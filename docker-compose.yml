@@ -1,0 +1,13 @@
+version: "3"
+
+services:
+
+  scylla-node:
+    container_name: scylla-node
+    image: scylladb/scylla:5.2.18
+    restart: always
+    command: --seeds=scylla-node --smp 1 --memory 1G --overprovisioned 1 --api-address 0.0.0.0
+    volumes:
+      - "./scylla/scylla.yaml:/etc/scylla/scylla.yaml"
+      - "./scylla/cassandra-rackdc.properties.dc1:/etc/scylla/cassandra-rackdc.properties"
+      - "./scylla/mutant-data.txt:/mutant-data.txt"

@@ -1,0 +1,8 @@
+# add relevant .gitignore entries for a Golang project:
+vendor/
+*.log
+*.out
+*.test
+*.prof
+*.pprof
+*.cover
