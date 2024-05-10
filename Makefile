@@ -13,6 +13,14 @@ help:
 	@echo " test                          Run unit tests"
 	@echo
 
+.PHONY: setup
+setup:
+	@go mod tidy
+
+.PHONY: run
+run:
+	@go run ./cmd/erpc/main.go
+
 .PHONY: build
 build:
 	@CGO_ENABLED=0 go build -ldflags="-w -s" -o ./bin/erpc ./cmd/erpc/main.go

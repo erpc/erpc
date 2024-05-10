@@ -15,8 +15,10 @@
 logLevel: DEBUG | INFO | WARN | ERROR
 
 server:
+  httpHost: string
   httpPort: number
-  websocketPort: number
+  wsHost: string
+  wsPort: number
   maxTimeoutMs: number
 
 metrics:
