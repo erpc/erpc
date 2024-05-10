@@ -17,9 +17,10 @@ type PreparedUpstream struct {
 	Id           string
 	Architecture string // ArchitectureEvm, ArchitectureSolana, ...
 	Endpoint     string
-	Metadata     map[string]string
-	NetworkId    string
-	Client       *Client
+
+	Metadata   map[string]string
+	NetworkIds []string
+	Client     ClientInterface
 }
 
 type UpstreamOrchestrator struct {
@@ -39,7 +40,8 @@ func NewUpstreamOrchestrator(cfg *config.Config) *UpstreamOrchestrator {
 func (u *UpstreamOrchestrator) Bootstrap() {
 	// Start a timer to periodically reorder upstreams
 
-	// For now let's just reorder the upstreams every 10 seconds
+	// TODO For now let's just reorder the upstreams every 10 seconds
+	// TODO In reality we would want to reorder the upstreams based on their health/performance/ciruit breaker status
 	timer := time.NewTicker(10 * time.Second)
 	go func() {
 		for range timer.C {
@@ -68,17 +70,19 @@ func (u *UpstreamOrchestrator) Bootstrap() {
 				log.Fatal().Err(err).Msgf("failed to prepare upstream on initialize: %s", upstream.Id)
 			}
 
-			if _, ok := u.upstreamsMap[project.Id][preparedUpstream.NetworkId]; !ok {
-				u.upstreamsMap[project.Id][preparedUpstream.NetworkId] = []*PreparedUpstream{}
-			}
+			for _, networkId := range preparedUpstream.NetworkIds {
+				if _, ok := u.upstreamsMap[project.Id][networkId]; !ok {
+					u.upstreamsMap[project.Id][networkId] = []*PreparedUpstream{}
+				}
 
-			u.upstreamsMap[project.Id][preparedUpstream.NetworkId] = append(u.upstreamsMap[project.Id][preparedUpstream.NetworkId], preparedUpstream)
+				u.upstreamsMap[project.Id][networkId] = append(u.upstreamsMap[project.Id][networkId], preparedUpstream)
+			}
 		}
 	}
 }
 
 // Function to find the best upstream for a project/network
-func (u *UpstreamOrchestrator) FindBestUpstream(projectId string, networkId string) (*PreparedUpstream, error) {
+func (u *UpstreamOrchestrator) GetBestUpstream(projectId string, networkId string) (*PreparedUpstream, error) {
 	if _, ok := u.upstreamsMap[projectId]; !ok {
 		return nil, fmt.Errorf("project %s not found", projectId)
 	}
@@ -110,19 +114,19 @@ func (u *UpstreamOrchestrator) RefreshNetworkUpstreamsHealth(projectId string, n
 	u.upstreamsMap[projectId][networkId] = reorderedUpstreams
 
 	// Log the reordering
-	log.Info().Msgf("Reordered upstreams for project: %s and network: %s", projectId, networkId)
+	log.Info().Msgf("reordered upstreams for project: %s and network: %s", projectId, networkId)
 	for i, upstream := range reorderedUpstreams {
-		log.Info().Msgf("Upstream %d: %s", i, upstream.Id)
+		log.Info().Msgf("upstream %d: %s", i, upstream.Id)
 	}
 }
 
 func (u *UpstreamOrchestrator) prepareUpstream(projectId string, upstream config.Upstream) (*PreparedUpstream, error) {
-	var networkId string
+	var networkIds []string = []string{}
 
 	if upstream.Metadata != nil {
 		if val, ok := upstream.Metadata["evmChainId"]; ok {
-			log.Debug().Msgf("network ID set via evmChainId for project: %s and upstream: %s", projectId, upstream.Id)
-			networkId = val
+			log.Debug().Msgf("network ID set to %s via evmChainId for project: %s and upstream: %s", val, projectId, upstream.Id)
+			networkIds = append(networkIds, val)
 		} else {
 			log.Debug().Msgf("network ID not set via evmChainId (%v) for project: %s and upstream: %s", upstream.Metadata["evmChainId"], projectId, upstream.Id)
 		}
@@ -132,12 +136,13 @@ func (u *UpstreamOrchestrator) prepareUpstream(projectId string, upstream config
 		upstream.Architecture = ArchitectureEvm
 	}
 
-	// TODO create a Client for upstream and try to "detect" the network ID
-	// if networkId == "" {
+	// TODO create a Client for upstream and try to "detect" the network ID(s)
+	// if networkIds == nil || len(networkIds) == 0 {
+	//
 	// }
 
-	if networkId == "" {
-		return nil, fmt.Errorf("could not detect network ID for project: %s and upstream: %s either set it manually (e.g. metadata.evmChainId) to make sure endpoint can provide such info (e.g. support eth_chainId method)", projectId, upstream.Id)
+	if len(networkIds) == 0 {
+		return nil, fmt.Errorf("could not detect any network ID for project: %s and upstream: %s either set it manually (e.g. metadata.evmChainId) to make sure endpoint can provide such info (e.g. support eth_chainId method)", projectId, upstream.Id)
 	}
 
 	preparedUpstream := &PreparedUpstream{
@@ -145,7 +150,7 @@ func (u *UpstreamOrchestrator) prepareUpstream(projectId string, upstream config
 		Architecture: upstream.Architecture,
 		Endpoint:     upstream.Endpoint,
 		Metadata:     upstream.Metadata,
-		NetworkId:    networkId,
+		NetworkIds:   networkIds,
 	}
 
 	client := u.clientManager.GetOrCreateClient(preparedUpstream)

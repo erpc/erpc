@@ -20,6 +20,8 @@ func NewHttpServer(cfg *config.Config, proxyCore *proxy.ProxyCore) *HttpServer {
 
 	handler := http.NewServeMux()
 	handler.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		log.Debug().Msgf("received request on path: %s with body length: %d", r.URL.Path, r.ContentLength)
+
 		// Split the URL path into segments
 		segments := strings.Split(r.URL.Path, "/")
 
