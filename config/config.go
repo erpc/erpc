@@ -7,9 +7,10 @@ import (
 )
 
 type Upstream struct {
-	Id       string            `yaml:"id"`
-	Endpoint string            `yaml:"endpoint"`
-	Metadata map[string]string `yaml:"metadata"`
+	Id           string            `yaml:"id"`
+	Architecture string            `yaml:"architecture,omitempty"`
+	Endpoint     string            `yaml:"endpoint"`
+	Metadata     map[string]string `yaml:"metadata"`
 }
 
 type Project struct {

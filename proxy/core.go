@@ -25,5 +25,5 @@ func (p *ProxyCore) Forward(project string, network string, w http.ResponseWrite
 		return
 	}
 
-	w.Write([]byte("Found upstream: " + upstream + " for project: " + project + " and network: " + network))
+	w.Write([]byte("Forwarded upstream: " + upstream.Id + " for project: " + project + " and network: " + network))
 }
