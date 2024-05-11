@@ -6,3 +6,5 @@ vendor/
 *.prof
 *.pprof
 *.cover
+
+erpc.yaml

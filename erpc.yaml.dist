@@ -1,0 +1,17 @@
+logLevel: DEBUG
+
+server:
+  httpHost: 0.0.0.0
+  httpPort: 4000
+
+projects:
+  - id: main
+    upstreams:
+    - id: my-blast
+      endpoint: https://eth-mainnet.blastapi.io/xxxxxxxxxxxxxxx
+      metadata:
+        evmChainId: 1
+    - id: my-alchemy
+      endpoint: https://eth-mainnet.alchemyapi.io/v2/xxxxxxxxxxxxxxx
+      metadata:
+        evmChainId: 1

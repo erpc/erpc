@@ -34,7 +34,12 @@ func NewHttpServer(cfg *config.Config, proxyCore *proxy.ProxyCore) *HttpServer {
 		project := segments[1]
 		network := segments[2]
 
-		proxyCore.Forward(project, network, w, r)
+		err := proxyCore.Forward(project, network, r, w)
+
+		if err != nil {
+			log.Error().Err(err).Msgf("failed to forward request to upstream")
+			http.Error(w, "failed to forward request to upstream", http.StatusInternalServerError)
+		}
 	})
 
 	return &HttpServer{
