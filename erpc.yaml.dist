@@ -4,6 +4,11 @@ server:
   httpHost: 0.0.0.0
   httpPort: 4000
 
+metrics:
+  enabled: true
+  host: 0.0.0.0
+  port: 4001
+
 projects:
   - id: main
     upstreams:

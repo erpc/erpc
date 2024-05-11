@@ -1,11 +1,15 @@
 package erpc
 
 import (
+	"fmt"
+	"net/http"
+
 	"github.com/flair-sdk/erpc/config"
 	"github.com/flair-sdk/erpc/proxy"
 	"github.com/flair-sdk/erpc/server"
 	"github.com/flair-sdk/erpc/upstream"
 	"github.com/flair-sdk/erpc/util"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog/log"
 )
 
@@ -26,6 +30,17 @@ func Bootstrap(cfg *config.Config) (func(), error) {
 			util.OsExit(util.ExitCodeHttpServerFailed)
 		}
 	}()
+
+	if cfg.Metrics.Enabled {
+		addr := fmt.Sprintf("%s:%d", cfg.Metrics.Host, cfg.Metrics.Port)
+		log.Info().Msgf("starting metrics server on addr: %s", addr)
+		go func() {
+			if err := http.ListenAndServe(addr, promhttp.Handler()); err != nil {
+				log.Error().Msgf("error starting metrics server: %s", err)
+				util.OsExit(util.ExitCodeHttpServerFailed)
+			}
+		}()
+	}
 
 	// Return a shutdown function
 	return func() {

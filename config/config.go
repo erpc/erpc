@@ -23,11 +23,18 @@ type ServerConfig struct {
 	maxTimeoutMs int    `yaml:"maxTimeoutMs"`
 }
 
+type MetricsConfig struct {
+	Enabled bool   `toml:"enabled"`
+	Host    string `toml:"host"`
+	Port    int    `toml:"port"`
+}
+
 // Config represents the configuration of the application.
 type Config struct {
 	Server   ServerConfig    `yaml:"server"`
 	LogLevel string          `yaml:"logLevel"`
 	Projects []ProjectConfig `yaml:"projects"`
+	Metrics  MetricsConfig   `yaml:"metrics"`
 }
 
 // LoadConfig loads the configuration from the specified file.

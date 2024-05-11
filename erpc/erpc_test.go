@@ -63,9 +63,9 @@ func TestBootstrap_UpstreamOrchestratorFailure(t *testing.T) {
 				Id: "test",
 				Upstreams: []config.UpstreamConfig{
 					{
-						Id:  "test",
+						Id:           "test",
 						Architecture: "evm",
-						Endpoint: "http://localhost:8080",
+						Endpoint:     "http://localhost:8080",
 						// missing "evmChainId" will cause an error
 						Metadata: map[string]string{},
 					},

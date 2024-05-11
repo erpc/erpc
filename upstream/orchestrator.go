@@ -2,9 +2,12 @@ package upstream
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/flair-sdk/erpc/config"
+	"github.com/prometheus/client_golang/prometheus"
+	promgo "github.com/prometheus/client_model/go"
 	"github.com/rs/zerolog/log"
 )
 
@@ -84,7 +87,7 @@ func (u *UpstreamOrchestrator) Bootstrap() error {
 }
 
 // Function to find the best upstream for a project/network
-func (u *UpstreamOrchestrator) GetBestUpstream(projectId string, networkId string) (*PreparedUpstream, error) {
+func (u *UpstreamOrchestrator) GetUpstreams(projectId string, networkId string) ([]*PreparedUpstream, error) {
 	if _, ok := u.upstreamsMap[projectId]; !ok {
 		return nil, fmt.Errorf("project %s not found", projectId)
 	}
@@ -97,7 +100,7 @@ func (u *UpstreamOrchestrator) GetBestUpstream(projectId string, networkId strin
 		return nil, fmt.Errorf("no upstreams found for project %s and network %s", projectId, networkId)
 	}
 
-	return u.upstreamsMap[projectId][networkId][0], nil
+	return u.upstreamsMap[projectId][networkId], nil
 }
 
 // Proactively update the health information of upstreams of a project/network and reorder them so the highest performing upstreams are at the top
@@ -106,20 +109,43 @@ func (u *UpstreamOrchestrator) RefreshNetworkUpstreamsHealth(projectId string, n
 	// Get the upstreams for the project/network
 	upstreams := u.upstreamsMap[projectId][networkId]
 
-	// Randomly reorder the upstreams
-	var reorderedUpstreams []*PreparedUpstream
-	for i := len(upstreams) - 1; i >= 0; i-- {
-		reorderedUpstreams = append(reorderedUpstreams, upstreams[i])
+	// Create a slice of upstreams with metrics
+	type UpstreamWithMetrics struct {
+		upstream  *PreparedUpstream
+		errorRate float64
+		latency   float64
 	}
+
+	var upstreamsWithMetrics []UpstreamWithMetrics
+	for _, upstream := range upstreams {
+		latency, errorRate := getMetricsDataForUpstream(projectId, networkId, upstream.Id)
+		upstreamsWithMetrics = append(upstreamsWithMetrics, UpstreamWithMetrics{
+			upstream:  upstream,
+			errorRate: errorRate,
+			latency:   latency,
+		})
+	}
+
+	// Sort by lowest error rate and latency
+	sort.Slice(upstreamsWithMetrics, func(i, j int) bool {
+		log.Debug().Msgf("comparing upstreams %s (errorRate=%f latency=%f) and %s (errorRate=%f latency=%f)", upstreamsWithMetrics[i].upstream.Id, upstreamsWithMetrics[i].errorRate, upstreamsWithMetrics[i].latency, upstreamsWithMetrics[j].upstream.Id, upstreamsWithMetrics[j].errorRate, upstreamsWithMetrics[j].latency)
+		if upstreamsWithMetrics[i].errorRate == upstreamsWithMetrics[j].errorRate {
+			return upstreamsWithMetrics[i].latency < upstreamsWithMetrics[j].latency
+		}
+		return upstreamsWithMetrics[i].errorRate < upstreamsWithMetrics[j].errorRate
+	})
+
+	// Extract sorted upstreams
+	var reorderedUpstreams []*PreparedUpstream
+	for _, upstreamWithMetrics := range upstreamsWithMetrics {
+		reorderedUpstreams = append(reorderedUpstreams, upstreamWithMetrics.upstream)
+	}
+
+	// Log the reordering
+	log.Debug().Msgf("reordered upstreams for project: %s and network: %s", projectId, networkId)
 
 	// Update the upstreams for the project/network
 	u.upstreamsMap[projectId][networkId] = reorderedUpstreams
-
-	// Log the reordering
-	log.Info().Msgf("reordered upstreams for project: %s and network: %s", projectId, networkId)
-	for i, upstream := range reorderedUpstreams {
-		log.Info().Msgf("upstream %d: %s", i, upstream.Id)
-	}
 }
 
 func (u *UpstreamOrchestrator) prepareUpstream(projectId string, upstream config.UpstreamConfig) (*PreparedUpstream, error) {
@@ -162,4 +188,89 @@ func (u *UpstreamOrchestrator) prepareUpstream(projectId string, upstream config
 	}
 
 	return preparedUpstream, nil
+}
+
+func getMetricsDataForUpstream(projectId, networkId, upstreamId string) (float64, float64) {
+	// Get and parse current prometheus metrics data
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		log.Error().Msgf("failed to gather prometheus metrics: %v", err)
+		// TODO think of a proper/sane default
+		return 1, 1
+	}
+
+	var latencyNinetyPercentile float64 = 0
+	var requestsTotal float64 = 0
+	var errorsTotal float64 = 0
+
+	// Find the metrics for the upstream
+	for _, mf := range mfs {
+		if mf.GetName() == "erpc_upstream_request_duration_seconds" {
+			for _, m := range mf.GetMetric() {
+				labels := m.GetLabel()
+				if doLabelsMatch(labels, projectId, networkId, upstreamId) {
+					percentiles := m.GetSummary().GetQuantile()
+					for _, p := range percentiles {
+						switch p.GetQuantile() {
+						case 0.9:
+							latencyNinetyPercentile = p.GetValue()
+						}
+					}
+				}
+			}
+		}
+
+		if mf.GetName() == "erpc_upstream_request_errors_total" {
+			for _, m := range mf.GetMetric() {
+				labels := m.GetLabel()
+				if doLabelsMatch(labels, projectId, networkId, upstreamId) {
+					errorsTotal = m.GetCounter().GetValue()
+				}
+			}
+		}
+
+		if mf.GetName() == "erpc_upstream_request_total" {
+			for _, m := range mf.GetMetric() {
+				labels := m.GetLabel()
+				// log.Debug().Msgf("ERT prometheus labels: %d %v", len((labels)), labels)
+				if doLabelsMatch(labels, projectId, networkId, upstreamId) {
+					// if labels[0].GetValue() == projectId && labels[1].GetValue() == networkId && labels[2].GetValue() == upstreamId {
+					// log.Debug().Msgf("ERT prometheus value: %f", m.GetCounter().GetValue())
+					requestsTotal = m.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+
+	log.Debug().Msgf("found metrics for project: %s network: %s upstream: %s latency: %f errors: %f requests: %f", projectId, networkId, upstreamId, latencyNinetyPercentile, errorsTotal, requestsTotal)
+
+	var errorRate float64 = 0
+
+	if requestsTotal > 0 {
+		errorRate = errorsTotal / requestsTotal
+	}
+
+	return latencyNinetyPercentile, errorRate
+}
+
+func doLabelsMatch(labels []*promgo.LabelPair, projectId, networkId, upstreamId string) bool {
+	var projectLabel *promgo.LabelPair
+	var networkLabel *promgo.LabelPair
+	var upstreamLabel *promgo.LabelPair
+
+	for _, label := range labels {
+		if label.GetName() == "project" {
+			projectLabel = label
+		} else if label.GetName() == "network" {
+			networkLabel = label
+		} else if label.GetName() == "upstream" {
+			upstreamLabel = label
+		}
+	}
+
+	if projectLabel == nil || networkLabel == nil || upstreamLabel == nil {
+		return false
+	}
+
+	return projectLabel.GetValue() == projectId && networkLabel.GetValue() == networkId && upstreamLabel.GetValue() == upstreamId
 }
