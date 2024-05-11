@@ -5,12 +5,16 @@ import (
 	"github.com/flair-sdk/erpc/proxy"
 	"github.com/flair-sdk/erpc/server"
 	"github.com/flair-sdk/erpc/upstream"
+	"github.com/flair-sdk/erpc/util"
 	"github.com/rs/zerolog/log"
 )
 
 func Bootstrap(cfg *config.Config) (func(), error) {
 	upstreamOrchestrator := upstream.NewUpstreamOrchestrator(cfg)
-	upstreamOrchestrator.Bootstrap()
+	err := upstreamOrchestrator.Bootstrap()
+	if err != nil {
+		return nil, err
+	}
 
 	proxyCore := proxy.NewProxyCore(upstreamOrchestrator)
 
@@ -18,7 +22,8 @@ func Bootstrap(cfg *config.Config) (func(), error) {
 	httpServer := server.NewHttpServer(cfg, proxyCore)
 	go func() {
 		if err := httpServer.Start(); err != nil {
-			log.Fatal().Msgf("failed to start httpServer: %v", err)
+			log.Error().Msgf("failed to start httpServer: %v", err)
+			util.OsExit(util.ExitCodeHttpServerFailed)
 		}
 	}()
 

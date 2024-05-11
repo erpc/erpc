@@ -37,7 +37,7 @@ func NewUpstreamOrchestrator(cfg *config.Config) *UpstreamOrchestrator {
 }
 
 // Bootstrap function that has a timer to periodically reorder upstreams based on their health/performance
-func (u *UpstreamOrchestrator) Bootstrap() {
+func (u *UpstreamOrchestrator) Bootstrap() error {
 	// Start a timer to periodically reorder upstreams
 
 	// TODO For now let's just reorder the upstreams every 10 seconds
@@ -67,7 +67,7 @@ func (u *UpstreamOrchestrator) Bootstrap() {
 			preparedUpstream, err := u.prepareUpstream(project.Id, upstream)
 
 			if err != nil {
-				log.Fatal().Err(err).Msgf("failed to prepare upstream on initialize: %s", upstream.Id)
+				return fmt.Errorf("failed to prepare upstream on initialize: %s", upstream.Id)
 			}
 
 			for _, networkId := range preparedUpstream.NetworkIds {
@@ -79,6 +79,8 @@ func (u *UpstreamOrchestrator) Bootstrap() {
 			}
 		}
 	}
+
+	return nil
 }
 
 // Function to find the best upstream for a project/network
@@ -120,7 +122,7 @@ func (u *UpstreamOrchestrator) RefreshNetworkUpstreamsHealth(projectId string, n
 	}
 }
 
-func (u *UpstreamOrchestrator) prepareUpstream(projectId string, upstream config.Upstream) (*PreparedUpstream, error) {
+func (u *UpstreamOrchestrator) prepareUpstream(projectId string, upstream config.UpstreamConfig) (*PreparedUpstream, error) {
 	var networkIds []string = []string{}
 
 	if upstream.Metadata != nil {
@@ -153,8 +155,11 @@ func (u *UpstreamOrchestrator) prepareUpstream(projectId string, upstream config
 		NetworkIds:   networkIds,
 	}
 
-	client := u.clientManager.GetOrCreateClient(preparedUpstream)
-	preparedUpstream.Client = client
+	if client, err := u.clientManager.GetOrCreateClient(preparedUpstream); err != nil {
+		return nil, err
+	} else {
+		preparedUpstream.Client = client
+	}
 
 	return preparedUpstream, nil
 }

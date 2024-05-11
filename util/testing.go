@@ -1,6 +1,8 @@
 package util
 
-import "flag"
+import (
+	"flag"
+)
 
 func IsTest() bool {
 	return flag.Lookup("test.v") != nil
