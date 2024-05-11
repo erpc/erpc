@@ -58,7 +58,7 @@ func (u *UpstreamOrchestrator) Bootstrap() {
 	// Load initial upstreams from the hard-coded config
 	u.upstreamsMap = make(map[string]map[string][]*PreparedUpstream)
 	for _, project := range u.config.Projects {
-		log.Info().Msgf("Loading upstreams for project: %v", project.Id)
+		log.Info().Msgf("loading upstreams for project: %v", project.Id)
 		if _, ok := u.upstreamsMap[project.Id]; !ok {
 			u.upstreamsMap[project.Id] = make(map[string][]*PreparedUpstream)
 		}

@@ -10,16 +10,13 @@ import (
 
 type ProxyCore struct {
 	upstreamOrchestrator *upstream.UpstreamOrchestrator
-}
-
-type PreparedJsonRpcRequest struct {
-	method string
-	params []interface{}
+	normalizer           *Normalizer
 }
 
 func NewProxyCore(upstreamOrchestrator *upstream.UpstreamOrchestrator) *ProxyCore {
 	return &ProxyCore{
 		upstreamOrchestrator: upstreamOrchestrator,
+		normalizer:           &Normalizer{},
 	}
 }
 
@@ -45,8 +42,14 @@ func (p *ProxyCore) Forward(project string, network string, w http.ResponseWrite
 			w.Write([]byte("failed to cast client to HttpJsonRpcClient"))
 			return
 		}
-		preparedJsonRpcRequest := p.ExtractAndPrepareJsonRpcRequest(r)
-		resp, errCall := jsonRpcClient.Call(preparedJsonRpcRequest.method, preparedJsonRpcRequest.params)
+
+		preparedReq, errPrepare := p.normalizer.NormalizeJsonRpcRequest(r)
+		if errPrepare != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(errPrepare.Error()))
+			return
+		}
+		resp, errCall := jsonRpcClient.SendRequest(preparedReq)
 
 		if errCall != nil {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -67,24 +70,6 @@ func (p *ProxyCore) Forward(project string, network string, w http.ResponseWrite
 		w.Write(respBytes)
 	default:
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("Unsupported client type: " + bestUpstream.Client.GetType()))
-	}
-}
-
-// Extract and prepare the request for forwarding.
-func (p *ProxyCore) ExtractAndPrepareJsonRpcRequest(r *http.Request) *PreparedJsonRpcRequest {
-	decoder := json.NewDecoder(r.Body)
-	var requestJson map[string]interface{}
-	err := decoder.Decode(&requestJson)
-	if err != nil {
-		return nil
-	}
-
-	method := requestJson["method"].(string)
-	params := requestJson["params"].([]interface{})
-
-	return &PreparedJsonRpcRequest{
-		method: method,
-		params: params,
+		w.Write([]byte("unsupported client type: " + bestUpstream.Client.GetType()))
 	}
 }

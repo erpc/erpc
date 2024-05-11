@@ -30,6 +30,11 @@ build:
 test:
 	@go test ./... -v
 
+.PHONY: coverage
+coverage:
+	@go test -coverprofile=coverage.out ./...
+	@go tool cover -html=coverage.out
+
 .PHONY: docker-up
 docker-up:
 	@docker-compose up -d

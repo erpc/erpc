@@ -1,8 +1,7 @@
 package config
 
 import (
-	"os"
-
+	"github.com/spf13/afero"
 	"gopkg.in/yaml.v2"
 )
 
@@ -30,8 +29,8 @@ type Config struct {
 }
 
 // LoadConfig loads the configuration from the specified file.
-func LoadConfig(filename string) (*Config, error) {
-	data, err := os.ReadFile(filename)
+func LoadConfig(fs afero.Fs, filename string) (*Config, error) {
+	data, err := afero.ReadFile(fs, filename)
 
 	if err != nil {
 		return nil, err

@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/flair-sdk/erpc/util"
+	"github.com/rs/zerolog/log"
 )
 
 type HttpJsonRpcClient struct {
@@ -18,9 +22,10 @@ type HttpJsonRpcClient struct {
 }
 
 type JsonRpcRequest struct {
-	Method string        `json:"method"`
-	Params []interface{} `json:"params"`
-	Id     int           `json:"id"`
+	JSONRPC string        `json:"jsonrpc,omitempty"`
+	ID      interface{}   `json:"id,omitempty"`
+	Method  string        `json:"method"`
+	Params  []interface{} `json:"params"`
 }
 
 type JsonRpcResponse struct {
@@ -35,28 +40,41 @@ type JsonRpcError struct {
 }
 
 func NewHttpJsonRpcClient(parsedUrl *url.URL) (*HttpJsonRpcClient, error) {
-	client := &HttpJsonRpcClient{
-		Type: "HttpJsonRpcClient",
-		Url:  parsedUrl,
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second, // Set a timeout
-			Transport: &http.Transport{
-				MaxIdleConns:        100,
-				IdleConnTimeout:     90 * time.Second,
-				MaxIdleConnsPerHost: 10,
+	var client *HttpJsonRpcClient
+
+	if util.IsTest() {
+		client = &HttpJsonRpcClient{
+			Type:       "HttpJsonRpcClient",
+			Url:        parsedUrl,
+			httpClient: &http.Client{},
+			jsonRpcId:  1,
+		}
+	} else {
+		client = &HttpJsonRpcClient{
+			Type: "HttpJsonRpcClient",
+			Url:  parsedUrl,
+			httpClient: &http.Client{
+				Timeout: 30 * time.Second, // Set a timeout
+				Transport: &http.Transport{
+					MaxIdleConns:        100,
+					IdleConnTimeout:     90 * time.Second,
+					MaxIdleConnsPerHost: 10,
+				},
 			},
-		},
-		jsonRpcId: 1,
+			jsonRpcId: 1,
+		}
+
 	}
 
 	return client, nil
 }
 
-func (c *HttpJsonRpcClient) Call(method string, params []interface{}) (interface{}, error) {
+func (c *HttpJsonRpcClient) SendRequest(req *JsonRpcRequest) (interface{}, error) {
 	requestBody, err := json.Marshal(JsonRpcRequest{
-		Method: method,
-		Params: params,
-		Id:     c.jsonRpcId,
+		JSONRPC: req.JSONRPC,
+		Method:  req.Method,
+		Params:  req.Params,
+		ID:      c.jsonRpcId,
 	})
 	c.jsonRpcId++
 
@@ -64,18 +82,28 @@ func (c *HttpJsonRpcClient) Call(method string, params []interface{}) (interface
 		return nil, err
 	}
 
+	log.Debug().Msgf("sending json rpc POST request to %s: %s", c.Url.String(), requestBody)
+
 	resp, err := c.httpClient.Post(c.Url.String(), "application/json", bytes.NewBuffer(requestBody))
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("server responded with status code %d", resp.StatusCode)
+	respStatusCode := resp.StatusCode
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	log.Debug().Msgf("received json rpc response status: %d and body: %s", respStatusCode, respBody)
+
+	if respStatusCode != http.StatusOK {
+		return nil, fmt.Errorf("server responded with status code %d", respStatusCode)
 	}
 
 	var jsonResponse JsonRpcResponse
-	if err := json.NewDecoder(resp.Body).Decode(&jsonResponse); err != nil {
+	if err := json.Unmarshal(respBody, &jsonResponse); err != nil {
 		return nil, err
 	}
 
