@@ -2,12 +2,11 @@ package upstream
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"time"
 
 	"github.com/flair-sdk/erpc/config"
 	"github.com/prometheus/client_golang/prometheus"
-	promgo "github.com/prometheus/client_model/go"
 	"github.com/rs/zerolog/log"
 )
 
@@ -16,21 +15,22 @@ const (
 	ArchitectureSolana = "solana"
 )
 
-type PreparedUpstream struct {
-	Id           string
-	Architecture string // ArchitectureEvm, ArchitectureSolana, ...
-	Endpoint     string
-
-	Metadata   map[string]string
-	NetworkIds []string
-	Client     ClientInterface
-}
-
 type UpstreamOrchestrator struct {
 	config        *config.Config
 	clientManager *ClientManager
 	upstreamsMap  map[string]map[string][]*PreparedUpstream
 }
+
+type NormalizedUpstreamMetrics struct {
+	P90Latency    float64
+	ErrorsTotal   float64
+	RequestsTotal float64
+	LastCollect   time.Time
+
+	BlocksLag float64
+}
+
+var normalizedUpstreamMetrics = make(map[string]map[string]map[string]*NormalizedUpstreamMetrics)
 
 func NewUpstreamOrchestrator(cfg *config.Config) *UpstreamOrchestrator {
 	return &UpstreamOrchestrator{
@@ -41,17 +41,12 @@ func NewUpstreamOrchestrator(cfg *config.Config) *UpstreamOrchestrator {
 
 // Bootstrap function that has a timer to periodically reorder upstreams based on their health/performance
 func (u *UpstreamOrchestrator) Bootstrap() error {
-	// Start a timer to periodically reorder upstreams
-
-	// TODO For now let's just reorder the upstreams every 10 seconds
-	// TODO In reality we would want to reorder the upstreams based on their health/performance/ciruit breaker status
+	// Start a timer to periodically reorder upstreams based on their health/performance
 	timer := time.NewTicker(10 * time.Second)
 	go func() {
 		for range timer.C {
-			// For each project/network, reorder the upstreams based on their health/performance
 			for project, networks := range u.upstreamsMap {
 				for network := range networks {
-					// Reorder the upstreams based on their health/performance
 					u.RefreshNetworkUpstreamsHealth(project, network)
 				}
 			}
@@ -86,8 +81,7 @@ func (u *UpstreamOrchestrator) Bootstrap() error {
 	return nil
 }
 
-// Function to find the best upstream for a project/network
-func (u *UpstreamOrchestrator) GetUpstreams(projectId string, networkId string) ([]*PreparedUpstream, error) {
+func (u *UpstreamOrchestrator) GetUpstreamsForNetwork(projectId string, networkId string) ([]*PreparedUpstream, error) {
 	if _, ok := u.upstreamsMap[projectId]; !ok {
 		return nil, fmt.Errorf("project %s not found", projectId)
 	}
@@ -105,34 +99,39 @@ func (u *UpstreamOrchestrator) GetUpstreams(projectId string, networkId string) 
 
 // Proactively update the health information of upstreams of a project/network and reorder them so the highest performing upstreams are at the top
 func (u *UpstreamOrchestrator) RefreshNetworkUpstreamsHealth(projectId string, networkId string) {
-	// For now let's randomly reorder the upstreams:
-	// Get the upstreams for the project/network
 	upstreams := u.upstreamsMap[projectId][networkId]
-
-	// Create a slice of upstreams with metrics
 	type UpstreamWithMetrics struct {
-		upstream  *PreparedUpstream
-		errorRate float64
-		latency   float64
+		upstream   *PreparedUpstream
+		errorRate  float64
+		p90Latency float64
 	}
 
-	var upstreamsWithMetrics []UpstreamWithMetrics
+	extractMetricsForUpstreams()
+
+	var upstreamsWithMetrics []*UpstreamWithMetrics
 	for _, upstream := range upstreams {
-		latency, errorRate := getMetricsDataForUpstream(projectId, networkId, upstream.Id)
-		upstreamsWithMetrics = append(upstreamsWithMetrics, UpstreamWithMetrics{
-			upstream:  upstream,
-			errorRate: errorRate,
-			latency:   latency,
+		p90Latency, errorRate := getMetricsForUpstream(projectId, networkId, upstream.Id)
+		upstreamsWithMetrics = append(upstreamsWithMetrics, &UpstreamWithMetrics{
+			upstream:   upstream,
+			errorRate:  errorRate,
+			p90Latency: p90Latency,
 		})
 	}
 
-	// Sort by lowest error rate and latency
-	sort.Slice(upstreamsWithMetrics, func(i, j int) bool {
-		log.Debug().Msgf("comparing upstreams %s (errorRate=%f latency=%f) and %s (errorRate=%f latency=%f)", upstreamsWithMetrics[i].upstream.Id, upstreamsWithMetrics[i].errorRate, upstreamsWithMetrics[i].latency, upstreamsWithMetrics[j].upstream.Id, upstreamsWithMetrics[j].errorRate, upstreamsWithMetrics[j].latency)
-		if upstreamsWithMetrics[i].errorRate == upstreamsWithMetrics[j].errorRate {
-			return upstreamsWithMetrics[i].latency < upstreamsWithMetrics[j].latency
+	slices.SortFunc(upstreamsWithMetrics, func(a, b *UpstreamWithMetrics) int {
+		if a.errorRate == b.errorRate {
+			if a.p90Latency == b.p90Latency {
+				return 0
+			}
+			if a.p90Latency < b.p90Latency {
+				return -1
+			}
+			return 1
 		}
-		return upstreamsWithMetrics[i].errorRate < upstreamsWithMetrics[j].errorRate
+		if a.errorRate < b.errorRate {
+			return -1
+		}
+		return 1
 	})
 
 	// Extract sorted upstreams
@@ -148,7 +147,63 @@ func (u *UpstreamOrchestrator) RefreshNetworkUpstreamsHealth(projectId string, n
 	u.upstreamsMap[projectId][networkId] = reorderedUpstreams
 }
 
-func (u *UpstreamOrchestrator) prepareUpstream(projectId string, upstream config.UpstreamConfig) (*PreparedUpstream, error) {
+func extractMetricsForUpstreams() {
+	// Get and parse current prometheus metrics data
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if mfs == nil {
+		log.Error().Msgf("failed to gather prometheus metrics: %v", err)
+		return
+	}
+
+	for _, mf := range mfs {
+		for _, m := range mf.GetMetric() {
+			labels := m.GetLabel()
+			var project, network, upstream string
+			for _, label := range labels {
+				if label.GetName() == "project" {
+					project = label.GetValue()
+				}
+				if label.GetName() == "network" {
+					network = label.GetValue()
+				}
+				if label.GetName() == "upstream" {
+					upstream = label.GetValue()
+				}
+			}
+
+			if project != "" && network != "" && upstream != "" {
+				if _, ok := normalizedUpstreamMetrics[project]; !ok {
+					normalizedUpstreamMetrics[project] = make(map[string]map[string]*NormalizedUpstreamMetrics)
+				}
+
+				if _, ok := normalizedUpstreamMetrics[project][network]; !ok {
+					normalizedUpstreamMetrics[project][network] = make(map[string]*NormalizedUpstreamMetrics)
+				}
+
+				if mf.GetName() == "erpc_upstream_request_duration_seconds" {
+					percentiles := m.GetSummary().GetQuantile()
+					for _, p := range percentiles {
+						switch p.GetQuantile() {
+						case 0.9:
+							normalizedUpstreamMetrics[project][network][upstream] = &NormalizedUpstreamMetrics{
+								P90Latency: p.GetValue(),
+							}
+						}
+					}
+				} else if mf.GetName() == "erpc_upstream_request_errors_total" {
+					normalizedUpstreamMetrics[project][network][upstream].ErrorsTotal = m.GetCounter().GetValue()
+				} else if mf.GetName() == "erpc_upstream_request_total" {
+					normalizedUpstreamMetrics[project][network][upstream].RequestsTotal = m.GetCounter().GetValue()
+				}
+
+				normalizedUpstreamMetrics[project][network][upstream].LastCollect = time.Now()
+			}
+		}
+
+	}
+}
+
+func (u *UpstreamOrchestrator) prepareUpstream(projectId string, upstream *config.UpstreamConfig) (*PreparedUpstream, error) {
 	var networkIds []string = []string{}
 
 	if upstream.Metadata != nil {
@@ -174,11 +229,13 @@ func (u *UpstreamOrchestrator) prepareUpstream(projectId string, upstream config
 	}
 
 	preparedUpstream := &PreparedUpstream{
-		Id:           upstream.Id,
-		Architecture: upstream.Architecture,
-		Endpoint:     upstream.Endpoint,
-		Metadata:     upstream.Metadata,
-		NetworkIds:   networkIds,
+		Id:               upstream.Id,
+		Architecture:     upstream.Architecture,
+		Endpoint:         upstream.Endpoint,
+		Metadata:         upstream.Metadata,
+		NetworkIds:       networkIds,
+		RateLimitBucket:  upstream.RateLimitBucket,
+		HealthCheckGroup: upstream.HealthCheckGroup,
 	}
 
 	if client, err := u.clientManager.GetOrCreateClient(preparedUpstream); err != nil {
@@ -190,87 +247,26 @@ func (u *UpstreamOrchestrator) prepareUpstream(projectId string, upstream config
 	return preparedUpstream, nil
 }
 
-func getMetricsDataForUpstream(projectId, networkId, upstreamId string) (float64, float64) {
-	// Get and parse current prometheus metrics data
-	mfs, err := prometheus.DefaultGatherer.Gather()
-	if err != nil {
-		log.Error().Msgf("failed to gather prometheus metrics: %v", err)
-		// TODO think of a proper/sane default
-		return 1, 1
+func getMetricsForUpstream(projectId, networkId, upstreamId string) (float64, float64) {
+	if _, ok := normalizedUpstreamMetrics[projectId]; !ok {
+		return 0, 0
 	}
 
-	var latencyNinetyPercentile float64 = 0
-	var requestsTotal float64 = 0
-	var errorsTotal float64 = 0
-
-	// Find the metrics for the upstream
-	for _, mf := range mfs {
-		if mf.GetName() == "erpc_upstream_request_duration_seconds" {
-			for _, m := range mf.GetMetric() {
-				labels := m.GetLabel()
-				if doLabelsMatch(labels, projectId, networkId, upstreamId) {
-					percentiles := m.GetSummary().GetQuantile()
-					for _, p := range percentiles {
-						switch p.GetQuantile() {
-						case 0.9:
-							latencyNinetyPercentile = p.GetValue()
-						}
-					}
-				}
-			}
-		}
-
-		if mf.GetName() == "erpc_upstream_request_errors_total" {
-			for _, m := range mf.GetMetric() {
-				labels := m.GetLabel()
-				if doLabelsMatch(labels, projectId, networkId, upstreamId) {
-					errorsTotal = m.GetCounter().GetValue()
-				}
-			}
-		}
-
-		if mf.GetName() == "erpc_upstream_request_total" {
-			for _, m := range mf.GetMetric() {
-				labels := m.GetLabel()
-				// log.Debug().Msgf("ERT prometheus labels: %d %v", len((labels)), labels)
-				if doLabelsMatch(labels, projectId, networkId, upstreamId) {
-					// if labels[0].GetValue() == projectId && labels[1].GetValue() == networkId && labels[2].GetValue() == upstreamId {
-					// log.Debug().Msgf("ERT prometheus value: %f", m.GetCounter().GetValue())
-					requestsTotal = m.GetCounter().GetValue()
-				}
-			}
-		}
+	if _, ok := normalizedUpstreamMetrics[projectId][networkId]; !ok {
+		return 0, 0
 	}
 
-	log.Debug().Msgf("found metrics for project: %s network: %s upstream: %s latency: %f errors: %f requests: %f", projectId, networkId, upstreamId, latencyNinetyPercentile, errorsTotal, requestsTotal)
+	if _, ok := normalizedUpstreamMetrics[projectId][networkId][upstreamId]; !ok {
+		return 0, 0
+	}
+
+	mt := normalizedUpstreamMetrics[projectId][networkId][upstreamId]
 
 	var errorRate float64 = 0
-
-	if requestsTotal > 0 {
-		errorRate = errorsTotal / requestsTotal
+	p90Latency := mt.P90Latency
+	if mt.RequestsTotal > 0 {
+		errorRate = mt.ErrorsTotal / mt.RequestsTotal
 	}
 
-	return latencyNinetyPercentile, errorRate
-}
-
-func doLabelsMatch(labels []*promgo.LabelPair, projectId, networkId, upstreamId string) bool {
-	var projectLabel *promgo.LabelPair
-	var networkLabel *promgo.LabelPair
-	var upstreamLabel *promgo.LabelPair
-
-	for _, label := range labels {
-		if label.GetName() == "project" {
-			projectLabel = label
-		} else if label.GetName() == "network" {
-			networkLabel = label
-		} else if label.GetName() == "upstream" {
-			upstreamLabel = label
-		}
-	}
-
-	if projectLabel == nil || networkLabel == nil || upstreamLabel == nil {
-		return false
-	}
-
-	return projectLabel.GetValue() == projectId && networkLabel.GetValue() == networkId && upstreamLabel.GetValue() == upstreamId
+	return p90Latency, errorRate
 }

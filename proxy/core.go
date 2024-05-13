@@ -13,13 +13,16 @@ import (
 
 type ProxyCore struct {
 	upstreamOrchestrator *upstream.UpstreamOrchestrator
-	normalizer           *Normalizer
+	rateLimitersHub      *RateLimitersHub
 }
 
-func NewProxyCore(upstreamOrchestrator *upstream.UpstreamOrchestrator) *ProxyCore {
+func NewProxyCore(
+	upstreamOrchestrator *upstream.UpstreamOrchestrator,
+	rateLimitersHub *RateLimitersHub,
+) *ProxyCore {
 	return &ProxyCore{
 		upstreamOrchestrator: upstreamOrchestrator,
-		normalizer:           &Normalizer{},
+		rateLimitersHub:      rateLimitersHub,
 	}
 }
 
@@ -27,28 +30,32 @@ func NewProxyCore(upstreamOrchestrator *upstream.UpstreamOrchestrator) *ProxyCor
 func (p *ProxyCore) Forward(project string, network string, r *http.Request, w http.ResponseWriter) error {
 	// TODO check if request exists in the hot, warm, or cold cache
 
-	currentUpstreams, errGet := p.upstreamOrchestrator.GetUpstreams(project, network)
-	if errGet != nil {
-		return fmt.Errorf("failed to get current upstreams: %w", errGet)
-	}
-
-	preparedReq, errPrepare := p.normalizer.NormalizeJsonRpcRequest(r)
-	if errPrepare != nil {
-		return fmt.Errorf("failed to normalize request: %w", errPrepare)
+	currentUpstreams, errUps := p.upstreamOrchestrator.GetUpstreamsForNetwork(project, network)
+	if errUps != nil {
+		return fmt.Errorf("failed to get current upstreams: %w", errUps)
 	}
 
 	var errorsByUpstream = make(map[string]error)
 
+	normalizedReq := upstream.NewNormalizedRequest(r)
 	log.Debug().Msgf("trying upstreams for project: %s, network: %s upstreams: %v", project, network, currentUpstreams)
 
 	for _, thisUpstream := range currentUpstreams {
-		log.Debug().Msgf("trying to forward request to upstream: %s", thisUpstream.Id)
-		// TODO cache the response in the hot, warm, or cold cache
+		preparedReq, errPrep := thisUpstream.PrepareRequest(normalizedReq)
+
+		if preparedReq == nil && errPrep == nil {
+			continue
+		}
+
+		if errPrep != nil {
+			errorsByUpstream[thisUpstream.Id] = fmt.Errorf("failed to prepare request for upstream: %w", errPrep)
+			continue
+		}
+
 		err := p.tryForwardToUpstream(project, network, thisUpstream, preparedReq, w)
-
-		log.Debug().Msgf("forwarding request to upstream: %s returned: %v", thisUpstream.Id, err)
-
 		if err == nil {
+			log.Info().Msgf("successfully forward request to upstream: %s for project: %s, network: %s", thisUpstream.Id, project, network)
+
 			return nil
 		}
 
@@ -58,7 +65,7 @@ func (p *ProxyCore) Forward(project string, network string, r *http.Request, w h
 	return fmt.Errorf("failed to forward request to any upstream: %v", errorsByUpstream)
 }
 
-func (p *ProxyCore) tryForwardToUpstream(project string, network string, thisUpstream *upstream.PreparedUpstream, preparedRequest *upstream.JsonRpcRequest, w http.ResponseWriter) error {
+func (p *ProxyCore) tryForwardToUpstream(project string, network string, thisUpstream *upstream.PreparedUpstream, preparedRequest interface{}, w http.ResponseWriter) error {
 	health.MetricUpstreamRequestTotal.WithLabelValues(
 		project,
 		network,
@@ -81,7 +88,35 @@ func (p *ProxyCore) tryForwardToUpstream(project string, network string, thisUps
 			return fmt.Errorf("failed to cast client to HttpJsonRpcClient")
 		}
 
-		resp, errCall := jsonRpcClient.SendRequest(preparedRequest)
+		limitersBucket, errLimiters := p.rateLimitersHub.GetBucket(thisUpstream.RateLimitBucket)
+		if errLimiters != nil {
+			return fmt.Errorf("failed to get rate limiters bucket '%s' error: %w", thisUpstream.RateLimitBucket, errLimiters)
+		}
+
+		log.Debug().Msgf("checking rate limiters bucket: %s result: %v", thisUpstream.RateLimitBucket, limitersBucket)
+
+		if limitersBucket != nil {
+			rules := limitersBucket.GetRulesByMethod(preparedRequest.(*upstream.JsonRpcRequest).Method)
+			log.Debug().Msgf("checking rate limiters rules: %v for method: %s", rules, preparedRequest.(*upstream.JsonRpcRequest).Method)
+			if len(rules) > 0 {
+				for _, rule := range rules {
+					log.Debug().Msgf("checking rate limiter rule: %v", rule)
+					if !(*rule.Limiter).TryAcquirePermit() {
+						log.Warn().Msgf("rate limit '%v' exceeded for upstream: %s", rule.Config, thisUpstream.Id)
+						health.MetricUpstreamRequestLocalRateLimited.WithLabelValues(
+							project,
+							network,
+							thisUpstream.Id,
+						).Inc()
+						return fmt.Errorf("rate limit '%v' exceeded for upstream: %s", rule.Config, thisUpstream.Id)
+					} else {
+						log.Debug().Msgf("rate limit '%v' passed for upstream: %s remaining capacity: %v", rule.Config, thisUpstream.Id, (*rule.Limiter))
+					}
+				}
+			}
+		}
+
+		resp, errCall := jsonRpcClient.SendRequest(preparedRequest.(*upstream.JsonRpcRequest))
 
 		if errCall != nil {
 			health.MetricUpstreamRequestErrors.WithLabelValues(

@@ -28,4 +28,10 @@ var (
 		Name:      "upstream_request_errors_total",
 		Help:      "Total number of errors for requests to upstreams.",
 	}, []string{"project", "network", "upstream"})
+
+	MetricUpstreamRequestLocalRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_request_local_rate_limited_total",
+		Help:      "Total number of locally rate limited requests to upstreams.",
+	}, []string{"project", "network", "upstream"})
 )

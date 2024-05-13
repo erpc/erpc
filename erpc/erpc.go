@@ -20,7 +20,10 @@ func Bootstrap(cfg *config.Config) (func(), error) {
 		return nil, err
 	}
 
-	proxyCore := proxy.NewProxyCore(upstreamOrchestrator)
+	rateLimitersHub := proxy.NewRateLimitersHub(cfg.RateLimiters)
+	rateLimitersHub.Bootstrap()
+
+	proxyCore := proxy.NewProxyCore(upstreamOrchestrator, rateLimitersHub)
 
 	// Create a new HTTP server
 	httpServer := server.NewHttpServer(cfg, proxyCore)
@@ -31,7 +34,7 @@ func Bootstrap(cfg *config.Config) (func(), error) {
 		}
 	}()
 
-	if cfg.Metrics.Enabled {
+	if cfg.Metrics != nil && cfg.Metrics.Enabled {
 		addr := fmt.Sprintf("%s:%d", cfg.Metrics.Host, cfg.Metrics.Port)
 		log.Info().Msgf("starting metrics server on addr: %s", addr)
 		go func() {

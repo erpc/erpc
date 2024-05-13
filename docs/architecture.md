@@ -15,11 +15,9 @@
 logLevel: DEBUG | INFO | WARN | ERROR
 
 server:
-  httpHost: string
   httpPort: number
-  wsHost: string
-  wsPort: number
-  maxTimeoutMs: number
+  websocketPort: number
+  maxTimeoutMs: mumber | string
 
 metrics:
   port: number
@@ -30,7 +28,8 @@ storage:
 
 projects:
   - id: string # main, frontend, sushiswap-prod, etc ...
-	   
+    rateLimitBucket: string
+
 	  # Define as many upstreams for this project
     upstreams:
     - id: string
@@ -49,19 +48,48 @@ projects:
       maxBatchSize: number
       rateLimitBucket: string
       healthCheckGroup: string
-      timeouts:
-        connectMs: number
-        responseMs: number
-        dnsMs: number
-      retry:
-        maxCount: number
-        delayMs: numbe
-        exponentialFactor: number
-        
-	# Optionally provide per-chain configs
+      failSafe:
+        retry:
+          maxCount: number
+          delay: number | string
+          backoffMaxDelay: number | string
+          backoffFactor: number
+          jitter: number | string
+        circuitBreaker:
+          failureThresholdCount: number
+          failureThresholdCapacity: number
+          halfOpenAfter: number | string
+          successThresholdCount: number
+          successThresholdCapacity: number
+        timeout:
+          duration: number | string
+        hedge:
+          delay: number | string
+          maxCount: number
+
+	  # Optionally provide per-chain configs
     networks:
     - architecture: evm
-      chainId: number
+      networkId: number
+      rateLimitBucket: string
+      failSafe:
+        retry:
+          maxCount: number
+          delay: number | string
+          backoffMaxDelay: number | string
+          backoffFactor: number
+          jitter: number | string
+        circuitBreaker:
+          failureThresholdCount: number
+          failureThresholdCapacity: number
+          halfOpenAfter: number | string
+          successThresholdCount: number
+          successThresholdCapacity: number
+        timeout:
+          duration: number | string
+        hedge:
+          delay: number | string
+          maxCount: number
       prefetch:
         enabled: boolean
         historicalSync: true
@@ -77,27 +105,38 @@ projects:
 		# and then define how many overall requests are allowed, across all upstreams.
 		#
 		# e.g. To make sure _across all chains_ you won't send more than X/mo to alchemy.
-    rateLimiters:
-      defaultScope: instance | cluster
-      buckets:
-      - id: string
-        limits:
-        - method: string | *
-          scope: instance | cluster
-          granularity: second | minute | hour | day | month
-          limit: number
-        - method: string | *
-          scope: instance | cluster
-          granularity: second | minute | hour | day | month
-          limit: number
-          
-    healthChecks:
-      groups:
-      - id: string
-        checkIntervalMs: number
-        maxErrorRatePercent: number
-        maxP90LatencyMs: number
-        maxBlocksBehind: number
+    # rateLimiters:
+    #   defaultScope: instance | cluster
+    #   buckets:
+    #   - id: string
+    #     limits:
+    #     - method: string | *
+    #       scope: instance | cluster
+    #       granularity: second | minute | hour | day | month
+    #       limit: number
+    #     - method: string | *
+    #       scope: instance | cluster
+    #       granularity: second | minute | hour | day | month
+    #       limit: number
+
+rateLimiters:
+  buckets:
+  - id: string
+    rules:
+    - mode: smooth | burst
+      method: string | *
+      maxCount: number
+      period: number | string
+      waitTime: number | string
+      scope: instance | cluster
+    
+healthChecks:
+  groups:
+  - id: string
+    checkInterval: number | string
+    maxErrorRatePercent: number
+    maxP90LatencyMs: mumber | string
+    maxBlocksBehind: number
 
 # Useful mappings you can re-use on multiple upstreams
 creditUnitMappings:

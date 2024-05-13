@@ -58,10 +58,10 @@ func TestBootstrap_UpstreamOrchestratorFailure(t *testing.T) {
 			HttpHost: "localhost",
 			HttpPort: fmt.Sprint(rand.Intn(1000) + 2000),
 		},
-		Projects: []config.ProjectConfig{
+		Projects: []*config.ProjectConfig{
 			{
 				Id: "test",
-				Upstreams: []config.UpstreamConfig{
+				Upstreams: []*config.UpstreamConfig{
 					{
 						Id:           "test",
 						Architecture: "evm",
