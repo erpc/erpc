@@ -15,7 +15,6 @@ help:
 
 .PHONY: setup
 setup:
-	@go get .
 	@go mod tidy
 
 .PHONY: run

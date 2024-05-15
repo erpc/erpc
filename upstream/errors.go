@@ -4,6 +4,44 @@ import (
 	"github.com/flair-sdk/erpc/common"
 )
 
+// Upstreams
+type ErrNetworkNotFound struct{ common.BaseError }
+
+var NewErrNetworkNotFound = func(network string) error {
+	return &ErrNetworkNotFound{
+		common.BaseError{
+			Code:    "ErrNetworkNotFound",
+			Message: "network not found",
+			Details: map[string]interface{}{
+				"network": network,
+			},
+		},
+	}
+}
+
+func (e *ErrNetworkNotFound) ErrorStatusCode() int { return 404 }
+
+type ErrNoUpstreamsDefined struct{ common.BaseError }
+
+var NewErrNoUpstreamsDefined = func(project string, network string) error {
+	return &ErrNoUpstreamsDefined{
+		common.BaseError{
+			Code:    "ErrNoUpstreamsDefined",
+			Message: "no upstreams defined for project/network",
+			Details: map[string]interface{}{
+				"project": project,
+				"network": network,
+			},
+		},
+	}
+}
+
+func (e *ErrNoUpstreamsDefined) ErrorStatusCode() int { return 404 }
+
+//
+// Clients
+//
+
 type ErrJsonRpcRequestUnmarshal struct {
 	common.BaseError
 }
@@ -17,6 +55,8 @@ var NewErrJsonRpcRequestUnmarshal = func(cause error) error {
 		},
 	}
 }
+
+func (e *ErrJsonRpcRequestUnmarshal) ErrorStatusCode() int { return 400 }
 
 type ErrJsonRpcRequestUnresolvableMethod struct {
 	common.BaseError

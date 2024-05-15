@@ -47,11 +47,18 @@ type RetryableError interface {
 // Common Errors
 //
 
-type ErrProjectNotFound struct {
-	BaseError
-	ProjectId string
+type ErrProjectNotFound struct{ BaseError }
+
+var NewErrProjectNotFound = func(projectId string) error {
+	return &ErrProjectNotFound{
+		BaseError{
+			Code:    "ErrProjectNotFound",
+			Message: "project not found",
+			Details: map[string]interface{}{
+				"projectId": projectId,
+			},
+		},
+	}
 }
 
-func (e *ErrProjectNotFound) Error() string {
-	return fmt.Sprintf("project not found: %s", e.ProjectId)
-}
+func (e *ErrProjectNotFound) ErrorStatusCode() int { return 404 }

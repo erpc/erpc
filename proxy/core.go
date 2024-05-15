@@ -46,9 +46,7 @@ func (p *ProxyCore) Forward(project string, network string, req *upstream.Normal
 
 	projectConfig := p.config.GetProjectConfig(project)
 	if projectConfig == nil {
-		return &common.ErrProjectNotFound{
-			ProjectId: project,
-		}
+		return common.NewErrProjectNotFound(project)
 	}
 	if projectConfig.RateLimitBucket != "" {
 		networkLimiter, errNetLimit := p.rateLimitersHub.GetBucket(projectConfig.RateLimitBucket)
@@ -58,20 +56,23 @@ func (p *ProxyCore) Forward(project string, network string, req *upstream.Normal
 		if networkLimiter != nil {
 			method, errMethod := req.Method()
 			if errMethod != nil {
-				return fmt.Errorf("failed to get method from request: %w", errMethod)
+				return errMethod
 			}
 			rules := networkLimiter.GetRulesByMethod(method)
 			log.Debug().Msgf("found %d network-level rate limiters for network: %s method: %s", len(rules), network, method)
 			if len(rules) > 0 {
 				for _, rule := range rules {
 					if !(*rule.Limiter).TryAcquirePermit() {
-						log.Warn().Msgf("network-level rate limit '%v' exceeded for network: %s", rule.Config, network)
 						health.MetricUpstreamRequestLocalRateLimited.WithLabelValues(
 							project,
 							network,
 							"",
 						).Inc()
-						return fmt.Errorf("network-level rate limit '%v' exceeded for network: %s", rule.Config, network)
+						return NewErrNetworkRateLimitRuleExceeded(
+							network,
+							projectConfig.RateLimitBucket,
+							rule.Config,
+						)
 					} else {
 						log.Debug().Msgf("network-level rate limit '%v' passed for network: %s", rule.Config, network)
 					}
@@ -155,8 +156,9 @@ func (p *ProxyCore) tryForwardToUpstream(project string, network string, thisUps
 							thisUpstream.Id,
 						).Inc()
 						return NewErrUpstreamRateLimitRuleExceeded(
-							rule.Config,
 							thisUpstream.Id,
+							thisUpstream.RateLimitBucket,
+							rule.Config,
 						)
 					} else {
 						log.Debug().Msgf("upstream-level rate limit '%v' passed for upstream: %s", rule.Config, thisUpstream.Id)

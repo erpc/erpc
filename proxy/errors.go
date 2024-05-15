@@ -107,17 +107,42 @@ var NewErrRateLimitRuleNotFound = func(bucketId, method string) error {
 
 type ErrUpstreamRateLimitRuleExceeded struct{ common.BaseError }
 
-var NewErrUpstreamRateLimitRuleExceeded = func(rule *config.RateLimitRuleConfig, upstreamId string) error {
+var NewErrUpstreamRateLimitRuleExceeded = func(upstream string, bucket string, rule *config.RateLimitRuleConfig) error {
 	return &ErrUpstreamRateLimitRuleExceeded{
 		common.BaseError{
 			Code:    "ErrUpstreamRateLimitRuleExceeded",
 			Message: "upstream-level rate limit rule exceeded",
 			Details: map[string]interface{}{
-				"rule":       rule,
-				"upstreamId": upstreamId,
+				"upstream": upstream,
+				"bucket":   bucket,
+				"rule":     rule,
 			},
 		},
 	}
+}
+
+func (e *ErrUpstreamRateLimitRuleExceeded) ErrorStatusCode() int {
+	return 429
+}
+
+type ErrNetworkRateLimitRuleExceeded struct{ common.BaseError }
+
+var NewErrNetworkRateLimitRuleExceeded = func(network string, bucket string, rule *config.RateLimitRuleConfig) error {
+	return &ErrNetworkRateLimitRuleExceeded{
+		common.BaseError{
+			Code:    "ErrNetworkRateLimitRuleExceeded",
+			Message: "network-level rate limit rule exceeded",
+			Details: map[string]interface{}{
+				"network": network,
+				"bucket":  bucket,
+				"rule":    rule,
+			},
+		},
+	}
+}
+
+func (e *ErrNetworkRateLimitRuleExceeded) ErrorStatusCode() int {
+	return 429
 }
 
 type ErrRateLimitInvalidConfig struct{ common.BaseError }

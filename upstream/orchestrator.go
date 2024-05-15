@@ -84,17 +84,15 @@ func (u *UpstreamOrchestrator) Bootstrap() error {
 
 func (u *UpstreamOrchestrator) GetUpstreamsForNetwork(projectId string, networkId string) ([]*PreparedUpstream, error) {
 	if _, ok := u.upstreamsMap[projectId]; !ok {
-		return nil, &common.ErrProjectNotFound{
-			ProjectId: projectId,
-		}
+		return nil, common.NewErrProjectNotFound(projectId)
 	}
 
 	if _, ok := u.upstreamsMap[projectId][networkId]; !ok {
-		return nil, fmt.Errorf("network %s not found for project %s", networkId, projectId)
+		return nil, NewErrNetworkNotFound(networkId)
 	}
 
 	if len(u.upstreamsMap[projectId][networkId]) == 0 {
-		return nil, fmt.Errorf("no upstreams found for project %s and network %s", projectId, networkId)
+		return nil, NewErrNoUpstreamsDefined(projectId, networkId)
 	}
 
 	return u.upstreamsMap[projectId][networkId], nil
