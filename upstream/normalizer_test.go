@@ -1,19 +1,11 @@
 package upstream
 
 import (
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 )
 
 func TestJsonRpcRequest_BodyCannotBeDecoded(t *testing.T) {
-	// Create a new HTTP request with an invalid JSON body
-	reqBody := strings.NewReader(`{"method": "test", "params": "invalid"}`)
-	req := httptest.NewRequest(http.MethodPost, "/", reqBody)
-
-	// Create a NormalizedRequest instance
-	normReq := NewNormalizedRequest(req)
+	normReq := NewNormalizedRequest([]byte(`{"method": "test", "params": "invalid"}`))
 
 	// Call the JsonRpcRequest method to parse and normalize the request
 	jsonRpcReq, err := normReq.JsonRpcRequest()

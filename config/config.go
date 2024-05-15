@@ -132,3 +132,14 @@ func LoadConfig(fs afero.Fs, filename string) (*Config, error) {
 
 	return &cfg, nil
 }
+
+// GetProjectConfig returns the project configuration by the specified project ID.
+func (c *Config) GetProjectConfig(projectId string) *ProjectConfig {
+	for _, project := range c.Projects {
+		if project.Id == projectId {
+			return project
+		}
+	}
+
+	return nil
+}

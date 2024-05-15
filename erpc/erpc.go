@@ -23,7 +23,11 @@ func Bootstrap(cfg *config.Config) (func(), error) {
 	rateLimitersHub := proxy.NewRateLimitersHub(cfg.RateLimiters)
 	rateLimitersHub.Bootstrap()
 
-	proxyCore := proxy.NewProxyCore(upstreamOrchestrator, rateLimitersHub)
+	proxyCore := proxy.NewProxyCore(
+		cfg,
+		upstreamOrchestrator,
+		rateLimitersHub,
+	)
 
 	// Create a new HTTP server
 	httpServer := server.NewHttpServer(cfg, proxyCore)

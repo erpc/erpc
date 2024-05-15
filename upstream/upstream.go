@@ -1,6 +1,8 @@
 package upstream
 
-import "fmt"
+import (
+	"fmt"
+)
 
 type PreparedUpstream struct {
 	Id               string
@@ -18,16 +20,24 @@ func (u *PreparedUpstream) PrepareRequest(normalizedReq *NormalizedRequest) (int
 	switch u.Architecture {
 	case ArchitectureEvm:
 		if u.Client == nil {
-			return nil, fmt.Errorf("client not initialized for evm upstream: %v", u.Id)
+			return nil, NewErrJsonRpcRequestPreparation(fmt.Errorf("client not initialized for evm upstream"), map[string]interface{}{
+				"upstreamId": u.Id,
+			})
 		}
 
 		if u.Client.GetType() == "HttpJsonRpcClient" {
 			// TODO check supported/unsupported methods for this upstream
 			return normalizedReq.JsonRpcRequest()
 		} else {
-			return nil, fmt.Errorf("unsupported evm client type: %v for upstream: %v", u.Client.GetType(), u.Id)
+			return nil, NewErrJsonRpcRequestPreparation(fmt.Errorf("unsupported evm client type for upstream"), map[string]interface{}{
+				"upstreamId": u.Id,
+				"clientType": u.Client.GetType(),
+			})
 		}
 	default:
-		return nil, fmt.Errorf("unsupported architecture: %v for upstream: %v", u.Architecture, u.Id)
+		return nil, NewErrJsonRpcRequestPreparation(fmt.Errorf("unsupported architecture for upstream"), map[string]interface{}{
+			"upstreamId":   u.Id,
+			"architecture": u.Architecture,
+		})
 	}
 }

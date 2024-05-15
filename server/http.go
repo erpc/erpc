@@ -1,12 +1,17 @@
 package server
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
+	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
 	"github.com/flair-sdk/erpc/proxy"
+	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog/log"
 )
 
@@ -34,11 +39,36 @@ func NewHttpServer(cfg *config.Config, proxyCore *proxy.ProxyCore) *HttpServer {
 		project := segments[1]
 		network := segments[2]
 
-		err := proxyCore.Forward(project, network, r, w)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			log.Error().Err(err).Msgf("failed to read request body")
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(err)
+			return
+		}
+
+		normalizedReq := upstream.NewNormalizedRequest(body)
+		err = proxyCore.Forward(project, network, normalizedReq, w)
 
 		if err != nil {
 			log.Error().Err(err).Msgf("failed to forward request to upstream")
-			http.Error(w, "failed to forward request to upstream", http.StatusInternalServerError)
+
+			w.Header().Set("Content-Type", "application/json")
+			var httpErr common.ErrorWithStatusCode
+			if errors.As(err, &httpErr) {
+				w.WriteHeader(httpErr.ErrorStatusCode())
+			} else {
+				w.WriteHeader(http.StatusInternalServerError)
+			}
+
+			var bodyErr common.ErrorWithBody
+			if errors.As(err, &bodyErr) {
+				json.NewEncoder(w).Encode(bodyErr.ErrorResponseBody())
+			} else {
+				json.NewEncoder(w).Encode(err)
+			}
 		}
 	})
 

@@ -26,7 +26,7 @@ type RateLimitRule struct {
 	Limiter *ratelimiter.RateLimiter[interface{}]
 }
 
-var rulesByMethod map[string][]*RateLimitRule = make(map[string][]*RateLimitRule)
+var rulesByBucketAndMethod map[string]map[string][]*RateLimitRule = make(map[string]map[string][]*RateLimitRule)
 
 func NewRateLimitersHub(cfg *config.RateLimiterConfig) *RateLimitersHub {
 	return &RateLimitersHub{
@@ -36,6 +36,11 @@ func NewRateLimitersHub(cfg *config.RateLimiterConfig) *RateLimitersHub {
 }
 
 func (r *RateLimitersHub) Bootstrap() error {
+	if r.cfg == nil {
+		log.Warn().Msg("no rate limiters defined which means all capacity of both local cpu/memory and remote upstreams will be used")
+		return nil
+	}
+
 	for _, bucketCfg := range r.cfg.Buckets {
 		log.Debug().Msgf("bootstrapping rate limiter bucket: %s", bucketCfg.Id)
 		for _, rule := range bucketCfg.Rules {
@@ -52,7 +57,7 @@ func (r *RateLimitersHub) Bootstrap() error {
 
 			duration, err := time.ParseDuration(rule.Period)
 			if err != nil {
-				return fmt.Errorf("failed to parse duration for limit %v: %w", rule, err)
+				return NewErrRateLimitInvalidConfig(fmt.Errorf("failed to parse duration for limit %v: %w", rule, err))
 			}
 
 			if rule.Mode == "smooth" {
@@ -64,7 +69,7 @@ func (r *RateLimitersHub) Bootstrap() error {
 			if rule.WaitTime != "" {
 				waitTime, err := time.ParseDuration(rule.WaitTime)
 				if err != nil {
-					return fmt.Errorf("failed to parse wait time for limit %v: %w", rule, err)
+					return NewErrRateLimitInvalidConfig(fmt.Errorf("failed to parse wait time for limit %v: %w", rule, err))
 				}
 				builder = builder.WithMaxWaitTime(waitTime)
 			}
@@ -94,12 +99,16 @@ func (r *RateLimitersHub) GetBucket(bucketId string) (*RateLimiterBucket, error)
 		return bucket, nil
 	}
 
-	return nil, fmt.Errorf("bucket not found: %s", bucketId)
+	return nil, NewErrRateLimitBucketNotFound(bucketId)
 }
 
 func (b *RateLimiterBucket) GetRulesByMethod(method string) []*RateLimitRule {
-	if limiters, ok := rulesByMethod[method]; ok {
-		return limiters
+	if _, ok := rulesByBucketAndMethod[b.Id]; !ok {
+		rulesByBucketAndMethod[b.Id] = make(map[string][]*RateLimitRule)
+	}
+
+	if rules, ok := rulesByBucketAndMethod[b.Id][method]; ok {
+		return rules
 	}
 
 	rules := make([]*RateLimitRule, 0)
@@ -111,8 +120,8 @@ func (b *RateLimiterBucket) GetRulesByMethod(method string) []*RateLimitRule {
 		}
 	}
 
-	rulesByMethod[method] = rules
-	
+	rulesByBucketAndMethod[b.Id][method] = rules
+
 	return rules
 }
 

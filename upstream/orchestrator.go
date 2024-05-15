@@ -5,6 +5,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog/log"
@@ -83,7 +84,9 @@ func (u *UpstreamOrchestrator) Bootstrap() error {
 
 func (u *UpstreamOrchestrator) GetUpstreamsForNetwork(projectId string, networkId string) ([]*PreparedUpstream, error) {
 	if _, ok := u.upstreamsMap[projectId]; !ok {
-		return nil, fmt.Errorf("project %s not found", projectId)
+		return nil, &common.ErrProjectNotFound{
+			ProjectId: projectId,
+		}
 	}
 
 	if _, ok := u.upstreamsMap[projectId][networkId]; !ok {

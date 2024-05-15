@@ -2,20 +2,16 @@ package upstream
 
 import (
 	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
 )
 
 type NormalizedRequest struct {
-	rawRequest *http.Request
-
+	body           []byte
 	jsonRpcRequest *JsonRpcRequest
 }
 
-func NewNormalizedRequest(rawRequest *http.Request) *NormalizedRequest {
+func NewNormalizedRequest(body []byte) *NormalizedRequest {
 	return &NormalizedRequest{
-		rawRequest: rawRequest,
+		body: body,
 	}
 }
 
@@ -25,20 +21,14 @@ func (n *NormalizedRequest) JsonRpcRequest() (*JsonRpcRequest, error) {
 		return n.jsonRpcRequest, nil
 	}
 
-	body, err := io.ReadAll(n.rawRequest.Body)
-
-	if err != nil {
-		return nil, err
-	}
-
 	rpcReq := new(JsonRpcRequest)
-	if err := json.Unmarshal(body, rpcReq); err != nil {
-		return nil, err
+	if err := json.Unmarshal(n.body, rpcReq); err != nil {
+		return nil, NewErrJsonRpcRequestUnmarshal(err)
 	}
 
 	method := rpcReq.Method
 	if method == "" {
-		return nil, fmt.Errorf("missing method in request %v", rpcReq)
+		return nil, NewErrJsonRpcRequestUnresolvableMethod(rpcReq)
 	}
 
 	if rpcReq.JSONRPC == "" {
@@ -48,4 +38,13 @@ func (n *NormalizedRequest) JsonRpcRequest() (*JsonRpcRequest, error) {
 	n.jsonRpcRequest = rpcReq
 
 	return rpcReq, nil
+}
+
+func (n *NormalizedRequest) Method() (string, error) {
+	rpcReq, err := n.JsonRpcRequest()
+	if err != nil {
+		return "", err
+	}
+
+	return rpcReq.Method, nil
 }
