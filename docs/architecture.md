@@ -48,31 +48,31 @@ projects:
       maxBatchSize: number
       rateLimitBucket: string
       healthCheckGroup: string
-      failSafe:
+      failsafe:
+        timeout:
+          duration: number | string
         retry:
           maxCount: number
           delay: number | string
           backoffMaxDelay: number | string
           backoffFactor: number
           jitter: number | string
+        hedge:
+          delay: number | string
+          maxCount: number
         circuitBreaker:
           failureThresholdCount: number
           failureThresholdCapacity: number
           halfOpenAfter: number | string
           successThresholdCount: number
           successThresholdCapacity: number
-        timeout:
-          duration: number | string
-        hedge:
-          delay: number | string
-          maxCount: number
 
 	  # Optionally provide per-chain configs
     networks:
     - architecture: evm
       networkId: number
       rateLimitBucket: string
-      failSafe:
+      failsafe:
         retry:
           maxCount: number
           delay: number | string
@@ -100,25 +100,6 @@ projects:
         evmEvents:
 	        filters: [] # same as getLogs: [address, topic0, ...]
 		
-		# Define any rate limit buckets and put upstreams in any bucket you seem fit
-		# For example create buckets with IDs alchemy-account-1 or ethereum-all-1 ...
-		# and then define how many overall requests are allowed, across all upstreams.
-		#
-		# e.g. To make sure _across all chains_ you won't send more than X/mo to alchemy.
-    # rateLimiters:
-    #   defaultScope: instance | cluster
-    #   buckets:
-    #   - id: string
-    #     limits:
-    #     - method: string | *
-    #       scope: instance | cluster
-    #       granularity: second | minute | hour | day | month
-    #       limit: number
-    #     - method: string | *
-    #       scope: instance | cluster
-    #       granularity: second | minute | hour | day | month
-    #       limit: number
-
 rateLimiters:
   buckets:
   - id: string
@@ -157,7 +138,7 @@ creditUnitMappings:
 * **ProxyCore**
     - Calls RequestNormalizer to normalize the request to prepare the final actual request body (resolving "latest" to an actual block, or resolving the correct receipts method name, etc.)
     - Calls DAL check if it is cached already
-    - Calls UpstreamOrchestrator to get the best upstream based on the project and metadata and request
+    - Calls UpstreamsRegistry to get the best upstream based on the project and metadata and request
     - Calls the upstream with the actual request body and normalize the response / errors via ResponseNormalizer
         - Reports to HealthCenter with endpoint performance and/or errors
         - Reports to RateLimitService with the usage of upstream
@@ -175,14 +156,14 @@ creditUnitMappings:
         - Rate of failures
         - P90 latency
         - Upstream availability (circuit breaker)
-    - Provides the health status to the UpstreamOrchestrator per group configuration
+    - Provides the health status to the UpstreamsRegistry per group configuration
     - Periodically syncs the health via DAL for other instances
 
 * **RateLimitService**
     - Tracks usage for each rate limit group
     - Provides info about the current usage (e.g. least busy member, etc.)
 
-* **UpstreamOrchestrator**:
+* **UpstreamsRegistry**:
     - Queries all upstreams from data store (which is initialized by the config) for the project
     - Pick the best one based on reports from HealthCenter and RateLimitService regarding the health and usage of the upstreams (weight, rate limits, health, etc.)
     - Periodically sorts the upstreams based on:

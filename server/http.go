@@ -10,18 +10,18 @@ import (
 
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
-	"github.com/flair-sdk/erpc/proxy"
+	"github.com/flair-sdk/erpc/erpc"
 	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog/log"
 )
 
 type HttpServer struct {
-	config *config.Config
+	config *config.ServerConfig
 	server *http.Server
 }
 
-func NewHttpServer(cfg *config.Config, proxyCore *proxy.ProxyCore) *HttpServer {
-	addr := fmt.Sprintf("%s:%s", cfg.Server.HttpHost, cfg.Server.HttpPort)
+func NewHttpServer(cfg *config.ServerConfig, erpc *erpc.ERPC) *HttpServer {
+	addr := fmt.Sprintf("%s:%s", cfg.HttpHost, cfg.HttpPort)
 
 	handler := http.NewServeMux()
 	handler.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -36,8 +36,8 @@ func NewHttpServer(cfg *config.Config, proxyCore *proxy.ProxyCore) *HttpServer {
 			return
 		}
 
-		project := segments[1]
-		network := segments[2]
+		projectId := segments[1]
+		networkId := segments[2]
 
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -49,11 +49,16 @@ func NewHttpServer(cfg *config.Config, proxyCore *proxy.ProxyCore) *HttpServer {
 			return
 		}
 
-		normalizedReq := upstream.NewNormalizedRequest(body)
-		err = proxyCore.Forward(project, network, normalizedReq, w)
+		log.Debug().Msgf("received request for projectId: %s, networkId: %s with body: %s", projectId, networkId, body)
+
+		nq := upstream.NewNormalizedRequest(body)
+		project, err := erpc.GetProject(projectId)
+		if err == nil {
+			err = project.Forward(r.Context(), networkId, nq, w)
+		}
 
 		if err != nil {
-			log.Error().Err(err).Msgf("failed to forward request to upstream")
+			log.Error().Err(err).Msgf("failed to forward request")
 
 			w.Header().Set("Content-Type", "application/json")
 			var httpErr common.ErrorWithStatusCode
@@ -69,6 +74,8 @@ func NewHttpServer(cfg *config.Config, proxyCore *proxy.ProxyCore) *HttpServer {
 			} else {
 				json.NewEncoder(w).Encode(err)
 			}
+		} else {
+			log.Debug().Msgf("request forwarded successfully for projectId: %s, networkId: %s", projectId, networkId)
 		}
 	})
 

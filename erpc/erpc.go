@@ -1,56 +1,85 @@
 package erpc
 
 import (
-	"fmt"
-	"net/http"
-
 	"github.com/flair-sdk/erpc/config"
-	"github.com/flair-sdk/erpc/proxy"
-	"github.com/flair-sdk/erpc/server"
+	"github.com/flair-sdk/erpc/resiliency"
 	"github.com/flair-sdk/erpc/upstream"
-	"github.com/flair-sdk/erpc/util"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog/log"
 )
 
-func Bootstrap(cfg *config.Config) (func(), error) {
-	upstreamOrchestrator := upstream.NewUpstreamOrchestrator(cfg)
-	err := upstreamOrchestrator.Bootstrap()
+type ERPC struct {
+	cfg                  *config.Config
+	upstreamsRegistry    *upstream.UpstreamsRegistry
+	rateLimitersRegistry *resiliency.RateLimitersRegistry
+	projectsRegistry     *ProjectsRegistry
+}
+
+func NewERPC(cfg *config.Config) (*ERPC, error) {
+	rateLimitersRegistry, err := resiliency.NewRateLimitersRegistry(cfg.RateLimiters)
 	if err != nil {
 		return nil, err
 	}
 
-	rateLimitersHub := proxy.NewRateLimitersHub(cfg.RateLimiters)
-	rateLimitersHub.Bootstrap()
-
-	proxyCore := proxy.NewProxyCore(
-		cfg,
-		upstreamOrchestrator,
-		rateLimitersHub,
-	)
-
-	// Create a new HTTP server
-	httpServer := server.NewHttpServer(cfg, proxyCore)
-	go func() {
-		if err := httpServer.Start(); err != nil {
-			log.Error().Msgf("failed to start httpServer: %v", err)
-			util.OsExit(util.ExitCodeHttpServerFailed)
-		}
-	}()
-
-	if cfg.Metrics != nil && cfg.Metrics.Enabled {
-		addr := fmt.Sprintf("%s:%d", cfg.Metrics.Host, cfg.Metrics.Port)
-		log.Info().Msgf("starting metrics server on addr: %s", addr)
-		go func() {
-			if err := http.ListenAndServe(addr, promhttp.Handler()); err != nil {
-				log.Error().Msgf("error starting metrics server: %s", err)
-				util.OsExit(util.ExitCodeHttpServerFailed)
-			}
-		}()
+	upstreamsRegistry, err := upstream.NewUpstreamsRegistry(cfg, rateLimitersRegistry)
+	if err != nil {
+		return nil, err
 	}
 
-	// Return a shutdown function
-	return func() {
-		log.Info().Msg("shutting down eRPC...")
+	projectRegistry, err := NewProjectsRegistry(upstreamsRegistry, rateLimitersRegistry, cfg.Projects)
+	if err != nil {
+		return nil, err
+	}
+
+	upstreamsRegistry.OnUpstreamsPriorityChange = func(projectId string, networkId string) error {
+		log.Info().Str("project", projectId).Str("network", networkId).Msgf("upstreams priority updated")
+		prj, err := projectRegistry.GetProject(projectId)
+		if err != nil {
+			return err
+		}
+
+		ntw, err := prj.GetNetwork(networkId)
+		if err != nil {
+			return err
+		}
+
+		for i := 0; i < len(ntw.Upstreams); i++ {
+			for j := i + 1; j < len(ntw.Upstreams); j++ {
+				if ntw.Upstreams[i].Score < ntw.Upstreams[j].Score {
+					ntw.Upstreams[i], ntw.Upstreams[j] = ntw.Upstreams[j], ntw.Upstreams[i]
+				}
+			}
+		}
+
+		var finalOrder string
+		for _, u := range ntw.Upstreams {
+			finalOrder += u.Id + ", "
+		}
+		log.Info().Str("project", projectId).Str("network", networkId).Str("upstreams", finalOrder).Msgf("upstreams priority updated")
+
+		return nil
+	}
+
+	return &ERPC{
+		cfg:                  cfg,
+		upstreamsRegistry:    upstreamsRegistry,
+		rateLimitersRegistry: rateLimitersRegistry,
+		projectsRegistry:     projectRegistry,
 	}, nil
+}
+
+func (e *ERPC) GetNetwork(projectId string, networkId string) (*PreparedNetwork, error) {
+	prj, err := e.GetProject(projectId)
+	if err != nil {
+		return nil, err
+	}
+
+	return prj.GetNetwork(networkId)
+}
+
+func (e *ERPC) GetProject(projectId string) (*PreparedProject, error) {
+	return e.projectsRegistry.GetProject(projectId)
+}
+
+func (e *ERPC) Shutdown() {
+	// TODO: Implement
 }

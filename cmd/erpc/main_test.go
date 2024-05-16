@@ -262,7 +262,12 @@ func TestInit_InvalidLogLevel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.WriteString("logLevel: invalid")
+	cfg.WriteString(`
+logLevel: invalid
+server:
+  httpHost: "localhost"
+  httpPort: "8080"
+`)
 
 	args := []string{"erpc-test", cfg.Name()}
 
@@ -317,7 +322,7 @@ projects:
 		t.Fatal("expected an error, got nil")
 	}
 
-	if !strings.Contains(err.Error(), "cannot bootstrap") {
+	if !strings.Contains(err.Error(), "could not detect any network ID") {
 		t.Errorf("unexpected error: %s", err)
 	}
 }

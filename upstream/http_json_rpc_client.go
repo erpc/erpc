@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/util"
 	"github.com/rs/zerolog/log"
 )
@@ -69,7 +71,7 @@ func NewHttpJsonRpcClient(parsedUrl *url.URL) (*HttpJsonRpcClient, error) {
 	return client, nil
 }
 
-func (c *HttpJsonRpcClient) SendRequest(req *JsonRpcRequest) (interface{}, error) {
+func (c *HttpJsonRpcClient) SendRequest(ctx context.Context, req *JsonRpcRequest) (interface{}, error) {
 	requestBody, err := json.Marshal(JsonRpcRequest{
 		JSONRPC: req.JSONRPC,
 		Method:  req.Method,
@@ -84,7 +86,20 @@ func (c *HttpJsonRpcClient) SendRequest(req *JsonRpcRequest) (interface{}, error
 
 	log.Debug().Msgf("sending json rpc POST request to %s: %s", c.Url.String(), requestBody)
 
-	resp, err := c.httpClient.Post(c.Url.String(), "application/json", bytes.NewBuffer(requestBody))
+	httpReq, errReq := http.NewRequestWithContext(ctx, "POST", c.Url.String(), bytes.NewBuffer(requestBody))
+	httpReq.Header.Set("Content-Type", "application/json")
+	if errReq != nil {
+		return nil, &common.BaseError{
+			Code:    "ErrHttp",
+			Message: fmt.Sprintf("%v", errReq),
+			Details: map[string]interface{}{
+				"url":     c.Url.String(),
+				"request": requestBody,
+			},
+		}
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return nil, err
 	}
@@ -98,8 +113,16 @@ func (c *HttpJsonRpcClient) SendRequest(req *JsonRpcRequest) (interface{}, error
 
 	log.Debug().Msgf("received json rpc response status: %d and body: %s", respStatusCode, respBody)
 
-	if respStatusCode != http.StatusOK {
-		return nil, fmt.Errorf("server responded with status code %d", respStatusCode)
+	if respStatusCode >= 400 {
+		// return nil, fmt.Errorf("server responded with status code %d", respStatusCode)
+		return nil, &common.BaseError{
+			Code:    "ErrHttp",
+			Message: "server responded with non-2xx status code",
+			Details: map[string]interface{}{
+				"statusCode": respStatusCode,
+				"body":       string(respBody),
+			},
+		}
 	}
 
 	var jsonResponse JsonRpcResponse
@@ -108,7 +131,14 @@ func (c *HttpJsonRpcClient) SendRequest(req *JsonRpcRequest) (interface{}, error
 	}
 
 	if jsonResponse.Error != nil {
-		return nil, fmt.Errorf("json rpc error (%d): %s", jsonResponse.Error.Code, jsonResponse.Error.Message)
+		// return nil, fmt.Errorf("json rpc error (%d): %s", jsonResponse.Error.Code, jsonResponse.Error.Message)
+		return nil, &common.BaseError{
+			Code:    "ErrJsonRpc",
+			Message: "response has json-rpc error",
+			Details: map[string]interface{}{
+				"response": jsonResponse,
+			},
+		}
 	}
 
 	return jsonResponse.Result, nil

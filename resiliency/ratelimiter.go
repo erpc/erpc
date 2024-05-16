@@ -1,4 +1,4 @@
-package proxy
+package resiliency
 
 import (
 	"fmt"
@@ -7,11 +7,12 @@ import (
 
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/failsafe-go/failsafe-go/ratelimiter"
+	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
 	"github.com/rs/zerolog/log"
 )
 
-type RateLimitersHub struct {
+type RateLimitersRegistry struct {
 	cfg             *config.RateLimiterConfig
 	bucketsLimiters map[string]*RateLimiterBucket
 }
@@ -19,6 +20,8 @@ type RateLimitersHub struct {
 type RateLimiterBucket struct {
 	Id    string
 	Rules []*RateLimitRule
+
+	registry *RateLimitersRegistry
 }
 
 type RateLimitRule struct {
@@ -28,14 +31,17 @@ type RateLimitRule struct {
 
 var rulesByBucketAndMethod map[string]map[string][]*RateLimitRule = make(map[string]map[string][]*RateLimitRule)
 
-func NewRateLimitersHub(cfg *config.RateLimiterConfig) *RateLimitersHub {
-	return &RateLimitersHub{
+func NewRateLimitersRegistry(cfg *config.RateLimiterConfig) (*RateLimitersRegistry, error) {
+	r := &RateLimitersRegistry{
 		cfg:             cfg,
 		bucketsLimiters: make(map[string]*RateLimiterBucket),
 	}
+	err := r.bootstrap()
+
+	return r, err
 }
 
-func (r *RateLimitersHub) Bootstrap() error {
+func (r *RateLimitersRegistry) bootstrap() error {
 	if r.cfg == nil {
 		log.Warn().Msg("no rate limiters defined which means all capacity of both local cpu/memory and remote upstreams will be used")
 		return nil
@@ -48,8 +54,9 @@ func (r *RateLimitersHub) Bootstrap() error {
 
 			if _, ok := r.bucketsLimiters[bucketCfg.Id]; !ok {
 				r.bucketsLimiters[bucketCfg.Id] = &RateLimiterBucket{
-					Id:    bucketCfg.Id,
-					Rules: make([]*RateLimitRule, 0),
+					Id:       bucketCfg.Id,
+					Rules:    make([]*RateLimitRule, 0),
+					registry: r,
 				}
 			}
 
@@ -57,7 +64,7 @@ func (r *RateLimitersHub) Bootstrap() error {
 
 			duration, err := time.ParseDuration(rule.Period)
 			if err != nil {
-				return NewErrRateLimitInvalidConfig(fmt.Errorf("failed to parse duration for limit %v: %w", rule, err))
+				return common.NewErrRateLimitInvalidConfig(fmt.Errorf("failed to parse duration for limit %v: %w", rule, err))
 			}
 
 			if rule.Mode == "smooth" {
@@ -69,7 +76,7 @@ func (r *RateLimitersHub) Bootstrap() error {
 			if rule.WaitTime != "" {
 				waitTime, err := time.ParseDuration(rule.WaitTime)
 				if err != nil {
-					return NewErrRateLimitInvalidConfig(fmt.Errorf("failed to parse wait time for limit %v: %w", rule, err))
+					return common.NewErrRateLimitInvalidConfig(fmt.Errorf("failed to parse wait time for limit %v: %w", rule, err))
 				}
 				builder = builder.WithMaxWaitTime(waitTime)
 			}
@@ -90,16 +97,18 @@ func (r *RateLimitersHub) Bootstrap() error {
 	return nil
 }
 
-func (r *RateLimitersHub) GetBucket(bucketId string) (*RateLimiterBucket, error) {
+func (r *RateLimitersRegistry) GetBucket(bucketId string) (*RateLimiterBucket, error) {
 	if bucketId == "" {
 		return nil, nil
 	}
+
+	log.Debug().Msgf("getting rate limiter bucket: %s", bucketId)
 
 	if bucket, ok := r.bucketsLimiters[bucketId]; ok {
 		return bucket, nil
 	}
 
-	return nil, NewErrRateLimitBucketNotFound(bucketId)
+	return nil, common.NewErrRateLimitBucketNotFound(bucketId)
 }
 
 func (b *RateLimiterBucket) GetRulesByMethod(method string) []*RateLimitRule {

@@ -15,18 +15,18 @@ type Client struct {
 	Upstream *PreparedUpstream
 }
 
-// ClientManager manages client instances
-type ClientManager struct {
+// ClientRegistry manages client instances
+type ClientRegistry struct {
 	clients sync.Map
 }
 
-// NewClientManager creates a new client manager
-func NewClientManager() *ClientManager {
-	return &ClientManager{}
+// NewClientRegistry creates a new client manager
+func NewClientRegistry() *ClientRegistry {
+	return &ClientRegistry{}
 }
 
 // GetOrCreateClient retrieves an existing client for a given endpoint or creates a new one if it doesn't exist
-func (manager *ClientManager) GetOrCreateClient(upstream *PreparedUpstream) (ClientInterface, error) {
+func (manager *ClientRegistry) GetOrCreateClient(upstream *PreparedUpstream) (ClientInterface, error) {
 	// Attempt to load an existing client
 	if client, ok := manager.clients.Load(upstream.Endpoint); ok {
 		return client.(ClientInterface), nil

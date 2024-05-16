@@ -2,6 +2,8 @@ package upstream
 
 import (
 	"encoding/json"
+
+	"github.com/flair-sdk/erpc/common"
 )
 
 type NormalizedRequest struct {
@@ -23,12 +25,12 @@ func (n *NormalizedRequest) JsonRpcRequest() (*JsonRpcRequest, error) {
 
 	rpcReq := new(JsonRpcRequest)
 	if err := json.Unmarshal(n.body, rpcReq); err != nil {
-		return nil, NewErrJsonRpcRequestUnmarshal(err)
+		return nil, common.NewErrJsonRpcRequestUnmarshal(err)
 	}
 
 	method := rpcReq.Method
 	if method == "" {
-		return nil, NewErrJsonRpcRequestUnresolvableMethod(rpcReq)
+		return nil, common.NewErrJsonRpcRequestUnresolvableMethod(rpcReq)
 	}
 
 	if rpcReq.JSONRPC == "" {

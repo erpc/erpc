@@ -1,6 +1,7 @@
 package config
 
 import (
+	"github.com/rs/zerolog"
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v2"
 )
@@ -8,7 +9,7 @@ import (
 // Config represents the configuration of the application.
 type Config struct {
 	LogLevel     string             `yaml:"logLevel"`
-	Server       ServerConfig       `yaml:"server"`
+	Server       *ServerConfig      `yaml:"server"`
 	Projects     []*ProjectConfig   `yaml:"projects"`
 	RateLimiters *RateLimiterConfig `yaml:"rateLimiters"`
 	HealthChecks *HealthCheckConfig `yaml:"healthChecks"`
@@ -42,17 +43,17 @@ type UpstreamConfig struct {
 }
 
 type FailsafeConfig struct {
-	Retry          RetryPolicyConfig          `yaml:"retry"`
-	CircuitBreaker CircuitBreakerPolicyConfig `yaml:"circuitBreaker"`
-	Timeout        TimeoutPolicyConfig        `yaml:"timeout"`
-	Hedge          HedgePolicyConfig          `yaml:"hedge"`
+	Retry          *RetryPolicyConfig          `yaml:"retry"`
+	CircuitBreaker *CircuitBreakerPolicyConfig `yaml:"circuitBreaker"`
+	Timeout        *TimeoutPolicyConfig        `yaml:"timeout"`
+	Hedge          *HedgePolicyConfig          `yaml:"hedge"`
 }
 
 type RetryPolicyConfig struct {
-	MaxCount        int     `yaml:"maxCount"`
+	MaxAttempts     int     `yaml:"maxAttempts"`
 	Delay           string  `yaml:"delay"`
 	BackoffMaxDelay string  `yaml:"backoffMaxDelay"`
-	BackoffFactor   float64 `yaml:"backoffFactor"`
+	BackoffFactor   float32 `yaml:"backoffFactor"`
 	Jitter          string  `yaml:"jitter"`
 }
 
@@ -95,11 +96,21 @@ type HealthCheckConfig struct {
 	Groups []*HealthCheckGroupConfig `yaml:"groups"`
 }
 
+func (c *HealthCheckConfig) GetGroupConfig(groupId string) *HealthCheckGroupConfig {
+	for _, group := range c.Groups {
+		if group.Id == groupId {
+			return group
+		}
+	}
+
+	return nil
+}
+
 type HealthCheckGroupConfig struct {
 	Id                  string `yaml:"id"`
-	CheckIntervalMs     int    `yaml:"checkIntervalMs"`
+	CheckInterval       string `yaml:"checkInterval"`
 	MaxErrorRatePercent int    `yaml:"maxErrorRatePercent"`
-	MaxP90LatencyMs     int    `yaml:"maxP90LatencyMs"`
+	MaxP90Latency       string `yaml:"maxP90Latency"`
 	MaxBlocksLag        int    `yaml:"maxBlocksLag"`
 }
 
@@ -116,6 +127,8 @@ type MetricsConfig struct {
 	Port    int    `toml:"port"`
 }
 
+var cfgInstance *Config
+
 // LoadConfig loads the configuration from the specified file.
 func LoadConfig(fs afero.Fs, filename string) (*Config, error) {
 	data, err := afero.ReadFile(fs, filename)
@@ -130,7 +143,13 @@ func LoadConfig(fs afero.Fs, filename string) (*Config, error) {
 		return nil, err
 	}
 
+	cfgInstance = &cfg
+
 	return &cfg, nil
+}
+
+func GetConfig() *Config {
+	return cfgInstance
 }
 
 // GetProjectConfig returns the project configuration by the specified project ID.
@@ -142,4 +161,13 @@ func (c *Config) GetProjectConfig(projectId string) *ProjectConfig {
 	}
 
 	return nil
+}
+
+func (c *RateLimitRuleConfig) MarshalZerologObject(e *zerolog.Event) {
+	e.Str("scope", c.Scope).
+		Str("mode", c.Mode).
+		Str("method", c.Method).
+		Int("maxCount", c.MaxCount).
+		Str("period", c.Period).
+		Str("waitTime", c.WaitTime)
 }
