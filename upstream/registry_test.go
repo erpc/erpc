@@ -17,7 +17,7 @@ func TestUpstreamsRegistry_UpstreamALowerLatencyHigherErroRateUpstreamBHigherLat
 		NetworkIds: []string{"123"},
 		Metrics: &UpstreamMetrics{
 			P90Latency:     0.100, // Seconds
-			ErrorsTotal:    10,
+			ErrorsTotal:    90,
 			RequestsTotal:  100,
 			ThrottledTotal: 0,
 			BlocksLag:      0,
@@ -29,7 +29,7 @@ func TestUpstreamsRegistry_UpstreamALowerLatencyHigherErroRateUpstreamBHigherLat
 		ProjectId:  "test_project",
 		NetworkIds: []string{"123"},
 		Metrics: &UpstreamMetrics{
-			P90Latency:     0.200, // Seconds
+			P90Latency:     0.500, // Seconds
 			ErrorsTotal:    1,
 			RequestsTotal:  100,
 			ThrottledTotal: 0,

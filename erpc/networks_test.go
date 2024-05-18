@@ -117,6 +117,7 @@ func TestPreparedNetwork_ForwardNotRateLimitedOnNetworkLevel(t *testing.T) {
 }
 
 func TestPreparedNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
+	defer gock.Off()
 	defer gock.Disable()
 	defer gock.DisableNetworking()
 	defer gock.DisableNetworkingFilters()
@@ -197,6 +198,7 @@ func TestPreparedNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 }
 
 func TestPreparedNetwork_ForwardRetryFailuresWithSuccess(t *testing.T) {
+	defer gock.Off()
 	defer gock.Disable()
 	defer gock.DisableNetworking()
 	defer gock.DisableNetworkingFilters()
@@ -295,6 +297,7 @@ func TestPreparedNetwork_ForwardRetryFailuresWithSuccess(t *testing.T) {
 }
 
 func TestPreparedNetwork_ForwardTimeoutPolicyFail(t *testing.T) {
+	defer gock.Off()
 	defer gock.Disable()
 	defer gock.DisableNetworking()
 	defer gock.DisableNetworkingFilters()
@@ -376,6 +379,7 @@ func TestPreparedNetwork_ForwardTimeoutPolicyFail(t *testing.T) {
 }
 
 func TestPreparedNetwork_ForwardTimeoutPolicyPass(t *testing.T) {
+	defer gock.Off()
 	defer gock.Disable()
 	defer gock.DisableNetworking()
 	defer gock.DisableNetworkingFilters()
@@ -455,6 +459,7 @@ func TestPreparedNetwork_ForwardTimeoutPolicyPass(t *testing.T) {
 }
 
 func TestPreparedNetwork_ForwardHedgePolicyTriggered(t *testing.T) {
+	defer gock.Off()
 	defer gock.Disable()
 	defer gock.DisableNetworking()
 	defer gock.DisableNetworkingFilters()
@@ -571,6 +576,7 @@ func TestPreparedNetwork_ForwardHedgePolicyTriggered(t *testing.T) {
 }
 
 func TestPreparedNetwork_ForwardHedgePolicyNotTriggered(t *testing.T) {
+	defer gock.Off()
 	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
 
 	gock.New("http://google.com").
@@ -679,6 +685,10 @@ func TestPreparedNetwork_ForwardHedgePolicyNotTriggered(t *testing.T) {
 }
 
 func TestPreparedNetwork_ForwardHedgePolicyIgnoresNegativeScoreUpstream(t *testing.T) {
+	// defer gock.Off()
+	// defer gock.Disable()
+	// defer gock.DisableNetworking()
+	// defer gock.DisableNetworkingFilters()
 	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
 
 	gock.New("http://google.com").

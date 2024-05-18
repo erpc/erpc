@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"net/http"
+	"sync"
 
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/flair-sdk/erpc/common"
@@ -109,22 +110,24 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 	}
 
 	// Handling when FailsafePolicies are defined
+	mtx := sync.Mutex{}
 	i := 0
 	_, execErr := n.Executor().GetWithExecution(func(exec failsafe.Execution[interface{}]) (interface{}, error) {
-		n.Logger.Debug().Msgf("executing forward current index: %d", i)
-
 		// We should try all upstreams at least once, but using "i" we make sure
 		// across different executions we pick up next upstream vs retrying the same upstream.
 		// This mimicks a round-robin behavior.
 		// Upstream-level retry is handled by the upstream itself (and its own failsafe policies).
 		ln := len(n.Upstreams)
 		for count := 0; count < ln; count++ {
+			mtx.Lock(); 
 			u := n.Upstreams[i]
-			i++
+			n.Logger.Debug().Msgf("executing forward current index: %d", i)
+			i++;
 			if i >= ln {
 				i = 0
 			}
-			n.Logger.Debug().Msgf("executing forward to upstream: %s next index: %d", u.Id, i)
+			mtx.Unlock();
+			n.Logger.Debug().Msgf("executing forward to upstream: %s", u.Id)
 
 			skipped, err := tryForward(u)
 			n.Logger.Debug().Err(err).Msgf("forwarded request to upstream %s skipped: %v err: %v", u.Id, skipped, err)

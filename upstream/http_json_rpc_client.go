@@ -20,7 +20,6 @@ type HttpJsonRpcClient struct {
 	Url  *url.URL
 
 	httpClient *http.Client
-	jsonRpcId  int // TODO do we need atomic concurrency-safe counter?
 }
 
 type JsonRpcRequest struct {
@@ -49,7 +48,6 @@ func NewHttpJsonRpcClient(parsedUrl *url.URL) (*HttpJsonRpcClient, error) {
 			Type:       "HttpJsonRpcClient",
 			Url:        parsedUrl,
 			httpClient: &http.Client{},
-			jsonRpcId:  1,
 		}
 	} else {
 		client = &HttpJsonRpcClient{
@@ -63,7 +61,6 @@ func NewHttpJsonRpcClient(parsedUrl *url.URL) (*HttpJsonRpcClient, error) {
 					MaxIdleConnsPerHost: 10,
 				},
 			},
-			jsonRpcId: 1,
 		}
 
 	}
@@ -76,9 +73,8 @@ func (c *HttpJsonRpcClient) SendRequest(ctx context.Context, req *JsonRpcRequest
 		JSONRPC: req.JSONRPC,
 		Method:  req.Method,
 		Params:  req.Params,
-		ID:      c.jsonRpcId,
+		ID:      req.ID,
 	})
-	c.jsonRpcId++
 
 	if err != nil {
 		return nil, err

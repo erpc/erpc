@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"strings"
@@ -51,15 +52,15 @@ server:
 func TestMain_MissingConfigFile(t *testing.T) {
 	os.Args = []string{"erpc-test", "some-random-non-existent.yaml"}
 
-	originalOsExit := util.OsExit
 	var called bool
-	defer func() {
-		util.OsExit = originalOsExit
-	}()
+	mu := &sync.Mutex{}
+
 	util.OsExit = func(code int) {
 		if code != util.ExitCodeERPCStartFailed {
 			t.Errorf("expected code %d, got %d", util.ExitCodeERPCStartFailed, code)
 		} else {
+			mu.Lock()
+			defer mu.Unlock()
 			called = true
 		}
 	}
@@ -68,6 +69,8 @@ func TestMain_MissingConfigFile(t *testing.T) {
 
 	time.Sleep(300 * time.Millisecond)
 
+	mu.Lock()
+	defer mu.Unlock()
 	if !called {
 		t.Error("expected osExit to be called")
 	}
@@ -90,16 +93,15 @@ server:
 
 	os.Args = []string{"erpc-test", f.Name()}
 
-	originalOsExit := util.OsExit
 	var called bool
-	defer func() {
-		util.OsExit = originalOsExit
-	}()
+	mu := &sync.Mutex{}
 	util.OsExit = func(code int) {
 		if code != util.ExitCodeHttpServerFailed {
 			t.Errorf("expected code %d, got %d", util.ExitCodeHttpServerFailed, code)
 		} else {
+			mu.Lock()
 			called = true
+			mu.Unlock()
 		}
 	}
 
@@ -107,12 +109,15 @@ server:
 
 	time.Sleep(300 * time.Millisecond)
 
+	mu.Lock()
+	defer mu.Unlock()
 	if !called {
 		t.Error("expected osExit to be called")
 	}
 }
 
 func TestInit_HappyPath(t *testing.T) {
+	defer gock.Off()
 	defer gock.Disable()
 	defer gock.DisableNetworking()
 	defer gock.DisableNetworkingFilters()
@@ -169,7 +174,7 @@ projects:
 		Post("").
 		MatchType("json").
 		JSON(
-			json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`),
+			json.RawMessage(`{"jsonrpc":"2.0","id":91799,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`),
 		).
 		Reply(200).
 		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
