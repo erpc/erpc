@@ -104,8 +104,7 @@ rateLimiters:
   buckets:
   - id: string
     rules:
-    - mode: smooth | burst
-      method: string | *
+    - method: string | *
       maxCount: number
       period: number | string
       waitTime: number | string

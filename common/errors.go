@@ -70,6 +70,40 @@ func (e *BaseError) CodeChain() string {
 	return e.Code
 }
 
+func (e BaseError) MarshalJSON() ([]byte, error) {
+	type Alias BaseError
+	cause := e.Cause
+
+	if baseErr, ok := cause.(*BaseError); ok {
+		return json.Marshal(&struct {
+			Alias
+			Cause BaseError `json:"cause"`
+		}{
+			Alias: (Alias)(e),
+			Cause: *baseErr,
+		})
+	} else if cause != nil {
+		return json.Marshal(&struct {
+			Alias
+			Cause BaseError `json:"cause"`
+		}{
+			Alias: (Alias)(e),
+			Cause: BaseError{
+				Code:    "ErrGeneric",
+				Message: cause.Error(),
+			},
+		})
+	}
+
+	return json.Marshal(&struct {
+		Alias
+		Cause interface{} `json:"cause"`
+	}{
+		Alias: (Alias)(e),
+		Cause: nil,
+	})
+}
+
 type ErrorWithStatusCode interface {
 	ErrorStatusCode() int
 }

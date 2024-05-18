@@ -20,7 +20,7 @@ type ClientRegistry struct {
 	clients sync.Map
 }
 
-// NewClientRegistry creates a new client manager
+// NewClientRegistry creates a new client registry
 func NewClientRegistry() *ClientRegistry {
 	return &ClientRegistry{}
 }

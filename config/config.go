@@ -85,7 +85,6 @@ type RateLimitBucketConfig struct {
 
 type RateLimitRuleConfig struct {
 	Scope    string `yaml:"scope"`
-	Mode     string `yaml:"mode"`
 	Method   string `yaml:"method"`
 	MaxCount int    `yaml:"maxCount"`
 	Period   string `yaml:"period"`
@@ -165,7 +164,6 @@ func (c *Config) GetProjectConfig(projectId string) *ProjectConfig {
 
 func (c *RateLimitRuleConfig) MarshalZerologObject(e *zerolog.Event) {
 	e.Str("scope", c.Scope).
-		Str("mode", c.Mode).
 		Str("method", c.Method).
 		Int("maxCount", c.MaxCount).
 		Str("period", c.Period).

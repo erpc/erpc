@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/flair-sdk/erpc/common"
+	"github.com/rs/zerolog"
 )
 
 type NormalizedRequest struct {
@@ -49,4 +50,8 @@ func (n *NormalizedRequest) Method() (string, error) {
 	}
 
 	return rpcReq.Method, nil
+}
+
+func (n *NormalizedRequest) MarshalZerologObject(e *zerolog.Event) {
+	e.Str("body", string(n.body))
 }

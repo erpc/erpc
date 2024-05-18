@@ -60,6 +60,8 @@ func (r *ProjectsRegistry) NewNetwork(logger zerolog.Logger, prjCfg *config.Proj
 }
 
 func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedRequest, w http.ResponseWriter) error {
+	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
+
 	// TODO check if request exists in the hot, warm, or cold cache
 
 	if err := n.acquireRateLimitPermit(req); err != nil {
@@ -75,7 +77,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 		}
 
 		pr, errPrep := u.PrepareRequest(req)
-		lg.Debug().Err(errPrep).Msgf("prepared request prepared: %v", pr)
+		lg.Debug().Err(errPrep).Msgf("prepared request: %v", pr)
 		if pr == nil && errPrep == nil {
 			continue
 		}
@@ -86,7 +88,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 
 		var forwardErr error
 
-		if u.FailsafePolicies == nil || len(u.FailsafePolicies) == 0 {
+		if n.FailsafePolicies == nil || len(n.FailsafePolicies) == 0 {
 			lg.Debug().Msgf("forwarding request to upstream without any failsafe policy")
 			forwardErr = n.forwardToUpstream(u, context.Background(), pr, w)
 			if !common.IsNull(forwardErr) {
@@ -146,7 +148,8 @@ func (n *PreparedNetwork) acquireRateLimitPermit(req *upstream.NormalizedRequest
 
 	if len(rules) > 0 {
 		for _, rule := range rules {
-			if !(*rule.Limiter).TryAcquirePermit() {
+			permit := (*rule.Limiter).TryAcquirePermit()
+			if !permit {
 				health.MetricNetworkRequestLocalRateLimited.WithLabelValues(
 					n.ProjectId,
 					n.NetworkId,
@@ -159,7 +162,7 @@ func (n *PreparedNetwork) acquireRateLimitPermit(req *upstream.NormalizedRequest
 					rule.Config,
 				)
 			} else {
-				n.Logger.Debug().Msgf("network-level rate limit '%v' passed for network: %s", rule.Config, n.NetworkId)
+				n.Logger.Debug().Object("rateLimitRule", rule.Config).Msgf("network-level rate limit passed")
 			}
 		}
 	}

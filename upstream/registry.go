@@ -50,7 +50,7 @@ func (u *UpstreamsRegistry) bootstrap() error {
 			u.upstreamsMapByNetwork[project.Id] = make(map[string]map[string]*PreparedUpstream)
 		}
 		for _, ups := range project.Upstreams {
-			preparedUpstream, err := u.prepareUpstream(project.Id, &lg, ups)
+			preparedUpstream, err := u.NewUpstream(project.Id, &lg, ups)
 			if err != nil {
 				return common.NewErrUpstreamInitialization(err, ups.Id)
 			}
@@ -214,6 +214,11 @@ func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupId string, ups
 }
 
 func (u *UpstreamsRegistry) collectMetricsForAllUpstreams() {
+	if len(u.upstreamsMapByNetwork) == 0 {
+		log.Debug().Msgf("no upstreams to collect metrics for")
+		return
+	}
+
 	log.Debug().Msgf("collecting upstreams metrics from prometheus")
 
 	// Get and parse current prometheus metrics data
@@ -279,7 +284,7 @@ func (u *UpstreamsRegistry) collectMetricsForAllUpstreams() {
 	}
 }
 
-func (u *UpstreamsRegistry) prepareUpstream(projectId string, logger *zerolog.Logger, upstream *config.UpstreamConfig) (*PreparedUpstream, error) {
+func (u *UpstreamsRegistry) NewUpstream(projectId string, logger *zerolog.Logger, upstream *config.UpstreamConfig) (*PreparedUpstream, error) {
 	var networkIds []string = []string{}
 
 	lg := logger.With().Str("upstream", upstream.Id).Logger()
@@ -289,7 +294,7 @@ func (u *UpstreamsRegistry) prepareUpstream(projectId string, logger *zerolog.Lo
 			lg.Debug().Str("network", val).Msgf("network ID set to %s via evmChainId", val)
 			networkIds = append(networkIds, val)
 		} else {
-			lg.Debug().Msgf("network ID not set via metadata.evmChainId", upstream.Metadata["evmChainId"])
+			lg.Debug().Msgf("network ID not set via metadata.evmChainId: %v", upstream.Metadata["evmChainId"])
 		}
 	}
 
@@ -337,7 +342,6 @@ func (u *UpstreamsRegistry) prepareUpstream(projectId string, logger *zerolog.Lo
 	return preparedUpstream, nil
 }
 
-// Step 2: Normalize the metrics
 func normalizeFloatValues(values []float64) []float64 {
 	if len(values) == 0 {
 		return values

@@ -67,11 +67,7 @@ func (r *RateLimitersRegistry) bootstrap() error {
 				return common.NewErrRateLimitInvalidConfig(fmt.Errorf("failed to parse duration for limit %v: %w", rule, err))
 			}
 
-			if rule.Mode == "smooth" {
-				builder = ratelimiter.SmoothBuilder[interface{}](uint(rule.MaxCount), duration)
-			} else {
-				builder = ratelimiter.BurstyBuilder[interface{}](uint(rule.MaxCount), duration)
-			}
+			builder = ratelimiter.BurstyBuilder[interface{}](uint(rule.MaxCount), duration)
 
 			if rule.WaitTime != "" {
 				waitTime, err := time.ParseDuration(rule.WaitTime)
@@ -82,7 +78,7 @@ func (r *RateLimitersRegistry) bootstrap() error {
 			}
 
 			builder.OnRateLimitExceeded(func(e failsafe.ExecutionEvent[any]) {
-				log.Warn().Msgf("rate limit '%v' exceeded", rule)
+				log.Warn().Msgf("rate limit exceeded for rule '%v'", rule)
 			})
 
 			limiter := builder.Build()

@@ -322,7 +322,7 @@ projects:
 		t.Fatal("expected an error, got nil")
 	}
 
-	if !strings.Contains(err.Error(), "could not detect any network ID") {
+	if !strings.Contains(err.Error(), "network not detected") {
 		t.Errorf("unexpected error: %s", err)
 	}
 }

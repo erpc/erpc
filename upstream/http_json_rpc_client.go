@@ -121,6 +121,7 @@ func (c *HttpJsonRpcClient) SendRequest(ctx context.Context, req *JsonRpcRequest
 			Details: map[string]interface{}{
 				"statusCode": respStatusCode,
 				"body":       string(respBody),
+				"headers":    resp.Header,
 			},
 		}
 	}
