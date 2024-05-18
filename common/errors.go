@@ -223,7 +223,7 @@ var NewErrUpstreamsExhausted = func(ers []error) error {
 		BaseError{
 			Code:    "ErrUpstreamsExhausted",
 			Message: "all available upstreams have been exhausted",
-			Cause:  errors.Join(ers...),
+			Cause:   errors.Join(ers...),
 			// Details: map[string]interface{}{
 			// 	"errors": errors,
 			// },
