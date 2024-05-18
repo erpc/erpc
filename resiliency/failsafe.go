@@ -146,9 +146,5 @@ func TranslateFailsafeError(execErr error) error {
 		return common.NewErrFailsafeTimeoutExceeded(execErr)
 	}
 
-	return &common.BaseError{
-		Code:    "ErrFailsafeUnexpected",
-		Message: "unexpected failsafe error type encountered",
-		Cause:   execErr,
-	}
+	return execErr
 }

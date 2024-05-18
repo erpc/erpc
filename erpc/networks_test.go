@@ -21,6 +21,8 @@ import (
 )
 
 func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T) {
+	defer gock.Clean()
+
 	rateLimitersRegistry, err := resiliency.NewRateLimitersRegistry(
 		&config.RateLimiterConfig{
 			Buckets: []*config.RateLimitBucketConfig{
@@ -51,7 +53,8 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 		},
 		rateLimitersRegistry: rateLimitersRegistry,
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	var lastErr error
 	var lastFakeRespWriter *httptest.ResponseRecorder
@@ -69,6 +72,8 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 }
 
 func TestPreparedNetwork_ForwardNotRateLimitedOnNetworkLevel(t *testing.T) {
+	defer gock.Clean()
+
 	rateLimitersRegistry, err := resiliency.NewRateLimitersRegistry(
 		&config.RateLimiterConfig{
 			Buckets: []*config.RateLimitBucketConfig{
@@ -99,7 +104,8 @@ func TestPreparedNetwork_ForwardNotRateLimitedOnNetworkLevel(t *testing.T) {
 		},
 		rateLimitersRegistry: rateLimitersRegistry,
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	var lastErr error
 	var lastFakeRespWriter *httptest.ResponseRecorder
@@ -117,8 +123,7 @@ func TestPreparedNetwork_ForwardNotRateLimitedOnNetworkLevel(t *testing.T) {
 }
 
 func TestPreparedNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
-	defer gock.Off()
-	defer gock.Disable()
+	defer gock.Clean()
 	defer gock.DisableNetworking()
 	defer gock.DisableNetworkingFilters()
 
@@ -140,7 +145,8 @@ func TestPreparedNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 		Reply(503).
 		JSON(json.RawMessage(`{"error":{"message":"some random provider issue"}}`))
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	clr := upstream.NewClientRegistry()
 
@@ -198,8 +204,8 @@ func TestPreparedNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 }
 
 func TestPreparedNetwork_ForwardRetryFailuresWithSuccess(t *testing.T) {
-	defer gock.Off()
-	defer gock.Disable()
+	defer gock.Clean()
+
 	defer gock.DisableNetworking()
 	defer gock.DisableNetworkingFilters()
 
@@ -224,7 +230,9 @@ func TestPreparedNetwork_ForwardRetryFailuresWithSuccess(t *testing.T) {
 		Reply(200).
 		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	clr := upstream.NewClientRegistry()
 	fsCfg := &config.FailsafeConfig{
 		Retry: &config.RetryPolicyConfig{
@@ -297,8 +305,8 @@ func TestPreparedNetwork_ForwardRetryFailuresWithSuccess(t *testing.T) {
 }
 
 func TestPreparedNetwork_ForwardTimeoutPolicyFail(t *testing.T) {
-	defer gock.Off()
-	defer gock.Disable()
+	defer gock.Clean()
+
 	defer gock.DisableNetworking()
 	defer gock.DisableNetworkingFilters()
 
@@ -318,7 +326,9 @@ func TestPreparedNetwork_ForwardTimeoutPolicyFail(t *testing.T) {
 		Delay(100 * time.Millisecond).
 		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	clr := upstream.NewClientRegistry()
 	fsCfg := &config.FailsafeConfig{
 		Timeout: &config.TimeoutPolicyConfig{
@@ -379,8 +389,7 @@ func TestPreparedNetwork_ForwardTimeoutPolicyFail(t *testing.T) {
 }
 
 func TestPreparedNetwork_ForwardTimeoutPolicyPass(t *testing.T) {
-	defer gock.Off()
-	defer gock.Disable()
+	defer gock.Clean()
 	defer gock.DisableNetworking()
 	defer gock.DisableNetworkingFilters()
 
@@ -400,7 +409,9 @@ func TestPreparedNetwork_ForwardTimeoutPolicyPass(t *testing.T) {
 		Delay(100 * time.Millisecond).
 		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	clr := upstream.NewClientRegistry()
 	fsCfg := &config.FailsafeConfig{
 		Timeout: &config.TimeoutPolicyConfig{
@@ -459,8 +470,7 @@ func TestPreparedNetwork_ForwardTimeoutPolicyPass(t *testing.T) {
 }
 
 func TestPreparedNetwork_ForwardHedgePolicyTriggered(t *testing.T) {
-	defer gock.Off()
-	defer gock.Disable()
+	defer gock.Clean()
 	defer gock.DisableNetworking()
 	defer gock.DisableNetworkingFilters()
 
@@ -486,7 +496,9 @@ func TestPreparedNetwork_ForwardHedgePolicyTriggered(t *testing.T) {
 		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc2"}}`)).
 		Delay(200 * time.Millisecond)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	clr := upstream.NewClientRegistry()
 	fsCfg := &config.FailsafeConfig{
 		Hedge: &config.HedgePolicyConfig{
@@ -576,7 +588,8 @@ func TestPreparedNetwork_ForwardHedgePolicyTriggered(t *testing.T) {
 }
 
 func TestPreparedNetwork_ForwardHedgePolicyNotTriggered(t *testing.T) {
-	defer gock.Off()
+	defer gock.Clean()
+
 	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
 
 	gock.New("http://google.com").
@@ -593,7 +606,9 @@ func TestPreparedNetwork_ForwardHedgePolicyNotTriggered(t *testing.T) {
 
 	log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	clr := upstream.NewClientRegistry()
 	fsCfg := &config.FailsafeConfig{
 		Hedge: &config.HedgePolicyConfig{
@@ -685,27 +700,26 @@ func TestPreparedNetwork_ForwardHedgePolicyNotTriggered(t *testing.T) {
 }
 
 func TestPreparedNetwork_ForwardHedgePolicyIgnoresNegativeScoreUpstream(t *testing.T) {
-	// defer gock.Off()
-	// defer gock.Disable()
-	// defer gock.DisableNetworking()
-	// defer gock.DisableNetworkingFilters()
+	defer gock.Clean()
 	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
 
+	log.Logger.Info().Msgf("Mocks registered before: %d", len(gock.Pending()))
 	gock.New("http://google.com").
 		Post("").
 		Times(3).
 		Reply(200).
 		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`)).
-		Delay(300 * time.Millisecond)
+		Delay(100 * time.Millisecond)
+	log.Logger.Info().Msgf("Mocks registered after: %d", len(gock.Pending()))
 
-	log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	ctx := context.Background()
 	clr := upstream.NewClientRegistry()
 	fsCfg := &config.FailsafeConfig{
 		Hedge: &config.HedgePolicyConfig{
-			Delay:    "100ms",
-			MaxCount: 3,
+			Delay:    "30ms",
+			MaxCount: 2,
 		},
 	}
 	policies, err := resiliency.CreateFailSafePolicies("eth_getBlockByNumber", fsCfg)
@@ -721,8 +735,9 @@ func TestPreparedNetwork_ForwardHedgePolicyIgnoresNegativeScoreUpstream(t *testi
 			"evmChainId": "123",
 		},
 		NetworkIds: []string{"123"},
+		Score:      2,
 	}
-	cl1, err := clr.GetOrCreateClient(pup1)
+	cl1, err := clr.CreateClient(pup1)
 	if err != nil {
 		t.Error(err)
 	}
@@ -738,7 +753,7 @@ func TestPreparedNetwork_ForwardHedgePolicyIgnoresNegativeScoreUpstream(t *testi
 		NetworkIds: []string{"123"},
 		Score:      -1,
 	}
-	cl2, err := clr.GetOrCreateClient(pup2)
+	cl2, err := clr.CreateClient(pup2)
 	if err != nil {
 		t.Error(err)
 	}
@@ -758,6 +773,8 @@ func TestPreparedNetwork_ForwardHedgePolicyIgnoresNegativeScoreUpstream(t *testi
 	respWriter := httptest.NewRecorder()
 	fakeReq := upstream.NewNormalizedRequest(requestBytes)
 	err = ntw.Forward(ctx, fakeReq, respWriter)
+
+	time.Sleep(50 * time.Millisecond)
 
 	if len(gock.Pending()) > 0 {
 		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))

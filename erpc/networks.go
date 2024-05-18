@@ -70,8 +70,14 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 
 	var errorsByUpstream = []error{}
 
+	// This mutex is used when multiple upstreams are tried in parallel (e.g. when Hedge failsafe policy is used)
+	writeLock := &sync.Mutex{}
+
 	// Function to prepare and forward the request to an upstream
-	tryForward := func(u *upstream.PreparedUpstream) (skipped bool, err error) {
+	tryForward := func(
+		u *upstream.PreparedUpstream,
+		ctx context.Context,
+	) (skipped bool, err error) {
 		lg := u.Logger.With().Str("network", n.NetworkId).Logger()
 		if u.Score < 0 {
 			lg.Debug().Msgf("skipping upstream with negative score %f", u.Score)
@@ -87,7 +93,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 			return false, err
 		}
 
-		err = n.forwardToUpstream(u, context.Background(), pr, w)
+		err = n.forwardToUpstream(u, ctx, pr, w, writeLock)
 		if !common.IsNull(err) {
 			return false, err
 		}
@@ -99,7 +105,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 	if n.FailsafePolicies == nil || len(n.FailsafePolicies) == 0 {
 		// Handling via simple loop over upstreams until one responds
 		for _, u := range n.Upstreams {
-			if _, err := tryForward(u); err != nil {
+			if _, err := tryForward(u, ctx); err != nil {
 				errorsByUpstream = append(errorsByUpstream, err)
 				continue
 			}
@@ -119,17 +125,17 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 		// Upstream-level retry is handled by the upstream itself (and its own failsafe policies).
 		ln := len(n.Upstreams)
 		for count := 0; count < ln; count++ {
-			mtx.Lock(); 
+			mtx.Lock()
 			u := n.Upstreams[i]
 			n.Logger.Debug().Msgf("executing forward current index: %d", i)
-			i++;
+			i++
 			if i >= ln {
 				i = 0
 			}
-			mtx.Unlock();
+			mtx.Unlock()
 			n.Logger.Debug().Msgf("executing forward to upstream: %s", u.Id)
 
-			skipped, err := tryForward(u)
+			skipped, err := tryForward(u, exec.Context())
 			n.Logger.Debug().Err(err).Msgf("forwarded request to upstream %s skipped: %v err: %v", u.Id, skipped, err)
 			if !skipped {
 				return nil, err
@@ -203,6 +209,7 @@ func (n *PreparedNetwork) forwardToUpstream(
 	ctx context.Context,
 	r interface{},
 	w http.ResponseWriter,
+	wl *sync.Mutex,
 ) error {
 	var category string = ""
 	if jrr, ok := r.(*upstream.JsonRpcRequest); ok {
@@ -222,5 +229,5 @@ func (n *PreparedNetwork) forwardToUpstream(
 	))
 	defer timer.ObserveDuration()
 
-	return thisUpstream.Forward(ctx, n.NetworkId, r, w)
+	return thisUpstream.Forward(ctx, n.NetworkId, r, w, wl)
 }

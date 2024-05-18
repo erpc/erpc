@@ -32,6 +32,10 @@ func (manager *ClientRegistry) GetOrCreateClient(upstream *PreparedUpstream) (Cl
 		return client.(ClientInterface), nil
 	}
 
+	return manager.CreateClient(upstream)
+}
+
+func (manager *ClientRegistry) CreateClient(upstream *PreparedUpstream) (ClientInterface, error) {
 	// Create a new client for the endpoint if not already present
 	var once sync.Once
 	var newClient ClientInterface

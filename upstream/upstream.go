@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/failsafe-go/failsafe-go"
@@ -78,7 +79,7 @@ func (u *PreparedUpstream) PrepareRequest(normalizedReq *NormalizedRequest) (int
 	}
 }
 
-func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req interface{}, w http.ResponseWriter) error {
+func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req interface{}, w http.ResponseWriter, wl *sync.Mutex) error {
 	clientType := u.Client.GetType()
 
 	switch clientType {
@@ -157,9 +158,14 @@ func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req in
 			)
 		}
 
-		w.Header().Add("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write(respBytes)
+		if wl.TryLock() {
+			w.Header().Add("Content-Type", "application/json")
+			w.Header().Add("X-ERPC-Upstream", u.Id)
+			w.Header().Add("X-ERPC-Network", networkId)
+			w.Write(respBytes)
+		} else {
+			return common.NewErrUpstreamResponseWriteLock(u.Id)
+		}
 		return nil
 	default:
 		return common.NewErrUpstreamClientInitialization(

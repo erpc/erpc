@@ -296,6 +296,24 @@ var NewErrUpstreamInitialization = func(cause error, upstreamId string) error {
 	}
 }
 
+type ErrUpstreamResponseWriteLock struct{ BaseError }
+
+var NewErrUpstreamResponseWriteLock = func(upstreamId string) error {
+	return &ErrUpstreamResponseWriteLock{
+		BaseError{
+			Code:    "ErrUpstreamResponseWriteLock",
+			Message: "failed to acquire write lock, potentially being writen by another upstream",
+			Details: map[string]interface{}{
+				"upstreamId": upstreamId,
+			},
+		},
+	}
+}
+
+//
+// Health Checks
+//
+
 type ErrHealthCheckGroupNotFound struct{ BaseError }
 
 var NewErrHealthCheckGroupNotFound = func(healthCheckGroupId string) error {

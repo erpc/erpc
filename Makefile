@@ -28,11 +28,13 @@ build:
 
 .PHONY: test
 test:
-	@go test -race ./... -v
+	@go clean -testcache
+	@go test -race -covermode=atomic ./... -count 10 -parallel 10
 
 .PHONY: coverage
 coverage:
-	@go test -race -coverprofile=coverage.txt -covermode=atomic ./... -v
+	@go clean -testcache
+	@go test -race -coverprofile=coverage.txt -covermode=atomic ./...
 	@go tool cover -html=coverage.txt
 
 .PHONY: docker-up
