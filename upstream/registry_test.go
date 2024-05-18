@@ -10,29 +10,29 @@ func TestUpstreamsRegistry_UpstreamALowerLatencyHigherErroRateUpstreamBHigherLat
 	registry := &UpstreamsRegistry{}
 
 	upA := &PreparedUpstream{
-		Id: "upstreamA",
-		ProjectId: "test_project",
+		Id:         "upstreamA",
+		ProjectId:  "test_project",
 		NetworkIds: []string{"123"},
 		Metrics: &UpstreamMetrics{
-			P90Latency: 0.100, // Seconds
-			ErrorsTotal: 10,
-			RequestsTotal: 100,
+			P90Latency:     0.100, // Seconds
+			ErrorsTotal:    10,
+			RequestsTotal:  100,
 			ThrottledTotal: 0,
-			BlocksLag: 0,
-			LastCollect: time.Now(),
+			BlocksLag:      0,
+			LastCollect:    time.Now(),
 		},
 	}
 	upB := &PreparedUpstream{
-		Id: "upstreamB",
-		ProjectId: "test_project",
+		Id:         "upstreamB",
+		ProjectId:  "test_project",
 		NetworkIds: []string{"123"},
 		Metrics: &UpstreamMetrics{
-			P90Latency: 0.200, // Seconds
-			ErrorsTotal: 1,
-			RequestsTotal: 100,
+			P90Latency:     0.200, // Seconds
+			ErrorsTotal:    1,
+			RequestsTotal:  100,
 			ThrottledTotal: 0,
-			BlocksLag: 0,
-			LastCollect: time.Now(),
+			BlocksLag:      0,
+			LastCollect:    time.Now(),
 		},
 	}
 

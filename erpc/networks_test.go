@@ -191,9 +191,7 @@ func TestPreparedNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 
 	if err == nil {
 		t.Errorf("Expected an error, got nil")
-	}
-
-	if !strings.Contains(err.Error(), "ErrFailsafeRetryExceeded") {
+	} else if !strings.Contains(err.Error(), "ErrFailsafeRetryExceeded") {
 		t.Errorf("Expected %v, got %v", "ErrFailsafeRetryExceeded", err)
 	}
 }
@@ -572,122 +570,110 @@ func TestPreparedNetwork_ForwardHedgePolicyTriggered(t *testing.T) {
 	}
 }
 
-// func TestPreparedNetwork_ForwardHedgePolicyNotTriggered(t *testing.T) {
-// 	defer gock.Disable()
-// 	defer gock.DisableNetworking()
-// 	defer gock.DisableNetworkingFilters()
+func TestPreparedNetwork_ForwardHedgePolicyNotTriggered(t *testing.T) {
+	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
 
-// 	gock.EnableNetworking()
+	gock.New("http://google.com").
+		Post("").
+		Reply(200).
+		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`)).
+		Delay(2000 * time.Millisecond)
 
-// 	// Register a networking filter
-// 	gock.NetworkingFilter(func(req *http.Request) bool {
-// 		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
-// 		return shouldMakeRealCall
-// 	})
+	gock.New("http://alchemy.com").
+		Post("").
+		Reply(200).
+		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc2"}}`)).
+		Delay(10 * time.Millisecond)
 
-// 	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
+	log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
 
-// 	gock.New("http://google.com").
-// 		Post("/rpc1").
-// 		Reply(200).
-// 		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`)).
-// 		Delay(200 * time.Millisecond)
+	ctx := context.Background()
+	clr := upstream.NewClientRegistry()
+	fsCfg := &config.FailsafeConfig{
+		Hedge: &config.HedgePolicyConfig{
+			Delay:    "100ms",
+			MaxCount: 5,
+		},
+	}
+	policies, err := resiliency.CreateFailSafePolicies("eth_getBlockByNumber", fsCfg)
+	if err != nil {
+		t.Error(err)
+	}
+	pup1 := &upstream.PreparedUpstream{
+		Logger:       log.Logger,
+		Id:           "rpc1",
+		Endpoint:     "http://google.com",
+		Architecture: upstream.ArchitectureEvm,
+		Metadata: map[string]string{
+			"evmChainId": "123",
+		},
+		NetworkIds: []string{"123"},
+	}
+	cl1, err := clr.GetOrCreateClient(pup1)
+	if err != nil {
+		t.Error(err)
+	}
+	pup1.Client = cl1
+	pup2 := &upstream.PreparedUpstream{
+		Logger:       log.Logger,
+		Id:           "rpc2",
+		Endpoint:     "http://alchemy.com",
+		Architecture: upstream.ArchitectureEvm,
+		Metadata: map[string]string{
+			"evmChainId": "123",
+		},
+		NetworkIds: []string{"123"},
+	}
+	cl2, err := clr.GetOrCreateClient(pup2)
+	if err != nil {
+		t.Error(err)
+	}
+	pup2.Client = cl2
 
-// 	gock.New("http://google.com").
-// 		Post("/rpc2").
-// 		Reply(200).
-// 		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc2"}}`)).
-// 		Delay(200 * time.Millisecond)
+	ntw := &PreparedNetwork{
+		Logger:    log.Logger,
+		NetworkId: "123",
+		Config: &config.NetworkConfig{
+			Failsafe: fsCfg,
+		},
+		FailsafePolicies: policies,
+		Upstreams:        []*upstream.PreparedUpstream{pup1, pup2},
+		failsafeExecutor: failsafe.NewExecutor(policies...),
+	}
 
-// 	log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
+	respWriter := httptest.NewRecorder()
+	fakeReq := upstream.NewNormalizedRequest(requestBytes)
+	err = ntw.Forward(ctx, fakeReq, respWriter)
 
-// 	ctx := context.Background()
-// 	clr := upstream.NewClientRegistry()
-// 	fsCfg := &config.FailsafeConfig{
-// 		Hedge: &config.HedgePolicyConfig{
-// 			Delay: "100ms",
-// 			MaxCount: 1,
-// 		},
-// 	}
-// 	policies, err := resiliency.CreateFailSafePolicies("eth_getBlockByNumber", fsCfg)
-// 	if err != nil {
-// 		t.Error(err)
-// 	}
-// 	pup1 := &upstream.PreparedUpstream{
-// 		Logger:       log.Logger,
-// 		Id:           "rpc1",
-// 		Endpoint:     "http://google.com/rpc1",
-// 		Architecture: upstream.ArchitectureEvm,
-// 		Metadata: map[string]string{
-// 			"evmChainId": "123",
-// 		},
-// 		NetworkIds: []string{"123"},
-// 	}
-// 	cl1, err := clr.GetOrCreateClient(pup1)
-// 	if err != nil {
-// 		t.Error(err)
-// 	}
-// 	pup1.Client = cl1
-// 	pup2 := &upstream.PreparedUpstream{
-// 		Logger:       log.Logger,
-// 		Id:           "rpc2",
-// 		Endpoint:     "http://google.com/rpc2",
-// 		Architecture: upstream.ArchitectureEvm,
-// 		Metadata: map[string]string{
-// 			"evmChainId": "123",
-// 		},
-// 		NetworkIds: []string{"123"},
-// 	}
-// 	cl2, err := clr.GetOrCreateClient(pup2)
-// 	if err != nil {
-// 		t.Error(err)
-// 	}
-// 	pup2.Client = cl2
+	if len(gock.Pending()) > 0 {
+		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
+		for _, pending := range gock.Pending() {
+			t.Errorf("Pending mock: %v", pending)
+		}
+	} else {
+		t.Logf("All mocks consumed")
+	}
 
-// 	ntw := &PreparedNetwork{
-// 		Logger:    log.Logger,
-// 		NetworkId: "123",
-// 		Config: &config.NetworkConfig{
-// 			Failsafe: fsCfg,
-// 		},
-// 		FailsafePolicies: policies,
-// 		Upstreams:        []*upstream.PreparedUpstream{pup1, pup2},
-// 		failsafeExecutor: failsafe.NewExecutor(policies...),
-// 	}
+	if err != nil {
+		t.Errorf("Expected nil error, got %v", err)
+	}
 
-// 	respWriter := httptest.NewRecorder()
-// 	fakeReq := upstream.NewNormalizedRequest(requestBytes)
-// 	err = ntw.Forward(ctx, fakeReq, respWriter)
+	resp := respWriter.Result()
 
-// 	if len(gock.Pending()) > 0 {
-// 		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
-// 		for _, pending := range gock.Pending() {
-// 			t.Errorf("Pending mock: %v", pending)
-// 		}
-// 	} else {
-// 		t.Logf("All mocks consumed")
-// 	}
+	if resp.StatusCode != 200 {
+		t.Errorf("Expected status 200, got %v", resp.StatusCode)
+	}
 
-// 	if err != nil {
-// 		t.Errorf("Expected nil error, got %v", err)
-// 	}
-
-// 	resp := respWriter.Result()
-
-// 	if resp.StatusCode != 200 {
-// 		t.Errorf("Expected status 200, got %v", resp.StatusCode)
-// 	}
-
-// 	var respObject map[string]interface{}
-// 	body, err := io.ReadAll(resp.Body)
-// 	if err != nil {
-// 		t.Fatalf("error reading response: %s", err)
-// 	}
-// 	err = json.Unmarshal(body, &respObject)
-// 	if err != nil {
-// 		t.Fatalf("error unmarshalling: %s response body: %s", err, body)
-// 	}
-// 	if respObject["fromHost"] != "rpc1" {
-// 		t.Errorf("Expected fromHost to be %v, got %v", "rpc1", respObject["fromHost"])
-// 	}
-// }
+	var respObject map[string]interface{}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("error reading response: %s", err)
+	}
+	err = json.Unmarshal(body, &respObject)
+	if err != nil {
+		t.Fatalf("error unmarshalling: %s response body: %s", err, body)
+	}
+	if respObject["fromHost"] != "rpc2" {
+		t.Errorf("Expected fromHost to be %v, got %v", "rpc2", respObject["fromHost"])
+	}
+}

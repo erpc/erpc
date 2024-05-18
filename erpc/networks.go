@@ -58,7 +58,6 @@ func (r *ProjectsRegistry) NewNetwork(logger zerolog.Logger, prjCfg *config.Proj
 
 	return preparedNetworks[key], nil
 }
-
 func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedRequest, w http.ResponseWriter) error {
 	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
 
@@ -69,56 +68,83 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 	}
 
 	var errorsByUpstream = []error{}
-	for _, u := range n.Upstreams {
+
+	// Function to prepare and forward the request to an upstream
+	tryForward := func(u *upstream.PreparedUpstream) (skipped bool, err error) {
 		lg := u.Logger.With().Str("network", n.NetworkId).Logger()
 		if u.Score < 0 {
 			lg.Debug().Msgf("skipping upstream with negative score %f", u.Score)
-			continue
+			return true, nil
 		}
 
-		pr, errPrep := u.PrepareRequest(req)
-		lg.Debug().Err(errPrep).Msgf("prepared request: %v", pr)
-		if pr == nil && errPrep == nil {
-			continue
+		pr, err := u.PrepareRequest(req)
+		lg.Debug().Err(err).Msgf("prepared request: %v", pr)
+		if pr == nil && err == nil {
+			return true, nil
 		}
-		if errPrep != nil {
-			errorsByUpstream = append(errorsByUpstream, errPrep)
-			continue
-		}
-
-		var forwardErr error
-
-		if n.FailsafePolicies == nil || len(n.FailsafePolicies) == 0 {
-			lg.Debug().Msgf("forwarding request to upstream without any failsafe policy")
-			forwardErr = n.forwardToUpstream(u, context.Background(), pr, w)
-			if !common.IsNull(forwardErr) {
-				lg.Debug().Err(forwardErr).Msgf("forward errored for upstream without any failsafe policy")
-			}
-		} else {
-			_, execErr := n.Executor().GetWithExecution(func(exec failsafe.Execution[interface{}]) (interface{}, error) {
-				lg.Debug().Int("attempts", exec.Attempts()).Msgf("forwarding request to upstream")
-				err := n.forwardToUpstream(u, exec.Context(), pr, w)
-				if !common.IsNull(err) {
-					lg.Debug().Err(err).Msgf("forward errored for upstream")
-				}
-				return nil, err
-			})
-			if execErr != nil {
-				forwardErr = resiliency.TranslateFailsafeError(execErr)
-			}
+		if err != nil {
+			return false, err
 		}
 
-		if forwardErr == nil {
-			lg.Info().Msgf("successfully forward request")
-			return nil
-		} else {
-			lg.Debug().Err(forwardErr).Msgf("failed to forward request")
+		err = n.forwardToUpstream(u, context.Background(), pr, w)
+		if !common.IsNull(err) {
+			return false, err
 		}
 
-		errorsByUpstream = append(errorsByUpstream, forwardErr)
+		lg.Info().Msgf("successfully forward request")
+		return false, nil
 	}
 
-	return common.NewErrUpstreamsExhausted(errorsByUpstream)
+	if n.FailsafePolicies == nil || len(n.FailsafePolicies) == 0 {
+		// Handling via simple loop over upstreams until one responds
+		for _, u := range n.Upstreams {
+			if _, err := tryForward(u); err != nil {
+				errorsByUpstream = append(errorsByUpstream, err)
+				continue
+			}
+			return nil
+		}
+
+		return common.NewErrUpstreamsExhausted(errorsByUpstream)
+	}
+
+	// Handling when FailsafePolicies are defined
+	i := 0
+	_, execErr := n.Executor().GetWithExecution(func(exec failsafe.Execution[interface{}]) (interface{}, error) {
+		n.Logger.Debug().Msgf("executing forward current index: %d", i)
+
+		// We should try all upstreams at least once, but using "i" we make sure
+		// across different executions we pick up next upstream vs retrying the same upstream.
+		// This mimicks a round-robin behavior.
+		// Upstream-level retry is handled by the upstream itself (and its own failsafe policies).
+		ln := len(n.Upstreams)
+		for count := 0; count < ln; count++ {
+			u := n.Upstreams[i]
+			i++
+			if i >= ln {
+				i = 0
+			}
+			n.Logger.Debug().Msgf("executing forward to upstream: %s next index: %d", u.Id, i)
+
+			skipped, err := tryForward(u)
+			n.Logger.Debug().Err(err).Msgf("forwarded request to upstream %s skipped: %v err: %v", u.Id, skipped, err)
+			if !skipped {
+				return nil, err
+			} else if err != nil {
+				errorsByUpstream = append(errorsByUpstream, err)
+
+				continue
+			}
+		}
+
+		return nil, common.NewErrUpstreamsExhausted(errorsByUpstream)
+	})
+
+	if execErr != nil {
+		return resiliency.TranslateFailsafeError(execErr)
+	}
+
+	return nil
 }
 
 func (n *PreparedNetwork) Executor() failsafe.Executor[interface{}] {

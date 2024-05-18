@@ -20,16 +20,16 @@ func CreateFailSafePolicies(component string, fsCfg *config.FailsafeConfig) ([]f
 		return policies, nil
 	}
 
-	if fsCfg.Hedge != nil {
-		p, err := createHegePolicy(component, fsCfg.Hedge)
+	if fsCfg.Retry != nil {
+		p, err := createRetryPolicy(component, fsCfg.Retry)
 		if err != nil {
 			return nil, err
 		}
 		policies = append(policies, p)
 	}
 
-	if fsCfg.Retry != nil {
-		p, err := createRetryPolicy(component, fsCfg.Retry)
+	if fsCfg.Hedge != nil {
+		p, err := createHegePolicy(component, fsCfg.Hedge)
 		if err != nil {
 			return nil, err
 		}

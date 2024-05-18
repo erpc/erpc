@@ -13,12 +13,12 @@ func IsNull(err interface{}) bool {
 		return true
 	}
 
-	baseErr, ok := err.(*BaseError)
-	if !ok {
-		return true
+	var be *BaseError
+	if errors.As(err.(error), &be) {
+		return be.Code == ""
 	}
 
-	return baseErr == nil || baseErr.Code == ""
+	return err == nil
 }
 
 //
