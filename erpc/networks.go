@@ -68,7 +68,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 		return err
 	}
 
-	var errorsByUpstream = make(map[string]error)
+	var errorsByUpstream = []error{}
 	for _, u := range n.Upstreams {
 		lg := u.Logger.With().Str("network", n.NetworkId).Logger()
 		if u.Score < 0 {
@@ -82,7 +82,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 			continue
 		}
 		if errPrep != nil {
-			errorsByUpstream[u.Id] = errPrep
+			errorsByUpstream = append(errorsByUpstream, errPrep)
 			continue
 		}
 
@@ -115,7 +115,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 			lg.Debug().Err(forwardErr).Msgf("failed to forward request")
 		}
 
-		errorsByUpstream[u.Id] = forwardErr
+		errorsByUpstream = append(errorsByUpstream, forwardErr)
 	}
 
 	return common.NewErrUpstreamsExhausted(errorsByUpstream)

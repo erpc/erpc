@@ -2,6 +2,7 @@ package common
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/flair-sdk/erpc/config"
@@ -217,14 +218,15 @@ var NewErrUpstreamMalformedResponse = func(cause error, upstreamId string) error
 
 type ErrUpstreamsExhausted struct{ BaseError }
 
-var NewErrUpstreamsExhausted = func(errors map[string]error) error {
+var NewErrUpstreamsExhausted = func(ers []error) error {
 	return &ErrUpstreamsExhausted{
 		BaseError{
 			Code:    "ErrUpstreamsExhausted",
 			Message: "all available upstreams have been exhausted",
-			Details: map[string]interface{}{
-				"errors": errors,
-			},
+			Cause:  errors.Join(ers...),
+			// Details: map[string]interface{}{
+			// 	"errors": errors,
+			// },
 		},
 	}
 }
@@ -387,6 +389,53 @@ var NewErrFailsafeConfiguration = func(cause error, details map[string]interface
 			Message: "failed to configure failsafe policy",
 			Cause:   cause,
 			Details: details,
+		},
+	}
+}
+
+type ErrFailsafeTimeoutExceeded struct{ BaseError }
+
+var NewErrFailsafeTimeoutExceeded = func(cause error) error {
+	return &ErrFailsafeTimeoutExceeded{
+		BaseError{
+			Code:    "ErrFailsafeTimeoutExceeded",
+			Message: "failsafe timeout policy exceeded",
+			Cause:   cause,
+		},
+	}
+}
+
+func (e *ErrFailsafeTimeoutExceeded) ErrorStatusCode() int {
+	return 504
+}
+
+type ErrFailsafeRetryExceeded struct{ BaseError }
+
+var NewErrFailsafeRetryExceeded = func(cause error, lastResult interface{}) error {
+	return &ErrFailsafeRetryExceeded{
+		BaseError{
+			Code:    "ErrFailsafeRetryExceeded",
+			Message: "failsafe retry policy exceeded",
+			Cause:   cause,
+			Details: map[string]interface{}{
+				"lastResult": lastResult,
+			},
+		},
+	}
+}
+
+func (e *ErrFailsafeRetryExceeded) ErrorStatusCode() int {
+	return 503
+}
+
+type ErrFailsafeUnexpected struct{ BaseError }
+
+var NewErrFailsafeUnexpected = func(cause error) error {
+	return &ErrFailsafeUnexpected{
+		BaseError{
+			Code:    "ErrFailsafeUnexpected",
+			Message: "unexpected failsafe error type encountered",
+			Cause:   cause,
 		},
 	}
 }

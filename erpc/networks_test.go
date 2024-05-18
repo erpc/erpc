@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/flair-sdk/erpc/common"
@@ -292,5 +293,165 @@ func TestPreparedNetwork_ForwardRetryFailuresWithSuccess(t *testing.T) {
 	}
 	if respObject["hash"] != "0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9" {
 		t.Errorf("Expected %v, got %v", "0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9", respObject["hash"])
+	}
+}
+
+func TestPreparedNetwork_ForwardTimeoutPolicyFail(t *testing.T) {
+	defer gock.Disable()
+	defer gock.DisableNetworking()
+	defer gock.DisableNetworkingFilters()
+
+	gock.EnableNetworking()
+
+	// Register a networking filter
+	gock.NetworkingFilter(func(req *http.Request) bool {
+		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
+		return shouldMakeRealCall
+	})
+
+	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
+
+	gock.New("http://google.com").
+		Post("").
+		Reply(200).
+		Delay(100 * time.Millisecond).
+		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
+
+	ctx := context.Background()
+	clr := upstream.NewClientRegistry()
+	fsCfg := &config.FailsafeConfig{
+		Timeout: &config.TimeoutPolicyConfig{
+			Duration: "30ms",
+		},
+	}
+	policies, err := resiliency.CreateFailSafePolicies("eth_getBlockByNumber", fsCfg)
+	if err != nil {
+		t.Error(err)
+	}
+	pup := &upstream.PreparedUpstream{
+		Logger:       log.Logger,
+		Id:           "test",
+		Endpoint:     "http://google.com",
+		Architecture: upstream.ArchitectureEvm,
+		Metadata: map[string]string{
+			"evmChainId": "123",
+		},
+		NetworkIds: []string{"123"},
+	}
+	cl, err := clr.GetOrCreateClient(pup)
+	if err != nil {
+		t.Error(err)
+	}
+	pup.Client = cl
+	ntw := &PreparedNetwork{
+		Logger:    log.Logger,
+		NetworkId: "123",
+		Config: &config.NetworkConfig{
+			Failsafe: fsCfg,
+		},
+		FailsafePolicies: policies,
+		Upstreams:        []*upstream.PreparedUpstream{pup},
+		failsafeExecutor: failsafe.NewExecutor(policies...),
+	}
+
+	respWriter := httptest.NewRecorder()
+	fakeReq := upstream.NewNormalizedRequest(requestBytes)
+	err = ntw.Forward(ctx, fakeReq, respWriter)
+
+	if len(gock.Pending()) > 0 {
+		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
+		for _, pending := range gock.Pending() {
+			t.Errorf("Pending mock: %v", pending)
+		}
+	}
+
+	if err == nil {
+		t.Errorf("Expected error, got %v", err)
+	}
+
+	var e *common.ErrFailsafeTimeoutExceeded
+	if !errors.As(err, &e) {
+		t.Errorf("Expected %v, got %v", "ErrFailsafeTimeoutExceeded", err)
+	} else {
+		t.Logf("Got expected error: %v", err)
+	}
+}
+
+func TestPreparedNetwork_ForwardTimeoutPolicyPass(t *testing.T) {
+	defer gock.Disable()
+	defer gock.DisableNetworking()
+	defer gock.DisableNetworkingFilters()
+
+	gock.EnableNetworking()
+
+	// Register a networking filter
+	gock.NetworkingFilter(func(req *http.Request) bool {
+		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
+		return shouldMakeRealCall
+	})
+
+	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
+
+	gock.New("http://google.com").
+		Post("").
+		Reply(200).
+		Delay(100 * time.Millisecond).
+		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
+
+	ctx := context.Background()
+	clr := upstream.NewClientRegistry()
+	fsCfg := &config.FailsafeConfig{
+		Timeout: &config.TimeoutPolicyConfig{
+			Duration: "1s",
+		},
+	}
+	policies, err := resiliency.CreateFailSafePolicies("eth_getBlockByNumber", fsCfg)
+	if err != nil {
+		t.Error(err)
+	}
+	pup := &upstream.PreparedUpstream{
+		Logger:       log.Logger,
+		Id:           "test",
+		Endpoint:     "http://google.com",
+		Architecture: upstream.ArchitectureEvm,
+		Metadata: map[string]string{
+			"evmChainId": "123",
+		},
+		NetworkIds: []string{"123"},
+	}
+	cl, err := clr.GetOrCreateClient(pup)
+	if err != nil {
+		t.Error(err)
+	}
+	pup.Client = cl
+	ntw := &PreparedNetwork{
+		Logger:    log.Logger,
+		NetworkId: "123",
+		Config: &config.NetworkConfig{
+			Failsafe: fsCfg,
+		},
+		FailsafePolicies: policies,
+		Upstreams:        []*upstream.PreparedUpstream{pup},
+		failsafeExecutor: failsafe.NewExecutor(policies...),
+	}
+
+	respWriter := httptest.NewRecorder()
+	fakeReq := upstream.NewNormalizedRequest(requestBytes)
+	err = ntw.Forward(ctx, fakeReq, respWriter)
+
+	if len(gock.Pending()) > 0 {
+		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
+		for _, pending := range gock.Pending() {
+			t.Errorf("Pending mock: %v", pending)
+		}
+	}
+
+	if err != nil {
+		t.Errorf("Expected nil error, got %v", err)
+	}
+
+	var e *common.ErrFailsafeTimeoutExceeded
+	if errors.As(err, &e) {
+		t.Errorf("Did not expect %v", "ErrFailsafeTimeoutExceeded")
 	}
 }
