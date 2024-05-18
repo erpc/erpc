@@ -3,6 +3,8 @@ package upstream
 import (
 	"testing"
 	"time"
+
+	"github.com/flair-sdk/erpc/config"
 )
 
 func TestUpstreamsRegistry_UpstreamALowerLatencyHigherErroRateUpstreamBHigherLatencyLowerErrorRate(t *testing.T) {
@@ -35,8 +37,14 @@ func TestUpstreamsRegistry_UpstreamALowerLatencyHigherErroRateUpstreamBHigherLat
 			LastCollect:    time.Now(),
 		},
 	}
+	gp := &config.HealthCheckGroupConfig{
+		Id:                  "test_group",
+		MaxErrorRatePercent: 10,
+		MaxP90Latency:       "1s",
+		MaxBlocksLag:        10,
+	}
 
-	registry.refreshUpstreamGroupScores("test", map[string]*PreparedUpstream{
+	registry.refreshUpstreamGroupScores(gp, map[string]*PreparedUpstream{
 		"upstreamA": upA,
 		"upstreamB": upB,
 	})

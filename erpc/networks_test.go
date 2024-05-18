@@ -677,3 +677,108 @@ func TestPreparedNetwork_ForwardHedgePolicyNotTriggered(t *testing.T) {
 		t.Errorf("Expected fromHost to be %v, got %v", "rpc2", respObject["fromHost"])
 	}
 }
+
+func TestPreparedNetwork_ForwardHedgePolicyIgnoresNegativeScoreUpstream(t *testing.T) {
+	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
+
+	gock.New("http://google.com").
+		Post("").
+		Times(3).
+		Reply(200).
+		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`)).
+		Delay(300 * time.Millisecond)
+
+	log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
+
+	ctx := context.Background()
+	clr := upstream.NewClientRegistry()
+	fsCfg := &config.FailsafeConfig{
+		Hedge: &config.HedgePolicyConfig{
+			Delay:    "100ms",
+			MaxCount: 3,
+		},
+	}
+	policies, err := resiliency.CreateFailSafePolicies("eth_getBlockByNumber", fsCfg)
+	if err != nil {
+		t.Error(err)
+	}
+	pup1 := &upstream.PreparedUpstream{
+		Logger:       log.Logger,
+		Id:           "rpc1",
+		Endpoint:     "http://google.com",
+		Architecture: upstream.ArchitectureEvm,
+		Metadata: map[string]string{
+			"evmChainId": "123",
+		},
+		NetworkIds: []string{"123"},
+	}
+	cl1, err := clr.GetOrCreateClient(pup1)
+	if err != nil {
+		t.Error(err)
+	}
+	pup1.Client = cl1
+	pup2 := &upstream.PreparedUpstream{
+		Logger:       log.Logger,
+		Id:           "rpc2",
+		Endpoint:     "http://alchemy.com",
+		Architecture: upstream.ArchitectureEvm,
+		Metadata: map[string]string{
+			"evmChainId": "123",
+		},
+		NetworkIds: []string{"123"},
+		Score:      -1,
+	}
+	cl2, err := clr.GetOrCreateClient(pup2)
+	if err != nil {
+		t.Error(err)
+	}
+	pup2.Client = cl2
+
+	ntw := &PreparedNetwork{
+		Logger:    log.Logger,
+		NetworkId: "123",
+		Config: &config.NetworkConfig{
+			Failsafe: fsCfg,
+		},
+		FailsafePolicies: policies,
+		Upstreams:        []*upstream.PreparedUpstream{pup1, pup2},
+		failsafeExecutor: failsafe.NewExecutor(policies...),
+	}
+
+	respWriter := httptest.NewRecorder()
+	fakeReq := upstream.NewNormalizedRequest(requestBytes)
+	err = ntw.Forward(ctx, fakeReq, respWriter)
+
+	if len(gock.Pending()) > 0 {
+		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
+		for _, pending := range gock.Pending() {
+			t.Errorf("Pending mock: %v", pending)
+		}
+	} else {
+		t.Logf("All mocks consumed")
+	}
+
+	if err != nil {
+		t.Errorf("Expected nil error, got %v", err)
+	}
+
+	resp := respWriter.Result()
+
+	if resp.StatusCode != 200 {
+		t.Errorf("Expected status 200, got %v", resp.StatusCode)
+	}
+
+	var respObject map[string]interface{}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("error reading response: %s", err)
+	}
+
+	err = json.Unmarshal(body, &respObject)
+	if err != nil {
+		t.Fatalf("error unmarshalling: %s response body: %s", err, body)
+	}
+	if respObject["fromHost"] != "rpc1" {
+		t.Errorf("Expected fromHost to be %v, got %v", "rpc1", respObject["fromHost"])
+	}
+}

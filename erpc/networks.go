@@ -132,7 +132,6 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 				return nil, err
 			} else if err != nil {
 				errorsByUpstream = append(errorsByUpstream, err)
-
 				continue
 			}
 		}

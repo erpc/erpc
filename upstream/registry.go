@@ -101,12 +101,12 @@ func (u *UpstreamsRegistry) scheduleHealthCheckTimers() error {
 		}
 		log.Debug().Str("healthCheckGroup", healthGroupId).Dur("interval", checkIntervalDuration).Msgf("scheduling health check timer")
 
-		go func(healthGroupId string, checkIntervalDuration time.Duration) {
+		go func(healthCheckGroup *config.HealthCheckGroupConfig, checkIntervalDuration time.Duration) {
 			for {
-				u.refreshUpstreamGroupScores(healthGroupId, u.upstreamsMapByHealthGroup[healthGroupId])
+				u.refreshUpstreamGroupScores(healthCheckGroup, u.upstreamsMapByHealthGroup[healthGroupId])
 				time.Sleep(time.Duration(checkIntervalDuration))
 			}
-		}(healthGroupId, checkIntervalDuration)
+		}(healthCheckGroup, checkIntervalDuration)
 	}
 
 	return nil
@@ -142,8 +142,8 @@ func (u *UpstreamsRegistry) GetUpstreamsByProject(projectId string) ([]*Prepared
 }
 
 // Proactively update the health information of upstreams of a project/network and reorder them so the highest performing upstreams are at the top
-func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupId string, upstreams map[string]*PreparedUpstream) error {
-	log.Debug().Str("healthCheckGroup", healthGroupId).Msgf("refreshing upstreams scores")
+func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *config.HealthCheckGroupConfig, upstreams map[string]*PreparedUpstream) error {
+	log.Debug().Str("healthCheckGroup", healthGroupCfg.Id).Msgf("refreshing upstreams scores")
 
 	var p90Latencies, errorRates, totalRequests, throttledRates, blockLags []float64
 	var changedProjectAndNetworks map[string]map[string]bool = make(map[string]map[string]bool)
@@ -197,7 +197,7 @@ func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupId string, ups
 			// Higher score for lower block lag
 			upstream.Score += (1 - normBlockLags[i]) * 2
 
-			log.Debug().Str("healthCheckGroup", healthGroupId).Str("upstream", upstream.Id).Float64("score", upstream.Score).Msgf("refreshed score")
+			log.Debug().Str("healthCheckGroup", healthGroupCfg.Id).Str("upstream", upstream.Id).Float64("score", upstream.Score).Msgf("refreshed score")
 			i++
 		}
 	}
