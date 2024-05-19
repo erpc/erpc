@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -79,7 +80,7 @@ func (u *PreparedUpstream) PrepareRequest(normalizedReq *NormalizedRequest) (int
 	}
 }
 
-func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req interface{}, w http.ResponseWriter, wl *sync.Mutex) error {
+func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req interface{}, w http.ResponseWriter, wmu *sync.Mutex) error {
 	clientType := u.Client.GetType()
 
 	switch clientType {
@@ -131,12 +132,14 @@ func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req in
 		lg.Debug().Err(errCall).Msgf("upstream call result received: %v", resp)
 
 		if errCall != nil {
-			health.MetricUpstreamRequestErrors.WithLabelValues(
-				u.ProjectId,
-				networkId,
-				u.Id,
-				category,
-			).Inc()
+			if !errors.Is(errCall, context.DeadlineExceeded) {
+				health.MetricUpstreamRequestErrors.WithLabelValues(
+					u.ProjectId,
+					networkId,
+					u.Id,
+					category,
+				).Inc()
+			}
 
 			return common.NewErrUpstreamRequest(
 				errCall,
@@ -158,7 +161,7 @@ func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req in
 			)
 		}
 
-		if wl.TryLock() {
+		if wmu.TryLock() {
 			w.Header().Add("Content-Type", "application/json")
 			w.Header().Add("X-ERPC-Upstream", u.Id)
 			w.Header().Add("X-ERPC-Network", networkId)

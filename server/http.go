@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
@@ -55,7 +56,9 @@ func NewHttpServer(cfg *config.ServerConfig, erpc *erpc.ERPC) *HttpServer {
 		nq := upstream.NewNormalizedRequest(body)
 		project, err := erpc.GetProject(projectId)
 		if err == nil {
-			err = project.Forward(r.Context(), networkId, nq, w)
+			// This mutex is used when multiple upstreams are tried in parallel (e.g. when Hedge failsafe policy is used)
+			writeMu := &sync.Mutex{}
+			err = project.Forward(r.Context(), networkId, nq, w, writeMu)
 		}
 
 		if err != nil {

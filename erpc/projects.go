@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"net/http"
+	"sync"
 
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/flair-sdk/erpc/common"
@@ -121,7 +122,7 @@ func (p *PreparedProject) GetNetwork(networkId string) (*PreparedNetwork, error)
 	return network, nil
 }
 
-func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *upstream.NormalizedRequest, w http.ResponseWriter) error {
+func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *upstream.NormalizedRequest, w http.ResponseWriter, wmu *sync.Mutex) error {
 	network, err := p.GetNetwork(networkId)
 	if err != nil {
 		return err
@@ -129,11 +130,11 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *ups
 
 	if network.FailsafePolicies == nil || len(network.FailsafePolicies) == 0 {
 		p.Logger.Debug().Msgf("forwarding request to network with no retries")
-		err = network.Forward(ctx, nq, w)
+		err = network.Forward(ctx, nq, w, wmu)
 	} else {
 		_, execErr := network.Executor().WithContext(ctx).GetWithExecution(func(exec failsafe.Execution[interface{}]) (interface{}, error) {
 			p.Logger.Debug().Int("attempts", exec.Attempts()).Msgf("forwarding request to network")
-			err = network.Forward(exec.Context(), nq, w)
+			err = network.Forward(exec.Context(), nq, w, wmu)
 			return nil, err
 		})
 		if execErr != nil {

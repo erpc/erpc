@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -59,10 +60,12 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 	var lastErr error
 	var lastFakeRespWriter *httptest.ResponseRecorder
 
+	wmu := &sync.Mutex{}
+
 	for i := 0; i < 5; i++ {
 		lastFakeRespWriter = &httptest.ResponseRecorder{}
 		fakeReq := upstream.NewNormalizedRequest([]byte(`{"method": "eth_chainId","params":[]}`))
-		lastErr = ntw.Forward(ctx, fakeReq, lastFakeRespWriter)
+		lastErr = ntw.Forward(ctx, fakeReq, lastFakeRespWriter, wmu)
 	}
 
 	var e *common.ErrNetworkRateLimitRuleExceeded
@@ -110,10 +113,12 @@ func TestPreparedNetwork_ForwardNotRateLimitedOnNetworkLevel(t *testing.T) {
 	var lastErr error
 	var lastFakeRespWriter *httptest.ResponseRecorder
 
+	wmu := &sync.Mutex{}
+
 	for i := 0; i < 10; i++ {
 		lastFakeRespWriter = &httptest.ResponseRecorder{}
 		fakeReq := upstream.NewNormalizedRequest([]byte(`{"method": "eth_chainId","params":[]}`))
-		lastErr = ntw.Forward(ctx, fakeReq, lastFakeRespWriter)
+		lastErr = ntw.Forward(ctx, fakeReq, lastFakeRespWriter, wmu)
 	}
 
 	var e *common.ErrNetworkRateLimitRuleExceeded
@@ -187,7 +192,7 @@ func TestPreparedNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 
 	respWriter := &httptest.ResponseRecorder{}
 	fakeReq := upstream.NewNormalizedRequest(requestBytes)
-	err = ntw.Forward(ctx, fakeReq, respWriter)
+	err = ntw.Forward(ctx, fakeReq, respWriter, &sync.Mutex{})
 
 	if len(gock.Pending()) > 0 {
 		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
@@ -271,7 +276,7 @@ func TestPreparedNetwork_ForwardRetryFailuresWithSuccess(t *testing.T) {
 
 	respWriter := httptest.NewRecorder()
 	fakeReq := upstream.NewNormalizedRequest(requestBytes)
-	err = ntw.Forward(ctx, fakeReq, respWriter)
+	err = ntw.Forward(ctx, fakeReq, respWriter, &sync.Mutex{})
 
 	if len(gock.Pending()) > 0 {
 		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
@@ -367,7 +372,7 @@ func TestPreparedNetwork_ForwardTimeoutPolicyFail(t *testing.T) {
 
 	respWriter := httptest.NewRecorder()
 	fakeReq := upstream.NewNormalizedRequest(requestBytes)
-	err = ntw.Forward(ctx, fakeReq, respWriter)
+	err = ntw.Forward(ctx, fakeReq, respWriter, &sync.Mutex{})
 
 	if len(gock.Pending()) > 0 {
 		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
@@ -450,7 +455,7 @@ func TestPreparedNetwork_ForwardTimeoutPolicyPass(t *testing.T) {
 
 	respWriter := httptest.NewRecorder()
 	fakeReq := upstream.NewNormalizedRequest(requestBytes)
-	err = ntw.Forward(ctx, fakeReq, respWriter)
+	err = ntw.Forward(ctx, fakeReq, respWriter, &sync.Mutex{})
 
 	if len(gock.Pending()) > 0 {
 		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
@@ -554,7 +559,7 @@ func TestPreparedNetwork_ForwardHedgePolicyTriggered(t *testing.T) {
 
 	respWriter := httptest.NewRecorder()
 	fakeReq := upstream.NewNormalizedRequest(requestBytes)
-	err = ntw.Forward(ctx, fakeReq, respWriter)
+	err = ntw.Forward(ctx, fakeReq, respWriter, &sync.Mutex{})
 
 	if len(gock.Pending()) > 0 {
 		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
@@ -664,7 +669,7 @@ func TestPreparedNetwork_ForwardHedgePolicyNotTriggered(t *testing.T) {
 
 	respWriter := httptest.NewRecorder()
 	fakeReq := upstream.NewNormalizedRequest(requestBytes)
-	err = ntw.Forward(ctx, fakeReq, respWriter)
+	err = ntw.Forward(ctx, fakeReq, respWriter, &sync.Mutex{})
 
 	if len(gock.Pending()) > 0 {
 		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
@@ -772,7 +777,7 @@ func TestPreparedNetwork_ForwardHedgePolicyIgnoresNegativeScoreUpstream(t *testi
 
 	respWriter := httptest.NewRecorder()
 	fakeReq := upstream.NewNormalizedRequest(requestBytes)
-	err = ntw.Forward(ctx, fakeReq, respWriter)
+	err = ntw.Forward(ctx, fakeReq, respWriter, &sync.Mutex{})
 
 	time.Sleep(50 * time.Millisecond)
 

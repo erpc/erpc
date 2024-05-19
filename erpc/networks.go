@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 
@@ -59,7 +60,7 @@ func (r *ProjectsRegistry) NewNetwork(logger zerolog.Logger, prjCfg *config.Proj
 
 	return preparedNetworks[key], nil
 }
-func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedRequest, w http.ResponseWriter) error {
+func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedRequest, w http.ResponseWriter, wmu *sync.Mutex) error {
 	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
 
 	// TODO check if request exists in the hot, warm, or cold cache
@@ -70,14 +71,11 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 
 	var errorsByUpstream = []error{}
 
-	// This mutex is used when multiple upstreams are tried in parallel (e.g. when Hedge failsafe policy is used)
-	writeLock := &sync.Mutex{}
-
 	// Function to prepare and forward the request to an upstream
 	tryForward := func(
 		u *upstream.PreparedUpstream,
 		ctx context.Context,
-		wl *sync.Mutex,
+		wmu *sync.Mutex,
 	) (skipped bool, err error) {
 		lg := u.Logger.With().Str("network", n.NetworkId).Logger()
 		if u.Score < 0 {
@@ -94,7 +92,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 			return false, err
 		}
 
-		err = n.forwardToUpstream(u, ctx, pr, w, wl)
+		err = n.forwardToUpstream(u, ctx, pr, w, wmu)
 		if !common.IsNull(err) {
 			return false, err
 		}
@@ -106,7 +104,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 	if n.FailsafePolicies == nil || len(n.FailsafePolicies) == 0 {
 		// Handling via simple loop over upstreams until one responds
 		for _, u := range n.Upstreams {
-			if _, err := tryForward(u, ctx, writeLock); err != nil {
+			if _, err := tryForward(u, ctx, wmu); err != nil {
 				errorsByUpstream = append(errorsByUpstream, err)
 				continue
 			}
@@ -136,7 +134,12 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 			mtx.Unlock()
 			n.Logger.Debug().Msgf("executing forward to upstream: %s", u.Id)
 
-			skipped, err := tryForward(u, exec.Context(), writeLock)
+			skipped, err := tryForward(u, exec.Context(), wmu)
+			if err != nil && errors.Is(err, context.DeadlineExceeded) && exec.Hedges() > 0 {
+				n.Logger.Debug().Err(err).Msgf("hedged request to upstream %s skipped: %v", u.Id, skipped)
+				return nil, err
+			}
+
 			n.Logger.Debug().Err(err).Msgf("forwarded request to upstream %s skipped: %v err: %v", u.Id, skipped, err)
 			if !skipped {
 				return nil, err
@@ -210,7 +213,7 @@ func (n *PreparedNetwork) forwardToUpstream(
 	ctx context.Context,
 	r interface{},
 	w http.ResponseWriter,
-	wl *sync.Mutex,
+	wmu *sync.Mutex,
 ) error {
 	var category string = ""
 	if jrr, ok := r.(*upstream.JsonRpcRequest); ok {
@@ -230,5 +233,5 @@ func (n *PreparedNetwork) forwardToUpstream(
 	))
 	defer timer.ObserveDuration()
 
-	return thisUpstream.Forward(ctx, n.NetworkId, r, w, wl)
+	return thisUpstream.Forward(ctx, n.NetworkId, r, w, wmu)
 }

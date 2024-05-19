@@ -174,9 +174,9 @@ projects:
 	args := []string{"erpc-test", cfg.Name()}
 
 	shutdown, err := Init(log.With().Logger(), fs, args)
-	if shutdown != nil {
-		defer shutdown()
-	}
+	if shutdown != nil { defer shutdown() }
+	time.Sleep(1000 * time.Millisecond)
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,9 +244,8 @@ func TestInit_InvalidConfig(t *testing.T) {
 	args := []string{"erpc-test", cfg.Name()}
 
 	shutdown, err := Init(log.With().Logger(), fs, args)
-	if shutdown != nil {
-		defer shutdown()
-	}
+	if shutdown != nil { defer shutdown() }
+	time.Sleep(1000 * time.Millisecond)
 
 	if err == nil {
 		t.Fatal("expected an error, got nil")
@@ -262,9 +261,8 @@ func TestInit_ConfigFileDoesNotExist(t *testing.T) {
 	args := []string{"erpc-test", "non-existent-file.yaml"}
 
 	shutdown, err := Init(log.With().Logger(), fs, args)
-	if shutdown != nil {
-		defer shutdown()
-	}
+	if shutdown != nil { defer shutdown() }
+	time.Sleep(1000 * time.Millisecond)
 
 	if err == nil {
 		t.Fatal("expected an error, got nil")
@@ -288,8 +286,8 @@ logLevel: invalid
 	args := []string{"erpc-test", cfg.Name()}
 
 	shutdown, err := Init(log.With().Logger(), fs, args)
-	shutdown()
-	time.Sleep(300 * time.Millisecond)
+	if shutdown != nil { defer shutdown() }
+	time.Sleep(1000 * time.Millisecond)
 
 	if err != nil {
 		t.Fatal(err)
@@ -330,9 +328,8 @@ projects:
 	args := []string{"erpc-test", cfg.Name()}
 
 	shutdown, err := Init(log.With().Logger(), fs, args)
-	if shutdown != nil {
-		defer shutdown()
-	}
+	if shutdown != nil { defer shutdown() }
+	time.Sleep(1000 * time.Millisecond)
 
 	if err == nil {
 		t.Fatal("expected an error, got nil")
