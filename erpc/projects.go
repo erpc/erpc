@@ -16,7 +16,7 @@ import (
 type PreparedProject struct {
 	Config   *config.ProjectConfig
 	Networks map[string]*PreparedNetwork
-	Logger   zerolog.Logger
+	Logger   *zerolog.Logger
 }
 
 type ProjectsRegistry struct {
@@ -59,9 +59,10 @@ func (r *ProjectsRegistry) NewProject(project *config.ProjectConfig) error {
 	if _, ok := r.preparedProjects[project.Id]; ok {
 		return common.NewErrProjectAlreadyExists(project.Id)
 	}
+	ptr := log.Logger.With().Str("project", project.Id).Logger()
 	pp := &PreparedProject{
 		Config: project,
-		Logger: log.Logger.With().Str("project", project.Id).Logger(),
+		Logger: &ptr,
 	}
 
 	var preparedUpstreams []*upstream.PreparedUpstream

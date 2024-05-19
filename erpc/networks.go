@@ -21,7 +21,7 @@ type PreparedNetwork struct {
 	ProjectId        string
 	FailsafePolicies []failsafe.Policy[any]
 	Config           *config.NetworkConfig
-	Logger           zerolog.Logger
+	Logger           *zerolog.Logger
 	Upstreams        []*upstream.PreparedUpstream
 
 	rateLimitersRegistry *resiliency.RateLimitersRegistry
@@ -30,7 +30,7 @@ type PreparedNetwork struct {
 
 var preparedNetworks map[string]*PreparedNetwork = make(map[string]*PreparedNetwork)
 
-func (r *ProjectsRegistry) NewNetwork(logger zerolog.Logger, prjCfg *config.ProjectConfig, nwCfg *config.NetworkConfig) (*PreparedNetwork, error) {
+func (r *ProjectsRegistry) NewNetwork(logger *zerolog.Logger, prjCfg *config.ProjectConfig, nwCfg *config.NetworkConfig) (*PreparedNetwork, error) {
 	var key = prjCfg.Id + ":" + nwCfg.NetworkId
 
 	if pn, ok := preparedNetworks[key]; ok {
@@ -47,12 +47,13 @@ func (r *ProjectsRegistry) NewNetwork(logger zerolog.Logger, prjCfg *config.Proj
 		policies = pls
 	}
 
+	ptr := logger.With().Str("network", nwCfg.NetworkId).Logger()
 	preparedNetworks[key] = &PreparedNetwork{
 		NetworkId:        nwCfg.NetworkId,
 		ProjectId:        prjCfg.Id,
 		FailsafePolicies: policies,
 		Config:           nwCfg,
-		Logger:           logger.With().Str("network", nwCfg.NetworkId).Logger(),
+		Logger:           &ptr,
 
 		rateLimitersRegistry: r.rateLimitersRegistry,
 		failsafeExecutor:     failsafe.NewExecutor[interface{}](policies...),

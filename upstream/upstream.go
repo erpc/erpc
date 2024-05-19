@@ -171,7 +171,7 @@ func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req in
 
 		method := req.(*JsonRpcRequest).Method
 		lg := u.Logger.With().Str("method", method).Logger()
-		
+
 		if limitersBucket != nil {
 			lg.Trace().Msgf("checking upstream-level rate limiters bucket: %s", u.RateLimitBucket)
 			rules := limitersBucket.GetRulesByMethod(method)
@@ -202,7 +202,7 @@ func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req in
 			req interface{},
 			w http.ResponseWriter,
 			wmu *sync.Mutex,
-		) (error) {
+		) error {
 			resp, errCall := jsonRpcClient.SendRequest(ctx, req.(*JsonRpcRequest))
 
 			lg.Debug().Err(errCall).Msgf("upstream call result received: %v", resp)
@@ -257,7 +257,7 @@ func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req in
 			if execErr != nil {
 				return resiliency.TranslateFailsafeError(execErr)
 			}
-			
+
 			return execErr
 		} else {
 			return tryForward(ctx, req, w, wmu)

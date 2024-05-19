@@ -6,6 +6,7 @@ require (
 	github.com/failsafe-go/failsafe-go v0.6.3
 	github.com/h2non/gock v1.2.0
 	github.com/prometheus/client_golang v1.19.1
+	github.com/redis/go-redis/v9 v9.5.1
 	github.com/rs/zerolog v1.32.0
 	github.com/spf13/afero v1.11.0
 )
@@ -14,6 +15,7 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bits-and-blooms/bitset v1.13.0 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
+	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/h2non/parth v0.0.0-20190131123155-b4df798d6542 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/prometheus/client_model v0.5.0 // indirect

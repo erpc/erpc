@@ -53,6 +53,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 			RateLimitBucket: "MyLimiterBucket_Test1",
 		},
 		rateLimitersRegistry: rateLimitersRegistry,
+		Logger:               &log.Logger,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -105,6 +106,7 @@ func TestPreparedNetwork_ForwardNotRateLimitedOnNetworkLevel(t *testing.T) {
 		Config: &config.NetworkConfig{
 			RateLimitBucket: "MyLimiterBucket_Test2",
 		},
+		Logger:               &log.Logger,
 		rateLimitersRegistry: rateLimitersRegistry,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -180,7 +182,7 @@ func TestPreparedNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 	}
 	pup.Client = cl
 	ntw := &PreparedNetwork{
-		Logger:    log.Logger,
+		Logger:    &log.Logger,
 		NetworkId: "123",
 		Config: &config.NetworkConfig{
 			Failsafe: fsCfg,
@@ -264,7 +266,7 @@ func TestPreparedNetwork_ForwardRetryFailuresWithSuccess(t *testing.T) {
 	}
 	pup.Client = cl
 	ntw := &PreparedNetwork{
-		Logger:    log.Logger,
+		Logger:    &log.Logger,
 		NetworkId: "123",
 		Config: &config.NetworkConfig{
 			Failsafe: fsCfg,
@@ -360,7 +362,7 @@ func TestPreparedNetwork_ForwardTimeoutPolicyFail(t *testing.T) {
 	}
 	pup.Client = cl
 	ntw := &PreparedNetwork{
-		Logger:    log.Logger,
+		Logger:    &log.Logger,
 		NetworkId: "123",
 		Config: &config.NetworkConfig{
 			Failsafe: fsCfg,
@@ -443,7 +445,7 @@ func TestPreparedNetwork_ForwardTimeoutPolicyPass(t *testing.T) {
 	}
 	pup.Client = cl
 	ntw := &PreparedNetwork{
-		Logger:    log.Logger,
+		Logger:    &log.Logger,
 		NetworkId: "123",
 		Config: &config.NetworkConfig{
 			Failsafe: fsCfg,
@@ -547,7 +549,7 @@ func TestPreparedNetwork_ForwardHedgePolicyTriggered(t *testing.T) {
 	pup2.Client = cl2
 
 	ntw := &PreparedNetwork{
-		Logger:    log.Logger,
+		Logger:    &log.Logger,
 		NetworkId: "123",
 		Config: &config.NetworkConfig{
 			Failsafe: fsCfg,
@@ -657,7 +659,7 @@ func TestPreparedNetwork_ForwardHedgePolicyNotTriggered(t *testing.T) {
 	pup2.Client = cl2
 
 	ntw := &PreparedNetwork{
-		Logger:    log.Logger,
+		Logger:    &log.Logger,
 		NetworkId: "123",
 		Config: &config.NetworkConfig{
 			Failsafe: fsCfg,
@@ -765,7 +767,7 @@ func TestPreparedNetwork_ForwardHedgePolicyIgnoresNegativeScoreUpstream(t *testi
 	pup2.Client = cl2
 
 	ntw := &PreparedNetwork{
-		Logger:    log.Logger,
+		Logger:    &log.Logger,
 		NetworkId: "123",
 		Config: &config.NetworkConfig{
 			Failsafe: fsCfg,
@@ -854,8 +856,8 @@ func TestPreparedNetwork_ForwardCBOpensAfterConstantFailure(t *testing.T) {
 		},
 	}
 	pup1, err := upstream.NewUpstream("test_cb", &config.UpstreamConfig{
-		Id: 		 "upstream1",
-		Endpoint:    "http://google.com",
+		Id:           "upstream1",
+		Endpoint:     "http://google.com",
 		Architecture: upstream.ArchitectureEvm,
 		Metadata: map[string]string{
 			"evmChainId": "123",
@@ -868,7 +870,7 @@ func TestPreparedNetwork_ForwardCBOpensAfterConstantFailure(t *testing.T) {
 	}
 
 	ntw := &PreparedNetwork{
-		Logger:    log.Logger,
+		Logger:    &log.Logger,
 		NetworkId: "123",
 		Config: &config.NetworkConfig{
 			NetworkId:    "123",
@@ -947,8 +949,8 @@ func TestPreparedNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
 		},
 	}
 	pup1, err := upstream.NewUpstream("test_cb", &config.UpstreamConfig{
-		Id: 		 "upstream1",
-		Endpoint:    "http://google.com",
+		Id:           "upstream1",
+		Endpoint:     "http://google.com",
 		Architecture: upstream.ArchitectureEvm,
 		Metadata: map[string]string{
 			"evmChainId": "123",
@@ -961,7 +963,7 @@ func TestPreparedNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
 	}
 
 	ntw := &PreparedNetwork{
-		Logger:    log.Logger,
+		Logger:    &log.Logger,
 		NetworkId: "123",
 		Config: &config.NetworkConfig{
 			NetworkId:    "123",
@@ -972,7 +974,7 @@ func TestPreparedNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
 		},
 	}
 
-	for i := 0; i < 4 + 2; i++ {
+	for i := 0; i < 4+2; i++ {
 		respWriter := httptest.NewRecorder()
 		fakeReq := upstream.NewNormalizedRequest(requestBytes)
 		err = ntw.Forward(ctx, fakeReq, respWriter, &sync.Mutex{})
