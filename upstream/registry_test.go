@@ -23,7 +23,7 @@ func TestUpstreamsRegistry_ScoreCalculations(t *testing.T) {
 			},
 			assertions: func(t *testing.T, upstreams map[string]*PreparedUpstream) {
 				if upstreams["upstreamA"].Score != 0 || upstreams["upstreamB"].Score != 0 {
-					t.Errorf("Expected both scores to be zero")
+					t.Errorf("Expected both scores to be zero, got %v and %v", upstreams["upstreamA"].Score, upstreams["upstreamB"].Score)
 				}
 			},
 		},
@@ -35,13 +35,10 @@ func TestUpstreamsRegistry_ScoreCalculations(t *testing.T) {
 			},
 			assertions: func(t *testing.T, upstreams map[string]*PreparedUpstream) {
 				if upstreams["upstreamA"].Score == 0 {
-					t.Errorf("Expected upstream A to have a non-zero score")
+					t.Errorf("Expected upstream A to have a non-zero score, got %v", upstreams["upstreamA"].Score)
 				}
 				if upstreams["upstreamB"].Score != 0 {
-					t.Errorf("Expected upstream B to have a zero score")
-				}
-				if upstreams["upstreamA"].Score <= upstreams["upstreamB"].Score {
-					t.Errorf("Expected upstream A to have a higher score than B")
+					t.Errorf("Expected upstream B to have a zero score, got %v", upstreams["upstreamB"].Score)
 				}
 			},
 		},
@@ -53,31 +50,46 @@ func TestUpstreamsRegistry_ScoreCalculations(t *testing.T) {
 			},
 			assertions: func(t *testing.T, upstreams map[string]*PreparedUpstream) {
 				if upstreams["upstreamA"].Score == 0 {
-					t.Errorf("Expected upstream A to have a non-zero score")
+					t.Errorf("Expected upstream A to have a non-zero score, got %v", upstreams["upstreamA"].Score)
 				}
 				if upstreams["upstreamB"].Score != 0 {
-					t.Errorf("Expected upstream B to have a zero score")
-				}
-				if upstreams["upstreamA"].Score <= upstreams["upstreamB"].Score {
-					t.Errorf("Expected upstream A to have a higher score than B")
+					t.Errorf("Expected upstream B to have a zero score, got %v", upstreams["upstreamB"].Score)
 				}
 			},
 		},
 		{
-			name: "upstream A has higher errorRate and lower latency and upstream B has lower errorRate higher latency, both same amount of requests",
+			name: "Upstream A has higher errorRate and lower latency and upstream B has lower errorRate higher latency, both same amount of requests",
 			upstreams: map[string]*PreparedUpstream{
 				"upstreamA": {Id: "upstreamA", ProjectId: "test_project", NetworkIds: []string{"123"}, Metrics: &UpstreamMetrics{P90Latency: 0.100, ErrorsTotal: 30, RequestsTotal: 50, ThrottledTotal: 0, BlocksLag: 0, LastCollect: time.Now()}},
 				"upstreamB": {Id: "upstreamB", ProjectId: "test_project", NetworkIds: []string{"123"}, Metrics: &UpstreamMetrics{P90Latency: 0.300, ErrorsTotal: 10, RequestsTotal: 50, ThrottledTotal: 0, BlocksLag: 0, LastCollect: time.Now()}},
 			},
 			assertions: func(t *testing.T, upstreams map[string]*PreparedUpstream) {
 				if upstreams["upstreamA"].Score == 0 {
-					t.Errorf("Expected upstream A to have a non-zero score")
+					t.Errorf("Expected upstream A to have a non-zero score, got %v", upstreams["upstreamA"].Score)
 				}
 				if upstreams["upstreamB"].Score == 0 {
-					t.Errorf("Expected upstream B to have a non-zero score")
+					t.Errorf("Expected upstream B to have a non-zero score, got %v", upstreams["upstreamB"].Score)
 				}
 				if upstreams["upstreamA"].Score >= upstreams["upstreamB"].Score {
-					t.Errorf("Expected upstream A to have a lower score than B")
+					t.Errorf("Expected upstream A to have a lower score than B, got A: %v, B: %v", upstreams["upstreamA"].Score, upstreams["upstreamB"].Score)
+				}
+			},
+		},
+		{
+			name: "Upstream A has higher errorRate and lower latency and upstream B has lower errorRate higher latency, A has significantly higher requests recorded",
+			upstreams: map[string]*PreparedUpstream{
+				"upstreamA": {Id: "upstreamA", ProjectId: "test_project", NetworkIds: []string{"123"}, Metrics: &UpstreamMetrics{P90Latency: 0.100, ErrorsTotal: 30, RequestsTotal: 500, ThrottledTotal: 0, BlocksLag: 0, LastCollect: time.Now()}},
+				"upstreamB": {Id: "upstreamB", ProjectId: "test_project", NetworkIds: []string{"123"}, Metrics: &UpstreamMetrics{P90Latency: 0.300, ErrorsTotal: 10, RequestsTotal: 50, ThrottledTotal: 0, BlocksLag: 0, LastCollect: time.Now()}},
+			},
+			assertions: func(t *testing.T, upstreams map[string]*PreparedUpstream) {
+				if upstreams["upstreamA"].Score == 0 {
+					t.Errorf("Expected upstream A to have a non-zero score, got %v", upstreams["upstreamA"].Score)
+				}
+				if upstreams["upstreamB"].Score == 0 {
+					t.Errorf("Expected upstream B to have a non-zero score, got %v", upstreams["upstreamB"].Score)
+				}
+				if upstreams["upstreamA"].Score <= upstreams["upstreamB"].Score {
+					t.Errorf("Expected upstream A to have a higher score than B, got A: %v, B: %v", upstreams["upstreamA"].Score, upstreams["upstreamB"].Score)
 				}
 			},
 		},
