@@ -60,6 +60,7 @@ func (r *ProjectsRegistry) NewNetwork(logger zerolog.Logger, prjCfg *config.Proj
 
 	return preparedNetworks[key], nil
 }
+
 func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedRequest, w http.ResponseWriter, wmu *sync.Mutex) error {
 	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
 
@@ -117,7 +118,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 	// Handling when FailsafePolicies are defined
 	mtx := sync.Mutex{}
 	i := 0
-	_, execErr := n.Executor().WithContext(ctx).GetWithExecution(func(exec failsafe.Execution[interface{}]) (interface{}, error) {
+	_, execErr := n.failsafeExecutor.WithContext(ctx).GetWithExecution(func(exec failsafe.Execution[interface{}]) (interface{}, error) {
 		// We should try all upstreams at least once, but using "i" we make sure
 		// across different executions we pick up next upstream vs retrying the same upstream.
 		// This mimicks a round-robin behavior.
@@ -157,10 +158,6 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 	}
 
 	return nil
-}
-
-func (n *PreparedNetwork) Executor() failsafe.Executor[interface{}] {
-	return n.failsafeExecutor
 }
 
 func (n *PreparedNetwork) acquireRateLimitPermit(req *upstream.NormalizedRequest) error {

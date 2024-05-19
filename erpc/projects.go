@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/failsafe-go/failsafe-go"
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
 	"github.com/flair-sdk/erpc/resiliency"
@@ -128,19 +127,9 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *ups
 		return err
 	}
 
-	if network.FailsafePolicies == nil || len(network.FailsafePolicies) == 0 {
-		p.Logger.Debug().Msgf("forwarding request to network with no retries")
-		err = network.Forward(ctx, nq, w, wmu)
-	} else {
-		_, execErr := network.Executor().WithContext(ctx).GetWithExecution(func(exec failsafe.Execution[interface{}]) (interface{}, error) {
-			p.Logger.Debug().Int("attempts", exec.Attempts()).Msgf("forwarding request to network")
-			err = network.Forward(exec.Context(), nq, w, wmu)
-			return nil, err
-		})
-		if execErr != nil {
-			err = resiliency.TranslateFailsafeError(execErr)
-		}
-	}
+	m, _ := nq.Method()
+	p.Logger.Debug().Str("method", m).Msgf("forwarding request to network")
+	err = network.Forward(ctx, nq, w, wmu)
 
 	if err == nil {
 		p.Logger.Info().Msgf("successfully forward request for network")

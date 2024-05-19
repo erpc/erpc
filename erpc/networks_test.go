@@ -814,3 +814,213 @@ func TestPreparedNetwork_ForwardHedgePolicyIgnoresNegativeScoreUpstream(t *testi
 		t.Errorf("Expected fromHost to be %v, got %v", "rpc1", respObject["fromHost"])
 	}
 }
+
+func TestPreparedNetwork_ForwardCBOpensAfterConstantFailure(t *testing.T) {
+	defer gock.Clean()
+	defer gock.DisableNetworking()
+	defer gock.DisableNetworkingFilters()
+
+	gock.EnableNetworking()
+
+	// Register a networking filter
+	gock.NetworkingFilter(func(req *http.Request) bool {
+		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
+		return shouldMakeRealCall
+	})
+
+	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
+
+	gock.New("http://google.com").
+		Post("").
+		Times(2).
+		Reply(200).
+		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
+
+	gock.New("http://google.com").
+		Post("").
+		Times(2).
+		Reply(503).
+		JSON(json.RawMessage(`{"error":{"message":"some random provider issue"}}`))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	clr := upstream.NewClientRegistry()
+	fsCfg := &config.FailsafeConfig{
+		CircuitBreaker: &config.CircuitBreakerPolicyConfig{
+			FailureThresholdCount:    2,
+			FailureThresholdCapacity: 4,
+			HalfOpenAfter:            "2s",
+		},
+	}
+	pup1, err := upstream.NewUpstream("test_cb", &config.UpstreamConfig{
+		Id: 		 "upstream1",
+		Endpoint:    "http://google.com",
+		Architecture: upstream.ArchitectureEvm,
+		Metadata: map[string]string{
+			"evmChainId": "123",
+		},
+		Failsafe: fsCfg,
+	}, clr, nil, &log.Logger)
+
+	if err != nil {
+		t.Error(err)
+	}
+
+	ntw := &PreparedNetwork{
+		Logger:    log.Logger,
+		NetworkId: "123",
+		Config: &config.NetworkConfig{
+			NetworkId:    "123",
+			Architecture: upstream.ArchitectureEvm,
+		},
+		Upstreams: []*upstream.PreparedUpstream{pup1},
+	}
+
+	for i := 0; i < 10; i++ {
+		respWriter := httptest.NewRecorder()
+		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		err = ntw.Forward(ctx, fakeReq, respWriter, &sync.Mutex{})
+	}
+
+	if err == nil {
+		t.Errorf("Expected an error, got nil")
+	}
+
+	var e *common.ErrFailsafeCircuitBreakerOpen
+	if !errors.As(err, &e) {
+		t.Errorf("Expected %v, got %v", "ErrFailsafeCircuitBreakerOpen", err)
+	}
+
+	if len(gock.Pending()) > 0 {
+		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
+		for _, pending := range gock.Pending() {
+			t.Errorf("Pending mock: %v", pending)
+		}
+	} else {
+		t.Logf("All mocks consumed")
+	}
+}
+
+func TestPreparedNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
+	defer gock.Clean()
+	defer gock.DisableNetworking()
+	defer gock.DisableNetworkingFilters()
+
+	gock.EnableNetworking()
+
+	// Register a networking filter
+	gock.NetworkingFilter(func(req *http.Request) bool {
+		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
+		return shouldMakeRealCall
+	})
+
+	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
+
+	gock.New("http://google.com").
+		Post("").
+		Times(2).
+		Reply(200).
+		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
+
+	gock.New("http://google.com").
+		Post("").
+		Times(2).
+		Reply(503).
+		JSON(json.RawMessage(`{"error":{"message":"some random provider issue"}}`))
+
+	gock.New("http://google.com").
+		Post("").
+		Times(3).
+		Reply(200).
+		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	clr := upstream.NewClientRegistry()
+	fsCfg := &config.FailsafeConfig{
+		CircuitBreaker: &config.CircuitBreakerPolicyConfig{
+			FailureThresholdCount:    2,
+			FailureThresholdCapacity: 4,
+			HalfOpenAfter:            "2s",
+		},
+	}
+	pup1, err := upstream.NewUpstream("test_cb", &config.UpstreamConfig{
+		Id: 		 "upstream1",
+		Endpoint:    "http://google.com",
+		Architecture: upstream.ArchitectureEvm,
+		Metadata: map[string]string{
+			"evmChainId": "123",
+		},
+		Failsafe: fsCfg,
+	}, clr, nil, &log.Logger)
+
+	if err != nil {
+		t.Error(err)
+	}
+
+	ntw := &PreparedNetwork{
+		Logger:    log.Logger,
+		NetworkId: "123",
+		Config: &config.NetworkConfig{
+			NetworkId:    "123",
+			Architecture: upstream.ArchitectureEvm,
+		},
+		Upstreams: []*upstream.PreparedUpstream{
+			pup1,
+		},
+	}
+
+	for i := 0; i < 4 + 2; i++ {
+		respWriter := httptest.NewRecorder()
+		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		err = ntw.Forward(ctx, fakeReq, respWriter, &sync.Mutex{})
+	}
+
+	if err == nil {
+		t.Errorf("Expected an error, got nil")
+	}
+
+	time.Sleep(2 * time.Second)
+
+	var respWriter *httptest.ResponseRecorder
+	for i := 0; i < 3; i++ {
+		respWriter = httptest.NewRecorder()
+		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		err = ntw.Forward(ctx, fakeReq, respWriter, &sync.Mutex{})
+	}
+
+	if err != nil {
+		t.Errorf("Expected nil error, got %v", err)
+	}
+
+	if len(gock.Pending()) > 0 {
+		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
+		for _, pending := range gock.Pending() {
+			t.Errorf("Pending mock: %v", pending)
+		}
+	} else {
+		t.Logf("All mocks consumed")
+	}
+
+	resp := respWriter.Result()
+
+	if resp.StatusCode != 200 {
+		t.Errorf("Expected status 200, got %v", resp.StatusCode)
+	}
+
+	var respObject map[string]interface{}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("error reading response: %s", err)
+	}
+
+	err = json.Unmarshal(body, &respObject)
+	if err != nil {
+		t.Fatalf("error unmarshalling: %s response body: %s", err, body)
+	}
+	if respObject["hash"] != "0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9" {
+		t.Errorf("Expected hash to be %v, got %v", "0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9", respObject["hash"])
+	}
+}

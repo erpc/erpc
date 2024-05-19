@@ -53,7 +53,7 @@ func (u *UpstreamsRegistry) bootstrap() error {
 			u.upstreamsMapByNetwork[project.Id] = make(map[string]map[string]*PreparedUpstream)
 		}
 		for _, ups := range project.Upstreams {
-			preparedUpstream, err := u.NewUpstream(project.Id, &lg, ups)
+			preparedUpstream, err := u.NewUpstream(project.Id, ups, &lg)
 			if err != nil {
 				return common.NewErrUpstreamInitialization(err, ups.Id)
 			}
@@ -291,62 +291,8 @@ func (u *UpstreamsRegistry) collectMetricsForAllUpstreams() {
 	}
 }
 
-func (u *UpstreamsRegistry) NewUpstream(projectId string, logger *zerolog.Logger, upstream *config.UpstreamConfig) (*PreparedUpstream, error) {
-	var networkIds []string = []string{}
-
-	lg := logger.With().Str("upstream", upstream.Id).Logger()
-
-	if upstream.Metadata != nil {
-		if val, ok := upstream.Metadata["evmChainId"]; ok {
-			lg.Debug().Str("network", val).Msgf("network ID set to %s via evmChainId", val)
-			networkIds = append(networkIds, val)
-		} else {
-			lg.Debug().Msgf("network ID not set via metadata.evmChainId: %v", upstream.Metadata["evmChainId"])
-		}
-	}
-
-	if upstream.Architecture == "" {
-		upstream.Architecture = ArchitectureEvm
-	}
-
-	// TODO create a Client for upstream and try to "detect" the network ID(s)
-	// if networkIds == nil || len(networkIds) == 0 {
-	// }
-
-	if len(networkIds) == 0 {
-		return nil, common.NewErrUpstreamNetworkNotDetected(projectId, upstream.Id)
-	}
-
-	policies, err := resiliency.CreateFailSafePolicies(upstream.Id, upstream.Failsafe)
-	if err != nil {
-		return nil, err
-	}
-
-	preparedUpstream := &PreparedUpstream{
-		Id:               upstream.Id,
-		Architecture:     upstream.Architecture,
-		Endpoint:         upstream.Endpoint,
-		Metadata:         upstream.Metadata,
-		RateLimitBucket:  upstream.RateLimitBucket,
-		HealthCheckGroup: upstream.HealthCheckGroup,
-		FailsafePolicies: policies,
-
-		ProjectId:  projectId,
-		NetworkIds: networkIds,
-		Logger:     lg,
-
-		rateLimitersRegistry: u.rateLimitersRegistry,
-	}
-
-	lg.Debug().Msgf("prepared upstream")
-
-	if client, err := u.clientRegistry.GetOrCreateClient(preparedUpstream); err != nil {
-		return nil, err
-	} else {
-		preparedUpstream.Client = client
-	}
-
-	return preparedUpstream, nil
+func (u *UpstreamsRegistry) NewUpstream(projectId string, cfg *config.UpstreamConfig, logger *zerolog.Logger) (*PreparedUpstream, error) {
+	return NewUpstream(projectId, cfg, u.clientRegistry, u.rateLimitersRegistry, logger)
 }
 
 func normalizeFloatValues(values []float64) []float64 {

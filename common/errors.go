@@ -446,6 +446,18 @@ func (e *ErrFailsafeRetryExceeded) ErrorStatusCode() int {
 	return 503
 }
 
+type ErrFailsafeCircuitBreakerOpen struct{ BaseError }
+
+var NewErrFailsafeCircuitBreakerOpen = func(cause error) error {
+	return &ErrFailsafeCircuitBreakerOpen{
+		BaseError{
+			Code:    "ErrFailsafeCircuitBreakerOpen",
+			Message: "circuit breaker is open due to high error rate",
+			Cause:   cause,
+		},
+	}
+}
+
 type ErrFailsafeUnexpected struct{ BaseError }
 
 var NewErrFailsafeUnexpected = func(cause error) error {
