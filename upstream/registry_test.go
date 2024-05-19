@@ -8,55 +8,81 @@ import (
 )
 
 func TestUpstreamsRegistry_ScoreCalculations(t *testing.T) {
-	registry := &UpstreamsRegistry{}
+	type testCase struct {
+		name       string
+		upstreams  map[string]*PreparedUpstream
+		assertions func(t *testing.T, upstreams map[string]*PreparedUpstream)
+	}
 
-	upA := &PreparedUpstream{
-		Id:         "upstreamA",
-		ProjectId:  "test_project",
-		NetworkIds: []string{"123"},
-		Metrics: &UpstreamMetrics{
-			P90Latency:     0.100, // Seconds
-			ErrorsTotal:    90,
-			RequestsTotal:  100,
-			ThrottledTotal: 0,
-			BlocksLag:      0,
-			LastCollect:    time.Now(),
+	testCases := []testCase{
+		{
+			name: "None of upstreams have any requests",
+			upstreams: map[string]*PreparedUpstream{
+				"upstreamA": {Id: "upstreamA", ProjectId: "test_project", NetworkIds: []string{"123"}, Metrics: nil},
+				"upstreamB": {Id: "upstreamB", ProjectId: "test_project", NetworkIds: []string{"123"}, Metrics: nil},
+			},
+			assertions: func(t *testing.T, upstreams map[string]*PreparedUpstream) {
+				if upstreams["upstreamA"].Score != 0 || upstreams["upstreamB"].Score != 0 {
+					t.Errorf("Expected both scores to be zero")
+				}
+			},
+		},
+		{
+			name: "Upstream A has some successful requests with some latency but B has no data yet",
+			upstreams: map[string]*PreparedUpstream{
+				"upstreamA": {Id: "upstreamA", ProjectId: "test_project", NetworkIds: []string{"123"}, Metrics: &UpstreamMetrics{P90Latency: 0.200, ErrorsTotal: 0, RequestsTotal: 50, ThrottledTotal: 0, BlocksLag: 0, LastCollect: time.Now()}},
+				"upstreamB": {Id: "upstreamB", ProjectId: "test_project", NetworkIds: []string{"123"}, Metrics: nil},
+			},
+			assertions: func(t *testing.T, upstreams map[string]*PreparedUpstream) {
+				if upstreams["upstreamA"].Score == 0 {
+					t.Errorf("Expected upstream A to have a non-zero score")
+				}
+				if upstreams["upstreamB"].Score != 0 {
+					t.Errorf("Expected upstream B to have a zero score")
+				}
+				if upstreams["upstreamA"].Score <= upstreams["upstreamB"].Score {
+					t.Errorf("Expected upstream A to have a higher score than B")
+				}
+			},
+		},
+		{
+			name: "Upstream A has some failed requests and B has no data yet",
+			upstreams: map[string]*PreparedUpstream{
+				"upstreamA": {Id: "upstreamA", ProjectId: "test_project", NetworkIds: []string{"123"}, Metrics: &UpstreamMetrics{P90Latency: 0.200, ErrorsTotal: 30, RequestsTotal: 50, ThrottledTotal: 0, BlocksLag: 0, LastCollect: time.Now()}},
+				"upstreamB": {Id: "upstreamB", ProjectId: "test_project", NetworkIds: []string{"123"}, Metrics: nil},
+			},
+			assertions: func(t *testing.T, upstreams map[string]*PreparedUpstream) {
+				if upstreams["upstreamA"].Score == 0 {
+					t.Errorf("Expected upstream A to have a non-zero score")
+				}
+				if upstreams["upstreamB"].Score != 0 {
+					t.Errorf("Expected upstream B to have a zero score")
+				}
+				if upstreams["upstreamA"].Score <= upstreams["upstreamB"].Score {
+					t.Errorf("Expected upstream A to have a higher score than B")
+				}
+			},
 		},
 	}
-	upB := &PreparedUpstream{
-		Id:         "upstreamB",
-		ProjectId:  "test_project",
-		NetworkIds: []string{"123"},
-		Metrics: &UpstreamMetrics{
-			P90Latency:     0.500, // Seconds
-			ErrorsTotal:    1,
-			RequestsTotal:  100,
-			ThrottledTotal: 0,
-			BlocksLag:      0,
-			LastCollect:    time.Now(),
-		},
-	}
-	gp := &config.HealthCheckGroupConfig{
-		Id:                  "test_group",
-		MaxErrorRatePercent: 10,
-		MaxP90Latency:       "1s",
-		MaxBlocksLag:        10,
-	}
-	registry.refreshUpstreamGroupScores(gp, map[string]*PreparedUpstream{
-		"upstreamA": upA,
-		"upstreamB": upB,
-	})
 
-	t.Run("NonZeroScores", func(t *testing.T) {
-		if upA.Score == 0 || upB.Score == 0 {
-			t.Errorf("Expected non-zero scores for both upstream A & B, got %v and %v", upA.Score, upB.Score)
-		}
-	})
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Create a new UpstreamsRegistry
+			registry := &UpstreamsRegistry{}
 
-	// expecting upstream B to have a higher score than upstream A, because of lower error rate
-	t.Run("UpstreamBHasHigherScoreWithLowerErrorRate", func(t *testing.T) {
-		if upA.Score >= upB.Score {
-			t.Errorf("Expected upstreamB to have a higher score than upstreamA (lower error rate), got %v and %v", upA.Score, upB.Score)
-		}
-	})
+			// HealthCheckGroupConfig for the test
+			gp := &config.HealthCheckGroupConfig{
+				Id:                  "test_group",
+				MaxErrorRatePercent: 10,
+				MaxP90Latency:       "1s",
+				MaxBlocksLag:        10,
+			}
+
+			// Refresh scores
+			registry.refreshUpstreamGroupScores(gp, tc.upstreams)
+
+			// Run assertions
+			tc.assertions(t, tc.upstreams)
+		})
+	}
 }
