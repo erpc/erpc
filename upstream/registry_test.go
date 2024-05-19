@@ -7,8 +7,7 @@ import (
 	"github.com/flair-sdk/erpc/config"
 )
 
-func TestUpstreamsRegistry_UpstreamALowerLatencyHigherErroRateUpstreamBHigherLatencyLowerErrorRate(t *testing.T) {
-	// Create a new UpstreamsRegistry
+func TestUpstreamsRegistry_ScoreCalculations(t *testing.T) {
 	registry := &UpstreamsRegistry{}
 
 	upA := &PreparedUpstream{
@@ -43,17 +42,21 @@ func TestUpstreamsRegistry_UpstreamALowerLatencyHigherErroRateUpstreamBHigherLat
 		MaxP90Latency:       "1s",
 		MaxBlocksLag:        10,
 	}
-
 	registry.refreshUpstreamGroupScores(gp, map[string]*PreparedUpstream{
 		"upstreamA": upA,
 		"upstreamB": upB,
 	})
 
-	if upA.Score == 0 || upB.Score == 0 {
-		t.Errorf("Expected non-zero scores, got %v and %v", upA.Score, upB.Score)
-	}
+	t.Run("NonZeroScores", func(t *testing.T) {
+		if upA.Score == 0 || upB.Score == 0 {
+			t.Errorf("Expected non-zero scores for both upstream A & B, got %v and %v", upA.Score, upB.Score)
+		}
+	})
 
-	if upA.Score >= upB.Score {
-		t.Errorf("Expected upstreamA to have a higher score than upstreamB, got %v and %v", upA.Score, upB.Score)
-	}
+	// expecting upstream B to have a higher score than upstream A, because of lower error rate
+	t.Run("UpstreamBHasHigherScoreWithLowerErrorRate", func(t *testing.T) {
+		if upA.Score >= upB.Score {
+			t.Errorf("Expected upstreamB to have a higher score than upstreamA (lower error rate), got %v and %v", upA.Score, upB.Score)
+		}
+	})
 }
