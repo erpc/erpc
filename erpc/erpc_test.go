@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/flair-sdk/erpc/config"
+	"github.com/rs/zerolog/log"
 )
 
 func TestBoorstrap_GracefulShutdown(t *testing.T) {
@@ -16,7 +17,7 @@ func TestBoorstrap_GracefulShutdown(t *testing.T) {
 		},
 	}
 
-	erpc, _ := NewERPC(cfg)
+	erpc, _ := NewERPC(log.With().Logger(), cfg)
 	erpc.Shutdown()
 }
 
@@ -42,7 +43,7 @@ func TestBootstrap_UpstreamsRegistryFailure(t *testing.T) {
 		},
 	}
 
-	_, err := NewERPC(cfg)
+	_, err := NewERPC(log.With().Logger(), cfg)
 	if err == nil {
 		t.Error("expected error when bootstraping upstream orchestrator, got nil")
 	}

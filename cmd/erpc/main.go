@@ -19,24 +19,24 @@ import (
 )
 
 func main() {
-	shutdown, err := Init(afero.NewOsFs(), os.Args)
+	logger := log.With().Logger()
+
+	shutdown, err := Init(logger, afero.NewOsFs(), os.Args)
 	defer shutdown()
 
 	if err != nil {
-		log.Error().Msgf("failed to start eRPC: %v", err)
+		logger.Error().Msgf("failed to start eRPC: %v", err)
 		util.OsExit(util.ExitCodeERPCStartFailed)
 	}
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	recvSig := <-sig
-	log.Warn().Msgf("caught signal: %v", recvSig)
+	logger.Warn().Msgf("caught signal: %v", recvSig)
 }
 
-func Init(fs afero.Fs, args []string) (func(), error) {
-	log.Debug().Msg("starting eRPC...")
-
-	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+func Init(logger zerolog.Logger, fs afero.Fs, args []string) (func() error, error) {
+	logger.Debug().Msg("starting eRPC...")
 
 	//
 	// 1) Load configuration
@@ -48,22 +48,22 @@ func Init(fs afero.Fs, args []string) (func(), error) {
 	if _, err := fs.Stat(configPath); errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("config file '%s' does not exist", configPath)
 	}
-	log.Info().Msgf("loading configuration from %s", configPath)
+	logger.Info().Msgf("loading configuration from %s", configPath)
 	cfg, err := config.LoadConfig(fs, configPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load configuration: %v", err)
 	}
 	if level, err := zerolog.ParseLevel(cfg.LogLevel); err != nil {
-		log.Warn().Msgf("invalid log level '%s', defaulting to 'debug': %s", cfg.LogLevel, err)
+		logger.Warn().Msgf("invalid log level '%s', defaulting to 'debug': %s", cfg.LogLevel, err)
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	} else {
-		log.Level(level)
+		logger.Level(level)
 	}
 
 	//
 	// 2) Initialize eRPC
 	//
-	erpcInstance, err := erpc.NewERPC(cfg)
+	erpcInstance, err := erpc.NewERPC(logger, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -71,27 +71,42 @@ func Init(fs afero.Fs, args []string) (func(), error) {
 	//
 	// 3) Expose Transports
 	//
-	httpServer := server.NewHttpServer(cfg.Server, erpcInstance)
-	go func() {
-		if err := httpServer.Start(); err != nil {
-			log.Error().Msgf("failed to start httpServer: %v", err)
-			util.OsExit(util.ExitCodeHttpServerFailed)
-		}
-	}()
+	var httpServer *server.HttpServer
+	if cfg.Server != nil {
+		httpServer = server.NewHttpServer(cfg.Server, erpcInstance)
+		go func() {
+			if err := httpServer.Start(); err != nil {
+				if err != http.ErrServerClosed {
+					logger.Error().Msgf("failed to start httpServer: %v", err)
+					util.OsExit(util.ExitCodeHttpServerFailed)
+				}
+			}
+		}()
+	}
 
 	if cfg.Metrics != nil && cfg.Metrics.Enabled {
 		addr := fmt.Sprintf("%s:%d", cfg.Metrics.Host, cfg.Metrics.Port)
-		log.Info().Msgf("starting metrics server on addr: %s", addr)
+		logger.Info().Msgf("starting metrics server on addr: %s", addr)
 		go func() {
 			if err := http.ListenAndServe(addr, promhttp.Handler()); err != nil {
-				log.Error().Msgf("error starting metrics server: %s", err)
+				logger.Error().Msgf("error starting metrics server: %s", err)
 				util.OsExit(util.ExitCodeHttpServerFailed)
 			}
 		}()
 	}
 
-	return func() {
-		log.Info().Msg("shutting down eRPC...")
-		erpcInstance.Shutdown()
+	return func() error {
+		logger.Info().Msg("shutting down eRPC...")
+		err := erpcInstance.Shutdown()
+		if err != nil {
+			return err
+		}
+		if httpServer != nil {
+			err = httpServer.Shutdown()
+			if err != nil {
+				return err
+			}
+		}
+		return nil
 	}, nil
 }

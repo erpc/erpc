@@ -17,10 +17,16 @@ import (
 	"github.com/flair-sdk/erpc/util"
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/afero"
 )
 
+var mainMutex sync.Mutex
+
 func TestMain_RealConfigFile(t *testing.T) {
+	mainMutex.Lock()
+	defer mainMutex.Unlock()
+
 	fs := afero.NewOsFs()
 
 	f, err := afero.TempFile(fs, "", "erpc.yaml")
@@ -41,7 +47,7 @@ server:
 	os.Args = []string{"erpc-test", f.Name()}
 	go main()
 
-	time.Sleep(300)
+	time.Sleep(100 * time.Millisecond)
 
 	// check if the server is running
 	if _, err := http.Get(localBaseUrl); err != nil {
@@ -50,10 +56,14 @@ server:
 }
 
 func TestMain_MissingConfigFile(t *testing.T) {
+	mainMutex.Lock()
+	defer mainMutex.Unlock()
+
+	mu := &sync.Mutex{}
+
 	os.Args = []string{"erpc-test", "some-random-non-existent.yaml"}
 
 	var called bool
-	mu := &sync.Mutex{}
 
 	util.OsExit = func(code int) {
 		if code != util.ExitCodeERPCStartFailed {
@@ -67,7 +77,7 @@ func TestMain_MissingConfigFile(t *testing.T) {
 
 	go main()
 
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -77,6 +87,9 @@ func TestMain_MissingConfigFile(t *testing.T) {
 }
 
 func TestMain_InvalidHttpPort(t *testing.T) {
+	mainMutex.Lock()
+	defer mainMutex.Unlock()
+
 	fs := afero.NewOsFs()
 
 	f, err := afero.TempFile(fs, "", "erpc.yaml")
@@ -91,10 +104,11 @@ server:
   httpPort: "-1"
 `)
 
+	mu := &sync.Mutex{}
+
 	os.Args = []string{"erpc-test", f.Name()}
 
 	var called bool
-	mu := &sync.Mutex{}
 	util.OsExit = func(code int) {
 		if code != util.ExitCodeHttpServerFailed {
 			t.Errorf("expected code %d, got %d", util.ExitCodeHttpServerFailed, code)
@@ -107,7 +121,7 @@ server:
 
 	go main()
 
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -159,7 +173,7 @@ projects:
 `)
 	args := []string{"erpc-test", cfg.Name()}
 
-	shutdown, err := Init(fs, args)
+	shutdown, err := Init(log.With().Logger(), fs, args)
 	if shutdown != nil {
 		defer shutdown()
 	}
@@ -229,7 +243,7 @@ func TestInit_InvalidConfig(t *testing.T) {
 
 	args := []string{"erpc-test", cfg.Name()}
 
-	shutdown, err := Init(fs, args)
+	shutdown, err := Init(log.With().Logger(), fs, args)
 	if shutdown != nil {
 		defer shutdown()
 	}
@@ -247,7 +261,7 @@ func TestInit_ConfigFileDoesNotExist(t *testing.T) {
 	fs := afero.NewMemMapFs()
 	args := []string{"erpc-test", "non-existent-file.yaml"}
 
-	shutdown, err := Init(fs, args)
+	shutdown, err := Init(log.With().Logger(), fs, args)
 	if shutdown != nil {
 		defer shutdown()
 	}
@@ -269,19 +283,16 @@ func TestInit_InvalidLogLevel(t *testing.T) {
 	}
 	cfg.WriteString(`
 logLevel: invalid
-server:
-  httpHost: "localhost"
-  httpPort: "8080"
 `)
 
 	args := []string{"erpc-test", cfg.Name()}
 
-	shutdown, err := Init(fs, args)
+	shutdown, err := Init(log.With().Logger(), fs, args)
+	shutdown()
+	time.Sleep(300 * time.Millisecond)
+
 	if err != nil {
 		t.Fatal(err)
-	}
-	if shutdown != nil {
-		defer shutdown()
 	}
 
 	logLevel := zerolog.GlobalLevel()
@@ -318,7 +329,7 @@ projects:
 `)
 	args := []string{"erpc-test", cfg.Name()}
 
-	shutdown, err := Init(fs, args)
+	shutdown, err := Init(log.With().Logger(), fs, args)
 	if shutdown != nil {
 		defer shutdown()
 	}

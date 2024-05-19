@@ -4,6 +4,7 @@ import (
 	"github.com/flair-sdk/erpc/config"
 	"github.com/flair-sdk/erpc/resiliency"
 	"github.com/flair-sdk/erpc/upstream"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
@@ -14,13 +15,13 @@ type ERPC struct {
 	projectsRegistry     *ProjectsRegistry
 }
 
-func NewERPC(cfg *config.Config) (*ERPC, error) {
+func NewERPC(logger zerolog.Logger, cfg *config.Config) (*ERPC, error) {
 	rateLimitersRegistry, err := resiliency.NewRateLimitersRegistry(cfg.RateLimiters)
 	if err != nil {
 		return nil, err
 	}
 
-	upstreamsRegistry, err := upstream.NewUpstreamsRegistry(cfg, rateLimitersRegistry)
+	upstreamsRegistry, err := upstream.NewUpstreamsRegistry(logger, cfg, rateLimitersRegistry)
 	if err != nil {
 		return nil, err
 	}
@@ -80,6 +81,7 @@ func (e *ERPC) GetProject(projectId string) (*PreparedProject, error) {
 	return e.projectsRegistry.GetProject(projectId)
 }
 
-func (e *ERPC) Shutdown() {
+func (e *ERPC) Shutdown() error {
 	// TODO: Implement
+	return nil
 }

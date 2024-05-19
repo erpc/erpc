@@ -133,7 +133,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *ups
 	} else {
 		_, execErr := network.Executor().WithContext(ctx).GetWithExecution(func(exec failsafe.Execution[interface{}]) (interface{}, error) {
 			p.Logger.Debug().Int("attempts", exec.Attempts()).Msgf("forwarding request to network")
-			err = network.Forward(ctx, nq, w)
+			err = network.Forward(exec.Context(), nq, w)
 			return nil, err
 		})
 		if execErr != nil {

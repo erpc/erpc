@@ -20,6 +20,7 @@ const (
 
 type UpstreamsRegistry struct {
 	OnUpstreamsPriorityChange func(projectId string, networkId string) error
+	Logger                    zerolog.Logger
 
 	config                    *config.Config
 	clientRegistry            *ClientRegistry
@@ -28,8 +29,10 @@ type UpstreamsRegistry struct {
 	rateLimitersRegistry      *resiliency.RateLimitersRegistry
 }
 
-func NewUpstreamsRegistry(cfg *config.Config, rlr *resiliency.RateLimitersRegistry) (*UpstreamsRegistry, error) {
+func NewUpstreamsRegistry(logger zerolog.Logger, cfg *config.Config, rlr *resiliency.RateLimitersRegistry) (*UpstreamsRegistry, error) {
 	r := &UpstreamsRegistry{
+		Logger: logger,
+
 		config:               cfg,
 		clientRegistry:       NewClientRegistry(),
 		rateLimitersRegistry: rlr,
@@ -146,6 +149,7 @@ func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *config.He
 	log.Debug().Str("healthCheckGroup", healthGroupCfg.Id).Msgf("refreshing upstreams scores")
 
 	var p90Latencies, errorRates, totalRequests, throttledRates, blockLags []float64
+	var comparingUpstreams []*PreparedUpstream
 	var changedProjectAndNetworks map[string]map[string]bool = make(map[string]map[string]bool)
 	for _, upstream := range upstreams {
 		if upstream.Metrics != nil {
@@ -168,6 +172,8 @@ func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *config.He
 			for _, networkId := range upstream.NetworkIds {
 				changedProjectAndNetworks[upstream.ProjectId][networkId] = true
 			}
+
+			comparingUpstreams = append(comparingUpstreams, upstream)
 		}
 	}
 
@@ -177,8 +183,7 @@ func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *config.He
 	normTotalRequests := normalizeFloatValues(totalRequests)
 	normBlockLags := normalizeFloatValues(blockLags)
 
-	i := 0
-	for _, upstream := range upstreams {
+	for i, upstream := range comparingUpstreams {
 		if upstream.Metrics != nil {
 			upstream.Score = 0
 
@@ -197,8 +202,10 @@ func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *config.He
 			// Higher score for lower block lag
 			upstream.Score += (1 - normBlockLags[i]) * 2
 
-			log.Debug().Str("healthCheckGroup", healthGroupCfg.Id).Str("upstream", upstream.Id).Float64("score", upstream.Score).Msgf("refreshed score")
-			i++
+			log.Debug().Str("healthCheckGroup", healthGroupCfg.Id).
+				Str("upstream", upstream.Id).
+				Float64("score", upstream.Score).
+				Msgf("refreshed score")
 		}
 	}
 
@@ -215,16 +222,16 @@ func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *config.He
 
 func (u *UpstreamsRegistry) collectMetricsForAllUpstreams() {
 	if len(u.upstreamsMapByNetwork) == 0 {
-		log.Debug().Msgf("no upstreams to collect metrics for")
+		u.Logger.Debug().Msgf("no upstreams to collect metrics for")
 		return
 	}
 
-	log.Debug().Msgf("collecting upstreams metrics from prometheus")
+	u.Logger.Debug().Msgf("collecting upstreams metrics from prometheus")
 
 	// Get and parse current prometheus metrics data
 	mfs, err := prometheus.DefaultGatherer.Gather()
 	if mfs == nil {
-		log.Error().Msgf("failed to gather prometheus metrics: %v", err)
+		u.Logger.Error().Msgf("failed to gather prometheus metrics: %v", err)
 		return
 	}
 
@@ -272,7 +279,7 @@ func (u *UpstreamsRegistry) collectMetricsForAllUpstreams() {
 
 				metrics.LastCollect = time.Now()
 
-				log.Trace().
+				u.Logger.Trace().
 					Str("project", project).
 					Str("network", network).
 					Str("upstream", upstream).

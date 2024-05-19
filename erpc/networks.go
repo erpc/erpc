@@ -77,6 +77,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 	tryForward := func(
 		u *upstream.PreparedUpstream,
 		ctx context.Context,
+		wl *sync.Mutex,
 	) (skipped bool, err error) {
 		lg := u.Logger.With().Str("network", n.NetworkId).Logger()
 		if u.Score < 0 {
@@ -93,7 +94,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 			return false, err
 		}
 
-		err = n.forwardToUpstream(u, ctx, pr, w, writeLock)
+		err = n.forwardToUpstream(u, ctx, pr, w, wl)
 		if !common.IsNull(err) {
 			return false, err
 		}
@@ -105,7 +106,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 	if n.FailsafePolicies == nil || len(n.FailsafePolicies) == 0 {
 		// Handling via simple loop over upstreams until one responds
 		for _, u := range n.Upstreams {
-			if _, err := tryForward(u, ctx); err != nil {
+			if _, err := tryForward(u, ctx, writeLock); err != nil {
 				errorsByUpstream = append(errorsByUpstream, err)
 				continue
 			}
@@ -118,7 +119,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 	// Handling when FailsafePolicies are defined
 	mtx := sync.Mutex{}
 	i := 0
-	_, execErr := n.Executor().GetWithExecution(func(exec failsafe.Execution[interface{}]) (interface{}, error) {
+	_, execErr := n.Executor().WithContext(ctx).GetWithExecution(func(exec failsafe.Execution[interface{}]) (interface{}, error) {
 		// We should try all upstreams at least once, but using "i" we make sure
 		// across different executions we pick up next upstream vs retrying the same upstream.
 		// This mimicks a round-robin behavior.
@@ -135,7 +136,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 			mtx.Unlock()
 			n.Logger.Debug().Msgf("executing forward to upstream: %s", u.Id)
 
-			skipped, err := tryForward(u, exec.Context())
+			skipped, err := tryForward(u, exec.Context(), writeLock)
 			n.Logger.Debug().Err(err).Msgf("forwarded request to upstream %s skipped: %v err: %v", u.Id, skipped, err)
 			if !skipped {
 				return nil, err

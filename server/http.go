@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -91,4 +92,9 @@ func NewHttpServer(cfg *config.ServerConfig, erpc *erpc.ERPC) *HttpServer {
 func (s *HttpServer) Start() error {
 	log.Info().Msgf("starting http server on %s", s.server.Addr)
 	return s.server.ListenAndServe()
+}
+
+func (s *HttpServer) Shutdown() error {
+	log.Info().Msg("shutting down http server")
+	return s.server.Shutdown(context.Background())
 }
