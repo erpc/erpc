@@ -38,12 +38,12 @@ coverage:
 	@go test -race -coverprofile=coverage.txt -covermode=atomic ./...
 	@go tool cover -html=coverage.txt
 
-.PHONY: docker-up
-docker-up:
+.PHONY: up
+up:
 	@docker-compose up -d
 
-.PHONY: docker-down
-docker-down:
+.PHONY: down
+down:
 	@docker-compose down
 
 .PHONY: fmt

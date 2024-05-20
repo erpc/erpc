@@ -1,8 +1,8 @@
 package erpc
 
 import (
-	"encoding/json"
 	"fmt"
+	"io"
 
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/data"
@@ -36,10 +36,10 @@ func NewEvmDAL(store data.Store) *EvmDAL {
 	}
 }
 
-func (dal *EvmDAL) Get(req *common.NormalizedRequest) ([]byte, error) {
+func (dal *EvmDAL) Get(req *common.NormalizedRequest) (string, error) {
 	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
 	method := rpcReq.Method
@@ -52,32 +52,50 @@ func (dal *EvmDAL) Get(req *common.NormalizedRequest) ([]byte, error) {
 	}
 }
 
-func (dal *EvmDAL) getSimple(req *common.JsonRpcRequest) ([]byte, error) {
+func (dal *EvmDAL) GetWithReader(req *common.NormalizedRequest) (io.Reader, error) {
+	rpcReq, err := req.JsonRpcRequest()
+	if err != nil {
+		return nil, err
+	}
+
+	key := fmt.Sprintf("%s:%s", rpcReq.Method, rpcReq.Params)
+	return dal.store.GetWithReader(key)
+}
+
+func (dal *EvmDAL) getSimple(req *common.JsonRpcRequest) (string, error) {
 	key := fmt.Sprintf("%s:%s", req.Method, req.Params)
 	rawRespStr, err := dal.store.Get(key)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	return rawRespStr, nil
 }
 
-func (dal *EvmDAL) getLogs(req *common.JsonRpcRequest) ([]byte, error) {
+func (dal *EvmDAL) getLogs(req *common.JsonRpcRequest) (string, error) {
+	// TODO implement advanced filtering and scatter-gather
 	return dal.getSimple(req)
 }
 
-func (dal *EvmDAL) Set(req *common.NormalizedRequest, value interface{}) (int, error) {
+func (dal *EvmDAL) Set(req *common.NormalizedRequest, value string) (int, error) {
 	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
 		return 0, err
 	}
 
 	key := fmt.Sprintf("%s:%s", rpcReq.Method, rpcReq.Params)
-	valueStr, err := json.Marshal(value)
+
+	return dal.store.Set(key, value)
+}
+
+func (dal *EvmDAL) SetWithWriter(req *common.NormalizedRequest) (io.WriteCloser, error) {
+	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
-		return 0, fmt.Errorf("failed to marshal value in EvmDAL: %w", err)
+		return nil, err
 	}
 
-	return dal.store.Set(key, valueStr)
+	key := fmt.Sprintf("%s:%s", rpcReq.Method, rpcReq.Params)
+
+	return dal.store.SetWithWriter(key)
 }
 
 func (dal *EvmDAL) Delete(req *common.NormalizedRequest) error {

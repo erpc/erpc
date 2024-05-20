@@ -1,14 +1,18 @@
 package data
 
 import (
+	"io"
+
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
 )
 
 type Store interface {
-	Get(key string) ([]byte, error)
-	Set(key string, value []byte) (int, error)
-	Scan(prefix string) ([][]byte, error)
+	Get(key string) (string, error)
+	GetWithReader(key string) (io.Reader, error)
+	Set(key string, value string) (int, error)
+	SetWithWriter(key string) (io.WriteCloser, error)
+	Scan(prefix string) ([]string, error)
 	Delete(key string) error
 }
 

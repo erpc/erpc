@@ -1,6 +1,7 @@
 package common
 
 import (
+	"io"
 	"net/http"
 	"sync"
 
@@ -12,50 +13,74 @@ type ResponseWriter interface {
 	Unlock()
 	AddHeader(string, string)
 	Write([]byte) (int, error)
-	SetDAL(DAL)
+	AddBodyWriter(io.WriteCloser)
+	Close() error
 }
 
 type HttpCompositeResponseWriter struct {
 	sync.Mutex
-	req *NormalizedRequest
-	hrw http.ResponseWriter
-	dal DAL
+	req          *NormalizedRequest
+	headerWriter http.ResponseWriter
+	bodyWriters  []io.Writer
 }
 
 func NewHttpCompositeResponseWriter(req *NormalizedRequest, hrw http.ResponseWriter) *HttpCompositeResponseWriter {
 	return &HttpCompositeResponseWriter{
-		req: req,
-		hrw: hrw,
+		req:          req,
+		headerWriter: hrw,
+		bodyWriters:  []io.Writer{hrw},
 	}
 }
 
-func (w *HttpCompositeResponseWriter) SetDAL(dal DAL) {
-	w.dal = dal
+func (w *HttpCompositeResponseWriter) AddBodyWriter(bwr io.WriteCloser) {
+	w.Lock()
+	w.bodyWriters = append(w.bodyWriters, bwr)
+	w.Unlock()
 }
 
 func (w *HttpCompositeResponseWriter) AddHeader(key, value string) {
-	if w.hrw != nil {
-		w.hrw.Header().Add(key, value)
+	if w.headerWriter != nil {
+		w.headerWriter.Header().Add(key, value)
 	}
 }
 
 func (w *HttpCompositeResponseWriter) Write(data []byte) (c int, err error) {
 	if log.Trace().Enabled() {
-		log.Trace().Msgf("writing response on http: %v dal: %v data: %s", &w.hrw, &w.dal, data)
-	}
-	if w.hrw != nil {
-		c, err = w.hrw.Write(data)
-		if err != nil {
-			return
-		}
+		log.Trace().Msgf("writing response on bodyWriters: %v data: %s", len(w.bodyWriters), data)
 	}
 
-	if w.dal != nil {
-		c, err = w.dal.Set(w.req, data)
+	for _, bw := range w.bodyWriters {
+		c, err = bw.Write(data)
 		if err != nil {
-			return
+			log.Error().Err(err).Msg("failed to write response")
+			return c, err
 		}
 	}
 
 	return
+}
+
+func (w *HttpCompositeResponseWriter) Close() error {
+	if w.bodyWriters != nil {
+		for _, bw := range w.bodyWriters {
+			closer, ok := bw.(io.Closer)
+			if ok {
+				if err := closer.Close(); err != nil {
+					log.Error().Err(err).Msg("failed to close bodyWriter")
+					return err
+				}
+			}
+		}
+	}
+
+	if w.headerWriter != nil {
+		if closer, ok := w.headerWriter.(io.Closer); ok {
+			if err := closer.Close(); err != nil {
+				log.Error().Err(err).Msg("failed to close headerWriter")
+				return err
+			}
+		}
+	}
+
+	return nil
 }

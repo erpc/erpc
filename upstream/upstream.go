@@ -2,9 +2,9 @@ package upstream
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/failsafe-go/failsafe-go"
@@ -219,31 +219,18 @@ func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req in
 				)
 			}
 
-			respBytes, errMarshal := json.Marshal(resp)
-			if errMarshal != nil {
-				health.MetricUpstreamRequestErrors.WithLabelValues(
-					u.ProjectId,
-					networkId,
-					u.Id,
-					method,
-				).Inc()
-				return common.NewErrUpstreamMalformedResponse(
-					errMarshal,
-					u.Id,
-				)
-			}
-
 			if w.TryLock() {
 				w.AddHeader("Content-Type", "application/json")
 				w.AddHeader("X-ERPC-Upstream", u.Id)
 				w.AddHeader("X-ERPC-Network", networkId)
 				w.AddHeader("X-ERPC-Cache", "Miss")
-				w.Write(respBytes)
+				defer w.Close()
+				defer resp.Close()
+				_, err := io.Copy(w, resp)
+				return err
 			} else {
 				return common.NewErrResponseWriteLock(u.Id)
 			}
-
-			return nil
 		}
 
 		if u.FailsafePolicies != nil && len(u.FailsafePolicies) > 0 {

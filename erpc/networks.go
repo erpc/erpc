@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
 
 	"github.com/failsafe-go/failsafe-go"
@@ -84,21 +85,18 @@ func (n *PreparedNetwork) Architecture() string {
 func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedRequest, w common.ResponseWriter) error {
 	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
 
-	cached, err := n.dal.Get(req)
+	cacheReader, err := n.dal.GetWithReader(req)
 	if err != nil {
 		n.Logger.Warn().Err(err).Msgf("could not find response in cache")
 	}
-	if cached != nil {
+	if cacheReader != nil {
 		if w.TryLock() {
-			n.Logger.Info().Object("req", req).Int("size", len(cached)).Msgf("response serving from cache")
 			w.AddHeader("Content-Type", "application/json")
 			w.AddHeader("X-ERPC-Network", n.NetworkId)
 			w.AddHeader("X-ERPC-Cache", "Hit")
-			_, err = w.Write([]byte(cached))
-			if err != nil {
-				return err
-			}
-			return nil
+			w, err := io.Copy(w, cacheReader)
+			n.Logger.Info().Object("req", req).Int64("written", w).Err(err).Msgf("response served from cache")
+			return err
 		} else {
 			return common.NewErrResponseWriteLock("<cache store>")
 		}
@@ -110,8 +108,13 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 
 	var errorsByUpstream = []error{}
 
-	// Configure the DAL on the response writer so result can be cached
-	w.SetDAL(n.dal)
+	// Configure the cache writer on the response writer so result can be cached
+	cwr, err := n.dal.SetWithWriter(req)
+	if err != nil {
+		n.Logger.Warn().Err(err).Msgf("could create cache response writer")
+	} else {
+		w.AddBodyWriter(cwr)
+	}
 
 	// Function to prepare and forward the request to an upstream
 	tryForward := func(
@@ -177,7 +180,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 
 			skipped, err := tryForward(u, exec.Context())
 			if err != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) && exec.Hedges() > 0 {
-				n.Logger.Debug().Err(err).Msgf("hedged request to upstream %s skipped: %v", u.Id, skipped)
+				n.Logger.Debug().Err(err).Msgf("discarding hedged request to upstream %s: %v", u.Id, skipped)
 				return nil, err
 			}
 

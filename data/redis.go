@@ -2,15 +2,37 @@ package data
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"strings"
 
 	"github.com/flair-sdk/erpc/config"
 	"github.com/redis/go-redis/v9"
+	"github.com/rs/zerolog/log"
 )
 
 var ctx = context.Background()
 
 type RedisStore struct {
 	client *redis.Client
+}
+
+type RedisValueWriter struct {
+	redisClient *redis.Client
+	key         string
+}
+
+func (w *RedisValueWriter) Write(p []byte) (n int, err error) {
+	// log.Trace().Msgf("writing to RedisValueWriter key: %s", w.key)
+	err = w.redisClient.Append(ctx, w.key, string(p)).Err()
+	if err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func (w *RedisValueWriter) Close() error {
+	return nil
 }
 
 func NewRedisStore(cfg *config.RedisStore) *RedisStore {
@@ -22,36 +44,47 @@ func NewRedisStore(cfg *config.RedisStore) *RedisStore {
 	return &RedisStore{client: rdb}
 }
 
-func (r *RedisStore) Get(key string) ([]byte, error) {
-	return r.client.Get(ctx, key).Bytes()
+func (r *RedisStore) Get(key string) (string, error) {
+	// log.Trace().Msgf("RedisStore getting key: %s", key)
+	return r.client.Get(ctx, key).Result()
 }
 
-func (r *RedisStore) Set(key string, value []byte) (int, error) {
+func (r *RedisStore) GetWithReader(key string) (io.Reader, error) {
+	log.Trace().Msgf("RedisStore getting key with reader: %s", key)
+	value, err := r.Get(key)
+	if err != nil {
+		return nil, err
+	}
+
+	return strings.NewReader(value), nil
+}
+
+func (r *RedisStore) Set(key string, value string) (int, error) {
+	// log.Trace().Msgf("RedisStore setting key: %s, value: %s", key, value)
 	sts := r.client.Set(ctx, key, value, 0)
 	return 0, sts.Err()
 }
 
-func (r *RedisStore) Scan(prefix string) ([][]byte, error) {
-	var values [][]byte
-	var cur uint64
+func (r *RedisStore) SetWithWriter(key string) (io.WriteCloser, error) {
+	// log.Trace().Msgf("RedisStore setting key with writer: %s", key)
+	// Ensure the key is deleted before starting to write new data
+	err := r.client.Del(ctx, key).Err()
+	if err != nil {
+		return nil, err
+	}
+	return &RedisValueWriter{redisClient: r.client, key: key}, nil
+}
 
-	for {
-		keys, cur, err := r.client.Scan(ctx, cur, prefix+"*", 100).Result()
-		if err != nil {
-			return nil, err
-		}
+func (r *RedisStore) Scan(prefix string) ([]string, error) {
+	var values []string
 
-		for _, key := range keys {
-			value, err := r.Get(key)
-			if err != nil {
-				return nil, err
-			}
-			values = append(values, value)
-		}
+	iter := r.client.Scan(ctx, 0, fmt.Sprintf("%s:*", prefix), 0).Iterator()
+	for iter.Next(ctx) {
+		values = append(values, iter.Val())
+	}
 
-		if cur == 0 {
-			break
-		}
+	if err := iter.Err(); err != nil {
+		return values, err
 	}
 
 	return values, nil

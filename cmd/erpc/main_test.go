@@ -163,6 +163,11 @@ server:
   httpHost: "` + localHost + `"
   httpPort: ` + localPort + `
 
+store:
+  driver: memory
+  memory:
+    maxSize: 100mb
+
 projects:
   - id: main
     upstreams:

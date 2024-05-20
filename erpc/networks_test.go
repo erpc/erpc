@@ -208,11 +208,16 @@ func TestPreparedNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 type ResponseRecorder struct {
 	sync.Mutex
 	*httptest.ResponseRecorder
-	dal common.DAL
+	// dal common.DAL
 }
 
-func (r *ResponseRecorder) SetDAL(dal common.DAL) {
-	r.dal = dal
+func (r *ResponseRecorder) AddBodyWriter(dal io.WriteCloser) {
+	// TODO
+}
+
+func (r *ResponseRecorder) Close() error {
+	// TODO
+	return nil
 }
 
 func (r *ResponseRecorder) AddHeader(key, value string) {
