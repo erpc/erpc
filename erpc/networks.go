@@ -131,7 +131,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 	) (skipped bool, err error) {
 		lg := u.Logger.With().Str("network", n.NetworkId).Logger()
 		if u.Score < 0 {
-			lg.Debug().Msgf("skipping upstream with negative score %f", u.Score)
+			lg.Debug().Msgf("skipping upstream with negative score %d", u.Score)
 			return true, nil
 		}
 
