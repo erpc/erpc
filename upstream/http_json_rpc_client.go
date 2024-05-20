@@ -22,24 +22,6 @@ type HttpJsonRpcClient struct {
 	httpClient *http.Client
 }
 
-type JsonRpcRequest struct {
-	JSONRPC string        `json:"jsonrpc,omitempty"`
-	ID      interface{}   `json:"id,omitempty"`
-	Method  string        `json:"method"`
-	Params  []interface{} `json:"params"`
-}
-
-type JsonRpcResponse struct {
-	Result interface{}   `json:"result"`
-	Error  *JsonRpcError `json:"error"`
-	Id     int           `json:"id"`
-}
-
-type JsonRpcError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
 func NewHttpJsonRpcClient(parsedUrl *url.URL) (*HttpJsonRpcClient, error) {
 	var client *HttpJsonRpcClient
 
@@ -68,8 +50,8 @@ func NewHttpJsonRpcClient(parsedUrl *url.URL) (*HttpJsonRpcClient, error) {
 	return client, nil
 }
 
-func (c *HttpJsonRpcClient) SendRequest(ctx context.Context, req *JsonRpcRequest) (interface{}, error) {
-	requestBody, err := json.Marshal(JsonRpcRequest{
+func (c *HttpJsonRpcClient) SendRequest(ctx context.Context, req *common.JsonRpcRequest) (interface{}, error) {
+	requestBody, err := json.Marshal(common.JsonRpcRequest{
 		JSONRPC: req.JSONRPC,
 		Method:  req.Method,
 		Params:  req.Params,
@@ -107,7 +89,7 @@ func (c *HttpJsonRpcClient) SendRequest(ctx context.Context, req *JsonRpcRequest
 		return nil, err
 	}
 
-	log.Debug().Msgf("received json rpc response status: %d and body: %s", respStatusCode, respBody)
+	log.Debug().Msgf("received json rpc response status: %d and body length: %d", respStatusCode, len(respBody))
 
 	if respStatusCode >= 400 {
 		// return nil, fmt.Errorf("server responded with status code %d", respStatusCode)
@@ -122,7 +104,7 @@ func (c *HttpJsonRpcClient) SendRequest(ctx context.Context, req *JsonRpcRequest
 		}
 	}
 
-	var jsonResponse JsonRpcResponse
+	var jsonResponse common.JsonRpcResponse
 	if err := json.Unmarshal(respBody, &jsonResponse); err != nil {
 		return nil, err
 	}

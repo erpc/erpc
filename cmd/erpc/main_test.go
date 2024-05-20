@@ -173,7 +173,8 @@ projects:
 `)
 	args := []string{"erpc-test", cfg.Name()}
 
-	shutdown, err := Init(log.With().Logger(), fs, args)
+	logger := log.With().Logger()
+	shutdown, err := Init(&logger, fs, args)
 	if shutdown != nil {
 		defer shutdown()
 	}
@@ -245,7 +246,8 @@ func TestInit_InvalidConfig(t *testing.T) {
 
 	args := []string{"erpc-test", cfg.Name()}
 
-	shutdown, err := Init(log.With().Logger(), fs, args)
+	logger := log.With().Logger()
+	shutdown, err := Init(&logger, fs, args)
 	if shutdown != nil {
 		defer shutdown()
 	}
@@ -264,7 +266,8 @@ func TestInit_ConfigFileDoesNotExist(t *testing.T) {
 	fs := afero.NewMemMapFs()
 	args := []string{"erpc-test", "non-existent-file.yaml"}
 
-	shutdown, err := Init(log.With().Logger(), fs, args)
+	logger := log.With().Logger()
+	shutdown, err := Init(&logger, fs, args)
 	if shutdown != nil {
 		defer shutdown()
 	}
@@ -291,7 +294,8 @@ logLevel: invalid
 
 	args := []string{"erpc-test", cfg.Name()}
 
-	shutdown, err := Init(log.With().Logger(), fs, args)
+	logger := log.With().Logger()
+	shutdown, err := Init(&logger, fs, args)
 	if shutdown != nil {
 		defer shutdown()
 	}
@@ -335,7 +339,8 @@ projects:
 `)
 	args := []string{"erpc-test", cfg.Name()}
 
-	shutdown, err := Init(log.With().Logger(), fs, args)
+	logger := log.With().Logger()
+	shutdown, err := Init(&logger, fs, args)
 	if shutdown != nil {
 		defer shutdown()
 	}

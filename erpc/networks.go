@@ -3,12 +3,12 @@ package erpc
 import (
 	"context"
 	"errors"
-	"net/http"
 	"sync"
 
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
+	"github.com/flair-sdk/erpc/data"
 	"github.com/flair-sdk/erpc/health"
 	"github.com/flair-sdk/erpc/resiliency"
 	"github.com/flair-sdk/erpc/upstream"
@@ -26,11 +26,17 @@ type PreparedNetwork struct {
 
 	rateLimitersRegistry *resiliency.RateLimitersRegistry
 	failsafeExecutor     failsafe.Executor[interface{}]
+	dal                  common.DAL
 }
 
 var preparedNetworks map[string]*PreparedNetwork = make(map[string]*PreparedNetwork)
 
-func (r *ProjectsRegistry) NewNetwork(logger *zerolog.Logger, prjCfg *config.ProjectConfig, nwCfg *config.NetworkConfig) (*PreparedNetwork, error) {
+func (r *ProjectsRegistry) NewNetwork(
+	logger *zerolog.Logger,
+	store data.Store,
+	prjCfg *config.ProjectConfig,
+	nwCfg *config.NetworkConfig,
+) (*PreparedNetwork, error) {
 	var key = prjCfg.Id + ":" + nwCfg.NetworkId
 
 	if pn, ok := preparedNetworks[key]; ok {
@@ -47,6 +53,14 @@ func (r *ProjectsRegistry) NewNetwork(logger *zerolog.Logger, prjCfg *config.Pro
 		policies = pls
 	}
 
+	var dal common.DAL
+	switch nwCfg.Architecture {
+	case "evm":
+		dal = NewEvmDAL(store)
+	default:
+		return nil, errors.New("unknown network architecture")
+	}
+
 	ptr := logger.With().Str("network", nwCfg.NetworkId).Logger()
 	preparedNetworks[key] = &PreparedNetwork{
 		NetworkId:        nwCfg.NetworkId,
@@ -55,6 +69,7 @@ func (r *ProjectsRegistry) NewNetwork(logger *zerolog.Logger, prjCfg *config.Pro
 		Config:           nwCfg,
 		Logger:           &ptr,
 
+		dal:                  dal,
 		rateLimitersRegistry: r.rateLimitersRegistry,
 		failsafeExecutor:     failsafe.NewExecutor[interface{}](policies...),
 	}
@@ -62,10 +77,32 @@ func (r *ProjectsRegistry) NewNetwork(logger *zerolog.Logger, prjCfg *config.Pro
 	return preparedNetworks[key], nil
 }
 
-func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedRequest, w http.ResponseWriter, wmu *sync.Mutex) error {
+func (n *PreparedNetwork) Architecture() string {
+	return n.Config.Architecture
+}
+
+func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedRequest, w common.ResponseWriter) error {
 	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
 
-	// TODO check if request exists in the hot, warm, or cold cache
+	cached, err := n.dal.Get(req)
+	if err != nil {
+		n.Logger.Warn().Err(err).Msgf("could not find response in cache")
+	}
+	if cached != nil {
+		if w.TryLock() {
+			n.Logger.Info().Object("req", req).Int("size", len(cached)).Msgf("response serving from cache")
+			w.AddHeader("Content-Type", "application/json")
+			w.AddHeader("X-ERPC-Network", n.NetworkId)
+			w.AddHeader("X-ERPC-Cache", "Hit")
+			_, err = w.Write([]byte(cached))
+			if err != nil {
+				return err
+			}
+			return nil
+		} else {
+			return common.NewErrResponseWriteLock("<cache store>")
+		}
+	}
 
 	if err := n.acquireRateLimitPermit(req); err != nil {
 		return err
@@ -73,11 +110,13 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 
 	var errorsByUpstream = []error{}
 
+	// Configure the DAL on the response writer so result can be cached
+	w.SetDAL(n.dal)
+
 	// Function to prepare and forward the request to an upstream
 	tryForward := func(
 		u *upstream.PreparedUpstream,
 		ctx context.Context,
-		wmu *sync.Mutex,
 	) (skipped bool, err error) {
 		lg := u.Logger.With().Str("network", n.NetworkId).Logger()
 		if u.Score < 0 {
@@ -94,7 +133,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 			return false, err
 		}
 
-		err = n.forwardToUpstream(u, ctx, pr, w, wmu)
+		err = n.forwardToUpstream(u, ctx, pr, w)
 		if !common.IsNull(err) {
 			return false, err
 		}
@@ -106,7 +145,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 	if n.FailsafePolicies == nil || len(n.FailsafePolicies) == 0 {
 		// Handling via simple loop over upstreams until one responds
 		for _, u := range n.Upstreams {
-			if _, err := tryForward(u, ctx, wmu); err != nil {
+			if _, err := tryForward(u, ctx); err != nil {
 				errorsByUpstream = append(errorsByUpstream, err)
 				continue
 			}
@@ -136,8 +175,8 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 			mtx.Unlock()
 			n.Logger.Debug().Msgf("executing forward to upstream: %s", u.Id)
 
-			skipped, err := tryForward(u, exec.Context(), wmu)
-			if err != nil && errors.Is(err, context.DeadlineExceeded) && exec.Hedges() > 0 {
+			skipped, err := tryForward(u, exec.Context())
+			if err != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) && exec.Hedges() > 0 {
 				n.Logger.Debug().Err(err).Msgf("hedged request to upstream %s skipped: %v", u.Id, skipped)
 				return nil, err
 			}
@@ -161,7 +200,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 	return nil
 }
 
-func (n *PreparedNetwork) acquireRateLimitPermit(req *upstream.NormalizedRequest) error {
+func (n *PreparedNetwork) acquireRateLimitPermit(req *common.NormalizedRequest) error {
 	if n.Config.RateLimitBucket == "" {
 		return nil
 	}
@@ -210,11 +249,10 @@ func (n *PreparedNetwork) forwardToUpstream(
 	thisUpstream *upstream.PreparedUpstream,
 	ctx context.Context,
 	r interface{},
-	w http.ResponseWriter,
-	wmu *sync.Mutex,
+	w common.ResponseWriter,
 ) error {
 	var category string = ""
-	if jrr, ok := r.(*upstream.JsonRpcRequest); ok {
+	if jrr, ok := r.(*common.JsonRpcRequest); ok {
 		category = jrr.Method
 	}
 	health.MetricUpstreamRequestTotal.WithLabelValues(
@@ -231,5 +269,5 @@ func (n *PreparedNetwork) forwardToUpstream(
 	))
 	defer timer.ObserveDuration()
 
-	return thisUpstream.Forward(ctx, n.NetworkId, r, w, wmu)
+	return thisUpstream.Forward(ctx, n.NetworkId, r, w)
 }

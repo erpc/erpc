@@ -10,6 +10,7 @@ import (
 type Config struct {
 	LogLevel     string             `yaml:"logLevel"`
 	Server       *ServerConfig      `yaml:"server"`
+	Store        *StoreConfig       `yaml:"store"`
 	Projects     []*ProjectConfig   `yaml:"projects"`
 	RateLimiters *RateLimiterConfig `yaml:"rateLimiters"`
 	HealthChecks *HealthCheckConfig `yaml:"healthChecks"`
@@ -20,6 +21,22 @@ type ServerConfig struct {
 	HttpHost     string `yaml:"httpHost"`
 	HttpPort     string `yaml:"httpPort"`
 	MaxTimeoutMs int    `yaml:"maxTimeoutMs"`
+}
+
+type StoreConfig struct {
+	Driver string       `yaml:"driver"`
+	Memory *MemoryStore `yaml:"memory"`
+	Redis  *RedisStore  `yaml:"redis"`
+}
+
+type MemoryStore struct {
+	MaxSize string `yaml:"maxSize"`
+}
+
+type RedisStore struct {
+	Addr     string `yaml:"addr"`
+	Password string `yaml:"password"`
+	DB       int    `yaml:"db"`
 }
 
 type ProjectConfig struct {

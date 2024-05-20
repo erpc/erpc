@@ -8,12 +8,10 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
 	"github.com/flair-sdk/erpc/erpc"
-	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog/log"
 )
 
@@ -26,7 +24,7 @@ func NewHttpServer(cfg *config.ServerConfig, erpc *erpc.ERPC) *HttpServer {
 	addr := fmt.Sprintf("%s:%s", cfg.HttpHost, cfg.HttpPort)
 
 	handler := http.NewServeMux()
-	handler.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	handler.HandleFunc("/", func(hrw http.ResponseWriter, r *http.Request) {
 		log.Debug().Msgf("received request on path: %s with body length: %d", r.URL.Path, r.ContentLength)
 
 		// Split the URL path into segments
@@ -34,7 +32,7 @@ func NewHttpServer(cfg *config.ServerConfig, erpc *erpc.ERPC) *HttpServer {
 
 		// Check if the URL path has at least three segments ("/main/1")
 		if len(segments) != 3 {
-			http.NotFound(w, r)
+			http.NotFound(hrw, r)
 			return
 		}
 
@@ -45,38 +43,38 @@ func NewHttpServer(cfg *config.ServerConfig, erpc *erpc.ERPC) *HttpServer {
 		if err != nil {
 			log.Error().Err(err).Msgf("failed to read request body")
 
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(err)
+			hrw.Header().Set("Content-Type", "application/json")
+			hrw.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(hrw).Encode(err)
 			return
 		}
 
 		log.Debug().Msgf("received request for projectId: %s, networkId: %s with body: %s", projectId, networkId, body)
 
-		nq := upstream.NewNormalizedRequest(body)
+		nq := common.NewNormalizedRequest(body)
 		project, err := erpc.GetProject(projectId)
 		if err == nil {
 			// This mutex is used when multiple upstreams are tried in parallel (e.g. when Hedge failsafe policy is used)
-			writeMu := &sync.Mutex{}
-			err = project.Forward(r.Context(), networkId, nq, w, writeMu)
+			cwr := common.NewHttpCompositeResponseWriter(nq, hrw)
+			err = project.Forward(r.Context(), networkId, nq, cwr)
 		}
 
 		if err != nil {
 			log.Error().Err(err).Msgf("failed to forward request")
 
-			w.Header().Set("Content-Type", "application/json")
+			hrw.Header().Set("Content-Type", "application/json")
 			var httpErr common.ErrorWithStatusCode
 			if errors.As(err, &httpErr) {
-				w.WriteHeader(httpErr.ErrorStatusCode())
+				hrw.WriteHeader(httpErr.ErrorStatusCode())
 			} else {
-				w.WriteHeader(http.StatusInternalServerError)
+				hrw.WriteHeader(http.StatusInternalServerError)
 			}
 
 			var bodyErr common.ErrorWithBody
 			if errors.As(err, &bodyErr) {
-				json.NewEncoder(w).Encode(bodyErr.ErrorResponseBody())
+				json.NewEncoder(hrw).Encode(bodyErr.ErrorResponseBody())
 			} else {
-				json.NewEncoder(w).Encode(err)
+				json.NewEncoder(hrw).Encode(err)
 			}
 		} else {
 			log.Debug().Msgf("request forwarded successfully for projectId: %s, networkId: %s", projectId, networkId)

@@ -1,10 +1,10 @@
-package upstream
+package common
 
 import (
 	"testing"
 )
 
-func UpstreamsRegistry_BodyCannotBeDecoded(t *testing.T) {
+func TestNormalizedRequest_BodyCannotBeDecoded(t *testing.T) {
 	normReq := NewNormalizedRequest([]byte(`{"method": "test", "params": "invalid"}`))
 
 	// Call the JsonRpcRequest method to parse and normalize the request
