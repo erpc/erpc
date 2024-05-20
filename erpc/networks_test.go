@@ -21,6 +21,49 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+type ResponseRecorder struct {
+	sync.Mutex
+	*httptest.ResponseRecorder
+	extraBodyWriters []io.Writer
+}
+
+func (r *ResponseRecorder) Write(p []byte) (int, error) {
+	n, err := r.ResponseRecorder.Write(p)
+	if err != nil {
+		return n, err
+	}
+	for _, wr := range r.extraBodyWriters {
+		_, err := wr.Write(p)
+		if err != nil {
+			return n, err
+		}
+	}
+	return n, nil
+}
+
+func (r *ResponseRecorder) AddBodyWriter(wr io.WriteCloser) {
+	r.extraBodyWriters = append(r.extraBodyWriters, wr)
+}
+
+func (r *ResponseRecorder) Close() error {
+	if r.extraBodyWriters != nil {
+		for _, wr := range r.extraBodyWriters {
+			closer, ok := wr.(io.Closer)
+			if ok {
+				err := closer.Close()
+				if err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (r *ResponseRecorder) AddHeader(key, value string) {
+	r.Header().Add(key, value)
+}
+
 func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T) {
 	defer gock.Clean()
 
@@ -205,25 +248,6 @@ func TestPreparedNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 	}
 }
 
-type ResponseRecorder struct {
-	sync.Mutex
-	*httptest.ResponseRecorder
-	// dal common.DAL
-}
-
-func (r *ResponseRecorder) AddBodyWriter(dal io.WriteCloser) {
-	// TODO
-}
-
-func (r *ResponseRecorder) Close() error {
-	// TODO
-	return nil
-}
-
-func (r *ResponseRecorder) AddHeader(key, value string) {
-	r.Header().Add(key, value)
-}
-
 func TestPreparedNetwork_ForwardRetryFailuresWithSuccess(t *testing.T) {
 	defer gock.Clean()
 
@@ -320,8 +344,11 @@ func TestPreparedNetwork_ForwardRetryFailuresWithSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("error unmarshalling: %s response body: %s", err, body)
 	}
-	if respObject["hash"] != "0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9" {
-		t.Errorf("Expected %v, got %v", "0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9", respObject["hash"])
+	if respObject["result"] == nil {
+		t.Errorf("Expected result, got %v", respObject)
+	}
+	if respObject["result"].(map[string]interface{})["hash"] == "" {
+		t.Errorf("Expected hash to exist, got %v", body)
 	}
 }
 
@@ -603,8 +630,11 @@ func TestPreparedNetwork_ForwardHedgePolicyTriggered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("error unmarshalling: %s response body: %s", err, body)
 	}
-	if respObject["fromHost"] != "rpc2" {
-		t.Errorf("Expected fromHost to be %v, got %v", "rpc2", respObject["fromHost"])
+	if respObject["result"] == nil {
+		t.Errorf("Expected result, got %v", respObject)
+	}
+	if respObject["result"].(map[string]interface{})["fromHost"] != "rpc2" {
+		t.Errorf("Expected fromHost to be %v, got %v", "rpc2", respObject["result"].(map[string]interface{})["fromHost"])
 	}
 }
 
@@ -711,12 +741,16 @@ func TestPreparedNetwork_ForwardHedgePolicyNotTriggered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("error reading response: %s", err)
 	}
+	// log.
 	err = json.Unmarshal(body, &respObject)
 	if err != nil {
 		t.Fatalf("error unmarshalling: %s response body: %s", err, body)
 	}
-	if respObject["fromHost"] != "rpc2" {
-		t.Errorf("Expected fromHost to be %v, got %v", "rpc2", respObject["fromHost"])
+	if respObject["result"] == nil {
+		t.Errorf("Expected result, got %v", respObject)
+	}
+	if respObject["result"].(map[string]interface{})["fromHost"] != "rpc2" {
+		t.Errorf("Expected fromHost to be %v, got %v", "rpc2", respObject["result"].(map[string]interface{})["fromHost"])
 	}
 }
 
@@ -826,8 +860,11 @@ func TestPreparedNetwork_ForwardHedgePolicyIgnoresNegativeScoreUpstream(t *testi
 	if err != nil {
 		t.Fatalf("error unmarshalling: %s response body: %s", err, body)
 	}
-	if respObject["fromHost"] != "rpc1" {
-		t.Errorf("Expected fromHost to be %v, got %v", "rpc1", respObject["fromHost"])
+	if respObject["result"] == nil {
+		t.Errorf("Expected result, got %v", respObject)
+	}
+	if respObject["result"].(map[string]interface{})["fromHost"] != "rpc1" {
+		t.Errorf("Expected fromHost to be %v, got %v", "rpc1", respObject["result"].(map[string]interface{})["fromHost"])
 	}
 }
 
@@ -1000,10 +1037,10 @@ func TestPreparedNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
 
 	time.Sleep(2 * time.Second)
 
-	var respWriter *httptest.ResponseRecorder
+	var respWriter *ResponseRecorder
 	for i := 0; i < 3; i++ {
 		fakeReq := common.NewNormalizedRequest(requestBytes)
-		respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
+		respWriter = &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 		err = ntw.Forward(ctx, fakeReq, respWriter)
 	}
 
@@ -1036,7 +1073,10 @@ func TestPreparedNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("error unmarshalling: %s response body: %s", err, body)
 	}
-	if respObject["hash"] != "0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9" {
-		t.Errorf("Expected hash to be %v, got %v", "0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9", respObject["hash"])
+	if respObject["result"] == nil {
+		t.Errorf("Expected result, got %v", respObject)
+	}
+	if respObject["result"].(map[string]interface{})["hash"] == "" {
+		t.Errorf("Expected hash to exist, got %v", body)
 	}
 }

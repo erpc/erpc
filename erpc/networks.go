@@ -55,11 +55,13 @@ func (r *ProjectsRegistry) NewNetwork(
 	}
 
 	var dal common.DAL
-	switch nwCfg.Architecture {
-	case "evm":
-		dal = NewEvmDAL(store)
-	default:
-		return nil, errors.New("unknown network architecture")
+	if store != nil {
+		switch nwCfg.Architecture {
+		case "evm":
+			dal = NewEvmDAL(store)
+		default:
+			return nil, errors.New("unknown network architecture")
+		}
 	}
 
 	ptr := logger.With().Str("network", nwCfg.NetworkId).Logger()
@@ -85,20 +87,22 @@ func (n *PreparedNetwork) Architecture() string {
 func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedRequest, w common.ResponseWriter) error {
 	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
 
-	cacheReader, err := n.dal.GetWithReader(req)
-	if err != nil {
-		n.Logger.Warn().Err(err).Msgf("could not find response in cache")
-	}
-	if cacheReader != nil {
-		if w.TryLock() {
-			w.AddHeader("Content-Type", "application/json")
-			w.AddHeader("X-ERPC-Network", n.NetworkId)
-			w.AddHeader("X-ERPC-Cache", "Hit")
-			w, err := io.Copy(w, cacheReader)
-			n.Logger.Info().Object("req", req).Int64("written", w).Err(err).Msgf("response served from cache")
-			return err
-		} else {
-			return common.NewErrResponseWriteLock("<cache store>")
+	if n.dal != nil {
+		cacheReader, err := n.dal.GetWithReader(req)
+		if err != nil {
+			n.Logger.Warn().Err(err).Msgf("could not find response in cache")
+		}
+		if cacheReader != nil {
+			if w.TryLock() {
+				w.AddHeader("Content-Type", "application/json")
+				w.AddHeader("X-ERPC-Network", n.NetworkId)
+				w.AddHeader("X-ERPC-Cache", "Hit")
+				w, err := io.Copy(w, cacheReader)
+				n.Logger.Info().Object("req", req).Int64("written", w).Err(err).Msgf("response served from cache")
+				return err
+			} else {
+				return common.NewErrResponseWriteLock("<cache store>")
+			}
 		}
 	}
 
@@ -109,12 +113,16 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 	var errorsByUpstream = []error{}
 
 	// Configure the cache writer on the response writer so result can be cached
-	cwr, err := n.dal.SetWithWriter(req)
-	if err != nil {
-		n.Logger.Warn().Err(err).Msgf("could create cache response writer")
-	} else {
-		w.AddBodyWriter(cwr)
-	}
+	go (func() {
+		if n.dal != nil {
+			cwr, err := n.dal.SetWithWriter(req)
+			if err != nil {
+				n.Logger.Warn().Err(err).Msgf("could create cache response writer")
+			} else {
+				w.AddBodyWriter(cwr)
+			}
+		}
+	})()
 
 	// Function to prepare and forward the request to an upstream
 	tryForward := func(
