@@ -24,19 +24,35 @@ type ServerConfig struct {
 }
 
 type StoreConfig struct {
-	Driver string       `yaml:"driver"`
-	Memory *MemoryStore `yaml:"memory"`
-	Redis  *RedisStore  `yaml:"redis"`
+	Driver   string               `yaml:"driver"`
+	Memory   *MemoryStoreConfig   `yaml:"memory"`
+	Redis    *RedisStoreConfig    `yaml:"redis"`
+	DynamoDB *DynamoDBStoreConfig `yaml:"dynamodb"`
 }
 
-type MemoryStore struct {
+type MemoryStoreConfig struct {
 	MaxSize string `yaml:"maxSize"`
 }
 
-type RedisStore struct {
+type RedisStoreConfig struct {
 	Addr     string `yaml:"addr"`
 	Password string `yaml:"password"`
 	DB       int    `yaml:"db"`
+}
+
+type DynamoDBStoreConfig struct {
+	Table    string         `yaml:"table"`
+	Region   string         `yaml:"region"`
+	Endpoint string         `yaml:"endpoint"`
+	Auth     *AwsAuthConfig `yaml:"auth"`
+}
+
+type AwsAuthConfig struct {
+	Mode            string `yaml:"mode"` // "file", "env", "secret"
+	CredentialsFile string `yaml:"credentialsFile"`
+	Profile         string `yaml:"profile"`
+	AccessKeyID     string `yaml:"accessKeyID"`
+	SecretAccessKey string `yaml:"secretAccessKey"`
 }
 
 type ProjectConfig struct {

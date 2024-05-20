@@ -1,6 +1,7 @@
 package data
 
 import (
+	"context"
 	"io"
 
 	"github.com/flair-sdk/erpc/common"
@@ -8,12 +9,12 @@ import (
 )
 
 type Store interface {
-	Get(key string) (string, error)
-	GetWithReader(key string) (io.Reader, error)
-	Set(key string, value string) (int, error)
-	SetWithWriter(key string) (io.WriteCloser, error)
-	Scan(prefix string) ([]string, error)
-	Delete(key string) error
+	Get(ctx context.Context, key string) (string, error)
+	GetWithReader(ctx context.Context, key string) (io.Reader, error)
+	Set(ctx context.Context, key string, value string) (int, error)
+	SetWithWriter(ctx context.Context, key string) (io.WriteCloser, error)
+	Scan(ctx context.Context, prefix string) ([]string, error)
+	Delete(ctx context.Context, key string) error
 }
 
 func NewStore(cfg *config.StoreConfig) (Store, error) {
@@ -22,6 +23,8 @@ func NewStore(cfg *config.StoreConfig) (Store, error) {
 		return NewMemoryStore(cfg.Memory), nil
 	case "redis":
 		return NewRedisStore(cfg.Redis), nil
+	case "dynamodb":
+		return NewDynamoDBStore(cfg.DynamoDB)
 	}
 
 	return nil, common.NewErrInvalidStoreDriver(cfg.Driver)

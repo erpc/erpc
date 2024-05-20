@@ -45,9 +45,9 @@ func (w *HttpCompositeResponseWriter) AddHeader(key, value string) {
 }
 
 func (w *HttpCompositeResponseWriter) Write(data []byte) (c int, err error) {
-	if log.Trace().Enabled() {
-		log.Trace().Msgf("writing response on bodyWriters: %v data: %s", len(w.bodyWriters), data)
-	}
+	// if log.Trace().Enabled() {
+	// 	log.Trace().Msgf("writing response on bodyWriters: %v data: %s", len(w.bodyWriters), data)
+	// }
 
 	for _, bw := range w.bodyWriters {
 		c, err = bw.Write(data)

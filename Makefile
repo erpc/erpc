@@ -40,7 +40,7 @@ coverage:
 
 .PHONY: up
 up:
-	@docker-compose up -d
+	@docker-compose up -d --force-recreate --remove-orphans
 
 .PHONY: down
 down:

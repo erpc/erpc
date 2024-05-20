@@ -1,6 +1,7 @@
 package erpc
 
 import (
+	"context"
 	"fmt"
 	"io"
 
@@ -36,7 +37,7 @@ func NewEvmDAL(store data.Store) *EvmDAL {
 	}
 }
 
-func (dal *EvmDAL) Get(req *common.NormalizedRequest) (string, error) {
+func (dal *EvmDAL) Get(ctx context.Context, req *common.NormalizedRequest) (string, error) {
 	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
 		return "", err
@@ -46,37 +47,37 @@ func (dal *EvmDAL) Get(req *common.NormalizedRequest) (string, error) {
 
 	switch method {
 	case "eth_getLogs":
-		return dal.getLogs(rpcReq)
+		return dal.getLogs(ctx, rpcReq)
 	default:
-		return dal.getSimple(rpcReq)
+		return dal.getSimple(ctx, rpcReq)
 	}
 }
 
-func (dal *EvmDAL) GetWithReader(req *common.NormalizedRequest) (io.Reader, error) {
+func (dal *EvmDAL) GetWithReader(ctx context.Context, req *common.NormalizedRequest) (io.Reader, error) {
 	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
 		return nil, err
 	}
 
 	key := fmt.Sprintf("%s:%s", rpcReq.Method, rpcReq.Params)
-	return dal.store.GetWithReader(key)
+	return dal.store.GetWithReader(ctx, key)
 }
 
-func (dal *EvmDAL) getSimple(req *common.JsonRpcRequest) (string, error) {
+func (dal *EvmDAL) getSimple(ctx context.Context, req *common.JsonRpcRequest) (string, error) {
 	key := fmt.Sprintf("%s:%s", req.Method, req.Params)
-	rawRespStr, err := dal.store.Get(key)
+	rawRespStr, err := dal.store.Get(ctx, key)
 	if err != nil {
 		return "", err
 	}
 	return rawRespStr, nil
 }
 
-func (dal *EvmDAL) getLogs(req *common.JsonRpcRequest) (string, error) {
+func (dal *EvmDAL) getLogs(ctx context.Context, req *common.JsonRpcRequest) (string, error) {
 	// TODO implement advanced filtering and scatter-gather
-	return dal.getSimple(req)
+	return dal.getSimple(ctx, req)
 }
 
-func (dal *EvmDAL) Set(req *common.NormalizedRequest, value string) (int, error) {
+func (dal *EvmDAL) Set(ctx context.Context, req *common.NormalizedRequest, value string) (int, error) {
 	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
 		return 0, err
@@ -84,10 +85,10 @@ func (dal *EvmDAL) Set(req *common.NormalizedRequest, value string) (int, error)
 
 	key := fmt.Sprintf("%s:%s", rpcReq.Method, rpcReq.Params)
 
-	return dal.store.Set(key, value)
+	return dal.store.Set(ctx, key, value)
 }
 
-func (dal *EvmDAL) SetWithWriter(req *common.NormalizedRequest) (io.WriteCloser, error) {
+func (dal *EvmDAL) SetWithWriter(ctx context.Context, req *common.NormalizedRequest) (io.WriteCloser, error) {
 	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
 		return nil, err
@@ -95,15 +96,15 @@ func (dal *EvmDAL) SetWithWriter(req *common.NormalizedRequest) (io.WriteCloser,
 
 	key := fmt.Sprintf("%s:%s", rpcReq.Method, rpcReq.Params)
 
-	return dal.store.SetWithWriter(key)
+	return dal.store.SetWithWriter(ctx, key)
 }
 
-func (dal *EvmDAL) Delete(req *common.NormalizedRequest) error {
+func (dal *EvmDAL) Delete(ctx context.Context, req *common.NormalizedRequest) error {
 	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
 		return err
 	}
 
 	key := fmt.Sprintf("%s:%s", rpcReq.Method, rpcReq.Params)
-	return dal.store.Delete(key)
+	return dal.store.Delete(ctx, key)
 }

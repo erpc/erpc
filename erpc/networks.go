@@ -88,7 +88,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
 
 	if n.dal != nil {
-		cacheReader, err := n.dal.GetWithReader(req)
+		cacheReader, err := n.dal.GetWithReader(ctx, req)
 		if err != nil {
 			n.Logger.Warn().Err(err).Msgf("could not find response in cache")
 		}
@@ -115,9 +115,9 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 	// Configure the cache writer on the response writer so result can be cached
 	go (func() {
 		if n.dal != nil {
-			cwr, err := n.dal.SetWithWriter(req)
+			cwr, err := n.dal.SetWithWriter(ctx, req)
 			if err != nil {
-				n.Logger.Warn().Err(err).Msgf("could create cache response writer")
+				n.Logger.Warn().Err(err).Msgf("could not create cache response writer")
 			} else {
 				w.AddBodyWriter(cwr)
 			}

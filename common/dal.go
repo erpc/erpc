@@ -1,11 +1,14 @@
 package common
 
-import "io"
+import (
+	"context"
+	"io"
+)
 
 type DAL interface {
-	Get(req *NormalizedRequest) (string, error)
-	GetWithReader(req *NormalizedRequest) (io.Reader, error)
-	Set(req *NormalizedRequest, value string) (int, error)
-	SetWithWriter(req *NormalizedRequest) (io.WriteCloser, error)
-	Delete(req *NormalizedRequest) error
+	Get(ctx context.Context, req *NormalizedRequest) (string, error)
+	GetWithReader(ctx context.Context, req *NormalizedRequest) (io.Reader, error)
+	Set(ctx context.Context, req *NormalizedRequest, value string) (int, error)
+	SetWithWriter(ctx context.Context, req *NormalizedRequest) (io.WriteCloser, error)
+	Delete(ctx context.Context, req *NormalizedRequest) error
 }

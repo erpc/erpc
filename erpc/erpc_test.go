@@ -17,7 +17,7 @@ func TestBoorstrap_GracefulShutdown(t *testing.T) {
 			HttpPort: fmt.Sprint(rand.Intn(1000) + 2000),
 		},
 	}
-	store := data.NewMemoryStore(&config.MemoryStore{
+	store := data.NewMemoryStore(&config.MemoryStoreConfig{
 		MaxSize: "100mb",
 	})
 	lg := log.With().Logger()
@@ -47,7 +47,7 @@ func TestBootstrap_UpstreamsRegistryFailure(t *testing.T) {
 		},
 	}
 
-	store := data.NewMemoryStore(&config.MemoryStore{
+	store := data.NewMemoryStore(&config.MemoryStoreConfig{
 		MaxSize: "100mb",
 	})
 	lg := log.With().Logger()

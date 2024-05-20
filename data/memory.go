@@ -1,6 +1,7 @@
 package data
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -11,18 +12,18 @@ import (
 
 type MemoryStore struct {
 	sync.RWMutex
-	config *config.MemoryStore
+	config *config.MemoryStoreConfig
 	data   map[string]string
 }
 
-func NewMemoryStore(cfg *config.MemoryStore) *MemoryStore {
+func NewMemoryStore(cfg *config.MemoryStoreConfig) *MemoryStore {
 	return &MemoryStore{
 		config: cfg,
 		data:   make(map[string]string),
 	}
 }
 
-func (m *MemoryStore) Get(key string) (string, error) {
+func (m *MemoryStore) Get(ctx context.Context, key string) (string, error) {
 	m.RLock()
 	defer m.RUnlock()
 	value, ok := m.data[key]
@@ -32,8 +33,8 @@ func (m *MemoryStore) Get(key string) (string, error) {
 	return value, nil
 }
 
-func (r *MemoryStore) GetWithReader(key string) (io.Reader, error) {
-	value, err := r.Get(key)
+func (r *MemoryStore) GetWithReader(ctx context.Context, key string) (io.Reader, error) {
+	value, err := r.Get(ctx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -41,21 +42,21 @@ func (r *MemoryStore) GetWithReader(key string) (io.Reader, error) {
 	return strings.NewReader(value), nil
 }
 
-func (m *MemoryStore) Set(key string, value string) (int, error) {
+func (m *MemoryStore) Set(ctx context.Context, key string, value string) (int, error) {
 	m.Lock()
 	defer m.Unlock()
 	m.data[key] = value
 	return len(value), nil
 }
 
-func (m *MemoryStore) SetWithWriter(key string) (io.WriteCloser, error) {
+func (m *MemoryStore) SetWithWriter(ctx context.Context, key string) (io.WriteCloser, error) {
 	m.Lock()
 	defer m.Unlock()
 	delete(m.data, key)
 	return &MemoryValueWriter{memoryStore: m, key: key}, nil
 }
 
-func (m *MemoryStore) Scan(prefix string) ([]string, error) {
+func (m *MemoryStore) Scan(ctx context.Context, prefix string) ([]string, error) {
 	m.RLock()
 	defer m.RUnlock()
 	var values []string
@@ -67,7 +68,7 @@ func (m *MemoryStore) Scan(prefix string) ([]string, error) {
 	return values, nil
 }
 
-func (m *MemoryStore) Delete(key string) error {
+func (m *MemoryStore) Delete(ctx context.Context, key string) error {
 	m.Lock()
 	defer m.Unlock()
 	if _, ok := m.data[key]; !ok {
