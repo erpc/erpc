@@ -23,14 +23,30 @@ metrics:
   port: number
 
 store:
-  driver: memory | rocksdb | redis | dynamo | postgre
+  driver: memory | redis | postgresql | dynamodb
   memory:
     maxSize: string
   redis:
     host: string
     port: number
     password: string
-
+  postgresql:
+    host: string
+    port: number
+    user: string
+    password: string
+    database: string
+  dynamodb:
+    region: string
+    endpoint: string
+    table: string
+    auth:
+      mode: env | file | secret
+      credentialsFile: string
+      profile: string
+      accessKeyID: string
+      secretAccessKey: string
+  
 projects:
   - id: string # main, frontend, sushiswap-prod, etc ...
     rateLimitBucket: string

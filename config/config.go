@@ -24,10 +24,11 @@ type ServerConfig struct {
 }
 
 type StoreConfig struct {
-	Driver   string               `yaml:"driver"`
-	Memory   *MemoryStoreConfig   `yaml:"memory"`
-	Redis    *RedisStoreConfig    `yaml:"redis"`
-	DynamoDB *DynamoDBStoreConfig `yaml:"dynamodb"`
+	Driver     string                 `yaml:"driver"`
+	Memory     *MemoryStoreConfig     `yaml:"memory"`
+	Redis      *RedisStoreConfig      `yaml:"redis"`
+	DynamoDB   *DynamoDBStoreConfig   `yaml:"dynamodb"`
+	PostgreSQL *PostgreSQLStoreConfig `yaml:"postgresql"`
 }
 
 type MemoryStoreConfig struct {
@@ -45,6 +46,11 @@ type DynamoDBStoreConfig struct {
 	Region   string         `yaml:"region"`
 	Endpoint string         `yaml:"endpoint"`
 	Auth     *AwsAuthConfig `yaml:"auth"`
+}
+
+type PostgreSQLStoreConfig struct {
+	ConnectionUri string `yaml:"connectionUri"`
+	Table         string `yaml:"table"`
 }
 
 type AwsAuthConfig struct {

@@ -593,3 +593,18 @@ var NewErrInvalidStoreDriver = func(driver string) error {
 		},
 	}
 }
+
+type ErrRecordNotFound struct{ BaseError }
+
+var NewErrRecordNotFound = func(key string, driver string) error {
+	return &ErrRecordNotFound{
+		BaseError{
+			Code:    "ErrRecordNotFound",
+			Message: "record not found",
+			Details: map[string]interface{}{
+				"key":    key,
+				"driver": driver,
+			},
+		},
+	}
+}
