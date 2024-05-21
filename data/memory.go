@@ -7,7 +7,12 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
+)
+
+const (
+	MemoryStoreDriver = "memory"
 )
 
 type MemoryStore struct {
@@ -28,7 +33,7 @@ func (m *MemoryStore) Get(ctx context.Context, key string) (string, error) {
 	defer m.RUnlock()
 	value, ok := m.data[key]
 	if !ok {
-		return "", fmt.Errorf("key not found: %s", key)
+		return "", common.NewErrRecordNotFound(key, MemoryStoreDriver)
 	}
 	return value, nil
 }

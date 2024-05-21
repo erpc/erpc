@@ -90,7 +90,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 	if n.dal != nil {
 		cacheReader, err := n.dal.GetWithReader(ctx, req)
 		if err != nil {
-			n.Logger.Warn().Err(err).Msgf("could not find response in cache")
+			n.Logger.Debug().Err(err).Msgf("could not find response in cache")
 		}
 		if cacheReader != nil {
 			if w.TryLock() {

@@ -25,6 +25,8 @@ func NewStore(cfg *config.StoreConfig) (Store, error) {
 		return NewRedisStore(cfg.Redis), nil
 	case "dynamodb":
 		return NewDynamoDBStore(cfg.DynamoDB)
+	case "postgresql":
+		return NewPostgreSQLStore(cfg.PostgreSQL)
 	}
 
 	return nil, common.NewErrInvalidStoreDriver(cfg.Driver)
