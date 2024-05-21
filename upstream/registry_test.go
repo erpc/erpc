@@ -148,6 +148,61 @@ func TestUpstreamsRegistry_ScoreOrdering(t *testing.T) {
 				{"upstreamE", 0.625, 625, 31, 31, 3},
 			},
 		},
+		// Very high errors and throttled rates
+		{
+			groupId: "VeryHighErrorsAndThrottledRates",
+			testCases: []testCase{
+				{"upstreamA", 100.0, 10000, 9000, 9000, 100},
+				{"upstreamB", 100.0, 10000, 8000, 8000, 100},
+				{"upstreamC", 100.0, 10000, 7000, 7000, 100},
+				{"upstreamD", 100.0, 10000, 6000, 6000, 100},
+				{"upstreamE", 100.0, 10000, 5000, 5000, 100},
+			},
+		},
+		// High latency but zero errors and throttled rates
+		{
+			groupId: "HighLatencyZeroErrorsThrottled",
+			testCases: []testCase{
+				{"upstreamA", 100.0, 10000, 0, 0, 100},
+				{"upstreamB", 90.0, 9000, 0, 0, 90},
+				{"upstreamC", 80.0, 8000, 0, 0, 80},
+				{"upstreamD", 70.0, 7000, 0, 0, 70},
+				{"upstreamE", 60.0, 6000, 0, 0, 60},
+			},
+		},
+		// Low block lags and errors
+		{
+			groupId: "LowBlockLagsAndErrors",
+			testCases: []testCase{
+				{"upstreamA", 100.0, 10000, 0, 100, 0},
+				{"upstreamB", 90.0, 9000, 0, 90, 0},
+				{"upstreamC", 80.0, 8000, 0, 80, 0},
+				{"upstreamD", 70.0, 7000, 0, 70, 0},
+				{"upstreamE", 60.0, 6000, 0, 60, 0},
+			},
+		},
+		// High throttled rates but low latency and errors
+		{
+			groupId: "HighThrottledLowLatencyErrors",
+			testCases: []testCase{
+				{"upstreamA", 1.0, 1000, 1, 900, 1},
+				{"upstreamB", 1.0, 1000, 1, 800, 1},
+				{"upstreamC", 1.0, 1000, 1, 700, 1},
+				{"upstreamD", 1.0, 1000, 1, 600, 1},
+				{"upstreamE", 1.0, 1000, 1, 500, 1},
+			},
+		},
+		// Zero errors, throttled rates, and block lags
+		{
+			groupId: "ZeroErrorsThrottledBlockLags",
+			testCases: []testCase{
+				{"upstreamA", 100.0, 10000, 0, 0, 0},
+				{"upstreamB", 90.0, 9000, 0, 0, 0},
+				{"upstreamC", 80.0, 8000, 0, 0, 0},
+				{"upstreamD", 70.0, 7000, 0, 0, 0},
+				{"upstreamE", 60.0, 6000, 0, 0, 0},
+			},
+		},
 	}
 
 	for _, tg := range testGroups {
