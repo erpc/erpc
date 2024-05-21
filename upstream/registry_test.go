@@ -104,6 +104,50 @@ func TestUpstreamsRegistry_ScoreOrdering(t *testing.T) {
 				{"upstreamD", 10.0, 10000, 1000, 100, 0},
 			},
 		},
+		// Mixed factors
+		{
+			groupId: "MixedFactors1",
+			testCases: []testCase{
+				{"upstreamA", 100.0, 100000, 10000, 10000, 100},
+				{"upstreamB", 50.0, 50000, 5000, 5000, 50},
+				{"upstreamC", 10.0, 10000, 1000, 1000, 10},
+				{"upstreamD", 1.0, 1000, 100, 100, 1},
+				{"upstreamE", 0.1, 100, 10, 10, 0},
+			},
+		},
+		// Low error and throttled rates
+		{
+			groupId: "LowErrorAndThrottledRates",
+			testCases: []testCase{
+				{"upstreamA", 50.0, 50000, 500, 500, 50},
+				{"upstreamB", 50.0, 50000, 100, 100, 50},
+				{"upstreamC", 50.0, 50000, 50, 50, 50},
+				{"upstreamD", 50.0, 50000, 10, 10, 50},
+				{"upstreamE", 50.0, 50000, 0, 0, 50},
+			},
+		},
+		// High requests but low latency
+		{
+			groupId: "HighRequestsLowLatency",
+			testCases: []testCase{
+				{"upstreamA", 0.1, 100000, 1000, 1000, 10},
+				{"upstreamB", 0.1, 50000, 500, 500, 10},
+				{"upstreamC", 0.1, 10000, 100, 100, 10},
+				{"upstreamD", 0.1, 1000, 10, 10, 10},
+				{"upstreamE", 0.1, 100, 1, 1, 10},
+			},
+		},
+		// Balanced metrics
+		{
+			groupId: "BalancedMetrics",
+			testCases: []testCase{
+				{"upstreamA", 10.0, 10000, 500, 500, 50},
+				{"upstreamB", 5.0, 5000, 250, 250, 25},
+				{"upstreamC", 2.5, 2500, 125, 125, 12},
+				{"upstreamD", 1.25, 1250, 62, 62, 6.},
+				{"upstreamE", 0.625, 625, 31, 31, 3},
+			},
+		},
 	}
 
 	for _, tg := range testGroups {
