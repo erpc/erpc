@@ -1,13 +1,33 @@
 version: "3"
 
 services:
+  redis:
+    container_name: erpc-redis
+    image: redis:6.2.5
+    restart: always
+    ports:
+      - "6379:6379"
+    networks:
+      erpc:
 
-  scylla-node:
-    container_name: scylla-node
+  scylla:
+    container_name: erpc-scylla
     image: scylladb/scylla:5.2.18
     restart: always
-    command: --seeds=scylla-node --smp 1 --memory 1G --overprovisioned 1 --api-address 0.0.0.0
+    # entrypoint: /usr/bin/scylla --log-to-syslog 0 --log-to-stdout 1 --default-log-level debug --developer-mode=1 --memory 1G --smp 1 --overprovisioned --listen-address 0.0.0.0 --rpc-address 0.0.0.0 --seed-provider-parameters seeds=erpc-scylla --api-address 0.0.0.0 --alternator-address 0.0.0.0 --alternator-port 8067 --alternator-write-isolation unsafe_rmw --blocked-reactor-notify-ms 999999999 
+    command: --alternator-port=8067 --alternator-write-isolation=unsafe_rmw --seeds=erpc-scylla --smp 1 --memory 1G --overprovisioned 1 --api-address 0.0.0.0
     volumes:
       - "./scylla/scylla.yaml:/etc/scylla/scylla.yaml"
       - "./scylla/cassandra-rackdc.properties.dc1:/etc/scylla/cassandra-rackdc.properties"
       - "./scylla/mutant-data.txt:/mutant-data.txt"
+    ports:
+      - "8067:8067"
+      - "9042:9042"
+      - "9160:9160"
+      - "10000:10000"
+    networks:
+      erpc:
+
+networks:
+  erpc:
+    driver: bridge

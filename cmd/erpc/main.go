@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/flair-sdk/erpc/config"
+	"github.com/flair-sdk/erpc/data"
 	"github.com/flair-sdk/erpc/erpc"
 	"github.com/flair-sdk/erpc/server"
 	"github.com/flair-sdk/erpc/util"
@@ -21,7 +22,7 @@ import (
 func main() {
 	logger := log.With().Logger()
 
-	shutdown, err := Init(logger, afero.NewOsFs(), os.Args)
+	shutdown, err := Init(&logger, afero.NewOsFs(), os.Args)
 	defer shutdown()
 
 	if err != nil {
@@ -35,7 +36,7 @@ func main() {
 	logger.Warn().Msgf("caught signal: %v", recvSig)
 }
 
-func Init(logger zerolog.Logger, fs afero.Fs, args []string) (func() error, error) {
+func Init(logger *zerolog.Logger, fs afero.Fs, args []string) (func() error, error) {
 	logger.Debug().Msg("starting eRPC...")
 
 	//
@@ -63,7 +64,14 @@ func Init(logger zerolog.Logger, fs afero.Fs, args []string) (func() error, erro
 	//
 	// 2) Initialize eRPC
 	//
-	erpcInstance, err := erpc.NewERPC(logger, cfg)
+	var store data.Store
+	if cfg.Store != nil {
+		store, err = data.NewStore(cfg.Store)
+		if err != nil {
+			return nil, err
+		}
+	}
+	erpcInstance, err := erpc.NewERPC(logger, store, cfg)
 	if err != nil {
 		return nil, err
 	}

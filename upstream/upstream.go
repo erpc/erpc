@@ -2,11 +2,9 @@ package upstream
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"sync"
+	"io"
 	"time"
 
 	"github.com/failsafe-go/failsafe-go"
@@ -121,7 +119,7 @@ func (c *UpstreamMetrics) MarshalZerologObject(e *zerolog.Event) {
 		Time("lastCollect", c.LastCollect)
 }
 
-func (u *PreparedUpstream) PrepareRequest(normalizedReq *NormalizedRequest) (interface{}, error) {
+func (u *PreparedUpstream) PrepareRequest(normalizedReq *common.NormalizedRequest) (interface{}, error) {
 	switch u.Architecture {
 	case ArchitectureEvm:
 		if u.Client == nil {
@@ -147,7 +145,7 @@ func (u *PreparedUpstream) PrepareRequest(normalizedReq *NormalizedRequest) (int
 	}
 }
 
-func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req interface{}, w http.ResponseWriter, wmu *sync.Mutex) error {
+func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req interface{}, w common.ResponseWriter) error {
 	clientType := u.Client.GetType()
 
 	switch clientType {
@@ -169,7 +167,7 @@ func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req in
 			}
 		}
 
-		method := req.(*JsonRpcRequest).Method
+		method := req.(*common.JsonRpcRequest).Method
 		lg := u.Logger.With().Str("method", method).Logger()
 
 		if limitersBucket != nil {
@@ -200,12 +198,10 @@ func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req in
 		tryForward := func(
 			ctx context.Context,
 			req interface{},
-			w http.ResponseWriter,
-			wmu *sync.Mutex,
 		) error {
-			resp, errCall := jsonRpcClient.SendRequest(ctx, req.(*JsonRpcRequest))
+			resp, errCall := jsonRpcClient.SendRequest(ctx, req.(*common.JsonRpcRequest))
 
-			lg.Debug().Err(errCall).Msgf("upstream call result received: %v", resp)
+			lg.Debug().Err(errCall).Msgf("upstream call result received: %v", &resp)
 
 			if errCall != nil {
 				if !errors.Is(errCall, context.DeadlineExceeded) && !errors.Is(errCall, context.Canceled) {
@@ -223,36 +219,26 @@ func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req in
 				)
 			}
 
-			respBytes, errMarshal := json.Marshal(resp)
-			if errMarshal != nil {
-				health.MetricUpstreamRequestErrors.WithLabelValues(
-					u.ProjectId,
-					networkId,
-					u.Id,
-					method,
-				).Inc()
-				return common.NewErrUpstreamMalformedResponse(
-					errMarshal,
-					u.Id,
-				)
-			}
-
-			if wmu.TryLock() {
-				w.Header().Add("Content-Type", "application/json")
-				w.Header().Add("X-ERPC-Upstream", u.Id)
-				w.Header().Add("X-ERPC-Network", networkId)
-				w.Write(respBytes)
+			if w.TryLock() {
+				w.AddHeader("Content-Type", "application/json")
+				w.AddHeader("X-ERPC-Upstream", u.Id)
+				w.AddHeader("X-ERPC-Network", networkId)
+				w.AddHeader("X-ERPC-Cache", "Miss")
+				defer w.Close()
+				defer resp.Close()
+				_, err := io.Copy(w, resp)
+				return err
 			} else {
-				return common.NewErrUpstreamResponseWriteLock(u.Id)
+				return common.NewErrResponseWriteLock(u.Id)
 			}
-
-			return nil
 		}
 
 		if u.FailsafePolicies != nil && len(u.FailsafePolicies) > 0 {
-			_, execErr := u.failsafeExecutor.WithContext(ctx).GetWithExecution(func(exec failsafe.Execution[interface{}]) (interface{}, error) {
-				return nil, tryForward(ctx, req, w, wmu)
-			})
+			_, execErr := u.failsafeExecutor.
+				WithContext(ctx).
+				GetWithExecution(func(exec failsafe.Execution[interface{}]) (interface{}, error) {
+					return nil, tryForward(ctx, req)
+				})
 
 			if execErr != nil {
 				return resiliency.TranslateFailsafeError(execErr)
@@ -260,7 +246,7 @@ func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req in
 
 			return execErr
 		} else {
-			return tryForward(ctx, req, w, wmu)
+			return tryForward(ctx, req)
 		}
 	default:
 		return common.NewErrUpstreamClientInitialization(

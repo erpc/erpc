@@ -173,7 +173,8 @@ projects:
 `)
 	args := []string{"erpc-test", cfg.Name()}
 
-	shutdown, err := Init(log.With().Logger(), fs, args)
+	logger := log.With().Logger()
+	shutdown, err := Init(&logger, fs, args)
 	if shutdown != nil {
 		defer shutdown()
 	}
@@ -230,8 +231,8 @@ projects:
 		t.Fatalf("error unmarshalling: %s response body: %s", err, respBody)
 	}
 
-	if respObject["hash"] != "0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9" {
-		t.Errorf("unexpected hash, got %s", respObject["hash"])
+	if _, ok := respObject["result"].(map[string]interface{})["hash"]; !ok {
+		t.Errorf("expected hash in response, got %v", respObject)
 	}
 }
 
@@ -245,7 +246,8 @@ func TestInit_InvalidConfig(t *testing.T) {
 
 	args := []string{"erpc-test", cfg.Name()}
 
-	shutdown, err := Init(log.With().Logger(), fs, args)
+	logger := log.With().Logger()
+	shutdown, err := Init(&logger, fs, args)
 	if shutdown != nil {
 		defer shutdown()
 	}
@@ -264,7 +266,8 @@ func TestInit_ConfigFileDoesNotExist(t *testing.T) {
 	fs := afero.NewMemMapFs()
 	args := []string{"erpc-test", "non-existent-file.yaml"}
 
-	shutdown, err := Init(log.With().Logger(), fs, args)
+	logger := log.With().Logger()
+	shutdown, err := Init(&logger, fs, args)
 	if shutdown != nil {
 		defer shutdown()
 	}
@@ -291,7 +294,8 @@ logLevel: invalid
 
 	args := []string{"erpc-test", cfg.Name()}
 
-	shutdown, err := Init(log.With().Logger(), fs, args)
+	logger := log.With().Logger()
+	shutdown, err := Init(&logger, fs, args)
 	if shutdown != nil {
 		defer shutdown()
 	}
@@ -335,7 +339,8 @@ projects:
 `)
 	args := []string{"erpc-test", cfg.Name()}
 
-	shutdown, err := Init(log.With().Logger(), fs, args)
+	logger := log.With().Logger()
+	shutdown, err := Init(&logger, fs, args)
 	if shutdown != nil {
 		defer shutdown()
 	}

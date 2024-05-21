@@ -1,9 +1,8 @@
-package upstream
+package common
 
 import (
 	"encoding/json"
 
-	"github.com/flair-sdk/erpc/common"
 	"github.com/rs/zerolog"
 )
 
@@ -26,12 +25,12 @@ func (n *NormalizedRequest) JsonRpcRequest() (*JsonRpcRequest, error) {
 
 	rpcReq := new(JsonRpcRequest)
 	if err := json.Unmarshal(n.body, rpcReq); err != nil {
-		return nil, common.NewErrJsonRpcRequestUnmarshal(err)
+		return nil, NewErrJsonRpcRequestUnmarshal(err)
 	}
 
 	method := rpcReq.Method
 	if method == "" {
-		return nil, common.NewErrJsonRpcRequestUnresolvableMethod(rpcReq)
+		return nil, NewErrJsonRpcRequestUnresolvableMethod(rpcReq)
 	}
 
 	if rpcReq.JSONRPC == "" {
