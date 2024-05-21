@@ -57,7 +57,7 @@ func TestUpstreamsRegistry_ScoreOrdering(t *testing.T) {
 	testGroups := []testGroup{
 		// Better (lower) latency
 		{
-			groupId: "group1",
+			groupId: "BetterLateny1",
 			testCases: []testCase{
 				{"upstreamA", 100.0, 100000, 100000, 100, 100},
 				{"upstreamB", 10.0, 10000, 10000, 50, 50},
@@ -68,10 +68,40 @@ func TestUpstreamsRegistry_ScoreOrdering(t *testing.T) {
 		},
 		// Give a chance to an upstream without any request
 		{
-			groupId: "group2",
+			groupId: "WithoutRequest1",
 			testCases: []testCase{
-				{"upstreamA", 0.0, 0, 0, 0, 0},
-				{"upstreamB", 0.4, 0, 10000, 0, 0},
+				{"upstreamA", 0.4, 0, 10000, 0, 0},
+				{"upstreamB", 0.0, 0, 0, 0, 0},
+			},
+		},
+		// Higher error rates
+		{
+			groupId: "HigherErrorRates1",
+			testCases: []testCase{
+				{"upstreamA", 10.0, 10000, 9000, 500, 50},
+				{"upstreamB", 10.0, 10000, 8000, 400, 50},
+				{"upstreamC", 10.0, 10000, 1000, 100, 50},
+				{"upstreamD", 10.0, 10000, 0, 0, 50},
+			},
+		},
+		// Higher throttled rates
+		{
+			groupId: "HigherThrottledRates1",
+			testCases: []testCase{
+				{"upstreamA", 10.0, 10000, 1000, 9000, 50},
+				{"upstreamB", 10.0, 10000, 1000, 4000, 50},
+				{"upstreamC", 10.0, 10000, 1000, 1000, 50},
+				{"upstreamD", 10.0, 10000, 1000, 0, 50},
+			},
+		},
+		// Higher block lags
+		{
+			groupId: "HigherBlockLags1",
+			testCases: []testCase{
+				{"upstreamA", 10.0, 10000, 1000, 100, 900},
+				{"upstreamB", 10.0, 10000, 1000, 100, 400},
+				{"upstreamC", 10.0, 10000, 1000, 100, 100},
+				{"upstreamD", 10.0, 10000, 1000, 100, 0},
 			},
 		},
 	}
