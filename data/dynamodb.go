@@ -13,8 +13,13 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/aws/aws-sdk-go/service/dynamodb/dynamodbattribute"
+	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
 	"github.com/rs/zerolog/log"
+)
+
+const (
+	DynamoDBStoreDriver = "dynamodb"
 )
 
 type DynamoDBStore struct {
@@ -23,6 +28,7 @@ type DynamoDBStore struct {
 }
 
 type DynamoDBValueWriter struct {
+	ctx    context.Context
 	client *dynamodb.DynamoDB
 	table  string
 	key    string
@@ -45,10 +51,11 @@ func (w *DynamoDBValueWriter) Close() error {
 		},
 	}
 
-	_, err := w.client.PutItem(&dynamodb.PutItemInput{
+	_, err := w.client.PutItemWithContext(w.ctx, &dynamodb.PutItemInput{
 		TableName: aws.String(w.table),
 		Item:      item,
 	})
+
 	return err
 }
 
@@ -89,7 +96,7 @@ func NewDynamoDBStore(cfg *config.DynamoDBStoreConfig) (*DynamoDBStore, error) {
 		},
 		BillingMode: aws.String("PAY_PER_REQUEST"),
 	})
-	
+
 	return &DynamoDBStore{client: client, table: tbl}, nil
 }
 
@@ -144,7 +151,7 @@ func (d *DynamoDBStore) Get(ctx context.Context, key string) (string, error) {
 	}
 
 	if result.Item == nil {
-		return "", fmt.Errorf("key not found: %s", key)
+		return "", common.NewErrRecordNotFound(key, DynamoDBStoreDriver)
 	}
 
 	var item map[string]string
@@ -157,7 +164,7 @@ func (d *DynamoDBStore) Get(ctx context.Context, key string) (string, error) {
 }
 
 func (d *DynamoDBStore) GetWithReader(ctx context.Context, key string) (io.Reader, error) {
-	log.Trace().Msgf("DynamoDBStore getting key with reader: %s", key)
+	// log.Trace().Msgf("DynamoDBStore getting key with reader: %s", key)
 	value, err := d.Get(ctx, key)
 	if err != nil {
 		return nil, err
@@ -167,7 +174,7 @@ func (d *DynamoDBStore) GetWithReader(ctx context.Context, key string) (io.Reade
 }
 
 func (d *DynamoDBStore) Set(ctx context.Context, key string, value string) (int, error) {
-	log.Trace().Msgf("DynamoDBStore setting key: %s, value: %s", key, value)
+	// log.Trace().Msgf("DynamoDBStore setting key: %s, value: %s", key, value)
 	item := map[string]*dynamodb.AttributeValue{
 		"key": {
 			S: aws.String(key),
@@ -176,14 +183,11 @@ func (d *DynamoDBStore) Set(ctx context.Context, key string, value string) (int,
 			S: aws.String(value),
 		},
 	}
-	log.Debug().Msgf("DynamoDBStore TEEEEEEEST item====: %+v", item)
 
-	r, err := d.client.PutItemWithContext(ctx, &dynamodb.PutItemInput{
+	_, err := d.client.PutItemWithContext(ctx, &dynamodb.PutItemInput{
 		TableName: aws.String(d.table),
 		Item:      item,
 	})
-	log.Debug().Msgf("DynamoDBStore TEEEEEEEST err====: %+v", err)
-	log.Debug().Msgf("DynamoDBStore TEEEEEEEST r====: %+v", r)
 	if err != nil {
 		return 0, err
 	}
@@ -192,8 +196,8 @@ func (d *DynamoDBStore) Set(ctx context.Context, key string, value string) (int,
 }
 
 func (d *DynamoDBStore) SetWithWriter(ctx context.Context, key string) (io.WriteCloser, error) {
-	log.Trace().Msgf("DynamoDBStore setting key with writer: %s", key)
-	return &DynamoDBValueWriter{client: d.client, table: d.table, key: key}, nil
+	// log.Trace().Msgf("DynamoDBStore setting key with writer: %s", key)
+	return &DynamoDBValueWriter{client: d.client, table: d.table, key: key, ctx: ctx}, nil
 }
 
 func (d *DynamoDBStore) Scan(ctx context.Context, prefix string) ([]string, error) {

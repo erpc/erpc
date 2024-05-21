@@ -6,9 +6,14 @@ import (
 	"io"
 	"strings"
 
+	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
+)
+
+const (
+	RedisStoreDriver = "redis"
 )
 
 type RedisStore struct {
@@ -16,25 +21,25 @@ type RedisStore struct {
 }
 
 type RedisValueWriter struct {
-	ctx         context.Context
-	redisClient *redis.Client
-	key         string
+	ctx    context.Context
+	client *redis.Client
+	key    string
+	buffer strings.Builder
 }
 
 func (w *RedisValueWriter) Write(p []byte) (n int, err error) {
-	// log.Trace().Msgf("writing to RedisValueWriter key: %s", w.key)
-	err = w.redisClient.Append(w.ctx, w.key, string(p)).Err()
-	if err != nil {
-		return 0, err
-	}
+	w.buffer.Write(p)
 	return len(p), nil
 }
 
 func (w *RedisValueWriter) Close() error {
-	return nil
+	log.Trace().Msgf("RedisStore setting key: %s, value: %s", w.key, w.buffer.String())
+	sts := w.client.Set(w.ctx, w.key, w.buffer.String(), 0)
+	return sts.Err()
 }
 
 func NewRedisStore(cfg *config.RedisStoreConfig) *RedisStore {
+	log.Info().Msgf("initializing redis store on addr: %v", cfg.Addr)
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     cfg.Addr,
 		Password: cfg.Password,
@@ -45,11 +50,21 @@ func NewRedisStore(cfg *config.RedisStoreConfig) *RedisStore {
 
 func (r *RedisStore) Get(ctx context.Context, key string) (string, error) {
 	// log.Trace().Msgf("RedisStore getting key: %s", key)
-	return r.client.Get(ctx, key).Result()
+	rs, err := r.client.Get(ctx, key).Result()
+
+	if err != nil {
+		if err == redis.Nil {
+			return "", common.NewErrRecordNotFound(key, RedisStoreDriver)
+		}
+
+		return "", err
+	}
+
+	return rs, nil
 }
 
 func (r *RedisStore) GetWithReader(ctx context.Context, key string) (io.Reader, error) {
-	log.Trace().Msgf("RedisStore getting key with reader: %s", key)
+	// log.Trace().Msgf("RedisStore getting key with reader: %s", key)
 	value, err := r.Get(ctx, key)
 	if err != nil {
 		return nil, err
@@ -59,19 +74,18 @@ func (r *RedisStore) GetWithReader(ctx context.Context, key string) (io.Reader, 
 }
 
 func (r *RedisStore) Set(ctx context.Context, key string, value string) (int, error) {
-	// log.Trace().Msgf("RedisStore setting key: %s, value: %s", key, value)
+
+	log.Debug().Msgf("SetWithWriter rrrrrrrrr ======: %v", r)
+	log.Debug().Msgf("SetWithWriter INSII r.client ======: %v", r.client)
+
+	// log.Trace().Msgf("RedisStore setting key: %s value: %s", key, value)
 	sts := r.client.Set(ctx, key, value, 0)
 	return 0, sts.Err()
 }
 
 func (r *RedisStore) SetWithWriter(ctx context.Context, key string) (io.WriteCloser, error) {
 	// log.Trace().Msgf("RedisStore setting key with writer: %s", key)
-	// Ensure the key is deleted before starting to write new data
-	err := r.client.Del(ctx, key).Err()
-	if err != nil {
-		return nil, err
-	}
-	return &RedisValueWriter{redisClient: r.client, key: key}, nil
+	return &RedisValueWriter{client: r.client, key: key, ctx: ctx}, nil
 }
 
 func (r *RedisStore) Scan(ctx context.Context, prefix string) ([]string, error) {
