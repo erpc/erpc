@@ -296,15 +296,15 @@ var NewErrUpstreamInitialization = func(cause error, upstreamId string) error {
 	}
 }
 
-type ErrUpstreamResponseWriteLock struct{ BaseError }
+type ErrResponseWriteLock struct{ BaseError }
 
-var NewErrUpstreamResponseWriteLock = func(upstreamId string) error {
-	return &ErrUpstreamResponseWriteLock{
+var NewErrResponseWriteLock = func(writerId string) error {
+	return &ErrResponseWriteLock{
 		BaseError{
-			Code:    "ErrUpstreamResponseWriteLock",
-			Message: "failed to acquire write lock, potentially being writen by another upstream",
+			Code:    "ErrResponseWriteLock",
+			Message: "failed to acquire write lock, potentially being writen by another upstream/writer",
 			Details: map[string]interface{}{
-				"upstreamId": upstreamId,
+				"writerId": writerId,
 			},
 		},
 	}
@@ -574,4 +574,22 @@ var NewErrUpstreamRateLimitRuleExceeded = func(upstream string, bucket string, r
 
 func (e *ErrUpstreamRateLimitRuleExceeded) ErrorStatusCode() int {
 	return 429
+}
+
+//
+// Store
+//
+
+type ErrInvalidStoreDriver struct{ BaseError }
+
+var NewErrInvalidStoreDriver = func(driver string) error {
+	return &ErrInvalidStoreDriver{
+		BaseError{
+			Code:    "ErrInvalidStoreDriver",
+			Message: "invalid store driver",
+			Details: map[string]interface{}{
+				"driver": driver,
+			},
+		},
+	}
 }

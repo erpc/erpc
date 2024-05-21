@@ -10,6 +10,7 @@ import (
 type Config struct {
 	LogLevel     string             `yaml:"logLevel"`
 	Server       *ServerConfig      `yaml:"server"`
+	Store        *StoreConfig       `yaml:"store"`
 	Projects     []*ProjectConfig   `yaml:"projects"`
 	RateLimiters *RateLimiterConfig `yaml:"rateLimiters"`
 	HealthChecks *HealthCheckConfig `yaml:"healthChecks"`
@@ -20,6 +21,38 @@ type ServerConfig struct {
 	HttpHost     string `yaml:"httpHost"`
 	HttpPort     string `yaml:"httpPort"`
 	MaxTimeoutMs int    `yaml:"maxTimeoutMs"`
+}
+
+type StoreConfig struct {
+	Driver   string               `yaml:"driver"`
+	Memory   *MemoryStoreConfig   `yaml:"memory"`
+	Redis    *RedisStoreConfig    `yaml:"redis"`
+	DynamoDB *DynamoDBStoreConfig `yaml:"dynamodb"`
+}
+
+type MemoryStoreConfig struct {
+	MaxSize string `yaml:"maxSize"`
+}
+
+type RedisStoreConfig struct {
+	Addr     string `yaml:"addr"`
+	Password string `yaml:"password"`
+	DB       int    `yaml:"db"`
+}
+
+type DynamoDBStoreConfig struct {
+	Table    string         `yaml:"table"`
+	Region   string         `yaml:"region"`
+	Endpoint string         `yaml:"endpoint"`
+	Auth     *AwsAuthConfig `yaml:"auth"`
+}
+
+type AwsAuthConfig struct {
+	Mode            string `yaml:"mode"` // "file", "env", "secret"
+	CredentialsFile string `yaml:"credentialsFile"`
+	Profile         string `yaml:"profile"`
+	AccessKeyID     string `yaml:"accessKeyID"`
+	SecretAccessKey string `yaml:"secretAccessKey"`
 }
 
 type ProjectConfig struct {

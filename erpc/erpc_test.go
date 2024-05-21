@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/flair-sdk/erpc/config"
+	"github.com/flair-sdk/erpc/data"
 	"github.com/rs/zerolog/log"
 )
 
@@ -16,8 +17,11 @@ func TestBoorstrap_GracefulShutdown(t *testing.T) {
 			HttpPort: fmt.Sprint(rand.Intn(1000) + 2000),
 		},
 	}
-
-	erpc, _ := NewERPC(log.With().Logger(), cfg)
+	store := data.NewMemoryStore(&config.MemoryStoreConfig{
+		MaxSize: "100mb",
+	})
+	lg := log.With().Logger()
+	erpc, _ := NewERPC(&lg, store, cfg)
 	erpc.Shutdown()
 }
 
@@ -43,7 +47,11 @@ func TestBootstrap_UpstreamsRegistryFailure(t *testing.T) {
 		},
 	}
 
-	_, err := NewERPC(log.With().Logger(), cfg)
+	store := data.NewMemoryStore(&config.MemoryStoreConfig{
+		MaxSize: "100mb",
+	})
+	lg := log.With().Logger()
+	_, err := NewERPC(&lg, store, cfg)
 	if err == nil {
 		t.Error("expected error when bootstraping upstream orchestrator, got nil")
 	}

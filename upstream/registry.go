@@ -20,8 +20,8 @@ const (
 
 type UpstreamsRegistry struct {
 	OnUpstreamsPriorityChange func(projectId string, networkId string) error
-	Logger                    zerolog.Logger
 
+	logger                    *zerolog.Logger
 	config                    *config.Config
 	clientRegistry            *ClientRegistry
 	upstreamsMapByNetwork     map[string]map[string]map[string]*PreparedUpstream
@@ -29,10 +29,13 @@ type UpstreamsRegistry struct {
 	rateLimitersRegistry      *resiliency.RateLimitersRegistry
 }
 
-func NewUpstreamsRegistry(logger zerolog.Logger, cfg *config.Config, rlr *resiliency.RateLimitersRegistry) (*UpstreamsRegistry, error) {
+func NewUpstreamsRegistry(
+	logger *zerolog.Logger,
+	cfg *config.Config,
+	rlr *resiliency.RateLimitersRegistry,
+) (*UpstreamsRegistry, error) {
 	r := &UpstreamsRegistry{
-		Logger: logger,
-
+		logger:               logger,
 		config:               cfg,
 		clientRegistry:       NewClientRegistry(),
 		rateLimitersRegistry: rlr,
@@ -222,16 +225,16 @@ func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *config.He
 
 func (u *UpstreamsRegistry) collectMetricsForAllUpstreams() {
 	if len(u.upstreamsMapByNetwork) == 0 {
-		u.Logger.Debug().Msgf("no upstreams to collect metrics for")
+		u.logger.Debug().Msgf("no upstreams to collect metrics for")
 		return
 	}
 
-	u.Logger.Debug().Msgf("collecting upstreams metrics from prometheus")
+	u.logger.Debug().Msgf("collecting upstreams metrics from prometheus")
 
 	// Get and parse current prometheus metrics data
 	mfs, err := prometheus.DefaultGatherer.Gather()
 	if mfs == nil {
-		u.Logger.Error().Msgf("failed to gather prometheus metrics: %v", err)
+		u.logger.Error().Msgf("failed to gather prometheus metrics: %v", err)
 		return
 	}
 
@@ -279,7 +282,7 @@ func (u *UpstreamsRegistry) collectMetricsForAllUpstreams() {
 
 				metrics.LastCollect = time.Now()
 
-				u.Logger.Trace().
+				u.logger.Trace().
 					Str("project", project).
 					Str("network", network).
 					Str("upstream", upstream).

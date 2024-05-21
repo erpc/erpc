@@ -2,11 +2,10 @@ package erpc
 
 import (
 	"context"
-	"net/http"
-	"sync"
 
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
+	"github.com/flair-sdk/erpc/data"
 	"github.com/flair-sdk/erpc/resiliency"
 	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog"
@@ -23,14 +22,17 @@ type ProjectsRegistry struct {
 	upstreamsRegistry    *upstream.UpstreamsRegistry
 	rateLimitersRegistry *resiliency.RateLimitersRegistry
 	preparedProjects     map[string]*PreparedProject
+	store                data.Store
 }
 
 func NewProjectsRegistry(
+	store data.Store,
 	upstreamsRegistry *upstream.UpstreamsRegistry,
 	rateLimitersRegistry *resiliency.RateLimitersRegistry,
 	staticProjects []*config.ProjectConfig,
 ) (*ProjectsRegistry, error) {
 	reg := &ProjectsRegistry{
+		store:                store,
 		upstreamsRegistry:    upstreamsRegistry,
 		rateLimitersRegistry: rateLimitersRegistry,
 		preparedProjects:     make(map[string]*PreparedProject),
@@ -75,7 +77,10 @@ func (r *ProjectsRegistry) NewProject(project *config.ProjectConfig) error {
 	var preparedNetworks map[string]*PreparedNetwork = make(map[string]*PreparedNetwork)
 	for _, network := range project.Networks {
 		if _, ok := preparedNetworks[network.NetworkId]; !ok {
-			pn, err := r.NewNetwork(pp.Logger, project, network)
+			if network.Architecture == "" {
+				network.Architecture = upstream.ArchitectureEvm
+			}
+			pn, err := r.NewNetwork(pp.Logger, r.store, project, network)
 			if err != nil {
 				return err
 			}
@@ -83,10 +88,22 @@ func (r *ProjectsRegistry) NewProject(project *config.ProjectConfig) error {
 		}
 	}
 
-	for _, upstream := range preparedUpstreams {
-		for _, networkId := range upstream.NetworkIds {
+	for _, ups := range preparedUpstreams {
+		arch := ups.Architecture
+		if arch == "" {
+			arch = upstream.ArchitectureEvm
+		}
+		for _, networkId := range ups.NetworkIds {
 			if _, ok := preparedNetworks[networkId]; !ok {
-				pn, err := r.NewNetwork(pp.Logger, project, &config.NetworkConfig{NetworkId: networkId})
+				pn, err := r.NewNetwork(
+					pp.Logger,
+					r.store,
+					project,
+					&config.NetworkConfig{
+						NetworkId:    networkId,
+						Architecture: arch,
+					},
+				)
 				if err != nil {
 					return err
 				}
@@ -122,7 +139,7 @@ func (p *PreparedProject) GetNetwork(networkId string) (*PreparedNetwork, error)
 	return network, nil
 }
 
-func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *upstream.NormalizedRequest, w http.ResponseWriter, wmu *sync.Mutex) error {
+func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *common.NormalizedRequest, w common.ResponseWriter) error {
 	network, err := p.GetNetwork(networkId)
 	if err != nil {
 		return err
@@ -130,7 +147,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *ups
 
 	m, _ := nq.Method()
 	p.Logger.Debug().Str("method", m).Msgf("forwarding request to network")
-	err = network.Forward(ctx, nq, w, wmu)
+	err = network.Forward(ctx, nq, w)
 
 	if err == nil {
 		p.Logger.Info().Msgf("successfully forward request for network")

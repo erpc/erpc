@@ -22,9 +22,14 @@ server:
 metrics:
   port: number
 
-storage:
-  type: memory | rocksdb | redis | dynamo | postgre
-  connectionUri: # ...
+store:
+  driver: memory | rocksdb | redis | dynamo | postgre
+  memory:
+    maxSize: string
+  redis:
+    host: string
+    port: number
+    password: string
 
 projects:
   - id: string # main, frontend, sushiswap-prod, etc ...
