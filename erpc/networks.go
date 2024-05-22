@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math/rand"
 	"sync"
+	"time"
 
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/flair-sdk/erpc/common"
@@ -24,10 +26,57 @@ type PreparedNetwork struct {
 	Config           *config.NetworkConfig
 	Logger           *zerolog.Logger
 	Upstreams        []*upstream.PreparedUpstream
+	mu               sync.Mutex
 
 	rateLimitersRegistry *resiliency.RateLimitersRegistry
 	failsafeExecutor     failsafe.Executor[interface{}]
 	dal                  common.DAL
+}
+
+// WeightedRandomSelect selects an upstream based on their weighted probabilities
+func WeightedRandomSelect(upstreams []*upstream.PreparedUpstream) *upstream.PreparedUpstream {
+	totalScore := 0
+	for _, upstream := range upstreams {
+		totalScore += upstream.Score
+	}
+
+	if totalScore == 0 {
+		return upstreams[0]
+	}
+
+	rand.Seed(time.Now().UnixNano())
+	randomValue := rand.Intn(totalScore)
+
+	for _, upstream := range upstreams {
+		if randomValue < upstream.Score {
+			return upstream
+		}
+		randomValue -= upstream.Score
+	}
+
+	// This should never be reached
+	return upstreams[len(upstreams)-1]
+}
+
+// ReorderUpstreams reorders the upstreams based on their weighted probabilities
+func ReorderUpstreams(upstreams []*upstream.PreparedUpstream) []*upstream.PreparedUpstream {
+	reordered := make([]*upstream.PreparedUpstream, len(upstreams))
+	remaining := append([]*upstream.PreparedUpstream{}, upstreams...)
+
+	for i := range reordered {
+		selected := WeightedRandomSelect(remaining)
+		reordered[i] = selected
+
+		// Remove selected item from remaining upstreams
+		for j, upstream := range remaining {
+			if upstream.Id == selected.Id {
+				remaining = append(remaining[:j], remaining[j+1:]...)
+				break
+			}
+		}
+	}
+
+	return reordered
 }
 
 var preparedNetworks map[string]*PreparedNetwork = make(map[string]*PreparedNetwork)
@@ -40,12 +89,14 @@ func (r *ProjectsRegistry) NewNetwork(
 ) (*PreparedNetwork, error) {
 	var key = prjCfg.Id + ":" + nwCfg.NetworkId
 
+	r.mu.Lock() // Lock the ProjectsRegistry before accessing preparedNetworks
+	defer r.mu.Unlock()
+
 	if pn, ok := preparedNetworks[key]; ok {
 		return pn, nil
 	}
 
 	var policies []failsafe.Policy[any]
-
 	if (nwCfg != nil) && (nwCfg.Failsafe != nil) {
 		pls, err := resiliency.CreateFailSafePolicies(key, nwCfg.Failsafe)
 		if err != nil {
@@ -77,7 +128,17 @@ func (r *ProjectsRegistry) NewNetwork(
 		failsafeExecutor:     failsafe.NewExecutor[interface{}](policies...),
 	}
 
-	return preparedNetworks[key], nil
+	ntw := preparedNetworks[key]
+
+	go func(pn *PreparedNetwork) {
+		ticker := time.NewTicker(1 * time.Second)
+		for range ticker.C {
+			pn.Upstreams = ReorderUpstreams(pn.Upstreams)
+			pn.Logger.Info().Msg("Upstreams reordered")
+		}
+	}(preparedNetworks[key])
+
+	return ntw, nil
 }
 
 func (n *PreparedNetwork) Architecture() string {

@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"sync"
 
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
@@ -23,6 +24,7 @@ type ProjectsRegistry struct {
 	rateLimitersRegistry *resiliency.RateLimitersRegistry
 	preparedProjects     map[string]*PreparedProject
 	store                data.Store
+	mu                   sync.Mutex
 }
 
 func NewProjectsRegistry(
