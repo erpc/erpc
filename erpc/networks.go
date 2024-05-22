@@ -89,9 +89,6 @@ func (r *ProjectsRegistry) NewNetwork(
 ) (*PreparedNetwork, error) {
 	var key = prjCfg.Id + ":" + nwCfg.NetworkId
 
-	r.mu.Lock() // Lock the ProjectsRegistry before accessing preparedNetworks
-	defer r.mu.Unlock()
-
 	if pn, ok := preparedNetworks[key]; ok {
 		return pn, nil
 	}
