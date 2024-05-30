@@ -27,14 +27,16 @@ type PreparedNetwork struct {
 
 	rateLimitersRegistry *resiliency.RateLimitersRegistry
 	failsafeExecutor     failsafe.Executor[interface{}]
-	dal                  common.DAL
+
+	rateLimiterDal data.RateLimitersDAL
+	cacheDal       data.CacheDAL
 }
 
 var preparedNetworks map[string]*PreparedNetwork = make(map[string]*PreparedNetwork)
 
 func (r *ProjectsRegistry) NewNetwork(
 	logger *zerolog.Logger,
-	store data.Store,
+	database *data.Database,
 	prjCfg *config.ProjectConfig,
 	nwCfg *config.NetworkConfig,
 ) (*PreparedNetwork, error) {
@@ -54,14 +56,19 @@ func (r *ProjectsRegistry) NewNetwork(
 		policies = pls
 	}
 
-	var dal common.DAL
-	if store != nil {
+	var cacheDal data.CacheDAL
+	var rateLimiterDal data.RateLimitersDAL
+	if database != nil {
 		switch nwCfg.Architecture {
 		case "evm":
-			dal = NewEvmDAL(store)
+			cacheDal = database.EvmJsonRpcCache
 		default:
 			return nil, errors.New("unknown network architecture")
 		}
+
+		// if database.RateLimitSnapshots != nil {
+		// 	rateLimiterDal = database.RateLimitSnapshots
+		// }
 	}
 
 	ptr := logger.With().Str("network", nwCfg.NetworkId).Logger()
@@ -72,7 +79,8 @@ func (r *ProjectsRegistry) NewNetwork(
 		Config:           nwCfg,
 		Logger:           &ptr,
 
-		dal:                  dal,
+		cacheDal:             cacheDal,
+		rateLimiterDal:       rateLimiterDal,
 		rateLimitersRegistry: r.rateLimitersRegistry,
 		failsafeExecutor:     failsafe.NewExecutor[interface{}](policies...),
 	}
@@ -87,8 +95,8 @@ func (n *PreparedNetwork) Architecture() string {
 func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedRequest, w common.ResponseWriter) error {
 	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
 
-	if n.dal != nil {
-		cacheReader, err := n.dal.GetWithReader(ctx, req)
+	if n.cacheDal != nil {
+		cacheReader, err := n.cacheDal.GetWithReader(ctx, req)
 		if err != nil {
 			n.Logger.Debug().Err(err).Msgf("could not find response in cache")
 		}
@@ -114,8 +122,8 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 
 	// Configure the cache writer on the response writer so result can be cached
 	go (func() {
-		if n.dal != nil {
-			cwr, err := n.dal.SetWithWriter(ctx, req)
+		if n.cacheDal != nil {
+			cwr, err := n.cacheDal.SetWithWriter(ctx, req)
 			if err != nil {
 				n.Logger.Warn().Err(err).Msgf("could not create cache response writer")
 			} else {
@@ -171,8 +179,8 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 	i := 0
 	_, execErr := n.failsafeExecutor.WithContext(ctx).GetWithExecution(func(exec failsafe.Execution[interface{}]) (interface{}, error) {
 		// We should try all upstreams at least once, but using "i" we make sure
-		// across different executions we pick up next upstream vs retrying the same upstream.
-		// This mimicks a round-robin behavior.
+		// across different executions of the failsafe we pick up next upstream vs retrying the same upstream.
+		// This mimicks a round-robin behavior, for example when doing hedge or retries.
 		// Upstream-level retry is handled by the upstream itself (and its own failsafe policies).
 		ln := len(n.Upstreams)
 		for count := 0; count < ln; count++ {

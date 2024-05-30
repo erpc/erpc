@@ -43,4 +43,4 @@ services:
 
 networks:
   erpc:
-    driver: bridge
+    driver: host

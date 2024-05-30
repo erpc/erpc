@@ -7,13 +7,15 @@ import (
 )
 
 type NormalizedRequest struct {
+	NetworkId      string
 	body           []byte
 	jsonRpcRequest *JsonRpcRequest
 }
 
-func NewNormalizedRequest(body []byte) *NormalizedRequest {
+func NewNormalizedRequest(networkId string, body []byte) *NormalizedRequest {
 	return &NormalizedRequest{
-		body: body,
+		NetworkId: networkId,
+		body:      body,
 	}
 }
 

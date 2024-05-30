@@ -111,16 +111,7 @@ projects:
         hedge:
           delay: number | string
           maxCount: number
-      prefetch:
-        enabled: boolean
-        historicalSync: true
-        realtimeSync: true
-        evmBlocks: true
-        evmTransactions: true
-        evmTraces: true
-        evmEvents:
-	        filters: [] # same as getLogs: [address, topic0, ...]
-		
+
 rateLimiters:
   buckets:
   - id: string
@@ -203,3 +194,83 @@ creditUnitMappings:
 
 * **UpstreamFeatureDetector**
     - Detects the features of the upstreams (e.g. chainId, archive node, getLogs max range, etc.)
+
+### Cache
+
+* Stores
+  - RPC Cache (partitioned by block number) -- `json_rpc_cache`
+    - Set:
+      - groupKey: `evm:<chain>:<blockNumber>`
+      - requestKey: `<chain>:<method>:<paramsHash>`
+      - value: `<response>`
+    - Get without block number:
+      - groupKey: `evm:<chain>:*`
+      - requestKey: `<chain>:<method>:<paramsHash>`
+      - value: `<response>`
+    - Purge with block number:
+      - groupKey: `evm:<chain>:<blockNumber>`
+      - requestKey: `*`
+  - Block Ingestions (for reorgs) -- `evm_block_ingestions`
+    - Set:
+      - partitionKey: `<chain>:<blockNumber>`
+      - rangeKey: `evm:<timestamp>`
+      - value: `<info>`
+    - Get:
+      - partitionKey: `<chain>:<blockNumber>`
+      - rangeKey: `evm:blocks`
+  - Rate Limit Snapshots -- `rate_limit_snapshots`
+    - Set:
+      - partitionKey: `<bucket>`
+      - rangeKey: `<rule>`
+      - value: `<usage>`
+    - Get:
+      - partitionKey: `<bucket>`
+      - rangeKey: `<rule>`
+      - value: `<usage>`
+
+* `paramsHash` = `sha256(<param1>)-sha256(<param2>)...`
+
+- Connector (e.g. Redis, Postgres, DynamoDB)
+    - SetWithWriter(table, partitionKey, [rangeKey]) (Writer, error)
+    - GetWithReader(table, index, partitionKey, [rangeKey]) (Reader, error)
+    - Delete(table, index, partitionKey, [rangeKey])
+    - Scan(table, index, partitionKey, [rangeKey])
+- Store
+    - EvmJsonRpcCache
+      - connector
+      - SetWithWriter(ctx, common.NormalizedRequest) (Writer, error)
+      - GetWithReader(ctx, common.NormalizedRequest) (Reader, []RemainerRequest, error)
+      - DeleteByGroupKey(ctx, chainId, blockNumber)
+      - setLogs(ctx, ...)
+      - getLogs(ctx, ...)
+    - EvmBlockIngestions
+      - connector
+      - Set(ctx, chainId, block)
+      - Get(ctx, chainId, blockNumber)
+      - Scan(ctx, chainId, minBlockTimestamp)
+    - RateLimitSnapshots
+      - connector
+      - Set(ctx, bucket, rule, usage)
+      - Increment(ctx, bucket, rule, usage)
+      - Get(ctx, bucket, rule)
+
+```yaml
+data:
+  evmJsonRpcCache:
+    connector: redis
+    redis:
+      addr: string # default: "localhost:6379"
+      password: string
+      db: number # default: 0
+      prefix: string # default: "erpc_evm_json_rpc_cache#"
+  evmBlockIngestions:
+    connector: dynamodb
+    dynamodb:
+      autoCreate: boolean
+      table: string # default: erpc_evm_block_ingestions
+  rateLimitSnapshots:
+    connector: postgresql
+    postgresql:
+      autoCreate: boolean
+      table: string  # erpc_rate_limit_snapshots
+```

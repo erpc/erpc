@@ -22,6 +22,8 @@ type PreparedUpstream struct {
 	RateLimitBucket  string            `json:"rateLimitBucket"`
 	HealthCheckGroup string            `json:"healthCheckGroup"`
 	Metadata         map[string]string `json:"metadata"`
+	AllowMethods     []string          `json:"allowMethods"`
+	IgnoreMethods    []string          `json:"ignoreMethods"`
 
 	ProjectId        string                 `json:"projectId"`
 	NetworkIds       []string               `json:"networkIds"`
@@ -34,6 +36,7 @@ type PreparedUpstream struct {
 
 	rateLimitersRegistry *resiliency.RateLimitersRegistry `json:"-"`
 	failsafeExecutor     failsafe.Executor[interface{}]   `json:"-"`
+	methodCheckResults   map[string]bool
 }
 
 type UpstreamMetrics struct {
@@ -90,6 +93,8 @@ func NewUpstream(
 		RateLimitBucket:  cfg.RateLimitBucket,
 		HealthCheckGroup: cfg.HealthCheckGroup,
 		FailsafePolicies: policies,
+		AllowMethods:     cfg.AllowMethods,
+		IgnoreMethods:    cfg.IgnoreMethods,
 
 		ProjectId:  projectId,
 		NetworkIds: networkIds,
@@ -97,6 +102,7 @@ func NewUpstream(
 
 		rateLimitersRegistry: rlr,
 		failsafeExecutor:     failsafe.NewExecutor[interface{}](policies...),
+		methodCheckResults:   map[string]bool{},
 	}
 
 	lg.Debug().Msgf("prepared upstream")
@@ -129,8 +135,18 @@ func (u *PreparedUpstream) PrepareRequest(normalizedReq *common.NormalizedReques
 		}
 
 		if u.Client.GetType() == "HttpJsonRpcClient" {
-			// TODO check supported/unsupported methods for this upstream
-			return normalizedReq.JsonRpcRequest()
+			jsonRpcReq, err := normalizedReq.JsonRpcRequest()
+			normalizeEvmHttpJsonRpc(jsonRpcReq)
+			if err != nil {
+				return nil, err
+			}
+
+			if !u.shouldHandleMethod(jsonRpcReq.Method) {
+				u.Logger.Debug().Str("method", jsonRpcReq.Method).Msg("method not allowed or ignored by upstread")
+				return nil, nil
+			}
+
+			return jsonRpcReq, nil
 		} else {
 			return nil, common.NewErrJsonRpcRequestPreparation(fmt.Errorf("unsupported evm client type for upstream"), map[string]interface{}{
 				"upstreamId": u.Id,
@@ -258,4 +274,89 @@ func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req in
 
 func (n *PreparedUpstream) Executor() failsafe.Executor[interface{}] {
 	return n.failsafeExecutor
+}
+
+func (u *PreparedUpstream) shouldHandleMethod(method string) (v bool) {
+	if s, ok := u.methodCheckResults[method]; ok {
+		return s
+	}
+
+	v = true
+
+	if u.AllowMethods != nil {
+		v = false
+		for _, m := range u.AllowMethods {
+			if common.WildcardMatch(m, method) {
+				v = true
+				break
+			}
+		}
+	}
+
+	if u.IgnoreMethods != nil {
+		for _, m := range u.IgnoreMethods {
+			if common.WildcardMatch(m, method) {
+				v = false
+				break
+			}
+		}
+	}
+
+	// Cache the result
+	u.methodCheckResults[method] = v
+
+	u.Logger.Debug().Bool("allowed", v).Str("method", method).Msg("method support result")
+
+	return v
+}
+
+func normalizeEvmHttpJsonRpc(r *common.JsonRpcRequest) error {
+	switch r.Method {
+	case "eth_getBlockByNumber",
+		"eth_getUncleByBlockNumberAndIndex",
+		"eth_getTransactionByBlockNumberAndIndex",
+		"eth_getUncleCountByBlockNumber",
+		"eth_getBlockTransactionCountByNumber":
+		if len(r.Params) > 0 {
+			b, err := common.NormalizeHex(r.Params[0])
+			if err != nil {
+				return err
+			}
+			r.Params[0] = b
+		}
+	case "eth_getBalance",
+		"eth_getStorageAt",
+		"eth_getCode",
+		"eth_getTransactionCount",
+		"eth_call",
+		"eth_estimateGas":
+		if len(r.Params) > 1 {
+			b, err := common.NormalizeHex(r.Params[1])
+			if err != nil {
+				return err
+			}
+			r.Params[1] = b
+		}
+	case "eth_getLogs":
+		if len(r.Params) > 0 {
+			if paramsMap, ok := r.Params[0].(map[string]interface{}); ok {
+				if fromBlock, ok := paramsMap["fromBlock"]; ok {
+					b, err := common.NormalizeHex(fromBlock)
+					if err != nil {
+						return err
+					}
+					paramsMap["fromBlock"] = b
+				}
+				if toBlock, ok := paramsMap["toBlock"]; ok {
+					b, err := common.NormalizeHex(toBlock)
+					if err != nil {
+						return err
+					}
+					paramsMap["toBlock"] = b
+				}
+			}
+		}
+	}
+
+	return nil
 }

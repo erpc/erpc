@@ -17,11 +17,9 @@ func TestBoorstrap_GracefulShutdown(t *testing.T) {
 			HttpPort: fmt.Sprint(rand.Intn(1000) + 2000),
 		},
 	}
-	store := data.NewMemoryStore(&config.MemoryStoreConfig{
-		MaxSize: "100mb",
-	})
+	db := &data.Database{}
 	lg := log.With().Logger()
-	erpc, _ := NewERPC(&lg, store, cfg)
+	erpc, _ := NewERPC(&lg, db, cfg)
 	erpc.Shutdown()
 }
 
@@ -47,11 +45,9 @@ func TestBootstrap_UpstreamsRegistryFailure(t *testing.T) {
 		},
 	}
 
-	store := data.NewMemoryStore(&config.MemoryStoreConfig{
-		MaxSize: "100mb",
-	})
 	lg := log.With().Logger()
-	_, err := NewERPC(&lg, store, cfg)
+	db := &data.Database{}
+	_, err := NewERPC(&lg, db, cfg)
 	if err == nil {
 		t.Error("expected error when bootstraping upstream orchestrator, got nil")
 	}

@@ -51,7 +51,7 @@ func NewHttpServer(cfg *config.ServerConfig, erpc *erpc.ERPC) *HttpServer {
 
 		log.Debug().Msgf("received request for projectId: %s, networkId: %s with body: %s", projectId, networkId, body)
 
-		nq := common.NewNormalizedRequest(body)
+		nq := common.NewNormalizedRequest(networkId, body)
 		project, err := erpc.GetProject(projectId)
 		if err == nil {
 			// This mutex is used when multiple upstreams are tried in parallel (e.g. when Hedge failsafe policy is used)
