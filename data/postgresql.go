@@ -12,11 +12,11 @@ import (
 )
 
 const (
-	PostgreSQLStoreDriver = "postgresql"
+	PostgreSQLConnectorDriver = "postgresql"
 )
 
 type PostgreSQLStore struct {
-	cfg  *config.PostgreSQLStoreConfig
+	cfg  *config.PostgreSQLConnectorConfig
 	conn *pgxpool.Pool
 }
 
@@ -38,7 +38,7 @@ func (w *PostgreSQLValueWriter) Close() error {
 	return err
 }
 
-func NewPostgreSQLStore(cfg *config.PostgreSQLStoreConfig) (*PostgreSQLStore, error) {
+func NewPostgreSQLStore(cfg *config.PostgreSQLConnectorConfig) (*PostgreSQLStore, error) {
 	conn, err := pgxpool.Connect(context.Background(), cfg.ConnectionUri)
 	if err != nil {
 		return nil, err
@@ -57,7 +57,7 @@ func (p *PostgreSQLStore) Get(ctx context.Context, key string) (string, error) {
 	err := p.conn.QueryRow(ctx, "SELECT value FROM "+p.cfg.Table+" WHERE key = $1", key).Scan(&value)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return "", common.NewErrRecordNotFound(key, PostgreSQLStoreDriver)
+			return "", common.NewErrRecordNotFound(key, PostgreSQLConnectorDriver)
 		}
 		return "", err
 	}

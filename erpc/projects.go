@@ -22,17 +22,17 @@ type ProjectsRegistry struct {
 	upstreamsRegistry    *upstream.UpstreamsRegistry
 	rateLimitersRegistry *resiliency.RateLimitersRegistry
 	preparedProjects     map[string]*PreparedProject
-	store                data.Store
+	database             *data.Database
 }
 
 func NewProjectsRegistry(
-	store data.Store,
+	database *data.Database,
 	upstreamsRegistry *upstream.UpstreamsRegistry,
 	rateLimitersRegistry *resiliency.RateLimitersRegistry,
 	staticProjects []*config.ProjectConfig,
 ) (*ProjectsRegistry, error) {
 	reg := &ProjectsRegistry{
-		store:                store,
+		database:             database,
 		upstreamsRegistry:    upstreamsRegistry,
 		rateLimitersRegistry: rateLimitersRegistry,
 		preparedProjects:     make(map[string]*PreparedProject),
@@ -80,7 +80,7 @@ func (r *ProjectsRegistry) NewProject(project *config.ProjectConfig) error {
 			if network.Architecture == "" {
 				network.Architecture = upstream.ArchitectureEvm
 			}
-			pn, err := r.NewNetwork(pp.Logger, r.store, project, network)
+			pn, err := r.NewNetwork(pp.Logger, r.database, project, network)
 			if err != nil {
 				return err
 			}
@@ -97,7 +97,7 @@ func (r *ProjectsRegistry) NewProject(project *config.ProjectConfig) error {
 			if _, ok := preparedNetworks[networkId]; !ok {
 				pn, err := r.NewNetwork(
 					pp.Logger,
-					r.store,
+					r.database,
 					project,
 					&config.NetworkConfig{
 						NetworkId:    networkId,

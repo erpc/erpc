@@ -10,7 +10,7 @@ import (
 type Config struct {
 	LogLevel     string             `yaml:"logLevel"`
 	Server       *ServerConfig      `yaml:"server"`
-	Store        *StoreConfig       `yaml:"store"`
+	Database     *DatabaseConfig    `yaml:"database"`
 	Projects     []*ProjectConfig   `yaml:"projects"`
 	RateLimiters *RateLimiterConfig `yaml:"rateLimiters"`
 	HealthChecks *HealthCheckConfig `yaml:"healthChecks"`
@@ -23,32 +23,41 @@ type ServerConfig struct {
 	MaxTimeoutMs int    `yaml:"maxTimeoutMs"`
 }
 
-type StoreConfig struct {
-	Driver     string                 `yaml:"driver"`
-	Memory     *MemoryStoreConfig     `yaml:"memory"`
-	Redis      *RedisStoreConfig      `yaml:"redis"`
-	DynamoDB   *DynamoDBStoreConfig   `yaml:"dynamodb"`
-	PostgreSQL *PostgreSQLStoreConfig `yaml:"postgresql"`
+type DatabaseConfig struct {
+	EvmJsonRpcCache    *ConnectorConfig `yaml:"evmJsonRpcCache"`
+	EvmBlockIngestions *ConnectorConfig `yaml:"evmBlockIngestions"`
+	RateLimitSnapshots *ConnectorConfig `yaml:"rateLimitSnapshots"`
 }
 
-type MemoryStoreConfig struct {
+type ConnectorConfig struct {
+	Driver     string                     `yaml:"driver"`
+	Memory     *MemoryConnectorConfig     `yaml:"memory"`
+	Redis      *RedisConnectorConfig      `yaml:"redis"`
+	DynamoDB   *DynamoDBConnectorConfig   `yaml:"dynamodb"`
+	PostgreSQL *PostgreSQLConnectorConfig `yaml:"postgresql"`
+}
+
+type MemoryConnectorConfig struct {
 	MaxSize string `yaml:"maxSize"`
 }
 
-type RedisStoreConfig struct {
+type RedisConnectorConfig struct {
 	Addr     string `yaml:"addr"`
 	Password string `yaml:"password"`
 	DB       int    `yaml:"db"`
 }
 
-type DynamoDBStoreConfig struct {
-	Table    string         `yaml:"table"`
-	Region   string         `yaml:"region"`
-	Endpoint string         `yaml:"endpoint"`
-	Auth     *AwsAuthConfig `yaml:"auth"`
+type DynamoDBConnectorConfig struct {
+	Table            string         `yaml:"table"`
+	Region           string         `yaml:"region"`
+	Endpoint         string         `yaml:"endpoint"`
+	Auth             *AwsAuthConfig `yaml:"auth"`
+	PartitionKeyName string         `yaml:"partitionKeyName"`
+	RangeKeyName     string         `yaml:"rangeKeyName"`
+	ReverseIndexName string         `yaml:"reverseIndexName"`
 }
 
-type PostgreSQLStoreConfig struct {
+type PostgreSQLConnectorConfig struct {
 	ConnectionUri string `yaml:"connectionUri"`
 	Table         string `yaml:"table"`
 }
@@ -69,16 +78,16 @@ type ProjectConfig struct {
 }
 
 type UpstreamConfig struct {
-	Id                 string            `yaml:"id"`
-	Architecture       string            `yaml:"architecture,omitempty"`
-	Endpoint           string            `yaml:"endpoint"`
-	Metadata           map[string]string `yaml:"metadata"`
-	Failsafe           *FailsafeConfig   `yaml:"failsafe"`
-	RateLimitBucket    string            `yaml:"rateLimitBucket"`
-	SupportedMethods   []string          `yaml:"supportedMethods"`
-	UnsupportedMethods []string          `yaml:"unsupportedMethods"`
-	CreditUnitMapping  string            `yaml:"creditUnitMapping"`
-	HealthCheckGroup   string            `yaml:"healthCheckGroup"`
+	Id                string            `yaml:"id"`
+	Architecture      string            `yaml:"architecture,omitempty"`
+	Endpoint          string            `yaml:"endpoint"`
+	Metadata          map[string]string `yaml:"metadata"`
+	Failsafe          *FailsafeConfig   `yaml:"failsafe"`
+	RateLimitBucket   string            `yaml:"rateLimitBucket"`
+	AllowMethods      []string          `yaml:"allowMethods"`
+	IgnoreMethods     []string          `yaml:"ignoreMethods"`
+	CreditUnitMapping string            `yaml:"creditUnitMapping"`
+	HealthCheckGroup  string            `yaml:"healthCheckGroup"`
 }
 
 type FailsafeConfig struct {
@@ -157,6 +166,7 @@ type NetworkConfig struct {
 	NetworkId       string          `yaml:"networkId"`
 	RateLimitBucket string          `yaml:"rateLimitBucket"`
 	Failsafe        *FailsafeConfig `yaml:"failsafe"`
+	FinalityDepth   int             `yaml:"finalityDepth"`
 }
 
 type MetricsConfig struct {

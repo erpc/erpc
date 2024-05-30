@@ -580,12 +580,12 @@ func (e *ErrUpstreamRateLimitRuleExceeded) ErrorStatusCode() int {
 // Store
 //
 
-type ErrInvalidStoreDriver struct{ BaseError }
+type ErrInvalidConnectorDriver struct{ BaseError }
 
-var NewErrInvalidStoreDriver = func(driver string) error {
-	return &ErrInvalidStoreDriver{
+var NewErrInvalidConnectorDriver = func(driver string) error {
+	return &ErrInvalidConnectorDriver{
 		BaseError{
-			Code:    "ErrInvalidStoreDriver",
+			Code:    "ErrInvalidConnectorDriver",
 			Message: "invalid store driver",
 			Details: map[string]interface{}{
 				"driver": driver,

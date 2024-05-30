@@ -12,16 +12,16 @@ import (
 )
 
 const (
-	MemoryStoreDriver = "memory"
+	MemoryConnectorDriver = "memory"
 )
 
 type MemoryStore struct {
 	sync.RWMutex
-	config *config.MemoryStoreConfig
+	config *config.MemoryConnectorConfig
 	data   map[string]string
 }
 
-func NewMemoryStore(cfg *config.MemoryStoreConfig) *MemoryStore {
+func NewMemoryStore(cfg *config.MemoryConnectorConfig) *MemoryStore {
 	return &MemoryStore{
 		config: cfg,
 		data:   make(map[string]string),
@@ -33,7 +33,7 @@ func (m *MemoryStore) Get(ctx context.Context, key string) (string, error) {
 	defer m.RUnlock()
 	value, ok := m.data[key]
 	if !ok {
-		return "", common.NewErrRecordNotFound(key, MemoryStoreDriver)
+		return "", common.NewErrRecordNotFound(key, MemoryConnectorDriver)
 	}
 	return value, nil
 }

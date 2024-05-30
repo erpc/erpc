@@ -16,7 +16,7 @@ type ERPC struct {
 	projectsRegistry     *ProjectsRegistry
 }
 
-func NewERPC(logger *zerolog.Logger, store data.Store, cfg *config.Config) (*ERPC, error) {
+func NewERPC(logger *zerolog.Logger, database *data.Database, cfg *config.Config) (*ERPC, error) {
 	rateLimitersRegistry, err := resiliency.NewRateLimitersRegistry(cfg.RateLimiters)
 	if err != nil {
 		return nil, err
@@ -27,7 +27,7 @@ func NewERPC(logger *zerolog.Logger, store data.Store, cfg *config.Config) (*ERP
 		return nil, err
 	}
 
-	projectRegistry, err := NewProjectsRegistry(store, upstreamsRegistry, rateLimitersRegistry, cfg.Projects)
+	projectRegistry, err := NewProjectsRegistry(database, upstreamsRegistry, rateLimitersRegistry, cfg.Projects)
 	if err != nil {
 		return nil, err
 	}

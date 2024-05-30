@@ -64,14 +64,14 @@ func Init(logger *zerolog.Logger, fs afero.Fs, args []string) (func() error, err
 	//
 	// 2) Initialize eRPC
 	//
-	var store data.Store
-	if cfg.Store != nil {
-		store, err = data.NewStore(cfg.Store)
+	var database *data.Database
+	if cfg.Database != nil {
+		database, err = data.NewDatabase(cfg.Database)
 		if err != nil {
 			return nil, err
 		}
 	}
-	erpcInstance, err := erpc.NewERPC(logger, store, cfg)
+	erpcInstance, err := erpc.NewERPC(logger, database, cfg)
 	if err != nil {
 		return nil, err
 	}

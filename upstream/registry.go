@@ -51,11 +51,12 @@ func (u *UpstreamsRegistry) bootstrap() error {
 	u.upstreamsMapByHealthGroup = make(map[string]map[string]*PreparedUpstream)
 	for _, project := range u.config.Projects {
 		lg := log.With().Str("project", project.Id).Logger()
-		lg.Info().Msgf("loading upstreams for static project")
+		lg.Info().Msgf("loading upstreams for static project: %+v", project)
 		if _, ok := u.upstreamsMapByNetwork[project.Id]; !ok {
 			u.upstreamsMapByNetwork[project.Id] = make(map[string]map[string]*PreparedUpstream)
 		}
 		for _, ups := range project.Upstreams {
+			lg.Debug().Msgf("ups ==== %+v", ups)
 			preparedUpstream, err := u.NewUpstream(project.Id, ups, &lg)
 			if err != nil {
 				return common.NewErrUpstreamInitialization(err, ups.Id)
@@ -109,7 +110,7 @@ func (u *UpstreamsRegistry) scheduleHealthCheckTimers() error {
 
 		go func(healthCheckGroup *config.HealthCheckGroupConfig, checkIntervalDuration time.Duration) {
 			for {
-				u.refreshUpstreamGroupScores(healthCheckGroup, u.upstreamsMapByHealthGroup[healthGroupId])
+				u.refreshUpstreamGroupScores(healthCheckGroup, u.upstreamsMapByHealthGroup[healthCheckGroup.Id])
 				time.Sleep(time.Duration(checkIntervalDuration))
 			}
 		}(healthCheckGroup, checkIntervalDuration)

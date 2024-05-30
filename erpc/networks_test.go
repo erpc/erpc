@@ -105,7 +105,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 	var lastFakeRespWriter common.ResponseWriter
 
 	for i := 0; i < 5; i++ {
-		fakeReq := common.NewNormalizedRequest([]byte(`{"method": "eth_chainId","params":[]}`))
+		fakeReq := common.NewNormalizedRequest("123", []byte(`{"method": "eth_chainId","params":[]}`))
 		lastFakeRespWriter = common.NewHttpCompositeResponseWriter(fakeReq, &httptest.ResponseRecorder{})
 		lastErr = ntw.Forward(ctx, fakeReq, lastFakeRespWriter)
 	}
@@ -156,7 +156,7 @@ func TestPreparedNetwork_ForwardNotRateLimitedOnNetworkLevel(t *testing.T) {
 	var lastFakeRespWriter common.ResponseWriter
 
 	for i := 0; i < 10; i++ {
-		fakeReq := common.NewNormalizedRequest([]byte(`{"method": "eth_chainId","params":[]}`))
+		fakeReq := common.NewNormalizedRequest("123", []byte(`{"method": "eth_chainId","params":[]}`))
 		lastFakeRespWriter = common.NewHttpCompositeResponseWriter(fakeReq, &httptest.ResponseRecorder{})
 		lastErr = ntw.Forward(ctx, fakeReq, lastFakeRespWriter)
 	}
@@ -230,7 +230,7 @@ func TestPreparedNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 		failsafeExecutor: failsafe.NewExecutor(policies...),
 	}
 
-	fakeReq := common.NewNormalizedRequest(requestBytes)
+	fakeReq := common.NewNormalizedRequest("123", requestBytes)
 	respWriter := common.NewHttpCompositeResponseWriter(fakeReq, &httptest.ResponseRecorder{})
 	err = ntw.Forward(ctx, fakeReq, respWriter)
 
@@ -314,7 +314,7 @@ func TestPreparedNetwork_ForwardRetryFailuresWithSuccess(t *testing.T) {
 		failsafeExecutor: failsafe.NewExecutor(policies...),
 	}
 
-	fakeReq := common.NewNormalizedRequest(requestBytes)
+	fakeReq := common.NewNormalizedRequest("123", requestBytes)
 	respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 	err = ntw.Forward(ctx, fakeReq, respWriter)
 
@@ -413,7 +413,7 @@ func TestPreparedNetwork_ForwardTimeoutPolicyFail(t *testing.T) {
 		failsafeExecutor: failsafe.NewExecutor(policies...),
 	}
 
-	fakeReq := common.NewNormalizedRequest(requestBytes)
+	fakeReq := common.NewNormalizedRequest("123", requestBytes)
 	respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 	err = ntw.Forward(ctx, fakeReq, respWriter)
 
@@ -496,7 +496,7 @@ func TestPreparedNetwork_ForwardTimeoutPolicyPass(t *testing.T) {
 		failsafeExecutor: failsafe.NewExecutor(policies...),
 	}
 
-	fakeReq := common.NewNormalizedRequest(requestBytes)
+	fakeReq := common.NewNormalizedRequest("123", requestBytes)
 	respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 	err = ntw.Forward(ctx, fakeReq, respWriter)
 
@@ -600,7 +600,7 @@ func TestPreparedNetwork_ForwardHedgePolicyTriggered(t *testing.T) {
 		failsafeExecutor: failsafe.NewExecutor(policies...),
 	}
 
-	fakeReq := common.NewNormalizedRequest(requestBytes)
+	fakeReq := common.NewNormalizedRequest("123", requestBytes)
 	respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 	err = ntw.Forward(ctx, fakeReq, respWriter)
 
@@ -713,7 +713,7 @@ func TestPreparedNetwork_ForwardHedgePolicyNotTriggered(t *testing.T) {
 		failsafeExecutor: failsafe.NewExecutor(policies...),
 	}
 
-	fakeReq := common.NewNormalizedRequest(requestBytes)
+	fakeReq := common.NewNormalizedRequest("123", requestBytes)
 	respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 	err = ntw.Forward(ctx, fakeReq, respWriter)
 
@@ -825,7 +825,7 @@ func TestPreparedNetwork_ForwardHedgePolicyIgnoresNegativeScoreUpstream(t *testi
 		failsafeExecutor: failsafe.NewExecutor(policies...),
 	}
 
-	fakeReq := common.NewNormalizedRequest(requestBytes)
+	fakeReq := common.NewNormalizedRequest("123", requestBytes)
 	respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 	err = ntw.Forward(ctx, fakeReq, respWriter)
 
@@ -931,7 +931,7 @@ func TestPreparedNetwork_ForwardCBOpensAfterConstantFailure(t *testing.T) {
 	}
 
 	for i := 0; i < 10; i++ {
-		fakeReq := common.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest("123", requestBytes)
 		respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 		err = ntw.Forward(ctx, fakeReq, respWriter)
 	}
@@ -1026,7 +1026,7 @@ func TestPreparedNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
 	}
 
 	for i := 0; i < 4+2; i++ {
-		fakeReq := common.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest("123", requestBytes)
 		respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 		err = ntw.Forward(ctx, fakeReq, respWriter)
 	}
@@ -1039,7 +1039,7 @@ func TestPreparedNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
 
 	var respWriter *ResponseRecorder
 	for i := 0; i < 3; i++ {
-		fakeReq := common.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest("123", requestBytes)
 		respWriter = &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 		err = ntw.Forward(ctx, fakeReq, respWriter)
 	}
