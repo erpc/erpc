@@ -287,7 +287,7 @@ func ensureGlobalSecondaryIndexes(client *dynamodb.DynamoDB, cfg *config.DynamoD
 	return err
 }
 
-func (d *DynamoDBConnector) SetWithWriter(ctx context.Context, partitionKey string, rangeKey string) (io.WriteCloser, error) {
+func (d *DynamoDBConnector) SetWithWriter(ctx context.Context, partitionKey, rangeKey string) (io.WriteCloser, error) {
 	log.Debug().Msgf("creating DynamoDBValueWriter with partition key: %s and range key: %s", partitionKey, rangeKey)
 	return &DynamoDBValueWriter{
 		connector:     d,
@@ -300,7 +300,7 @@ func (d *DynamoDBConnector) SetWithWriter(ctx context.Context, partitionKey stri
 	}, nil
 }
 
-func (d *DynamoDBConnector) GetWithReader(ctx context.Context, index, partitionKey string, rangeKey string) (io.Reader, error) {
+func (d *DynamoDBConnector) GetWithReader(ctx context.Context, index, partitionKey, rangeKey string) (io.Reader, error) {
 	var value string
 
 	if index == ConnectorReverseIndex {
@@ -373,6 +373,75 @@ func (d *DynamoDBConnector) GetWithReader(ctx context.Context, index, partitionK
 	}
 
 	return strings.NewReader(value), nil
+}
+func (d *DynamoDBConnector) Query(ctx context.Context, index, partitionKey, rangeKey string) ([]*DataValue, error) {
+	var keyCondition string
+	var exprAttrNames = map[string]*string{
+		"#pkey": aws.String(d.partitionKeyName),
+	}
+	var exprAttrValues = map[string]*dynamodb.AttributeValue{}
+
+	if strings.HasSuffix(partitionKey, "*") && index == ConnectorMainIndex {
+		return nil, fmt.Errorf("partition key does not support prefix search in dynamodb")
+	} else {
+		keyCondition = "#pkey = :pkey"
+		exprAttrValues[":pkey"] = &dynamodb.AttributeValue{
+			S: aws.String(partitionKey),
+		}
+	}
+
+	if rangeKey != "" {
+		exprAttrNames["#rkey"] = aws.String(d.rangeKeyName)
+		exprAttrValues[":rkey"] = &dynamodb.AttributeValue{
+			S: aws.String(strings.TrimSuffix(rangeKey, "*")),
+		}
+
+		if strings.HasSuffix(rangeKey, "*") {
+			keyCondition += " AND begins_with(#rkey, :rkey)"
+		} else {
+			keyCondition += " AND #rkey = :rkey"
+		}
+	}
+
+	qi := &dynamodb.QueryInput{
+		TableName:                 aws.String(d.table),
+		KeyConditionExpression:    aws.String(keyCondition),
+		ExpressionAttributeNames:  exprAttrNames,
+		ExpressionAttributeValues: exprAttrValues,
+	}
+
+	if index != "" && index != "main" {
+		qi.IndexName = aws.String(index)
+	}
+
+	var results []*DataValue
+	var lastEvaluatedKey map[string]*dynamodb.AttributeValue
+
+	for {
+		if lastEvaluatedKey != nil {
+			qi.ExclusiveStartKey = lastEvaluatedKey
+		}
+
+		log.Debug().Msgf("querying dynamodb with input: %+v", qi)
+		result, err := d.client.QueryWithContext(ctx, qi)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, item := range result.Items {
+			dv := &DataValue{
+				raw: *item["value"].S,
+			}
+			results = append(results, dv)
+		}
+
+		lastEvaluatedKey = result.LastEvaluatedKey
+		if lastEvaluatedKey == nil {
+			break
+		}
+	}
+
+	return results, nil
 }
 
 func (d *DynamoDBConnector) Delete(ctx context.Context, index, partitionKey, rangeKey string) error {
