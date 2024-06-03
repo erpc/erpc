@@ -16,6 +16,7 @@ const (
 type Connector interface {
 	GetWithReader(ctx context.Context, index, partitionKey, rangeKey string) (io.Reader, error)
 	SetWithWriter(ctx context.Context, partitionKey, rangeKey string) (io.WriteCloser, error)
+	Query(ctx context.Context, index, partitionKey, rangeKey string) ([]*DataValue, error)
 	Delete(ctx context.Context, index, partitionKey, rangeKey string) error
 }
 
