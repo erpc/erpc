@@ -44,7 +44,6 @@ func WeightedRandomSelect(upstreams []*upstream.PreparedUpstream) *upstream.Prep
 		return upstreams[0]
 	}
 
-	rand.Seed(time.Now().UnixNano())
 	randomValue := rand.Intn(totalScore)
 
 	for _, upstream := range upstreams {

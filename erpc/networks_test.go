@@ -1080,3 +1080,75 @@ func TestPreparedNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
 		t.Errorf("Expected hash to exist, got %v", body)
 	}
 }
+
+func TestPreparedNetwork_WeightedRandomSelect(t *testing.T) {
+	// Test cases
+	tests := []struct {
+		name      string
+		upstreams []*upstream.PreparedUpstream
+		expected  map[string]int // To track selection counts for each upstream ID
+	}{
+		{
+			name: "Basic scenario with distinct weights",
+			upstreams: []*upstream.PreparedUpstream{
+				{Id: "upstream1", Score: 1},
+				{Id: "upstream2", Score: 2},
+				{Id: "upstream3", Score: 3},
+			},
+			expected: map[string]int{"upstream1": 0, "upstream2": 0, "upstream3": 0},
+		},
+		{
+			name: "All upstreams have the same score",
+			upstreams: []*upstream.PreparedUpstream{
+				{Id: "upstream1", Score: 1},
+				{Id: "upstream2", Score: 1},
+				{Id: "upstream3", Score: 1},
+			},
+			expected: map[string]int{"upstream1": 0, "upstream2": 0, "upstream3": 0},
+		},
+		{
+			name: "Single upstream",
+			upstreams: []*upstream.PreparedUpstream{
+				{Id: "upstream1", Score: 1},
+			},
+			expected: map[string]int{"upstream1": 0},
+		},
+		{
+			name: "Upstreams with zero score",
+			upstreams: []*upstream.PreparedUpstream{
+				{Id: "upstream1", Score: 0},
+				{Id: "upstream2", Score: 0},
+				{Id: "upstream3", Score: 1},
+			},
+			expected: map[string]int{"upstream1": 0, "upstream2": 0, "upstream3": 0},
+		},
+	}
+
+	// Number of iterations to perform for weighted selection
+	const iterations = 10000
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for i := 0; i < iterations; i++ {
+				selected := WeightedRandomSelect(tt.upstreams)
+				tt.expected[selected.Id]++
+			}
+
+			// Check if the distribution matches the expected ratios
+			totalScore := 0
+			for _, upstream := range tt.upstreams {
+				totalScore += upstream.Score
+			}
+
+			for _, upstream := range tt.upstreams {
+				if upstream.Score > 0 {
+					expectedCount := (upstream.Score * iterations) / totalScore
+					actualCount := tt.expected[upstream.Id]
+					if actualCount < expectedCount*9/10 || actualCount > expectedCount*11/10 {
+						t.Errorf("upstream %s selected %d times, expected approximately %d times", upstream.Id, actualCount, expectedCount)
+					}
+				}
+			}
+		})
+	}
+}
