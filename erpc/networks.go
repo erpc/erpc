@@ -107,7 +107,9 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
 
 	if n.cacheDal != nil {
+		n.Logger.Debug().Msgf("checking cache for request")
 		cacheReader, err := n.cacheDal.GetWithReader(ctx, req)
+		n.Logger.Debug().Err(err).Msgf("cache response: %v", cacheReader)
 		if err != nil {
 			n.Logger.Debug().Err(err).Msgf("could not find response in cache")
 		}
@@ -318,7 +320,7 @@ func (n *PreparedNetwork) EvmIsBlockFinalized(blockNumber uint64) (bool, error) 
 func (n *PreparedNetwork) resolveNetworkId(ctx context.Context) error {
 	n.Logger.Debug().Msgf("resolving network id")
 	if n.Architecture() == "evm" {
-		if n.Config.Evm != nil {
+		if n.Config.Evm != nil && n.Config.Evm.ChainId > 0 {
 			n.NetworkId = strconv.Itoa(n.Config.Evm.ChainId)
 		} else {
 			nid, err := n.EvmGetChainId(ctx)

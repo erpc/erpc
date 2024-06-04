@@ -234,3 +234,9 @@ func (c *NetworkConfig) NetworkId() string {
 		return ""
 	}
 }
+
+func (c *ServerConfig) MarshalZerologObject(e *zerolog.Event) {
+	e.Str("host", c.HttpHost).
+		Str("port", c.HttpPort).
+		Int("maxTimeoutMs", c.MaxTimeoutMs)
+}

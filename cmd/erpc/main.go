@@ -42,11 +42,10 @@ func Init(
 	fs afero.Fs,
 	args []string,
 ) (func() error, error) {
-	logger.Debug().Msg("starting eRPC...")
-
 	//
 	// 1) Load configuration
 	//
+	logger.Info().Msg("loading eRPC configuration")
 	configPath := "./erpc.yaml"
 	if len(args) > 1 {
 		configPath = args[1]
@@ -54,10 +53,10 @@ func Init(
 	if _, err := fs.Stat(configPath); errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("config file '%s' does not exist", configPath)
 	}
-	logger.Info().Msgf("loading configuration from %s", configPath)
+	logger.Info().Msgf("resolved configuration file to: %s", configPath)
 	cfg, err := config.LoadConfig(fs, configPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load configuration: %v", err)
+		return nil, fmt.Errorf("failed to load configuration from %s: %v", configPath, err)
 	}
 	if level, err := zerolog.ParseLevel(cfg.LogLevel); err != nil {
 		logger.Warn().Msgf("invalid log level '%s', defaulting to 'debug': %s", cfg.LogLevel, err)
@@ -69,6 +68,7 @@ func Init(
 	//
 	// 2) Initialize eRPC
 	//
+	logger.Info().Msg("bootstrapping eRPC")
 	var evmJsonRpcCache *erpc.EvmJsonRpcCache
 	if cfg.Database != nil {
 		if cfg.Database.EvmJsonRpcCache != nil {
@@ -86,13 +86,14 @@ func Init(
 	//
 	// 3) Expose Transports
 	//
+	logger.Info().Msg("bootstrapping transports")
 	var httpServer *server.HttpServer
 	if cfg.Server != nil {
 		httpServer = server.NewHttpServer(cfg.Server, erpcInstance)
 		go func() {
 			if err := httpServer.Start(); err != nil {
 				if err != http.ErrServerClosed {
-					logger.Error().Msgf("failed to start httpServer: %v", err)
+					logger.Error().Msgf("failed to start http server: %v", err)
 					util.OsExit(util.ExitCodeHttpServerFailed)
 				}
 			}
