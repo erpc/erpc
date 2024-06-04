@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/flair-sdk/erpc/common"
@@ -63,6 +64,7 @@ func NewEvmJsonRpcCache(ctx context.Context, cfg *config.ConnectorConfig) (*EvmJ
 }
 
 func (c *EvmJsonRpcCache) WithNetwork(network *PreparedNetwork) *EvmJsonRpcCache {
+	network.Logger.Debug().Msgf("creating EvmJsonRpcCache")
 	return &EvmJsonRpcCache{
 		conn:    c.conn,
 		network: network,
@@ -75,21 +77,22 @@ func (c *EvmJsonRpcCache) GetWithReader(ctx context.Context, req *common.Normali
 		return nil, err
 	}
 
-	cacheKey, err := generateCacheKey(rpcReq)
-	if err != nil {
-		return nil, err
-	}
-	requestKey := fmt.Sprintf("%s:%s", req.NetworkId, cacheKey)
-
 	blockRef, _, err := extractBlockReferenceFromRequest(rpcReq)
 	if err != nil {
 		return nil, err
 	}
-	if blockRef != "" {
-		groupKey := fmt.Sprintf("evm:%s:%s", req.NetworkId, blockRef)
+	if blockRef == "" {
+		blockRef = "*"
+	}
+
+	groupKey, requestKey, err := generateKeysForJsonRpcRequest(req, blockRef)
+	if err != nil {
+		return nil, err
+	}
+
+	if blockRef != "*" {
 		return c.conn.GetWithReader(ctx, data.ConnectorMainIndex, groupKey, requestKey)
 	} else {
-		groupKey := fmt.Sprintf("evm:%s:*", req.NetworkId)
 		return c.conn.GetWithReader(ctx, data.ConnectorReverseIndex, groupKey, requestKey)
 	}
 }
@@ -106,24 +109,21 @@ func (c *EvmJsonRpcCache) SetWithWriter(ctx context.Context, req *common.Normali
 	}
 
 	if blockRef != "" {
-		if s, e := c.shouldCacheForBlock(blockNumber); !s || e != nil {
+		s, e := c.shouldCacheForBlock(blockNumber)
+		if !s || e != nil {
 			return nil, e
 		}
-
-		groupKey := fmt.Sprintf("evm:%s:%s", req.NetworkId, blockRef)
-		cacheKey, err := generateCacheKey(rpcReq)
+		pk, rk, err := generateKeysForJsonRpcRequest(req, blockRef)
 		if err != nil {
 			return nil, err
 		}
-		requestKey := fmt.Sprintf("%s:%s", req.NetworkId, cacheKey)
-		return c.conn.SetWithWriter(ctx, groupKey, requestKey)
+		return c.conn.SetWithWriter(ctx, pk, rk)
 	} else {
 		// Empty keys forces the connector to use the keyResolver when response is fully received
 		ctx = context.WithValue(ctx, JsonRpcCacheContext, map[string]interface{}{
 			"req":   req,
 			"cache": c,
 		})
-
 		return c.conn.SetWithWriter(ctx, "", "")
 	}
 }
@@ -140,7 +140,9 @@ func (c *EvmJsonRpcCache) DeleteByGroupKey(ctx context.Context, groupKeys ...str
 }
 
 func (c *EvmJsonRpcCache) shouldCacheForBlock(blockNumber uint64) (bool, error) {
-	return c.network.EvmIsBlockFinalized(blockNumber)
+	b, e := c.network.EvmIsBlockFinalized(blockNumber)
+	log.Debug().Msgf("shouldCacheForBlock on block: %d, finalized: %t, err: %v", blockNumber, b, e)
+	return b, e
 }
 
 func generateCacheKey(r *common.JsonRpcRequest) (string, error) {
@@ -218,14 +220,29 @@ func resolveEvmJsonRpcCacheKeys(ctx context.Context, dv *data.DataValue) (pk str
 	}
 
 	cache := values["cache"].(*EvmJsonRpcCache)
-	if s, e := cache.shouldCacheForBlock(blockNumber); !s || e != nil {
+	s, e := cache.shouldCacheForBlock(blockNumber)
+	if !s || e != nil {
 		return "", "", e
 	}
 
+	return generateKeysForJsonRpcRequest(req, blockRef)
+}
+
+func generateKeysForJsonRpcRequest(req *common.NormalizedRequest, blockRef string) (string, string, error) {
+	rpcReq, err := req.JsonRpcRequest()
+	if err != nil {
+		return "", "", err
+	}
+
+	cacheKey, err := generateCacheKey(rpcReq)
+	if err != nil {
+		return "", "", err
+	}
+
 	if blockRef != "" {
-		return fmt.Sprintf("evm:%s:%s", req.NetworkId, blockRef), fmt.Sprintf("%s:%s:%s", req.NetworkId, rpcReq.Method, rpcReq.Params), nil
+		return fmt.Sprintf("evm:%s:%s", req.NetworkId, blockRef), fmt.Sprintf("%s:%s", req.NetworkId, cacheKey), nil
 	} else {
-		return fmt.Sprintf("evm:%s:nil", req.NetworkId), fmt.Sprintf("%s:%s:%s", req.NetworkId, rpcReq.Method, rpcReq.Params), nil
+		return fmt.Sprintf("evm:%s:nil", req.NetworkId), fmt.Sprintf("%s:%s", req.NetworkId, cacheKey), nil
 	}
 }
 
@@ -276,13 +293,18 @@ func extractBlockReferenceFromRequest(r *common.JsonRpcRequest) (string, uint64,
 		"eth_getTransactionByBlockNumberAndIndex",
 		"eth_getUncleCountByBlockNumber",
 		"eth_getBlockTransactionCountByNumber":
+		log.Debug().Msgf("extractBlockReferenceFromRequest r.Params: %+v", r.Params)
 		if len(r.Params) > 0 {
 			if bns, ok := r.Params[0].(string); ok {
-				bni, err := hexutil.DecodeUint64(bns)
-				if err != nil {
-					return "", 0, err
+				if strings.HasPrefix(bns, "0x") {
+					bni, err := hexutil.DecodeUint64(bns)
+					if err != nil {
+						return "", 0, err
+					}
+					return bns, bni, nil
+				} else {
+					return "", 0, nil
 				}
-				return bns, bni, nil
 			}
 		} else {
 			return "", 0, fmt.Errorf("unexpected no parameters for method %s", r.Method)
@@ -294,13 +316,18 @@ func extractBlockReferenceFromRequest(r *common.JsonRpcRequest) (string, uint64,
 		"eth_getTransactionCount",
 		"eth_call",
 		"eth_estimateGas":
+		log.Debug().Msgf("extractBlockReferenceFromRequest r.Params: %+v", r.Params)
 		if len(r.Params) > 1 {
 			if bns, ok := r.Params[1].(string); ok {
-				bni, err := hexutil.DecodeUint64(bns)
-				if err != nil {
-					return "", 0, err
+				if strings.HasPrefix(bns, "0x") {
+					bni, err := hexutil.DecodeUint64(bns)
+					if err != nil {
+						return "", 0, err
+					}
+					return bns, bni, nil
+				} else {
+					return "", 0, nil
 				}
-				return bns, bni, nil
 			}
 		} else {
 			return "", 0, fmt.Errorf("unexpected missing 2nd parameter for method %s: %+v", r.Method, r.Params)

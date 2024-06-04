@@ -66,15 +66,18 @@ func (w *DynamoDBValueWriter) Close() error {
 			return err
 		}
 	} else {
-		return fmt.Errorf("missing partition and range keys, also no keyResolver provided")
+		return fmt.Errorf("missing partition and range keys for dynamodb, also no keyResolver provided")
 	}
 
+	
 	if w.valueResolver != nil {
 		dv, err = w.valueResolver(w.ctx, dv)
 		if err != nil {
 			return err
 		}
 	}
+	
+	log.Debug().Interface("data", dv).Msgf("writing item to dynamodb with partition key: %s and range key: %s", pk, rk)
 
 	if dv == nil {
 		// Skip writing since valueResolver returned nil
@@ -395,6 +398,7 @@ func (d *DynamoDBConnector) GetWithReader(ctx context.Context, index, partitionK
 
 	return strings.NewReader(value), nil
 }
+
 func (d *DynamoDBConnector) Query(ctx context.Context, index, partitionKey, rangeKey string) ([]*DataValue, error) {
 	var keyCondition string
 	var exprAttrNames = map[string]*string{

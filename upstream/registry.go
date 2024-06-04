@@ -89,7 +89,7 @@ func (u *UpstreamsRegistry) scheduleHealthCheckTimers() error {
 	go func() {
 		for {
 			u.collectMetricsForAllUpstreams()
-			time.Sleep(5 * time.Second)
+			time.Sleep(60 * time.Second)
 		}
 	}()
 

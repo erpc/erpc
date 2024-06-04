@@ -31,7 +31,7 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 
 	e.ctx, e.ctxCancel = context.WithCancel(ctx)
 
-	var blockTrackerInterval = 5 * time.Second // default value
+	var blockTrackerInterval = 60 * time.Second // default value
 	var err error
 	if e.network.Config.Evm != nil && e.network.Config.Evm.BlockTrackerInterval != "" {
 		blockTrackerInterval, err = time.ParseDuration(e.network.Config.Evm.BlockTrackerInterval)
@@ -40,35 +40,37 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 		}
 	}
 
-	defer e.Stop()
+	go (func() {
+		for {
+			e.network.Logger.Debug().Msg("fetching latest block")
+			select {
+			case <-e.ctx.Done():
+				return
+			default:
+				lb, err := e.fetchLatestBlockNumber(e.ctx, e.network.NetworkId)
+				if err != nil {
+					e.network.Logger.Error().Err(err).Msg("failed to get latest block number in block tracker")
+				}
+				e.network.Logger.Debug().Uint64("blockNumber", lb).Msg("fetched latest block")
+				if lb > 0 {
+					e.LatestBlockNumber = lb
+				}
 
-	for {
-		e.network.Logger.Debug().Msg("fetching latest block")
-		select {
-		case <-e.ctx.Done():
-			return nil
-		default:
-			lb, err := e.fetchLatestBlockNumber(e.ctx, e.network.NetworkId)
-			if err != nil {
-				e.network.Logger.Error().Err(err).Msg("failed to get latest block number in block tracker")
-			}
-			e.network.Logger.Debug().Uint64("blockNumber", lb).Msg("fetched latest block")
-			if lb > 0 {
-				e.LatestBlockNumber = lb
+				fb, err := e.fetchFinalizedBlockNumber(e.ctx, e.network.NetworkId)
+				if err != nil {
+					e.network.Logger.Error().Err(err).Msg("failed to get finalized block number in block tracker")
+				}
+				e.network.Logger.Debug().Uint64("blockNumber", fb).Msg("fetched finalized block")
+				if fb > 0 {
+					e.FinalizedBlockNumber = fb
+				}
 			}
 
-			fb, err := e.fetchFinalizedBlockNumber(e.ctx, e.network.NetworkId)
-			if err != nil {
-				e.network.Logger.Error().Err(err).Msg("failed to get finalized block number in block tracker")
-			}
-			e.network.Logger.Debug().Uint64("blockNumber", fb).Msg("fetched finalized block")
-			if fb > 0 {
-				e.FinalizedBlockNumber = fb
-			}
+			time.Sleep(blockTrackerInterval)
 		}
+	})()
 
-		time.Sleep(blockTrackerInterval)
-	}
+	return nil
 }
 
 func (e *EvmBlockTracker) Stop() {

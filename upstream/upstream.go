@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/flair-sdk/erpc/common"
@@ -35,6 +36,7 @@ type PreparedUpstream struct {
 	Score   float64          `json:"score"`
 
 	methodCheckResults   map[string]bool                  `json:"-"`
+	methodCheckResultsMu sync.Mutex                       `json:"-"`
 	rateLimitersRegistry *resiliency.RateLimitersRegistry `json:"-"`
 	failsafeExecutor     failsafe.Executor[interface{}]   `json:"-"`
 }
@@ -320,10 +322,12 @@ func (u *PreparedUpstream) shouldHandleMethod(method string) (v bool) {
 	}
 
 	// Cache the result
+	u.methodCheckResultsMu.Lock()
 	if u.methodCheckResults == nil {
 		u.methodCheckResults = map[string]bool{}
 	}
 	u.methodCheckResults[method] = v
+	u.methodCheckResultsMu.Unlock()
 
 	u.Logger.Debug().Bool("allowed", v).Str("method", method).Msg("method support result")
 

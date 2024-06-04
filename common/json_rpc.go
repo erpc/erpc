@@ -1,6 +1,10 @@
 package common
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/rs/zerolog"
+)
 
 type JsonRpcRequest struct {
 	JSONRPC string        `json:"jsonrpc,omitempty"`
@@ -35,4 +39,16 @@ func WrapJsonRpcError(r *JsonRpcError) error {
 			"jsonRpcErrorCode": r.Code,
 		},
 	}
+}
+
+func (r *JsonRpcError) Error() string {
+	return fmt.Sprintf("%d: %s", r.Code, r.Message)
+}
+
+func (r *JsonRpcRequest) MarshalZerologObject(e *zerolog.Event) {
+	e.Str("method", r.Method).Interface("params", r.Params).Interface("id", r.ID)
+}
+
+func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
+	e.Int("id", r.ID).Interface("result", r.Result).Interface("error", r.Error)
 }
