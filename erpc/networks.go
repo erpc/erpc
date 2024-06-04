@@ -2,8 +2,10 @@ package erpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"strconv"
 	"sync"
 
 	"github.com/failsafe-go/failsafe-go"
@@ -15,6 +17,7 @@ import (
 	"github.com/flair-sdk/erpc/upstream"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 type PreparedNetwork struct {
@@ -30,17 +33,19 @@ type PreparedNetwork struct {
 
 	rateLimiterDal data.RateLimitersDAL
 	cacheDal       data.CacheDAL
+
+	evmBlockTracker *EvmBlockTracker
 }
 
 var preparedNetworks map[string]*PreparedNetwork = make(map[string]*PreparedNetwork)
 
 func (r *ProjectsRegistry) NewNetwork(
 	logger *zerolog.Logger,
-	database *data.Database,
+	evmJsonRpcCache *EvmJsonRpcCache,
 	prjCfg *config.ProjectConfig,
 	nwCfg *config.NetworkConfig,
 ) (*PreparedNetwork, error) {
-	var key = prjCfg.Id + ":" + nwCfg.NetworkId
+	var key = prjCfg.Id
 
 	if pn, ok := preparedNetworks[key]; ok {
 		return pn, nil
@@ -56,36 +61,42 @@ func (r *ProjectsRegistry) NewNetwork(
 		policies = pls
 	}
 
-	var cacheDal data.CacheDAL
 	var rateLimiterDal data.RateLimitersDAL
-	if database != nil {
-		switch nwCfg.Architecture {
-		case "evm":
-			cacheDal = database.EvmJsonRpcCache
-		default:
-			return nil, errors.New("unknown network architecture")
-		}
 
-		// if database.RateLimitSnapshots != nil {
-		// 	rateLimiterDal = database.RateLimitSnapshots
-		// }
-	}
-
-	ptr := logger.With().Str("network", nwCfg.NetworkId).Logger()
 	preparedNetworks[key] = &PreparedNetwork{
-		NetworkId:        nwCfg.NetworkId,
 		ProjectId:        prjCfg.Id,
 		FailsafePolicies: policies,
 		Config:           nwCfg,
-		Logger:           &ptr,
+		Logger:           logger,
 
-		cacheDal:             cacheDal,
 		rateLimiterDal:       rateLimiterDal,
 		rateLimitersRegistry: r.rateLimitersRegistry,
 		failsafeExecutor:     failsafe.NewExecutor[interface{}](policies...),
 	}
 
+	switch nwCfg.Architecture {
+	case "evm":
+		preparedNetworks[key].cacheDal = evmJsonRpcCache.WithNetwork(preparedNetworks[key])
+	default:
+		return nil, errors.New("unknown network architecture")
+	}
+
 	return preparedNetworks[key], nil
+}
+
+func (n *PreparedNetwork) Bootstrap(ctx context.Context) error {
+	if err := n.resolveNetworkId(ctx); err != nil {
+		return err
+	}
+
+	if n.Architecture() == upstream.ArchitectureEvm {
+		n.evmBlockTracker = NewEvmBlockTracker(n)
+		if err := n.evmBlockTracker.Bootstrap(ctx); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (n *PreparedNetwork) Architecture() string {
@@ -215,6 +226,114 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 	if execErr != nil {
 		return resiliency.TranslateFailsafeError(execErr)
 	}
+
+	return nil
+}
+
+// Send will call the upstream and parses the response, used in internal non-proxy flows such as block tracker
+func (n *PreparedNetwork) Send(ctx context.Context, networkId string, req *common.NormalizedRequest) ([]byte, error) {
+	rw := common.NewMemoryResponseWriter()
+	crw := common.NewHttpCompositeResponseWriter(rw)
+
+	err := n.Forward(ctx, req, crw)
+	if err != nil {
+		return nil, err
+	}
+
+	respBody, err := io.ReadAll(rw)
+	if err != nil {
+		return nil, err
+	}
+
+	return respBody, nil
+}
+
+func (n *PreparedNetwork) EvmGetChainId(ctx context.Context) (string, error) {
+	pr := common.NewNormalizedRequest(n.NetworkId, []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[]}`))
+	respBytes, err := n.Send(ctx, n.NetworkId, pr)
+	if err != nil {
+		return "", err
+	}
+
+	jrr := &common.JsonRpcResponse{}
+	err = json.Unmarshal(respBytes, jrr)
+	if err != nil {
+		return "", err
+	}
+
+	if jrr.Error != nil {
+		return "", common.WrapJsonRpcError(jrr.Error)
+	}
+
+	log.Debug().Msgf("eth_chainId response: %+v", jrr)
+
+	hex, err := common.NormalizeHex(jrr.Result)
+	if err != nil {
+		return "", err
+	}
+
+	dec, err := common.HexToUint64(hex)
+	if err != nil {
+		return "", err
+	}
+
+	return strconv.FormatUint(dec, 10), nil
+}
+
+func (n *PreparedNetwork) EvmIsBlockFinalized(blockNumber uint64) (bool, error) {
+	if n.evmBlockTracker == nil {
+		return false, nil
+	}
+
+	finalizedBlock := n.evmBlockTracker.FinalizedBlockNumber
+	latestBlock := n.evmBlockTracker.LatestBlockNumber
+	if latestBlock == 0 && finalizedBlock == 0 {
+		n.Logger.Debug().
+			Uint64("finalizedBlock", finalizedBlock).
+			Uint64("latestBlock", latestBlock).
+			Uint64("blockNumber", blockNumber).
+			Msgf("finalized/latest blocks are not available yet when checking block finality")
+		return false, nil
+	}
+
+	if finalizedBlock > 0 {
+		return blockNumber <= finalizedBlock, nil
+	}
+
+	if latestBlock == 0 {
+		return false, nil
+	}
+
+	var fb uint64
+
+	if n.Config.Evm != nil {
+		fb = latestBlock - n.Config.Evm.FinalityDepth
+	} else {
+		fb = latestBlock - 128
+	}
+
+	return blockNumber <= fb, nil
+}
+
+func (n *PreparedNetwork) resolveNetworkId(ctx context.Context) error {
+	n.Logger.Debug().Msgf("resolving network id")
+	if n.Architecture() == "evm" {
+		if n.Config.Evm != nil {
+			n.NetworkId = strconv.Itoa(n.Config.Evm.ChainId)
+		} else {
+			nid, err := n.EvmGetChainId(ctx)
+			if err != nil {
+				return err
+			}
+			n.NetworkId = nid
+		}
+	}
+
+	if n.NetworkId == "" {
+		return common.NewErrUnknownNetworkID(n.Architecture())
+	}
+
+	n.Logger.Debug().Msgf("resolved network id to: %s", n.NetworkId)
 
 	return nil
 }

@@ -2,7 +2,6 @@ package erpc
 
 import (
 	"github.com/flair-sdk/erpc/config"
-	"github.com/flair-sdk/erpc/data"
 	"github.com/flair-sdk/erpc/resiliency"
 	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog"
@@ -16,7 +15,11 @@ type ERPC struct {
 	projectsRegistry     *ProjectsRegistry
 }
 
-func NewERPC(logger *zerolog.Logger, database *data.Database, cfg *config.Config) (*ERPC, error) {
+func NewERPC(
+	logger *zerolog.Logger,
+	evmJsonRpcCache *EvmJsonRpcCache,
+	cfg *config.Config,
+) (*ERPC, error) {
 	rateLimitersRegistry, err := resiliency.NewRateLimitersRegistry(cfg.RateLimiters)
 	if err != nil {
 		return nil, err
@@ -27,7 +30,7 @@ func NewERPC(logger *zerolog.Logger, database *data.Database, cfg *config.Config
 		return nil, err
 	}
 
-	projectRegistry, err := NewProjectsRegistry(database, upstreamsRegistry, rateLimitersRegistry, cfg.Projects)
+	projectRegistry, err := NewProjectsRegistry(evmJsonRpcCache, upstreamsRegistry, rateLimitersRegistry, cfg.Projects)
 	if err != nil {
 		return nil, err
 	}

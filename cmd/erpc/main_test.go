@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -174,7 +175,7 @@ projects:
 	args := []string{"erpc-test", cfg.Name()}
 
 	logger := log.With().Logger()
-	shutdown, err := Init(&logger, fs, args)
+	shutdown, err := Init(context.Background(), &logger, fs, args)
 	if shutdown != nil {
 		defer shutdown()
 	}
@@ -247,7 +248,7 @@ func TestInit_InvalidConfig(t *testing.T) {
 	args := []string{"erpc-test", cfg.Name()}
 
 	logger := log.With().Logger()
-	shutdown, err := Init(&logger, fs, args)
+	shutdown, err := Init(context.Background(), &logger, fs, args)
 	if shutdown != nil {
 		defer shutdown()
 	}
@@ -267,7 +268,7 @@ func TestInit_ConfigFileDoesNotExist(t *testing.T) {
 	args := []string{"erpc-test", "non-existent-file.yaml"}
 
 	logger := log.With().Logger()
-	shutdown, err := Init(&logger, fs, args)
+	shutdown, err := Init(context.Background(), &logger, fs, args)
 	if shutdown != nil {
 		defer shutdown()
 	}
@@ -295,7 +296,7 @@ logLevel: invalid
 	args := []string{"erpc-test", cfg.Name()}
 
 	logger := log.With().Logger()
-	shutdown, err := Init(&logger, fs, args)
+	shutdown, err := Init(context.Background(), &logger, fs, args)
 	if shutdown != nil {
 		defer shutdown()
 	}
@@ -340,7 +341,7 @@ projects:
 	args := []string{"erpc-test", cfg.Name()}
 
 	logger := log.With().Logger()
-	shutdown, err := Init(&logger, fs, args)
+	shutdown, err := Init(context.Background(), &logger, fs, args)
 	if shutdown != nil {
 		defer shutdown()
 	}

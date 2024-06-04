@@ -1,23 +1,27 @@
 package data
 
-import "github.com/flair-sdk/erpc/config"
+// import (
+// 	"context"
 
-type Database struct {
-	EvmJsonRpcCache *EvmJsonRpcCache
-	// EvmBlockIngestions *EvmBlockIngestions
-	// RateLimitSnapshots *RateLimitSnapshots
-}
+// 	"github.com/flair-sdk/erpc/config"
+// )
 
-func NewDatabase(cfg *config.DatabaseConfig) (*Database, error) {
-	db := &Database{}
+// // type Database struct {
+// // 	EvmJsonRpcCache *EvmJsonRpcCache
+// // 	// EvmBlockIngestions *EvmBlockIngestions
+// // 	// RateLimitSnapshots *RateLimitSnapshots
+// // }
 
-	if cfg.EvmJsonRpcCache != nil {
-		c, err := NewEvmJsonRpcCache(cfg.EvmJsonRpcCache)
-		if err != nil {
-			return nil, err
-		}
-		db.EvmJsonRpcCache = c
-	}
+// // func NewDatabase(ctx context.Context, cfg *config.DatabaseConfig) (*Database, error) {
+// // 	db := &Database{}
 
-	return db, nil
-}
+// // 	if cfg.EvmJsonRpcCache != nil {
+// // 		c, err := NewEvmJsonRpcCache(ctx, cfg.EvmJsonRpcCache)
+// // 		if err != nil {
+// // 			return nil, err
+// // 		}
+// // 		db.EvmJsonRpcCache = c
+// // 	}
+
+// // 	return db, nil
+// // }

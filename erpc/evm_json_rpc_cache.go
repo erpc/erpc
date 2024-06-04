@@ -1,4 +1,4 @@
-package data
+package erpc
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
+	"github.com/flair-sdk/erpc/data"
 	"github.com/rs/zerolog/log"
 )
 
@@ -32,21 +33,22 @@ type EvmLogFilter struct {
 }
 
 type EvmJsonRpcCache struct {
-	conn Connector
+	conn    data.Connector
+	network *PreparedNetwork
 }
 
 const (
-	JsonRpcRequestKey  common.ContextKey = "jsonRpcReq"
-	JsonRpcResponseKey common.ContextKey = "jsonRpcRes"
+	JsonRpcCacheContext common.ContextKey = "jsonRpcCache"
 )
 
-func NewEvmJsonRpcCache(cfg *config.ConnectorConfig) (*EvmJsonRpcCache, error) {
+func NewEvmJsonRpcCache(ctx context.Context, cfg *config.ConnectorConfig) (*EvmJsonRpcCache, error) {
 	err := populateDefaults(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	c, err := NewConnector(
+	c, err := data.NewConnector(
+		ctx,
 		cfg,
 		resolveEvmJsonRpcCacheKeys,
 		resolveOnlySuccessfulResponses,
@@ -58,6 +60,13 @@ func NewEvmJsonRpcCache(cfg *config.ConnectorConfig) (*EvmJsonRpcCache, error) {
 	return &EvmJsonRpcCache{
 		conn: c,
 	}, nil
+}
+
+func (c *EvmJsonRpcCache) WithNetwork(network *PreparedNetwork) *EvmJsonRpcCache {
+	return &EvmJsonRpcCache{
+		conn:    c.conn,
+		network: network,
+	}
 }
 
 func (c *EvmJsonRpcCache) GetWithReader(ctx context.Context, req *common.NormalizedRequest) (io.Reader, error) {
@@ -72,13 +81,16 @@ func (c *EvmJsonRpcCache) GetWithReader(ctx context.Context, req *common.Normali
 	}
 	requestKey := fmt.Sprintf("%s:%s", req.NetworkId, cacheKey)
 
-	blockNumber, _ := extractBlockReferenceFromRequest(rpcReq)
-	if blockNumber != "" {
-		groupKey := fmt.Sprintf("evm:%s:%s", req.NetworkId, blockNumber)
-		return c.conn.GetWithReader(ctx, ConnectorMainIndex, groupKey, requestKey)
+	blockRef, _, err := extractBlockReferenceFromRequest(rpcReq)
+	if err != nil {
+		return nil, err
+	}
+	if blockRef != "" {
+		groupKey := fmt.Sprintf("evm:%s:%s", req.NetworkId, blockRef)
+		return c.conn.GetWithReader(ctx, data.ConnectorMainIndex, groupKey, requestKey)
 	} else {
 		groupKey := fmt.Sprintf("evm:%s:*", req.NetworkId)
-		return c.conn.GetWithReader(ctx, ConnectorReverseIndex, groupKey, requestKey)
+		return c.conn.GetWithReader(ctx, data.ConnectorReverseIndex, groupKey, requestKey)
 	}
 }
 
@@ -88,13 +100,17 @@ func (c *EvmJsonRpcCache) SetWithWriter(ctx context.Context, req *common.Normali
 		return nil, err
 	}
 
-	blockNumber, err := extractBlockReferenceFromRequest(rpcReq)
+	blockRef, blockNumber, err := extractBlockReferenceFromRequest(rpcReq)
 	if err != nil {
 		return nil, err
 	}
 
-	if blockNumber != "" {
-		groupKey := fmt.Sprintf("evm:%s:%s", req.NetworkId, blockNumber)
+	if blockRef != "" {
+		if s, e := c.shouldCacheForBlock(blockNumber); !s || e != nil {
+			return nil, e
+		}
+
+		groupKey := fmt.Sprintf("evm:%s:%s", req.NetworkId, blockRef)
 		cacheKey, err := generateCacheKey(rpcReq)
 		if err != nil {
 			return nil, err
@@ -103,20 +119,28 @@ func (c *EvmJsonRpcCache) SetWithWriter(ctx context.Context, req *common.Normali
 		return c.conn.SetWithWriter(ctx, groupKey, requestKey)
 	} else {
 		// Empty keys forces the connector to use the keyResolver when response is fully received
-		ctx = context.WithValue(ctx, JsonRpcRequestKey, req)
+		ctx = context.WithValue(ctx, JsonRpcCacheContext, map[string]interface{}{
+			"req":   req,
+			"cache": c,
+		})
+
 		return c.conn.SetWithWriter(ctx, "", "")
 	}
 }
 
 func (c *EvmJsonRpcCache) DeleteByGroupKey(ctx context.Context, groupKeys ...string) error {
 	for _, groupKey := range groupKeys {
-		err := c.conn.Delete(ctx, ConnectorMainIndex, groupKey, "")
+		err := c.conn.Delete(ctx, data.ConnectorMainIndex, groupKey, "")
 		if err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+func (c *EvmJsonRpcCache) shouldCacheForBlock(blockNumber uint64) (bool, error) {
+	return c.network.EvmIsBlockFinalized(blockNumber)
 }
 
 func generateCacheKey(r *common.JsonRpcRequest) (string, error) {
@@ -171,8 +195,10 @@ func hashValue(h io.Writer, v interface{}) error {
 	}
 }
 
-func resolveEvmJsonRpcCacheKeys(ctx context.Context, dv *DataValue) (pk string, rk string, err error) {
-	req := ctx.Value(JsonRpcRequestKey).(*common.NormalizedRequest)
+func resolveEvmJsonRpcCacheKeys(ctx context.Context, dv *data.DataValue) (pk string, rk string, err error) {
+	values := ctx.Value(JsonRpcCacheContext).(map[string]interface{})
+
+	req := values["req"].(*common.NormalizedRequest)
 	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
 		return "", "", err
@@ -186,19 +212,24 @@ func resolveEvmJsonRpcCacheKeys(ctx context.Context, dv *DataValue) (pk string, 
 		return "", "", errors.New("json-rpc response is nil")
 	}
 
-	blockNumber, err := extractBlockReferenceFromResponse(rpcReq, rpcRes)
+	blockRef, blockNumber, err := extractBlockReferenceFromResponse(rpcReq, rpcRes)
 	if err != nil {
 		return "", "", err
 	}
 
-	if blockNumber != "" {
-		return fmt.Sprintf("evm:%s:%s", req.NetworkId, blockNumber), fmt.Sprintf("%s:%s:%s", req.NetworkId, rpcReq.Method, rpcReq.Params), nil
+	cache := values["cache"].(*EvmJsonRpcCache)
+	if s, e := cache.shouldCacheForBlock(blockNumber); !s || e != nil {
+		return "", "", e
+	}
+
+	if blockRef != "" {
+		return fmt.Sprintf("evm:%s:%s", req.NetworkId, blockRef), fmt.Sprintf("%s:%s:%s", req.NetworkId, rpcReq.Method, rpcReq.Params), nil
 	} else {
 		return fmt.Sprintf("evm:%s:nil", req.NetworkId), fmt.Sprintf("%s:%s:%s", req.NetworkId, rpcReq.Method, rpcReq.Params), nil
 	}
 }
 
-func resolveOnlySuccessfulResponses(_ context.Context, dv *DataValue) (*DataValue, error) {
+func resolveOnlySuccessfulResponses(_ context.Context, dv *data.DataValue) (*data.DataValue, error) {
 	e, err := dv.AsJsonRpcResponse()
 	if err != nil {
 		return nil, err
@@ -213,7 +244,7 @@ func resolveOnlySuccessfulResponses(_ context.Context, dv *DataValue) (*DataValu
 
 func populateDefaults(cfg *config.ConnectorConfig) error {
 	switch cfg.Driver {
-	case DynamoDBDriverName:
+	case data.DynamoDBDriverName:
 		if cfg.DynamoDB.Table == "" {
 			cfg.DynamoDB.Table = "erpc_json_rpc_cache"
 		}
@@ -234,9 +265,9 @@ func populateDefaults(cfg *config.ConnectorConfig) error {
 	return nil
 }
 
-func extractBlockReferenceFromRequest(r *common.JsonRpcRequest) (string, error) {
+func extractBlockReferenceFromRequest(r *common.JsonRpcRequest) (string, uint64, error) {
 	if r == nil {
-		return "", errors.New("cannot extract block reference when json-rpc request is nil")
+		return "", 0, errors.New("cannot extract block reference when json-rpc request is nil")
 	}
 
 	switch r.Method {
@@ -246,9 +277,15 @@ func extractBlockReferenceFromRequest(r *common.JsonRpcRequest) (string, error) 
 		"eth_getUncleCountByBlockNumber",
 		"eth_getBlockTransactionCountByNumber":
 		if len(r.Params) > 0 {
-			return fmt.Sprintf("%s", r.Params[0]), nil
+			if bns, ok := r.Params[0].(string); ok {
+				bni, err := hexutil.DecodeUint64(bns)
+				if err != nil {
+					return "", 0, err
+				}
+				return bns, bni, nil
+			}
 		} else {
-			return "", fmt.Errorf("unexpected no parameters for method %s", r.Method)
+			return "", 0, fmt.Errorf("unexpected no parameters for method %s", r.Method)
 		}
 
 	case "eth_getBalance",
@@ -258,33 +295,39 @@ func extractBlockReferenceFromRequest(r *common.JsonRpcRequest) (string, error) 
 		"eth_call",
 		"eth_estimateGas":
 		if len(r.Params) > 1 {
-			return fmt.Sprintf("%s", r.Params[1]), nil
+			if bns, ok := r.Params[1].(string); ok {
+				bni, err := hexutil.DecodeUint64(bns)
+				if err != nil {
+					return "", 0, err
+				}
+				return bns, bni, nil
+			}
 		} else {
-			return "", fmt.Errorf("unexpected missing 2nd parameter for method %s: %+v", r.Method, r.Params)
+			return "", 0, fmt.Errorf("unexpected missing 2nd parameter for method %s: %+v", r.Method, r.Params)
 		}
 
 	case "eth_getBlockByHash":
 		if len(r.Params) > 0 {
 			if blockHash, ok := r.Params[0].(string); ok {
-				return blockHash, nil
+				return blockHash, 0, nil
 			}
-			return "", fmt.Errorf("first parameter is not a string for method %s it is %+v", r.Method, r.Params)
+			return "", 0, fmt.Errorf("first parameter is not a string for method %s it is %+v", r.Method, r.Params)
 		}
 
 	default:
-		return "", nil
+		return "", 0, nil
 	}
 
-	return "", nil
+	return "", 0, nil
 }
 
-func extractBlockReferenceFromResponse(rpcReq *common.JsonRpcRequest, rpcResp *common.JsonRpcResponse) (string, error) {
+func extractBlockReferenceFromResponse(rpcReq *common.JsonRpcRequest, rpcResp *common.JsonRpcResponse) (string, uint64, error) {
 	if rpcReq == nil {
-		return "", errors.New("cannot extract block reference when json-rpc request is nil")
+		return "", 0, errors.New("cannot extract block reference when json-rpc request is nil")
 	}
 
 	if rpcResp == nil {
-		return "", errors.New("cannot extract block reference when json-rpc response is nil")
+		return "", 0, errors.New("cannot extract block reference when json-rpc response is nil")
 	}
 
 	switch rpcReq.Method {
@@ -296,16 +339,16 @@ func extractBlockReferenceFromResponse(rpcReq *common.JsonRpcRequest, rpcResp *c
 					log.Debug().Msgf("extractBlockReferenceFromResponse blockNumber: %+v", blockNumber)
 					bn, err := hexutil.DecodeUint64(blockNumber)
 					if err != nil {
-						return "", err
+						return "", bn, err
 					}
-					return fmt.Sprintf("%d", bn), nil
+					return fmt.Sprintf("%d", bn), bn, nil
 				}
 			}
 		}
 
 	default:
-		return "", nil
+		return "", 0, nil
 	}
 
-	return "", nil
+	return "", 0, nil
 }

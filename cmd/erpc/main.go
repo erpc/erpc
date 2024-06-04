@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,7 +10,6 @@ import (
 	"syscall"
 
 	"github.com/flair-sdk/erpc/config"
-	"github.com/flair-sdk/erpc/data"
 	"github.com/flair-sdk/erpc/erpc"
 	"github.com/flair-sdk/erpc/server"
 	"github.com/flair-sdk/erpc/util"
@@ -22,7 +22,7 @@ import (
 func main() {
 	logger := log.With().Logger()
 
-	shutdown, err := Init(&logger, afero.NewOsFs(), os.Args)
+	shutdown, err := Init(context.Background(), &logger, afero.NewOsFs(), os.Args)
 	defer shutdown()
 
 	if err != nil {
@@ -36,7 +36,12 @@ func main() {
 	logger.Warn().Msgf("caught signal: %v", recvSig)
 }
 
-func Init(logger *zerolog.Logger, fs afero.Fs, args []string) (func() error, error) {
+func Init(
+	ctx context.Context,
+	logger *zerolog.Logger,
+	fs afero.Fs,
+	args []string,
+) (func() error, error) {
 	logger.Debug().Msg("starting eRPC...")
 
 	//
@@ -64,14 +69,16 @@ func Init(logger *zerolog.Logger, fs afero.Fs, args []string) (func() error, err
 	//
 	// 2) Initialize eRPC
 	//
-	var database *data.Database
+	var evmJsonRpcCache *erpc.EvmJsonRpcCache
 	if cfg.Database != nil {
-		database, err = data.NewDatabase(cfg.Database)
-		if err != nil {
-			return nil, err
+		if cfg.Database.EvmJsonRpcCache != nil {
+			evmJsonRpcCache, err = erpc.NewEvmJsonRpcCache(ctx, cfg.Database.EvmJsonRpcCache)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
-	erpcInstance, err := erpc.NewERPC(logger, database, cfg)
+	erpcInstance, err := erpc.NewERPC(logger, evmJsonRpcCache, cfg)
 	if err != nil {
 		return nil, err
 	}

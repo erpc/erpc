@@ -10,8 +10,8 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 )
 
-// HexToDecimal converts a hexadecimal string to its decimal representation as a string.
-func HexToDecimal(hexValue string) (string, error) {
+// HexToUint64 converts a hexadecimal string to its decimal representation as a string.
+func HexToUint64(hexValue string) (uint64, error) {
 	// Create a new big.Int
 	n := new(big.Int)
 
@@ -23,11 +23,11 @@ func HexToDecimal(hexValue string) (string, error) {
 	// Set n to the value of the hex string
 	_, ok := n.SetString(hexValue, 16)
 	if !ok {
-		return "", fmt.Errorf("invalid hexadecimal string")
+		return 0, fmt.Errorf("invalid hexadecimal string")
 	}
 
 	// Return the decimal representation
-	return n.String(), nil
+	return n.Uint64(), nil
 }
 
 type ContextKey string

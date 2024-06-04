@@ -167,6 +167,20 @@ var NewErrNetworkNotFound = func(networkId string) error {
 	}
 }
 
+type ErrUnknownNetworkID struct{ BaseError }
+
+var NewErrUnknownNetworkID = func(arch string) error {
+	return &ErrUnknownNetworkID{
+		BaseError{
+			Code:    "ErrUnknownNetworkID",
+			Message: "could not resolve network ID not from config nor from the upstreams",
+			Details: map[string]interface{}{
+				"architecture": arch,
+			},
+		},
+	}
+}
+
 //
 // Upstreams
 //
