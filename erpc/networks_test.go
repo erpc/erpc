@@ -1129,6 +1129,7 @@ func TestPreparedNetwork_WeightedRandomSelect(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Test WeightedRandomSelect
 			for i := 0; i < iterations; i++ {
 				selected := WeightedRandomSelect(tt.upstreams)
 				tt.expected[selected.Id]++
