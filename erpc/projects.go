@@ -119,11 +119,17 @@ func (r *ProjectsRegistry) NewProject(project *config.ProjectConfig) error {
 			if _, ok := preparedNetworks[networkId]; !ok {
 				return common.NewErrNetworkNotFound(networkId)
 			}
+			preparedNetworks[networkId].mu.Lock()
 			if preparedNetworks[networkId].Upstreams == nil {
 				preparedNetworks[networkId].Upstreams = make([]*upstream.PreparedUpstream, 0)
 			}
 			preparedNetworks[networkId].Upstreams = append(preparedNetworks[networkId].Upstreams, pu)
+			preparedNetworks[networkId].mu.Unlock()
 		}
+	}
+
+	for _, network := range preparedNetworks {
+		network.Bootstrap()
 	}
 
 	pp.Networks = preparedNetworks

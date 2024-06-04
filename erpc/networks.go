@@ -26,7 +26,7 @@ type PreparedNetwork struct {
 	Config           *config.NetworkConfig
 	Logger           *zerolog.Logger
 	Upstreams        []*upstream.PreparedUpstream
-	mu               sync.Mutex
+	mu               *sync.RWMutex
 
 	rateLimitersRegistry *resiliency.RateLimitersRegistry
 	failsafeExecutor     failsafe.Executor[interface{}]
@@ -119,6 +119,7 @@ func (r *ProjectsRegistry) NewNetwork(
 		FailsafePolicies: policies,
 		Config:           nwCfg,
 		Logger:           &ptr,
+		mu:               &sync.RWMutex{},
 
 		dal:                  dal,
 		rateLimitersRegistry: r.rateLimitersRegistry,
@@ -126,20 +127,24 @@ func (r *ProjectsRegistry) NewNetwork(
 	}
 
 	ntw := preparedNetworks[key]
-
-	go func(pn *PreparedNetwork) {
-		ticker := time.NewTicker(1 * time.Second)
-		for range ticker.C {
-			pn.Upstreams = ReorderUpstreams(pn.Upstreams)
-			pn.Logger.Info().Msg("Upstreams reordered")
-		}
-	}(preparedNetworks[key])
-
 	return ntw, nil
 }
 
 func (n *PreparedNetwork) Architecture() string {
 	return n.Config.Architecture
+}
+
+func (n *PreparedNetwork) Bootstrap() {
+	go func(pn *PreparedNetwork) {
+		ticker := time.NewTicker(1 * time.Second)
+		for range ticker.C {
+			upsList := ReorderUpstreams(pn.Upstreams)
+			pn.mu.Lock()
+			pn.Upstreams = upsList
+			pn.mu.Unlock()
+			pn.Logger.Info().Msg("Upstreams reordered")
+		}
+	}(n)
 }
 
 func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedRequest, w common.ResponseWriter) error {
@@ -213,7 +218,10 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 
 	if n.FailsafePolicies == nil || len(n.FailsafePolicies) == 0 {
 		// Handling via simple loop over upstreams until one responds
-		for _, u := range n.Upstreams {
+		n.mu.RLock()
+		var upsList = n.Upstreams
+		n.mu.RUnlock()
+		for _, u := range upsList {
 			if _, err := tryForward(u, ctx); err != nil {
 				errorsByUpstream = append(errorsByUpstream, err)
 				continue
@@ -232,10 +240,14 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 		// across different executions we pick up next upstream vs retrying the same upstream.
 		// This mimicks a round-robin behavior.
 		// Upstream-level retry is handled by the upstream itself (and its own failsafe policies).
-		ln := len(n.Upstreams)
+		n.mu.RLock()
+		upsList := n.Upstreams
+		n.mu.RUnlock()
+
+		ln := len(upsList)
 		for count := 0; count < ln; count++ {
 			mtx.Lock()
-			u := n.Upstreams[i]
+			u := upsList[i]
 			n.Logger.Debug().Msgf("executing forward current index: %d", i)
 			i++
 			if i >= ln {
