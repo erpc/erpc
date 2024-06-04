@@ -81,6 +81,11 @@ func (w *DynamoDBValueWriter) Close() error {
 		return nil
 	}
 
+	if pk == "" || rk == "" {
+		// Skip when key resolver returns empty keys (i.e. cache must be ignored)
+		return nil
+	}
+
 	item := map[string]*dynamodb.AttributeValue{
 		w.connector.partitionKeyName: {
 			S: aws.String(pk),
@@ -101,7 +106,12 @@ func (w *DynamoDBValueWriter) Close() error {
 	return err
 }
 
-func NewDynamoDBConnector(cfg *config.DynamoDBConnectorConfig, keyResolver KeyResolver, valueResolver ValueResolver) (*DynamoDBConnector, error) {
+func NewDynamoDBConnector(
+	ctx context.Context,
+	cfg *config.DynamoDBConnectorConfig,
+	keyResolver KeyResolver,
+	valueResolver ValueResolver,
+) (*DynamoDBConnector, error) {
 	log.Debug().Msgf("creating DynamoDBConnector with config: %+v", cfg)
 
 	sess, err := createSession(cfg)
@@ -120,12 +130,15 @@ func NewDynamoDBConnector(cfg *config.DynamoDBConnectorConfig, keyResolver KeyRe
 		return nil, fmt.Errorf("missing table name for dynamodb connector")
 	}
 
-	err = createTableIfNotExists(client, cfg)
+	sctx, done := context.WithTimeout(ctx, 15*time.Second)
+	defer done()
+
+	err = createTableIfNotExists(sctx, client, cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	err = ensureGlobalSecondaryIndexes(client, cfg)
+	err = ensureGlobalSecondaryIndexes(sctx, client, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -177,9 +190,13 @@ func createSession(cfg *config.DynamoDBConnectorConfig) (*session.Session, error
 	})
 }
 
-func createTableIfNotExists(client *dynamodb.DynamoDB, cfg *config.DynamoDBConnectorConfig) error {
+func createTableIfNotExists(
+	ctx context.Context,
+	client *dynamodb.DynamoDB,
+	cfg *config.DynamoDBConnectorConfig,
+) error {
 	log.Debug().Msgf("creating dynamodb table '%s' if not exists with partition key '%s' and range key %s", cfg.Table, cfg.PartitionKeyName, cfg.RangeKeyName)
-	_, err := client.CreateTable(&dynamodb.CreateTableInput{
+	_, err := client.CreateTableWithContext(ctx, &dynamodb.CreateTableInput{
 		TableName: aws.String(cfg.Table),
 		KeySchema: []*dynamodb.KeySchemaElement{
 			{
@@ -232,14 +249,18 @@ func createTableIfNotExists(client *dynamodb.DynamoDB, cfg *config.DynamoDBConne
 	return nil
 }
 
-func ensureGlobalSecondaryIndexes(client *dynamodb.DynamoDB, cfg *config.DynamoDBConnectorConfig) error {
+func ensureGlobalSecondaryIndexes(
+	ctx context.Context,
+	client *dynamodb.DynamoDB,
+	cfg *config.DynamoDBConnectorConfig,
+) error {
 	if cfg.ReverseIndexName == "" {
 		return nil
 	}
 
 	log.Debug().Msgf("ensuring global secondary index '%s' for table '%s'", cfg.ReverseIndexName, cfg.Table)
 
-	currentTable, err := client.DescribeTable(&dynamodb.DescribeTableInput{
+	currentTable, err := client.DescribeTableWithContext(ctx, &dynamodb.DescribeTableInput{
 		TableName: aws.String(cfg.Table),
 	})
 
@@ -254,7 +275,7 @@ func ensureGlobalSecondaryIndexes(client *dynamodb.DynamoDB, cfg *config.DynamoD
 		}
 	}
 
-	_, err = client.UpdateTable(&dynamodb.UpdateTableInput{
+	_, err = client.UpdateTableWithContext(ctx, &dynamodb.UpdateTableInput{
 		TableName: aws.String(cfg.Table),
 		GlobalSecondaryIndexUpdates: []*dynamodb.GlobalSecondaryIndexUpdate{
 			{

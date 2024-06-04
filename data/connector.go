@@ -23,14 +23,19 @@ type Connector interface {
 type KeyResolver func(ctx context.Context, dv *DataValue) (string, string, error)
 type ValueResolver func(ctx context.Context, dv *DataValue) (*DataValue, error)
 
-func NewConnector(cfg *config.ConnectorConfig, keyResolver KeyResolver, valueResolver ValueResolver) (Connector, error) {
+func NewConnector(
+	ctx context.Context,
+	cfg *config.ConnectorConfig,
+	keyResolver KeyResolver,
+	valueResolver ValueResolver,
+) (Connector, error) {
 	switch cfg.Driver {
 	// case "memory":
 	// 	return NewMemoryStore(cfg.Memory), nil
 	// case "redis":
 	// 	return NewRedisStore(cfg.Redis), nil
 	case "dynamodb":
-		return NewDynamoDBConnector(cfg.DynamoDB, keyResolver, valueResolver)
+		return NewDynamoDBConnector(ctx, cfg.DynamoDB, keyResolver, valueResolver)
 		// case "postgresql":
 		// 	return NewPostgreSQLStore(cfg.PostgreSQL)
 	}

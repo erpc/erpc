@@ -2,10 +2,10 @@ package upstream
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"time"
 
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/flair-sdk/erpc/common"
@@ -34,18 +34,9 @@ type PreparedUpstream struct {
 	Metrics *UpstreamMetrics `json:"metrics"`
 	Score   float64          `json:"score"`
 
+	methodCheckResults   map[string]bool                  `json:"-"`
 	rateLimitersRegistry *resiliency.RateLimitersRegistry `json:"-"`
 	failsafeExecutor     failsafe.Executor[interface{}]   `json:"-"`
-	methodCheckResults   map[string]bool
-}
-
-type UpstreamMetrics struct {
-	P90Latency     float64   `json:"p90Latency"`
-	ErrorsTotal    float64   `json:"errorsTotal"`
-	ThrottledTotal float64   `json:"throttledTotal"`
-	RequestsTotal  float64   `json:"requestsTotal"`
-	BlocksLag      float64   `json:"blocksLag"`
-	LastCollect    time.Time `json:"lastCollect"`
 }
 
 func NewUpstream(
@@ -116,15 +107,6 @@ func NewUpstream(
 	return preparedUpstream, nil
 }
 
-func (c *UpstreamMetrics) MarshalZerologObject(e *zerolog.Event) {
-	e.Float64("p90Latency", c.P90Latency).
-		Float64("errorsTotal", c.ErrorsTotal).
-		Float64("requestsTotal", c.RequestsTotal).
-		Float64("throttledTotal", c.ThrottledTotal).
-		Float64("blocksLag", c.BlocksLag).
-		Time("lastCollect", c.LastCollect)
-}
-
 func (u *PreparedUpstream) PrepareRequest(normalizedReq *common.NormalizedRequest) (interface{}, error) {
 	switch u.Architecture {
 	case ArchitectureEvm:
@@ -161,6 +143,7 @@ func (u *PreparedUpstream) PrepareRequest(normalizedReq *common.NormalizedReques
 	}
 }
 
+// Forward is used during lifecycle of a proxied request, it uses writers and readers for better performance
 func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req interface{}, w common.ResponseWriter) error {
 	clientType := u.Client.GetType()
 
@@ -272,6 +255,40 @@ func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req in
 	}
 }
 
+// Send will call the upstream and parses the response, used in internal non-proxy flows such as block tracker
+func (u *PreparedUpstream) Send(ctx context.Context, networkId string, req interface{}) (interface{}, error) {
+	clientType := u.Client.GetType()
+
+	switch clientType {
+	case "HttpJsonRpcClient":
+		rw := common.NewMemoryResponseWriter()
+		crw := common.NewHttpCompositeResponseWriter(rw)
+
+		err := u.Forward(ctx, networkId, req, crw)
+		if err != nil {
+			return nil, err
+		}
+
+		respBody, err := io.ReadAll(rw)
+		if err != nil {
+			return nil, common.NewErrUpstreamRequest(err, u.Id)
+		}
+
+		result := &common.JsonRpcResponse{}
+		err = json.Unmarshal(respBody, result)
+		if err != nil {
+			return nil, err
+		}
+
+		return result, nil
+	default:
+		return nil, common.NewErrUpstreamClientInitialization(
+			fmt.Errorf("unsupported client type: %s", clientType),
+			u.Id,
+		)
+	}
+}
+
 func (n *PreparedUpstream) Executor() failsafe.Executor[interface{}] {
 	return n.failsafeExecutor
 }
@@ -303,6 +320,9 @@ func (u *PreparedUpstream) shouldHandleMethod(method string) (v bool) {
 	}
 
 	// Cache the result
+	if u.methodCheckResults == nil {
+		u.methodCheckResults = map[string]bool{}
+	}
 	u.methodCheckResults[method] = v
 
 	u.Logger.Debug().Bool("allowed", v).Str("method", method).Msg("method support result")

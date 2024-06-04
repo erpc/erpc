@@ -56,7 +56,6 @@ func (u *UpstreamsRegistry) bootstrap() error {
 			u.upstreamsMapByNetwork[project.Id] = make(map[string]map[string]*PreparedUpstream)
 		}
 		for _, ups := range project.Upstreams {
-			lg.Debug().Msgf("ups ==== %+v", ups)
 			preparedUpstream, err := u.NewUpstream(project.Id, ups, &lg)
 			if err != nil {
 				return common.NewErrUpstreamInitialization(err, ups.Id)

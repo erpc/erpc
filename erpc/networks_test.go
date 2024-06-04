@@ -106,7 +106,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 
 	for i := 0; i < 5; i++ {
 		fakeReq := common.NewNormalizedRequest("123", []byte(`{"method": "eth_chainId","params":[]}`))
-		lastFakeRespWriter = common.NewHttpCompositeResponseWriter(fakeReq, &httptest.ResponseRecorder{})
+		lastFakeRespWriter = common.NewHttpCompositeResponseWriter(&httptest.ResponseRecorder{})
 		lastErr = ntw.Forward(ctx, fakeReq, lastFakeRespWriter)
 	}
 
@@ -157,7 +157,7 @@ func TestPreparedNetwork_ForwardNotRateLimitedOnNetworkLevel(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		fakeReq := common.NewNormalizedRequest("123", []byte(`{"method": "eth_chainId","params":[]}`))
-		lastFakeRespWriter = common.NewHttpCompositeResponseWriter(fakeReq, &httptest.ResponseRecorder{})
+		lastFakeRespWriter = common.NewHttpCompositeResponseWriter(&httptest.ResponseRecorder{})
 		lastErr = ntw.Forward(ctx, fakeReq, lastFakeRespWriter)
 	}
 
@@ -231,7 +231,7 @@ func TestPreparedNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 	}
 
 	fakeReq := common.NewNormalizedRequest("123", requestBytes)
-	respWriter := common.NewHttpCompositeResponseWriter(fakeReq, &httptest.ResponseRecorder{})
+	respWriter := common.NewHttpCompositeResponseWriter(&httptest.ResponseRecorder{})
 	err = ntw.Forward(ctx, fakeReq, respWriter)
 
 	if len(gock.Pending()) > 0 {
@@ -924,7 +924,6 @@ func TestPreparedNetwork_ForwardCBOpensAfterConstantFailure(t *testing.T) {
 		Logger:    &log.Logger,
 		NetworkId: "123",
 		Config: &config.NetworkConfig{
-			NetworkId:    "123",
 			Architecture: upstream.ArchitectureEvm,
 		},
 		Upstreams: []*upstream.PreparedUpstream{pup1},
@@ -1017,8 +1016,10 @@ func TestPreparedNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
 		Logger:    &log.Logger,
 		NetworkId: "123",
 		Config: &config.NetworkConfig{
-			NetworkId:    "123",
 			Architecture: upstream.ArchitectureEvm,
+			Evm: &config.EvmNetworkConfig{
+				ChainId: 123,
+			},
 		},
 		Upstreams: []*upstream.PreparedUpstream{
 			pup1,

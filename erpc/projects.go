@@ -5,7 +5,6 @@ import (
 
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
-	"github.com/flair-sdk/erpc/data"
 	"github.com/flair-sdk/erpc/resiliency"
 	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog"
@@ -22,17 +21,17 @@ type ProjectsRegistry struct {
 	upstreamsRegistry    *upstream.UpstreamsRegistry
 	rateLimitersRegistry *resiliency.RateLimitersRegistry
 	preparedProjects     map[string]*PreparedProject
-	database             *data.Database
+	evmJsonRpcCache      *EvmJsonRpcCache
 }
 
 func NewProjectsRegistry(
-	database *data.Database,
+	evmJsonRpcCache *EvmJsonRpcCache,
 	upstreamsRegistry *upstream.UpstreamsRegistry,
 	rateLimitersRegistry *resiliency.RateLimitersRegistry,
 	staticProjects []*config.ProjectConfig,
 ) (*ProjectsRegistry, error) {
 	reg := &ProjectsRegistry{
-		database:             database,
+		evmJsonRpcCache:      evmJsonRpcCache,
 		upstreamsRegistry:    upstreamsRegistry,
 		rateLimitersRegistry: rateLimitersRegistry,
 		preparedProjects:     make(map[string]*PreparedProject),
@@ -67,6 +66,7 @@ func (r *ProjectsRegistry) NewProject(project *config.ProjectConfig) error {
 		Logger: &ptr,
 	}
 
+	// Prepare all upstreams
 	var preparedUpstreams []*upstream.PreparedUpstream
 	ups, err := r.upstreamsRegistry.GetUpstreamsByProject(project.Id)
 	if err != nil {
@@ -74,20 +74,23 @@ func (r *ProjectsRegistry) NewProject(project *config.ProjectConfig) error {
 	}
 	preparedUpstreams = append(preparedUpstreams, ups...)
 
+	// Initialize networks based on configuration
 	var preparedNetworks map[string]*PreparedNetwork = make(map[string]*PreparedNetwork)
 	for _, network := range project.Networks {
-		if _, ok := preparedNetworks[network.NetworkId]; !ok {
+		nid := network.NetworkId()
+		if _, ok := preparedNetworks[nid]; !ok {
 			if network.Architecture == "" {
 				network.Architecture = upstream.ArchitectureEvm
 			}
-			pn, err := r.NewNetwork(pp.Logger, r.database, project, network)
+			pn, err := r.NewNetwork(pp.Logger, r.evmJsonRpcCache, project, network)
 			if err != nil {
 				return err
 			}
-			preparedNetworks[network.NetworkId] = pn
+			preparedNetworks[nid] = pn
 		}
 	}
 
+	// Initialize networks based on upstreams supported networks
 	for _, ups := range preparedUpstreams {
 		arch := ups.Architecture
 		if arch == "" {
@@ -97,10 +100,9 @@ func (r *ProjectsRegistry) NewProject(project *config.ProjectConfig) error {
 			if _, ok := preparedNetworks[networkId]; !ok {
 				pn, err := r.NewNetwork(
 					pp.Logger,
-					r.database,
+					r.evmJsonRpcCache,
 					project,
 					&config.NetworkConfig{
-						NetworkId:    networkId,
 						Architecture: arch,
 					},
 				)
@@ -112,6 +114,7 @@ func (r *ProjectsRegistry) NewProject(project *config.ProjectConfig) error {
 		}
 	}
 
+	// Populate networks with upstreams
 	for _, pu := range preparedUpstreams {
 		for _, networkId := range pu.NetworkIds {
 			if _, ok := preparedNetworks[networkId]; !ok {
@@ -125,6 +128,14 @@ func (r *ProjectsRegistry) NewProject(project *config.ProjectConfig) error {
 	}
 
 	pp.Networks = preparedNetworks
+
+	// Bootstrap all the networks
+	for _, network := range pp.Networks {
+		err := network.Bootstrap(context.Background())
+		if err != nil {
+			return err
+		}
+	}
 
 	r.preparedProjects[project.Id] = pp
 

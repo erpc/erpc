@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+
 	"github.com/rs/zerolog"
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v2"
@@ -162,11 +164,16 @@ type HealthCheckGroupConfig struct {
 }
 
 type NetworkConfig struct {
-	Architecture    string          `yaml:"architecture"`
-	NetworkId       string          `yaml:"networkId"`
-	RateLimitBucket string          `yaml:"rateLimitBucket"`
-	Failsafe        *FailsafeConfig `yaml:"failsafe"`
-	FinalityDepth   int             `yaml:"finalityDepth"`
+	Architecture    string            `yaml:"architecture"`
+	RateLimitBucket string            `yaml:"rateLimitBucket"`
+	Failsafe        *FailsafeConfig   `yaml:"failsafe"`
+	Evm             *EvmNetworkConfig `yaml:"evm"`
+}
+
+type EvmNetworkConfig struct {
+	ChainId              int    `yaml:"chainId"`
+	FinalityDepth        uint64 `yaml:"finalityDepth"`
+	BlockTrackerInterval string `yaml:"blockTrackerInterval"`
 }
 
 type MetricsConfig struct {
@@ -217,4 +224,13 @@ func (c *RateLimitRuleConfig) MarshalZerologObject(e *zerolog.Event) {
 		Int("maxCount", c.MaxCount).
 		Str("period", c.Period).
 		Str("waitTime", c.WaitTime)
+}
+
+func (c *NetworkConfig) NetworkId() string {
+	switch c.Architecture {
+	case "evm":
+		return fmt.Sprintf("eip155:%d", c.Evm.ChainId)
+	default:
+		return ""
+	}
 }
