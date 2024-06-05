@@ -30,7 +30,7 @@ type PreparedUpstream struct {
 
 	Client  ClientInterface  `json:"-"`
 	Metrics *UpstreamMetrics `json:"metrics"`
-	Score   float64          `json:"score"`
+	Score   int              `json:"score"`
 
 	rateLimitersRegistry *resiliency.RateLimitersRegistry `json:"-"`
 	failsafeExecutor     failsafe.Executor[interface{}]   `json:"-"`
