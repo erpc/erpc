@@ -180,34 +180,34 @@ func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *config.He
 		}
 	}
 
-	normP90Latencies := normalizeFloatValues(p90Latencies)
-	normErrorRates := normalizeFloatValues(errorRates)
-	normThrottledRates := normalizeFloatValues(throttledRates)
-	normTotalRequests := normalizeFloatValues(totalRequests)
-	normBlockLags := normalizeFloatValues(blockLags)
+	normP90Latencies := normalizeIntValues(p90Latencies, 100)
+	normErrorRates := normalizeIntValues(errorRates, 100)
+	normThrottledRates := normalizeIntValues(throttledRates, 100)
+	normTotalRequests := normalizeIntValues(totalRequests, 100)
+	normBlockLags := normalizeIntValues(blockLags, 100)
 
 	for i, upstream := range comparingUpstreams {
 		if upstream.Metrics != nil {
 			upstream.Score = 0
 
 			// Higher score for lower total requests (to balance the load)
-			upstream.Score += 1 - normTotalRequests[i]
+			upstream.Score += 100 - normTotalRequests[i]
 
 			// Higher score for lower p90 latency
-			upstream.Score += 1 - normP90Latencies[i]
+			upstream.Score += 100 - normP90Latencies[i]
 
 			// Higher score for lower error rate
-			upstream.Score += (1 - normErrorRates[i]) * 4
+			upstream.Score += (100 - normErrorRates[i]) * 4
 
 			// Higher score for lower throttled rate
-			upstream.Score += (1 - normThrottledRates[i]) * 3
+			upstream.Score += (100 - normThrottledRates[i]) * 3
 
 			// Higher score for lower block lag
-			upstream.Score += (1 - normBlockLags[i]) * 2
+			upstream.Score += (100 - normBlockLags[i]) * 2
 
 			log.Debug().Str("healthCheckGroup", healthGroupCfg.Id).
 				Str("upstream", upstream.Id).
-				Float64("score", upstream.Score).
+				Int("score", upstream.Score).
 				Msgf("refreshed score")
 		}
 	}
@@ -298,32 +298,21 @@ func (u *UpstreamsRegistry) NewUpstream(projectId string, cfg *config.UpstreamCo
 	return NewUpstream(projectId, cfg, u.clientRegistry, u.rateLimitersRegistry, logger)
 }
 
-func normalizeFloatValues(values []float64) []float64 {
+func normalizeIntValues(values []float64, scale int) []int {
 	if len(values) == 0 {
-		return values
+		return []int{}
 	}
 	var min float64 = 0
-	// min, max := values[0], values[0]
 	max := values[0]
 	for _, value := range values {
-		// if value < min {
-		// 	min = value
-		// }
 		if value > max {
 			max = value
 		}
 	}
-	// if min == max {
-	// 	normalized := make([]float64, len(values))
-	// 	for i := range normalized {
-	// 		normalized[i] = 1
-	// 	}
-	// 	return normalized
-	// }
-	normalized := make([]float64, len(values))
+	normalized := make([]int, len(values))
 	for i, value := range values {
 		if (max - min) > 0 {
-			normalized[i] = (value - min) / (max - min)
+			normalized[i] = int((value - min) / (max - min) * float64(scale))
 		} else {
 			normalized[i] = 0
 		}

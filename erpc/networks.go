@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math/rand"
 	"sync"
+	"time"
 
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/flair-sdk/erpc/common"
@@ -24,10 +26,56 @@ type PreparedNetwork struct {
 	Config           *config.NetworkConfig
 	Logger           *zerolog.Logger
 	Upstreams        []*upstream.PreparedUpstream
+	mu               *sync.RWMutex
 
 	rateLimitersRegistry *resiliency.RateLimitersRegistry
 	failsafeExecutor     failsafe.Executor[interface{}]
 	dal                  common.DAL
+}
+
+// WeightedRandomSelect selects an upstream based on their weighted probabilities
+func WeightedRandomSelect(upstreams []*upstream.PreparedUpstream) *upstream.PreparedUpstream {
+	totalScore := 0
+	for _, upstream := range upstreams {
+		totalScore += upstream.Score
+	}
+
+	if totalScore == 0 {
+		return upstreams[0]
+	}
+
+	randomValue := rand.Intn(totalScore)
+
+	for _, upstream := range upstreams {
+		if randomValue < upstream.Score {
+			return upstream
+		}
+		randomValue -= upstream.Score
+	}
+
+	// This should never be reached
+	return upstreams[len(upstreams)-1]
+}
+
+// ReorderUpstreams reorders the upstreams based on their weighted probabilities
+func ReorderUpstreams(upstreams []*upstream.PreparedUpstream) []*upstream.PreparedUpstream {
+	reordered := make([]*upstream.PreparedUpstream, len(upstreams))
+	remaining := append([]*upstream.PreparedUpstream{}, upstreams...)
+
+	for i := range reordered {
+		selected := WeightedRandomSelect(remaining)
+		reordered[i] = selected
+
+		// Remove selected item from remaining upstreams
+		for j, upstream := range remaining {
+			if upstream.Id == selected.Id {
+				remaining = append(remaining[:j], remaining[j+1:]...)
+				break
+			}
+		}
+	}
+
+	return reordered
 }
 
 var preparedNetworks map[string]*PreparedNetwork = make(map[string]*PreparedNetwork)
@@ -45,7 +93,6 @@ func (r *ProjectsRegistry) NewNetwork(
 	}
 
 	var policies []failsafe.Policy[any]
-
 	if (nwCfg != nil) && (nwCfg.Failsafe != nil) {
 		pls, err := resiliency.CreateFailSafePolicies(key, nwCfg.Failsafe)
 		if err != nil {
@@ -71,17 +118,32 @@ func (r *ProjectsRegistry) NewNetwork(
 		FailsafePolicies: policies,
 		Config:           nwCfg,
 		Logger:           &ptr,
+		mu:               &sync.RWMutex{},
 
 		dal:                  dal,
 		rateLimitersRegistry: r.rateLimitersRegistry,
 		failsafeExecutor:     failsafe.NewExecutor[interface{}](policies...),
 	}
 
-	return preparedNetworks[key], nil
+	ntw := preparedNetworks[key]
+	return ntw, nil
 }
 
 func (n *PreparedNetwork) Architecture() string {
 	return n.Config.Architecture
+}
+
+func (n *PreparedNetwork) Bootstrap() {
+	go func(pn *PreparedNetwork) {
+		ticker := time.NewTicker(1 * time.Second)
+		for range ticker.C {
+			upsList := ReorderUpstreams(pn.Upstreams)
+			pn.mu.Lock()
+			pn.Upstreams = upsList
+			pn.mu.Unlock()
+			pn.Logger.Info().Msg("Upstreams reordered")
+		}
+	}(n)
 }
 
 func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedRequest, w common.ResponseWriter) error {
@@ -131,7 +193,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 	) (skipped bool, err error) {
 		lg := u.Logger.With().Str("network", n.NetworkId).Logger()
 		if u.Score < 0 {
-			lg.Debug().Msgf("skipping upstream with negative score %f", u.Score)
+			lg.Debug().Msgf("skipping upstream with negative score %d", u.Score)
 			return true, nil
 		}
 
@@ -155,7 +217,10 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 
 	if n.FailsafePolicies == nil || len(n.FailsafePolicies) == 0 {
 		// Handling via simple loop over upstreams until one responds
-		for _, u := range n.Upstreams {
+		n.mu.RLock()
+		var upsList = n.Upstreams
+		n.mu.RUnlock()
+		for _, u := range upsList {
 			if _, err := tryForward(u, ctx); err != nil {
 				errorsByUpstream = append(errorsByUpstream, err)
 				continue
@@ -174,10 +239,14 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 		// across different executions we pick up next upstream vs retrying the same upstream.
 		// This mimicks a round-robin behavior.
 		// Upstream-level retry is handled by the upstream itself (and its own failsafe policies).
-		ln := len(n.Upstreams)
+		n.mu.RLock()
+		upsList := n.Upstreams
+		n.mu.RUnlock()
+
+		ln := len(upsList)
 		for count := 0; count < ln; count++ {
 			mtx.Lock()
-			u := n.Upstreams[i]
+			u := upsList[i]
 			n.Logger.Debug().Msgf("executing forward current index: %d", i)
 			i++
 			if i >= ln {
