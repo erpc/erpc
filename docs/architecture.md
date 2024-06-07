@@ -274,3 +274,71 @@ data:
       autoCreate: boolean
       table: string  # erpc_rate_limit_snapshots
 ```
+
+## v0
+
+### 0.1.0 (core features)
+
+* refactor read/write to be sync (vs reader/writer), because?
+  - simpler block extraction for cache writes
+  - simpler empty response retry
+  - extracting result only from response for caching
+  - simpler cache serving with proper response IDs
+* empty response retry for recent block data
+* merge no/some failover policies flow
+  - can we implement empty response retrying in fallback?
+  - customize retryable responses (json-rpc error) and errors
+* data integrity threshold
+  - allow defining min required responses per method per upstream (or params)
+* normalize errors
+  - standard json-rpc eth errors
+  - vendor-specific error
+* narrower upstream metrics collection for scoring (vs prometheus)
+* add weighted shuffle for upstreams based on score
+
+### 0.2.0 (clean up and tests)
+
+* refactor upstream.metadata.evm* to upstream.evm
+* should support an erpc as upstream (for SaaS)
+  - allow upstreams support multiple chains (and architecture?), maybe with a new architecture named "erpc"
+* move evm-related logic to separate package
+  - caching logic (methods, params, etc.)
+  - block tracker
+* add unit and integration tests for critical path
+
+### 0.3.0 (user experience delight)
+
+* expose gui
+  - to view configs, charts and metrics per project, network, upstream, method
+
+### 0.4.0 (get ahead alternatives)
+
+* support CORS and origin configurations
+* auth support for clients
+  - token-based (header or param or qs)
+* smart request-batching support
+  - json-rpc level batching
+  - multicall contract batching for known chains
+* credit unit mappings
+  - popular vendor mappings (quicknode, alchemy)
+
+### 0.5.0 (expand covered use-cases)
+
+* multi-chain websocket load balancing
+  - support eth_subscribe
+  - allow min upstreams
+  - auto-rotate on fatal failure, negative score, long-silence, too-late messages (compared to other actives)
+
+## v0.x rc (launch prep)
+
+* highest test coverage possible
+* load-tests and benchmarks
+  - proper load distribution among diff quality upstreams
+* config docs
+* typescript definitions and sample repo to auto-generate yaml config
+
+## backlog
+
+* persist rate limiter usage across instances (e.g. alchemy monthly usage tracking)
+* gui to edit configs, reset caches, etc (projects, upstreams, rate limiters, etc.)
+  - dynamic config reload on signal? on periodic check? 
