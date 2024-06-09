@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math/rand"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/flair-sdk/erpc/common"
@@ -28,60 +30,16 @@ type PreparedNetwork struct {
 	Logger           *zerolog.Logger
 	Upstreams        []*upstream.PreparedUpstream
 
+	mu *sync.RWMutex
+
 	rateLimitersRegistry *resiliency.RateLimitersRegistry
 	failsafeExecutor     failsafe.Executor[interface{}]
 
 	rateLimiterDal data.RateLimitersDAL
 	cacheDal       data.CacheDAL
 
-	evmBlockTracker *EvmBlockTracker
-}
-
-var preparedNetworks map[string]*PreparedNetwork = make(map[string]*PreparedNetwork)
-
-func (r *ProjectsRegistry) NewNetwork(
-	logger *zerolog.Logger,
-	evmJsonRpcCache *EvmJsonRpcCache,
-	prjCfg *config.ProjectConfig,
-	nwCfg *config.NetworkConfig,
-) (*PreparedNetwork, error) {
-	var key = prjCfg.Id
-
-	if pn, ok := preparedNetworks[key]; ok {
-		return pn, nil
-	}
-
-	var policies []failsafe.Policy[any]
-
-	if (nwCfg != nil) && (nwCfg.Failsafe != nil) {
-		pls, err := resiliency.CreateFailSafePolicies(key, nwCfg.Failsafe)
-		if err != nil {
-			return nil, err
-		}
-		policies = pls
-	}
-
-	var rateLimiterDal data.RateLimitersDAL
-
-	preparedNetworks[key] = &PreparedNetwork{
-		ProjectId:        prjCfg.Id,
-		FailsafePolicies: policies,
-		Config:           nwCfg,
-		Logger:           logger,
-
-		rateLimiterDal:       rateLimiterDal,
-		rateLimitersRegistry: r.rateLimitersRegistry,
-		failsafeExecutor:     failsafe.NewExecutor[interface{}](policies...),
-	}
-
-	switch nwCfg.Architecture {
-	case "evm":
-		preparedNetworks[key].cacheDal = evmJsonRpcCache.WithNetwork(preparedNetworks[key])
-	default:
-		return nil, errors.New("unknown network architecture")
-	}
-
-	return preparedNetworks[key], nil
+	evmBlockTracker    *EvmBlockTracker
+	reorderStopperChan chan bool
 }
 
 func (n *PreparedNetwork) Bootstrap(ctx context.Context) error {
@@ -96,7 +54,33 @@ func (n *PreparedNetwork) Bootstrap(ctx context.Context) error {
 		}
 	}
 
+	go func(pn *PreparedNetwork) {
+		ticker := time.NewTicker(1 * time.Second)
+		for {
+			select {
+			case <-pn.reorderStopperChan:
+				ticker.Stop()
+				return
+			case <-ticker.C:
+				upsList := reorderUpstreams(pn.Upstreams)
+				pn.mu.Lock()
+				pn.Upstreams = upsList
+				pn.mu.Unlock()
+			}
+		}
+	}(n)
+
 	return nil
+}
+
+func (n *PreparedNetwork) Shutdown() {
+	if n.evmBlockTracker != nil {
+		n.evmBlockTracker.Shutdown()
+	}
+
+	if n.reorderStopperChan != nil {
+		n.reorderStopperChan <- true
+	}
 }
 
 func (n *PreparedNetwork) Architecture() string {
@@ -152,7 +136,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 	) (skipped bool, err error) {
 		lg := u.Logger.With().Str("network", n.NetworkId).Logger()
 		if u.Score < 0 {
-			lg.Debug().Msgf("skipping upstream with negative score %f", u.Score)
+			lg.Debug().Msgf("skipping upstream with negative score %d", u.Score)
 			return true, nil
 		}
 
@@ -176,7 +160,10 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 
 	if n.FailsafePolicies == nil || len(n.FailsafePolicies) == 0 {
 		// Handling via simple loop over upstreams until one responds
-		for _, u := range n.Upstreams {
+		n.mu.RLock()
+		var upsList = n.Upstreams
+		n.mu.RUnlock()
+		for _, u := range upsList {
 			if _, err := tryForward(u, ctx); err != nil {
 				errorsByUpstream = append(errorsByUpstream, err)
 				continue
@@ -195,10 +182,14 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 		// across different executions of the failsafe we pick up next upstream vs retrying the same upstream.
 		// This mimicks a round-robin behavior, for example when doing hedge or retries.
 		// Upstream-level retry is handled by the upstream itself (and its own failsafe policies).
-		ln := len(n.Upstreams)
+		n.mu.RLock()
+		upsList := n.Upstreams
+		n.mu.RUnlock()
+
+		ln := len(upsList)
 		for count := 0; count < ln; count++ {
 			mtx.Lock()
-			u := n.Upstreams[i]
+			u := upsList[i]
 			n.Logger.Debug().Msgf("executing forward current index: %d", i)
 			i++
 			if i >= ln {
@@ -318,6 +309,11 @@ func (n *PreparedNetwork) EvmIsBlockFinalized(blockNumber uint64) (bool, error) 
 }
 
 func (n *PreparedNetwork) resolveNetworkId(ctx context.Context) error {
+	if n.NetworkId != "" {
+		n.Logger.Trace().Msgf("network id already resolved")
+		return nil
+	}
+
 	n.Logger.Debug().Msgf("resolving network id")
 	if n.Architecture() == "evm" {
 		if n.Config.Evm != nil && n.Config.Evm.ChainId > 0 {
@@ -410,4 +406,47 @@ func (n *PreparedNetwork) forwardToUpstream(
 	defer timer.ObserveDuration()
 
 	return thisUpstream.Forward(ctx, n.NetworkId, r, w)
+}
+
+func weightedRandomSelect(upstreams []*upstream.PreparedUpstream) *upstream.PreparedUpstream {
+	totalScore := 0
+	for _, upstream := range upstreams {
+		totalScore += upstream.Score
+	}
+
+	if totalScore == 0 {
+		return upstreams[0]
+	}
+
+	randomValue := rand.Intn(totalScore)
+
+	for _, upstream := range upstreams {
+		if randomValue < upstream.Score {
+			return upstream
+		}
+		randomValue -= upstream.Score
+	}
+
+	// This should never be reached
+	return upstreams[len(upstreams)-1]
+}
+
+func reorderUpstreams(upstreams []*upstream.PreparedUpstream) []*upstream.PreparedUpstream {
+	reordered := make([]*upstream.PreparedUpstream, len(upstreams))
+	remaining := append([]*upstream.PreparedUpstream{}, upstreams...)
+
+	for i := range reordered {
+		selected := weightedRandomSelect(remaining)
+		reordered[i] = selected
+
+		// Remove selected item from remaining upstreams
+		for j, upstream := range remaining {
+			if upstream.Id == selected.Id {
+				remaining = append(remaining[:j], remaining[j+1:]...)
+				break
+			}
+		}
+	}
+
+	return reordered
 }

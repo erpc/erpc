@@ -5,10 +5,7 @@ import (
 
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
-	"github.com/flair-sdk/erpc/resiliency"
-	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 type PreparedProject struct {
@@ -17,127 +14,13 @@ type PreparedProject struct {
 	Logger   *zerolog.Logger
 }
 
-type ProjectsRegistry struct {
-	upstreamsRegistry    *upstream.UpstreamsRegistry
-	rateLimitersRegistry *resiliency.RateLimitersRegistry
-	preparedProjects     map[string]*PreparedProject
-	evmJsonRpcCache      *EvmJsonRpcCache
-}
-
-func NewProjectsRegistry(
-	evmJsonRpcCache *EvmJsonRpcCache,
-	upstreamsRegistry *upstream.UpstreamsRegistry,
-	rateLimitersRegistry *resiliency.RateLimitersRegistry,
-	staticProjects []*config.ProjectConfig,
-) (*ProjectsRegistry, error) {
-	reg := &ProjectsRegistry{
-		evmJsonRpcCache:      evmJsonRpcCache,
-		upstreamsRegistry:    upstreamsRegistry,
-		rateLimitersRegistry: rateLimitersRegistry,
-		preparedProjects:     make(map[string]*PreparedProject),
-	}
-
-	for _, project := range staticProjects {
-		err := reg.NewProject(project)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return reg, nil
-}
-
-func (r *ProjectsRegistry) GetProject(projectId string) (*PreparedProject, error) {
-	project, ok := r.preparedProjects[projectId]
-	if !ok {
-		// TODO when implementing dynamic db-based project loading, this should be a DB query
-		return nil, common.NewErrProjectNotFound(projectId)
-	}
-	return project, nil
-}
-
-func (r *ProjectsRegistry) NewProject(project *config.ProjectConfig) error {
-	if _, ok := r.preparedProjects[project.Id]; ok {
-		return common.NewErrProjectAlreadyExists(project.Id)
-	}
-	ptr := log.Logger.With().Str("project", project.Id).Logger()
-	pp := &PreparedProject{
-		Config: project,
-		Logger: &ptr,
-	}
-
-	// Prepare all upstreams
-	var preparedUpstreams []*upstream.PreparedUpstream
-	ups, err := r.upstreamsRegistry.GetUpstreamsByProject(project.Id)
-	if err != nil {
-		return err
-	}
-	preparedUpstreams = append(preparedUpstreams, ups...)
-
-	// Initialize networks based on configuration
-	var preparedNetworks map[string]*PreparedNetwork = make(map[string]*PreparedNetwork)
-	for _, network := range project.Networks {
-		nid := network.NetworkId()
-		if _, ok := preparedNetworks[nid]; !ok {
-			if network.Architecture == "" {
-				network.Architecture = upstream.ArchitectureEvm
-			}
-			pn, err := r.NewNetwork(pp.Logger, r.evmJsonRpcCache, project, network)
-			if err != nil {
-				return err
-			}
-			preparedNetworks[nid] = pn
-		}
-	}
-
-	// Initialize networks based on upstreams supported networks
-	for _, ups := range preparedUpstreams {
-		arch := ups.Architecture
-		if arch == "" {
-			arch = upstream.ArchitectureEvm
-		}
-		for _, networkId := range ups.NetworkIds {
-			if _, ok := preparedNetworks[networkId]; !ok {
-				pn, err := r.NewNetwork(
-					pp.Logger,
-					r.evmJsonRpcCache,
-					project,
-					&config.NetworkConfig{
-						Architecture: arch,
-					},
-				)
-				if err != nil {
-					return err
-				}
-				preparedNetworks[networkId] = pn
-			}
-		}
-	}
-
-	// Populate networks with upstreams
-	for _, pu := range preparedUpstreams {
-		for _, networkId := range pu.NetworkIds {
-			if _, ok := preparedNetworks[networkId]; !ok {
-				return common.NewErrNetworkNotFound(networkId)
-			}
-			if preparedNetworks[networkId].Upstreams == nil {
-				preparedNetworks[networkId].Upstreams = make([]*upstream.PreparedUpstream, 0)
-			}
-			preparedNetworks[networkId].Upstreams = append(preparedNetworks[networkId].Upstreams, pu)
-		}
-	}
-
-	pp.Networks = preparedNetworks
-
-	// Bootstrap all the networks
-	for _, network := range pp.Networks {
-		err := network.Bootstrap(context.Background())
+func (p *PreparedProject) Bootstrap(ctx context.Context) error {
+	for _, network := range p.Networks {
+		err := network.Bootstrap(ctx)
 		if err != nil {
 			return err
 		}
 	}
-
-	r.preparedProjects[project.Id] = pp
 
 	return nil
 }
