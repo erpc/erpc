@@ -12,6 +12,8 @@ import (
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
 	"github.com/flair-sdk/erpc/erpc"
+	"github.com/flair-sdk/erpc/evm"
+	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog/log"
 )
 
@@ -30,14 +32,19 @@ func NewHttpServer(cfg *config.ServerConfig, erpc *erpc.ERPC) *HttpServer {
 		// Split the URL path into segments
 		segments := strings.Split(r.URL.Path, "/")
 
-		// Check if the URL path has at least three segments ("/main/1")
-		if len(segments) != 3 {
+		// Check if the URL path has at least three segments ("/main/evm/1")
+		if len(segments) != 4 {
 			http.NotFound(hrw, r)
 			return
 		}
 
 		projectId := segments[1]
-		networkId := segments[2]
+		architecture := segments[2]
+		var networkId string
+		switch architecture {
+		case upstream.ArchitectureEvm:
+			networkId = evm.EIP155(segments[3])
+		}
 
 		body, err := io.ReadAll(r.Body)
 		if err != nil {

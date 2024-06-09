@@ -69,14 +69,13 @@ func (w *DynamoDBValueWriter) Close() error {
 		return fmt.Errorf("missing partition and range keys for dynamodb, also no keyResolver provided")
 	}
 
-	
 	if w.valueResolver != nil {
 		dv, err = w.valueResolver(w.ctx, dv)
 		if err != nil {
 			return err
 		}
 	}
-	
+
 	log.Debug().Interface("data", dv).Msgf("writing item to dynamodb with partition key: %s and range key: %s", pk, rk)
 
 	if dv == nil {

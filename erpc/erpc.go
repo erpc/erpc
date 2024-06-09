@@ -30,7 +30,14 @@ func NewERPC(
 		return nil, err
 	}
 
-	projectRegistry, err := NewProjectsRegistry(evmJsonRpcCache, upstreamsRegistry, rateLimitersRegistry, cfg.Projects)
+	networksRegistry := NewNetworksRegistry(rateLimitersRegistry)
+	projectRegistry, err := NewProjectsRegistry(
+		cfg.Projects,
+		networksRegistry,
+		upstreamsRegistry,
+		rateLimitersRegistry,
+		evmJsonRpcCache,
+	)
 	if err != nil {
 		return nil, err
 	}

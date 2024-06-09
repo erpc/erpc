@@ -95,8 +95,10 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 		Config: &config.NetworkConfig{
 			RateLimitBucket: "MyLimiterBucket_Test1",
 		},
+		Logger: &log.Logger,
+
 		rateLimitersRegistry: rateLimitersRegistry,
-		Logger:               &log.Logger,
+		mu:                   &sync.RWMutex{},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -146,8 +148,10 @@ func TestPreparedNetwork_ForwardNotRateLimitedOnNetworkLevel(t *testing.T) {
 		Config: &config.NetworkConfig{
 			RateLimitBucket: "MyLimiterBucket_Test2",
 		},
-		Logger:               &log.Logger,
+		Logger: &log.Logger,
+
 		rateLimitersRegistry: rateLimitersRegistry,
+		mu:                   &sync.RWMutex{},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -185,8 +189,6 @@ func TestPreparedNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 	gock.New("http://google.com").
 		Times(3).
 		Post("").
-		// MatchType("json").
-		// JSON(requestBytes).
 		Reply(503).
 		JSON(json.RawMessage(`{"error":{"message":"some random provider issue"}}`))
 
@@ -227,7 +229,9 @@ func TestPreparedNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 		},
 		FailsafePolicies: policies,
 		Upstreams:        []*upstream.PreparedUpstream{pup},
+
 		failsafeExecutor: failsafe.NewExecutor(policies...),
+		mu:               &sync.RWMutex{},
 	}
 
 	fakeReq := common.NewNormalizedRequest("123", requestBytes)
@@ -311,7 +315,9 @@ func TestPreparedNetwork_ForwardRetryFailuresWithSuccess(t *testing.T) {
 		},
 		FailsafePolicies: policies,
 		Upstreams:        []*upstream.PreparedUpstream{pup},
+
 		failsafeExecutor: failsafe.NewExecutor(policies...),
+		mu:               &sync.RWMutex{},
 	}
 
 	fakeReq := common.NewNormalizedRequest("123", requestBytes)
@@ -410,7 +416,9 @@ func TestPreparedNetwork_ForwardTimeoutPolicyFail(t *testing.T) {
 		},
 		FailsafePolicies: policies,
 		Upstreams:        []*upstream.PreparedUpstream{pup},
+
 		failsafeExecutor: failsafe.NewExecutor(policies...),
+		mu:               &sync.RWMutex{},
 	}
 
 	fakeReq := common.NewNormalizedRequest("123", requestBytes)
@@ -493,7 +501,9 @@ func TestPreparedNetwork_ForwardTimeoutPolicyPass(t *testing.T) {
 		},
 		FailsafePolicies: policies,
 		Upstreams:        []*upstream.PreparedUpstream{pup},
+
 		failsafeExecutor: failsafe.NewExecutor(policies...),
+		mu:               &sync.RWMutex{},
 	}
 
 	fakeReq := common.NewNormalizedRequest("123", requestBytes)
@@ -597,7 +607,9 @@ func TestPreparedNetwork_ForwardHedgePolicyTriggered(t *testing.T) {
 		},
 		FailsafePolicies: policies,
 		Upstreams:        []*upstream.PreparedUpstream{pup1, pup2},
+
 		failsafeExecutor: failsafe.NewExecutor(policies...),
+		mu:               &sync.RWMutex{},
 	}
 
 	fakeReq := common.NewNormalizedRequest("123", requestBytes)
@@ -710,7 +722,9 @@ func TestPreparedNetwork_ForwardHedgePolicyNotTriggered(t *testing.T) {
 		},
 		FailsafePolicies: policies,
 		Upstreams:        []*upstream.PreparedUpstream{pup1, pup2},
+
 		failsafeExecutor: failsafe.NewExecutor(policies...),
+		mu:               &sync.RWMutex{},
 	}
 
 	fakeReq := common.NewNormalizedRequest("123", requestBytes)
@@ -822,7 +836,9 @@ func TestPreparedNetwork_ForwardHedgePolicyIgnoresNegativeScoreUpstream(t *testi
 		},
 		FailsafePolicies: policies,
 		Upstreams:        []*upstream.PreparedUpstream{pup1, pup2},
+
 		failsafeExecutor: failsafe.NewExecutor(policies...),
+		mu:               &sync.RWMutex{},
 	}
 
 	fakeReq := common.NewNormalizedRequest("123", requestBytes)
@@ -927,6 +943,7 @@ func TestPreparedNetwork_ForwardCBOpensAfterConstantFailure(t *testing.T) {
 			Architecture: upstream.ArchitectureEvm,
 		},
 		Upstreams: []*upstream.PreparedUpstream{pup1},
+		mu:        &sync.RWMutex{},
 	}
 
 	for i := 0; i < 10; i++ {
@@ -1024,6 +1041,7 @@ func TestPreparedNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
 		Upstreams: []*upstream.PreparedUpstream{
 			pup1,
 		},
+		mu: &sync.RWMutex{},
 	}
 
 	for i := 0; i < 4+2; i++ {
@@ -1079,5 +1097,78 @@ func TestPreparedNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
 	}
 	if respObject["result"].(map[string]interface{})["hash"] == "" {
 		t.Errorf("Expected hash to exist, got %v", body)
+	}
+}
+
+func TestPreparedNetwork_WeightedRandomSelect(t *testing.T) {
+	// Test cases
+	tests := []struct {
+		name      string
+		upstreams []*upstream.PreparedUpstream
+		expected  map[string]int // To track selection counts for each upstream ID
+	}{
+		{
+			name: "Basic scenario with distinct weights",
+			upstreams: []*upstream.PreparedUpstream{
+				{Id: "upstream1", Score: 1},
+				{Id: "upstream2", Score: 2},
+				{Id: "upstream3", Score: 3},
+			},
+			expected: map[string]int{"upstream1": 0, "upstream2": 0, "upstream3": 0},
+		},
+		{
+			name: "All upstreams have the same score",
+			upstreams: []*upstream.PreparedUpstream{
+				{Id: "upstream1", Score: 1},
+				{Id: "upstream2", Score: 1},
+				{Id: "upstream3", Score: 1},
+			},
+			expected: map[string]int{"upstream1": 0, "upstream2": 0, "upstream3": 0},
+		},
+		{
+			name: "Single upstream",
+			upstreams: []*upstream.PreparedUpstream{
+				{Id: "upstream1", Score: 1},
+			},
+			expected: map[string]int{"upstream1": 0},
+		},
+		{
+			name: "Upstreams with zero score",
+			upstreams: []*upstream.PreparedUpstream{
+				{Id: "upstream1", Score: 0},
+				{Id: "upstream2", Score: 0},
+				{Id: "upstream3", Score: 1},
+			},
+			expected: map[string]int{"upstream1": 0, "upstream2": 0, "upstream3": 0},
+		},
+	}
+
+	// Number of iterations to perform for weighted selection
+	const iterations = 10000
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Test WeightedRandomSelect
+			for i := 0; i < iterations; i++ {
+				selected := weightedRandomSelect(tt.upstreams)
+				tt.expected[selected.Id]++
+			}
+
+			// Check if the distribution matches the expected ratios
+			totalScore := 0
+			for _, upstream := range tt.upstreams {
+				totalScore += upstream.Score
+			}
+
+			for _, upstream := range tt.upstreams {
+				if upstream.Score > 0 {
+					expectedCount := (upstream.Score * iterations) / totalScore
+					actualCount := tt.expected[upstream.Id]
+					if actualCount < expectedCount*9/10 || actualCount > expectedCount*11/10 {
+						t.Errorf("upstream %s selected %d times, expected approximately %d times", upstream.Id, actualCount, expectedCount)
+					}
+				}
+			}
+		})
 	}
 }

@@ -73,7 +73,7 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 	return nil
 }
 
-func (e *EvmBlockTracker) Stop() {
+func (e *EvmBlockTracker) Shutdown() {
 	if e.ctxCancel != nil {
 		e.ctxCancel()
 	}
@@ -102,6 +102,18 @@ func (e *EvmBlockTracker) fetchBlock(ctx context.Context, nid string, blockTag s
 
 	if jrr.Error != nil {
 		return 0, common.WrapJsonRpcError(jrr.Error)
+	}
+
+	// If result is nil, return 0
+	if jrr.Result == nil || jrr.Result.(map[string]interface{}) == nil || jrr.Result.(map[string]interface{})["number"] == nil {
+		return 0, &common.BaseError{
+			Code:    "ErrEvmBlockTracker",
+			Message: "block not found",
+			Details: map[string]interface{}{
+				"blockTag": blockTag,
+				"result":   jrr.Result,
+			},
+		}
 	}
 
 	return common.HexToUint64(jrr.Result.(map[string]interface{})["number"].(string))

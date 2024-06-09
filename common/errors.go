@@ -181,6 +181,34 @@ var NewErrUnknownNetworkID = func(arch string) error {
 	}
 }
 
+type ErrUnknownNetworkArchitecture struct{ BaseError }
+
+var NewErrUnknownNetworkArchitecture = func(arch string) error {
+	return &ErrUnknownNetworkArchitecture{
+		BaseError{
+			Code:    "ErrUnknownNetworkArchitecture",
+			Message: "unknown network architecture",
+			Details: map[string]interface{}{
+				"architecture": arch,
+			},
+		},
+	}
+}
+
+type ErrInvalidEvmChainId struct{ BaseError }
+
+var NewErrInvalidEvmChainId = func(chainId any) error {
+	return &ErrInvalidEvmChainId{
+		BaseError{
+			Code:    "ErrInvalidEvmChainId",
+			Message: "invalid EVM chain ID, it must be a number",
+			Details: map[string]interface{}{
+				"chainId": fmt.Sprintf("%+v", chainId),
+			},
+		},
+	}
+}
+
 //
 // Upstreams
 //

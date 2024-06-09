@@ -132,6 +132,9 @@ server:
 }
 
 func TestInit_HappyPath(t *testing.T) {
+	mainMutex.Lock()
+	defer mainMutex.Unlock()
+
 	defer gock.Off()
 	defer gock.Disable()
 	defer gock.DisableNetworking()
@@ -146,7 +149,16 @@ func TestInit_HappyPath(t *testing.T) {
 	})
 
 	//
-	// 1) Initialize the eRPC server with a mock configuration
+	// 1) Create a new mock EVM JSON-RPC server
+	//
+	gock.New("http://fake.localhost/good-evm-rpc").
+		Times(5).
+		Post("").
+		Reply(200).
+		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
+
+	//
+	// 2) Initialize the eRPC server with a mock configuration
 	//
 	fs := afero.NewMemMapFs()
 	cfg, err := afero.TempFile(fs, "", "erpc.yaml")
@@ -168,9 +180,14 @@ projects:
   - id: main
     upstreams:
     - id: good-evm-rpc
-      endpoint: http://google.com
+      endpoint: http://fake.localhost/good-evm-rpc
       metadata:
         evmChainId: 1
+    networks:
+    - id: mainnet
+      architecture: evm
+      evm:
+        chainId: 1
 `)
 	args := []string{"erpc-test", cfg.Name()}
 
@@ -184,18 +201,6 @@ projects:
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	//
-	// 2) Create a new mock EVM JSON-RPC server
-	//
-	gock.New("http://google.com").
-		Post("").
-		MatchType("json").
-		JSON(
-			json.RawMessage(`{"jsonrpc":"2.0","id":91799,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`),
-		).
-		Reply(200).
-		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
 
 	//
 	// 3) Make a request to the eRPC server
@@ -212,6 +217,7 @@ projects:
 		}
 	`))
 	res, err := http.Post(fmt.Sprintf("%s/main/1", localBaseUrl), "application/json", body)
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,6 +244,9 @@ projects:
 }
 
 func TestInit_InvalidConfig(t *testing.T) {
+	mainMutex.Lock()
+	defer mainMutex.Unlock()
+
 	fs := afero.NewMemMapFs()
 	cfg, err := afero.TempFile(fs, "", "erpc.yaml")
 	if err != nil {
@@ -264,6 +273,9 @@ func TestInit_InvalidConfig(t *testing.T) {
 }
 
 func TestInit_ConfigFileDoesNotExist(t *testing.T) {
+	mainMutex.Lock()
+	defer mainMutex.Unlock()
+
 	fs := afero.NewMemMapFs()
 	args := []string{"erpc-test", "non-existent-file.yaml"}
 
@@ -284,6 +296,9 @@ func TestInit_ConfigFileDoesNotExist(t *testing.T) {
 }
 
 func TestInit_InvalidLogLevel(t *testing.T) {
+	mainMutex.Lock()
+	defer mainMutex.Unlock()
+
 	fs := afero.NewMemMapFs()
 	cfg, err := afero.TempFile(fs, "", "erpc.yaml")
 	if err != nil {
@@ -313,6 +328,9 @@ logLevel: invalid
 }
 
 func TestInit_BootstrapFailure(t *testing.T) {
+	mainMutex.Lock()
+	defer mainMutex.Unlock()
+
 	fs := afero.NewMemMapFs()
 
 	cfg, err := afero.TempFile(fs, "", "erpc.yaml")

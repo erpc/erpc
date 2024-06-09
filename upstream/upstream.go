@@ -33,10 +33,10 @@ type PreparedUpstream struct {
 
 	Client  ClientInterface  `json:"-"`
 	Metrics *UpstreamMetrics `json:"metrics"`
-	Score   float64          `json:"score"`
+	Score   int              `json:"score"`
 
 	methodCheckResults   map[string]bool                  `json:"-"`
-	methodCheckResultsMu sync.Mutex                       `json:"-"`
+	methodCheckResultsMu sync.RWMutex                     `json:"-"`
 	rateLimitersRegistry *resiliency.RateLimitersRegistry `json:"-"`
 	failsafeExecutor     failsafe.Executor[interface{}]   `json:"-"`
 }
@@ -55,7 +55,7 @@ func NewUpstream(
 	if cfg.Metadata != nil {
 		if val, ok := cfg.Metadata["evmChainId"]; ok {
 			lg.Debug().Str("network", val).Msgf("network ID set to %s via evmChainId", val)
-			networkIds = append(networkIds, val)
+			networkIds = append(networkIds, fmt.Sprintf("eip155:%s", val))
 		} else {
 			lg.Debug().Msgf("network ID not set via metadata.evmChainId: %v", cfg.Metadata["evmChainId"])
 		}
@@ -296,9 +296,12 @@ func (n *PreparedUpstream) Executor() failsafe.Executor[interface{}] {
 }
 
 func (u *PreparedUpstream) shouldHandleMethod(method string) (v bool) {
+	u.methodCheckResultsMu.RLock()
 	if s, ok := u.methodCheckResults[method]; ok {
+		u.methodCheckResultsMu.RUnlock()
 		return s
 	}
+	u.methodCheckResultsMu.RUnlock()
 
 	v = true
 

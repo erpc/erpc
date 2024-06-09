@@ -295,6 +295,7 @@ data:
   - vendor-specific error
 * narrower upstream metrics collection for scoring (vs prometheus)
 * add weighted shuffle for upstreams based on score
+* change path to /{project}/{architecture}/{chain-XXX/network-YYY/...}
 
 ### 0.2.0 (clean up and tests)
 
