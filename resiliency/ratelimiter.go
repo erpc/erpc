@@ -2,7 +2,6 @@ package resiliency
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/failsafe-go/failsafe-go"
@@ -120,7 +119,7 @@ func (b *RateLimiterBucket) GetRulesByMethod(method string) []*RateLimitRule {
 
 	for _, rule := range b.Rules {
 		if rule.Config.Method == method ||
-			wildcardMatch(rule.Config.Method, method) {
+			common.WildcardMatch(rule.Config.Method, method) {
 			rules = append(rules, rule)
 		}
 	}
@@ -128,17 +127,4 @@ func (b *RateLimiterBucket) GetRulesByMethod(method string) []*RateLimitRule {
 	rulesByBucketAndMethod[b.Id][method] = rules
 
 	return rules
-}
-
-func wildcardMatch(pattern, value string) bool {
-	if pattern == "*" {
-		return true
-	}
-
-	// if pattern includes a * anywhere in the string then check the match
-	if i := strings.Index(pattern, "*"); i != -1 {
-		return strings.HasPrefix(value, pattern[:i]) && strings.HasSuffix(value, pattern[i+1:])
-	}
-
-	return false
 }

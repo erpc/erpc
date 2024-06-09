@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	RedisStoreDriver = "redis"
+	RedisConnectorDriver = "redis"
 )
 
 type RedisStore struct {
@@ -38,7 +38,7 @@ func (w *RedisValueWriter) Close() error {
 	return sts.Err()
 }
 
-func NewRedisStore(cfg *config.RedisStoreConfig) *RedisStore {
+func NewRedisStore(cfg *config.RedisConnectorConfig) *RedisStore {
 	log.Info().Msgf("initializing redis store on addr: %v", cfg.Addr)
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     cfg.Addr,
@@ -54,7 +54,7 @@ func (r *RedisStore) Get(ctx context.Context, key string) (string, error) {
 
 	if err != nil {
 		if err == redis.Nil {
-			return "", common.NewErrRecordNotFound(key, RedisStoreDriver)
+			return "", common.NewErrRecordNotFound(key, RedisConnectorDriver)
 		}
 
 		return "", err
