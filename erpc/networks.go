@@ -2,9 +2,11 @@ package erpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"math/rand"
+	"strconv"
 	"sync"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/flair-sdk/erpc/upstream"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 type PreparedNetwork struct {
@@ -26,131 +29,71 @@ type PreparedNetwork struct {
 	Config           *config.NetworkConfig
 	Logger           *zerolog.Logger
 	Upstreams        []*upstream.PreparedUpstream
-	mu               *sync.RWMutex
+
+	mu *sync.RWMutex
 
 	rateLimitersRegistry *resiliency.RateLimitersRegistry
 	failsafeExecutor     failsafe.Executor[interface{}]
-	dal                  common.DAL
+
+	rateLimiterDal data.RateLimitersDAL
+	cacheDal       data.CacheDAL
+
+	evmBlockTracker    *EvmBlockTracker
+	reorderStopperChan chan bool
 }
 
-// WeightedRandomSelect selects an upstream based on their weighted probabilities
-func WeightedRandomSelect(upstreams []*upstream.PreparedUpstream) *upstream.PreparedUpstream {
-	totalScore := 0
-	for _, upstream := range upstreams {
-		totalScore += upstream.Score
+func (n *PreparedNetwork) Bootstrap(ctx context.Context) error {
+	if err := n.resolveNetworkId(ctx); err != nil {
+		return err
 	}
 
-	if totalScore == 0 {
-		return upstreams[0]
-	}
-
-	randomValue := rand.Intn(totalScore)
-
-	for _, upstream := range upstreams {
-		if randomValue < upstream.Score {
-			return upstream
+	if n.Architecture() == upstream.ArchitectureEvm {
+		n.evmBlockTracker = NewEvmBlockTracker(n)
+		if err := n.evmBlockTracker.Bootstrap(ctx); err != nil {
+			return err
 		}
-		randomValue -= upstream.Score
 	}
 
-	// This should never be reached
-	return upstreams[len(upstreams)-1]
-}
-
-// ReorderUpstreams reorders the upstreams based on their weighted probabilities
-func ReorderUpstreams(upstreams []*upstream.PreparedUpstream) []*upstream.PreparedUpstream {
-	reordered := make([]*upstream.PreparedUpstream, len(upstreams))
-	remaining := append([]*upstream.PreparedUpstream{}, upstreams...)
-
-	for i := range reordered {
-		selected := WeightedRandomSelect(remaining)
-		reordered[i] = selected
-
-		// Remove selected item from remaining upstreams
-		for j, upstream := range remaining {
-			if upstream.Id == selected.Id {
-				remaining = append(remaining[:j], remaining[j+1:]...)
-				break
+	go func(pn *PreparedNetwork) {
+		ticker := time.NewTicker(1 * time.Second)
+		for {
+			select {
+			case <-pn.reorderStopperChan:
+				ticker.Stop()
+				return
+			case <-ticker.C:
+				upsList := reorderUpstreams(pn.Upstreams)
+				pn.mu.Lock()
+				pn.Upstreams = upsList
+				pn.mu.Unlock()
 			}
 		}
-	}
+	}(n)
 
-	return reordered
+	return nil
 }
 
-var preparedNetworks map[string]*PreparedNetwork = make(map[string]*PreparedNetwork)
-
-func (r *ProjectsRegistry) NewNetwork(
-	logger *zerolog.Logger,
-	store data.Store,
-	prjCfg *config.ProjectConfig,
-	nwCfg *config.NetworkConfig,
-) (*PreparedNetwork, error) {
-	var key = prjCfg.Id + ":" + nwCfg.NetworkId
-
-	if pn, ok := preparedNetworks[key]; ok {
-		return pn, nil
+func (n *PreparedNetwork) Shutdown() {
+	if n.evmBlockTracker != nil {
+		n.evmBlockTracker.Shutdown()
 	}
 
-	var policies []failsafe.Policy[any]
-	if (nwCfg != nil) && (nwCfg.Failsafe != nil) {
-		pls, err := resiliency.CreateFailSafePolicies(key, nwCfg.Failsafe)
-		if err != nil {
-			return nil, err
-		}
-		policies = pls
+	if n.reorderStopperChan != nil {
+		n.reorderStopperChan <- true
 	}
-
-	var dal common.DAL
-	if store != nil {
-		switch nwCfg.Architecture {
-		case "evm":
-			dal = NewEvmDAL(store)
-		default:
-			return nil, errors.New("unknown network architecture")
-		}
-	}
-
-	ptr := logger.With().Str("network", nwCfg.NetworkId).Logger()
-	preparedNetworks[key] = &PreparedNetwork{
-		NetworkId:        nwCfg.NetworkId,
-		ProjectId:        prjCfg.Id,
-		FailsafePolicies: policies,
-		Config:           nwCfg,
-		Logger:           &ptr,
-		mu:               &sync.RWMutex{},
-
-		dal:                  dal,
-		rateLimitersRegistry: r.rateLimitersRegistry,
-		failsafeExecutor:     failsafe.NewExecutor[interface{}](policies...),
-	}
-
-	ntw := preparedNetworks[key]
-	return ntw, nil
 }
 
 func (n *PreparedNetwork) Architecture() string {
 	return n.Config.Architecture
 }
 
-func (n *PreparedNetwork) Bootstrap() {
-	go func(pn *PreparedNetwork) {
-		ticker := time.NewTicker(1 * time.Second)
-		for range ticker.C {
-			upsList := ReorderUpstreams(pn.Upstreams)
-			pn.mu.Lock()
-			pn.Upstreams = upsList
-			pn.mu.Unlock()
-			pn.Logger.Info().Msg("Upstreams reordered")
-		}
-	}(n)
-}
-
 func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedRequest, w common.ResponseWriter) error {
 	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
 
-	if n.dal != nil {
-		cacheReader, err := n.dal.GetWithReader(ctx, req)
+	if n.cacheDal != nil {
+		n.Logger.Debug().Msgf("checking cache for request")
+		cacheReader, err := n.cacheDal.GetWithReader(ctx, req)
+		n.Logger.Debug().Err(err).Msgf("cache response: %v", cacheReader)
 		if err != nil {
 			n.Logger.Debug().Err(err).Msgf("could not find response in cache")
 		}
@@ -176,8 +119,8 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 
 	// Configure the cache writer on the response writer so result can be cached
 	go (func() {
-		if n.dal != nil {
-			cwr, err := n.dal.SetWithWriter(ctx, req)
+		if n.cacheDal != nil {
+			cwr, err := n.cacheDal.SetWithWriter(ctx, req)
 			if err != nil {
 				n.Logger.Warn().Err(err).Msgf("could not create cache response writer")
 			} else {
@@ -236,8 +179,8 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 	i := 0
 	_, execErr := n.failsafeExecutor.WithContext(ctx).GetWithExecution(func(exec failsafe.Execution[interface{}]) (interface{}, error) {
 		// We should try all upstreams at least once, but using "i" we make sure
-		// across different executions we pick up next upstream vs retrying the same upstream.
-		// This mimicks a round-robin behavior.
+		// across different executions of the failsafe we pick up next upstream vs retrying the same upstream.
+		// This mimicks a round-robin behavior, for example when doing hedge or retries.
 		// Upstream-level retry is handled by the upstream itself (and its own failsafe policies).
 		n.mu.RLock()
 		upsList := n.Upstreams
@@ -276,6 +219,119 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 	if execErr != nil {
 		return resiliency.TranslateFailsafeError(execErr)
 	}
+
+	return nil
+}
+
+// Send will call the upstream and parses the response, used in internal non-proxy flows such as block tracker
+func (n *PreparedNetwork) Send(ctx context.Context, networkId string, req *common.NormalizedRequest) ([]byte, error) {
+	rw := common.NewMemoryResponseWriter()
+	crw := common.NewHttpCompositeResponseWriter(rw)
+
+	err := n.Forward(ctx, req, crw)
+	if err != nil {
+		return nil, err
+	}
+
+	respBody, err := io.ReadAll(rw)
+	if err != nil {
+		return nil, err
+	}
+
+	return respBody, nil
+}
+
+func (n *PreparedNetwork) EvmGetChainId(ctx context.Context) (string, error) {
+	pr := common.NewNormalizedRequest(n.NetworkId, []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[]}`))
+	respBytes, err := n.Send(ctx, n.NetworkId, pr)
+	if err != nil {
+		return "", err
+	}
+
+	jrr := &common.JsonRpcResponse{}
+	err = json.Unmarshal(respBytes, jrr)
+	if err != nil {
+		return "", err
+	}
+
+	if jrr.Error != nil {
+		return "", common.WrapJsonRpcError(jrr.Error)
+	}
+
+	log.Debug().Msgf("eth_chainId response: %+v", jrr)
+
+	hex, err := common.NormalizeHex(jrr.Result)
+	if err != nil {
+		return "", err
+	}
+
+	dec, err := common.HexToUint64(hex)
+	if err != nil {
+		return "", err
+	}
+
+	return strconv.FormatUint(dec, 10), nil
+}
+
+func (n *PreparedNetwork) EvmIsBlockFinalized(blockNumber uint64) (bool, error) {
+	if n.evmBlockTracker == nil {
+		return false, nil
+	}
+
+	finalizedBlock := n.evmBlockTracker.FinalizedBlockNumber
+	latestBlock := n.evmBlockTracker.LatestBlockNumber
+	if latestBlock == 0 && finalizedBlock == 0 {
+		n.Logger.Debug().
+			Uint64("finalizedBlock", finalizedBlock).
+			Uint64("latestBlock", latestBlock).
+			Uint64("blockNumber", blockNumber).
+			Msgf("finalized/latest blocks are not available yet when checking block finality")
+		return false, nil
+	}
+
+	if finalizedBlock > 0 {
+		return blockNumber <= finalizedBlock, nil
+	}
+
+	if latestBlock == 0 {
+		return false, nil
+	}
+
+	var fb uint64
+
+	if n.Config.Evm != nil {
+		fb = latestBlock - n.Config.Evm.FinalityDepth
+	} else {
+		fb = latestBlock - 128
+	}
+
+	return blockNumber <= fb, nil
+}
+
+func (n *PreparedNetwork) resolveNetworkId(ctx context.Context) error {
+	if n.NetworkId != "" {
+		n.Logger.Trace().Msgf("network id already resolved")
+		return nil
+	}
+
+	n.Logger.Debug().Msgf("resolving network id")
+	if n.Architecture() == "evm" {
+		if n.Config.Evm != nil && n.Config.Evm.ChainId > 0 {
+			n.NetworkId = strconv.Itoa(n.Config.Evm.ChainId)
+		} else {
+			nid, err := n.EvmGetChainId(ctx)
+			if err != nil {
+				return err
+			}
+			n.NetworkId = nid
+		}
+	}
+
+	if n.NetworkId == "" {
+		return common.NewErrUnknownNetworkID(n.Architecture())
+	}
+
+	n.Logger.Debug().Msgf("resolved network id to: %s", n.NetworkId)
 
 	return nil
 }
@@ -350,4 +406,47 @@ func (n *PreparedNetwork) forwardToUpstream(
 	defer timer.ObserveDuration()
 
 	return thisUpstream.Forward(ctx, n.NetworkId, r, w)
+}
+
+func weightedRandomSelect(upstreams []*upstream.PreparedUpstream) *upstream.PreparedUpstream {
+	totalScore := 0
+	for _, upstream := range upstreams {
+		totalScore += upstream.Score
+	}
+
+	if totalScore == 0 {
+		return upstreams[0]
+	}
+
+	randomValue := rand.Intn(totalScore)
+
+	for _, upstream := range upstreams {
+		if randomValue < upstream.Score {
+			return upstream
+		}
+		randomValue -= upstream.Score
+	}
+
+	// This should never be reached
+	return upstreams[len(upstreams)-1]
+}
+
+func reorderUpstreams(upstreams []*upstream.PreparedUpstream) []*upstream.PreparedUpstream {
+	reordered := make([]*upstream.PreparedUpstream, len(upstreams))
+	remaining := append([]*upstream.PreparedUpstream{}, upstreams...)
+
+	for i := range reordered {
+		selected := weightedRandomSelect(remaining)
+		reordered[i] = selected
+
+		// Remove selected item from remaining upstreams
+		for j, upstream := range remaining {
+			if upstream.Id == selected.Id {
+				remaining = append(remaining[:j], remaining[j+1:]...)
+				break
+			}
+		}
+	}
+
+	return reordered
 }

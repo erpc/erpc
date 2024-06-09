@@ -2,18 +2,22 @@ package common
 
 import (
 	"encoding/json"
+	"math"
+	"math/rand"
 
 	"github.com/rs/zerolog"
 )
 
 type NormalizedRequest struct {
+	NetworkId      string
 	body           []byte
 	jsonRpcRequest *JsonRpcRequest
 }
 
-func NewNormalizedRequest(body []byte) *NormalizedRequest {
+func NewNormalizedRequest(networkId string, body []byte) *NormalizedRequest {
 	return &NormalizedRequest{
-		body: body,
+		NetworkId: networkId,
+		body:      body,
 	}
 }
 
@@ -35,6 +39,10 @@ func (n *NormalizedRequest) JsonRpcRequest() (*JsonRpcRequest, error) {
 
 	if rpcReq.JSONRPC == "" {
 		rpcReq.JSONRPC = "2.0"
+	}
+
+	if rpcReq.ID == nil {
+		rpcReq.ID = rand.Intn(math.MaxInt32)
 	}
 
 	n.jsonRpcRequest = rpcReq

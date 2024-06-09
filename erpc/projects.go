@@ -2,15 +2,10 @@ package erpc
 
 import (
 	"context"
-	"sync"
 
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
-	"github.com/flair-sdk/erpc/data"
-	"github.com/flair-sdk/erpc/resiliency"
-	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 type PreparedProject struct {
@@ -19,122 +14,13 @@ type PreparedProject struct {
 	Logger   *zerolog.Logger
 }
 
-type ProjectsRegistry struct {
-	upstreamsRegistry    *upstream.UpstreamsRegistry
-	rateLimitersRegistry *resiliency.RateLimitersRegistry
-	preparedProjects     map[string]*PreparedProject
-	store                data.Store
-	mu                   sync.Mutex
-}
-
-func NewProjectsRegistry(
-	store data.Store,
-	upstreamsRegistry *upstream.UpstreamsRegistry,
-	rateLimitersRegistry *resiliency.RateLimitersRegistry,
-	staticProjects []*config.ProjectConfig,
-) (*ProjectsRegistry, error) {
-	reg := &ProjectsRegistry{
-		store:                store,
-		upstreamsRegistry:    upstreamsRegistry,
-		rateLimitersRegistry: rateLimitersRegistry,
-		preparedProjects:     make(map[string]*PreparedProject),
-	}
-
-	for _, project := range staticProjects {
-		err := reg.NewProject(project)
+func (p *PreparedProject) Bootstrap(ctx context.Context) error {
+	for _, network := range p.Networks {
+		err := network.Bootstrap(ctx)
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
-
-	return reg, nil
-}
-
-func (r *ProjectsRegistry) GetProject(projectId string) (*PreparedProject, error) {
-	project, ok := r.preparedProjects[projectId]
-	if !ok {
-		// TODO when implementing dynamic db-based project loading, this should be a DB query
-		return nil, common.NewErrProjectNotFound(projectId)
-	}
-	return project, nil
-}
-
-func (r *ProjectsRegistry) NewProject(project *config.ProjectConfig) error {
-	if _, ok := r.preparedProjects[project.Id]; ok {
-		return common.NewErrProjectAlreadyExists(project.Id)
-	}
-	ptr := log.Logger.With().Str("project", project.Id).Logger()
-	pp := &PreparedProject{
-		Config: project,
-		Logger: &ptr,
-	}
-
-	var preparedUpstreams []*upstream.PreparedUpstream
-	ups, err := r.upstreamsRegistry.GetUpstreamsByProject(project.Id)
-	if err != nil {
-		return err
-	}
-	preparedUpstreams = append(preparedUpstreams, ups...)
-
-	var preparedNetworks map[string]*PreparedNetwork = make(map[string]*PreparedNetwork)
-	for _, network := range project.Networks {
-		if _, ok := preparedNetworks[network.NetworkId]; !ok {
-			if network.Architecture == "" {
-				network.Architecture = upstream.ArchitectureEvm
-			}
-			pn, err := r.NewNetwork(pp.Logger, r.store, project, network)
-			if err != nil {
-				return err
-			}
-			preparedNetworks[network.NetworkId] = pn
-		}
-	}
-
-	for _, ups := range preparedUpstreams {
-		arch := ups.Architecture
-		if arch == "" {
-			arch = upstream.ArchitectureEvm
-		}
-		for _, networkId := range ups.NetworkIds {
-			if _, ok := preparedNetworks[networkId]; !ok {
-				pn, err := r.NewNetwork(
-					pp.Logger,
-					r.store,
-					project,
-					&config.NetworkConfig{
-						NetworkId:    networkId,
-						Architecture: arch,
-					},
-				)
-				if err != nil {
-					return err
-				}
-				preparedNetworks[networkId] = pn
-			}
-		}
-	}
-
-	for _, pu := range preparedUpstreams {
-		for _, networkId := range pu.NetworkIds {
-			if _, ok := preparedNetworks[networkId]; !ok {
-				return common.NewErrNetworkNotFound(networkId)
-			}
-			preparedNetworks[networkId].mu.Lock()
-			if preparedNetworks[networkId].Upstreams == nil {
-				preparedNetworks[networkId].Upstreams = make([]*upstream.PreparedUpstream, 0)
-			}
-			preparedNetworks[networkId].Upstreams = append(preparedNetworks[networkId].Upstreams, pu)
-			preparedNetworks[networkId].mu.Unlock()
-		}
-	}
-
-	for _, network := range preparedNetworks {
-		network.Bootstrap()
-	}
-
-	pp.Networks = preparedNetworks
-
-	r.preparedProjects[project.Id] = pp
 
 	return nil
 }

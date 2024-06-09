@@ -167,6 +167,48 @@ var NewErrNetworkNotFound = func(networkId string) error {
 	}
 }
 
+type ErrUnknownNetworkID struct{ BaseError }
+
+var NewErrUnknownNetworkID = func(arch string) error {
+	return &ErrUnknownNetworkID{
+		BaseError{
+			Code:    "ErrUnknownNetworkID",
+			Message: "could not resolve network ID not from config nor from the upstreams",
+			Details: map[string]interface{}{
+				"architecture": arch,
+			},
+		},
+	}
+}
+
+type ErrUnknownNetworkArchitecture struct{ BaseError }
+
+var NewErrUnknownNetworkArchitecture = func(arch string) error {
+	return &ErrUnknownNetworkArchitecture{
+		BaseError{
+			Code:    "ErrUnknownNetworkArchitecture",
+			Message: "unknown network architecture",
+			Details: map[string]interface{}{
+				"architecture": arch,
+			},
+		},
+	}
+}
+
+type ErrInvalidEvmChainId struct{ BaseError }
+
+var NewErrInvalidEvmChainId = func(chainId any) error {
+	return &ErrInvalidEvmChainId{
+		BaseError{
+			Code:    "ErrInvalidEvmChainId",
+			Message: "invalid EVM chain ID, it must be a number",
+			Details: map[string]interface{}{
+				"chainId": fmt.Sprintf("%+v", chainId),
+			},
+		},
+	}
+}
+
 //
 // Upstreams
 //
@@ -580,12 +622,12 @@ func (e *ErrUpstreamRateLimitRuleExceeded) ErrorStatusCode() int {
 // Store
 //
 
-type ErrInvalidStoreDriver struct{ BaseError }
+type ErrInvalidConnectorDriver struct{ BaseError }
 
-var NewErrInvalidStoreDriver = func(driver string) error {
-	return &ErrInvalidStoreDriver{
+var NewErrInvalidConnectorDriver = func(driver string) error {
+	return &ErrInvalidConnectorDriver{
 		BaseError{
-			Code:    "ErrInvalidStoreDriver",
+			Code:    "ErrInvalidConnectorDriver",
 			Message: "invalid store driver",
 			Details: map[string]interface{}{
 				"driver": driver,

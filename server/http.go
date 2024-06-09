@@ -12,6 +12,8 @@ import (
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
 	"github.com/flair-sdk/erpc/erpc"
+	"github.com/flair-sdk/erpc/evm"
+	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog/log"
 )
 
@@ -30,14 +32,19 @@ func NewHttpServer(cfg *config.ServerConfig, erpc *erpc.ERPC) *HttpServer {
 		// Split the URL path into segments
 		segments := strings.Split(r.URL.Path, "/")
 
-		// Check if the URL path has at least three segments ("/main/1")
-		if len(segments) != 3 {
+		// Check if the URL path has at least three segments ("/main/evm/1")
+		if len(segments) != 4 {
 			http.NotFound(hrw, r)
 			return
 		}
 
 		projectId := segments[1]
-		networkId := segments[2]
+		architecture := segments[2]
+		var networkId string
+		switch architecture {
+		case upstream.ArchitectureEvm:
+			networkId = evm.EIP155(segments[3])
+		}
 
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -51,11 +58,10 @@ func NewHttpServer(cfg *config.ServerConfig, erpc *erpc.ERPC) *HttpServer {
 
 		log.Debug().Msgf("received request for projectId: %s, networkId: %s with body: %s", projectId, networkId, body)
 
-		nq := common.NewNormalizedRequest(body)
+		nq := common.NewNormalizedRequest(networkId, body)
 		project, err := erpc.GetProject(projectId)
 		if err == nil {
-			// This mutex is used when multiple upstreams are tried in parallel (e.g. when Hedge failsafe policy is used)
-			cwr := common.NewHttpCompositeResponseWriter(nq, hrw)
+			cwr := common.NewHttpCompositeResponseWriter(hrw)
 			err = project.Forward(r.Context(), networkId, nq, cwr)
 		}
 

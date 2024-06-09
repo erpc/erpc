@@ -1,6 +1,7 @@
 package common
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"sync"
@@ -19,14 +20,12 @@ type ResponseWriter interface {
 
 type HttpCompositeResponseWriter struct {
 	sync.Mutex
-	req          *NormalizedRequest
 	headerWriter http.ResponseWriter
 	bodyWriters  []io.Writer
 }
 
-func NewHttpCompositeResponseWriter(req *NormalizedRequest, hrw http.ResponseWriter) *HttpCompositeResponseWriter {
+func NewHttpCompositeResponseWriter(hrw http.ResponseWriter) *HttpCompositeResponseWriter {
 	return &HttpCompositeResponseWriter{
-		req:          req,
 		headerWriter: hrw,
 		bodyWriters:  []io.Writer{hrw},
 	}
@@ -45,10 +44,6 @@ func (w *HttpCompositeResponseWriter) AddHeader(key, value string) {
 }
 
 func (w *HttpCompositeResponseWriter) Write(data []byte) (c int, err error) {
-	// if log.Trace().Enabled() {
-	// 	log.Trace().Msgf("writing response on bodyWriters: %v data: %s", len(w.bodyWriters), data)
-	// }
-
 	for _, bw := range w.bodyWriters {
 		c, err = bw.Write(data)
 		if err != nil {
@@ -83,4 +78,32 @@ func (w *HttpCompositeResponseWriter) Close() error {
 	}
 
 	return nil
+}
+
+type MemoryResponseWriter struct {
+	http.ResponseWriter
+	Body *bytes.Buffer
+}
+
+func NewMemoryResponseWriter() *MemoryResponseWriter {
+	return &MemoryResponseWriter{
+		Body: new(bytes.Buffer),
+	}
+}
+
+func (crw *MemoryResponseWriter) Write(b []byte) (int, error) {
+	return crw.Body.Write(b)
+}
+
+// func (crw *MemoryResponseWriter) WriteHeader(statusCode int) {
+// 	// crw.StatusCode = statusCode
+// 	// crw.ResponseWriter.WriteHeader(statusCode)
+// }
+
+func (crw *MemoryResponseWriter) Header() http.Header {
+	return http.Header{}
+}
+
+func (crw *MemoryResponseWriter) Read(p []byte) (int, error) {
+	return crw.Body.Read(p)
 }

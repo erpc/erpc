@@ -95,8 +95,10 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 		Config: &config.NetworkConfig{
 			RateLimitBucket: "MyLimiterBucket_Test1",
 		},
+		Logger: &log.Logger,
+
 		rateLimitersRegistry: rateLimitersRegistry,
-		Logger:               &log.Logger,
+		mu:                   &sync.RWMutex{},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -105,8 +107,8 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 	var lastFakeRespWriter common.ResponseWriter
 
 	for i := 0; i < 5; i++ {
-		fakeReq := common.NewNormalizedRequest([]byte(`{"method": "eth_chainId","params":[]}`))
-		lastFakeRespWriter = common.NewHttpCompositeResponseWriter(fakeReq, &httptest.ResponseRecorder{})
+		fakeReq := common.NewNormalizedRequest("123", []byte(`{"method": "eth_chainId","params":[]}`))
+		lastFakeRespWriter = common.NewHttpCompositeResponseWriter(&httptest.ResponseRecorder{})
 		lastErr = ntw.Forward(ctx, fakeReq, lastFakeRespWriter)
 	}
 
@@ -146,8 +148,10 @@ func TestPreparedNetwork_ForwardNotRateLimitedOnNetworkLevel(t *testing.T) {
 		Config: &config.NetworkConfig{
 			RateLimitBucket: "MyLimiterBucket_Test2",
 		},
-		Logger:               &log.Logger,
+		Logger: &log.Logger,
+
 		rateLimitersRegistry: rateLimitersRegistry,
+		mu:                   &sync.RWMutex{},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -156,8 +160,8 @@ func TestPreparedNetwork_ForwardNotRateLimitedOnNetworkLevel(t *testing.T) {
 	var lastFakeRespWriter common.ResponseWriter
 
 	for i := 0; i < 10; i++ {
-		fakeReq := common.NewNormalizedRequest([]byte(`{"method": "eth_chainId","params":[]}`))
-		lastFakeRespWriter = common.NewHttpCompositeResponseWriter(fakeReq, &httptest.ResponseRecorder{})
+		fakeReq := common.NewNormalizedRequest("123", []byte(`{"method": "eth_chainId","params":[]}`))
+		lastFakeRespWriter = common.NewHttpCompositeResponseWriter(&httptest.ResponseRecorder{})
 		lastErr = ntw.Forward(ctx, fakeReq, lastFakeRespWriter)
 	}
 
@@ -185,8 +189,6 @@ func TestPreparedNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 	gock.New("http://google.com").
 		Times(3).
 		Post("").
-		// MatchType("json").
-		// JSON(requestBytes).
 		Reply(503).
 		JSON(json.RawMessage(`{"error":{"message":"some random provider issue"}}`))
 
@@ -227,11 +229,13 @@ func TestPreparedNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 		},
 		FailsafePolicies: policies,
 		Upstreams:        []*upstream.PreparedUpstream{pup},
+
 		failsafeExecutor: failsafe.NewExecutor(policies...),
+		mu:               &sync.RWMutex{},
 	}
 
-	fakeReq := common.NewNormalizedRequest(requestBytes)
-	respWriter := common.NewHttpCompositeResponseWriter(fakeReq, &httptest.ResponseRecorder{})
+	fakeReq := common.NewNormalizedRequest("123", requestBytes)
+	respWriter := common.NewHttpCompositeResponseWriter(&httptest.ResponseRecorder{})
 	err = ntw.Forward(ctx, fakeReq, respWriter)
 
 	if len(gock.Pending()) > 0 {
@@ -311,10 +315,12 @@ func TestPreparedNetwork_ForwardRetryFailuresWithSuccess(t *testing.T) {
 		},
 		FailsafePolicies: policies,
 		Upstreams:        []*upstream.PreparedUpstream{pup},
+
 		failsafeExecutor: failsafe.NewExecutor(policies...),
+		mu:               &sync.RWMutex{},
 	}
 
-	fakeReq := common.NewNormalizedRequest(requestBytes)
+	fakeReq := common.NewNormalizedRequest("123", requestBytes)
 	respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 	err = ntw.Forward(ctx, fakeReq, respWriter)
 
@@ -410,10 +416,12 @@ func TestPreparedNetwork_ForwardTimeoutPolicyFail(t *testing.T) {
 		},
 		FailsafePolicies: policies,
 		Upstreams:        []*upstream.PreparedUpstream{pup},
+
 		failsafeExecutor: failsafe.NewExecutor(policies...),
+		mu:               &sync.RWMutex{},
 	}
 
-	fakeReq := common.NewNormalizedRequest(requestBytes)
+	fakeReq := common.NewNormalizedRequest("123", requestBytes)
 	respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 	err = ntw.Forward(ctx, fakeReq, respWriter)
 
@@ -493,10 +501,12 @@ func TestPreparedNetwork_ForwardTimeoutPolicyPass(t *testing.T) {
 		},
 		FailsafePolicies: policies,
 		Upstreams:        []*upstream.PreparedUpstream{pup},
+
 		failsafeExecutor: failsafe.NewExecutor(policies...),
+		mu:               &sync.RWMutex{},
 	}
 
-	fakeReq := common.NewNormalizedRequest(requestBytes)
+	fakeReq := common.NewNormalizedRequest("123", requestBytes)
 	respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 	err = ntw.Forward(ctx, fakeReq, respWriter)
 
@@ -597,10 +607,12 @@ func TestPreparedNetwork_ForwardHedgePolicyTriggered(t *testing.T) {
 		},
 		FailsafePolicies: policies,
 		Upstreams:        []*upstream.PreparedUpstream{pup1, pup2},
+
 		failsafeExecutor: failsafe.NewExecutor(policies...),
+		mu:               &sync.RWMutex{},
 	}
 
-	fakeReq := common.NewNormalizedRequest(requestBytes)
+	fakeReq := common.NewNormalizedRequest("123", requestBytes)
 	respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 	err = ntw.Forward(ctx, fakeReq, respWriter)
 
@@ -710,10 +722,12 @@ func TestPreparedNetwork_ForwardHedgePolicyNotTriggered(t *testing.T) {
 		},
 		FailsafePolicies: policies,
 		Upstreams:        []*upstream.PreparedUpstream{pup1, pup2},
+
 		failsafeExecutor: failsafe.NewExecutor(policies...),
+		mu:               &sync.RWMutex{},
 	}
 
-	fakeReq := common.NewNormalizedRequest(requestBytes)
+	fakeReq := common.NewNormalizedRequest("123", requestBytes)
 	respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 	err = ntw.Forward(ctx, fakeReq, respWriter)
 
@@ -822,10 +836,12 @@ func TestPreparedNetwork_ForwardHedgePolicyIgnoresNegativeScoreUpstream(t *testi
 		},
 		FailsafePolicies: policies,
 		Upstreams:        []*upstream.PreparedUpstream{pup1, pup2},
+
 		failsafeExecutor: failsafe.NewExecutor(policies...),
+		mu:               &sync.RWMutex{},
 	}
 
-	fakeReq := common.NewNormalizedRequest(requestBytes)
+	fakeReq := common.NewNormalizedRequest("123", requestBytes)
 	respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 	err = ntw.Forward(ctx, fakeReq, respWriter)
 
@@ -924,14 +940,14 @@ func TestPreparedNetwork_ForwardCBOpensAfterConstantFailure(t *testing.T) {
 		Logger:    &log.Logger,
 		NetworkId: "123",
 		Config: &config.NetworkConfig{
-			NetworkId:    "123",
 			Architecture: upstream.ArchitectureEvm,
 		},
 		Upstreams: []*upstream.PreparedUpstream{pup1},
+		mu:        &sync.RWMutex{},
 	}
 
 	for i := 0; i < 10; i++ {
-		fakeReq := common.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest("123", requestBytes)
 		respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 		err = ntw.Forward(ctx, fakeReq, respWriter)
 	}
@@ -1017,16 +1033,19 @@ func TestPreparedNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
 		Logger:    &log.Logger,
 		NetworkId: "123",
 		Config: &config.NetworkConfig{
-			NetworkId:    "123",
 			Architecture: upstream.ArchitectureEvm,
+			Evm: &config.EvmNetworkConfig{
+				ChainId: 123,
+			},
 		},
 		Upstreams: []*upstream.PreparedUpstream{
 			pup1,
 		},
+		mu: &sync.RWMutex{},
 	}
 
 	for i := 0; i < 4+2; i++ {
-		fakeReq := common.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest("123", requestBytes)
 		respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 		err = ntw.Forward(ctx, fakeReq, respWriter)
 	}
@@ -1039,7 +1058,7 @@ func TestPreparedNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
 
 	var respWriter *ResponseRecorder
 	for i := 0; i < 3; i++ {
-		fakeReq := common.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest("123", requestBytes)
 		respWriter = &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 		err = ntw.Forward(ctx, fakeReq, respWriter)
 	}
@@ -1131,7 +1150,7 @@ func TestPreparedNetwork_WeightedRandomSelect(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Test WeightedRandomSelect
 			for i := 0; i < iterations; i++ {
-				selected := WeightedRandomSelect(tt.upstreams)
+				selected := weightedRandomSelect(tt.upstreams)
 				tt.expected[selected.Id]++
 			}
 
