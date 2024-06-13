@@ -2,10 +2,8 @@ package upstream
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"sync"
 
 	"github.com/failsafe-go/failsafe-go"
@@ -26,19 +24,19 @@ type PreparedUpstream struct {
 	AllowMethods     []string          `json:"allowMethods"`
 	IgnoreMethods    []string          `json:"ignoreMethods"`
 
-	ProjectId        string                 `json:"projectId"`
-	NetworkIds       []string               `json:"networkIds"`
-	Logger           zerolog.Logger         `json:"-"`
-	FailsafePolicies []failsafe.Policy[any] `json:"-"`
+	ProjectId        string                                        `json:"projectId"`
+	NetworkIds       []string                                      `json:"networkIds"`
+	Logger           zerolog.Logger                                `json:"-"`
+	FailsafePolicies []failsafe.Policy[*common.NormalizedResponse] `json:"-"`
 
 	Client  ClientInterface  `json:"-"`
 	Metrics *UpstreamMetrics `json:"metrics"`
 	Score   int              `json:"score"`
 
-	methodCheckResults   map[string]bool                  `json:"-"`
-	methodCheckResultsMu sync.RWMutex                     `json:"-"`
-	rateLimitersRegistry *resiliency.RateLimitersRegistry `json:"-"`
-	failsafeExecutor     failsafe.Executor[interface{}]   `json:"-"`
+	methodCheckResults   map[string]bool                               `json:"-"`
+	methodCheckResultsMu sync.RWMutex                                  `json:"-"`
+	rateLimitersRegistry *resiliency.RateLimitersRegistry              `json:"-"`
+	failsafeExecutor     failsafe.Executor[*common.NormalizedResponse] `json:"-"`
 }
 
 func NewUpstream(
@@ -94,7 +92,7 @@ func NewUpstream(
 		Logger:     lg,
 
 		rateLimitersRegistry: rlr,
-		failsafeExecutor:     failsafe.NewExecutor[interface{}](policies...),
+		failsafeExecutor:     failsafe.NewExecutor[*common.NormalizedResponse](policies...),
 		methodCheckResults:   map[string]bool{},
 	}
 
@@ -146,62 +144,68 @@ func (u *PreparedUpstream) PrepareRequest(normalizedReq *common.NormalizedReques
 }
 
 // Forward is used during lifecycle of a proxied request, it uses writers and readers for better performance
-func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req interface{}, w common.ResponseWriter) error {
+func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	clientType := u.Client.GetType()
+
+	var limitersBucket *resiliency.RateLimiterBucket
+	if u.RateLimitBucket != "" {
+		var errLimiters error
+		limitersBucket, errLimiters = u.rateLimitersRegistry.GetBucket(u.RateLimitBucket)
+		if errLimiters != nil {
+			return nil, errLimiters
+		}
+	}
+
+	method, err := req.Method()
+	if err != nil {
+		return nil, common.NewErrUpstreamRequest(err, u.Id)
+	}
+
+	lg := u.Logger.With().Str("method", method).Logger()
+
+	if limitersBucket != nil {
+		lg.Trace().Msgf("checking upstream-level rate limiters bucket: %s", u.RateLimitBucket)
+		rules := limitersBucket.GetRulesByMethod(method)
+		if len(rules) > 0 {
+			for _, rule := range rules {
+				if !(*rule.Limiter).TryAcquirePermit() {
+					lg.Warn().Msgf("upstream-level rate limit '%v' exceeded", rule.Config)
+					health.MetricUpstreamRequestLocalRateLimited.WithLabelValues(
+						u.ProjectId,
+						networkId,
+						u.Id,
+						method,
+					).Inc()
+					return nil, common.NewErrUpstreamRateLimitRuleExceeded(
+						u.Id,
+						u.RateLimitBucket,
+						rule.Config,
+					)
+				} else {
+					lg.Debug().Object("rule", rule.Config).Msgf("upstream-level rate limit passed")
+				}
+			}
+		}
+	}
 
 	switch clientType {
 	case "HttpJsonRpcClient":
 		jsonRpcClient, okClient := u.Client.(*HttpJsonRpcClient)
+		jrReq, err := req.JsonRpcRequest()
+		if err != nil {
+			return nil, common.NewErrUpstreamRequest(err, u.Id)
+		}
 		if !okClient {
-			return common.NewErrUpstreamClientInitialization(
+			return nil, common.NewErrUpstreamClientInitialization(
 				fmt.Errorf("failed to cast client to HttpJsonRpcClient"),
 				u.Id,
 			)
 		}
 
-		var limitersBucket *resiliency.RateLimiterBucket
-		if u.RateLimitBucket != "" {
-			var errLimiters error
-			limitersBucket, errLimiters = u.rateLimitersRegistry.GetBucket(u.RateLimitBucket)
-			if errLimiters != nil {
-				return errLimiters
-			}
-		}
-
-		method := req.(*common.JsonRpcRequest).Method
-		lg := u.Logger.With().Str("method", method).Logger()
-
-		if limitersBucket != nil {
-			lg.Trace().Msgf("checking upstream-level rate limiters bucket: %s", u.RateLimitBucket)
-			rules := limitersBucket.GetRulesByMethod(method)
-			if len(rules) > 0 {
-				for _, rule := range rules {
-					if !(*rule.Limiter).TryAcquirePermit() {
-						lg.Warn().Msgf("upstream-level rate limit '%v' exceeded", rule.Config)
-						health.MetricUpstreamRequestLocalRateLimited.WithLabelValues(
-							u.ProjectId,
-							networkId,
-							u.Id,
-							method,
-						).Inc()
-						return common.NewErrUpstreamRateLimitRuleExceeded(
-							u.Id,
-							u.RateLimitBucket,
-							rule.Config,
-						)
-					} else {
-						lg.Debug().Object("rule", rule.Config).Msgf("upstream-level rate limit passed")
-					}
-				}
-			}
-		}
-
 		tryForward := func(
 			ctx context.Context,
-			req interface{},
-		) error {
-			resp, errCall := jsonRpcClient.SendRequest(ctx, req.(*common.JsonRpcRequest))
-
+		) (*common.NormalizedResponse, error) {
+			resp, errCall := jsonRpcClient.SendRequest(ctx, jrReq)
 			lg.Debug().Err(errCall).Msgf("upstream call result received: %v", &resp)
 
 			if errCall != nil {
@@ -213,76 +217,30 @@ func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req in
 						method,
 					).Inc()
 				}
-
-				return common.NewErrUpstreamRequest(
+				return nil, common.NewErrUpstreamRequest(
 					errCall,
 					u.Id,
 				)
 			}
 
-			if w.TryLock() {
-				w.AddHeader("Content-Type", "application/json")
-				w.AddHeader("X-ERPC-Upstream", u.Id)
-				w.AddHeader("X-ERPC-Network", networkId)
-				w.AddHeader("X-ERPC-Cache", "Miss")
-				defer w.Close()
-				defer resp.Close()
-				_, err := io.Copy(w, resp)
-				return err
-			} else {
-				return common.NewErrResponseWriteLock(u.Id)
-			}
+			return resp, nil
 		}
 
 		if u.FailsafePolicies != nil && len(u.FailsafePolicies) > 0 {
-			_, execErr := u.failsafeExecutor.
+			resp, execErr := u.failsafeExecutor.
 				WithContext(ctx).
-				GetWithExecution(func(exec failsafe.Execution[interface{}]) (interface{}, error) {
-					return nil, tryForward(ctx, req)
+				GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+					return tryForward(ctx)
 				})
 
 			if execErr != nil {
-				return resiliency.TranslateFailsafeError(execErr)
+				return nil, resiliency.TranslateFailsafeError(execErr)
 			}
 
-			return execErr
+			return resp, execErr
 		} else {
-			return tryForward(ctx, req)
+			return tryForward(ctx)
 		}
-	default:
-		return common.NewErrUpstreamClientInitialization(
-			fmt.Errorf("unsupported client type: %s", clientType),
-			u.Id,
-		)
-	}
-}
-
-// Send will call the upstream and parses the response, used in internal non-proxy flows such as block tracker
-func (u *PreparedUpstream) Send(ctx context.Context, networkId string, req interface{}) (interface{}, error) {
-	clientType := u.Client.GetType()
-
-	switch clientType {
-	case "HttpJsonRpcClient":
-		rw := common.NewMemoryResponseWriter()
-		crw := common.NewHttpCompositeResponseWriter(rw)
-
-		err := u.Forward(ctx, networkId, req, crw)
-		if err != nil {
-			return nil, err
-		}
-
-		respBody, err := io.ReadAll(rw)
-		if err != nil {
-			return nil, common.NewErrUpstreamRequest(err, u.Id)
-		}
-
-		result := &common.JsonRpcResponse{}
-		err = json.Unmarshal(respBody, result)
-		if err != nil {
-			return nil, err
-		}
-
-		return result, nil
 	default:
 		return nil, common.NewErrUpstreamClientInitialization(
 			fmt.Errorf("unsupported client type: %s", clientType),
@@ -291,7 +249,41 @@ func (u *PreparedUpstream) Send(ctx context.Context, networkId string, req inter
 	}
 }
 
-func (n *PreparedUpstream) Executor() failsafe.Executor[interface{}] {
+// Send will call the upstream and parses the response, used in internal non-proxy flows such as block tracker
+// func (u *PreparedUpstream) Send(ctx context.Context, networkId string, req interface{}) (interface{}, error) {
+// 	clientType := u.Client.GetType()
+
+// 	switch clientType {
+// 	case "HttpJsonRpcClient":
+// 		rw := common.NewMemoryResponseWriter()
+// 		crw := common.NewHttpCompositeResponseWriter(rw)
+
+// 		err := u.Forward(ctx, networkId, req, crw)
+// 		if err != nil {
+// 			return nil, err
+// 		}
+
+// 		respBody, err := io.ReadAll(rw)
+// 		if err != nil {
+// 			return nil, common.NewErrUpstreamRequest(err, u.Id)
+// 		}
+
+// 		result := &common.JsonRpcResponse{}
+// 		err = json.Unmarshal(respBody, result)
+// 		if err != nil {
+// 			return nil, err
+// 		}
+
+// 		return result, nil
+// 	default:
+// 		return nil, common.NewErrUpstreamClientInitialization(
+// 			fmt.Errorf("unsupported client type: %s", clientType),
+// 			u.Id,
+// 		)
+// 	}
+// }
+
+func (n *PreparedUpstream) Executor() failsafe.Executor[*common.NormalizedResponse] {
 	return n.failsafeExecutor
 }
 

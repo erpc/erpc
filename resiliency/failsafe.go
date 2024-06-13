@@ -15,8 +15,8 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-func CreateFailSafePolicies(component string, fsCfg *config.FailsafeConfig) ([]failsafe.Policy[any], error) {
-	var policies = []failsafe.Policy[any]{}
+func CreateFailSafePolicies(component string, fsCfg *config.FailsafeConfig) ([]failsafe.Policy[*common.NormalizedResponse], error) {
+	var policies = []failsafe.Policy[*common.NormalizedResponse]{}
 
 	if fsCfg == nil {
 		return policies, nil
@@ -57,8 +57,8 @@ func CreateFailSafePolicies(component string, fsCfg *config.FailsafeConfig) ([]f
 	return policies, nil
 }
 
-func createCircuitBreakerPolicy(component string, cfg *config.CircuitBreakerPolicyConfig) (failsafe.Policy[any], error) {
-	builder := circuitbreaker.Builder[interface{}]()
+func createCircuitBreakerPolicy(component string, cfg *config.CircuitBreakerPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+	builder := circuitbreaker.Builder[*common.NormalizedResponse]()
 
 	if cfg.FailureThresholdCount > 0 {
 		if cfg.FailureThresholdCapacity > 0 {
@@ -95,7 +95,7 @@ func createCircuitBreakerPolicy(component string, cfg *config.CircuitBreakerPoli
 	return builder.Build(), nil
 }
 
-func createHegePolicy(component string, cfg *config.HedgePolicyConfig) (failsafe.Policy[any], error) {
+func createHegePolicy(component string, cfg *config.HedgePolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
 	delay, err := time.ParseDuration(cfg.Delay)
 	if err != nil {
 		return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse hedge.delay: %v", err), map[string]interface{}{
@@ -103,7 +103,7 @@ func createHegePolicy(component string, cfg *config.HedgePolicyConfig) (failsafe
 			"policy":    cfg,
 		})
 	}
-	builder := hedgepolicy.BuilderWithDelay[interface{}](delay)
+	builder := hedgepolicy.BuilderWithDelay[*common.NormalizedResponse](delay)
 
 	if cfg.MaxCount > 0 {
 		builder = builder.WithMaxHedges(cfg.MaxCount)
@@ -112,8 +112,8 @@ func createHegePolicy(component string, cfg *config.HedgePolicyConfig) (failsafe
 	return builder.Build(), nil
 }
 
-func createRetryPolicy(component string, cfg *config.RetryPolicyConfig) (failsafe.Policy[any], error) {
-	builder := retrypolicy.Builder[any]()
+func createRetryPolicy(component string, cfg *config.RetryPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+	builder := retrypolicy.Builder[*common.NormalizedResponse]()
 
 	if cfg.MaxAttempts > 0 {
 		builder = builder.WithMaxAttempts(cfg.MaxAttempts)
@@ -160,7 +160,7 @@ func createRetryPolicy(component string, cfg *config.RetryPolicyConfig) (failsaf
 	return builder.Build(), nil
 }
 
-func createTimeoutPolicy(component string, cfg *config.TimeoutPolicyConfig) (failsafe.Policy[any], error) {
+func createTimeoutPolicy(component string, cfg *config.TimeoutPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
 	if cfg.Duration == "" {
 		return nil, common.NewErrFailsafeConfiguration(errors.New("missing timeout"), map[string]interface{}{
 			"component": component,
@@ -169,7 +169,7 @@ func createTimeoutPolicy(component string, cfg *config.TimeoutPolicyConfig) (fai
 	}
 
 	timeoutDuration, err := time.ParseDuration(cfg.Duration)
-	builder := timeout.Builder[any](timeoutDuration)
+	builder := timeout.Builder[*common.NormalizedResponse](timeoutDuration)
 
 	if err != nil {
 		return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse timeout: %v", err), map[string]interface{}{

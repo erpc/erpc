@@ -1,6 +1,8 @@
 package erpc
 
 import (
+	"context"
+
 	"github.com/flair-sdk/erpc/config"
 	"github.com/flair-sdk/erpc/resiliency"
 	"github.com/flair-sdk/erpc/upstream"
@@ -38,6 +40,10 @@ func NewERPC(
 		rateLimitersRegistry,
 		evmJsonRpcCache,
 	)
+	if err != nil {
+		return nil, err
+	}
+	err = projectRegistry.Bootstrap(context.Background())
 	if err != nil {
 		return nil, err
 	}

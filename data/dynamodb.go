@@ -3,7 +3,6 @@ package data
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -29,90 +28,11 @@ type DynamoDBConnector struct {
 	partitionKeyName string
 	rangeKeyName     string
 	reverseIndexName string
-	keyResolver      KeyResolver
-	valueResolver    ValueResolver
-}
-
-type DynamoDBValueWriter struct {
-	ctx           context.Context
-	connector     *DynamoDBConnector
-	partitionKey  string
-	rangeKey      string
-	buffer        *strings.Builder
-	keyResolver   KeyResolver
-	valueResolver ValueResolver
-}
-
-func (w *DynamoDBValueWriter) Write(p []byte) (n int, err error) {
-	w.buffer.Write(p)
-	return len(p), nil
-}
-
-func (w *DynamoDBValueWriter) Close() error {
-	var pk string
-	var rk string
-	var err error
-
-	dv := &DataValue{
-		raw: w.buffer.String(),
-	}
-
-	if w.partitionKey != "" && w.rangeKey != "" {
-		pk = w.partitionKey
-		rk = w.rangeKey
-	} else if w.keyResolver != nil {
-		pk, rk, err = w.keyResolver(w.ctx, dv)
-		if err != nil {
-			return err
-		}
-	} else {
-		return fmt.Errorf("missing partition and range keys for dynamodb, also no keyResolver provided")
-	}
-
-	if w.valueResolver != nil {
-		dv, err = w.valueResolver(w.ctx, dv)
-		if err != nil {
-			return err
-		}
-	}
-
-	log.Debug().Interface("data", dv).Msgf("writing item to dynamodb with partition key: %s and range key: %s", pk, rk)
-
-	if dv == nil {
-		// Skip writing since valueResolver returned nil
-		return nil
-	}
-
-	if pk == "" || rk == "" {
-		// Skip when key resolver returns empty keys (i.e. cache must be ignored)
-		return nil
-	}
-
-	item := map[string]*dynamodb.AttributeValue{
-		w.connector.partitionKeyName: {
-			S: aws.String(pk),
-		},
-		w.connector.rangeKeyName: {
-			S: aws.String(rk),
-		},
-		"value": {
-			S: aws.String(dv.raw),
-		},
-	}
-
-	_, err = w.connector.client.PutItemWithContext(w.ctx, &dynamodb.PutItemInput{
-		TableName: aws.String(w.connector.table),
-		Item:      item,
-	})
-
-	return err
 }
 
 func NewDynamoDBConnector(
 	ctx context.Context,
 	cfg *config.DynamoDBConnectorConfig,
-	keyResolver KeyResolver,
-	valueResolver ValueResolver,
 ) (*DynamoDBConnector, error) {
 	log.Debug().Msgf("creating DynamoDBConnector with config: %+v", cfg)
 
@@ -151,8 +71,6 @@ func NewDynamoDBConnector(
 		partitionKeyName: cfg.PartitionKeyName,
 		rangeKeyName:     cfg.RangeKeyName,
 		reverseIndexName: cfg.ReverseIndexName,
-		keyResolver:      keyResolver,
-		valueResolver:    valueResolver,
 	}, nil
 }
 
@@ -310,20 +228,30 @@ func ensureGlobalSecondaryIndexes(
 	return err
 }
 
-func (d *DynamoDBConnector) SetWithWriter(ctx context.Context, partitionKey, rangeKey string) (io.WriteCloser, error) {
-	log.Debug().Msgf("creating DynamoDBValueWriter with partition key: %s and range key: %s", partitionKey, rangeKey)
-	return &DynamoDBValueWriter{
-		connector:     d,
-		partitionKey:  partitionKey,
-		rangeKey:      rangeKey,
-		ctx:           ctx,
-		buffer:        &strings.Builder{},
-		keyResolver:   d.keyResolver,
-		valueResolver: d.valueResolver,
-	}, nil
+func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, value string) error {
+	log.Debug().Msgf("writing to dynamodb with partition key: %s and range key: %s", partitionKey, rangeKey)
+
+	item := map[string]*dynamodb.AttributeValue{
+		d.partitionKeyName: {
+			S: aws.String(partitionKey),
+		},
+		d.rangeKeyName: {
+			S: aws.String(rangeKey),
+		},
+		"value": {
+			S: aws.String(value),
+		},
+	}
+
+	_, err := d.client.PutItemWithContext(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(d.table),
+		Item:      item,
+	})
+
+	return err
 }
 
-func (d *DynamoDBConnector) GetWithReader(ctx context.Context, index, partitionKey, rangeKey string) (io.Reader, error) {
+func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) (string, error) {
 	var value string
 
 	if index == ConnectorReverseIndex {
@@ -359,13 +287,13 @@ func (d *DynamoDBConnector) GetWithReader(ctx context.Context, index, partitionK
 			ExpressionAttributeNames:  exprAttrNames,
 			ExpressionAttributeValues: exprAttrValues,
 		}
-		log.Debug().Msgf("querying dynamodb with input: %+v", qi)
+		log.Debug().Msgf("getting item from dynamodb with input: %+v", qi)
 		result, err := d.client.QueryWithContext(ctx, qi)
 		if err != nil {
-			return nil, err
+			return "", err
 		}
 		if len(result.Items) == 0 {
-			return nil, common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s", partitionKey, rangeKey), DynamoDBDriverName)
+			return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s", partitionKey, rangeKey), DynamoDBDriverName)
 		}
 
 		value = *result.Items[0]["value"].S
@@ -385,20 +313,20 @@ func (d *DynamoDBConnector) GetWithReader(ctx context.Context, index, partitionK
 		})
 
 		if err != nil {
-			return nil, err
+			return "", err
 		}
 
 		if result.Item == nil {
-			return nil, common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s", partitionKey, rangeKey), DynamoDBDriverName)
+			return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s", partitionKey, rangeKey), DynamoDBDriverName)
 		}
 
 		value = *result.Item["value"].S
 	}
 
-	return strings.NewReader(value), nil
+	return value, nil
 }
 
-func (d *DynamoDBConnector) Query(ctx context.Context, index, partitionKey, rangeKey string) ([]*DataValue, error) {
+func (d *DynamoDBConnector) Query(ctx context.Context, index, partitionKey, rangeKey string) ([]*DataRow, error) {
 	var keyCondition string
 	var exprAttrNames = map[string]*string{
 		"#pkey": aws.String(d.partitionKeyName),
@@ -438,7 +366,7 @@ func (d *DynamoDBConnector) Query(ctx context.Context, index, partitionKey, rang
 		qi.IndexName = aws.String(index)
 	}
 
-	var results []*DataValue
+	var results []*DataRow
 	var lastEvaluatedKey map[string]*dynamodb.AttributeValue
 
 	for {
@@ -453,8 +381,8 @@ func (d *DynamoDBConnector) Query(ctx context.Context, index, partitionKey, rang
 		}
 
 		for _, item := range result.Items {
-			dv := &DataValue{
-				raw: *item["value"].S,
+			dv := &DataRow{
+				Value: *item["value"].S,
 			}
 			results = append(results, dv)
 		}

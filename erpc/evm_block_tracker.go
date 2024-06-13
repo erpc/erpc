@@ -2,7 +2,6 @@ package erpc
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -89,13 +88,12 @@ func (e *EvmBlockTracker) fetchFinalizedBlockNumber(ctx context.Context, nid str
 
 func (e *EvmBlockTracker) fetchBlock(ctx context.Context, nid string, blockTag string) (uint64, error) {
 	pr := common.NewNormalizedRequest(nid, []byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["%s",false]}`, blockTag)))
-	respBytes, err := e.network.Send(ctx, nid, pr)
+	resp, err := e.network.Forward(ctx, pr)
 	if err != nil {
 		return 0, err
 	}
 
-	jrr := &common.JsonRpcResponse{}
-	err = json.Unmarshal(respBytes, jrr)
+	jrr, err := resp.JsonRpcResponse()
 	if err != nil {
 		return 0, err
 	}

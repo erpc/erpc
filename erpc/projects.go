@@ -33,22 +33,22 @@ func (p *PreparedProject) GetNetwork(networkId string) (*PreparedNetwork, error)
 	return network, nil
 }
 
-func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *common.NormalizedRequest, w common.ResponseWriter) error {
+func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	network, err := p.GetNetwork(networkId)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	m, _ := nq.Method()
 	p.Logger.Debug().Str("method", m).Msgf("forwarding request to network")
-	err = network.Forward(ctx, nq, w)
+	resp, err := network.Forward(ctx, nq)
 
 	if err == nil {
 		p.Logger.Info().Msgf("successfully forward request for network")
-		return nil
+		return resp, nil
 	} else {
 		p.Logger.Warn().Err(err).Msgf("failed to forward request for network")
 	}
 
-	return err
+	return nil, err
 }

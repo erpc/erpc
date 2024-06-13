@@ -7,18 +7,20 @@ import (
 	"github.com/flair-sdk/erpc/common"
 )
 
-type DataValue struct {
-	raw string
-	mu  sync.Mutex
+type DataRow struct {
+	PK    string
+	RK    string
+	Value string
 
+	mu               sync.Mutex
 	parsedJsonRpcRes *common.JsonRpcResponse
 }
 
-func NewDataValue(raw string) *DataValue {
-	return &DataValue{raw: raw}
+func NewDataValue(v string) *DataRow {
+	return &DataRow{Value: v}
 }
 
-func (d *DataValue) AsJsonRpcResponse() (*common.JsonRpcResponse, error) {
+func (d *DataRow) AsJsonRpcResponse() (*common.JsonRpcResponse, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -27,7 +29,7 @@ func (d *DataValue) AsJsonRpcResponse() (*common.JsonRpcResponse, error) {
 	}
 
 	var result common.JsonRpcResponse
-	err := json.Unmarshal([]byte(d.raw), &result)
+	err := json.Unmarshal([]byte(d.Value), &result)
 	if err != nil {
 		return nil, err
 	}
