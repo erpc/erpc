@@ -103,7 +103,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 		Logger: &log.Logger,
 
 		rateLimitersRegistry: rateLimitersRegistry,
-		mu:                   &sync.RWMutex{},
+		upstreamsMutex:       &sync.RWMutex{},
 		failsafeExecutor:     failsafe.NewExecutor(retrypolicy.Builder[*common.NormalizedResponse]().Build()),
 	}
 	ctx, cancel := context.WithCancel(context.Background())

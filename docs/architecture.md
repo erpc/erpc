@@ -275,27 +275,85 @@ data:
       table: string  # erpc_rate_limit_snapshots
 ```
 
+#### Empty response scenarios
+
+1. Full node with only last 128 blocks
+  - Fallback
+2. Full or archive node being synced
+  - Fallback
+3. Non-existent data (e.g. by tx hash)
+  - Fail
+4. Future block far in ahead in time (i.e. user mistake)
+  - Fail
+5. Future block close to tip of chain (i.e. node is lagging behind)
+  - Retry
+6. Genuine empty result (e.g. getLogs with no match)
+  - Return
+
+#### Failover dimensions
+
+* Policy
+  - Retry
+  - Hedge
+  - CircuitBreaker
+  - Timeout
+* Method
+  - Single-resource direct access: eth_getTx, eth_getBlock(0x12345)
+  - Undeterministic result: eth_blockNumber, eth_syncing, eth_getBlock(latest/earliest/pending)
+  - Multi-resource range query-like: eth_getLogs
+* Node Type
+  - Full
+  - Archive
+  - Unknown
+* Sync State
+  - Synced
+  - Syncing
+  - Unknown
+* Directives
+  - X-ERPC-Retry-Empty: no/(yes)
+* Http Error
+  - 400 Bad Request / 413 Payload Too Large
+  - 401 Unauthorized / 403 Forbidden
+  - 404 Not Found / 405 Method Not Allowed
+  - 429 Too Many Requests / 408 Request Timeout
+  - Other 4xx...
+  - 500 Internal Server Error
+  - 502 Bad Gateway / 503 Service Unavailable / 504 Gateway Timeout
+  - Other 5xx...
+* JSON-RPC Error (invalid params, missing trie, etc.)
+  - client-side user error
+  - server internal error
+  - provider-specific error (e.g. billing, auth, etc)
+* JSON-RPC Result
+  - null
+  - empty ("0x", "", [], {}, "0x0", "0x0{64}", "0x0{42}")
+
 ## v0
 
 ### 0.1.0 (core features)
 
+* change path to /{project}/{architecture}/{chain-XXX/network-YYY/...}
 * refactor read/write to be sync (vs reader/writer), because?
   - simpler block extraction for cache writes
   - simpler empty response retry
   - extracting result only from response for caching
   - simpler cache serving with proper response IDs
+
 * empty response retry for recent block data
 * merge no/some failover policies flow
   - can we implement empty response retrying in fallback?
   - customize retryable responses (json-rpc error) and errors
-* data integrity threshold
-  - allow defining min required responses per method per upstream (or params)
+
 * normalize errors
   - standard json-rpc eth errors
   - vendor-specific error
+  - add normalized errors under "cause"
+
+* data integrity threshold
+  - allow defining min required responses per method per upstream (or params)
+
 * narrower upstream metrics collection for scoring (vs prometheus)
 * add weighted shuffle for upstreams based on score
-* change path to /{project}/{architecture}/{chain-XXX/network-YYY/...}
 
 ### 0.2.0 (clean up and tests)
 

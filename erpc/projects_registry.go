@@ -137,12 +137,12 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *config.ProjectConfig) error {
 			if nt == nil {
 				return common.NewErrNetworkNotFound(networkId)
 			}
-			nt.mu.Lock()
+			nt.upstreamsMutex.Lock()
 			if nt.Upstreams == nil {
 				nt.Upstreams = make([]*upstream.PreparedUpstream, 0)
 			}
 			nt.Upstreams = append(nt.Upstreams, pu)
-			nt.mu.Unlock()
+			nt.upstreamsMutex.Unlock()
 		}
 	}
 

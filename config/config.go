@@ -80,16 +80,23 @@ type ProjectConfig struct {
 }
 
 type UpstreamConfig struct {
-	Id                string            `yaml:"id"`
-	Architecture      string            `yaml:"architecture,omitempty"`
-	Endpoint          string            `yaml:"endpoint"`
-	Metadata          map[string]string `yaml:"metadata"`
-	Failsafe          *FailsafeConfig   `yaml:"failsafe"`
-	RateLimitBucket   string            `yaml:"rateLimitBucket"`
-	AllowMethods      []string          `yaml:"allowMethods"`
-	IgnoreMethods     []string          `yaml:"ignoreMethods"`
-	CreditUnitMapping string            `yaml:"creditUnitMapping"`
-	HealthCheckGroup  string            `yaml:"healthCheckGroup"`
+	Id                string             `yaml:"id"`
+	Architecture      string             `yaml:"architecture,omitempty"` // evm, solana, erpc
+	Endpoint          string             `yaml:"endpoint"`
+	Evm               *EvmUpstreamConfig `yaml:"evm"`
+	AllowMethods      []string           `yaml:"allowMethods"`
+	IgnoreMethods     []string           `yaml:"ignoreMethods"`
+	Failsafe          *FailsafeConfig    `yaml:"failsafe"`
+	RateLimitBucket   string             `yaml:"rateLimitBucket"`
+	HealthCheckGroup  string             `yaml:"healthCheckGroup"`
+	CreditUnitMapping string             `yaml:"creditUnitMapping"`
+}
+
+type EvmUpstreamConfig struct {
+	ChainId       int    `yaml:"chainId"`
+	Type          string `yaml:"type"`   // "full", "archive", "sequencer", "execution"
+	Engine        string `yaml:"engine"` // "geth", "parity", etc
+	MaxBlockRange int    `yaml:"maxBlockRange"`
 }
 
 type FailsafeConfig struct {

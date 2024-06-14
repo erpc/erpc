@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 
 	"github.com/failsafe-go/failsafe-go"
@@ -15,14 +16,14 @@ import (
 )
 
 type PreparedUpstream struct {
-	Id               string            `json:"id"`
-	Architecture     string            `json:"architecture"`
-	Endpoint         string            `json:"endpoint"`
-	RateLimitBucket  string            `json:"rateLimitBucket"`
-	HealthCheckGroup string            `json:"healthCheckGroup"`
-	Metadata         map[string]string `json:"metadata"`
-	AllowMethods     []string          `json:"allowMethods"`
-	IgnoreMethods    []string          `json:"ignoreMethods"`
+	Id               string                    `json:"id"`
+	Architecture     string                    `json:"architecture"`
+	Endpoint         string                    `json:"endpoint"`
+	RateLimitBucket  string                    `json:"rateLimitBucket"`
+	HealthCheckGroup string                    `json:"healthCheckGroup"`
+	AllowMethods     []string                  `json:"allowMethods"`
+	IgnoreMethods    []string                  `json:"ignoreMethods"`
+	Evm              *config.EvmUpstreamConfig `json:"evm"`
 
 	ProjectId        string                                        `json:"projectId"`
 	NetworkIds       []string                                      `json:"networkIds"`
@@ -46,29 +47,10 @@ func NewUpstream(
 	rlr *resiliency.RateLimitersRegistry,
 	logger *zerolog.Logger,
 ) (*PreparedUpstream, error) {
-	var networkIds []string = []string{}
-
 	lg := logger.With().Str("upstream", cfg.Id).Logger()
-
-	if cfg.Metadata != nil {
-		if val, ok := cfg.Metadata["evmChainId"]; ok {
-			lg.Debug().Str("network", val).Msgf("network ID set to %s via evmChainId", val)
-			networkIds = append(networkIds, fmt.Sprintf("eip155:%s", val))
-		} else {
-			lg.Debug().Msgf("network ID not set via metadata.evmChainId: %v", cfg.Metadata["evmChainId"])
-		}
-	}
 
 	if cfg.Architecture == "" {
 		cfg.Architecture = ArchitectureEvm
-	}
-
-	// TODO create a Client for upstream and try to "detect" the network ID(s)
-	// if networkIds == nil || len(networkIds) == 0 {
-	// }
-
-	if len(networkIds) == 0 {
-		return nil, common.NewErrUpstreamNetworkNotDetected(projectId, cfg.Id)
 	}
 
 	policies, err := resiliency.CreateFailSafePolicies(cfg.Id, cfg.Failsafe)
@@ -80,29 +62,37 @@ func NewUpstream(
 		Id:               cfg.Id,
 		Architecture:     cfg.Architecture,
 		Endpoint:         cfg.Endpoint,
-		Metadata:         cfg.Metadata,
 		RateLimitBucket:  cfg.RateLimitBucket,
 		HealthCheckGroup: cfg.HealthCheckGroup,
 		FailsafePolicies: policies,
 		AllowMethods:     cfg.AllowMethods,
 		IgnoreMethods:    cfg.IgnoreMethods,
+		Evm:              cfg.Evm,
 
-		ProjectId:  projectId,
-		NetworkIds: networkIds,
-		Logger:     lg,
+		ProjectId: projectId,
+		Logger:    lg,
 
 		rateLimitersRegistry: rlr,
 		failsafeExecutor:     failsafe.NewExecutor[*common.NormalizedResponse](policies...),
 		methodCheckResults:   map[string]bool{},
 	}
 
-	lg.Debug().Msgf("prepared upstream")
-
 	if client, err := cr.GetOrCreateClient(preparedUpstream); err != nil {
 		return nil, err
 	} else {
 		preparedUpstream.Client = client
 	}
+
+	err = preparedUpstream.resolveNetworkIds(context.Background())
+	if err != nil {
+		return nil, err
+	}
+
+	if len(preparedUpstream.NetworkIds) == 0 {
+		return nil, common.NewErrUpstreamNetworkNotDetected(projectId, cfg.Id)
+	}
+
+	lg.Debug().Msgf("prepared upstream")
 
 	return preparedUpstream, nil
 }
@@ -249,42 +239,37 @@ func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req *c
 	}
 }
 
-// Send will call the upstream and parses the response, used in internal non-proxy flows such as block tracker
-// func (u *PreparedUpstream) Send(ctx context.Context, networkId string, req interface{}) (interface{}, error) {
-// 	clientType := u.Client.GetType()
-
-// 	switch clientType {
-// 	case "HttpJsonRpcClient":
-// 		rw := common.NewMemoryResponseWriter()
-// 		crw := common.NewHttpCompositeResponseWriter(rw)
-
-// 		err := u.Forward(ctx, networkId, req, crw)
-// 		if err != nil {
-// 			return nil, err
-// 		}
-
-// 		respBody, err := io.ReadAll(rw)
-// 		if err != nil {
-// 			return nil, common.NewErrUpstreamRequest(err, u.Id)
-// 		}
-
-// 		result := &common.JsonRpcResponse{}
-// 		err = json.Unmarshal(respBody, result)
-// 		if err != nil {
-// 			return nil, err
-// 		}
-
-// 		return result, nil
-// 	default:
-// 		return nil, common.NewErrUpstreamClientInitialization(
-// 			fmt.Errorf("unsupported client type: %s", clientType),
-// 			u.Id,
-// 		)
-// 	}
-// }
-
 func (n *PreparedUpstream) Executor() failsafe.Executor[*common.NormalizedResponse] {
 	return n.failsafeExecutor
+}
+
+func (n *PreparedUpstream) EvmGetChainId(ctx context.Context) (string, error) {
+	pr := common.NewNormalizedRequest("n/a", []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[]}`))
+	resp, err := n.Forward(ctx, "n/a", pr)
+	if err != nil {
+		return "", err
+	}
+	jrr, err := resp.JsonRpcResponse()
+	if err != nil {
+		return "", err
+	}
+	if jrr.Error != nil {
+		return "", common.WrapJsonRpcError(jrr.Error)
+	}
+
+	n.Logger.Debug().Msgf("eth_chainId response: %+v", jrr)
+
+	hex, err := common.NormalizeHex(jrr.Result)
+	if err != nil {
+		return "", err
+	}
+
+	dec, err := common.HexToUint64(hex)
+	if err != nil {
+		return "", err
+	}
+
+	return strconv.FormatUint(dec, 10), nil
 }
 
 func (u *PreparedUpstream) shouldHandleMethod(method string) (v bool) {
@@ -327,6 +312,34 @@ func (u *PreparedUpstream) shouldHandleMethod(method string) (v bool) {
 	u.Logger.Debug().Bool("allowed", v).Str("method", method).Msg("method support result")
 
 	return v
+}
+
+func (n *PreparedUpstream) resolveNetworkIds(ctx context.Context) error {
+	if n.Client == nil {
+		return common.NewErrUpstreamClientInitialization(fmt.Errorf("client not initialized for upstream to resolve networkId"), n.Id)
+	}
+
+	if n.NetworkIds == nil || len(n.NetworkIds) == 0 {
+		n.NetworkIds = []string{}
+	}
+
+	switch n.Architecture {
+	case ArchitectureEvm:
+		if n.Evm != nil && n.Evm.ChainId > 0 {
+			n.NetworkIds = append(n.NetworkIds, fmt.Sprintf("eip155:%d", n.Evm.ChainId))
+		} else {
+			nid, err := n.EvmGetChainId(ctx)
+			if err != nil {
+				return err
+			}
+			n.NetworkIds = append(n.NetworkIds, fmt.Sprintf("eip155:%s", nid))
+		}
+	}
+
+	// remove duplicates
+	n.NetworkIds = common.RemoveDuplicates(n.NetworkIds)
+
+	return nil
 }
 
 func normalizeEvmHttpJsonRpc(r *common.JsonRpcRequest) error {

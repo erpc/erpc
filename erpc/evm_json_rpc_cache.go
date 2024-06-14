@@ -55,12 +55,21 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		return nil, err
 	}
 
-	blockRef, _, err := extractBlockReferenceFromRequest(rpcReq)
+	blockRef, blockNumber, err := extractBlockReferenceFromRequest(rpcReq)
 	if err != nil {
 		return nil, err
 	}
 	if blockRef == "" {
 		blockRef = "*"
+	}
+	if blockNumber != 0 {
+		s, err := c.shouldCacheForBlock(blockNumber)
+		if err != nil {
+			return nil, err
+		}
+		if !s {
+			return nil, nil
+		}
 	}
 
 	groupKey, requestKey, err := generateKeysForJsonRpcRequest(req, blockRef)
