@@ -50,7 +50,7 @@ func NewHttpJsonRpcClient(parsedUrl *url.URL) (*HttpJsonRpcClient, error) {
 	return client, nil
 }
 
-func (c *HttpJsonRpcClient) SendRequest(ctx context.Context, req *common.JsonRpcRequest) (io.ReadCloser, error) {
+func (c *HttpJsonRpcClient) SendRequest(ctx context.Context, req *common.JsonRpcRequest) (*common.NormalizedResponse, error) {
 	requestBody, err := json.Marshal(common.JsonRpcRequest{
 		JSONRPC: req.JSONRPC,
 		Method:  req.Method,
@@ -83,14 +83,14 @@ func (c *HttpJsonRpcClient) SendRequest(ctx context.Context, req *common.JsonRpc
 	}
 
 	respStatusCode := resp.StatusCode
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
 	log.Debug().Msgf("received json rpc response status: %d", respStatusCode)
 
 	if respStatusCode >= 400 {
-		respBody, err := io.ReadAll(resp.Body)
 		defer resp.Body.Close()
-		if err != nil {
-			return nil, err
-		}
 		return nil, &common.BaseError{
 			Code:    "ErrHttp",
 			Message: "server responded with non-2xx status code",
@@ -102,37 +102,7 @@ func (c *HttpJsonRpcClient) SendRequest(ctx context.Context, req *common.JsonRpc
 		}
 	}
 
-	// var jsonResponse common.JsonRpcResponse
-	// if err := json.Unmarshal(respBody, &jsonResponse); err != nil {
-	// 	return nil, err
-	// }
-
-	// if jsonResponse.Error != nil {
-	// 	// return nil, fmt.Errorf("json rpc error (%d): %s", jsonResponse.Error.Code, jsonResponse.Error.Message)
-	// 	return nil, &common.BaseError{
-	// 		Code:    "ErrJsonRpc",
-	// 		Message: "response has json-rpc error",
-	// 		Details: map[string]interface{}{
-	// 			"response": jsonResponse,
-	// 		},
-	// 	}
-	// }
-
-	// respBytes, errMarshal := json.Marshal(resp)
-	// if errMarshal != nil {
-	// 	health.MetricUpstreamRequestErrors.WithLabelValues(
-	// 		u.ProjectId,
-	// 		networkId,
-	// 		u.Id,
-	// 		method,
-	// 	).Inc()
-	// 	return common.NewErrUpstreamMalformedResponse(
-	// 		errMarshal,
-	// 		u.Id,
-	// 	)
-	// }
-
-	return resp.Body, nil
+	return common.NewNormalizedResponseFromBody(respBody), nil
 }
 
 func (c *HttpJsonRpcClient) GetType() string {

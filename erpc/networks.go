@@ -2,9 +2,8 @@ package erpc
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
+	"fmt"
 	"math/rand"
 	"strconv"
 	"sync"
@@ -25,7 +24,7 @@ import (
 type PreparedNetwork struct {
 	NetworkId        string
 	ProjectId        string
-	FailsafePolicies []failsafe.Policy[any]
+	FailsafePolicies []failsafe.Policy[*common.NormalizedResponse]
 	Config           *config.NetworkConfig
 	Logger           *zerolog.Logger
 	Upstreams        []*upstream.PreparedUpstream
@@ -33,7 +32,7 @@ type PreparedNetwork struct {
 	mu *sync.RWMutex
 
 	rateLimitersRegistry *resiliency.RateLimitersRegistry
-	failsafeExecutor     failsafe.Executor[interface{}]
+	failsafeExecutor     failsafe.Executor[*common.NormalizedResponse]
 
 	rateLimiterDal data.RateLimitersDAL
 	cacheDal       data.CacheDAL
@@ -52,6 +51,8 @@ func (n *PreparedNetwork) Bootstrap(ctx context.Context) error {
 		if err := n.evmBlockTracker.Bootstrap(ctx); err != nil {
 			return err
 		}
+	} else {
+		return fmt.Errorf("network architecture not supported: %s", n.Architecture())
 	}
 
 	go func(pn *PreparedNetwork) {
@@ -87,172 +88,141 @@ func (n *PreparedNetwork) Architecture() string {
 	return n.Config.Architecture
 }
 
-func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedRequest, w common.ResponseWriter) error {
+func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
 
 	if n.cacheDal != nil {
 		n.Logger.Debug().Msgf("checking cache for request")
-		cacheReader, err := n.cacheDal.GetWithReader(ctx, req)
-		n.Logger.Debug().Err(err).Msgf("cache response: %v", cacheReader)
+		resp, err := n.cacheDal.Get(ctx, req)
+		n.Logger.Debug().Err(err).Msgf("cache response: %v", resp)
 		if err != nil {
 			n.Logger.Debug().Err(err).Msgf("could not find response in cache")
-		}
-		if cacheReader != nil {
-			if w.TryLock() {
-				w.AddHeader("Content-Type", "application/json")
-				w.AddHeader("X-ERPC-Network", n.NetworkId)
-				w.AddHeader("X-ERPC-Cache", "Hit")
-				w, err := io.Copy(w, cacheReader)
-				n.Logger.Info().Object("req", req).Int64("written", w).Err(err).Msgf("response served from cache")
-				return err
-			} else {
-				return common.NewErrResponseWriteLock("<cache store>")
-			}
+		} else if resp != nil {
+			n.Logger.Info().Object("req", req).Err(err).Msgf("response served from cache")
+			return resp, err
 		}
 	}
 
 	if err := n.acquireRateLimitPermit(req); err != nil {
-		return err
+		return nil, err
 	}
 
 	var errorsByUpstream = []error{}
-
-	// Configure the cache writer on the response writer so result can be cached
-	go (func() {
-		if n.cacheDal != nil {
-			cwr, err := n.cacheDal.SetWithWriter(ctx, req)
-			if err != nil {
-				n.Logger.Warn().Err(err).Msgf("could not create cache response writer")
-			} else {
-				w.AddBodyWriter(cwr)
-			}
-		}
-	})()
 
 	// Function to prepare and forward the request to an upstream
 	tryForward := func(
 		u *upstream.PreparedUpstream,
 		ctx context.Context,
-	) (skipped bool, err error) {
+	) (resp *common.NormalizedResponse, skipped bool, err error) {
 		lg := u.Logger.With().Str("network", n.NetworkId).Logger()
 		if u.Score < 0 {
 			lg.Debug().Msgf("skipping upstream with negative score %d", u.Score)
-			return true, nil
+			return nil, true, nil
 		}
 
-		pr, err := u.PrepareRequest(req)
-		lg.Debug().Err(err).Msgf("prepared request: %v", pr)
-		if pr == nil && err == nil {
-			return true, nil
-		}
-		if err != nil {
-			return false, err
-		}
-
-		err = n.forwardToUpstream(u, ctx, pr, w)
+		resp, err = n.forwardToUpstream(u, ctx, req)
 		if !common.IsNull(err) {
-			return false, err
+			return nil, false, err
 		}
 
-		lg.Info().Msgf("successfully forward request")
-		return false, nil
+		lg.Info().Msgf("successfully forwarded request to upstream")
+		return resp, false, nil
 	}
 
-	if n.FailsafePolicies == nil || len(n.FailsafePolicies) == 0 {
-		// Handling via simple loop over upstreams until one responds
-		n.mu.RLock()
-		var upsList = n.Upstreams
-		n.mu.RUnlock()
-		for _, u := range upsList {
-			if _, err := tryForward(u, ctx); err != nil {
-				errorsByUpstream = append(errorsByUpstream, err)
-				continue
-			}
-			return nil
-		}
-
-		return common.NewErrUpstreamsExhausted(errorsByUpstream)
-	}
-
-	// Handling when FailsafePolicies are defined
 	mtx := sync.Mutex{}
 	i := 0
-	_, execErr := n.failsafeExecutor.WithContext(ctx).GetWithExecution(func(exec failsafe.Execution[interface{}]) (interface{}, error) {
-		// We should try all upstreams at least once, but using "i" we make sure
-		// across different executions of the failsafe we pick up next upstream vs retrying the same upstream.
-		// This mimicks a round-robin behavior, for example when doing hedge or retries.
-		// Upstream-level retry is handled by the upstream itself (and its own failsafe policies).
-		n.mu.RLock()
-		upsList := n.Upstreams
-		n.mu.RUnlock()
+	resp, execErr := n.failsafeExecutor.
+		WithContext(ctx).
+		GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+			n.mu.RLock()
+			upsList := n.Upstreams
+			n.mu.RUnlock()
 
-		ln := len(upsList)
-		for count := 0; count < ln; count++ {
-			mtx.Lock()
-			u := upsList[i]
-			n.Logger.Debug().Msgf("executing forward current index: %d", i)
-			i++
-			if i >= ln {
-				i = 0
+			// We should try all upstreams at least once, but using "i" we make sure
+			// across different executions of the failsafe we pick up next upstream vs retrying the same upstream.
+			// This mimicks a round-robin behavior, for example when doing hedge or retries.
+			// Upstream-level retry is handled by the upstream itself (and its own failsafe policies).
+			ln := len(upsList)
+			for count := 0; count < ln; count++ {
+				mtx.Lock()
+				u := upsList[i]
+				n.Logger.Debug().Msgf("executing forward current index: %d", i)
+				i++
+				if i >= ln {
+					i = 0
+				}
+				mtx.Unlock()
+				n.Logger.Debug().Msgf("executing forward to upstream: %s", u.Id)
+
+				resp, skipped, err := tryForward(u, exec.Context())
+				if err != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) && exec.Hedges() > 0 {
+					n.Logger.Debug().Err(err).Msgf("discarding hedged request to upstream %s: %v", u.Id, skipped)
+					return nil, err
+				}
+
+				n.Logger.Debug().Err(err).Msgf("forwarded request to upstream %s skipped: %v err: %v", u.Id, skipped, err)
+				if !skipped {
+					n.Logger.Debug().Interface("resp", resp).Msgf("storing response in cache")
+					go (func(resp *common.NormalizedResponse) {
+						if n.cacheDal != nil {
+							c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+							defer cancel()
+							err := n.cacheDal.Set(c, req, resp)
+							if err != nil {
+								n.Logger.Warn().Err(err).Msgf("could not store response in cache")
+							}
+						}
+					})(resp)
+					return resp, err
+				} else if err != nil {
+					errorsByUpstream = append(errorsByUpstream, err)
+					continue
+				}
 			}
-			mtx.Unlock()
-			n.Logger.Debug().Msgf("executing forward to upstream: %s", u.Id)
 
-			skipped, err := tryForward(u, exec.Context())
-			if err != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) && exec.Hedges() > 0 {
-				n.Logger.Debug().Err(err).Msgf("discarding hedged request to upstream %s: %v", u.Id, skipped)
-				return nil, err
-			}
-
-			n.Logger.Debug().Err(err).Msgf("forwarded request to upstream %s skipped: %v err: %v", u.Id, skipped, err)
-			if !skipped {
-				return nil, err
-			} else if err != nil {
-				errorsByUpstream = append(errorsByUpstream, err)
-				continue
-			}
-		}
-
-		return nil, common.NewErrUpstreamsExhausted(errorsByUpstream)
-	})
+			return nil, common.NewErrUpstreamsExhausted(errorsByUpstream)
+		})
 
 	if execErr != nil {
-		return resiliency.TranslateFailsafeError(execErr)
+		return nil, resiliency.TranslateFailsafeError(execErr)
 	}
 
-	return nil
+	return resp, nil
 }
 
-// Send will call the upstream and parses the response, used in internal non-proxy flows such as block tracker
-func (n *PreparedNetwork) Send(ctx context.Context, networkId string, req *common.NormalizedRequest) ([]byte, error) {
-	rw := common.NewMemoryResponseWriter()
-	crw := common.NewHttpCompositeResponseWriter(rw)
+// // Send will call the upstream and parses the response, used in internal non-proxy flows such as block tracker
+// func (n *PreparedNetwork) Send(ctx context.Context, networkId string, req *common.NormalizedRequest) ([]byte, error) {
+// 	rw := common.NewMemoryResponseWriter()
+// 	crw := common.NewHttpCompositeResponseWriter(rw)
 
-	err := n.Forward(ctx, req, crw)
-	if err != nil {
-		return nil, err
-	}
+// 	err := n.Forward(ctx, req, crw)
+// 	if err != nil {
+// 		return nil, err
+// 	}
 
-	respBody, err := io.ReadAll(rw)
-	if err != nil {
-		return nil, err
-	}
+// 	respBody, err := io.ReadAll(rw)
+// 	if err != nil {
+// 		return nil, err
+// 	}
 
-	return respBody, nil
-}
+// 	return respBody, nil
+// }
 
 func (n *PreparedNetwork) EvmGetChainId(ctx context.Context) (string, error) {
 	pr := common.NewNormalizedRequest(n.NetworkId, []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[]}`))
-	respBytes, err := n.Send(ctx, n.NetworkId, pr)
+	resp, err := n.Forward(ctx, pr)
 	if err != nil {
 		return "", err
 	}
-
-	jrr := &common.JsonRpcResponse{}
-	err = json.Unmarshal(respBytes, jrr)
+	jrr, err := resp.JsonRpcResponse()
 	if err != nil {
 		return "", err
 	}
+	// jrr := &common.JsonRpcResponse{}
+	// err = json.Unmarshal(respBytes, jrr)
+	// if err != nil {
+	// 	return "", err
+	// }
 
 	if jrr.Error != nil {
 		return "", common.WrapJsonRpcError(jrr.Error)
@@ -289,6 +259,12 @@ func (n *PreparedNetwork) EvmIsBlockFinalized(blockNumber uint64) (bool, error) 
 		return false, nil
 	}
 
+	n.Logger.Debug().
+		Uint64("finalizedBlock", finalizedBlock).
+		Uint64("latestBlock", latestBlock).
+		Uint64("blockNumber", blockNumber).
+		Msgf("calculating block finality")
+
 	if finalizedBlock > 0 {
 		return blockNumber <= finalizedBlock, nil
 	}
@@ -304,6 +280,12 @@ func (n *PreparedNetwork) EvmIsBlockFinalized(blockNumber uint64) (bool, error) 
 	} else {
 		fb = latestBlock - 128
 	}
+
+	n.Logger.Debug().
+		Uint64("inferredFinalizedBlock", fb).
+		Uint64("latestBlock", latestBlock).
+		Uint64("blockNumber", blockNumber).
+		Msgf("calculating block finality using inferred finalized block")
 
 	return blockNumber <= fb, nil
 }
@@ -384,12 +366,11 @@ func (n *PreparedNetwork) acquireRateLimitPermit(req *common.NormalizedRequest) 
 func (n *PreparedNetwork) forwardToUpstream(
 	thisUpstream *upstream.PreparedUpstream,
 	ctx context.Context,
-	r interface{},
-	w common.ResponseWriter,
-) error {
+	req *common.NormalizedRequest,
+) (*common.NormalizedResponse, error) {
 	var category string = ""
-	if jrr, ok := r.(*common.JsonRpcRequest); ok {
-		category = jrr.Method
+	if m, _ := req.Method(); m != "" {
+		category = m
 	}
 	health.MetricUpstreamRequestTotal.WithLabelValues(
 		n.ProjectId,
@@ -405,7 +386,7 @@ func (n *PreparedNetwork) forwardToUpstream(
 	))
 	defer timer.ObserveDuration()
 
-	return thisUpstream.Forward(ctx, n.NetworkId, r, w)
+	return thisUpstream.Forward(ctx, n.NetworkId, req)
 }
 
 func weightedRandomSelect(upstreams []*upstream.PreparedUpstream) *upstream.PreparedUpstream {

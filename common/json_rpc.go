@@ -15,7 +15,7 @@ type JsonRpcRequest struct {
 
 type JsonRpcResponse struct {
 	JSONRPC string        `json:"jsonrpc,omitempty"`
-	ID      int           `json:"id"`
+	ID      interface{}   `json:"id"`
 	Result  interface{}   `json:"result"`
 	Error   *JsonRpcError `json:"error,omitempty"`
 }
@@ -50,5 +50,5 @@ func (r *JsonRpcRequest) MarshalZerologObject(e *zerolog.Event) {
 }
 
 func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
-	e.Int("id", r.ID).Interface("result", r.Result).Interface("error", r.Error)
+	e.Interface("id", r.ID).Interface("result", r.Result).Interface("error", r.Error)
 }

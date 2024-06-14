@@ -216,7 +216,7 @@ projects:
 			"jsonrpc": "2.0"
 		}
 	`))
-	res, err := http.Post(fmt.Sprintf("%s/main/1", localBaseUrl), "application/json", body)
+	res, err := http.Post(fmt.Sprintf("%s/main/evm/1", localBaseUrl), "application/json", body)
 
 	if err != nil {
 		t.Fatal(err)

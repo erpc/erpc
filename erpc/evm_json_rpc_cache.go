@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,24 +15,6 @@ import (
 	"github.com/flair-sdk/erpc/data"
 	"github.com/rs/zerolog/log"
 )
-
-type EvmLog struct {
-	LogIndex         string
-	TransactionIndex string
-	TransactionHash  string
-	BlockHash        string
-	BlockNumber      string
-	Address          string
-	Topics           []string
-	Data             string
-}
-
-type EvmLogFilter struct {
-	FromBlock string
-	ToBlock   string
-	Address   string
-	Topics    []string
-}
 
 type EvmJsonRpcCache struct {
 	conn    data.Connector
@@ -48,12 +31,7 @@ func NewEvmJsonRpcCache(ctx context.Context, cfg *config.ConnectorConfig) (*EvmJ
 		return nil, err
 	}
 
-	c, err := data.NewConnector(
-		ctx,
-		cfg,
-		resolveEvmJsonRpcCacheKeys,
-		resolveOnlySuccessfulResponses,
-	)
+	c, err := data.NewConnector(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +49,7 @@ func (c *EvmJsonRpcCache) WithNetwork(network *PreparedNetwork) *EvmJsonRpcCache
 	}
 }
 
-func (c *EvmJsonRpcCache) GetWithReader(ctx context.Context, req *common.NormalizedRequest) (io.Reader, error) {
+func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
 		return nil, err
@@ -90,42 +68,86 @@ func (c *EvmJsonRpcCache) GetWithReader(ctx context.Context, req *common.Normali
 		return nil, err
 	}
 
+	var resultString string
 	if blockRef != "*" {
-		return c.conn.GetWithReader(ctx, data.ConnectorMainIndex, groupKey, requestKey)
+		resultString, err = c.conn.Get(ctx, data.ConnectorMainIndex, groupKey, requestKey)
 	} else {
-		return c.conn.GetWithReader(ctx, data.ConnectorReverseIndex, groupKey, requestKey)
+		resultString, err = c.conn.Get(ctx, data.ConnectorReverseIndex, groupKey, requestKey)
 	}
-}
-
-func (c *EvmJsonRpcCache) SetWithWriter(ctx context.Context, req *common.NormalizedRequest) (io.WriteCloser, error) {
-	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
 		return nil, err
+	}
+
+	var resultObj interface{}
+	err = json.Unmarshal([]byte(resultString), &resultObj)
+	if err != nil {
+		return nil, err
+	}
+
+	jrr := &common.JsonRpcResponse{
+		JSONRPC: rpcReq.JSONRPC,
+		ID:      rpcReq.ID,
+		Error:   nil,
+		Result:  resultObj,
+	}
+
+	return common.NewNormalizedJsonRpcResponse(jrr), err
+}
+
+func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
+	rpcReq, err := req.JsonRpcRequest()
+	if err != nil {
+		return err
+	}
+
+	rpcResp, err := resp.JsonRpcResponse()
+	if err != nil {
+		return err
+	}
+
+	if rpcResp.Result == nil || rpcResp.Error != nil {
+		log.Debug().Interface("resp", resp).Msg("not caching response because it has no result or has error")
+		return nil
 	}
 
 	blockRef, blockNumber, err := extractBlockReferenceFromRequest(rpcReq)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	if blockRef != "" {
-		s, e := c.shouldCacheForBlock(blockNumber)
-		if !s || e != nil {
-			return nil, e
-		}
-		pk, rk, err := generateKeysForJsonRpcRequest(req, blockRef)
+	if blockRef == "" {
+		blockRef, blockNumber, err = extractBlockReferenceFromResponse(rpcReq, rpcResp)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		return c.conn.SetWithWriter(ctx, pk, rk)
-	} else {
-		// Empty keys forces the connector to use the keyResolver when response is fully received
-		ctx = context.WithValue(ctx, JsonRpcCacheContext, map[string]interface{}{
-			"req":   req,
-			"cache": c,
-		})
-		return c.conn.SetWithWriter(ctx, "", "")
 	}
+
+	if blockRef == "" || blockNumber == 0 {
+		// Do not cache if we can't resolve a block reference (e.g. latest block requests)
+		log.Debug().
+			Str("blockRef", blockRef).
+			Uint64("blockNumber", blockNumber).
+			Str("method", rpcReq.Method).
+			Msg("not caching request because it has no block reference or block number")
+		return nil
+	}
+
+	s, e := c.shouldCacheForBlock(blockNumber)
+	if !s || e != nil {
+		return e
+	}
+
+	pk, rk, err := generateKeysForJsonRpcRequest(req, blockRef)
+	if err != nil {
+		return err
+	}
+
+	resultStr, err := json.Marshal(rpcResp.Result)
+	if err != nil {
+		return err
+	}
+
+	return c.conn.Set(ctx, pk, rk, string(resultStr))
 }
 
 func (c *EvmJsonRpcCache) DeleteByGroupKey(ctx context.Context, groupKeys ...string) error {
@@ -141,7 +163,6 @@ func (c *EvmJsonRpcCache) DeleteByGroupKey(ctx context.Context, groupKeys ...str
 
 func (c *EvmJsonRpcCache) shouldCacheForBlock(blockNumber uint64) (bool, error) {
 	b, e := c.network.EvmIsBlockFinalized(blockNumber)
-	log.Debug().Msgf("shouldCacheForBlock on block: %d, finalized: %t, err: %v", blockNumber, b, e)
 	return b, e
 }
 
@@ -197,37 +218,6 @@ func hashValue(h io.Writer, v interface{}) error {
 	}
 }
 
-func resolveEvmJsonRpcCacheKeys(ctx context.Context, dv *data.DataValue) (pk string, rk string, err error) {
-	values := ctx.Value(JsonRpcCacheContext).(map[string]interface{})
-
-	req := values["req"].(*common.NormalizedRequest)
-	rpcReq, err := req.JsonRpcRequest()
-	if err != nil {
-		return "", "", err
-	}
-
-	rpcRes, err := dv.AsJsonRpcResponse()
-	if err != nil {
-		return "", "", err
-	}
-	if rpcRes == nil {
-		return "", "", errors.New("json-rpc response is nil")
-	}
-
-	blockRef, blockNumber, err := extractBlockReferenceFromResponse(rpcReq, rpcRes)
-	if err != nil {
-		return "", "", err
-	}
-
-	cache := values["cache"].(*EvmJsonRpcCache)
-	s, e := cache.shouldCacheForBlock(blockNumber)
-	if !s || e != nil {
-		return "", "", e
-	}
-
-	return generateKeysForJsonRpcRequest(req, blockRef)
-}
-
 func generateKeysForJsonRpcRequest(req *common.NormalizedRequest, blockRef string) (string, string, error) {
 	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
@@ -240,23 +230,10 @@ func generateKeysForJsonRpcRequest(req *common.NormalizedRequest, blockRef strin
 	}
 
 	if blockRef != "" {
-		return fmt.Sprintf("evm:%s:%s", req.NetworkId, blockRef), fmt.Sprintf("%s:%s", req.NetworkId, cacheKey), nil
+		return fmt.Sprintf("evm:%s:%s", req.NetworkId, blockRef), cacheKey, nil
 	} else {
-		return fmt.Sprintf("evm:%s:nil", req.NetworkId), fmt.Sprintf("%s:%s", req.NetworkId, cacheKey), nil
+		return fmt.Sprintf("evm:%s:nil", req.NetworkId), cacheKey, nil
 	}
-}
-
-func resolveOnlySuccessfulResponses(_ context.Context, dv *data.DataValue) (*data.DataValue, error) {
-	e, err := dv.AsJsonRpcResponse()
-	if err != nil {
-		return nil, err
-	}
-
-	if e.Error != nil || e.Result == nil {
-		return nil, nil
-	}
-
-	return dv, nil
 }
 
 func populateDefaults(cfg *config.ConnectorConfig) error {
@@ -293,7 +270,6 @@ func extractBlockReferenceFromRequest(r *common.JsonRpcRequest) (string, uint64,
 		"eth_getTransactionByBlockNumberAndIndex",
 		"eth_getUncleCountByBlockNumber",
 		"eth_getBlockTransactionCountByNumber":
-		log.Debug().Msgf("extractBlockReferenceFromRequest r.Params: %+v", r.Params)
 		if len(r.Params) > 0 {
 			if bns, ok := r.Params[0].(string); ok {
 				if strings.HasPrefix(bns, "0x") {
@@ -316,7 +292,6 @@ func extractBlockReferenceFromRequest(r *common.JsonRpcRequest) (string, uint64,
 		"eth_getTransactionCount",
 		"eth_call",
 		"eth_estimateGas":
-		log.Debug().Msgf("extractBlockReferenceFromRequest r.Params: %+v", r.Params)
 		if len(r.Params) > 1 {
 			if bns, ok := r.Params[1].(string); ok {
 				if strings.HasPrefix(bns, "0x") {
@@ -361,9 +336,7 @@ func extractBlockReferenceFromResponse(rpcReq *common.JsonRpcRequest, rpcResp *c
 	case "eth_getTransactionReceipt":
 		if rpcResp.Result != nil {
 			if receipt, ok := rpcResp.Result.(map[string]interface{}); ok {
-				log.Debug().Msgf("extractBlockReferenceFromResponse receipt: %+v", receipt)
 				if blockNumber, ok := receipt["blockNumber"].(string); ok {
-					log.Debug().Msgf("extractBlockReferenceFromResponse blockNumber: %+v", blockNumber)
 					bn, err := hexutil.DecodeUint64(blockNumber)
 					if err != nil {
 						return "", bn, err

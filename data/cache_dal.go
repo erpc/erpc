@@ -2,13 +2,12 @@ package data
 
 import (
 	"context"
-	"io"
 
 	"github.com/flair-sdk/erpc/common"
 )
 
 type CacheDAL interface {
-	SetWithWriter(ctx context.Context, req *common.NormalizedRequest) (io.WriteCloser, error)
-	GetWithReader(ctx context.Context, req *common.NormalizedRequest) (io.Reader, error)
+	Set(ctx context.Context, req *common.NormalizedRequest, res *common.NormalizedResponse) error
+	Get(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
 	DeleteByGroupKey(ctx context.Context, groupKeys ...string) error
 }
