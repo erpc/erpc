@@ -61,8 +61,12 @@ func NewHttpServer(cfg *config.ServerConfig, erpc *erpc.ERPC) *HttpServer {
 		nq := common.NewNormalizedRequest(networkId, body)
 		project, err := erpc.GetProject(projectId)
 		if err == nil {
-			cwr := common.NewHttpCompositeResponseWriter(hrw)
-			err = project.Forward(r.Context(), networkId, nq, cwr)
+			resp, err := project.Forward(r.Context(), networkId, nq)
+			if err == nil {
+				hrw.Header().Set("Content-Type", "application/json")
+				hrw.WriteHeader(http.StatusOK)
+				hrw.Write(resp.Body())
+			}
 		}
 
 		if err != nil {

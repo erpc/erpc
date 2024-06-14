@@ -2,7 +2,6 @@ package data
 
 import (
 	"context"
-	"io"
 
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
@@ -14,20 +13,15 @@ const (
 )
 
 type Connector interface {
-	GetWithReader(ctx context.Context, index, partitionKey, rangeKey string) (io.Reader, error)
-	SetWithWriter(ctx context.Context, partitionKey, rangeKey string) (io.WriteCloser, error)
-	Query(ctx context.Context, index, partitionKey, rangeKey string) ([]*DataValue, error)
+	Get(ctx context.Context, index, partitionKey, rangeKey string) (string, error)
+	Set(ctx context.Context, partitionKey, rangeKey, value string) error
+	Query(ctx context.Context, index, partitionKey, rangeKey string) ([]*DataRow, error)
 	Delete(ctx context.Context, index, partitionKey, rangeKey string) error
 }
-
-type KeyResolver func(ctx context.Context, dv *DataValue) (string, string, error)
-type ValueResolver func(ctx context.Context, dv *DataValue) (*DataValue, error)
 
 func NewConnector(
 	ctx context.Context,
 	cfg *config.ConnectorConfig,
-	keyResolver KeyResolver,
-	valueResolver ValueResolver,
 ) (Connector, error) {
 	switch cfg.Driver {
 	// case "memory":
@@ -35,7 +29,8 @@ func NewConnector(
 	// case "redis":
 	// 	return NewRedisStore(cfg.Redis), nil
 	case "dynamodb":
-		return NewDynamoDBConnector(ctx, cfg.DynamoDB, keyResolver, valueResolver)
+		// return NewDynamoDBConnector(ctx, cfg.DynamoDB, keyResolver, valueResolver)
+		return NewDynamoDBConnector(ctx, cfg.DynamoDB)
 		// case "postgresql":
 		// 	return NewPostgreSQLStore(cfg.PostgreSQL)
 	}

@@ -74,10 +74,6 @@ func (r *RedisStore) GetWithReader(ctx context.Context, key string) (io.Reader, 
 }
 
 func (r *RedisStore) Set(ctx context.Context, key string, value string) (int, error) {
-
-	log.Debug().Msgf("SetWithWriter rrrrrrrrr ======: %v", r)
-	log.Debug().Msgf("SetWithWriter INSII r.client ======: %v", r.client)
-
 	// log.Trace().Msgf("RedisStore setting key: %s value: %s", key, value)
 	sts := r.client.Set(ctx, key, value, 0)
 	return 0, sts.Err()

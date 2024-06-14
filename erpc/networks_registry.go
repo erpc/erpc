@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/failsafe-go/failsafe-go"
+	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
 	"github.com/flair-sdk/erpc/data"
 	"github.com/flair-sdk/erpc/resiliency"
@@ -38,7 +39,7 @@ func (r *NetworksRegistry) RegisterNetwork(
 		return pn, nil
 	}
 
-	var policies []failsafe.Policy[any]
+	var policies []failsafe.Policy[*common.NormalizedResponse]
 	if (nwCfg != nil) && (nwCfg.Failsafe != nil) {
 		pls, err := resiliency.CreateFailSafePolicies(key, nwCfg.Failsafe)
 		if err != nil {
@@ -59,7 +60,7 @@ func (r *NetworksRegistry) RegisterNetwork(
 		mu:                   &sync.RWMutex{},
 		rateLimiterDal:       rateLimiterDal,
 		rateLimitersRegistry: r.rateLimitersRegistry,
-		failsafeExecutor:     failsafe.NewExecutor[interface{}](policies...),
+		failsafeExecutor:     failsafe.NewExecutor[*common.NormalizedResponse](policies...),
 	}
 
 	if nwCfg.Architecture == "" {
