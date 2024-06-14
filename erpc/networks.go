@@ -29,7 +29,8 @@ type PreparedNetwork struct {
 	Logger           *zerolog.Logger
 	Upstreams        []*upstream.PreparedUpstream
 
-	mu *sync.RWMutex
+	upstreamsMutex     *sync.RWMutex
+	reorderStopChannel chan bool
 
 	rateLimitersRegistry *resiliency.RateLimitersRegistry
 	failsafeExecutor     failsafe.Executor[*common.NormalizedResponse]
@@ -37,8 +38,7 @@ type PreparedNetwork struct {
 	rateLimiterDal data.RateLimitersDAL
 	cacheDal       data.CacheDAL
 
-	evmBlockTracker    *EvmBlockTracker
-	reorderStopperChan chan bool
+	evmBlockTracker *EvmBlockTracker
 }
 
 func (n *PreparedNetwork) Bootstrap(ctx context.Context) error {
@@ -59,14 +59,14 @@ func (n *PreparedNetwork) Bootstrap(ctx context.Context) error {
 		ticker := time.NewTicker(1 * time.Second)
 		for {
 			select {
-			case <-pn.reorderStopperChan:
+			case <-pn.reorderStopChannel:
 				ticker.Stop()
 				return
 			case <-ticker.C:
 				upsList := reorderUpstreams(pn.Upstreams)
-				pn.mu.Lock()
+				pn.upstreamsMutex.Lock()
 				pn.Upstreams = upsList
-				pn.mu.Unlock()
+				pn.upstreamsMutex.Unlock()
 			}
 		}
 	}(n)
@@ -79,12 +79,18 @@ func (n *PreparedNetwork) Shutdown() {
 		n.evmBlockTracker.Shutdown()
 	}
 
-	if n.reorderStopperChan != nil {
-		n.reorderStopperChan <- true
+	if n.reorderStopChannel != nil {
+		n.reorderStopChannel <- true
 	}
 }
 
 func (n *PreparedNetwork) Architecture() string {
+	if n.Config.Architecture == "" {
+		if n.Config.Evm != nil {
+			n.Config.Architecture = upstream.ArchitectureEvm
+		}
+	}
+
 	return n.Config.Architecture
 }
 
@@ -134,9 +140,9 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 	resp, execErr := n.failsafeExecutor.
 		WithContext(ctx).
 		GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
-			n.mu.RLock()
+			n.upstreamsMutex.RLock()
 			upsList := n.Upstreams
-			n.mu.RUnlock()
+			n.upstreamsMutex.RUnlock()
 
 			// We should try all upstreams at least once, but using "i" we make sure
 			// across different executions of the failsafe we pick up next upstream vs retrying the same upstream.
@@ -190,26 +196,8 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 	return resp, nil
 }
 
-// // Send will call the upstream and parses the response, used in internal non-proxy flows such as block tracker
-// func (n *PreparedNetwork) Send(ctx context.Context, networkId string, req *common.NormalizedRequest) ([]byte, error) {
-// 	rw := common.NewMemoryResponseWriter()
-// 	crw := common.NewHttpCompositeResponseWriter(rw)
-
-// 	err := n.Forward(ctx, req, crw)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-
-// 	respBody, err := io.ReadAll(rw)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-
-// 	return respBody, nil
-// }
-
 func (n *PreparedNetwork) EvmGetChainId(ctx context.Context) (string, error) {
-	pr := common.NewNormalizedRequest(n.NetworkId, []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[]}`))
+	pr := common.NewNormalizedRequest("n/a", []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[]}`))
 	resp, err := n.Forward(ctx, pr)
 	if err != nil {
 		return "", err
@@ -218,12 +206,6 @@ func (n *PreparedNetwork) EvmGetChainId(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// jrr := &common.JsonRpcResponse{}
-	// err = json.Unmarshal(respBytes, jrr)
-	// if err != nil {
-	// 	return "", err
-	// }
-
 	if jrr.Error != nil {
 		return "", common.WrapJsonRpcError(jrr.Error)
 	}
@@ -297,7 +279,7 @@ func (n *PreparedNetwork) resolveNetworkId(ctx context.Context) error {
 	}
 
 	n.Logger.Debug().Msgf("resolving network id")
-	if n.Architecture() == "evm" {
+	if n.Architecture() == upstream.ArchitectureEvm {
 		if n.Config.Evm != nil && n.Config.Evm.ChainId > 0 {
 			n.NetworkId = strconv.Itoa(n.Config.Evm.ChainId)
 		} else {

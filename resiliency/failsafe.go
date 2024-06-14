@@ -39,7 +39,7 @@ func CreateFailSafePolicies(component string, fsCfg *config.FailsafeConfig) ([]f
 	}
 
 	if fsCfg.Hedge != nil {
-		p, err := createHegePolicy(component, fsCfg.Hedge)
+		p, err := createHedgePolicy(component, fsCfg.Hedge)
 		if err != nil {
 			return nil, err
 		}
@@ -95,7 +95,7 @@ func createCircuitBreakerPolicy(component string, cfg *config.CircuitBreakerPoli
 	return builder.Build(), nil
 }
 
-func createHegePolicy(component string, cfg *config.HedgePolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+func createHedgePolicy(component string, cfg *config.HedgePolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
 	delay, err := time.ParseDuration(cfg.Delay)
 	if err != nil {
 		return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse hedge.delay: %v", err), map[string]interface{}{

@@ -37,7 +37,6 @@ func TestBootstrap_UpstreamsRegistryFailure(t *testing.T) {
 						Architecture: "evm",
 						Endpoint:     "http://localhost:8080",
 						// missing "evmChainId" will cause an error
-						Metadata: map[string]string{},
 					},
 				},
 			},

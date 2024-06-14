@@ -57,10 +57,10 @@ func (r *NetworksRegistry) RegisterNetwork(
 		Config:           nwCfg,
 		Logger:           logger,
 
-		mu:                   &sync.RWMutex{},
+		upstreamsMutex:       &sync.RWMutex{},
 		rateLimiterDal:       rateLimiterDal,
 		rateLimitersRegistry: r.rateLimitersRegistry,
-		failsafeExecutor:     failsafe.NewExecutor[*common.NormalizedResponse](policies...),
+		failsafeExecutor:     failsafe.NewExecutor(policies...),
 	}
 
 	if nwCfg.Architecture == "" {
