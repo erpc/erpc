@@ -49,7 +49,7 @@ func (manager *ClientRegistry) CreateClient(upstream *PreparedUpstream) (ClientI
 				clientErr = fmt.Errorf("failed to parse URL for upstream: %v", upstream.Id)
 			} else {
 				if parsedUrl.Scheme == "http" || parsedUrl.Scheme == "https" {
-					newClient, err = NewHttpJsonRpcClient(parsedUrl)
+					newClient, err = NewHttpJsonRpcClient(upstream, parsedUrl)
 					if err != nil {
 						clientErr = fmt.Errorf("failed to create HTTP client for upstream: %v", upstream.Id)
 					}

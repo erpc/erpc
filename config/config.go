@@ -97,6 +97,7 @@ type EvmUpstreamConfig struct {
 	Type          string `yaml:"type"`   // "full", "archive", "sequencer", "execution"
 	Engine        string `yaml:"engine"` // "geth", "parity", etc
 	MaxBlockRange int    `yaml:"maxBlockRange"`
+	Syncing       bool   `yaml:"syncing"`
 }
 
 type FailsafeConfig struct {

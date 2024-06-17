@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/flair-sdk/erpc/common"
+	"github.com/flair-sdk/erpc/upstream"
 )
 
 type EvmBlockTracker struct {
@@ -87,7 +88,7 @@ func (e *EvmBlockTracker) fetchFinalizedBlockNumber(ctx context.Context, nid str
 }
 
 func (e *EvmBlockTracker) fetchBlock(ctx context.Context, nid string, blockTag string) (uint64, error) {
-	pr := common.NewNormalizedRequest(nid, []byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["%s",false]}`, blockTag)))
+	pr := upstream.NewNormalizedRequest(nid, []byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["%s",false]}`, blockTag)))
 	resp, err := e.network.Forward(ctx, pr)
 	if err != nil {
 		return 0, err
@@ -99,7 +100,7 @@ func (e *EvmBlockTracker) fetchBlock(ctx context.Context, nid string, blockTag s
 	}
 
 	if jrr.Error != nil {
-		return 0, common.WrapJsonRpcError(jrr.Error)
+		return 0, upstream.WrapJsonRpcError(jrr.Error)
 	}
 
 	// If result is nil, return 0

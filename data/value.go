@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"sync"
 
-	"github.com/flair-sdk/erpc/common"
+	"github.com/flair-sdk/erpc/upstream"
 )
 
 type DataRow struct {
@@ -13,14 +13,14 @@ type DataRow struct {
 	Value string
 
 	mu               sync.Mutex
-	parsedJsonRpcRes *common.JsonRpcResponse
+	parsedJsonRpcRes *upstream.JsonRpcResponse
 }
 
 func NewDataValue(v string) *DataRow {
 	return &DataRow{Value: v}
 }
 
-func (d *DataRow) AsJsonRpcResponse() (*common.JsonRpcResponse, error) {
+func (d *DataRow) AsJsonRpcResponse() (*upstream.JsonRpcResponse, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -28,7 +28,7 @@ func (d *DataRow) AsJsonRpcResponse() (*common.JsonRpcResponse, error) {
 		return d.parsedJsonRpcRes, nil
 	}
 
-	var result common.JsonRpcResponse
+	var result upstream.JsonRpcResponse
 	err := json.Unmarshal([]byte(d.Value), &result)
 	if err != nil {
 		return nil, err

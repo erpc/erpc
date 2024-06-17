@@ -11,7 +11,6 @@ import (
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
 	"github.com/flair-sdk/erpc/health"
-	"github.com/flair-sdk/erpc/resiliency"
 	"github.com/rs/zerolog"
 )
 
@@ -25,26 +24,26 @@ type PreparedUpstream struct {
 	IgnoreMethods    []string                  `json:"ignoreMethods"`
 	Evm              *config.EvmUpstreamConfig `json:"evm"`
 
-	ProjectId        string                                        `json:"projectId"`
-	NetworkIds       []string                                      `json:"networkIds"`
-	Logger           zerolog.Logger                                `json:"-"`
-	FailsafePolicies []failsafe.Policy[*common.NormalizedResponse] `json:"-"`
+	ProjectId        string                                 `json:"projectId"`
+	NetworkIds       []string                               `json:"networkIds"`
+	Logger           zerolog.Logger                         `json:"-"`
+	FailsafePolicies []failsafe.Policy[*NormalizedResponse] `json:"-"`
 
 	Client  ClientInterface  `json:"-"`
 	Metrics *UpstreamMetrics `json:"metrics"`
 	Score   int              `json:"score"`
 
-	methodCheckResults   map[string]bool                               `json:"-"`
-	methodCheckResultsMu sync.RWMutex                                  `json:"-"`
-	rateLimitersRegistry *resiliency.RateLimitersRegistry              `json:"-"`
-	failsafeExecutor     failsafe.Executor[*common.NormalizedResponse] `json:"-"`
+	methodCheckResults   map[string]bool                        `json:"-"`
+	methodCheckResultsMu sync.RWMutex                           `json:"-"`
+	rateLimitersRegistry *RateLimitersRegistry                  `json:"-"`
+	failsafeExecutor     failsafe.Executor[*NormalizedResponse] `json:"-"`
 }
 
 func NewUpstream(
 	projectId string,
 	cfg *config.UpstreamConfig,
 	cr *ClientRegistry,
-	rlr *resiliency.RateLimitersRegistry,
+	rlr *RateLimitersRegistry,
 	logger *zerolog.Logger,
 ) (*PreparedUpstream, error) {
 	lg := logger.With().Str("upstream", cfg.Id).Logger()
@@ -53,7 +52,7 @@ func NewUpstream(
 		cfg.Architecture = ArchitectureEvm
 	}
 
-	policies, err := resiliency.CreateFailSafePolicies(cfg.Id, cfg.Failsafe)
+	policies, err := CreateFailSafePolicies(ScopeUpstream, cfg.Id, cfg.Failsafe)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +72,7 @@ func NewUpstream(
 		Logger:    lg,
 
 		rateLimitersRegistry: rlr,
-		failsafeExecutor:     failsafe.NewExecutor[*common.NormalizedResponse](policies...),
+		failsafeExecutor:     failsafe.NewExecutor[*NormalizedResponse](policies...),
 		methodCheckResults:   map[string]bool{},
 	}
 
@@ -97,7 +96,7 @@ func NewUpstream(
 	return preparedUpstream, nil
 }
 
-func (u *PreparedUpstream) PrepareRequest(normalizedReq *common.NormalizedRequest) (interface{}, error) {
+func (u *PreparedUpstream) PrepareRequest(normalizedReq *NormalizedRequest) (interface{}, error) {
 	switch u.Architecture {
 	case ArchitectureEvm:
 		if u.Client == nil {
@@ -134,10 +133,10 @@ func (u *PreparedUpstream) PrepareRequest(normalizedReq *common.NormalizedReques
 }
 
 // Forward is used during lifecycle of a proxied request, it uses writers and readers for better performance
-func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req *NormalizedRequest) (*NormalizedResponse, error) {
 	clientType := u.Client.GetType()
 
-	var limitersBucket *resiliency.RateLimiterBucket
+	var limitersBucket *RateLimiterBucket
 	if u.RateLimitBucket != "" {
 		var errLimiters error
 		limitersBucket, errLimiters = u.rateLimitersRegistry.GetBucket(u.RateLimitBucket)
@@ -181,10 +180,6 @@ func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req *c
 	switch clientType {
 	case "HttpJsonRpcClient":
 		jsonRpcClient, okClient := u.Client.(*HttpJsonRpcClient)
-		jrReq, err := req.JsonRpcRequest()
-		if err != nil {
-			return nil, common.NewErrUpstreamRequest(err, u.Id)
-		}
 		if !okClient {
 			return nil, common.NewErrUpstreamClientInitialization(
 				fmt.Errorf("failed to cast client to HttpJsonRpcClient"),
@@ -194,8 +189,8 @@ func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req *c
 
 		tryForward := func(
 			ctx context.Context,
-		) (*common.NormalizedResponse, error) {
-			resp, errCall := jsonRpcClient.SendRequest(ctx, jrReq)
+		) (*NormalizedResponse, error) {
+			resp, errCall := jsonRpcClient.SendRequest(ctx, req)
 			lg.Debug().Err(errCall).Msgf("upstream call result received: %v", &resp)
 
 			if errCall != nil {
@@ -219,12 +214,12 @@ func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req *c
 		if u.FailsafePolicies != nil && len(u.FailsafePolicies) > 0 {
 			resp, execErr := u.failsafeExecutor.
 				WithContext(ctx).
-				GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+				GetWithExecution(func(exec failsafe.Execution[*NormalizedResponse]) (*NormalizedResponse, error) {
 					return tryForward(ctx)
 				})
 
 			if execErr != nil {
-				return nil, resiliency.TranslateFailsafeError(execErr)
+				return nil, TranslateFailsafeError(execErr)
 			}
 
 			return resp, execErr
@@ -239,12 +234,12 @@ func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req *c
 	}
 }
 
-func (n *PreparedUpstream) Executor() failsafe.Executor[*common.NormalizedResponse] {
+func (n *PreparedUpstream) Executor() failsafe.Executor[*NormalizedResponse] {
 	return n.failsafeExecutor
 }
 
 func (n *PreparedUpstream) EvmGetChainId(ctx context.Context) (string, error) {
-	pr := common.NewNormalizedRequest("n/a", []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[]}`))
+	pr := NewNormalizedRequest("n/a", []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[]}`))
 	resp, err := n.Forward(ctx, "n/a", pr)
 	if err != nil {
 		return "", err
@@ -254,7 +249,7 @@ func (n *PreparedUpstream) EvmGetChainId(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if jrr.Error != nil {
-		return "", common.WrapJsonRpcError(jrr.Error)
+		return "", WrapJsonRpcError(jrr.Error)
 	}
 
 	n.Logger.Debug().Msgf("eth_chainId response: %+v", jrr)
@@ -342,7 +337,7 @@ func (n *PreparedUpstream) resolveNetworkIds(ctx context.Context) error {
 	return nil
 }
 
-func normalizeEvmHttpJsonRpc(r *common.JsonRpcRequest) error {
+func normalizeEvmHttpJsonRpc(r *JsonRpcRequest) error {
 	switch r.Method {
 	case "eth_getBlockByNumber",
 		"eth_getUncleByBlockNumberAndIndex",

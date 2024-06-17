@@ -13,6 +13,7 @@ import (
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
 	"github.com/flair-sdk/erpc/data"
+	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog/log"
 )
 
@@ -49,7 +50,7 @@ func (c *EvmJsonRpcCache) WithNetwork(network *PreparedNetwork) *EvmJsonRpcCache
 	}
 }
 
-func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+func (c *EvmJsonRpcCache) Get(ctx context.Context, req *upstream.NormalizedRequest) (*upstream.NormalizedResponse, error) {
 	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
 		return nil, err
@@ -93,17 +94,19 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		return nil, err
 	}
 
-	jrr := &common.JsonRpcResponse{
+	jrr := &upstream.JsonRpcResponse{
 		JSONRPC: rpcReq.JSONRPC,
 		ID:      rpcReq.ID,
 		Error:   nil,
 		Result:  resultObj,
 	}
 
-	return common.NewNormalizedJsonRpcResponse(jrr), err
+	return upstream.NewNormalizedResponse().
+		WithRequest(req).
+		WithJsonRpcResponse(jrr), nil
 }
 
-func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
+func (c *EvmJsonRpcCache) Set(ctx context.Context, req *upstream.NormalizedRequest, resp *upstream.NormalizedResponse) error {
 	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
 		return err
@@ -175,7 +178,7 @@ func (c *EvmJsonRpcCache) shouldCacheForBlock(blockNumber uint64) (bool, error) 
 	return b, e
 }
 
-func generateCacheKey(r *common.JsonRpcRequest) (string, error) {
+func generateCacheKey(r *upstream.JsonRpcRequest) (string, error) {
 	hasher := sha256.New()
 
 	for _, p := range r.Params {
@@ -227,7 +230,7 @@ func hashValue(h io.Writer, v interface{}) error {
 	}
 }
 
-func generateKeysForJsonRpcRequest(req *common.NormalizedRequest, blockRef string) (string, string, error) {
+func generateKeysForJsonRpcRequest(req *upstream.NormalizedRequest, blockRef string) (string, string, error) {
 	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
 		return "", "", err
@@ -268,7 +271,7 @@ func populateDefaults(cfg *config.ConnectorConfig) error {
 	return nil
 }
 
-func extractBlockReferenceFromRequest(r *common.JsonRpcRequest) (string, uint64, error) {
+func extractBlockReferenceFromRequest(r *upstream.JsonRpcRequest) (string, uint64, error) {
 	if r == nil {
 		return "", 0, errors.New("cannot extract block reference when json-rpc request is nil")
 	}
@@ -332,7 +335,7 @@ func extractBlockReferenceFromRequest(r *common.JsonRpcRequest) (string, uint64,
 	return "", 0, nil
 }
 
-func extractBlockReferenceFromResponse(rpcReq *common.JsonRpcRequest, rpcResp *common.JsonRpcResponse) (string, uint64, error) {
+func extractBlockReferenceFromResponse(rpcReq *upstream.JsonRpcRequest, rpcResp *upstream.JsonRpcResponse) (string, uint64, error) {
 	if rpcReq == nil {
 		return "", 0, errors.New("cannot extract block reference when json-rpc request is nil")
 	}

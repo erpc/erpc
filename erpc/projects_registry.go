@@ -7,7 +7,6 @@ import (
 
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
-	"github.com/flair-sdk/erpc/resiliency"
 	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog/log"
 )
@@ -15,7 +14,7 @@ import (
 type ProjectsRegistry struct {
 	networksRegistry     *NetworksRegistry
 	upstreamsRegistry    *upstream.UpstreamsRegistry
-	rateLimitersRegistry *resiliency.RateLimitersRegistry
+	rateLimitersRegistry *upstream.RateLimitersRegistry
 	evmJsonRpcCache      *EvmJsonRpcCache
 	preparedProjects     map[string]*PreparedProject
 }
@@ -24,7 +23,7 @@ func NewProjectsRegistry(
 	staticProjects []*config.ProjectConfig,
 	networksRegistry *NetworksRegistry,
 	upstreamsRegistry *upstream.UpstreamsRegistry,
-	rateLimitersRegistry *resiliency.RateLimitersRegistry,
+	rateLimitersRegistry *upstream.RateLimitersRegistry,
 	evmJsonRpcCache *EvmJsonRpcCache,
 ) (*ProjectsRegistry, error) {
 	reg := &ProjectsRegistry{

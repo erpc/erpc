@@ -3,11 +3,11 @@ package data
 import (
 	"context"
 
-	"github.com/flair-sdk/erpc/common"
+	"github.com/flair-sdk/erpc/upstream"
 )
 
 type CacheDAL interface {
-	Set(ctx context.Context, req *common.NormalizedRequest, res *common.NormalizedResponse) error
-	Get(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
+	Set(ctx context.Context, req *upstream.NormalizedRequest, res *upstream.NormalizedResponse) error
+	Get(ctx context.Context, req *upstream.NormalizedRequest) (*upstream.NormalizedResponse, error)
 	DeleteByGroupKey(ctx context.Context, groupKeys ...string) error
 }
