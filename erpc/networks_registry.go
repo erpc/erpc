@@ -6,20 +6,18 @@ import (
 	"sync"
 
 	"github.com/failsafe-go/failsafe-go"
-	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
 	"github.com/flair-sdk/erpc/data"
-	"github.com/flair-sdk/erpc/resiliency"
 	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog"
 )
 
 type NetworksRegistry struct {
-	rateLimitersRegistry *resiliency.RateLimitersRegistry
+	rateLimitersRegistry *upstream.RateLimitersRegistry
 	preparedNetworks     map[string]*PreparedNetwork
 }
 
-func NewNetworksRegistry(rateLimitersRegistry *resiliency.RateLimitersRegistry) *NetworksRegistry {
+func NewNetworksRegistry(rateLimitersRegistry *upstream.RateLimitersRegistry) *NetworksRegistry {
 	r := &NetworksRegistry{
 		rateLimitersRegistry: rateLimitersRegistry,
 		preparedNetworks:     make(map[string]*PreparedNetwork),
@@ -39,9 +37,9 @@ func (r *NetworksRegistry) RegisterNetwork(
 		return pn, nil
 	}
 
-	var policies []failsafe.Policy[*common.NormalizedResponse]
+	var policies []failsafe.Policy[*upstream.NormalizedResponse]
 	if (nwCfg != nil) && (nwCfg.Failsafe != nil) {
-		pls, err := resiliency.CreateFailSafePolicies(key, nwCfg.Failsafe)
+		pls, err := upstream.CreateFailSafePolicies(upstream.ScopeNetwork, key, nwCfg.Failsafe)
 		if err != nil {
 			return nil, err
 		}

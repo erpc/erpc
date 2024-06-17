@@ -1,4 +1,4 @@
-package resiliency
+package upstream
 
 import (
 	"fmt"

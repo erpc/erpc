@@ -1,17 +1,24 @@
-package common
+package upstream
 
 import (
 	"encoding/json"
 	"math"
 	"math/rand"
+	"net/http"
 
+	"github.com/flair-sdk/erpc/common"
 	"github.com/rs/zerolog"
 )
 
 type NormalizedRequest struct {
-	NetworkId      string
-	body           []byte
+	NetworkId string
+	Upstream  *PreparedUpstream
+
+	body []byte
+
 	jsonRpcRequest *JsonRpcRequest
+
+	DirectiveRetryEmpty bool
 }
 
 func NewNormalizedRequest(networkId string, body []byte) *NormalizedRequest {
@@ -19,6 +26,11 @@ func NewNormalizedRequest(networkId string, body []byte) *NormalizedRequest {
 		NetworkId: networkId,
 		body:      body,
 	}
+}
+
+func (r *NormalizedRequest) ApplyDirectivesFromHttpHeaders(headers http.Header) error {
+	r.DirectiveRetryEmpty = headers.Get("x-erpc-retry-empty") != "false"
+	return nil
 }
 
 // Extract and prepare the request for forwarding.
@@ -29,12 +41,12 @@ func (n *NormalizedRequest) JsonRpcRequest() (*JsonRpcRequest, error) {
 
 	rpcReq := new(JsonRpcRequest)
 	if err := json.Unmarshal(n.body, rpcReq); err != nil {
-		return nil, NewErrJsonRpcRequestUnmarshal(err)
+		return nil, common.NewErrJsonRpcRequestUnmarshal(err)
 	}
 
 	method := rpcReq.Method
 	if method == "" {
-		return nil, NewErrJsonRpcRequestUnresolvableMethod(rpcReq)
+		return nil, common.NewErrJsonRpcRequestUnresolvableMethod(rpcReq)
 	}
 
 	if rpcReq.JSONRPC == "" {

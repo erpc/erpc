@@ -14,7 +14,6 @@ import (
 	"github.com/flair-sdk/erpc/config"
 	"github.com/flair-sdk/erpc/data"
 	"github.com/flair-sdk/erpc/health"
-	"github.com/flair-sdk/erpc/resiliency"
 	"github.com/flair-sdk/erpc/upstream"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
@@ -24,7 +23,7 @@ import (
 type PreparedNetwork struct {
 	NetworkId        string
 	ProjectId        string
-	FailsafePolicies []failsafe.Policy[*common.NormalizedResponse]
+	FailsafePolicies []failsafe.Policy[*upstream.NormalizedResponse]
 	Config           *config.NetworkConfig
 	Logger           *zerolog.Logger
 	Upstreams        []*upstream.PreparedUpstream
@@ -32,8 +31,8 @@ type PreparedNetwork struct {
 	upstreamsMutex     *sync.RWMutex
 	reorderStopChannel chan bool
 
-	rateLimitersRegistry *resiliency.RateLimitersRegistry
-	failsafeExecutor     failsafe.Executor[*common.NormalizedResponse]
+	rateLimitersRegistry *upstream.RateLimitersRegistry
+	failsafeExecutor     failsafe.Executor[*upstream.NormalizedResponse]
 
 	rateLimiterDal data.RateLimitersDAL
 	cacheDal       data.CacheDAL
@@ -94,7 +93,7 @@ func (n *PreparedNetwork) Architecture() string {
 	return n.Config.Architecture
 }
 
-func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedRequest) (*upstream.NormalizedResponse, error) {
 	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
 
 	if n.cacheDal != nil {
@@ -119,7 +118,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 	tryForward := func(
 		u *upstream.PreparedUpstream,
 		ctx context.Context,
-	) (resp *common.NormalizedResponse, skipped bool, err error) {
+	) (resp *upstream.NormalizedResponse, skipped bool, err error) {
 		lg := u.Logger.With().Str("network", n.NetworkId).Logger()
 		if u.Score < 0 {
 			lg.Debug().Msgf("skipping upstream with negative score %d", u.Score)
@@ -139,7 +138,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 	i := 0
 	resp, execErr := n.failsafeExecutor.
 		WithContext(ctx).
-		GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+		GetWithExecution(func(exec failsafe.Execution[*upstream.NormalizedResponse]) (*upstream.NormalizedResponse, error) {
 			n.upstreamsMutex.RLock()
 			upsList := n.Upstreams
 			n.upstreamsMutex.RUnlock()
@@ -169,7 +168,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 				n.Logger.Debug().Err(err).Msgf("forwarded request to upstream %s skipped: %v err: %v", u.Id, skipped, err)
 				if !skipped {
 					n.Logger.Debug().Interface("resp", resp).Msgf("storing response in cache")
-					go (func(resp *common.NormalizedResponse) {
+					go (func(resp *upstream.NormalizedResponse) {
 						if n.cacheDal != nil {
 							c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 							defer cancel()
@@ -190,14 +189,14 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 		})
 
 	if execErr != nil {
-		return nil, resiliency.TranslateFailsafeError(execErr)
+		return nil, upstream.TranslateFailsafeError(execErr)
 	}
 
 	return resp, nil
 }
 
 func (n *PreparedNetwork) EvmGetChainId(ctx context.Context) (string, error) {
-	pr := common.NewNormalizedRequest("n/a", []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[]}`))
+	pr := upstream.NewNormalizedRequest("n/a", []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[]}`))
 	resp, err := n.Forward(ctx, pr)
 	if err != nil {
 		return "", err
@@ -207,7 +206,7 @@ func (n *PreparedNetwork) EvmGetChainId(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if jrr.Error != nil {
-		return "", common.WrapJsonRpcError(jrr.Error)
+		return "", upstream.WrapJsonRpcError(jrr.Error)
 	}
 
 	log.Debug().Msgf("eth_chainId response: %+v", jrr)
@@ -300,7 +299,7 @@ func (n *PreparedNetwork) resolveNetworkId(ctx context.Context) error {
 	return nil
 }
 
-func (n *PreparedNetwork) acquireRateLimitPermit(req *common.NormalizedRequest) error {
+func (n *PreparedNetwork) acquireRateLimitPermit(req *upstream.NormalizedRequest) error {
 	if n.Config.RateLimitBucket == "" {
 		return nil
 	}
@@ -348,8 +347,8 @@ func (n *PreparedNetwork) acquireRateLimitPermit(req *common.NormalizedRequest) 
 func (n *PreparedNetwork) forwardToUpstream(
 	thisUpstream *upstream.PreparedUpstream,
 	ctx context.Context,
-	req *common.NormalizedRequest,
-) (*common.NormalizedResponse, error) {
+	req *upstream.NormalizedRequest,
+) (*upstream.NormalizedResponse, error) {
 	var category string = ""
 	if m, _ := req.Method(); m != "" {
 		category = m

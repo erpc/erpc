@@ -58,7 +58,9 @@ func NewHttpServer(cfg *config.ServerConfig, erpc *erpc.ERPC) *HttpServer {
 
 		log.Debug().Msgf("received request for projectId: %s, networkId: %s with body: %s", projectId, networkId, body)
 
-		nq := common.NewNormalizedRequest(networkId, body)
+		nq := upstream.NewNormalizedRequest(networkId, body)
+		nq.ApplyDirectivesFromHttpHeaders(r.Header)
+
 		project, err := erpc.GetProject(projectId)
 		if err == nil {
 			resp, err := project.Forward(r.Context(), networkId, nq)

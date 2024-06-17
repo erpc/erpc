@@ -1,8 +1,9 @@
-package common
+package upstream
 
 import (
 	"fmt"
 
+	"github.com/flair-sdk/erpc/common"
 	"github.com/rs/zerolog"
 )
 
@@ -31,7 +32,7 @@ func WrapJsonRpcError(r *JsonRpcError) error {
 		return nil
 	}
 
-	return &BaseError{
+	return &common.BaseError{
 		Code:    "JsonRpcError",
 		Message: fmt.Sprintf("%d: %s", r.Code, r.Message),
 		Cause:   r.Cause.(error),

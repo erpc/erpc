@@ -105,6 +105,34 @@ func (e BaseError) MarshalJSON() ([]byte, error) {
 	})
 }
 
+func (e *BaseError) Is(err error) bool {
+	var is bool
+
+	if be, ok := err.(*BaseError); ok {
+		is = e.Code == be.Code
+	}
+
+	if !is && e.Cause != nil {
+		is = errors.Is(e.Cause, err)
+	}
+
+	return is
+}
+
+func (e *BaseError) HasCode(code string) bool {
+	if e.Code == code {
+		return true
+	}
+
+	if e.Cause != nil {
+		if be, ok := e.Cause.(*BaseError); ok {
+			return be.HasCode(code)
+		}
+	}
+
+	return false
+}
+
 type ErrorWithStatusCode interface {
 	ErrorStatusCode() int
 }
@@ -619,15 +647,92 @@ func (e *ErrUpstreamRateLimitRuleExceeded) ErrorStatusCode() int {
 }
 
 //
+// Endpoint (3rd party providers, RPC nodes)
+//
+
+type ErrEndpointUnauthorized struct{ BaseError }
+
+var ErrCodeEndpointUnauthorized = "ErrEndpointUnauthorized"
+
+var NewErrEndpointUnauthorized = func(cause error) error {
+	return &ErrEndpointUnauthorized{
+		BaseError{
+			Code:    ErrCodeEndpointUnauthorized,
+			Message: "remote endpoint responded with Unauthorized",
+			Cause:   cause,
+		},
+	}
+}
+
+type ErrEndpointClientSideException struct{ BaseError }
+
+var ErrCodeEndpointClientSideException = "ErrEndpointClientSideException"
+
+var NewErrEndpointClientSideException = func(cause error) error {
+	return &ErrEndpointClientSideException{
+		BaseError{
+			Code:    ErrCodeEndpointClientSideException,
+			Message: "user and/or client-side error when sending request to remote endpoint",
+			Cause:   cause,
+		},
+	}
+}
+
+type ErrEndpointServerSideException struct{ BaseError }
+
+var ErrCodeEndpointServerSideException = "ErrEndpointServerSideException"
+
+var NewErrEndpointServerSideException = func(cause error) error {
+	return &ErrEndpointServerSideException{
+		BaseError{
+			Code:    ErrCodeEndpointServerSideException,
+			Message: "an internal error on remote endpoint",
+			Cause:   cause,
+		},
+	}
+}
+
+type ErrEndpointCapacityExceeded struct{ BaseError }
+
+var ErrCodeEndpointCapacityExceeded = "ErrEndpointCapacityExceeded"
+
+var NewErrEndpointCapacityExceeded = func(cause error) error {
+	return &ErrEndpointCapacityExceeded{
+		BaseError{
+			Code:    ErrCodeEndpointCapacityExceeded,
+			Message: "remote endpoint capacity exceeded",
+			Cause:   cause,
+		},
+	}
+}
+
+type ErrEndpointBillingIssue struct{ BaseError }
+
+var ErrCodeEndpointBillingIssue = "ErrEndpointBillingIssue"
+
+var NewErrEndpointBillingIssue = func(cause error) error {
+	return &ErrEndpointBillingIssue{
+		BaseError{
+			Code:    ErrCodeEndpointBillingIssue,
+			Message: "remote endpoint billing issue",
+			Cause:   cause,
+		},
+	}
+}
+
+//
+//
 // Store
 //
 
 type ErrInvalidConnectorDriver struct{ BaseError }
 
+var ErrCodeInvalidConnectorDriver = "ErrInvalidConnectorDriver"
+
 var NewErrInvalidConnectorDriver = func(driver string) error {
 	return &ErrInvalidConnectorDriver{
 		BaseError{
-			Code:    "ErrInvalidConnectorDriver",
+			Code:    ErrCodeInvalidConnectorDriver,
 			Message: "invalid store driver",
 			Details: map[string]interface{}{
 				"driver": driver,
@@ -638,10 +743,12 @@ var NewErrInvalidConnectorDriver = func(driver string) error {
 
 type ErrRecordNotFound struct{ BaseError }
 
+var ErrCodeRecordNotFound = "ErrRecordNotFound"
+
 var NewErrRecordNotFound = func(key string, driver string) error {
 	return &ErrRecordNotFound{
 		BaseError{
-			Code:    "ErrRecordNotFound",
+			Code:    ErrCodeRecordNotFound,
 			Message: "record not found",
 			Details: map[string]interface{}{
 				"key":    key,
@@ -649,4 +756,12 @@ var NewErrRecordNotFound = func(key string, driver string) error {
 			},
 		},
 	}
+}
+
+func HasCode(err error, code string) bool {
+	if be, ok := err.(*BaseError); ok {
+		return be.HasCode(code)
+	}
+
+	return false
 }

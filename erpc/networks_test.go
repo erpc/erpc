@@ -19,7 +19,7 @@ import (
 	"github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
-	"github.com/flair-sdk/erpc/resiliency"
+	"github.com/flair-sdk/erpc/upstream"
 
 	// "github.com/flair-sdk/erpc/upstream"
 	"github.com/h2non/gock"
@@ -72,7 +72,7 @@ func (r *ResponseRecorder) AddHeader(key, value string) {
 func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T) {
 	defer gock.Clean()
 
-	rateLimitersRegistry, err := resiliency.NewRateLimitersRegistry(
+	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
 		&config.RateLimiterConfig{
 			Buckets: []*config.RateLimitBucketConfig{
 				{
@@ -104,16 +104,16 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 
 		rateLimitersRegistry: rateLimitersRegistry,
 		upstreamsMutex:       &sync.RWMutex{},
-		failsafeExecutor:     failsafe.NewExecutor(retrypolicy.Builder[*common.NormalizedResponse]().Build()),
+		failsafeExecutor:     failsafe.NewExecutor(retrypolicy.Builder[*upstream.NormalizedResponse]().Build()),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	var lastErr error
-	var lastResp *common.NormalizedResponse
+	var lastResp *upstream.NormalizedResponse
 
 	for i := 0; i < 5; i++ {
-		fakeReq := common.NewNormalizedRequest("123", []byte(`{"method": "eth_chainId","params":[]}`))
+		fakeReq := upstream.NewNormalizedRequest("123", []byte(`{"method": "eth_chainId","params":[]}`))
 		lastResp, lastErr = ntw.Forward(ctx, fakeReq)
 	}
 
@@ -128,7 +128,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // func TestPreparedNetwork_ForwardNotRateLimitedOnNetworkLevel(t *testing.T) {
 // 	defer gock.Clean()
 
-// 	rateLimitersRegistry, err := resiliency.NewRateLimitersRegistry(
+// 	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
 // 		&config.RateLimiterConfig{
 // 			Buckets: []*config.RateLimitBucketConfig{
 // 				{
@@ -167,7 +167,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	var lastFakeRespWriter common.ResponseWriter
 
 // 	for i := 0; i < 10; i++ {
-// 		fakeReq := common.NewNormalizedRequest("123", []byte(`{"method": "eth_chainId","params":[]}`))
+// 		fakeReq := upstream.NewNormalizedRequest("123", []byte(`{"method": "eth_chainId","params":[]}`))
 // 		lastFakeRespWriter = common.NewHttpCompositeResponseWriter(&httptest.ResponseRecorder{})
 // 		lastErr = ntw.Forward(ctx, fakeReq, lastFakeRespWriter)
 // 	}
@@ -209,7 +209,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 			MaxAttempts: 3,
 // 		},
 // 	}
-// 	policies, err := resiliency.CreateFailSafePolicies("eth_getBlockByNumber", fsCfg)
+// 	policies, err := upstream.CreateFailSafePolicies("eth_getBlockByNumber", fsCfg)
 // 	if err != nil {
 // 		t.Error(err)
 // 	}
@@ -241,7 +241,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		mu:               &sync.RWMutex{},
 // 	}
 
-// 	fakeReq := common.NewNormalizedRequest("123", requestBytes)
+// 	fakeReq := upstream.NewNormalizedRequest("123", requestBytes)
 // 	respWriter := common.NewHttpCompositeResponseWriter(&httptest.ResponseRecorder{})
 // 	err = ntw.Forward(ctx, fakeReq, respWriter)
 
@@ -295,7 +295,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 			MaxAttempts: 4,
 // 		},
 // 	}
-// 	policies, err := resiliency.CreateFailSafePolicies("eth_getBlockByNumber", fsCfg)
+// 	policies, err := upstream.CreateFailSafePolicies("eth_getBlockByNumber", fsCfg)
 // 	if err != nil {
 // 		t.Error(err)
 // 	}
@@ -327,7 +327,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		mu:               &sync.RWMutex{},
 // 	}
 
-// 	fakeReq := common.NewNormalizedRequest("123", requestBytes)
+// 	fakeReq := upstream.NewNormalizedRequest("123", requestBytes)
 // 	respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 // 	err = ntw.Forward(ctx, fakeReq, respWriter)
 
@@ -396,7 +396,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 			Duration: "30ms",
 // 		},
 // 	}
-// 	policies, err := resiliency.CreateFailSafePolicies("eth_getBlockByNumber", fsCfg)
+// 	policies, err := upstream.CreateFailSafePolicies("eth_getBlockByNumber", fsCfg)
 // 	if err != nil {
 // 		t.Error(err)
 // 	}
@@ -428,7 +428,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		mu:               &sync.RWMutex{},
 // 	}
 
-// 	fakeReq := common.NewNormalizedRequest("123", requestBytes)
+// 	fakeReq := upstream.NewNormalizedRequest("123", requestBytes)
 // 	respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 // 	err = ntw.Forward(ctx, fakeReq, respWriter)
 
@@ -481,7 +481,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 			Duration: "1s",
 // 		},
 // 	}
-// 	policies, err := resiliency.CreateFailSafePolicies("eth_getBlockByNumber", fsCfg)
+// 	policies, err := upstream.CreateFailSafePolicies("eth_getBlockByNumber", fsCfg)
 // 	if err != nil {
 // 		t.Error(err)
 // 	}
@@ -513,7 +513,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		mu:               &sync.RWMutex{},
 // 	}
 
-// 	fakeReq := common.NewNormalizedRequest("123", requestBytes)
+// 	fakeReq := upstream.NewNormalizedRequest("123", requestBytes)
 // 	respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 // 	err = ntw.Forward(ctx, fakeReq, respWriter)
 
@@ -571,7 +571,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 			MaxCount: 1,
 // 		},
 // 	}
-// 	policies, err := resiliency.CreateFailSafePolicies("eth_getBlockByNumber", fsCfg)
+// 	policies, err := upstream.CreateFailSafePolicies("eth_getBlockByNumber", fsCfg)
 // 	if err != nil {
 // 		t.Error(err)
 // 	}
@@ -619,7 +619,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		mu:               &sync.RWMutex{},
 // 	}
 
-// 	fakeReq := common.NewNormalizedRequest("123", requestBytes)
+// 	fakeReq := upstream.NewNormalizedRequest("123", requestBytes)
 // 	respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 // 	err = ntw.Forward(ctx, fakeReq, respWriter)
 
@@ -686,7 +686,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 			MaxCount: 5,
 // 		},
 // 	}
-// 	policies, err := resiliency.CreateFailSafePolicies("eth_getBlockByNumber", fsCfg)
+// 	policies, err := upstream.CreateFailSafePolicies("eth_getBlockByNumber", fsCfg)
 // 	if err != nil {
 // 		t.Error(err)
 // 	}
@@ -734,7 +734,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		mu:               &sync.RWMutex{},
 // 	}
 
-// 	fakeReq := common.NewNormalizedRequest("123", requestBytes)
+// 	fakeReq := upstream.NewNormalizedRequest("123", requestBytes)
 // 	respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 // 	err = ntw.Forward(ctx, fakeReq, respWriter)
 
@@ -798,7 +798,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 			MaxCount: 2,
 // 		},
 // 	}
-// 	policies, err := resiliency.CreateFailSafePolicies("eth_getBlockByNumber", fsCfg)
+// 	policies, err := upstream.CreateFailSafePolicies("eth_getBlockByNumber", fsCfg)
 // 	if err != nil {
 // 		t.Error(err)
 // 	}
@@ -848,7 +848,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		mu:               &sync.RWMutex{},
 // 	}
 
-// 	fakeReq := common.NewNormalizedRequest("123", requestBytes)
+// 	fakeReq := upstream.NewNormalizedRequest("123", requestBytes)
 // 	respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 // 	err = ntw.Forward(ctx, fakeReq, respWriter)
 
@@ -954,7 +954,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	}
 
 // 	for i := 0; i < 10; i++ {
-// 		fakeReq := common.NewNormalizedRequest("123", requestBytes)
+// 		fakeReq := upstream.NewNormalizedRequest("123", requestBytes)
 // 		respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 // 		err = ntw.Forward(ctx, fakeReq, respWriter)
 // 	}
@@ -1052,7 +1052,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	}
 
 // 	for i := 0; i < 4+2; i++ {
-// 		fakeReq := common.NewNormalizedRequest("123", requestBytes)
+// 		fakeReq := upstream.NewNormalizedRequest("123", requestBytes)
 // 		respWriter := &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 // 		err = ntw.Forward(ctx, fakeReq, respWriter)
 // 	}
@@ -1065,7 +1065,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 
 // 	var respWriter *ResponseRecorder
 // 	for i := 0; i < 3; i++ {
-// 		fakeReq := common.NewNormalizedRequest("123", requestBytes)
+// 		fakeReq := upstream.NewNormalizedRequest("123", requestBytes)
 // 		respWriter = &ResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 // 		err = ntw.Forward(ctx, fakeReq, respWriter)
 // 	}
