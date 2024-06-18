@@ -45,7 +45,7 @@ func (n *PreparedNetwork) Bootstrap(ctx context.Context) error {
 		return err
 	}
 
-	if n.Architecture() == upstream.ArchitectureEvm {
+	if n.Architecture() == common.ArchitectureEvm {
 		n.evmBlockTracker = NewEvmBlockTracker(n)
 		if err := n.evmBlockTracker.Bootstrap(ctx); err != nil {
 			return err
@@ -83,10 +83,14 @@ func (n *PreparedNetwork) Shutdown() {
 	}
 }
 
-func (n *PreparedNetwork) Architecture() string {
+func (n *PreparedNetwork) Id() string {
+	return n.NetworkId
+}
+
+func (n *PreparedNetwork) Architecture() common.NetworkArchitecture {
 	if n.Config.Architecture == "" {
 		if n.Config.Evm != nil {
-			n.Config.Architecture = upstream.ArchitectureEvm
+			n.Config.Architecture = common.ArchitectureEvm
 		}
 	}
 
@@ -95,6 +99,7 @@ func (n *PreparedNetwork) Architecture() string {
 
 func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedRequest) (*upstream.NormalizedResponse, error) {
 	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
+	req.WithNetwork(n)
 
 	if n.cacheDal != nil {
 		n.Logger.Debug().Msgf("checking cache for request")
@@ -196,7 +201,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 }
 
 func (n *PreparedNetwork) EvmGetChainId(ctx context.Context) (string, error) {
-	pr := upstream.NewNormalizedRequest("n/a", []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[]}`))
+	pr := upstream.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[]}`)).WithNetwork(n)
 	resp, err := n.Forward(ctx, pr)
 	if err != nil {
 		return "", err
@@ -278,7 +283,7 @@ func (n *PreparedNetwork) resolveNetworkId(ctx context.Context) error {
 	}
 
 	n.Logger.Debug().Msgf("resolving network id")
-	if n.Architecture() == upstream.ArchitectureEvm {
+	if n.Architecture() == common.ArchitectureEvm {
 		if n.Config.Evm != nil && n.Config.Evm.ChainId > 0 {
 			n.NetworkId = strconv.Itoa(n.Config.Evm.ChainId)
 		} else {
@@ -333,7 +338,7 @@ func (n *PreparedNetwork) acquireRateLimitPermit(req *upstream.NormalizedRequest
 					n.ProjectId,
 					n.NetworkId,
 					n.Config.RateLimitBucket,
-					rule.Config,
+					fmt.Sprintf("%+v", rule.Config),
 				)
 			} else {
 				n.Logger.Debug().Object("rateLimitRule", rule.Config).Msgf("network-level rate limit passed")
@@ -367,7 +372,7 @@ func (n *PreparedNetwork) forwardToUpstream(
 	))
 	defer timer.ObserveDuration()
 
-	return thisUpstream.Forward(ctx, n.NetworkId, req)
+	return thisUpstream.Forward(ctx, req)
 }
 
 func weightedRandomSelect(upstreams []*upstream.PreparedUpstream) *upstream.PreparedUpstream {

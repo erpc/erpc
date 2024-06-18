@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/url"
 	"sync"
+
+	"github.com/flair-sdk/erpc/common"
 )
 
 // Define a shared interface for all types of Clients
@@ -35,36 +37,36 @@ func (manager *ClientRegistry) GetOrCreateClient(upstream *PreparedUpstream) (Cl
 	return manager.CreateClient(upstream)
 }
 
-func (manager *ClientRegistry) CreateClient(upstream *PreparedUpstream) (ClientInterface, error) {
+func (manager *ClientRegistry) CreateClient(ups *PreparedUpstream) (ClientInterface, error) {
 	// Create a new client for the endpoint if not already present
 	var once sync.Once
 	var newClient ClientInterface
 	var clientErr error
 
 	once.Do(func() {
-		switch upstream.Architecture {
-		case ArchitectureEvm:
-			parsedUrl, err := url.Parse(upstream.Endpoint)
+		switch ups.Architecture {
+		case common.ArchitectureEvm:
+			parsedUrl, err := url.Parse(ups.Endpoint)
 			if err != nil {
-				clientErr = fmt.Errorf("failed to parse URL for upstream: %v", upstream.Id)
+				clientErr = fmt.Errorf("failed to parse URL for upstream: %v", ups.Id)
 			} else {
 				if parsedUrl.Scheme == "http" || parsedUrl.Scheme == "https" {
-					newClient, err = NewHttpJsonRpcClient(upstream, parsedUrl)
+					newClient, err = NewHttpJsonRpcClient(ups, parsedUrl)
 					if err != nil {
-						clientErr = fmt.Errorf("failed to create HTTP client for upstream: %v", upstream.Id)
+						clientErr = fmt.Errorf("failed to create HTTP client for upstream: %v", ups.Id)
 					}
 				} else if parsedUrl.Scheme == "ws" || parsedUrl.Scheme == "wss" {
 					clientErr = fmt.Errorf("websocket client not implemented yet")
 				} else {
-					clientErr = fmt.Errorf("unsupported EVM scheme: %v for upstream: %v", parsedUrl.Scheme, upstream.Id)
+					clientErr = fmt.Errorf("unsupported EVM scheme: %v for upstream: %v", parsedUrl.Scheme, ups.Id)
 				}
 			}
 		default:
-			clientErr = fmt.Errorf("unsupported architecture: %v for upstream: %v", upstream.Architecture, upstream.Id)
+			clientErr = fmt.Errorf("unsupported architecture: %v for upstream: %v", ups.Architecture, ups.Id)
 		}
 
 		if clientErr != nil {
-			manager.clients.Store(upstream.Endpoint, newClient)
+			manager.clients.Store(ups.Endpoint, newClient)
 		}
 	})
 

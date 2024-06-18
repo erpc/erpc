@@ -12,11 +12,6 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-const (
-	ArchitectureEvm    = "evm"
-	ArchitectureSolana = "solana"
-)
-
 type UpstreamsRegistry struct {
 	OnUpstreamsPriorityChange func(projectId string, networkId string) error
 

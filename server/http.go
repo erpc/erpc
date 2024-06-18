@@ -42,7 +42,7 @@ func NewHttpServer(cfg *config.ServerConfig, erpc *erpc.ERPC) *HttpServer {
 		architecture := segments[2]
 		var networkId string
 		switch architecture {
-		case upstream.ArchitectureEvm:
+		case string(common.ArchitectureEvm):
 			networkId = evm.EIP155(segments[3])
 		}
 
@@ -58,11 +58,18 @@ func NewHttpServer(cfg *config.ServerConfig, erpc *erpc.ERPC) *HttpServer {
 
 		log.Debug().Msgf("received request for projectId: %s, networkId: %s with body: %s", projectId, networkId, body)
 
-		nq := upstream.NewNormalizedRequest(networkId, body)
-		nq.ApplyDirectivesFromHttpHeaders(r.Header)
-
 		project, err := erpc.GetProject(projectId)
 		if err == nil {
+			nw, err := erpc.GetNetwork(projectId, networkId)
+			if err != nil {
+				log.Error().Err(err).Msgf("failed to get network %s for project %s", networkId, projectId)
+				hrw.WriteHeader(http.StatusNotFound)
+				return
+			}
+			nq := upstream.NewNormalizedRequest(body).
+				WithNetwork(nw).
+				ApplyDirectivesFromHttpHeaders(r.Header)
+
 			resp, err := project.Forward(r.Context(), networkId, nq)
 			if err == nil {
 				hrw.Header().Set("Content-Type", "application/json")

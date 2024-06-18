@@ -95,7 +95,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *config.ProjectConfig) error {
 	for _, ups := range preparedUpstreams {
 		arch := ups.Architecture
 		if arch == "" {
-			arch = upstream.ArchitectureEvm
+			arch = common.ArchitectureEvm
 		}
 		for _, networkId := range ups.NetworkIds {
 			ncfg := &config.NetworkConfig{
@@ -103,7 +103,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *config.ProjectConfig) error {
 			}
 
 			switch arch {
-			case upstream.ArchitectureEvm:
+			case common.ArchitectureEvm:
 				chainId, err := strconv.Atoi(strings.Replace(networkId, "eip155:", "", 1))
 				if err != nil {
 					return common.NewErrInvalidEvmChainId(networkId)
