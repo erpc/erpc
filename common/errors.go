@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-
-	"github.com/flair-sdk/erpc/config"
 )
 
 func IsNull(err interface{}) bool {
@@ -197,7 +195,7 @@ var NewErrNetworkNotFound = func(networkId string) error {
 
 type ErrUnknownNetworkID struct{ BaseError }
 
-var NewErrUnknownNetworkID = func(arch string) error {
+var NewErrUnknownNetworkID = func(arch NetworkArchitecture) error {
 	return &ErrUnknownNetworkID{
 		BaseError{
 			Code:    "ErrUnknownNetworkID",
@@ -211,7 +209,7 @@ var NewErrUnknownNetworkID = func(arch string) error {
 
 type ErrUnknownNetworkArchitecture struct{ BaseError }
 
-var NewErrUnknownNetworkArchitecture = func(arch string) error {
+var NewErrUnknownNetworkArchitecture = func(arch NetworkArchitecture) error {
 	return &ErrUnknownNetworkArchitecture{
 		BaseError{
 			Code:    "ErrUnknownNetworkArchitecture",
@@ -587,7 +585,7 @@ var NewErrRateLimitInvalidConfig = func(cause error) error {
 
 type ErrProjectRateLimitRuleExceeded struct{ BaseError }
 
-var NewErrProjectRateLimitRuleExceeded = func(project string, bucket string, rule *config.RateLimitRuleConfig) error {
+var NewErrProjectRateLimitRuleExceeded = func(project string, bucket string, rule string) error {
 	return &ErrProjectRateLimitRuleExceeded{
 		BaseError{
 			Code:    "ErrProjectRateLimitRuleExceeded",
@@ -607,7 +605,7 @@ func (e *ErrProjectRateLimitRuleExceeded) ErrorStatusCode() int {
 
 type ErrNetworkRateLimitRuleExceeded struct{ BaseError }
 
-var NewErrNetworkRateLimitRuleExceeded = func(project string, network string, bucket string, rule *config.RateLimitRuleConfig) error {
+var NewErrNetworkRateLimitRuleExceeded = func(project string, network string, bucket string, rule string) error {
 	return &ErrNetworkRateLimitRuleExceeded{
 		BaseError{
 			Code:    "ErrNetworkRateLimitRuleExceeded",
@@ -628,7 +626,7 @@ func (e *ErrNetworkRateLimitRuleExceeded) ErrorStatusCode() int {
 
 type ErrUpstreamRateLimitRuleExceeded struct{ BaseError }
 
-var NewErrUpstreamRateLimitRuleExceeded = func(upstream string, bucket string, rule *config.RateLimitRuleConfig) error {
+var NewErrUpstreamRateLimitRuleExceeded = func(upstream string, bucket string, rule string) error {
 	return &ErrUpstreamRateLimitRuleExceeded{
 		BaseError{
 			Code:    "ErrUpstreamRateLimitRuleExceeded",

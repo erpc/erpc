@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/flair-sdk/erpc/common"
@@ -56,7 +55,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *upstream.NormalizedReque
 		return nil, err
 	}
 
-	blockRef, blockNumber, err := extractBlockReferenceFromRequest(rpcReq)
+	blockRef, blockNumber, err := rpcReq.EvmBlockReference()
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +121,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *upstream.NormalizedReque
 		return nil
 	}
 
-	blockRef, blockNumber, err := extractBlockReferenceFromRequest(rpcReq)
+	blockRef, blockNumber, err := rpcReq.EvmBlockReference()
 	if err != nil {
 		return err
 	}
@@ -242,9 +241,9 @@ func generateKeysForJsonRpcRequest(req *upstream.NormalizedRequest, blockRef str
 	}
 
 	if blockRef != "" {
-		return fmt.Sprintf("evm:%s:%s", req.NetworkId, blockRef), cacheKey, nil
+		return fmt.Sprintf("evm:%s:%s", req.Network.Id(), blockRef), cacheKey, nil
 	} else {
-		return fmt.Sprintf("evm:%s:nil", req.NetworkId), cacheKey, nil
+		return fmt.Sprintf("evm:%s:nil", req.Network.Id()), cacheKey, nil
 	}
 }
 
@@ -271,70 +270,6 @@ func populateDefaults(cfg *config.ConnectorConfig) error {
 	return nil
 }
 
-func extractBlockReferenceFromRequest(r *upstream.JsonRpcRequest) (string, uint64, error) {
-	if r == nil {
-		return "", 0, errors.New("cannot extract block reference when json-rpc request is nil")
-	}
-
-	switch r.Method {
-	case "eth_getBlockByNumber",
-		"eth_getUncleByBlockNumberAndIndex",
-		"eth_getTransactionByBlockNumberAndIndex",
-		"eth_getUncleCountByBlockNumber",
-		"eth_getBlockTransactionCountByNumber":
-		if len(r.Params) > 0 {
-			if bns, ok := r.Params[0].(string); ok {
-				if strings.HasPrefix(bns, "0x") {
-					bni, err := hexutil.DecodeUint64(bns)
-					if err != nil {
-						return "", 0, err
-					}
-					return bns, bni, nil
-				} else {
-					return "", 0, nil
-				}
-			}
-		} else {
-			return "", 0, fmt.Errorf("unexpected no parameters for method %s", r.Method)
-		}
-
-	case "eth_getBalance",
-		"eth_getStorageAt",
-		"eth_getCode",
-		"eth_getTransactionCount",
-		"eth_call",
-		"eth_estimateGas":
-		if len(r.Params) > 1 {
-			if bns, ok := r.Params[1].(string); ok {
-				if strings.HasPrefix(bns, "0x") {
-					bni, err := hexutil.DecodeUint64(bns)
-					if err != nil {
-						return "", 0, err
-					}
-					return bns, bni, nil
-				} else {
-					return "", 0, nil
-				}
-			}
-		} else {
-			return "", 0, fmt.Errorf("unexpected missing 2nd parameter for method %s: %+v", r.Method, r.Params)
-		}
-
-	case "eth_getBlockByHash":
-		if len(r.Params) > 0 {
-			if blockHash, ok := r.Params[0].(string); ok {
-				return blockHash, 0, nil
-			}
-			return "", 0, fmt.Errorf("first parameter is not a string for method %s it is %+v", r.Method, r.Params)
-		}
-
-	default:
-		return "", 0, nil
-	}
-
-	return "", 0, nil
-}
-
 func extractBlockReferenceFromResponse(rpcReq *upstream.JsonRpcRequest, rpcResp *upstream.JsonRpcResponse) (string, uint64, error) {
 	if rpcReq == nil {
 		return "", 0, errors.New("cannot extract block reference when json-rpc request is nil")
@@ -357,6 +292,9 @@ func extractBlockReferenceFromResponse(rpcReq *upstream.JsonRpcRequest, rpcResp 
 				}
 			}
 		}
+
+	case "eth_chainId":
+		return "all", 1, nil
 
 	default:
 		return "", 0, nil

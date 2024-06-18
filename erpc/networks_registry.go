@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/failsafe-go/failsafe-go"
+	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
 	"github.com/flair-sdk/erpc/data"
 	"github.com/flair-sdk/erpc/upstream"
@@ -62,7 +63,7 @@ func (r *NetworksRegistry) RegisterNetwork(
 	}
 
 	if nwCfg.Architecture == "" {
-		nwCfg.Architecture = upstream.ArchitectureEvm
+		nwCfg.Architecture = common.ArchitectureEvm
 	}
 
 	switch nwCfg.Architecture {

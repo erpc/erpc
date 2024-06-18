@@ -93,13 +93,13 @@ func (c *HttpJsonRpcClient) SendRequest(ctx context.Context, req *NormalizedRequ
 
 	respStatusCode := resp.StatusCode
 	respBody, err := io.ReadAll(resp.Body)
+	defer resp.Body.Close()
 	if err != nil {
 		return nil, err
 	}
 	log.Debug().Msgf("received json rpc response status: %d", respStatusCode)
 
 	if respStatusCode >= 400 {
-		defer resp.Body.Close()
 		return nil, &common.BaseError{
 			Code:    "ErrHttp",
 			Message: "server responded with non-2xx status code",

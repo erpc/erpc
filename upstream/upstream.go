@@ -15,14 +15,14 @@ import (
 )
 
 type PreparedUpstream struct {
-	Id               string                    `json:"id"`
-	Architecture     string                    `json:"architecture"`
-	Endpoint         string                    `json:"endpoint"`
-	RateLimitBucket  string                    `json:"rateLimitBucket"`
-	HealthCheckGroup string                    `json:"healthCheckGroup"`
-	AllowMethods     []string                  `json:"allowMethods"`
-	IgnoreMethods    []string                  `json:"ignoreMethods"`
-	Evm              *config.EvmUpstreamConfig `json:"evm"`
+	Id               string                     `json:"id"`
+	Architecture     common.NetworkArchitecture `json:"architecture"`
+	Endpoint         string                     `json:"endpoint"`
+	RateLimitBucket  string                     `json:"rateLimitBucket"`
+	HealthCheckGroup string                     `json:"healthCheckGroup"`
+	AllowMethods     []string                   `json:"allowMethods"`
+	IgnoreMethods    []string                   `json:"ignoreMethods"`
+	Evm              *config.EvmUpstreamConfig  `json:"evm"`
 
 	ProjectId        string                                 `json:"projectId"`
 	NetworkIds       []string                               `json:"networkIds"`
@@ -49,7 +49,7 @@ func NewUpstream(
 	lg := logger.With().Str("upstream", cfg.Id).Logger()
 
 	if cfg.Architecture == "" {
-		cfg.Architecture = ArchitectureEvm
+		cfg.Architecture = common.ArchitectureEvm
 	}
 
 	policies, err := CreateFailSafePolicies(ScopeUpstream, cfg.Id, cfg.Failsafe)
@@ -98,7 +98,7 @@ func NewUpstream(
 
 func (u *PreparedUpstream) PrepareRequest(normalizedReq *NormalizedRequest) (interface{}, error) {
 	switch u.Architecture {
-	case ArchitectureEvm:
+	case common.ArchitectureEvm:
 		if u.Client == nil {
 			return nil, common.NewErrJsonRpcRequestPreparation(fmt.Errorf("client not initialized for evm upstream"), map[string]interface{}{
 				"upstreamId": u.Id,
@@ -133,7 +133,7 @@ func (u *PreparedUpstream) PrepareRequest(normalizedReq *NormalizedRequest) (int
 }
 
 // Forward is used during lifecycle of a proxied request, it uses writers and readers for better performance
-func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req *NormalizedRequest) (*NormalizedResponse, error) {
+func (u *PreparedUpstream) Forward(ctx context.Context, req *NormalizedRequest) (*NormalizedResponse, error) {
 	clientType := u.Client.GetType()
 
 	var limitersBucket *RateLimiterBucket
@@ -152,6 +152,8 @@ func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req *N
 
 	lg := u.Logger.With().Str("method", method).Logger()
 
+	req = req.Clone().WithUpstream(u)
+
 	if limitersBucket != nil {
 		lg.Trace().Msgf("checking upstream-level rate limiters bucket: %s", u.RateLimitBucket)
 		rules := limitersBucket.GetRulesByMethod(method)
@@ -161,14 +163,14 @@ func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req *N
 					lg.Warn().Msgf("upstream-level rate limit '%v' exceeded", rule.Config)
 					health.MetricUpstreamRequestLocalRateLimited.WithLabelValues(
 						u.ProjectId,
-						networkId,
+						req.Network.Id(),
 						u.Id,
 						method,
 					).Inc()
 					return nil, common.NewErrUpstreamRateLimitRuleExceeded(
 						u.Id,
 						u.RateLimitBucket,
-						rule.Config,
+						fmt.Sprintf("%+v", rule.Config),
 					)
 				} else {
 					lg.Debug().Object("rule", rule.Config).Msgf("upstream-level rate limit passed")
@@ -197,7 +199,7 @@ func (u *PreparedUpstream) Forward(ctx context.Context, networkId string, req *N
 				if !errors.Is(errCall, context.DeadlineExceeded) && !errors.Is(errCall, context.Canceled) {
 					health.MetricUpstreamRequestErrors.WithLabelValues(
 						u.ProjectId,
-						networkId,
+						req.Network.Id(),
 						u.Id,
 						method,
 					).Inc()
@@ -239,8 +241,8 @@ func (n *PreparedUpstream) Executor() failsafe.Executor[*NormalizedResponse] {
 }
 
 func (n *PreparedUpstream) EvmGetChainId(ctx context.Context) (string, error) {
-	pr := NewNormalizedRequest("n/a", []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[]}`))
-	resp, err := n.Forward(ctx, "n/a", pr)
+	pr := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[]}`))
+	resp, err := n.Forward(ctx, pr)
 	if err != nil {
 		return "", err
 	}
@@ -319,7 +321,7 @@ func (n *PreparedUpstream) resolveNetworkIds(ctx context.Context) error {
 	}
 
 	switch n.Architecture {
-	case ArchitectureEvm:
+	case common.ArchitectureEvm:
 		if n.Evm != nil && n.Evm.ChainId > 0 {
 			n.NetworkIds = append(n.NetworkIds, fmt.Sprintf("eip155:%d", n.Evm.ChainId))
 		} else {

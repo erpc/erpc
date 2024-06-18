@@ -129,13 +129,15 @@ func createCircuitBreakerPolicy(component string, cfg *config.CircuitBreakerPoli
 			return true
 		}
 
-		up := result.Request.Upstream
+		if result != nil {
+			up := result.Request.Upstream
 
-		// if "syncing" and null/empty response -> open the circuit
-		if up.Evm != nil {
-			if up.Evm.Syncing {
-				if result.IsEmpty() {
-					return true
+			// if "syncing" and null/empty response -> open the circuit
+			if up.Evm != nil {
+				if up.Evm.Syncing {
+					if result.IsEmpty() {
+						return true
+					}
 				}
 			}
 		}
@@ -211,32 +213,47 @@ func createRetryPolicy(scope Scope, component string, cfg *config.RetryPolicyCon
 
 	builder.HandleIf(func(result *NormalizedResponse, err error) bool {
 		// 400 / 404 / 405 / 413 -> No Retry
+		// RPC-RPC client-side error (invalid params) -> No Retry
 		if common.HasCode(err, common.ErrCodeEndpointClientSideException) {
 			return false
 		}
 
-		req := result.Request
-
-		// no Retry-Empty directive + "empty" response -> No Retry
-		if !req.DirectiveRetryEmpty && result.IsEmpty() {
-			return false
-		}
-
 		// Upstream-level + 401 / 403 -> No Retry
+		// RPC-RPC vendor billing/capacity/auth -> No Retry
 		if scope == ScopeUpstream && common.HasCode(err, common.ErrCodeEndpointUnauthorized) {
 			return false
 		}
 
-		// TODO null response + "full" node + block is far in the past -> No Retry
-		// TODO X-Empty directive + "empty" response + "full" node + block is far in the past -> No Retry
-		// TODO RPC-RPC client-side error (invalid params) -> No Retry
-		// TODO RPC-RPC vendor billing/capacity/auth -> No Retry
+		if result != nil {
+			req := result.Request
+			isEmpty := result.IsEmpty()
+
+			// no Retry-Empty directive + "empty" response -> No Retry
+			if !req.DirectiveRetryEmpty && isEmpty {
+				return false
+			}
+
+			if req.Upstream.Evm != nil {
+				if req.Upstream.Evm.NodeType == common.EvmNodeTypeFull {
+					// Retry-Empty directive + "empty" response + "full" node + block is far in the past -> No Retry
+					if err != nil && req.DirectiveRetryEmpty && isEmpty {
+						bn, ebn := req.EvmBlockNumber()
+						if ebn == nil {
+							fin, efin := req.Network.EvmIsBlockFinalized(bn)
+							if efin == nil && fin {
+								return false
+							}
+						}
+					}
+				}
+			}
+		}
 
 		// X-Empty directive + "empty" response + block is unfinalized -> Retry
 		// X-ERPC-Retry-Empty directive + null response + block is unfinalized -> Retry
 		// 429 / 408 -> Retry
 		// 5xx -> Retry
-		return true
+		return err != nil
 	})
 
 	return builder.Build(), nil

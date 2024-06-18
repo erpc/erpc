@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 
+	"github.com/flair-sdk/erpc/common"
 	"github.com/rs/zerolog"
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v2"
@@ -80,24 +81,24 @@ type ProjectConfig struct {
 }
 
 type UpstreamConfig struct {
-	Id                string             `yaml:"id"`
-	Architecture      string             `yaml:"architecture,omitempty"` // evm, solana, erpc
-	Endpoint          string             `yaml:"endpoint"`
-	Evm               *EvmUpstreamConfig `yaml:"evm"`
-	AllowMethods      []string           `yaml:"allowMethods"`
-	IgnoreMethods     []string           `yaml:"ignoreMethods"`
-	Failsafe          *FailsafeConfig    `yaml:"failsafe"`
-	RateLimitBucket   string             `yaml:"rateLimitBucket"`
-	HealthCheckGroup  string             `yaml:"healthCheckGroup"`
-	CreditUnitMapping string             `yaml:"creditUnitMapping"`
+	Id                string                     `yaml:"id"`
+	Architecture      common.NetworkArchitecture `yaml:"architecture,omitempty"` // evm, solana, erpc
+	Endpoint          string                     `yaml:"endpoint"`
+	Evm               *EvmUpstreamConfig         `yaml:"evm"`
+	AllowMethods      []string                   `yaml:"allowMethods"`
+	IgnoreMethods     []string                   `yaml:"ignoreMethods"`
+	Failsafe          *FailsafeConfig            `yaml:"failsafe"`
+	RateLimitBucket   string                     `yaml:"rateLimitBucket"`
+	HealthCheckGroup  string                     `yaml:"healthCheckGroup"`
+	CreditUnitMapping string                     `yaml:"creditUnitMapping"`
 }
 
 type EvmUpstreamConfig struct {
-	ChainId       int    `yaml:"chainId"`
-	Type          string `yaml:"type"`   // "full", "archive", "sequencer", "execution"
-	Engine        string `yaml:"engine"` // "geth", "parity", etc
-	MaxBlockRange int    `yaml:"maxBlockRange"`
-	Syncing       bool   `yaml:"syncing"`
+	ChainId       int                `yaml:"chainId"`
+	NodeType      common.EvmNodeType `yaml:"nodeType"`
+	Engine        string             `yaml:"engine"`
+	MaxBlockRange int                `yaml:"maxBlockRange"`
+	Syncing       bool               `yaml:"syncing"`
 }
 
 type FailsafeConfig struct {
@@ -172,10 +173,10 @@ type HealthCheckGroupConfig struct {
 }
 
 type NetworkConfig struct {
-	Architecture    string            `yaml:"architecture"`
-	RateLimitBucket string            `yaml:"rateLimitBucket"`
-	Failsafe        *FailsafeConfig   `yaml:"failsafe"`
-	Evm             *EvmNetworkConfig `yaml:"evm"`
+	Architecture    common.NetworkArchitecture `yaml:"architecture"`
+	RateLimitBucket string                     `yaml:"rateLimitBucket"`
+	Failsafe        *FailsafeConfig            `yaml:"failsafe"`
+	Evm             *EvmNetworkConfig          `yaml:"evm"`
 }
 
 type EvmNetworkConfig struct {

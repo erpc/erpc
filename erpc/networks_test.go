@@ -113,7 +113,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 	var lastResp *upstream.NormalizedResponse
 
 	for i := 0; i < 5; i++ {
-		fakeReq := upstream.NewNormalizedRequest("123", []byte(`{"method": "eth_chainId","params":[]}`))
+		fakeReq := upstream.NewNormalizedRequest([]byte(`{"method": "eth_chainId","params":[]}`))
 		lastResp, lastErr = ntw.Forward(ctx, fakeReq)
 	}
 
@@ -167,7 +167,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	var lastFakeRespWriter common.ResponseWriter
 
 // 	for i := 0; i < 10; i++ {
-// 		fakeReq := upstream.NewNormalizedRequest("123", []byte(`{"method": "eth_chainId","params":[]}`))
+// 		fakeReq := upstream.NewNormalizedRequest([]byte(`{"method": "eth_chainId","params":[]}`))
 // 		lastFakeRespWriter = common.NewHttpCompositeResponseWriter(&httptest.ResponseRecorder{})
 // 		lastErr = ntw.Forward(ctx, fakeReq, lastFakeRespWriter)
 // 	}
@@ -217,7 +217,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		Logger:       log.Logger,
 // 		Id:           "test",
 // 		Endpoint:     "http://google.com",
-// 		Architecture: upstream.ArchitectureEvm,
+// 		Architecture: common.ArchitectureEvm,
 // 		Metadata: map[string]string{
 // 			"evmChainId": "123",
 // 		},
@@ -303,7 +303,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		Logger:       log.Logger,
 // 		Id:           "test",
 // 		Endpoint:     "http://google.com",
-// 		Architecture: upstream.ArchitectureEvm,
+// 		Architecture: common.ArchitectureEvm,
 // 		Metadata: map[string]string{
 // 			"evmChainId": "123",
 // 		},
@@ -404,7 +404,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		Logger:       log.Logger,
 // 		Id:           "test",
 // 		Endpoint:     "http://google.com",
-// 		Architecture: upstream.ArchitectureEvm,
+// 		Architecture: common.ArchitectureEvm,
 // 		Metadata: map[string]string{
 // 			"evmChainId": "123",
 // 		},
@@ -489,7 +489,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		Logger:       log.Logger,
 // 		Id:           "test",
 // 		Endpoint:     "http://google.com",
-// 		Architecture: upstream.ArchitectureEvm,
+// 		Architecture: common.ArchitectureEvm,
 // 		Metadata: map[string]string{
 // 			"evmChainId": "123",
 // 		},
@@ -579,7 +579,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		Logger:       log.Logger,
 // 		Id:           "rpc1",
 // 		Endpoint:     "http://rpc1.localhost",
-// 		Architecture: upstream.ArchitectureEvm,
+// 		Architecture: common.ArchitectureEvm,
 // 		Metadata: map[string]string{
 // 			"evmChainId": "123",
 // 		},
@@ -594,7 +594,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		Logger:       log.Logger,
 // 		Id:           "rpc2",
 // 		Endpoint:     "http://rpc2.localhost",
-// 		Architecture: upstream.ArchitectureEvm,
+// 		Architecture: common.ArchitectureEvm,
 // 		Metadata: map[string]string{
 // 			"evmChainId": "123",
 // 		},
@@ -694,7 +694,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		Logger:       log.Logger,
 // 		Id:           "rpc1",
 // 		Endpoint:     "http://google.com",
-// 		Architecture: upstream.ArchitectureEvm,
+// 		Architecture: common.ArchitectureEvm,
 // 		Metadata: map[string]string{
 // 			"evmChainId": "123",
 // 		},
@@ -709,7 +709,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		Logger:       log.Logger,
 // 		Id:           "rpc2",
 // 		Endpoint:     "http://alchemy.com",
-// 		Architecture: upstream.ArchitectureEvm,
+// 		Architecture: common.ArchitectureEvm,
 // 		Metadata: map[string]string{
 // 			"evmChainId": "123",
 // 		},
@@ -806,7 +806,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		Logger:       log.Logger,
 // 		Id:           "rpc1",
 // 		Endpoint:     "http://google.com",
-// 		Architecture: upstream.ArchitectureEvm,
+// 		Architecture: common.ArchitectureEvm,
 // 		Metadata: map[string]string{
 // 			"evmChainId": "123",
 // 		},
@@ -822,7 +822,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		Logger:       log.Logger,
 // 		Id:           "rpc2",
 // 		Endpoint:     "http://alchemy.com",
-// 		Architecture: upstream.ArchitectureEvm,
+// 		Architecture: common.ArchitectureEvm,
 // 		Metadata: map[string]string{
 // 			"evmChainId": "123",
 // 		},
@@ -932,7 +932,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	pup1, err := upstream.NewUpstream("test_cb", &config.UpstreamConfig{
 // 		Id:           "upstream1",
 // 		Endpoint:     "http://google.com",
-// 		Architecture: upstream.ArchitectureEvm,
+// 		Architecture: common.ArchitectureEvm,
 // 		Metadata: map[string]string{
 // 			"evmChainId": "123",
 // 		},
@@ -947,7 +947,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		Logger:    &log.Logger,
 // 		NetworkId: "123",
 // 		Config: &config.NetworkConfig{
-// 			Architecture: upstream.ArchitectureEvm,
+// 			Architecture: common.ArchitectureEvm,
 // 		},
 // 		Upstreams: []*upstream.PreparedUpstream{pup1},
 // 		mu:        &sync.RWMutex{},
@@ -1025,7 +1025,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	pup1, err := upstream.NewUpstream("test_cb", &config.UpstreamConfig{
 // 		Id:           "upstream1",
 // 		Endpoint:     "http://google.com",
-// 		Architecture: upstream.ArchitectureEvm,
+// 		Architecture: common.ArchitectureEvm,
 // 		Metadata: map[string]string{
 // 			"evmChainId": "123",
 // 		},
@@ -1040,7 +1040,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		Logger:    &log.Logger,
 // 		NetworkId: "123",
 // 		Config: &config.NetworkConfig{
-// 			Architecture: upstream.ArchitectureEvm,
+// 			Architecture: common.ArchitectureEvm,
 // 			Evm: &config.EvmNetworkConfig{
 // 				ChainId: 123,
 // 			},
