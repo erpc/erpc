@@ -23,11 +23,17 @@ func IsNull(err interface{}) bool {
 // Base Types
 //
 
+type ErrorCode string
+
 type BaseError struct {
-	Code    string                 `json:"code"`
-	Message string                 `json:"message"`
-	Cause   error                  `json:"cause"`
-	Details map[string]interface{} `json:"details"`
+	Code    ErrorCode                 `json:"code"`
+	Message string                 `json:"message,omitempty"`
+	Cause   error                  `json:"cause,omitempty"`
+	Details map[string]interface{} `json:"details,omitempty"`
+}
+
+type ErrorWithHasCode interface {
+	HasCode(code ErrorCode) bool
 }
 
 func (e *BaseError) Unwrap() error {
@@ -66,20 +72,19 @@ func (e *BaseError) CodeChain() string {
 		}
 	}
 
-	return e.Code
+	return string(e.Code)
 }
 
 func (e BaseError) MarshalJSON() ([]byte, error) {
 	type Alias BaseError
 	cause := e.Cause
-
-	if baseErr, ok := cause.(*BaseError); ok {
+	if cc, ok := cause.(ErrorWithHasCode); ok {
 		return json.Marshal(&struct {
 			Alias
-			Cause BaseError `json:"cause"`
+			Cause interface{} `json:"cause"`
 		}{
 			Alias: (Alias)(e),
-			Cause: *baseErr,
+			Cause: cc,
 		})
 	} else if cause != nil {
 		return json.Marshal(&struct {
@@ -117,13 +122,13 @@ func (e *BaseError) Is(err error) bool {
 	return is
 }
 
-func (e *BaseError) HasCode(code string) bool {
+func (e *BaseError) HasCode(code ErrorCode) bool {
 	if e.Code == code {
 		return true
 	}
 
 	if e.Cause != nil {
-		if be, ok := e.Cause.(*BaseError); ok {
+		if be, ok := e.Cause.(ErrorWithHasCode); ok {
 			return be.HasCode(code)
 		}
 	}
@@ -137,10 +142,6 @@ type ErrorWithStatusCode interface {
 
 type ErrorWithBody interface {
 	ErrorResponseBody() interface{}
-}
-
-type RetryableError interface {
-	RetryAfter() int
 }
 
 //
@@ -256,7 +257,7 @@ var NewErrUpstreamClientInitialization = func(cause error, upstreamId string) er
 
 type ErrUpstreamRequest struct{ BaseError }
 
-var NewErrUpstreamRequest = func(cause error, upstreamId string) error {
+var NewErrUpstreamRequest = func(cause error, upstreamId string, req interface{}) error {
 	return &ErrUpstreamRequest{
 		BaseError{
 			Code:    "ErrUpstreamRequest",
@@ -264,6 +265,7 @@ var NewErrUpstreamRequest = func(cause error, upstreamId string) error {
 			Cause:   cause,
 			Details: map[string]interface{}{
 				"upstreamId": upstreamId,
+				"request":   req,
 			},
 		},
 	}
@@ -650,7 +652,7 @@ func (e *ErrUpstreamRateLimitRuleExceeded) ErrorStatusCode() int {
 
 type ErrEndpointUnauthorized struct{ BaseError }
 
-var ErrCodeEndpointUnauthorized = "ErrEndpointUnauthorized"
+const ErrCodeEndpointUnauthorized = "ErrEndpointUnauthorized"
 
 var NewErrEndpointUnauthorized = func(cause error) error {
 	return &ErrEndpointUnauthorized{
@@ -662,23 +664,49 @@ var NewErrEndpointUnauthorized = func(cause error) error {
 	}
 }
 
-type ErrEndpointClientSideException struct{ BaseError }
+func (e *ErrEndpointUnauthorized) ErrorStatusCode() int {
+	return 401
+}
 
-var ErrCodeEndpointClientSideException = "ErrEndpointClientSideException"
+type ErrEndpointUnsupported struct{ BaseError }
 
-var NewErrEndpointClientSideException = func(cause error) error {
-	return &ErrEndpointClientSideException{
+const ErrCodeEndpointUnsupported = "ErrEndpointUnsupported"
+
+var NewErrEndpointUnsupported = func(cause error) error {
+	return &ErrEndpointUnsupported{
 		BaseError{
-			Code:    ErrCodeEndpointClientSideException,
-			Message: "user and/or client-side error when sending request to remote endpoint",
+			Code:    ErrCodeEndpointUnsupported,
+			Message: "remote endpoint does not support requested method",
 			Cause:   cause,
 		},
 	}
 }
 
+func (e *ErrEndpointUnsupported) ErrorStatusCode() int {
+	return 415
+}
+
+type ErrEndpointClientSideException struct{ BaseError }
+
+const ErrCodeEndpointClientSideException = "ErrEndpointClientSideException"
+
+var NewErrEndpointClientSideException = func(cause error) error {
+	return &ErrEndpointClientSideException{
+		BaseError{
+			Code:    ErrCodeEndpointClientSideException,
+			Message: "client-side error when sending request to remote endpoint",
+			Cause:   cause,
+		},
+	}
+}
+
+func (e *ErrEndpointClientSideException) ErrorStatusCode() int {
+	return 400
+}
+
 type ErrEndpointServerSideException struct{ BaseError }
 
-var ErrCodeEndpointServerSideException = "ErrEndpointServerSideException"
+const ErrCodeEndpointServerSideException = "ErrEndpointServerSideException"
 
 var NewErrEndpointServerSideException = func(cause error) error {
 	return &ErrEndpointServerSideException{
@@ -690,9 +718,13 @@ var NewErrEndpointServerSideException = func(cause error) error {
 	}
 }
 
+func (e *ErrEndpointServerSideException) ErrorStatusCode() int {
+	return 500
+}
+
 type ErrEndpointCapacityExceeded struct{ BaseError }
 
-var ErrCodeEndpointCapacityExceeded = "ErrEndpointCapacityExceeded"
+const ErrCodeEndpointCapacityExceeded = "ErrEndpointCapacityExceeded"
 
 var NewErrEndpointCapacityExceeded = func(cause error) error {
 	return &ErrEndpointCapacityExceeded{
@@ -704,9 +736,13 @@ var NewErrEndpointCapacityExceeded = func(cause error) error {
 	}
 }
 
+func (e *ErrEndpointCapacityExceeded) ErrorStatusCode() int {
+	return 429
+}
+
 type ErrEndpointBillingIssue struct{ BaseError }
 
-var ErrCodeEndpointBillingIssue = "ErrEndpointBillingIssue"
+const ErrCodeEndpointBillingIssue = "ErrEndpointBillingIssue"
 
 var NewErrEndpointBillingIssue = func(cause error) error {
 	return &ErrEndpointBillingIssue{
@@ -718,14 +754,55 @@ var NewErrEndpointBillingIssue = func(cause error) error {
 	}
 }
 
+func (e *ErrEndpointBillingIssue) ErrorStatusCode() int {
+	return 402
+}
+
 //
+// JSON-RPC
+//
+
+type JsonRpcErrorNumber int
+
+const (
+	JsonRpcErrorParseException      JsonRpcErrorNumber = -32600
+	JsonRpcErrorInvalidArgument     JsonRpcErrorNumber = -32602
+	JsonRpcErrorServerSideException JsonRpcErrorNumber = -32603
+	JsonRpcErrorClientSideException JsonRpcErrorNumber = -32700
+)
+
+type ErrJsonRpcException struct{ BaseError }
+
+func (e *ErrJsonRpcException) ErrorStatusCode() int {
+	if e.Cause != nil {
+		if er, ok := e.Cause.(ErrorWithStatusCode); ok {
+			return er.ErrorStatusCode()
+		}
+	}
+	return 400
+}
+
+var NewErrJsonRpcException = func(cause error, code JsonRpcErrorNumber, message string) *ErrJsonRpcException {
+	return &ErrJsonRpcException{
+		BaseError{
+			Code:    "ErrJsonRpcException",
+			Message: "json-rpc error",
+			Cause:   cause,
+			Details: map[string]interface{}{
+				"code":    code,
+				"message": message,
+			},
+		},
+	}
+}
+
 //
 // Store
 //
 
 type ErrInvalidConnectorDriver struct{ BaseError }
 
-var ErrCodeInvalidConnectorDriver = "ErrInvalidConnectorDriver"
+const ErrCodeInvalidConnectorDriver = "ErrInvalidConnectorDriver"
 
 var NewErrInvalidConnectorDriver = func(driver string) error {
 	return &ErrInvalidConnectorDriver{
@@ -741,7 +818,7 @@ var NewErrInvalidConnectorDriver = func(driver string) error {
 
 type ErrRecordNotFound struct{ BaseError }
 
-var ErrCodeRecordNotFound = "ErrRecordNotFound"
+const ErrCodeRecordNotFound = "ErrRecordNotFound"
 
 var NewErrRecordNotFound = func(key string, driver string) error {
 	return &ErrRecordNotFound{
@@ -756,9 +833,13 @@ var NewErrRecordNotFound = func(key string, driver string) error {
 	}
 }
 
-func HasCode(err error, code string) bool {
-	if be, ok := err.(*BaseError); ok {
+func HasCode(err error, code ErrorCode) bool {
+	if be, ok := err.(ErrorWithHasCode); ok {
 		return be.HasCode(code)
+	}
+
+	if be, ok := err.(*BaseError); ok {
+		return be.Code == code
 	}
 
 	return false

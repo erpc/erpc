@@ -147,7 +147,7 @@ func (u *PreparedUpstream) Forward(ctx context.Context, req *NormalizedRequest) 
 
 	method, err := req.Method()
 	if err != nil {
-		return nil, common.NewErrUpstreamRequest(err, u.Id)
+		return nil, common.NewErrUpstreamRequest(err, u.Id, req)
 	}
 
 	lg := u.Logger.With().Str("method", method).Logger()
@@ -161,9 +161,13 @@ func (u *PreparedUpstream) Forward(ctx context.Context, req *NormalizedRequest) 
 			for _, rule := range rules {
 				if !(*rule.Limiter).TryAcquirePermit() {
 					lg.Warn().Msgf("upstream-level rate limit '%v' exceeded", rule.Config)
+					netId := "n/a"
+					if req.Network != nil {
+						netId = req.Network.Id()
+					}
 					health.MetricUpstreamRequestLocalRateLimited.WithLabelValues(
 						u.ProjectId,
-						req.Network.Id(),
+						netId,
 						u.Id,
 						method,
 					).Inc()
@@ -197,9 +201,13 @@ func (u *PreparedUpstream) Forward(ctx context.Context, req *NormalizedRequest) 
 
 			if errCall != nil {
 				if !errors.Is(errCall, context.DeadlineExceeded) && !errors.Is(errCall, context.Canceled) {
+					netId := "n/a"
+					if req.Network != nil {
+						netId = req.Network.Id()
+					}
 					health.MetricUpstreamRequestErrors.WithLabelValues(
 						u.ProjectId,
-						req.Network.Id(),
+						netId,
 						u.Id,
 						method,
 					).Inc()
@@ -207,6 +215,7 @@ func (u *PreparedUpstream) Forward(ctx context.Context, req *NormalizedRequest) 
 				return nil, common.NewErrUpstreamRequest(
 					errCall,
 					u.Id,
+					req,
 				)
 			}
 
@@ -236,13 +245,13 @@ func (u *PreparedUpstream) Forward(ctx context.Context, req *NormalizedRequest) 
 	}
 }
 
-func (n *PreparedUpstream) Executor() failsafe.Executor[*NormalizedResponse] {
-	return n.failsafeExecutor
+func (u *PreparedUpstream) Executor() failsafe.Executor[*NormalizedResponse] {
+	return u.failsafeExecutor
 }
 
-func (n *PreparedUpstream) EvmGetChainId(ctx context.Context) (string, error) {
+func (u *PreparedUpstream) EvmGetChainId(ctx context.Context) (string, error) {
 	pr := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[]}`))
-	resp, err := n.Forward(ctx, pr)
+	resp, err := u.Forward(ctx, pr)
 	if err != nil {
 		return "", err
 	}
@@ -251,10 +260,10 @@ func (n *PreparedUpstream) EvmGetChainId(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if jrr.Error != nil {
-		return "", WrapJsonRpcError(jrr.Error)
+		return "", jrr.Error
 	}
 
-	n.Logger.Debug().Msgf("eth_chainId response: %+v", jrr)
+	u.Logger.Debug().Msgf("eth_chainId response: %+v", jrr)
 
 	hex, err := common.NormalizeHex(jrr.Result)
 	if err != nil {
@@ -311,30 +320,30 @@ func (u *PreparedUpstream) shouldHandleMethod(method string) (v bool) {
 	return v
 }
 
-func (n *PreparedUpstream) resolveNetworkIds(ctx context.Context) error {
-	if n.Client == nil {
-		return common.NewErrUpstreamClientInitialization(fmt.Errorf("client not initialized for upstream to resolve networkId"), n.Id)
+func (u *PreparedUpstream) resolveNetworkIds(ctx context.Context) error {
+	if u.Client == nil {
+		return common.NewErrUpstreamClientInitialization(fmt.Errorf("client not initialized for upstream to resolve networkId"), u.Id)
 	}
 
-	if n.NetworkIds == nil || len(n.NetworkIds) == 0 {
-		n.NetworkIds = []string{}
+	if u.NetworkIds == nil || len(u.NetworkIds) == 0 {
+		u.NetworkIds = []string{}
 	}
 
-	switch n.Architecture {
+	switch u.Architecture {
 	case common.ArchitectureEvm:
-		if n.Evm != nil && n.Evm.ChainId > 0 {
-			n.NetworkIds = append(n.NetworkIds, fmt.Sprintf("eip155:%d", n.Evm.ChainId))
+		if u.Evm != nil && u.Evm.ChainId > 0 {
+			u.NetworkIds = append(u.NetworkIds, fmt.Sprintf("eip155:%d", u.Evm.ChainId))
 		} else {
-			nid, err := n.EvmGetChainId(ctx)
+			nid, err := u.EvmGetChainId(ctx)
 			if err != nil {
 				return err
 			}
-			n.NetworkIds = append(n.NetworkIds, fmt.Sprintf("eip155:%s", nid))
+			u.NetworkIds = append(u.NetworkIds, fmt.Sprintf("eip155:%s", nid))
 		}
 	}
 
 	// remove duplicates
-	n.NetworkIds = common.RemoveDuplicates(n.NetworkIds)
+	u.NetworkIds = common.RemoveDuplicates(u.NetworkIds)
 
 	return nil
 }

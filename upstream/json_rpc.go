@@ -1,7 +1,7 @@
 package upstream
 
 import (
-	"fmt"
+	"encoding/json"
 
 	"github.com/flair-sdk/erpc/common"
 	"github.com/rs/zerolog"
@@ -15,35 +15,10 @@ type JsonRpcRequest struct {
 }
 
 type JsonRpcResponse struct {
-	JSONRPC string        `json:"jsonrpc,omitempty"`
-	ID      interface{}   `json:"id"`
-	Result  interface{}   `json:"result"`
-	Error   *JsonRpcError `json:"error,omitempty"`
-}
-
-type JsonRpcError struct {
-	Code    int         `json:"code"`
-	Message string      `json:"message"`
-	Cause   interface{} `json:"cause,omitempty"`
-}
-
-func WrapJsonRpcError(r *JsonRpcError) error {
-	if r == nil {
-		return nil
-	}
-
-	return &common.BaseError{
-		Code:    "JsonRpcError",
-		Message: fmt.Sprintf("%d: %s", r.Code, r.Message),
-		Cause:   r.Cause.(error),
-		Details: map[string]interface{}{
-			"jsonRpcErrorCode": r.Code,
-		},
-	}
-}
-
-func (r *JsonRpcError) Error() string {
-	return fmt.Sprintf("%d: %s", r.Code, r.Message)
+	JSONRPC string                     `json:"jsonrpc,omitempty"`
+	ID      interface{}                `json:"id"`
+	Result  interface{}                `json:"result"`
+	Error   *common.ErrJsonRpcException `json:"error,omitempty"`
 }
 
 func (r *JsonRpcRequest) MarshalZerologObject(e *zerolog.Event) {
@@ -52,4 +27,33 @@ func (r *JsonRpcRequest) MarshalZerologObject(e *zerolog.Event) {
 
 func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 	e.Interface("id", r.ID).Interface("result", r.Result).Interface("error", r.Error)
+}
+
+// Custom unmarshal method for JsonRpcResponse
+func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
+	type Alias JsonRpcResponse
+	aux := &struct {
+		Error json.RawMessage `json:"error,omitempty"`
+		*Alias
+	}{
+		Alias: (*Alias)(r),
+	}
+
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	if aux.Error != nil {
+		var customError map[string]interface{}
+		if err := json.Unmarshal(aux.Error, &customError); err != nil {
+			return err
+		}
+		r.Error = common.NewErrJsonRpcException(
+			nil,
+			common.JsonRpcErrorNumber(customError["code"].(float64)),
+			customError["message"].(string),
+		)
+	}
+
+	return nil
 }
