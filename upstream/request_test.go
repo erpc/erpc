@@ -1,11 +1,11 @@
-package common
+package upstream
 
 import (
 	"testing"
 )
 
 func TestNormalizedRequest_BodyCannotBeDecoded(t *testing.T) {
-	normReq := NewNormalizedRequest("123", []byte(`{"method": "test", "params": "invalid"}`))
+	normReq := NewNormalizedRequest([]byte(`{"method": "test", "params": "invalid"}`))
 
 	// Call the JsonRpcRequest method to parse and normalize the request
 	jsonRpcReq, err := normReq.JsonRpcRequest()

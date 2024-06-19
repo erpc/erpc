@@ -27,6 +27,9 @@ func NewHttpServer(cfg *config.ServerConfig, erpc *erpc.ERPC) *HttpServer {
 
 	handler := http.NewServeMux()
 	handler.HandleFunc("/", func(hrw http.ResponseWriter, r *http.Request) {
+		var resp *upstream.NormalizedResponse
+		var err error
+
 		log.Debug().Msgf("received request on path: %s with body length: %d", r.URL.Path, r.ContentLength)
 
 		// Split the URL path into segments
@@ -42,7 +45,7 @@ func NewHttpServer(cfg *config.ServerConfig, erpc *erpc.ERPC) *HttpServer {
 		architecture := segments[2]
 		var networkId string
 		switch architecture {
-		case upstream.ArchitectureEvm:
+		case string(common.ArchitectureEvm):
 			networkId = evm.EIP155(segments[3])
 		}
 
@@ -58,36 +61,29 @@ func NewHttpServer(cfg *config.ServerConfig, erpc *erpc.ERPC) *HttpServer {
 
 		log.Debug().Msgf("received request for projectId: %s, networkId: %s with body: %s", projectId, networkId, body)
 
-		nq := common.NewNormalizedRequest(networkId, body)
 		project, err := erpc.GetProject(projectId)
 		if err == nil {
-			resp, err := project.Forward(r.Context(), networkId, nq)
+			nw, err := erpc.GetNetwork(projectId, networkId)
+			if err != nil {
+				log.Error().Err(err).Msgf("failed to get network %s for project %s", networkId, projectId)
+				hrw.WriteHeader(http.StatusNotFound)
+				return
+			}
+			nq := upstream.NewNormalizedRequest(body).
+				WithNetwork(nw).
+				ApplyDirectivesFromHttpHeaders(r.Header)
+
+			resp, err = project.Forward(r.Context(), networkId, nq)
 			if err == nil {
 				hrw.Header().Set("Content-Type", "application/json")
 				hrw.WriteHeader(http.StatusOK)
 				hrw.Write(resp.Body())
-			}
-		}
-
-		if err != nil {
-			log.Error().Err(err).Msgf("failed to forward request")
-
-			hrw.Header().Set("Content-Type", "application/json")
-			var httpErr common.ErrorWithStatusCode
-			if errors.As(err, &httpErr) {
-				hrw.WriteHeader(httpErr.ErrorStatusCode())
+				log.Debug().Msgf("request forwarded successfully for projectId: %s, networkId: %s", projectId, networkId)
 			} else {
-				hrw.WriteHeader(http.StatusInternalServerError)
-			}
-
-			var bodyErr common.ErrorWithBody
-			if errors.As(err, &bodyErr) {
-				json.NewEncoder(hrw).Encode(bodyErr.ErrorResponseBody())
-			} else {
-				json.NewEncoder(hrw).Encode(err)
+				handleErrorResponse(err, hrw)
 			}
 		} else {
-			log.Debug().Msgf("request forwarded successfully for projectId: %s, networkId: %s", projectId, networkId)
+			handleErrorResponse(err, hrw)
 		}
 	})
 
@@ -97,6 +93,34 @@ func NewHttpServer(cfg *config.ServerConfig, erpc *erpc.ERPC) *HttpServer {
 			Addr:    addr,
 			Handler: handler,
 		},
+	}
+}
+
+func handleErrorResponse(err error, hrw http.ResponseWriter) {
+	log.Error().Err(err).Msgf("failed to forward request")
+
+	hrw.Header().Set("Content-Type", "application/json")
+	var httpErr common.ErrorWithStatusCode
+	if errors.As(err, &httpErr) {
+		hrw.WriteHeader(httpErr.ErrorStatusCode())
+	} else {
+		hrw.WriteHeader(http.StatusInternalServerError)
+	}
+
+	var bodyErr common.ErrorWithBody
+	if errors.As(err, &bodyErr) {
+		json.NewEncoder(hrw).Encode(bodyErr.ErrorResponseBody())
+	} else {
+		jre := &common.ErrJsonRpcException{}
+		if errors.As(err, &jre) {
+			json.NewEncoder(hrw).Encode(map[string]interface{}{
+				"code":    jre.Details["code"],
+				"message": jre.Details["message"],
+				"cause":   err,
+			})
+		} else {
+			json.NewEncoder(hrw).Encode(err)
+		}
 	}
 }
 

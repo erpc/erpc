@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/flair-sdk/erpc/common"
+	"github.com/flair-sdk/erpc/upstream"
 )
 
 type EvmBlockTracker struct {
@@ -46,7 +47,7 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 			case <-e.ctx.Done():
 				return
 			default:
-				lb, err := e.fetchLatestBlockNumber(e.ctx, e.network.NetworkId)
+				lb, err := e.fetchLatestBlockNumber(e.ctx)
 				if err != nil {
 					e.network.Logger.Error().Err(err).Msg("failed to get latest block number in block tracker")
 				}
@@ -55,7 +56,7 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 					e.LatestBlockNumber = lb
 				}
 
-				fb, err := e.fetchFinalizedBlockNumber(e.ctx, e.network.NetworkId)
+				fb, err := e.fetchFinalizedBlockNumber(e.ctx)
 				if err != nil {
 					e.network.Logger.Error().Err(err).Msg("failed to get finalized block number in block tracker")
 				}
@@ -78,16 +79,16 @@ func (e *EvmBlockTracker) Shutdown() {
 	}
 }
 
-func (e *EvmBlockTracker) fetchLatestBlockNumber(ctx context.Context, nid string) (uint64, error) {
-	return e.fetchBlock(ctx, nid, "latest")
+func (e *EvmBlockTracker) fetchLatestBlockNumber(ctx context.Context) (uint64, error) {
+	return e.fetchBlock(ctx, "latest")
 }
 
-func (e *EvmBlockTracker) fetchFinalizedBlockNumber(ctx context.Context, nid string) (uint64, error) {
-	return e.fetchBlock(ctx, nid, "finalized")
+func (e *EvmBlockTracker) fetchFinalizedBlockNumber(ctx context.Context) (uint64, error) {
+	return e.fetchBlock(ctx, "finalized")
 }
 
-func (e *EvmBlockTracker) fetchBlock(ctx context.Context, nid string, blockTag string) (uint64, error) {
-	pr := common.NewNormalizedRequest(nid, []byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["%s",false]}`, blockTag)))
+func (e *EvmBlockTracker) fetchBlock(ctx context.Context, blockTag string) (uint64, error) {
+	pr := upstream.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["%s",false]}`, blockTag))).WithNetwork(e.network)
 	resp, err := e.network.Forward(ctx, pr)
 	if err != nil {
 		return 0, err
@@ -99,7 +100,7 @@ func (e *EvmBlockTracker) fetchBlock(ctx context.Context, nid string, blockTag s
 	}
 
 	if jrr.Error != nil {
-		return 0, common.WrapJsonRpcError(jrr.Error)
+		return 0, jrr.Error
 	}
 
 	// If result is nil, return 0

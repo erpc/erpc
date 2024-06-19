@@ -5,6 +5,7 @@ import (
 
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
+	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog"
 )
 
@@ -33,7 +34,7 @@ func (p *PreparedProject) GetNetwork(networkId string) (*PreparedNetwork, error)
 	return network, nil
 }
 
-func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *upstream.NormalizedRequest) (*upstream.NormalizedResponse, error) {
 	network, err := p.GetNetwork(networkId)
 	if err != nil {
 		return nil, err
