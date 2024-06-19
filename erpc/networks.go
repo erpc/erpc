@@ -14,7 +14,6 @@ import (
 	"github.com/flair-sdk/erpc/config"
 	"github.com/flair-sdk/erpc/data"
 	"github.com/flair-sdk/erpc/health"
-	"github.com/flair-sdk/erpc/resiliency"
 	"github.com/flair-sdk/erpc/upstream"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
@@ -24,21 +23,21 @@ import (
 type PreparedNetwork struct {
 	NetworkId        string
 	ProjectId        string
-	FailsafePolicies []failsafe.Policy[*common.NormalizedResponse]
+	FailsafePolicies []failsafe.Policy[*upstream.NormalizedResponse]
 	Config           *config.NetworkConfig
 	Logger           *zerolog.Logger
 	Upstreams        []*upstream.PreparedUpstream
 
-	mu *sync.RWMutex
+	upstreamsMutex     *sync.RWMutex
+	reorderStopChannel chan bool
 
-	rateLimitersRegistry *resiliency.RateLimitersRegistry
-	failsafeExecutor     failsafe.Executor[*common.NormalizedResponse]
+	rateLimitersRegistry *upstream.RateLimitersRegistry
+	failsafeExecutor     failsafe.Executor[*upstream.NormalizedResponse]
 
 	rateLimiterDal data.RateLimitersDAL
 	cacheDal       data.CacheDAL
 
-	evmBlockTracker    *EvmBlockTracker
-	reorderStopperChan chan bool
+	evmBlockTracker *EvmBlockTracker
 }
 
 func (n *PreparedNetwork) Bootstrap(ctx context.Context) error {
@@ -46,7 +45,7 @@ func (n *PreparedNetwork) Bootstrap(ctx context.Context) error {
 		return err
 	}
 
-	if n.Architecture() == upstream.ArchitectureEvm {
+	if n.Architecture() == common.ArchitectureEvm {
 		n.evmBlockTracker = NewEvmBlockTracker(n)
 		if err := n.evmBlockTracker.Bootstrap(ctx); err != nil {
 			return err
@@ -59,14 +58,14 @@ func (n *PreparedNetwork) Bootstrap(ctx context.Context) error {
 		ticker := time.NewTicker(1 * time.Second)
 		for {
 			select {
-			case <-pn.reorderStopperChan:
+			case <-pn.reorderStopChannel:
 				ticker.Stop()
 				return
 			case <-ticker.C:
 				upsList := reorderUpstreams(pn.Upstreams)
-				pn.mu.Lock()
+				pn.upstreamsMutex.Lock()
 				pn.Upstreams = upsList
-				pn.mu.Unlock()
+				pn.upstreamsMutex.Unlock()
 			}
 		}
 	}(n)
@@ -79,17 +78,28 @@ func (n *PreparedNetwork) Shutdown() {
 		n.evmBlockTracker.Shutdown()
 	}
 
-	if n.reorderStopperChan != nil {
-		n.reorderStopperChan <- true
+	if n.reorderStopChannel != nil {
+		n.reorderStopChannel <- true
 	}
 }
 
-func (n *PreparedNetwork) Architecture() string {
+func (n *PreparedNetwork) Id() string {
+	return n.NetworkId
+}
+
+func (n *PreparedNetwork) Architecture() common.NetworkArchitecture {
+	if n.Config.Architecture == "" {
+		if n.Config.Evm != nil {
+			n.Config.Architecture = common.ArchitectureEvm
+		}
+	}
+
 	return n.Config.Architecture
 }
 
-func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedRequest) (*upstream.NormalizedResponse, error) {
 	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
+	req.WithNetwork(n)
 
 	if n.cacheDal != nil {
 		n.Logger.Debug().Msgf("checking cache for request")
@@ -113,7 +123,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 	tryForward := func(
 		u *upstream.PreparedUpstream,
 		ctx context.Context,
-	) (resp *common.NormalizedResponse, skipped bool, err error) {
+	) (resp *upstream.NormalizedResponse, skipped bool, err error) {
 		lg := u.Logger.With().Str("network", n.NetworkId).Logger()
 		if u.Score < 0 {
 			lg.Debug().Msgf("skipping upstream with negative score %d", u.Score)
@@ -133,10 +143,10 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 	i := 0
 	resp, execErr := n.failsafeExecutor.
 		WithContext(ctx).
-		GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
-			n.mu.RLock()
+		GetWithExecution(func(exec failsafe.Execution[*upstream.NormalizedResponse]) (*upstream.NormalizedResponse, error) {
+			n.upstreamsMutex.RLock()
 			upsList := n.Upstreams
-			n.mu.RUnlock()
+			n.upstreamsMutex.RUnlock()
 
 			// We should try all upstreams at least once, but using "i" we make sure
 			// across different executions of the failsafe we pick up next upstream vs retrying the same upstream.
@@ -163,8 +173,8 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 				n.Logger.Debug().Err(err).Msgf("forwarded request to upstream %s skipped: %v err: %v", u.Id, skipped, err)
 				if !skipped {
 					n.Logger.Debug().Interface("resp", resp).Msgf("storing response in cache")
-					go (func(resp *common.NormalizedResponse) {
-						if n.cacheDal != nil {
+					go (func(resp *upstream.NormalizedResponse) {
+						if n.cacheDal != nil && resp != nil {
 							c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 							defer cancel()
 							err := n.cacheDal.Set(c, req, resp)
@@ -184,32 +194,14 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *common.NormalizedReq
 		})
 
 	if execErr != nil {
-		return nil, resiliency.TranslateFailsafeError(execErr)
+		return nil, upstream.TranslateFailsafeError(execErr)
 	}
 
 	return resp, nil
 }
 
-// // Send will call the upstream and parses the response, used in internal non-proxy flows such as block tracker
-// func (n *PreparedNetwork) Send(ctx context.Context, networkId string, req *common.NormalizedRequest) ([]byte, error) {
-// 	rw := common.NewMemoryResponseWriter()
-// 	crw := common.NewHttpCompositeResponseWriter(rw)
-
-// 	err := n.Forward(ctx, req, crw)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-
-// 	respBody, err := io.ReadAll(rw)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-
-// 	return respBody, nil
-// }
-
 func (n *PreparedNetwork) EvmGetChainId(ctx context.Context) (string, error) {
-	pr := common.NewNormalizedRequest(n.NetworkId, []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[]}`))
+	pr := upstream.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[]}`)).WithNetwork(n)
 	resp, err := n.Forward(ctx, pr)
 	if err != nil {
 		return "", err
@@ -218,14 +210,8 @@ func (n *PreparedNetwork) EvmGetChainId(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// jrr := &common.JsonRpcResponse{}
-	// err = json.Unmarshal(respBytes, jrr)
-	// if err != nil {
-	// 	return "", err
-	// }
-
 	if jrr.Error != nil {
-		return "", common.WrapJsonRpcError(jrr.Error)
+		return "", jrr.Error
 	}
 
 	log.Debug().Msgf("eth_chainId response: %+v", jrr)
@@ -297,7 +283,7 @@ func (n *PreparedNetwork) resolveNetworkId(ctx context.Context) error {
 	}
 
 	n.Logger.Debug().Msgf("resolving network id")
-	if n.Architecture() == "evm" {
+	if n.Architecture() == common.ArchitectureEvm {
 		if n.Config.Evm != nil && n.Config.Evm.ChainId > 0 {
 			n.NetworkId = strconv.Itoa(n.Config.Evm.ChainId)
 		} else {
@@ -318,7 +304,7 @@ func (n *PreparedNetwork) resolveNetworkId(ctx context.Context) error {
 	return nil
 }
 
-func (n *PreparedNetwork) acquireRateLimitPermit(req *common.NormalizedRequest) error {
+func (n *PreparedNetwork) acquireRateLimitPermit(req *upstream.NormalizedRequest) error {
 	if n.Config.RateLimitBucket == "" {
 		return nil
 	}
@@ -352,7 +338,7 @@ func (n *PreparedNetwork) acquireRateLimitPermit(req *common.NormalizedRequest) 
 					n.ProjectId,
 					n.NetworkId,
 					n.Config.RateLimitBucket,
-					rule.Config,
+					fmt.Sprintf("%+v", rule.Config),
 				)
 			} else {
 				n.Logger.Debug().Object("rateLimitRule", rule.Config).Msgf("network-level rate limit passed")
@@ -366,8 +352,8 @@ func (n *PreparedNetwork) acquireRateLimitPermit(req *common.NormalizedRequest) 
 func (n *PreparedNetwork) forwardToUpstream(
 	thisUpstream *upstream.PreparedUpstream,
 	ctx context.Context,
-	req *common.NormalizedRequest,
-) (*common.NormalizedResponse, error) {
+	req *upstream.NormalizedRequest,
+) (*upstream.NormalizedResponse, error) {
 	var category string = ""
 	if m, _ := req.Method(); m != "" {
 		category = m
@@ -386,7 +372,7 @@ func (n *PreparedNetwork) forwardToUpstream(
 	))
 	defer timer.ObserveDuration()
 
-	return thisUpstream.Forward(ctx, n.NetworkId, req)
+	return thisUpstream.Forward(ctx, req)
 }
 
 func weightedRandomSelect(upstreams []*upstream.PreparedUpstream) *upstream.PreparedUpstream {

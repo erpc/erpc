@@ -7,15 +7,9 @@ import (
 
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/config"
-	"github.com/flair-sdk/erpc/resiliency"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-)
-
-const (
-	ArchitectureEvm    = "evm"
-	ArchitectureSolana = "solana"
 )
 
 type UpstreamsRegistry struct {
@@ -26,13 +20,13 @@ type UpstreamsRegistry struct {
 	clientRegistry            *ClientRegistry
 	upstreamsMapByNetwork     map[string]map[string]map[string]*PreparedUpstream
 	upstreamsMapByHealthGroup map[string]map[string]*PreparedUpstream
-	rateLimitersRegistry      *resiliency.RateLimitersRegistry
+	rateLimitersRegistry      *RateLimitersRegistry
 }
 
 func NewUpstreamsRegistry(
 	logger *zerolog.Logger,
 	cfg *config.Config,
-	rlr *resiliency.RateLimitersRegistry,
+	rlr *RateLimitersRegistry,
 ) (*UpstreamsRegistry, error) {
 	r := &UpstreamsRegistry{
 		logger:               logger,
@@ -154,29 +148,29 @@ func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *config.He
 	var p90Latencies, errorRates, totalRequests, throttledRates, blockLags []float64
 	var comparingUpstreams []*PreparedUpstream
 	var changedProjectAndNetworks map[string]map[string]bool = make(map[string]map[string]bool)
-	for _, upstream := range upstreams {
-		if upstream.Metrics != nil {
-			p90Latencies = append(p90Latencies, upstream.Metrics.P90Latency)
-			if upstream.Metrics.RequestsTotal > 0 {
-				errorRates = append(errorRates, upstream.Metrics.ErrorsTotal/upstream.Metrics.RequestsTotal)
-				throttledRates = append(throttledRates, upstream.Metrics.ThrottledTotal/upstream.Metrics.RequestsTotal)
-				totalRequests = append(totalRequests, upstream.Metrics.RequestsTotal)
+	for _, ups := range upstreams {
+		if ups.Metrics != nil {
+			p90Latencies = append(p90Latencies, ups.Metrics.P90Latency)
+			if ups.Metrics.RequestsTotal > 0 {
+				errorRates = append(errorRates, ups.Metrics.ErrorsTotal/ups.Metrics.RequestsTotal)
+				throttledRates = append(throttledRates, ups.Metrics.ThrottledTotal/ups.Metrics.RequestsTotal)
+				totalRequests = append(totalRequests, ups.Metrics.RequestsTotal)
 			} else {
 				errorRates = append(errorRates, 0)
 				throttledRates = append(throttledRates, 0)
 				totalRequests = append(totalRequests, 0)
 			}
-			blockLags = append(blockLags, upstream.Metrics.BlocksLag)
+			blockLags = append(blockLags, ups.Metrics.BlocksLag)
 
-			if changedProjectAndNetworks[upstream.ProjectId] == nil {
-				changedProjectAndNetworks[upstream.ProjectId] = make(map[string]bool)
+			if changedProjectAndNetworks[ups.ProjectId] == nil {
+				changedProjectAndNetworks[ups.ProjectId] = make(map[string]bool)
 			}
 
-			for _, networkId := range upstream.NetworkIds {
-				changedProjectAndNetworks[upstream.ProjectId][networkId] = true
+			for _, networkId := range ups.NetworkIds {
+				changedProjectAndNetworks[ups.ProjectId][networkId] = true
 			}
 
-			comparingUpstreams = append(comparingUpstreams, upstream)
+			comparingUpstreams = append(comparingUpstreams, ups)
 		}
 	}
 
@@ -186,28 +180,28 @@ func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *config.He
 	normTotalRequests := normalizeIntValues(totalRequests, 100)
 	normBlockLags := normalizeIntValues(blockLags, 100)
 
-	for i, upstream := range comparingUpstreams {
-		if upstream.Metrics != nil {
-			upstream.Score = 0
+	for i, ups := range comparingUpstreams {
+		if ups.Metrics != nil {
+			ups.Score = 0
 
 			// Higher score for lower total requests (to balance the load)
-			upstream.Score += 100 - normTotalRequests[i]
+			ups.Score += 100 - normTotalRequests[i]
 
 			// Higher score for lower p90 latency
-			upstream.Score += 100 - normP90Latencies[i]
+			ups.Score += 100 - normP90Latencies[i]
 
 			// Higher score for lower error rate
-			upstream.Score += (100 - normErrorRates[i]) * 4
+			ups.Score += (100 - normErrorRates[i]) * 4
 
 			// Higher score for lower throttled rate
-			upstream.Score += (100 - normThrottledRates[i]) * 3
+			ups.Score += (100 - normThrottledRates[i]) * 3
 
 			// Higher score for lower block lag
-			upstream.Score += (100 - normBlockLags[i]) * 2
+			ups.Score += (100 - normBlockLags[i]) * 2
 
 			log.Debug().Str("healthCheckGroup", healthGroupCfg.Id).
-				Str("upstream", upstream.Id).
-				Int("score", upstream.Score).
+				Str("upstream", ups.Id).
+				Int("score", ups.Score).
 				Msgf("refreshed score")
 		}
 	}
