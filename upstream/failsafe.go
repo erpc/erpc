@@ -224,6 +224,11 @@ func createRetryPolicy(scope Scope, component string, cfg *config.RetryPolicyCon
 			return false
 		}
 
+		// Unsupported features and methods
+		if common.HasCode(err, common.ErrCodeEndpointUnsupported) {
+			return false
+		}
+
 		if result != nil {
 			req := result.Request
 			isEmpty := result.IsEmpty()

@@ -347,8 +347,9 @@ data:
   - customize retryable responses (json-rpc error) and errors
 
 * normalize errors
+  - http errors
   - standard json-rpc eth errors
-  - vendor-specific error
+  - vendor-specific errors
   - add normalized errors under "cause"
 
 * narrower upstream metrics collection for scoring (vs prometheus)

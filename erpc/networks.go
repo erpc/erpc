@@ -174,7 +174,7 @@ func (n *PreparedNetwork) Forward(ctx context.Context, req *upstream.NormalizedR
 				if !skipped {
 					n.Logger.Debug().Interface("resp", resp).Msgf("storing response in cache")
 					go (func(resp *upstream.NormalizedResponse) {
-						if n.cacheDal != nil {
+						if n.cacheDal != nil && resp != nil {
 							c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 							defer cancel()
 							err := n.cacheDal.Set(c, req, resp)
@@ -211,7 +211,7 @@ func (n *PreparedNetwork) EvmGetChainId(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if jrr.Error != nil {
-		return "", upstream.WrapJsonRpcError(jrr.Error)
+		return "", jrr.Error
 	}
 
 	log.Debug().Msgf("eth_chainId response: %+v", jrr)

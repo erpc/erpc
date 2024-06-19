@@ -176,3 +176,21 @@ func (r *JsonRpcRequest) EvmBlockReference() (string, uint64, error) {
 
 	return "", 0, nil
 }
+
+func (r *NormalizedRequest) MarshalJSON() ([]byte, error) {
+	if r.body != nil {
+		return r.body, nil
+	}
+	
+	if r.jsonRpcRequest != nil {
+		return json.Marshal(r.jsonRpcRequest)
+	}
+
+	if m, _ := r.Method(); m != "" {
+		return json.Marshal(map[string]interface{}{
+			"method": m,
+		})
+	}
+	
+	return nil, nil
+}

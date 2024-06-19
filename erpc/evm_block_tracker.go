@@ -100,7 +100,7 @@ func (e *EvmBlockTracker) fetchBlock(ctx context.Context, blockTag string) (uint
 	}
 
 	if jrr.Error != nil {
-		return 0, upstream.WrapJsonRpcError(jrr.Error)
+		return 0, jrr.Error
 	}
 
 	// If result is nil, return 0

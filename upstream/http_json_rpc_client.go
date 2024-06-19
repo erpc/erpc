@@ -56,7 +56,7 @@ func NewHttpJsonRpcClient(pu *PreparedUpstream, parsedUrl *url.URL) (*HttpJsonRp
 func (c *HttpJsonRpcClient) SendRequest(ctx context.Context, req *NormalizedRequest) (*NormalizedResponse, error) {
 	jrReq, err := req.JsonRpcRequest()
 	if err != nil {
-		return nil, common.NewErrUpstreamRequest(err, c.upstream.Id)
+		return nil, common.NewErrUpstreamRequest(err, c.upstream.Id, req)
 	}
 
 	requestBody, err := json.Marshal(JsonRpcRequest{
@@ -91,32 +91,81 @@ func (c *HttpJsonRpcClient) SendRequest(ctx context.Context, req *NormalizedRequ
 		return nil, err
 	}
 
-	respStatusCode := resp.StatusCode
 	respBody, err := io.ReadAll(resp.Body)
 	defer resp.Body.Close()
 	if err != nil {
 		return nil, err
 	}
-	log.Debug().Msgf("received json rpc response status: %d", respStatusCode)
 
-	if respStatusCode >= 400 {
-		return nil, &common.BaseError{
-			Code:    "ErrHttp",
-			Message: "server responded with non-2xx status code",
-			Details: map[string]interface{}{
-				"upstream":   c.upstream.Id,
-				"statusCode": respStatusCode,
-				"body":       string(respBody),
-				"headers":    resp.Header,
-			},
-		}
-	}
+	nr := NewNormalizedResponse().WithRequest(req).WithBody(respBody)
 
-	return NewNormalizedResponse().
-		WithRequest(req).
-		WithBody(respBody), nil
+	return nr, c.normalizeJsonRpcError(resp, nr)
 }
 
 func (c *HttpJsonRpcClient) GetType() string {
 	return c.Type
+}
+
+func (c *HttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *NormalizedResponse) error {
+	jr, err := nr.JsonRpcResponse()
+
+	if r.StatusCode < 400 {
+		if nr != nil {
+			if err != nil {
+				return common.NewErrJsonRpcException(
+					err,
+					common.JsonRpcErrorParseException,
+					"could not parse json rpc response from upstream",
+				)
+			}
+			log.Debug().
+				Err(err).
+				Interface("resp", jr).
+				Msgf("received json rpc response status: %d", r.StatusCode)
+
+			if jr != nil && jr.Error == nil {
+				return nil
+			}
+		}
+	}
+
+	if e := extractJsonRpcError(r, jr); e != nil {
+		return e
+	}
+
+	return common.NewErrJsonRpcException(&common.BaseError{
+		Code:    "ErrEndpointUnknownException",
+		Message: "unknown json-rpc body",
+		Details: map[string]interface{}{
+			"upstream":   c.upstream.Id,
+			"statusCode": r.StatusCode,
+			"headers":    r.Header,
+			"body":       string(nr.Body()),
+		},
+	}, common.JsonRpcErrorServerSideException, "upstream endpoint responded with unknown error")
+}
+
+func extractJsonRpcError(r *http.Response, jr *JsonRpcResponse) error {
+	if jr != nil && jr.Error != nil {
+		oerr := jr.Error
+
+		code := oerr.Details["code"].(common.JsonRpcErrorNumber)
+		msg := oerr.Details["message"].(string)
+
+		err := common.NewErrJsonRpcException(oerr.Cause, code, msg)
+
+		if r.StatusCode == 401 || r.StatusCode == 403 {
+			return common.NewErrEndpointUnauthorized(err)
+		}
+
+		switch code {
+		case common.JsonRpcErrorParseException:
+		case common.JsonRpcErrorInvalidArgument:
+			return common.NewErrEndpointClientSideException(err)
+		}
+
+		return err
+	}
+
+	return nil
 }
