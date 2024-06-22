@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/config"
 	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog/log"
 )
@@ -20,7 +19,7 @@ type ProjectsRegistry struct {
 }
 
 func NewProjectsRegistry(
-	staticProjects []*config.ProjectConfig,
+	staticProjects []*common.ProjectConfig,
 	networksRegistry *NetworksRegistry,
 	upstreamsRegistry *upstream.UpstreamsRegistry,
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
@@ -64,7 +63,7 @@ func (r *ProjectsRegistry) GetProject(projectId string) (*PreparedProject, error
 	return project, nil
 }
 
-func (r *ProjectsRegistry) RegisterProject(prjCfg *config.ProjectConfig) error {
+func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) error {
 	if _, ok := r.preparedProjects[prjCfg.Id]; ok {
 		return common.NewErrProjectAlreadyExists(prjCfg.Id)
 	}
@@ -80,7 +79,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *config.ProjectConfig) error {
 	}
 
 	// Initialize networks based on configuration
-	var preparedNetworks map[string]*PreparedNetwork = make(map[string]*PreparedNetwork)
+	var preparedNetworks map[string]*Network = make(map[string]*Network)
 	for _, nwCfg := range prjCfg.Networks {
 		nt, err := r.networksRegistry.RegisterNetwork(pp.Logger, r.evmJsonRpcCache, prjCfg, nwCfg)
 		if err != nil {
@@ -93,12 +92,12 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *config.ProjectConfig) error {
 
 	// Initialize networks based on upstreams supported networks
 	for _, ups := range preparedUpstreams {
-		arch := ups.Architecture
+		arch := ups.Config().Architecture
 		if arch == "" {
 			arch = common.ArchitectureEvm
 		}
 		for _, networkId := range ups.NetworkIds {
-			ncfg := &config.NetworkConfig{
+			ncfg := &common.NetworkConfig{
 				Architecture: arch,
 			}
 
@@ -108,7 +107,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *config.ProjectConfig) error {
 				if err != nil {
 					return common.NewErrInvalidEvmChainId(networkId)
 				}
-				ncfg.Evm = &config.EvmNetworkConfig{
+				ncfg.Evm = &common.EvmNetworkConfig{
 					ChainId: chainId,
 				}
 			default:
@@ -138,7 +137,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *config.ProjectConfig) error {
 			}
 			nt.upstreamsMutex.Lock()
 			if nt.Upstreams == nil {
-				nt.Upstreams = make([]*upstream.PreparedUpstream, 0)
+				nt.Upstreams = make([]*upstream.Upstream, 0)
 			}
 			nt.Upstreams = append(nt.Upstreams, pu)
 			nt.upstreamsMutex.Unlock()

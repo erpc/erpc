@@ -4,14 +4,13 @@ import (
 	"context"
 
 	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/config"
 	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog"
 )
 
 type PreparedProject struct {
-	Config   *config.ProjectConfig
-	Networks map[string]*PreparedNetwork
+	Config   *common.ProjectConfig
+	Networks map[string]*Network
 	Logger   *zerolog.Logger
 }
 
@@ -26,7 +25,7 @@ func (p *PreparedProject) Bootstrap(ctx context.Context) error {
 	return nil
 }
 
-func (p *PreparedProject) GetNetwork(networkId string) (*PreparedNetwork, error) {
+func (p *PreparedProject) GetNetwork(networkId string) (*Network, error) {
 	network, ok := p.Networks[networkId]
 	if !ok {
 		return nil, common.NewErrNetworkNotFound(networkId)
@@ -34,7 +33,7 @@ func (p *PreparedProject) GetNetwork(networkId string) (*PreparedNetwork, error)
 	return network, nil
 }
 
-func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *upstream.NormalizedRequest) (*upstream.NormalizedResponse, error) {
+func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *upstream.NormalizedRequest) (common.NormalizedResponse, error) {
 	network, err := p.GetNetwork(networkId)
 	if err != nil {
 		return nil, err

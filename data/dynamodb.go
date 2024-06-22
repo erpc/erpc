@@ -12,7 +12,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/config"
 	"github.com/rs/zerolog/log"
 )
 
@@ -32,7 +31,7 @@ type DynamoDBConnector struct {
 
 func NewDynamoDBConnector(
 	ctx context.Context,
-	cfg *config.DynamoDBConnectorConfig,
+	cfg *common.DynamoDBConnectorConfig,
 ) (*DynamoDBConnector, error) {
 	log.Debug().Msgf("creating DynamoDBConnector with config: %+v", cfg)
 
@@ -74,7 +73,7 @@ func NewDynamoDBConnector(
 	}, nil
 }
 
-func createSession(cfg *config.DynamoDBConnectorConfig) (*session.Session, error) {
+func createSession(cfg *common.DynamoDBConnectorConfig) (*session.Session, error) {
 	if cfg == nil || cfg.Region == "" {
 		return nil, fmt.Errorf("missing region for store.dynamodb")
 	}
@@ -113,7 +112,7 @@ func createSession(cfg *config.DynamoDBConnectorConfig) (*session.Session, error
 func createTableIfNotExists(
 	ctx context.Context,
 	client *dynamodb.DynamoDB,
-	cfg *config.DynamoDBConnectorConfig,
+	cfg *common.DynamoDBConnectorConfig,
 ) error {
 	log.Debug().Msgf("creating dynamodb table '%s' if not exists with partition key '%s' and range key %s", cfg.Table, cfg.PartitionKeyName, cfg.RangeKeyName)
 	_, err := client.CreateTableWithContext(ctx, &dynamodb.CreateTableInput{
@@ -172,7 +171,7 @@ func createTableIfNotExists(
 func ensureGlobalSecondaryIndexes(
 	ctx context.Context,
 	client *dynamodb.DynamoDB,
-	cfg *config.DynamoDBConnectorConfig,
+	cfg *common.DynamoDBConnectorConfig,
 ) error {
 	if cfg.ReverseIndexName == "" {
 		return nil

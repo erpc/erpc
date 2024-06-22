@@ -8,7 +8,6 @@ import (
 	"sync"
 
 	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/config"
 )
 
 const (
@@ -17,11 +16,11 @@ const (
 
 type MemoryStore struct {
 	sync.RWMutex
-	config *config.MemoryConnectorConfig
+	config *common.MemoryConnectorConfig
 	data   map[string]string
 }
 
-func NewMemoryStore(cfg *config.MemoryConnectorConfig) *MemoryStore {
+func NewMemoryStore(cfg *common.MemoryConnectorConfig) *MemoryStore {
 	return &MemoryStore{
 		config: cfg,
 		data:   make(map[string]string),

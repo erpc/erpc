@@ -3,7 +3,7 @@ package data
 // import (
 // 	"context"
 
-// 	"github.com/flair-sdk/erpc/config"
+// 	"github.com/flair-sdk/erpc/common"
 // )
 
 // // type Database struct {
@@ -12,7 +12,7 @@ package data
 // // 	// RateLimitSnapshots *RateLimitSnapshots
 // // }
 
-// // func NewDatabase(ctx context.Context, cfg *config.DatabaseConfig) (*Database, error) {
+// // func NewDatabase(ctx context.Context, cfg *common.DatabaseConfig) (*Database, error) {
 // // 	db := &Database{}
 
 // // 	if cfg.EvmJsonRpcCache != nil {

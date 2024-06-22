@@ -2,18 +2,25 @@ package upstream
 
 import (
 	"encoding/json"
+
+	"github.com/flair-sdk/erpc/common"
 )
 
 type NormalizedResponse struct {
-	Request *NormalizedRequest
+	request *NormalizedRequest
 	body    []byte
 	err     error
 
-	jsonRpcResponse *JsonRpcResponse
+	jsonRpcResponse *common.JsonRpcResponse
 }
 
 func NewNormalizedResponse() *NormalizedResponse {
 	return &NormalizedResponse{}
+}
+
+func (r *NormalizedResponse) WithRequest(req *NormalizedRequest) *NormalizedResponse {
+	r.request = req
+	return r
 }
 
 func (r *NormalizedResponse) WithBody(body []byte) *NormalizedResponse {
@@ -26,29 +33,16 @@ func (r *NormalizedResponse) WithError(err error) *NormalizedResponse {
 	return r
 }
 
-func (r *NormalizedResponse) WithRequest(req *NormalizedRequest) *NormalizedResponse {
-	r.Request = req
-	return r
-}
-
-func (r *NormalizedResponse) WithJsonRpcResponse(jrr *JsonRpcResponse) *NormalizedResponse {
+func (r *NormalizedResponse) WithJsonRpcResponse(jrr *common.JsonRpcResponse) *NormalizedResponse {
 	r.jsonRpcResponse = jrr
 	return r
 }
 
-func (r *NormalizedResponse) JsonRpcResponse() (*JsonRpcResponse, error) {
-	if r.jsonRpcResponse != nil {
-		return r.jsonRpcResponse, nil
+func (r *NormalizedResponse) Request() common.NormalizedRequest {
+	if r == nil {
+		return nil
 	}
-
-	jrr := &JsonRpcResponse{}
-	err := json.Unmarshal(r.body, jrr)
-	if err != nil {
-		return nil, err
-	}
-	r.jsonRpcResponse = jrr
-
-	return jrr, nil
+	return r.request
 }
 
 func (r *NormalizedResponse) Body() []byte {
@@ -69,7 +63,15 @@ func (r *NormalizedResponse) Body() []byte {
 	return r.body
 }
 
-func (r *NormalizedResponse) IsEmpty() bool {
+func (r *NormalizedResponse) Error() error {
+	if r.err != nil {
+		return r.err
+	}
+
+	return nil
+}
+
+func (r *NormalizedResponse) IsResultEmptyish() bool {
 	jrr, err := r.JsonRpcResponse()
 	if err != nil {
 		if jrr.Result == nil {
@@ -79,6 +81,38 @@ func (r *NormalizedResponse) IsEmpty() bool {
 		if s, ok := jrr.Result.(string); ok {
 			return s == "" || s == "0x"
 		}
+	}
+
+	return false
+}
+
+func (r *NormalizedResponse) JsonRpcResponse() (*common.JsonRpcResponse, error) {
+	if r == nil {
+		return nil, nil
+	}
+
+	if r.jsonRpcResponse != nil {
+		return r.jsonRpcResponse, nil
+	}
+
+	jrr := &common.JsonRpcResponse{}
+	err := json.Unmarshal(r.body, jrr)
+	if err != nil {
+		return nil, err
+	}
+	r.jsonRpcResponse = jrr
+
+	return jrr, nil
+}
+
+func (r *NormalizedResponse) IsObjectNull() bool {
+	if r == nil {
+		return true
+	}
+
+	jrr, _ := r.JsonRpcResponse()
+	if jrr == nil && r.body == nil {
+		return true
 	}
 
 	return false

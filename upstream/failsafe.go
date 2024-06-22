@@ -11,7 +11,6 @@ import (
 	"github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/failsafe-go/failsafe-go/timeout"
 	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/config"
 	"github.com/rs/zerolog/log"
 )
 
@@ -27,9 +26,9 @@ const (
 	ScopeUpstream Scope = "upstream"
 )
 
-func CreateFailSafePolicies(scope Scope, component string, fsCfg *config.FailsafeConfig) ([]failsafe.Policy[*NormalizedResponse], error) {
+func CreateFailSafePolicies(scope Scope, component string, fsCfg *common.FailsafeConfig) ([]failsafe.Policy[common.NormalizedResponse], error) {
 	// The order of policies below are important as per docs of failsafe-go
-	var policies = []failsafe.Policy[*NormalizedResponse]{}
+	var policies = []failsafe.Policy[common.NormalizedResponse]{}
 
 	if fsCfg == nil {
 		return policies, nil
@@ -73,8 +72,8 @@ func CreateFailSafePolicies(scope Scope, component string, fsCfg *config.Failsaf
 	return policies, nil
 }
 
-func createCircuitBreakerPolicy(component string, cfg *config.CircuitBreakerPolicyConfig) (failsafe.Policy[*NormalizedResponse], error) {
-	builder := circuitbreaker.Builder[*NormalizedResponse]()
+func createCircuitBreakerPolicy(component string, cfg *common.CircuitBreakerPolicyConfig) (failsafe.Policy[common.NormalizedResponse], error) {
+	builder := circuitbreaker.Builder[common.NormalizedResponse]()
 
 	if cfg.FailureThresholdCount > 0 {
 		if cfg.FailureThresholdCapacity > 0 {
@@ -108,7 +107,7 @@ func createCircuitBreakerPolicy(component string, cfg *config.CircuitBreakerPoli
 		log.Debug().Msgf("CircuitBreaker state changed oldState: %s newState: %s", e.OldState, e.NewState)
 	})
 
-	builder.HandleIf(func(result *NormalizedResponse, err error) bool {
+	builder.HandleIf(func(result common.NormalizedResponse, err error) bool {
 		// 5xx or other non-retryable server-side errors -> open the circuit
 		if common.HasCode(err, common.ErrCodeEndpointServerSideException) {
 			return true
@@ -129,13 +128,14 @@ func createCircuitBreakerPolicy(component string, cfg *config.CircuitBreakerPoli
 			return true
 		}
 
-		if result != nil {
-			up := result.Request.Upstream
+		if result != nil && result.Request() != nil {
+			up := result.Request().Upstream()
 
 			// if "syncing" and null/empty response -> open the circuit
-			if up.Evm != nil {
-				if up.Evm.Syncing {
-					if result.IsEmpty() {
+			cfg := up.Config()
+			if cfg.Evm != nil {
+				if cfg.Evm.Syncing {
+					if result.IsResultEmptyish() {
 						return true
 					}
 				}
@@ -149,7 +149,7 @@ func createCircuitBreakerPolicy(component string, cfg *config.CircuitBreakerPoli
 	return builder.Build(), nil
 }
 
-func createHedgePolicy(component string, cfg *config.HedgePolicyConfig) (failsafe.Policy[*NormalizedResponse], error) {
+func createHedgePolicy(component string, cfg *common.HedgePolicyConfig) (failsafe.Policy[common.NormalizedResponse], error) {
 	delay, err := time.ParseDuration(cfg.Delay)
 	if err != nil {
 		return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse hedge.delay: %v", err), map[string]interface{}{
@@ -157,7 +157,7 @@ func createHedgePolicy(component string, cfg *config.HedgePolicyConfig) (failsaf
 			"policy":    cfg,
 		})
 	}
-	builder := hedgepolicy.BuilderWithDelay[*NormalizedResponse](delay)
+	builder := hedgepolicy.BuilderWithDelay[common.NormalizedResponse](delay)
 
 	if cfg.MaxCount > 0 {
 		builder = builder.WithMaxHedges(cfg.MaxCount)
@@ -166,8 +166,8 @@ func createHedgePolicy(component string, cfg *config.HedgePolicyConfig) (failsaf
 	return builder.Build(), nil
 }
 
-func createRetryPolicy(scope Scope, component string, cfg *config.RetryPolicyConfig) (failsafe.Policy[*NormalizedResponse], error) {
-	builder := retrypolicy.Builder[*NormalizedResponse]()
+func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyConfig) (failsafe.Policy[common.NormalizedResponse], error) {
+	builder := retrypolicy.Builder[common.NormalizedResponse]()
 
 	if cfg.MaxAttempts > 0 {
 		builder = builder.WithMaxAttempts(cfg.MaxAttempts)
@@ -211,7 +211,7 @@ func createRetryPolicy(scope Scope, component string, cfg *config.RetryPolicyCon
 		builder = builder.WithJitter(jitterDuration)
 	}
 
-	builder.HandleIf(func(result *NormalizedResponse, err error) bool {
+	builder.HandleIf(func(result common.NormalizedResponse, err error) bool {
 		// 400 / 404 / 405 / 413 -> No Retry
 		// RPC-RPC client-side error (invalid params) -> No Retry
 		if common.HasCode(err, common.ErrCodeEndpointClientSideException) {
@@ -225,26 +225,28 @@ func createRetryPolicy(scope Scope, component string, cfg *config.RetryPolicyCon
 		}
 
 		// Unsupported features and methods
-		if common.HasCode(err, common.ErrCodeEndpointUnsupported) {
+		if scope == ScopeUpstream && common.HasCode(err, common.ErrCodeEndpointUnsupported) {
 			return false
 		}
 
-		if result != nil {
-			req := result.Request
-			isEmpty := result.IsEmpty()
+		if !result.IsObjectNull() {
+			req := result.Request()
+			isEmpty := result.IsResultEmptyish()
 
 			// no Retry-Empty directive + "empty" response -> No Retry
-			if !req.DirectiveRetryEmpty && isEmpty {
+			rds := req.Directives()
+			if !rds.RetryEmpty && isEmpty {
 				return false
 			}
 
-			if req.Upstream.Evm != nil {
-				if req.Upstream.Evm.NodeType == common.EvmNodeTypeFull {
+			ucfg := req.Upstream().Config()
+			if ucfg.Evm != nil {
+				if ucfg.Evm.NodeType == common.EvmNodeTypeFull {
 					// Retry-Empty directive + "empty" response + "full" node + block is far in the past -> No Retry
-					if err != nil && req.DirectiveRetryEmpty && isEmpty {
+					if err != nil && rds.RetryEmpty && isEmpty {
 						bn, ebn := req.EvmBlockNumber()
 						if ebn == nil {
-							fin, efin := req.Network.EvmIsBlockFinalized(bn)
+							fin, efin := req.Network().EvmIsBlockFinalized(bn)
 							if efin == nil && fin {
 								return false
 							}
@@ -264,7 +266,7 @@ func createRetryPolicy(scope Scope, component string, cfg *config.RetryPolicyCon
 	return builder.Build(), nil
 }
 
-func createTimeoutPolicy(component string, cfg *config.TimeoutPolicyConfig) (failsafe.Policy[*NormalizedResponse], error) {
+func createTimeoutPolicy(component string, cfg *common.TimeoutPolicyConfig) (failsafe.Policy[common.NormalizedResponse], error) {
 	if cfg.Duration == "" {
 		return nil, common.NewErrFailsafeConfiguration(errors.New("missing timeout"), map[string]interface{}{
 			"component": component,
@@ -273,7 +275,7 @@ func createTimeoutPolicy(component string, cfg *config.TimeoutPolicyConfig) (fai
 	}
 
 	timeoutDuration, err := time.ParseDuration(cfg.Duration)
-	builder := timeout.Builder[*NormalizedResponse](timeoutDuration)
+	builder := timeout.Builder[common.NormalizedResponse](timeoutDuration)
 
 	if err != nil {
 		return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse timeout: %v", err), map[string]interface{}{

@@ -18,7 +18,6 @@ import (
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/config"
 	"github.com/flair-sdk/erpc/upstream"
 
 	// "github.com/flair-sdk/erpc/upstream"
@@ -69,15 +68,15 @@ func (r *ResponseRecorder) AddHeader(key, value string) {
 	r.Header().Add(key, value)
 }
 
-func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T) {
+func TestNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T) {
 	defer gock.Clean()
 
 	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
-		&config.RateLimiterConfig{
-			Buckets: []*config.RateLimitBucketConfig{
+		&common.RateLimiterConfig{
+			Buckets: []*common.RateLimitBucketConfig{
 				{
 					Id: "MyLimiterBucket_Test1",
-					Rules: []*config.RateLimitRuleConfig{
+					Rules: []*common.RateLimitRuleConfig{
 						{
 							Scope:    "instance",
 							Method:   "*",
@@ -94,23 +93,23 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 		t.Error(err)
 	}
 
-	ntw := &PreparedNetwork{
+	ntw := &Network{
 		ProjectId: "test",
 		NetworkId: "123",
-		Config: &config.NetworkConfig{
+		Config: &common.NetworkConfig{
 			RateLimitBucket: "MyLimiterBucket_Test1",
 		},
 		Logger: &log.Logger,
 
 		rateLimitersRegistry: rateLimitersRegistry,
 		upstreamsMutex:       &sync.RWMutex{},
-		failsafeExecutor:     failsafe.NewExecutor(retrypolicy.Builder[*upstream.NormalizedResponse]().Build()),
+		failsafeExecutor:     failsafe.NewExecutor(retrypolicy.Builder[common.NormalizedResponse]().Build()),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	var lastErr error
-	var lastResp *upstream.NormalizedResponse
+	var lastResp common.NormalizedResponse
 
 	for i := 0; i < 5; i++ {
 		fakeReq := upstream.NewNormalizedRequest([]byte(`{"method": "eth_chainId","params":[]}`))
@@ -125,15 +124,15 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 	log.Logger.Info().Msgf("Last Resp: %+v", lastResp)
 }
 
-// func TestPreparedNetwork_ForwardNotRateLimitedOnNetworkLevel(t *testing.T) {
+// func TestNetwork_ForwardNotRateLimitedOnNetworkLevel(t *testing.T) {
 // 	defer gock.Clean()
 
 // 	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
-// 		&config.RateLimiterConfig{
-// 			Buckets: []*config.RateLimitBucketConfig{
+// 		&common.RateLimiterConfig{
+// 			Buckets: []*common.RateLimitBucketConfig{
 // 				{
 // 					Id: "MyLimiterBucket_Test2",
-// 					Rules: []*config.RateLimitRuleConfig{
+// 					Rules: []*common.RateLimitRuleConfig{
 // 						{
 // 							Scope:    "instance",
 // 							Method:   "*",
@@ -149,10 +148,10 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	if err != nil {
 // 		t.Error(err)
 // 	}
-// 	ntw := &PreparedNetwork{
+// 	ntw := &Network{
 // 		ProjectId: "test",
 // 		NetworkId: "123",
-// 		Config: &config.NetworkConfig{
+// 		Config: &common.NetworkConfig{
 // 			RateLimitBucket: "MyLimiterBucket_Test2",
 // 		},
 // 		Logger: &log.Logger,
@@ -178,7 +177,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	}
 // }
 
-// func TestPreparedNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
+// func TestNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 // 	defer gock.Clean()
 // 	defer gock.DisableNetworking()
 // 	defer gock.DisableNetworkingFilters()
@@ -204,8 +203,8 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 
 // 	clr := upstream.NewClientRegistry()
 
-// 	fsCfg := &config.FailsafeConfig{
-// 		Retry: &config.RetryPolicyConfig{
+// 	fsCfg := &common.FailsafeConfig{
+// 		Retry: &common.RetryPolicyConfig{
 // 			MaxAttempts: 3,
 // 		},
 // 	}
@@ -213,7 +212,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	if err != nil {
 // 		t.Error(err)
 // 	}
-// 	pup := &upstream.PreparedUpstream{
+// 	pup := &upstream.Upstream{
 // 		Logger:       log.Logger,
 // 		Id:           "test",
 // 		Endpoint:     "http://google.com",
@@ -228,14 +227,14 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		t.Error(err)
 // 	}
 // 	pup.Client = cl
-// 	ntw := &PreparedNetwork{
+// 	ntw := &Network{
 // 		Logger:    &log.Logger,
 // 		NetworkId: "123",
-// 		Config: &config.NetworkConfig{
+// 		Config: &common.NetworkConfig{
 // 			Failsafe: fsCfg,
 // 		},
 // 		FailsafePolicies: policies,
-// 		Upstreams:        []*upstream.PreparedUpstream{pup},
+// 		Upstreams:        []*upstream.Upstream{pup},
 
 // 		failsafeExecutor: failsafe.NewExecutor(policies...),
 // 		mu:               &sync.RWMutex{},
@@ -259,7 +258,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	}
 // }
 
-// func TestPreparedNetwork_ForwardRetryFailuresWithSuccess(t *testing.T) {
+// func TestNetwork_ForwardRetryFailuresWithSuccess(t *testing.T) {
 // 	defer gock.Clean()
 
 // 	defer gock.DisableNetworking()
@@ -290,8 +289,8 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	defer cancel()
 
 // 	clr := upstream.NewClientRegistry()
-// 	fsCfg := &config.FailsafeConfig{
-// 		Retry: &config.RetryPolicyConfig{
+// 	fsCfg := &common.FailsafeConfig{
+// 		Retry: &common.RetryPolicyConfig{
 // 			MaxAttempts: 4,
 // 		},
 // 	}
@@ -299,7 +298,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	if err != nil {
 // 		t.Error(err)
 // 	}
-// 	pup := &upstream.PreparedUpstream{
+// 	pup := &upstream.Upstream{
 // 		Logger:       log.Logger,
 // 		Id:           "test",
 // 		Endpoint:     "http://google.com",
@@ -314,14 +313,14 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		t.Error(err)
 // 	}
 // 	pup.Client = cl
-// 	ntw := &PreparedNetwork{
+// 	ntw := &Network{
 // 		Logger:    &log.Logger,
 // 		NetworkId: "123",
-// 		Config: &config.NetworkConfig{
+// 		Config: &common.NetworkConfig{
 // 			Failsafe: fsCfg,
 // 		},
 // 		FailsafePolicies: policies,
-// 		Upstreams:        []*upstream.PreparedUpstream{pup},
+// 		Upstreams:        []*upstream.Upstream{pup},
 
 // 		failsafeExecutor: failsafe.NewExecutor(policies...),
 // 		mu:               &sync.RWMutex{},
@@ -365,7 +364,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	}
 // }
 
-// func TestPreparedNetwork_ForwardTimeoutPolicyFail(t *testing.T) {
+// func TestNetwork_ForwardTimeoutPolicyFail(t *testing.T) {
 // 	defer gock.Clean()
 
 // 	defer gock.DisableNetworking()
@@ -391,8 +390,8 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	defer cancel()
 
 // 	clr := upstream.NewClientRegistry()
-// 	fsCfg := &config.FailsafeConfig{
-// 		Timeout: &config.TimeoutPolicyConfig{
+// 	fsCfg := &common.FailsafeConfig{
+// 		Timeout: &common.TimeoutPolicyConfig{
 // 			Duration: "30ms",
 // 		},
 // 	}
@@ -400,7 +399,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	if err != nil {
 // 		t.Error(err)
 // 	}
-// 	pup := &upstream.PreparedUpstream{
+// 	pup := &upstream.Upstream{
 // 		Logger:       log.Logger,
 // 		Id:           "test",
 // 		Endpoint:     "http://google.com",
@@ -415,14 +414,14 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		t.Error(err)
 // 	}
 // 	pup.Client = cl
-// 	ntw := &PreparedNetwork{
+// 	ntw := &Network{
 // 		Logger:    &log.Logger,
 // 		NetworkId: "123",
-// 		Config: &config.NetworkConfig{
+// 		Config: &common.NetworkConfig{
 // 			Failsafe: fsCfg,
 // 		},
 // 		FailsafePolicies: policies,
-// 		Upstreams:        []*upstream.PreparedUpstream{pup},
+// 		Upstreams:        []*upstream.Upstream{pup},
 
 // 		failsafeExecutor: failsafe.NewExecutor(policies...),
 // 		mu:               &sync.RWMutex{},
@@ -451,7 +450,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	}
 // }
 
-// func TestPreparedNetwork_ForwardTimeoutPolicyPass(t *testing.T) {
+// func TestNetwork_ForwardTimeoutPolicyPass(t *testing.T) {
 // 	defer gock.Clean()
 // 	defer gock.DisableNetworking()
 // 	defer gock.DisableNetworkingFilters()
@@ -476,8 +475,8 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	defer cancel()
 
 // 	clr := upstream.NewClientRegistry()
-// 	fsCfg := &config.FailsafeConfig{
-// 		Timeout: &config.TimeoutPolicyConfig{
+// 	fsCfg := &common.FailsafeConfig{
+// 		Timeout: &common.TimeoutPolicyConfig{
 // 			Duration: "1s",
 // 		},
 // 	}
@@ -485,7 +484,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	if err != nil {
 // 		t.Error(err)
 // 	}
-// 	pup := &upstream.PreparedUpstream{
+// 	pup := &upstream.Upstream{
 // 		Logger:       log.Logger,
 // 		Id:           "test",
 // 		Endpoint:     "http://google.com",
@@ -500,14 +499,14 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		t.Error(err)
 // 	}
 // 	pup.Client = cl
-// 	ntw := &PreparedNetwork{
+// 	ntw := &Network{
 // 		Logger:    &log.Logger,
 // 		NetworkId: "123",
-// 		Config: &config.NetworkConfig{
+// 		Config: &common.NetworkConfig{
 // 			Failsafe: fsCfg,
 // 		},
 // 		FailsafePolicies: policies,
-// 		Upstreams:        []*upstream.PreparedUpstream{pup},
+// 		Upstreams:        []*upstream.Upstream{pup},
 
 // 		failsafeExecutor: failsafe.NewExecutor(policies...),
 // 		mu:               &sync.RWMutex{},
@@ -534,7 +533,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	}
 // }
 
-// func TestPreparedNetwork_ForwardHedgePolicyTriggered(t *testing.T) {
+// func TestNetwork_ForwardHedgePolicyTriggered(t *testing.T) {
 // 	defer gock.Clean()
 // 	defer gock.DisableNetworking()
 // 	defer gock.DisableNetworkingFilters()
@@ -565,8 +564,8 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	defer cancel()
 
 // 	clr := upstream.NewClientRegistry()
-// 	fsCfg := &config.FailsafeConfig{
-// 		Hedge: &config.HedgePolicyConfig{
+// 	fsCfg := &common.FailsafeConfig{
+// 		Hedge: &common.HedgePolicyConfig{
 // 			Delay:    "200ms",
 // 			MaxCount: 1,
 // 		},
@@ -575,7 +574,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	if err != nil {
 // 		t.Error(err)
 // 	}
-// 	pup1 := &upstream.PreparedUpstream{
+// 	pup1 := &upstream.Upstream{
 // 		Logger:       log.Logger,
 // 		Id:           "rpc1",
 // 		Endpoint:     "http://rpc1.localhost",
@@ -590,7 +589,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		t.Error(err)
 // 	}
 // 	pup1.Client = cl1
-// 	pup2 := &upstream.PreparedUpstream{
+// 	pup2 := &upstream.Upstream{
 // 		Logger:       log.Logger,
 // 		Id:           "rpc2",
 // 		Endpoint:     "http://rpc2.localhost",
@@ -606,14 +605,14 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	}
 // 	pup2.Client = cl2
 
-// 	ntw := &PreparedNetwork{
+// 	ntw := &Network{
 // 		Logger:    &log.Logger,
 // 		NetworkId: "123",
-// 		Config: &config.NetworkConfig{
+// 		Config: &common.NetworkConfig{
 // 			Failsafe: fsCfg,
 // 		},
 // 		FailsafePolicies: policies,
-// 		Upstreams:        []*upstream.PreparedUpstream{pup1, pup2},
+// 		Upstreams:        []*upstream.Upstream{pup1, pup2},
 
 // 		failsafeExecutor: failsafe.NewExecutor(policies...),
 // 		mu:               &sync.RWMutex{},
@@ -657,7 +656,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	}
 // }
 
-// func TestPreparedNetwork_ForwardHedgePolicyNotTriggered(t *testing.T) {
+// func TestNetwork_ForwardHedgePolicyNotTriggered(t *testing.T) {
 // 	defer gock.Clean()
 
 // 	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
@@ -680,8 +679,8 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	defer cancel()
 
 // 	clr := upstream.NewClientRegistry()
-// 	fsCfg := &config.FailsafeConfig{
-// 		Hedge: &config.HedgePolicyConfig{
+// 	fsCfg := &common.FailsafeConfig{
+// 		Hedge: &common.HedgePolicyConfig{
 // 			Delay:    "100ms",
 // 			MaxCount: 5,
 // 		},
@@ -690,7 +689,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	if err != nil {
 // 		t.Error(err)
 // 	}
-// 	pup1 := &upstream.PreparedUpstream{
+// 	pup1 := &upstream.Upstream{
 // 		Logger:       log.Logger,
 // 		Id:           "rpc1",
 // 		Endpoint:     "http://google.com",
@@ -705,7 +704,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		t.Error(err)
 // 	}
 // 	pup1.Client = cl1
-// 	pup2 := &upstream.PreparedUpstream{
+// 	pup2 := &upstream.Upstream{
 // 		Logger:       log.Logger,
 // 		Id:           "rpc2",
 // 		Endpoint:     "http://alchemy.com",
@@ -721,14 +720,14 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	}
 // 	pup2.Client = cl2
 
-// 	ntw := &PreparedNetwork{
+// 	ntw := &Network{
 // 		Logger:    &log.Logger,
 // 		NetworkId: "123",
-// 		Config: &config.NetworkConfig{
+// 		Config: &common.NetworkConfig{
 // 			Failsafe: fsCfg,
 // 		},
 // 		FailsafePolicies: policies,
-// 		Upstreams:        []*upstream.PreparedUpstream{pup1, pup2},
+// 		Upstreams:        []*upstream.Upstream{pup1, pup2},
 
 // 		failsafeExecutor: failsafe.NewExecutor(policies...),
 // 		mu:               &sync.RWMutex{},
@@ -775,7 +774,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	}
 // }
 
-// func TestPreparedNetwork_ForwardHedgePolicyIgnoresNegativeScoreUpstream(t *testing.T) {
+// func TestNetwork_ForwardHedgePolicyIgnoresNegativeScoreUpstream(t *testing.T) {
 // 	defer gock.Clean()
 // 	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
 
@@ -792,8 +791,8 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	defer cancel()
 
 // 	clr := upstream.NewClientRegistry()
-// 	fsCfg := &config.FailsafeConfig{
-// 		Hedge: &config.HedgePolicyConfig{
+// 	fsCfg := &common.FailsafeConfig{
+// 		Hedge: &common.HedgePolicyConfig{
 // 			Delay:    "30ms",
 // 			MaxCount: 2,
 // 		},
@@ -802,7 +801,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	if err != nil {
 // 		t.Error(err)
 // 	}
-// 	pup1 := &upstream.PreparedUpstream{
+// 	pup1 := &upstream.Upstream{
 // 		Logger:       log.Logger,
 // 		Id:           "rpc1",
 // 		Endpoint:     "http://google.com",
@@ -818,7 +817,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		t.Error(err)
 // 	}
 // 	pup1.Client = cl1
-// 	pup2 := &upstream.PreparedUpstream{
+// 	pup2 := &upstream.Upstream{
 // 		Logger:       log.Logger,
 // 		Id:           "rpc2",
 // 		Endpoint:     "http://alchemy.com",
@@ -835,14 +834,14 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	}
 // 	pup2.Client = cl2
 
-// 	ntw := &PreparedNetwork{
+// 	ntw := &Network{
 // 		Logger:    &log.Logger,
 // 		NetworkId: "123",
-// 		Config: &config.NetworkConfig{
+// 		Config: &common.NetworkConfig{
 // 			Failsafe: fsCfg,
 // 		},
 // 		FailsafePolicies: policies,
-// 		Upstreams:        []*upstream.PreparedUpstream{pup1, pup2},
+// 		Upstreams:        []*upstream.Upstream{pup1, pup2},
 
 // 		failsafeExecutor: failsafe.NewExecutor(policies...),
 // 		mu:               &sync.RWMutex{},
@@ -891,7 +890,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	}
 // }
 
-// func TestPreparedNetwork_ForwardCBOpensAfterConstantFailure(t *testing.T) {
+// func TestNetwork_ForwardCBOpensAfterConstantFailure(t *testing.T) {
 // 	defer gock.Clean()
 // 	defer gock.DisableNetworking()
 // 	defer gock.DisableNetworkingFilters()
@@ -922,14 +921,14 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	defer cancel()
 
 // 	clr := upstream.NewClientRegistry()
-// 	fsCfg := &config.FailsafeConfig{
-// 		CircuitBreaker: &config.CircuitBreakerPolicyConfig{
+// 	fsCfg := &common.FailsafeConfig{
+// 		CircuitBreaker: &common.CircuitBreakerPolicyConfig{
 // 			FailureThresholdCount:    2,
 // 			FailureThresholdCapacity: 4,
 // 			HalfOpenAfter:            "2s",
 // 		},
 // 	}
-// 	pup1, err := upstream.NewUpstream("test_cb", &config.UpstreamConfig{
+// 	pup1, err := upstream.NewUpstream("test_cb", &common.UpstreamConfig{
 // 		Id:           "upstream1",
 // 		Endpoint:     "http://google.com",
 // 		Architecture: common.ArchitectureEvm,
@@ -943,13 +942,13 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		t.Error(err)
 // 	}
 
-// 	ntw := &PreparedNetwork{
+// 	ntw := &Network{
 // 		Logger:    &log.Logger,
 // 		NetworkId: "123",
-// 		Config: &config.NetworkConfig{
+// 		Config: &common.NetworkConfig{
 // 			Architecture: common.ArchitectureEvm,
 // 		},
-// 		Upstreams: []*upstream.PreparedUpstream{pup1},
+// 		Upstreams: []*upstream.Upstream{pup1},
 // 		mu:        &sync.RWMutex{},
 // 	}
 
@@ -978,7 +977,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	}
 // }
 
-// func TestPreparedNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
+// func TestNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
 // 	defer gock.Clean()
 // 	defer gock.DisableNetworking()
 // 	defer gock.DisableNetworkingFilters()
@@ -1015,14 +1014,14 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	defer cancel()
 
 // 	clr := upstream.NewClientRegistry()
-// 	fsCfg := &config.FailsafeConfig{
-// 		CircuitBreaker: &config.CircuitBreakerPolicyConfig{
+// 	fsCfg := &common.FailsafeConfig{
+// 		CircuitBreaker: &common.CircuitBreakerPolicyConfig{
 // 			FailureThresholdCount:    2,
 // 			FailureThresholdCapacity: 4,
 // 			HalfOpenAfter:            "2s",
 // 		},
 // 	}
-// 	pup1, err := upstream.NewUpstream("test_cb", &config.UpstreamConfig{
+// 	pup1, err := upstream.NewUpstream("test_cb", &common.UpstreamConfig{
 // 		Id:           "upstream1",
 // 		Endpoint:     "http://google.com",
 // 		Architecture: common.ArchitectureEvm,
@@ -1036,16 +1035,16 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		t.Error(err)
 // 	}
 
-// 	ntw := &PreparedNetwork{
+// 	ntw := &Network{
 // 		Logger:    &log.Logger,
 // 		NetworkId: "123",
-// 		Config: &config.NetworkConfig{
+// 		Config: &common.NetworkConfig{
 // 			Architecture: common.ArchitectureEvm,
-// 			Evm: &config.EvmNetworkConfig{
+// 			Evm: &common.EvmNetworkConfig{
 // 				ChainId: 123,
 // 			},
 // 		},
-// 		Upstreams: []*upstream.PreparedUpstream{
+// 		Upstreams: []*upstream.Upstream{
 // 			pup1,
 // 		},
 // 		mu: &sync.RWMutex{},
@@ -1107,16 +1106,16 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 	}
 // }
 
-// func TestPreparedNetwork_WeightedRandomSelect(t *testing.T) {
+// func TestNetwork_WeightedRandomSelect(t *testing.T) {
 // 	// Test cases
 // 	tests := []struct {
 // 		name      string
-// 		upstreams []*upstream.PreparedUpstream
+// 		upstreams []*upstream.Upstream
 // 		expected  map[string]int // To track selection counts for each upstream ID
 // 	}{
 // 		{
 // 			name: "Basic scenario with distinct weights",
-// 			upstreams: []*upstream.PreparedUpstream{
+// 			upstreams: []*upstream.Upstream{
 // 				{Id: "upstream1", Score: 1},
 // 				{Id: "upstream2", Score: 2},
 // 				{Id: "upstream3", Score: 3},
@@ -1125,7 +1124,7 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		},
 // 		{
 // 			name: "All upstreams have the same score",
-// 			upstreams: []*upstream.PreparedUpstream{
+// 			upstreams: []*upstream.Upstream{
 // 				{Id: "upstream1", Score: 1},
 // 				{Id: "upstream2", Score: 1},
 // 				{Id: "upstream3", Score: 1},
@@ -1134,14 +1133,14 @@ func TestPreparedNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T)
 // 		},
 // 		{
 // 			name: "Single upstream",
-// 			upstreams: []*upstream.PreparedUpstream{
+// 			upstreams: []*upstream.Upstream{
 // 				{Id: "upstream1", Score: 1},
 // 			},
 // 			expected: map[string]int{"upstream1": 0},
 // 		},
 // 		{
 // 			name: "Upstreams with zero score",
-// 			upstreams: []*upstream.PreparedUpstream{
+// 			upstreams: []*upstream.Upstream{
 // 				{Id: "upstream1", Score: 0},
 // 				{Id: "upstream2", Score: 0},
 // 				{Id: "upstream3", Score: 1},

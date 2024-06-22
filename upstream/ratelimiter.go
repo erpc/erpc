@@ -7,12 +7,11 @@ import (
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/failsafe-go/failsafe-go/ratelimiter"
 	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/config"
 	"github.com/rs/zerolog/log"
 )
 
 type RateLimitersRegistry struct {
-	cfg             *config.RateLimiterConfig
+	cfg             *common.RateLimiterConfig
 	bucketsLimiters map[string]*RateLimiterBucket
 }
 
@@ -24,13 +23,13 @@ type RateLimiterBucket struct {
 }
 
 type RateLimitRule struct {
-	Config  *config.RateLimitRuleConfig
+	Config  *common.RateLimitRuleConfig
 	Limiter *ratelimiter.RateLimiter[interface{}]
 }
 
 var rulesByBucketAndMethod map[string]map[string][]*RateLimitRule = make(map[string]map[string][]*RateLimitRule)
 
-func NewRateLimitersRegistry(cfg *config.RateLimiterConfig) (*RateLimitersRegistry, error) {
+func NewRateLimitersRegistry(cfg *common.RateLimiterConfig) (*RateLimitersRegistry, error) {
 	r := &RateLimitersRegistry{
 		cfg:             cfg,
 		bucketsLimiters: make(map[string]*RateLimiterBucket),

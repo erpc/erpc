@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/config"
 	"github.com/flair-sdk/erpc/erpc"
 	"github.com/flair-sdk/erpc/evm"
 	"github.com/flair-sdk/erpc/upstream"
@@ -18,16 +17,16 @@ import (
 )
 
 type HttpServer struct {
-	config *config.ServerConfig
+	config *common.ServerConfig
 	server *http.Server
 }
 
-func NewHttpServer(cfg *config.ServerConfig, erpc *erpc.ERPC) *HttpServer {
+func NewHttpServer(cfg *common.ServerConfig, erpc *erpc.ERPC) *HttpServer {
 	addr := fmt.Sprintf("%s:%s", cfg.HttpHost, cfg.HttpPort)
 
 	handler := http.NewServeMux()
 	handler.HandleFunc("/", func(hrw http.ResponseWriter, r *http.Request) {
-		var resp *upstream.NormalizedResponse
+		var resp common.NormalizedResponse
 		var err error
 
 		log.Debug().Msgf("received request on path: %s with body length: %d", r.URL.Path, r.ContentLength)
@@ -107,20 +106,41 @@ func handleErrorResponse(err error, hrw http.ResponseWriter) {
 		hrw.WriteHeader(http.StatusInternalServerError)
 	}
 
+	jre := &common.ErrJsonRpcException{}
+	if errors.As(err, &jre) {
+		json.NewEncoder(hrw).Encode(map[string]interface{}{
+			"code":    jre.NormalizedCode(),
+			"message": jre.Message,
+			"cause":   err,
+		})
+		return
+	}
+	
 	var bodyErr common.ErrorWithBody
+	var writeErr error
+	
 	if errors.As(err, &bodyErr) {
-		json.NewEncoder(hrw).Encode(bodyErr.ErrorResponseBody())
+		writeErr = json.NewEncoder(hrw).Encode(bodyErr.ErrorResponseBody())
 	} else {
-		jre := &common.ErrJsonRpcException{}
-		if errors.As(err, &jre) {
-			json.NewEncoder(hrw).Encode(map[string]interface{}{
-				"code":    jre.Details["code"],
-				"message": jre.Details["message"],
-				"cause":   err,
-			})
+		writeErr = json.NewEncoder(hrw).Encode(err)
+	}
+
+	if writeErr != nil {
+		log.Error().Err(writeErr).Msgf("failed to encode error response body")
+		hrw.WriteHeader(http.StatusInternalServerError)
+
+		var cause interface{}
+		if be, ok := writeErr.(*common.BaseError); ok {
+			cause = be
 		} else {
-			json.NewEncoder(hrw).Encode(err)
+			cause = writeErr.Error()
 		}
+
+		json.NewEncoder(hrw).Encode(map[string]interface{}{
+			"code":    common.JsonRpcErrorServerSideException,
+			"message": "unexpected server error",
+			"cause":   cause,
+		})
 	}
 }
 

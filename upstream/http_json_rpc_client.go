@@ -19,11 +19,11 @@ type HttpJsonRpcClient struct {
 	Type string
 	Url  *url.URL
 
-	upstream   *PreparedUpstream
+	upstream   *Upstream
 	httpClient *http.Client
 }
 
-func NewHttpJsonRpcClient(pu *PreparedUpstream, parsedUrl *url.URL) (*HttpJsonRpcClient, error) {
+func NewHttpJsonRpcClient(pu *Upstream, parsedUrl *url.URL) (*HttpJsonRpcClient, error) {
 	var client *HttpJsonRpcClient
 
 	if util.IsTest() {
@@ -56,10 +56,10 @@ func NewHttpJsonRpcClient(pu *PreparedUpstream, parsedUrl *url.URL) (*HttpJsonRp
 func (c *HttpJsonRpcClient) SendRequest(ctx context.Context, req *NormalizedRequest) (*NormalizedResponse, error) {
 	jrReq, err := req.JsonRpcRequest()
 	if err != nil {
-		return nil, common.NewErrUpstreamRequest(err, c.upstream.Id, req)
+		return nil, common.NewErrUpstreamRequest(err, c.upstream.Config().Id, req)
 	}
 
-	requestBody, err := json.Marshal(JsonRpcRequest{
+	requestBody, err := json.Marshal(common.JsonRpcRequest{
 		JSONRPC: jrReq.JSONRPC,
 		Method:  jrReq.Method,
 		Params:  jrReq.Params,
@@ -80,7 +80,7 @@ func (c *HttpJsonRpcClient) SendRequest(ctx context.Context, req *NormalizedRequ
 			Message: fmt.Sprintf("%v", errReq),
 			Details: map[string]interface{}{
 				"url":      c.Url.String(),
-				"upstream": c.upstream.Id,
+				"upstream": c.upstream.Config().Id,
 				"request":  requestBody,
 			},
 		}
@@ -113,9 +113,10 @@ func (c *HttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *Normaliz
 		if nr != nil {
 			if err != nil {
 				return common.NewErrJsonRpcException(
-					err,
-					common.JsonRpcErrorParseException,
+					0,
+					common.JsonRpcErrorClientSideException,
 					"could not parse json rpc response from upstream",
+					err,
 				)
 			}
 			log.Debug().
@@ -129,43 +130,64 @@ func (c *HttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *Normaliz
 		}
 	}
 
-	if e := extractJsonRpcError(r, jr); e != nil {
+	if e := extractJsonRpcError(r, nr, jr); e != nil {
 		return e
 	}
 
-	return common.NewErrJsonRpcException(&common.BaseError{
-		Code:    "ErrEndpointUnknownException",
-		Message: "unknown json-rpc body",
-		Details: map[string]interface{}{
-			"upstream":   c.upstream.Id,
-			"statusCode": r.StatusCode,
-			"headers":    r.Header,
-			"body":       string(nr.Body()),
-		},
-	}, common.JsonRpcErrorServerSideException, "upstream endpoint responded with unknown error")
+	e := common.NewErrJsonRpcException(0, common.JsonRpcErrorServerSideException, "unknown json-rpc response", nil)
+	e.Details = map[string]interface{}{
+		"upstream":   c.upstream.Config().Id,
+		"statusCode": r.StatusCode,
+		"headers":    r.Header,
+		"body":       string(nr.Body()),
+	}
+
+	return e
 }
 
-func extractJsonRpcError(r *http.Response, jr *JsonRpcResponse) error {
+func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *common.JsonRpcResponse) error {
 	if jr != nil && jr.Error != nil {
-		oerr := jr.Error
+		err := jr.Error
 
-		code := oerr.Details["code"].(common.JsonRpcErrorNumber)
-		msg := oerr.Details["message"].(string)
-
-		err := common.NewErrJsonRpcException(oerr.Cause, code, msg)
+		if ver := getVendorSpecificErrorIfAny(r, nr, jr); ver != nil {
+			return ver
+		}
 
 		if r.StatusCode == 401 || r.StatusCode == 403 {
 			return common.NewErrEndpointUnauthorized(err)
-		}
-
-		switch code {
-		case common.JsonRpcErrorParseException:
-		case common.JsonRpcErrorInvalidArgument:
-			return common.NewErrEndpointClientSideException(err)
+		} else if r.StatusCode == 415 {
+			return common.NewErrEndpointUnsupported(err)
+		} else if r.StatusCode == 429 || r.StatusCode == 408 {
+			return common.NewErrEndpointCapacityExceeded(err)
+		} else if r.StatusCode >= 500 {
+			return common.NewErrEndpointServerSideException(err)
 		}
 
 		return err
 	}
 
 	return nil
+}
+
+func getVendorSpecificErrorIfAny(
+	rp *http.Response,
+	nr common.NormalizedResponse,
+	jr *common.JsonRpcResponse,
+) error {
+	req := nr.Request()
+	if req == nil {
+		return nil
+	}
+
+	ups := req.Upstream()
+	if ups == nil {
+		return nil
+	}
+
+	vn := ups.Vendor()
+	if vn == nil {
+		return nil
+	}
+
+	return vn.GetVendorSpecificErrorIfAny(rp, jr)
 }

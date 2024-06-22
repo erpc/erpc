@@ -12,13 +12,13 @@ import (
 type EvmBlockTracker struct {
 	ctx       context.Context
 	ctxCancel context.CancelFunc
-	network   *PreparedNetwork
+	network   *Network
 
 	LatestBlockNumber    uint64
 	FinalizedBlockNumber uint64
 }
 
-func NewEvmBlockTracker(network *PreparedNetwork) *EvmBlockTracker {
+func NewEvmBlockTracker(network *Network) *EvmBlockTracker {
 	return &EvmBlockTracker{
 		network: network,
 	}

@@ -7,7 +7,6 @@ import (
 
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/config"
 	"github.com/flair-sdk/erpc/data"
 	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog"
@@ -15,13 +14,13 @@ import (
 
 type NetworksRegistry struct {
 	rateLimitersRegistry *upstream.RateLimitersRegistry
-	preparedNetworks     map[string]*PreparedNetwork
+	preparedNetworks     map[string]*Network
 }
 
 func NewNetworksRegistry(rateLimitersRegistry *upstream.RateLimitersRegistry) *NetworksRegistry {
 	r := &NetworksRegistry{
 		rateLimitersRegistry: rateLimitersRegistry,
-		preparedNetworks:     make(map[string]*PreparedNetwork),
+		preparedNetworks:     make(map[string]*Network),
 	}
 	return r
 }
@@ -29,16 +28,16 @@ func NewNetworksRegistry(rateLimitersRegistry *upstream.RateLimitersRegistry) *N
 func (r *NetworksRegistry) RegisterNetwork(
 	logger *zerolog.Logger,
 	evmJsonRpcCache *EvmJsonRpcCache,
-	prjCfg *config.ProjectConfig,
-	nwCfg *config.NetworkConfig,
-) (*PreparedNetwork, error) {
+	prjCfg *common.ProjectConfig,
+	nwCfg *common.NetworkConfig,
+) (*Network, error) {
 	var key = fmt.Sprintf("%s-%s", prjCfg.Id, nwCfg.NetworkId())
 
 	if pn, ok := r.preparedNetworks[key]; ok {
 		return pn, nil
 	}
 
-	var policies []failsafe.Policy[*upstream.NormalizedResponse]
+	var policies []failsafe.Policy[common.NormalizedResponse]
 	if (nwCfg != nil) && (nwCfg.Failsafe != nil) {
 		pls, err := upstream.CreateFailSafePolicies(upstream.ScopeNetwork, key, nwCfg.Failsafe)
 		if err != nil {
@@ -49,10 +48,10 @@ func (r *NetworksRegistry) RegisterNetwork(
 
 	var rateLimiterDal data.RateLimitersDAL
 
-	r.preparedNetworks[key] = &PreparedNetwork{
+	r.preparedNetworks[key] = &Network{
 		ProjectId:        prjCfg.Id,
 		NetworkId:        nwCfg.NetworkId(),
-		FailsafePolicies: policies,
+		failsafePolicies: policies,
 		Config:           nwCfg,
 		Logger:           logger,
 
@@ -78,6 +77,6 @@ func (r *NetworksRegistry) RegisterNetwork(
 	return r.preparedNetworks[key], nil
 }
 
-func (nr *NetworksRegistry) GetNetwork(projectId, networkId string) *PreparedNetwork {
+func (nr *NetworksRegistry) GetNetwork(projectId, networkId string) *Network {
 	return nr.preparedNetworks[fmt.Sprintf("%s-%s", projectId, networkId)]
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/config"
 )
 
 const (
@@ -21,7 +20,7 @@ type Connector interface {
 
 func NewConnector(
 	ctx context.Context,
-	cfg *config.ConnectorConfig,
+	cfg *common.ConnectorConfig,
 ) (Connector, error) {
 	switch cfg.Driver {
 	// case "memory":

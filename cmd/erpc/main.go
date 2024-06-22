@@ -9,7 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/flair-sdk/erpc/config"
+	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/erpc"
 	"github.com/flair-sdk/erpc/server"
 	"github.com/flair-sdk/erpc/util"
@@ -54,7 +54,7 @@ func Init(
 		return nil, fmt.Errorf("config file '%s' does not exist", configPath)
 	}
 	logger.Info().Msgf("resolved configuration file to: %s", configPath)
-	cfg, err := config.LoadConfig(fs, configPath)
+	cfg, err := common.LoadConfig(fs, configPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load configuration from %s: %v", configPath, err)
 	}
