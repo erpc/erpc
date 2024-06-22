@@ -2,69 +2,94 @@ package upstream
 
 import (
 	"encoding/json"
-	"errors"
-	"fmt"
 	"math"
 	"math/rand"
 	"net/http"
-	"strings"
 
-	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/flair-sdk/erpc/common"
+	"github.com/flair-sdk/erpc/evm"
 	"github.com/rs/zerolog"
 )
 
 type NormalizedRequest struct {
-	Network  common.Network
-	Upstream *PreparedUpstream
-
-	body []byte
-
-	jsonRpcRequest *JsonRpcRequest
-
-	DirectiveRetryEmpty bool
+	network        common.Network
+	upstream       common.Upstream
+	body           []byte
+	directives     *common.RequestDirectives
+	jsonRpcRequest *common.JsonRpcRequest
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {
 	return &NormalizedRequest{
 		body: body,
+		directives: &common.RequestDirectives{
+			RetryEmpty: true,
+		},
 	}
 }
 
-func (r *NormalizedRequest) Clone() *NormalizedRequest {
+func (r *NormalizedRequest) Clone() common.NormalizedRequest {
 	return &NormalizedRequest{
-		Network:             r.Network,
-		Upstream:            r.Upstream,
-		DirectiveRetryEmpty: r.DirectiveRetryEmpty,
-
+		network:        r.network,
+		upstream:       r.upstream,
 		body:           r.body,
+		directives:     r.directives,
 		jsonRpcRequest: r.jsonRpcRequest,
 	}
 }
 
+func (r *NormalizedRequest) Network() common.Network {
+	if r == nil {
+		return nil
+	}
+	return r.network
+}
+
+func (r *NormalizedRequest) Upstream() common.Upstream {
+	if r == nil {
+		return nil
+	}
+	return r.upstream
+}
+
 func (r *NormalizedRequest) WithNetwork(network common.Network) *NormalizedRequest {
-	r.Network = network
+	r.network = network
 	return r
 }
 
-func (r *NormalizedRequest) WithUpstream(upstream *PreparedUpstream) *NormalizedRequest {
-	r.Upstream = upstream
+func (r *NormalizedRequest) WithUpstream(upstream common.Upstream) *NormalizedRequest {
+	r.upstream = upstream
 	return r
 }
 
 func (r *NormalizedRequest) ApplyDirectivesFromHttpHeaders(headers http.Header) *NormalizedRequest {
-	r.DirectiveRetryEmpty = headers.Get("x-erpc-retry-empty") != "false"
+	drc := &common.RequestDirectives{
+		RetryEmpty: headers.Get("x-erpc-retry-empty") != "false",
+	}
+	r.directives = drc
 	return r
 }
 
-// Extract and prepare the request for forwarding.
-func (n *NormalizedRequest) JsonRpcRequest() (*JsonRpcRequest, error) {
-	if n.jsonRpcRequest != nil {
-		return n.jsonRpcRequest, nil
+func (r *NormalizedRequest) Directives() *common.RequestDirectives {
+	if r == nil {
+		return nil
 	}
 
-	rpcReq := new(JsonRpcRequest)
-	if err := json.Unmarshal(n.body, rpcReq); err != nil {
+	return r.directives
+}
+
+// Extract and prepare the request for forwarding.
+func (r *NormalizedRequest) JsonRpcRequest() (*common.JsonRpcRequest, error) {
+	if r == nil {
+		return nil, nil
+	}
+
+	if r.jsonRpcRequest != nil {
+		return r.jsonRpcRequest, nil
+	}
+
+	rpcReq := new(common.JsonRpcRequest)
+	if err := json.Unmarshal(r.body, rpcReq); err != nil {
 		return nil, common.NewErrJsonRpcRequestUnmarshal(err)
 	}
 
@@ -81,13 +106,13 @@ func (n *NormalizedRequest) JsonRpcRequest() (*JsonRpcRequest, error) {
 		rpcReq.ID = rand.Intn(math.MaxInt32)
 	}
 
-	n.jsonRpcRequest = rpcReq
+	r.jsonRpcRequest = rpcReq
 
 	return rpcReq, nil
 }
 
-func (n *NormalizedRequest) Method() (string, error) {
-	rpcReq, err := n.JsonRpcRequest()
+func (r *NormalizedRequest) Method() (string, error) {
+	rpcReq, err := r.JsonRpcRequest()
 	if err != nil {
 		return "", err
 	}
@@ -95,17 +120,17 @@ func (n *NormalizedRequest) Method() (string, error) {
 	return rpcReq.Method, nil
 }
 
-func (n *NormalizedRequest) MarshalZerologObject(e *zerolog.Event) {
-	e.Str("body", string(n.body))
+func (r *NormalizedRequest) MarshalZerologObject(e *zerolog.Event) {
+	e.Str("body", string(r.body))
 }
 
-func (n *NormalizedRequest) EvmBlockNumber() (uint64, error) {
-	rpcReq, err := n.JsonRpcRequest()
+func (r *NormalizedRequest) EvmBlockNumber() (uint64, error) {
+	rpcReq, err := r.JsonRpcRequest()
 	if err != nil {
 		return 0, err
 	}
 
-	_, bn, err := rpcReq.EvmBlockReference()
+	_, bn, err := evm.ExtractBlockReference(rpcReq)
 	if err != nil {
 		return 0, err
 	}
@@ -113,75 +138,11 @@ func (n *NormalizedRequest) EvmBlockNumber() (uint64, error) {
 	return bn, nil
 }
 
-func (r *JsonRpcRequest) EvmBlockReference() (string, uint64, error) {
-	if r == nil {
-		return "", 0, errors.New("cannot extract block reference when json-rpc request is nil")
-	}
-
-	switch r.Method {
-	case "eth_getBlockByNumber",
-		"eth_getUncleByBlockNumberAndIndex",
-		"eth_getTransactionByBlockNumberAndIndex",
-		"eth_getUncleCountByBlockNumber",
-		"eth_getBlockTransactionCountByNumber":
-		if len(r.Params) > 0 {
-			if bns, ok := r.Params[0].(string); ok {
-				if strings.HasPrefix(bns, "0x") {
-					bni, err := hexutil.DecodeUint64(bns)
-					if err != nil {
-						return "", 0, err
-					}
-					return bns, bni, nil
-				} else {
-					return "", 0, nil
-				}
-			}
-		} else {
-			return "", 0, fmt.Errorf("unexpected no parameters for method %s", r.Method)
-		}
-
-	case "eth_getBalance",
-		"eth_getStorageAt",
-		"eth_getCode",
-		"eth_getTransactionCount",
-		"eth_call",
-		"eth_estimateGas":
-		if len(r.Params) > 1 {
-			if bns, ok := r.Params[1].(string); ok {
-				if strings.HasPrefix(bns, "0x") {
-					bni, err := hexutil.DecodeUint64(bns)
-					if err != nil {
-						return "", 0, err
-					}
-					return bns, bni, nil
-				} else {
-					return "", 0, nil
-				}
-			}
-		} else {
-			return "", 0, fmt.Errorf("unexpected missing 2nd parameter for method %s: %+v", r.Method, r.Params)
-		}
-
-	case "eth_getBlockByHash":
-		if len(r.Params) > 0 {
-			if blockHash, ok := r.Params[0].(string); ok {
-				return blockHash, 0, nil
-			}
-			return "", 0, fmt.Errorf("first parameter is not a string for method %s it is %+v", r.Method, r.Params)
-		}
-
-	default:
-		return "", 0, nil
-	}
-
-	return "", 0, nil
-}
-
 func (r *NormalizedRequest) MarshalJSON() ([]byte, error) {
 	if r.body != nil {
 		return r.body, nil
 	}
-	
+
 	if r.jsonRpcRequest != nil {
 		return json.Marshal(r.jsonRpcRequest)
 	}
@@ -191,6 +152,6 @@ func (r *NormalizedRequest) MarshalJSON() ([]byte, error) {
 			"method": m,
 		})
 	}
-	
+
 	return nil, nil
 }

@@ -10,22 +10,22 @@ import (
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/config"
 	"github.com/flair-sdk/erpc/data"
+	"github.com/flair-sdk/erpc/evm"
 	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog/log"
 )
 
 type EvmJsonRpcCache struct {
 	conn    data.Connector
-	network *PreparedNetwork
+	network *Network
 }
 
 const (
 	JsonRpcCacheContext common.ContextKey = "jsonRpcCache"
 )
 
-func NewEvmJsonRpcCache(ctx context.Context, cfg *config.ConnectorConfig) (*EvmJsonRpcCache, error) {
+func NewEvmJsonRpcCache(ctx context.Context, cfg *common.ConnectorConfig) (*EvmJsonRpcCache, error) {
 	err := populateDefaults(cfg)
 	if err != nil {
 		return nil, err
@@ -41,7 +41,7 @@ func NewEvmJsonRpcCache(ctx context.Context, cfg *config.ConnectorConfig) (*EvmJ
 	}, nil
 }
 
-func (c *EvmJsonRpcCache) WithNetwork(network *PreparedNetwork) *EvmJsonRpcCache {
+func (c *EvmJsonRpcCache) WithNetwork(network *Network) *EvmJsonRpcCache {
 	network.Logger.Debug().Msgf("creating EvmJsonRpcCache")
 	return &EvmJsonRpcCache{
 		conn:    c.conn,
@@ -49,13 +49,13 @@ func (c *EvmJsonRpcCache) WithNetwork(network *PreparedNetwork) *EvmJsonRpcCache
 	}
 }
 
-func (c *EvmJsonRpcCache) Get(ctx context.Context, req *upstream.NormalizedRequest) (*upstream.NormalizedResponse, error) {
+func (c *EvmJsonRpcCache) Get(ctx context.Context, req *upstream.NormalizedRequest) (common.NormalizedResponse, error) {
 	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
 		return nil, err
 	}
 
-	blockRef, blockNumber, err := rpcReq.EvmBlockReference()
+	blockRef, blockNumber, err := evm.ExtractBlockReference(rpcReq)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +93,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *upstream.NormalizedReque
 		return nil, err
 	}
 
-	jrr := &upstream.JsonRpcResponse{
+	jrr := &common.JsonRpcResponse{
 		JSONRPC: rpcReq.JSONRPC,
 		ID:      rpcReq.ID,
 		Error:   nil,
@@ -105,7 +105,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *upstream.NormalizedReque
 		WithJsonRpcResponse(jrr), nil
 }
 
-func (c *EvmJsonRpcCache) Set(ctx context.Context, req *upstream.NormalizedRequest, resp *upstream.NormalizedResponse) error {
+func (c *EvmJsonRpcCache) Set(ctx context.Context, req *upstream.NormalizedRequest, resp common.NormalizedResponse) error {
 	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
 		return err
@@ -121,7 +121,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *upstream.NormalizedReque
 		return nil
 	}
 
-	blockRef, blockNumber, err := rpcReq.EvmBlockReference()
+	blockRef, blockNumber, err := evm.ExtractBlockReference(rpcReq)
 	if err != nil {
 		return err
 	}
@@ -177,7 +177,7 @@ func (c *EvmJsonRpcCache) shouldCacheForBlock(blockNumber uint64) (bool, error) 
 	return b, e
 }
 
-func generateCacheKey(r *upstream.JsonRpcRequest) (string, error) {
+func generateCacheKey(r *common.JsonRpcRequest) (string, error) {
 	hasher := sha256.New()
 
 	for _, p := range r.Params {
@@ -241,13 +241,13 @@ func generateKeysForJsonRpcRequest(req *upstream.NormalizedRequest, blockRef str
 	}
 
 	if blockRef != "" {
-		return fmt.Sprintf("evm:%s:%s", req.Network.Id(), blockRef), cacheKey, nil
+		return fmt.Sprintf("evm:%s:%s", req.Network().Id(), blockRef), cacheKey, nil
 	} else {
-		return fmt.Sprintf("evm:%s:nil", req.Network.Id()), cacheKey, nil
+		return fmt.Sprintf("evm:%s:nil", req.Network().Id()), cacheKey, nil
 	}
 }
 
-func populateDefaults(cfg *config.ConnectorConfig) error {
+func populateDefaults(cfg *common.ConnectorConfig) error {
 	switch cfg.Driver {
 	case data.DynamoDBDriverName:
 		if cfg.DynamoDB.Table == "" {
@@ -270,7 +270,7 @@ func populateDefaults(cfg *config.ConnectorConfig) error {
 	return nil
 }
 
-func extractBlockReferenceFromResponse(rpcReq *upstream.JsonRpcRequest, rpcResp *upstream.JsonRpcResponse) (string, uint64, error) {
+func extractBlockReferenceFromResponse(rpcReq *common.JsonRpcRequest, rpcResp *common.JsonRpcResponse) (string, uint64, error) {
 	if rpcReq == nil {
 		return "", 0, errors.New("cannot extract block reference when json-rpc request is nil")
 	}

@@ -1,9 +1,8 @@
-package upstream
+package common
 
 import (
 	"encoding/json"
 
-	"github.com/flair-sdk/erpc/common"
 	"github.com/rs/zerolog"
 )
 
@@ -15,10 +14,10 @@ type JsonRpcRequest struct {
 }
 
 type JsonRpcResponse struct {
-	JSONRPC string                     `json:"jsonrpc,omitempty"`
-	ID      interface{}                `json:"id"`
-	Result  interface{}                `json:"result"`
-	Error   *common.ErrJsonRpcException `json:"error,omitempty"`
+	JSONRPC string               `json:"jsonrpc,omitempty"`
+	ID      interface{}          `json:"id"`
+	Result  interface{}          `json:"result"`
+	Error   *ErrJsonRpcException `json:"error,omitempty"`
 }
 
 func (r *JsonRpcRequest) MarshalZerologObject(e *zerolog.Event) {
@@ -48,10 +47,11 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 		if err := json.Unmarshal(aux.Error, &customError); err != nil {
 			return err
 		}
-		r.Error = common.NewErrJsonRpcException(
-			nil,
-			common.JsonRpcErrorNumber(customError["code"].(float64)),
+		r.Error = NewErrJsonRpcException(
+			int(customError["code"].(float64)),
+			0,
 			customError["message"].(string),
+			nil,
 		)
 	}
 

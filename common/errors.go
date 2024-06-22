@@ -26,7 +26,7 @@ func IsNull(err interface{}) bool {
 type ErrorCode string
 
 type BaseError struct {
-	Code    ErrorCode                 `json:"code"`
+	Code    ErrorCode              `json:"code"`
 	Message string                 `json:"message,omitempty"`
 	Cause   error                  `json:"cause,omitempty"`
 	Details map[string]interface{} `json:"details,omitempty"`
@@ -258,6 +258,10 @@ var NewErrUpstreamClientInitialization = func(cause error, upstreamId string) er
 type ErrUpstreamRequest struct{ BaseError }
 
 var NewErrUpstreamRequest = func(cause error, upstreamId string, req interface{}) error {
+	// reqStr, err := json.Marshal(req)
+	// if err != nil {
+	// 	reqStr = []byte(fmt.Sprintf("%+v", req))
+	// }
 	return &ErrUpstreamRequest{
 		BaseError{
 			Code:    "ErrUpstreamRequest",
@@ -265,7 +269,7 @@ var NewErrUpstreamRequest = func(cause error, upstreamId string, req interface{}
 			Cause:   cause,
 			Details: map[string]interface{}{
 				"upstreamId": upstreamId,
-				"request":   req,
+				// "request":    reqStr,
 			},
 		},
 	}
@@ -648,6 +652,7 @@ func (e *ErrUpstreamRateLimitRuleExceeded) ErrorStatusCode() int {
 
 //
 // Endpoint (3rd party providers, RPC nodes)
+// Main purpose of these error types is internal eRPC error handling (retries, etc)
 //
 
 type ErrEndpointUnauthorized struct{ BaseError }
@@ -758,18 +763,99 @@ func (e *ErrEndpointBillingIssue) ErrorStatusCode() int {
 	return 402
 }
 
+type ErrEndpointNodeTimeout struct{ BaseError }
+
+const ErrCodeEndpointNodeTimeout = "ErrEndpointNodeTimeout"
+
+var NewErrEndpointNodeTimeout = func(cause error) error {
+	return &ErrEndpointNodeTimeout{
+		BaseError{
+			Code:    ErrCodeEndpointNodeTimeout,
+			Message: "node timeout to execute the request, maybe increase the method timeout",
+			Cause:   cause,
+		},
+	}
+}
+
+type ErrEndpointNotSyncedYet struct{ BaseError }
+
+const ErrCodeEndpointNotSyncedYet = "ErrEndpointNotSyncedYet"
+
+var NewErrEndpointNotSyncedYet = func(cause error) error {
+	return &ErrEndpointNotSyncedYet{
+		BaseError{
+			Code:    ErrCodeEndpointNotSyncedYet,
+			Message: "remote endpoint not synced yet for this specific data or block",
+			Cause:   cause,
+		},
+	}
+}
+
+type ErrEndpointEvmLargeRange struct{ BaseError }
+
+const ErrCodeEndpointEvmLargeRange = "ErrEndpointEvmLargeRange"
+
+var NewErrEndpointEvmLargeRange = func(cause error) error {
+	return &ErrEndpointEvmLargeRange{
+		BaseError{
+			Code:    ErrCodeEndpointEvmLargeRange,
+			Message: "evm remote endpoint complained about large logs range",
+			Cause:   cause,
+		},
+	}
+}
+
 //
 // JSON-RPC
+//
+
+//
+// These error numbers are necessary to represent errors in json-rpc spec (i.e. numeric codes)
+// eRPC will do a best-effort to normalize these errors across 3rd-party providers
+// The main purpose of these error numbers is for client usage i.e. internal error handling of erpc must rely on error types above
 //
 
 type JsonRpcErrorNumber int
 
 const (
-	JsonRpcErrorParseException      JsonRpcErrorNumber = -32600
-	JsonRpcErrorInvalidArgument     JsonRpcErrorNumber = -32602
-	JsonRpcErrorServerSideException JsonRpcErrorNumber = -32603
-	JsonRpcErrorClientSideException JsonRpcErrorNumber = -32700
+	JsonRpcErrorUnknown JsonRpcErrorNumber = -99999
+
+	// Standard JSON-RPC codes
+	JsonRpcErrorClientSideException  JsonRpcErrorNumber = -32600
+	JsonRpcErrorUnsupportedException JsonRpcErrorNumber = -32601
+	JsonRpcErrorInvalidArgument      JsonRpcErrorNumber = -32602
+	JsonRpcErrorServerSideException  JsonRpcErrorNumber = -32603
+	JsonRpcErrorParseException       JsonRpcErrorNumber = -32700
+
+	// Normalized blockchain-specific codes by eRPC
+	JsonRpcErrorCapacityExceeded  JsonRpcErrorNumber = -32005
+	JsonRpcErrorEvmLogsLargeRange JsonRpcErrorNumber = -32012
+	JsonRpcErrorEvmReverted       JsonRpcErrorNumber = -32013
+	JsonRpcErrorNotSyncedYet      JsonRpcErrorNumber = -32014
+	JsonRpcErrorNodeTimeout       JsonRpcErrorNumber = -32015
 )
+
+var jsonRpcErrorNumberToName = map[JsonRpcErrorNumber]string{
+	JsonRpcErrorUnknown:              "JsonRpcErrorUnknown",
+	JsonRpcErrorClientSideException:  "JsonRpcErrorClientSideException",
+	JsonRpcErrorUnsupportedException: "JsonRpcErrorUnsupportedException",
+	JsonRpcErrorInvalidArgument:      "JsonRpcErrorInvalidArgument",
+	JsonRpcErrorServerSideException:  "JsonRpcErrorServerSideException",
+	JsonRpcErrorParseException:       "JsonRpcErrorParseException",
+	JsonRpcErrorCapacityExceeded:     "JsonRpcErrorCapacityExceeded",
+	JsonRpcErrorEvmLogsLargeRange:    "JsonRpcErrorEvmLogsLargeRange",
+	JsonRpcErrorEvmReverted:          "JsonRpcErrorEvmReverted",
+	JsonRpcErrorNotSyncedYet:         "JsonRpcErrorNotSyncedYet",
+	JsonRpcErrorNodeTimeout:          "JsonRpcErrorNodeTimeout",
+}
+
+func GetJsonRpcErrorName(code JsonRpcErrorNumber) string {
+	if name, exists := jsonRpcErrorNumberToName[code]; exists {
+		return name
+	}
+
+	return "UnknownErrorCode"
+}
 
 type ErrJsonRpcException struct{ BaseError }
 
@@ -782,16 +868,42 @@ func (e *ErrJsonRpcException) ErrorStatusCode() int {
 	return 400
 }
 
-var NewErrJsonRpcException = func(cause error, code JsonRpcErrorNumber, message string) *ErrJsonRpcException {
+func (e *ErrJsonRpcException) NormalizedCode() JsonRpcErrorNumber {
+	if code, ok := e.Details["normalizedCode"]; ok {
+		return code.(JsonRpcErrorNumber)
+	}
+	return 0
+}
+
+func (e *ErrJsonRpcException) OriginalCode() int {
+	if code, ok := e.Details["originalCode"]; ok {
+		return code.(int)
+	}
+	return 0
+}
+
+var NewErrJsonRpcException = func(originalCode int, normalizedCode JsonRpcErrorNumber, message string, cause error) *ErrJsonRpcException {
+	var dt map[string]interface{} = make(map[string]interface{})
+	if originalCode != 0 {
+		dt["originalCode"] = originalCode
+	}
+	if normalizedCode != 0 {
+		dt["normalizedCode"] = normalizedCode
+	}
+
+	var msg string
+	if normalizedCode != 0 {
+		msg = fmt.Sprintf("%s: %s", GetJsonRpcErrorName(normalizedCode), message)
+	} else {
+		msg = message
+	}
+
 	return &ErrJsonRpcException{
 		BaseError{
 			Code:    "ErrJsonRpcException",
-			Message: "json-rpc error",
+			Message: msg,
+			Details: dt,
 			Cause:   cause,
-			Details: map[string]interface{}{
-				"code":    code,
-				"message": message,
-			},
 		},
 	}
 }

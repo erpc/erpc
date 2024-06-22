@@ -3,14 +3,15 @@ package erpc
 import (
 	"context"
 
-	"github.com/flair-sdk/erpc/config"
+	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/upstream"
+	"github.com/flair-sdk/erpc/vendors"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
 type ERPC struct {
-	cfg                  *config.Config
+	cfg                  *common.Config
 	upstreamsRegistry    *upstream.UpstreamsRegistry
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	projectsRegistry     *ProjectsRegistry
@@ -19,14 +20,16 @@ type ERPC struct {
 func NewERPC(
 	logger *zerolog.Logger,
 	evmJsonRpcCache *EvmJsonRpcCache,
-	cfg *config.Config,
+	cfg *common.Config,
 ) (*ERPC, error) {
 	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(cfg.RateLimiters)
 	if err != nil {
 		return nil, err
 	}
 
-	upstreamsRegistry, err := upstream.NewUpstreamsRegistry(logger, cfg, rateLimitersRegistry)
+	vendorsRegistry := vendors.NewVendorsRegistry()
+
+	upstreamsRegistry, err := upstream.NewUpstreamsRegistry(logger, cfg, rateLimitersRegistry, vendorsRegistry)
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +72,7 @@ func NewERPC(
 
 		var finalOrder string
 		for _, u := range ntw.Upstreams {
-			finalOrder += u.Id + ", "
+			finalOrder += u.Config().Id + ", "
 		}
 		log.Info().Str("project", projectId).Str("network", networkId).Str("upstreams", finalOrder).Msgf("upstreams priority updated")
 
@@ -84,7 +87,7 @@ func NewERPC(
 	}, nil
 }
 
-func (e *ERPC) GetNetwork(projectId string, networkId string) (*PreparedNetwork, error) {
+func (e *ERPC) GetNetwork(projectId string, networkId string) (*Network, error) {
 	prj, err := e.GetProject(projectId)
 	if err != nil {
 		return nil, err

@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/config"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 )
@@ -16,7 +15,7 @@ const (
 )
 
 type PostgreSQLStore struct {
-	cfg  *config.PostgreSQLConnectorConfig
+	cfg  *common.PostgreSQLConnectorConfig
 	conn *pgxpool.Pool
 }
 
@@ -38,7 +37,7 @@ func (w *PostgreSQLValueWriter) Close() error {
 	return err
 }
 
-func NewPostgreSQLStore(cfg *config.PostgreSQLConnectorConfig) (*PostgreSQLStore, error) {
+func NewPostgreSQLStore(cfg *common.PostgreSQLConnectorConfig) (*PostgreSQLStore, error) {
 	conn, err := pgxpool.Connect(context.Background(), cfg.ConnectionUri)
 	if err != nil {
 		return nil, err

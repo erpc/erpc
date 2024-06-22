@@ -5,13 +5,13 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/flair-sdk/erpc/config"
+	"github.com/flair-sdk/erpc/common"
 	"github.com/rs/zerolog/log"
 )
 
 func TestBoorstrap_GracefulShutdown(t *testing.T) {
-	cfg := &config.Config{
-		Server: &config.ServerConfig{
+	cfg := &common.Config{
+		Server: &common.ServerConfig{
 			HttpHost: "localhost",
 			HttpPort: fmt.Sprint(rand.Intn(1000) + 2000),
 		},
@@ -23,15 +23,15 @@ func TestBoorstrap_GracefulShutdown(t *testing.T) {
 }
 
 func TestBootstrap_UpstreamsRegistryFailure(t *testing.T) {
-	cfg := &config.Config{
-		Server: &config.ServerConfig{
+	cfg := &common.Config{
+		Server: &common.ServerConfig{
 			HttpHost: "localhost",
 			HttpPort: fmt.Sprint(rand.Intn(1000) + 2000),
 		},
-		Projects: []*config.ProjectConfig{
+		Projects: []*common.ProjectConfig{
 			{
 				Id: "test",
-				Upstreams: []*config.UpstreamConfig{
+				Upstreams: []*common.UpstreamConfig{
 					{
 						Id:           "test",
 						Architecture: "evm",

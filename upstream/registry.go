@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/config"
+	"github.com/flair-sdk/erpc/vendors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -16,23 +16,26 @@ type UpstreamsRegistry struct {
 	OnUpstreamsPriorityChange func(projectId string, networkId string) error
 
 	logger                    *zerolog.Logger
-	config                    *config.Config
+	config                    *common.Config
 	clientRegistry            *ClientRegistry
-	upstreamsMapByNetwork     map[string]map[string]map[string]*PreparedUpstream
-	upstreamsMapByHealthGroup map[string]map[string]*PreparedUpstream
+	vendorsRegistry           *vendors.VendorsRegistry
 	rateLimitersRegistry      *RateLimitersRegistry
+	upstreamsMapByNetwork     map[string]map[string]map[string]*Upstream
+	upstreamsMapByHealthGroup map[string]map[string]*Upstream
 }
 
 func NewUpstreamsRegistry(
 	logger *zerolog.Logger,
-	cfg *config.Config,
+	cfg *common.Config,
 	rlr *RateLimitersRegistry,
+	vr *vendors.VendorsRegistry,
 ) (*UpstreamsRegistry, error) {
 	r := &UpstreamsRegistry{
 		logger:               logger,
 		config:               cfg,
 		clientRegistry:       NewClientRegistry(),
 		rateLimitersRegistry: rlr,
+		vendorsRegistry:      vr,
 	}
 	err := r.bootstrap()
 	return r, err
@@ -41,13 +44,13 @@ func NewUpstreamsRegistry(
 // Bootstrap function that has a timer to periodically reorder upstreams based on their health/performance
 func (u *UpstreamsRegistry) bootstrap() error {
 	// Load initial upstreams from the hard-coded config
-	u.upstreamsMapByNetwork = make(map[string]map[string]map[string]*PreparedUpstream)
-	u.upstreamsMapByHealthGroup = make(map[string]map[string]*PreparedUpstream)
+	u.upstreamsMapByNetwork = make(map[string]map[string]map[string]*Upstream)
+	u.upstreamsMapByHealthGroup = make(map[string]map[string]*Upstream)
 	for _, project := range u.config.Projects {
 		lg := log.With().Str("project", project.Id).Logger()
 		lg.Info().Msgf("loading upstreams for static project: %+v", project)
 		if _, ok := u.upstreamsMapByNetwork[project.Id]; !ok {
-			u.upstreamsMapByNetwork[project.Id] = make(map[string]map[string]*PreparedUpstream)
+			u.upstreamsMapByNetwork[project.Id] = make(map[string]map[string]*Upstream)
 		}
 		for _, ups := range project.Upstreams {
 			preparedUpstream, err := u.NewUpstream(project.Id, ups, &lg)
@@ -56,13 +59,13 @@ func (u *UpstreamsRegistry) bootstrap() error {
 			}
 			for _, networkId := range preparedUpstream.NetworkIds {
 				if _, ok := u.upstreamsMapByNetwork[project.Id][networkId]; !ok {
-					u.upstreamsMapByNetwork[project.Id][networkId] = make(map[string]*PreparedUpstream)
+					u.upstreamsMapByNetwork[project.Id][networkId] = make(map[string]*Upstream)
 				}
 				u.upstreamsMapByNetwork[project.Id][networkId][ups.Id] = preparedUpstream
 			}
 			if ups.HealthCheckGroup != "" {
 				if _, ok := u.upstreamsMapByHealthGroup[ups.HealthCheckGroup]; !ok {
-					u.upstreamsMapByHealthGroup[ups.HealthCheckGroup] = make(map[string]*PreparedUpstream)
+					u.upstreamsMapByHealthGroup[ups.HealthCheckGroup] = make(map[string]*Upstream)
 				}
 				u.upstreamsMapByHealthGroup[ups.HealthCheckGroup][ups.Id] = preparedUpstream
 			}
@@ -101,7 +104,7 @@ func (u *UpstreamsRegistry) scheduleHealthCheckTimers() error {
 		}
 		log.Debug().Str("healthCheckGroup", healthGroupId).Dur("interval", checkIntervalDuration).Msgf("scheduling health check timer")
 
-		go func(healthCheckGroup *config.HealthCheckGroupConfig, checkIntervalDuration time.Duration) {
+		go func(healthCheckGroup *common.HealthCheckGroupConfig, checkIntervalDuration time.Duration) {
 			for {
 				u.refreshUpstreamGroupScores(healthCheckGroup, u.upstreamsMapByHealthGroup[healthCheckGroup.Id])
 				time.Sleep(time.Duration(checkIntervalDuration))
@@ -112,7 +115,7 @@ func (u *UpstreamsRegistry) scheduleHealthCheckTimers() error {
 	return nil
 }
 
-func (u *UpstreamsRegistry) GetUpstreamsByProject(projectId string) ([]*PreparedUpstream, error) {
+func (u *UpstreamsRegistry) GetUpstreamsByProject(projectId string) ([]*Upstream, error) {
 	if _, ok := u.upstreamsMapByNetwork[projectId]; !ok {
 		return nil, common.NewErrProjectNotFound(projectId)
 	}
@@ -121,14 +124,14 @@ func (u *UpstreamsRegistry) GetUpstreamsByProject(projectId string) ([]*Prepared
 		return nil, common.NewErrNoUpstreamsDefined(projectId)
 	}
 
-	var upstreams []*PreparedUpstream
+	var upstreams []*Upstream
 	for _, upstreamsForProject := range u.upstreamsMapByNetwork[projectId] {
 		for _, upstream := range upstreamsForProject {
 			upstreams = append(upstreams, upstream)
 		}
 	}
 
-	slices.SortFunc(upstreams, func(a, b *PreparedUpstream) int {
+	slices.SortFunc(upstreams, func(a, b *Upstream) int {
 		if a.Score == b.Score {
 			return 1
 		}
@@ -142,11 +145,11 @@ func (u *UpstreamsRegistry) GetUpstreamsByProject(projectId string) ([]*Prepared
 }
 
 // Proactively update the health information of upstreams of a project/network and reorder them so the highest performing upstreams are at the top
-func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *config.HealthCheckGroupConfig, upstreams map[string]*PreparedUpstream) error {
+func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *common.HealthCheckGroupConfig, upstreams map[string]*Upstream) error {
 	log.Debug().Str("healthCheckGroup", healthGroupCfg.Id).Msgf("refreshing upstreams scores")
 
 	var p90Latencies, errorRates, totalRequests, throttledRates, blockLags []float64
-	var comparingUpstreams []*PreparedUpstream
+	var comparingUpstreams []*Upstream
 	var changedProjectAndNetworks map[string]map[string]bool = make(map[string]map[string]bool)
 	for _, ups := range upstreams {
 		if ups.Metrics != nil {
@@ -200,7 +203,7 @@ func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *config.He
 			ups.Score += (100 - normBlockLags[i]) * 2
 
 			log.Debug().Str("healthCheckGroup", healthGroupCfg.Id).
-				Str("upstream", ups.Id).
+				Str("upstream", ups.Config().Id).
 				Int("score", ups.Score).
 				Msgf("refreshed score")
 		}
@@ -288,8 +291,8 @@ func (u *UpstreamsRegistry) collectMetricsForAllUpstreams() {
 	}
 }
 
-func (u *UpstreamsRegistry) NewUpstream(projectId string, cfg *config.UpstreamConfig, logger *zerolog.Logger) (*PreparedUpstream, error) {
-	return NewUpstream(projectId, cfg, u.clientRegistry, u.rateLimitersRegistry, logger)
+func (u *UpstreamsRegistry) NewUpstream(projectId string, cfg *common.UpstreamConfig, logger *zerolog.Logger) (*Upstream, error) {
+	return NewUpstream(projectId, cfg, u.clientRegistry, u.rateLimitersRegistry, u.vendorsRegistry, logger)
 }
 
 func normalizeIntValues(values []float64, scale int) []int {

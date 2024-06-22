@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/flair-sdk/erpc/config"
+	"github.com/flair-sdk/erpc/common"
 )
 
 // scoredUpstream represents an upstream with a score
@@ -207,10 +207,12 @@ func TestUpstreamsRegistry_ScoreOrdering(t *testing.T) {
 
 	for _, tg := range testGroups {
 		t.Run(tg.groupId, func(t *testing.T) {
-			upstreams := make(map[string]*PreparedUpstream)
+			upstreams := make(map[string]*Upstream)
 			for _, tc := range tg.testCases {
-				upstreams[tc.id] = &PreparedUpstream{
-					Id:         tc.id,
+				upstreams[tc.id] = &Upstream{
+					config: &common.UpstreamConfig{
+						Id: tc.id,
+					},
 					ProjectId:  "test_project",
 					NetworkIds: []string{"123"},
 					Metrics:    genMetrics(tc.latency, tc.errorsTotal, tc.requestsTotal, tc.throttledTotal, tc.blocksLag),
@@ -221,7 +223,7 @@ func TestUpstreamsRegistry_ScoreOrdering(t *testing.T) {
 			registry := &UpstreamsRegistry{}
 
 			// HealthCheckGroupConfig for the test
-			gp := &config.HealthCheckGroupConfig{
+			gp := &common.HealthCheckGroupConfig{
 				Id:                  "test_group",
 				MaxErrorRatePercent: 10,
 				MaxP90Latency:       "1s",

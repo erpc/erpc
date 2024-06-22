@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/config"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 )
@@ -38,7 +37,7 @@ func (w *RedisValueWriter) Close() error {
 	return sts.Err()
 }
 
-func NewRedisStore(cfg *config.RedisConnectorConfig) *RedisStore {
+func NewRedisStore(cfg *common.RedisConnectorConfig) *RedisStore {
 	log.Info().Msgf("initializing redis store on addr: %v", cfg.Addr)
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     cfg.Addr,

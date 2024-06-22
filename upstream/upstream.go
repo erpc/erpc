@@ -9,43 +9,39 @@ import (
 
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/config"
+	"github.com/flair-sdk/erpc/evm"
 	"github.com/flair-sdk/erpc/health"
+	"github.com/flair-sdk/erpc/vendors"
 	"github.com/rs/zerolog"
 )
 
-type PreparedUpstream struct {
-	Id               string                     `json:"id"`
-	Architecture     common.NetworkArchitecture `json:"architecture"`
-	Endpoint         string                     `json:"endpoint"`
-	RateLimitBucket  string                     `json:"rateLimitBucket"`
-	HealthCheckGroup string                     `json:"healthCheckGroup"`
-	AllowMethods     []string                   `json:"allowMethods"`
-	IgnoreMethods    []string                   `json:"ignoreMethods"`
-	Evm              *config.EvmUpstreamConfig  `json:"evm"`
+type Upstream struct {
+	Client  ClientInterface
+	Metrics *UpstreamMetrics
+	Logger  zerolog.Logger
 
-	ProjectId        string                                 `json:"projectId"`
-	NetworkIds       []string                               `json:"networkIds"`
-	Logger           zerolog.Logger                         `json:"-"`
-	FailsafePolicies []failsafe.Policy[*NormalizedResponse] `json:"-"`
+	ProjectId  string
+	NetworkIds []string
+	Score      int
 
-	Client  ClientInterface  `json:"-"`
-	Metrics *UpstreamMetrics `json:"metrics"`
-	Score   int              `json:"score"`
+	config *common.UpstreamConfig
+	vendor common.Vendor
 
-	methodCheckResults   map[string]bool                        `json:"-"`
-	methodCheckResultsMu sync.RWMutex                           `json:"-"`
-	rateLimitersRegistry *RateLimitersRegistry                  `json:"-"`
-	failsafeExecutor     failsafe.Executor[*NormalizedResponse] `json:"-"`
+	failsafePolicies     []failsafe.Policy[common.NormalizedResponse]
+	failsafeExecutor     failsafe.Executor[common.NormalizedResponse]
+	rateLimitersRegistry *RateLimitersRegistry
+	methodCheckResults   map[string]bool
+	methodCheckResultsMu sync.RWMutex
 }
 
 func NewUpstream(
 	projectId string,
-	cfg *config.UpstreamConfig,
+	cfg *common.UpstreamConfig,
 	cr *ClientRegistry,
 	rlr *RateLimitersRegistry,
+	vr *vendors.VendorsRegistry,
 	logger *zerolog.Logger,
-) (*PreparedUpstream, error) {
+) (*Upstream, error) {
 	lg := logger.With().Str("upstream", cfg.Id).Logger()
 
 	if cfg.Architecture == "" {
@@ -57,22 +53,17 @@ func NewUpstream(
 		return nil, err
 	}
 
-	preparedUpstream := &PreparedUpstream{
-		Id:               cfg.Id,
-		Architecture:     cfg.Architecture,
-		Endpoint:         cfg.Endpoint,
-		RateLimitBucket:  cfg.RateLimitBucket,
-		HealthCheckGroup: cfg.HealthCheckGroup,
-		FailsafePolicies: policies,
-		AllowMethods:     cfg.AllowMethods,
-		IgnoreMethods:    cfg.IgnoreMethods,
-		Evm:              cfg.Evm,
+	vn := vr.LookupByUpstream(cfg)
 
+	preparedUpstream := &Upstream{
 		ProjectId: projectId,
 		Logger:    lg,
 
+		config:               cfg,
+		vendor:               vn,
+		failsafePolicies:     policies,
+		failsafeExecutor:     failsafe.NewExecutor[common.NormalizedResponse](policies...),
 		rateLimitersRegistry: rlr,
-		failsafeExecutor:     failsafe.NewExecutor[*NormalizedResponse](policies...),
 		methodCheckResults:   map[string]bool{},
 	}
 
@@ -96,50 +87,83 @@ func NewUpstream(
 	return preparedUpstream, nil
 }
 
-func (u *PreparedUpstream) PrepareRequest(normalizedReq *NormalizedRequest) (interface{}, error) {
-	switch u.Architecture {
+func (u *Upstream) Config() *common.UpstreamConfig {
+	return u.config
+}
+
+func (u *Upstream) Vendor() common.Vendor {
+	return u.vendor
+}
+
+func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) (error) {
+	cfg := u.Config()
+	switch cfg.Architecture {
 	case common.ArchitectureEvm:
 		if u.Client == nil {
-			return nil, common.NewErrJsonRpcRequestPreparation(fmt.Errorf("client not initialized for evm upstream"), map[string]interface{}{
-				"upstreamId": u.Id,
-			})
+			return common.NewErrJsonRpcException(
+				0,
+				common.JsonRpcErrorServerSideException,
+				fmt.Sprintf("client not initialized for evm upstream: %s", cfg.Id),
+				nil,
+			)
 		}
 
 		if u.Client.GetType() == "HttpJsonRpcClient" {
 			jsonRpcReq, err := normalizedReq.JsonRpcRequest()
-			normalizeEvmHttpJsonRpc(jsonRpcReq)
 			if err != nil {
-				return nil, err
+				return common.NewErrJsonRpcException(
+					0,
+					common.JsonRpcErrorClientSideException,
+					"failed to unmarshal jsonrpc request",
+					err,
+				)
+			}
+			err = evm.NormalizeHttpJsonRpc(jsonRpcReq)
+			if err != nil {
+				return common.NewErrJsonRpcException(
+					0,
+					common.JsonRpcErrorServerSideException,
+					"failed to normalize jsonrpc request",
+					err,
+				)
 			}
 
 			if !u.shouldHandleMethod(jsonRpcReq.Method) {
 				u.Logger.Debug().Str("method", jsonRpcReq.Method).Msg("method not allowed or ignored by upstread")
-				return nil, nil
+				return nil
 			}
 
-			return jsonRpcReq, nil
+			return nil
 		} else {
-			return nil, common.NewErrJsonRpcRequestPreparation(fmt.Errorf("unsupported evm client type for upstream"), map[string]interface{}{
-				"upstreamId": u.Id,
-				"clientType": u.Client.GetType(),
-			})
+			return common.NewErrJsonRpcException(
+				0,
+				common.JsonRpcErrorServerSideException,
+				fmt.Sprintf("unsupported evm client type: %s upstream: %s", u.Client.GetType(), cfg.Id),
+				nil,
+			)
 		}
 	default:
-		return nil, common.NewErrJsonRpcRequestPreparation(fmt.Errorf("unsupported architecture for upstream"), map[string]interface{}{
-			"upstreamId":   u.Id,
-			"architecture": u.Architecture,
-		})
+		return common.NewErrJsonRpcException(
+			0,
+			common.JsonRpcErrorServerSideException,
+			fmt.Sprintf("unsupported architecture: %s for upstream: %s", cfg.Architecture, cfg.Id),
+			nil,
+		)
 	}
 }
 
 // Forward is used during lifecycle of a proxied request, it uses writers and readers for better performance
-func (u *PreparedUpstream) Forward(ctx context.Context, req *NormalizedRequest) (*NormalizedResponse, error) {
+func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.NormalizedResponse, error) {
+	cfg := u.Config()
 	clientType := u.Client.GetType()
 
+	//
+	// Apply rate limits
+	//
 	var limitersBucket *RateLimiterBucket
-	if u.RateLimitBucket != "" {
+	if cfg.RateLimitBucket != "" {
 		var errLimiters error
-		limitersBucket, errLimiters = u.rateLimitersRegistry.GetBucket(u.RateLimitBucket)
+		limitersBucket, errLimiters = u.rateLimitersRegistry.GetBucket(cfg.RateLimitBucket)
 		if errLimiters != nil {
 			return nil, errLimiters
 		}
@@ -147,33 +171,31 @@ func (u *PreparedUpstream) Forward(ctx context.Context, req *NormalizedRequest) 
 
 	method, err := req.Method()
 	if err != nil {
-		return nil, common.NewErrUpstreamRequest(err, u.Id, req)
+		return nil, common.NewErrUpstreamRequest(err, cfg.Id, req)
 	}
 
 	lg := u.Logger.With().Str("method", method).Logger()
 
-	req = req.Clone().WithUpstream(u)
-
 	if limitersBucket != nil {
-		lg.Trace().Msgf("checking upstream-level rate limiters bucket: %s", u.RateLimitBucket)
+		lg.Trace().Msgf("checking upstream-level rate limiters bucket: %s", cfg.RateLimitBucket)
 		rules := limitersBucket.GetRulesByMethod(method)
 		if len(rules) > 0 {
 			for _, rule := range rules {
 				if !(*rule.Limiter).TryAcquirePermit() {
 					lg.Warn().Msgf("upstream-level rate limit '%v' exceeded", rule.Config)
 					netId := "n/a"
-					if req.Network != nil {
-						netId = req.Network.Id()
+					if req.Network() != nil {
+						netId = req.Network().Id()
 					}
 					health.MetricUpstreamRequestLocalRateLimited.WithLabelValues(
 						u.ProjectId,
 						netId,
-						u.Id,
+						cfg.Id,
 						method,
 					).Inc()
 					return nil, common.NewErrUpstreamRateLimitRuleExceeded(
-						u.Id,
-						u.RateLimitBucket,
+						cfg.Id,
+						cfg.RateLimitBucket,
 						fmt.Sprintf("%+v", rule.Config),
 					)
 				} else {
@@ -183,16 +205,30 @@ func (u *PreparedUpstream) Forward(ctx context.Context, req *NormalizedRequest) 
 		}
 	}
 
+
+	//
+	// Prepare and normalize the request object
+	//
+	req = req.Clone().(*NormalizedRequest)
+	req.WithUpstream(u)
+	err = u.prepareRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	//
+	// Send the request based on client type
+	//
 	switch clientType {
 	case "HttpJsonRpcClient":
 		jsonRpcClient, okClient := u.Client.(*HttpJsonRpcClient)
 		if !okClient {
 			return nil, common.NewErrUpstreamClientInitialization(
 				fmt.Errorf("failed to cast client to HttpJsonRpcClient"),
-				u.Id,
+				cfg.Id,
 			)
 		}
-
+	
 		tryForward := func(
 			ctx context.Context,
 		) (*NormalizedResponse, error) {
@@ -202,19 +238,19 @@ func (u *PreparedUpstream) Forward(ctx context.Context, req *NormalizedRequest) 
 			if errCall != nil {
 				if !errors.Is(errCall, context.DeadlineExceeded) && !errors.Is(errCall, context.Canceled) {
 					netId := "n/a"
-					if req.Network != nil {
-						netId = req.Network.Id()
+					if req.Network() != nil {
+						netId = req.Network().Id()
 					}
 					health.MetricUpstreamRequestErrors.WithLabelValues(
 						u.ProjectId,
 						netId,
-						u.Id,
+						cfg.Id,
 						method,
 					).Inc()
 				}
 				return nil, common.NewErrUpstreamRequest(
 					errCall,
-					u.Id,
+					cfg.Id,
 					req,
 				)
 			}
@@ -222,10 +258,10 @@ func (u *PreparedUpstream) Forward(ctx context.Context, req *NormalizedRequest) 
 			return resp, nil
 		}
 
-		if u.FailsafePolicies != nil && len(u.FailsafePolicies) > 0 {
+		if u.failsafePolicies != nil && len(u.failsafePolicies) > 0 {
 			resp, execErr := u.failsafeExecutor.
 				WithContext(ctx).
-				GetWithExecution(func(exec failsafe.Execution[*NormalizedResponse]) (*NormalizedResponse, error) {
+				GetWithExecution(func(exec failsafe.Execution[common.NormalizedResponse]) (common.NormalizedResponse, error) {
 					return tryForward(ctx)
 				})
 
@@ -240,16 +276,16 @@ func (u *PreparedUpstream) Forward(ctx context.Context, req *NormalizedRequest) 
 	default:
 		return nil, common.NewErrUpstreamClientInitialization(
 			fmt.Errorf("unsupported client type: %s", clientType),
-			u.Id,
+			cfg.Id,
 		)
 	}
 }
 
-func (u *PreparedUpstream) Executor() failsafe.Executor[*NormalizedResponse] {
+func (u *Upstream) Executor() failsafe.Executor[common.NormalizedResponse] {
 	return u.failsafeExecutor
 }
 
-func (u *PreparedUpstream) EvmGetChainId(ctx context.Context) (string, error) {
+func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 	pr := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[]}`))
 	resp, err := u.Forward(ctx, pr)
 	if err != nil {
@@ -278,7 +314,8 @@ func (u *PreparedUpstream) EvmGetChainId(ctx context.Context) (string, error) {
 	return strconv.FormatUint(dec, 10), nil
 }
 
-func (u *PreparedUpstream) shouldHandleMethod(method string) (v bool) {
+func (u *Upstream) shouldHandleMethod(method string) (v bool) {
+	cfg := u.Config()
 	u.methodCheckResultsMu.RLock()
 	if s, ok := u.methodCheckResults[method]; ok {
 		u.methodCheckResultsMu.RUnlock()
@@ -288,9 +325,9 @@ func (u *PreparedUpstream) shouldHandleMethod(method string) (v bool) {
 
 	v = true
 
-	if u.AllowMethods != nil {
+	if cfg.AllowMethods != nil {
 		v = false
-		for _, m := range u.AllowMethods {
+		for _, m := range cfg.AllowMethods {
 			if common.WildcardMatch(m, method) {
 				v = true
 				break
@@ -298,8 +335,8 @@ func (u *PreparedUpstream) shouldHandleMethod(method string) (v bool) {
 		}
 	}
 
-	if u.IgnoreMethods != nil {
-		for _, m := range u.IgnoreMethods {
+	if cfg.IgnoreMethods != nil {
+		for _, m := range cfg.IgnoreMethods {
 			if common.WildcardMatch(m, method) {
 				v = false
 				break
@@ -320,19 +357,21 @@ func (u *PreparedUpstream) shouldHandleMethod(method string) (v bool) {
 	return v
 }
 
-func (u *PreparedUpstream) resolveNetworkIds(ctx context.Context) error {
+func (u *Upstream) resolveNetworkIds(ctx context.Context) error {
 	if u.Client == nil {
-		return common.NewErrUpstreamClientInitialization(fmt.Errorf("client not initialized for upstream to resolve networkId"), u.Id)
+		return common.NewErrUpstreamClientInitialization(fmt.Errorf("client not initialized for upstream to resolve networkId"), u.Config().Id)
 	}
 
 	if u.NetworkIds == nil || len(u.NetworkIds) == 0 {
 		u.NetworkIds = []string{}
 	}
 
-	switch u.Architecture {
+	cfg := u.Config()
+
+	switch cfg.Architecture {
 	case common.ArchitectureEvm:
-		if u.Evm != nil && u.Evm.ChainId > 0 {
-			u.NetworkIds = append(u.NetworkIds, fmt.Sprintf("eip155:%d", u.Evm.ChainId))
+		if cfg.Evm != nil && cfg.Evm.ChainId > 0 {
+			u.NetworkIds = append(u.NetworkIds, fmt.Sprintf("eip155:%d", cfg.Evm.ChainId))
 		} else {
 			nid, err := u.EvmGetChainId(ctx)
 			if err != nil {
@@ -344,57 +383,6 @@ func (u *PreparedUpstream) resolveNetworkIds(ctx context.Context) error {
 
 	// remove duplicates
 	u.NetworkIds = common.RemoveDuplicates(u.NetworkIds)
-
-	return nil
-}
-
-func normalizeEvmHttpJsonRpc(r *JsonRpcRequest) error {
-	switch r.Method {
-	case "eth_getBlockByNumber",
-		"eth_getUncleByBlockNumberAndIndex",
-		"eth_getTransactionByBlockNumberAndIndex",
-		"eth_getUncleCountByBlockNumber",
-		"eth_getBlockTransactionCountByNumber":
-		if len(r.Params) > 0 {
-			b, err := common.NormalizeHex(r.Params[0])
-			if err != nil {
-				return err
-			}
-			r.Params[0] = b
-		}
-	case "eth_getBalance",
-		"eth_getStorageAt",
-		"eth_getCode",
-		"eth_getTransactionCount",
-		"eth_call",
-		"eth_estimateGas":
-		if len(r.Params) > 1 {
-			b, err := common.NormalizeHex(r.Params[1])
-			if err != nil {
-				return err
-			}
-			r.Params[1] = b
-		}
-	case "eth_getLogs":
-		if len(r.Params) > 0 {
-			if paramsMap, ok := r.Params[0].(map[string]interface{}); ok {
-				if fromBlock, ok := paramsMap["fromBlock"]; ok {
-					b, err := common.NormalizeHex(fromBlock)
-					if err != nil {
-						return err
-					}
-					paramsMap["fromBlock"] = b
-				}
-				if toBlock, ok := paramsMap["toBlock"]; ok {
-					b, err := common.NormalizeHex(toBlock)
-					if err != nil {
-						return err
-					}
-					paramsMap["toBlock"] = b
-				}
-			}
-		}
-	}
 
 	return nil
 }
