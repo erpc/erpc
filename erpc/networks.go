@@ -199,7 +199,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 }
 
 func (n *Network) EvmGetChainId(ctx context.Context) (string, error) {
-	pr := upstream.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[]}`)).WithNetwork(n)
+	pr := upstream.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_chainId","params":[]}`)).WithNetwork(n)
 	resp, err := n.Forward(ctx, pr)
 	if err != nil {
 		return "", err

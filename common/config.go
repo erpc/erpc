@@ -80,17 +80,17 @@ type ProjectConfig struct {
 }
 
 type UpstreamConfig struct {
-	Id                string              `yaml:"id"`
-	Architecture      NetworkArchitecture `yaml:"architecture,omitempty"` // evm, solana, erpc
-	VendorName        string              `yaml:"vendorName"`
-	Endpoint          string              `yaml:"endpoint"`
-	Evm               *EvmUpstreamConfig  `yaml:"evm"`
-	AllowMethods      []string            `yaml:"allowMethods"`
-	IgnoreMethods     []string            `yaml:"ignoreMethods"`
-	Failsafe          *FailsafeConfig     `yaml:"failsafe"`
-	RateLimitBucket   string              `yaml:"rateLimitBucket"`
-	HealthCheckGroup  string              `yaml:"healthCheckGroup"`
-	CreditUnitMapping string              `yaml:"creditUnitMapping"`
+	Id                string             `yaml:"id"`
+	Type              UpstreamType       `yaml:"type"` // evm, evm-erpc, evm-alchemy, solana
+	VendorName        string             `yaml:"vendorName"`
+	Endpoint          string             `yaml:"endpoint"`
+	Evm               *EvmUpstreamConfig `yaml:"evm"`
+	AllowMethods      []string           `yaml:"allowMethods"`
+	IgnoreMethods     []string           `yaml:"ignoreMethods"`
+	Failsafe          *FailsafeConfig    `yaml:"failsafe"`
+	RateLimitBucket   string             `yaml:"rateLimitBucket"`
+	HealthCheckGroup  string             `yaml:"healthCheckGroup"`
+	CreditUnitMapping string             `yaml:"creditUnitMapping"`
 }
 
 type EvmUpstreamConfig struct {
@@ -238,7 +238,7 @@ func (c *RateLimitRuleConfig) MarshalZerologObject(e *zerolog.Event) {
 func (c *NetworkConfig) NetworkId() string {
 	switch c.Architecture {
 	case "evm":
-		return fmt.Sprintf("eip155:%d", c.Evm.ChainId)
+		return fmt.Sprintf("evm:%d", c.Evm.ChainId)
 	default:
 		return ""
 	}
