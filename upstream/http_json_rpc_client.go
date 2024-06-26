@@ -153,17 +153,32 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 			return ver
 		}
 
+		code := common.JsonRpcErrorNumber(err.OriginalCode())
+
+		// Infer from known status codes
 		if r.StatusCode == 401 || r.StatusCode == 403 {
 			return common.NewErrEndpointUnauthorized(err)
-		} else if r.StatusCode == 415 {
+		} else if r.StatusCode == 415 || code == common.JsonRpcErrorUnsupportedException {
 			return common.NewErrEndpointUnsupported(err)
 		} else if r.StatusCode == 429 || r.StatusCode == 408 {
 			return common.NewErrEndpointCapacityExceeded(err)
 		} else if r.StatusCode >= 500 {
 			return common.NewErrEndpointServerSideException(err)
+
+			// Wrap rpc exception with endpoint-specific errors (useful for erpc specialized handling)
+		} else if code == common.JsonRpcErrorUnsupportedException {
+			return common.NewErrEndpointUnsupported(err)
+		} else if code == common.JsonRpcErrorServerSideException {
+			return common.NewErrEndpointServerSideException(err)
+
+			// Wrap stanard EIP-1474 rpc error codes with endpoint-specific errors (useful for erpc specialized handling)
+		} else if code == -32004 || code == -32001 {
+			return common.NewErrEndpointUnsupported(err)
+		} else if code == -32005 {
+			return common.NewErrEndpointCapacityExceeded(err)
 		}
 
-		return err
+		return common.NewErrEndpointClientSideException(err)
 	}
 
 	return nil

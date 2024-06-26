@@ -7,19 +7,19 @@ import (
 	"github.com/flair-sdk/erpc/common"
 )
 
-type AlchemyVendor struct {
+type InfuraVendor struct {
 	common.Vendor
 }
 
-func CreateAlchemyVendor() common.Vendor {
-	return &AlchemyVendor{}
+func CreateInfuraVendor() common.Vendor {
+	return &InfuraVendor{}
 }
 
-func (v *AlchemyVendor) Name() string {
+func (v *InfuraVendor) Name() string {
 	return "alchemy"
 }
 
-func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}) error {
+func (v *InfuraVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}) error {
 	bodyMap, ok := jrr.(*common.JsonRpcResponse)
 	if !ok {
 		return nil
@@ -38,29 +38,20 @@ func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr int
 					nil,
 				),
 			)
-		} else if code >= -32000 && code <= -32099 {
-			return common.NewErrEndpointServerSideException(
+		} else if code == -32001 || code == -32004 {
+			return common.NewErrEndpointUnsupported(
 				common.NewErrJsonRpcException(
 					code,
-					common.JsonRpcErrorServerSideException,
+					common.JsonRpcErrorUnsupportedException,
 					msg,
 					nil,
 				),
 			)
-		} else if code >= -32099 && code <= -32599 || code >= -32603 && code <= -32699 || code >= -32701 && code <= -32768 {
-			return common.NewErrEndpointClientSideException(
+		} else if code == -32005 {
+			return common.NewErrEndpointCapacityExceeded(
 				common.NewErrJsonRpcException(
 					code,
-					common.JsonRpcErrorClientSideException,
-					msg,
-					nil,
-				),
-			)
-		} else if code == 3 {
-			return common.NewErrEndpointClientSideException(
-				common.NewErrJsonRpcException(
-					code,
-					common.JsonRpcErrorEvmReverted,
+					common.JsonRpcErrorCapacityExceeded,
 					msg,
 					nil,
 				),
@@ -72,6 +63,6 @@ func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr int
 	return nil
 }
 
-func (v *AlchemyVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
+func (v *InfuraVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 	return strings.Contains(ups.Endpoint, ".alchemy.com") || strings.Contains(ups.Endpoint, ".alchemyapi.io")
 }

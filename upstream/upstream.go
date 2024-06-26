@@ -95,7 +95,7 @@ func (u *Upstream) Vendor() common.Vendor {
 	return u.vendor
 }
 
-func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) (error) {
+func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 	cfg := u.Config()
 	switch cfg.Architecture {
 	case common.ArchitectureEvm:
@@ -205,7 +205,6 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 		}
 	}
 
-
 	//
 	// Prepare and normalize the request object
 	//
@@ -228,7 +227,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 				cfg.Id,
 			)
 		}
-	
+
 		tryForward := func(
 			ctx context.Context,
 		) (*NormalizedResponse, error) {

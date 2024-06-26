@@ -340,7 +340,6 @@ data:
   - extracting result only from response for caching
   - simpler cache serving with proper response IDs
 
-* node features and feature detection
 * empty response retry for recent block data
 * merge no/some failover policies flow
   - can we implement empty response retrying in fallback?
@@ -351,6 +350,12 @@ data:
   - standard json-rpc eth errors
   - vendor-specific errors
   - add normalized errors under "cause"
+
+* node features and feature detection
+  - archive vs full
+  - engine type (erigon, geth, reth, etc)
+  - supported methods (on-going)
+  - 
 
 * narrower upstream metrics collection for scoring (vs prometheus)
 * add weighted shuffle for upstreams based on score

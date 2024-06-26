@@ -833,6 +833,7 @@ const (
 	JsonRpcErrorEvmReverted       JsonRpcErrorNumber = -32013
 	JsonRpcErrorNotSyncedYet      JsonRpcErrorNumber = -32014
 	JsonRpcErrorNodeTimeout       JsonRpcErrorNumber = -32015
+	JsonRpcErrorUnauthorized      JsonRpcErrorNumber = -32016
 )
 
 var jsonRpcErrorNumberToName = map[JsonRpcErrorNumber]string{
