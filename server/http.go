@@ -115,10 +115,10 @@ func handleErrorResponse(err error, hrw http.ResponseWriter) {
 		})
 		return
 	}
-	
+
 	var bodyErr common.ErrorWithBody
 	var writeErr error
-	
+
 	if errors.As(err, &bodyErr) {
 		writeErr = json.NewEncoder(hrw).Encode(bodyErr.ErrorResponseBody())
 	} else {

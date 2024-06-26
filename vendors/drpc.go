@@ -33,7 +33,7 @@ func (v *DrpcVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interf
 			return common.NewErrEndpointUnauthorized(
 				common.NewErrJsonRpcException(
 					code,
-					common.JsonRpcErrorParseException,
+					common.JsonRpcErrorUnauthorized,
 					msg,
 					nil,
 				),
