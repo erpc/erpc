@@ -11,7 +11,6 @@ import (
 
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/erpc"
-	"github.com/flair-sdk/erpc/evm"
 	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog/log"
 )
@@ -41,12 +40,7 @@ func NewHttpServer(cfg *common.ServerConfig, erpc *erpc.ERPC) *HttpServer {
 		}
 
 		projectId := segments[1]
-		architecture := segments[2]
-		var networkId string
-		switch architecture {
-		case string(common.ArchitectureEvm):
-			networkId = evm.EIP155(segments[3])
-		}
+		networkId := fmt.Sprintf("%s:%s", segments[2], segments[3])
 
 		body, err := io.ReadAll(r.Body)
 		if err != nil {

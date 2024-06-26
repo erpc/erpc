@@ -363,8 +363,9 @@ data:
 ### 0.2.0 (clean up and tests)
 
 * refactor upstream.metadata.evm* to upstream.evm
-* should support an erpc as upstream (for SaaS)
+* should support an erpc as upstream or a full vendor as upstream
   - allow upstreams support multiple chains (and architecture?), maybe with a new architecture named "erpc"
+
 * move evm-related logic to separate package
   - caching logic (methods, params, etc.)
   - block tracker

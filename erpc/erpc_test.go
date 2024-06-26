@@ -33,9 +33,9 @@ func TestBootstrap_UpstreamsRegistryFailure(t *testing.T) {
 				Id: "test",
 				Upstreams: []*common.UpstreamConfig{
 					{
-						Id:           "test",
-						Architecture: "evm",
-						Endpoint:     "http://localhost:8080",
+						Id:       "test",
+						Type:     "evm",
+						Endpoint: "http://localhost:8080",
 						// missing "evmChainId" will cause an error
 					},
 				},

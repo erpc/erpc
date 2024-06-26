@@ -11,6 +11,7 @@ import (
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/evm"
 	"github.com/flair-sdk/erpc/health"
+	"github.com/flair-sdk/erpc/util"
 	"github.com/flair-sdk/erpc/vendors"
 	"github.com/rs/zerolog"
 )
@@ -21,7 +22,6 @@ type Upstream struct {
 	Logger  zerolog.Logger
 
 	ProjectId  string
-	NetworkIds []string
 	Score      int
 
 	config *common.UpstreamConfig
@@ -32,6 +32,8 @@ type Upstream struct {
 	rateLimitersRegistry *RateLimitersRegistry
 	methodCheckResults   map[string]bool
 	methodCheckResultsMu sync.RWMutex
+	supportedNetworkIds map[string]bool
+	supportedNetworkIdsMu sync.RWMutex
 }
 
 func NewUpstream(
@@ -44,10 +46,6 @@ func NewUpstream(
 ) (*Upstream, error) {
 	lg := logger.With().Str("upstream", cfg.Id).Logger()
 
-	if cfg.Architecture == "" {
-		cfg.Architecture = common.ArchitectureEvm
-	}
-
 	policies, err := CreateFailSafePolicies(ScopeUpstream, cfg.Id, cfg.Failsafe)
 	if err != nil {
 		return nil, err
@@ -55,7 +53,7 @@ func NewUpstream(
 
 	vn := vr.LookupByUpstream(cfg)
 
-	preparedUpstream := &Upstream{
+	pup := &Upstream{
 		ProjectId: projectId,
 		Logger:    lg,
 
@@ -67,24 +65,17 @@ func NewUpstream(
 		methodCheckResults:   map[string]bool{},
 	}
 
-	if client, err := cr.GetOrCreateClient(preparedUpstream); err != nil {
+	if client, err := cr.GetOrCreateClient(pup); err != nil {
 		return nil, err
 	} else {
-		preparedUpstream.Client = client
+		pup.Client = client
 	}
-
-	err = preparedUpstream.resolveNetworkIds(context.Background())
-	if err != nil {
-		return nil, err
-	}
-
-	if len(preparedUpstream.NetworkIds) == 0 {
-		return nil, common.NewErrUpstreamNetworkNotDetected(projectId, cfg.Id)
-	}
+	
+	pup.detectFeatures()
 
 	lg.Debug().Msgf("prepared upstream")
 
-	return preparedUpstream, nil
+	return pup, nil
 }
 
 func (u *Upstream) Config() *common.UpstreamConfig {
@@ -97,8 +88,8 @@ func (u *Upstream) Vendor() common.Vendor {
 
 func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 	cfg := u.Config()
-	switch cfg.Architecture {
-	case common.ArchitectureEvm:
+	switch cfg.Type {
+	case common.UpstreamTypeEvm:
 		if u.Client == nil {
 			return common.NewErrJsonRpcException(
 				0,
@@ -146,7 +137,7 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 		return common.NewErrJsonRpcException(
 			0,
 			common.JsonRpcErrorServerSideException,
-			fmt.Sprintf("unsupported architecture: %s for upstream: %s", cfg.Architecture, cfg.Id),
+			fmt.Sprintf("unsupported architecture: %s for upstream: %s", cfg.Type, cfg.Id),
 			nil,
 		)
 	}
@@ -285,7 +276,7 @@ func (u *Upstream) Executor() failsafe.Executor[common.NormalizedResponse] {
 }
 
 func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
-	pr := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[]}`))
+	pr := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_chainId","params":[]}`))
 	resp, err := u.Forward(ctx, pr)
 	if err != nil {
 		return "", err
@@ -311,6 +302,13 @@ func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 	}
 
 	return strconv.FormatUint(dec, 10), nil
+}
+
+func (u *Upstream) SupportsNetwork(networkId string) bool {
+	u.supportedNetworkIdsMu.RLock()
+	_, ok := u.supportedNetworkIds[networkId]
+	u.supportedNetworkIdsMu.RUnlock()
+	return ok
 }
 
 func (u *Upstream) shouldHandleMethod(method string) (v bool) {
@@ -356,32 +354,35 @@ func (u *Upstream) shouldHandleMethod(method string) (v bool) {
 	return v
 }
 
-func (u *Upstream) resolveNetworkIds(ctx context.Context) error {
-	if u.Client == nil {
-		return common.NewErrUpstreamClientInitialization(fmt.Errorf("client not initialized for upstream to resolve networkId"), u.Config().Id)
-	}
-
-	if u.NetworkIds == nil || len(u.NetworkIds) == 0 {
-		u.NetworkIds = []string{}
-	}
-
+func (u *Upstream) detectFeatures() error {
 	cfg := u.Config()
 
-	switch cfg.Architecture {
-	case common.ArchitectureEvm:
-		if cfg.Evm != nil && cfg.Evm.ChainId > 0 {
-			u.NetworkIds = append(u.NetworkIds, fmt.Sprintf("eip155:%d", cfg.Evm.ChainId))
-		} else {
-			nid, err := u.EvmGetChainId(ctx)
+	if cfg.Type == "" {
+		// TODO detect upstream type if not defined (evm, erpc, solana, etc)
+		cfg.Type = common.UpstreamTypeEvm
+	}
+
+	if cfg.Type == common.UpstreamTypeEvm {
+		if cfg.Evm == nil {
+			cfg.Evm = &common.EvmUpstreamConfig{}
+		}
+		if cfg.Evm.ChainId == 0 {
+			nid, err := u.EvmGetChainId(context.Background())
 			if err != nil {
 				return err
 			}
-			u.NetworkIds = append(u.NetworkIds, fmt.Sprintf("eip155:%s", nid))
+			cfg.Evm.ChainId, err = strconv.Atoi(nid)
+			if err != nil {
+				return err
+			}
+			u.supportedNetworkIdsMu.Lock()
+			u.supportedNetworkIds[util.EvmNetworkId(cfg.Evm.ChainId)] = true
+			u.supportedNetworkIdsMu.Unlock()
 		}
+		// TODO evm: check full vs archive node
+		// TODO evm: check trace methods availability (by engine? erigon/geth/etc)
+		// TODO evm: detect max eth_getLogs max block range
 	}
-
-	// remove duplicates
-	u.NetworkIds = common.RemoveDuplicates(u.NetworkIds)
 
 	return nil
 }

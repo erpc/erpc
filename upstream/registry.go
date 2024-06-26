@@ -20,7 +20,7 @@ type UpstreamsRegistry struct {
 	clientRegistry            *ClientRegistry
 	vendorsRegistry           *vendors.VendorsRegistry
 	rateLimitersRegistry      *RateLimitersRegistry
-	upstreamsMapByNetwork     map[string]map[string]map[string]*Upstream
+	upstreamsMapByProject     map[string][]common.Upstream
 	upstreamsMapByHealthGroup map[string]map[string]*Upstream
 }
 
@@ -29,55 +29,17 @@ func NewUpstreamsRegistry(
 	cfg *common.Config,
 	rlr *RateLimitersRegistry,
 	vr *vendors.VendorsRegistry,
-) (*UpstreamsRegistry, error) {
+) (*UpstreamsRegistry) {
 	r := &UpstreamsRegistry{
 		logger:               logger,
 		config:               cfg,
 		clientRegistry:       NewClientRegistry(),
 		rateLimitersRegistry: rlr,
 		vendorsRegistry:      vr,
+		upstreamsMapByProject: make(map[string][]common.Upstream),
+		upstreamsMapByHealthGroup: make(map[string]map[string]*Upstream),
 	}
-	err := r.bootstrap()
-	return r, err
-}
-
-// Bootstrap function that has a timer to periodically reorder upstreams based on their health/performance
-func (u *UpstreamsRegistry) bootstrap() error {
-	// Load initial upstreams from the hard-coded config
-	u.upstreamsMapByNetwork = make(map[string]map[string]map[string]*Upstream)
-	u.upstreamsMapByHealthGroup = make(map[string]map[string]*Upstream)
-	for _, project := range u.config.Projects {
-		lg := log.With().Str("project", project.Id).Logger()
-		lg.Info().Msgf("loading upstreams for static project: %+v", project)
-		if _, ok := u.upstreamsMapByNetwork[project.Id]; !ok {
-			u.upstreamsMapByNetwork[project.Id] = make(map[string]map[string]*Upstream)
-		}
-		for _, ups := range project.Upstreams {
-			preparedUpstream, err := u.NewUpstream(project.Id, ups, &lg)
-			if err != nil {
-				return common.NewErrUpstreamInitialization(err, ups.Id)
-			}
-			for _, networkId := range preparedUpstream.NetworkIds {
-				if _, ok := u.upstreamsMapByNetwork[project.Id][networkId]; !ok {
-					u.upstreamsMapByNetwork[project.Id][networkId] = make(map[string]*Upstream)
-				}
-				u.upstreamsMapByNetwork[project.Id][networkId][ups.Id] = preparedUpstream
-			}
-			if ups.HealthCheckGroup != "" {
-				if _, ok := u.upstreamsMapByHealthGroup[ups.HealthCheckGroup]; !ok {
-					u.upstreamsMapByHealthGroup[ups.HealthCheckGroup] = make(map[string]*Upstream)
-				}
-				u.upstreamsMapByHealthGroup[ups.HealthCheckGroup][ups.Id] = preparedUpstream
-			}
-		}
-	}
-
-	err := u.scheduleHealthCheckTimers()
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return r
 }
 
 func (u *UpstreamsRegistry) scheduleHealthCheckTimers() error {
@@ -115,32 +77,31 @@ func (u *UpstreamsRegistry) scheduleHealthCheckTimers() error {
 	return nil
 }
 
-func (u *UpstreamsRegistry) GetUpstreamsByProject(projectId string) ([]*Upstream, error) {
-	if _, ok := u.upstreamsMapByNetwork[projectId]; !ok {
-		return nil, common.NewErrProjectNotFound(projectId)
+func (u *UpstreamsRegistry) GetUpstreamsByProject(prjCfg *common.ProjectConfig) ([]common.Upstream, error) {
+	if upstreams, ok := u.upstreamsMapByProject[prjCfg.Id]; ok {
+		return upstreams, nil
 	}
 
-	if len(u.upstreamsMapByNetwork[projectId]) == 0 {
-		return nil, common.NewErrNoUpstreamsDefined(projectId)
+	var upstreams []common.Upstream
+	for _, upsCfg := range prjCfg.Upstreams {
+		upstream, err := u.NewUpstream(prjCfg.Id, upsCfg, u.logger)
+		if err != nil {
+			return nil, err
+		}
+		if upsCfg.HealthCheckGroup != "" {
+			if _, ok := u.upstreamsMapByHealthGroup[upsCfg.HealthCheckGroup]; !ok {
+				u.upstreamsMapByHealthGroup[upsCfg.HealthCheckGroup] = make(map[string]*Upstream)
+			}
+			u.upstreamsMapByHealthGroup[upsCfg.HealthCheckGroup][upsCfg.Id] = upstream
+		}
+		upstreams = append(upstreams, upstream)
 	}
-
-	var upstreams []*Upstream
-	for _, upstreamsForProject := range u.upstreamsMapByNetwork[projectId] {
-		for _, upstream := range upstreamsForProject {
-			upstreams = append(upstreams, upstream)
-		}
+	
+	if len(upstreams) == 0 {
+		return nil, common.NewErrNoUpstreamsDefined(prjCfg.Id)
 	}
-
-	slices.SortFunc(upstreams, func(a, b *Upstream) int {
-		if a.Score == b.Score {
-			return 1
-		}
-		if a.Score < b.Score {
-			return -1
-		}
-		return 1
-	})
-
+	
+	u.upstreamsMapByProject[prjCfg.Id] = upstreams
 	return upstreams, nil
 }
 
@@ -221,7 +182,7 @@ func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *common.He
 }
 
 func (u *UpstreamsRegistry) collectMetricsForAllUpstreams() {
-	if len(u.upstreamsMapByNetwork) == 0 {
+	if len(u.upstreamsMapByProject) == 0 {
 		u.logger.Debug().Msgf("no upstreams to collect metrics for")
 		return
 	}
@@ -255,10 +216,10 @@ func (u *UpstreamsRegistry) collectMetricsForAllUpstreams() {
 			}
 
 			if project != "" && network != "" && upstream != "" && category != "" {
-				var metrics = u.upstreamsMapByNetwork[project][network][upstream].Metrics
+				var metrics = u.upstreamsMapByProject[project][network][upstream].Metrics
 				if metrics == nil {
 					metrics = &UpstreamMetrics{}
-					u.upstreamsMapByNetwork[project][network][upstream].Metrics = metrics
+					u.upstreamsMapByProject[project][network][upstream].Metrics = metrics
 				}
 
 				if mf.GetName() == "erpc_upstream_request_duration_seconds" {
