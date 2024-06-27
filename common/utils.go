@@ -46,10 +46,12 @@ func NormalizeHex(value interface{}) (string, error) {
 
 		// If blockNumber is base 10 digits, convert to hex without 0 padding
 		value, err := strconv.ParseUint(bn, 10, 64)
-		if err != nil {
-			return "", err
+		if err == nil && value > 0 {
+			return fmt.Sprintf("0x%x", value), nil
 		}
-		return fmt.Sprintf("0x%x", value), nil
+
+		// TODO should we return an error here?
+		return bn, nil
 	}
 
 	// If blockNumber is a number, convert to hex

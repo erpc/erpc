@@ -3,6 +3,7 @@ package evm
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -27,7 +28,7 @@ func ExtractBlockReference(r *common.JsonRpcRequest) (string, uint64, error) {
 					if err != nil {
 						return "", 0, err
 					}
-					return bns, bni, nil
+					return strconv.FormatUint(bni, 10), bni, nil
 				} else {
 					return "", 0, nil
 				}
@@ -47,9 +48,9 @@ func ExtractBlockReference(r *common.JsonRpcRequest) (string, uint64, error) {
 				if strings.HasPrefix(bns, "0x") {
 					bni, err := hexutil.DecodeUint64(bns)
 					if err != nil {
-						return "", 0, err
+						return bns, 0, err
 					}
-					return bns, bni, nil
+					return strconv.FormatUint(bni, 10), bni, nil
 				} else {
 					return "", 0, nil
 				}

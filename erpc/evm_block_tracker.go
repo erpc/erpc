@@ -14,8 +14,8 @@ type EvmBlockTracker struct {
 	ctxCancel context.CancelFunc
 	network   *Network
 
-	LatestBlockNumber    uint64
-	FinalizedBlockNumber uint64
+	latestBlockNumber    uint64
+	finalizedBlockNumber uint64
 }
 
 func NewEvmBlockTracker(network *Network) *EvmBlockTracker {
@@ -40,6 +40,29 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 		}
 	}
 
+	var updateBlockNumbers = func() error {
+		lb, err := e.fetchLatestBlockNumber(e.ctx)
+		if err != nil {
+			e.network.Logger.Error().Err(err).Msg("failed to get latest block number in block tracker")
+		}
+		e.network.Logger.Debug().Uint64("blockNumber", lb).Msg("fetched latest block")
+		if lb > 0 {
+			e.latestBlockNumber = lb
+		}
+
+		fb, err := e.fetchFinalizedBlockNumber(e.ctx)
+		if err != nil {
+			e.network.Logger.Error().Err(err).Msg("failed to get finalized block number in block tracker")
+		}
+		e.network.Logger.Debug().Uint64("blockNumber", fb).Msg("fetched finalized block")
+		if fb > 0 {
+			e.finalizedBlockNumber = fb
+		}
+
+		// TODO should we return error here?
+		return nil
+	}
+
 	go (func() {
 		for {
 			e.network.Logger.Debug().Msg("fetching latest block")
@@ -47,36 +70,28 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 			case <-e.ctx.Done():
 				return
 			default:
-				lb, err := e.fetchLatestBlockNumber(e.ctx)
-				if err != nil {
-					e.network.Logger.Error().Err(err).Msg("failed to get latest block number in block tracker")
-				}
-				e.network.Logger.Debug().Uint64("blockNumber", lb).Msg("fetched latest block")
-				if lb > 0 {
-					e.LatestBlockNumber = lb
-				}
-
-				fb, err := e.fetchFinalizedBlockNumber(e.ctx)
-				if err != nil {
-					e.network.Logger.Error().Err(err).Msg("failed to get finalized block number in block tracker")
-				}
-				e.network.Logger.Debug().Uint64("blockNumber", fb).Msg("fetched finalized block")
-				if fb > 0 {
-					e.FinalizedBlockNumber = fb
-				}
+				updateBlockNumbers()
 			}
 
 			time.Sleep(blockTrackerInterval)
 		}
 	})()
 
-	return nil
+	return updateBlockNumbers()
 }
 
 func (e *EvmBlockTracker) Shutdown() {
 	if e.ctxCancel != nil {
 		e.ctxCancel()
 	}
+}
+
+func (e *EvmBlockTracker) LatestBlock() uint64 {
+	return e.latestBlockNumber
+}
+
+func (e *EvmBlockTracker) FinalizedBlock() uint64 {
+	return e.finalizedBlockNumber
 }
 
 func (e *EvmBlockTracker) fetchLatestBlockNumber(ctx context.Context) (uint64, error) {

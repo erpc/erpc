@@ -56,12 +56,18 @@ func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr i
 				common.NewErrJsonRpcException(code, common.JsonRpcErrorCapacityExceeded, msg, nil),
 			)
 		} else if strings.Contains(msg, "failed to parse") {
-			return common.NewErrJsonRpcException(code, common.JsonRpcErrorParseException, msg, nil)
-		} else if code == -32010 || code == -32015 || code == -32602 || code == -32603 {
+			return common.NewErrEndpointClientSideException(
+				common.NewErrJsonRpcException(code, common.JsonRpcErrorParseException, msg, nil),
+			)
+		} else if code == -32010 || code == -32015 {
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcException(code, common.JsonRpcErrorClientSideException, msg, nil),
 			)
-		} else if code == -32011 {
+		} else if code == -32602 {
+			return common.NewErrEndpointClientSideException(
+				common.NewErrJsonRpcException(code, common.JsonRpcErrorInvalidArgument, msg, nil),
+			)
+		} else if code == -32011 || code == -32603 {
 			return common.NewErrEndpointServerSideException(
 				common.NewErrJsonRpcException(code, common.JsonRpcErrorServerSideException, msg, nil),
 			)

@@ -1,7 +1,7 @@
 package erpc
 
 import (
-	"context"
+	// "context"
 
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/upstream"
@@ -43,16 +43,16 @@ func NewProjectsRegistry(
 	return reg, nil
 }
 
-func (p *ProjectsRegistry) Bootstrap(ctx context.Context) error {
-	for _, pp := range p.preparedProjects {
-		err := pp.Bootstrap(ctx)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
+// func (p *ProjectsRegistry) Bootstrap(ctx context.Context) error {
+// 	for _, pp := range p.preparedProjects {
+// 		err := pp.Bootstrap(ctx)
+// 		if err != nil {
+// 			return err
+// 		}
+// 	}
+//
+// 	return nil
+// }
 
 func (r *ProjectsRegistry) GetProject(projectId string) (project *PreparedProject, err error) {
 	project, exists := r.preparedProjects[projectId]
@@ -70,6 +70,10 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 	pp := &PreparedProject{
 		Config: prjCfg,
 		Logger: &ptr,
+
+		networksRegistry:  r.networksRegistry,
+		upstreamsRegistry: r.upstreamsRegistry,
+		evmJsonRpcCache:   r.evmJsonRpcCache,
 	}
 
 	// preparedUpstreams, err := r.upstreamsRegistry.GetUpstreamsByProject(prjCfg.Id)

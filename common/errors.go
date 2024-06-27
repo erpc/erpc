@@ -425,10 +425,12 @@ type ErrJsonRpcRequestUnmarshal struct {
 	BaseError
 }
 
+const ErrCodeJsonRpcRequestUnmarshal = "ErrJsonRpcRequestUnmarshal"
+
 var NewErrJsonRpcRequestUnmarshal = func(cause error) error {
 	return &ErrJsonRpcRequestUnmarshal{
 		BaseError{
-			Code:    "ErrJsonRpcRequestUnmarshal",
+			Code:    ErrCodeJsonRpcRequestUnmarshal,
 			Message: "failed to unmarshal json-rpc request",
 			Cause:   cause,
 		},
@@ -883,6 +885,8 @@ func (e *ErrJsonRpcException) OriginalCode() int {
 	return 0
 }
 
+const ErrCodeJsonRpcException = "ErrJsonRpcException"
+
 var NewErrJsonRpcException = func(originalCode int, normalizedCode JsonRpcErrorNumber, message string, cause error) *ErrJsonRpcException {
 	var dt map[string]interface{} = make(map[string]interface{})
 	if originalCode != 0 {
@@ -901,7 +905,7 @@ var NewErrJsonRpcException = func(originalCode int, normalizedCode JsonRpcErrorN
 
 	return &ErrJsonRpcException{
 		BaseError{
-			Code:    "ErrJsonRpcException",
+			Code:    ErrCodeJsonRpcException,
 			Message: msg,
 			Details: dt,
 			Cause:   cause,

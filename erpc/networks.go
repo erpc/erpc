@@ -39,10 +39,6 @@ type Network struct {
 }
 
 func (n *Network) Bootstrap(ctx context.Context) error {
-	if err := n.resolveNetworkId(ctx); err != nil {
-		return err
-	}
-
 	if n.Architecture() == common.ArchitectureEvm {
 		n.evmBlockTracker = NewEvmBlockTracker(n)
 		if err := n.evmBlockTracker.Bootstrap(ctx); err != nil {
@@ -52,21 +48,23 @@ func (n *Network) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("network architecture not supported: %s", n.Architecture())
 	}
 
-	go func(pn *Network) {
-		ticker := time.NewTicker(1 * time.Second)
-		for {
-			select {
-			case <-pn.reorderStopChannel:
-				ticker.Stop()
-				return
-			case <-ticker.C:
-				upsList := reorderUpstreams(pn.Upstreams)
-				pn.upstreamsMutex.Lock()
-				pn.Upstreams = upsList
-				pn.upstreamsMutex.Unlock()
+	if len(n.Upstreams) > 0 {
+		go func(pn *Network) {
+			ticker := time.NewTicker(1 * time.Second)
+			for {
+				select {
+				case <-pn.reorderStopChannel:
+					ticker.Stop()
+					return
+				case <-ticker.C:
+					upsList := reorderUpstreams(pn.Upstreams)
+					pn.upstreamsMutex.Lock()
+					pn.Upstreams = upsList
+					pn.upstreamsMutex.Unlock()
+				}
 			}
-		}
-	}(n)
+		}(n)
+	}
 
 	return nil
 }
@@ -162,7 +160,10 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 				mtx.Unlock()
 				n.Logger.Debug().Msgf("executing forward to upstream: %s", u.Config().Id)
 
-				resp, skipped, err := tryForward(u, exec.Context())
+				resp, skipped, err := n.processResponse(
+					tryForward(u, exec.Context()),
+				)
+
 				if err != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) && exec.Hedges() > 0 {
 					n.Logger.Debug().Err(err).Msgf("discarding hedged request to upstream %s: %v", u.Config().Id, skipped)
 					return nil, err
@@ -171,16 +172,16 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 				n.Logger.Debug().Err(err).Msgf("forwarded request to upstream %s skipped: %v err: %v", u.Config().Id, skipped, err)
 				if !skipped {
 					n.Logger.Debug().Interface("resp", resp).Msgf("storing response in cache")
-					go (func(resp common.NormalizedResponse) {
-						if n.cacheDal != nil && resp != nil {
+					if n.cacheDal != nil && resp != nil {
+						go (func(resp common.NormalizedResponse) {
 							c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 							defer cancel()
 							err := n.cacheDal.Set(c, req, resp)
 							if err != nil {
 								n.Logger.Warn().Err(err).Msgf("could not store response in cache")
 							}
-						}
-					})(resp)
+						})(resp)
+					}
 					return resp, err
 				} else if err != nil {
 					errorsByUpstream = append(errorsByUpstream, err)
@@ -232,8 +233,8 @@ func (n *Network) EvmIsBlockFinalized(blockNumber uint64) (bool, error) {
 		return false, nil
 	}
 
-	finalizedBlock := n.evmBlockTracker.FinalizedBlockNumber
-	latestBlock := n.evmBlockTracker.LatestBlockNumber
+	finalizedBlock := n.evmBlockTracker.FinalizedBlock()
+	latestBlock := n.evmBlockTracker.LatestBlock()
 	if latestBlock == 0 && finalizedBlock == 0 {
 		n.Logger.Debug().
 			Uint64("finalizedBlock", finalizedBlock).
@@ -274,33 +275,66 @@ func (n *Network) EvmIsBlockFinalized(blockNumber uint64) (bool, error) {
 	return blockNumber <= fb, nil
 }
 
-func (n *Network) resolveNetworkId(ctx context.Context) error {
-	if n.NetworkId != "" {
-		n.Logger.Trace().Msgf("network id already resolved")
-		return nil
-	}
-
-	n.Logger.Debug().Msgf("resolving network id")
-	if n.Architecture() == common.ArchitectureEvm {
-		if n.Config.Evm != nil && n.Config.Evm.ChainId > 0 {
-			n.NetworkId = strconv.Itoa(n.Config.Evm.ChainId)
-		} else {
-			nid, err := n.EvmGetChainId(ctx)
-			if err != nil {
-				return err
-			}
-			n.NetworkId = nid
-		}
-	}
-
-	if n.NetworkId == "" {
-		return common.NewErrUnknownNetworkID(n.Architecture())
-	}
-
-	n.Logger.Debug().Msgf("resolved network id to: %s", n.NetworkId)
-
-	return nil
+func (n *Network) EvmBlockTracker() common.EvmBlockTracker {
+	return n.evmBlockTracker
 }
+
+func (n *Network) processResponse(resp common.NormalizedResponse, skipped bool, err error) (common.NormalizedResponse, bool, error) {
+	if err == nil {
+		return resp, skipped, nil
+	}
+
+	switch n.Architecture() {
+	case common.ArchitectureEvm:
+		if common.HasCode(err, common.ErrCodeJsonRpcException) {
+			return resp, skipped, err
+		}
+		if common.HasCode(err, common.ErrCodeJsonRpcRequestUnmarshal) {
+			return resp, skipped, common.NewErrJsonRpcException(
+				0,
+				common.JsonRpcErrorParseException,
+				"failed to parse json-rpc request",
+				err,
+			)
+		}
+		return resp, skipped, common.NewErrJsonRpcException(
+			0,
+			common.JsonRpcErrorServerSideException,
+			fmt.Sprintf("failed request on evm network %s", n.NetworkId),
+			err,
+		)
+	default:
+		return resp, skipped, err
+	}
+}
+
+// func (n *Network) resolveNetworkId(ctx context.Context) error {
+// 	if n.NetworkId != "" {
+// 		n.Logger.Trace().Msgf("network id already resolved")
+// 		return nil
+// 	}
+
+// 	n.Logger.Debug().Msgf("resolving network id")
+// 	if n.Architecture() == common.ArchitectureEvm {
+// 		if n.Config.Evm != nil && n.Config.Evm.ChainId > 0 {
+// 			n.NetworkId = strconv.Itoa(n.Config.Evm.ChainId)
+// 		} else {
+// 			nid, err := n.EvmGetChainId(ctx)
+// 			if err != nil {
+// 				return err
+// 			}
+// 			n.NetworkId = nid
+// 		}
+// 	}
+
+// 	if n.NetworkId == "" {
+// 		return common.NewErrUnknownNetworkID(n.Architecture())
+// 	}
+
+// 	n.Logger.Debug().Msgf("resolved network id to: %s", n.NetworkId)
+
+// 	return nil
+// }
 
 func (n *Network) acquireRateLimitPermit(req *upstream.NormalizedRequest) error {
 	if n.Config.RateLimitBucket == "" {

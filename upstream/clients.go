@@ -46,8 +46,8 @@ func (manager *ClientRegistry) CreateClient(ups *Upstream) (ClientInterface, err
 	cfg := ups.Config()
 
 	once.Do(func() {
-		switch ups.Config().Type {
-		case common.ArchitectureEvm:
+		switch cfg.Type {
+		case common.UpstreamTypeEvm:
 			parsedUrl, err := url.Parse(cfg.Endpoint)
 			if err != nil {
 				clientErr = fmt.Errorf("failed to parse URL for upstream: %v", cfg.Id)
@@ -64,7 +64,7 @@ func (manager *ClientRegistry) CreateClient(ups *Upstream) (ClientInterface, err
 				}
 			}
 		default:
-			clientErr = fmt.Errorf("unsupported architecture: %v for upstream: %v", cfg.Type, cfg.Id)
+			clientErr = fmt.Errorf("unsupported upstream type: %v for upstream: %v", cfg.Type, cfg.Id)
 		}
 
 		if clientErr != nil {

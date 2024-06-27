@@ -11,6 +11,7 @@ import (
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/evm"
 	"github.com/flair-sdk/erpc/health"
+	"github.com/flair-sdk/erpc/upstream/adapter"
 	"github.com/flair-sdk/erpc/util"
 	"github.com/flair-sdk/erpc/vendors"
 	"github.com/rs/zerolog"
@@ -21,18 +22,19 @@ type Upstream struct {
 	Metrics *UpstreamMetrics
 	Logger  zerolog.Logger
 
-	ProjectId  string
-	Score      int
+	ProjectId string
+	Score     int
 
-	config *common.UpstreamConfig
-	vendor common.Vendor
+	config  *common.UpstreamConfig
+	vendor  common.Vendor
+	adapter adapter.Adapter
 
-	failsafePolicies     []failsafe.Policy[common.NormalizedResponse]
-	failsafeExecutor     failsafe.Executor[common.NormalizedResponse]
-	rateLimitersRegistry *RateLimitersRegistry
-	methodCheckResults   map[string]bool
-	methodCheckResultsMu sync.RWMutex
-	supportedNetworkIds map[string]bool
+	failsafePolicies      []failsafe.Policy[common.NormalizedResponse]
+	failsafeExecutor      failsafe.Executor[common.NormalizedResponse]
+	rateLimitersRegistry  *RateLimitersRegistry
+	methodCheckResults    map[string]bool
+	methodCheckResultsMu  sync.RWMutex
+	supportedNetworkIds   map[string]bool
 	supportedNetworkIdsMu sync.RWMutex
 }
 
@@ -70,8 +72,12 @@ func NewUpstream(
 	} else {
 		pup.Client = client
 	}
-	
+
 	pup.detectFeatures()
+	pup.adapter, err = adapter.CreateAdapter(pup)
+	if err != nil {
+		return nil, err
+	}
 
 	lg.Debug().Msgf("prepared upstream")
 
@@ -104,12 +110,12 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 			if err != nil {
 				return common.NewErrJsonRpcException(
 					0,
-					common.JsonRpcErrorClientSideException,
+					common.JsonRpcErrorParseException,
 					"failed to unmarshal jsonrpc request",
 					err,
 				)
 			}
-			err = evm.NormalizeHttpJsonRpc(jsonRpcReq)
+			err = evm.NormalizeHttpJsonRpc(normalizedReq, jsonRpcReq)
 			if err != nil {
 				return common.NewErrJsonRpcException(
 					0,
@@ -213,17 +219,30 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 	case "HttpJsonRpcClient":
 		jsonRpcClient, okClient := u.Client.(*HttpJsonRpcClient)
 		if !okClient {
-			return nil, common.NewErrUpstreamClientInitialization(
-				fmt.Errorf("failed to cast client to HttpJsonRpcClient"),
-				cfg.Id,
+			return nil, common.NewErrJsonRpcException(
+				0,
+				common.JsonRpcErrorServerSideException,
+				fmt.Sprintf("failed to initialize client for upstream %s", cfg.Id),
+				common.NewErrUpstreamClientInitialization(
+					fmt.Errorf("failed to cast client to HttpJsonRpcClient"),
+					cfg.Id,
+				),
 			)
 		}
 
 		tryForward := func(
 			ctx context.Context,
 		) (*NormalizedResponse, error) {
+			if err := u.adapter.PreRequestHook(req); err != nil {
+				return nil, err
+			}
+
 			resp, errCall := jsonRpcClient.SendRequest(ctx, req)
 			lg.Debug().Err(errCall).Msgf("upstream call result received: %v", &resp)
+
+			if err := u.adapter.AfterResponseHook(req, resp, errCall); err != nil {
+				return nil, err
+			}
 
 			if errCall != nil {
 				if !errors.Is(errCall, context.DeadlineExceeded) && !errors.Is(errCall, context.Canceled) {
@@ -304,11 +323,20 @@ func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 	return strconv.FormatUint(dec, 10), nil
 }
 
-func (u *Upstream) SupportsNetwork(networkId string) bool {
+func (u *Upstream) SupportsNetwork(networkId string) (bool, error) {
 	u.supportedNetworkIdsMu.RLock()
-	_, ok := u.supportedNetworkIds[networkId]
-	u.supportedNetworkIdsMu.RUnlock()
-	return ok
+	defer u.supportedNetworkIdsMu.RUnlock()
+	supports, exists := u.supportedNetworkIds[networkId]
+	if exists && supports {
+		return true, nil
+	}
+
+	supports, err := u.adapter.SupportsNetwork(networkId)
+	if err != nil {
+		return false, err
+	}
+
+	return supports, nil
 }
 
 func (u *Upstream) shouldHandleMethod(method string) (v bool) {

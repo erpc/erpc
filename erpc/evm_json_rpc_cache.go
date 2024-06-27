@@ -241,9 +241,9 @@ func generateKeysForJsonRpcRequest(req *upstream.NormalizedRequest, blockRef str
 	}
 
 	if blockRef != "" {
-		return fmt.Sprintf("evm:%s:%s", req.Network().Id(), blockRef), cacheKey, nil
+		return fmt.Sprintf("%s:%s", req.Network().Id(), blockRef), cacheKey, nil
 	} else {
-		return fmt.Sprintf("evm:%s:nil", req.Network().Id()), cacheKey, nil
+		return fmt.Sprintf("%s:nil", req.Network().Id()), cacheKey, nil
 	}
 }
 

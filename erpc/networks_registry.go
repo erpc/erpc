@@ -49,15 +49,15 @@ func (r *NetworksRegistry) RegisterNetwork(
 	var rateLimiterDal data.RateLimitersDAL
 
 	r.preparedNetworks[key] = &Network{
-		ProjectId:        prjCfg.Id,
-		NetworkId:        nwCfg.NetworkId(),
-		failsafePolicies: policies,
-		Config:           nwCfg,
-		Logger:           logger,
+		ProjectId: prjCfg.Id,
+		NetworkId: nwCfg.NetworkId(),
+		Config:    nwCfg,
+		Logger:    logger,
 
 		upstreamsMutex:       &sync.RWMutex{},
 		rateLimiterDal:       rateLimiterDal,
 		rateLimitersRegistry: r.rateLimitersRegistry,
+		failsafePolicies:     policies,
 		failsafeExecutor:     failsafe.NewExecutor(policies...),
 	}
 
