@@ -1,8 +1,7 @@
 package common
 
 import (
-	"fmt"
-
+	"github.com/flair-sdk/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v2"
@@ -238,7 +237,7 @@ func (c *RateLimitRuleConfig) MarshalZerologObject(e *zerolog.Event) {
 func (c *NetworkConfig) NetworkId() string {
 	switch c.Architecture {
 	case "evm":
-		return fmt.Sprintf("evm:%d", c.Evm.ChainId)
+		return util.EvmNetworkId(c.Evm.ChainId)
 	default:
 		return ""
 	}

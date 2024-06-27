@@ -213,9 +213,8 @@ func TestUpstreamsRegistry_ScoreOrdering(t *testing.T) {
 					config: &common.UpstreamConfig{
 						Id: tc.id,
 					},
-					ProjectId:  "test_project",
-					NetworkIds: []string{"123"},
-					Metrics:    genMetrics(tc.latency, tc.errorsTotal, tc.requestsTotal, tc.throttledTotal, tc.blocksLag),
+					ProjectId: "test_project",
+					Metrics:   genMetrics(tc.latency, tc.errorsTotal, tc.requestsTotal, tc.throttledTotal, tc.blocksLag),
 				}
 			}
 

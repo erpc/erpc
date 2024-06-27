@@ -13,26 +13,26 @@ type PreparedProject struct {
 	Networks map[string]*Network
 	Logger   *zerolog.Logger
 
-	networksRegistry *NetworksRegistry
+	networksRegistry  *NetworksRegistry
 	upstreamsRegistry *upstream.UpstreamsRegistry
-	evmJsonRpcCache *EvmJsonRpcCache
+	evmJsonRpcCache   *EvmJsonRpcCache
 }
 
-func (p *PreparedProject) Bootstrap(ctx context.Context) error {
-	for _, network := range p.Networks {
-		err := network.Bootstrap(ctx)
-		if err != nil {
-			return err
-		}
-	}
+// func (p *PreparedProject) Bootstrap(ctx context.Context) error {
+// 	for _, network := range p.Networks {
+// 		err := network.Bootstrap(ctx)
+// 		if err != nil {
+// 			return err
+// 		}
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
 func (p *PreparedProject) GetNetwork(networkId string) (network *Network, err error) {
 	network, ok := p.Networks[networkId]
 	if !ok {
-		network, err = p.loadNetwork(networkId)
+		network, err = p.initializeNetwork(networkId)
 		if err != nil {
 			return nil, err
 		}
@@ -61,17 +61,26 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *ups
 	return nil, err
 }
 
-func (p *PreparedProject) loadNetwork(networkId string) (*Network, error) {
+func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) {
 	// 1) Find all upstreams that support this network
-	var upstreams []common.Upstream
+	var upstreams []*upstream.Upstream
 	pups, err := p.upstreamsRegistry.GetUpstreamsByProject(p.Config)
 	if err != nil {
 		return nil, err
 	}
 	for _, ups := range pups {
-		if ups.SupportsNetwork(networkId) {
+		if s, e := ups.SupportsNetwork(networkId); e == nil && s {
 			upstreams = append(upstreams, ups)
+		} else if e != nil {
+			p.Logger.Warn().Err(e).
+				Str("upstream", ups.Config().Id).
+				Str("network", networkId).
+				Msgf("failed to check if upstream supports network")
 		}
+	}
+
+	if len(upstreams) == 0 {
+		return nil, common.NewErrNoUpstreamsFound(p.Config.Id, networkId)
 	}
 
 	// 2) Find if any network configs defined on project-level
@@ -90,6 +99,12 @@ func (p *PreparedProject) loadNetwork(networkId string) (*Network, error) {
 		p.Config,
 		nwCfg,
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	nw.Upstreams = upstreams
+	err = nw.Bootstrap(context.Background())
 	if err != nil {
 		return nil, err
 	}

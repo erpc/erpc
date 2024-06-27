@@ -2,7 +2,6 @@ package upstream
 
 import (
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/flair-sdk/erpc/common"
@@ -13,15 +12,16 @@ import (
 )
 
 type UpstreamsRegistry struct {
-	OnUpstreamsPriorityChange func(projectId string, networkId string) error
+	OnUpstreamsPriorityChange func(projectId string) error
 
-	logger                    *zerolog.Logger
-	config                    *common.Config
-	clientRegistry            *ClientRegistry
-	vendorsRegistry           *vendors.VendorsRegistry
-	rateLimitersRegistry      *RateLimitersRegistry
-	upstreamsMapByProject     map[string][]common.Upstream
-	upstreamsMapByHealthGroup map[string]map[string]*Upstream
+	logger                      *zerolog.Logger
+	config                      *common.Config
+	clientRegistry              *ClientRegistry
+	vendorsRegistry             *vendors.VendorsRegistry
+	rateLimitersRegistry        *RateLimitersRegistry
+	upstreamsMapByProject       map[string][]*Upstream
+	upstreamsMapByProjectWithId map[string]map[string]*Upstream
+	upstreamsMapByHealthGroup   map[string]map[string]*Upstream
 }
 
 func NewUpstreamsRegistry(
@@ -29,17 +29,22 @@ func NewUpstreamsRegistry(
 	cfg *common.Config,
 	rlr *RateLimitersRegistry,
 	vr *vendors.VendorsRegistry,
-) (*UpstreamsRegistry) {
+) *UpstreamsRegistry {
 	r := &UpstreamsRegistry{
-		logger:               logger,
-		config:               cfg,
-		clientRegistry:       NewClientRegistry(),
-		rateLimitersRegistry: rlr,
-		vendorsRegistry:      vr,
-		upstreamsMapByProject: make(map[string][]common.Upstream),
-		upstreamsMapByHealthGroup: make(map[string]map[string]*Upstream),
+		logger:                      logger,
+		config:                      cfg,
+		clientRegistry:              NewClientRegistry(),
+		rateLimitersRegistry:        rlr,
+		vendorsRegistry:             vr,
+		upstreamsMapByProject:       make(map[string][]*Upstream),
+		upstreamsMapByProjectWithId: make(map[string]map[string]*Upstream),
+		upstreamsMapByHealthGroup:   make(map[string]map[string]*Upstream),
 	}
 	return r
+}
+
+func (u *UpstreamsRegistry) Bootstrap() error {
+	return u.scheduleHealthCheckTimers()
 }
 
 func (u *UpstreamsRegistry) scheduleHealthCheckTimers() error {
@@ -77,12 +82,12 @@ func (u *UpstreamsRegistry) scheduleHealthCheckTimers() error {
 	return nil
 }
 
-func (u *UpstreamsRegistry) GetUpstreamsByProject(prjCfg *common.ProjectConfig) ([]common.Upstream, error) {
+func (u *UpstreamsRegistry) GetUpstreamsByProject(prjCfg *common.ProjectConfig) ([]*Upstream, error) {
 	if upstreams, ok := u.upstreamsMapByProject[prjCfg.Id]; ok {
 		return upstreams, nil
 	}
 
-	var upstreams []common.Upstream
+	var upstreams []*Upstream
 	for _, upsCfg := range prjCfg.Upstreams {
 		upstream, err := u.NewUpstream(prjCfg.Id, upsCfg, u.logger)
 		if err != nil {
@@ -94,13 +99,17 @@ func (u *UpstreamsRegistry) GetUpstreamsByProject(prjCfg *common.ProjectConfig) 
 			}
 			u.upstreamsMapByHealthGroup[upsCfg.HealthCheckGroup][upsCfg.Id] = upstream
 		}
+		if _, ok := u.upstreamsMapByProjectWithId[prjCfg.Id]; !ok {
+			u.upstreamsMapByProjectWithId[prjCfg.Id] = make(map[string]*Upstream)
+		}
+		u.upstreamsMapByProjectWithId[prjCfg.Id][upsCfg.Id] = upstream
 		upstreams = append(upstreams, upstream)
 	}
-	
+
 	if len(upstreams) == 0 {
 		return nil, common.NewErrNoUpstreamsDefined(prjCfg.Id)
 	}
-	
+
 	u.upstreamsMapByProject[prjCfg.Id] = upstreams
 	return upstreams, nil
 }
@@ -111,7 +120,7 @@ func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *common.He
 
 	var p90Latencies, errorRates, totalRequests, throttledRates, blockLags []float64
 	var comparingUpstreams []*Upstream
-	var changedProjectAndNetworks map[string]map[string]bool = make(map[string]map[string]bool)
+	var changedProjects map[string]bool = make(map[string]bool)
 	for _, ups := range upstreams {
 		if ups.Metrics != nil {
 			p90Latencies = append(p90Latencies, ups.Metrics.P90Latency)
@@ -126,14 +135,7 @@ func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *common.He
 			}
 			blockLags = append(blockLags, ups.Metrics.BlocksLag)
 
-			if changedProjectAndNetworks[ups.ProjectId] == nil {
-				changedProjectAndNetworks[ups.ProjectId] = make(map[string]bool)
-			}
-
-			for _, networkId := range ups.NetworkIds {
-				changedProjectAndNetworks[ups.ProjectId][networkId] = true
-			}
-
+			changedProjects[ups.ProjectId] = true
 			comparingUpstreams = append(comparingUpstreams, ups)
 		}
 	}
@@ -171,10 +173,8 @@ func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *common.He
 	}
 
 	if u.OnUpstreamsPriorityChange != nil {
-		for projectId, networks := range changedProjectAndNetworks {
-			for networkId := range networks {
-				u.OnUpstreamsPriorityChange(projectId, networkId)
-			}
+		for projectId := range changedProjects {
+			u.OnUpstreamsPriorityChange(projectId)
 		}
 	}
 
@@ -215,11 +215,11 @@ func (u *UpstreamsRegistry) collectMetricsForAllUpstreams() {
 				}
 			}
 
-			if project != "" && network != "" && upstream != "" && category != "" {
-				var metrics = u.upstreamsMapByProject[project][network][upstream].Metrics
+			if project != "" && upstream != "" && category != "" {
+				var metrics = u.upstreamsMapByProjectWithId[project][upstream].Metrics
 				if metrics == nil {
 					metrics = &UpstreamMetrics{}
-					u.upstreamsMapByProject[project][network][upstream].Metrics = metrics
+					u.upstreamsMapByProjectWithId[project][upstream].Metrics = metrics
 				}
 
 				if mf.GetName() == "erpc_upstream_request_duration_seconds" {

@@ -114,7 +114,7 @@ func (c *HttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *Normaliz
 			if err != nil {
 				return common.NewErrJsonRpcException(
 					0,
-					common.JsonRpcErrorClientSideException,
+					common.JsonRpcErrorParseException,
 					"could not parse json rpc response from upstream",
 					err,
 				)

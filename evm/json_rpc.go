@@ -1,8 +1,12 @@
 package evm
 
-import "github.com/flair-sdk/erpc/common"
+import (
+	"fmt"
 
-func NormalizeHttpJsonRpc(r *common.JsonRpcRequest) error {
+	"github.com/flair-sdk/erpc/common"
+)
+
+func NormalizeHttpJsonRpc(nrq common.NormalizedRequest, r *common.JsonRpcRequest) error {
 	switch r.Method {
 	case "eth_getBlockByNumber",
 		"eth_getUncleByBlockNumberAndIndex",
@@ -10,11 +14,34 @@ func NormalizeHttpJsonRpc(r *common.JsonRpcRequest) error {
 		"eth_getUncleCountByBlockNumber",
 		"eth_getBlockTransactionCountByNumber":
 		if len(r.Params) > 0 {
-			b, err := common.NormalizeHex(r.Params[0])
-			if err != nil {
-				return err
+			bks, ok := r.Params[0].(string)
+			if !ok {
+				return fmt.Errorf("invalid block number, must be 0x hex string, or numer or latest/finalized")
 			}
-			r.Params[0] = b
+			ntw := nrq.Network()
+			if ntw != nil {
+				etk := ntw.EvmBlockTracker()
+				if etk != nil {
+					switch bks {
+					case "latest":
+						lb := etk.LatestBlock()
+						if lb > 0 {
+							r.Params[0] = lb
+						}
+					case "finalized":
+						fb := etk.FinalizedBlock()
+						if fb > 0 {
+							r.Params[0] = fb
+						}
+					default:
+						b, err := common.NormalizeHex(r.Params[0])
+						if err == nil {
+							r.Params[0] = b
+						}
+					}
+				}
+			}
+
 		}
 	case "eth_getBalance",
 		"eth_getStorageAt",

@@ -11,4 +11,5 @@ type Network interface {
 	Id() string
 	Architecture() NetworkArchitecture
 	EvmIsBlockFinalized(blockNumber uint64) (bool, error)
+	EvmBlockTracker() EvmBlockTracker
 }

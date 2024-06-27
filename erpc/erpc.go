@@ -1,7 +1,7 @@
 package erpc
 
 import (
-	"context"
+	// "context"
 
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/upstream"
@@ -28,12 +28,11 @@ func NewERPC(
 	}
 
 	vendorsRegistry := vendors.NewVendorsRegistry()
-
-	upstreamsRegistry, err := upstream.NewUpstreamsRegistry(logger, cfg, rateLimitersRegistry, vendorsRegistry)
+	upstreamsRegistry := upstream.NewUpstreamsRegistry(logger, cfg, rateLimitersRegistry, vendorsRegistry)
+	err = upstreamsRegistry.Bootstrap()
 	if err != nil {
 		return nil, err
 	}
-
 	networksRegistry := NewNetworksRegistry(rateLimitersRegistry)
 	projectRegistry, err := NewProjectsRegistry(
 		cfg.Projects,
@@ -45,36 +44,35 @@ func NewERPC(
 	if err != nil {
 		return nil, err
 	}
-	err = projectRegistry.Bootstrap(context.Background())
-	if err != nil {
-		return nil, err
-	}
+	// err = projectRegistry.Bootstrap(context.Background())
+	// if err != nil {
+	// 	return nil, err
+	// }
 
-	upstreamsRegistry.OnUpstreamsPriorityChange = func(projectId string, networkId string) error {
-		log.Info().Str("project", projectId).Str("network", networkId).Msgf("upstreams priority updated")
+	upstreamsRegistry.OnUpstreamsPriorityChange = func(projectId string) error {
+		log.Info().Str("project", projectId).Msgf("upstreams priority updated")
 		prj, err := projectRegistry.GetProject(projectId)
 		if err != nil {
 			return err
 		}
 
-		ntw, err := prj.GetNetwork(networkId)
-		if err != nil {
-			return err
-		}
+		networks := prj.Networks
 
-		for i := 0; i < len(ntw.Upstreams); i++ {
-			for j := i + 1; j < len(ntw.Upstreams); j++ {
-				if ntw.Upstreams[i].Score < ntw.Upstreams[j].Score {
-					ntw.Upstreams[i], ntw.Upstreams[j] = ntw.Upstreams[j], ntw.Upstreams[i]
+		for _, ntw := range networks {
+			for i := 0; i < len(ntw.Upstreams); i++ {
+				for j := i + 1; j < len(ntw.Upstreams); j++ {
+					if ntw.Upstreams[i].Score < ntw.Upstreams[j].Score {
+						ntw.Upstreams[i], ntw.Upstreams[j] = ntw.Upstreams[j], ntw.Upstreams[i]
+					}
 				}
 			}
-		}
 
-		var finalOrder string
-		for _, u := range ntw.Upstreams {
-			finalOrder += u.Config().Id + ", "
+			var finalOrder string
+			for _, u := range ntw.Upstreams {
+				finalOrder += u.Config().Id + ", "
+			}
+			log.Info().Str("project", projectId).Str("network", ntw.Id()).Str("upstreams", finalOrder).Msgf("upstreams priority updated")
 		}
-		log.Info().Str("project", projectId).Str("network", networkId).Str("upstreams", finalOrder).Msgf("upstreams priority updated")
 
 		return nil
 	}
