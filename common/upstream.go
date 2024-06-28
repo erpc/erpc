@@ -6,7 +6,6 @@ type UpstreamType string
 
 const (
 	UpstreamTypeEvm        UpstreamType = "evm"
-	UpstreamTypeEvmErpc    UpstreamType = "evm-erpc"
 	UpstreamTypeEvmAlchemy UpstreamType = "evm-alchemy"
 )
 

@@ -2,107 +2,196 @@ package data
 
 import (
 	"context"
-	"io"
+	"fmt"
 	"strings"
 
 	"github.com/flair-sdk/erpc/common"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/rs/zerolog/log"
 )
 
 const (
-	PostgreSQLConnectorDriver = "postgresql"
+	PostgreSQLDriverName = "postgresql"
 )
 
-type PostgreSQLStore struct {
-	cfg  *common.PostgreSQLConnectorConfig
-	conn *pgxpool.Pool
+var _ Connector = (*PostgreSQLConnector)(nil)
+
+type PostgreSQLConnector struct {
+	conn  *pgxpool.Pool
+	table string
 }
 
-type PostgreSQLValueWriter struct {
-	ctx    context.Context
-	store  *PostgreSQLStore
-	conn   *pgxpool.Pool
-	key    string
-	buffer strings.Builder
+func NewPostgreSQLConnector(ctx context.Context, cfg *common.PostgreSQLConnectorConfig) (*PostgreSQLConnector, error) {
+	log.Debug().Msgf("creating PostgreSQLConnector with config: %+v", cfg)
+
+	conn, err := pgxpool.Connect(ctx, cfg.ConnectionUri)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to PostgreSQL: %w", err)
+	}
+
+	// Create table if not exists
+	_, err = conn.Exec(ctx, fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s (
+			partition_key TEXT,
+			range_key TEXT,
+			value TEXT,
+			PRIMARY KEY (partition_key, range_key)
+		)
+	`, cfg.Table))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create table: %w", err)
+	}
+
+	// Create index for reverse lookups
+	_, err = conn.Exec(ctx, fmt.Sprintf(`
+		CREATE INDEX IF NOT EXISTS idx_reverse ON %s (range_key, partition_key)
+	`, cfg.Table))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create reverse index: %w", err)
+	}
+
+	return &PostgreSQLConnector{
+		conn:  conn,
+		table: cfg.Table,
+	}, nil
 }
 
-func (w *PostgreSQLValueWriter) Write(p []byte) (n int, err error) {
-	w.buffer.Write(p)
-	return len(p), nil
-}
+func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey, value string) error {
+	log.Debug().Msgf("writing to PostgreSQL with partition key: %s and range key: %s", partitionKey, rangeKey)
 
-func (w *PostgreSQLValueWriter) Close() error {
-	_, err := w.conn.Exec(w.ctx, "INSERT INTO "+w.store.cfg.Table+" (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2", w.key, w.buffer.String())
+	_, err := p.conn.Exec(ctx, fmt.Sprintf(`
+		INSERT INTO %s (partition_key, range_key, value)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (partition_key, range_key) DO UPDATE
+		SET value = $3
+	`, p.table), partitionKey, rangeKey, value)
+
 	return err
 }
 
-func NewPostgreSQLStore(cfg *common.PostgreSQLConnectorConfig) (*PostgreSQLStore, error) {
-	conn, err := pgxpool.Connect(context.Background(), cfg.ConnectionUri)
-	if err != nil {
-		return nil, err
+func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) (string, error) {
+	var query string
+	var args []interface{}
+
+	if strings.HasSuffix(partitionKey, "*") || strings.HasSuffix(rangeKey, "*") {
+		return p.getWithWildcard(ctx, index, partitionKey, rangeKey)
 	}
 
-	_, err = conn.Exec(context.Background(), "CREATE TABLE IF NOT EXISTS "+cfg.Table+" (key VARCHAR(1024) PRIMARY KEY, value TEXT)")
-	if err != nil {
-		return nil, err
+	if index == ConnectorReverseIndex {
+		query = fmt.Sprintf(`
+			SELECT value FROM %s
+			WHERE range_key = $1 AND partition_key = $2
+		`, p.table)
+		args = []interface{}{rangeKey, partitionKey}
+	} else {
+		query = fmt.Sprintf(`
+			SELECT value FROM %s
+			WHERE partition_key = $1 AND range_key = $2
+		`, p.table)
+		args = []interface{}{partitionKey, rangeKey}
 	}
 
-	return &PostgreSQLStore{cfg: cfg, conn: conn}, nil
-}
+	log.Debug().Msgf("getting item from PostgreSQL with query: %s", query)
 
-func (p *PostgreSQLStore) Get(ctx context.Context, key string) (string, error) {
 	var value string
-	err := p.conn.QueryRow(ctx, "SELECT value FROM "+p.cfg.Table+" WHERE key = $1", key).Scan(&value)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return "", common.NewErrRecordNotFound(key, PostgreSQLConnectorDriver)
-		}
+	err := p.conn.QueryRow(ctx, query, args...).Scan(&value)
+
+	if err == pgx.ErrNoRows {
+		return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s", partitionKey, rangeKey), PostgreSQLDriverName)
+	} else if err != nil {
 		return "", err
 	}
+
 	return value, nil
 }
 
-func (d *PostgreSQLStore) GetWithReader(ctx context.Context, key string) (io.Reader, error) {
-	value, err := d.Get(ctx, key)
-	if err != nil {
-		return nil, err
-	}
+func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, index, partitionKey, rangeKey string) (string, error) {
+	var query string
+	var args []interface{}
 
-	return strings.NewReader(value), nil
-}
-
-func (p *PostgreSQLStore) Set(ctx context.Context, key string, value string) (int, error) {
-	x, err := p.conn.Exec(ctx, "INSERT INTO "+p.cfg.Table+" (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2", key, value)
-	return int(x.RowsAffected()), err
-}
-
-func (p *PostgreSQLStore) SetWithWriter(ctx context.Context, key string) (io.WriteCloser, error) {
-	return &PostgreSQLValueWriter{store: p, ctx: ctx, conn: p.conn, key: key}, nil
-}
-
-func (p *PostgreSQLStore) Scan(ctx context.Context, prefix string) ([]string, error) {
-	rows, err := p.conn.Query(ctx, "SELECT key FROM "+p.cfg.Table+" WHERE key LIKE $1", prefix+"%")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var keys []string
-	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
-			return nil, err
+	if index == ConnectorReverseIndex {
+		query = fmt.Sprintf(`
+			SELECT value FROM %s
+			WHERE range_key = $1 AND partition_key LIKE $2
+			LIMIT 1
+		`, p.table)
+		args = []interface{}{
+			strings.ReplaceAll(rangeKey, "*", "%"),
+			strings.ReplaceAll(partitionKey, "*", "%"),
 		}
-		keys = append(keys, key)
+	} else {
+		query = fmt.Sprintf(`
+			SELECT value FROM %s
+			WHERE partition_key = $1 AND range_key LIKE $2
+			LIMIT 1
+		`, p.table)
+		args = []interface{}{
+			strings.ReplaceAll(partitionKey, "*", "%"),
+			strings.ReplaceAll(rangeKey, "*", "%"),
+		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+
+	log.Debug().Msgf("getting item from PostgreSQL with wildcard query: %s", query)
+
+	var value string
+	err := p.conn.QueryRow(ctx, query, args...).Scan(&value)
+
+	if err == pgx.ErrNoRows {
+		return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s", partitionKey, rangeKey), PostgreSQLDriverName)
+	} else if err != nil {
+		return "", err
 	}
-	return keys, nil
+
+	return value, nil
 }
 
-func (p *PostgreSQLStore) Delete(ctx context.Context, key string) error {
-	_, err := p.conn.Exec(ctx, "DELETE FROM "+p.cfg.Table+" WHERE key = $1", key)
+func (p *PostgreSQLConnector) Delete(ctx context.Context, index, partitionKey, rangeKey string) error {
+	if strings.HasSuffix(rangeKey, "*") {
+		return p.deleteWithPrefix(ctx, index, partitionKey, rangeKey)
+	} else {
+		return p.deleteSingleItem(ctx, partitionKey, rangeKey)
+	}
+}
+
+func (p *PostgreSQLConnector) deleteSingleItem(ctx context.Context, partitionKey, rangeKey string) error {
+	_, err := p.conn.Exec(ctx, fmt.Sprintf(`
+		DELETE FROM %s
+		WHERE partition_key = $1 AND range_key = $2
+	`, p.table), partitionKey, rangeKey)
+
 	return err
+}
+
+func (p *PostgreSQLConnector) deleteWithPrefix(ctx context.Context, index, partitionKey, rangeKey string) error {
+	var query string
+	var args []interface{}
+
+	if index == ConnectorReverseIndex {
+		query = fmt.Sprintf(`
+			DELETE FROM %s
+			WHERE range_key LIKE $1 AND partition_key = $2
+		`, p.table)
+		args = []interface{}{
+			strings.ReplaceAll(rangeKey, "*", "%"),
+			partitionKey,
+		}
+	} else {
+		query = fmt.Sprintf(`
+			DELETE FROM %s
+			WHERE partition_key = $1 AND range_key LIKE $2
+		`, p.table)
+		args = []interface{}{
+			partitionKey,
+			strings.ReplaceAll(rangeKey, "*", "%"),
+		}
+	}
+
+	_, err := p.conn.Exec(ctx, query, args...)
+	return err
+}
+
+func (p *PostgreSQLConnector) Close(ctx context.Context) error {
+	p.conn.Close()
+	return nil
 }

@@ -229,7 +229,7 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 			return false
 		}
 
-		if !result.IsObjectNull() {
+		if result != nil && !result.IsObjectNull() {
 			req := result.Request()
 			isEmpty := result.IsResultEmptyish()
 

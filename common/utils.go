@@ -66,11 +66,7 @@ func NormalizeHex(value interface{}) (string, error) {
 }
 
 func WildcardMatch(pattern, value string) bool {
-	if pattern == "*" {
-		return true
-	}
-
-	return wildcard.Match(value, pattern)
+	return wildcard.Match(pattern, value)
 }
 
 func RemoveDuplicates(slice []string) []string {
