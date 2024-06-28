@@ -54,7 +54,7 @@ projects:
 	  # Define as many upstreams for this project
     upstreams:
     - id: string
-      architecture: auto | evm | substrate | solana | bitcoin
+      architecture: auto | evm | substrate |    | bitcoin
       endpoint: string # wss:// or wss+alchemy://MY_ALCHEMY_API_KEY or https+alchemy://MY_ALCHEMY_API_KEY?chainId=1,5
       headers:
         key: value
