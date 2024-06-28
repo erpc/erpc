@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"strconv"
 	"sync"
 	"time"
 
@@ -16,7 +15,6 @@ import (
 	"github.com/flair-sdk/erpc/upstream"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 type Network struct {
@@ -199,35 +197,6 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 	return resp, nil
 }
 
-func (n *Network) EvmGetChainId(ctx context.Context) (string, error) {
-	pr := upstream.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_chainId","params":[]}`)).WithNetwork(n)
-	resp, err := n.Forward(ctx, pr)
-	if err != nil {
-		return "", err
-	}
-	jrr, err := resp.JsonRpcResponse()
-	if err != nil {
-		return "", err
-	}
-	if jrr.Error != nil {
-		return "", jrr.Error
-	}
-
-	log.Debug().Msgf("eth_chainId response: %+v", jrr)
-
-	hex, err := common.NormalizeHex(jrr.Result)
-	if err != nil {
-		return "", err
-	}
-
-	dec, err := common.HexToUint64(hex)
-	if err != nil {
-		return "", err
-	}
-
-	return strconv.FormatUint(dec, 10), nil
-}
-
 func (n *Network) EvmIsBlockFinalized(blockNumber uint64) (bool, error) {
 	if n.evmBlockTracker == nil {
 		return false, nil
@@ -279,6 +248,13 @@ func (n *Network) EvmBlockTracker() common.EvmBlockTracker {
 	return n.evmBlockTracker
 }
 
+func (n *Network) EvmChainId() (uint64, error) {
+	if n.Config == nil || n.Config.Evm == nil {
+		return 0, common.NewErrUnknownNetworkID(n.Architecture())
+	}
+	return uint64(n.Config.Evm.ChainId), nil
+}
+
 func (n *Network) processResponse(resp common.NormalizedResponse, skipped bool, err error) (common.NormalizedResponse, bool, error) {
 	if err == nil {
 		return resp, skipped, nil
@@ -307,34 +283,6 @@ func (n *Network) processResponse(resp common.NormalizedResponse, skipped bool, 
 		return resp, skipped, err
 	}
 }
-
-// func (n *Network) resolveNetworkId(ctx context.Context) error {
-// 	if n.NetworkId != "" {
-// 		n.Logger.Trace().Msgf("network id already resolved")
-// 		return nil
-// 	}
-
-// 	n.Logger.Debug().Msgf("resolving network id")
-// 	if n.Architecture() == common.ArchitectureEvm {
-// 		if n.Config.Evm != nil && n.Config.Evm.ChainId > 0 {
-// 			n.NetworkId = strconv.Itoa(n.Config.Evm.ChainId)
-// 		} else {
-// 			nid, err := n.EvmGetChainId(ctx)
-// 			if err != nil {
-// 				return err
-// 			}
-// 			n.NetworkId = nid
-// 		}
-// 	}
-
-// 	if n.NetworkId == "" {
-// 		return common.NewErrUnknownNetworkID(n.Architecture())
-// 	}
-
-// 	n.Logger.Debug().Msgf("resolved network id to: %s", n.NetworkId)
-
-// 	return nil
-// }
 
 func (n *Network) acquireRateLimitPermit(req *upstream.NormalizedRequest) error {
 	if n.Config.RateLimitBucket == "" {

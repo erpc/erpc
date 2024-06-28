@@ -73,5 +73,9 @@ func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr int
 }
 
 func (v *AlchemyVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
+	if strings.HasPrefix(ups.Endpoint, "alchemy://") {
+		return true
+	}
+
 	return strings.Contains(ups.Endpoint, ".alchemy.com") || strings.Contains(ups.Endpoint, ".alchemyapi.io")
 }
