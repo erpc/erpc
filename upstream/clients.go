@@ -8,9 +8,17 @@ import (
 	"github.com/flair-sdk/erpc/common"
 )
 
+type ClientType string
+
+const (
+	ClientTypeHttpJsonRpc        ClientType = "HttpJsonRpc"
+	ClientTypeAlchemyHttpJsonRpc ClientType = "AlchemyHttpJsonRpc"
+)
+
 // Define a shared interface for all types of Clients
 type ClientInterface interface {
-	GetType() string
+	GetType() ClientType
+	SupportsNetwork(networkId string) (bool, error)
 }
 
 type Client struct {
@@ -44,16 +52,15 @@ func (manager *ClientRegistry) CreateClient(ups *Upstream) (ClientInterface, err
 	var clientErr error
 
 	cfg := ups.Config()
-
-	once.Do(func() {
-		switch cfg.Type {
-		case common.UpstreamTypeEvm:
-			parsedUrl, err := url.Parse(cfg.Endpoint)
-			if err != nil {
-				clientErr = fmt.Errorf("failed to parse URL for upstream: %v", cfg.Id)
-			} else {
+	parsedUrl, err := url.Parse(cfg.Endpoint)
+	if err != nil {
+		clientErr = fmt.Errorf("failed to parse URL for upstream: %v", cfg.Id)
+	} else {
+		once.Do(func() {
+			switch cfg.Type {
+			case common.UpstreamTypeEvm:
 				if parsedUrl.Scheme == "http" || parsedUrl.Scheme == "https" {
-					newClient, err = NewHttpJsonRpcClient(ups, parsedUrl)
+					newClient, err = NewGenericHttpJsonRpcClient(ups, parsedUrl)
 					if err != nil {
 						clientErr = fmt.Errorf("failed to create HTTP client for upstream: %v", cfg.Id)
 					}
@@ -62,15 +69,21 @@ func (manager *ClientRegistry) CreateClient(ups *Upstream) (ClientInterface, err
 				} else {
 					clientErr = fmt.Errorf("unsupported EVM scheme: %v for upstream: %v", parsedUrl.Scheme, cfg.Id)
 				}
-			}
-		default:
-			clientErr = fmt.Errorf("unsupported upstream type: %v for upstream: %v", cfg.Type, cfg.Id)
-		}
 
-		if clientErr != nil {
-			manager.clients.Store(cfg.Endpoint, newClient)
-		}
-	})
+			case common.UpstreamTypeEvmAlchemy:
+				newClient, err = NewAlchemyHttpJsonRpcClient(ups, parsedUrl)
+				if err != nil {
+					clientErr = fmt.Errorf("failed to create Alchemy client for upstream: %v", cfg.Id)
+				}
+			default:
+				clientErr = fmt.Errorf("unsupported upstream type: %v for upstream: %v", cfg.Type, cfg.Id)
+			}
+
+			if clientErr == nil {
+				manager.clients.Store(cfg.Endpoint, newClient)
+			}
+		})
+	}
 
 	return newClient, clientErr
 }

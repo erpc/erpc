@@ -5,13 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/evm"
 	"github.com/flair-sdk/erpc/health"
-	"github.com/flair-sdk/erpc/upstream/adapter"
+	// "github.com/flair-sdk/erpc/upstream/adapter"
 	"github.com/flair-sdk/erpc/util"
 	"github.com/flair-sdk/erpc/vendors"
 	"github.com/rs/zerolog"
@@ -25,9 +26,9 @@ type Upstream struct {
 	ProjectId string
 	Score     int
 
-	config  *common.UpstreamConfig
-	vendor  common.Vendor
-	adapter adapter.Adapter
+	config *common.UpstreamConfig
+	vendor common.Vendor
+	// adapter adapter.Adapter
 
 	failsafePolicies      []failsafe.Policy[common.NormalizedResponse]
 	failsafeExecutor      failsafe.Executor[common.NormalizedResponse]
@@ -65,19 +66,20 @@ func NewUpstream(
 		failsafeExecutor:     failsafe.NewExecutor[common.NormalizedResponse](policies...),
 		rateLimitersRegistry: rlr,
 		methodCheckResults:   map[string]bool{},
+		supportedNetworkIds:  map[string]bool{},
 	}
 
+	pup.guessUpstreamType()
 	if client, err := cr.GetOrCreateClient(pup); err != nil {
 		return nil, err
 	} else {
 		pup.Client = client
 	}
-
 	pup.detectFeatures()
-	pup.adapter, err = adapter.CreateAdapter(pup)
-	if err != nil {
-		return nil, err
-	}
+	// pup.adapter, err = adapter.CreateAdapter(pup)
+	// if err != nil {
+	// 	return nil, err
+	// }
 
 	lg.Debug().Msgf("prepared upstream")
 
@@ -96,6 +98,7 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 	cfg := u.Config()
 	switch cfg.Type {
 	case common.UpstreamTypeEvm:
+	case common.UpstreamTypeEvmAlchemy:
 		if u.Client == nil {
 			return common.NewErrJsonRpcException(
 				0,
@@ -105,7 +108,7 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 			)
 		}
 
-		if u.Client.GetType() == "HttpJsonRpcClient" {
+		if u.Client.GetType() == ClientTypeHttpJsonRpc || u.Client.GetType() == ClientTypeAlchemyHttpJsonRpc {
 			jsonRpcReq, err := normalizedReq.JsonRpcRequest()
 			if err != nil {
 				return common.NewErrJsonRpcException(
@@ -147,6 +150,8 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 			nil,
 		)
 	}
+
+	return nil
 }
 
 // Forward is used during lifecycle of a proxied request, it uses writers and readers for better performance
@@ -216,8 +221,9 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 	// Send the request based on client type
 	//
 	switch clientType {
-	case "HttpJsonRpcClient":
-		jsonRpcClient, okClient := u.Client.(*HttpJsonRpcClient)
+	case ClientTypeHttpJsonRpc:
+	case ClientTypeAlchemyHttpJsonRpc:
+		jsonRpcClient, okClient := u.Client.(HttpJsonRpcClient)
 		if !okClient {
 			return nil, common.NewErrJsonRpcException(
 				0,
@@ -233,16 +239,16 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 		tryForward := func(
 			ctx context.Context,
 		) (*NormalizedResponse, error) {
-			if err := u.adapter.PreRequestHook(req); err != nil {
-				return nil, err
-			}
+			// if err := u.adapter.PreRequestHook(req); err != nil {
+			// 	return nil, err
+			// }
 
 			resp, errCall := jsonRpcClient.SendRequest(ctx, req)
 			lg.Debug().Err(errCall).Msgf("upstream call result received: %v", &resp)
 
-			if err := u.adapter.AfterResponseHook(req, resp, errCall); err != nil {
-				return nil, err
-			}
+			// if err := u.adapter.AfterResponseHook(req, resp, errCall); err != nil {
+			// 	return nil, err
+			// }
 
 			if errCall != nil {
 				if !errors.Is(errCall, context.DeadlineExceeded) && !errors.Is(errCall, context.Canceled) {
@@ -288,6 +294,8 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 			cfg.Id,
 		)
 	}
+
+	return nil, fmt.Errorf("unexpected client type during forward: %s", clientType)
 }
 
 func (u *Upstream) Executor() failsafe.Executor[common.NormalizedResponse] {
@@ -325,16 +333,20 @@ func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 
 func (u *Upstream) SupportsNetwork(networkId string) (bool, error) {
 	u.supportedNetworkIdsMu.RLock()
-	defer u.supportedNetworkIdsMu.RUnlock()
 	supports, exists := u.supportedNetworkIds[networkId]
+	u.supportedNetworkIdsMu.RUnlock()
 	if exists && supports {
 		return true, nil
 	}
 
-	supports, err := u.adapter.SupportsNetwork(networkId)
+	supports, err := u.Client.SupportsNetwork(networkId)
 	if err != nil {
 		return false, err
 	}
+
+	u.supportedNetworkIdsMu.Lock()
+	u.supportedNetworkIds[networkId] = supports
+	u.supportedNetworkIdsMu.Unlock()
 
 	return supports, nil
 }
@@ -382,12 +394,28 @@ func (u *Upstream) shouldHandleMethod(method string) (v bool) {
 	return v
 }
 
+func (u *Upstream) guessUpstreamType() error {
+	cfg := u.Config()
+
+	if cfg.Type != "" {
+		return nil
+	}
+
+	if strings.HasPrefix(cfg.Endpoint, "alchemy://") {
+		cfg.Type = common.UpstreamTypeEvmAlchemy
+		return nil
+	}
+
+	// TODO make actual calls to detect other types (solana, btc, etc)
+	cfg.Type = common.UpstreamTypeEvm
+	return nil
+}
+
 func (u *Upstream) detectFeatures() error {
 	cfg := u.Config()
 
 	if cfg.Type == "" {
-		// TODO detect upstream type if not defined (evm, erpc, solana, etc)
-		cfg.Type = common.UpstreamTypeEvm
+		return fmt.Errorf("upstream type not set yet")
 	}
 
 	if cfg.Type == common.UpstreamTypeEvm {

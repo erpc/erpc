@@ -59,7 +59,7 @@ func NewHttpServer(cfg *common.ServerConfig, erpc *erpc.ERPC) *HttpServer {
 			nw, err := erpc.GetNetwork(projectId, networkId)
 			if err != nil {
 				log.Error().Err(err).Msgf("failed to get network %s for project %s", networkId, projectId)
-				hrw.WriteHeader(http.StatusNotFound)
+				handleErrorResponse(err, hrw)
 				return
 			}
 			nq := upstream.NewNormalizedRequest(body).
@@ -115,8 +115,16 @@ func handleErrorResponse(err error, hrw http.ResponseWriter) {
 
 	if errors.As(err, &bodyErr) {
 		writeErr = json.NewEncoder(hrw).Encode(bodyErr.ErrorResponseBody())
-	} else {
+	} else if _, ok := err.(*common.BaseError); ok {
 		writeErr = json.NewEncoder(hrw).Encode(err)
+	} else {
+		writeErr = json.NewEncoder(hrw).Encode(
+			common.BaseError{
+				Code:    "ErrUnknown",
+				Message: "unexpected server error",
+				Cause:   err,
+			},
+		)
 	}
 
 	if writeErr != nil {

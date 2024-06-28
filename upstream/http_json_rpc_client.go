@@ -15,27 +15,30 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-type HttpJsonRpcClient struct {
-	Type string
-	Url  *url.URL
+type HttpJsonRpcClient interface {
+	GetType() ClientType
+	SupportsNetwork(networkId string) (bool, error)
+	SendRequest(ctx context.Context, req *NormalizedRequest) (*NormalizedResponse, error)
+}
+
+type GenericHttpJsonRpcClient struct {
+	Url *url.URL
 
 	upstream   *Upstream
 	httpClient *http.Client
 }
 
-func NewHttpJsonRpcClient(pu *Upstream, parsedUrl *url.URL) (*HttpJsonRpcClient, error) {
-	var client *HttpJsonRpcClient
+func NewGenericHttpJsonRpcClient(pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
+	var client HttpJsonRpcClient
 
 	if util.IsTest() {
-		client = &HttpJsonRpcClient{
-			Type:       "HttpJsonRpcClient",
+		client = &GenericHttpJsonRpcClient{
 			Url:        parsedUrl,
 			upstream:   pu,
 			httpClient: &http.Client{},
 		}
 	} else {
-		client = &HttpJsonRpcClient{
-			Type:     "HttpJsonRpcClient",
+		client = &GenericHttpJsonRpcClient{
 			Url:      parsedUrl,
 			upstream: pu,
 			httpClient: &http.Client{
@@ -53,7 +56,19 @@ func NewHttpJsonRpcClient(pu *Upstream, parsedUrl *url.URL) (*HttpJsonRpcClient,
 	return client, nil
 }
 
-func (c *HttpJsonRpcClient) SendRequest(ctx context.Context, req *NormalizedRequest) (*NormalizedResponse, error) {
+func (c *GenericHttpJsonRpcClient) GetType() ClientType {
+	return ClientTypeHttpJsonRpc
+}
+
+func (c *GenericHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, error) {
+	cfg := c.upstream.Config()
+	if cfg.Evm != nil && cfg.Evm.ChainId > 0 {
+		return util.EvmNetworkId(cfg.Evm.ChainId) == networkId, nil
+	}
+	return false, nil
+}
+
+func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *NormalizedRequest) (*NormalizedResponse, error) {
 	jrReq, err := req.JsonRpcRequest()
 	if err != nil {
 		return nil, common.NewErrUpstreamRequest(err, c.upstream.Config().Id, req)
@@ -102,11 +117,7 @@ func (c *HttpJsonRpcClient) SendRequest(ctx context.Context, req *NormalizedRequ
 	return nr, c.normalizeJsonRpcError(resp, nr)
 }
 
-func (c *HttpJsonRpcClient) GetType() string {
-	return c.Type
-}
-
-func (c *HttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *NormalizedResponse) error {
+func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *NormalizedResponse) error {
 	jr, err := nr.JsonRpcResponse()
 
 	if r.StatusCode < 400 {
