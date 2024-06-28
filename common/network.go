@@ -3,8 +3,7 @@ package common
 type NetworkArchitecture string
 
 const (
-	ArchitectureEvm    NetworkArchitecture = "evm"
-	ArchitectureSolana NetworkArchitecture = "solana"
+	ArchitectureEvm NetworkArchitecture = "evm"
 )
 
 type Network interface {

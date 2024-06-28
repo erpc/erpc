@@ -12,7 +12,6 @@ import (
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/evm"
 	"github.com/flair-sdk/erpc/health"
-	// "github.com/flair-sdk/erpc/upstream/adapter"
 	"github.com/flair-sdk/erpc/util"
 	"github.com/flair-sdk/erpc/vendors"
 	"github.com/rs/zerolog"
@@ -28,11 +27,11 @@ type Upstream struct {
 
 	config *common.UpstreamConfig
 	vendor common.Vendor
-	// adapter adapter.Adapter
 
-	failsafePolicies      []failsafe.Policy[common.NormalizedResponse]
-	failsafeExecutor      failsafe.Executor[common.NormalizedResponse]
-	rateLimitersRegistry  *RateLimitersRegistry
+	failsafePolicies     []failsafe.Policy[common.NormalizedResponse]
+	failsafeExecutor     failsafe.Executor[common.NormalizedResponse]
+	rateLimitersRegistry *RateLimitersRegistry
+
 	methodCheckResults    map[string]bool
 	methodCheckResultsMu  sync.RWMutex
 	supportedNetworkIds   map[string]bool
@@ -239,16 +238,8 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 		tryForward := func(
 			ctx context.Context,
 		) (*NormalizedResponse, error) {
-			// if err := u.adapter.PreRequestHook(req); err != nil {
-			// 	return nil, err
-			// }
-
 			resp, errCall := jsonRpcClient.SendRequest(ctx, req)
 			lg.Debug().Err(errCall).Msgf("upstream call result received: %v", &resp)
-
-			// if err := u.adapter.AfterResponseHook(req, resp, errCall); err != nil {
-			// 	return nil, err
-			// }
 
 			if errCall != nil {
 				if !errors.Is(errCall, context.DeadlineExceeded) && !errors.Is(errCall, context.Canceled) {
@@ -401,7 +392,7 @@ func (u *Upstream) guessUpstreamType() error {
 		return nil
 	}
 
-	if strings.HasPrefix(cfg.Endpoint, "alchemy://") {
+	if strings.HasPrefix(cfg.Endpoint, "alchemy://") || strings.HasPrefix(cfg.Endpoint, "evm+alchemy://") {
 		cfg.Type = common.UpstreamTypeEvmAlchemy
 		return nil
 	}

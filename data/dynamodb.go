@@ -163,6 +163,13 @@ func createTableIfNotExists(
 		return err
 	}
 
+	if err := client.WaitUntilTableExistsWithContext(ctx, &dynamodb.DescribeTableInput{
+		TableName: aws.String(cfg.Table),
+	}); err != nil {
+		log.Error().Err(err).Msgf("failed to wait for dynamodb table %s to be created", cfg.Table)
+		return err
+	}
+
 	log.Debug().Msgf("dynamodb table '%s' is ready", cfg.Table)
 
 	return nil
@@ -325,76 +332,6 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 	return value, nil
 }
 
-func (d *DynamoDBConnector) Query(ctx context.Context, index, partitionKey, rangeKey string) ([]*DataRow, error) {
-	var keyCondition string
-	var exprAttrNames = map[string]*string{
-		"#pkey": aws.String(d.partitionKeyName),
-	}
-	var exprAttrValues = map[string]*dynamodb.AttributeValue{}
-
-	if strings.HasSuffix(partitionKey, "*") && index == ConnectorMainIndex {
-		return nil, fmt.Errorf("partition key does not support prefix search in dynamodb")
-	} else {
-		keyCondition = "#pkey = :pkey"
-		exprAttrValues[":pkey"] = &dynamodb.AttributeValue{
-			S: aws.String(partitionKey),
-		}
-	}
-
-	if rangeKey != "" {
-		exprAttrNames["#rkey"] = aws.String(d.rangeKeyName)
-		exprAttrValues[":rkey"] = &dynamodb.AttributeValue{
-			S: aws.String(strings.TrimSuffix(rangeKey, "*")),
-		}
-
-		if strings.HasSuffix(rangeKey, "*") {
-			keyCondition += " AND begins_with(#rkey, :rkey)"
-		} else {
-			keyCondition += " AND #rkey = :rkey"
-		}
-	}
-
-	qi := &dynamodb.QueryInput{
-		TableName:                 aws.String(d.table),
-		KeyConditionExpression:    aws.String(keyCondition),
-		ExpressionAttributeNames:  exprAttrNames,
-		ExpressionAttributeValues: exprAttrValues,
-	}
-
-	if index != "" && index != "main" {
-		qi.IndexName = aws.String(index)
-	}
-
-	var results []*DataRow
-	var lastEvaluatedKey map[string]*dynamodb.AttributeValue
-
-	for {
-		if lastEvaluatedKey != nil {
-			qi.ExclusiveStartKey = lastEvaluatedKey
-		}
-
-		log.Debug().Msgf("querying dynamodb with input: %+v", qi)
-		result, err := d.client.QueryWithContext(ctx, qi)
-		if err != nil {
-			return nil, err
-		}
-
-		for _, item := range result.Items {
-			dv := &DataRow{
-				Value: *item["value"].S,
-			}
-			results = append(results, dv)
-		}
-
-		lastEvaluatedKey = result.LastEvaluatedKey
-		if lastEvaluatedKey == nil {
-			break
-		}
-	}
-
-	return results, nil
-}
-
 func (d *DynamoDBConnector) Delete(ctx context.Context, index, partitionKey, rangeKey string) error {
 	if strings.HasSuffix(rangeKey, "*") {
 		return d.deleteWithPrefix(ctx, index, partitionKey, rangeKey)
@@ -509,4 +446,8 @@ func (d *DynamoDBConnector) deleteKeys(ctx context.Context, keys []map[string]*d
 	})
 
 	return err
+}
+
+func (d *DynamoDBConnector) Close(ctx context.Context) error {
+	return nil
 }

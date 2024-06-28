@@ -262,9 +262,17 @@ func populateDefaults(cfg *common.ConnectorConfig) error {
 		if cfg.DynamoDB.ReverseIndexName == "" {
 			cfg.DynamoDB.ReverseIndexName = "idx_groupKey_requestKey"
 		}
-
-	default:
-		return common.NewErrInvalidConnectorDriver(cfg.Driver)
+	case data.RedisDriverName:
+		if cfg.Redis.Addr == "" {
+			cfg.Redis.Addr = "localhost:6379"
+		}
+	case data.PostgreSQLDriverName:
+		if cfg.PostgreSQL.ConnectionUri == "" {
+			cfg.PostgreSQL.ConnectionUri = "postgres://erpc:erpc@localhost:5432/erpc"
+		}
+		if cfg.PostgreSQL.Table == "" {
+			cfg.PostgreSQL.Table = "erpc_json_rpc_cache"
+		}
 	}
 
 	return nil

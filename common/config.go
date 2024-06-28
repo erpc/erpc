@@ -39,7 +39,7 @@ type ConnectorConfig struct {
 }
 
 type MemoryConnectorConfig struct {
-	MaxSize string `yaml:"maxSize"`
+	MaxItems int `yaml:"maxItems"`
 }
 
 type RedisConnectorConfig struct {
@@ -80,7 +80,7 @@ type ProjectConfig struct {
 
 type UpstreamConfig struct {
 	Id                string             `yaml:"id"`
-	Type              UpstreamType       `yaml:"type"` // evm, evm-erpc, evm-alchemy, solana
+	Type              UpstreamType       `yaml:"type"` // evm, evm-alchemy, solana
 	VendorName        string             `yaml:"vendorName"`
 	Endpoint          string             `yaml:"endpoint"`
 	Evm               *EvmUpstreamConfig `yaml:"evm"`
