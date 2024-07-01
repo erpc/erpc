@@ -2,10 +2,12 @@ package erpc
 
 import (
 	"context"
+	"sync"
 
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/health"
 	"github.com/flair-sdk/erpc/upstream"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 )
 
@@ -14,25 +16,19 @@ type PreparedProject struct {
 	Networks map[string]*Network
 	Logger   *zerolog.Logger
 
+	networksMu        sync.RWMutex
 	networksRegistry  *NetworksRegistry
 	upstreamsRegistry *upstream.UpstreamsRegistry
 	evmJsonRpcCache   *EvmJsonRpcCache
 }
 
-// func (p *PreparedProject) Bootstrap(ctx context.Context) error {
-// 	for _, network := range p.Networks {
-// 		err := network.Bootstrap(ctx)
-// 		if err != nil {
-// 			return err
-// 		}
-// 	}
-
-// 	return nil
-// }
-
 func (p *PreparedProject) GetNetwork(networkId string) (network *Network, err error) {
+	p.networksMu.RLock()
 	network, ok := p.Networks[networkId]
+	p.networksMu.RUnlock()
 	if !ok {
+		p.networksMu.Lock()
+		defer p.networksMu.Unlock()
 		network, err = p.initializeNetwork(networkId)
 		if err != nil {
 			return nil, err
@@ -47,8 +43,15 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *ups
 	if err != nil {
 		return nil, err
 	}
-
 	method, _ := nq.Method()
+
+	timer := prometheus.NewTimer(health.MetricNetworkRequestDuration.WithLabelValues(
+		network.ProjectId,
+		network.NetworkId,
+		method,
+	))
+	defer timer.ObserveDuration()
+
 	health.MetricNetworkRequestsReceived.WithLabelValues(network.ProjectId, network.NetworkId, method).Inc()
 	p.Logger.Debug().Str("method", method).Msgf("forwarding request to network")
 	resp, err := network.Forward(ctx, nq)
@@ -59,7 +62,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *ups
 		return resp, nil
 	} else {
 		p.Logger.Warn().Err(err).Msgf("failed to forward request for network")
-		health.MetricNetworkFailedRequests.WithLabelValues(network.ProjectId, network.NetworkId, method).Inc()
+		health.MetricNetworkFailedRequests.WithLabelValues(network.ProjectId, network.NetworkId, method, common.ErrorSummary(err)).Inc()
 	}
 
 	return nil, err

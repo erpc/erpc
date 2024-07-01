@@ -252,6 +252,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 						netId,
 						cfg.Id,
 						method,
+						common.ErrorSummary(errCall),
 					).Inc()
 				}
 				return nil, common.NewErrUpstreamRequest(
