@@ -2,11 +2,9 @@ package erpc
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/flair-sdk/erpc/common"
@@ -177,65 +175,8 @@ func (c *EvmJsonRpcCache) shouldCacheForBlock(blockNumber uint64) (bool, error) 
 	return b, e
 }
 
-func generateCacheKey(r *common.JsonRpcRequest) (string, error) {
-	hasher := sha256.New()
-
-	for _, p := range r.Params {
-		err := hashValue(hasher, p)
-		if err != nil {
-			return "", err
-		}
-	}
-
-	b := sha256.Sum256(hasher.Sum(nil))
-	return fmt.Sprintf("%s:%x", r.Method, b), nil
-}
-
-func hashValue(h io.Writer, v interface{}) error {
-	switch t := v.(type) {
-	case bool:
-		_, err := h.Write([]byte(fmt.Sprintf("%t", t)))
-		return err
-	case int:
-		_, err := h.Write([]byte(fmt.Sprintf("%d", t)))
-		return err
-	case float64:
-		_, err := h.Write([]byte(fmt.Sprintf("%f", t)))
-		return err
-	case string:
-		_, err := h.Write([]byte(t))
-		return err
-	case []interface{}:
-		for _, i := range t {
-			err := hashValue(h, i)
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	case map[string]interface{}:
-		for k, i := range t {
-			if _, err := h.Write([]byte(k)); err != nil {
-				return err
-			}
-			err := hashValue(h, i)
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	default:
-		return fmt.Errorf("unsupported type for value: %+v", v)
-	}
-}
-
 func generateKeysForJsonRpcRequest(req *upstream.NormalizedRequest, blockRef string) (string, string, error) {
-	rpcReq, err := req.JsonRpcRequest()
-	if err != nil {
-		return "", "", err
-	}
-
-	cacheKey, err := generateCacheKey(rpcReq)
+	cacheKey, err := req.CacheHash()
 	if err != nil {
 		return "", "", err
 	}

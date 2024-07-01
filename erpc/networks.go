@@ -27,6 +27,8 @@ type Network struct {
 
 	upstreamsMutex     *sync.RWMutex
 	reorderStopChannel chan bool
+	inFlightMutex      *sync.Mutex
+	inFlightRequests   map[string]*multiplexedInFlightRequest
 
 	failsafePolicies     []failsafe.Policy[common.NormalizedResponse]
 	failsafeExecutor     failsafe.Executor[common.NormalizedResponse]
@@ -34,6 +36,12 @@ type Network struct {
 	rateLimiterDal       data.RateLimitersDAL
 	cacheDal             data.CacheDAL
 	evmBlockTracker      *EvmBlockTracker
+}
+
+type multiplexedInFlightRequest struct {
+	resp common.NormalizedResponse
+	err  error
+	done chan struct{}
 }
 
 func (n *Network) Bootstrap(ctx context.Context) error {
@@ -95,6 +103,38 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
 	req.WithNetwork(n)
 
+	method, _ := req.Method()
+
+	// 1) In-flight multiplexing
+	mlxHash, _ := req.CacheHash()
+	n.inFlightMutex.Lock()
+	if inf, exists := n.inFlightRequests[mlxHash]; exists {
+		n.inFlightMutex.Unlock()
+		n.Logger.Debug().Msgf("found in-flight request, waiting for result")
+		health.MetricNetworkMultiplexedRequests.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
+		if inf.resp != nil || inf.err != nil {
+			return inf.resp, inf.err
+		}
+		select {
+		case <-inf.done:
+			return inf.resp, inf.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	inf := &multiplexedInFlightRequest{
+		done: make(chan struct{}),
+	}
+	n.inFlightRequests[mlxHash] = inf
+	n.inFlightMutex.Unlock()
+	defer func() {
+		<-inf.done
+		n.inFlightMutex.Lock()
+		delete(n.inFlightRequests, mlxHash)
+		n.inFlightMutex.Unlock()
+	}()
+
+	// 2) Get from cache if exists
 	if n.cacheDal != nil {
 		n.Logger.Debug().Msgf("checking cache for request")
 		resp, err := n.cacheDal.Get(ctx, req)
@@ -103,17 +143,21 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 			n.Logger.Debug().Err(err).Msgf("could not find response in cache")
 		} else if resp != nil {
 			n.Logger.Info().Object("req", req).Err(err).Msgf("response served from cache")
+			inf.resp = resp
+			close(inf.done)
 			return resp, err
 		}
 	}
 
+	// 3) Apply rate limits
 	if err := n.acquireRateLimitPermit(req); err != nil {
+		inf.err = err
+		close(inf.done)
 		return nil, err
 	}
 
+	// 4) Iterate over upstreams and forward the request until success or fatal failure
 	var errorsByUpstream = []error{}
-
-	// Function to prepare and forward the request to an upstream
 	tryForward := func(
 		u *upstream.Upstream,
 		ctx context.Context,
@@ -132,7 +176,6 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		lg.Info().Msgf("successfully forwarded request to upstream")
 		return resp, false, nil
 	}
-
 	mtx := sync.Mutex{}
 	i := 0
 	resp, execErr := n.failsafeExecutor.
@@ -191,9 +234,14 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		})
 
 	if execErr != nil {
-		return nil, upstream.TranslateFailsafeError(execErr)
+		err := upstream.TranslateFailsafeError(execErr)
+		inf.err = err
+		close(inf.done)
+		return nil, err
 	}
 
+	inf.resp = resp
+	close(inf.done)
 	return resp, nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/flair-sdk/erpc/common"
+	"github.com/flair-sdk/erpc/health"
 	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog"
 )
@@ -47,15 +48,18 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *ups
 		return nil, err
 	}
 
-	m, _ := nq.Method()
-	p.Logger.Debug().Str("method", m).Msgf("forwarding request to network")
+	method, _ := nq.Method()
+	health.MetricNetworkRequestsReceived.WithLabelValues(network.ProjectId, network.NetworkId, method).Inc()
+	p.Logger.Debug().Str("method", method).Msgf("forwarding request to network")
 	resp, err := network.Forward(ctx, nq)
 
 	if err == nil {
 		p.Logger.Info().Msgf("successfully forward request for network")
+		health.MetricNetworkSuccessfulRequests.WithLabelValues(network.ProjectId, network.NetworkId, method).Inc()
 		return resp, nil
 	} else {
 		p.Logger.Warn().Err(err).Msgf("failed to forward request for network")
+		health.MetricNetworkFailedRequests.WithLabelValues(network.ProjectId, network.NetworkId, method).Inc()
 	}
 
 	return nil, err

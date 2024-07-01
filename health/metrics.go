@@ -40,4 +40,28 @@ var (
 		Name:      "network_request_local_rate_limited_total",
 		Help:      "Total number of locally rate limited requests to network.",
 	}, []string{"project", "network", "category"})
+
+	MetricNetworkRequestsReceived = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_requests_received_total",
+		Help:      "Total number of requests received for a network.",
+	}, []string{"project", "network", "category"})
+
+	MetricNetworkMultiplexedRequests = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_multiplexed_requests_total",
+		Help:      "Total number of multiplexed requests for a network.",
+	}, []string{"project", "network", "category"})
+
+	MetricNetworkFailedRequests = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_failed_requests_total",
+		Help:      "Total number of failed requests for a network.",
+	}, []string{"project", "network", "category"})
+
+	MetricNetworkSuccessfulRequests = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_successful_requests_total",
+		Help:      "Total number of successful requests for a network.",
+	}, []string{"project", "network", "category"})
 )
