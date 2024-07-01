@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"math/rand"
 	"net/http"
@@ -17,6 +18,11 @@ type NormalizedRequest struct {
 	body           []byte
 	directives     *common.RequestDirectives
 	jsonRpcRequest *common.JsonRpcRequest
+}
+
+type UniqueRequestKey struct {
+	Method string
+	Params string
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {
@@ -154,4 +160,13 @@ func (r *NormalizedRequest) MarshalJSON() ([]byte, error) {
 	}
 
 	return nil, nil
+}
+
+func (r *NormalizedRequest) CacheHash() (string, error) {
+	rq, _ := r.JsonRpcRequest()
+	if rq != nil {
+		return rq.CacheHash()
+	}
+
+	return "", fmt.Errorf("request is not valid to generate cache hash")
 }

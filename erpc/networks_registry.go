@@ -54,6 +54,8 @@ func (r *NetworksRegistry) RegisterNetwork(
 		Config:    nwCfg,
 		Logger:    logger,
 
+		inFlightMutex:        &sync.Mutex{},
+		inFlightRequests:     make(map[string]*multiplexedInFlightRequest),
 		upstreamsMutex:       &sync.RWMutex{},
 		rateLimiterDal:       rateLimiterDal,
 		rateLimitersRegistry: r.rateLimitersRegistry,
