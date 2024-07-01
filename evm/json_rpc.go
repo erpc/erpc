@@ -26,12 +26,18 @@ func NormalizeHttpJsonRpc(nrq common.NormalizedRequest, r *common.JsonRpcRequest
 					case "latest":
 						lb := etk.LatestBlock()
 						if lb > 0 {
-							r.Params[0] = lb
+							lbh, err := common.NormalizeHex(lb)
+							if err == nil {
+								r.Params[0] = lbh
+							}
 						}
 					case "finalized":
 						fb := etk.FinalizedBlock()
 						if fb > 0 {
-							r.Params[0] = fb
+							fbh, err := common.NormalizeHex(fb)
+							if err == nil {
+								r.Params[0] = fbh
+							}
 						}
 					default:
 						b, err := common.NormalizeHex(r.Params[0])

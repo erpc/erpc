@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/flair-sdk/erpc/common"
@@ -14,6 +15,7 @@ type EvmBlockTracker struct {
 	ctxCancel context.CancelFunc
 	network   *Network
 
+	updateMu             sync.Mutex
 	latestBlockNumber    uint64
 	finalizedBlockNumber uint64
 }
@@ -41,6 +43,9 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 	}
 
 	var updateBlockNumbers = func() error {
+		e.updateMu.Lock()
+		defer e.updateMu.Unlock()
+
 		lb, err := e.fetchLatestBlockNumber(e.ctx)
 		if err != nil {
 			e.network.Logger.Error().Err(err).Msg("failed to get latest block number in block tracker")
@@ -103,6 +108,8 @@ func (e *EvmBlockTracker) fetchFinalizedBlockNumber(ctx context.Context) (uint64
 }
 
 func (e *EvmBlockTracker) fetchBlock(ctx context.Context, blockTag string) (uint64, error) {
+	e.network.Logger.Debug().Str("blockTag", blockTag).Msg("FEEEEEEEEETCHING BLOCK")
+
 	pr := upstream.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["%s",false]}`, blockTag))).WithNetwork(e.network)
 	resp, err := e.network.Forward(ctx, pr)
 	if err != nil {

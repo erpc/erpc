@@ -19,6 +19,22 @@ func IsNull(err interface{}) bool {
 	return err == nil
 }
 
+func ErrorSummary(err interface{}) string {
+	if err == nil {
+		return ""
+	}
+
+	if be, ok := err.(*BaseError); ok {
+		return fmt.Sprintf("%s: %s", be.CodeChain(), be.DeepestMessage())
+	}
+
+	if e, ok := err.(error); ok {
+		return e.Error()
+	}
+
+	return "ErrUnknown"
+}
+
 //
 // Base Types
 //
@@ -73,6 +89,16 @@ func (e *BaseError) CodeChain() string {
 	}
 
 	return string(e.Code)
+}
+
+func (e *BaseError) DeepestMessage() string {
+	if e.Cause != nil {
+		if be, ok := e.Cause.(*BaseError); ok {
+			return be.DeepestMessage()
+		}
+	}
+
+	return e.Message
 }
 
 func (e BaseError) MarshalJSON() ([]byte, error) {
@@ -257,11 +283,14 @@ var NewErrUpstreamClientInitialization = func(cause error, upstreamId string) er
 
 type ErrUpstreamRequest struct{ BaseError }
 
-var NewErrUpstreamRequest = func(cause error, upstreamId string, req interface{}) error {
-	// reqStr, err := json.Marshal(req)
-	// if err != nil {
-	// 	reqStr = []byte(fmt.Sprintf("%+v", req))
-	// }
+var NewErrUpstreamRequest = func(cause error, upstreamId string, req NormalizedRequest) error {
+	var reqStr string
+	s, err := json.Marshal(req)
+	if err != nil {
+		reqStr = fmt.Sprintf("%v", req)
+	} else if s != nil {
+		reqStr = string(s)
+	}
 	return &ErrUpstreamRequest{
 		BaseError{
 			Code:    "ErrUpstreamRequest",
@@ -269,7 +298,7 @@ var NewErrUpstreamRequest = func(cause error, upstreamId string, req interface{}
 			Cause:   cause,
 			Details: map[string]interface{}{
 				"upstreamId": upstreamId,
-				// "request":    reqStr,
+				"request":    reqStr,
 			},
 		},
 	}

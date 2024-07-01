@@ -27,7 +27,7 @@ var (
 		Namespace: "erpc",
 		Name:      "upstream_request_errors_total",
 		Help:      "Total number of errors for requests to upstreams.",
-	}, []string{"project", "network", "upstream", "category"})
+	}, []string{"project", "network", "upstream", "category", "error"})
 
 	MetricUpstreamRequestLocalRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
@@ -57,11 +57,29 @@ var (
 		Namespace: "erpc",
 		Name:      "network_failed_requests_total",
 		Help:      "Total number of failed requests for a network.",
-	}, []string{"project", "network", "category"})
+	}, []string{"project", "network", "category", "error"})
 
 	MetricNetworkSuccessfulRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_successful_requests_total",
 		Help:      "Total number of successful requests for a network.",
+	}, []string{"project", "network", "category"})
+
+	MetricNetworkCacheHits = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_cache_hits_total",
+		Help:      "Total number of cache hits for a network.",
+	}, []string{"project", "network", "category"})
+
+	MetricNetworkCacheMisses = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_cache_misses_total",
+		Help:      "Total number of cache misses for a network.",
+	}, []string{"project", "network", "category"})
+
+	MetricNetworkRequestDuration = promauto.NewSummaryVec(prometheus.SummaryOpts{
+		Namespace: "erpc",
+		Name:      "network_request_duration_seconds",
+		Help:      "Duration of requests for a network.",
 	}, []string{"project", "network", "category"})
 )

@@ -110,7 +110,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 	n.inFlightMutex.Lock()
 	if inf, exists := n.inFlightRequests[mlxHash]; exists {
 		n.inFlightMutex.Unlock()
-		n.Logger.Debug().Msgf("found in-flight request, waiting for result")
+		n.Logger.Debug().Object("req", req).Msgf("found similar in-flight request, waiting for result")
 		health.MetricNetworkMultiplexedRequests.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 		if inf.resp != nil || inf.err != nil {
 			return inf.resp, inf.err
@@ -141,8 +141,10 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		n.Logger.Debug().Err(err).Msgf("cache response: %v", resp)
 		if err != nil {
 			n.Logger.Debug().Err(err).Msgf("could not find response in cache")
+			health.MetricNetworkCacheMisses.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 		} else if resp != nil {
 			n.Logger.Info().Object("req", req).Err(err).Msgf("response served from cache")
+			health.MetricNetworkCacheHits.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 			inf.resp = resp
 			close(inf.done)
 			return resp, err
@@ -193,13 +195,15 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 			for count := 0; count < ln; count++ {
 				mtx.Lock()
 				u := upsList[i]
-				n.Logger.Debug().Msgf("executing forward current index: %d", i)
 				i++
 				if i >= ln {
 					i = 0
 				}
 				mtx.Unlock()
-				n.Logger.Debug().Msgf("executing forward to upstream: %s", u.Config().Id)
+				n.Logger.Debug().
+					Str("upstream", u.Config().Id).
+					Int("index", i).
+					Msgf("executing forward to upstream")
 
 				resp, skipped, err := n.processResponse(
 					tryForward(u, exec.Context()),
@@ -212,9 +216,9 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 
 				n.Logger.Debug().Err(err).Msgf("forwarded request to upstream %s skipped: %v err: %v", u.Config().Id, skipped, err)
 				if !skipped {
-					n.Logger.Debug().Interface("resp", resp).Msgf("storing response in cache")
 					if n.cacheDal != nil && resp != nil {
 						go (func(resp common.NormalizedResponse) {
+							n.Logger.Debug().Interface("resp", resp).Msgf("storing response in cache")
 							c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 							defer cancel()
 							err := n.cacheDal.Set(c, req, resp)
