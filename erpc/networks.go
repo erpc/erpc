@@ -199,11 +199,11 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 				if i >= ln {
 					i = 0
 				}
-				mtx.Unlock()
 				n.Logger.Debug().
 					Str("upstream", u.Config().Id).
 					Int("index", i).
 					Msgf("executing forward to upstream")
+				mtx.Unlock()
 
 				resp, skipped, err := n.processResponse(
 					tryForward(u, exec.Context()),

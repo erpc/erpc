@@ -35,7 +35,7 @@ test:
 .PHONY: coverage
 coverage:
 	@go clean -testcache
-	@go test -race -coverprofile=coverage.txt -covermode=atomic ./...
+	@go test -coverprofile=coverage.txt -covermode=atomic ./...
 	@go tool cover -html=coverage.txt
 
 .PHONY: up
