@@ -18,8 +18,8 @@ type JsonRpcRequest struct {
 
 type JsonRpcResponse struct {
 	JSONRPC string               `json:"jsonrpc,omitempty"`
-	ID      interface{}          `json:"id"`
-	Result  interface{}          `json:"result"`
+	ID      interface{}          `json:"id,omitempty"`
+	Result  interface{}          `json:"result,omitempty"`
 	Error   *ErrJsonRpcException `json:"error,omitempty"`
 }
 
@@ -102,10 +102,23 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 		if err := json.Unmarshal(aux.Error, &customError); err != nil {
 			return err
 		}
+		var code int
+		var msg string
+
+		if c, ok := customError["code"]; ok {
+			cf, ok := c.(float64)
+			if ok {
+				code = int(cf)
+			}
+		}
+		if m, ok := customError["message"]; ok {
+			msg = m.(string)
+		}
+
 		r.Error = NewErrJsonRpcException(
-			int(customError["code"].(float64)),
+			code,
 			0,
-			customError["message"].(string),
+			msg,
 			nil,
 		)
 	}

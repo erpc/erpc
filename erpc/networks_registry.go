@@ -7,7 +7,6 @@ import (
 
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/data"
 	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog"
 )
@@ -25,6 +24,43 @@ func NewNetworksRegistry(rateLimitersRegistry *upstream.RateLimitersRegistry) *N
 	return r
 }
 
+func NewNetwork(
+	logger *zerolog.Logger,
+	prjId string,
+	nwCfg *common.NetworkConfig,
+	rateLimitersRegistry *upstream.RateLimitersRegistry,
+) (*Network, error) {
+	var policies []failsafe.Policy[common.NormalizedResponse]
+	if (nwCfg != nil) && (nwCfg.Failsafe != nil) {
+		key := fmt.Sprintf("%s-%s", prjId, nwCfg.NetworkId())
+		pls, err := upstream.CreateFailSafePolicies(upstream.ScopeNetwork, key, nwCfg.Failsafe)
+		if err != nil {
+			return nil, err
+		}
+		policies = pls
+	}
+
+	network := &Network{
+		ProjectId: prjId,
+		NetworkId: nwCfg.NetworkId(),
+		Config:    nwCfg,
+		Logger:    logger,
+
+		inFlightMutex:        &sync.Mutex{},
+		inFlightRequests:     make(map[string]*multiplexedInFlightRequest),
+		upstreamsMutex:       &sync.RWMutex{},
+		rateLimitersRegistry: rateLimitersRegistry,
+		failsafePolicies:     policies,
+		failsafeExecutor:     failsafe.NewExecutor(policies...),
+	}
+
+	if nwCfg.Architecture == "" {
+		nwCfg.Architecture = common.ArchitectureEvm
+	}
+
+	return network, nil
+}
+
 func (r *NetworksRegistry) RegisterNetwork(
 	logger *zerolog.Logger,
 	evmJsonRpcCache *EvmJsonRpcCache,
@@ -37,46 +73,22 @@ func (r *NetworksRegistry) RegisterNetwork(
 		return pn, nil
 	}
 
-	var policies []failsafe.Policy[common.NormalizedResponse]
-	if (nwCfg != nil) && (nwCfg.Failsafe != nil) {
-		pls, err := upstream.CreateFailSafePolicies(upstream.ScopeNetwork, key, nwCfg.Failsafe)
-		if err != nil {
-			return nil, err
-		}
-		policies = pls
-	}
-
-	var rateLimiterDal data.RateLimitersDAL
-
-	r.preparedNetworks[key] = &Network{
-		ProjectId: prjCfg.Id,
-		NetworkId: nwCfg.NetworkId(),
-		Config:    nwCfg,
-		Logger:    logger,
-
-		inFlightMutex:        &sync.Mutex{},
-		inFlightRequests:     make(map[string]*multiplexedInFlightRequest),
-		upstreamsMutex:       &sync.RWMutex{},
-		rateLimiterDal:       rateLimiterDal,
-		rateLimitersRegistry: r.rateLimitersRegistry,
-		failsafePolicies:     policies,
-		failsafeExecutor:     failsafe.NewExecutor(policies...),
-	}
-
-	if nwCfg.Architecture == "" {
-		nwCfg.Architecture = common.ArchitectureEvm
+	network, err := NewNetwork(logger, prjCfg.Id, nwCfg, r.rateLimitersRegistry)
+	if err != nil {
+		return nil, err
 	}
 
 	switch nwCfg.Architecture {
 	case "evm":
 		if evmJsonRpcCache != nil {
-			r.preparedNetworks[key].cacheDal = evmJsonRpcCache.WithNetwork(r.preparedNetworks[key])
+			network.cacheDal = evmJsonRpcCache.WithNetwork(network)
 		}
 	default:
 		return nil, errors.New("unknown network architecture")
 	}
 
-	return r.preparedNetworks[key], nil
+	r.preparedNetworks[key] = network
+	return network, nil
 }
 
 func (nr *NetworksRegistry) GetNetwork(projectId, networkId string) *Network {

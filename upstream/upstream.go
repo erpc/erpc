@@ -220,8 +220,8 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 	// Send the request based on client type
 	//
 	switch clientType {
-	case ClientTypeHttpJsonRpc:
-	case ClientTypeAlchemyHttpJsonRpc:
+	case ClientTypeAlchemyHttpJsonRpc,
+		ClientTypeHttpJsonRpc:
 		jsonRpcClient, okClient := u.Client.(HttpJsonRpcClient)
 		if !okClient {
 			return nil, common.NewErrJsonRpcException(
@@ -282,12 +282,10 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 		}
 	default:
 		return nil, common.NewErrUpstreamClientInitialization(
-			fmt.Errorf("unsupported client type: %s", clientType),
+			fmt.Errorf("unsupported client type during forward: %s", clientType),
 			cfg.Id,
 		)
 	}
-
-	return nil, fmt.Errorf("unexpected client type during forward: %s", clientType)
 }
 
 func (u *Upstream) Executor() failsafe.Executor[common.NormalizedResponse] {
