@@ -33,9 +33,9 @@ type Network struct {
 	failsafePolicies     []failsafe.Policy[common.NormalizedResponse]
 	failsafeExecutor     failsafe.Executor[common.NormalizedResponse]
 	rateLimitersRegistry *upstream.RateLimitersRegistry
-	rateLimiterDal       data.RateLimitersDAL
-	cacheDal             data.CacheDAL
-	evmBlockTracker      *EvmBlockTracker
+	// rateLimiterDal       data.RateLimitersDAL
+	cacheDal        data.CacheDAL
+	evmBlockTracker *EvmBlockTracker
 }
 
 type multiplexedInFlightRequest struct {

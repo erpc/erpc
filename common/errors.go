@@ -42,7 +42,7 @@ func ErrorSummary(err interface{}) string {
 type ErrorCode string
 
 type BaseError struct {
-	Code    ErrorCode              `json:"code"`
+	Code    ErrorCode              `json:"code,omitempty"`
 	Message string                 `json:"message,omitempty"`
 	Cause   error                  `json:"cause,omitempty"`
 	Details map[string]interface{} `json:"details,omitempty"`
