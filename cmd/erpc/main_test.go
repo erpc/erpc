@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/flair-sdk/erpc/erpc"
 	"github.com/flair-sdk/erpc/util"
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog"
@@ -193,7 +194,7 @@ projects:
 	args := []string{"erpc-test", cfg.Name()}
 
 	logger := log.With().Logger()
-	shutdown, err := Init(context.Background(), &logger, fs, args)
+	shutdown, err := erpc.Init(context.Background(), &logger, fs, args)
 	if shutdown != nil {
 		defer shutdown()
 	}
@@ -258,7 +259,7 @@ func TestInit_InvalidConfig(t *testing.T) {
 	args := []string{"erpc-test", cfg.Name()}
 
 	logger := log.With().Logger()
-	shutdown, err := Init(context.Background(), &logger, fs, args)
+	shutdown, err := erpc.Init(context.Background(), &logger, fs, args)
 	if shutdown != nil {
 		defer shutdown()
 	}
@@ -281,7 +282,7 @@ func TestInit_ConfigFileDoesNotExist(t *testing.T) {
 	args := []string{"erpc-test", "non-existent-file.yaml"}
 
 	logger := log.With().Logger()
-	shutdown, err := Init(context.Background(), &logger, fs, args)
+	shutdown, err := erpc.Init(context.Background(), &logger, fs, args)
 	if shutdown != nil {
 		defer shutdown()
 	}
@@ -312,7 +313,7 @@ logLevel: invalid
 	args := []string{"erpc-test", cfg.Name()}
 
 	logger := log.With().Logger()
-	shutdown, err := Init(context.Background(), &logger, fs, args)
+	shutdown, err := erpc.Init(context.Background(), &logger, fs, args)
 	if shutdown != nil {
 		defer shutdown()
 	}

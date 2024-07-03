@@ -790,7 +790,7 @@ func TestNetwork_ForwardHedgePolicyIgnoresNegativeScoreUpstream(t *testing.T) {
 	}
 	pup1.Score = 2
 	pup1.Client = cl1
-	
+
 	pup2, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "rpc2",
