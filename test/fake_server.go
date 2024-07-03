@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 )
@@ -23,6 +24,11 @@ type JSONRPCResponse struct {
 	ID      interface{} `json:"id"`
 }
 
+type RequestResponseSample struct {
+	Request  JSONRPCRequest  `json:"request"`
+	Response JSONRPCResponse `json:"response"`
+}
+
 type FakeServer struct {
 	Port            int
 	FailureRate     float64
@@ -31,15 +37,35 @@ type FakeServer struct {
 	server          *http.Server
 	mu              sync.Mutex
 	requestsHandled int64
+	samples         []RequestResponseSample
 }
 
-func NewFakeServer(port int, failureRate float64, minDelay, maxDelay time.Duration) *FakeServer {
-	return &FakeServer{
+func NewFakeServer(port int, failureRate float64, minDelay, maxDelay time.Duration, sampleFilePath string) (*FakeServer, error) {
+	fs := &FakeServer{
 		Port:        port,
 		FailureRate: failureRate,
 		MinDelay:    minDelay,
 		MaxDelay:    maxDelay,
 	}
+
+	if err := fs.loadSamples(sampleFilePath); err != nil {
+		return nil, fmt.Errorf("failed to load samples: %w", err)
+	}
+
+	return fs, nil
+}
+
+func (fs *FakeServer) loadSamples(filePath string) error {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to read sample file: %w", err)
+	}
+
+	if err := json.Unmarshal(data, &fs.samples); err != nil {
+		return fmt.Errorf("failed to unmarshal samples: %w", err)
+	}
+
+	return nil
 }
 
 func (fs *FakeServer) Start() error {
@@ -88,13 +114,27 @@ func (fs *FakeServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Successful response
-	response := JSONRPCResponse{
-		Jsonrpc: "2.0",
-		Result:  fmt.Sprintf("Processed method: %s", req.Method),
-		ID:      req.ID,
+	// Find matching sample or use default response
+	response := fs.findMatchingSample(req)
+	if response == nil {
+		response = &JSONRPCResponse{
+			Jsonrpc: "2.0",
+			Result:  fmt.Sprintf("Default response for method: %s", req.Method),
+			ID:      req.ID,
+		}
 	}
+
 	json.NewEncoder(w).Encode(response)
+}
+
+func (fs *FakeServer) findMatchingSample(req JSONRPCRequest) *JSONRPCResponse {
+	for _, sample := range fs.samples {
+		if sample.Request.Method == req.Method {
+			// You can add more matching criteria here if needed
+			return &sample.Response
+		}
+	}
+	return nil
 }
 
 func (fs *FakeServer) randomDelay() time.Duration {
