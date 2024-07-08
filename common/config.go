@@ -20,7 +20,7 @@ type Config struct {
 
 type ServerConfig struct {
 	HttpHost     string `yaml:"httpHost"`
-	HttpPort     string `yaml:"httpPort"`
+	HttpPort     int    `yaml:"httpPort"`
 	MaxTimeoutMs int    `yaml:"maxTimeoutMs"`
 }
 
@@ -245,6 +245,6 @@ func (c *NetworkConfig) NetworkId() string {
 
 func (c *ServerConfig) MarshalZerologObject(e *zerolog.Event) {
 	e.Str("host", c.HttpHost).
-		Str("port", c.HttpPort).
+		Int("port", c.HttpPort).
 		Int("maxTimeoutMs", c.MaxTimeoutMs)
 }

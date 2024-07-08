@@ -123,12 +123,19 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *N
 	if r.StatusCode < 400 {
 		if nr != nil {
 			if err != nil {
-				return common.NewErrJsonRpcException(
+				e := common.NewErrJsonRpcException(
 					0,
 					common.JsonRpcErrorParseException,
 					"could not parse json rpc response from upstream",
 					err,
 				)
+				e.Details = map[string]interface{}{
+					"upstream":   c.upstream.Config().Id,
+					"statusCode": r.StatusCode,
+					"headers":    r.Header,
+					"body":       string(nr.Body()),
+				}
+				return e
 			}
 			log.Debug().
 				Err(err).

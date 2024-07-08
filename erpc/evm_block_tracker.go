@@ -125,8 +125,9 @@ func (e *EvmBlockTracker) fetchBlock(ctx context.Context, blockTag string) (uint
 		return 0, jrr.Error
 	}
 
-	// If result is nil, return 0
-	if jrr.Result == nil || jrr.Result.(map[string]interface{}) == nil || jrr.Result.(map[string]interface{})["number"] == nil {
+	// If result is nil or has an invalid structure, return an error
+	resultMap, ok := jrr.Result.(map[string]interface{})
+	if !ok || resultMap == nil || resultMap["number"] == nil {
 		return 0, &common.BaseError{
 			Code:    "ErrEvmBlockTracker",
 			Message: "block not found",
@@ -137,5 +138,17 @@ func (e *EvmBlockTracker) fetchBlock(ctx context.Context, blockTag string) (uint
 		}
 	}
 
-	return common.HexToUint64(jrr.Result.(map[string]interface{})["number"].(string))
+	numberStr, ok := resultMap["number"].(string)
+	if !ok {
+		return 0, &common.BaseError{
+			Code:    "ErrEvmBlockTracker",
+			Message: "block number is not a string",
+			Details: map[string]interface{}{
+				"blockTag": blockTag,
+				"result":   jrr.Result,
+			},
+		}
+	}
+
+	return common.HexToUint64(numberStr)
 }

@@ -1,7 +1,6 @@
 package erpc
 
 import (
-	"fmt"
 	"math/rand"
 	"testing"
 
@@ -13,7 +12,7 @@ func TestBoorstrap_GracefulShutdown(t *testing.T) {
 	cfg := &common.Config{
 		Server: &common.ServerConfig{
 			HttpHost: "localhost",
-			HttpPort: fmt.Sprint(rand.Intn(1000) + 2000),
+			HttpPort: rand.Intn(1000) + 2000,
 		},
 	}
 	db := &EvmJsonRpcCache{}
