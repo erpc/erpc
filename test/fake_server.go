@@ -8,6 +8,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/flair-sdk/erpc/common"
 )
 
 type JSONRPCRequest struct {
@@ -37,6 +39,8 @@ type FakeServer struct {
 	server          *http.Server
 	mu              sync.Mutex
 	requestsHandled int64
+	requestsFailed  int64
+	requestsSuccess int64
 	samples         []RequestResponseSample
 }
 
@@ -99,20 +103,30 @@ func (fs *FakeServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 	var req JSONRPCRequest
 	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
+		fs.mu.Lock()
+		fs.requestsFailed++
+		fs.mu.Unlock()
 		http.Error(w, "Invalid JSON-RPC request", http.StatusBadRequest)
 		return
 	}
 
 	// Simulate failure based on failure rate
 	if rand.Float64() < fs.FailureRate {
+		fs.mu.Lock()
+		fs.requestsFailed++
+		fs.mu.Unlock()
 		response := JSONRPCResponse{
 			Jsonrpc: "2.0",
-			Error:   "Simulated failure",
+			Error:   map[string]interface{}{"code": common.JsonRpcErrorServerSideException, "message": "simulated internal server failure"},
 			ID:      req.ID,
 		}
 		json.NewEncoder(w).Encode(response)
 		return
 	}
+
+	fs.mu.Lock()
+	fs.requestsSuccess++
+	fs.mu.Unlock()
 
 	// Find matching sample or use default response
 	response := fs.findMatchingSample(req)
@@ -130,7 +144,15 @@ func (fs *FakeServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 func (fs *FakeServer) findMatchingSample(req JSONRPCRequest) *JSONRPCResponse {
 	for _, sample := range fs.samples {
 		if sample.Request.Method == req.Method {
-			// You can add more matching criteria here if needed
+			// if params values are also equal one by one
+			if len(sample.Request.Params.([]interface{})) == len(req.Params.([]interface{})) {
+				for i, param := range sample.Request.Params.([]interface{}) {
+					if param != req.Params.([]interface{})[i] {
+						break
+					}
+				}
+			}
+
 			return &sample.Response
 		}
 	}
@@ -145,4 +167,16 @@ func (fs *FakeServer) RequestsHandled() int64 {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	return fs.requestsHandled
+}
+
+func (fs *FakeServer) RequestsFailed() int64 {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	return fs.requestsFailed
+}
+
+func (fs *FakeServer) RequestsSuccess() int64 {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	return fs.requestsSuccess
 }

@@ -2,6 +2,8 @@ package erpc
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/flair-sdk/erpc/common"
@@ -96,6 +98,27 @@ func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) 
 		if n.NetworkId() == networkId {
 			nwCfg = n
 			break
+		}
+	}
+
+	if nwCfg == nil {
+		nwCfg = &common.NetworkConfig{}
+
+		s := strings.Split(networkId, ":")
+		if len(s) != 2 {
+			// TODO use more appropriate error for non-evm
+			return nil, common.NewErrInvalidEvmChainId(networkId)
+		}
+		nwCfg.Architecture = common.NetworkArchitecture(s[0])
+		switch nwCfg.Architecture {
+		case common.ArchitectureEvm:
+			c, e := strconv.Atoi(s[1])
+			if e != nil {
+				return nil, e
+			}
+			nwCfg.Evm = &common.EvmNetworkConfig{
+				ChainId: c,
+			}
 		}
 	}
 

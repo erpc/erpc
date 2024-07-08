@@ -20,7 +20,7 @@ type HttpServer struct {
 }
 
 func NewHttpServer(cfg *common.ServerConfig, erpc *ERPC) *HttpServer {
-	addr := fmt.Sprintf("%s:%s", cfg.HttpHost, cfg.HttpPort)
+	addr := fmt.Sprintf("%s:%d", cfg.HttpHost, cfg.HttpPort)
 
 	handler := http.NewServeMux()
 	handler.HandleFunc("/", func(hrw http.ResponseWriter, r *http.Request) {
