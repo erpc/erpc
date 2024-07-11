@@ -37,6 +37,25 @@ func ExtractBlockReference(r *common.JsonRpcRequest) (string, uint64, error) {
 			return "", 0, fmt.Errorf("unexpected no parameters for method %s", r.Method)
 		}
 
+	case "eth_getLogs":
+		if len(r.Params) > 0 {
+			if logsFilter, ok := r.Params[0].(map[string]interface{}); ok {
+				if from, ok := logsFilter["fromBlock"].(string); ok {
+					if to, ok := logsFilter["toBlock"].(string); ok && strings.HasPrefix(to, "0x") {
+						toUint, err := hexutil.DecodeUint64(to)
+						if err != nil {
+							return "", 0, err
+						}
+						// Block ref is combo of from-to which makes sure cache key is unique for this range.
+						// Block number is the highest value to ensure non-finalized ranges are not cached.
+						return strings.ToLower(fmt.Sprintf("%s-%s", from, to)), toUint, nil
+					}
+				}
+			}
+		}
+
+		return "", 0, nil
+
 	case "eth_getBalance",
 		"eth_getStorageAt",
 		"eth_getCode",

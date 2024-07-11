@@ -180,7 +180,7 @@ var NewErrProjectNotFound = func(projectId string) error {
 	return &ErrProjectNotFound{
 		BaseError{
 			Code:    "ErrProjectNotFound",
-			Message: "project not configured in the config found",
+			Message: "project not configured in the config",
 			Details: map[string]interface{}{
 				"projectId": projectId,
 			},

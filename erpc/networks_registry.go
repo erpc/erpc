@@ -40,11 +40,12 @@ func NewNetwork(
 		policies = pls
 	}
 
+	lg := logger.With().Str("network", nwCfg.NetworkId()).Logger()
 	network := &Network{
 		ProjectId: prjId,
 		NetworkId: nwCfg.NetworkId(),
 		Config:    nwCfg,
-		Logger:    logger,
+		Logger:    &lg,
 
 		inFlightMutex:        &sync.Mutex{},
 		inFlightRequests:     make(map[string]*multiplexedInFlightRequest),
