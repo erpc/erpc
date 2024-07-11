@@ -219,12 +219,11 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 				if !skipped {
 					if n.cacheDal != nil && resp != nil {
 						go (func(resp common.NormalizedResponse) {
-							n.Logger.Debug().Interface("resp", resp).Msgf("storing response in cache")
 							c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 							defer cancel()
 							err := n.cacheDal.Set(c, req, resp)
 							if err != nil {
-								n.Logger.Warn().Err(err).Msgf("could not store response in cache")
+								lg.Warn().Err(err).Msgf("could not store response in cache")
 							}
 						})(resp)
 					}
