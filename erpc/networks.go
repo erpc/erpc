@@ -104,13 +104,14 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 	req.WithNetwork(n)
 
 	method, _ := req.Method()
+	lg := n.Logger.With().Str("method", method).Logger()
 
 	// 1) In-flight multiplexing
 	mlxHash, _ := req.CacheHash()
 	n.inFlightMutex.Lock()
 	if inf, exists := n.inFlightRequests[mlxHash]; exists {
 		n.inFlightMutex.Unlock()
-		n.Logger.Debug().Object("req", req).Msgf("found similar in-flight request, waiting for result")
+		lg.Debug().Object("req", req).Msgf("found similar in-flight request, waiting for result")
 		health.MetricNetworkMultiplexedRequests.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 		if inf.resp != nil || inf.err != nil {
 			return inf.resp, inf.err
@@ -136,14 +137,14 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 
 	// 2) Get from cache if exists
 	if n.cacheDal != nil {
-		n.Logger.Debug().Msgf("checking cache for request")
+		lg.Debug().Msgf("checking cache for request")
 		resp, err := n.cacheDal.Get(ctx, req)
-		n.Logger.Debug().Err(err).Msgf("cache response: %v", resp)
+		lg.Debug().Err(err).Msgf("cache response: %v", resp)
 		if err != nil {
-			n.Logger.Debug().Err(err).Msgf("could not find response in cache")
+			lg.Debug().Err(err).Msgf("could not find response in cache")
 			health.MetricNetworkCacheMisses.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 		} else if resp != nil {
-			n.Logger.Info().Object("req", req).Err(err).Msgf("response served from cache")
+			lg.Info().Object("req", req).Err(err).Msgf("response served from cache")
 			health.MetricNetworkCacheHits.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 			inf.resp = resp
 			close(inf.done)
@@ -164,7 +165,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		u *upstream.Upstream,
 		ctx context.Context,
 	) (resp common.NormalizedResponse, skipped bool, err error) {
-		lg := u.Logger.With().Str("network", n.NetworkId).Logger()
+		lg := u.Logger.With().Str("upstream", u.Config().Id).Logger()
 		if u.Score < 0 {
 			lg.Debug().Msgf("skipping upstream with negative score %d", u.Score)
 			return nil, true, nil
@@ -199,7 +200,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 				if i >= ln {
 					i = 0
 				}
-				n.Logger.Debug().
+				lg.Debug().
 					Str("upstream", u.Config().Id).
 					Int("index", i).
 					Msgf("executing forward to upstream")
@@ -210,11 +211,11 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 				)
 
 				if err != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) && exec.Hedges() > 0 {
-					n.Logger.Debug().Err(err).Msgf("discarding hedged request to upstream %s: %v", u.Config().Id, skipped)
+					lg.Debug().Err(err).Msgf("discarding hedged request to upstream %s: %v", u.Config().Id, skipped)
 					return nil, err
 				}
 
-				n.Logger.Debug().Err(err).Msgf("forwarded request to upstream %s skipped: %v err: %v", u.Config().Id, skipped, err)
+				lg.Debug().Err(err).Msgf("forwarded request to upstream %s skipped: %v err: %v", u.Config().Id, skipped, err)
 				if !skipped {
 					if n.cacheDal != nil && resp != nil {
 						go (func(resp common.NormalizedResponse) {
@@ -353,9 +354,10 @@ func (n *Network) acquireRateLimitPermit(req *upstream.NormalizedRequest) error 
 	if errMethod != nil {
 		return errMethod
 	}
+	lg := n.Logger.With().Str("method", method).Logger()
 
 	rules := rlb.GetRulesByMethod(method)
-	n.Logger.Debug().Msgf("found %d network-level rate limiters for network: %s method: %s", len(rules), n.NetworkId, method)
+	lg.Debug().Msgf("found %d network-level rate limiters", len(rules))
 
 	if len(rules) > 0 {
 		for _, rule := range rules {
@@ -373,7 +375,7 @@ func (n *Network) acquireRateLimitPermit(req *upstream.NormalizedRequest) error 
 					fmt.Sprintf("%+v", rule.Config),
 				)
 			} else {
-				n.Logger.Debug().Object("rateLimitRule", rule.Config).Msgf("network-level rate limit passed")
+				lg.Debug().Object("rateLimitRule", rule.Config).Msgf("network-level rate limit passed")
 			}
 		}
 	}

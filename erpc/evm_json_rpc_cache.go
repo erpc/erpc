@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/flair-sdk/erpc/common"
@@ -156,6 +157,8 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *upstream.NormalizedReque
 		return err
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
 	return c.conn.Set(ctx, pk, rk, string(resultStr))
 }
 
@@ -242,7 +245,22 @@ func extractBlockReferenceFromResponse(rpcReq *common.JsonRpcRequest, rpcResp *c
 			}
 		}
 
+	case "arbtrace_replayTransaction",
+		"trace_replayTransaction",
+		"debug_traceTransaction",
+		"trace_transaction":
+		// We cannot extract block number from trace responses, but we will cache them
+		// because after a reorg the consumer must not even request this transaction hash,
+		// it is not part of the final reorged block.
+		// "nil" means there's no specific block reference for this cache item
+		// "1" is a placeholder to pass the block number check (is there a cleaner nicer way?)
+		//
+		// TODO is there a way to find block number without a new request? (e.g. adding a flag to such requests that exposes block number)
+		return "nil", 1, nil
 	case "eth_chainId":
+		// This request is supposed to always return the same response.
+		// "all" means this applies to all blocks
+		// "1" is a placeholder to pass the block number check (is there a cleaner nicer way?)
 		return "all", 1, nil
 
 	default:

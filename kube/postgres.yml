@@ -1,0 +1,77 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: erpc-pg-pvc
+  namespace: erpc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 500Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: erpc-pg
+  namespace: erpc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: erpc-pg
+  template:
+    metadata:
+      labels:
+        app: erpc-pg
+    spec:
+      containers:
+      - name: erpc-pg
+        image: postgres:latest
+        resources:
+          requests:
+            memory: "8Gi"
+            cpu: "4"
+          limits:
+            memory: "8Gi"
+            cpu: "4"
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          value: erpc
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: erpc-pg-secret
+              key: erpc-pg-password
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+      volumes:
+      - name: postgres-storage
+        persistentVolumeClaim:
+          claimName: erpc-pg-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: erpc-pg
+  namespace: erpc
+spec:
+  selector:
+    app: erpc-pg
+  ports:
+    - protocol: TCP
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: erpc-pg-secret
+  namespace: erpc
+stringData:
+  erpc-pg-password: "erpc-pg-password-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
