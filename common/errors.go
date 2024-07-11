@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 )
 
 func IsNull(err interface{}) bool {
@@ -24,15 +26,26 @@ func ErrorSummary(err interface{}) string {
 		return ""
 	}
 
-	if be, ok := err.(*BaseError); ok {
-		return fmt.Sprintf("%s: %s", be.CodeChain(), be.DeepestMessage())
+	s := "ErrUnknown"
+
+	if be, ok := err.(StandardError); ok {
+		s = fmt.Sprintf("%s: %s", be.CodeChain(), cleanUpMessage(be.DeepestMessage()))
+	} else if e, ok := err.(error); ok {
+		s = cleanUpMessage(e.Error())
 	}
 
-	if e, ok := err.(error); ok {
-		return e.Error()
-	}
+	return s
+}
 
-	return "ErrUnknown"
+var ddg = regexp.MustCompile(`\d+`)
+var ethAddr = regexp.MustCompile(`0x[a-fA-F0-9]{40}`)
+var revertAddr = regexp.MustCompile(`.*execution reverted.*`)
+
+func cleanUpMessage(s string) string {
+	s = ddg.ReplaceAllString(s, "XX")
+	s = ethAddr.ReplaceAllString(s, "0xADDY")
+	s = revertAddr.ReplaceAllString(s, "execution reverted")
+	return s
 }
 
 //
@@ -48,8 +61,14 @@ type BaseError struct {
 	Details map[string]interface{} `json:"details,omitempty"`
 }
 
-type ErrorWithHasCode interface {
+type StandardError interface {
 	HasCode(code ErrorCode) bool
+	CodeChain() string
+	DeepestMessage() string
+}
+
+func (e *BaseError) GetCode() ErrorCode {
+	return e.Code
 }
 
 func (e *BaseError) Unwrap() error {
@@ -83,8 +102,8 @@ func (e *BaseError) Error() string {
 
 func (e *BaseError) CodeChain() string {
 	if e.Cause != nil {
-		if be, ok := e.Cause.(*BaseError); ok {
-			return fmt.Sprintf("%s <- %s", e.Code, be.CodeChain())
+		if be, ok := e.Cause.(StandardError); ok {
+			return fmt.Sprintf("%s <- %s", e.GetCode(), be.CodeChain())
 		}
 	}
 
@@ -93,7 +112,7 @@ func (e *BaseError) CodeChain() string {
 
 func (e *BaseError) DeepestMessage() string {
 	if e.Cause != nil {
-		if be, ok := e.Cause.(*BaseError); ok {
+		if be, ok := e.Cause.(StandardError); ok {
 			return be.DeepestMessage()
 		}
 	}
@@ -104,7 +123,7 @@ func (e *BaseError) DeepestMessage() string {
 func (e BaseError) MarshalJSON() ([]byte, error) {
 	type Alias BaseError
 	cause := e.Cause
-	if cc, ok := cause.(ErrorWithHasCode); ok {
+	if cc, ok := cause.(StandardError); ok {
 		return json.Marshal(&struct {
 			Alias
 			Cause interface{} `json:"cause"`
@@ -139,6 +158,8 @@ func (e *BaseError) Is(err error) bool {
 
 	if be, ok := err.(*BaseError); ok {
 		is = e.Code == be.Code
+	} else if be, ok := err.(StandardError); ok {
+		is = strings.Contains(be.CodeChain(), string(e.Code))
 	}
 
 	if !is && e.Cause != nil {
@@ -154,7 +175,7 @@ func (e *BaseError) HasCode(code ErrorCode) bool {
 	}
 
 	if e.Cause != nil {
-		if be, ok := e.Cause.(ErrorWithHasCode); ok {
+		if be, ok := e.Cause.(StandardError); ok {
 			return be.HasCode(code)
 		}
 	}
@@ -867,27 +888,27 @@ const (
 	JsonRpcErrorUnauthorized      JsonRpcErrorNumber = -32016
 )
 
-var jsonRpcErrorNumberToName = map[JsonRpcErrorNumber]string{
-	JsonRpcErrorUnknown:              "JsonRpcErrorUnknown",
-	JsonRpcErrorClientSideException:  "JsonRpcErrorClientSideException",
-	JsonRpcErrorUnsupportedException: "JsonRpcErrorUnsupportedException",
-	JsonRpcErrorInvalidArgument:      "JsonRpcErrorInvalidArgument",
-	JsonRpcErrorServerSideException:  "JsonRpcErrorServerSideException",
-	JsonRpcErrorParseException:       "JsonRpcErrorParseException",
-	JsonRpcErrorCapacityExceeded:     "JsonRpcErrorCapacityExceeded",
-	JsonRpcErrorEvmLogsLargeRange:    "JsonRpcErrorEvmLogsLargeRange",
-	JsonRpcErrorEvmReverted:          "JsonRpcErrorEvmReverted",
-	JsonRpcErrorNotSyncedYet:         "JsonRpcErrorNotSyncedYet",
-	JsonRpcErrorNodeTimeout:          "JsonRpcErrorNodeTimeout",
-}
+// var jsonRpcErrorNumberToName = map[JsonRpcErrorNumber]string{
+// 	JsonRpcErrorUnknown:              "JsonRpcErrorUnknown",
+// 	JsonRpcErrorClientSideException:  "JsonRpcErrorClientSideException",
+// 	JsonRpcErrorUnsupportedException: "JsonRpcErrorUnsupportedException",
+// 	JsonRpcErrorInvalidArgument:      "JsonRpcErrorInvalidArgument",
+// 	JsonRpcErrorServerSideException:  "JsonRpcErrorServerSideException",
+// 	JsonRpcErrorParseException:       "JsonRpcErrorParseException",
+// 	JsonRpcErrorCapacityExceeded:     "JsonRpcErrorCapacityExceeded",
+// 	JsonRpcErrorEvmLogsLargeRange:    "JsonRpcErrorEvmLogsLargeRange",
+// 	JsonRpcErrorEvmReverted:          "JsonRpcErrorEvmReverted",
+// 	JsonRpcErrorNotSyncedYet:         "JsonRpcErrorNotSyncedYet",
+// 	JsonRpcErrorNodeTimeout:          "JsonRpcErrorNodeTimeout",
+// }
 
-func GetJsonRpcErrorName(code JsonRpcErrorNumber) string {
-	if name, exists := jsonRpcErrorNumberToName[code]; exists {
-		return name
-	}
+// func GetJsonRpcErrorName(code JsonRpcErrorNumber) string {
+// 	if name, exists := jsonRpcErrorNumberToName[code]; exists {
+// 		return name
+// 	}
 
-	return "UnknownErrorCode"
-}
+// 	return "UnknownErrorCode"
+// }
 
 type ErrJsonRpcException struct{ BaseError }
 
@@ -898,6 +919,10 @@ func (e *ErrJsonRpcException) ErrorStatusCode() int {
 		}
 	}
 	return 400
+}
+
+func (e *ErrJsonRpcException) CodeChain() string {
+	return fmt.Sprintf("%d <- %s", e.NormalizedCode(), e.BaseError.CodeChain())
 }
 
 func (e *ErrJsonRpcException) NormalizedCode() JsonRpcErrorNumber {
@@ -925,17 +950,17 @@ var NewErrJsonRpcException = func(originalCode int, normalizedCode JsonRpcErrorN
 		dt["normalizedCode"] = normalizedCode
 	}
 
-	var msg string
-	if normalizedCode != 0 {
-		msg = fmt.Sprintf("%s: %s", GetJsonRpcErrorName(normalizedCode), message)
-	} else {
-		msg = message
-	}
+	// var msg string
+	// if normalizedCode != 0 {
+	// 	msg = fmt.Sprintf("%s <- %s", GetJsonRpcErrorName(normalizedCode), message)
+	// } else {
+	// 	msg = message
+	// }
 
 	return &ErrJsonRpcException{
 		BaseError{
 			Code:    ErrCodeJsonRpcException,
-			Message: msg,
+			Message: message,
 			Details: dt,
 			Cause:   cause,
 		},
@@ -980,7 +1005,7 @@ var NewErrRecordNotFound = func(key string, driver string) error {
 }
 
 func HasCode(err error, code ErrorCode) bool {
-	if be, ok := err.(ErrorWithHasCode); ok {
+	if be, ok := err.(StandardError); ok {
 		return be.HasCode(code)
 	}
 

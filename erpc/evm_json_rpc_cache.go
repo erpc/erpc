@@ -115,8 +115,10 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *upstream.NormalizedReque
 		return err
 	}
 
+	lg := log.With().Str("network", req.Network().Id()).Str("method", rpcReq.Method).Logger()
+
 	if rpcResp.Result == nil || rpcResp.Error != nil {
-		log.Debug().Interface("resp", resp).Msg("not caching response because it has no result or has error")
+		lg.Debug().Interface("resp", rpcResp).Msg("not caching response because it has no result or has error")
 		return nil
 	}
 
@@ -134,18 +136,29 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *upstream.NormalizedReque
 
 	if blockRef == "" || blockNumber == 0 {
 		// Do not cache if we can't resolve a block reference (e.g. latest block requests)
-		log.Debug().
+		lg.Debug().
 			Str("blockRef", blockRef).
 			Uint64("blockNumber", blockNumber).
-			Str("method", rpcReq.Method).
-			Msg("not caching request because it has no block reference or block number")
+			Msg("will not cache the response because it has no block reference or block number")
 		return nil
 	}
 
 	s, e := c.shouldCacheForBlock(blockNumber)
 	if !s || e != nil {
+		lg.Debug().
+			Err(e).
+			Str("blockRef", blockRef).
+			Uint64("blockNumber", blockNumber).
+			Interface("result", rpcResp.Result).
+			Msg("will not cache the response because block is not finalized")
 		return e
 	}
+
+	lg.Debug().
+		Str("blockRef", blockRef).
+		Uint64("blockNumber", blockNumber).
+		Interface("result", rpcResp.Result).
+		Msg("caching the response")
 
 	pk, rk, err := generateKeysForJsonRpcRequest(req, blockRef)
 	if err != nil {

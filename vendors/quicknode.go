@@ -47,7 +47,7 @@ func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr i
 					common.NewErrJsonRpcException(code, common.JsonRpcErrorClientSideException, msg, nil),
 				)
 			}
-		} else if code == -32009 {
+		} else if code == -32009 || code == -32007 {
 			return common.NewErrEndpointCapacityExceeded(
 				common.NewErrJsonRpcException(code, common.JsonRpcErrorCapacityExceeded, msg, nil),
 			)
@@ -70,6 +70,15 @@ func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr i
 		} else if code == -32011 || code == -32603 {
 			return common.NewErrEndpointServerSideException(
 				common.NewErrJsonRpcException(code, common.JsonRpcErrorServerSideException, msg, nil),
+			)
+		} else if code == 3 {
+			return common.NewErrEndpointClientSideException(
+				common.NewErrJsonRpcException(
+					code,
+					common.JsonRpcErrorEvmReverted,
+					msg,
+					nil,
+				),
 			)
 		}
 	}
