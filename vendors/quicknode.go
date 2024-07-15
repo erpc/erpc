@@ -34,7 +34,7 @@ func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr i
 				common.NewErrJsonRpcException(code, common.JsonRpcErrorEvmLogsLargeRange, msg, nil),
 			)
 		} else if code == -32000 {
-			if strings.Contains(msg, "header not found") && strings.Contains(msg, "could not find block") {
+			if strings.Contains(msg, "header not found") || strings.Contains(msg, "could not find block") {
 				return common.NewErrEndpointNotSyncedYet(
 					common.NewErrJsonRpcException(code, common.JsonRpcErrorNotSyncedYet, msg, nil),
 				)
