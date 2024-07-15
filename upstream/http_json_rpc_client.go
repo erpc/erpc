@@ -202,6 +202,9 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 			return common.NewErrEndpointNotSyncedYet(err)
 		} else if code == -32000 && strings.Contains(err.Message, "not supported") {
 			return common.NewErrEndpointUnsupported(err)
+		} else if code == -32600 && strings.Contains(err.Message, "genesis is not traceable") {
+			// This usually happens when sending a trace_* request to a newly created block
+			return common.NewErrEndpointNotSyncedYet(err)
 		}
 
 		// By default we consider a problem on the server so that retry/failover mechanisms try other upstreams
