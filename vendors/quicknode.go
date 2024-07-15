@@ -42,10 +42,6 @@ func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr i
 				return common.NewErrEndpointNodeTimeout(
 					common.NewErrJsonRpcException(code, common.JsonRpcErrorNodeTimeout, msg, nil),
 				)
-			} else {
-				return common.NewErrEndpointClientSideException(
-					common.NewErrJsonRpcException(code, common.JsonRpcErrorClientSideException, msg, nil),
-				)
 			}
 		} else if code == -32009 || code == -32007 {
 			return common.NewErrEndpointCapacityExceeded(
