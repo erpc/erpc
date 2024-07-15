@@ -13,6 +13,7 @@ func NewVendorsRegistry() *VendorsRegistry {
 	r.Register(CreateDrpcVendor())
 	r.Register(CreateInfuraVendor())
 	r.Register(CreateQuicknodeVendor())
+	r.Register(CreateLlamaVendor())
 
 	return r
 }
