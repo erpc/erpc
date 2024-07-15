@@ -202,7 +202,8 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 			return common.NewErrEndpointNotSyncedYet(err)
 		}
 
-		return common.NewErrEndpointClientSideException(err)
+		// By default we consider a problem on the server so that retry/failover mechanisms try other upstreams
+		return common.NewErrEndpointServerSideException(err)
 	}
 
 	return nil
