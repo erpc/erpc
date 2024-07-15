@@ -200,7 +200,7 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 		// Text-based common errors
 		if strings.Contains(err.Message, "missing trie node") {
 			return common.NewErrEndpointNotSyncedYet(err)
-		} else if code == -32600 && strings.Contains(err.Message, "not supported") {
+		} else if code == -32000 && strings.Contains(err.Message, "not supported") {
 			return common.NewErrEndpointUnsupported(err)
 		}
 
