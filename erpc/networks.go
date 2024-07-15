@@ -138,7 +138,9 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 	// 2) Get from cache if exists
 	if n.cacheDal != nil {
 		lg.Debug().Msgf("checking cache for request")
-		resp, err := n.cacheDal.Get(ctx, req)
+		cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		resp, err := n.cacheDal.Get(cctx, req)
 		lg.Debug().Err(err).Msgf("cache response: %v", resp)
 		if err != nil {
 			lg.Debug().Err(err).Msgf("could not find response in cache")
