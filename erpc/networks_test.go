@@ -1129,3 +1129,91 @@ func TestNetwork_WeightedRandomSelect(t *testing.T) {
 		})
 	}
 }
+
+func TestNetwork_ForwardServerSideFail(t *testing.T) {
+	defer gock.Clean()
+
+	defer gock.DisableNetworking()
+	defer gock.DisableNetworkingFilters()
+
+	gock.EnableNetworking()
+
+	// Register a networking filter
+	gock.NetworkingFilter(func(req *http.Request) bool {
+		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
+		return shouldMakeRealCall
+	})
+
+	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
+
+	gock.New("http://google.com").
+		Post("").
+		Reply(500).
+		JSON(json.RawMessage(`{"error":{"message":"Internal error"}}`))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	clr := upstream.NewClientRegistry()
+	fsCfg := &common.FailsafeConfig{
+		Hedge: &common.HedgePolicyConfig{
+			MaxCount: 2,
+			Delay:    "500ms",
+		},
+		Timeout: &common.TimeoutPolicyConfig{
+			Duration: "5ms",
+		},
+	}
+	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		Buckets: []*common.RateLimitBucketConfig{},
+	})
+	if err != nil {
+		t.Error(err)
+	}
+	vndr := vendors.NewVendorsRegistry()
+	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vndr)
+	pup, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
+		Type:     common.UpstreamTypeEvm,
+		Id:       "test",
+		Endpoint: "http://google.com",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId: 123,
+		},
+	}, &log.Logger)
+	if err != nil {
+		t.Error(err)
+	}
+	cl, err := clr.GetOrCreateClient(pup)
+	if err != nil {
+		t.Error(err)
+	}
+	pup.Client = cl
+	ntw, err := NewNetwork(&log.Logger, "prjA", &common.NetworkConfig{
+		Failsafe: fsCfg,
+	}, rlr)
+	if err != nil {
+		t.Error(err)
+	}
+	ntw.Upstreams = []*upstream.Upstream{pup}
+
+	fakeReq := upstream.NewNormalizedRequest(requestBytes)
+	_, err = ntw.Forward(ctx, fakeReq)
+
+	if len(gock.Pending()) > 0 {
+		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
+		for _, pending := range gock.Pending() {
+			t.Errorf("Pending mock: %v", pending)
+		}
+	}
+
+	if err == nil {
+		t.Errorf("Expected error, got %v", err)
+	}
+
+	var e *common.ErrEndpointServerSideException
+	if !errors.As(err, &e) {
+		t.Errorf("Expected %v, got %v", "ErrCodeEndpointServerSideException", err)
+	} else {
+		t.Logf("Got expected error: %v", err)
+	}
+}
