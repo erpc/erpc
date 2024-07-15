@@ -38,13 +38,13 @@ func ErrorSummary(err interface{}) string {
 }
 
 var ddg = regexp.MustCompile(`\d+`)
-var ethAddr = regexp.MustCompile(`0x[a-fA-F0-9]{40}`)
+var ethAddr = regexp.MustCompile(`0x[a-fA-F0-9]+`)
 var revertAddr = regexp.MustCompile(`.*execution reverted.*`)
 
 func cleanUpMessage(s string) string {
-	s = ddg.ReplaceAllString(s, "XX")
-	s = ethAddr.ReplaceAllString(s, "0xADDY")
+	s = ethAddr.ReplaceAllString(s, "0xREDACTED")
 	s = revertAddr.ReplaceAllString(s, "execution reverted")
+	s = ddg.ReplaceAllString(s, "XX")
 	return s
 }
 

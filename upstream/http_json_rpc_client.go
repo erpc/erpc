@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/flair-sdk/erpc/common"
@@ -194,6 +195,11 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 			return common.NewErrEndpointUnsupported(err)
 		} else if code == -32005 {
 			return common.NewErrEndpointCapacityExceeded(err)
+		}
+
+		// Text-based common errors
+		if strings.Contains(err.Message, "missing trie node") {
+			return common.NewErrEndpointNotSyncedYet(err)
 		}
 
 		return common.NewErrEndpointClientSideException(err)
