@@ -29,7 +29,7 @@ func (v *LlamaVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr inter
 	if code := err.OriginalCode(); code != 0 {
 		msg := err.Message
 
-		if code == 4 && strings.Contains(msg, "token is invalid") {
+		if code == 1015 {
 			return common.NewErrEndpointUnauthorized(
 				common.NewErrJsonRpcException(code, common.JsonRpcErrorCapacityExceeded, msg, nil),
 			)
