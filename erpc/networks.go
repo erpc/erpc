@@ -188,6 +188,8 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 			upsList := n.Upstreams
 			n.upstreamsMutex.RUnlock()
 
+			isHedge := exec.Hedges() > 0
+
 			// We should try all upstreams at least once, but using "i" we make sure
 			// across different executions of the failsafe we pick up next upstream vs retrying the same upstream.
 			// This mimicks a round-robin behavior, for example when doing hedge or retries.
@@ -200,10 +202,17 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 				if i >= ln {
 					i = 0
 				}
-				lg.Debug().
-					Str("upstream", u.Config().Id).
-					Int("index", i).
-					Msgf("executing forward to upstream")
+				if isHedge {
+					lg.Debug().
+						Str("upstream", u.Config().Id).
+						Int("index", i).
+						Msgf("executing hedged forward to upstream")
+				} else {
+					lg.Debug().
+						Str("upstream", u.Config().Id).
+						Int("index", i).
+						Msgf("executing forward to upstream")
+				}
 				mtx.Unlock()
 
 				resp, skipped, err := n.processResponse(
@@ -215,7 +224,11 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 					return nil, err
 				}
 
-				lg.Debug().Err(err).Msgf("forwarded request to upstream %s skipped: %v err: %v", u.Config().Id, skipped, err)
+				if isHedge {
+					lg.Debug().Err(err).Msgf("forwarded hedged request to upstream %s skipped: %v err: %v", u.Config().Id, skipped, err)
+				} else {
+					lg.Debug().Err(err).Msgf("forwarded request to upstream %s skipped: %v err: %v", u.Config().Id, skipped, err)
+				}
 				if !skipped {
 					if n.cacheDal != nil && resp != nil {
 						go (func(resp common.NormalizedResponse) {
