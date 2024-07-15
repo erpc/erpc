@@ -26,14 +26,13 @@ func (v *LlamaVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr inter
 	}
 
 	err := bodyMap.Error
-	if code := err.OriginalCode(); code != 0 {
-		msg := err.Message
+	code := err.OriginalCode()
+	msg := err.Message
 
-		if code == 1015 {
-			return common.NewErrEndpointUnauthorized(
-				common.NewErrJsonRpcException(code, common.JsonRpcErrorCapacityExceeded, msg, nil),
-			)
-		}
+	if code == 0 && strings.Contains(msg, "error code: 1015") {
+		return common.NewErrEndpointUnauthorized(
+			common.NewErrJsonRpcException(code, common.JsonRpcErrorCapacityExceeded, msg, nil),
+		)
 	}
 
 	// Other errors can be properly handled by generic error handling
