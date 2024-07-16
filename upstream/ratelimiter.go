@@ -12,10 +12,10 @@ import (
 
 type RateLimitersRegistry struct {
 	cfg             *common.RateLimiterConfig
-	bucketsLimiters map[string]*RateLimiterBucket
+	budgetsLimiters map[string]*RateLimiterBudget
 }
 
-type RateLimiterBucket struct {
+type RateLimiterBudget struct {
 	Id    string
 	Rules []*RateLimitRule
 
@@ -27,12 +27,12 @@ type RateLimitRule struct {
 	Limiter *ratelimiter.RateLimiter[interface{}]
 }
 
-var rulesByBucketAndMethod map[string]map[string][]*RateLimitRule = make(map[string]map[string][]*RateLimitRule)
+var rulesByBudgetAndMethod map[string]map[string][]*RateLimitRule = make(map[string]map[string][]*RateLimitRule)
 
 func NewRateLimitersRegistry(cfg *common.RateLimiterConfig) (*RateLimitersRegistry, error) {
 	r := &RateLimitersRegistry{
 		cfg:             cfg,
-		bucketsLimiters: make(map[string]*RateLimiterBucket),
+		budgetsLimiters: make(map[string]*RateLimiterBudget),
 	}
 	err := r.bootstrap()
 
@@ -45,14 +45,14 @@ func (r *RateLimitersRegistry) bootstrap() error {
 		return nil
 	}
 
-	for _, bucketCfg := range r.cfg.Buckets {
-		log.Debug().Msgf("bootstrapping rate limiter bucket: %s", bucketCfg.Id)
-		for _, rule := range bucketCfg.Rules {
+	for _, budgetCfg := range r.cfg.Budgets {
+		log.Debug().Msgf("bootstrapping rate limiter budget: %s", budgetCfg.Id)
+		for _, rule := range budgetCfg.Rules {
 			log.Debug().Msgf("preparing rate limiter rule: %v", rule)
 
-			if _, ok := r.bucketsLimiters[bucketCfg.Id]; !ok {
-				r.bucketsLimiters[bucketCfg.Id] = &RateLimiterBucket{
-					Id:       bucketCfg.Id,
+			if _, ok := r.budgetsLimiters[budgetCfg.Id]; !ok {
+				r.budgetsLimiters[budgetCfg.Id] = &RateLimiterBudget{
+					Id:       budgetCfg.Id,
 					Rules:    make([]*RateLimitRule, 0),
 					registry: r,
 				}
@@ -81,7 +81,7 @@ func (r *RateLimitersRegistry) bootstrap() error {
 
 			limiter := builder.Build()
 			log.Debug().Msgf("rate limiter rule prepared: %v with max: %d duration: %d", limiter, rule.MaxCount, duration)
-			r.bucketsLimiters[bucketCfg.Id].Rules = append(r.bucketsLimiters[bucketCfg.Id].Rules, &RateLimitRule{
+			r.budgetsLimiters[budgetCfg.Id].Rules = append(r.budgetsLimiters[budgetCfg.Id].Rules, &RateLimitRule{
 				Config:  rule,
 				Limiter: &limiter,
 			})
@@ -91,26 +91,26 @@ func (r *RateLimitersRegistry) bootstrap() error {
 	return nil
 }
 
-func (r *RateLimitersRegistry) GetBucket(bucketId string) (*RateLimiterBucket, error) {
-	if bucketId == "" {
+func (r *RateLimitersRegistry) GetBudget(budgetId string) (*RateLimiterBudget, error) {
+	if budgetId == "" {
 		return nil, nil
 	}
 
-	log.Debug().Msgf("getting rate limiter bucket: %s", bucketId)
+	log.Debug().Msgf("getting rate limiter budget: %s", budgetId)
 
-	if bucket, ok := r.bucketsLimiters[bucketId]; ok {
-		return bucket, nil
+	if budget, ok := r.budgetsLimiters[budgetId]; ok {
+		return budget, nil
 	}
 
-	return nil, common.NewErrRateLimitBucketNotFound(bucketId)
+	return nil, common.NewErrRateLimitBudgetNotFound(budgetId)
 }
 
-func (b *RateLimiterBucket) GetRulesByMethod(method string) []*RateLimitRule {
-	if _, ok := rulesByBucketAndMethod[b.Id]; !ok {
-		rulesByBucketAndMethod[b.Id] = make(map[string][]*RateLimitRule)
+func (b *RateLimiterBudget) GetRulesByMethod(method string) []*RateLimitRule {
+	if _, ok := rulesByBudgetAndMethod[b.Id]; !ok {
+		rulesByBudgetAndMethod[b.Id] = make(map[string][]*RateLimitRule)
 	}
 
-	if rules, ok := rulesByBucketAndMethod[b.Id][method]; ok {
+	if rules, ok := rulesByBudgetAndMethod[b.Id][method]; ok {
 		return rules
 	}
 
@@ -123,7 +123,7 @@ func (b *RateLimiterBucket) GetRulesByMethod(method string) []*RateLimitRule {
 		}
 	}
 
-	rulesByBucketAndMethod[b.Id][method] = rules
+	rulesByBudgetAndMethod[b.Id][method] = rules
 
 	return rules
 }

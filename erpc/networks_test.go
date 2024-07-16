@@ -80,9 +80,9 @@ func TestNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T) {
 
 	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
 		&common.RateLimiterConfig{
-			Buckets: []*common.RateLimitBucketConfig{
+			Budgets: []*common.RateLimitBudgetConfig{
 				{
-					Id: "MyLimiterBucket_Test1",
+					Id: "MyLimiterBudget_Test1",
 					Rules: []*common.RateLimitRuleConfig{
 						{
 							Scope:    "instance",
@@ -101,7 +101,7 @@ func TestNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T) {
 	}
 
 	ntw, err := NewNetwork(&log.Logger, "prjA", &common.NetworkConfig{
-		RateLimitBucket: "MyLimiterBucket_Test1",
+		RateLimitBudget: "MyLimiterBudget_Test1",
 	}, rateLimitersRegistry)
 	if err != nil {
 		t.Error(err)
@@ -130,9 +130,9 @@ func TestNetwork_ForwardNotRateLimitedOnNetworkLevel(t *testing.T) {
 
 	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
 		&common.RateLimiterConfig{
-			Buckets: []*common.RateLimitBucketConfig{
+			Budgets: []*common.RateLimitBudgetConfig{
 				{
-					Id: "MyLimiterBucket_Test2",
+					Id: "MyLimiterBudget_Test2",
 					Rules: []*common.RateLimitRuleConfig{
 						{
 							Scope:    "instance",
@@ -150,7 +150,7 @@ func TestNetwork_ForwardNotRateLimitedOnNetworkLevel(t *testing.T) {
 		t.Error(err)
 	}
 	ntw, err := NewNetwork(&log.Logger, "prjA", &common.NetworkConfig{
-		RateLimitBucket: "MyLimiterBucket_Test2",
+		RateLimitBudget: "MyLimiterBudget_Test2",
 	}, rateLimitersRegistry)
 	if err != nil {
 		t.Error(err)
@@ -203,7 +203,7 @@ func TestNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 		},
 	}
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
-		Buckets: []*common.RateLimitBucketConfig{},
+		Budgets: []*common.RateLimitBudgetConfig{},
 	})
 	if err != nil {
 		t.Error(err)
@@ -286,7 +286,7 @@ func TestNetwork_ForwardRetryFailuresWithSuccess(t *testing.T) {
 		},
 	}
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
-		Buckets: []*common.RateLimitBucketConfig{},
+		Budgets: []*common.RateLimitBudgetConfig{},
 	})
 	if err != nil {
 		t.Error(err)
@@ -375,7 +375,7 @@ func TestNetwork_ForwardTimeoutPolicyFail(t *testing.T) {
 		},
 	}
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
-		Buckets: []*common.RateLimitBucketConfig{},
+		Budgets: []*common.RateLimitBudgetConfig{},
 	})
 	if err != nil {
 		t.Error(err)
@@ -459,7 +459,7 @@ func TestNetwork_ForwardTimeoutPolicyPass(t *testing.T) {
 		},
 	}
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
-		Buckets: []*common.RateLimitBucketConfig{},
+		Budgets: []*common.RateLimitBudgetConfig{},
 	})
 	if err != nil {
 		t.Error(err)
@@ -548,7 +548,7 @@ func TestNetwork_ForwardHedgePolicyTriggered(t *testing.T) {
 		},
 	}
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
-		Buckets: []*common.RateLimitBucketConfig{},
+		Budgets: []*common.RateLimitBudgetConfig{},
 	})
 	if err != nil {
 		t.Error(err)
@@ -652,7 +652,7 @@ func TestNetwork_ForwardHedgePolicyNotTriggered(t *testing.T) {
 		},
 	}
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
-		Buckets: []*common.RateLimitBucketConfig{},
+		Budgets: []*common.RateLimitBudgetConfig{},
 	})
 	if err != nil {
 		t.Error(err)
@@ -751,7 +751,7 @@ func TestNetwork_ForwardHedgePolicyIgnoresNegativeScoreUpstream(t *testing.T) {
 		},
 	}
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
-		Buckets: []*common.RateLimitBucketConfig{},
+		Budgets: []*common.RateLimitBudgetConfig{},
 	})
 	if err != nil {
 		t.Error(err)
@@ -887,7 +887,7 @@ func TestNetwork_ForwardCBOpensAfterConstantFailure(t *testing.T) {
 	}
 
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
-		Buckets: []*common.RateLimitBucketConfig{},
+		Budgets: []*common.RateLimitBudgetConfig{},
 	})
 	if err != nil {
 		t.Error(err)
@@ -987,7 +987,7 @@ func TestNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
 		},
 	}
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
-		Buckets: []*common.RateLimitBucketConfig{},
+		Budgets: []*common.RateLimitBudgetConfig{},
 	})
 	if err != nil {
 		t.Error(err)

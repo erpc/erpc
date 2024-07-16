@@ -25,18 +25,18 @@ services:
   #   networks:
   #     erpc:
 
-  postgresql:
-    container_name: erpc-postgresql
-    image: postgres:13.4
-    restart: always
-    environment:
-      POSTGRES_USER: erpc
-      POSTGRES_PASSWORD: erpc
-      POSTGRES_DB: erpc
-    ports:
-      - "5432:5432"
-    networks:
-      erpc:
+  # postgresql:
+  #   container_name: erpc-postgresql
+  #   image: postgres:13.4
+  #   restart: always
+  #   environment:
+  #     POSTGRES_USER: erpc
+  #     POSTGRES_PASSWORD: erpc
+  #     POSTGRES_DB: erpc
+  #   ports:
+  #     - "5432:5432"
+  #   networks:
+  #     erpc:
 
   # scylla:
   #   container_name: erpc-scylla

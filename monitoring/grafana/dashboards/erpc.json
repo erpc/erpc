@@ -84,7 +84,7 @@
         },
         "type": "graph",
         "xaxis": {
-          "buckets": null,
+          "budgets": null,
           "mode": "time",
           "name": null,
           "show": true,
@@ -161,7 +161,7 @@
         "steppedLine": false,
         "targets": [
           {
-            "expr": "histogram_quantile(0.95, sum(rate(erpc_upstream_request_duration_seconds_bucket[5m])) by (le, upstream))",
+            "expr": "histogram_quantile(0.95, sum(rate(erpc_upstream_request_duration_seconds_budget[5m])) by (le, upstream))",
             "interval": "",
             "legendFormat": "{{upstream}}",
             "refId": "A"
@@ -179,7 +179,7 @@
         },
         "type": "graph",
         "xaxis": {
-          "buckets": null,
+          "budgets": null,
           "mode": "time",
           "name": null,
           "show": true,
@@ -274,7 +274,7 @@
         },
         "type": "graph",
         "xaxis": {
-          "buckets": null,
+          "budgets": null,
           "mode": "time",
           "name": null,
           "show": true,
@@ -375,7 +375,7 @@
         },
         "type": "graph",
         "xaxis": {
-          "buckets": null,
+          "budgets": null,
           "mode": "time",
           "name": null,
           "show": true,
