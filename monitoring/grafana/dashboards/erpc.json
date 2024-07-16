@@ -64,7 +64,7 @@
           },
           "expr": "sum(rate(erpc_network_requests_received_total{}[30s])) by (project, network, category)",
           "interval": "",
-          "legendFormat": "{{upstream}}",
+          "legendFormat": "{ category: '{{category}}', network: '{{network}}', project: '{{project}}' }",
           "refId": "A",
           "editorMode": "code",
           "range": true
@@ -121,12 +121,9 @@
       "bars": false,
       "dashLength": 10,
       "dashes": false,
-      "datasource": null,
-      "fieldConfig": {
-        "defaults": {
-          "custom": {}
-        },
-        "overrides": []
+      "datasource": {
+        "uid": "PBFA97CFB590B2093",
+        "type": "prometheus"
       },
       "fill": 1,
       "fillGradient": 0,
@@ -154,7 +151,7 @@
         "alertThreshold": true
       },
       "percentage": false,
-      "pluginVersion": "7.2.0",
+      "pluginVersion": "9.3.2",
       "pointradius": 2,
       "points": false,
       "renderer": "flot",
@@ -166,7 +163,7 @@
         {
           "expr": "sum(rate(erpc_network_cache_hits_total{}[1m])) by (project, network, category)",
           "interval": "",
-          "legendFormat": "{{upstream}}",
+          "legendFormat": "{ category: '{{category}}', network: '{{network}}', project: '{{project}}' }",
           "refId": "A"
         }
       ],
@@ -182,7 +179,7 @@
       },
       "type": "graph",
       "xaxis": {
-        "budgets": null,
+        "buckets": null,
         "mode": "time",
         "name": null,
         "show": true,
@@ -212,12 +209,12 @@
       }
     },
     {
-      "id": 3,
+      "id": 4,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 0
+        "y": 8
       },
       "type": "graph",
       "title": "total upstream requests per second",
@@ -257,7 +254,7 @@
           },
           "expr": "sum(rate(erpc_upstream_request_total{}[1m])) by (project, network, upstream, category)",
           "interval": "",
-          "legendFormat": "{{upstream}}",
+          "legendFormat": "{ category: '{{category}}', network: '{{network}}', project: '{{project}}', upstream: '{{upstream}}' }",
           "refId": "A",
           "editorMode": "code",
           "range": true
@@ -315,7 +312,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 0
+        "y": 8
       },
       "type": "graph",
       "title": "total network errors per second",
@@ -363,7 +360,7 @@
           },
           "expr": "sum(rate(erpc_network_failed_requests_total{}[1m])) by (project, network, upstream, error)",
           "interval": "",
-          "legendFormat": "{{upstream}}",
+          "legendFormat": "{ error: '{{error}}', network: '{{network}}', project: '{{project}}' }",
           "refId": "A"
         }
       ],
@@ -377,7 +374,6 @@
       },
       "xaxis": {
         "buckets": null,
-        "budgets": null,
         "mode": "time",
         "name": null,
         "show": true,
@@ -412,7 +408,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 8
+        "y": 16
       },
       "type": "graph",
       "title": "total errors per upstream per second",
@@ -460,7 +456,7 @@
           },
           "expr": "sum(rate(erpc_upstream_request_errors_total{}[1m])) by (project, network, upstream, error)",
           "interval": "",
-          "legendFormat": "{{upstream}}",
+          "legendFormat": "{ error: '{{error}}', network: '{{network}}', project: '{{project}}', upstream: '{{upstream}}' }",
           "refId": "A"
         }
       ],
@@ -474,7 +470,6 @@
       },
       "xaxis": {
         "buckets": null,
-        "budgets": null,
         "mode": "time",
         "name": null,
         "show": true,
