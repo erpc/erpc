@@ -17,6 +17,8 @@ Join [eRPC's Telegram](https://t.me/+eEik0_G1VMhmN2U8) for technical support, fe
 
 # Usage
 
+[![Open in Gitpod](https://gitpod.io/button/open-in-gitpod.svg)](https://gitpod.io/#https://github.com/erpc/erpc)
+
 1. Create your `erpc.yaml` configuration file based on the [`erpc.yaml.dist`](./erpc.yaml.dist) file.
 ```yaml
 # vi ./erpc.yaml
