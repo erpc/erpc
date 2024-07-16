@@ -49,7 +49,7 @@ store:
   
 projects:
   - id: string # main, frontend, sushiswap-prod, etc ...
-    rateLimitBucket: string
+    rateLimitBudget: string
 
 	  # Define as many upstreams for this project
     upstreams:
@@ -67,7 +67,7 @@ projects:
       unsupportedMethods: [string]
       creditUnitMapping: string # e.g. alchemy-growth-plan
       maxBatchSize: number
-      rateLimitBucket: string
+      rateLimitBudget: string
       healthCheckGroup: string
       failsafe:
         timeout:
@@ -92,7 +92,7 @@ projects:
     networks:
     - architecture: evm
       networkId: number
-      rateLimitBucket: string
+      rateLimitBudget: string
       failsafe:
         retry:
           maxCount: number
@@ -113,7 +113,7 @@ projects:
           maxCount: number
 
 rateLimiters:
-  buckets:
+  budgets:
   - id: string
     rules:
     - method: string | *
@@ -220,11 +220,11 @@ creditUnitMappings:
       - rangeKey: `evm:blocks`
   - Rate Limit Snapshots -- `rate_limit_snapshots`
     - Set:
-      - partitionKey: `<bucket>`
+      - partitionKey: `<budget>`
       - rangeKey: `<rule>`
       - value: `<usage>`
     - Get:
-      - partitionKey: `<bucket>`
+      - partitionKey: `<budget>`
       - rangeKey: `<rule>`
       - value: `<usage>`
 
@@ -250,9 +250,9 @@ creditUnitMappings:
       - Scan(ctx, chainId, minBlockTimestamp)
     - RateLimitSnapshots
       - connector
-      - Set(ctx, bucket, rule, usage)
-      - Increment(ctx, bucket, rule, usage)
-      - Get(ctx, bucket, rule)
+      - Set(ctx, budget, rule, usage)
+      - Increment(ctx, budget, rule, usage)
+      - Get(ctx, budget, rule)
 
 ```yaml
 data:

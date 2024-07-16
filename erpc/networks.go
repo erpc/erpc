@@ -352,11 +352,11 @@ func (n *Network) processResponse(resp common.NormalizedResponse, skipped bool, 
 }
 
 func (n *Network) acquireRateLimitPermit(req *upstream.NormalizedRequest) error {
-	if n.Config.RateLimitBucket == "" {
+	if n.Config.RateLimitBudget == "" {
 		return nil
 	}
 
-	rlb, errNetLimit := n.rateLimitersRegistry.GetBucket(n.Config.RateLimitBucket)
+	rlb, errNetLimit := n.rateLimitersRegistry.GetBudget(n.Config.RateLimitBudget)
 	if errNetLimit != nil {
 		return errNetLimit
 	}
@@ -385,7 +385,7 @@ func (n *Network) acquireRateLimitPermit(req *upstream.NormalizedRequest) error 
 				return common.NewErrNetworkRateLimitRuleExceeded(
 					n.ProjectId,
 					n.NetworkId,
-					n.Config.RateLimitBucket,
+					n.Config.RateLimitBudget,
 					fmt.Sprintf("%+v", rule.Config),
 				)
 			} else {

@@ -75,7 +75,7 @@ type ProjectConfig struct {
 	Id              string            `yaml:"id"`
 	Upstreams       []*UpstreamConfig `yaml:"upstreams"`
 	Networks        []*NetworkConfig  `yaml:"networks"`
-	RateLimitBucket string            `yaml:"rateLimitBucket"`
+	RateLimitBudget string            `yaml:"rateLimitBudget"`
 }
 
 type UpstreamConfig struct {
@@ -87,7 +87,7 @@ type UpstreamConfig struct {
 	AllowMethods      []string           `yaml:"allowMethods"`
 	IgnoreMethods     []string           `yaml:"ignoreMethods"`
 	Failsafe          *FailsafeConfig    `yaml:"failsafe"`
-	RateLimitBucket   string             `yaml:"rateLimitBucket"`
+	RateLimitBudget   string             `yaml:"rateLimitBudget"`
 	HealthCheckGroup  string             `yaml:"healthCheckGroup"`
 	CreditUnitMapping string             `yaml:"creditUnitMapping"`
 }
@@ -133,10 +133,10 @@ type HedgePolicyConfig struct {
 }
 
 type RateLimiterConfig struct {
-	Buckets []*RateLimitBucketConfig `yaml:"buckets"`
+	Budgets []*RateLimitBudgetConfig `yaml:"budgets"`
 }
 
-type RateLimitBucketConfig struct {
+type RateLimitBudgetConfig struct {
 	Id    string                 `yaml:"id"`
 	Rules []*RateLimitRuleConfig `yaml:"rules"`
 }
@@ -173,7 +173,7 @@ type HealthCheckGroupConfig struct {
 
 type NetworkConfig struct {
 	Architecture    NetworkArchitecture `yaml:"architecture"`
-	RateLimitBucket string              `yaml:"rateLimitBucket"`
+	RateLimitBudget string              `yaml:"rateLimitBudget"`
 	Failsafe        *FailsafeConfig     `yaml:"failsafe"`
 	Evm             *EvmNetworkConfig   `yaml:"evm"`
 }
