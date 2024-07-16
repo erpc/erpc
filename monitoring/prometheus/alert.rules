@@ -11,7 +11,7 @@ groups:
       description: "Error rate for upstream {{ $labels.upstream }} is {{ $value | humanizePercentage }} over the last 5 minutes"
 
   - alert: SlowRequests
-    expr: histogram_quantile(0.95, sum(rate(erpc_upstream_request_duration_seconds_bucket[5m])) by (le, upstream)) > 1
+    expr: histogram_quantile(0.95, sum(rate(erpc_upstream_request_duration_seconds_budget[5m])) by (le, upstream)) > 1
     for: 5m
     labels:
       severity: warning

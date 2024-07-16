@@ -161,10 +161,10 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 	//
 	// Apply rate limits
 	//
-	var limitersBucket *RateLimiterBucket
-	if cfg.RateLimitBucket != "" {
+	var limitersBudget *RateLimiterBudget
+	if cfg.RateLimitBudget != "" {
 		var errLimiters error
-		limitersBucket, errLimiters = u.rateLimitersRegistry.GetBucket(cfg.RateLimitBucket)
+		limitersBudget, errLimiters = u.rateLimitersRegistry.GetBudget(cfg.RateLimitBudget)
 		if errLimiters != nil {
 			return nil, errLimiters
 		}
@@ -177,9 +177,9 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 
 	lg := u.Logger.With().Str("method", method).Logger()
 
-	if limitersBucket != nil {
-		lg.Trace().Msgf("checking upstream-level rate limiters bucket: %s", cfg.RateLimitBucket)
-		rules := limitersBucket.GetRulesByMethod(method)
+	if limitersBudget != nil {
+		lg.Trace().Msgf("checking upstream-level rate limiters budget: %s", cfg.RateLimitBudget)
+		rules := limitersBudget.GetRulesByMethod(method)
 		if len(rules) > 0 {
 			for _, rule := range rules {
 				if !(*rule.Limiter).TryAcquirePermit() {
@@ -196,7 +196,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 					).Inc()
 					return nil, common.NewErrUpstreamRateLimitRuleExceeded(
 						cfg.Id,
-						cfg.RateLimitBucket,
+						cfg.RateLimitBudget,
 						fmt.Sprintf("%+v", rule.Config),
 					)
 				} else {

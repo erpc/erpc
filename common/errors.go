@@ -600,15 +600,15 @@ var NewErrFailsafeUnexpected = func(cause error) error {
 // Rate Limiters
 //
 
-type ErrRateLimitBucketNotFound struct{ BaseError }
+type ErrRateLimitBudgetNotFound struct{ BaseError }
 
-var NewErrRateLimitBucketNotFound = func(bucketId string) error {
-	return &ErrRateLimitBucketNotFound{
+var NewErrRateLimitBudgetNotFound = func(budgetId string) error {
+	return &ErrRateLimitBudgetNotFound{
 		BaseError{
-			Code:    "ErrRateLimitBucketNotFound",
-			Message: "rate limit bucket not found",
+			Code:    "ErrRateLimitBudgetNotFound",
+			Message: "rate limit budget not found",
 			Details: map[string]interface{}{
-				"bucketId": bucketId,
+				"budgetId": budgetId,
 			},
 		},
 	}
@@ -616,13 +616,13 @@ var NewErrRateLimitBucketNotFound = func(bucketId string) error {
 
 type ErrRateLimitRuleNotFound struct{ BaseError }
 
-var NewErrRateLimitRuleNotFound = func(bucketId, method string) error {
+var NewErrRateLimitRuleNotFound = func(budgetId, method string) error {
 	return &ErrRateLimitRuleNotFound{
 		BaseError{
 			Code:    "ErrRateLimitRuleNotFound",
 			Message: "rate limit rule not found",
 			Details: map[string]interface{}{
-				"bucketId": bucketId,
+				"budgetId": budgetId,
 				"method":   method,
 			},
 		},
@@ -643,14 +643,14 @@ var NewErrRateLimitInvalidConfig = func(cause error) error {
 
 type ErrProjectRateLimitRuleExceeded struct{ BaseError }
 
-var NewErrProjectRateLimitRuleExceeded = func(project string, bucket string, rule string) error {
+var NewErrProjectRateLimitRuleExceeded = func(project string, budget string, rule string) error {
 	return &ErrProjectRateLimitRuleExceeded{
 		BaseError{
 			Code:    "ErrProjectRateLimitRuleExceeded",
 			Message: "project-level rate limit rule exceeded",
 			Details: map[string]interface{}{
 				"project": project,
-				"bucket":  bucket,
+				"budget":  budget,
 				"rule":    rule,
 			},
 		},
@@ -663,7 +663,7 @@ func (e *ErrProjectRateLimitRuleExceeded) ErrorStatusCode() int {
 
 type ErrNetworkRateLimitRuleExceeded struct{ BaseError }
 
-var NewErrNetworkRateLimitRuleExceeded = func(project string, network string, bucket string, rule string) error {
+var NewErrNetworkRateLimitRuleExceeded = func(project string, network string, budget string, rule string) error {
 	return &ErrNetworkRateLimitRuleExceeded{
 		BaseError{
 			Code:    "ErrNetworkRateLimitRuleExceeded",
@@ -671,7 +671,7 @@ var NewErrNetworkRateLimitRuleExceeded = func(project string, network string, bu
 			Details: map[string]interface{}{
 				"project": project,
 				"network": network,
-				"bucket":  bucket,
+				"budget":  budget,
 				"rule":    rule,
 			},
 		},
@@ -684,14 +684,14 @@ func (e *ErrNetworkRateLimitRuleExceeded) ErrorStatusCode() int {
 
 type ErrUpstreamRateLimitRuleExceeded struct{ BaseError }
 
-var NewErrUpstreamRateLimitRuleExceeded = func(upstream string, bucket string, rule string) error {
+var NewErrUpstreamRateLimitRuleExceeded = func(upstream string, budget string, rule string) error {
 	return &ErrUpstreamRateLimitRuleExceeded{
 		BaseError{
 			Code:    "ErrUpstreamRateLimitRuleExceeded",
 			Message: "upstream-level rate limit rule exceeded",
 			Details: map[string]interface{}{
 				"upstream": upstream,
-				"bucket":   bucket,
+				"budget":   budget,
 				"rule":     rule,
 			},
 		},

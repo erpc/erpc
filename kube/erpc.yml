@@ -80,7 +80,7 @@ data:
         upstreams:
         - id: alchemy-main
           endpoint: alchemy://xxxxxxxxxxxxxxxxxxxxxx
-          rateLimitBucket: global
+          rateLimitBudget: global
           healthCheckGroup: aggressive
           failsafe:
             timeout:
@@ -93,7 +93,7 @@ data:
               jitter: 200ms
         - id: blast-42161
           endpoint: https://arbitrum-one.blastapi.io/xxxxxxxxxxxxxxxxxxxxxx
-          rateLimitBucket: global
+          rateLimitBudget: global
           healthCheckGroup: aggressive
           failsafe:
             timeout:
@@ -106,7 +106,7 @@ data:
               jitter: 200ms
         - id: quicknode-42161
           endpoint: https://chaotic-late-sanctuary.arbitrum-mainnet.quiknode.pro/xxxxxxxxxxxxxxxxxxxxxx/
-          rateLimitBucket: global
+          rateLimitBudget: global
           healthCheckGroup: aggressive
           failsafe:
             timeout:
@@ -118,7 +118,7 @@ data:
               backoffFactor: 0.3
               jitter: 200ms
     rateLimiters:
-      buckets:
+      budgets:
       - id: global
         rules:
         - method: '*'
