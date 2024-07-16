@@ -1,8 +1,21 @@
 # eRPC
 
+[![Flair](https://img.shields.io/badge/Powered%20by-Flair-ff69b4)](https://flair.dev)
+[![join chat](https://img.shields.io/badge/Telegram-join%20chat-blue)](https://t.me/+eEik0_G1VMhmN2U8)
+
 Open-source EVM RPC proxy & cache service built to scale horizontally from small traffic to million RPS across many chains, optimized for read-heavy use-cases such as Indexers, Frontends, MEV bots, etc.
 
-![eRPC High-level Architecture](./assets/hla-diagram.svg)
+# Support
+
+Join [eRPC's Telegram](https://t.me/+eEik0_G1VMhmN2U8) for technical support, feedback and chatting.
+
+# Quick Start
+
+Clone this repository and run the below command:
+
+```bash
+make run
+```
 
 # License
 
