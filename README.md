@@ -179,6 +179,11 @@ curl --location 'http://localhost:4000/main/evm/42161' \
 
 4. Bring up monitoring stack (Prometheus, Grafana) using docker-compose:
 ```bash
+# clone the repo if you haven't
+git clone https://github.com/erpc/erpc.git
+cd erpc
+
+# bring up the monitoring stack
 docker-compose up -d
 ```
 
