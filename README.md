@@ -5,9 +5,10 @@
 
 Open-source EVM RPC proxy & cache service built to scale horizontally from small traffic to million RPS across many chains, optimized for read-heavy use-cases such as Indexers, Frontends, MEV bots, etc.
 
-## Support
+## Roadmap
 
-Join [eRPC's Telegram](https://t.me/+eEik0_G1VMhmN2U8) for technical support, feedback and chatting.
+* Join [eRPC's Telegram](https://t.me/+eEik0_G1VMhmN2U8) for technical discussions and feedbacks.
+* Request a feature in [Featurebase](https://erpc.featurebase.app) 
 
 ### Disclaimer
 
@@ -192,6 +193,8 @@ docker-compose up -d
 - password: `admin`
 
 6. Send more requests and watch the metrics being collected and visualized in Grafana.
+
+[![eRPC Grafana Dashboard](./assets/monitoring-example-erpc.png)](https://grafana.com/grafana/dashboards/186080)
 
 ## Local Development
 
