@@ -1,14 +1,13 @@
 # eRPC
 
-[![Flair](https://img.shields.io/badge/Powered%20by-Flair-ff69b4)](https://flair.dev)
 [![join chat](https://img.shields.io/badge/Telegram-join%20chat-blue)](https://t.me/+eEik0_G1VMhmN2U8)
 
 Open-source EVM RPC proxy & cache service built to scale horizontally from small traffic to million RPS across many chains, optimized for read-heavy use-cases such as Indexers, Frontends, MEV bots, etc.
 
 ## Roadmap
 
-* Join [eRPC's Telegram](https://t.me/+eEik0_G1VMhmN2U8) for technical discussions and feedbacks.
-* Request a feature in [Featurebase](https://erpc.featurebase.app) 
+- Join [eRPC's Telegram](https://t.me/+eEik0_G1VMhmN2U8) for technical discussions and feedbacks.
+- Request a feature in [Featurebase](https://erpc.featurebase.app)
 
 ### Disclaimer
 
@@ -19,6 +18,7 @@ Open-source EVM RPC proxy & cache service built to scale horizontally from small
 # Usage
 
 1. Create your `erpc.yaml` configuration file based on the [`erpc.yaml.dist`](./erpc.yaml.dist) file.
+
 ```yaml
 # vi ./erpc.yaml
 logLevel: warn
@@ -136,17 +136,17 @@ rateLimiters:
   budgets:
     - id: default-budget
       rules:
-        - method: '*'
+        - method: "*"
           maxCount: 10000
           period: 1s
     - id: global-blast
       rules:
-        - method: '*'
+        - method: "*"
           maxCount: 1000
           period: 1s
     - id: global-quicknode
       rules:
-        - method: '*'
+        - method: "*"
           maxCount: 300
           period: 1s
 healthChecks:
@@ -159,11 +159,13 @@ healthChecks:
 ```
 
 2. Use the Docker image:
+
 ```bash
 docker run -v $(pwd)/erpc.yaml:/app/erpc.yaml -p 4000:4000 -p 4001:4001 ghcr.io/erpc/erpc:latest
 ```
 
 3. Send your first request:
+
 ```bash
 curl --location 'http://localhost:4000/main/evm/42161' \
 --header 'Content-Type: application/json' \
@@ -179,6 +181,7 @@ curl --location 'http://localhost:4000/main/evm/42161' \
 ```
 
 4. Bring up monitoring stack (Prometheus, Grafana) using docker-compose:
+
 ```bash
 # clone the repo if you haven't
 git clone https://github.com/erpc/erpc.git
@@ -189,6 +192,7 @@ docker-compose up -d
 ```
 
 5. Open Grafana at [http://localhost:3000](http://localhost:3000) and login with the following credentials:
+
 - username: `admin`
 - password: `admin`
 
@@ -199,22 +203,26 @@ docker-compose up -d
 ## Local Development
 
 1. Clone this repository:
+
 ```bash
 git clone https://github.com/erpc/erpc.git
 ```
 
 2. Install Go dependencies:
+
 ```bash
 make setup
 ```
 
 3. Create a `erpc.yaml` configuration file based on the [`erpc.yaml.dist`](./erpc.yaml.dist) file, and use your RPC provider credentials:
+
 ```bash
 cp erpc.yaml.dist erpc.yaml
 vi erpc.yaml
 ```
 
 4. Run the eRPC server:
+
 ```bash
 make run
 ```
