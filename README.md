@@ -12,7 +12,7 @@ Open-source EVM RPC proxy & cache service built to scale horizontally from small
 
 ### Disclaimer
 
-> This project is still under development, and for now should be used as "a fallback" for RPC calls.
+> ⚠️ This project is still under development, and for now should be used as "a fallback" for RPC calls.
 
 ![Architecture](./assets/hla-diagram.svg)
 
