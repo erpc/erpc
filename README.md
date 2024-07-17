@@ -161,7 +161,6 @@ healthChecks:
 ```bash
 docker run -v $(pwd)/erpc.yaml:/app/erpc.yaml -p 4000:4000 -p 4001:4001 ghcr.io/erpc/erpc:latest
 ```
-> You can also download the binary from the [Releases](https://github.com/erpc/erpc/releases) page.
 
 3. Send your first request:
 ```bash
