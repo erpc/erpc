@@ -103,7 +103,7 @@ logLevel: DEBUG
 
 server:
   httpHost: "localhost"
-  httpPort: "-1"
+  httpPort: -1
 `)
 
 	mu := &sync.Mutex{}
