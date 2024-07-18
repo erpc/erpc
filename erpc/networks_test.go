@@ -193,7 +193,7 @@ func TestNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 		JSON(json.RawMessage(`{"error":{"message":"some random provider issue"}}`))
 
 	// Set a timeout for the context to avoid hanging tests
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	clr := upstream.NewClientRegistry()
