@@ -1,0 +1,18 @@
+import { Callout } from 'nextra/components'
+
+# Networks
+
+A network represents a chain in EVM, and it is a local grouping for upstreams.
+
+<Callout>
+  Requests to eRPC are targetted to a specific project and network (via URL), and handled by any upstream that supports this network.
+</Callout>
+
+You can configure failover behavior per network as follows:
+
+```yaml filename="erpc.yaml"
+networks:
+  mainnet:
+    upstreams:
+      - "https://rpc.ankr.com/eth_mainnet"
+```

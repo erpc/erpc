@@ -1,0 +1,18 @@
+import { Callout } from 'nextra/components'
+
+# Upstreams
+
+An upstream is defined to handle 1 or more networks (a.k.a. chains). There are currently these types are upstreams:
+
+- [`evm`](#evm) A generic EVM-compatible JSON-RPC endpoint. This is the deault and most-used type.
+- [`evm-alchemy`](#alchemy) A special upstream type that accepts Alchemy API-KEY and automatically adds all their EVM chains.
+- [`erpc`](#erpc) A special upstream type that is another remote eRPC instance.
+
+
+## `evm` Upstreams
+
+These are generic well-known EVM-compatible JSON-RPC endpoints. This is the deault and most-used type. They can be your own self-hosted nodes, or remote 3rd-party provider nodes.
+
+```yaml filename="erpc.yaml"
+
+```

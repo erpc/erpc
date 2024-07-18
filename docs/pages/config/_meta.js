@@ -1,15 +1,15 @@
 module.exports = {
-	"complete-example": {
-		title: "erpc.yml",
+	"example": {
+		title: "erpc.yaml",
 	},
-	upstreams: {
-		title: "Upstreams",
+	"projects": {
+		title: "Projects",
 	},
 	failsafe: {
 		title: "Failsafe",
 	},
 	database: {
-		title: "Database (Caching)",
+		title: "Database",
 	},
 	"rate-limiters": {
 		title: "Rate limiters",

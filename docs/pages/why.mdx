@@ -1,7 +1,34 @@
 # Why eRPC?
- 
-Hello, world!
+
+The are the main reasons eRPC was built:
+
+- To **reduce overall costs** of RPC usage and egress traffic, by local caching.
+- To provide a **fault-tolerant** and **reliable source** for RPC consumers in case of one or more provider outages.
+- To give a global **observability** about your RPC usage both within internal teams and projects, and towards the upstream RPC 3rd party companies.
 
 # Features
 
+- [Failover](/config/failsafe) across multiple upstreams by tracking their response time, error rate, blockchain sync status, etc.
+- Offer self-imposed [rate limitting](/rate-limiting) per project, or network, or upstream to avoid abuse, and unintentional DDoS.
+- Promeheus metrics collection and Grafana dashboards to [monitor](/operation/monitoring) costs, usage and health of your RPC endpoints.
+
 # Use-cases
+
+For the start the main focus of eRPC will be on read-heavy use-cases such as:
+
+### Data indexing using Ponder, Graph, Envio, Flair, etc.
+
+When using any of the web3 indexing tools you will be making lots of requests towards your RPC provider, especially during re-backfills for historical data. 
+
+eRPC can help in two main areas:
+- Cache already made RPC calls (eth_getLogs, eth_call, eth_getBlockByNumber, etc)
+- Rate-limit upstream pressure towards RPC nodes to avoid fatal error
+
+### Resilient load balancer for self-hosted RPC nodes
+
+For app-specific chains and rollups, or projects who prefer to self-host RPC nodes for performance reasons, it make sense to use eRPC as the entry-point load-balancer.
+
+Compared to more traditional LB solutions (ALB, K8S Services, etc) eRPC will provide EVM-focused features like:
+- EVM-aware healthchecks (e.g. how many blocks behind)
+- EVM-aware fallbacks (e.g. if a 4xx is because of missing block, try another upstream)
+- EVM-aware method filters (e.g. certain methods to go to node A and other methods to go to node B)
