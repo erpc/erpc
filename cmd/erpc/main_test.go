@@ -24,7 +24,6 @@ import (
 )
 
 var mainMutex sync.Mutex
-var gockMutex sync.Mutex
 
 func TestMain_RealConfigFile(t *testing.T) {
 	mainMutex.Lock()
@@ -244,9 +243,6 @@ projects:
 func TestInit_InvalidConfig(t *testing.T) {
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
-
-	gockMutex.Lock()
-	defer gockMutex.Unlock()
 
 	fs := afero.NewMemMapFs()
 	cfg, err := afero.TempFile(fs, "", "erpc.yaml")
