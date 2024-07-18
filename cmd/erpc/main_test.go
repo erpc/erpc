@@ -137,10 +137,6 @@ func TestInit_HappyPath(t *testing.T) {
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 
-	defer gock.Clean()
-	defer gock.DisableNetworking()
-	defer gock.DisableNetworkingFilters()
-
 	gock.EnableNetworking()
 
 	// Register a networking filter
