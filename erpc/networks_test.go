@@ -192,7 +192,8 @@ func TestNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 		Reply(503).
 		JSON(json.RawMessage(`{"error":{"message":"some random provider issue"}}`))
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// Set a timeout for the context to avoid hanging tests
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	clr := upstream.NewClientRegistry()
@@ -234,7 +235,11 @@ func TestNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 	}
 	ntw.Upstreams = []*upstream.Upstream{pup}
 	fakeReq := upstream.NewNormalizedRequest(requestBytes)
+
+	// Add logging to trace the test progress
+	t.Log("Starting the Forward request")
 	_, err = ntw.Forward(ctx, fakeReq)
+	t.Log("Finished the Forward request")
 
 	if len(gock.Pending()) > 0 {
 		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
