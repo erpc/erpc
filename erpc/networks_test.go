@@ -192,7 +192,6 @@ func TestNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 		Reply(503).
 		JSON(json.RawMessage(`{"error":{"message":"some random provider issue"}}`))
 
-	// Set a timeout for the context to avoid hanging tests
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -239,8 +238,6 @@ func TestNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 	ntw.Upstreams = []*upstream.Upstream{pup}
 	fakeReq := upstream.NewNormalizedRequest(requestBytes)
 
-	// Add logging to trace the test progress
-	t.Log("Starting the Forward request")
 	_, err = ntw.Forward(ctx, fakeReq)
 	t.Log("Finished the Forward request")
 

@@ -136,6 +136,11 @@ func TestInit_HappyPath(t *testing.T) {
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 
+	// defer gock.Off()
+	// defer gock.Disable()
+	// defer gock.DisableNetworking()
+	// defer gock.DisableNetworkingFilters()
+
 	gock.EnableNetworking()
 
 	// Register a networking filter
@@ -243,11 +248,6 @@ projects:
 func TestInit_InvalidConfig(t *testing.T) {
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
-
-	defer gock.Off()
-	defer gock.Disable()
-	defer gock.DisableNetworking()
-	defer gock.DisableNetworkingFilters()
 
 	fs := afero.NewMemMapFs()
 	cfg, err := afero.TempFile(fs, "", "erpc.yaml")
