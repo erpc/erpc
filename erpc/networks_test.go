@@ -1130,9 +1130,8 @@ func TestNetwork_WeightedRandomSelect(t *testing.T) {
 	}
 }
 
-func TestNetwork_ForwardServerSideFail(t *testing.T) {
+func TestNetwork_ForwardEndpointServerSideExceptionSuccess(t *testing.T) {
 	defer gock.Clean()
-
 	defer gock.DisableNetworking()
 	defer gock.DisableNetworkingFilters()
 
@@ -1146,36 +1145,42 @@ func TestNetwork_ForwardServerSideFail(t *testing.T) {
 
 	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
 
-	gock.New("http://google.com").
+	gock.New("http://rpc1.localhost").
 		Post("").
 		Reply(500).
 		JSON(json.RawMessage(`{"error":{"message":"Internal error"}}`))
+
+	gock.New("http://rpc2.localhost").
+		Post("").
+		Reply(200).
+		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc2"}}`))
+
+	log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	clr := upstream.NewClientRegistry()
 	fsCfg := &common.FailsafeConfig{
-		Hedge: &common.HedgePolicyConfig{
-			MaxCount: 2,
-			Delay:    "500ms",
-		},
 		Timeout: &common.TimeoutPolicyConfig{
 			Duration: "5ms",
 		},
+		Retry: &common.RetryPolicyConfig{
+			MaxAttempts: 2,
+		},
 	}
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
-		Buckets: []*common.RateLimitBucketConfig{},
+		Budgets: []*common.RateLimitBudgetConfig{},
 	})
 	if err != nil {
 		t.Error(err)
 	}
-	vndr := vendors.NewVendorsRegistry()
-	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vndr)
-	pup, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
+
+	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vendors.NewVendorsRegistry())
+	pup1, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
-		Id:       "test",
-		Endpoint: "http://google.com",
+		Id:       "rpc1",
+		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId: 123,
 		},
@@ -1183,21 +1188,39 @@ func TestNetwork_ForwardServerSideFail(t *testing.T) {
 	if err != nil {
 		t.Error(err)
 	}
-	cl, err := clr.GetOrCreateClient(pup)
+	cl1, err := clr.GetOrCreateClient(pup1)
 	if err != nil {
 		t.Error(err)
 	}
-	pup.Client = cl
+	pup1.Client = cl1
+
+	pup2, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
+		Type:     common.UpstreamTypeEvm,
+		Id:       "rpc2",
+		Endpoint: "http://rpc2.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId: 123,
+		},
+	}, &log.Logger)
+	if err != nil {
+		t.Error(err)
+	}
+	cl2, err := clr.GetOrCreateClient(pup2)
+	if err != nil {
+		t.Error(err)
+	}
+	pup2.Client = cl2
+
 	ntw, err := NewNetwork(&log.Logger, "prjA", &common.NetworkConfig{
 		Failsafe: fsCfg,
 	}, rlr)
 	if err != nil {
 		t.Error(err)
 	}
-	ntw.Upstreams = []*upstream.Upstream{pup}
+	ntw.Upstreams = []*upstream.Upstream{pup1, pup2}
 
 	fakeReq := upstream.NewNormalizedRequest(requestBytes)
-	_, err = ntw.Forward(ctx, fakeReq)
+	resp, err := ntw.Forward(ctx, fakeReq)
 
 	if len(gock.Pending()) > 0 {
 		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
@@ -1206,14 +1229,19 @@ func TestNetwork_ForwardServerSideFail(t *testing.T) {
 		}
 	}
 
-	if err == nil {
-		t.Errorf("Expected error, got %v", err)
+	if err != nil {
+		t.Errorf("Expected nil error, got %v", err)
 	}
 
-	var e *common.ErrEndpointServerSideException
-	if !errors.As(err, &e) {
-		t.Errorf("Expected %v, got %v", "ErrCodeEndpointServerSideException", err)
-	} else {
-		t.Logf("Got expected error: %v", err)
+	jrr, err := resp.JsonRpcResponse()
+
+	if err != nil {
+		t.Errorf("Expected nil error, got %v", err)
+	}
+	if jrr.Result == nil {
+		t.Errorf("Expected result, got %v", jrr)
+	}
+	if jrr.Result.(map[string]interface{})["fromHost"] != "rpc2" {
+		t.Errorf("Expected fromHost to be %v, got %v", "rpc2", jrr.Result.(map[string]interface{})["fromHost"])
 	}
 }
