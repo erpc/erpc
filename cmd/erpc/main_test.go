@@ -132,11 +132,11 @@ server:
 	}
 }
 
+var gockMutex sync.Mutex // Define a global mutex for gock operations
+
 func TestInit_HappyPath(t *testing.T) {
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
-
-	var gockMutex sync.Mutex // Define a global mutex for gock operations
 
 	gockMutex.Lock() // Lock the mutex before setting up gock
 	defer gockMutex.Unlock()
