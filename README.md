@@ -75,6 +75,10 @@ projects:
         endpoint: alchemy://XXXX_YOUR_ALCHEMY_API_KEY_HERE_XXXX
         rateLimitBudget: global
         healthCheckGroup: default-hcg
+        allowMethods:
+          - "alchemy_*"
+        ignoreMethods:
+          - "trace_transaction"
         failsafe:
           timeout:
             duration: 15s
@@ -91,6 +95,10 @@ projects:
         healthCheckGroup: default-hcg
         evm:
           chainId: 42161
+        allowMethods:
+          - "eth_*"
+        ignoreMethods:
+          - "eth_trace"
         failsafe:
           timeout:
             duration: 15s
