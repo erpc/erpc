@@ -64,7 +64,7 @@
           },
           "expr": "sum(rate(erpc_network_requests_received_total{}[30s])) by (project, network, category)",
           "interval": "",
-          "legendFormat": "{ category: '{{category}}', network: '{{network}}', project: '{{project}}' }",
+          "legendFormat": "{ {{category}}, {{network}}, {{project}} }",
           "refId": "A",
           "editorMode": "code",
           "range": true
@@ -163,7 +163,7 @@
         {
           "expr": "sum(rate(erpc_network_cache_hits_total{}[1m])) by (project, network, category)",
           "interval": "",
-          "legendFormat": "{ category: '{{category}}', network: '{{network}}', project: '{{project}}' }",
+          "legendFormat": "{ {{category}}, {{network}}, {{project}} }",
           "refId": "A"
         }
       ],
@@ -254,7 +254,7 @@
           },
           "expr": "sum(rate(erpc_upstream_request_total{}[1m])) by (project, network, upstream, category)",
           "interval": "",
-          "legendFormat": "{ category: '{{category}}', network: '{{network}}', project: '{{project}}', upstream: '{{upstream}}' }",
+          "legendFormat": "{ {{category}}, {{network}}, {{project}}, {{upstream}} }",
           "refId": "A",
           "editorMode": "code",
           "range": true
@@ -360,7 +360,7 @@
           },
           "expr": "sum(rate(erpc_network_failed_requests_total{}[1m])) by (project, network, upstream, error)",
           "interval": "",
-          "legendFormat": "{ error: '{{error}}', network: '{{network}}', project: '{{project}}' }",
+          "legendFormat": "{ {{error}}, {{network}}, {{project}} }",
           "refId": "A"
         }
       ],
@@ -456,7 +456,7 @@
           },
           "expr": "sum(rate(erpc_upstream_request_errors_total{}[1m])) by (project, network, upstream, error)",
           "interval": "",
-          "legendFormat": "{ error: '{{error}}', network: '{{network}}', project: '{{project}}', upstream: '{{upstream}}' }",
+          "legendFormat": "{ {{error}}, {{network}}, {{project}}, {{upstream}} }",
           "refId": "A"
         }
       ],
