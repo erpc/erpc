@@ -239,7 +239,6 @@ func TestNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 	fakeReq := upstream.NewNormalizedRequest(requestBytes)
 
 	_, err = ntw.Forward(ctx, fakeReq)
-	t.Log("Finished the Forward request")
 
 	if len(gock.Pending()) > 0 {
 		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
@@ -379,7 +378,7 @@ func TestNetwork_ForwardTimeoutPolicyFail(t *testing.T) {
 	clr := upstream.NewClientRegistry()
 	fsCfg := &common.FailsafeConfig{
 		Timeout: &common.TimeoutPolicyConfig{
-			Duration: "30ms",
+			Duration: "5ms",
 		},
 	}
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
