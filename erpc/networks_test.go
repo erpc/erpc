@@ -961,7 +961,6 @@ func TestNetwork_ForwardCBOpensAfterConstantFailure(t *testing.T) {
 		t.Logf("All mocks consumed")
 	}
 }
-
 func TestNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
 	defer gock.Clean()
 	defer gock.DisableNetworking()
