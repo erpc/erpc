@@ -1,7 +1,9 @@
 # eRPC
 
+[![join chat](https://img.shields.io/badge/Telegram-join%20chat-blue)](https://t.me/+eEik0_G1VMhmN2U8)
+
 [![CI status][ci-badge]][ci-url]
-[![Version][version-badge]][version-url]
+[![Telegram chat][tg-badge]][tg-url]
 
 Open-source EVM RPC proxy & cache service built to scale horizontally from small traffic to million RPS across many chains, optimized for read-heavy use-cases such as Indexers, Frontends, MEV bots, etc.
 
@@ -76,10 +78,6 @@ projects:
         endpoint: alchemy://XXXX_YOUR_ALCHEMY_API_KEY_HERE_XXXX
         rateLimitBudget: global
         healthCheckGroup: default-hcg
-        allowMethods:
-          - "alchemy_*"
-        ignoreMethods:
-          - "trace_transaction"
         failsafe:
           timeout:
             duration: 15s
@@ -96,10 +94,6 @@ projects:
         healthCheckGroup: default-hcg
         evm:
           chainId: 42161
-        allowMethods:
-          - "eth_*"
-        ignoreMethods:
-          - "eth_trace"
         failsafe:
           timeout:
             duration: 15s
