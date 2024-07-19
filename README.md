@@ -1,7 +1,5 @@
 # eRPC
 
-[![join chat](https://img.shields.io/badge/Telegram-join%20chat-blue)](https://t.me/+eEik0_G1VMhmN2U8)
-
 [![CI status][ci-badge]][ci-url]
 [![Telegram chat][tg-badge]][tg-url]
 
