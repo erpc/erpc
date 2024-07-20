@@ -1,0 +1,83 @@
+import { Callout } from "nextra/components";
+
+# Database
+
+Long-term storage is optional but used for various purposes such as caching, rate limit persistence, etc.
+
+```yaml filename="erpc.yaml"
+# ...
+database:
+  evmJsonRpcCache: # ...
+```
+
+### `evmJsonRpcCache`
+
+This config defines the destination for caching JSON-RPC cals towards any EVM architecture upstream.
+Caching mechanism is non-blocking on critical path, and is used as best-effort. If the database is not available, the cache set/get will be skipped.
+
+<Callout type="info">
+Make sure the storage requirements meet your usage, for example caching 70m blocks + 10m txs + 10m traces on Arbitrum needs 200GB of storage.
+</Callout>
+
+
+## Drivers
+
+Depending on your use-case you can use different drivers.
+
+### Memory
+
+Mainly useful for local testing or when you don't need to cache too much data.
+
+```yaml filename="erpc.yaml"
+# ...
+database:
+  evmJsonRpcCache:
+    driver: memory
+    maxItems: 10000
+```
+
+### Redis
+
+Redis is useful when you need to store cached data temporarily with eviction policy (e.g. certain amount of memory).
+
+### PostgreSQL
+
+Useful when you need to store cached data permanently without TTL i.e. forever.
+
+<Callout type="info">
+You don't need to create the table, the driver will automatically create the table and requried indexes.
+</Callout>
+
+```yaml filename="erpc.yaml"
+# ...
+database:
+  evmJsonRpcCache:
+    driver: postgresql
+    postgresql:
+      connectionUri: >-
+        postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name
+      table: rpc_cache
+# ...
+```
+
+### DynamoDB
+
+When you need to have scalable (compared to Postgres) permanent caching and are happy with the costs.
+
+```yaml filename="erpc.yaml"
+# ...
+database:
+  evmJsonRpcCache:
+    driver: dynamodb
+    dynamodb:
+      table: rpc_cache
+      region: eu-west-1
+      endpoint: https://dynamodb.eu-west-1.amazonaws.com # Optional
+      # Auth is optional if you are running within AWS.
+      auth:
+        mode: secret # file, or env
+        accessKeyId: YOUR_ACCESS_KEY_ID # Only if mode is secret
+        secretAccessKey: YOUR_SECRET_ACCESS_KEY # Only if mode is secret
+        profile: xxxxx # Only if mode is file
+        credentialsFile: xxxx # Only if mode is file
+```

@@ -1,0 +1,11 @@
+module.exports = {
+	"url": {
+		title: "URL",
+	},
+	"production": {
+		title: "Production checklist",
+	},
+	monitoring: {
+		title: "Monitoring",
+	}
+};

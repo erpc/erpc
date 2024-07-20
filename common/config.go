@@ -93,11 +93,11 @@ type UpstreamConfig struct {
 }
 
 type EvmUpstreamConfig struct {
-	ChainId       int         `yaml:"chainId"`
-	NodeType      EvmNodeType `yaml:"nodeType"`
-	Engine        string      `yaml:"engine"`
-	MaxBlockRange int         `yaml:"maxBlockRange"`
-	Syncing       bool        `yaml:"syncing"`
+	ChainId              int         `yaml:"chainId"`
+	NodeType             EvmNodeType `yaml:"nodeType"`
+	Engine               string      `yaml:"engine"`
+	GetLogsMaxBlockRange int         `yaml:"getLogsMaxBlockRange"`
+	Syncing              bool        `yaml:"syncing"`
 }
 
 type FailsafeConfig struct {

@@ -40,7 +40,7 @@ spec:
         volumeMounts:
           - name: config-volume
             mountPath: /root/erpc.yaml
-            subPath: erpc.yml
+            subPath: erpc.yaml
       volumes:
       - name: config-volume
         configMap:
@@ -52,7 +52,7 @@ metadata:
   name: erpc-config
   namespace: erpc
 data:
-  erpc.yml: |
+  erpc.yaml: |
     logLevel: DEBUG
     database:
       evmJsonRpcCache:

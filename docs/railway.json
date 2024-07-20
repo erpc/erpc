@@ -1,0 +1,9 @@
+{
+    "build": {
+        "context": ".",
+        "dockerfile": "./Dockerfile"
+    },
+    "deploy": {
+        "startCommand": "pnpm start"
+    }
+}
