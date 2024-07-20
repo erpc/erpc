@@ -1242,3 +1242,242 @@ func TestNetwork_ForwardEndpointServerSideExceptionSuccess(t *testing.T) {
 		t.Errorf("Expected fromHost to be %v, got %v", "rpc2", jrr.Result.(map[string]interface{})["fromHost"])
 	}
 }
+
+func TestNetwork_ForwardEthGetLogsEmptyArrayResponseSuccess(t *testing.T) {
+	defer gock.Clean()
+	defer gock.DisableNetworking()
+	defer gock.DisableNetworkingFilters()
+
+	gock.EnableNetworking()
+
+	// Register a networking filter
+	gock.NetworkingFilter(func(req *http.Request) bool {
+		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
+		return shouldMakeRealCall
+	})
+
+	var requestBytes = json.RawMessage(`{"jsonrpc": "2.0","method": "eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
+
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Reply(200).
+		JSON(json.RawMessage(`{"result":[]`))
+
+	gock.New("http://rpc2.localhost").
+		Post("").
+		Reply(200).
+		JSON(json.RawMessage(`{"result":[{"address": "0x1234567890abcdef1234567890abcdef12345678","blockHash":"0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef","blockNumber": "0x1","data": "0x","logIndex": "0x0","removed": false,"topics": ["0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"],"transactionHash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef","transactionIndex": "0x0","fromHost": "rpc2"}]}`))
+
+	log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	clr := upstream.NewClientRegistry()
+	fsCfg := &common.FailsafeConfig{
+		Retry: &common.RetryPolicyConfig{
+			MaxAttempts: 2,
+		},
+	}
+	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		Budgets: []*common.RateLimitBudgetConfig{},
+	})
+	if err != nil {
+		t.Error(err)
+	}
+
+	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vendors.NewVendorsRegistry())
+	pup1, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
+		Type:     common.UpstreamTypeEvm,
+		Id:       "rpc1",
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId: 123,
+		},
+	}, &log.Logger)
+	if err != nil {
+		t.Error(err)
+	}
+	cl1, err := clr.GetOrCreateClient(pup1)
+	if err != nil {
+		t.Error(err)
+	}
+	pup1.Client = cl1
+
+	pup2, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
+		Type:     common.UpstreamTypeEvm,
+		Id:       "rpc2",
+		Endpoint: "http://rpc2.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId: 123,
+		},
+	}, &log.Logger)
+	if err != nil {
+		t.Error(err)
+	}
+	cl2, err := clr.GetOrCreateClient(pup2)
+	if err != nil {
+		t.Error(err)
+	}
+	pup2.Client = cl2
+
+	ntw, err := NewNetwork(&log.Logger, "prjA", &common.NetworkConfig{
+		Failsafe: fsCfg,
+	}, rlr)
+	if err != nil {
+		t.Error(err)
+	}
+	ntw.Upstreams = []*upstream.Upstream{pup1, pup2}
+
+	fakeReq := upstream.NewNormalizedRequest(requestBytes)
+	resp, err := ntw.Forward(ctx, fakeReq)
+
+	if len(gock.Pending()) > 0 {
+		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
+		for _, pending := range gock.Pending() {
+			t.Errorf("Pending mock: %v", pending)
+		}
+	}
+
+	if err != nil {
+		t.Errorf("Expected nil error, got %v", err)
+	}
+
+	jrr, err := resp.JsonRpcResponse()
+
+	if err != nil {
+		t.Errorf("Expected nil error, got %v", err)
+	}
+	if jrr.Result == nil {
+		t.Errorf("Expected result, got %v", jrr)
+	}
+	jrrResult, ok := jrr.Result.([]interface{})
+	if !ok {
+		t.Errorf("Expected result to be an array, got %T", jrr.Result)
+		return
+	}
+
+	if len(jrrResult) == 0 {
+		t.Errorf("Expected non-empty result array, got %v", jrrResult)
+		return
+	}
+
+	firstLog, ok := jrrResult[0].(map[string]interface{})
+	if !ok {
+		t.Errorf("Expected first log to be a map, got %T", jrrResult[0])
+		return
+	}
+
+	fromHost, ok := firstLog["fromHost"]
+	if !ok {
+		t.Errorf("Expected fromHost field in the first log, got %v", firstLog)
+		return
+	}
+
+	if fromHost != "rpc2" {
+		t.Errorf("Expected fromHost to be %v, got %v", "rpc2", fromHost)
+	}
+}
+
+func TestNetwork_ForwardEthGetLogsEmptyArrayResponseFailure(t *testing.T) {
+	defer gock.Clean()
+	defer gock.DisableNetworking()
+	defer gock.DisableNetworkingFilters()
+
+	gock.EnableNetworking()
+
+	// Register a networking filter
+	gock.NetworkingFilter(func(req *http.Request) bool {
+		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
+		return shouldMakeRealCall
+	})
+
+	var requestBytes = json.RawMessage(`{"jsonrpc": "2.0","method": "eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
+
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Reply(200).
+		JSON(json.RawMessage(`{"result":[]`))
+
+	gock.New("http://rpc2.localhost").
+		Post("").
+		Reply(200).
+		JSON(json.RawMessage(`{"result":[]`))
+
+	log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	clr := upstream.NewClientRegistry()
+	fsCfg := &common.FailsafeConfig{
+		Retry: &common.RetryPolicyConfig{
+			MaxAttempts: 2,
+		},
+	}
+	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		Budgets: []*common.RateLimitBudgetConfig{},
+	})
+	if err != nil {
+		t.Error(err)
+	}
+
+	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vendors.NewVendorsRegistry())
+	pup1, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
+		Type:     common.UpstreamTypeEvm,
+		Id:       "rpc1",
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId: 123,
+		},
+	}, &log.Logger)
+	if err != nil {
+		t.Error(err)
+	}
+	cl1, err := clr.GetOrCreateClient(pup1)
+	if err != nil {
+		t.Error(err)
+	}
+	pup1.Client = cl1
+
+	pup2, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
+		Type:     common.UpstreamTypeEvm,
+		Id:       "rpc2",
+		Endpoint: "http://rpc2.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId: 123,
+		},
+	}, &log.Logger)
+	if err != nil {
+		t.Error(err)
+	}
+	cl2, err := clr.GetOrCreateClient(pup2)
+	if err != nil {
+		t.Error(err)
+	}
+	pup2.Client = cl2
+
+	ntw, err := NewNetwork(&log.Logger, "prjA", &common.NetworkConfig{
+		Failsafe: fsCfg,
+	}, rlr)
+	if err != nil {
+		t.Error(err)
+	}
+	ntw.Upstreams = []*upstream.Upstream{pup1, pup2}
+
+	fakeReq := upstream.NewNormalizedRequest(requestBytes)
+	_, err = ntw.Forward(ctx, fakeReq)
+
+	if len(gock.Pending()) > 0 {
+		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
+		for _, pending := range gock.Pending() {
+			t.Errorf("Pending mock: %v", pending)
+		}
+	}
+
+	if err == nil {
+		t.Errorf("Expected an error, got nil")
+	} else if !strings.Contains(err.Error(), "ErrFailsafeRetryExceeded") {
+		t.Errorf("Expected %v, got %v", "ErrFailsafeRetryExceeded", err)
+	}
+}
