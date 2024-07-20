@@ -1,0 +1,207 @@
+# Complete config example
+
+This example config demonstrates all features of eRPC in one place. For more explanation of each section, refer to dedicated pages:
+
+
+- [Database](/config/database): to configure caching and database.
+- [Projects](/config/projects): to define multiple projects with different rate limit budgets.
+- [Networks](/config/projects/networks): to configure failsafe policies for each network.
+- [Upstreams](/config/projects/upstreams): to configure upstreams with failsafe policies, rate limiters, allowed/rejected methods, etc.
+- [Rate limiters](/config/rate-limiters): to configure various self-imposed budgets to prevent pressure on upstreams.
+- [Health checks](/config/health-checks): to configure health checks about what marks an upstream as unhealthy.
+- [Failsafe](/config/failsafe): explains different policies such as retry, timeout, and hedges, used for networks and upstreams.
+
+
+### `erpc.yaml`
+
+By default `erpc` binary will look for `./erpc.yaml` file in the current directory. You can change this path by passing an argument to the binary:
+```bash
+$ erpc /path/to/your/erpc.yaml
+```
+
+```yaml filename="erpc.yaml"
+# Log level helps in debugging or error detection:
+# - debug: information down to actual request and responses, and decisions about rate-liming etc.
+# - info: usually prints happy paths and might print 1 log per request indicating of success or failure.
+# - warn: these problems do not cause end-user problems, but might indicate degredataion or an issue such as cache databse being down.
+# - error: these are problems that have end-user impact, such as misconfigurations.
+logLevel: warn
+
+# There are various uses of database in erpc, such as caching, dynamic configs, rate limit persistence, etc.
+database:
+  # `evmJsonRpcCache` defines the destination for caching JSON-RPC cals towards any EVM architecture upstream.
+  # This database is non-blocking on critical path, and is used as best-effort.
+  # Make sure the storage requirements meet your usage, for example caching 70m blocks + 10m txs + 10m traces on Arbitrum needs 200GB of storage.
+  evmJsonRpcCache:
+    # Refer to "Database" section for more details.
+    # Note that table, schema and indexes will be created automatically if they don't exist.
+    driver: postgresql
+    postgresql:
+      connectionUri: >-
+        postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name
+      table: rpc_cache
+
+# The main server for eRPC to listen for requests.
+server:
+  httpHost: 0.0.0.0
+  httpPort: 4000
+
+# Optional Prometheus metrics server.
+metrics:
+  enabled: true
+  host: 0.0.0.0
+  port: 4001
+
+# Each project is a collection of networks and upstreams.
+# For example "backend", "indexer", "frontend", and you want to use only 1 project you can name it "main"
+# The main purpose of multiple projects is different failsafe policies (more aggressive and costly, or less costly and more error-prone)
+projects:
+  - id: main
+
+    # This array configures network-specific (a.k.a chain-specific) features.
+    # For each network "architecture" and corresponding network id (e.g. evm.chainId) is required.
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+        # Refer to "Failsafe" section for more details.
+        # On network-level "timeout" is applied for the whole lifecycle of the request (including however many retries)
+        failsafe:
+          timeout:
+            duration: 30s
+          retry:
+            maxCount: 3
+            delay: 500ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 500ms
+          # Defining a "hedge" is highly-recommended on network-level because if upstream A is being slow for
+          # a specific request, it can start a new parallel hedged request to upstream B, for whichever responds faster.
+          hedge:
+            delay: 3000ms
+            maxCount: 2
+          circuitBreaker:
+            failureThresholdCount: 30
+            failureThresholdCapacity: 100
+            halfOpenAfter: 60s
+            successThresholdCount: 8
+            successThresholdCapacity: 10
+      - architecture: evm
+        evm:
+          chainId: 42161
+        failsafe:
+          timeout:
+            duration: 30s
+          retry:
+            maxCount: 5
+            delay: 500ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 200ms
+          hedge:
+            delay: 1000ms
+            maxCount: 2
+
+    # Each upstream supports 1 or more networks (chains)
+    upstreams:
+      - id: blastapi-chain-42161
+        type: evm
+        endpoint: https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
+        # Defines which budget to use when hadnling requests of this upstream.
+        rateLimitBudget: global-blast
+        # chainId is optional and will be detected from the endpoint (eth_chainId) but it is recommended to set it explicitly, for faster initialization.
+        evm:
+          chainId: 42161
+        # Which methods are allowed to be called on this upstream:
+        allowedMethods:
+        - 'alchemy_*'
+        # Which methods must never be sent to this upstream:
+        ignoredMethods:
+        - 'eth_traceTransaction'
+        # Refer to "Failsafe" section for more details:
+        failsafe:
+          timeout:
+            duration: 15s
+          retry:
+            maxCount: 2
+            delay: 1000ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 500ms
+      - id: blastapi-chain-1
+        type: evm
+        endpoint: https://eth-mainnet.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
+        rateLimitBudget: global-blast
+        evm:
+          chainId: 1
+        failsafe:
+          timeout:
+            duration: 15s
+          retry:
+            maxCount: 2
+            delay: 1000ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 500ms
+      - id: quiknode-chain-42161
+        type: evm
+        endpoint: https://xxxxxx-xxxxxx.arbitrum-mainnet.quiknode.pro/xxxxxxxxxxxxxxxxxxxxxxxx/
+        rateLimitBudget: global-quicknode
+        evm:
+          chainId: 42161
+        failsafe:
+          timeout:
+            duration: 15s
+          retry:
+            maxCount: 2
+            delay: 1000ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 500ms
+
+        # "id" is a unique identifier to distinguish in logs and metrics.
+      - id: alchemy-multi-chain-example
+        # For certain known providers (such as Alchemy) you use a custom protocol name
+        # which allows to single upstream to import "all chains" supported by that provider.
+        # Note that these chains are hard-coded in the repo, so if they support a new chain eRPC must be updated.
+        endpoint: alchemy://XXXX_YOUR_ALCHEMY_API_KEY_HERE_XXXX
+        rateLimitBudget: global
+        failsafe:
+          timeout:
+            duration: 15s
+          retry:
+            maxCount: 2
+            delay: 1000ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 500ms
+
+# Rate limiter allows you to create "shared" budgets for upstreams.
+# For example upstream A and B can use the same budget, which means both of them together must not exceed the defined limits.
+rateLimiters:
+  budgets:
+    - id: default-budget
+      rules:
+        - method: '*'
+          maxCount: 10000
+          period: 1s
+    - id: global-blast
+      rules:
+        - method: '*'
+          maxCount: 1000
+          period: 1s
+    - id: global-quicknode
+      rules:
+        - method: '*'
+          maxCount: 300
+          period: 1s
+
+```
+
+#### Roadmap
+
+On some doc pages we like to share our ideas for related future implementations, feel free to open a PR if you're up for a challenge:
+<br />
+- [ ] Support a Typescript-based config to allow injecting env variables and code reusability.
+- [ ] More advanced validation for the values to prevent user errors.
+- [ ] Add healthcheck configuration for error rate, and max allowed blocked behind allowed for evm upstreams.

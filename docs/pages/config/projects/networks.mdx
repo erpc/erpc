@@ -1,0 +1,65 @@
+import { Callout } from 'nextra/components'
+
+# Networks
+
+A network represents a chain in EVM, and it is a local grouping for upstreams.
+
+<Callout type='info'>
+  [Upstreams](/config/projects/upstreams) are configured separately, and on the first request to a network, the eRPC will automatically find any upstream that support that network.
+</Callout>
+
+You can configure failover behavior per network as follows:
+
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+
+    # This array configures network-specific (a.k.a chain-specific) features.
+    # For each network "architecture" and corresponding network id (e.g. evm.chainId) is required.
+    networks:
+      - architecture: evm
+        # When "evm" is used, "chainId" is required, so that rate limit budget or failsafe policies are properly applied.
+        evm:
+          chainId: 1
+
+        # A network-level rate limit budget applied to all requests despite upstreams own rate-limits.
+        # For example even if upstreams can handle 1000 RPS, and network-level is limited to 100 RPS,
+        # the request will be rate-limited to 100 RPS.
+        rateLimitBudget: my-limiter-budget
+
+        # Refer to "Failsafe" section for more details.
+        failsafe:
+          timeout:
+            # On network-level "timeout" is applied for the whole lifecycle of the request (including however many retries happens on upstream)
+            duration: 30s
+          retry:
+            # It is recommended to set a retry policy on network-level to make sure if one upstream is rate-limited,
+            # the request will be retried on another upstream.
+            maxCount: 3
+            delay: 500ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 500ms
+          # Defining a "hedge" is highly-recommended on network-level because if upstream A is being slow for
+          # a specific request, it can start a new parallel hedged request to upstream B, for whichever responds faster.
+          hedge:
+            delay: 3000ms
+            maxCount: 2
+    
+    upstreams:
+    # Refer to "Upstreams" section to learn how to configure upstreams.
+    # ...
+# ...
+```
+
+### Architectures
+
+#### `evm`
+
+This type of network are generic EVM-based chains that support JSON-RPC protocol.
+
+#### Roadmap
+
+On some doc pages we like to share our ideas for related future implementations, feel free to open a PR if you're up for a challenge:
+<br />
+- [ ] Add support for more architectures (Solana, etc)
