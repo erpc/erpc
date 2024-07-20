@@ -29,6 +29,7 @@ func (v *LlamaVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr inter
 	code := err.OriginalCode()
 	msg := err.Message
 
+	// TODO make sure for un-paresable responses the body text is used in err.Message
 	if code == 0 && strings.Contains(msg, "error code: 1015") {
 		return common.NewErrEndpointUnauthorized(
 			common.NewErrJsonRpcException(code, common.JsonRpcErrorCapacityExceeded, msg, nil),
