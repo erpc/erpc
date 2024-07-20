@@ -1,0 +1,46 @@
+# Rate limiters
+
+To add self-imposed rate limits when sending requests to upstreams (RPS, Monthly, etc) you can define one or more rate limiter budgets.
+
+A "budget" can be assigned to one or more upstreams, and those upstreams will share the usage of the budget.
+
+### Config
+
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - id: blastapi-chain-42161
+        type: evm
+        endpoint: https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
+        rateLimitBudget: global-blast
+        # ...
+      - id: blastapi-chain-1
+        type: evm
+        endpoint: https://eth-mainnet.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
+        rateLimitBudget: global-blast
+        # ...
+      - id: quiknode-chain-42161
+        type: evm
+        endpoint: https://xxxxxx-xxxxxx.arbitrum-mainnet.quiknode.pro/xxxxxxxxxxxxxxxxxxxxxxxx/
+        rateLimitBudget: global-quicknode
+        # ...
+
+# Rate limiter allows you to create "shared" budgets for upstreams.
+# For example upstream A and B can use the same budget, which means both of them together must not exceed the defined limits.
+rateLimiters:
+  budgets:
+    - id: global-blast
+      rules:
+        # You can limit which methods apply to this rule e.g. eth_getLogs or eth_* or * (all methods).
+        - method: '*'
+          maxCount: 1000
+          period: 1s
+    - id: global-quicknode
+      rules:
+        - method: '*'
+          maxCount: 300
+          period: 1s
+```

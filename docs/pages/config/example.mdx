@@ -1,13 +1,16 @@
 # Complete config example
 
 This example config demonstrates all features of eRPC in one place. For more explanation of each section, refer to dedicated pages:
+
+
 - [Database](/config/database): to configure caching and database.
-  - [Projects](/config/projects): to define multiple projects with different rate limit budgets.
-  - [Networks](/config/projects/networks): to configure failsafe policies for each network.
+- [Projects](/config/projects): to define multiple projects with different rate limit budgets.
+- [Networks](/config/projects/networks): to configure failsafe policies for each network.
 - [Upstreams](/config/projects/upstreams): to configure upstreams with failsafe policies, rate limiters, allowed/rejected methods, etc.
 - [Rate limiters](/config/rate-limiters): to configure various self-imposed budgets to prevent pressure on upstreams.
 - [Health checks](/config/health-checks): to configure health checks about what marks an upstream as unhealthy.
 - [Failsafe](/config/failsafe): explains different policies such as retry, timeout, and hedges, used for networks and upstreams.
+
 
 ### `erpc.yaml`
 
@@ -77,6 +80,12 @@ projects:
           hedge:
             delay: 3000ms
             maxCount: 2
+          circuitBreaker:
+            failureThresholdCount: 30
+            failureThresholdCapacity: 100
+            halfOpenAfter: 60s
+            successThresholdCount: 8
+            successThresholdCapacity: 10
       - architecture: evm
         evm:
           chainId: 42161
@@ -100,8 +109,6 @@ projects:
         endpoint: https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
         # Defines which budget to use when hadnling requests of this upstream.
         rateLimitBudget: global-blast
-        # Defines which health check group config to use to decide this upstream is unhealthy.
-        healthCheckGroup: default-hcg
         # chainId is optional and will be detected from the endpoint (eth_chainId) but it is recommended to set it explicitly, for faster initialization.
         evm:
           chainId: 42161
@@ -125,7 +132,6 @@ projects:
         type: evm
         endpoint: https://eth-mainnet.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
         rateLimitBudget: global-blast
-        healthCheckGroup: default-hcg
         evm:
           chainId: 1
         failsafe:
@@ -141,7 +147,6 @@ projects:
         type: evm
         endpoint: https://xxxxxx-xxxxxx.arbitrum-mainnet.quiknode.pro/xxxxxxxxxxxxxxxxxxxxxxxx/
         rateLimitBudget: global-quicknode
-        healthCheckGroup: default-hcg
         evm:
           chainId: 42161
         failsafe:
@@ -161,7 +166,6 @@ projects:
         # Note that these chains are hard-coded in the repo, so if they support a new chain eRPC must be updated.
         endpoint: alchemy://XXXX_YOUR_ALCHEMY_API_KEY_HERE_XXXX
         rateLimitBudget: global
-        healthCheckGroup: default-hcg
         failsafe:
           timeout:
             duration: 15s
@@ -192,15 +196,6 @@ rateLimiters:
           maxCount: 300
           period: 1s
 
-# Health check groups define when to mark an upstream as unhealthy.
-# You can define multiple groups and use them for 1 or more upstreams.
-healthChecks:
-  groups:
-    - id: default-hcg
-      checkInterval: 30s
-      maxErrorRatePercent: 10
-      maxP90LatencyMs: 5s
-      maxBlocksBehind: 5
 ```
 
 #### Roadmap
@@ -209,3 +204,4 @@ On some doc pages we like to share our ideas for related future implementations,
 <br />
 - [ ] Support a Typescript-based config to allow injecting env variables and code reusability.
 - [ ] More advanced validation for the values to prevent user errors.
+- [ ] Add healthcheck configuration for error rate, and max allowed blocked behind allowed for evm upstreams.

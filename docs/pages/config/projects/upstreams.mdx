@@ -4,15 +4,102 @@ import { Callout } from 'nextra/components'
 
 An upstream is defined to handle 1 or more networks (a.k.a. chains). There are currently these types are upstreams:
 
-- [`evm`](#evm) A generic EVM-compatible JSON-RPC endpoint. This is the deault and most-used type.
+- [`evm`](#evm) A generic EVM-compatible JSON-RPC endpoint. This is the default and most-used type.
 - [`evm-alchemy`](#alchemy) A special upstream type that accepts Alchemy API-KEY and automatically adds all their EVM chains.
-- [`erpc`](#erpc) A special upstream type that is another remote eRPC instance.
 
-
-## `evm` Upstreams
-
-These are generic well-known EVM-compatible JSON-RPC endpoints. This is the deault and most-used type. They can be your own self-hosted nodes, or remote 3rd-party provider nodes.
+## Config
 
 ```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
 
+    # Each upstream supports 1 or more networks (i.e. evm chains)
+    upstreams:
+      - id: blastapi-chain-42161
+        type: evm
+        endpoint: https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
+
+        # Defines which budget to use when hadnling requests of this upstream (e.g. to limit total RPS)
+        # Since budgets can be applied to multiple upstreams they all consume from the same budget.
+        # For example "global-blast" below can be applied to all chains supported by BlastAPI,
+        # to ensure you're not hitting them more than your account allows.
+        rateLimitBudget: global-blast
+
+        # Defines which health check group config to use to decide this upstream is unhealthy.
+        healthCheckGroup: default-hcg
+        
+        # chainId is optional and will be detected from the endpoint (eth_chainId),
+        # but it is recommended to set it explicitly, for faster initialization.
+        evm:
+          chainId: 42161
+
+        # Which methods are allowed to be called on this upstream.
+        # If this is empty, all methods are allowed.
+        allowedMethods:
+        - 'eth_getBlockNumber'
+        # Which methods must never be sent to this upstream.
+        # For example this can be used to avoid archive calls (traces) to full nodes
+        ignoredMethods:
+        - 'eth_traceTransaction'
+        - 'alchemy_*'
+        
+        # Refer to "Failsafe" section for more details:
+        failsafe:
+          timeout:
+            duration: 15s
+          retry:
+            maxCount: 2
+            delay: 1000ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 500ms
 ```
+
+## Upstream Types
+
+### `evm` JSON-RPC 
+
+These are generic well-known EVM-compatible JSON-RPC endpoints. This is the default and most-used type. They can be your own self-hosted nodes, or remote 3rd-party provider nodes.
+
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - id: my-infura
+        type: evm
+        endpoint: https://mainnet.infura.io/v3/YOUR_INFURA_KEY
+        evm:
+            chainId: 1 # Optional. If this is not set it'll be detected from the endpoint (eth_chainId)
+            nodeType: full # Optional. Can be "full" or "archive"
+        # ...
+```
+
+### `evm-alchemy` JSON-RPC 
+
+This upstream type is built specially for [Alchemy](https://alchemy.com) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
+
+
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - id: my-alchemy
+        type: evm-alchemy # Optional. It will automatically detect this if the endpoint starts with "evm-alchemy://"
+        endpoint: evm-alchemy://YOUR_ALCHEMY_API_KEY
+        # ...
+```
+
+#### Roadmap
+
+On some doc pages we like to share our ideas for related future implementations, feel free to open a PR if you're up for a challenge:
+<br />
+- [ ] Add a "exclusiveMethods" to make it easier to configure which upstreams are only ones supporting certain methods (e.g. alchemy_*)
+- [ ] Automatically detect type of EVM nodes (full, archive) and engines (erigon, geth, etc)
+- [ ] Implement the logic for "getLogsMaxBlockRange" to split multiple requests when the block range is too high.
+- [ ] Add more special types for well-known vendors (BlastAPI, Ankr, LlamaRPC, etc) for easier multi-chain support.

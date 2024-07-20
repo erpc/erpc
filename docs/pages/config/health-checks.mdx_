@@ -1,0 +1,42 @@
+import { Callout } from 'nextra/components'
+
+# Health checks
+
+You can define one or more health check groups, to use for one or more upstreams. When any of the defined health checks fail, the upstream will be marked as unhealthy and removed from the available list.
+
+<Callout type="info">
+  When used on "evm" upstreams, the lastest block is fetched from most up-to-date upstream.
+</Callout>
+
+## Config
+
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - id: blastapi-chain-42161
+        # ...
+        healthCheckGroup: default-hcg
+
+# Health check groups define when to mark an upstream as unhealthy.
+# You can define multiple groups and use them for 1 or more upstreams.
+healthChecks:
+  groups:
+    - id: default-hcg
+      # How often to recalculate the health status of the upstreams.
+      checkInterval: 30s
+      # The maximum allowed error rate for assigned upstream.
+      maxErrorRatePercent: 10
+      # The maximum allowed P90 latency for assigned upstreams.
+      maxP90LatencyMs: 5s
+      # The maximum allowed blocks behind for assigned upstreams.
+      maxBlocksBehind: 5
+```
+
+#### Roadmap
+
+On some doc pages we like to share our ideas for related future implementations, feel free to open a PR if you're up for a challenge:
+<br />
+- [ ] 
