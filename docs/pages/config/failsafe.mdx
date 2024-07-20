@@ -1,4 +1,4 @@
-import { Callout } from 'nextra/components'
+import { Callout } from "nextra/components";
 
 # Failsafe
 
@@ -42,7 +42,7 @@ projects:
 
 ## `retry` policy
 
-This policies will retry certain retryable failures, either on network-level and/or upstream-level.
+This policies will retry certain retriable failures, either on network-level and/or upstream-level.
 
 ```yaml filename="erpc.yaml"
 # ...
@@ -68,7 +68,7 @@ projects:
             # Random jitter to avoid thundering herd,
             # e.g. add between 0 to 500ms to each retry delay:
             jitter: 500ms
-      
+
     upstreams:
       - id: blastapi-chain-42161
         # ...
@@ -86,22 +86,25 @@ projects:
 ```
 
 These errors will be retried:
+
 - `5xx` and generally any error that indicate server-side (intermittent) issues.
 - `408` which means request timeout.
 - `429` which means rate limit exceeded, therefore retrying after few moments.
 - `EmptyResponse` for certain methods (e.g. eth_getLogs) if upstream A returns empty array, it could be due to lag in node syncing, so upstream B will be retried.
 
 These errors will not be retried:
+
 - `4xx` and generally any error that indicate client-side issues (invalid request, invalid parameters, etc).
 - `UnsupportedMethods` which means upstream does not support certain methods (e.g. eth_traceTransaction)
 
 ## `hedge` policy
 
-When a request towards an upstream is slow, the `hedge` policy will start a new simultaneous request towards the next upstream. 
+When a request towards an upstream is slow, the `hedge` policy will start a new simultaneous request towards the next upstream.
 
 <Callout type="info">
-  This policy is highly recommended to be set at least on network-level. It will ensure if upstream A is slow,
-  a new request towards upstream B will be started, whichever responds faster will be returned to the client.
+  This policy is highly recommended to be set at least on network-level. It will
+  ensure if upstream A is slow, a new request towards upstream B will be
+  started, whichever responds faster will be returned to the client.
 </Callout>
 
 ```yaml filename="erpc.yaml"
@@ -131,8 +134,8 @@ projects:
 When upstreams are constantly failing, the `circuitBreaker` policy will temporarily remove them from list of available upstreams.
 
 <Callout type="info">
-  This policy is recommended to be set on upstream-level. This will make sure temporarily broken upstreams
-  are not used, and will give them time to recover.
+  This policy is recommended to be set on upstream-level. This will make sure
+  temporarily broken upstreams are not used, and will give them time to recover.
 </Callout>
 
 ```yaml filename="erpc.yaml"
@@ -159,5 +162,6 @@ projects:
 #### Roadmap
 
 On some doc pages we like to share our ideas for related future implementations, feel free to open a PR if you're up for a challenge:
-<br />
-- [ ] Allow defining failsafe policies on a per-method basis (e.g. different behavior for eth_getLogs vs other methods).
+
+<br />- [ ] Allow defining failsafe policies on a per-method basis (e.g. different
+behavior for eth_getLogs vs other methods).
