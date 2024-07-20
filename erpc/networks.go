@@ -149,7 +149,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 			lg.Info().Object("req", req).Err(err).Msgf("response served from cache")
 			health.MetricNetworkCacheHits.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 			inf.resp = resp
-			close(inf.done)
+			close(inf.done) // Ensure done is closed
 			return resp, err
 		}
 	}
@@ -157,7 +157,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 	// 3) Apply rate limits
 	if err := n.acquireRateLimitPermit(req); err != nil {
 		inf.err = err
-		close(inf.done)
+		close(inf.done) // Ensure done is closed
 		return nil, err
 	}
 
@@ -186,9 +186,16 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 	resp, execErr := n.failsafeExecutor.
 		WithContext(ctx).
 		GetWithExecution(func(exec failsafe.Execution[common.NormalizedResponse]) (common.NormalizedResponse, error) {
+			lg.Debug().Msg("Entered GetWithExecution")
+
 			n.upstreamsMutex.RLock()
 			upsList := n.Upstreams
 			n.upstreamsMutex.RUnlock()
+
+			if upsList == nil {
+				lg.Error().Msg("upsList is nil")
+				return nil, errors.New("upsList is nil")
+			}
 
 			isHedge := exec.Hedges() > 0
 
@@ -255,12 +262,12 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 	if execErr != nil {
 		err := upstream.TranslateFailsafeError(execErr)
 		inf.err = err
-		close(inf.done)
+		close(inf.done) // Ensure done is closed
 		return nil, err
 	}
 
 	inf.resp = resp
-	close(inf.done)
+	close(inf.done) // Ensure done is closed
 	return resp, nil
 }
 

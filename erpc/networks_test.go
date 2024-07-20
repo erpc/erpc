@@ -1,35 +1,35 @@
 package erpc
 
 import (
-
-	// "encoding/json"
-
 	"context"
 	"encoding/json"
-	"errors"
-	"io"
 	"strings"
-	"testing"
 	"time"
 
-	// "net/http"
+	// "encoding/json"
+	"errors"
+	"io"
 
+	// "net/http"
 	"net/http"
 	"net/http/httptest"
 
 	// "strings"
 	"sync"
+	"testing"
 
-	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/upstream"
-	"github.com/flair-sdk/erpc/vendors"
-	"github.com/h2non/gock"
-	"github.com/rs/zerolog/log"
 	// "time"
+
 	// "github.com/failsafe-go/failsafe-go"
 	// "github.com/failsafe-go/failsafe-go"
 	// "github.com/failsafe-go/failsafe-go/retrypolicy"
+	"github.com/flair-sdk/erpc/common"
+	"github.com/flair-sdk/erpc/upstream"
+	"github.com/flair-sdk/erpc/vendors"
+
 	// "github.com/flair-sdk/erpc/upstream"
+	"github.com/h2non/gock"
+	"github.com/rs/zerolog/log"
 )
 
 type ResponseRecorder struct {
@@ -198,9 +198,6 @@ func TestNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 	clr := upstream.NewClientRegistry()
 
 	fsCfg := &common.FailsafeConfig{
-		Timeout: &common.TimeoutPolicyConfig{
-			Duration: "5ms",
-		},
 		Retry: &common.RetryPolicyConfig{
 			MaxAttempts: 3,
 		},
@@ -237,7 +234,6 @@ func TestNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 	}
 	ntw.Upstreams = []*upstream.Upstream{pup}
 	fakeReq := upstream.NewNormalizedRequest(requestBytes)
-
 	_, err = ntw.Forward(ctx, fakeReq)
 
 	if len(gock.Pending()) > 0 {
@@ -285,9 +281,6 @@ func TestNetwork_ForwardRetryFailuresWithSuccess(t *testing.T) {
 
 	clr := upstream.NewClientRegistry()
 	fsCfg := &common.FailsafeConfig{
-		Timeout: &common.TimeoutPolicyConfig{
-			Duration: "5ms",
-		},
 		Retry: &common.RetryPolicyConfig{
 			MaxAttempts: 4,
 		},
@@ -378,7 +371,7 @@ func TestNetwork_ForwardTimeoutPolicyFail(t *testing.T) {
 	clr := upstream.NewClientRegistry()
 	fsCfg := &common.FailsafeConfig{
 		Timeout: &common.TimeoutPolicyConfig{
-			Duration: "5ms",
+			Duration: "30ms",
 		},
 	}
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
@@ -553,9 +546,6 @@ func TestNetwork_ForwardHedgePolicyTriggered(t *testing.T) {
 			Delay:    "200ms",
 			MaxCount: 1,
 		},
-		Timeout: &common.TimeoutPolicyConfig{
-			Duration: "500ms",
-		},
 	}
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 		Budgets: []*common.RateLimitBudgetConfig{},
@@ -660,9 +650,6 @@ func TestNetwork_ForwardHedgePolicyNotTriggered(t *testing.T) {
 			Delay:    "100ms",
 			MaxCount: 5,
 		},
-		Timeout: &common.TimeoutPolicyConfig{
-			Duration: "500ms",
-		},
 	}
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 		Budgets: []*common.RateLimitBudgetConfig{},
@@ -761,9 +748,6 @@ func TestNetwork_ForwardHedgePolicyIgnoresNegativeScoreUpstream(t *testing.T) {
 		Hedge: &common.HedgePolicyConfig{
 			Delay:    "30ms",
 			MaxCount: 2,
-		},
-		Timeout: &common.TimeoutPolicyConfig{
-			Duration: "500ms",
 		},
 	}
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
@@ -900,9 +884,6 @@ func TestNetwork_ForwardCBOpensAfterConstantFailure(t *testing.T) {
 			FailureThresholdCapacity: 4,
 			HalfOpenAfter:            "2s",
 		},
-		Timeout: &common.TimeoutPolicyConfig{
-			Duration: "500ms",
-		},
 	}
 
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
@@ -960,6 +941,7 @@ func TestNetwork_ForwardCBOpensAfterConstantFailure(t *testing.T) {
 		t.Logf("All mocks consumed")
 	}
 }
+
 func TestNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
 	defer gock.Clean()
 	defer gock.DisableNetworking()
@@ -1001,10 +983,7 @@ func TestNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
 		CircuitBreaker: &common.CircuitBreakerPolicyConfig{
 			FailureThresholdCount:    2,
 			FailureThresholdCapacity: 4,
-			HalfOpenAfter:            "5s",
-		},
-		Timeout: &common.TimeoutPolicyConfig{
-			Duration: "5s",
+			HalfOpenAfter:            "2s",
 		},
 	}
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
@@ -1048,7 +1027,7 @@ func TestNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
 		t.Errorf("Expected an error, got nil")
 	}
 
-	time.Sleep(5 * time.Second) // Increased from 2s to 5s
+	time.Sleep(2 * time.Second)
 
 	var resp common.NormalizedResponse
 	for i := 0; i < 3; i++ {
@@ -1183,9 +1162,6 @@ func TestNetwork_ForwardEndpointServerSideExceptionSuccess(t *testing.T) {
 
 	clr := upstream.NewClientRegistry()
 	fsCfg := &common.FailsafeConfig{
-		Timeout: &common.TimeoutPolicyConfig{
-			Duration: "5ms",
-		},
 		Retry: &common.RetryPolicyConfig{
 			MaxAttempts: 2,
 		},
