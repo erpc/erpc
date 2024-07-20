@@ -81,6 +81,10 @@ func (r *NormalizedResponse) IsResultEmptyish() bool {
 		if s, ok := jrr.Result.(string); ok {
 			return s == "" || s == "0x"
 		}
+
+		if arr, ok := jrr.Result.([]interface{}); ok {
+			return len(arr) == 0
+		}
 	}
 
 	return false
