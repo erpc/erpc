@@ -41,11 +41,16 @@ func CreateFailSafePolicies(scope Scope, component string, fsCfg *common.Failsaf
 		if err != nil {
 			return nil, err
 		}
-	}
 
-	// For network-level we want the timeout to apply to the overall lifecycle
-	if scope == ScopeNetwork {
-		policies = append(policies, timeoutPolicy)
+		// For network-level we want the timeout to apply to the overall lifecycle
+		if scope == ScopeNetwork {
+			policies = append(policies, timeoutPolicy)
+		}
+
+		// For upstream-level we want the timeout to apply to each individual request towards upstream
+		if scope == ScopeUpstream {
+			policies = append(policies, timeoutPolicy)
+		}
 	}
 
 	if fsCfg.Retry != nil {
@@ -73,11 +78,6 @@ func CreateFailSafePolicies(scope Scope, component string, fsCfg *common.Failsaf
 			return nil, err
 		}
 		policies = append(policies, p)
-	}
-
-	// For upstream-level we want the timeout to apply to each individual request towards upstream
-	if scope == ScopeUpstream {
-		policies = append(policies, timeoutPolicy)
 	}
 
 	return policies, nil
