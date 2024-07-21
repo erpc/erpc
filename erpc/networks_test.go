@@ -1310,14 +1310,12 @@ func TestNetwork_ForwardEthGetLogsEmptyArrayResponseSuccess(t *testing.T) {
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Reply(200).
-		JSON(json.RawMessage(`{"result":[]}`)).
-		Delay(500 * time.Millisecond)
+		JSON(json.RawMessage(`{"result":[]}`))
 
 	gock.New("http://rpc2.localhost").
 		Post("").
 		Reply(200).
-		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc2"}}`)).
-		Delay(200 * time.Millisecond)
+		JSON(json.RawMessage(`{"result":[{"logIndex":444,"fromHost":"rpc2"}]}`))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1325,9 +1323,8 @@ func TestNetwork_ForwardEthGetLogsEmptyArrayResponseSuccess(t *testing.T) {
 	// Setup test network
 	clr := upstream.NewClientRegistry()
 	fsCfg := &common.FailsafeConfig{
-		Hedge: &common.HedgePolicyConfig{
-			Delay:    "200ms",
-			MaxCount: 1,
+		Retry: &common.RetryPolicyConfig{
+			MaxAttempts: 2,
 		},
 	}
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
@@ -1403,28 +1400,18 @@ func TestNetwork_ForwardEthGetLogsEmptyArrayResponseSuccess(t *testing.T) {
 		t.Fatalf("Expected non-nil result")
 	}
 
-	result, ok := jrr.Result.(map[string]interface{})
+	result, ok := jrr.Result.([]interface{})
 	if !ok {
-		t.Fatalf("Expected Result to be map[string]interface{}, got %T", jrr.Result)
+		t.Fatalf("Expected Result to be []interface{}, got %T", jrr.Result)
 	}
 
-	fromHost, ok := result["fromHost"].(string)
+	fromHost, ok := result[0].(map[string]interface{})["fromHost"].(string)
 	if !ok {
-		t.Fatalf("Expected fromHost to be string, got %T", result["fromHost"])
+		t.Fatalf("Expected fromHost to be string, got %T", result[0].(map[string]interface{})["fromHost"])
 	}
 
 	if fromHost != "rpc2" {
 		t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
-	}
-
-	hash, ok := result["hash"].(string)
-	if !ok {
-		t.Fatalf("Expected hash to be string, got %T", result["hash"])
-	}
-
-	expectedHash := "0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"
-	if hash != expectedHash {
-		t.Errorf("Expected hash to be %q, got %q", expectedHash, hash)
 	}
 }
 

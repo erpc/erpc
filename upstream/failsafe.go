@@ -265,6 +265,9 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 					}
 				}
 			}
+			if rds.RetryEmpty && isEmpty {
+				return true
+			}
 		}
 
 		// X-Empty directive + "empty" response + block is unfinalized -> Retry

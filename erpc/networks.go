@@ -190,18 +190,11 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 	resp, execErr := n.failsafeExecutor.
 		WithContext(ctx).
 		GetWithExecution(func(exec failsafe.Execution[common.NormalizedResponse]) (common.NormalizedResponse, error) {
-			lg.Debug().Msg("Entered GetWithExecution")
-
 			n.upstreamsMutex.RLock()
 			upsList := n.Upstreams
 			n.upstreamsMutex.RUnlock()
 
-			if upsList == nil {
-				lg.Error().Msg("upsList is nil")
-				return nil, errors.New("upsList is nil")
-			}
-
-			isHedge := exec.Hedges() > 0
+			isHedged := exec.Hedges() > 0
 
 			// We should try all upstreams at least once, but using "i" we make sure
 			// across different executions of the failsafe we pick up next upstream vs retrying the same upstream.
@@ -215,7 +208,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 				if i >= ln {
 					i = 0
 				}
-				if isHedge {
+				if isHedged {
 					lg.Debug().
 						Str("upstream", u.Config().Id).
 						Int("index", i).
@@ -237,7 +230,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 					return nil, err
 				}
 
-				if isHedge {
+				if isHedged {
 					lg.Debug().Err(err).Msgf("forwarded hedged request to upstream %s skipped: %v err: %v", u.Config().Id, skipped, err)
 				} else {
 					lg.Debug().Err(err).Msgf("forwarded request to upstream %s skipped: %v err: %v", u.Config().Id, skipped, err)
