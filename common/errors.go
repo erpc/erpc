@@ -894,28 +894,6 @@ const (
 	JsonRpcErrorUnauthorized      JsonRpcErrorNumber = -32016
 )
 
-// var jsonRpcErrorNumberToName = map[JsonRpcErrorNumber]string{
-// 	JsonRpcErrorUnknown:              "JsonRpcErrorUnknown",
-// 	JsonRpcErrorClientSideException:  "JsonRpcErrorClientSideException",
-// 	JsonRpcErrorUnsupportedException: "JsonRpcErrorUnsupportedException",
-// 	JsonRpcErrorInvalidArgument:      "JsonRpcErrorInvalidArgument",
-// 	JsonRpcErrorServerSideException:  "JsonRpcErrorServerSideException",
-// 	JsonRpcErrorParseException:       "JsonRpcErrorParseException",
-// 	JsonRpcErrorCapacityExceeded:     "JsonRpcErrorCapacityExceeded",
-// 	JsonRpcErrorEvmLogsLargeRange:    "JsonRpcErrorEvmLogsLargeRange",
-// 	JsonRpcErrorEvmReverted:          "JsonRpcErrorEvmReverted",
-// 	JsonRpcErrorNotSyncedYet:         "JsonRpcErrorNotSyncedYet",
-// 	JsonRpcErrorNodeTimeout:          "JsonRpcErrorNodeTimeout",
-// }
-
-// func GetJsonRpcErrorName(code JsonRpcErrorNumber) string {
-// 	if name, exists := jsonRpcErrorNumberToName[code]; exists {
-// 		return name
-// 	}
-
-// 	return "UnknownErrorCode"
-// }
-
 type ErrJsonRpcException struct{ BaseError }
 
 func (e *ErrJsonRpcException) ErrorStatusCode() int {

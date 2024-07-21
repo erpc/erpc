@@ -121,32 +121,24 @@ func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *Normali
 func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *NormalizedResponse) error {
 	jr, err := nr.JsonRpcResponse()
 
-	if r.StatusCode < 400 {
-		if nr != nil {
-			if err != nil {
-				e := common.NewErrJsonRpcException(
-					0,
-					common.JsonRpcErrorParseException,
-					"could not parse json rpc response from upstream",
-					err,
-				)
-				e.Details = map[string]interface{}{
-					"upstream":   c.upstream.Config().Id,
-					"statusCode": r.StatusCode,
-					"headers":    r.Header,
-					"body":       string(nr.Body()),
-				}
-				return e
-			}
-			log.Debug().
-				Err(err).
-				Interface("resp", jr).
-				Msgf("received json rpc response status: %d", r.StatusCode)
-
-			if jr != nil && jr.Error == nil {
-				return nil
-			}
+	if err != nil {
+		e := common.NewErrJsonRpcException(
+			0,
+			common.JsonRpcErrorParseException,
+			"could not parse json rpc response from upstream",
+			err,
+		)
+		e.Details = map[string]interface{}{
+			"upstream":   c.upstream.Config().Id,
+			"statusCode": r.StatusCode,
+			"headers":    r.Header,
+			"body":       string(nr.Body()),
 		}
+		return e
+	}
+
+	if jr.Error == nil {
+		return nil
 	}
 
 	if e := extractJsonRpcError(r, nr, jr); e != nil {
