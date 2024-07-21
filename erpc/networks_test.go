@@ -210,6 +210,7 @@ func TestNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 	}
 	vndr := vendors.NewVendorsRegistry()
 	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vndr)
+	defer upr.Shutdown()
 	pup, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "test",
@@ -293,6 +294,7 @@ func TestNetwork_ForwardRetryFailuresWithSuccess(t *testing.T) {
 	}
 	vndr := vendors.NewVendorsRegistry()
 	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vndr)
+	defer upr.Shutdown()
 	pup, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "test",
@@ -382,6 +384,7 @@ func TestNetwork_ForwardTimeoutPolicyFail(t *testing.T) {
 	}
 	vndr := vendors.NewVendorsRegistry()
 	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vndr)
+	defer upr.Shutdown()
 	pup, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "test",
@@ -465,6 +468,7 @@ func TestNetwork_ForwardTimeoutPolicyPass(t *testing.T) {
 		t.Error(err)
 	}
 	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vendors.NewVendorsRegistry())
+	defer upr.Shutdown()
 	pup, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "test",
@@ -554,6 +558,7 @@ func TestNetwork_ForwardHedgePolicyTriggered(t *testing.T) {
 		t.Error(err)
 	}
 	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vendors.NewVendorsRegistry())
+	defer upr.Shutdown()
 	pup1, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "rpc1",
@@ -676,6 +681,7 @@ func TestNetwork_ForwardHedgePolicyNotTriggered(t *testing.T) {
 		t.Error(err)
 	}
 	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vendors.NewVendorsRegistry())
+	defer upr.Shutdown()
 	pup1, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "rpc1",
@@ -775,6 +781,7 @@ func TestNetwork_ForwardHedgePolicyIgnoresNegativeScoreUpstream(t *testing.T) {
 		t.Error(err)
 	}
 	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vendors.NewVendorsRegistry())
+	defer upr.Shutdown()
 
 	// policies, err := upstream.CreateFailSafePolicies("eth_getBlockByNumber", fsCfg)
 	// if err != nil {
@@ -911,6 +918,7 @@ func TestNetwork_ForwardCBOpensAfterConstantFailure(t *testing.T) {
 		t.Error(err)
 	}
 	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vendors.NewVendorsRegistry())
+	defer upr.Shutdown()
 	pup1, err := upr.NewUpstream("test_cb", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "upstream1",
@@ -1011,6 +1019,7 @@ func TestNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
 		t.Error(err)
 	}
 	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vendors.NewVendorsRegistry())
+	defer upr.Shutdown()
 	pup1, err := upr.NewUpstream("test_cb", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "upstream1",
@@ -1192,6 +1201,7 @@ func TestNetwork_ForwardEndpointServerSideExceptionSuccess(t *testing.T) {
 	}
 
 	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vendors.NewVendorsRegistry())
+	defer upr.Shutdown()
 	pup1, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "rpc1",
@@ -1327,7 +1337,7 @@ func TestNetwork_ForwardEthGetLogsEmptyArrayResponseSuccess(t *testing.T) {
 		t.Fatalf("Failed to create rate limiters registry: %v", err)
 	}
 	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vendors.NewVendorsRegistry())
-
+	defer upr.Shutdown()
 	pup1, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "rpc1",
@@ -1463,7 +1473,7 @@ func TestNetwork_ForwardEthGetLogsBothEmptyArrayResponse(t *testing.T) {
 		t.Fatalf("Failed to create rate limiters registry: %v", err)
 	}
 	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vendors.NewVendorsRegistry())
-
+	defer upr.Shutdown()
 	pup1, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "rpc1",

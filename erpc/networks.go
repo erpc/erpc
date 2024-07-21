@@ -75,14 +75,18 @@ func (n *Network) Bootstrap(ctx context.Context) error {
 	return nil
 }
 
-func (n *Network) Shutdown() {
+func (n *Network) Shutdown() error {
 	if n.evmBlockTracker != nil {
-		n.evmBlockTracker.Shutdown()
+		if err := n.evmBlockTracker.Shutdown(); err != nil {
+			return err
+		}
 	}
 
 	if n.reorderStopChannel != nil {
 		n.reorderStopChannel <- true
 	}
+
+	return nil
 }
 
 func (n *Network) Id() string {

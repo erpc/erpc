@@ -95,3 +95,12 @@ func (r *NetworksRegistry) RegisterNetwork(
 func (nr *NetworksRegistry) GetNetwork(projectId, networkId string) *Network {
 	return nr.preparedNetworks[fmt.Sprintf("%s-%s", projectId, networkId)]
 }
+
+func (nr *NetworksRegistry) Shutdown() error {
+	for _, network := range nr.preparedNetworks {
+		if err := network.Shutdown(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
