@@ -15,6 +15,8 @@ type ERPC struct {
 	upstreamsRegistry    *upstream.UpstreamsRegistry
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	projectsRegistry     *ProjectsRegistry
+	networksRegistry     *NetworksRegistry
+	evmJsonRpcCache      *EvmJsonRpcCache
 }
 
 func NewERPC(
@@ -82,6 +84,7 @@ func NewERPC(
 		upstreamsRegistry:    upstreamsRegistry,
 		rateLimitersRegistry: rateLimitersRegistry,
 		projectsRegistry:     projectRegistry,
+		networksRegistry:     networksRegistry,
 	}, nil
 }
 
@@ -99,6 +102,14 @@ func (e *ERPC) GetProject(projectId string) (*PreparedProject, error) {
 }
 
 func (e *ERPC) Shutdown() error {
-	// TODO: Implement
+	if err := e.upstreamsRegistry.Shutdown(); err != nil {
+		return err
+	}
+	if err := e.networksRegistry.Shutdown(); err != nil {
+		return err
+	}
+	if err := e.evmJsonRpcCache.Shutdown(); err != nil {
+		return err
+	}
 	return nil
 }

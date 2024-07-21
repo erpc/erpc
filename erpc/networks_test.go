@@ -210,6 +210,7 @@ func TestNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 	}
 	vndr := vendors.NewVendorsRegistry()
 	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vndr)
+	defer upr.Shutdown()
 	pup, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "test",
@@ -293,6 +294,7 @@ func TestNetwork_ForwardRetryFailuresWithSuccess(t *testing.T) {
 	}
 	vndr := vendors.NewVendorsRegistry()
 	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vndr)
+	defer upr.Shutdown()
 	pup, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "test",
@@ -382,6 +384,7 @@ func TestNetwork_ForwardTimeoutPolicyFail(t *testing.T) {
 	}
 	vndr := vendors.NewVendorsRegistry()
 	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vndr)
+	defer upr.Shutdown()
 	pup, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "test",
@@ -465,6 +468,7 @@ func TestNetwork_ForwardTimeoutPolicyPass(t *testing.T) {
 		t.Error(err)
 	}
 	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vendors.NewVendorsRegistry())
+	defer upr.Shutdown()
 	pup, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "test",
@@ -554,6 +558,7 @@ func TestNetwork_ForwardHedgePolicyTriggered(t *testing.T) {
 		t.Error(err)
 	}
 	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vendors.NewVendorsRegistry())
+	defer upr.Shutdown()
 	pup1, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "rpc1",
@@ -608,17 +613,35 @@ func TestNetwork_ForwardHedgePolicyTriggered(t *testing.T) {
 
 	if err != nil {
 		t.Errorf("Expected nil error, got %v", err)
+		return
 	}
 
 	jrr, err := resp.JsonRpcResponse()
 	if err != nil {
 		t.Errorf("Expected nil error, got %v", err)
+		return
 	}
+
 	if jrr.Result == nil {
-		t.Errorf("Expected result, got %v", jrr)
+		t.Errorf("Expected result, got nil")
+		return
 	}
-	if jrr.Result.(map[string]interface{})["fromHost"] != "rpc2" {
-		t.Errorf("Expected fromHost to be %v, got %v", "rpc2", jrr.Result.(map[string]interface{})["fromHost"])
+
+	// Type assertion with check
+	result, ok := jrr.Result.(map[string]interface{})
+	if !ok {
+		t.Errorf("Expected Result to be map[string]interface{}, got %T", jrr.Result)
+		return
+	}
+
+	fromHost, ok := result["fromHost"].(string)
+	if !ok {
+		t.Errorf("Expected fromHost to be string, got %T", result["fromHost"])
+		return
+	}
+
+	if fromHost != "rpc2" {
+		t.Errorf("Expected fromHost to be %v, got %v", "rpc2", fromHost)
 	}
 }
 
@@ -658,6 +681,7 @@ func TestNetwork_ForwardHedgePolicyNotTriggered(t *testing.T) {
 		t.Error(err)
 	}
 	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vendors.NewVendorsRegistry())
+	defer upr.Shutdown()
 	pup1, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "rpc1",
@@ -757,6 +781,7 @@ func TestNetwork_ForwardHedgePolicyIgnoresNegativeScoreUpstream(t *testing.T) {
 		t.Error(err)
 	}
 	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vendors.NewVendorsRegistry())
+	defer upr.Shutdown()
 
 	// policies, err := upstream.CreateFailSafePolicies("eth_getBlockByNumber", fsCfg)
 	// if err != nil {
@@ -893,6 +918,7 @@ func TestNetwork_ForwardCBOpensAfterConstantFailure(t *testing.T) {
 		t.Error(err)
 	}
 	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vendors.NewVendorsRegistry())
+	defer upr.Shutdown()
 	pup1, err := upr.NewUpstream("test_cb", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "upstream1",
@@ -993,6 +1019,7 @@ func TestNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
 		t.Error(err)
 	}
 	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vendors.NewVendorsRegistry())
+	defer upr.Shutdown()
 	pup1, err := upr.NewUpstream("test_cb", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "upstream1",
@@ -1127,5 +1154,381 @@ func TestNetwork_WeightedRandomSelect(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNetwork_ForwardEndpointServerSideExceptionSuccess(t *testing.T) {
+	defer gock.Clean()
+	defer gock.DisableNetworking()
+	defer gock.DisableNetworkingFilters()
+
+	gock.EnableNetworking()
+
+	// Register a networking filter
+	gock.NetworkingFilter(func(req *http.Request) bool {
+		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
+		return shouldMakeRealCall
+	})
+
+	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
+
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Reply(500).
+		JSON(json.RawMessage(`{"error":{"message":"Internal error"}}`))
+
+	gock.New("http://rpc2.localhost").
+		Post("").
+		Reply(200).
+		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc2"}}`))
+
+	log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	clr := upstream.NewClientRegistry()
+	fsCfg := &common.FailsafeConfig{
+		Retry: &common.RetryPolicyConfig{
+			MaxAttempts: 2,
+		},
+	}
+	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		Budgets: []*common.RateLimitBudgetConfig{},
+	})
+	if err != nil {
+		t.Error(err)
+	}
+
+	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vendors.NewVendorsRegistry())
+	defer upr.Shutdown()
+	pup1, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
+		Type:     common.UpstreamTypeEvm,
+		Id:       "rpc1",
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId: 123,
+		},
+	}, &log.Logger)
+	if err != nil {
+		t.Error(err)
+	}
+	cl1, err := clr.GetOrCreateClient(pup1)
+	if err != nil {
+		t.Error(err)
+	}
+	pup1.Client = cl1
+
+	pup2, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
+		Type:     common.UpstreamTypeEvm,
+		Id:       "rpc2",
+		Endpoint: "http://rpc2.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId: 123,
+		},
+	}, &log.Logger)
+	if err != nil {
+		t.Error(err)
+	}
+	cl2, err := clr.GetOrCreateClient(pup2)
+	if err != nil {
+		t.Error(err)
+	}
+	pup2.Client = cl2
+
+	ntw, err := NewNetwork(&log.Logger, "prjA", &common.NetworkConfig{
+		Failsafe: fsCfg,
+	}, rlr)
+	if err != nil {
+		t.Error(err)
+	}
+	ntw.Upstreams = []*upstream.Upstream{pup1, pup2}
+
+	fakeReq := upstream.NewNormalizedRequest(requestBytes)
+	resp, err := ntw.Forward(ctx, fakeReq)
+
+	if len(gock.Pending()) > 0 {
+		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
+		for _, pending := range gock.Pending() {
+			t.Errorf("Pending mock: %v", pending)
+		}
+	}
+
+	if err != nil {
+		t.Errorf("Expected nil error, got %v", err)
+		return
+	}
+
+	jrr, err := resp.JsonRpcResponse()
+	if err != nil {
+		t.Errorf("Expected nil error, got %v", err)
+		return
+	}
+
+	if jrr.Result == nil {
+		t.Errorf("Expected result, got nil")
+		return
+	}
+
+	// Debug logging
+	t.Logf("jrr.Result type: %T", jrr.Result)
+	t.Logf("jrr.Result content: %+v", jrr.Result)
+
+	// Type assertion with check
+	result, ok := jrr.Result.(map[string]interface{})
+	if !ok {
+		t.Errorf("Expected Result to be map[string]interface{}, got %T", jrr.Result)
+		return
+	}
+
+	fromHost, ok := result["fromHost"].(string)
+	if !ok {
+		t.Errorf("Expected fromHost to be string, got %T", result["fromHost"])
+		return
+	}
+
+	if fromHost != "rpc2" {
+		t.Errorf("Expected fromHost to be %v, got %v", "rpc2", fromHost)
+	}
+}
+
+func TestNetwork_ForwardEthGetLogsEmptyArrayResponseSuccess(t *testing.T) {
+	defer gock.Clean()
+	defer gock.DisableNetworking()
+	defer gock.DisableNetworkingFilters()
+
+	gock.EnableNetworking()
+
+	// Register a networking filter
+	gock.NetworkingFilter(func(req *http.Request) bool {
+		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
+		return shouldMakeRealCall
+	})
+
+	var requestBytes = json.RawMessage(`{"jsonrpc": "2.0","method": "eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
+
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Reply(200).
+		JSON(json.RawMessage(`{"result":[]}`))
+
+	gock.New("http://rpc2.localhost").
+		Post("").
+		Reply(200).
+		JSON(json.RawMessage(`{"result":[{"logIndex":444,"fromHost":"rpc2"}]}`))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Setup test network
+	clr := upstream.NewClientRegistry()
+	fsCfg := &common.FailsafeConfig{
+		Retry: &common.RetryPolicyConfig{
+			MaxAttempts: 2,
+		},
+	}
+	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		Budgets: []*common.RateLimitBudgetConfig{},
+	})
+	if err != nil {
+		t.Fatalf("Failed to create rate limiters registry: %v", err)
+	}
+	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vendors.NewVendorsRegistry())
+	defer upr.Shutdown()
+	pup1, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
+		Type:     common.UpstreamTypeEvm,
+		Id:       "rpc1",
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId: 123,
+		},
+	}, &log.Logger)
+	if err != nil {
+		t.Fatalf("Failed to create upstream 1: %v", err)
+	}
+	cl1, err := clr.GetOrCreateClient(pup1)
+	if err != nil {
+		t.Fatalf("Failed to get or create client for upstream 1: %v", err)
+	}
+	pup1.Client = cl1
+
+	pup2, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
+		Type:     common.UpstreamTypeEvm,
+		Id:       "rpc2",
+		Endpoint: "http://rpc2.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId: 123,
+		},
+	}, &log.Logger)
+	if err != nil {
+		t.Fatalf("Failed to create upstream 2: %v", err)
+	}
+	cl2, err := clr.GetOrCreateClient(pup2)
+	if err != nil {
+		t.Fatalf("Failed to get or create client for upstream 2: %v", err)
+	}
+	pup2.Client = cl2
+
+	ntw, err := NewNetwork(&log.Logger, "prjA", &common.NetworkConfig{
+		Failsafe: fsCfg,
+	}, rlr)
+	if err != nil {
+		t.Fatalf("Failed to create network: %v", err)
+	}
+	ntw.Upstreams = []*upstream.Upstream{pup1, pup2}
+
+	fakeReq := upstream.NewNormalizedRequest(requestBytes)
+	resp, err := ntw.Forward(ctx, fakeReq)
+
+	if len(gock.Pending()) > 0 {
+		t.Errorf("Expected all mocks to be consumed, got %d left", len(gock.Pending()))
+		for _, pending := range gock.Pending() {
+			t.Errorf("Pending mock: %v", pending)
+		}
+	}
+
+	if err != nil {
+		t.Fatalf("Expected nil error, got %v", err)
+	}
+
+	jrr, err := resp.JsonRpcResponse()
+	if err != nil {
+		t.Fatalf("Failed to get JSON-RPC response: %v", err)
+	}
+
+	if jrr.Result == nil {
+		t.Fatalf("Expected non-nil result")
+	}
+
+	result, ok := jrr.Result.([]interface{})
+	if !ok {
+		t.Fatalf("Expected Result to be []interface{}, got %T", jrr.Result)
+	}
+
+	fromHost, ok := result[0].(map[string]interface{})["fromHost"].(string)
+	if !ok {
+		t.Fatalf("Expected fromHost to be string, got %T", result[0].(map[string]interface{})["fromHost"])
+	}
+
+	if fromHost != "rpc2" {
+		t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
+	}
+}
+
+func TestNetwork_ForwardEthGetLogsBothEmptyArrayResponse(t *testing.T) {
+	defer gock.Clean()
+	defer gock.DisableNetworking()
+	defer gock.DisableNetworkingFilters()
+
+	gock.EnableNetworking()
+
+	gock.NetworkingFilter(func(req *http.Request) bool {
+		return strings.Split(req.URL.Host, ":")[0] == "localhost"
+	})
+
+	var requestBytes = json.RawMessage(`{"jsonrpc": "2.0","method": "eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
+
+	emptyResponse := json.RawMessage(`{"jsonrpc": "2.0","id": 1,"result":[]}`)
+
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Reply(200).
+		JSON(emptyResponse)
+
+	gock.New("http://rpc2.localhost").
+		Post("").
+		Reply(200).
+		JSON(emptyResponse)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	// Setup test network
+	clr := upstream.NewClientRegistry()
+	fsCfg := &common.FailsafeConfig{
+		Retry: &common.RetryPolicyConfig{
+			MaxAttempts: 2,
+		},
+	}
+	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		Budgets: []*common.RateLimitBudgetConfig{},
+	})
+	if err != nil {
+		t.Fatalf("Failed to create rate limiters registry: %v", err)
+	}
+	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vendors.NewVendorsRegistry())
+	defer upr.Shutdown()
+	pup1, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
+		Type:     common.UpstreamTypeEvm,
+		Id:       "rpc1",
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId: 123,
+		},
+	}, &log.Logger)
+	if err != nil {
+		t.Fatalf("Failed to create upstream 1: %v", err)
+	}
+	cl1, err := clr.GetOrCreateClient(pup1)
+	if err != nil {
+		t.Fatalf("Failed to get or create client for upstream 1: %v", err)
+	}
+	pup1.Client = cl1
+
+	pup2, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
+		Type:     common.UpstreamTypeEvm,
+		Id:       "rpc2",
+		Endpoint: "http://rpc2.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId: 123,
+		},
+	}, &log.Logger)
+	if err != nil {
+		t.Fatalf("Failed to create upstream 2: %v", err)
+	}
+	cl2, err := clr.GetOrCreateClient(pup2)
+	if err != nil {
+		t.Fatalf("Failed to get or create client for upstream 2: %v", err)
+	}
+	pup2.Client = cl2
+
+	ntw, err := NewNetwork(&log.Logger, "prjA", &common.NetworkConfig{
+		Failsafe: fsCfg,
+	}, rlr)
+	if err != nil {
+		t.Fatalf("Failed to create network: %v", err)
+	}
+	ntw.Upstreams = []*upstream.Upstream{pup1, pup2}
+
+	fakeReq := upstream.NewNormalizedRequest(requestBytes)
+	resp, err := ntw.Forward(ctx, fakeReq)
+
+	if len(gock.Pending()) > 0 {
+		t.Errorf("Expected all mocks to be consumed, got %d left", len(gock.Pending()))
+		for _, pending := range gock.Pending() {
+			t.Errorf("Pending mock: %v", pending)
+		}
+	}
+
+	if err != nil {
+		t.Fatalf("Expected nil error, got %v", err)
+	}
+
+	jrr, err := resp.JsonRpcResponse()
+	if err != nil {
+		t.Fatalf("Failed to get JSON-RPC response: %v", err)
+	}
+
+	if jrr.Result == nil {
+		t.Fatalf("Expected non-nil result")
+	}
+
+	result, ok := jrr.Result.([]interface{})
+	if !ok {
+		t.Fatalf("Expected Result to be []interface{}, got %T", jrr.Result)
+	}
+
+	if len(result) != 0 {
+		t.Errorf("Expected empty array result, got array of length %d", len(result))
 	}
 }

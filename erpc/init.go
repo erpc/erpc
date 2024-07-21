@@ -52,7 +52,7 @@ func Init(
 		if cfg.Database.EvmJsonRpcCache != nil {
 			evmJsonRpcCache, err = NewEvmJsonRpcCache(ctx, cfg.Database.EvmJsonRpcCache)
 			if err != nil {
-				return nil, err
+				logger.Warn().Msgf("failed to initialize evm json rpc cache: %v", err)
 			}
 		}
 	}
