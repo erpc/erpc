@@ -555,10 +555,12 @@ func (e *ErrFailsafeTimeoutExceeded) ErrorStatusCode() int {
 
 type ErrFailsafeRetryExceeded struct{ BaseError }
 
+var ErrCodeFailsafeRetryExceeded ErrorCode = "ErrFailsafeRetryExceeded"
+
 var NewErrFailsafeRetryExceeded = func(cause error, lastResult interface{}) error {
 	return &ErrFailsafeRetryExceeded{
 		BaseError{
-			Code:    "ErrFailsafeRetryExceeded",
+			Code:    ErrCodeFailsafeRetryExceeded,
 			Message: "failsafe retry policy exceeded",
 			Cause:   cause,
 			Details: map[string]interface{}{
@@ -570,6 +572,10 @@ var NewErrFailsafeRetryExceeded = func(cause error, lastResult interface{}) erro
 
 func (e *ErrFailsafeRetryExceeded) ErrorStatusCode() int {
 	return 503
+}
+
+func (e *ErrFailsafeRetryExceeded) LastResult() interface{} {
+	return e.Details["lastResult"]
 }
 
 type ErrFailsafeCircuitBreakerOpen struct{ BaseError }

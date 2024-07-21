@@ -1433,14 +1433,12 @@ func TestNetwork_ForwardEthGetLogsBothEmptyArrayResponse(t *testing.T) {
 	gock.New("http://rpc1.localhost").
 		Post("").
 		Reply(200).
-		JSON(emptyResponse).
-		Delay(500 * time.Millisecond)
+		JSON(emptyResponse)
 
 	gock.New("http://rpc2.localhost").
 		Post("").
 		Reply(200).
-		JSON(emptyResponse).
-		Delay(200 * time.Millisecond)
+		JSON(emptyResponse)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
@@ -1448,9 +1446,8 @@ func TestNetwork_ForwardEthGetLogsBothEmptyArrayResponse(t *testing.T) {
 	// Setup test network
 	clr := upstream.NewClientRegistry()
 	fsCfg := &common.FailsafeConfig{
-		Hedge: &common.HedgePolicyConfig{
-			Delay:    "200ms",
-			MaxCount: 1,
+		Retry: &common.RetryPolicyConfig{
+			MaxAttempts: 2,
 		},
 	}
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{

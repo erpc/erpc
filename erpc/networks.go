@@ -258,6 +258,19 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 
 	if execErr != nil {
 		err := upstream.TranslateFailsafeError(execErr)
+		// if error is due to empty response be generous and accept it
+		if common.HasCode(err, common.ErrCodeFailsafeRetryExceeded) {
+			re := err.(*common.ErrFailsafeRetryExceeded)
+			lr := re.LastResult()
+			if lr != nil {
+				resp := lr.(common.NormalizedResponse)
+				if resp != nil && resp.IsResultEmptyish() {
+					inf.resp = resp
+					close(inf.done) // Ensure done is closed
+					return resp, nil
+				}
+			}
+		}
 		inf.err = err
 		close(inf.done) // Ensure done is closed
 		return nil, err
