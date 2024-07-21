@@ -49,9 +49,8 @@ make run
 
 # License
 
-AGPL-3.0 - Free for personal or open-source commercial use
+AGPL-3.0
 
-> For a closed-source commercial usage (e.g. selling as a SaaS), please [contact us](https://docs.flair.dev/talk-to-an-engineer).
 
 [ci-badge]: https://github.com/erpc/erpc/actions/workflows/development.yml/badge.svg
 [ci-url]: https://github.com/erpc/erpc/actions/workflows/development.yml
