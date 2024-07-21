@@ -75,14 +75,18 @@ func (n *Network) Bootstrap(ctx context.Context) error {
 	return nil
 }
 
-func (n *Network) Shutdown() {
+func (n *Network) Shutdown() error {
 	if n.evmBlockTracker != nil {
-		n.evmBlockTracker.Shutdown()
+		if err := n.evmBlockTracker.Shutdown(); err != nil {
+			return err
+		}
 	}
 
 	if n.reorderStopChannel != nil {
 		n.reorderStopChannel <- true
 	}
+
+	return nil
 }
 
 func (n *Network) Id() string {
@@ -149,7 +153,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 			lg.Info().Object("req", req).Err(err).Msgf("response served from cache")
 			health.MetricNetworkCacheHits.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 			inf.resp = resp
-			close(inf.done)
+			close(inf.done) // Ensure done is closed
 			return resp, err
 		}
 	}
@@ -157,7 +161,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 	// 3) Apply rate limits
 	if err := n.acquireRateLimitPermit(req); err != nil {
 		inf.err = err
-		close(inf.done)
+		close(inf.done) // Ensure done is closed
 		return nil, err
 	}
 
@@ -190,7 +194,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 			upsList := n.Upstreams
 			n.upstreamsMutex.RUnlock()
 
-			isHedge := exec.Hedges() > 0
+			isHedged := exec.Hedges() > 0
 
 			// We should try all upstreams at least once, but using "i" we make sure
 			// across different executions of the failsafe we pick up next upstream vs retrying the same upstream.
@@ -204,7 +208,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 				if i >= ln {
 					i = 0
 				}
-				if isHedge {
+				if isHedged {
 					lg.Debug().
 						Str("upstream", u.Config().Id).
 						Int("index", i).
@@ -226,7 +230,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 					return nil, err
 				}
 
-				if isHedge {
+				if isHedged {
 					lg.Debug().Err(err).Msgf("forwarded hedged request to upstream %s skipped: %v err: %v", u.Config().Id, skipped, err)
 				} else {
 					lg.Debug().Err(err).Msgf("forwarded request to upstream %s skipped: %v err: %v", u.Config().Id, skipped, err)
@@ -254,13 +258,26 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 
 	if execErr != nil {
 		err := upstream.TranslateFailsafeError(execErr)
+		// if error is due to empty response be generous and accept it
+		if common.HasCode(err, common.ErrCodeFailsafeRetryExceeded) {
+			re := err.(*common.ErrFailsafeRetryExceeded)
+			lr := re.LastResult()
+			if lr != nil {
+				resp := lr.(common.NormalizedResponse)
+				if resp != nil && resp.IsResultEmptyish() {
+					inf.resp = resp
+					close(inf.done) // Ensure done is closed
+					return resp, nil
+				}
+			}
+		}
 		inf.err = err
-		close(inf.done)
+		close(inf.done) // Ensure done is closed
 		return nil, err
 	}
 
 	inf.resp = resp
-	close(inf.done)
+	close(inf.done) // Ensure done is closed
 	return resp, nil
 }
 

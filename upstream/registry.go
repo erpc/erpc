@@ -22,6 +22,7 @@ type UpstreamsRegistry struct {
 	upstreamsMapByProject       map[string][]*Upstream
 	upstreamsMapByProjectWithId map[string]map[string]*Upstream
 	upstreamsMapByHealthGroup   map[string]map[string]*Upstream
+	shutdownChan                chan struct{}
 }
 
 func NewUpstreamsRegistry(
@@ -39,6 +40,7 @@ func NewUpstreamsRegistry(
 		upstreamsMapByProject:       make(map[string][]*Upstream),
 		upstreamsMapByProjectWithId: make(map[string]map[string]*Upstream),
 		upstreamsMapByHealthGroup:   make(map[string]map[string]*Upstream),
+		shutdownChan:                make(chan struct{}),
 	}
 	return r
 }
@@ -47,13 +49,23 @@ func (u *UpstreamsRegistry) Bootstrap() error {
 	return u.scheduleHealthCheckTimers()
 }
 
+func (u *UpstreamsRegistry) Shutdown() error {
+	close(u.shutdownChan)
+	return nil
+}
+
 func (u *UpstreamsRegistry) scheduleHealthCheckTimers() error {
 	// A global timer to collect metrics for all upstreams
 	// TODO make this work per-group and more accurate metrics collection vs prometheus
 	go func() {
 		for {
-			u.collectMetricsForAllUpstreams()
-			time.Sleep(60 * time.Second)
+			select {
+			case <-u.shutdownChan:
+				return
+			default:
+				u.collectMetricsForAllUpstreams()
+				time.Sleep(60 * time.Second)
+			}
 		}
 	}()
 
@@ -70,11 +82,15 @@ func (u *UpstreamsRegistry) scheduleHealthCheckTimers() error {
 			return common.NewErrInvalidHealthCheckConfig(fmt.Errorf("could not pase checkInterval: %w", err), healthGroupId)
 		}
 		log.Debug().Str("healthCheckGroup", healthGroupId).Dur("interval", checkIntervalDuration).Msgf("scheduling health check timer")
-
 		go func(healthCheckGroup *common.HealthCheckGroupConfig, checkIntervalDuration time.Duration) {
 			for {
-				u.refreshUpstreamGroupScores(healthCheckGroup, u.upstreamsMapByHealthGroup[healthCheckGroup.Id])
-				time.Sleep(time.Duration(checkIntervalDuration))
+				select {
+				case <-u.shutdownChan:
+					return
+				default:
+					u.refreshUpstreamGroupScores(healthCheckGroup, u.upstreamsMapByHealthGroup[healthCheckGroup.Id])
+					time.Sleep(time.Duration(checkIntervalDuration))
+				}
 			}
 		}(healthCheckGroup, checkIntervalDuration)
 	}

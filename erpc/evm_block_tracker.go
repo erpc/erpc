@@ -85,10 +85,12 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 	return updateBlockNumbers()
 }
 
-func (e *EvmBlockTracker) Shutdown() {
+func (e *EvmBlockTracker) Shutdown() error {
 	if e.ctxCancel != nil {
 		e.ctxCancel()
 	}
+
+	return nil
 }
 
 func (e *EvmBlockTracker) LatestBlock() uint64 {

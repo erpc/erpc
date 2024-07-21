@@ -73,7 +73,7 @@ func (r *NormalizedResponse) Error() error {
 
 func (r *NormalizedResponse) IsResultEmptyish() bool {
 	jrr, err := r.JsonRpcResponse()
-	if err != nil {
+	if err == nil {
 		if jrr.Result == nil {
 			return true
 		}

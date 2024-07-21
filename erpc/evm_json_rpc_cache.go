@@ -40,6 +40,14 @@ func NewEvmJsonRpcCache(ctx context.Context, cfg *common.ConnectorConfig) (*EvmJ
 	}, nil
 }
 
+func (c *EvmJsonRpcCache) Shutdown() error {
+	if c == nil {
+		// Means evm json-rpc cache is not created
+		return nil
+	}
+	return c.conn.Close(context.Background())
+}
+
 func (c *EvmJsonRpcCache) WithNetwork(network *Network) *EvmJsonRpcCache {
 	network.Logger.Debug().Msgf("creating EvmJsonRpcCache")
 	return &EvmJsonRpcCache{
