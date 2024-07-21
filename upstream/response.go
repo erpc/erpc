@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/flair-sdk/erpc/common"
 )
@@ -102,7 +103,12 @@ func (r *NormalizedResponse) JsonRpcResponse() (*common.JsonRpcResponse, error) 
 	jrr := &common.JsonRpcResponse{}
 	err := json.Unmarshal(r.body, jrr)
 	if err != nil {
-		return nil, err
+		jrr.Error = common.NewErrJsonRpcException(
+			int(common.JsonRpcErrorServerSideException),
+			0,
+			fmt.Sprintf("%s -> %s", err, string(r.body)),
+			nil,
+		)
 	}
 	r.jsonRpcResponse = jrr
 

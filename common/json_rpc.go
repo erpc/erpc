@@ -97,6 +97,45 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
+	// Special case upstream does not return proper json-rpc response
+	if aux.Error == nil && aux.Result == nil && aux.ID == nil {
+		// Special case #1: there is numeric "code" and "message" in the "data"
+		sp1 := &struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		}{}
+		if err := json.Unmarshal(data, &sp1); err == nil {
+			r.Error = NewErrJsonRpcException(
+				sp1.Code,
+				0,
+				sp1.Message,
+				nil,
+			)
+			return nil
+		}
+		// Special case #2: there is "error" field with string in the body
+		sp2 := &struct {
+			Error string `json:"error"`
+		}{}
+		if err := json.Unmarshal(data, &sp2); err == nil {
+			r.Error = NewErrJsonRpcException(
+				int(JsonRpcErrorServerSideException),
+				0,
+				sp2.Error,
+				nil,
+			)
+			return nil
+		}
+
+		r.Error = NewErrJsonRpcException(
+			int(JsonRpcErrorServerSideException),
+			0,
+			string(data),
+			nil,
+		)
+		return nil
+	}
+
 	if aux.Error != nil {
 		var customError map[string]interface{}
 		if err := json.Unmarshal(aux.Error, &customError); err != nil {

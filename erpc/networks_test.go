@@ -1532,3 +1532,179 @@ func TestNetwork_ForwardEthGetLogsBothEmptyArrayResponse(t *testing.T) {
 		t.Errorf("Expected empty array result, got array of length %d", len(result))
 	}
 }
+
+func TestNetwork_ForwardQuicknodeEndpointRateLimitResponse(t *testing.T) {
+	defer gock.Clean()
+	defer gock.DisableNetworking()
+	defer gock.DisableNetworkingFilters()
+
+	gock.EnableNetworking()
+
+	// Register a networking filter
+	gock.NetworkingFilter(func(req *http.Request) bool {
+		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
+		return shouldMakeRealCall
+	})
+
+	//
+	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
+
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Reply(429).
+		JSON(json.RawMessage(`{"code":-32007,"message":"300/second request limit reached - reduce calls per second or upgrade your account at quicknode.com"}`))
+
+	log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	clr := upstream.NewClientRegistry()
+	fsCfg := &common.FailsafeConfig{}
+	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		Budgets: []*common.RateLimitBudgetConfig{},
+	})
+	if err != nil {
+		t.Error(err)
+	}
+
+	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vendors.NewVendorsRegistry())
+	defer upr.Shutdown()
+	pup1, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
+		Type:     common.UpstreamTypeEvm,
+		Id:       "rpc1",
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId: 123,
+		},
+		VendorName: "quicknode",
+	}, &log.Logger)
+	if err != nil {
+		t.Error(err)
+	}
+	cl1, err := clr.GetOrCreateClient(pup1)
+	if err != nil {
+		t.Error(err)
+	}
+	pup1.Client = cl1
+
+	ntw, err := NewNetwork(&log.Logger, "prjA", &common.NetworkConfig{
+		Failsafe: fsCfg,
+	}, rlr)
+	if err != nil {
+		t.Error(err)
+	}
+	ntw.Upstreams = []*upstream.Upstream{pup1}
+
+	fakeReq := upstream.NewNormalizedRequest(requestBytes)
+	resp, err := ntw.Forward(ctx, fakeReq)
+
+	if len(gock.Pending()) > 0 {
+		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
+		for _, pending := range gock.Pending() {
+			t.Errorf("Pending mock: %v", pending)
+		}
+	}
+
+	if err == nil {
+		t.Errorf("Expected non-nil error, got nil")
+		return
+	}
+
+	if resp != nil {
+		t.Errorf("Expected nil response, got %v", resp)
+		return
+	}
+
+	if !common.HasCode(err, common.ErrCodeEndpointCapacityExceeded) {
+		t.Errorf("Expected error code %v, got %+v", common.ErrCodeEndpointCapacityExceeded, err)
+	}
+}
+
+func TestNetwork_ForwardLlamaRPCEndpointRateLimitResponse(t *testing.T) {
+	defer gock.Clean()
+	defer gock.DisableNetworking()
+	defer gock.DisableNetworkingFilters()
+
+	gock.EnableNetworking()
+
+	// Register a networking filter
+	gock.NetworkingFilter(func(req *http.Request) bool {
+		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
+		return shouldMakeRealCall
+	})
+
+	//
+	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
+
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Reply(200).
+		BodyString(`error code: 1015`)
+
+	log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	clr := upstream.NewClientRegistry()
+	fsCfg := &common.FailsafeConfig{}
+	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		Budgets: []*common.RateLimitBudgetConfig{},
+	})
+	if err != nil {
+		t.Error(err)
+	}
+
+	upr := upstream.NewUpstreamsRegistry(&log.Logger, &common.Config{}, rlr, vendors.NewVendorsRegistry())
+	defer upr.Shutdown()
+	pup1, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
+		Type:     common.UpstreamTypeEvm,
+		Id:       "rpc1",
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId: 123,
+		},
+		VendorName: "llama",
+	}, &log.Logger)
+	if err != nil {
+		t.Error(err)
+	}
+	cl1, err := clr.GetOrCreateClient(pup1)
+	if err != nil {
+		t.Error(err)
+	}
+	pup1.Client = cl1
+
+	ntw, err := NewNetwork(&log.Logger, "prjA", &common.NetworkConfig{
+		Failsafe: fsCfg,
+	}, rlr)
+	if err != nil {
+		t.Error(err)
+	}
+	ntw.Upstreams = []*upstream.Upstream{pup1}
+
+	fakeReq := upstream.NewNormalizedRequest(requestBytes)
+	resp, err := ntw.Forward(ctx, fakeReq)
+
+	if len(gock.Pending()) > 0 {
+		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
+		for _, pending := range gock.Pending() {
+			t.Errorf("Pending mock: %v", pending)
+		}
+	}
+
+	if err == nil {
+		t.Errorf("Expected non-nil error, got nil")
+		return
+	}
+
+	if resp != nil {
+		t.Errorf("Expected nil response, got %v", resp)
+		return
+	}
+
+	if !common.HasCode(err, common.ErrCodeEndpointCapacityExceeded) {
+		t.Errorf("Expected error code %v, got %+v", common.ErrCodeEndpointCapacityExceeded, err)
+	}
+}
