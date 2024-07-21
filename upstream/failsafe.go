@@ -76,7 +76,7 @@ func CreateFailSafePolicies(scope Scope, component string, fsCfg *common.Failsaf
 	}
 
 	// For upstream-level we want the timeout to apply to each individual request towards upstream
-	if scope == ScopeNetwork {
+	if scope == ScopeUpstream {
 		policies = append(policies, timeoutPolicy)
 	}
 
