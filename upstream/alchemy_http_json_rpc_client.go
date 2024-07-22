@@ -12,11 +12,60 @@ import (
 )
 
 var alchemyNetworkSubdomains = map[uint64]string{
-	1:       "eth-mainnet",
-	5:       "eth-goerli",
-	1115511: "eth-sepolia",
-	137:     "polygon-mainnet",
-	80001:   "polygon-mumbai",
+	// Ethereum
+	1:        "eth-mainnet",
+	5:        "eth-goerli",
+	11155111: "eth-sepolia",
+
+	// Polygon
+	137:   "polygon-mainnet",
+	80001: "polygon-mumbai",
+
+	// Optimism
+	10:       "opt-mainnet",
+	420:      "opt-goerli",
+	11155420: "opt-sepolia",
+
+	// Arbitrum
+	42161:  "arb-mainnet",
+	421613: "arb-goerli",
+	421614: "arb-sepolia",
+
+	// Astar
+	592: "astar-mainnet",
+
+	// Polygon zkEVM
+	1101: "polygonzk-mainnet",
+	1442: "polygonzk-testnet",
+
+	// Base
+	8453:  "base-mainnet",
+	84531: "base-goerli",
+	84532: "base-sepolia",
+
+	// zkSync
+	324: "zksync-mainnet",
+	300: "zksync-sepolia",
+
+	// Fantom Opera
+	250:  "fantom-mainnet",
+	4002: "fantom-testnet",
+
+	// BSC (Binance Smart Chain)
+	56: "bsc-mainnet",
+	97: "bsc-testnet",
+
+	// Avalanche
+	43114: "avalanche-mainnet",
+	43113: "avalanche-fuji",
+
+	// Blast
+	81457:     "blast-mainnet",
+	168587773: "blast-sepolia",
+
+	// Zeta
+	7000: "zeta-mainnet",
+	7001: "zeta-testnet",
 }
 
 type AlchemyHttpJsonRpcClient struct {
