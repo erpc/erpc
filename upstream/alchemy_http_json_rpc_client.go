@@ -58,6 +58,14 @@ var alchemyNetworkSubdomains = map[uint64]string{
 	// Avalanche
 	43114: "avalanche-mainnet",
 	43113: "avalanche-fuji",
+
+	// Blast
+	81457:     "blast-mainnet",
+	168587773: "blast-sepolia",
+
+	// Zeta
+	7000: "zeta-mainnet",
+	7001: "zeta-testnet",
 }
 
 type AlchemyHttpJsonRpcClient struct {
