@@ -18,11 +18,14 @@ type EvmBlockTracker struct {
 	updateMu             sync.Mutex
 	latestBlockNumber    uint64
 	finalizedBlockNumber uint64
+
+	shutdownChan chan struct{}
 }
 
 func NewEvmBlockTracker(network *Network) *EvmBlockTracker {
 	return &EvmBlockTracker{
-		network: network,
+		network:      network,
+		shutdownChan: make(chan struct{}),
 	}
 }
 
@@ -43,6 +46,8 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 	}
 
 	var updateBlockNumbers = func() error {
+		e.network.Logger.Debug().Msg("fetching latest and finalized block")
+
 		e.updateMu.Lock()
 		defer e.updateMu.Unlock()
 
@@ -69,16 +74,19 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 	}
 
 	go (func() {
+		ticker := time.NewTicker(blockTrackerInterval)
+		defer ticker.Stop()
 		for {
-			e.network.Logger.Debug().Msg("fetching latest block")
 			select {
 			case <-e.ctx.Done():
+				e.network.Logger.Debug().Msg("shutting down block tracker due to context cancellation")
 				return
-			default:
+			case <-e.shutdownChan:
+				e.network.Logger.Debug().Msg("shutting down block tracker via shutdown channel")
+				return
+			case <-ticker.C:
 				updateBlockNumbers()
 			}
-
-			time.Sleep(blockTrackerInterval)
 		}
 	})()
 
@@ -89,6 +97,8 @@ func (e *EvmBlockTracker) Shutdown() error {
 	if e.ctxCancel != nil {
 		e.ctxCancel()
 	}
+
+	close(e.shutdownChan)
 
 	return nil
 }

@@ -3,31 +3,17 @@ package erpc
 import (
 	"context"
 	"encoding/json"
-	"strings"
-	"time"
-
-	// "encoding/json"
 	"errors"
 	"io"
-
-	// "net/http"
-	"net/http"
 	"net/http/httptest"
-
-	// "strings"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
-	// "time"
-
-	// "github.com/failsafe-go/failsafe-go"
-	// "github.com/failsafe-go/failsafe-go"
-	// "github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/upstream"
 	"github.com/flair-sdk/erpc/vendors"
-
-	// "github.com/flair-sdk/erpc/upstream"
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog/log"
 )
@@ -76,7 +62,9 @@ func (r *ResponseRecorder) AddHeader(key, value string) {
 }
 
 func TestNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T) {
+	defer gock.Off()
 	defer gock.Clean()
+	defer gock.CleanUnmatchedRequest()
 
 	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
 		&common.RateLimiterConfig{
@@ -126,7 +114,9 @@ func TestNetwork_ForwardCorrectlyRateLimitedOnNetworkLevel(t *testing.T) {
 }
 
 func TestNetwork_ForwardNotRateLimitedOnNetworkLevel(t *testing.T) {
+	defer gock.Off()
 	defer gock.Clean()
+	defer gock.CleanUnmatchedRequest()
 
 	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
 		&common.RateLimiterConfig{
@@ -172,21 +162,13 @@ func TestNetwork_ForwardNotRateLimitedOnNetworkLevel(t *testing.T) {
 }
 
 func TestNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
+	defer gock.Off()
 	defer gock.Clean()
-	defer gock.DisableNetworking()
-	defer gock.DisableNetworkingFilters()
-
-	gock.EnableNetworking()
-
-	// Register a networking filter
-	gock.NetworkingFilter(func(req *http.Request) bool {
-		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
-		return shouldMakeRealCall
-	})
+	defer gock.CleanUnmatchedRequest()
 
 	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
 
-	gock.New("http://google.com").
+	gock.New("http://rpc1.localhost").
 		Times(3).
 		Post("").
 		Reply(503).
@@ -214,7 +196,7 @@ func TestNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 	pup, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "test",
-		Endpoint: "http://google.com",
+		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId: 123,
 		},
@@ -252,27 +234,19 @@ func TestNetwork_ForwardRetryFailuresWithoutSuccess(t *testing.T) {
 }
 
 func TestNetwork_ForwardRetryFailuresWithSuccess(t *testing.T) {
+	defer gock.Off()
 	defer gock.Clean()
-	defer gock.DisableNetworking()
-	defer gock.DisableNetworkingFilters()
-
-	gock.EnableNetworking()
-
-	// Register a networking filter
-	gock.NetworkingFilter(func(req *http.Request) bool {
-		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
-		return shouldMakeRealCall
-	})
+	defer gock.CleanUnmatchedRequest()
 
 	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
 
-	gock.New("http://google.com").
+	gock.New("http://rpc1.localhost").
 		Times(3).
 		Post("").
 		Reply(503).
 		JSON(json.RawMessage(`{"error":{"message":"some random provider issue"}}`))
 
-	gock.New("http://google.com").
+	gock.New("http://rpc1.localhost").
 		Post("").
 		Reply(200).
 		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
@@ -298,7 +272,7 @@ func TestNetwork_ForwardRetryFailuresWithSuccess(t *testing.T) {
 	pup, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "test",
-		Endpoint: "http://google.com",
+		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId: 123,
 		},
@@ -346,22 +320,13 @@ func TestNetwork_ForwardRetryFailuresWithSuccess(t *testing.T) {
 }
 
 func TestNetwork_ForwardTimeoutPolicyFail(t *testing.T) {
+	defer gock.Off()
 	defer gock.Clean()
-
-	defer gock.DisableNetworking()
-	defer gock.DisableNetworkingFilters()
-
-	gock.EnableNetworking()
-
-	// Register a networking filter
-	gock.NetworkingFilter(func(req *http.Request) bool {
-		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
-		return shouldMakeRealCall
-	})
+	defer gock.CleanUnmatchedRequest()
 
 	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
 
-	gock.New("http://google.com").
+	gock.New("http://rpc1.localhost").
 		Post("").
 		Reply(200).
 		Delay(100 * time.Millisecond).
@@ -388,7 +353,7 @@ func TestNetwork_ForwardTimeoutPolicyFail(t *testing.T) {
 	pup, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "test",
-		Endpoint: "http://google.com",
+		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId: 123,
 		},
@@ -432,21 +397,13 @@ func TestNetwork_ForwardTimeoutPolicyFail(t *testing.T) {
 }
 
 func TestNetwork_ForwardTimeoutPolicyPass(t *testing.T) {
+	defer gock.Off()
 	defer gock.Clean()
-	defer gock.DisableNetworking()
-	defer gock.DisableNetworkingFilters()
-
-	gock.EnableNetworking()
-
-	// Register a networking filter
-	gock.NetworkingFilter(func(req *http.Request) bool {
-		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
-		return shouldMakeRealCall
-	})
+	defer gock.CleanUnmatchedRequest()
 
 	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
 
-	gock.New("http://google.com").
+	gock.New("http://rpc1.localhost").
 		Post("").
 		Reply(200).
 		Delay(100 * time.Millisecond).
@@ -472,7 +429,7 @@ func TestNetwork_ForwardTimeoutPolicyPass(t *testing.T) {
 	pup, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "test",
-		Endpoint: "http://google.com",
+		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId: 123,
 		},
@@ -515,17 +472,9 @@ func TestNetwork_ForwardTimeoutPolicyPass(t *testing.T) {
 }
 
 func TestNetwork_ForwardHedgePolicyTriggered(t *testing.T) {
+	defer gock.Off()
 	defer gock.Clean()
-	defer gock.DisableNetworking()
-	defer gock.DisableNetworkingFilters()
-
-	gock.EnableNetworking()
-
-	// Register a networking filter
-	gock.NetworkingFilter(func(req *http.Request) bool {
-		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
-		return shouldMakeRealCall
-	})
+	defer gock.CleanUnmatchedRequest()
 
 	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
 
@@ -646,11 +595,13 @@ func TestNetwork_ForwardHedgePolicyTriggered(t *testing.T) {
 }
 
 func TestNetwork_ForwardHedgePolicyNotTriggered(t *testing.T) {
+	defer gock.Off()
 	defer gock.Clean()
+	defer gock.CleanUnmatchedRequest()
 
 	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
 
-	gock.New("http://google.com").
+	gock.New("http://rpc1.localhost").
 		Post("").
 		Reply(200).
 		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`)).
@@ -685,7 +636,7 @@ func TestNetwork_ForwardHedgePolicyNotTriggered(t *testing.T) {
 	pup1, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "rpc1",
-		Endpoint: "http://google.com",
+		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId: 123,
 		},
@@ -752,11 +703,14 @@ func TestNetwork_ForwardHedgePolicyNotTriggered(t *testing.T) {
 }
 
 func TestNetwork_ForwardHedgePolicyIgnoresNegativeScoreUpstream(t *testing.T) {
+	defer gock.Off()
 	defer gock.Clean()
+	defer gock.CleanUnmatchedRequest()
+
 	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
 
 	log.Logger.Info().Msgf("Mocks registered before: %d", len(gock.Pending()))
-	gock.New("http://google.com").
+	gock.New("http://rpc1.localhost").
 		Post("").
 		Times(3).
 		Reply(200).
@@ -790,7 +744,7 @@ func TestNetwork_ForwardHedgePolicyIgnoresNegativeScoreUpstream(t *testing.T) {
 	// pup1 := &upstream.Upstream{
 	// 	Logger:       log.Logger,
 	// 	Id:           "rpc1",
-	// 	Endpoint:     "http://google.com",
+	// 	Endpoint:     "http://rpc1.localhost",
 	// 	Architecture: common.ArchitectureEvm,
 	// 	Metadata: map[string]string{
 	// 		"evmChainId": "123",
@@ -801,7 +755,7 @@ func TestNetwork_ForwardHedgePolicyIgnoresNegativeScoreUpstream(t *testing.T) {
 	pup1, err := upr.NewUpstream("prjA", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "rpc1",
-		Endpoint: "http://google.com",
+		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId: 123,
 		},
@@ -873,27 +827,19 @@ func TestNetwork_ForwardHedgePolicyIgnoresNegativeScoreUpstream(t *testing.T) {
 }
 
 func TestNetwork_ForwardCBOpensAfterConstantFailure(t *testing.T) {
+	defer gock.Off()
 	defer gock.Clean()
-	defer gock.DisableNetworking()
-	defer gock.DisableNetworkingFilters()
-
-	gock.EnableNetworking()
-
-	// Register a networking filter
-	gock.NetworkingFilter(func(req *http.Request) bool {
-		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
-		return shouldMakeRealCall
-	})
+	defer gock.CleanUnmatchedRequest()
 
 	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
 
-	gock.New("http://google.com").
+	gock.New("http://rpc1.localhost").
 		Post("").
 		Times(2).
 		Reply(200).
 		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
 
-	gock.New("http://google.com").
+	gock.New("http://rpc1.localhost").
 		Post("").
 		Times(2).
 		Reply(503).
@@ -922,7 +868,7 @@ func TestNetwork_ForwardCBOpensAfterConstantFailure(t *testing.T) {
 	pup1, err := upr.NewUpstream("test_cb", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "upstream1",
-		Endpoint: "http://google.com",
+		Endpoint: "http://rpc1.localhost",
 		Failsafe: fsCfg,
 		Evm: &common.EvmUpstreamConfig{
 			ChainId: 123,
@@ -969,33 +915,25 @@ func TestNetwork_ForwardCBOpensAfterConstantFailure(t *testing.T) {
 }
 
 func TestNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
+	defer gock.Off()
 	defer gock.Clean()
-	defer gock.DisableNetworking()
-	defer gock.DisableNetworkingFilters()
-
-	gock.EnableNetworking()
-
-	// Register a networking filter
-	gock.NetworkingFilter(func(req *http.Request) bool {
-		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
-		return shouldMakeRealCall
-	})
+	defer gock.CleanUnmatchedRequest()
 
 	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
 
-	gock.New("http://google.com").
+	gock.New("http://rpc1.localhost").
 		Post("").
 		Times(3).
 		Reply(200).
 		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
 
-	gock.New("http://google.com").
+	gock.New("http://rpc1.localhost").
 		Post("").
 		Times(3).
 		Reply(503).
 		JSON(json.RawMessage(`{"error":{"message":"some random provider issue"}}`))
 
-	gock.New("http://google.com").
+	gock.New("http://rpc1.localhost").
 		Post("").
 		Times(3).
 		Reply(200).
@@ -1023,7 +961,7 @@ func TestNetwork_ForwardCBClosesAfterUpstreamIsBackUp(t *testing.T) {
 	pup1, err := upr.NewUpstream("test_cb", &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "upstream1",
-		Endpoint: "http://google.com",
+		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId: 123,
 		},
@@ -1158,17 +1096,9 @@ func TestNetwork_WeightedRandomSelect(t *testing.T) {
 }
 
 func TestNetwork_ForwardEndpointServerSideExceptionSuccess(t *testing.T) {
+	defer gock.Off()
 	defer gock.Clean()
-	defer gock.DisableNetworking()
-	defer gock.DisableNetworkingFilters()
-
-	gock.EnableNetworking()
-
-	// Register a networking filter
-	gock.NetworkingFilter(func(req *http.Request) bool {
-		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
-		return shouldMakeRealCall
-	})
+	defer gock.CleanUnmatchedRequest()
 
 	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
 
@@ -1293,17 +1223,9 @@ func TestNetwork_ForwardEndpointServerSideExceptionSuccess(t *testing.T) {
 }
 
 func TestNetwork_ForwardEthGetLogsEmptyArrayResponseSuccess(t *testing.T) {
+	defer gock.Off()
 	defer gock.Clean()
-	defer gock.DisableNetworking()
-	defer gock.DisableNetworkingFilters()
-
-	gock.EnableNetworking()
-
-	// Register a networking filter
-	gock.NetworkingFilter(func(req *http.Request) bool {
-		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
-		return shouldMakeRealCall
-	})
+	defer gock.CleanUnmatchedRequest()
 
 	var requestBytes = json.RawMessage(`{"jsonrpc": "2.0","method": "eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
 
@@ -1416,15 +1338,9 @@ func TestNetwork_ForwardEthGetLogsEmptyArrayResponseSuccess(t *testing.T) {
 }
 
 func TestNetwork_ForwardEthGetLogsBothEmptyArrayResponse(t *testing.T) {
+	defer gock.Off()
 	defer gock.Clean()
-	defer gock.DisableNetworking()
-	defer gock.DisableNetworkingFilters()
-
-	gock.EnableNetworking()
-
-	gock.NetworkingFilter(func(req *http.Request) bool {
-		return strings.Split(req.URL.Host, ":")[0] == "localhost"
-	})
+	defer gock.CleanUnmatchedRequest()
 
 	var requestBytes = json.RawMessage(`{"jsonrpc": "2.0","method": "eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
 
@@ -1534,19 +1450,10 @@ func TestNetwork_ForwardEthGetLogsBothEmptyArrayResponse(t *testing.T) {
 }
 
 func TestNetwork_ForwardQuicknodeEndpointRateLimitResponse(t *testing.T) {
+	defer gock.Off()
 	defer gock.Clean()
-	defer gock.DisableNetworking()
-	defer gock.DisableNetworkingFilters()
+	defer gock.CleanUnmatchedRequest()
 
-	gock.EnableNetworking()
-
-	// Register a networking filter
-	gock.NetworkingFilter(func(req *http.Request) bool {
-		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
-		return shouldMakeRealCall
-	})
-
-	//
 	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
 
 	gock.New("http://rpc1.localhost").
@@ -1622,19 +1529,10 @@ func TestNetwork_ForwardQuicknodeEndpointRateLimitResponse(t *testing.T) {
 }
 
 func TestNetwork_ForwardLlamaRPCEndpointRateLimitResponse(t *testing.T) {
+	defer gock.Off()
 	defer gock.Clean()
-	defer gock.DisableNetworking()
-	defer gock.DisableNetworkingFilters()
+	defer gock.CleanUnmatchedRequest()
 
-	gock.EnableNetworking()
-
-	// Register a networking filter
-	gock.NetworkingFilter(func(req *http.Request) bool {
-		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
-		return shouldMakeRealCall
-	})
-
-	//
 	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
 
 	gock.New("http://rpc1.localhost").
