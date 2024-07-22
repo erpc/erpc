@@ -88,7 +88,7 @@ func (n *Network) Shutdown() error {
 	}
 
 	close(n.shutdownChan)
-	
+
 	return nil
 }
 

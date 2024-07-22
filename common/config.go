@@ -164,11 +164,8 @@ func (c *HealthCheckConfig) GetGroupConfig(groupId string) *HealthCheckGroupConf
 }
 
 type HealthCheckGroupConfig struct {
-	Id                  string `yaml:"id"`
-	CheckInterval       string `yaml:"checkInterval"`
-	MaxErrorRatePercent int    `yaml:"maxErrorRatePercent"`
-	MaxP90Latency       string `yaml:"maxP90Latency"`
-	MaxBlocksLag        int    `yaml:"maxBlocksLag"`
+	Id            string `yaml:"id"`
+	CheckInterval string `yaml:"checkInterval"`
 }
 
 type NetworkConfig struct {

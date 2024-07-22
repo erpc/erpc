@@ -25,13 +25,13 @@ func assertScoreOrder(t *testing.T, scoredUpstreams []scoredUpstream) {
 }
 
 // genMetrics generates UpstreamMetrics with provided parameters
-func genMetrics(latency float64, errorsTotal, requestsTotal, throttledTotal, blocksLag int) *UpstreamMetrics {
+func genMetrics(latency, errorsTotal, requestsTotal, throttledTotal, blocksLag float64) *UpstreamMetrics {
 	return &UpstreamMetrics{
-		P90Latency:     latency,
-		ErrorsTotal:    float64(errorsTotal),
-		RequestsTotal:  float64(requestsTotal),
-		ThrottledTotal: float64(throttledTotal),
-		BlocksLag:      float64(blocksLag),
+		P90LatencySecs: latency,
+		ErrorsTotal:    errorsTotal,
+		RequestsTotal:  requestsTotal,
+		ThrottledTotal: throttledTotal,
+		BlocksLag:      blocksLag,
 		LastCollect:    time.Date(2023, time.January, 1, 0, 0, 0, 0, time.UTC),
 	}
 }
@@ -40,10 +40,10 @@ func genMetrics(latency float64, errorsTotal, requestsTotal, throttledTotal, blo
 type testCase struct {
 	id             string
 	latency        float64
-	errorsTotal    int
-	requestsTotal  int
-	throttledTotal int
-	blocksLag      int
+	errorsTotal    float64
+	requestsTotal  float64
+	throttledTotal float64
+	blocksLag      float64
 }
 
 // Test group struct
@@ -223,10 +223,8 @@ func TestUpstreamsRegistry_ScoreOrdering(t *testing.T) {
 
 			// HealthCheckGroupConfig for the test
 			gp := &common.HealthCheckGroupConfig{
-				Id:                  "test_group",
-				MaxErrorRatePercent: 10,
-				MaxP90Latency:       "1s",
-				MaxBlocksLag:        10,
+				Id:            "test_group",
+				CheckInterval: "1s",
 			}
 
 			// Refresh scores

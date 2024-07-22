@@ -135,7 +135,7 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 		nr := upstream.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0x123456789"],"id":1}`))
 		_, _ = nw.Forward(ctx, nr)
 	}
-	
+
 	// wait until scores are calculated and erpc is shutdown down properly
 	time.Sleep(6 * time.Second)
 	cancel()
