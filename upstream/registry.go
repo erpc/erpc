@@ -60,13 +60,16 @@ func (u *UpstreamsRegistry) scheduleHealthCheckTimers() error {
 	// A global timer to collect metrics for all upstreams
 	// TODO make this work per-group and more accurate metrics collection vs prometheus
 	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-u.shutdownChan:
+				log.Debug().Msgf("shutting down metrics collection timer")
+				ticker.Stop()
 				return
-			default:
+			case <-ticker.C:
 				u.collectMetricsForAllUpstreams()
-				time.Sleep(5 * time.Second)
 			}
 		}
 	}()
@@ -86,13 +89,15 @@ func (u *UpstreamsRegistry) scheduleHealthCheckTimers() error {
 		}
 		log.Debug().Str("healthCheckGroup", healthGroupId).Dur("interval", checkIntervalDuration).Msgf("scheduling health check timer")
 		go func(healthCheckGroup *common.HealthCheckGroupConfig, checkIntervalDuration time.Duration) {
+			ticker := time.NewTicker(checkIntervalDuration)
+			defer ticker.Stop()
 			for {
 				select {
 				case <-u.shutdownChan:
+					log.Debug().Str("healthCheckGroup", healthCheckGroup.Id).Msgf("shutting down health check timer")
 					return
-				default:
+				case <-ticker.C:
 					u.refreshUpstreamGroupScores(healthCheckGroup, u.upstreamsMapByHealthGroup[healthCheckGroup.Id])
-					time.Sleep(time.Duration(checkIntervalDuration))
 				}
 			}
 		}(healthCheckGroup, checkIntervalDuration)
@@ -155,7 +160,7 @@ func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *common.He
 	var comparingUpstreams []*Upstream
 	var changedProjects map[string]bool = make(map[string]bool)
 	for _, ups := range upstreams {
-		ups.metricsMu.RLock()
+		ups.MetricsMu.RLock()
 		if ups.Metrics != nil {
 			p90Latencies = append(p90Latencies, ups.Metrics.P90Latency)
 			if ups.Metrics.RequestsTotal > 0 {
@@ -172,7 +177,7 @@ func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *common.He
 			changedProjects[ups.ProjectId] = true
 			comparingUpstreams = append(comparingUpstreams, ups)
 		}
-		ups.metricsMu.RUnlock()
+		ups.MetricsMu.RUnlock()
 	}
 
 	normP90Latencies := normalizeIntValues(p90Latencies, 100)
@@ -182,6 +187,7 @@ func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *common.He
 	normBlockLags := normalizeIntValues(blockLags, 100)
 
 	for i, ups := range comparingUpstreams {
+		ups.MetricsMu.Lock()
 		ups.Score = 0
 
 		// Higher score for lower total requests (to balance the load)
@@ -203,6 +209,8 @@ func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *common.He
 			Str("upstream", ups.Config().Id).
 			Int("score", ups.Score).
 			Msgf("refreshed score")
+
+		ups.MetricsMu.Unlock()
 	}
 
 	if u.OnUpstreamsPriorityChange != nil {
@@ -259,16 +267,11 @@ func (u *UpstreamsRegistry) collectMetricsForAllUpstreams() {
 					continue
 				}
 
-				ups.metricsMu.RLock()
+				ups.MetricsMu.Lock()
 				var metrics = ups.Metrics
 				if metrics == nil {
 					metrics = &UpstreamMetrics{}
-					ups.metricsMu.RUnlock()
-					ups.metricsMu.Lock()
 					ups.Metrics = metrics
-					ups.metricsMu.Unlock()
-				} else {
-					ups.metricsMu.RUnlock()
 				}
 
 				if mf.GetName() == "erpc_upstream_request_duration_seconds" {
@@ -288,6 +291,8 @@ func (u *UpstreamsRegistry) collectMetricsForAllUpstreams() {
 				}
 
 				metrics.LastCollect = time.Now()
+
+				ups.MetricsMu.Unlock()
 
 				u.logger.Trace().
 					Str("project", project).

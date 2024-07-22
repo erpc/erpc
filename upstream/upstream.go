@@ -37,7 +37,7 @@ type Upstream struct {
 	supportedNetworkIds   map[string]bool
 	supportedNetworkIdsMu sync.RWMutex
 
-	metricsMu sync.RWMutex
+	MetricsMu sync.RWMutex
 }
 
 func NewUpstream(

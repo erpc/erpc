@@ -14,7 +14,12 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+var erpcMu sync.Mutex
+
 func TestErpc_GracefulShutdown(t *testing.T) {
+	erpcMu.Lock()
+	defer erpcMu.Unlock()
+
 	cfg := &common.Config{
 		Server: &common.ServerConfig{
 			HttpHost: "localhost",
@@ -27,11 +32,10 @@ func TestErpc_GracefulShutdown(t *testing.T) {
 	erpc.Shutdown()
 }
 
-var prioMu sync.Mutex
 func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
-	prioMu.Lock()
-	defer prioMu.Unlock()
-	
+	erpcMu.Lock()
+	defer erpcMu.Unlock()
+
 	defer gock.Off()
 	defer gock.Clean()
 	defer gock.CleanUnmatchedRequest()
@@ -119,30 +123,38 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 	}
 
 	nw, err := erpcInstance.GetNetwork("test", "evm:123")
+	upsA := nw.Upstreams[0]
+	upsB := nw.Upstreams[1]
+
 	if err != nil {
 		t.Errorf("expected nil, got %v", err)
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	for i := 0; i < 500; i++ {
-		nr := upstream.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":1}`))
-		_, _ = nw.Forward(context.Background(), nr)
+		nr := upstream.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0x123456789"],"id":1}`))
+		_, _ = nw.Forward(ctx, nr)
 	}
-
+	
 	// wait until scores are calculated and erpc is shutdown down properly
 	time.Sleep(6 * time.Second)
+	cancel()
 	erpcInstance.Shutdown()
-	time.Sleep(2 * time.Second)
+	time.Sleep(6 * time.Second)
 
-	ups := nw.Upstreams
+	// TODO can we do this without exposing metrics mutex?
 	var up1Score, up2Score int
-	
-	if ups[0].Config().Id == "rpc1" {
-		up1Score = ups[0].Score
-		up2Score = ups[1].Score
+	upsA.MetricsMu.RLock()
+	upsB.MetricsMu.RLock()
+	if upsA.Config().Id == "rpc1" {
+		up1Score = upsA.Score
+		up2Score = upsB.Score
 	} else {
-		up1Score = ups[1].Score
-		up2Score = ups[0].Score
+		up1Score = upsB.Score
+		up2Score = upsA.Score
 	}
+	upsA.MetricsMu.RUnlock()
+	upsB.MetricsMu.RUnlock()
 
 	if up1Score >= up2Score {
 		t.Errorf("expected up1 to have lower score, got %v up1 failed/total: %f/%f up2 failed/total: %f/%f", up1Score, nw.Upstreams[0].Metrics.ErrorsTotal, nw.Upstreams[0].Metrics.RequestsTotal, nw.Upstreams[1].Metrics.ErrorsTotal, nw.Upstreams[1].Metrics.RequestsTotal)
