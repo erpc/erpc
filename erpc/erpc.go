@@ -61,19 +61,25 @@ func NewERPC(
 		networks := prj.Networks
 
 		for _, ntw := range networks {
+			ntw.upstreamsMutex.Lock()
 			for i := 0; i < len(ntw.Upstreams); i++ {
 				for j := i + 1; j < len(ntw.Upstreams); j++ {
+					ntw.Upstreams[i].MetricsMu.RLock()
+					ntw.Upstreams[j].MetricsMu.RLock()
 					if ntw.Upstreams[i].Score < ntw.Upstreams[j].Score {
 						ntw.Upstreams[i], ntw.Upstreams[j] = ntw.Upstreams[j], ntw.Upstreams[i]
 					}
+					ntw.Upstreams[i].MetricsMu.RUnlock()
+					ntw.Upstreams[j].MetricsMu.RUnlock()
 				}
 			}
-
+			
 			var finalOrder string
 			for _, u := range ntw.Upstreams {
 				finalOrder += u.Config().Id + ", "
 			}
 			log.Info().Str("project", projectId).Str("network", ntw.Id()).Str("upstreams", finalOrder).Msgf("upstreams priority updated")
+			ntw.upstreamsMutex.Unlock()
 		}
 
 		return nil

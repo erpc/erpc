@@ -25,10 +25,9 @@ type Network struct {
 	Logger    *zerolog.Logger
 	Upstreams []*upstream.Upstream
 
-	upstreamsMutex     *sync.RWMutex
-	reorderStopChannel chan bool
-	inFlightMutex      *sync.Mutex
-	inFlightRequests   map[string]*multiplexedInFlightRequest
+	upstreamsMutex   *sync.RWMutex
+	inFlightMutex    *sync.Mutex
+	inFlightRequests map[string]*multiplexedInFlightRequest
 
 	failsafePolicies     []failsafe.Policy[common.NormalizedResponse]
 	failsafeExecutor     failsafe.Executor[common.NormalizedResponse]
@@ -36,6 +35,8 @@ type Network struct {
 	// rateLimiterDal       data.RateLimitersDAL
 	cacheDal        data.CacheDAL
 	evmBlockTracker *EvmBlockTracker
+
+	shutdownChan chan struct{}
 }
 
 type multiplexedInFlightRequest struct {
@@ -57,13 +58,17 @@ func (n *Network) Bootstrap(ctx context.Context) error {
 	if len(n.Upstreams) > 0 {
 		go func(pn *Network) {
 			ticker := time.NewTicker(1 * time.Second)
+			defer ticker.Stop()
 			for {
 				select {
-				case <-pn.reorderStopChannel:
-					ticker.Stop()
+				case <-ctx.Done():
+					pn.Logger.Debug().Msg("shutting down upstream reordering timer due to context cancellation")
+					return
+				case <-pn.shutdownChan:
+					pn.Logger.Debug().Msg("shutting down upstream reordering timer via shutdown channel")
 					return
 				case <-ticker.C:
-					upsList := reorderUpstreams(pn.Upstreams)
+					upsList := n.reorderUpstreams(pn.Upstreams)
 					pn.upstreamsMutex.Lock()
 					pn.Upstreams = upsList
 					pn.upstreamsMutex.Unlock()
@@ -82,10 +87,8 @@ func (n *Network) Shutdown() error {
 		}
 	}
 
-	if n.reorderStopChannel != nil {
-		n.reorderStopChannel <- true
-	}
-
+	close(n.shutdownChan)
+	
 	return nil
 }
 
@@ -172,10 +175,13 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		ctx context.Context,
 	) (resp common.NormalizedResponse, skipped bool, err error) {
 		lg := u.Logger.With().Str("upstream", u.Config().Id).Logger()
+		u.MetricsMu.RLock()
 		if u.Score < 0 {
 			lg.Debug().Msgf("skipping upstream with negative score %d", u.Score)
+			u.MetricsMu.RUnlock()
 			return nil, true, nil
 		}
+		u.MetricsMu.RUnlock()
 
 		resp, err = n.forwardToUpstream(u, ctx, req)
 		if !common.IsNull(err) {
@@ -443,7 +449,9 @@ func (n *Network) forwardToUpstream(
 func weightedRandomSelect(upstreams []*upstream.Upstream) *upstream.Upstream {
 	totalScore := 0
 	for _, upstream := range upstreams {
+		upstream.MetricsMu.RLock()
 		totalScore += upstream.Score
+		upstream.MetricsMu.RUnlock()
 	}
 
 	if totalScore == 0 {
@@ -453,17 +461,24 @@ func weightedRandomSelect(upstreams []*upstream.Upstream) *upstream.Upstream {
 	randomValue := rand.Intn(totalScore)
 
 	for _, upstream := range upstreams {
+		upstream.MetricsMu.RLock()
 		if randomValue < upstream.Score {
+			upstream.MetricsMu.RUnlock()
 			return upstream
 		}
 		randomValue -= upstream.Score
+		upstream.MetricsMu.RUnlock()
 	}
 
 	// This should never be reached
 	return upstreams[len(upstreams)-1]
 }
 
-func reorderUpstreams(upstreams []*upstream.Upstream) []*upstream.Upstream {
+func (n *Network) reorderUpstreams(upstreams []*upstream.Upstream) []*upstream.Upstream {
+	n.Logger.Trace().Msg("reordering upstreams for network")
+	n.upstreamsMutex.RLock()
+	defer n.upstreamsMutex.RUnlock()
+
 	reordered := make([]*upstream.Upstream, len(upstreams))
 	remaining := append([]*upstream.Upstream{}, upstreams...)
 

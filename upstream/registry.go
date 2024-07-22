@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/flair-sdk/erpc/common"
@@ -19,6 +20,7 @@ type UpstreamsRegistry struct {
 	clientRegistry              *ClientRegistry
 	vendorsRegistry             *vendors.VendorsRegistry
 	rateLimitersRegistry        *RateLimitersRegistry
+	mapMu                       sync.RWMutex
 	upstreamsMapByProject       map[string][]*Upstream
 	upstreamsMapByProjectWithId map[string]map[string]*Upstream
 	upstreamsMapByHealthGroup   map[string]map[string]*Upstream
@@ -58,52 +60,63 @@ func (u *UpstreamsRegistry) scheduleHealthCheckTimers() error {
 	// A global timer to collect metrics for all upstreams
 	// TODO make this work per-group and more accurate metrics collection vs prometheus
 	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-u.shutdownChan:
+				log.Debug().Msgf("shutting down metrics collection timer")
+				ticker.Stop()
 				return
-			default:
+			case <-ticker.C:
 				u.collectMetricsForAllUpstreams()
-				time.Sleep(60 * time.Second)
 			}
 		}
 	}()
 
 	// A timer for each health check group to refresh the scores of the upstreams
-	for healthGroupId := range u.upstreamsMapByHealthGroup {
-		healthCheckGroup := u.config.HealthChecks.GetGroupConfig(healthGroupId)
+	if u.config == nil || u.config.HealthChecks == nil || len(u.config.HealthChecks.Groups) == 0 {
+		log.Debug().Msgf("no health check groups defined, skipping health check timers")
+		return nil
+	}
 
-		if healthCheckGroup == nil {
-			return common.NewErrHealthCheckGroupNotFound(healthGroupId)
-		}
-
+	u.mapMu.Lock()
+	for _, healthCheckGroup := range u.config.HealthChecks.Groups {
+		healthGroupId := healthCheckGroup.Id
 		checkIntervalDuration, err := time.ParseDuration(healthCheckGroup.CheckInterval)
 		if err != nil {
 			return common.NewErrInvalidHealthCheckConfig(fmt.Errorf("could not pase checkInterval: %w", err), healthGroupId)
 		}
 		log.Debug().Str("healthCheckGroup", healthGroupId).Dur("interval", checkIntervalDuration).Msgf("scheduling health check timer")
 		go func(healthCheckGroup *common.HealthCheckGroupConfig, checkIntervalDuration time.Duration) {
+			ticker := time.NewTicker(checkIntervalDuration)
+			defer ticker.Stop()
 			for {
 				select {
 				case <-u.shutdownChan:
+					log.Debug().Str("healthCheckGroup", healthCheckGroup.Id).Msgf("shutting down health check timer")
 					return
-				default:
+				case <-ticker.C:
 					u.refreshUpstreamGroupScores(healthCheckGroup, u.upstreamsMapByHealthGroup[healthCheckGroup.Id])
-					time.Sleep(time.Duration(checkIntervalDuration))
 				}
 			}
 		}(healthCheckGroup, checkIntervalDuration)
 	}
+	u.mapMu.Unlock()
 
 	return nil
 }
 
 func (u *UpstreamsRegistry) GetUpstreamsByProject(prjCfg *common.ProjectConfig) ([]*Upstream, error) {
+	u.mapMu.RLock()
 	if upstreams, ok := u.upstreamsMapByProject[prjCfg.Id]; ok {
+		u.mapMu.RUnlock()
 		return upstreams, nil
 	}
+	u.mapMu.RUnlock()
 
 	var upstreams []*Upstream
+	u.mapMu.Lock()
 	for _, upsCfg := range prjCfg.Upstreams {
 		upstream, err := u.NewUpstream(prjCfg.Id, upsCfg, u.logger)
 		if err != nil {
@@ -121,6 +134,7 @@ func (u *UpstreamsRegistry) GetUpstreamsByProject(prjCfg *common.ProjectConfig) 
 		u.upstreamsMapByProjectWithId[prjCfg.Id][upsCfg.Id] = upstream
 		upstreams = append(upstreams, upstream)
 	}
+	u.mapMu.Unlock()
 
 	if len(upstreams) == 0 {
 		return nil, common.NewErrNoUpstreamsDefined(prjCfg.Id)
@@ -132,12 +146,21 @@ func (u *UpstreamsRegistry) GetUpstreamsByProject(prjCfg *common.ProjectConfig) 
 
 // Proactively update the health information of upstreams of a project/network and reorder them so the highest performing upstreams are at the top
 func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *common.HealthCheckGroupConfig, upstreams map[string]*Upstream) error {
+	u.mapMu.RLock()
+	defer u.mapMu.RUnlock()
+
+	if len(upstreams) == 0 {
+		log.Debug().Str("healthCheckGroup", healthGroupCfg.Id).Msgf("no upstreams yet to refresh scores for health check group")
+		return nil
+	}
+
 	log.Debug().Str("healthCheckGroup", healthGroupCfg.Id).Msgf("refreshing upstreams scores")
 
 	var p90Latencies, errorRates, totalRequests, throttledRates, blockLags []float64
 	var comparingUpstreams []*Upstream
 	var changedProjects map[string]bool = make(map[string]bool)
 	for _, ups := range upstreams {
+		ups.MetricsMu.RLock()
 		if ups.Metrics != nil {
 			p90Latencies = append(p90Latencies, ups.Metrics.P90Latency)
 			if ups.Metrics.RequestsTotal > 0 {
@@ -154,6 +177,7 @@ func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *common.He
 			changedProjects[ups.ProjectId] = true
 			comparingUpstreams = append(comparingUpstreams, ups)
 		}
+		ups.MetricsMu.RUnlock()
 	}
 
 	normP90Latencies := normalizeIntValues(p90Latencies, 100)
@@ -163,29 +187,30 @@ func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *common.He
 	normBlockLags := normalizeIntValues(blockLags, 100)
 
 	for i, ups := range comparingUpstreams {
-		if ups.Metrics != nil {
-			ups.Score = 0
+		ups.MetricsMu.Lock()
+		ups.Score = 0
 
-			// Higher score for lower total requests (to balance the load)
-			ups.Score += 100 - normTotalRequests[i]
+		// Higher score for lower total requests (to balance the load)
+		ups.Score += 100 - normTotalRequests[i]
 
-			// Higher score for lower p90 latency
-			ups.Score += 100 - normP90Latencies[i]
+		// Higher score for lower p90 latency
+		ups.Score += 100 - normP90Latencies[i]
 
-			// Higher score for lower error rate
-			ups.Score += (100 - normErrorRates[i]) * 4
+		// Higher score for lower error rate
+		ups.Score += (100 - normErrorRates[i]) * 4
 
-			// Higher score for lower throttled rate
-			ups.Score += (100 - normThrottledRates[i]) * 3
+		// Higher score for lower throttled rate
+		ups.Score += (100 - normThrottledRates[i]) * 3
 
-			// Higher score for lower block lag
-			ups.Score += (100 - normBlockLags[i]) * 2
+		// Higher score for lower block lag
+		ups.Score += (100 - normBlockLags[i]) * 2
 
-			log.Debug().Str("healthCheckGroup", healthGroupCfg.Id).
-				Str("upstream", ups.Config().Id).
-				Int("score", ups.Score).
-				Msgf("refreshed score")
-		}
+		log.Debug().Str("healthCheckGroup", healthGroupCfg.Id).
+			Str("upstream", ups.Config().Id).
+			Int("score", ups.Score).
+			Msgf("refreshed score")
+
+		ups.MetricsMu.Unlock()
 	}
 
 	if u.OnUpstreamsPriorityChange != nil {
@@ -232,10 +257,21 @@ func (u *UpstreamsRegistry) collectMetricsForAllUpstreams() {
 			}
 
 			if project != "" && upstream != "" && category != "" {
-				var metrics = u.upstreamsMapByProjectWithId[project][upstream].Metrics
+				// Skip collection if project not registered yet
+				// TODO improve this scenario
+				if _, ok := u.upstreamsMapByProjectWithId[project]; !ok {
+					continue
+				}
+				ups := u.upstreamsMapByProjectWithId[project][upstream]
+				if ups == nil {
+					continue
+				}
+
+				ups.MetricsMu.Lock()
+				var metrics = ups.Metrics
 				if metrics == nil {
 					metrics = &UpstreamMetrics{}
-					u.upstreamsMapByProjectWithId[project][upstream].Metrics = metrics
+					ups.Metrics = metrics
 				}
 
 				if mf.GetName() == "erpc_upstream_request_duration_seconds" {
@@ -255,6 +291,8 @@ func (u *UpstreamsRegistry) collectMetricsForAllUpstreams() {
 				}
 
 				metrics.LastCollect = time.Now()
+
+				ups.MetricsMu.Unlock()
 
 				u.logger.Trace().
 					Str("project", project).

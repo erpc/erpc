@@ -137,6 +137,9 @@ func TestInit_HappyPath(t *testing.T) {
 	defer mainMutex.Unlock()
 
 	defer gock.Off()
+	defer gock.DisableNetworking()
+	defer gock.Clean()
+	defer gock.CleanUnmatchedRequest()
 
 	gock.EnableNetworking()
 
@@ -192,9 +195,7 @@ projects:
 
 	logger := log.With().Logger()
 	shutdown, err := erpc.Init(context.Background(), &logger, fs, args)
-	if shutdown != nil {
-		defer shutdown()
-	}
+	defer shutdown()
 	time.Sleep(1000 * time.Millisecond)
 
 	if err != nil {

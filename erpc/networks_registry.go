@@ -53,6 +53,7 @@ func NewNetwork(
 		rateLimitersRegistry: rateLimitersRegistry,
 		failsafePolicies:     policies,
 		failsafeExecutor:     failsafe.NewExecutor(policies...),
+		shutdownChan:         make(chan struct{}),
 	}
 
 	if nwCfg.Architecture == "" {
