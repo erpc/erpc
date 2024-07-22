@@ -73,7 +73,7 @@ func NewERPC(
 					ntw.Upstreams[j].MetricsMu.RUnlock()
 				}
 			}
-			
+
 			var finalOrder string
 			for _, u := range ntw.Upstreams {
 				finalOrder += u.Config().Id + ", "

@@ -7,7 +7,7 @@ import (
 )
 
 type UpstreamMetrics struct {
-	P90Latency     float64   `json:"p90Latency"`
+	P90LatencySecs float64   `json:"p90LatencySecs"`
 	ErrorsTotal    float64   `json:"errorsTotal"`
 	ThrottledTotal float64   `json:"throttledTotal"`
 	RequestsTotal  float64   `json:"requestsTotal"`
@@ -16,7 +16,7 @@ type UpstreamMetrics struct {
 }
 
 func (c *UpstreamMetrics) MarshalZerologObject(e *zerolog.Event) {
-	e.Float64("p90Latency", c.P90Latency).
+	e.Float64("p90LatencySecs", c.P90LatencySecs).
 		Float64("errorsTotal", c.ErrorsTotal).
 		Float64("requestsTotal", c.RequestsTotal).
 		Float64("throttledTotal", c.ThrottledTotal).

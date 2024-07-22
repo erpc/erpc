@@ -129,8 +129,8 @@ data:
       groups:
       - id: aggressive
         checkInterval: 30s
-        maxErrorRatePercent: 10
-        maxP90LatencyMs: 5s
+        maxErrorRate: 0.3 # after 30% error rate mark as unhealthy
+        maxP90LatencySecs: 5s
         maxBlocksBehind: 5
 ---
 apiVersion: v1

@@ -77,10 +77,6 @@ func NewUpstream(
 		pup.Client = client
 	}
 	pup.detectFeatures()
-	// pup.adapter, err = adapter.CreateAdapter(pup)
-	// if err != nil {
-	// 	return nil, err
-	// }
 
 	lg.Debug().Msgf("prepared upstream")
 

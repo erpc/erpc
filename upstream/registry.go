@@ -162,7 +162,7 @@ func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *common.He
 	for _, ups := range upstreams {
 		ups.MetricsMu.RLock()
 		if ups.Metrics != nil {
-			p90Latencies = append(p90Latencies, ups.Metrics.P90Latency)
+			p90Latencies = append(p90Latencies, ups.Metrics.P90LatencySecs)
 			if ups.Metrics.RequestsTotal > 0 {
 				errorRates = append(errorRates, ups.Metrics.ErrorsTotal/ups.Metrics.RequestsTotal)
 				throttledRates = append(throttledRates, ups.Metrics.ThrottledTotal/ups.Metrics.RequestsTotal)
@@ -279,7 +279,7 @@ func (u *UpstreamsRegistry) collectMetricsForAllUpstreams() {
 					for _, p := range percentiles {
 						switch p.GetQuantile() {
 						case 0.9:
-							metrics.P90Latency = p.GetValue()
+							metrics.P90LatencySecs = p.GetValue()
 						}
 					}
 				} else if mf.GetName() == "erpc_upstream_request_errors_total" {
