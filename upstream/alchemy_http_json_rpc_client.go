@@ -45,7 +45,7 @@ var alchemyNetworkSubdomains = map[uint64]string{
 
 	// zkSync
 	324: "zksync-mainnet",
-	280: "zksync-goerli",
+	300: "zksync-sepolia",
 
 	// Fantom Opera
 	250:  "fantom-mainnet",
