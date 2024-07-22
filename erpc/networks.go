@@ -25,10 +25,9 @@ type Network struct {
 	Logger    *zerolog.Logger
 	Upstreams []*upstream.Upstream
 
-	upstreamsMutex     *sync.RWMutex
-	reorderStopChannel chan bool
-	inFlightMutex      *sync.Mutex
-	inFlightRequests   map[string]*multiplexedInFlightRequest
+	upstreamsMutex   *sync.RWMutex
+	inFlightMutex    *sync.Mutex
+	inFlightRequests map[string]*multiplexedInFlightRequest
 
 	failsafePolicies     []failsafe.Policy[common.NormalizedResponse]
 	failsafeExecutor     failsafe.Executor[common.NormalizedResponse]
@@ -36,6 +35,8 @@ type Network struct {
 	// rateLimiterDal       data.RateLimitersDAL
 	cacheDal        data.CacheDAL
 	evmBlockTracker *EvmBlockTracker
+
+	shutdownChan chan struct{}
 }
 
 type multiplexedInFlightRequest struct {
@@ -59,7 +60,7 @@ func (n *Network) Bootstrap(ctx context.Context) error {
 			ticker := time.NewTicker(1 * time.Second)
 			for {
 				select {
-				case <-pn.reorderStopChannel:
+				case <-pn.shutdownChan:
 					ticker.Stop()
 					return
 				case <-ticker.C:
@@ -82,8 +83,8 @@ func (n *Network) Shutdown() error {
 		}
 	}
 
-	if n.reorderStopChannel != nil {
-		n.reorderStopChannel <- true
+	if n.shutdownChan != nil {
+		close(n.shutdownChan)
 	}
 
 	return nil
