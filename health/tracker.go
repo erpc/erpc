@@ -21,72 +21,63 @@ type TrackedMetrics struct {
 }
 
 type Tracker struct {
+	projectId string
+
 	mu        sync.RWMutex
 	upstreams map[string]common.Upstream
-	// metrics is a map of network -> upstream -> method -> metrics
-	metrics map[string]map[string]map[string]*TrackedMetrics
-	// windowMetrics is a map of network -> upstream -> method -> metrics
+
+	// a map of upstream -> network (or *) -> method (or *) -> metrics
 	windowMetrics map[string]map[string]map[string]*TrackedMetrics
+	windowSize    time.Duration
 
-	requestTotal           *prometheus.GaugeVec
-	requestDuration        *prometheus.SummaryVec
-	errorTotal             *prometheus.GaugeVec
-	selfRateLimitedTotal   *prometheus.GaugeVec
-	remoteRateLimitedTotal *prometheus.GaugeVec
-
-	windowSize time.Duration
-
-	cachedMetrics         []*dto.MetricFamily
-	cachedMetricsmu       sync.RWMutex
-	metricRefreshInterval time.Duration
-
-	projectId string
+	prometheusRefreshInterval time.Duration
+	cachedMetrics             []*dto.MetricFamily
+	cachedMetricsmu           sync.RWMutex
 }
 
-func NewTracker(projectId string, windowSize, metricRefreshInterval time.Duration) *Tracker {
+var metricRequestTotal = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Namespace: "erpc",
+	Name:      "upstream_request_total",
+	Help:      "Total number of requests to upstreams in the current window.",
+}, []string{"project", "network", "upstream", "method"})
+
+var metricRequestDuration = promauto.NewSummaryVec(prometheus.SummaryOpts{
+	Namespace: "erpc",
+	Name:      "upstream_request_duration_seconds",
+	Help:      "Duration of requests to upstreams.",
+	Objectives: map[float64]float64{
+		0.5:  0.05,
+		0.9:  0.01,
+		0.99: 0.001,
+	},
+}, []string{"project", "network", "upstream", "method"})
+
+var metricErrorTotal = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Namespace: "erpc",
+	Name:      "upstream_request_errors_total",
+	Help:      "Total number of errors for requests to upstreams in the current window.",
+}, []string{"project", "network", "upstream", "method", "error"})
+
+var metricSelfRateLimitedTotal = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Namespace: "erpc",
+	Name:      "upstream_request_self_rate_limited_total",
+	Help:      "Total number of self-imposed rate limited requests to upstreams in the current window.",
+}, []string{"project", "network", "upstream", "method"})
+
+var metricRemoteRateLimitedTotal = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Namespace: "erpc",
+	Name:      "upstream_request_remote_rate_limited_total",
+	Help:      "Total number of remote rate limited requests by upstreams in the current window.",
+}, []string{"project", "network", "upstream", "method"})
+
+func NewTracker(projectId string, windowSize, prometheusRefreshInterval time.Duration) *Tracker {
 	t := &Tracker{
-		upstreams:             make(map[string]common.Upstream),
-		metrics:               make(map[string]map[string]map[string]*TrackedMetrics),
-		windowMetrics:         make(map[string]map[string]map[string]*TrackedMetrics),
-		windowSize:            windowSize,
-		metricRefreshInterval: metricRefreshInterval,
-		projectId:             projectId,
+		projectId:                 projectId,
+		upstreams:                 make(map[string]common.Upstream),
+		windowMetrics:             make(map[string]map[string]map[string]*TrackedMetrics),
+		windowSize:                windowSize,
+		prometheusRefreshInterval: prometheusRefreshInterval,
 	}
-
-	t.requestTotal = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "erpc",
-		Name:      "upstream_request_total",
-		Help:      "Total number of requests to upstreams in the current window.",
-	}, []string{"project", "network", "upstream", "method"})
-
-	t.requestDuration = promauto.NewSummaryVec(prometheus.SummaryOpts{
-		Namespace: "erpc",
-		Name:      "upstream_request_duration_seconds",
-		Help:      "Duration of requests to upstreams.",
-		Objectives: map[float64]float64{
-			0.5:  0.05,
-			0.9:  0.01,
-			0.99: 0.001,
-		},
-	}, []string{"project", "network", "upstream", "method"})
-
-	t.errorTotal = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "erpc",
-		Name:      "upstream_request_errors_total",
-		Help:      "Total number of errors for requests to upstreams in the current window.",
-	}, []string{"project", "network", "upstream", "method", "error"})
-
-	t.selfRateLimitedTotal = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "erpc",
-		Name:      "upstream_request_self_rate_limited_total",
-		Help:      "Total number of self-imposed rate limited requests to upstreams in the current window.",
-	}, []string{"project", "network", "upstream", "method"})
-
-	t.remoteRateLimitedTotal = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "erpc",
-		Name:      "upstream_request_remote_rate_limited_total",
-		Help:      "Total number of remote rate limited requests by upstreams in the current window.",
-	}, []string{"project", "network", "upstream", "method"})
 
 	return t
 }
@@ -106,24 +97,32 @@ func (t *Tracker) updatePrometheusMetrics(ctx context.Context) {
 			return
 		case <-ticker.C:
 			t.mu.Lock()
-			for network, upss := range t.windowMetrics {
-				for ups, methods := range upss {
-					for method, metrics := range methods {
-						t.requestTotal.WithLabelValues(t.projectId, network, ups, method).Set(metrics.RequestsTotal)
-						t.errorTotal.WithLabelValues(t.projectId, network, ups, method, "all").Set(metrics.ErrorsTotal)
-						t.selfRateLimitedTotal.WithLabelValues(t.projectId, network, ups, method).Set(metrics.SelfRateLimitedTotal)
-						t.remoteRateLimitedTotal.WithLabelValues(t.projectId, network, ups, method).Set(metrics.RemoteRateLimitedTotal)
+			for _, upsList := range t.windowMetrics {
+				for _, methods := range upsList {
+					for _, metrics := range methods {
+						if metrics == nil {
+							continue
+						}
+						metrics.ErrorsTotal = 0
+						metrics.RequestsTotal = 0
+						metrics.SelfRateLimitedTotal = 0
+						metrics.RemoteRateLimitedTotal = 0
+						// Update Prometheus metrics
+						// metricRequestTotal.WithLabelValues(t.projectId, network, ups, method).Set(metrics.RequestsTotal)
+						// metricErrorTotal.WithLabelValues(t.projectId, network, ups, method, "all").Set(metrics.ErrorsTotal)
+						// metricSelfRateLimitedTotal.WithLabelValues(t.projectId, network, ups, method).Set(metrics.SelfRateLimitedTotal)
+						// metricRemoteRateLimitedTotal.WithLabelValues(t.projectId, network, ups, method).Set(metrics.RemoteRateLimitedTotal)
 					}
 				}
 			}
-			t.windowMetrics = make(map[string]map[string]map[string]*TrackedMetrics)
+			// t.windowMetrics = make(map[string]map[string]map[string]*TrackedMetrics)
 			t.mu.Unlock()
 		}
 	}
 }
 
 func (t *Tracker) refreshCachedMetrics(ctx context.Context) {
-	ticker := time.NewTicker(t.metricRefreshInterval)
+	ticker := time.NewTicker(t.prometheusRefreshInterval)
 	defer ticker.Stop()
 
 	for {
@@ -149,17 +148,28 @@ func (t *Tracker) RegisterUpstream(ups common.Upstream) {
 }
 
 func (t *Tracker) ensureMetricsInitialized(network, ups, method string) {
-	if _, ok := t.metrics[ups]; !ok {
-		t.metrics[ups] = make(map[string]map[string]*TrackedMetrics)
+	if _, ok := t.windowMetrics[ups]; !ok {
 		t.windowMetrics[ups] = make(map[string]map[string]*TrackedMetrics)
 	}
-	if _, ok := t.metrics[ups][network]; !ok {
-		t.metrics[ups][network] = make(map[string]*TrackedMetrics)
+
+	if _, ok := t.windowMetrics[ups][network]; !ok {
 		t.windowMetrics[ups][network] = make(map[string]*TrackedMetrics)
 	}
-	if _, ok := t.metrics[ups][network][method]; !ok {
-		t.metrics[ups][network][method] = &TrackedMetrics{}
+	if _, ok := t.windowMetrics[ups][network][method]; !ok {
 		t.windowMetrics[ups][network][method] = &TrackedMetrics{}
+	}
+	if _, ok := t.windowMetrics[ups][network]["*"]; !ok {
+		t.windowMetrics[ups][network]["*"] = &TrackedMetrics{}
+	}
+
+	if _, ok := t.windowMetrics[ups]["*"]; !ok {
+		t.windowMetrics[ups]["*"] = make(map[string]*TrackedMetrics)
+	}
+	if _, ok := t.windowMetrics[ups]["*"][method]; !ok {
+		t.windowMetrics[ups]["*"][method] = &TrackedMetrics{}
+	}
+	if _, ok := t.windowMetrics[ups]["*"]["*"]; !ok {
+		t.windowMetrics[ups]["*"]["*"] = &TrackedMetrics{}
 	}
 }
 
@@ -173,7 +183,7 @@ func (t *Tracker) RecordUpstreamRequest(network, ups, method string) {
 
 	t.ensureMetricsInitialized(network, ups, method)
 	t.incrementMetric(network, ups, method, "RequestsTotal", 1)
-	t.requestTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
+	metricRequestTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
 }
 
 func (t *Tracker) RecordUpstreamDurationStart(network, ups, method string) *prometheus.Timer {
@@ -181,7 +191,7 @@ func (t *Tracker) RecordUpstreamDurationStart(network, ups, method string) *prom
 	defer t.mu.Unlock()
 
 	t.ensureMetricsInitialized(network, ups, method)
-	return prometheus.NewTimer(t.requestDuration.WithLabelValues(t.projectId, network, ups, method))
+	return prometheus.NewTimer(metricRequestDuration.WithLabelValues(t.projectId, network, ups, method))
 }
 
 func (t *Tracker) RecordUpstreamFailure(network, ups, method, errorType string) {
@@ -190,7 +200,7 @@ func (t *Tracker) RecordUpstreamFailure(network, ups, method, errorType string) 
 
 	t.ensureMetricsInitialized(network, ups, method)
 	t.incrementMetric(network, ups, method, "ErrorsTotal", 1)
-	t.errorTotal.WithLabelValues(t.projectId, network, ups, method, errorType).Inc()
+	metricErrorTotal.WithLabelValues(t.projectId, network, ups, method, errorType).Inc()
 }
 
 func (t *Tracker) RecordUpstreamSelfRateLimited(network, ups, method string) {
@@ -199,7 +209,7 @@ func (t *Tracker) RecordUpstreamSelfRateLimited(network, ups, method string) {
 
 	t.ensureMetricsInitialized(network, ups, method)
 	t.incrementMetric(network, ups, method, "SelfRateLimitedTotal", 1)
-	t.selfRateLimitedTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
+	metricSelfRateLimitedTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
 }
 
 func (t *Tracker) RecordUpstreamRemoteRateLimited(network, ups, method string) {
@@ -208,16 +218,13 @@ func (t *Tracker) RecordUpstreamRemoteRateLimited(network, ups, method string) {
 
 	t.ensureMetricsInitialized(network, ups, method)
 	t.incrementMetric(network, ups, method, "RemoteRateLimitedTotal", 1)
-	t.remoteRateLimitedTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
+	metricRemoteRateLimitedTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
 }
 
 func (t *Tracker) incrementMetric(network, ups, method, metricName string, value float64) {
-	t.incrementMetricHelper(t.metrics, network, ups, method, metricName, value)
 	t.incrementMetricHelper(t.windowMetrics, network, ups, method, metricName, value)
-	t.incrementMetricHelper(t.metrics, network, ups, "", metricName, value)
-	t.incrementMetricHelper(t.windowMetrics, network, ups, "", metricName, value)
-	t.incrementMetricHelper(t.metrics, ups, "", "", metricName, value)
-	t.incrementMetricHelper(t.windowMetrics, ups, "", "", metricName, value)
+	t.incrementMetricHelper(t.windowMetrics, network, ups, "*", metricName, value)
+	t.incrementMetricHelper(t.windowMetrics, ups, "*", "*", metricName, value)
 }
 
 func (t *Tracker) incrementMetricHelper(metrics map[string]map[string]map[string]*TrackedMetrics, network, ups, method, metricName string, value float64) {
@@ -239,16 +246,24 @@ func (t *Tracker) GetUpstreamMethodMetrics(network, ups, method string) *Tracked
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	if metrics, ok := t.metrics[ups][network][method]; ok {
+	// If we have data for the method on this specific network, use it
+	if metrics, ok := t.windowMetrics[ups][network][method]; ok {
 		return t.calculateMetrics(network, ups, method, metrics)
 	}
 
-	if metrics, ok := t.metrics[ups][network][""]; ok {
-		return t.calculateMetrics(network, ups, "", metrics)
+	// If we have data for any method on the network, use it
+	if metrics, ok := t.windowMetrics[ups][network]["*"]; ok {
+		return t.calculateMetrics(network, ups, "*", metrics)
 	}
 
-	if metrics, ok := t.metrics[ups][""][""]; ok {
-		return t.calculateMetrics(ups, "", "", metrics)
+	// If we have data for the method any network of this upstream, use it
+	if metrics, ok := t.windowMetrics[ups]["*"][method]; ok {
+		return t.calculateMetrics("*", ups, method, metrics)
+	}
+
+	// If we have data for any method and any network of this upstream, use it
+	if metrics, ok := t.windowMetrics[ups]["*"]["*"]; ok {
+		return t.calculateMetrics("*", ups, "*", metrics)
 	}
 
 	return &TrackedMetrics{

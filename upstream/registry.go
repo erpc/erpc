@@ -3,7 +3,7 @@ package upstream
 import (
 	"context"
 	"fmt"
-	"math/rand"
+	"sort"
 	"sync"
 	"time"
 
@@ -25,11 +25,9 @@ type UpstreamsRegistry struct {
 	upsCfg               []*common.UpstreamConfig
 
 	allUpstreams []*Upstream
-	// map of network -> method => upstreams
+	// map of network -> method (or *) => upstreams
 	sortedUpstreams map[string]map[string][]*Upstream
-	// map of network -> upstream -> method => metrics
-	upstreamsMetrics map[string]map[string]map[string]*UpstreamMetrics
-	// map of network -> method -> upstream => score
+	// map of upstream -> network (or *) -> method (or *) => score
 	upstreamScores map[string]map[string]map[string]int
 }
 
@@ -50,7 +48,6 @@ func NewUpstreamsRegistry(
 		metricsTracker:       mt,
 		upsCfg:               upsCfg,
 		sortedUpstreams:      make(map[string]map[string][]*Upstream),
-		upstreamsMetrics:     make(map[string]map[string]map[string]*UpstreamMetrics),
 		upstreamScores:       make(map[string]map[string]map[string]int),
 		mapMu:                sync.RWMutex{},
 	}
@@ -92,23 +89,32 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(networkId string) error {
 		return common.NewErrNoUpstreamsFound(u.prjId, networkId)
 	}
 
-	if u.sortedUpstreams[networkId] == nil {
+	if _, ok := u.sortedUpstreams[networkId]; !ok {
 		u.sortedUpstreams[networkId] = make(map[string][]*Upstream)
 	}
-	u.sortedUpstreams[networkId]["*"] = upstreams
-
-	if u.upstreamsMetrics[networkId] == nil {
-		u.upstreamsMetrics[networkId] = make(map[string]map[string]*UpstreamMetrics)
-	}
-	if u.upstreamsMetrics[networkId]["*"] == nil {
-		u.upstreamsMetrics[networkId]["*"] = make(map[string]*UpstreamMetrics)
+	if _, ok := u.sortedUpstreams[networkId]["*"]; !ok {
+		u.sortedUpstreams[networkId]["*"] = upstreams
 	}
 
-	if u.upstreamScores[networkId] == nil {
-		u.upstreamScores[networkId] = make(map[string]map[string]int)
-	}
-	if u.upstreamScores[networkId]["*"] == nil {
-		u.upstreamScores[networkId]["*"] = make(map[string]int)
+	// Initialize score for this or any network and any method for each upstream
+	for _, ups := range upstreams {
+		if _, ok := u.upstreamScores[ups.Config().Id]; !ok {
+			u.upstreamScores[ups.Config().Id] = make(map[string]map[string]int)
+		}
+
+		if _, ok := u.upstreamScores[ups.Config().Id][networkId]; !ok {
+			u.upstreamScores[ups.Config().Id][networkId] = make(map[string]int)
+		}
+		if _, ok := u.upstreamScores[ups.Config().Id][networkId]["*"]; !ok {
+			u.upstreamScores[ups.Config().Id][networkId]["*"] = 0
+		}
+
+		if _, ok := u.upstreamScores[ups.Config().Id]["*"]; !ok {
+			u.upstreamScores[ups.Config().Id]["*"] = make(map[string]int)
+		}
+		if _, ok := u.upstreamScores[ups.Config().Id]["*"]["*"]; !ok {
+			u.upstreamScores[ups.Config().Id]["*"]["*"] = 0
+		}
 	}
 
 	return nil
@@ -120,8 +126,11 @@ func (u *UpstreamsRegistry) GetSortedUpstreams(networkId, method string) ([]*Ups
 	if upsList == nil {
 		upsList = u.sortedUpstreams[networkId]["*"]
 		if upsList == nil {
-			u.mapMu.RUnlock()
-			return nil, common.NewErrNoUpstreamsFound(u.prjId, networkId)
+			upsList = u.sortedUpstreams["*"]["*"]
+			if upsList == nil {
+				u.mapMu.RUnlock()
+				return nil, common.NewErrNoUpstreamsFound(u.prjId, networkId)
+			}
 		}
 		u.mapMu.RUnlock()
 
@@ -129,74 +138,43 @@ func (u *UpstreamsRegistry) GetSortedUpstreams(networkId, method string) ([]*Ups
 		methodUpsList := make([]*Upstream, len(upsList))
 		copy(methodUpsList, upsList)
 
-		// Use a goroutine to update the sorted upstreams map
-		go func() {
-			u.mapMu.Lock()
-			defer u.mapMu.Unlock()
-			if u.sortedUpstreams[networkId][method] == nil {
-				u.sortedUpstreams[networkId][method] = methodUpsList
-				// Initialize scores for the new method using the "*" method scores
-				u.upstreamScores[networkId][method] = make(map[string]int)
-				for _, ups := range methodUpsList {
-					u.upstreamScores[networkId][method][ups.Config().Id] = u.upstreamScores[networkId]["*"][ups.Config().Id]
-				}
+		u.mapMu.Lock()
+		u.sortedUpstreams[networkId][method] = methodUpsList
+		u.mapMu.Unlock()
+
+		// Initialize scores for this method on this network and "any" network
+		for _, ups := range methodUpsList {
+			if _, ok := u.upstreamScores[ups.Config().Id][networkId][method]; !ok {
+				u.upstreamScores[ups.Config().Id][networkId][method] = 0
 			}
-		}()
+			if _, ok := u.upstreamScores[ups.Config().Id]["*"][method]; !ok {
+				u.upstreamScores[ups.Config().Id]["*"][method] = 0
+			}
+		}
 
 		return methodUpsList, nil
+	} else {
+		u.mapMu.RUnlock()
 	}
-	u.mapMu.RUnlock()
 
 	return upsList, nil
 }
 
 func (u *UpstreamsRegistry) sortUpstreams(networkId, method string, upstreams []*Upstream) {
-	sortedUpstreams := make([]*Upstream, 0, len(upstreams))
-	remainingUpstreams := append([]*Upstream{}, upstreams...)
+	sort.Slice(upstreams, func(i, j int) bool {
+		scoreI := u.upstreamScores[upstreams[i].Config().Id][networkId][method]
+		scoreJ := u.upstreamScores[upstreams[j].Config().Id][networkId][method]
 
-	for len(remainingUpstreams) > 0 {
-		selected := u.weightedRandomSelect(networkId, method, remainingUpstreams)
-		sortedUpstreams = append(sortedUpstreams, selected)
-
-		// Remove the selected upstream from remainingUpstreams
-		for i, ups := range remainingUpstreams {
-			if ups.Config().Id == selected.Config().Id {
-				remainingUpstreams = append(remainingUpstreams[:i], remainingUpstreams[i+1:]...)
-				break
-			}
+		if scoreI != scoreJ {
+			return scoreI > scoreJ
 		}
-	}
 
-	// Replace the original slice with the sorted one
-	copy(upstreams, sortedUpstreams)
+		// If scores are equal, sort by upstream ID for consistency
+		return upstreams[i].Config().Id < upstreams[j].Config().Id
+	})
 }
 
-func (u *UpstreamsRegistry) weightedRandomSelect(networkId, method string, upstreams []*Upstream) *Upstream {
-	totalScore := 0
-	for _, upstream := range upstreams {
-		totalScore += u.upstreamScores[networkId][method][upstream.Config().Id]
-	}
-
-	if totalScore == 0 {
-		// If all scores are 0, return a random upstream
-		return upstreams[rand.Intn(len(upstreams))]
-	}
-
-	randomValue := rand.Intn(totalScore)
-
-	for _, upstream := range upstreams {
-		score := u.upstreamScores[networkId][method][upstream.Config().Id]
-		if randomValue < score {
-			return upstream
-		}
-		randomValue -= score
-	}
-
-	// This should never be reached, but return the last upstream if it does
-	return upstreams[len(upstreams)-1]
-}
-
-func (u *UpstreamsRegistry) refreshUpstreamGroupScores() error {
+func (u *UpstreamsRegistry) refreshUpstreamNetworkMethodScores() error {
 	u.mapMu.Lock()
 	defer u.mapMu.Unlock()
 
@@ -245,7 +223,7 @@ func (u *UpstreamsRegistry) scheduleHealthCheckTimers(ctx context.Context) error
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				u.refreshUpstreamGroupScores()
+				u.refreshUpstreamNetworkMethodScores()
 			}
 		}
 	}()
@@ -277,16 +255,9 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 	normThrottledRates := normalizeIntValues(throttledRates, 100)
 	normTotalRequests := normalizeIntValues(totalRequests, 100)
 
-	if u.upstreamScores[networkId] == nil {
-		u.upstreamScores[networkId] = make(map[string]map[string]int)
-	}
-	if u.upstreamScores[networkId][method] == nil {
-		u.upstreamScores[networkId][method] = make(map[string]int)
-	}
-
 	for i, ups := range upsList {
 		score := u.calculateScore(normTotalRequests[i], normP90Latencies[i], normErrorRates[i], normThrottledRates[i])
-		u.upstreamScores[networkId][method][ups.Config().Id] = score
+		u.upstreamScores[ups.Config().Id][networkId][method] = score
 
 		log.Debug().Str("projectId", u.prjId).
 			Str("upstream", ups.Config().Id).
