@@ -67,7 +67,7 @@ func (manager *ClientRegistry) CreateClient(ups *Upstream) (ClientInterface, err
 				} else if parsedUrl.Scheme == "ws" || parsedUrl.Scheme == "wss" {
 					clientErr = fmt.Errorf("websocket client not implemented yet")
 				} else {
-					clientErr = fmt.Errorf("unsupported EVM scheme: %v for upstream: %v", parsedUrl.Scheme, cfg.Id)
+					clientErr = fmt.Errorf("unsupported endpoint scheme: %v for upstream: %v", parsedUrl.Scheme, cfg.Id)
 				}
 
 			case common.UpstreamTypeEvmAlchemy:
