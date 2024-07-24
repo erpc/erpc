@@ -6,39 +6,45 @@ import (
 )
 
 var (
-	MetricUpstreamRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "erpc",
-		Name:      "upstream_request_total",
-		Help:      "Total number of requests to upstreams.",
-	}, []string{"project", "network", "upstream", "category"})
+	// MetricUpstreamRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	// 	Namespace: "erpc",
+	// 	Name:      "upstream_request_total",
+	// 	Help:      "Total number of requests to upstreams.",
+	// }, []string{"project", "network", "upstream", "category"})
 
-	MetricUpstreamRequestDuration = promauto.NewSummaryVec(prometheus.SummaryOpts{
-		Namespace: "erpc",
-		Name:      "upstream_request_duration_seconds",
-		Help:      "Duration of requests to upstreams.",
-		Objectives: map[float64]float64{
-			0.5:  0.05,  // 50th percentile with a max. absolute error of 0.05.
-			0.9:  0.01,  // 90th percentile with a max. absolute error of 0.01.
-			0.99: 0.001, // 99th percentile with a max. absolute error of 0.001.
-		},
-	}, []string{"project", "network", "upstream", "category"})
+	// MetricUpstreamRequestDuration = promauto.NewSummaryVec(prometheus.SummaryOpts{
+	// 	Namespace: "erpc",
+	// 	Name:      "upstream_request_duration_seconds",
+	// 	Help:      "Duration of requests to upstreams.",
+	// 	Objectives: map[float64]float64{
+	// 		0.5:  0.05,  // 50th percentile with a max. absolute error of 0.05.
+	// 		0.9:  0.01,  // 90th percentile with a max. absolute error of 0.01.
+	// 		0.99: 0.001, // 99th percentile with a max. absolute error of 0.001.
+	// 	},
+	// }, []string{"project", "network", "upstream", "category"})
 
-	MetricUpstreamRequestErrors = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "erpc",
-		Name:      "upstream_request_errors_total",
-		Help:      "Total number of errors for requests to upstreams.",
-	}, []string{"project", "network", "upstream", "category", "error"})
+	// MetricUpstreamRequestErrors = promauto.NewCounterVec(prometheus.CounterOpts{
+	// 	Namespace: "erpc",
+	// 	Name:      "upstream_request_errors_total",
+	// 	Help:      "Total number of errors for requests to upstreams.",
+	// }, []string{"project", "network", "upstream", "category", "error"})
 
-	MetricUpstreamRequestLocalRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "erpc",
-		Name:      "upstream_request_local_rate_limited_total",
-		Help:      "Total number of locally rate limited requests to upstreams.",
-	}, []string{"project", "network", "upstream", "category"})
+	// MetricUpstreamRequestRemoteRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
+	// 	Namespace: "erpc",
+	// 	Name:      "upstream_request_remote_rate_limited_total",
+	// 	Help:      "Total number of remote rate limited requests by upstreams.",
+	// }, []string{"project", "network", "upstream", "category"})
 
-	MetricNetworkRequestLocalRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
+	// MetricUpstreamRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
+	// 	Namespace: "erpc",
+	// 	Name:      "upstream_request_self_rate_limited_total",
+	// 	Help:      "Total number of self-imposed (locally) rate limited requests to upstreams.",
+	// }, []string{"project", "network", "upstream", "category"})
+
+	MetricNetworkRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
-		Name:      "network_request_local_rate_limited_total",
-		Help:      "Total number of locally rate limited requests to network.",
+		Name:      "network_request_self_rate_limited_total",
+		Help:      "Total number of self-imposed (locally) rate limited requests towards the network.",
 	}, []string{"project", "network", "category"})
 
 	MetricNetworkRequestsReceived = promauto.NewCounterVec(prometheus.CounterOpts{

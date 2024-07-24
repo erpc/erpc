@@ -1,313 +1,327 @@
 package upstream
 
 import (
+	"context"
 	"fmt"
+	"math/rand"
 	"sync"
 	"time"
 
 	"github.com/flair-sdk/erpc/common"
+	"github.com/flair-sdk/erpc/health"
 	"github.com/flair-sdk/erpc/vendors"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
 type UpstreamsRegistry struct {
-	OnUpstreamsPriorityChange func(projectId string) error
+	prjId                string
+	logger               *zerolog.Logger
+	metricsTracker       *health.Tracker
+	clientRegistry       *ClientRegistry
+	vendorsRegistry      *vendors.VendorsRegistry
+	rateLimitersRegistry *RateLimitersRegistry
+	mapMu                sync.RWMutex
+	upsCfg               []*common.UpstreamConfig
 
-	logger                      *zerolog.Logger
-	config                      *common.Config
-	clientRegistry              *ClientRegistry
-	vendorsRegistry             *vendors.VendorsRegistry
-	rateLimitersRegistry        *RateLimitersRegistry
-	mapMu                       sync.RWMutex
-	upstreamsMapByProject       map[string][]*Upstream
-	upstreamsMapByProjectWithId map[string]map[string]*Upstream
-	upstreamsMapByHealthGroup   map[string]map[string]*Upstream
-	shutdownChan                chan struct{}
+	allUpstreams []*Upstream
+	// map of network -> method => upstreams
+	sortedUpstreams map[string]map[string][]*Upstream
+	// map of network -> upstream -> method => metrics
+	upstreamsMetrics map[string]map[string]map[string]*UpstreamMetrics
+	// map of network -> method -> upstream => score
+	upstreamScores map[string]map[string]map[string]int
 }
 
 func NewUpstreamsRegistry(
 	logger *zerolog.Logger,
-	cfg *common.Config,
+	prjId string,
+	upsCfg []*common.UpstreamConfig,
 	rlr *RateLimitersRegistry,
 	vr *vendors.VendorsRegistry,
+	mt *health.Tracker,
 ) *UpstreamsRegistry {
-	r := &UpstreamsRegistry{
-		logger:                      logger,
-		config:                      cfg,
-		clientRegistry:              NewClientRegistry(),
-		rateLimitersRegistry:        rlr,
-		vendorsRegistry:             vr,
-		upstreamsMapByProject:       make(map[string][]*Upstream),
-		upstreamsMapByProjectWithId: make(map[string]map[string]*Upstream),
-		upstreamsMapByHealthGroup:   make(map[string]map[string]*Upstream),
-		shutdownChan:                make(chan struct{}),
+	return &UpstreamsRegistry{
+		prjId:                prjId,
+		logger:               logger,
+		clientRegistry:       NewClientRegistry(),
+		rateLimitersRegistry: rlr,
+		vendorsRegistry:      vr,
+		metricsTracker:       mt,
+		upsCfg:               upsCfg,
+		sortedUpstreams:      make(map[string]map[string][]*Upstream),
+		upstreamsMetrics:     make(map[string]map[string]map[string]*UpstreamMetrics),
+		upstreamScores:       make(map[string]map[string]map[string]int),
+		mapMu:                sync.RWMutex{},
 	}
-	return r
 }
 
-func (u *UpstreamsRegistry) Bootstrap() error {
-	return u.scheduleHealthCheckTimers()
+func (u *UpstreamsRegistry) Bootstrap(ctx context.Context) error {
+	err := u.registerUpstreams()
+	if err != nil {
+		return err
+	}
+	return u.scheduleHealthCheckTimers(ctx)
 }
 
-func (u *UpstreamsRegistry) Shutdown() error {
-	close(u.shutdownChan)
+func (u *UpstreamsRegistry) NewUpstream(
+	projectId string,
+	cfg *common.UpstreamConfig,
+	logger *zerolog.Logger,
+	mt *health.Tracker,
+) (*Upstream, error) {
+	return NewUpstream(projectId, cfg, u.clientRegistry, u.rateLimitersRegistry, u.vendorsRegistry, logger, mt)
+}
+
+func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(networkId string) error {
+	u.mapMu.Lock()
+	defer u.mapMu.Unlock()
+
+	var upstreams []*Upstream
+	for _, ups := range u.allUpstreams {
+		if s, e := ups.SupportsNetwork(networkId); e == nil && s {
+			upstreams = append(upstreams, ups)
+		} else if e != nil {
+			u.logger.Warn().Err(e).
+				Str("upstream", ups.Config().Id).
+				Str("network", networkId).
+				Msgf("failed to check if upstream supports network")
+		}
+	}
+	if len(upstreams) == 0 {
+		return common.NewErrNoUpstreamsFound(u.prjId, networkId)
+	}
+
+	if u.sortedUpstreams[networkId] == nil {
+		u.sortedUpstreams[networkId] = make(map[string][]*Upstream)
+	}
+	u.sortedUpstreams[networkId]["*"] = upstreams
+
+	if u.upstreamsMetrics[networkId] == nil {
+		u.upstreamsMetrics[networkId] = make(map[string]map[string]*UpstreamMetrics)
+	}
+	if u.upstreamsMetrics[networkId]["*"] == nil {
+		u.upstreamsMetrics[networkId]["*"] = make(map[string]*UpstreamMetrics)
+	}
+
+	if u.upstreamScores[networkId] == nil {
+		u.upstreamScores[networkId] = make(map[string]map[string]int)
+	}
+	if u.upstreamScores[networkId]["*"] == nil {
+		u.upstreamScores[networkId]["*"] = make(map[string]int)
+	}
+
 	return nil
 }
 
-func (u *UpstreamsRegistry) scheduleHealthCheckTimers() error {
-	// A global timer to collect metrics for all upstreams
-	// TODO make this work per-group and more accurate metrics collection vs prometheus
+func (u *UpstreamsRegistry) GetSortedUpstreams(networkId, method string) ([]*Upstream, error) {
+	u.mapMu.RLock()
+	upsList := u.sortedUpstreams[networkId][method]
+	if upsList == nil {
+		upsList = u.sortedUpstreams[networkId]["*"]
+		if upsList == nil {
+			u.mapMu.RUnlock()
+			return nil, common.NewErrNoUpstreamsFound(u.prjId, networkId)
+		}
+		u.mapMu.RUnlock()
+
+		// Create a copy of the default upstreams list for this method
+		methodUpsList := make([]*Upstream, len(upsList))
+		copy(methodUpsList, upsList)
+
+		// Use a goroutine to update the sorted upstreams map
+		go func() {
+			u.mapMu.Lock()
+			defer u.mapMu.Unlock()
+			if u.sortedUpstreams[networkId][method] == nil {
+				u.sortedUpstreams[networkId][method] = methodUpsList
+				// Initialize scores for the new method using the "*" method scores
+				u.upstreamScores[networkId][method] = make(map[string]int)
+				for _, ups := range methodUpsList {
+					u.upstreamScores[networkId][method][ups.Config().Id] = u.upstreamScores[networkId]["*"][ups.Config().Id]
+				}
+			}
+		}()
+
+		return methodUpsList, nil
+	}
+	u.mapMu.RUnlock()
+
+	return upsList, nil
+}
+
+func (u *UpstreamsRegistry) sortUpstreams(networkId, method string, upstreams []*Upstream) {
+	sortedUpstreams := make([]*Upstream, 0, len(upstreams))
+	remainingUpstreams := append([]*Upstream{}, upstreams...)
+
+	for len(remainingUpstreams) > 0 {
+		selected := u.weightedRandomSelect(networkId, method, remainingUpstreams)
+		sortedUpstreams = append(sortedUpstreams, selected)
+
+		// Remove the selected upstream from remainingUpstreams
+		for i, ups := range remainingUpstreams {
+			if ups.Config().Id == selected.Config().Id {
+				remainingUpstreams = append(remainingUpstreams[:i], remainingUpstreams[i+1:]...)
+				break
+			}
+		}
+	}
+
+	// Replace the original slice with the sorted one
+	copy(upstreams, sortedUpstreams)
+}
+
+func (u *UpstreamsRegistry) weightedRandomSelect(networkId, method string, upstreams []*Upstream) *Upstream {
+	totalScore := 0
+	for _, upstream := range upstreams {
+		totalScore += u.upstreamScores[networkId][method][upstream.Config().Id]
+	}
+
+	if totalScore == 0 {
+		// If all scores are 0, return a random upstream
+		return upstreams[rand.Intn(len(upstreams))]
+	}
+
+	randomValue := rand.Intn(totalScore)
+
+	for _, upstream := range upstreams {
+		score := u.upstreamScores[networkId][method][upstream.Config().Id]
+		if randomValue < score {
+			return upstream
+		}
+		randomValue -= score
+	}
+
+	// This should never be reached, but return the last upstream if it does
+	return upstreams[len(upstreams)-1]
+}
+
+func (u *UpstreamsRegistry) refreshUpstreamGroupScores() error {
+	u.mapMu.Lock()
+	defer u.mapMu.Unlock()
+
+	if len(u.allUpstreams) == 0 {
+		log.Debug().Str("projectId", u.prjId).Msgf("no upstreams yet to refresh scores")
+		return nil
+	}
+
+	log.Debug().Str("projectId", u.prjId).Msgf("refreshing upstreams scores")
+
+	for networkId, upsMap := range u.sortedUpstreams {
+		for method, upsList := range upsMap {
+			u.updateScoresAndSort(networkId, method, upsList)
+		}
+	}
+
+	return nil
+}
+
+func (u *UpstreamsRegistry) registerUpstreams() error {
+	u.mapMu.Lock()
+	defer u.mapMu.Unlock()
+
+	for _, upsCfg := range u.upsCfg {
+		upstream, err := u.NewUpstream(u.prjId, upsCfg, u.logger, u.metricsTracker)
+		if err != nil {
+			return err
+		}
+		u.metricsTracker.RegisterUpstream(upstream)
+		u.allUpstreams = append(u.allUpstreams, upstream)
+	}
+
+	if len(u.allUpstreams) == 0 {
+		return common.NewErrNoUpstreamsDefined(u.prjId)
+	}
+
+	return nil
+}
+
+func (u *UpstreamsRegistry) scheduleHealthCheckTimers(ctx context.Context) error {
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-u.shutdownChan:
-				log.Debug().Msgf("shutting down metrics collection timer")
-				ticker.Stop()
+			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				u.collectMetricsForAllUpstreams()
+				u.refreshUpstreamGroupScores()
 			}
 		}
 	}()
 
-	// A timer for each health check group to refresh the scores of the upstreams
-	if u.config == nil || u.config.HealthChecks == nil || len(u.config.HealthChecks.Groups) == 0 {
-		log.Debug().Msgf("no health check groups defined, skipping health check timers")
-		return nil
-	}
-
-	u.mapMu.Lock()
-	for _, healthCheckGroup := range u.config.HealthChecks.Groups {
-		healthGroupId := healthCheckGroup.Id
-		checkIntervalDuration, err := time.ParseDuration(healthCheckGroup.CheckInterval)
-		if err != nil {
-			return common.NewErrInvalidHealthCheckConfig(fmt.Errorf("could not pase checkInterval: %w", err), healthGroupId)
-		}
-		log.Debug().Str("healthCheckGroup", healthGroupId).Dur("interval", checkIntervalDuration).Msgf("scheduling health check timer")
-		go func(healthCheckGroup *common.HealthCheckGroupConfig, checkIntervalDuration time.Duration) {
-			ticker := time.NewTicker(checkIntervalDuration)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-u.shutdownChan:
-					log.Debug().Str("healthCheckGroup", healthCheckGroup.Id).Msgf("shutting down health check timer")
-					return
-				case <-ticker.C:
-					u.refreshUpstreamGroupScores(healthCheckGroup, u.upstreamsMapByHealthGroup[healthCheckGroup.Id])
-				}
-			}
-		}(healthCheckGroup, checkIntervalDuration)
-	}
-	u.mapMu.Unlock()
-
 	return nil
 }
 
-func (u *UpstreamsRegistry) GetUpstreamsByProject(prjCfg *common.ProjectConfig) ([]*Upstream, error) {
-	u.mapMu.RLock()
-	if upstreams, ok := u.upstreamsMapByProject[prjCfg.Id]; ok {
-		u.mapMu.RUnlock()
-		return upstreams, nil
-	}
-	u.mapMu.RUnlock()
+func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsList []*Upstream) {
+	var p90Latencies, errorRates, totalRequests, throttledRates []float64
 
-	var upstreams []*Upstream
-	u.mapMu.Lock()
-	for _, upsCfg := range prjCfg.Upstreams {
-		upstream, err := u.NewUpstream(prjCfg.Id, upsCfg, u.logger)
-		if err != nil {
-			return nil, err
+	for _, ups := range upsList {
+		metrics := u.metricsTracker.GetUpstreamMethodMetrics(networkId, ups.Config().Id, method)
+		p90Latencies = append(p90Latencies, metrics.P90LatencySecs)
+
+		rateLimitedTotal := metrics.RemoteRateLimitedTotal + metrics.SelfRateLimitedTotal
+		if metrics.RequestsTotal > 0 {
+			errorRates = append(errorRates, metrics.ErrorsTotal/metrics.RequestsTotal)
+			throttledRates = append(throttledRates, rateLimitedTotal/metrics.RequestsTotal)
+			totalRequests = append(totalRequests, metrics.RequestsTotal)
+		} else {
+			errorRates = append(errorRates, 0)
+			throttledRates = append(throttledRates, 0)
+			totalRequests = append(totalRequests, 0)
 		}
-		if upsCfg.HealthCheckGroup != "" {
-			if _, ok := u.upstreamsMapByHealthGroup[upsCfg.HealthCheckGroup]; !ok {
-				u.upstreamsMapByHealthGroup[upsCfg.HealthCheckGroup] = make(map[string]*Upstream)
-			}
-			u.upstreamsMapByHealthGroup[upsCfg.HealthCheckGroup][upsCfg.Id] = upstream
-		}
-		if _, ok := u.upstreamsMapByProjectWithId[prjCfg.Id]; !ok {
-			u.upstreamsMapByProjectWithId[prjCfg.Id] = make(map[string]*Upstream)
-		}
-		u.upstreamsMapByProjectWithId[prjCfg.Id][upsCfg.Id] = upstream
-		upstreams = append(upstreams, upstream)
-	}
-	u.mapMu.Unlock()
-
-	if len(upstreams) == 0 {
-		return nil, common.NewErrNoUpstreamsDefined(prjCfg.Id)
-	}
-
-	u.upstreamsMapByProject[prjCfg.Id] = upstreams
-	return upstreams, nil
-}
-
-// Proactively update the health information of upstreams of a project/network and reorder them so the highest performing upstreams are at the top
-func (u *UpstreamsRegistry) refreshUpstreamGroupScores(healthGroupCfg *common.HealthCheckGroupConfig, upstreams map[string]*Upstream) error {
-	u.mapMu.RLock()
-	defer u.mapMu.RUnlock()
-
-	if len(upstreams) == 0 {
-		log.Debug().Str("healthCheckGroup", healthGroupCfg.Id).Msgf("no upstreams yet to refresh scores for health check group")
-		return nil
-	}
-
-	log.Debug().Str("healthCheckGroup", healthGroupCfg.Id).Msgf("refreshing upstreams scores")
-
-	var p90Latencies, errorRates, totalRequests, throttledRates, blockLags []float64
-	var comparingUpstreams []*Upstream
-	var changedProjects map[string]bool = make(map[string]bool)
-	for _, ups := range upstreams {
-		ups.MetricsMu.RLock()
-		if ups.Metrics != nil {
-			p90Latencies = append(p90Latencies, ups.Metrics.P90LatencySecs)
-			if ups.Metrics.RequestsTotal > 0 {
-				errorRates = append(errorRates, ups.Metrics.ErrorsTotal/ups.Metrics.RequestsTotal)
-				throttledRates = append(throttledRates, ups.Metrics.ThrottledTotal/ups.Metrics.RequestsTotal)
-				totalRequests = append(totalRequests, ups.Metrics.RequestsTotal)
-			} else {
-				errorRates = append(errorRates, 0)
-				throttledRates = append(throttledRates, 0)
-				totalRequests = append(totalRequests, 0)
-			}
-			blockLags = append(blockLags, ups.Metrics.BlocksLag)
-
-			changedProjects[ups.ProjectId] = true
-			comparingUpstreams = append(comparingUpstreams, ups)
-		}
-		ups.MetricsMu.RUnlock()
 	}
 
 	normP90Latencies := normalizeIntValues(p90Latencies, 100)
 	normErrorRates := normalizeIntValues(errorRates, 100)
 	normThrottledRates := normalizeIntValues(throttledRates, 100)
 	normTotalRequests := normalizeIntValues(totalRequests, 100)
-	normBlockLags := normalizeIntValues(blockLags, 100)
 
-	for i, ups := range comparingUpstreams {
-		ups.MetricsMu.Lock()
-		ups.Score = 0
+	if u.upstreamScores[networkId] == nil {
+		u.upstreamScores[networkId] = make(map[string]map[string]int)
+	}
+	if u.upstreamScores[networkId][method] == nil {
+		u.upstreamScores[networkId][method] = make(map[string]int)
+	}
 
-		// Higher score for lower total requests (to balance the load)
-		ups.Score += 100 - normTotalRequests[i]
+	for i, ups := range upsList {
+		score := u.calculateScore(normTotalRequests[i], normP90Latencies[i], normErrorRates[i], normThrottledRates[i])
+		u.upstreamScores[networkId][method][ups.Config().Id] = score
 
-		// Higher score for lower p90 latency
-		ups.Score += 100 - normP90Latencies[i]
-
-		// Higher score for lower error rate
-		ups.Score += (100 - normErrorRates[i]) * 4
-
-		// Higher score for lower throttled rate
-		ups.Score += (100 - normThrottledRates[i]) * 3
-
-		// Higher score for lower block lag
-		ups.Score += (100 - normBlockLags[i]) * 2
-
-		log.Debug().Str("healthCheckGroup", healthGroupCfg.Id).
+		log.Debug().Str("projectId", u.prjId).
 			Str("upstream", ups.Config().Id).
-			Int("score", ups.Score).
+			Str("method", method).
+			Int("score", score).
 			Msgf("refreshed score")
-
-		ups.MetricsMu.Unlock()
 	}
 
-	if u.OnUpstreamsPriorityChange != nil {
-		for projectId := range changedProjects {
-			u.OnUpstreamsPriorityChange(projectId)
-		}
+	u.sortUpstreams(networkId, method, upsList)
+	u.sortedUpstreams[networkId][method] = upsList
+
+	newSortStr := ""
+	for _, ups := range upsList {
+		newSortStr += fmt.Sprintf("%s ", ups.Config().Id)
 	}
 
-	return nil
+	log.Debug().Str("projectId", u.prjId).Str("networkId", networkId).Str("method", method).Str("newSort", newSortStr).Msgf("sorted upstreams")
 }
 
-func (u *UpstreamsRegistry) collectMetricsForAllUpstreams() {
-	if len(u.upstreamsMapByProject) == 0 {
-		u.logger.Debug().Msgf("no upstreams to collect metrics for")
-		return
-	}
+func (u *UpstreamsRegistry) calculateScore(normTotalRequests, normP90Latency, normErrorRate, normThrottledRate int) int {
+	score := 0
 
-	u.logger.Debug().Msgf("collecting upstreams metrics from prometheus")
+	// Higher score for lower total requests (to balance the load)
+	score += 100 - normTotalRequests
 
-	// Get and parse current prometheus metrics data
-	mfs, err := prometheus.DefaultGatherer.Gather()
-	if mfs == nil {
-		u.logger.Error().Msgf("failed to gather prometheus metrics: %v", err)
-		return
-	}
+	// Higher score for lower p90 latency
+	score += 100 - normP90Latency
 
-	for _, mf := range mfs {
-		for _, m := range mf.GetMetric() {
-			labels := m.GetLabel()
-			var project, network, upstream, category string
-			for _, label := range labels {
-				if label.GetName() == "project" {
-					project = label.GetValue()
-				}
-				if label.GetName() == "network" {
-					network = label.GetValue()
-				}
-				if label.GetName() == "upstream" {
-					upstream = label.GetValue()
-				}
-				if label.GetName() == "category" {
-					category = label.GetValue()
-				}
-			}
+	// Higher score for lower error rate
+	score += (100 - normErrorRate) * 4
 
-			if project != "" && upstream != "" && category != "" {
-				// Skip collection if project not registered yet
-				// TODO improve this scenario
-				if _, ok := u.upstreamsMapByProjectWithId[project]; !ok {
-					continue
-				}
-				ups := u.upstreamsMapByProjectWithId[project][upstream]
-				if ups == nil {
-					continue
-				}
+	// Higher score for lower throttled rate
+	score += (100 - normThrottledRate) * 3
 
-				ups.MetricsMu.Lock()
-				var metrics = ups.Metrics
-				if metrics == nil {
-					metrics = &UpstreamMetrics{}
-					ups.Metrics = metrics
-				}
-
-				if mf.GetName() == "erpc_upstream_request_duration_seconds" {
-					percentiles := m.GetSummary().GetQuantile()
-					for _, p := range percentiles {
-						switch p.GetQuantile() {
-						case 0.9:
-							metrics.P90LatencySecs = p.GetValue()
-						}
-					}
-				} else if mf.GetName() == "erpc_upstream_request_errors_total" {
-					metrics.ErrorsTotal = m.GetCounter().GetValue()
-				} else if mf.GetName() == "erpc_upstream_request_total" {
-					metrics.RequestsTotal = m.GetCounter().GetValue()
-				} else if mf.GetName() == "erpc_upstream_request_local_rate_limited_total" {
-					metrics.ThrottledTotal = m.GetCounter().GetValue()
-				}
-
-				metrics.LastCollect = time.Now()
-
-				ups.MetricsMu.Unlock()
-
-				u.logger.Trace().
-					Str("project", project).
-					Str("network", network).
-					Str("upstream", upstream).
-					Str("category", category).
-					Object("metrics", metrics).
-					Msgf("collected metrics")
-			}
-		}
-	}
-}
-
-func (u *UpstreamsRegistry) NewUpstream(projectId string, cfg *common.UpstreamConfig, logger *zerolog.Logger) (*Upstream, error) {
-	return NewUpstream(projectId, cfg, u.clientRegistry, u.rateLimitersRegistry, u.vendorsRegistry, logger)
+	return score
 }
 
 func normalizeIntValues(values []float64, scale int) []int {

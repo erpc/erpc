@@ -15,9 +15,7 @@ import (
 func main() {
 	logger := log.With().Logger()
 
-	shutdown, err := erpc.Init(context.Background(), &logger, afero.NewOsFs(), os.Args)
-	defer shutdown()
-
+	err := erpc.Init(context.Background(), &logger, afero.NewOsFs(), os.Args)
 	if err != nil {
 		logger.Error().Msgf("failed to start eRPC: %v", err)
 		util.OsExit(util.ExitCodeERPCStartFailed)

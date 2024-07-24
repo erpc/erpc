@@ -18,15 +18,17 @@ import (
 )
 
 type Upstream struct {
-	Client  ClientInterface
-	Metrics *UpstreamMetrics
-	Logger  zerolog.Logger
+	Client ClientInterface
+	// Metrics *UpstreamMetrics
+	Logger zerolog.Logger
 
 	ProjectId string
-	Score     int
+	// Score     int
 
 	config *common.UpstreamConfig
 	vendor common.Vendor
+
+	metricsTracker *health.Tracker
 
 	failsafePolicies     []failsafe.Policy[common.NormalizedResponse]
 	failsafeExecutor     failsafe.Executor[common.NormalizedResponse]
@@ -37,7 +39,7 @@ type Upstream struct {
 	supportedNetworkIds   map[string]bool
 	supportedNetworkIdsMu sync.RWMutex
 
-	MetricsMu sync.RWMutex
+	// MetricsMu sync.RWMutex
 }
 
 func NewUpstream(
@@ -47,6 +49,7 @@ func NewUpstream(
 	rlr *RateLimitersRegistry,
 	vr *vendors.VendorsRegistry,
 	logger *zerolog.Logger,
+	mt *health.Tracker,
 ) (*Upstream, error) {
 	lg := logger.With().Str("upstream", cfg.Id).Logger()
 
@@ -63,6 +66,7 @@ func NewUpstream(
 
 		config:               cfg,
 		vendor:               vn,
+		metricsTracker:       mt,
 		failsafePolicies:     policies,
 		failsafeExecutor:     failsafe.NewExecutor[common.NormalizedResponse](policies...),
 		rateLimitersRegistry: rlr,
@@ -186,12 +190,11 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 					if req.Network() != nil {
 						netId = req.Network().Id()
 					}
-					health.MetricUpstreamRequestLocalRateLimited.WithLabelValues(
-						u.ProjectId,
+					u.metricsTracker.RecordUpstreamSelfRateLimited(
 						netId,
 						cfg.Id,
 						method,
-					).Inc()
+					)
 					return nil, common.NewErrUpstreamRateLimitRuleExceeded(
 						cfg.Id,
 						cfg.RateLimitBudget,
@@ -245,13 +248,20 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 					if req.Network() != nil {
 						netId = req.Network().Id()
 					}
-					health.MetricUpstreamRequestErrors.WithLabelValues(
-						u.ProjectId,
-						netId,
-						cfg.Id,
-						method,
-						common.ErrorSummary(errCall),
-					).Inc()
+					if common.HasCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
+						u.metricsTracker.RecordUpstreamRemoteRateLimited(
+							netId,
+							cfg.Id,
+							method,
+						)
+					} else {
+						u.metricsTracker.RecordUpstreamFailure(
+							netId,
+							cfg.Id,
+							method,
+							common.ErrorSummary(errCall),
+						)
+					}
 				}
 				return nil, common.NewErrUpstreamRequest(
 					errCall,

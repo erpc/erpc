@@ -15,7 +15,7 @@ type Connector interface {
 	Get(ctx context.Context, index, partitionKey, rangeKey string) (string, error)
 	Set(ctx context.Context, partitionKey, rangeKey, value string) error
 	Delete(ctx context.Context, index, partitionKey, rangeKey string) error
-	Close(ctx context.Context) error
+	// Close(ctx context.Context) error
 }
 
 func NewConnector(

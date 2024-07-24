@@ -18,6 +18,7 @@ type PreparedProject struct {
 	Networks map[string]*Network
 	Logger   *zerolog.Logger
 
+	appCtx            context.Context
 	networksMu        sync.RWMutex
 	networksRegistry  *NetworksRegistry
 	upstreamsRegistry *upstream.UpstreamsRegistry
@@ -72,24 +73,9 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *ups
 
 func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) {
 	// 1) Find all upstreams that support this network
-	var upstreams []*upstream.Upstream
-	pups, err := p.upstreamsRegistry.GetUpstreamsByProject(p.Config)
+	err := p.upstreamsRegistry.PrepareUpstreamsForNetwork(networkId)
 	if err != nil {
 		return nil, err
-	}
-	for _, ups := range pups {
-		if s, e := ups.SupportsNetwork(networkId); e == nil && s {
-			upstreams = append(upstreams, ups)
-		} else if e != nil {
-			p.Logger.Warn().Err(e).
-				Str("upstream", ups.Config().Id).
-				Str("network", networkId).
-				Msgf("failed to check if upstream supports network")
-		}
-	}
-
-	if len(upstreams) == 0 {
-		return nil, common.NewErrNoUpstreamsFound(p.Config.Id, networkId)
 	}
 
 	// 2) Find if any network configs defined on project-level
@@ -125,7 +111,6 @@ func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) 
 	// 3) Register and prepare the network in registry
 	nw, err := p.networksRegistry.RegisterNetwork(
 		p.Logger,
-		p.evmJsonRpcCache,
 		p.Config,
 		nwCfg,
 	)
@@ -133,8 +118,10 @@ func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) 
 		return nil, err
 	}
 
-	nw.Upstreams = upstreams
-	err = nw.Bootstrap(context.Background())
+	// nw.Upstreams = make(map[string][]*upstream.Upstream)
+	// nw.Upstreams["*"] = upstreams
+
+	err = nw.Bootstrap(p.appCtx)
 	if err != nil {
 		return nil, err
 	}

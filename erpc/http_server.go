@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/upstream"
@@ -19,7 +20,7 @@ type HttpServer struct {
 	server *http.Server
 }
 
-func NewHttpServer(cfg *common.ServerConfig, erpc *ERPC) *HttpServer {
+func NewHttpServer(ctx context.Context, cfg *common.ServerConfig, erpc *ERPC) *HttpServer {
 	addr := fmt.Sprintf("%s:%d", cfg.HttpHost, cfg.HttpPort)
 
 	handler := http.NewServeMux()
@@ -79,13 +80,27 @@ func NewHttpServer(cfg *common.ServerConfig, erpc *ERPC) *HttpServer {
 		}
 	})
 
-	return &HttpServer{
+	srv := &HttpServer{
 		config: cfg,
 		server: &http.Server{
 			Addr:    addr,
 			Handler: handler,
 		},
 	}
+
+	go func() {
+		<-ctx.Done()
+		log.Info().Msg("shutting down http server...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Error().Msgf("http server forced to shutdown: %s", err)
+		} else {
+			log.Info().Msg("http server stopped")
+		}
+	}()
+
+	return srv
 }
 
 func handleErrorResponse(err error, hrw http.ResponseWriter) {
@@ -150,7 +165,7 @@ func (s *HttpServer) Start() error {
 	return s.server.ListenAndServe()
 }
 
-func (s *HttpServer) Shutdown() error {
+func (s *HttpServer) Shutdown(ctx context.Context) error {
 	log.Info().Msg("shutting down http server")
-	return s.server.Shutdown(context.Background())
+	return s.server.Shutdown(ctx)
 }
