@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/util"
@@ -19,7 +20,7 @@ func Init(
 	logger *zerolog.Logger,
 	fs afero.Fs,
 	args []string,
-) (func() error, error) {
+) error {
 	//
 	// 1) Load configuration
 	//
@@ -29,12 +30,12 @@ func Init(
 		configPath = args[1]
 	}
 	if _, err := fs.Stat(configPath); errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("config file '%s' does not exist", configPath)
+		return fmt.Errorf("config file '%s' does not exist", configPath)
 	}
 	logger.Info().Msgf("resolved configuration file to: %s", configPath)
 	cfg, err := common.LoadConfig(fs, configPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load configuration from %s: %v", configPath, err)
+		return fmt.Errorf("failed to load configuration from %s: %v", configPath, err)
 	}
 	if level, err := zerolog.ParseLevel(cfg.LogLevel); err != nil {
 		logger.Warn().Msgf("invalid log level '%s', defaulting to 'debug': %s", cfg.LogLevel, err)
@@ -56,9 +57,9 @@ func Init(
 			}
 		}
 	}
-	erpcInstance, err := NewERPC(logger, evmJsonRpcCache, cfg)
+	erpcInstance, err := NewERPC(ctx, logger, evmJsonRpcCache, cfg)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	//
@@ -67,7 +68,7 @@ func Init(
 	logger.Info().Msg("bootstrapping transports")
 	var httpServer *HttpServer
 	if cfg.Server != nil {
-		httpServer = NewHttpServer(cfg.Server, erpcInstance)
+		httpServer = NewHttpServer(ctx, cfg.Server, erpcInstance)
 		go func() {
 			if err := httpServer.Start(); err != nil {
 				if err != http.ErrServerClosed {
@@ -81,26 +82,28 @@ func Init(
 	if cfg.Metrics != nil && cfg.Metrics.Enabled {
 		addr := fmt.Sprintf("%s:%d", cfg.Metrics.Host, cfg.Metrics.Port)
 		logger.Info().Msgf("starting metrics server on addr: %s", addr)
+		srv := &http.Server{
+			Addr:    addr,
+			Handler: promhttp.Handler(),
+		}
 		go func() {
-			if err := http.ListenAndServe(addr, promhttp.Handler()); err != nil {
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				logger.Error().Msgf("error starting metrics server: %s", err)
 				util.OsExit(util.ExitCodeHttpServerFailed)
 			}
 		}()
+		go func() {
+			<-ctx.Done()
+			logger.Info().Msg("shutting down metrics server...")
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := srv.Shutdown(shutdownCtx); err != nil {
+				logger.Error().Msgf("metrics server forced to shutdown: %s", err)
+			} else {
+				logger.Info().Msg("metrics server stopped")
+			}
+		}()
 	}
 
-	return func() error {
-		logger.Info().Msg("shutting down eRPC...")
-		err := erpcInstance.Shutdown()
-		if err != nil {
-			return err
-		}
-		if httpServer != nil {
-			err = httpServer.Shutdown()
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	}, nil
+	return nil
 }

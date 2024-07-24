@@ -7,17 +7,29 @@ import (
 
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/flair-sdk/erpc/common"
+	"github.com/flair-sdk/erpc/health"
 	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog"
 )
 
 type NetworksRegistry struct {
+	upstreamsRegistry    *upstream.UpstreamsRegistry
+	metricsTracker       *health.Tracker
+	evmJsonRpcCache      *EvmJsonRpcCache
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	preparedNetworks     map[string]*Network
 }
 
-func NewNetworksRegistry(rateLimitersRegistry *upstream.RateLimitersRegistry) *NetworksRegistry {
+func NewNetworksRegistry(
+	upstreamsRegistry *upstream.UpstreamsRegistry,
+	metricsTracker *health.Tracker,
+	evmJsonRpcCache *EvmJsonRpcCache,
+	rateLimitersRegistry *upstream.RateLimitersRegistry,
+) *NetworksRegistry {
 	r := &NetworksRegistry{
+		upstreamsRegistry:    upstreamsRegistry,
+		metricsTracker:       metricsTracker,
+		evmJsonRpcCache:      evmJsonRpcCache,
 		rateLimitersRegistry: rateLimitersRegistry,
 		preparedNetworks:     make(map[string]*Network),
 	}
@@ -29,6 +41,8 @@ func NewNetwork(
 	prjId string,
 	nwCfg *common.NetworkConfig,
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
+	upstreamsRegistry *upstream.UpstreamsRegistry,
+	metricsTracker *health.Tracker,
 ) (*Network, error) {
 	var policies []failsafe.Policy[common.NormalizedResponse]
 	if (nwCfg != nil) && (nwCfg.Failsafe != nil) {
@@ -47,13 +61,14 @@ func NewNetwork(
 		Config:    nwCfg,
 		Logger:    &lg,
 
-		inFlightMutex:        &sync.Mutex{},
-		inFlightRequests:     make(map[string]*multiplexedInFlightRequest),
-		upstreamsMutex:       &sync.RWMutex{},
+		upstreamsRegistry:    upstreamsRegistry,
+		metricsTracker:       metricsTracker,
 		rateLimitersRegistry: rateLimitersRegistry,
-		failsafePolicies:     policies,
-		failsafeExecutor:     failsafe.NewExecutor(policies...),
-		shutdownChan:         make(chan struct{}),
+
+		inFlightMutex:    &sync.Mutex{},
+		inFlightRequests: make(map[string]*multiplexedInFlightRequest),
+		failsafePolicies: policies,
+		failsafeExecutor: failsafe.NewExecutor(policies...),
 	}
 
 	if nwCfg.Architecture == "" {
@@ -65,7 +80,6 @@ func NewNetwork(
 
 func (r *NetworksRegistry) RegisterNetwork(
 	logger *zerolog.Logger,
-	evmJsonRpcCache *EvmJsonRpcCache,
 	prjCfg *common.ProjectConfig,
 	nwCfg *common.NetworkConfig,
 ) (*Network, error) {
@@ -75,15 +89,15 @@ func (r *NetworksRegistry) RegisterNetwork(
 		return pn, nil
 	}
 
-	network, err := NewNetwork(logger, prjCfg.Id, nwCfg, r.rateLimitersRegistry)
+	network, err := NewNetwork(logger, prjCfg.Id, nwCfg, r.rateLimitersRegistry, r.upstreamsRegistry, r.metricsTracker)
 	if err != nil {
 		return nil, err
 	}
 
 	switch nwCfg.Architecture {
 	case "evm":
-		if evmJsonRpcCache != nil {
-			network.cacheDal = evmJsonRpcCache.WithNetwork(network)
+		if r.evmJsonRpcCache != nil {
+			network.cacheDal = r.evmJsonRpcCache.WithNetwork(network)
 		}
 	default:
 		return nil, errors.New("unknown network architecture")
@@ -97,11 +111,11 @@ func (nr *NetworksRegistry) GetNetwork(projectId, networkId string) *Network {
 	return nr.preparedNetworks[fmt.Sprintf("%s-%s", projectId, networkId)]
 }
 
-func (nr *NetworksRegistry) Shutdown() error {
-	for _, network := range nr.preparedNetworks {
-		if err := network.Shutdown(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
+// func (nr *NetworksRegistry) Shutdown() error {
+// 	for _, network := range nr.preparedNetworks {
+// 		if err := network.Shutdown(); err != nil {
+// 			return err
+// 		}
+// 	}
+// 	return nil
+// }

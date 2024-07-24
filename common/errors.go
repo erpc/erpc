@@ -65,6 +65,7 @@ type StandardError interface {
 	HasCode(code ErrorCode) bool
 	CodeChain() string
 	DeepestMessage() string
+	GetCause() error
 }
 
 func (e *BaseError) GetCode() ErrorCode {
@@ -118,6 +119,10 @@ func (e *BaseError) DeepestMessage() string {
 	}
 
 	return e.Message
+}
+
+func (e *BaseError) GetCause() error {
+	return e.Cause
 }
 
 func (e BaseError) MarshalJSON() ([]byte, error) {

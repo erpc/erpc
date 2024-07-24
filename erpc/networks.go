@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
 	"sync"
 	"time"
 
@@ -13,7 +12,6 @@ import (
 	"github.com/flair-sdk/erpc/data"
 	"github.com/flair-sdk/erpc/health"
 	"github.com/flair-sdk/erpc/upstream"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 )
 
@@ -23,9 +21,9 @@ type Network struct {
 	NetworkId string
 	ProjectId string
 	Logger    *zerolog.Logger
-	Upstreams []*upstream.Upstream
+	// Upstreams map[string][]*upstream.Upstream
 
-	upstreamsMutex   *sync.RWMutex
+	// upstreamsMutex   *sync.RWMutex
 	inFlightMutex    *sync.Mutex
 	inFlightRequests map[string]*multiplexedInFlightRequest
 
@@ -33,10 +31,10 @@ type Network struct {
 	failsafeExecutor     failsafe.Executor[common.NormalizedResponse]
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	// rateLimiterDal       data.RateLimitersDAL
-	cacheDal        data.CacheDAL
-	evmBlockTracker *EvmBlockTracker
-
-	shutdownChan chan struct{}
+	cacheDal          data.CacheDAL
+	evmBlockTracker   *EvmBlockTracker
+	metricsTracker    *health.Tracker
+	upstreamsRegistry *upstream.UpstreamsRegistry
 }
 
 type multiplexedInFlightRequest struct {
@@ -55,39 +53,24 @@ func (n *Network) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("network architecture not supported: %s", n.Architecture())
 	}
 
-	if len(n.Upstreams) > 0 {
-		go func(pn *Network) {
-			ticker := time.NewTicker(1 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					pn.Logger.Debug().Msg("shutting down upstream reordering timer due to context cancellation")
-					return
-				case <-pn.shutdownChan:
-					pn.Logger.Debug().Msg("shutting down upstream reordering timer via shutdown channel")
-					return
-				case <-ticker.C:
-					upsList := n.reorderUpstreams(pn.Upstreams)
-					pn.upstreamsMutex.Lock()
-					pn.Upstreams = upsList
-					pn.upstreamsMutex.Unlock()
-				}
-			}
-		}(n)
-	}
-
-	return nil
-}
-
-func (n *Network) Shutdown() error {
-	if n.evmBlockTracker != nil {
-		if err := n.evmBlockTracker.Shutdown(); err != nil {
-			return err
-		}
-	}
-
-	close(n.shutdownChan)
+	// if len(n.Upstreams) > 0 {
+	// 	go func(pn *Network) {
+	// 		ticker := time.NewTicker(1 * time.Second)
+	// 		defer ticker.Stop()
+	// 		for {
+	// 			select {
+	// 			case <-ctx.Done():
+	// 				pn.Logger.Debug().Msg("shutting down upstream reordering timer due to context cancellation")
+	// 				return
+	// 			case <-ticker.C:
+	// 				upsList := n.reorderUpstreams(pn.Upstreams)
+	// 				pn.upstreamsMutex.Lock()
+	// 				pn.Upstreams = upsList
+	// 				pn.upstreamsMutex.Unlock()
+	// 			}
+	// 		}
+	// 	}(n)
+	// }
 
 	return nil
 }
@@ -175,14 +158,8 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		ctx context.Context,
 	) (resp common.NormalizedResponse, skipped bool, err error) {
 		lg := u.Logger.With().Str("upstream", u.Config().Id).Logger()
-		u.MetricsMu.RLock()
-		if u.Score < 0 {
-			lg.Debug().Msgf("skipping upstream with negative score %d", u.Score)
-			u.MetricsMu.RUnlock()
-			return nil, true, nil
-		}
-		u.MetricsMu.RUnlock()
 
+		// TODO skip upstream if method not supported / score is negative / too much block lag and request is for recent data
 		resp, err = n.forwardToUpstream(u, ctx, req)
 		if !common.IsNull(err) {
 			return nil, false, err
@@ -191,14 +168,16 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		lg.Info().Msgf("successfully forwarded request to upstream")
 		return resp, false, nil
 	}
+
 	mtx := sync.Mutex{}
 	i := 0
 	resp, execErr := n.failsafeExecutor.
 		WithContext(ctx).
 		GetWithExecution(func(exec failsafe.Execution[common.NormalizedResponse]) (common.NormalizedResponse, error) {
-			n.upstreamsMutex.RLock()
-			upsList := n.Upstreams
-			n.upstreamsMutex.RUnlock()
+			upsList, err := n.upstreamsRegistry.GetSortedUpstreams(n.NetworkId, method)
+			if err != nil {
+				return nil, err
+			}
 
 			isHedged := exec.Hedges() > 0
 
@@ -242,16 +221,6 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 					lg.Debug().Err(err).Msgf("forwarded request to upstream %s skipped: %v err: %v", u.Config().Id, skipped, err)
 				}
 				if !skipped {
-					if n.cacheDal != nil && resp != nil {
-						go (func(resp common.NormalizedResponse) {
-							c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-							defer cancel()
-							err := n.cacheDal.Set(c, req, resp)
-							if err != nil {
-								lg.Warn().Err(err).Msgf("could not store response in cache")
-							}
-						})(resp)
-					}
 					return resp, err
 				} else if err != nil {
 					errorsByUpstream = append(errorsByUpstream, err)
@@ -266,24 +235,34 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		err := upstream.TranslateFailsafeError(execErr)
 		// if error is due to empty response be generous and accept it
 		if common.HasCode(err, common.ErrCodeFailsafeRetryExceeded) {
-			re := err.(*common.ErrFailsafeRetryExceeded)
-			lr := re.LastResult()
-			if lr != nil {
-				resp := lr.(common.NormalizedResponse)
-				if resp != nil && resp.IsResultEmptyish() {
-					inf.resp = resp
-					close(inf.done) // Ensure done is closed
-					return resp, nil
-				}
+			lr := tryExtractLastResult(err)
+			if lr != nil && lr.IsResultEmptyish() {
+				resp = lr
+			} else {
+				inf.err = err
+				close(inf.done)
+				return nil, err
 			}
+		} else {
+			inf.err = err
+			close(inf.done)
+			return nil, err
 		}
-		inf.err = err
-		close(inf.done) // Ensure done is closed
-		return nil, err
+	}
+
+	if n.cacheDal != nil && resp != nil {
+		go (func(resp common.NormalizedResponse) {
+			c, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			err := n.cacheDal.Set(c, req, resp)
+			if err != nil {
+				lg.Warn().Err(err).Msgf("could not store response in cache")
+			}
+		})(resp)
 	}
 
 	inf.resp = resp
-	close(inf.done) // Ensure done is closed
+	close(inf.done)
 	return resp, nil
 }
 
@@ -400,7 +379,7 @@ func (n *Network) acquireRateLimitPermit(req *upstream.NormalizedRequest) error 
 		for _, rule := range rules {
 			permit := (*rule.Limiter).TryAcquirePermit()
 			if !permit {
-				health.MetricNetworkRequestLocalRateLimited.WithLabelValues(
+				health.MetricNetworkRequestSelfRateLimited.WithLabelValues(
 					n.ProjectId,
 					n.NetworkId,
 					method,
@@ -429,71 +408,32 @@ func (n *Network) forwardToUpstream(
 	if m, _ := req.Method(); m != "" {
 		category = m
 	}
-	health.MetricUpstreamRequestTotal.WithLabelValues(
-		n.ProjectId,
-		n.NetworkId,
-		ups.Config().Id,
-		category,
-	).Inc()
-	timer := prometheus.NewTimer(health.MetricUpstreamRequestDuration.WithLabelValues(
-		n.ProjectId,
-		n.NetworkId,
-		ups.Config().Id,
-		category,
-	))
+
+	n.metricsTracker.RecordUpstreamRequest(n.NetworkId, ups.Config().Id, category)
+	timer := n.metricsTracker.RecordUpstreamDurationStart(n.NetworkId, ups.Config().Id, category)
 	defer timer.ObserveDuration()
 
 	return ups.Forward(ctx, req)
 }
 
-func weightedRandomSelect(upstreams []*upstream.Upstream) *upstream.Upstream {
-	totalScore := 0
-	for _, upstream := range upstreams {
-		upstream.MetricsMu.RLock()
-		totalScore += upstream.Score
-		upstream.MetricsMu.RUnlock()
+func tryExtractLastResult(err interface{}) common.NormalizedResponse {
+	re, ok := err.(*common.ErrFailsafeRetryExceeded)
+	var lr interface{}
+	if ok {
+		lr = re.LastResult()
 	}
 
-	if totalScore == 0 {
-		return upstreams[0]
-	}
-
-	randomValue := rand.Intn(totalScore)
-
-	for _, upstream := range upstreams {
-		upstream.MetricsMu.RLock()
-		if randomValue < upstream.Score {
-			upstream.MetricsMu.RUnlock()
-			return upstream
-		}
-		randomValue -= upstream.Score
-		upstream.MetricsMu.RUnlock()
-	}
-
-	// This should never be reached
-	return upstreams[len(upstreams)-1]
-}
-
-func (n *Network) reorderUpstreams(upstreams []*upstream.Upstream) []*upstream.Upstream {
-	n.Logger.Trace().Msg("reordering upstreams for network")
-	n.upstreamsMutex.RLock()
-	defer n.upstreamsMutex.RUnlock()
-
-	reordered := make([]*upstream.Upstream, len(upstreams))
-	remaining := append([]*upstream.Upstream{}, upstreams...)
-
-	for i := range reordered {
-		selected := weightedRandomSelect(remaining)
-		reordered[i] = selected
-
-		// Remove selected item from remaining upstreams
-		for j, upstream := range remaining {
-			if upstream.Config().Id == selected.Config().Id {
-				remaining = append(remaining[:j], remaining[j+1:]...)
-				break
+	if lr == nil {
+		if be, ok := err.(interface {
+			GetCause() error
+		}); ok {
+			c := be.GetCause()
+			if c != nil && common.HasCode(c, common.ErrCodeFailsafeRetryExceeded) {
+				return tryExtractLastResult(c)
 			}
 		}
+		return nil
 	}
 
-	return reordered
+	return lr.(common.NormalizedResponse)
 }

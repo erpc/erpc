@@ -3,34 +3,40 @@ package erpc
 import (
 	// "context"
 
+	"context"
+	"time"
+
 	"github.com/flair-sdk/erpc/common"
+	"github.com/flair-sdk/erpc/health"
 	"github.com/flair-sdk/erpc/upstream"
+	"github.com/flair-sdk/erpc/vendors"
 	"github.com/rs/zerolog/log"
 )
 
 type ProjectsRegistry struct {
-	networksRegistry     *NetworksRegistry
-	upstreamsRegistry    *upstream.UpstreamsRegistry
+	appCtx context.Context
+
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	evmJsonRpcCache      *EvmJsonRpcCache
 	preparedProjects     map[string]*PreparedProject
 	staticProjects       []*common.ProjectConfig
+	vendorsRegistry      *vendors.VendorsRegistry
 }
 
 func NewProjectsRegistry(
+	ctx context.Context,
 	staticProjects []*common.ProjectConfig,
-	networksRegistry *NetworksRegistry,
-	upstreamsRegistry *upstream.UpstreamsRegistry,
-	rateLimitersRegistry *upstream.RateLimitersRegistry,
 	evmJsonRpcCache *EvmJsonRpcCache,
+	rateLimitersRegistry *upstream.RateLimitersRegistry,
+	vendorsRegistry *vendors.VendorsRegistry,
 ) (*ProjectsRegistry, error) {
 	reg := &ProjectsRegistry{
+		appCtx:               ctx,
 		staticProjects:       staticProjects,
 		preparedProjects:     make(map[string]*PreparedProject),
-		networksRegistry:     networksRegistry,
-		upstreamsRegistry:    upstreamsRegistry,
 		rateLimitersRegistry: rateLimitersRegistry,
 		evmJsonRpcCache:      evmJsonRpcCache,
+		vendorsRegistry:      vendorsRegistry,
 	}
 
 	for _, prjCfg := range staticProjects {
@@ -42,17 +48,6 @@ func NewProjectsRegistry(
 
 	return reg, nil
 }
-
-// func (p *ProjectsRegistry) Bootstrap(ctx context.Context) error {
-// 	for _, pp := range p.preparedProjects {
-// 		err := pp.Bootstrap(ctx)
-// 		if err != nil {
-// 			return err
-// 		}
-// 	}
-//
-// 	return nil
-// }
 
 func (r *ProjectsRegistry) GetProject(projectId string) (project *PreparedProject, err error) {
 	project, exists := r.preparedProjects[projectId]
@@ -66,88 +61,38 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 	if _, ok := r.preparedProjects[prjCfg.Id]; ok {
 		return nil, common.NewErrProjectAlreadyExists(prjCfg.Id)
 	}
-	ptr := log.Logger.With().Str("project", prjCfg.Id).Logger()
+
+	lg := log.Logger.With().Str("project", prjCfg.Id).Logger()
+
+	metricsTracker := health.NewTracker(prjCfg.Id, 30*time.Second, 10*time.Second)
+	upstreamsRegistry := upstream.NewUpstreamsRegistry(
+		&lg,
+		prjCfg.Id,
+		prjCfg.Upstreams,
+		r.rateLimitersRegistry,
+		r.vendorsRegistry,
+		metricsTracker,
+	)
+	err := upstreamsRegistry.Bootstrap(r.appCtx)
+	if err != nil {
+		return nil, err
+	}
+	networksRegistry := NewNetworksRegistry(
+		upstreamsRegistry,
+		metricsTracker,
+		r.evmJsonRpcCache,
+		r.rateLimitersRegistry,
+	)
+
 	pp := &PreparedProject{
 		Config: prjCfg,
-		Logger: &ptr,
+		Logger: &lg,
 
-		networksRegistry:  r.networksRegistry,
-		upstreamsRegistry: r.upstreamsRegistry,
+		appCtx:            r.appCtx,
+		networksRegistry:  networksRegistry,
+		upstreamsRegistry: upstreamsRegistry,
 		evmJsonRpcCache:   r.evmJsonRpcCache,
 	}
-
-	// preparedUpstreams, err := r.upstreamsRegistry.GetUpstreamsByProject(prjCfg.Id)
-	// if err != nil {
-	// 	return nil, err
-	// }
-
-	// // Initialize networks based on configuration
-	// var preparedNetworks map[string]*Network = make(map[string]*Network)
-	// for _, nwCfg := range prjCfg.Networks {
-	// 	nt, err := r.networksRegistry.RegisterNetwork(pp.Logger, r.evmJsonRpcCache, prjCfg, nwCfg)
-	// 	if err != nil {
-	// 		return nil, err
-	// 	}
-	// 	preparedNetworks[nt.NetworkId] = nt
-	// }
-
-	// log.Info().Msgf("registered %d networks for project %s", len(preparedNetworks), prjCfg.Id)
-
-	// // Initialize networks based on upstreams supported networks
-	// for _, ups := range preparedUpstreams {
-	// 	tp := ups.Config().Type
-	// 	if tp == "" {
-	// 		tp, err = common.UpstreamTypeEvm
-	// 	}
-	// 	for _, networkId := range ups.NetworkIds {
-	// 		ncfg := &common.NetworkConfig{
-	// 			Architecture: tp,
-	// 		}
-
-	// 		switch tp {
-	// 		case common.ArchitectureEvm:
-	// 			chainId, err := strconv.Atoi(strings.Replace(networkId, "eip155:", "", 1))
-	// 			if err != nil {
-	// 				return common.NewErrInvalidEvmChainId(networkId)
-	// 			}
-	// 			ncfg.Evm = &common.EvmNetworkConfig{
-	// 				ChainId: chainId,
-	// 			}
-	// 		default:
-	// 			return common.NewErrUnknownNetworkArchitecture(tp)
-	// 		}
-	// 		nt, err := r.networksRegistry.RegisterNetwork(
-	// 			pp.Logger,
-	// 			r.evmJsonRpcCache,
-	// 			prjCfg,
-	// 			ncfg,
-	// 		)
-	// 		if err != nil {
-	// 			return err
-	// 		}
-	// 		preparedNetworks[nt.NetworkId] = nt
-	// 	}
-	// }
-
-	// log.Info().Msgf("registered %d upstreams for project %s", len(preparedUpstreams), prjCfg.Id)
-
-	// // Populate networks with upstreams
-	// for _, pu := range preparedUpstreams {
-	// 	for _, networkId := range pu.NetworkIds {
-	// 		nt := r.networksRegistry.GetNetwork(prjCfg.Id, networkId)
-	// 		if nt == nil {
-	// 			return common.NewErrNetworkNotFound(networkId)
-	// 		}
-	// 		nt.upstreamsMutex.Lock()
-	// 		if nt.Upstreams == nil {
-	// 			nt.Upstreams = make([]*upstream.Upstream, 0)
-	// 		}
-	// 		nt.Upstreams = append(nt.Upstreams, pu)
-	// 		nt.upstreamsMutex.Unlock()
-	// 	}
-	// }
-
-	// pp.Networks = preparedNetworks
 	pp.Networks = make(map[string]*Network)
 
 	r.preparedProjects[prjCfg.Id] = pp
@@ -158,9 +103,9 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 }
 
 func (r *ProjectsRegistry) loadProject(projectId string) (*PreparedProject, error) {
-	for _, prj := range r.staticProjects {
-		if prj.Id == projectId {
-			return r.RegisterProject(prj)
+	for _, prjCfg := range r.staticProjects {
+		if prjCfg.Id == projectId {
+			return r.RegisterProject(prjCfg)
 		}
 	}
 

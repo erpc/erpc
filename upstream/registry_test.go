@@ -207,34 +207,28 @@ func TestUpstreamsRegistry_ScoreOrdering(t *testing.T) {
 
 	for _, tg := range testGroups {
 		t.Run(tg.groupId, func(t *testing.T) {
-			upstreams := make(map[string]*Upstream)
+			upstreams := make([]*Upstream, 0)
 			for _, tc := range tg.testCases {
-				upstreams[tc.id] = &Upstream{
+				upstreams = append(upstreams, &Upstream{
 					config: &common.UpstreamConfig{
 						Id: tc.id,
 					},
 					ProjectId: "test_project",
 					Metrics:   genMetrics(tc.latency, tc.errorsTotal, tc.requestsTotal, tc.throttledTotal, tc.blocksLag),
-				}
+				})
 			}
 
 			// Create a new UpstreamsRegistry
 			registry := &UpstreamsRegistry{}
 
-			// HealthCheckGroupConfig for the test
-			gp := &common.HealthCheckGroupConfig{
-				Id:            "test_group",
-				CheckInterval: "1s",
-			}
-
 			// Refresh scores
-			registry.refreshUpstreamGroupScores(gp, upstreams)
+			registry.refreshUpstreamGroupScores("test", upstreams)
 
 			var scoredUpstreams []scoredUpstream
-			for id, upstream := range upstreams {
-				t.Logf("Metrics for %s: %+v", id, upstream.Metrics)
-				t.Logf("Score for %s: %v", id, upstream.Score)
-				scoredUpstreams = append(scoredUpstreams, scoredUpstream{Id: id, Score: upstream.Score})
+			for _, upstream := range upstreams {
+				t.Logf("Metrics for %s: %+v", upstream.config.Id, upstream.Metrics)
+				t.Logf("Score for %s: %v", upstream.config.Id, upstream.Score)
+				scoredUpstreams = append(scoredUpstreams, scoredUpstream{Id: upstream.config.Id, Score: upstream.Score})
 			}
 
 			// Sort scored upstreams based on their scores

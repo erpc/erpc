@@ -39,6 +39,11 @@ func NewRedisConnector(
 		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
 	}
 
+	go func() {
+		<-ctx.Done()
+		client.Close()
+	}()
+
 	return &RedisConnector{
 		client: client,
 	}, nil

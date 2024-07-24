@@ -14,8 +14,8 @@ type Config struct {
 	Database     *DatabaseConfig    `yaml:"database"`
 	Projects     []*ProjectConfig   `yaml:"projects"`
 	RateLimiters *RateLimiterConfig `yaml:"rateLimiters"`
-	HealthChecks *HealthCheckConfig `yaml:"healthChecks"`
-	Metrics      *MetricsConfig     `yaml:"metrics"`
+	// HealthChecks *HealthCheckConfig `yaml:"healthChecks"`
+	Metrics *MetricsConfig `yaml:"metrics"`
 }
 
 type ServerConfig struct {
@@ -79,17 +79,17 @@ type ProjectConfig struct {
 }
 
 type UpstreamConfig struct {
-	Id                string             `yaml:"id"`
-	Type              UpstreamType       `yaml:"type"` // evm, evm-alchemy, solana
-	VendorName        string             `yaml:"vendorName"`
-	Endpoint          string             `yaml:"endpoint"`
-	Evm               *EvmUpstreamConfig `yaml:"evm"`
-	AllowMethods      []string           `yaml:"allowMethods"`
-	IgnoreMethods     []string           `yaml:"ignoreMethods"`
-	Failsafe          *FailsafeConfig    `yaml:"failsafe"`
-	RateLimitBudget   string             `yaml:"rateLimitBudget"`
-	HealthCheckGroup  string             `yaml:"healthCheckGroup"`
-	CreditUnitMapping string             `yaml:"creditUnitMapping"`
+	Id              string             `yaml:"id"`
+	Type            UpstreamType       `yaml:"type"` // evm, evm-alchemy, solana
+	VendorName      string             `yaml:"vendorName"`
+	Endpoint        string             `yaml:"endpoint"`
+	Evm             *EvmUpstreamConfig `yaml:"evm"`
+	AllowMethods    []string           `yaml:"allowMethods"`
+	IgnoreMethods   []string           `yaml:"ignoreMethods"`
+	Failsafe        *FailsafeConfig    `yaml:"failsafe"`
+	RateLimitBudget string             `yaml:"rateLimitBudget"`
+	// HealthCheckGroup  string             `yaml:"healthCheckGroup"`
+	CreditUnitMapping string `yaml:"creditUnitMapping"`
 }
 
 type EvmUpstreamConfig struct {
@@ -149,24 +149,24 @@ type RateLimitRuleConfig struct {
 	WaitTime string `yaml:"waitTime"`
 }
 
-type HealthCheckConfig struct {
-	Groups []*HealthCheckGroupConfig `yaml:"groups"`
-}
+// type HealthCheckConfig struct {
+// 	Groups []*HealthCheckGroupConfig `yaml:"groups"`
+// }
 
-func (c *HealthCheckConfig) GetGroupConfig(groupId string) *HealthCheckGroupConfig {
-	for _, group := range c.Groups {
-		if group.Id == groupId {
-			return group
-		}
-	}
+// func (c *HealthCheckConfig) GetGroupConfig(groupId string) *HealthCheckGroupConfig {
+// 	for _, group := range c.Groups {
+// 		if group.Id == groupId {
+// 			return group
+// 		}
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
-type HealthCheckGroupConfig struct {
-	Id            string `yaml:"id"`
-	CheckInterval string `yaml:"checkInterval"`
-}
+// type HealthCheckGroupConfig struct {
+// 	Id            string `yaml:"id"`
+// 	CheckInterval string `yaml:"checkInterval"`
+// }
 
 type NetworkConfig struct {
 	Architecture    NetworkArchitecture `yaml:"architecture"`
