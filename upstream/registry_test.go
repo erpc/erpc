@@ -18,182 +18,123 @@ func TestUpstreamsRegistry(t *testing.T) {
 	projectID := "test-project"
 	networkID := "evm:123"
 	method := "eth_call"
-	windowsSize := 2 * time.Second
+	windowSize := 2 * time.Second
 	refreshInterval := 1 * time.Second
+	iterations := 1000
 
 	t.Run("ErrorRateAffectsScoreAndOrder", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, windowsSize, refreshInterval)
-		// Initialize score tracking for this method
+		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize, refreshInterval)
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
-		// Simulate requests and errors for upstream A, B, and C
 		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 20)
 		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 30)
 		simulateRequests(metricsTracker, networkID, "upstream-c", method, 100, 10)
 
-		// Force score refresh
-		registry.RefreshUpstreamNetworkMethodScores()
-
-		// Get sorted upstreams
-		sortedUpstreams, err := registry.GetSortedUpstreams(networkID, method)
-		assert.NoError(t, err)
-		assert.Len(t, sortedUpstreams, 3)
-		assert.Equal(t, "upstream-c", sortedUpstreams[0].Config().Id)
-		assert.Equal(t, "upstream-a", sortedUpstreams[1].Config().Id)
-		assert.Equal(t, "upstream-b", sortedUpstreams[2].Config().Id)
+		expectedOrder := []string{"upstream-c", "upstream-a", "upstream-b"}
+		checkUpstreamDistribution(t, registry, networkID, method, iterations, expectedOrder)
 	})
 
 	t.Run("P90LatencyAffectsSortOrder", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, windowsSize, refreshInterval)
-		// Initialize score tracking for this method
+		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize, refreshInterval)
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
-		// Simulate requests with different latencies
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method, 10, 0.05)
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", method, 10, 0.03)
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-c", method, 10, 0.01)
 
-		// Force score refresh for latency
 		time.Sleep(refreshInterval)
-		registry.RefreshUpstreamNetworkMethodScores()
 
-		// Get sorted upstreams
-		sortedUpstreams, err := registry.GetSortedUpstreams(networkID, method)
-		assert.NoError(t, err)
-		assert.Len(t, sortedUpstreams, 3)
-		assert.Equal(t, "upstream-c", sortedUpstreams[0].Config().Id)
-		assert.Equal(t, "upstream-b", sortedUpstreams[1].Config().Id)
-		assert.Equal(t, "upstream-a", sortedUpstreams[2].Config().Id)
+		expectedOrder := []string{"upstream-c", "upstream-b", "upstream-a"}
+		checkUpstreamDistribution(t, registry, networkID, method, iterations, expectedOrder)
 	})
 
 	t.Run("DynamicErrorRateChangesAffectOrder", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, windowsSize, refreshInterval)
-		// Initialize score tracking for this method
+		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize, refreshInterval)
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
-		// Initial phase: A has more errors than B
+		// Initial phase
 		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 20)
 		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 30)
 		simulateRequests(metricsTracker, networkID, "upstream-c", method, 100, 10)
 
-		registry.RefreshUpstreamNetworkMethodScores()
-
-		sortedUpstreams, err := registry.GetSortedUpstreams(networkID, method)
-		assert.NoError(t, err)
-		assert.Len(t, sortedUpstreams, 3)
-		assert.Equal(t, "upstream-c", sortedUpstreams[0].Config().Id)
-		assert.Equal(t, "upstream-a", sortedUpstreams[1].Config().Id)
-		assert.Equal(t, "upstream-b", sortedUpstreams[2].Config().Id)
+		expectedOrder := []string{"upstream-c", "upstream-a", "upstream-b"}
+		checkUpstreamDistribution(t, registry, networkID, method, iterations, expectedOrder)
 
 		// Simulate time passing and metrics reset
-		time.Sleep(windowsSize)
+		time.Sleep(windowSize)
 
-		// Second phase: B now has more errors than A
+		// Second phase
 		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 15)
 		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 5)
 		simulateRequests(metricsTracker, networkID, "upstream-c", method, 100, 20)
 
-		registry.RefreshUpstreamNetworkMethodScores()
-
-		sortedUpstreams, err = registry.GetSortedUpstreams(networkID, method)
-		assert.NoError(t, err)
-		assert.Len(t, sortedUpstreams, 3)
-		assert.Equal(t, "upstream-b", sortedUpstreams[0].Config().Id)
-		assert.Equal(t, "upstream-a", sortedUpstreams[1].Config().Id)
-		assert.Equal(t, "upstream-c", sortedUpstreams[2].Config().Id)
+		expectedOrder = []string{"upstream-b", "upstream-a", "upstream-c"}
+		checkUpstreamDistribution(t, registry, networkID, method, iterations, expectedOrder)
 	})
 
 	t.Run("RateLimitingAffectsScore", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, windowsSize, refreshInterval)
-		// Initialize score tracking for this method
+		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize, refreshInterval)
+		method := "eth_call"
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
 		simulateRequestsWithRateLimiting(metricsTracker, networkID, "upstream-a", method, 100, 10, 5)
 		simulateRequestsWithRateLimiting(metricsTracker, networkID, "upstream-b", method, 100, 5, 2)
 		simulateRequestsWithRateLimiting(metricsTracker, networkID, "upstream-c", method, 100, 2, 1)
 
-		registry.RefreshUpstreamNetworkMethodScores()
-
-		sortedUpstreams, err := registry.GetSortedUpstreams(networkID, method)
-		assert.NoError(t, err)
-		assert.Len(t, sortedUpstreams, 3)
-		assert.Equal(t, "upstream-c", sortedUpstreams[0].Config().Id)
-		assert.Equal(t, "upstream-b", sortedUpstreams[1].Config().Id)
-		assert.Equal(t, "upstream-a", sortedUpstreams[2].Config().Id)
+		expectedOrder := []string{"upstream-c", "upstream-b", "upstream-a"}
+		checkUpstreamDistribution(t, registry, networkID, method, iterations, expectedOrder)
 	})
 
 	t.Run("TotalRequestsAffectLoadBalancing", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, windowsSize, refreshInterval)
-		// Initialize score tracking for this method
+		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize, refreshInterval)
+		method := "eth_call"
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
-		// Simulate different number of requests for each upstream
 		simulateRequests(metricsTracker, networkID, "upstream-a", method, 50, 0)
 		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 0)
 		simulateRequests(metricsTracker, networkID, "upstream-c", method, 25, 0)
 
-		registry.RefreshUpstreamNetworkMethodScores()
-
-		sortedUpstreams, err := registry.GetSortedUpstreams(networkID, method)
-		assert.NoError(t, err)
-		assert.Len(t, sortedUpstreams, 3)
-		assert.Equal(t, "upstream-c", sortedUpstreams[0].Config().Id)
-		assert.Equal(t, "upstream-a", sortedUpstreams[1].Config().Id)
-		assert.Equal(t, "upstream-b", sortedUpstreams[2].Config().Id)
+		expectedOrder := []string{"upstream-c", "upstream-a", "upstream-b"}
+		checkUpstreamDistribution(t, registry, networkID, method, iterations, expectedOrder)
 	})
 
 	t.Run("MethodSpecificErrorRatePerformance", func(t *testing.T) {
-		largerWindowSize := windowsSize * 2
+		largerWindowSize := windowSize * 2
 		largerRefreshInterval := refreshInterval * 2
 		registry, metricsTracker := createTestRegistry(projectID, &logger, largerWindowSize, largerRefreshInterval)
 
-		// Initialize score tracking for both methods
-		_, _ = registry.GetSortedUpstreams(networkID, "eth_getLogs")
-		_, _ = registry.GetSortedUpstreams(networkID, "eth_traceTransaction")
+		methodGetLogs := "eth_getLogs"
+		methodTraceTransaction := "eth_traceTransaction"
+		_, _ = registry.GetSortedUpstreams(networkID, methodGetLogs)
+		_, _ = registry.GetSortedUpstreams(networkID, methodTraceTransaction)
 
 		// Simulate performance for eth_getLogs
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", "eth_getLogs", 5, 0.01)
-		simulateRequests(metricsTracker, networkID, "upstream-a", "eth_getLogs", 5, 0)
-
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", "eth_getLogs", 5, 0.5)
-		simulateRequests(metricsTracker, networkID, "upstream-b", "eth_getLogs", 5, 2)
-
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-c", "eth_getLogs", 5, 0.1)
-		simulateRequests(metricsTracker, networkID, "upstream-c", "eth_getLogs", 5, 1)
+		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", methodGetLogs, 5, 0.01)
+		simulateRequests(metricsTracker, networkID, "upstream-a", methodGetLogs, 5, 0)
+		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", methodGetLogs, 5, 0.5)
+		simulateRequests(metricsTracker, networkID, "upstream-b", methodGetLogs, 5, 2)
+		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-c", methodGetLogs, 5, 0.1)
+		simulateRequests(metricsTracker, networkID, "upstream-c", methodGetLogs, 5, 1)
 
 		// Simulate performance for eth_traceTransaction
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", "eth_traceTransaction", 5, 0.5)
-		simulateRequests(metricsTracker, networkID, "upstream-a", "eth_traceTransaction", 5, 2)
+		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", methodTraceTransaction, 5, 0.5)
+		simulateRequests(metricsTracker, networkID, "upstream-a", methodTraceTransaction, 5, 2)
+		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", methodTraceTransaction, 5, 0.01)
+		simulateRequests(metricsTracker, networkID, "upstream-b", methodTraceTransaction, 5, 0)
+		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-c", methodTraceTransaction, 5, 0.1)
+		simulateRequests(metricsTracker, networkID, "upstream-c", methodTraceTransaction, 5, 1)
 
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", "eth_traceTransaction", 5, 0.01)
-		simulateRequests(metricsTracker, networkID, "upstream-b", "eth_traceTransaction", 5, 0)
-
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-c", "eth_traceTransaction", 5, 0.1)
-		simulateRequests(metricsTracker, networkID, "upstream-c", "eth_traceTransaction", 5, 1)
-
-		// Force score refresh
 		time.Sleep(largerRefreshInterval)
-		registry.RefreshUpstreamNetworkMethodScores()
 
-		// Check sorting for eth_getLogs
-		sortedUpstreamsGetLogs, err := registry.GetSortedUpstreams(networkID, "eth_getLogs")
-		assert.NoError(t, err)
-		assert.Len(t, sortedUpstreamsGetLogs, 3)
-		assert.Equal(t, "upstream-a", sortedUpstreamsGetLogs[0].Config().Id)
-		assert.Equal(t, "upstream-c", sortedUpstreamsGetLogs[1].Config().Id)
-		assert.Equal(t, "upstream-b", sortedUpstreamsGetLogs[2].Config().Id)
+		expectedOrderGetLogs := []string{"upstream-a", "upstream-c", "upstream-b"}
+		checkUpstreamDistribution(t, registry, networkID, methodGetLogs, iterations, expectedOrderGetLogs)
 
-		// Check sorting for eth_traceTransaction
-		sortedUpstreamsTraceTransaction, err := registry.GetSortedUpstreams(networkID, "eth_traceTransaction")
-		assert.NoError(t, err)
-		assert.Len(t, sortedUpstreamsTraceTransaction, 3)
-		assert.Equal(t, "upstream-b", sortedUpstreamsTraceTransaction[0].Config().Id)
-		assert.Equal(t, "upstream-c", sortedUpstreamsTraceTransaction[1].Config().Id)
-		assert.Equal(t, "upstream-a", sortedUpstreamsTraceTransaction[2].Config().Id)
+		expectedOrderTraceTransaction := []string{"upstream-b", "upstream-c", "upstream-a"}
+		checkUpstreamDistribution(t, registry, networkID, methodTraceTransaction, iterations, expectedOrderTraceTransaction)
 	})
 
 	t.Run("DynamicLatencyPerformanceChangesMultipleMethods", func(t *testing.T) {
-		largerWindowSize := windowsSize * 2
+		largerWindowSize := windowSize * 2
 		largerRefreshInterval := refreshInterval * 2
 		registry, metricsTracker := createTestRegistry(projectID, &logger, largerWindowSize, largerRefreshInterval)
 
@@ -203,79 +144,41 @@ func TestUpstreamsRegistry(t *testing.T) {
 		_, _ = registry.GetSortedUpstreams(networkID, method2)
 
 		// Phase 1: Initial performance
-		// Method 1: A > B > C
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method1, 5, 0.01)
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", method1, 5, 0.03)
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-c", method1, 5, 0.05)
 
-		// Method 2: C > B > A
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-c", method2, 5, 0.01)
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", method2, 5, 0.03)
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method2, 5, 0.05)
 
 		time.Sleep(largerRefreshInterval)
-		registry.RefreshUpstreamNetworkMethodScores()
 
-		sortedUpstreams1Method1, err := registry.GetSortedUpstreams(networkID, method1)
-		assert.NoError(t, err)
-		assert.Len(t, sortedUpstreams1Method1, 3)
-		assert.Equal(t, "upstream-a", sortedUpstreams1Method1[0].Config().Id)
-		assert.Equal(t, "upstream-b", sortedUpstreams1Method1[1].Config().Id)
-		assert.Equal(t, "upstream-c", sortedUpstreams1Method1[2].Config().Id)
+		expectedOrderMethod1Phase1 := []string{"upstream-a", "upstream-b", "upstream-c"}
+		checkUpstreamDistribution(t, registry, networkID, method1, iterations, expectedOrderMethod1Phase1)
 
-		sortedUpstreams1Method2, err := registry.GetSortedUpstreams(networkID, method2)
-		assert.NoError(t, err)
-		assert.Len(t, sortedUpstreams1Method2, 3)
-		assert.Equal(t, "upstream-c", sortedUpstreams1Method2[0].Config().Id)
-		assert.Equal(t, "upstream-b", sortedUpstreams1Method2[1].Config().Id)
-		assert.Equal(t, "upstream-a", sortedUpstreams1Method2[2].Config().Id)
+		expectedOrderMethod2Phase1 := []string{"upstream-c", "upstream-b", "upstream-a"}
+		checkUpstreamDistribution(t, registry, networkID, method2, iterations, expectedOrderMethod2Phase1)
 
 		// Sleep for the duration of largerWindowSize to ensure metrics from phase 1 have cycled out
 		time.Sleep(largerWindowSize)
 
 		// Phase 2: Performance changes
-		// Method 1: B > C > A
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", method1, 5, 0.01)
-		// simulateRequests(metricsTracker, networkID, "upstream-b", method1, 5, 0)
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-c", method1, 5, 0.03)
-		// simulateRequests(metricsTracker, networkID, "upstream-c", method1, 5, 1)
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method1, 5, 0.05)
-		// simulateRequests(metricsTracker, networkID, "upstream-a", method1, 5, 2)
 
-		// Method 2: A > C > B
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method2, 5, 0.01)
-		// simulateRequests(metricsTracker, networkID, "upstream-a", method2, 5, 0)
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-c", method2, 5, 0.03)
-		// simulateRequests(metricsTracker, networkID, "upstream-c", method2, 5, 1)
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", method2, 5, 0.05)
-		// simulateRequests(metricsTracker, networkID, "upstream-b", method2, 5, 2)
 
 		time.Sleep(largerRefreshInterval)
-		registry.RefreshUpstreamNetworkMethodScores()
 
-		sortedUpstreams2Method1, err := registry.GetSortedUpstreams(networkID, method1)
-		assert.NoError(t, err)
-		assert.Len(t, sortedUpstreams2Method1, 3)
-		assert.Equal(t, "upstream-b", sortedUpstreams2Method1[0].Config().Id)
-		assert.Equal(t, "upstream-c", sortedUpstreams2Method1[1].Config().Id)
-		assert.Equal(t, "upstream-a", sortedUpstreams2Method1[2].Config().Id)
+		expectedOrderMethod1Phase2 := []string{"upstream-b", "upstream-c", "upstream-a"}
+		checkUpstreamDistribution(t, registry, networkID, method1, iterations, expectedOrderMethod1Phase2)
 
-		sortedUpstreams2Method2, err := registry.GetSortedUpstreams(networkID, method2)
-		assert.NoError(t, err)
-		assert.Len(t, sortedUpstreams2Method2, 3)
-
-		// Debug information
-		t.Logf("Sorted upstreams for method2 in Phase 2:")
-		for i, ups := range sortedUpstreams2Method2 {
-			metrics := metricsTracker.GetUpstreamMethodMetrics(networkID, ups.Config().Id, method2)
-			t.Logf("%d. %s - Latency: %.2f, Errors: %.0f, Requests: %.0f",
-				i+1, ups.Config().Id, metrics.P90LatencySecs, metrics.ErrorsTotal, metrics.RequestsTotal)
-		}
-
-		// Adjust assertions based on actual behavior
-		assert.Equal(t, "upstream-c", sortedUpstreams2Method2[0].Config().Id, "Expected upstream-c to be first for method2 in Phase 2")
-		assert.Equal(t, "upstream-a", sortedUpstreams2Method2[1].Config().Id, "Expected upstream-a to be second for method2 in Phase 2")
-		assert.Equal(t, "upstream-b", sortedUpstreams2Method2[2].Config().Id, "Expected upstream-b to be third for method2 in Phase 2")
+		expectedOrderMethod2Phase2 := []string{"upstream-a", "upstream-c", "upstream-b"}
+		checkUpstreamDistribution(t, registry, networkID, method2, iterations, expectedOrderMethod2Phase2)
 	})
 
 	t.Run("LatencyVsReliabilityScoring", func(t *testing.T) {
@@ -287,44 +190,28 @@ func TestUpstreamsRegistry(t *testing.T) {
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
 		// Simulate upstream A: 500ms latency, 20% failure rate
-		totalRequestsA := 100
-		failedRequestsA := 20
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method, totalRequestsA-failedRequestsA, 0.5)
-		simulateFailedRequests(metricsTracker, networkID, "upstream-a", method, failedRequestsA)
+		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method, 80, 0.5)
+		simulateFailedRequests(metricsTracker, networkID, "upstream-a", method, 20)
 
 		// Simulate upstream B: 1000ms latency, 1% failure rate
-		totalRequestsB := 100
-		failedRequestsB := 1
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", method, totalRequestsB-failedRequestsB, 1.0)
-		simulateFailedRequests(metricsTracker, networkID, "upstream-b", method, failedRequestsB)
+		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", method, 99, 1.0)
+		simulateFailedRequests(metricsTracker, networkID, "upstream-b", method, 1)
 
 		// Simulate upstream C: 750ms latency, 10% failure rate
-		totalRequestsC := 100
-		failedRequestsC := 10
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-c", method, totalRequestsC-failedRequestsC, 0.75)
-		simulateFailedRequests(metricsTracker, networkID, "upstream-c", method, failedRequestsC)
+		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-c", method, 90, 0.75)
+		simulateFailedRequests(metricsTracker, networkID, "upstream-c", method, 10)
 
 		time.Sleep(largerRefreshInterval)
-		registry.RefreshUpstreamNetworkMethodScores()
 
-		sortedUpstreams, err := registry.GetSortedUpstreams(networkID, method)
-		assert.NoError(t, err)
-		assert.Len(t, sortedUpstreams, 3)
+		expectedOrder := []string{"upstream-b", "upstream-c", "upstream-a"}
+		checkUpstreamDistribution(t, registry, networkID, method, iterations, expectedOrder)
 
 		// Log the metrics for better understanding
-		for _, ups := range sortedUpstreams {
-			metrics := metricsTracker.GetUpstreamMethodMetrics(networkID, ups.Config().Id, method)
+		for _, ups := range expectedOrder {
+			metrics := metricsTracker.GetUpstreamMethodMetrics(networkID, ups, method)
 			t.Logf("Upstream %s - Latency: %.2f, Errors: %.0f, Requests: %.0f",
-				ups.Config().Id, metrics.P90LatencySecs, metrics.ErrorsTotal, metrics.RequestsTotal)
+				ups, metrics.P90LatencySecs, metrics.ErrorsTotal, metrics.RequestsTotal)
 		}
-
-		// Assert the expected order: B (most reliable) > C (balanced) > A (least reliable)
-		assert.Equal(t, "upstream-b", sortedUpstreams[0].Config().Id,
-			"Expected upstream-b to be ranked highest due to best reliability despite highest latency")
-		assert.Equal(t, "upstream-c", sortedUpstreams[1].Config().Id,
-			"Expected upstream-c to be ranked second due to balanced performance")
-		assert.Equal(t, "upstream-a", sortedUpstreams[2].Config().Id,
-			"Expected upstream-a to be ranked lowest due to worst reliability despite lowest latency")
 	})
 
 	t.Run("ScoreReuseAcrossMethods", func(t *testing.T) {
@@ -335,11 +222,9 @@ func TestUpstreamsRegistry(t *testing.T) {
 		method1 := "eth_getLogs"
 		method2 := "eth_blockNumber"
 
-		// Initialize tracking for both methods
 		_, _ = registry.GetSortedUpstreams(networkID, method1)
 		_, _ = registry.GetSortedUpstreams(networkID, method2)
 
-		// Simulate performance for eth_getLogs
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method1, 90, 0.1)
 		simulateFailedRequests(metricsTracker, networkID, "upstream-a", method1, 10)
 
@@ -350,54 +235,33 @@ func TestUpstreamsRegistry(t *testing.T) {
 		simulateFailedRequests(metricsTracker, networkID, "upstream-c", method1, 2)
 
 		time.Sleep(largerRefreshInterval)
-		registry.RefreshUpstreamNetworkMethodScores()
 
-		// Get sorted upstreams for eth_getLogs
-		sortedUpstreamsMethod1, err := registry.GetSortedUpstreams(networkID, method1)
-		assert.NoError(t, err)
-		assert.Len(t, sortedUpstreamsMethod1, 3)
+		expectedOrderMethod1 := []string{"upstream-c", "upstream-b", "upstream-a"}
+		checkUpstreamDistribution(t, registry, networkID, method1, iterations, expectedOrderMethod1)
 
-		// Log the metrics for eth_getLogs
-		t.Log("Metrics for eth_getLogs:")
-		for _, ups := range sortedUpstreamsMethod1 {
-			metrics := metricsTracker.GetUpstreamMethodMetrics(networkID, ups.Config().Id, method1)
+		// Log the metrics for method1
+		t.Log("Metrics for", method1)
+		for _, ups := range expectedOrderMethod1 {
+			metrics := metricsTracker.GetUpstreamMethodMetrics(networkID, ups, method1)
 			t.Logf("Upstream %s - Latency: %.2f, Errors: %.0f, Requests: %.0f",
-				ups.Config().Id, metrics.P90LatencySecs, metrics.ErrorsTotal, metrics.RequestsTotal)
+				ups, metrics.P90LatencySecs, metrics.ErrorsTotal, metrics.RequestsTotal)
 		}
 
-		// Assert the order for eth_getLogs
-		assert.Equal(t, "upstream-c", sortedUpstreamsMethod1[0].Config().Id,
-			"Expected upstream-c to be ranked highest for eth_getLogs")
-		assert.Equal(t, "upstream-b", sortedUpstreamsMethod1[1].Config().Id,
-			"Expected upstream-b to be ranked second for eth_getLogs")
-		assert.Equal(t, "upstream-a", sortedUpstreamsMethod1[2].Config().Id,
-			"Expected upstream-a to be ranked lowest for eth_getLogs")
+		// Check if the order for method2 is the same as method1
+		checkUpstreamDistribution(t, registry, networkID, method2, iterations, expectedOrderMethod1)
 
-		// Get sorted upstreams for eth_blockNumber (no specific metrics simulated)
-		sortedUpstreamsMethod2, err := registry.GetSortedUpstreams(networkID, method2)
-		assert.NoError(t, err)
-		assert.Len(t, sortedUpstreamsMethod2, 3)
-
-		// Log the metrics for eth_blockNumber
-		t.Log("Metrics for eth_blockNumber:")
-		for _, ups := range sortedUpstreamsMethod2 {
-			metrics := metricsTracker.GetUpstreamMethodMetrics(networkID, ups.Config().Id, method2)
+		// Log the metrics for method2
+		t.Log("Metrics for", method2)
+		for _, ups := range expectedOrderMethod1 {
+			metrics := metricsTracker.GetUpstreamMethodMetrics(networkID, ups, method2)
 			t.Logf("Upstream %s - Latency: %.2f, Errors: %.0f, Requests: %.0f",
-				ups.Config().Id, metrics.P90LatencySecs, metrics.ErrorsTotal, metrics.RequestsTotal)
+				ups, metrics.P90LatencySecs, metrics.ErrorsTotal, metrics.RequestsTotal)
 		}
-
-		// Assert that the order for eth_blockNumber is the same as eth_getLogs
-		assert.Equal(t, sortedUpstreamsMethod1[0].Config().Id, sortedUpstreamsMethod2[0].Config().Id,
-			"Expected the highest ranked upstream to be the same for both methods")
-		assert.Equal(t, sortedUpstreamsMethod1[1].Config().Id, sortedUpstreamsMethod2[1].Config().Id,
-			"Expected the second ranked upstream to be the same for both methods")
-		assert.Equal(t, sortedUpstreamsMethod1[2].Config().Id, sortedUpstreamsMethod2[2].Config().Id,
-			"Expected the lowest ranked upstream to be the same for both methods")
 	})
 }
 
-func createTestRegistry(projectID string, logger *zerolog.Logger, windowsSize, refreshInterval time.Duration) (*UpstreamsRegistry, *health.Tracker) {
-	metricsTracker := health.NewTracker(projectID, windowsSize, refreshInterval)
+func createTestRegistry(projectID string, logger *zerolog.Logger, windowSize, refreshInterval time.Duration) (*UpstreamsRegistry, *health.Tracker) {
+	metricsTracker := health.NewTracker(projectID, windowSize, refreshInterval)
 	metricsTracker.Bootstrap(context.Background())
 
 	upstreamConfigs := []*common.UpstreamConfig{
@@ -472,5 +336,40 @@ func simulateFailedRequests(tracker *health.Tracker, network, upstream, method s
 	for i := 0; i < count; i++ {
 		tracker.RecordUpstreamRequest(network, upstream, method)
 		tracker.RecordUpstreamFailure(network, upstream, method, "test-error")
+	}
+}
+
+// Helper function to check the distribution of upstream positions
+func checkUpstreamDistribution(t *testing.T, registry *UpstreamsRegistry, networkID, method string, iterations int, expectedOrder []string) {
+	results := make(map[string][]int)
+	for _, id := range expectedOrder {
+		results[id] = make([]int, 3) // Track positions 0, 1, 2
+	}
+
+	for i := 0; i < iterations; i++ {
+		registry.RefreshUpstreamNetworkMethodScores()
+		sortedUpstreams, err := registry.GetSortedUpstreams(networkID, method)
+		assert.NoError(t, err)
+		assert.Len(t, sortedUpstreams, 3)
+
+		for pos, ups := range sortedUpstreams[:3] {
+			results[ups.Config().Id][pos]++
+		}
+	}
+
+	// Log the distribution for manual inspection
+	t.Logf("Distribution of positions: %v", results)
+
+	// Check if the distribution is roughly as expected
+	for i := 0; i < len(expectedOrder)-1; i++ {
+		assert.Greater(t, results[expectedOrder[i]][0], results[expectedOrder[i+1]][0],
+			"%s should be first more often than %s", expectedOrder[i], expectedOrder[i+1])
+	}
+
+	// Ensure each upstream appears in each position at least once
+	for _, id := range expectedOrder {
+		for pos := 0; pos < 3; pos++ {
+			assert.Greater(t, results[id][pos], 0, "%s should appear in position %d at least once", id, pos)
+		}
 	}
 }
