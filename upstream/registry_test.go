@@ -32,7 +32,7 @@ func TestUpstreamsRegistry(t *testing.T) {
 		simulateRequests(metricsTracker, networkID, "upstream-c", method, 100, 10)
 
 		// Force score refresh
-		registry.refreshUpstreamNetworkMethodScores()
+		registry.RefreshUpstreamNetworkMethodScores()
 
 		// Get sorted upstreams
 		sortedUpstreams, err := registry.GetSortedUpstreams(networkID, method)
@@ -55,7 +55,7 @@ func TestUpstreamsRegistry(t *testing.T) {
 
 		// Force score refresh for latency
 		time.Sleep(refreshInterval)
-		registry.refreshUpstreamNetworkMethodScores()
+		registry.RefreshUpstreamNetworkMethodScores()
 
 		// Get sorted upstreams
 		sortedUpstreams, err := registry.GetSortedUpstreams(networkID, method)
@@ -76,7 +76,7 @@ func TestUpstreamsRegistry(t *testing.T) {
 		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 30)
 		simulateRequests(metricsTracker, networkID, "upstream-c", method, 100, 10)
 
-		registry.refreshUpstreamNetworkMethodScores()
+		registry.RefreshUpstreamNetworkMethodScores()
 
 		sortedUpstreams, err := registry.GetSortedUpstreams(networkID, method)
 		assert.NoError(t, err)
@@ -93,7 +93,7 @@ func TestUpstreamsRegistry(t *testing.T) {
 		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 5)
 		simulateRequests(metricsTracker, networkID, "upstream-c", method, 100, 20)
 
-		registry.refreshUpstreamNetworkMethodScores()
+		registry.RefreshUpstreamNetworkMethodScores()
 
 		sortedUpstreams, err = registry.GetSortedUpstreams(networkID, method)
 		assert.NoError(t, err)
@@ -112,7 +112,7 @@ func TestUpstreamsRegistry(t *testing.T) {
 		simulateRequestsWithRateLimiting(metricsTracker, networkID, "upstream-b", method, 100, 5, 2)
 		simulateRequestsWithRateLimiting(metricsTracker, networkID, "upstream-c", method, 100, 2, 1)
 
-		registry.refreshUpstreamNetworkMethodScores()
+		registry.RefreshUpstreamNetworkMethodScores()
 
 		sortedUpstreams, err := registry.GetSortedUpstreams(networkID, method)
 		assert.NoError(t, err)
@@ -132,7 +132,7 @@ func TestUpstreamsRegistry(t *testing.T) {
 		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 0)
 		simulateRequests(metricsTracker, networkID, "upstream-c", method, 25, 0)
 
-		registry.refreshUpstreamNetworkMethodScores()
+		registry.RefreshUpstreamNetworkMethodScores()
 
 		sortedUpstreams, err := registry.GetSortedUpstreams(networkID, method)
 		assert.NoError(t, err)
@@ -173,7 +173,7 @@ func TestUpstreamsRegistry(t *testing.T) {
 
 		// Force score refresh
 		time.Sleep(largerRefreshInterval)
-		registry.refreshUpstreamNetworkMethodScores()
+		registry.RefreshUpstreamNetworkMethodScores()
 
 		// Check sorting for eth_getLogs
 		sortedUpstreamsGetLogs, err := registry.GetSortedUpstreams(networkID, "eth_getLogs")
@@ -214,7 +214,7 @@ func TestUpstreamsRegistry(t *testing.T) {
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method2, 5, 0.05)
 
 		time.Sleep(largerRefreshInterval)
-		registry.refreshUpstreamNetworkMethodScores()
+		registry.RefreshUpstreamNetworkMethodScores()
 
 		sortedUpstreams1Method1, err := registry.GetSortedUpstreams(networkID, method1)
 		assert.NoError(t, err)
@@ -251,7 +251,7 @@ func TestUpstreamsRegistry(t *testing.T) {
 		// simulateRequests(metricsTracker, networkID, "upstream-b", method2, 5, 2)
 
 		time.Sleep(largerRefreshInterval)
-		registry.refreshUpstreamNetworkMethodScores()
+		registry.RefreshUpstreamNetworkMethodScores()
 
 		sortedUpstreams2Method1, err := registry.GetSortedUpstreams(networkID, method1)
 		assert.NoError(t, err)
@@ -305,7 +305,7 @@ func TestUpstreamsRegistry(t *testing.T) {
 		simulateFailedRequests(metricsTracker, networkID, "upstream-c", method, failedRequestsC)
 
 		time.Sleep(largerRefreshInterval)
-		registry.refreshUpstreamNetworkMethodScores()
+		registry.RefreshUpstreamNetworkMethodScores()
 
 		sortedUpstreams, err := registry.GetSortedUpstreams(networkID, method)
 		assert.NoError(t, err)
@@ -350,7 +350,7 @@ func TestUpstreamsRegistry(t *testing.T) {
 		simulateFailedRequests(metricsTracker, networkID, "upstream-c", method1, 2)
 
 		time.Sleep(largerRefreshInterval)
-		registry.refreshUpstreamNetworkMethodScores()
+		registry.RefreshUpstreamNetworkMethodScores()
 
 		// Get sorted upstreams for eth_getLogs
 		sortedUpstreamsMethod1, err := registry.GetSortedUpstreams(networkID, method1)
