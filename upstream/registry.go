@@ -174,7 +174,7 @@ func (u *UpstreamsRegistry) sortUpstreams(networkId, method string, upstreams []
 	})
 }
 
-func (u *UpstreamsRegistry) refreshUpstreamNetworkMethodScores() error {
+func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 	u.mapMu.Lock()
 	defer u.mapMu.Unlock()
 
@@ -223,7 +223,7 @@ func (u *UpstreamsRegistry) scheduleHealthCheckTimers(ctx context.Context) error
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				u.refreshUpstreamNetworkMethodScores()
+				u.RefreshUpstreamNetworkMethodScores()
 			}
 		}
 	}()
@@ -236,6 +236,15 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 
 	for _, ups := range upsList {
 		metrics := u.metricsTracker.GetUpstreamMethodMetrics(networkId, ups.Config().Id, method)
+		log.Debug().Str("projectId", u.prjId).
+			Str("networkId", networkId).
+			Str("upstream", ups.Config().Id).
+			Str("method", method).
+			Float64("p90Latency", metrics.P90LatencySecs).
+			Int("errors", int(metrics.ErrorsTotal)).
+			Int("requests", int(metrics.RequestsTotal)).
+			Int("throttled", int(metrics.RemoteRateLimitedTotal+metrics.SelfRateLimitedTotal)).
+			Msgf("queried upstream metrics")
 		p90Latencies = append(p90Latencies, metrics.P90LatencySecs)
 
 		rateLimitedTotal := metrics.RemoteRateLimitedTotal + metrics.SelfRateLimitedTotal
