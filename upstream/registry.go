@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"sort"
 	"sync"
 	"time"
@@ -161,15 +162,46 @@ func (u *UpstreamsRegistry) GetSortedUpstreams(networkId, method string) ([]*Ups
 }
 
 func (u *UpstreamsRegistry) sortUpstreams(networkId, method string, upstreams []*Upstream) {
+	// Calculate total score
+	totalScore := 0
+	for _, ups := range upstreams {
+		score := u.upstreamScores[ups.Config().Id][networkId][method]
+		if score < 0 {
+			score = 0
+		}
+		totalScore += score
+	}
+
+	// If all scores are 0 or negative, fall back to random shuffle
+	if totalScore == 0 {
+		rand.Shuffle(len(upstreams), func(i, j int) {
+			upstreams[i], upstreams[j] = upstreams[j], upstreams[i]
+		})
+		return
+	}
+
+	// Perform weighted random sort
 	sort.Slice(upstreams, func(i, j int) bool {
 		scoreI := u.upstreamScores[upstreams[i].Config().Id][networkId][method]
 		scoreJ := u.upstreamScores[upstreams[j].Config().Id][networkId][method]
 
-		if scoreI != scoreJ {
-			return scoreI > scoreJ
+		if scoreI < 0 {
+			scoreI = 0
+		}
+		if scoreJ < 0 {
+			scoreJ = 0
 		}
 
-		// If scores are equal, sort by upstream ID for consistency
+		// Generate random values based on scores
+		randI := rand.Float64() * float64(scoreI)
+		randJ := rand.Float64() * float64(scoreJ)
+
+		// Compare random values for sorting
+		if randI != randJ {
+			return randI > randJ
+		}
+
+		// If random values are equal, sort by upstream ID for consistency
 		return upstreams[i].Config().Id < upstreams[j].Config().Id
 	})
 }
