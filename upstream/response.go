@@ -127,3 +127,20 @@ func (r *NormalizedResponse) IsObjectNull() bool {
 
 	return false
 }
+
+func (r *NormalizedResponse) String() string {
+	if r == nil {
+		return "<nil>"
+	}
+	if r.body != nil && len(r.body) > 0 {
+		return string(r.body)
+	}
+	if r.err != nil {
+		return r.err.Error()
+	}
+	if r.jsonRpcResponse != nil {
+		b, _ := json.Marshal(r.jsonRpcResponse)
+		return string(b)
+	}
+	return "<nil>"
+}

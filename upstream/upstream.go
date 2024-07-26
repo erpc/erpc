@@ -38,8 +38,6 @@ type Upstream struct {
 	methodCheckResultsMu  sync.RWMutex
 	supportedNetworkIds   map[string]bool
 	supportedNetworkIdsMu sync.RWMutex
-
-	// MetricsMu sync.RWMutex
 }
 
 func NewUpstream(
@@ -239,25 +237,31 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 		tryForward := func(
 			ctx context.Context,
 		) (*NormalizedResponse, error) {
+			netId := "n/a"
+			if req.Network() != nil {
+				netId = req.Network().Id()
+			}
+			u.metricsTracker.RecordUpstreamRequest(
+				cfg.Id,
+				netId,
+				method,
+			)
+			timer := u.metricsTracker.RecordUpstreamDurationStart(cfg.Id, netId, method)
+			defer timer.ObserveDuration()
 			resp, errCall := jsonRpcClient.SendRequest(ctx, req)
-			lg.Debug().Err(errCall).Msgf("upstream call result received: %v", &resp)
-
+			lg.Debug().Err(errCall).Str("response", resp.String()).Msgf("upstream call result received")
 			if errCall != nil {
 				if !errors.Is(errCall, context.DeadlineExceeded) && !errors.Is(errCall, context.Canceled) {
-					netId := "n/a"
-					if req.Network() != nil {
-						netId = req.Network().Id()
-					}
 					if common.HasCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
 						u.metricsTracker.RecordUpstreamRemoteRateLimited(
-							netId,
 							cfg.Id,
+							netId,
 							method,
 						)
 					} else {
 						u.metricsTracker.RecordUpstreamFailure(
-							netId,
 							cfg.Id,
+							netId,
 							method,
 							common.ErrorSummary(errCall),
 						)

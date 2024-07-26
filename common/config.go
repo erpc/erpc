@@ -14,8 +14,7 @@ type Config struct {
 	Database     *DatabaseConfig    `yaml:"database"`
 	Projects     []*ProjectConfig   `yaml:"projects"`
 	RateLimiters *RateLimiterConfig `yaml:"rateLimiters"`
-	// HealthChecks *HealthCheckConfig `yaml:"healthChecks"`
-	Metrics *MetricsConfig `yaml:"metrics"`
+	Metrics      *MetricsConfig     `yaml:"metrics"`
 }
 
 type ServerConfig struct {
@@ -72,24 +71,24 @@ type AwsAuthConfig struct {
 }
 
 type ProjectConfig struct {
-	Id              string            `yaml:"id"`
-	Upstreams       []*UpstreamConfig `yaml:"upstreams"`
-	Networks        []*NetworkConfig  `yaml:"networks"`
-	RateLimitBudget string            `yaml:"rateLimitBudget"`
+	Id              string             `yaml:"id"`
+	Upstreams       []*UpstreamConfig  `yaml:"upstreams"`
+	Networks        []*NetworkConfig   `yaml:"networks"`
+	RateLimitBudget string             `yaml:"rateLimitBudget"`
+	HealthCheck     *HealthCheckConfig `yaml:"healthCheck"`
 }
 
 type UpstreamConfig struct {
-	Id              string             `yaml:"id"`
-	Type            UpstreamType       `yaml:"type"` // evm, evm-alchemy, solana
-	VendorName      string             `yaml:"vendorName"`
-	Endpoint        string             `yaml:"endpoint"`
-	Evm             *EvmUpstreamConfig `yaml:"evm"`
-	AllowMethods    []string           `yaml:"allowMethods"`
-	IgnoreMethods   []string           `yaml:"ignoreMethods"`
-	Failsafe        *FailsafeConfig    `yaml:"failsafe"`
-	RateLimitBudget string             `yaml:"rateLimitBudget"`
-	// HealthCheckGroup  string             `yaml:"healthCheckGroup"`
-	CreditUnitMapping string `yaml:"creditUnitMapping"`
+	Id                string             `yaml:"id"`
+	Type              UpstreamType       `yaml:"type"` // evm, evm-alchemy, solana
+	VendorName        string             `yaml:"vendorName"`
+	Endpoint          string             `yaml:"endpoint"`
+	Evm               *EvmUpstreamConfig `yaml:"evm"`
+	AllowMethods      []string           `yaml:"allowMethods"`
+	IgnoreMethods     []string           `yaml:"ignoreMethods"`
+	Failsafe          *FailsafeConfig    `yaml:"failsafe"`
+	RateLimitBudget   string             `yaml:"rateLimitBudget"`
+	CreditUnitMapping string             `yaml:"creditUnitMapping"`
 }
 
 type EvmUpstreamConfig struct {
@@ -149,24 +148,9 @@ type RateLimitRuleConfig struct {
 	WaitTime string `yaml:"waitTime"`
 }
 
-// type HealthCheckConfig struct {
-// 	Groups []*HealthCheckGroupConfig `yaml:"groups"`
-// }
-
-// func (c *HealthCheckConfig) GetGroupConfig(groupId string) *HealthCheckGroupConfig {
-// 	for _, group := range c.Groups {
-// 		if group.Id == groupId {
-// 			return group
-// 		}
-// 	}
-
-// 	return nil
-// }
-
-// type HealthCheckGroupConfig struct {
-// 	Id            string `yaml:"id"`
-// 	CheckInterval string `yaml:"checkInterval"`
-// }
+type HealthCheckConfig struct {
+	ScoreMetricsWindowSize string `yaml:"scoreMetricsWindowSize"`
+}
 
 type NetworkConfig struct {
 	Architecture    NetworkArchitecture `yaml:"architecture"`

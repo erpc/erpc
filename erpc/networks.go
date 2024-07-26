@@ -41,6 +41,7 @@ type multiplexedInFlightRequest struct {
 	resp common.NormalizedResponse
 	err  error
 	done chan struct{}
+	mu   sync.RWMutex
 }
 
 func (n *Network) Bootstrap(ctx context.Context) error {
@@ -100,14 +101,21 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 	mlxHash, _ := req.CacheHash()
 	n.inFlightMutex.Lock()
 	if inf, exists := n.inFlightRequests[mlxHash]; exists {
-		n.inFlightMutex.Unlock()
+		defer n.inFlightMutex.Unlock()
 		lg.Debug().Object("req", req).Msgf("found similar in-flight request, waiting for result")
 		health.MetricNetworkMultiplexedRequests.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
+		
+		inf.mu.RLock()
 		if inf.resp != nil || inf.err != nil {
+			inf.mu.RUnlock()
 			return inf.resp, inf.err
 		}
+		inf.mu.RUnlock()
+
 		select {
 		case <-inf.done:
+			inf.mu.RLock()
+			defer inf.mu.RUnlock()
 			return inf.resp, inf.err
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -119,7 +127,6 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 	n.inFlightRequests[mlxHash] = inf
 	n.inFlightMutex.Unlock()
 	defer func() {
-		<-inf.done
 		n.inFlightMutex.Lock()
 		delete(n.inFlightRequests, mlxHash)
 		n.inFlightMutex.Unlock()
@@ -139,15 +146,17 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 			lg.Info().Object("req", req).Err(err).Msgf("response served from cache")
 			health.MetricNetworkCacheHits.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 			inf.resp = resp
-			close(inf.done) // Ensure done is closed
+			close(inf.done)
 			return resp, err
 		}
 	}
 
 	// 3) Apply rate limits
 	if err := n.acquireRateLimitPermit(req); err != nil {
+		inf.mu.Lock()
+		defer inf.mu.Unlock()
 		inf.err = err
-		close(inf.done) // Ensure done is closed
+		close(inf.done)
 		return nil, err
 	}
 
@@ -160,7 +169,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		lg := u.Logger.With().Str("upstream", u.Config().Id).Logger()
 
 		// TODO skip upstream if method not supported / score is negative / too much block lag and request is for recent data
-		resp, err = n.forwardToUpstream(u, ctx, req)
+		resp, err = u.Forward(ctx, req)
 		if !common.IsNull(err) {
 			return nil, false, err
 		}
@@ -171,14 +180,13 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 
 	mtx := sync.Mutex{}
 	i := 0
+	upsList, err := n.upstreamsRegistry.GetSortedUpstreams(n.NetworkId, method)
+	if err != nil {
+		return nil, err
+	}
 	resp, execErr := n.failsafeExecutor.
 		WithContext(ctx).
 		GetWithExecution(func(exec failsafe.Execution[common.NormalizedResponse]) (common.NormalizedResponse, error) {
-			upsList, err := n.upstreamsRegistry.GetSortedUpstreams(n.NetworkId, method)
-			if err != nil {
-				return nil, err
-			}
-
 			isHedged := exec.Hedges() > 0
 
 			// We should try all upstreams at least once, but using "i" we make sure
@@ -239,11 +247,15 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 			if lr != nil && lr.IsResultEmptyish() {
 				resp = lr
 			} else {
+				inf.mu.Lock()
+				defer inf.mu.Unlock()
 				inf.err = err
 				close(inf.done)
 				return nil, err
 			}
 		} else {
+			inf.mu.Lock()
+			defer inf.mu.Unlock()
 			inf.err = err
 			close(inf.done)
 			return nil, err
@@ -261,6 +273,8 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		})(resp)
 	}
 
+	inf.mu.Lock()
+	defer inf.mu.Unlock()
 	inf.resp = resp
 	close(inf.done)
 	return resp, nil
@@ -397,23 +411,6 @@ func (n *Network) acquireRateLimitPermit(req *upstream.NormalizedRequest) error 
 	}
 
 	return nil
-}
-
-func (n *Network) forwardToUpstream(
-	ups *upstream.Upstream,
-	ctx context.Context,
-	req *upstream.NormalizedRequest,
-) (common.NormalizedResponse, error) {
-	var category string = ""
-	if m, _ := req.Method(); m != "" {
-		category = m
-	}
-
-	n.metricsTracker.RecordUpstreamRequest(n.NetworkId, ups.Config().Id, category)
-	timer := n.metricsTracker.RecordUpstreamDurationStart(n.NetworkId, ups.Config().Id, category)
-	defer timer.ObserveDuration()
-
-	return ups.Forward(ctx, req)
 }
 
 func tryExtractLastResult(err interface{}) common.NormalizedResponse {

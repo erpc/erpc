@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,10 +14,9 @@ func TestTracker(t *testing.T) {
 	projectID := "test-project"
 	networkID := "evm:123"
 	windowSize := 100 * time.Millisecond
-	refreshInterval := 50 * time.Millisecond
 
 	t.Run("BasicMetricsCollection", func(t *testing.T) {
-		tracker := NewTracker(projectID, windowSize, refreshInterval)
+		tracker := NewTracker(projectID, windowSize)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -24,15 +24,13 @@ func TestTracker(t *testing.T) {
 
 		ups1 := newFakeUpstream("a")
 		ups2 := newFakeUpstream("b")
-		tracker.RegisterUpstream(ups1)
-		tracker.RegisterUpstream(ups2)
 
 		// Simulate requests
 		simulateRequests(tracker, networkID, ups1.Config().Id, "method1", 100, 10)
 		simulateRequests(tracker, networkID, ups2.Config().Id, "method1", 50, 5)
 
-		metrics1 := tracker.GetUpstreamMethodMetrics(networkID, ups1.Config().Id, "method1")
-		metrics2 := tracker.GetUpstreamMethodMetrics(networkID, ups2.Config().Id, "method1")
+		metrics1 := tracker.GetUpstreamMethodMetrics(ups1.Config().Id, networkID, "method1")
+		metrics2 := tracker.GetUpstreamMethodMetrics(ups2.Config().Id, networkID, "method1")
 
 		assert.Equal(t, float64(100), metrics1.RequestsTotal)
 		assert.Equal(t, float64(10), metrics1.ErrorsTotal)
@@ -41,19 +39,18 @@ func TestTracker(t *testing.T) {
 	})
 
 	t.Run("MetricsOverTime", func(t *testing.T) {
-		tracker := NewTracker(projectID, windowSize, refreshInterval)
+		tracker := NewTracker(projectID, windowSize)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		tracker.Bootstrap(ctx)
 
 		ups := newFakeUpstream("a")
-		tracker.RegisterUpstream(ups)
 
 		// First window
 		simulateRequests(tracker, networkID, ups.Config().Id, "method1", 100, 10)
 
-		metrics1 := tracker.GetUpstreamMethodMetrics(networkID, ups.Config().Id, "method1")
+		metrics1 := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "method1")
 		assert.Equal(t, float64(100), metrics1.RequestsTotal)
 		assert.Equal(t, float64(10), metrics1.ErrorsTotal)
 
@@ -62,31 +59,30 @@ func TestTracker(t *testing.T) {
 		// Second window
 		simulateRequests(tracker, networkID, ups.Config().Id, "method1", 50, 5)
 
-		metrics2 := tracker.GetUpstreamMethodMetrics(networkID, ups.Config().Id, "method1")
+		metrics2 := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "method1")
 		assert.Equal(t, float64(50), metrics2.RequestsTotal)
 		assert.Equal(t, float64(5), metrics2.ErrorsTotal)
 	})
 
 	t.Run("RateLimitingMetrics", func(t *testing.T) {
-		tracker := NewTracker(projectID, windowSize, refreshInterval)
+		tracker := NewTracker(projectID, windowSize)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		tracker.Bootstrap(ctx)
 
 		ups := newFakeUpstream("a")
-		tracker.RegisterUpstream(ups)
 
 		simulateRequestsWithRateLimiting(tracker, networkID, ups.Config().Id, "method1", 100, 20, 10)
 
-		metrics := tracker.GetUpstreamMethodMetrics(networkID, ups.Config().Id, "method1")
+		metrics := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "method1")
 		assert.Equal(t, float64(100), metrics.RequestsTotal)
 		assert.Equal(t, float64(20), metrics.SelfRateLimitedTotal)
 		assert.Equal(t, float64(10), metrics.RemoteRateLimitedTotal)
 	})
 
 	t.Run("LatencyMetrics", func(t *testing.T) {
-		tracker := NewTracker(projectID, windowSize, refreshInterval)
+		tracker := NewTracker(projectID, windowSize)
 		resetMetrics()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -94,19 +90,16 @@ func TestTracker(t *testing.T) {
 		tracker.Bootstrap(ctx)
 
 		ups := newFakeUpstream("a")
-		tracker.RegisterUpstream(ups)
 
 		simulateRequestsWithLatency(tracker, networkID, ups.Config().Id, "method1", 10, 0.05)
 
-		time.Sleep(refreshInterval)
-
-		metrics := tracker.GetUpstreamMethodMetrics(networkID, ups.Config().Id, "method1")
-		assert.Greater(t, metrics.P90LatencySecs, 0.04)
-		assert.Less(t, metrics.P90LatencySecs, 0.06)
+		metrics := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "method1")
+		assert.GreaterOrEqual(t, metrics.LatencySecs.P90(), 0.04)
+		assert.LessOrEqual(t, metrics.LatencySecs.P90(), 0.06)
 	})
 
 	t.Run("MultipleUpstreamsComparison", func(t *testing.T) {
-		tracker := NewTracker(projectID, windowSize, refreshInterval)
+		tracker := NewTracker(projectID, windowSize)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -115,19 +108,14 @@ func TestTracker(t *testing.T) {
 		ups1 := newFakeUpstream("a")
 		ups2 := newFakeUpstream("b")
 		ups3 := newFakeUpstream("c")
-		tracker.RegisterUpstream(ups1)
-		tracker.RegisterUpstream(ups2)
-		tracker.RegisterUpstream(ups3)
 
 		simulateRequests(tracker, networkID, ups1.Config().Id, "method1", 100, 10)
 		simulateRequests(tracker, networkID, ups2.Config().Id, "method1", 80, 5)
 		simulateRequests(tracker, networkID, ups3.Config().Id, "method1", 120, 15)
 
-		time.Sleep(refreshInterval)
-
-		metrics1 := tracker.GetUpstreamMethodMetrics(networkID, ups1.Config().Id, "method1")
-		metrics2 := tracker.GetUpstreamMethodMetrics(networkID, ups2.Config().Id, "method1")
-		metrics3 := tracker.GetUpstreamMethodMetrics(networkID, ups3.Config().Id, "method1")
+		metrics1 := tracker.GetUpstreamMethodMetrics(ups1.Config().Id, networkID, "method1")
+		metrics2 := tracker.GetUpstreamMethodMetrics(ups2.Config().Id, networkID, "method1")
+		metrics3 := tracker.GetUpstreamMethodMetrics(ups3.Config().Id, networkID, "method1")
 
 		// Check if metrics are collected correctly
 		assert.Equal(t, float64(100), metrics1.RequestsTotal)
@@ -143,26 +131,24 @@ func TestTracker(t *testing.T) {
 	})
 
 	t.Run("ResetMetrics", func(t *testing.T) {
-		tracker := NewTracker(projectID, windowSize, refreshInterval)
+		tracker := NewTracker(projectID, windowSize)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		tracker.Bootstrap(ctx)
 
 		ups := newFakeUpstream("a")
-		tracker.RegisterUpstream(ups)
 
 		simulateRequests(tracker, networkID, ups.Config().Id, "method1", 100, 10)
 
-		time.Sleep(refreshInterval)
-		metricsBefore := tracker.GetUpstreamMethodMetrics(networkID, ups.Config().Id, "method1")
-		time.Sleep(windowSize)
-		metricsAfter := tracker.GetUpstreamMethodMetrics(networkID, ups.Config().Id, "method1")
-
+		metricsBefore := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "method1")
 		assert.Equal(t, float64(100), metricsBefore.RequestsTotal)
 		assert.Equal(t, float64(10), metricsBefore.ErrorsTotal)
 		assert.Equal(t, float64(0), metricsBefore.SelfRateLimitedTotal)
 		assert.Equal(t, float64(0), metricsBefore.RemoteRateLimitedTotal)
+
+		time.Sleep(windowSize + 1*time.Millisecond)
+		metricsAfter := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "method1")
 
 		assert.Equal(t, float64(0), metricsAfter.RequestsTotal)
 		assert.Equal(t, float64(0), metricsAfter.ErrorsTotal)
@@ -171,22 +157,19 @@ func TestTracker(t *testing.T) {
 	})
 
 	t.Run("DifferentMethods", func(t *testing.T) {
-		tracker := NewTracker(projectID, windowSize, refreshInterval)
+		tracker := NewTracker(projectID, windowSize)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		tracker.Bootstrap(ctx)
 
 		ups := newFakeUpstream("a")
-		tracker.RegisterUpstream(ups)
 
 		simulateRequests(tracker, networkID, ups.Config().Id, "method1", 100, 10)
 		simulateRequests(tracker, networkID, ups.Config().Id, "method2", 50, 5)
 
-		time.Sleep(refreshInterval)
-
-		metrics1 := tracker.GetUpstreamMethodMetrics(networkID, ups.Config().Id, "method1")
-		metrics2 := tracker.GetUpstreamMethodMetrics(networkID, ups.Config().Id, "method2")
+		metrics1 := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "method1")
+		metrics2 := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "method2")
 
 		assert.Equal(t, float64(100), metrics1.RequestsTotal)
 		assert.Equal(t, float64(50), metrics2.RequestsTotal)
@@ -194,27 +177,26 @@ func TestTracker(t *testing.T) {
 
 	t.Run("LongTermMetrics", func(t *testing.T) {
 		longWindowSize := 500 * time.Millisecond
-		tracker := NewTracker(projectID, longWindowSize, refreshInterval)
+		tracker := NewTracker(projectID, longWindowSize)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		tracker.Bootstrap(ctx)
 
 		ups := newFakeUpstream("a")
-		tracker.RegisterUpstream(ups)
 
 		for i := 0; i < 5; i++ {
 			simulateRequests(tracker, networkID, ups.Config().Id, "method1", 20, 2)
 			time.Sleep(50 * time.Millisecond)
 		}
 
-		metrics := tracker.GetUpstreamMethodMetrics(networkID, ups.Config().Id, "method1")
+		metrics := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "method1")
 		assert.Equal(t, float64(100), metrics.RequestsTotal)
 		assert.Equal(t, float64(10), metrics.ErrorsTotal)
 	})
 
 	t.Run("LongTermMetricsReset", func(t *testing.T) {
-		tracker := NewTracker(projectID, windowSize, refreshInterval)
+		tracker := NewTracker(projectID, windowSize)
 		resetMetrics()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -222,17 +204,76 @@ func TestTracker(t *testing.T) {
 		tracker.Bootstrap(ctx)
 
 		ups := newFakeUpstream("a")
-		tracker.RegisterUpstream(ups)
 
 		for i := 0; i < 5; i++ {
 			simulateRequests(tracker, networkID, ups.Config().Id, "method1", 20, 2)
 
-			metrics := tracker.GetUpstreamMethodMetrics(networkID, ups.Config().Id, "method1")
+			metrics := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "method1")
 			assert.Equal(t, float64(20), metrics.RequestsTotal)
 			assert.Equal(t, float64(2), metrics.ErrorsTotal)
 
 			time.Sleep(windowSize + 1*time.Millisecond)
 		}
+	})
+
+	t.Run("MultipleMethodsRequestsIncreaseNetworkOverall", func(t *testing.T) {
+		tracker := NewTracker(projectID, windowSize)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		tracker.Bootstrap(ctx)
+
+		ups := newFakeUpstream("a")
+		simulateRequests(tracker, networkID, ups.Config().Id, "method1", 100, 10)
+		simulateRequests(tracker, networkID, ups.Config().Id, "method2", 50, 5)
+
+		metrics1 := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "*")
+
+		assert.Equal(t, float64(150), metrics1.RequestsTotal)
+	})
+
+	t.Run("MultipleMethodsRequestsIncreaseUpstreamOverall", func(t *testing.T) {
+		tracker := NewTracker(projectID, windowSize)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		tracker.Bootstrap(ctx)
+
+		ups := newFakeUpstream("a")
+		simulateRequests(tracker, networkID, ups.Config().Id, "method1", 100, 10)
+		simulateRequests(tracker, networkID, ups.Config().Id, "method2", 50, 5)
+
+		metrics1 := tracker.GetUpstreamMethodMetrics(ups.Config().Id, "*", "*")
+
+		assert.Equal(t, float64(150), metrics1.RequestsTotal)
+	})
+
+	t.Run("LatencyCorrectP90AcrossMethods", func(t *testing.T) {
+		tracker := NewTracker(projectID, windowSize)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		tracker.Bootstrap(ctx)
+
+		ups := newFakeUpstream("a")
+		simulateRequestsWithLatency(tracker, networkID, ups.Config().Id, "method1", 10, 0.06)
+		simulateRequestsWithLatency(tracker, networkID, ups.Config().Id, "method2", 90, 0.02)
+
+		metrics1 := tracker.GetUpstreamMethodMetrics(ups.Config().Id, "*", "*")
+		assert.GreaterOrEqual(t, metrics1.LatencySecs.P90(), 0.02)
+		assert.LessOrEqual(t, metrics1.LatencySecs.P90(), 0.03)
+	})
+
+	t.Run("LatencyCorrectP90SingleMethod", func(t *testing.T) {
+		tracker := NewTracker(projectID, windowSize)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		tracker.Bootstrap(ctx)
+
+		ups := newFakeUpstream("a")
+		simulateRequestsWithLatency(tracker, networkID, ups.Config().Id, "method1", 10, 0.06)
+		simulateRequestsWithLatency(tracker, networkID, ups.Config().Id, "method1", 90, 0.02)
+
+		metrics1 := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "method1")
+		assert.GreaterOrEqual(t, metrics1.LatencySecs.P90(), 0.02)
+		assert.LessOrEqual(t, metrics1.LatencySecs.P90(), 0.03)
 	})
 }
 
@@ -266,36 +307,40 @@ func (u *fakeUpstream) SupportsNetwork(networkId string) (bool, error) {
 
 func simulateRequests(tracker *Tracker, network, upstream, method string, total, errors int) {
 	for i := 0; i < total; i++ {
-		tracker.RecordUpstreamRequest(network, upstream, method)
+		tracker.RecordUpstreamRequest(upstream, network, method)
 		if i < errors {
-			tracker.RecordUpstreamFailure(network, upstream, method, "test-error")
+			tracker.RecordUpstreamFailure(upstream, network, method, "test-error")
 		}
-		timer := tracker.RecordUpstreamDurationStart(network, upstream, method)
+		timer := tracker.RecordUpstreamDurationStart(upstream, network, method)
 		timer.ObserveDuration()
 	}
 }
 
 func simulateRequestsWithRateLimiting(tracker *Tracker, network, upstream, method string, total, selfLimited, remoteLimited int) {
 	for i := 0; i < total; i++ {
-		tracker.RecordUpstreamRequest(network, upstream, method)
+		tracker.RecordUpstreamRequest(upstream, network, method)
 		if i < selfLimited {
-			tracker.RecordUpstreamSelfRateLimited(network, upstream, method)
+			tracker.RecordUpstreamSelfRateLimited(upstream, network, method)
 		}
 		if i >= selfLimited && i < selfLimited+remoteLimited {
-			tracker.RecordUpstreamRemoteRateLimited(network, upstream, method)
+			tracker.RecordUpstreamRemoteRateLimited(upstream, network, method)
 		}
-		timer := tracker.RecordUpstreamDurationStart(network, upstream, method)
+		timer := tracker.RecordUpstreamDurationStart(upstream, network, method)
 		timer.ObserveDuration()
 	}
 }
 
 func simulateRequestsWithLatency(tracker *Tracker, network, upstream, method string, total int, latency float64) {
+	wg := sync.WaitGroup{}
 	for i := 0; i < total; i++ {
-		tracker.RecordUpstreamRequest(network, upstream, method)
-		timer := tracker.RecordUpstreamDurationStart(network, upstream, method)
-		time.Sleep(time.Duration(latency * float64(time.Second)))
-		timer.ObserveDuration()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tracker.RecordUpstreamRequest(upstream, network, method)
+			tracker.RecordUpstreamDuration(upstream, network, method, time.Duration(latency*float64(time.Second)))
+		}()
 	}
+	wg.Wait()
 }
 
 func resetMetrics() {

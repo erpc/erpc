@@ -3,6 +3,8 @@ package upstream
 import (
 	"context"
 	"fmt"
+
+	// "math"
 	"math/rand"
 	"sort"
 	"sync"
@@ -94,7 +96,17 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(networkId string) error {
 		u.sortedUpstreams[networkId] = make(map[string][]*Upstream)
 	}
 	if _, ok := u.sortedUpstreams[networkId]["*"]; !ok {
-		u.sortedUpstreams[networkId]["*"] = upstreams
+		cpUps := make([]*Upstream, len(upstreams))
+		copy(cpUps, upstreams)
+		u.sortedUpstreams[networkId]["*"] = cpUps
+	}
+	if _, ok := u.sortedUpstreams["*"]; !ok {
+		u.sortedUpstreams["*"] = make(map[string][]*Upstream)
+	}
+	if _, ok := u.sortedUpstreams["*"]["*"]; !ok {
+		cpUps := make([]*Upstream, len(upstreams))
+		copy(cpUps, upstreams)
+		u.sortedUpstreams["*"]["*"] = cpUps
 	}
 
 	// Initialize score for this or any network and any method for each upstream
@@ -180,7 +192,6 @@ func (u *UpstreamsRegistry) sortUpstreams(networkId, method string, upstreams []
 		return
 	}
 
-	// Perform weighted random sort
 	sort.Slice(upstreams, func(i, j int) bool {
 		scoreI := u.upstreamScores[upstreams[i].Config().Id][networkId][method]
 		scoreJ := u.upstreamScores[upstreams[j].Config().Id][networkId][method]
@@ -192,13 +203,8 @@ func (u *UpstreamsRegistry) sortUpstreams(networkId, method string, upstreams []
 			scoreJ = 0
 		}
 
-		// Generate random values based on scores
-		randI := rand.Float64() * float64(scoreI)
-		randJ := rand.Float64() * float64(scoreJ)
-
-		// Compare random values for sorting
-		if randI != randJ {
-			return randI > randJ
+		if scoreI != scoreJ {
+			return scoreI > scoreJ
 		}
 
 		// If random values are equal, sort by upstream ID for consistency
@@ -235,7 +241,6 @@ func (u *UpstreamsRegistry) registerUpstreams() error {
 		if err != nil {
 			return err
 		}
-		u.metricsTracker.RegisterUpstream(upstream)
 		u.allUpstreams = append(u.allUpstreams, upstream)
 	}
 
@@ -267,18 +272,15 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 	var p90Latencies, errorRates, totalRequests, throttledRates []float64
 
 	for _, ups := range upsList {
-		metrics := u.metricsTracker.GetUpstreamMethodMetrics(networkId, ups.Config().Id, method)
-		log.Debug().Str("projectId", u.prjId).
+		metrics := u.metricsTracker.GetUpstreamMethodMetrics(ups.Config().Id, networkId, method)
+		u.logger.Debug().
+			Str("projectId", u.prjId).
 			Str("networkId", networkId).
-			Str("upstream", ups.Config().Id).
 			Str("method", method).
-			Float64("p90Latency", metrics.P90LatencySecs).
-			Int("errors", int(metrics.ErrorsTotal)).
-			Int("requests", int(metrics.RequestsTotal)).
-			Int("throttled", int(metrics.RemoteRateLimitedTotal+metrics.SelfRateLimitedTotal)).
-			Msgf("queried upstream metrics")
-		p90Latencies = append(p90Latencies, metrics.P90LatencySecs)
-
+			Str("upstream", ups.Config().Id).
+			Interface("metrics", metrics).
+			Msg("queried upstream metrics")
+		p90Latencies = append(p90Latencies, metrics.LatencySecs.P90())
 		rateLimitedTotal := metrics.RemoteRateLimitedTotal + metrics.SelfRateLimitedTotal
 		if metrics.RequestsTotal > 0 {
 			errorRates = append(errorRates, metrics.ErrorsTotal/metrics.RequestsTotal)
@@ -302,6 +304,7 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 
 		log.Debug().Str("projectId", u.prjId).
 			Str("upstream", ups.Config().Id).
+			Str("networkId", networkId).
 			Str("method", method).
 			Int("score", score).
 			Msgf("refreshed score")
