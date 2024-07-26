@@ -1,16 +1,15 @@
 package erpc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
-
-	// "io"
-	// "net/http/httptest"
+	"io"
+	"net/http"
 	"strings"
-	// "sync"
+	"sync"
 	"testing"
 	"time"
 
@@ -53,7 +52,7 @@ func TestNetwork(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		mt := health.NewTracker("prjA", 2*time.Second, 1*time.Second)
+		mt := health.NewTracker("prjA", 2*time.Second)
 		upsReg := upstream.NewUpstreamsRegistry(
 			&log.Logger,
 			"prjA",
@@ -121,7 +120,7 @@ func TestNetwork(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		mt := health.NewTracker("prjA", 2*time.Second, 1*time.Second)
+		mt := health.NewTracker("prjA", 2*time.Second)
 		upsReg := upstream.NewUpstreamsRegistry(
 			&log.Logger,
 			"prjA",
@@ -189,7 +188,7 @@ func TestNetwork(t *testing.T) {
 			t.Fatal(err)
 		}
 		vndr := vendors.NewVendorsRegistry()
-		mt := health.NewTracker("prjA", 2*time.Second, 1*time.Second)
+		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "test",
@@ -242,7 +241,7 @@ func TestNetwork(t *testing.T) {
 			},
 			rlr,
 			upr,
-			health.NewTracker("prjA", 2*time.Second, 1*time.Second),
+			health.NewTracker("prjA", 2*time.Second),
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -292,7 +291,7 @@ func TestNetwork(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		mt := health.NewTracker("prjA", 2*time.Second, 1*time.Second)
+		mt := health.NewTracker("prjA", 2*time.Second)
 		upsReg := upstream.NewUpstreamsRegistry(
 			&log.Logger,
 			"prjA",
@@ -385,7 +384,7 @@ func TestNetwork(t *testing.T) {
 			t.Fatal(err)
 		}
 		vndr := vendors.NewVendorsRegistry()
-		mt := health.NewTracker("prjA", 2*time.Second, 1*time.Second)
+		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "test",
@@ -495,7 +494,7 @@ func TestNetwork(t *testing.T) {
 			t.Fatal(err)
 		}
 		vndr := vendors.NewVendorsRegistry()
-		mt := health.NewTracker("prjA", 2*time.Second, 1*time.Second)
+		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "test",
@@ -613,7 +612,7 @@ func TestNetwork(t *testing.T) {
 			t.Fatal(err)
 		}
 		vndr := vendors.NewVendorsRegistry()
-		mt := health.NewTracker("prjA", 2*time.Second, 1*time.Second)
+		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "test",
@@ -723,7 +722,7 @@ func TestNetwork(t *testing.T) {
 			t.Fatal(err)
 		}
 		vndr := vendors.NewVendorsRegistry()
-		mt := health.NewTracker("prjA", 2*time.Second, 1*time.Second)
+		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "test",
@@ -838,7 +837,7 @@ func TestNetwork(t *testing.T) {
 			t.Fatal(err)
 		}
 		vndr := vendors.NewVendorsRegistry()
-		mt := health.NewTracker("prjA", 2*time.Second, 1*time.Second)
+		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
@@ -995,7 +994,7 @@ func TestNetwork(t *testing.T) {
 			t.Fatal(err)
 		}
 		vndr := vendors.NewVendorsRegistry()
-		mt := health.NewTracker("prjA", 2*time.Second, 1*time.Second)
+		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
@@ -1112,9 +1111,7 @@ func TestNetwork(t *testing.T) {
 	// 	defer gock.Off()
 	// 	defer gock.Clean()
 	// 	defer gock.CleanUnmatchedRequest()
-
 	// 	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
-
 	// 	log.Logger.Info().Msgf("Mocks registered before: %d", len(gock.Pending()))
 	// 	gock.New("http://rpc1.localhost").
 	// 		Post("").
@@ -1123,10 +1120,8 @@ func TestNetwork(t *testing.T) {
 	// 		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`)).
 	// 		Delay(100 * time.Millisecond)
 	// 	log.Logger.Info().Msgf("Mocks registered after: %d", len(gock.Pending()))
-
 	// 	ctx, cancel := context.WithCancel(context.Background())
 	// 	defer cancel()
-
 	// 	clr := upstream.NewClientRegistry()
 	// 	fsCfg := &common.FailsafeConfig{
 	// 		Hedge: &common.HedgePolicyConfig{
@@ -1141,7 +1136,7 @@ func TestNetwork(t *testing.T) {
 	// 		t.Fatal(err)
 	// 	}
 	// 	vndr := vendors.NewVendorsRegistry()
-	// 	mt := health.NewTracker("prjA", 2*time.Second, 1*time.Second)
+	// 	mt := health.NewTracker("prjA", 2*time.Second)
 	// 	up1 := &common.UpstreamConfig{
 	// 		Type:     common.UpstreamTypeEvm,
 	// 		Id:       "rpc1",
@@ -1189,7 +1184,6 @@ func TestNetwork(t *testing.T) {
 	// 	}
 	// 	pup1.Score = 2
 	// 	pup1.Client = cl1
-
 	// 	pup2, err := upr.NewUpstream(
 	// 		"prjA",
 	// 		up2,
@@ -1205,7 +1199,6 @@ func TestNetwork(t *testing.T) {
 	// 	}
 	// 	pup2.Client = cl2
 	// 	pup2.Score = -2
-
 	// 	ntw, err := NewNetwork(
 	// 		&log.Logger,
 	// 		"prjA",
@@ -1223,12 +1216,9 @@ func TestNetwork(t *testing.T) {
 	// 	if err != nil {
 	// 		t.Fatal(err)
 	// 	}
-
 	// 	fakeReq := upstream.NewNormalizedRequest(requestBytes)
 	// 	resp, err := ntw.Forward(ctx, fakeReq)
-
 	// 	time.Sleep(50 * time.Millisecond)
-
 	// 	if len(gock.Pending()) > 0 {
 	// 		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
 	// 		for _, pending := range gock.Pending() {
@@ -1237,11 +1227,9 @@ func TestNetwork(t *testing.T) {
 	// 	} else {
 	// 		t.Logf("All mocks consumed")
 	// 	}
-
 	// 	if err != nil {
 	// 		t.Fatalf("Expected nil error, got %v", err)
 	// 	}
-
 	// 	jrr, err := resp.JsonRpcResponse()
 	// 	if err != nil {
 	// 		t.Fatalf("Expected nil error, got %v", err)
@@ -1296,7 +1284,7 @@ func TestNetwork(t *testing.T) {
 			t.Fatal(err)
 		}
 		vndr := vendors.NewVendorsRegistry()
-		mt := health.NewTracker("test_cb", 2*time.Second, 1*time.Second)
+		mt := health.NewTracker("test_cb", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "upstream1",
@@ -1422,7 +1410,7 @@ func TestNetwork(t *testing.T) {
 			t.Fatal(err)
 		}
 		vndr := vendors.NewVendorsRegistry()
-		mt := health.NewTracker("test_cb", 2*time.Second, 1*time.Second)
+		mt := health.NewTracker("test_cb", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "upstream1",
@@ -1560,7 +1548,7 @@ func TestNetwork(t *testing.T) {
 		}
 
 		vndr := vendors.NewVendorsRegistry()
-		mt := health.NewTracker("prjA", 2*time.Second, 1*time.Second)
+		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
@@ -1716,7 +1704,7 @@ func TestNetwork(t *testing.T) {
 			t.Fatal(err)
 		}
 		vndr := vendors.NewVendorsRegistry()
-		mt := health.NewTracker("prjA", 2*time.Second, 1*time.Second)
+		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
@@ -1878,7 +1866,7 @@ func TestNetwork(t *testing.T) {
 			t.Fatalf("Failed to create rate limiters registry: %v", err)
 		}
 		vndr := vendors.NewVendorsRegistry()
-		mt := health.NewTracker("prjA", 2*time.Second, 1*time.Second)
+		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
@@ -1988,7 +1976,7 @@ func TestNetwork(t *testing.T) {
 			t.Fatal(err)
 		}
 		vndr := vendors.NewVendorsRegistry()
-		mt := health.NewTracker("prjA", 2*time.Second, 1*time.Second)
+		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
@@ -2083,7 +2071,7 @@ func TestNetwork(t *testing.T) {
 			t.Fatal(err)
 		}
 		vndr := vendors.NewVendorsRegistry()
-		mt := health.NewTracker("prjA", 2*time.Second, 1*time.Second)
+		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
@@ -2160,11 +2148,9 @@ func TestNetwork(t *testing.T) {
 
 		projectID := "test-project"
 		networkID := "evm:123"
-		windowSize := 4000 * time.Millisecond
-		refreshInterval := 3000 * time.Millisecond
 
 		logger := zerolog.New(zerolog.NewConsoleWriter())
-		metricsTracker := health.NewTracker(projectID, windowSize, refreshInterval)
+		metricsTracker := health.NewTracker(projectID, 1*time.Hour)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -2179,6 +2165,7 @@ func TestNetwork(t *testing.T) {
 		upstreamConfigs := []*common.UpstreamConfig{
 			{Id: "upstream-a", Endpoint: "http://upstream-a.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
 			{Id: "upstream-b", Endpoint: "http://upstream-b.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Id: "upstream-c", Endpoint: "http://upstream-c.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
 		}
 
 		upstreamsRegistry := upstream.NewUpstreamsRegistry(
@@ -2213,66 +2200,68 @@ func TestNetwork(t *testing.T) {
 		)
 		assert.NoError(t, err)
 
-		wg := sync.WaitGroup{}
-		// Helper function to simulate requests with specific latency
-		simulateRequests := func(method string, upstreamId string, latency time.Duration, count int) {
-			wg.Add(1)
-			defer wg.Done()
+		simulateRequests := func(method string, upstreamId string, latency time.Duration) {
 			gock.New("http://" + upstreamId + ".localhost").
-				Post("/").
-				Times(count).
+				Times(1000).
+				// Post("/").
+				Filter(func(request *http.Request) bool {
+					// seek body in request without changing the original Body buffer
+					body := safeReadBody(request)
+					return strings.Contains(body, method) && strings.Contains(request.Host, upstreamId)
+				}).
 				Reply(200).
-				BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
-
-			for i := 0; i < count; i++ {
-				req := upstream.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":[],"id":1}`, method)))
-				gock.New("http://" + upstreamId + ".localhost").
-					Post("/").
-					Reply(200).
-					BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`).
-					Delay(latency)
-
-				_, err := network.Forward(ctx, req)
-				assert.NoError(t, err)
-			}
+				BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1","method":"` + method + `","upstreamId":"` + upstreamId + `","latency":` + fmt.Sprintf("%d", latency.Milliseconds()) + `}`).
+				Delay(latency)
 		}
 
-		// Phase 1: Upstream A is faster for eth_getLogs, Upstream B is faster for eth_traceTransaction
-		simulateRequests("eth_getLogs", "upstream-a", 50*time.Millisecond, 10)
-		simulateRequests("eth_getLogs", "upstream-b", 100*time.Millisecond, 10)
-		simulateRequests("eth_traceTransaction", "upstream-a", 100*time.Millisecond, 10)
-		simulateRequests("eth_traceTransaction", "upstream-b", 50*time.Millisecond, 10)
+		// Upstream A is faster for eth_call, Upstream B is faster for eth_traceTransaction, Upstream C is faster for eth_getLogs
+		simulateRequests("eth_getLogs", "upstream-a", 200*time.Millisecond)
+		simulateRequests("eth_getLogs", "upstream-b", 100*time.Millisecond)
+		simulateRequests("eth_getLogs", "upstream-c", 50*time.Millisecond)
+		simulateRequests("eth_traceTransaction", "upstream-a", 100*time.Millisecond)
+		simulateRequests("eth_traceTransaction", "upstream-b", 50*time.Millisecond)
+		simulateRequests("eth_traceTransaction", "upstream-c", 200*time.Millisecond)
+		simulateRequests("eth_call", "upstream-a", 50*time.Millisecond)
+		simulateRequests("eth_call", "upstream-b", 200*time.Millisecond)
+		simulateRequests("eth_call", "upstream-c", 100*time.Millisecond)
 
+		allMethods := []string{"eth_getLogs", "eth_traceTransaction", "eth_call"}
+
+		wg := sync.WaitGroup{}
+		for _, method := range allMethods {
+			for i := 0; i < 100; i++ {
+				wg.Add(1)
+				go func(method string) {
+					defer wg.Done()
+					upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
+					req := upstream.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":[],"id":1}`, method)))
+					_, err := network.Forward(ctx, req)
+					assert.NoError(t, err)
+				}(method)
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
 		wg.Wait()
-
-		// time.Sleep(refreshInterval)
-		upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
 
 		sortedUpstreamsGetLogs, err := upstreamsRegistry.GetSortedUpstreams(networkID, "eth_getLogs")
 		assert.NoError(t, err)
-		assert.Equal(t, "upstream-a", sortedUpstreamsGetLogs[0].Config().Id, "Expected upstream-a to be preferred for eth_getLogs in Phase 1")
+		assert.Equal(t, "upstream-c", sortedUpstreamsGetLogs[0].Config().Id, "Expected upstream-c to be preferred for eth_getLogs in Phase 1")
 
 		sortedUpstreamsTraceTransaction, err := upstreamsRegistry.GetSortedUpstreams(networkID, "eth_traceTransaction")
 		assert.NoError(t, err)
 		assert.Equal(t, "upstream-b", sortedUpstreamsTraceTransaction[0].Config().Id, "Expected upstream-b to be preferred for eth_traceTransaction in Phase 1")
 
-		// // Phase 2: Latency patterns change
-		// time.Sleep(windowSize)
-
-		// simulateRequests("eth_getLogs", "upstream-a", 100*time.Millisecond, 10)
-		// simulateRequests("eth_getLogs", "upstream-b", 50*time.Millisecond, 10)
-		// simulateRequests("eth_traceTransaction", "upstream-a", 100*time.Millisecond, 10)
-		// simulateRequests("eth_traceTransaction", "upstream-b", 200*time.Millisecond, 10)
-
-		// time.Sleep(refreshInterval)
-		// upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
-
-		// sortedUpstreamsGetLogs, err = upstreamsRegistry.GetSortedUpstreams(networkID, "eth_getLogs")
-		// assert.NoError(t, err)
-		// assert.Equal(t, "upstream-b", sortedUpstreamsGetLogs[0].Config().Id, "Expected upstream-b to be preferred for eth_getLogs in Phase 2")
-
-		// sortedUpstreamsTraceTransaction, err = upstreamsRegistry.GetSortedUpstreams(networkID, "eth_traceTransaction")
-		// assert.NoError(t, err)
-		// assert.Equal(t, "upstream-a", sortedUpstreamsTraceTransaction[0].Config().Id, "Expected upstream-a to be preferred for eth_traceTransaction in Phase 2")
+		sortedUpstreamsCall, err := upstreamsRegistry.GetSortedUpstreams(networkID, "eth_call")
+		assert.NoError(t, err)
+		assert.Equal(t, "upstream-a", sortedUpstreamsCall[0].Config().Id, "Expected upstream-a to be preferred for eth_call in Phase 1")
 	})
+}
+
+func safeReadBody(request *http.Request) string {
+	body, err := io.ReadAll(request.Body)
+	if err != nil {
+		return ""
+	}
+	request.Body = io.NopCloser(bytes.NewBuffer(body))
+	return string(body)
 }

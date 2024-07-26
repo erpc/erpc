@@ -64,7 +64,15 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 
 	lg := log.Logger.With().Str("project", prjCfg.Id).Logger()
 
-	metricsTracker := health.NewTracker(prjCfg.Id, 30*time.Second, 10*time.Second)
+	ws := prjCfg.HealthCheck.ScoreMetricsWindowSize
+	if ws == "" {
+		ws = "30s"
+	}
+	wsDuration, err := time.ParseDuration(ws)
+	if err != nil {
+		return nil, err
+	}
+	metricsTracker := health.NewTracker(prjCfg.Id, wsDuration)
 	upstreamsRegistry := upstream.NewUpstreamsRegistry(
 		&lg,
 		prjCfg.Id,
@@ -73,7 +81,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		r.vendorsRegistry,
 		metricsTracker,
 	)
-	err := upstreamsRegistry.Bootstrap(r.appCtx)
+	err = upstreamsRegistry.Bootstrap(r.appCtx)
 	if err != nil {
 		return nil, err
 	}
