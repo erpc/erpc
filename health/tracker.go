@@ -45,6 +45,7 @@ var metricRemoteRateLimitedTotal = promauto.NewGaugeVec(prometheus.GaugeOpts{
 }, []string{"project", "network", "upstream", "method"})
 
 type TrackedMetrics struct {
+	Mutex                  sync.RWMutex
 	LatencySecs            *QuantileTracker `json:"latencySecs"`
 	ErrorsTotal            float64          `json:"errorsTotal"`
 	SelfRateLimitedTotal   float64          `json:"selfRateLimitedTotal"`
@@ -96,12 +97,14 @@ func (t *Tracker) resetMetrics(ctx context.Context) {
 		case <-ticker.C:
 			t.mu.Lock()
 			for key := range t.metrics {
+				t.metrics[key].Mutex.Lock()
 				t.metrics[key].ErrorsTotal = 0
 				t.metrics[key].RequestsTotal = 0
 				t.metrics[key].SelfRateLimitedTotal = 0
 				t.metrics[key].RemoteRateLimitedTotal = 0
 				t.metrics[key].LatencySecs.Reset()
 				t.metrics[key].LastCollect = time.Now()
+				t.metrics[key].Mutex.Unlock()
 			}
 			t.mu.Unlock()
 		}
@@ -157,7 +160,9 @@ func (t *Tracker) RecordUpstreamRequest(ups, network, method string) {
 
 	t.ensureMetricsInitialized(ups, network, method)
 	for _, key := range t.getKeys(ups, network, method) {
+		t.metrics[key].Mutex.Lock()
 		t.metrics[key].RequestsTotal++
+		t.metrics[key].Mutex.Unlock()
 	}
 
 	metricRequestTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
@@ -191,7 +196,9 @@ func (t *Tracker) RecordUpstreamFailure(ups, network, method, errorType string) 
 
 	t.ensureMetricsInitialized(ups, network, method)
 	for _, key := range t.getKeys(ups, network, method) {
+		t.metrics[key].Mutex.Lock()
 		t.metrics[key].ErrorsTotal++
+		t.metrics[key].Mutex.Unlock()
 	}
 
 	metricErrorTotal.WithLabelValues(t.projectId, network, ups, method, errorType).Inc()
@@ -203,7 +210,9 @@ func (t *Tracker) RecordUpstreamSelfRateLimited(ups, network, method string) {
 
 	t.ensureMetricsInitialized(ups, network, method)
 	for _, key := range t.getKeys(ups, network, method) {
+		t.metrics[key].Mutex.Lock()
 		t.metrics[key].SelfRateLimitedTotal++
+		t.metrics[key].Mutex.Unlock()
 	}
 
 	metricSelfRateLimitedTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
@@ -215,7 +224,9 @@ func (t *Tracker) RecordUpstreamRemoteRateLimited(ups, network, method string) {
 
 	t.ensureMetricsInitialized(ups, network, method)
 	for _, key := range t.getKeys(ups, network, method) {
+		t.metrics[key].Mutex.Lock()
 		t.metrics[key].RemoteRateLimitedTotal++
+		t.metrics[key].Mutex.Unlock()
 	}
 
 	metricRemoteRateLimitedTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
@@ -234,14 +245,3 @@ func (t *Tracker) GetUpstreamMethodMetrics(ups, network, method string) *Tracked
 
 	return metrics
 }
-
-// func (t *Tracker) copyMetrics(from, to string) {
-// 	t.metrics[to] = &TrackedMetrics{
-// 		LatencySecs:            t.metrics[from].LatencySecs.Copy(),
-// 		ErrorsTotal:            t.metrics[from].ErrorsTotal,
-// 		SelfRateLimitedTotal:   t.metrics[from].SelfRateLimitedTotal,
-// 		RemoteRateLimitedTotal: t.metrics[from].RemoteRateLimitedTotal,
-// 		RequestsTotal:          t.metrics[from].RequestsTotal,
-// 		LastCollect:            t.metrics[from].LastCollect,
-// 	}
-// }
