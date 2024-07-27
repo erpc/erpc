@@ -16,9 +16,9 @@ This config defines the destination for caching JSON-RPC cals towards any EVM ar
 Caching mechanism is non-blocking on critical path, and is used as best-effort. If the database is not available, the cache set/get will be skipped.
 
 <Callout type="info">
-Make sure the storage requirements meet your usage, for example caching 70m blocks + 10m txs + 10m traces on Arbitrum needs 200GB of storage.
+  Make sure the storage requirements meet your usage, for example caching 70m
+  blocks + 10m txs + 10m traces on Arbitrum needs 200GB of storage.
 </Callout>
-
 
 ## Drivers
 
@@ -40,12 +40,25 @@ database:
 
 Redis is useful when you need to store cached data temporarily with eviction policy (e.g. certain amount of memory).
 
+```yaml filename="erpc.yaml"
+# ...
+database:
+  evmJsonRpcCache:
+    driver: redis
+    redis:
+      Addr: XXX
+      Password: XXX
+      DB: XXX
+# ...
+```
+
 ### PostgreSQL
 
 Useful when you need to store cached data permanently without TTL i.e. forever.
 
 <Callout type="info">
-You don't need to create the table, the driver will automatically create the table and requried indexes.
+  You don't need to create the table, the driver will automatically create the
+  table and requried indexes.
 </Callout>
 
 ```yaml filename="erpc.yaml"
