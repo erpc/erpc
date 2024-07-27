@@ -26,7 +26,7 @@ import (
 )
 
 func init() {
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+	log.Logger = log.Level(zerolog.ErrorLevel).Output(zerolog.ConsoleWriter{Out: os.Stderr})
 }
 
 func TestNetwork_Forward(t *testing.T) {
