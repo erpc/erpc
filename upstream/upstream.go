@@ -176,7 +176,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 		rules := limitersBudget.GetRulesByMethod(method)
 		if len(rules) > 0 {
 			for _, rule := range rules {
-				if !(*rule.Limiter).TryAcquirePermit() {
+				if !rule.Limiter.TryAcquirePermit() {
 					lg.Warn().Msgf("upstream-level rate limit '%v' exceeded", rule.Config)
 					netId := "n/a"
 					if req.Network() != nil {

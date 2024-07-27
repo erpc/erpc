@@ -357,7 +357,7 @@ func (n *Network) acquireRateLimitPermit(req *upstream.NormalizedRequest) error 
 
 	if len(rules) > 0 {
 		for _, rule := range rules {
-			permit := (*rule.Limiter).TryAcquirePermit()
+			permit := rule.Limiter.TryAcquirePermit()
 			if !permit {
 				health.MetricNetworkRequestSelfRateLimited.WithLabelValues(
 					n.ProjectId,
