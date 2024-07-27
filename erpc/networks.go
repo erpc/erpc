@@ -104,7 +104,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		defer n.inFlightMutex.Unlock()
 		lg.Debug().Object("req", req).Msgf("found similar in-flight request, waiting for result")
 		health.MetricNetworkMultiplexedRequests.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
-		
+
 		inf.mu.RLock()
 		if inf.resp != nil || inf.err != nil {
 			inf.mu.RUnlock()

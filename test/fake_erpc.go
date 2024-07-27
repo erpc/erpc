@@ -268,7 +268,7 @@ func prepareERPCConfig(fs afero.Fs, config StressTestConfig) (string, string, er
 func initializeERPC(fs afero.Fs, configPath string) (func() error, error) {
 	args := []string{"erpc-test", configPath}
 	logger := log.With().Logger()
-	err := erpc.Init(context.Background(), &logger, fs, args)
+	err := erpc.Init(context.Background(), logger, fs, args)
 	return nil, err
 }
 

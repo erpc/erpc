@@ -8,7 +8,7 @@ import (
 	"github.com/flair-sdk/erpc/common"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
-	"github.com/rs/zerolog/log"
+	"github.com/rs/zerolog"
 )
 
 const (
@@ -18,12 +18,13 @@ const (
 var _ Connector = (*PostgreSQLConnector)(nil)
 
 type PostgreSQLConnector struct {
-	conn  *pgxpool.Pool
-	table string
+	logger *zerolog.Logger
+	conn   *pgxpool.Pool
+	table  string
 }
 
-func NewPostgreSQLConnector(ctx context.Context, cfg *common.PostgreSQLConnectorConfig) (*PostgreSQLConnector, error) {
-	log.Debug().Msgf("creating PostgreSQLConnector with config: %+v", cfg)
+func NewPostgreSQLConnector(ctx context.Context, logger *zerolog.Logger, cfg *common.PostgreSQLConnectorConfig) (*PostgreSQLConnector, error) {
+	logger.Debug().Msgf("creating PostgreSQLConnector with config: %+v", cfg)
 
 	conn, err := pgxpool.Connect(ctx, cfg.ConnectionUri)
 	if err != nil {
@@ -58,7 +59,7 @@ func NewPostgreSQLConnector(ctx context.Context, cfg *common.PostgreSQLConnector
 }
 
 func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey, value string) error {
-	log.Debug().Msgf("writing to PostgreSQL with partition key: %s and range key: %s", partitionKey, rangeKey)
+	p.logger.Debug().Msgf("writing to PostgreSQL with partition key: %s and range key: %s", partitionKey, rangeKey)
 
 	_, err := p.conn.Exec(ctx, fmt.Sprintf(`
 		INSERT INTO %s (partition_key, range_key, value)
@@ -92,7 +93,7 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 		args = []interface{}{partitionKey, rangeKey}
 	}
 
-	log.Debug().Msgf("getting item from PostgreSQL with query: %s", query)
+	p.logger.Debug().Msgf("getting item from PostgreSQL with query: %s", query)
 
 	var value string
 	err := p.conn.QueryRow(ctx, query, args...).Scan(&value)
@@ -132,7 +133,7 @@ func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, index, partit
 		}
 	}
 
-	log.Debug().Msgf("getting item from PostgreSQL with wildcard query: %s", query)
+	p.logger.Debug().Msgf("getting item from PostgreSQL with wildcard query: %s", query)
 
 	var value string
 	err := p.conn.QueryRow(ctx, query, args...).Scan(&value)

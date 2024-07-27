@@ -13,7 +13,7 @@ import (
 
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/util"
-	"github.com/rs/zerolog/log"
+	"github.com/rs/zerolog"
 )
 
 type HttpJsonRpcClient interface {
@@ -25,22 +25,25 @@ type HttpJsonRpcClient interface {
 type GenericHttpJsonRpcClient struct {
 	Url *url.URL
 
+	logger     *zerolog.Logger
 	upstream   *Upstream
 	httpClient *http.Client
 }
 
-func NewGenericHttpJsonRpcClient(pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
+func NewGenericHttpJsonRpcClient(logger *zerolog.Logger, pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
 	var client HttpJsonRpcClient
 
 	if util.IsTest() {
 		client = &GenericHttpJsonRpcClient{
 			Url:        parsedUrl,
+			logger:     logger,
 			upstream:   pu,
 			httpClient: &http.Client{},
 		}
 	} else {
 		client = &GenericHttpJsonRpcClient{
 			Url:      parsedUrl,
+			logger:   logger,
 			upstream: pu,
 			httpClient: &http.Client{
 				Timeout: 30 * time.Second, // Set a timeout
@@ -86,7 +89,7 @@ func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *Normali
 		return nil, err
 	}
 
-	log.Debug().Msgf("sending json rpc POST request to %s: %s", c.Url.String(), requestBody)
+	c.logger.Debug().Msgf("sending json rpc POST request to %s: %s", c.Url.String(), requestBody)
 
 	httpReq, errReq := http.NewRequestWithContext(ctx, "POST", c.Url.String(), bytes.NewBuffer(requestBody))
 	httpReq.Header.Set("Content-Type", "application/json")

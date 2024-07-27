@@ -117,9 +117,9 @@ func TestUpstreamsRegistry(t *testing.T) {
 		method := "eth_call"
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
-		simulateRequests(metricsTracker, networkID, "upstream-a", method, 50, 0)
-		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 0)
-		simulateRequests(metricsTracker, networkID, "upstream-c", method, 25, 0)
+		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 0)
+		simulateRequests(metricsTracker, networkID, "upstream-b", method, 200, 0)
+		simulateRequests(metricsTracker, networkID, "upstream-c", method, 10, 0)
 
 		expectedOrder := []string{"upstream-c", "upstream-a", "upstream-b"}
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
@@ -259,8 +259,6 @@ func simulateRequests(tracker *health.Tracker, network, upstream, method string,
 		if i < errors {
 			tracker.RecordUpstreamFailure(upstream, network, method, "test-error")
 		}
-		timer := tracker.RecordUpstreamDurationStart(upstream, network, method)
-		timer.ObserveDuration()
 	}
 }
 

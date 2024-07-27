@@ -3,8 +3,6 @@ package upstream
 import (
 	"context"
 	"fmt"
-
-	// "math"
 	"math/rand"
 	"sort"
 	"sync"
@@ -14,7 +12,6 @@ import (
 	"github.com/flair-sdk/erpc/health"
 	"github.com/flair-sdk/erpc/vendors"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 type UpstreamsRegistry struct {
@@ -45,7 +42,7 @@ func NewUpstreamsRegistry(
 	return &UpstreamsRegistry{
 		prjId:                prjId,
 		logger:               logger,
-		clientRegistry:       NewClientRegistry(),
+		clientRegistry:       NewClientRegistry(logger),
 		rateLimitersRegistry: rlr,
 		vendorsRegistry:      vr,
 		metricsTracker:       mt,
@@ -217,11 +214,11 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 	defer u.mapMu.Unlock()
 
 	if len(u.allUpstreams) == 0 {
-		log.Debug().Str("projectId", u.prjId).Msgf("no upstreams yet to refresh scores")
+		u.logger.Debug().Str("projectId", u.prjId).Msgf("no upstreams yet to refresh scores")
 		return nil
 	}
 
-	log.Debug().Str("projectId", u.prjId).Msgf("refreshing upstreams scores")
+	u.logger.Debug().Str("projectId", u.prjId).Msgf("refreshing upstreams scores")
 
 	for networkId, upsMap := range u.sortedUpstreams {
 		for method, upsList := range upsMap {
@@ -303,7 +300,7 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 	for i, ups := range upsList {
 		score := u.calculateScore(normTotalRequests[i], normP90Latencies[i], normErrorRates[i], normThrottledRates[i])
 		u.upstreamScores[ups.Config().Id][networkId][method] = score
-		log.Debug().Str("projectId", u.prjId).
+		u.logger.Debug().Str("projectId", u.prjId).
 			Str("upstream", ups.Config().Id).
 			Str("networkId", networkId).
 			Str("method", method).
@@ -319,7 +316,7 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 		newSortStr += fmt.Sprintf("%s ", ups.Config().Id)
 	}
 
-	log.Debug().Str("projectId", u.prjId).Str("networkId", networkId).Str("method", method).Str("newSort", newSortStr).Msgf("sorted upstreams")
+	u.logger.Debug().Str("projectId", u.prjId).Str("networkId", networkId).Str("method", method).Str("newSort", newSortStr).Msgf("sorted upstreams")
 }
 
 func (u *UpstreamsRegistry) calculateScore(normTotalRequests, normP90Latency, normErrorRate, normThrottledRate int) int {

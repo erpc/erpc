@@ -12,45 +12,40 @@ import (
 	"github.com/flair-sdk/erpc/data"
 	"github.com/flair-sdk/erpc/evm"
 	"github.com/flair-sdk/erpc/upstream"
-	"github.com/rs/zerolog/log"
+	"github.com/rs/zerolog"
 )
 
 type EvmJsonRpcCache struct {
 	conn    data.Connector
 	network *Network
+	logger  *zerolog.Logger
 }
 
 const (
 	JsonRpcCacheContext common.ContextKey = "jsonRpcCache"
 )
 
-func NewEvmJsonRpcCache(ctx context.Context, cfg *common.ConnectorConfig) (*EvmJsonRpcCache, error) {
+func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common.ConnectorConfig) (*EvmJsonRpcCache, error) {
 	err := populateDefaults(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	c, err := data.NewConnector(ctx, cfg)
+	c, err := data.NewConnector(ctx, logger, cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	return &EvmJsonRpcCache{
-		conn: c,
+		conn:   c,
+		logger: logger,
 	}, nil
 }
-
-// func (c *EvmJsonRpcCache) Shutdown() error {
-// 	if c == nil {
-// 		// Means evm json-rpc cache is not created
-// 		return nil
-// 	}
-// 	return c.conn.Close(context.Background())
-// }
 
 func (c *EvmJsonRpcCache) WithNetwork(network *Network) *EvmJsonRpcCache {
 	network.Logger.Debug().Msgf("creating EvmJsonRpcCache")
 	return &EvmJsonRpcCache{
+		logger:  c.logger,
 		conn:    c.conn,
 		network: network,
 	}
@@ -123,7 +118,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *upstream.NormalizedReque
 		return err
 	}
 
-	lg := log.With().Str("network", req.Network().Id()).Str("method", rpcReq.Method).Logger()
+	lg := c.logger.With().Str("network", req.Network().Id()).Str("method", rpcReq.Method).Logger()
 
 	if rpcResp.Result == nil || rpcResp.Error != nil {
 		lg.Debug().Interface("resp", rpcResp).Msg("not caching response because it has no result or has error")

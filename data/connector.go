@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/flair-sdk/erpc/common"
+	"github.com/rs/zerolog"
 )
 
 const (
@@ -20,17 +21,18 @@ type Connector interface {
 
 func NewConnector(
 	ctx context.Context,
+	logger *zerolog.Logger,
 	cfg *common.ConnectorConfig,
 ) (Connector, error) {
 	switch cfg.Driver {
 	case "memory":
-		return NewMemoryConnector(ctx, cfg.Memory)
+		return NewMemoryConnector(ctx, logger, cfg.Memory)
 	case "redis":
-		return NewRedisConnector(ctx, cfg.Redis)
+		return NewRedisConnector(ctx, logger, cfg.Redis)
 	case "dynamodb":
-		return NewDynamoDBConnector(ctx, cfg.DynamoDB)
+		return NewDynamoDBConnector(ctx, logger, cfg.DynamoDB)
 	case "postgresql":
-		return NewPostgreSQLConnector(ctx, cfg.PostgreSQL)
+		return NewPostgreSQLConnector(ctx, logger, cfg.PostgreSQL)
 	}
 
 	return nil, common.NewErrInvalidConnectorDriver(cfg.Driver)
