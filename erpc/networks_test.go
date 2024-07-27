@@ -37,7 +37,6 @@ func TestNetwork(t *testing.T) {
 						Id: "MyLimiterBudget_Test1",
 						Rules: []*common.RateLimitRuleConfig{
 							{
-								Scope:    "instance",
 								Method:   "*",
 								MaxCount: 3,
 								Period:   "60s",
@@ -106,7 +105,6 @@ func TestNetwork(t *testing.T) {
 						Id: "MyLimiterBudget_Test2",
 						Rules: []*common.RateLimitRuleConfig{
 							{
-								Scope:    "instance",
 								Method:   "*",
 								MaxCount: 1000,
 								Period:   "60s",
@@ -278,7 +276,6 @@ func TestNetwork(t *testing.T) {
 						Id: "MyLimiterBudget_Test2",
 						Rules: []*common.RateLimitRuleConfig{
 							{
-								Scope:    "instance",
 								Method:   "*",
 								MaxCount: 1000,
 								Period:   "60s",
@@ -2258,6 +2255,215 @@ func TestNetwork(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, "upstream-a", sortedUpstreamsCall[0].Config().Id, "Expected upstream-a to be preferred for eth_call in Phase 1")
 	})
+}
+
+func TestNetwork_InFlightRequests(t *testing.T) {
+	t.Run("MultipleSuccessfulConcurrentRequests", func(t *testing.T) {
+		network := setupTestNetwork(t)
+		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Reply(200).
+			BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
+
+		var wg sync.WaitGroup
+		for i := 0; i < 10; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				req := upstream.NewNormalizedRequest(requestBytes)
+				resp, err := network.Forward(context.Background(), req)
+				assert.NoError(t, err)
+				assert.NotNil(t, resp)
+			}()
+		}
+		wg.Wait()
+
+		if len(gock.Pending()) > 0 {
+			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
+			for _, pending := range gock.Pending() {
+				t.Errorf("Pending mock: %v", pending)
+			}
+		}
+
+	})
+
+	t.Run("MultipleConcurrentRequestsWithFailure", func(t *testing.T) {
+		network := setupTestNetwork(t)
+		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[]}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Reply(500).
+			BodyString(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"Internal error"}}`)
+
+		var wg sync.WaitGroup
+		for i := 0; i < 10; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				req := upstream.NewNormalizedRequest(requestBytes)
+				resp, err := network.Forward(context.Background(), req)
+				assert.Error(t, err)
+				assert.Nil(t, resp)
+			}()
+		}
+		wg.Wait()
+
+		assert.Equal(t, 0, len(gock.Pending()), "Expected no pending requests")
+	})
+
+	t.Run("MultipleConcurrentRequestsWithContextTimeout", func(t *testing.T) {
+		network := setupTestNetwork(t)
+		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[]}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Reply(200).
+			BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`).
+			Delay(2 * time.Second)
+
+		var wg sync.WaitGroup
+		for i := 0; i < 10; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+				defer cancel()
+				req := upstream.NewNormalizedRequest(requestBytes)
+				resp, err := network.Forward(ctx, req)
+				assert.Error(t, err)
+				assert.True(t, errors.Is(err, context.DeadlineExceeded))
+				assert.Nil(t, resp)
+			}()
+		}
+		wg.Wait()
+
+		if len(gock.Pending()) > 0 {
+			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
+			for _, pending := range gock.Pending() {
+				t.Errorf("Pending mock: %v", pending)
+			}
+		}
+
+	})
+
+	t.Run("MixedSuccessAndFailureConcurrentRequests", func(t *testing.T) {
+		network := setupTestNetwork(t)
+		successRequestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
+		failureRequestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"]}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(safeReadBody(request), "eth_getLogs")
+			}).
+			Reply(200).
+			BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(safeReadBody(request), "eth_getBalance")
+			}).
+			Reply(500).
+			BodyString(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"Internal error"}}`)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		go func() {
+			defer wg.Done()
+			req := upstream.NewNormalizedRequest(successRequestBytes)
+			resp, err := network.Forward(context.Background(), req)
+			assert.NoError(t, err)
+			assert.NotNil(t, resp)
+		}()
+
+		go func() {
+			defer wg.Done()
+			req := upstream.NewNormalizedRequest(failureRequestBytes)
+			resp, err := network.Forward(context.Background(), req)
+			assert.Error(t, err)
+			assert.Nil(t, resp)
+		}()
+
+		wg.Wait()
+
+		assert.Equal(t, 0, len(gock.Pending()), "Expected no pending requests")
+	})
+
+	t.Run("SequentialInFlightRequests", func(t *testing.T) {
+		network := setupTestNetwork(t)
+		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[]}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Times(2).
+			Reply(200).
+			BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
+
+		// First request
+		req1 := upstream.NewNormalizedRequest(requestBytes)
+		resp1, err1 := network.Forward(context.Background(), req1)
+		assert.NoError(t, err1)
+		assert.NotNil(t, resp1)
+
+		// Second request (should not be in-flight)
+		req2 := upstream.NewNormalizedRequest(requestBytes)
+		resp2, err2 := network.Forward(context.Background(), req2)
+		assert.NoError(t, err2)
+		assert.NotNil(t, resp2)
+
+		assert.Equal(t, 0, len(gock.Pending()), "Expected no pending requests")
+	})
+}
+
+func setupTestNetwork(t *testing.T) *Network {
+	t.Helper()
+
+	logger := zerolog.New(io.Discard)
+	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &logger)
+	metricsTracker := health.NewTracker("test", time.Minute)
+
+	upstreamConfig := &common.UpstreamConfig{
+		Type:     common.UpstreamTypeEvm,
+		Id:       "test",
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId: 123,
+		},
+	}
+	upstreamsRegistry := upstream.NewUpstreamsRegistry(
+		&logger,
+		"test",
+		[]*common.UpstreamConfig{upstreamConfig},
+		rateLimitersRegistry,
+		vendors.NewVendorsRegistry(),
+		metricsTracker,
+	)
+	network, err := NewNetwork(
+		&logger,
+		"test",
+		&common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm: &common.EvmNetworkConfig{
+				ChainId: 123,
+			},
+		},
+		rateLimitersRegistry,
+		upstreamsRegistry,
+		metricsTracker,
+	)
+	assert.NoError(t, err)
+
+	err = upstreamsRegistry.Bootstrap(context.Background())
+	assert.NoError(t, err)
+	err = upstreamsRegistry.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+	assert.NoError(t, err)
+
+	return network
 }
 
 func safeReadBody(request *http.Request) string {

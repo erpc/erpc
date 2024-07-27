@@ -195,7 +195,7 @@ projects:
 	logger := log.With().Logger()
 	err = erpc.Init(context.Background(), logger, fs, args)
 	if err != nil {
-        t.Fatal(err)
+		t.Fatal(err)
 	}
 
 	//

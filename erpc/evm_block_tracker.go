@@ -11,8 +11,6 @@ import (
 )
 
 type EvmBlockTracker struct {
-	// ctx       context.Context
-	// ctxCancel context.CancelFunc
 	network *Network
 
 	updateMu             sync.Mutex
@@ -84,7 +82,8 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 		}
 	})()
 
-	return updateBlockNumbers()
+	go updateBlockNumbers()
+	return nil
 }
 
 func (e *EvmBlockTracker) LatestBlock() uint64 {

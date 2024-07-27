@@ -57,7 +57,6 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 						Evm: &common.EvmUpstreamConfig{
 							ChainId: 123,
 						},
-						// HealthCheckGroup: "test-hcg",
 					},
 					{
 						Id:       "rpc2",
@@ -66,7 +65,6 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 						Evm: &common.EvmUpstreamConfig{
 							ChainId: 123,
 						},
-						// HealthCheckGroup: "test-hcg",
 					},
 				},
 			},
