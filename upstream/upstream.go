@@ -18,18 +18,14 @@ import (
 )
 
 type Upstream struct {
-	Client ClientInterface
-	// Metrics *UpstreamMetrics
-	Logger zerolog.Logger
-
 	ProjectId string
-	// Score     int
+	Client    ClientInterface
+	Logger    zerolog.Logger
 
 	config *common.UpstreamConfig
 	vendor common.Vendor
 
-	metricsTracker *health.Tracker
-
+	metricsTracker       *health.Tracker
 	failsafePolicies     []failsafe.Policy[common.NormalizedResponse]
 	failsafeExecutor     failsafe.Executor[common.NormalizedResponse]
 	rateLimitersRegistry *RateLimitersRegistry

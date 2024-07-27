@@ -118,9 +118,6 @@ func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) 
 		return nil, err
 	}
 
-	// nw.Upstreams = make(map[string][]*upstream.Upstream)
-	// nw.Upstreams["*"] = upstreams
-
 	err = nw.Bootstrap(p.appCtx)
 	if err != nil {
 		return nil, err

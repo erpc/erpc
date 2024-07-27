@@ -127,21 +127,6 @@ func (t *Tracker) getKey(ups, network, method string) string {
 func (t *Tracker) ensureMetricsInitialized(ups, network, method string) {
 	for _, key := range t.getKeys(ups, network, method) {
 		if _, ok := t.metrics[key]; !ok {
-			// overallNetworkKey := t.getKey(ups, network, "*")
-			// if _, ok := t.metrics[overallNetworkKey]; ok {
-			// 	t.copyMetrics(overallNetworkKey, key)
-			// 	continue
-			// }
-			// overallUpstreamKey := t.getKey(ups, "*", "*")
-			// if _, ok := t.metrics[overallUpstreamKey]; ok {
-			// 	t.copyMetrics(overallUpstreamKey, key)
-			// 	continue
-			// }
-			// overallMethodKey := t.getKey(ups, "*", method)
-			// if _, ok := t.metrics[overallMethodKey]; ok {
-			// 	t.copyMetrics(overallMethodKey, key)
-			// 	continue
-			// }
 			t.metrics[key] = &TrackedMetrics{
 				LatencySecs:            NewQuantileTracker(t.windowSize),
 				ErrorsTotal:            0,

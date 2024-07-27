@@ -21,11 +21,9 @@ type Network struct {
 	NetworkId string
 	ProjectId string
 	Logger    *zerolog.Logger
-	// Upstreams map[string][]*upstream.Upstream
 
-	// upstreamsMutex   *sync.RWMutex
 	inFlightMutex    *sync.Mutex
-	inFlightRequests map[string]*multiplexedInFlightRequest
+	inFlightRequests map[string]*Multiplexer
 
 	failsafePolicies     []failsafe.Policy[common.NormalizedResponse]
 	failsafeExecutor     failsafe.Executor[common.NormalizedResponse]
@@ -37,13 +35,6 @@ type Network struct {
 	upstreamsRegistry *upstream.UpstreamsRegistry
 }
 
-type multiplexedInFlightRequest struct {
-	resp common.NormalizedResponse
-	err  error
-	done chan struct{}
-	mu   sync.RWMutex
-}
-
 func (n *Network) Bootstrap(ctx context.Context) error {
 	if n.Architecture() == common.ArchitectureEvm {
 		n.evmBlockTracker = NewEvmBlockTracker(n)
@@ -53,25 +44,6 @@ func (n *Network) Bootstrap(ctx context.Context) error {
 	} else {
 		return fmt.Errorf("network architecture not supported: %s", n.Architecture())
 	}
-
-	// if len(n.Upstreams) > 0 {
-	// 	go func(pn *Network) {
-	// 		ticker := time.NewTicker(1 * time.Second)
-	// 		defer ticker.Stop()
-	// 		for {
-	// 			select {
-	// 			case <-ctx.Done():
-	// 				pn.Logger.Debug().Msg("shutting down upstream reordering timer due to context cancellation")
-	// 				return
-	// 			case <-ticker.C:
-	// 				upsList := n.reorderUpstreams(pn.Upstreams)
-	// 				pn.upstreamsMutex.Lock()
-	// 				pn.Upstreams = upsList
-	// 				pn.upstreamsMutex.Unlock()
-	// 			}
-	// 		}
-	// 	}(n)
-	// }
 
 	return nil
 }
@@ -101,7 +73,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 	mlxHash, _ := req.CacheHash()
 	n.inFlightMutex.Lock()
 	if inf, exists := n.inFlightRequests[mlxHash]; exists {
-		defer n.inFlightMutex.Unlock()
+		n.inFlightMutex.Unlock()
 		lg.Debug().Object("req", req).Msgf("found similar in-flight request, waiting for result")
 		health.MetricNetworkMultiplexedRequests.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 
@@ -114,22 +86,20 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 
 		select {
 		case <-inf.done:
-			inf.mu.RLock()
-			defer inf.mu.RUnlock()
+			// inf.mu.RLock()
+			// defer inf.mu.RUnlock()
 			return inf.resp, inf.err
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
 	}
-	inf := &multiplexedInFlightRequest{
-		done: make(chan struct{}),
-	}
+	inf := NewMultiplexer()
 	n.inFlightRequests[mlxHash] = inf
 	n.inFlightMutex.Unlock()
 	defer func() {
 		n.inFlightMutex.Lock()
+		defer n.inFlightMutex.Unlock()
 		delete(n.inFlightRequests, mlxHash)
-		n.inFlightMutex.Unlock()
 	}()
 
 	// 2) Get from cache if exists
@@ -145,18 +115,14 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		} else if resp != nil {
 			lg.Info().Object("req", req).Err(err).Msgf("response served from cache")
 			health.MetricNetworkCacheHits.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
-			inf.resp = resp
-			close(inf.done)
+			inf.Close(resp, err)
 			return resp, err
 		}
 	}
 
 	// 3) Apply rate limits
 	if err := n.acquireRateLimitPermit(req); err != nil {
-		inf.mu.Lock()
-		defer inf.mu.Unlock()
-		inf.err = err
-		close(inf.done)
+		inf.Close(nil, err)
 		return nil, err
 	}
 
@@ -178,10 +144,11 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		return resp, false, nil
 	}
 
-	mtx := sync.Mutex{}
+	imtx := sync.Mutex{}
 	i := 0
 	upsList, err := n.upstreamsRegistry.GetSortedUpstreams(n.NetworkId, method)
 	if err != nil {
+		inf.Close(nil, err)
 		return nil, err
 	}
 	resp, execErr := n.failsafeExecutor.
@@ -195,8 +162,10 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 			// Upstream-level retry is handled by the upstream itself (and its own failsafe policies).
 			ln := len(upsList)
 			for count := 0; count < ln; count++ {
-				mtx.Lock()
+				imtx.Lock()
+				n.upstreamsRegistry.RLockUpstreams(n.NetworkId)
 				u := upsList[i]
+				n.upstreamsRegistry.RUnlockUpstreams(n.NetworkId)
 				i++
 				if i >= ln {
 					i = 0
@@ -212,7 +181,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 						Int("index", i).
 						Msgf("executing forward to upstream")
 				}
-				mtx.Unlock()
+				imtx.Unlock()
 
 				resp, skipped, err := n.processResponse(
 					tryForward(u, exec.Context()),
@@ -247,17 +216,11 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 			if lr != nil && lr.IsResultEmptyish() {
 				resp = lr
 			} else {
-				inf.mu.Lock()
-				defer inf.mu.Unlock()
-				inf.err = err
-				close(inf.done)
+				inf.Close(nil, err)
 				return nil, err
 			}
 		} else {
-			inf.mu.Lock()
-			defer inf.mu.Unlock()
-			inf.err = err
-			close(inf.done)
+			inf.Close(nil, err)
 			return nil, err
 		}
 	}
@@ -273,10 +236,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		})(resp)
 	}
 
-	inf.mu.Lock()
-	defer inf.mu.Unlock()
-	inf.resp = resp
-	close(inf.done)
+	inf.Close(resp, nil)
 	return resp, nil
 }
 
