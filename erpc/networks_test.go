@@ -47,6 +47,7 @@ func TestNetwork(t *testing.T) {
 					},
 				},
 			},
+			&log.Logger,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -115,6 +116,7 @@ func TestNetwork(t *testing.T) {
 					},
 				},
 			},
+			&log.Logger,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -174,7 +176,7 @@ func TestNetwork(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry()
+		clr := upstream.NewClientRegistry(&log.Logger)
 
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -183,7 +185,7 @@ func TestNetwork(t *testing.T) {
 		}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
-		})
+		}, &log.Logger)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -286,6 +288,7 @@ func TestNetwork(t *testing.T) {
 					},
 				},
 			},
+			&log.Logger,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -370,7 +373,7 @@ func TestNetwork(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry()
+		clr := upstream.NewClientRegistry(&log.Logger)
 
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -379,7 +382,7 @@ func TestNetwork(t *testing.T) {
 		}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
-		})
+		}, &log.Logger)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -481,7 +484,7 @@ func TestNetwork(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry()
+		clr := upstream.NewClientRegistry(&log.Logger)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 4,
@@ -489,7 +492,7 @@ func TestNetwork(t *testing.T) {
 		}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
-		})
+		}, &log.Logger)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -599,7 +602,7 @@ func TestNetwork(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry()
+		clr := upstream.NewClientRegistry(&log.Logger)
 		fsCfg := &common.FailsafeConfig{
 			Timeout: &common.TimeoutPolicyConfig{
 				Duration: "30ms",
@@ -607,7 +610,7 @@ func TestNetwork(t *testing.T) {
 		}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
-		})
+		}, &log.Logger)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -709,7 +712,7 @@ func TestNetwork(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry()
+		clr := upstream.NewClientRegistry(&log.Logger)
 		fsCfg := &common.FailsafeConfig{
 			Timeout: &common.TimeoutPolicyConfig{
 				Duration: "1s",
@@ -717,7 +720,7 @@ func TestNetwork(t *testing.T) {
 		}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
-		})
+		}, &log.Logger)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -823,7 +826,7 @@ func TestNetwork(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry()
+		clr := upstream.NewClientRegistry(&log.Logger)
 		fsCfg := &common.FailsafeConfig{
 			Hedge: &common.HedgePolicyConfig{
 				Delay:    "200ms",
@@ -832,7 +835,7 @@ func TestNetwork(t *testing.T) {
 		}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
-		})
+		}, &log.Logger)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -980,7 +983,7 @@ func TestNetwork(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry()
+		clr := upstream.NewClientRegistry(&log.Logger)
 		fsCfg := &common.FailsafeConfig{
 			Hedge: &common.HedgePolicyConfig{
 				Delay:    "100ms",
@@ -989,7 +992,7 @@ func TestNetwork(t *testing.T) {
 		}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
-		})
+		}, &log.Logger)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1122,7 +1125,7 @@ func TestNetwork(t *testing.T) {
 	// 	log.Logger.Info().Msgf("Mocks registered after: %d", len(gock.Pending()))
 	// 	ctx, cancel := context.WithCancel(context.Background())
 	// 	defer cancel()
-	// 	clr := upstream.NewClientRegistry()
+	// 	clr := upstream.NewClientRegistry(&log.Logger)
 	// 	fsCfg := &common.FailsafeConfig{
 	// 		Hedge: &common.HedgePolicyConfig{
 	// 			Delay:    "30ms",
@@ -1268,7 +1271,7 @@ func TestNetwork(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry()
+		clr := upstream.NewClientRegistry(&log.Logger)
 		fsCfg := &common.FailsafeConfig{
 			CircuitBreaker: &common.CircuitBreakerPolicyConfig{
 				FailureThresholdCount:    2,
@@ -1279,7 +1282,7 @@ func TestNetwork(t *testing.T) {
 
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
-		})
+		}, &log.Logger)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1395,7 +1398,7 @@ func TestNetwork(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry()
+		clr := upstream.NewClientRegistry(&log.Logger)
 		fsCfg := &common.FailsafeConfig{
 			CircuitBreaker: &common.CircuitBreakerPolicyConfig{
 				FailureThresholdCount:    2,
@@ -1405,7 +1408,7 @@ func TestNetwork(t *testing.T) {
 		}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
-		})
+		}, &log.Logger)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1534,7 +1537,7 @@ func TestNetwork(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry()
+		clr := upstream.NewClientRegistry(&log.Logger)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
@@ -1542,7 +1545,7 @@ func TestNetwork(t *testing.T) {
 		}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
-		})
+		}, &log.Logger)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1691,7 +1694,7 @@ func TestNetwork(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry()
+		clr := upstream.NewClientRegistry(&log.Logger)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
@@ -1699,7 +1702,7 @@ func TestNetwork(t *testing.T) {
 		}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
-		})
+		}, &log.Logger)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1861,7 +1864,7 @@ func TestNetwork(t *testing.T) {
 		}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
-		})
+		}, &log.Logger)
 		if err != nil {
 			t.Fatalf("Failed to create rate limiters registry: %v", err)
 		}
@@ -1971,7 +1974,7 @@ func TestNetwork(t *testing.T) {
 		fsCfg := &common.FailsafeConfig{}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
-		})
+		}, &log.Logger)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2066,7 +2069,7 @@ func TestNetwork(t *testing.T) {
 		fsCfg := &common.FailsafeConfig{}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
-		})
+		}, &log.Logger)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2159,7 +2162,7 @@ func TestNetwork(t *testing.T) {
 
 		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
-		})
+		}, &logger)
 		assert.NoError(t, err)
 
 		upstreamConfigs := []*common.UpstreamConfig{

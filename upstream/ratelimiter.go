@@ -7,10 +7,11 @@ import (
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/failsafe-go/failsafe-go/ratelimiter"
 	"github.com/flair-sdk/erpc/common"
-	"github.com/rs/zerolog/log"
+	"github.com/rs/zerolog"
 )
 
 type RateLimitersRegistry struct {
+	logger          *zerolog.Logger
 	cfg             *common.RateLimiterConfig
 	budgetsLimiters map[string]*RateLimiterBudget
 }
@@ -29,9 +30,10 @@ type RateLimitRule struct {
 
 var rulesByBudgetAndMethod map[string]map[string][]*RateLimitRule = make(map[string]map[string][]*RateLimitRule)
 
-func NewRateLimitersRegistry(cfg *common.RateLimiterConfig) (*RateLimitersRegistry, error) {
+func NewRateLimitersRegistry(cfg *common.RateLimiterConfig, logger *zerolog.Logger) (*RateLimitersRegistry, error) {
 	r := &RateLimitersRegistry{
 		cfg:             cfg,
+		logger:          logger,
 		budgetsLimiters: make(map[string]*RateLimiterBudget),
 	}
 	err := r.bootstrap()
@@ -41,14 +43,14 @@ func NewRateLimitersRegistry(cfg *common.RateLimiterConfig) (*RateLimitersRegist
 
 func (r *RateLimitersRegistry) bootstrap() error {
 	if r.cfg == nil {
-		log.Warn().Msg("no rate limiters defined which means all capacity of both local cpu/memory and remote upstreams will be used")
+		r.logger.Warn().Msg("no rate limiters defined which means all capacity of both local cpu/memory and remote upstreams will be used")
 		return nil
 	}
 
 	for _, budgetCfg := range r.cfg.Budgets {
-		log.Debug().Msgf("bootstrapping rate limiter budget: %s", budgetCfg.Id)
+		r.logger.Debug().Msgf("bootstrapping rate limiter budget: %s", budgetCfg.Id)
 		for _, rule := range budgetCfg.Rules {
-			log.Debug().Msgf("preparing rate limiter rule: %v", rule)
+			r.logger.Debug().Msgf("preparing rate limiter rule: %v", rule)
 
 			if _, ok := r.budgetsLimiters[budgetCfg.Id]; !ok {
 				r.budgetsLimiters[budgetCfg.Id] = &RateLimiterBudget{
@@ -76,11 +78,11 @@ func (r *RateLimitersRegistry) bootstrap() error {
 			}
 
 			builder.OnRateLimitExceeded(func(e failsafe.ExecutionEvent[any]) {
-				log.Warn().Msgf("rate limit exceeded for rule '%v'", rule)
+				r.logger.Warn().Msgf("rate limit exceeded for rule '%v'", rule)
 			})
 
 			limiter := builder.Build()
-			log.Debug().Msgf("rate limiter rule prepared: %v with max: %d duration: %d", limiter, rule.MaxCount, duration)
+			r.logger.Debug().Msgf("rate limiter rule prepared: %v with max: %d duration: %d", limiter, rule.MaxCount, duration)
 			r.budgetsLimiters[budgetCfg.Id].Rules = append(r.budgetsLimiters[budgetCfg.Id].Rules, &RateLimitRule{
 				Config:  rule,
 				Limiter: &limiter,
@@ -96,7 +98,7 @@ func (r *RateLimitersRegistry) GetBudget(budgetId string) (*RateLimiterBudget, e
 		return nil, nil
 	}
 
-	log.Debug().Msgf("getting rate limiter budget: %s", budgetId)
+	r.logger.Debug().Msgf("getting rate limiter budget: %s", budgetId)
 
 	if budget, ok := r.budgetsLimiters[budgetId]; ok {
 		return budget, nil

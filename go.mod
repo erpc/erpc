@@ -4,7 +4,6 @@ go 1.22.3
 
 require (
 	github.com/IGLOU-EU/go-wildcard/v2 v2.0.2
-	github.com/VividCortex/ewma v1.2.0
 	github.com/aws/aws-sdk-go v1.53.5
 	github.com/ethereum/go-ethereum v1.14.3
 	github.com/failsafe-go/failsafe-go v0.6.3

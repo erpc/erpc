@@ -17,7 +17,7 @@ import (
 
 func Init(
 	ctx context.Context,
-	logger *zerolog.Logger,
+	logger zerolog.Logger,
 	fs afero.Fs,
 	args []string,
 ) error {
@@ -34,14 +34,16 @@ func Init(
 	}
 	logger.Info().Msgf("resolved configuration file to: %s", configPath)
 	cfg, err := common.LoadConfig(fs, configPath)
+
 	if err != nil {
 		return fmt.Errorf("failed to load configuration from %s: %v", configPath, err)
 	}
-	if level, err := zerolog.ParseLevel(cfg.LogLevel); err != nil {
+	level, err := zerolog.ParseLevel(cfg.LogLevel)
+	if err != nil {
 		logger.Warn().Msgf("invalid log level '%s', defaulting to 'debug': %s", cfg.LogLevel, err)
-		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+		level = zerolog.DebugLevel
 	} else {
-		logger.Level(level)
+		logger = logger.Level(level)
 	}
 
 	//
@@ -51,13 +53,13 @@ func Init(
 	var evmJsonRpcCache *EvmJsonRpcCache
 	if cfg.Database != nil {
 		if cfg.Database.EvmJsonRpcCache != nil {
-			evmJsonRpcCache, err = NewEvmJsonRpcCache(ctx, cfg.Database.EvmJsonRpcCache)
+			evmJsonRpcCache, err = NewEvmJsonRpcCache(ctx, &logger, cfg.Database.EvmJsonRpcCache)
 			if err != nil {
 				logger.Warn().Msgf("failed to initialize evm json rpc cache: %v", err)
 			}
 		}
 	}
-	erpcInstance, err := NewERPC(ctx, logger, evmJsonRpcCache, cfg)
+	erpcInstance, err := NewERPC(ctx, &logger, evmJsonRpcCache, cfg)
 	if err != nil {
 		return err
 	}
@@ -68,9 +70,9 @@ func Init(
 	logger.Info().Msg("bootstrapping transports")
 	var httpServer *HttpServer
 	if cfg.Server != nil {
-		httpServer = NewHttpServer(ctx, cfg.Server, erpcInstance)
+		httpServer = NewHttpServer(ctx, &logger, cfg.Server, erpcInstance)
 		go func() {
-			if err := httpServer.Start(); err != nil {
+			if err := httpServer.Start(&logger); err != nil {
 				if err != http.ErrServerClosed {
 					logger.Error().Msgf("failed to start http server: %v", err)
 					util.OsExit(util.ExitCodeHttpServerFailed)

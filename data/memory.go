@@ -7,6 +7,7 @@ import (
 
 	"github.com/flair-sdk/erpc/common"
 	lru "github.com/hashicorp/golang-lru/v2"
+	"github.com/rs/zerolog"
 )
 
 const (
@@ -16,10 +17,11 @@ const (
 var _ Connector = (*MemoryConnector)(nil)
 
 type MemoryConnector struct {
-	cache *lru.Cache[string, string]
+	logger *zerolog.Logger
+	cache  *lru.Cache[string, string]
 }
 
-func NewMemoryConnector(ctx context.Context, cfg *common.MemoryConnectorConfig) (*MemoryConnector, error) {
+func NewMemoryConnector(ctx context.Context, logger *zerolog.Logger, cfg *common.MemoryConnectorConfig) (*MemoryConnector, error) {
 	if cfg != nil && cfg.MaxItems <= 0 {
 		return nil, fmt.Errorf("maxItems must be greater than 0")
 	}
@@ -35,7 +37,8 @@ func NewMemoryConnector(ctx context.Context, cfg *common.MemoryConnectorConfig) 
 	}
 
 	return &MemoryConnector{
-		cache: cache,
+		logger: logger,
+		cache:  cache,
 	}, nil
 }
 

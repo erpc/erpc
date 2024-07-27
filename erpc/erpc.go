@@ -20,7 +20,7 @@ func NewERPC(
 	evmJsonRpcCache *EvmJsonRpcCache,
 	cfg *common.Config,
 ) (*ERPC, error) {
-	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(cfg.RateLimiters)
+	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(cfg.RateLimiters, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -28,6 +28,7 @@ func NewERPC(
 	vendorsRegistry := vendors.NewVendorsRegistry()
 	projectRegistry, err := NewProjectsRegistry(
 		ctx,
+		logger,
 		cfg.Projects,
 		evmJsonRpcCache,
 		rateLimitersRegistry,

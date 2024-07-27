@@ -10,10 +10,11 @@ import (
 	"github.com/flair-sdk/erpc/health"
 	"github.com/flair-sdk/erpc/upstream"
 	"github.com/flair-sdk/erpc/vendors"
-	"github.com/rs/zerolog/log"
+	"github.com/rs/zerolog"
 )
 
 type ProjectsRegistry struct {
+	logger *zerolog.Logger
 	appCtx context.Context
 
 	rateLimitersRegistry *upstream.RateLimitersRegistry
@@ -25,12 +26,14 @@ type ProjectsRegistry struct {
 
 func NewProjectsRegistry(
 	ctx context.Context,
+	logger *zerolog.Logger,
 	staticProjects []*common.ProjectConfig,
 	evmJsonRpcCache *EvmJsonRpcCache,
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
 	vendorsRegistry *vendors.VendorsRegistry,
 ) (*ProjectsRegistry, error) {
 	reg := &ProjectsRegistry{
+		logger:               logger,
 		appCtx:               ctx,
 		staticProjects:       staticProjects,
 		preparedProjects:     make(map[string]*PreparedProject),
@@ -62,11 +65,11 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		return nil, common.NewErrProjectAlreadyExists(prjCfg.Id)
 	}
 
-	lg := log.Logger.With().Str("project", prjCfg.Id).Logger()
+	lg := r.logger.With().Str("project", prjCfg.Id).Logger()
 
-	ws := prjCfg.HealthCheck.ScoreMetricsWindowSize
-	if ws == "" {
-		ws = "30s"
+	ws := "30s"
+	if prjCfg.HealthCheck != nil && prjCfg.HealthCheck.ScoreMetricsWindowSize != "" {
+		ws = prjCfg.HealthCheck.ScoreMetricsWindowSize
 	}
 	wsDuration, err := time.ParseDuration(ws)
 	if err != nil {
@@ -105,7 +108,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 
 	r.preparedProjects[prjCfg.Id] = pp
 
-	log.Info().Msgf("registered project %s", prjCfg.Id)
+	r.logger.Info().Msgf("registered project %s", prjCfg.Id)
 
 	return pp, nil
 }
