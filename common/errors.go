@@ -425,6 +425,38 @@ var NewErrUpstreamInitialization = func(cause error, upstreamId string) error {
 	}
 }
 
+type ErrUpstreamRequestSkipped struct{ BaseError }
+
+var NewErrUpstreamRequestSkipped = func(reason error, upstreamId string, req NormalizedRequest) error {
+	m, _ := req.Method()
+	return &ErrUpstreamRequestSkipped{
+		BaseError{
+			Code:    "ErrUpstreamRequestSkipped",
+			Message: "skipped forwarding request to upstream",
+			Cause:   reason,
+			Details: map[string]interface{}{
+				"upstreamId": upstreamId,
+				"method":     m,
+			},
+		},
+	}
+}
+
+type ErrUpstreamMethodIgnored struct{ BaseError }
+
+var NewErrUpstreamMethodIgnored = func(method string, upstreamId string) error {
+	return &ErrUpstreamMethodIgnored{
+		BaseError{
+			Code:    "ErrUpstreamMethodIgnored",
+			Message: "method ignored by upstream configuration",
+			Details: map[string]interface{}{
+				"method":     method,
+				"upstreamId": upstreamId,
+			},
+		},
+	}
+}
+
 type ErrResponseWriteLock struct{ BaseError }
 
 var NewErrResponseWriteLock = func(writerId string) error {

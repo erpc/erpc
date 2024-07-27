@@ -134,14 +134,20 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 	) (resp common.NormalizedResponse, skipped bool, err error) {
 		lg := u.Logger.With().Str("upstream", u.Config().Id).Logger()
 
-		// TODO skip upstream if method not supported / score is negative / too much block lag and request is for recent data
-		resp, err = u.Forward(ctx, req)
+		lg.Debug().Str("method", method).Str("rid", fmt.Sprintf("%p", req)).Msgf("trying to forward request to upstream")
+
+		resp, skipped, err = u.Forward(ctx, req)
 		if !common.IsNull(err) {
-			return nil, false, err
+			return nil, skipped, err
 		}
 
-		lg.Info().Msgf("successfully forwarded request to upstream")
-		return resp, false, nil
+		if skipped {
+			lg.Debug().Err(err).Msgf("skipped forwarding request to upstream")
+		} else {
+			lg.Info().Msgf("finished forwarding request to upstream")
+		}
+
+		return resp, skipped, err
 	}
 
 	imtx := sync.Mutex{}
