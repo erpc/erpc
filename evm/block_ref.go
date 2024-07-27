@@ -86,6 +86,23 @@ func ExtractBlockReference(r *common.JsonRpcRequest) (string, uint64, error) {
 			return "", 0, fmt.Errorf("first parameter is not a string for method %s it is %+v", r.Method, r.Params)
 		}
 
+	case "eth_getProof":
+		if len(r.Params) > 2 {
+			if bns, ok := r.Params[2].(string); ok {
+				if strings.HasPrefix(bns, "0x") {
+					bni, err := hexutil.DecodeUint64(bns)
+					if err != nil {
+						return bns, 0, err
+					}
+					return strconv.FormatUint(bni, 10), bni, nil
+				} else {
+					return "", 0, nil
+				}
+			}
+		} else {
+			return "", 0, fmt.Errorf("unexpected missing 3rd parameter for method %s: %+v", r.Method, r.Params)
+		}
+
 	default:
 		return "", 0, nil
 	}
