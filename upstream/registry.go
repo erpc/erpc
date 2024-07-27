@@ -242,9 +242,14 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 
 	u.logger.Debug().Str("projectId", u.prjId).Msgf("refreshing upstreams scores")
 
-	for networkId, upsMap := range u.sortedUpstreams {
+	allNetworks := make([]string, 0, len(u.sortedUpstreams))
+	for networkId := range u.sortedUpstreams {
+		allNetworks = append(allNetworks, networkId)
+	}
+
+	for _, networkId := range allNetworks {
 		u.wLockUpstreams(networkId)
-		for method, upsList := range upsMap {
+		for method, upsList := range u.sortedUpstreams[networkId] {
 			u.updateScoresAndSort(networkId, method, upsList)
 		}
 		u.wUnlockUpstreams(networkId)

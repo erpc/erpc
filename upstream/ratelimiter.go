@@ -60,10 +60,12 @@ func (r *RateLimitersRegistry) bootstrap() error {
 				return err
 			}
 
+			budget.rulesMu.Lock()
 			budget.Rules = append(budget.Rules, &RateLimitRule{
 				Config:  rule,
 				Limiter: limiter,
 			})
+			budget.rulesMu.Unlock()
 		}
 
 		r.budgetsLimiters.Store(budgetCfg.Id, budget)

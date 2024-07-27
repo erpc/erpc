@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -10,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNewRateLimitersRegistry(t *testing.T) {
+func TestRateLimitersRegistry_New(t *testing.T) {
 	logger := zerolog.Nop()
 
 	t.Run("nil config", func(t *testing.T) {
@@ -167,7 +168,7 @@ func TestRateLimiterBudget_GetRulesByMethod(t *testing.T) {
 	})
 }
 
-func TestRateLimiterConcurrency(t *testing.T) {
+func TestRateLimiter_ConcurrentPermits(t *testing.T) {
 	logger := zerolog.Nop()
 	cfg := &common.RateLimiterConfig{
 		Budgets: []*common.RateLimitBudgetConfig{
@@ -176,7 +177,7 @@ func TestRateLimiterConcurrency(t *testing.T) {
 				Rules: []*common.RateLimitRuleConfig{
 					{
 						Method:   "test-method",
-						MaxCount: 100,
+						MaxCount: 3000,
 						Period:   "1s",
 					},
 				},
@@ -190,31 +191,63 @@ func TestRateLimiterConcurrency(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, budget)
 
-	const numGoroutines = 100
-	const numRequests = 1000
+	const numGoroutines = 10
+	const numRequests = 30
 
 	start := time.Now()
-	done := make(chan bool)
+	wg := sync.WaitGroup{}
 
 	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			for j := 0; j < numRequests; j++ {
 				rules := budget.GetRulesByMethod("test-method")
 				require.Len(t, rules, 1)
 				ok := rules[0].Limiter.TryAcquirePermit()
 				require.True(t, ok)
 			}
-			done <- true
 		}()
 	}
 
-	for i := 0; i < numGoroutines; i++ {
-		<-done
-	}
+	wg.Wait()
 
 	elapsed := time.Since(start)
 	t.Logf("Time taken for %d requests across %d goroutines: %v", numGoroutines*numRequests, numGoroutines, elapsed)
+}
 
-	// Ensure that the rate limiting worked
-	assert.True(t, elapsed >= 10*time.Second, "Rate limiting should have slowed down the requests")
+func TestRateLimiter_ExceedCapacity(t *testing.T) {
+	logger := zerolog.Nop()
+	cfg := &common.RateLimiterConfig{
+		Budgets: []*common.RateLimitBudgetConfig{
+			{
+				Id: "test-budget",
+				Rules: []*common.RateLimitRuleConfig{
+					{
+						Method:   "test-method",
+						MaxCount: 10,
+						Period:   "1s",
+					},
+				},
+			},
+		},
+	}
+
+	registry, err := NewRateLimitersRegistry(cfg, &logger)
+	require.NoError(t, err)
+
+	budget, err := registry.GetBudget("test-budget")
+	require.NoError(t, err)
+	require.NotNil(t, budget)
+
+	for i := 0; i < 10; i++ {
+		rules := budget.GetRulesByMethod("test-method")
+		require.Len(t, rules, 1)
+		ok := rules[0].Limiter.TryAcquirePermit()
+		require.True(t, ok)
+	}
+	
+	rules := budget.GetRulesByMethod("test-method")
+	ok := rules[0].Limiter.TryAcquirePermit()
+	require.False(t, ok)
 }

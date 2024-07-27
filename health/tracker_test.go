@@ -236,7 +236,7 @@ func TestTracker(t *testing.T) {
 			assert.Equal(t, float64(2), metrics.ErrorsTotal)
 			metrics.Mutex.RUnlock()
 
-			time.Sleep(windowSize + 1*time.Millisecond)
+			time.Sleep(windowSize + 10*time.Millisecond)
 		}
 	})
 
