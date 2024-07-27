@@ -104,6 +104,13 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 		t.Errorf("expected nil, got %v", err)
 	}
 
+	nw.upstreamsRegistry.PrepareUpstreamsForNetwork("evm:123")
+	time.Sleep(100 * time.Millisecond)
+	nw.upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
+	time.Sleep(100 * time.Millisecond)
+	nw.evmBlockTracker.Bootstrap(ctx1)
+	time.Sleep(100 * time.Millisecond)
+
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	wg := sync.WaitGroup{}
 	for i := 0; i < 500; i++ {

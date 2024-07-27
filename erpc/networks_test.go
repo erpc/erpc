@@ -24,7 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestNetwork(t *testing.T) {
+func TestNetwork_Forward(t *testing.T) {
 	t.Run("ForwardCorrectlyRateLimitedOnNetworkLevel", func(t *testing.T) {
 		defer gock.Off()
 		defer gock.Clean()
@@ -2226,6 +2226,9 @@ func TestNetwork(t *testing.T) {
 		simulateRequests("eth_call", "upstream-c", 100*time.Millisecond)
 
 		allMethods := []string{"eth_getLogs", "eth_traceTransaction", "eth_call"}
+
+		upstreamsRegistry.PrepareUpstreamsForNetwork(networkID)
+		upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
 
 		wg := sync.WaitGroup{}
 		for _, method := range allMethods {

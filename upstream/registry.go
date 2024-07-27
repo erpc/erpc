@@ -22,7 +22,7 @@ type UpstreamsRegistry struct {
 	vendorsRegistry      *vendors.VendorsRegistry
 	rateLimitersRegistry *RateLimitersRegistry
 	upsCfg               []*common.UpstreamConfig
-	
+
 	allUpstreams []*Upstream
 	// map of network -> method (or *) => upstreams
 	sortedUpstreams map[string]map[string][]*Upstream
@@ -58,7 +58,7 @@ func (u *UpstreamsRegistry) Bootstrap(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return u.scheduleHealthCheckTimers(ctx)
+	return u.scheduleScoreCalculationTimers(ctx)
 }
 
 func (u *UpstreamsRegistry) NewUpstream(
@@ -243,9 +243,11 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 	u.logger.Debug().Str("projectId", u.prjId).Msgf("refreshing upstreams scores")
 
 	for networkId, upsMap := range u.sortedUpstreams {
+		u.wLockUpstreams(networkId)
 		for method, upsList := range upsMap {
 			u.updateScoresAndSort(networkId, method, upsList)
 		}
+		u.wUnlockUpstreams(networkId)
 	}
 
 	return nil
@@ -267,9 +269,9 @@ func (u *UpstreamsRegistry) registerUpstreams() error {
 	return nil
 }
 
-func (u *UpstreamsRegistry) scheduleHealthCheckTimers(ctx context.Context) error {
+func (u *UpstreamsRegistry) scheduleScoreCalculationTimers(ctx context.Context) error {
 	go func() {
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
@@ -285,9 +287,6 @@ func (u *UpstreamsRegistry) scheduleHealthCheckTimers(ctx context.Context) error
 }
 
 func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsList []*Upstream) {
-	u.wLockUpstreams(networkId)
-	defer u.wUnlockUpstreams(networkId)
-
 	var p90Latencies, errorRates, totalRequests, throttledRates []float64
 
 	for _, ups := range upsList {
@@ -331,9 +330,7 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 	}
 
 	u.sortUpstreams(networkId, method, upsList)
-	u.wLockUpstreams(networkId)
 	u.sortedUpstreams[networkId][method] = upsList
-	u.wUnlockUpstreams(networkId)
 
 	newSortStr := ""
 	for _, ups := range upsList {
