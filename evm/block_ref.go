@@ -57,7 +57,6 @@ func ExtractBlockReference(r *common.JsonRpcRequest) (string, uint64, error) {
 		return "", 0, nil
 
 	case "eth_getBalance",
-		"eth_getStorageAt",
 		"eth_getCode",
 		"eth_getTransactionCount",
 		"eth_call",
@@ -86,7 +85,8 @@ func ExtractBlockReference(r *common.JsonRpcRequest) (string, uint64, error) {
 			return "", 0, fmt.Errorf("first parameter is not a string for method %s it is %+v", r.Method, r.Params)
 		}
 
-	case "eth_getProof":
+	case "eth_getProof",
+		"eth_getStorageAt":
 		if len(r.Params) > 2 {
 			if bns, ok := r.Params[2].(string); ok {
 				if strings.HasPrefix(bns, "0x") {
