@@ -20,7 +20,8 @@ func ExtractBlockReference(r *common.JsonRpcRequest) (string, uint64, error) {
 		"eth_getUncleByBlockNumberAndIndex",
 		"eth_getTransactionByBlockNumberAndIndex",
 		"eth_getUncleCountByBlockNumber",
-		"eth_getBlockTransactionCountByNumber":
+		"eth_getBlockTransactionCountByNumber",
+		"eth_getBlockReceipts":
 		if len(r.Params) > 0 {
 			if bns, ok := r.Params[0].(string); ok {
 				if strings.HasPrefix(bns, "0x") {
