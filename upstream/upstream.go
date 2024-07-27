@@ -122,13 +122,6 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 					err,
 				)
 			}
-
-			if !u.shouldHandleMethod(jsonRpcReq.Method) {
-				u.Logger.Debug().Str("method", jsonRpcReq.Method).Msg("method not allowed or ignored by upstread")
-				return nil
-			}
-
-			return nil
 		} else {
 			return common.NewErrJsonRpcException(
 				0,
@@ -150,8 +143,13 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 }
 
 // Forward is used during lifecycle of a proxied request, it uses writers and readers for better performance
-func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.NormalizedResponse, error) {
+func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.NormalizedResponse, bool, error) {
 	cfg := u.Config()
+
+	if reason, skip := u.shouldSkip(req); skip {
+		return nil, true, common.NewErrUpstreamRequestSkipped(reason, cfg.Id, req)
+	}
+
 	clientType := u.Client.GetType()
 
 	//
@@ -162,13 +160,13 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 		var errLimiters error
 		limitersBudget, errLimiters = u.rateLimitersRegistry.GetBudget(cfg.RateLimitBudget)
 		if errLimiters != nil {
-			return nil, errLimiters
+			return nil, false, errLimiters
 		}
 	}
 
 	method, err := req.Method()
 	if err != nil {
-		return nil, common.NewErrUpstreamRequest(err, cfg.Id, req)
+		return nil, false, common.NewErrUpstreamRequest(err, cfg.Id, req)
 	}
 
 	lg := u.Logger.With().Str("method", method).Logger()
@@ -189,7 +187,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 						cfg.Id,
 						method,
 					)
-					return nil, common.NewErrUpstreamRateLimitRuleExceeded(
+					return nil, true, common.NewErrUpstreamRateLimitRuleExceeded(
 						cfg.Id,
 						cfg.RateLimitBudget,
 						fmt.Sprintf("%+v", rule.Config),
@@ -208,7 +206,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 	req.WithUpstream(u)
 	err = u.prepareRequest(req)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	//
@@ -219,7 +217,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 		ClientTypeHttpJsonRpc:
 		jsonRpcClient, okClient := u.Client.(HttpJsonRpcClient)
 		if !okClient {
-			return nil, common.NewErrJsonRpcException(
+			return nil, false, common.NewErrJsonRpcException(
 				0,
 				common.JsonRpcErrorServerSideException,
 				fmt.Sprintf("failed to initialize client for upstream %s", cfg.Id),
@@ -281,15 +279,16 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 				})
 
 			if execErr != nil {
-				return nil, TranslateFailsafeError(execErr)
+				return nil, false, TranslateFailsafeError(execErr)
 			}
 
-			return resp, execErr
+			return resp, false, execErr
 		} else {
-			return tryForward(ctx)
+			r, e := tryForward(ctx)
+			return r, false, e
 		}
 	default:
-		return nil, common.NewErrUpstreamClientInitialization(
+		return nil, false, common.NewErrUpstreamClientInitialization(
 			fmt.Errorf("unsupported client type during forward: %s", clientType),
 			cfg.Id,
 		)
@@ -302,7 +301,7 @@ func (u *Upstream) Executor() failsafe.Executor[common.NormalizedResponse] {
 
 func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 	pr := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_chainId","params":[]}`))
-	resp, err := u.Forward(ctx, pr)
+	resp, _, err := u.Forward(ctx, pr)
 	if err != nil {
 		return "", err
 	}
@@ -359,16 +358,6 @@ func (u *Upstream) shouldHandleMethod(method string) (v bool) {
 	u.methodCheckResultsMu.RUnlock()
 
 	v = true
-
-	if cfg.AllowMethods != nil {
-		v = false
-		for _, m := range cfg.AllowMethods {
-			if common.WildcardMatch(m, method) {
-				v = true
-				break
-			}
-		}
-	}
 
 	if cfg.IgnoreMethods != nil {
 		for _, m := range cfg.IgnoreMethods {
@@ -439,4 +428,15 @@ func (u *Upstream) detectFeatures() error {
 	}
 
 	return nil
+}
+
+func (u *Upstream) shouldSkip(req *NormalizedRequest) (reason error, skip bool) {
+	method, _ := req.Method()
+
+	if !u.shouldHandleMethod(method) {
+		u.Logger.Debug().Str("method", method).Msg("method not allowed or ignored by upstread")
+		return common.NewErrUpstreamMethodIgnored(method, u.config.Id), true
+	}
+
+	return nil, false
 }

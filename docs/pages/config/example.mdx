@@ -111,11 +111,9 @@ projects:
         # chainId is optional and will be detected from the endpoint (eth_chainId) but it is recommended to set it explicitly, for faster initialization.
         evm:
           chainId: 42161
-        # Which methods are allowed to be called on this upstream:
-        allowedMethods:
-          - "alchemy_*"
         # Which methods must never be sent to this upstream:
-        ignoredMethods:
+        ignoreMethods:
+          - "alchemy_*"
           - "eth_traceTransaction"
         # Refer to "Failsafe" section for more details:
         failsafe:

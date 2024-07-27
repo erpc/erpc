@@ -84,7 +84,6 @@ type UpstreamConfig struct {
 	VendorName        string             `yaml:"vendorName"`
 	Endpoint          string             `yaml:"endpoint"`
 	Evm               *EvmUpstreamConfig `yaml:"evm"`
-	AllowMethods      []string           `yaml:"allowMethods"`
 	IgnoreMethods     []string           `yaml:"ignoreMethods"`
 	Failsafe          *FailsafeConfig    `yaml:"failsafe"`
 	RateLimitBudget   string             `yaml:"rateLimitBudget"`
