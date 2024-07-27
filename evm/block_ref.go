@@ -60,7 +60,8 @@ func ExtractBlockReference(r *common.JsonRpcRequest) (string, uint64, error) {
 		"eth_getCode",
 		"eth_getTransactionCount",
 		"eth_call",
-		"eth_estimateGas":
+		"eth_estimateGas",
+		"eth_feeHistory":
 		if len(r.Params) > 1 {
 			if bns, ok := r.Params[1].(string); ok {
 				if strings.HasPrefix(bns, "0x") {
