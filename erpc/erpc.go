@@ -56,13 +56,3 @@ func (e *ERPC) GetNetwork(projectId string, networkId string) (*Network, error) 
 func (e *ERPC) GetProject(projectId string) (*PreparedProject, error) {
 	return e.projectsRegistry.GetProject(projectId)
 }
-
-// func (e *ERPC) Shutdown() error {
-// 	if err := e.projectsRegistry.Shutdown(); err != nil {
-// 		return err
-// 	}
-// 	if err := e.evmJsonRpcCache.Shutdown(); err != nil {
-// 		return err
-// 	}
-// 	return nil
-// }
