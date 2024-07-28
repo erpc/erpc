@@ -79,7 +79,8 @@ func ExtractBlockReference(r *common.JsonRpcRequest) (string, uint64, error) {
 			return "", 0, fmt.Errorf("unexpected missing 2nd parameter for method %s: %+v", r.Method, r.Params)
 		}
 
-	case "eth_getBlockByHash":
+	case "eth_getBlockByHash",
+		"eth_getTransactionByBlockHashAndIndex":
 		if len(r.Params) > 0 {
 			if blockHash, ok := r.Params[0].(string); ok {
 				return blockHash, 0, nil
