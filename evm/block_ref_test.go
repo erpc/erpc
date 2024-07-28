@@ -102,6 +102,58 @@ func TestExtractBlockReference(t *testing.T) {
 			expErr:   false,
 		},
 		{
+			name: "eth_getCode",
+			request: &common.JsonRpcRequest{
+				Method: "eth_getCode",
+				Params: []interface{}{"0xAddress", "0x1b4"},
+			},
+			expected: "436",
+			expUint:  436,
+			expErr:   false,
+		},
+		{
+			name: "eth_getTransactionCount",
+			request: &common.JsonRpcRequest{
+				Method: "eth_getTransactionCount",
+				Params: []interface{}{"0xAddress", "0x1b4"},
+			},
+			expected: "436",
+			expUint:  436,
+			expErr:   false,
+		},
+		{
+			name: "eth_call",
+			request: &common.JsonRpcRequest{
+				Method: "eth_call",
+				Params: []interface{}{
+					map[string]interface{}{
+						"from": nil,
+						"to":   "0x6b175474e89094c44da98b954eedeac495271d0f",
+						"data": "0x70a082310000000000000000000000006E0d01A76C3Cf4288372a29124A26D4353EE51BE",
+					},
+					"0x1b4",
+					map[string]interface{}{
+						"0x1111111111111111111111111111111111111111": map[string]interface{}{
+							"balance": "0xFFFFFFFFFFFFFFFFFFFF",
+						},
+					},
+				},
+			},
+			expected: "436",
+			expUint:  436,
+			expErr:   false,
+		},
+		{
+			name: "eth_feeHistory",
+			request: &common.JsonRpcRequest{
+				Method: "eth_feeHistory",
+				Params: []interface{}{4, "0x1b4", []interface{}{25, 75}},
+			},
+			expected: "436",
+			expUint:  436,
+			expErr:   false,
+		},
+		{
 			name: "eth_getBlockByHash",
 			request: &common.JsonRpcRequest{
 				Method: "eth_getBlockByHash",
