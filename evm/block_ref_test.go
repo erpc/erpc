@@ -15,14 +15,15 @@ func TestExtractBlockReference(t *testing.T) {
 		expUint  uint64
 		expErr   bool
 	}{
+		// METHODS
 		{
 			name: "eth_getBlockByNumber",
 			request: &common.JsonRpcRequest{
 				Method: "eth_getBlockByNumber",
-				Params: []interface{}{"0x1b4"},
+				Params: []interface{}{"0xc5043f", false},
 			},
-			expected: "436",
-			expUint:  436,
+			expected: "12911679",
+			expUint:  12911679,
 			expErr:   false,
 		},
 		{
@@ -33,6 +34,46 @@ func TestExtractBlockReference(t *testing.T) {
 			},
 			expected: "436",
 			expUint:  436,
+			expErr:   false,
+		},
+		{
+			name: "eth_getTransactionByBlockNumberAndIndex",
+			request: &common.JsonRpcRequest{
+				Method: "eth_getTransactionByBlockNumberAndIndex",
+				Params: []interface{}{"0xc5043f", "0x0"},
+			},
+			expected: "12911679",
+			expUint:  12911679,
+			expErr:   false,
+		},
+		{
+			name: "eth_getUncleCountByBlockNumber",
+			request: &common.JsonRpcRequest{
+				Method: "eth_getUncleCountByBlockNumber",
+				Params: []interface{}{"0xc5043f"},
+			},
+			expected: "12911679",
+			expUint:  12911679,
+			expErr:   false,
+		},
+		{
+			name: "eth_getBlockTransactionCountByNumber",
+			request: &common.JsonRpcRequest{
+				Method: "eth_getUncleCountByBlockNumber",
+				Params: []interface{}{"0xc5043f"},
+			},
+			expected: "12911679",
+			expUint:  12911679,
+			expErr:   false,
+		},
+		{
+			name: "eth_getBlockReceipts",
+			request: &common.JsonRpcRequest{
+				Method: "eth_getBlockReceipts",
+				Params: []interface{}{"0xc5043f"},
+			},
+			expected: "12911679",
+			expUint:  12911679,
 			expErr:   false,
 		},
 		{
