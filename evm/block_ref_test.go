@@ -157,9 +157,19 @@ func TestExtractBlockReference(t *testing.T) {
 			name: "eth_getBlockByHash",
 			request: &common.JsonRpcRequest{
 				Method: "eth_getBlockByHash",
-				Params: []interface{}{"0xBlockHash"},
+				Params: []interface{}{"0x3f07a9c83155594c000642e7d60e8a8a00038d03e9849171a05ed0e2d47acbb3", false},
 			},
-			expected: "0xBlockHash",
+			expected: "0x3f07a9c83155594c000642e7d60e8a8a00038d03e9849171a05ed0e2d47acbb3",
+			expUint:  0,
+			expErr:   false,
+		},
+		{
+			name: "eth_getTransactionByBlockHashAndIndex",
+			request: &common.JsonRpcRequest{
+				Method: "eth_getTransactionByBlockHashAndIndex",
+				Params: []interface{}{"0x829df9bb801fc0494abf2f443423a49ffa32964554db71b098d332d87b70a48b", "0x0"},
+			},
+			expected: "0x829df9bb801fc0494abf2f443423a49ffa32964554db71b098d332d87b70a48b",
 			expUint:  0,
 			expErr:   false,
 		},
