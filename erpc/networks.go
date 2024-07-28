@@ -169,9 +169,9 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 			ln := len(upsList)
 			for count := 0; count < ln; count++ {
 				imtx.Lock()
-				n.upstreamsRegistry.RLockUpstreams(n.NetworkId)
+				n.upstreamsRegistry.RLockUpstreams()
 				u := upsList[i]
-				n.upstreamsRegistry.RUnlockUpstreams(n.NetworkId)
+				n.upstreamsRegistry.RUnlockUpstreams()
 				i++
 				if i >= ln {
 					i = 0

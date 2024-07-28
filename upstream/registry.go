@@ -24,11 +24,11 @@ type UpstreamsRegistry struct {
 	upsCfg               []*common.UpstreamConfig
 
 	allUpstreams []*Upstream
+	upstreamsMu  *sync.RWMutex
 	// map of network -> method (or *) => upstreams
 	sortedUpstreams map[string]map[string][]*Upstream
 	// map of upstream -> network (or *) -> method (or *) => score
 	upstreamScores map[string]map[string]map[string]int
-	upstreamsMapMu map[string]*sync.RWMutex
 }
 
 func NewUpstreamsRegistry(
@@ -49,7 +49,7 @@ func NewUpstreamsRegistry(
 		upsCfg:               upsCfg,
 		sortedUpstreams:      make(map[string]map[string][]*Upstream),
 		upstreamScores:       make(map[string]map[string]map[string]int),
-		upstreamsMapMu:       make(map[string]*sync.RWMutex),
+		upstreamsMu:          &sync.RWMutex{},
 	}
 }
 
@@ -71,8 +71,8 @@ func (u *UpstreamsRegistry) NewUpstream(
 }
 
 func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(networkId string) error {
-	u.wLockUpstreams(networkId)
-	defer u.wUnlockUpstreams(networkId)
+	u.upstreamsMu.Lock()
+	defer u.upstreamsMu.Unlock()
 
 	var upstreams []*Upstream
 	for _, ups := range u.allUpstreams {
@@ -131,24 +131,26 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(networkId string) error {
 }
 
 func (u *UpstreamsRegistry) GetSortedUpstreams(networkId, method string) ([]*Upstream, error) {
-	u.RLockUpstreams(networkId)
+	u.upstreamsMu.RLock()
 	upsList := u.sortedUpstreams[networkId][method]
+	u.upstreamsMu.RUnlock()
+
 	if upsList == nil {
+		u.upstreamsMu.Lock()
+		defer u.upstreamsMu.Unlock()
+	
 		upsList = u.sortedUpstreams[networkId]["*"]
 		if upsList == nil {
 			upsList = u.sortedUpstreams["*"]["*"]
 			if upsList == nil {
-				u.RUnlockUpstreams(networkId)
 				return nil, common.NewErrNoUpstreamsFound(u.prjId, networkId)
 			}
 		}
-		u.RUnlockUpstreams(networkId)
 
 		// Create a copy of the default upstreams list for this method
 		methodUpsList := make([]*Upstream, len(upsList))
 		copy(methodUpsList, upsList)
 
-		u.wLockUpstreams(networkId)
 		if _, ok := u.sortedUpstreams[networkId]; !ok {
 			u.sortedUpstreams[networkId] = make(map[string][]*Upstream)
 		}
@@ -163,36 +165,19 @@ func (u *UpstreamsRegistry) GetSortedUpstreams(networkId, method string) ([]*Ups
 				u.upstreamScores[ups.Config().Id]["*"][method] = 0
 			}
 		}
-		u.wUnlockUpstreams(networkId)
 
 		return methodUpsList, nil
-	} else {
-		u.RUnlockUpstreams(networkId)
 	}
 
 	return upsList, nil
 }
 
-func (u *UpstreamsRegistry) wLockUpstreams(networkId string) {
-	if _, ok := u.upstreamsMapMu[networkId]; !ok {
-		u.upstreamsMapMu[networkId] = &sync.RWMutex{}
-	}
-	u.upstreamsMapMu[networkId].Lock()
+func (u *UpstreamsRegistry) RLockUpstreams() {
+	u.upstreamsMu.RLock()
 }
 
-func (u *UpstreamsRegistry) wUnlockUpstreams(networkId string) {
-	u.upstreamsMapMu[networkId].Unlock()
-}
-
-func (u *UpstreamsRegistry) RLockUpstreams(networkId string) {
-	if _, ok := u.upstreamsMapMu[networkId]; !ok {
-		u.upstreamsMapMu[networkId] = &sync.RWMutex{}
-	}
-	u.upstreamsMapMu[networkId].RLock()
-}
-
-func (u *UpstreamsRegistry) RUnlockUpstreams(networkId string) {
-	u.upstreamsMapMu[networkId].RUnlock()
+func (u *UpstreamsRegistry) RUnlockUpstreams() {
+	u.upstreamsMu.RUnlock()
 }
 
 func (u *UpstreamsRegistry) sortUpstreams(networkId, method string, upstreams []*Upstream) {
@@ -235,6 +220,9 @@ func (u *UpstreamsRegistry) sortUpstreams(networkId, method string, upstreams []
 }
 
 func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
+	u.upstreamsMu.Lock()
+	defer u.upstreamsMu.Unlock()
+
 	if len(u.allUpstreams) == 0 {
 		u.logger.Debug().Str("projectId", u.prjId).Msgf("no upstreams yet to refresh scores")
 		return nil
@@ -248,11 +236,9 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 	}
 
 	for _, networkId := range allNetworks {
-		u.wLockUpstreams(networkId)
 		for method, upsList := range u.sortedUpstreams[networkId] {
 			u.updateScoresAndSort(networkId, method, upsList)
 		}
-		u.wUnlockUpstreams(networkId)
 	}
 
 	return nil
