@@ -80,7 +80,8 @@ func ExtractBlockReference(r *common.JsonRpcRequest) (string, uint64, error) {
 		}
 
 	case "eth_getBlockByHash",
-		"eth_getTransactionByBlockHashAndIndex":
+		"eth_getTransactionByBlockHashAndIndex",
+		"eth_getBlockTransactionCountByHash":
 		if len(r.Params) > 0 {
 			if blockHash, ok := r.Params[0].(string); ok {
 				return blockHash, 0, nil
