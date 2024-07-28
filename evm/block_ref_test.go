@@ -108,6 +108,23 @@ func TestExtractBlockReference(t *testing.T) {
 			expErr:   false,
 		},
 		{
+			name: "eth_newFilter",
+			request: &common.JsonRpcRequest{
+				Method: "eth_newFilter",
+				Params: []interface{}{
+					map[string]interface{}{
+						"fromBlock": "0x1b4",
+						"toBlock":   "0x1b5",
+						"address":   "0x6b175474e89094c44da98b954eedeac495271d0f",
+						"topics":    []interface{}{},
+					},
+				},
+			},
+			expected: "0x1b4-0x1b5",
+			expUint:  437,
+			expErr:   false,
+		},
+		{
 			name: "missing parameters in eth_getLogs",
 			request: &common.JsonRpcRequest{
 				Method: "eth_getLogs",
