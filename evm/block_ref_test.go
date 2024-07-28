@@ -15,7 +15,13 @@ func TestExtractBlockReference(t *testing.T) {
 		expUint  uint64
 		expErr   bool
 	}{
-		// METHODS
+		{
+			name:     "nil request",
+			request:  nil,
+			expected: "",
+			expUint:  0,
+			expErr:   true,
+		},
 		{
 			name: "eth_getBlockByNumber",
 			request: &common.JsonRpcRequest{
@@ -24,6 +30,16 @@ func TestExtractBlockReference(t *testing.T) {
 			},
 			expected: "12911679",
 			expUint:  12911679,
+			expErr:   false,
+		},
+		{
+			name: "invalid hex in eth_getBlockByNumber",
+			request: &common.JsonRpcRequest{
+				Method: "eth_getBlockByNumber",
+				Params: []interface{}{"invalidHex"},
+			},
+			expected: "",
+			expUint:  0,
 			expErr:   false,
 		},
 		{
@@ -92,6 +108,16 @@ func TestExtractBlockReference(t *testing.T) {
 			expErr:   false,
 		},
 		{
+			name: "missing parameters in eth_getLogs",
+			request: &common.JsonRpcRequest{
+				Method: "eth_getLogs",
+				Params: []interface{}{},
+			},
+			expected: "",
+			expUint:  0,
+			expErr:   false,
+		},
+		{
 			name: "eth_getBalance",
 			request: &common.JsonRpcRequest{
 				Method: "eth_getBalance",
@@ -100,6 +126,16 @@ func TestExtractBlockReference(t *testing.T) {
 			expected: "436",
 			expUint:  436,
 			expErr:   false,
+		},
+		{
+			name: "missing parameters in eth_getBalance",
+			request: &common.JsonRpcRequest{
+				Method: "eth_getBalance",
+				Params: []interface{}{"0xAddress"},
+			},
+			expected: "",
+			expUint:  0,
+			expErr:   true,
 		},
 		{
 			name: "eth_getCode",
@@ -177,48 +213,29 @@ func TestExtractBlockReference(t *testing.T) {
 			name: "eth_getProof",
 			request: &common.JsonRpcRequest{
 				Method: "eth_getProof",
-				Params: []interface{}{"0xAddress", "keys", "0x1b4"},
+				Params: []interface{}{
+					"0x7F0d15C7FAae65896648C8273B6d7E43f58Fa842",
+					[]interface{}{"0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"},
+					"0x1b4",
+				},
 			},
 			expected: "436",
 			expUint:  436,
 			expErr:   false,
 		},
 		{
-			name:     "nil request",
-			request:  nil,
-			expected: "",
-			expUint:  0,
-			expErr:   true,
-		},
-		{
-			name: "invalid hex in eth_getBlockByNumber",
+			name: "eth_getStorageAt",
 			request: &common.JsonRpcRequest{
-				Method: "eth_getBlockByNumber",
-				Params: []interface{}{"invalidHex"},
+				Method: "eth_getStorageAt",
+				Params: []interface{}{
+					"0xE592427A0AEce92De3Edee1F18E0157C05861564",
+					"0x0",
+					"0x1b4",
+				},
 			},
-			expected: "",
-			expUint:  0,
+			expected: "436",
+			expUint:  436,
 			expErr:   false,
-		},
-		{
-			name: "missing parameters in eth_getLogs",
-			request: &common.JsonRpcRequest{
-				Method: "eth_getLogs",
-				Params: []interface{}{},
-			},
-			expected: "",
-			expUint:  0,
-			expErr:   false,
-		},
-		{
-			name: "missing parameters in eth_getBalance",
-			request: &common.JsonRpcRequest{
-				Method: "eth_getBalance",
-				Params: []interface{}{"0xAddress"},
-			},
-			expected: "",
-			expUint:  0,
-			expErr:   true,
 		},
 	}
 
