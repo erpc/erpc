@@ -183,6 +183,16 @@ func TestExtractBlockReference(t *testing.T) {
 			name: "eth_feeHistory",
 			request: &common.JsonRpcRequest{
 				Method: "eth_feeHistory",
+				Params: []interface{}{"0x8D97689C9818892B700e27F316cc3E41e17fBeb9", "0x1b4"},
+			},
+			expected: "436",
+			expUint:  436,
+			expErr:   false,
+		},
+		{
+			name: "eth_getAccount",
+			request: &common.JsonRpcRequest{
+				Method: "eth_getAccount",
 				Params: []interface{}{4, "0x1b4", []interface{}{25, 75}},
 			},
 			expected: "436",

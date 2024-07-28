@@ -38,8 +38,7 @@ func ExtractBlockReference(r *common.JsonRpcRequest) (string, uint64, error) {
 			return "", 0, fmt.Errorf("unexpected no parameters for method %s", r.Method)
 		}
 
-	case "eth_getLogs",
-		"eth_newFilter":
+	case "eth_getLogs":
 		if len(r.Params) > 0 {
 			if logsFilter, ok := r.Params[0].(map[string]interface{}); ok {
 				if from, ok := logsFilter["fromBlock"].(string); ok {
@@ -62,7 +61,8 @@ func ExtractBlockReference(r *common.JsonRpcRequest) (string, uint64, error) {
 		"eth_getCode",
 		"eth_getTransactionCount",
 		"eth_call",
-		"eth_feeHistory":
+		"eth_feeHistory",
+		"eth_getAccount":
 		if len(r.Params) > 1 {
 			if bns, ok := r.Params[1].(string); ok {
 				if strings.HasPrefix(bns, "0x") {
