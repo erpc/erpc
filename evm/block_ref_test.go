@@ -230,6 +230,16 @@ func TestExtractBlockReference(t *testing.T) {
 			expErr:   false,
 		},
 		{
+			name: "eth_getUncleCountByBlockHash",
+			request: &common.JsonRpcRequest{
+				Method: "eth_getUncleCountByBlockHash",
+				Params: []interface{}{"0x829df9bb801fc0494abf2f443423a49ffa32964554db71b098d332d87b70a48b"},
+			},
+			expected: "0x829df9bb801fc0494abf2f443423a49ffa32964554db71b098d332d87b70a48b",
+			expUint:  0,
+			expErr:   false,
+		},
+		{
 			name: "eth_getProof",
 			request: &common.JsonRpcRequest{
 				Method: "eth_getProof",
