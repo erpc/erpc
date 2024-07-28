@@ -75,7 +75,7 @@ func TestExtractBlockReference(t *testing.T) {
 		{
 			name: "eth_getBlockTransactionCountByNumber",
 			request: &common.JsonRpcRequest{
-				Method: "eth_getUncleCountByBlockNumber",
+				Method: "eth_getBlockTransactionCountByNumber",
 				Params: []interface{}{"0xc5043f"},
 			},
 			expected: "12911679",
