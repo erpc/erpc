@@ -246,7 +246,7 @@ func TestRateLimiter_ExceedCapacity(t *testing.T) {
 		ok := rules[0].Limiter.TryAcquirePermit()
 		require.True(t, ok)
 	}
-	
+
 	rules := budget.GetRulesByMethod("test-method")
 	ok := rules[0].Limiter.TryAcquirePermit()
 	require.False(t, ok)

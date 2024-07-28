@@ -1438,6 +1438,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		time.Sleep(50 * time.Millisecond)
 		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
@@ -2237,6 +2238,8 @@ func TestNetwork_Forward(t *testing.T) {
 		upstreamsRegistry.PrepareUpstreamsForNetwork(networkID)
 		upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
 
+		time.Sleep(2 * time.Second)
+
 		wg := sync.WaitGroup{}
 		for _, method := range allMethods {
 			for i := 0; i < 100; i++ {
@@ -2252,6 +2255,8 @@ func TestNetwork_Forward(t *testing.T) {
 			}
 		}
 		wg.Wait()
+
+		time.Sleep(2 * time.Second)
 
 		sortedUpstreamsGetLogs, err := upstreamsRegistry.GetSortedUpstreams(networkID, "eth_getLogs")
 		assert.NoError(t, err)

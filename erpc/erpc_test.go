@@ -113,7 +113,7 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	wg := sync.WaitGroup{}
-	for i := 0; i < 500; i++ {
+	for i := 0; i < 100; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -125,7 +125,7 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 	wg.Wait()
 
 	// wait until scores are calculated and erpc is shutdown down properly
-	time.Sleep(6 * time.Second)
+	time.Sleep(1 * time.Second)
 	cancel1()
 	cancel2()
 

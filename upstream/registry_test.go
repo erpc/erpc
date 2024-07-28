@@ -321,7 +321,9 @@ func checkUpstreamScoreOrder(t *testing.T, registry *UpstreamsRegistry, networkI
 	fmt.Printf("Checking upstream order: %v\n", sortedUpstreams)
 
 	assert.NoError(t, err)
+	registry.RLockUpstreams()
 	for i, ups := range sortedUpstreams {
 		assert.Equal(t, expectedOrder[i], ups.Config().Id)
 	}
+	registry.RUnlockUpstreams()
 }

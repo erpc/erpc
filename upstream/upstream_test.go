@@ -11,8 +11,8 @@ func TestUpstream_SkipLogic(t *testing.T) {
 	t.Run("SingleSimpleMethod", func(t *testing.T) {
 		upstream := &Upstream{
 			config: &common.UpstreamConfig{
-				Id:             "test",
-				IgnoreMethods:  []string{"eth_getBalance"},
+				Id:            "test",
+				IgnoreMethods: []string{"eth_getBalance"},
 			},
 		}
 
@@ -28,8 +28,8 @@ func TestUpstream_SkipLogic(t *testing.T) {
 	t.Run("SingleWildcardMethod", func(t *testing.T) {
 		upstream := &Upstream{
 			config: &common.UpstreamConfig{
-				Id:             "test",
-				IgnoreMethods:  []string{"eth_*"},
+				Id:            "test",
+				IgnoreMethods: []string{"eth_*"},
 			},
 		}
 
@@ -45,8 +45,8 @@ func TestUpstream_SkipLogic(t *testing.T) {
 	t.Run("MultipleMethods", func(t *testing.T) {
 		upstream := &Upstream{
 			config: &common.UpstreamConfig{
-				Id:             "test",
-				IgnoreMethods:  []string{"eth_getBalance", "eth_getBlockByNumber"},
+				Id:            "test",
+				IgnoreMethods: []string{"eth_getBalance", "eth_getBlockByNumber"},
 			},
 		}
 
@@ -66,8 +66,8 @@ func TestUpstream_SkipLogic(t *testing.T) {
 	t.Run("MultipleMethodsWithWildcard", func(t *testing.T) {
 		upstream := &Upstream{
 			config: &common.UpstreamConfig{
-				Id:             "test",
-				IgnoreMethods:  []string{"eth_*", "net_version"},
+				Id:            "test",
+				IgnoreMethods: []string{"eth_*", "net_version"},
 			},
 		}
 
@@ -87,13 +87,13 @@ func TestUpstream_SkipLogic(t *testing.T) {
 	t.Run("MultipleUpstreamsOneIgnoredAnotherNot", func(t *testing.T) {
 		upstream1 := &Upstream{
 			config: &common.UpstreamConfig{
-				Id:             "test1",
-				IgnoreMethods:  []string{"eth_getBalance"},
+				Id:            "test1",
+				IgnoreMethods: []string{"eth_getBalance"},
 			},
 		}
 		upstream2 := &Upstream{
 			config: &common.UpstreamConfig{
-				Id:             "test2",
+				Id: "test2",
 			},
 		}
 
@@ -109,14 +109,14 @@ func TestUpstream_SkipLogic(t *testing.T) {
 	t.Run("MultipleUpstreamsBothIgnoreDifferentThings", func(t *testing.T) {
 		upstream1 := &Upstream{
 			config: &common.UpstreamConfig{
-				Id:             "test1",
-				IgnoreMethods:  []string{"eth_getBalance"},
+				Id:            "test1",
+				IgnoreMethods: []string{"eth_getBalance"},
 			},
 		}
 		upstream2 := &Upstream{
 			config: &common.UpstreamConfig{
-				Id:             "test2",
-				IgnoreMethods:  []string{"eth_getBlockByNumber"},
+				Id:            "test2",
+				IgnoreMethods: []string{"eth_getBlockByNumber"},
 			},
 		}
 
@@ -140,14 +140,14 @@ func TestUpstream_SkipLogic(t *testing.T) {
 	t.Run("MultipleUpstreamsAllIgnoredAMethod", func(t *testing.T) {
 		upstream1 := &Upstream{
 			config: &common.UpstreamConfig{
-				Id:             "test1",
-				IgnoreMethods:  []string{"eth_getBalance"},
+				Id:            "test1",
+				IgnoreMethods: []string{"eth_getBalance"},
 			},
 		}
 		upstream2 := &Upstream{
 			config: &common.UpstreamConfig{
-				Id:             "test2",
-				IgnoreMethods:  []string{"eth_*"},
+				Id:            "test2",
+				IgnoreMethods: []string{"eth_*"},
 			},
 		}
 
@@ -208,8 +208,8 @@ func TestUpstream_SkipLogic(t *testing.T) {
 	t.Run("CombinationOfWildcardAndSpecificMethods", func(t *testing.T) {
 		upstream := &Upstream{
 			config: &common.UpstreamConfig{
-				Id:             "test",
-				IgnoreMethods:  []string{"eth_*", "net_version", "web3_clientVersion"},
+				Id:            "test",
+				IgnoreMethods: []string{"eth_*", "net_version", "web3_clientVersion"},
 			},
 		}
 
@@ -233,8 +233,8 @@ func TestUpstream_SkipLogic(t *testing.T) {
 	t.Run("NestedWildcards", func(t *testing.T) {
 		upstream := &Upstream{
 			config: &common.UpstreamConfig{
-				Id:             "test",
-				IgnoreMethods:  []string{"eth_*_*"},
+				Id:            "test",
+				IgnoreMethods: []string{"eth_*_*"},
 			},
 		}
 
