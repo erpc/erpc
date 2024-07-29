@@ -64,5 +64,5 @@ func (v *InfuraVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr inte
 }
 
 func (v *InfuraVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
-	return strings.Contains(ups.Endpoint, ".alchemy.com") || strings.Contains(ups.Endpoint, ".alchemyapi.io")
+	return strings.Contains(ups.Endpoint, ".infura.io")
 }
