@@ -142,7 +142,7 @@ func (c *AlchemyHttpJsonRpcClient) getOrCreateClient(network common.Network) (Ht
 		return nil, fmt.Errorf("unsupported network chain ID for Alchemy: %d", chainID)
 	}
 
-	alchemyURL := fmt.Sprintf("https://%s.alchemyapi.io/v2/%s", subdomain, c.apiKey)
+	alchemyURL := fmt.Sprintf("https://%s.g.alchemy.com/v2/%s", subdomain, c.apiKey)
 	parsedURL, err := url.Parse(alchemyURL)
 	if err != nil {
 		return nil, err

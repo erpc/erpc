@@ -5,6 +5,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v2"
+	"os"
 )
 
 // Config represents the configuration of the application.
@@ -179,8 +180,11 @@ func LoadConfig(fs afero.Fs, filename string) (*Config, error) {
 		return nil, err
 	}
 
+    // Expand environment variables
+    expandedData := []byte(os.ExpandEnv(string(data)))
+
 	var cfg Config
-	err = yaml.Unmarshal(data, &cfg)
+	err = yaml.Unmarshal(expandedData, &cfg)
 	if err != nil {
 		return nil, err
 	}
