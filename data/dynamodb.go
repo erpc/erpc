@@ -67,6 +67,7 @@ func NewDynamoDBConnector(
 	}
 
 	return &DynamoDBConnector{
+		logger:           logger,
 		client:           client,
 		table:            cfg.Table,
 		partitionKeyName: cfg.PartitionKeyName,
