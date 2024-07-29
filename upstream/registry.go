@@ -338,10 +338,10 @@ func (u *UpstreamsRegistry) calculateScore(normTotalRequests, normP90Latency, no
 	score += 100 - normTotalRequests
 
 	// Higher score for lower p90 latency
-	score += 100 - normP90Latency
+	score += 100 - normP90Latency * 4
 
 	// Higher score for lower error rate
-	score += (100 - normErrorRate) * 4
+	score += (100 - normErrorRate) * 8
 
 	// Higher score for lower throttled rate
 	score += (100 - normThrottledRate) * 3

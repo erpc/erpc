@@ -104,9 +104,9 @@ func TestUpstreamsRegistry(t *testing.T) {
 		method := "eth_call"
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
-		simulateRequestsWithRateLimiting(metricsTracker, networkID, "upstream-a", method, 100, 10, 5)
-		simulateRequestsWithRateLimiting(metricsTracker, networkID, "upstream-b", method, 100, 5, 2)
-		simulateRequestsWithRateLimiting(metricsTracker, networkID, "upstream-c", method, 100, 2, 1)
+		simulateRequestsWithRateLimiting(metricsTracker, networkID, "upstream-a", method, 100, 30, 30)
+		simulateRequestsWithRateLimiting(metricsTracker, networkID, "upstream-b", method, 100, 15, 15)
+		simulateRequestsWithRateLimiting(metricsTracker, networkID, "upstream-c", method, 100, 5, 5)
 
 		expectedOrder := []string{"upstream-c", "upstream-b", "upstream-a"}
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
