@@ -8,12 +8,12 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/evm"
+	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/util"
+	"github.com/erpc/erpc/vendors"
 	"github.com/failsafe-go/failsafe-go"
-	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/evm"
-	"github.com/flair-sdk/erpc/health"
-	"github.com/flair-sdk/erpc/util"
-	"github.com/flair-sdk/erpc/vendors"
 	"github.com/rs/zerolog"
 )
 
@@ -243,7 +243,11 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 			timer := u.metricsTracker.RecordUpstreamDurationStart(cfg.Id, netId, method)
 			defer timer.ObserveDuration()
 			resp, errCall := jsonRpcClient.SendRequest(ctx, req)
-			lg.Debug().Err(errCall).Str("response", resp.String()).Msgf("upstream call result received")
+			if resp != nil {
+				lg.Debug().Err(errCall).Str("response", resp.String()).Msgf("upstream call result received")
+			} else {
+				lg.Debug().Err(errCall).Msgf("upstream call result received")
+			}
 			if errCall != nil {
 				if !errors.Is(errCall, context.DeadlineExceeded) && !errors.Is(errCall, context.Canceled) {
 					if common.HasCode(errCall, common.ErrCodeEndpointCapacityExceeded) {

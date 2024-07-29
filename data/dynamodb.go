@@ -11,7 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
-	"github.com/flair-sdk/erpc/common"
+	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
 )
 

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/flair-sdk/erpc/common"
+	"github.com/erpc/erpc/common"
 )
 
 type NormalizedResponse struct {
@@ -47,6 +47,9 @@ func (r *NormalizedResponse) Request() common.NormalizedRequest {
 }
 
 func (r *NormalizedResponse) Body() []byte {
+	if r == nil {
+		return nil
+	}
 	if r.body != nil {
 		return r.body
 	}
@@ -75,7 +78,7 @@ func (r *NormalizedResponse) Error() error {
 func (r *NormalizedResponse) IsResultEmptyish() bool {
 	jrr, err := r.JsonRpcResponse()
 	if err == nil {
-		if jrr.Result == nil {
+		if jrr == nil || jrr.Result == nil {
 			return true
 		}
 

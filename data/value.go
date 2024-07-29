@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"sync"
 
-	"github.com/flair-sdk/erpc/common"
+	"github.com/erpc/erpc/common"
 )
 
 type DataRow struct {

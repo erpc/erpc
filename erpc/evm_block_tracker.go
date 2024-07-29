@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/upstream"
-	"github.com/flair-sdk/erpc/util"
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/upstream"
+	"github.com/erpc/erpc/util"
 )
 
 type EvmBlockTracker struct {
@@ -36,11 +36,9 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-
-		if !util.IsTest() {
-			// For non-test environments, set a default interval of 60 seconds
-			blockTrackerInterval = 60 * time.Second
-		}
+	} else if !util.IsTest() {
+		// For non-test environments, set a default interval of 60 seconds
+		blockTrackerInterval = 60 * time.Second
 	}
 
 	var updateBlockNumbers = func() error {
@@ -124,7 +122,7 @@ func (e *EvmBlockTracker) fetchBlock(ctx context.Context, blockTag string) (uint
 		return 0, err
 	}
 
-	if jrr.Error != nil {
+	if jrr == nil || jrr.Error != nil {
 		return 0, jrr.Error
 	}
 

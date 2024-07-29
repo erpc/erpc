@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/erpc/erpc/common"
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/failsafe-go/failsafe-go/circuitbreaker"
 	"github.com/failsafe-go/failsafe-go/hedgepolicy"
 	"github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/failsafe-go/failsafe-go/timeout"
-	"github.com/flair-sdk/erpc/common"
 )
 
 type Scope string

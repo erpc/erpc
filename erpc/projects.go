@@ -6,9 +6,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/health"
-	"github.com/flair-sdk/erpc/upstream"
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/upstream"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 )

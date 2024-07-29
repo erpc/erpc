@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/evm"
+	"github.com/erpc/erpc/upstream"
 	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/data"
-	"github.com/flair-sdk/erpc/evm"
-	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog"
 )
 
@@ -120,8 +120,8 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *upstream.NormalizedReque
 
 	lg := c.logger.With().Str("network", req.Network().Id()).Str("method", rpcReq.Method).Logger()
 
-	if rpcResp.Result == nil || rpcResp.Error != nil {
-		lg.Debug().Interface("resp", rpcResp).Msg("not caching response because it has no result or has error")
+	if rpcResp == nil || rpcResp.Result == nil || rpcResp.Error != nil {
+		lg.Debug().Msg("not caching response because it has no result or has error")
 		return nil
 	}
 

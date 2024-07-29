@@ -7,11 +7,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/upstream"
 	"github.com/failsafe-go/failsafe-go"
-	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/data"
-	"github.com/flair-sdk/erpc/health"
-	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog"
 )
 
@@ -381,12 +381,14 @@ func (n *Network) acquireRateLimitPermit(req *upstream.NormalizedRequest) error 
 
 func tryExtractLastResult(err interface{}) common.NormalizedResponse {
 	re, ok := err.(*common.ErrFailsafeRetryExceeded)
-	var lr interface{}
+	var lr common.NormalizedResponse
 	if ok {
-		lr = re.LastResult()
+		if r := re.LastResult(); r != nil {
+			lr = r.(common.NormalizedResponse)
+		}
 	}
 
-	if lr == nil {
+	if lr == nil || lr.IsObjectNull() {
 		if be, ok := err.(interface {
 			GetCause() error
 		}); ok {
@@ -398,5 +400,5 @@ func tryExtractLastResult(err interface{}) common.NormalizedResponse {
 		return nil
 	}
 
-	return lr.(common.NormalizedResponse)
+	return lr
 }

@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/erpc"
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/erpc"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/afero"

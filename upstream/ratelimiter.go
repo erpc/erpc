@@ -5,9 +5,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/erpc/erpc/common"
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/failsafe-go/failsafe-go/ratelimiter"
-	"github.com/flair-sdk/erpc/common"
 	"github.com/rs/zerolog"
 )
 

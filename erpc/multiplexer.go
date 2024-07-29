@@ -3,7 +3,7 @@ package erpc
 import (
 	"sync"
 
-	"github.com/flair-sdk/erpc/common"
+	"github.com/erpc/erpc/common"
 )
 
 type Multiplexer struct {

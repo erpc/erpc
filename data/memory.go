@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/flair-sdk/erpc/common"
+	"github.com/erpc/erpc/common"
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/rs/zerolog"
 )
