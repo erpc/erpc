@@ -24,7 +24,7 @@ spec:
     spec:
       containers:
       - name: main
-        image: "flairsdk/erpc:latest"
+        image: "ghcr.io/erpc/erpc:latest"
         imagePullPolicy: Always
         command: ["/root/erpc-server"]
         resources:

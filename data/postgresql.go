@@ -53,8 +53,9 @@ func NewPostgreSQLConnector(ctx context.Context, logger *zerolog.Logger, cfg *co
 	}
 
 	return &PostgreSQLConnector{
-		conn:  conn,
-		table: cfg.Table,
+		logger: logger,
+		conn:   conn,
+		table:  cfg.Table,
 	}, nil
 }
 
