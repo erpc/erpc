@@ -157,9 +157,11 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		inf.Close(nil, err)
 		return nil, err
 	}
+	var execution failsafe.Execution[common.NormalizedResponse]
 	resp, execErr := n.failsafeExecutor.
 		WithContext(ctx).
 		GetWithExecution(func(exec failsafe.Execution[common.NormalizedResponse]) (common.NormalizedResponse, error) {
+			execution = exec
 			isHedged := exec.Hedges() > 0
 
 			// We should try all upstreams at least once, but using "i" we make sure
@@ -215,7 +217,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		})
 
 	if execErr != nil {
-		err := upstream.TranslateFailsafeError(execErr)
+		err := upstream.TranslateFailsafeError(execution, execErr)
 		// if error is due to empty response be generous and accept it
 		if common.HasCode(err, common.ErrCodeFailsafeRetryExceeded) {
 			lr := tryExtractLastResult(err)
@@ -311,18 +313,16 @@ func (n *Network) processResponse(resp common.NormalizedResponse, skipped bool, 
 
 	switch n.Architecture() {
 	case common.ArchitectureEvm:
-		if common.HasCode(err, common.ErrCodeJsonRpcException) {
+		if common.HasCode(err, common.ErrCodeJsonRpcExceptionInternal) {
 			return resp, skipped, err
 		}
 		if common.HasCode(err, common.ErrCodeJsonRpcRequestUnmarshal) {
-			return resp, skipped, common.NewErrJsonRpcException(
-				0,
-				common.JsonRpcErrorParseException,
+			return resp, skipped, common.NewErrJsonRpcExceptionExternal(
+				int(common.JsonRpcErrorParseException),
 				"failed to parse json-rpc request",
-				err,
 			)
 		}
-		return resp, skipped, common.NewErrJsonRpcException(
+		return resp, skipped, common.NewErrJsonRpcExceptionInternal(
 			0,
 			common.JsonRpcErrorServerSideException,
 			fmt.Sprintf("failed request on evm network %s", n.NetworkId),

@@ -9,7 +9,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-var metricRequestTotal = promauto.NewGaugeVec(prometheus.GaugeOpts{
+var metricRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Namespace: "erpc",
 	Name:      "upstream_request_total",
 	Help:      "Total number of requests to upstreams in the current window.",
@@ -26,19 +26,19 @@ var metricRequestDuration = promauto.NewSummaryVec(prometheus.SummaryOpts{
 	},
 }, []string{"project", "network", "upstream", "method"})
 
-var metricErrorTotal = promauto.NewGaugeVec(prometheus.GaugeOpts{
+var metricErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Namespace: "erpc",
 	Name:      "upstream_request_errors_total",
 	Help:      "Total number of errors for requests to upstreams in the current window.",
 }, []string{"project", "network", "upstream", "method", "error"})
 
-var metricSelfRateLimitedTotal = promauto.NewGaugeVec(prometheus.GaugeOpts{
+var metricSelfRateLimitedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Namespace: "erpc",
 	Name:      "upstream_request_self_rate_limited_total",
 	Help:      "Total number of self-imposed rate limited requests to upstreams in the current window.",
 }, []string{"project", "network", "upstream", "method"})
 
-var metricRemoteRateLimitedTotal = promauto.NewGaugeVec(prometheus.GaugeOpts{
+var metricRemoteRateLimitedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Namespace: "erpc",
 	Name:      "upstream_request_remote_rate_limited_total",
 	Help:      "Total number of remote rate limited requests by upstreams in the current window.",

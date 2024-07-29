@@ -138,7 +138,7 @@ func (u *UpstreamsRegistry) GetSortedUpstreams(networkId, method string) ([]*Ups
 	if upsList == nil {
 		u.upstreamsMu.Lock()
 		defer u.upstreamsMu.Unlock()
-	
+
 		upsList = u.sortedUpstreams[networkId]["*"]
 		if upsList == nil {
 			upsList = u.sortedUpstreams["*"]["*"]

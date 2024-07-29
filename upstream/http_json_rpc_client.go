@@ -125,7 +125,7 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *N
 	jr, err := nr.JsonRpcResponse()
 
 	if err != nil {
-		e := common.NewErrJsonRpcException(
+		e := common.NewErrJsonRpcExceptionInternal(
 			0,
 			common.JsonRpcErrorParseException,
 			"could not parse json rpc response from upstream",
@@ -148,7 +148,7 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *N
 		return e
 	}
 
-	e := common.NewErrJsonRpcException(0, common.JsonRpcErrorServerSideException, "unknown json-rpc response", nil)
+	e := common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorServerSideException, "unknown json-rpc response", nil)
 	e.Details = map[string]interface{}{
 		"upstream":   c.upstream.Config().Id,
 		"statusCode": r.StatusCode,
@@ -167,7 +167,7 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 			return ver
 		}
 
-		code := common.JsonRpcErrorNumber(err.OriginalCode())
+		code := common.JsonRpcErrorNumber(err.Code)
 
 		// Infer from known status codes
 		if r.StatusCode == 401 || r.StatusCode == 403 {
