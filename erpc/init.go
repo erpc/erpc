@@ -8,8 +8,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/util"
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 	"github.com/spf13/afero"

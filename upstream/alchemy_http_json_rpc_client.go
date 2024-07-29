@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/flair-sdk/erpc/common"
+	"github.com/erpc/erpc/common"
 )
 
 var alchemyNetworkSubdomains = map[uint64]string{

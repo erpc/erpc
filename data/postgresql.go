@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/flair-sdk/erpc/common"
+	"github.com/erpc/erpc/common"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/rs/zerolog"

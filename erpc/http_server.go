@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/upstream"
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/upstream"
 	"github.com/rs/zerolog"
 )
 
@@ -67,7 +67,7 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 				ApplyDirectivesFromHttpHeaders(r.Header)
 
 			resp, err = project.Forward(r.Context(), networkId, nq)
-			if err == nil {
+			if err == nil && resp != nil {
 				hrw.Header().Set("Content-Type", "application/json")
 				hrw.WriteHeader(http.StatusOK)
 				hrw.Write(resp.Body())

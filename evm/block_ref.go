@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/erpc/erpc/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/flair-sdk/erpc/common"
 )
 
 func ExtractBlockReference(r *common.JsonRpcRequest) (string, uint64, error) {

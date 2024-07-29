@@ -15,8 +15,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/flair-sdk/erpc/erpc"
-	"github.com/flair-sdk/erpc/util"
+	"github.com/erpc/erpc/erpc"
+	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/afero"

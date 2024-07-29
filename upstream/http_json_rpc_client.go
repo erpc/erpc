@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/util"
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
 

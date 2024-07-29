@@ -3,9 +3,9 @@ package erpc
 import (
 	"context"
 
-	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/upstream"
-	"github.com/flair-sdk/erpc/vendors"
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/upstream"
+	"github.com/erpc/erpc/vendors"
 	"github.com/rs/zerolog"
 )
 

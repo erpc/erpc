@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/flair-sdk/erpc/common"
+	"github.com/erpc/erpc/common"
 )
 
 type InfuraVendor struct {

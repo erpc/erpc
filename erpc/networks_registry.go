@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/upstream"
 	"github.com/failsafe-go/failsafe-go"
-	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/health"
-	"github.com/flair-sdk/erpc/upstream"
 	"github.com/rs/zerolog"
 )
 

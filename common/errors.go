@@ -45,7 +45,7 @@ func cleanUpMessage(s string) string {
 	s = ethAddr.ReplaceAllString(s, "0xREDACTED")
 	s = revertAddr.ReplaceAllString(s, "execution reverted")
 	s = ddg.ReplaceAllString(s, "XX")
-	
+
 	if len(s) > 512 {
 		s = s[:512]
 	}
@@ -619,7 +619,11 @@ func (e *ErrFailsafeRetryExceeded) ErrorStatusCode() int {
 }
 
 func (e *ErrFailsafeRetryExceeded) LastResult() interface{} {
-	return e.Details["lastResult"]
+	r, ok := e.Details["lastResult"]
+	if !ok {
+		return nil
+	}
+	return r
 }
 
 type ErrFailsafeCircuitBreakerOpen struct{ BaseError }

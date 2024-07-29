@@ -1,11 +1,12 @@
 package common
 
 import (
-	"github.com/flair-sdk/erpc/util"
+	"os"
+
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v2"
-	"os"
 )
 
 // Config represents the configuration of the application.
@@ -180,8 +181,8 @@ func LoadConfig(fs afero.Fs, filename string) (*Config, error) {
 		return nil, err
 	}
 
-    // Expand environment variables
-    expandedData := []byte(os.ExpandEnv(string(data)))
+	// Expand environment variables
+	expandedData := []byte(os.ExpandEnv(string(data)))
 
 	var cfg Config
 	err = yaml.Unmarshal(expandedData, &cfg)

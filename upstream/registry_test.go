@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/health"
-	"github.com/flair-sdk/erpc/vendors"
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/vendors"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 )

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/flair-sdk/erpc/common"
+	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

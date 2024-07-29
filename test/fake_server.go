@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/flair-sdk/erpc/common"
+	"github.com/erpc/erpc/common"
 )
 
 type JSONRPCRequest struct {

@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/health"
-	"github.com/flair-sdk/erpc/vendors"
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/vendors"
 	"github.com/rs/zerolog"
 )
 
@@ -338,7 +338,7 @@ func (u *UpstreamsRegistry) calculateScore(normTotalRequests, normP90Latency, no
 	score += 100 - normTotalRequests
 
 	// Higher score for lower p90 latency
-	score += 100 - normP90Latency * 4
+	score += 100 - normP90Latency*4
 
 	// Higher score for lower error rate
 	score += (100 - normErrorRate) * 8

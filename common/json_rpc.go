@@ -24,6 +24,9 @@ type JsonRpcResponse struct {
 }
 
 func (r *JsonRpcRequest) MarshalZerologObject(e *zerolog.Event) {
+	if r == nil {
+		return
+	}
 	e.Str("method", r.Method).Interface("params", r.Params).Interface("id", r.ID)
 }
 

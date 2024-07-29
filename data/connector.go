@@ -3,7 +3,7 @@ package data
 import (
 	"context"
 
-	"github.com/flair-sdk/erpc/common"
+	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
 )
 
