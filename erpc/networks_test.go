@@ -2307,8 +2307,8 @@ func TestNetwork_Forward(t *testing.T) {
 
 		simulateRequests := func(method string, upstreamId string, latency time.Duration) {
 			gock.New("http://" + upstreamId + ".localhost").
-				Times(1000).
-				// Post("/").
+				Persist().
+				Post("/").
 				Filter(func(request *http.Request) bool {
 					// seek body in request without changing the original Body buffer
 					body := safeReadBody(request)
@@ -2333,8 +2333,9 @@ func TestNetwork_Forward(t *testing.T) {
 		allMethods := []string{"eth_getLogs", "eth_traceTransaction", "eth_call"}
 
 		upstreamsRegistry.PrepareUpstreamsForNetwork(networkID)
-		upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
+		time.Sleep(2 * time.Second)
 
+		upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
 		time.Sleep(2 * time.Second)
 
 		wg := sync.WaitGroup{}
@@ -2354,6 +2355,7 @@ func TestNetwork_Forward(t *testing.T) {
 		wg.Wait()
 
 		time.Sleep(2 * time.Second)
+		upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
 
 		sortedUpstreamsGetLogs, err := upstreamsRegistry.GetSortedUpstreams(networkID, "eth_getLogs")
 		assert.NoError(t, err)
