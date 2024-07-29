@@ -26,12 +26,12 @@ func (v *DrpcVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interf
 	}
 
 	err := bodyMap.Error
-	if code := err.OriginalCode(); code != 0 {
+	if code := err.Code; code != 0 {
 		msg := err.Message
 
 		if code == 4 && strings.Contains(msg, "token is invalid") {
 			return common.NewErrEndpointUnauthorized(
-				common.NewErrJsonRpcException(
+				common.NewErrJsonRpcExceptionInternal(
 					code,
 					common.JsonRpcErrorUnauthorized,
 					msg,

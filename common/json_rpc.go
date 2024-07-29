@@ -17,10 +17,10 @@ type JsonRpcRequest struct {
 }
 
 type JsonRpcResponse struct {
-	JSONRPC string               `json:"jsonrpc,omitempty"`
-	ID      interface{}          `json:"id,omitempty"`
-	Result  interface{}          `json:"result,omitempty"`
-	Error   *ErrJsonRpcException `json:"error,omitempty"`
+	JSONRPC string                       `json:"jsonrpc,omitempty"`
+	ID      interface{}                  `json:"id,omitempty"`
+	Result  interface{}                  `json:"result,omitempty"`
+	Error   *ErrJsonRpcExceptionExternal `json:"error,omitempty"`
 }
 
 func (r *JsonRpcRequest) MarshalZerologObject(e *zerolog.Event) {
@@ -105,11 +105,9 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 			Message string `json:"message"`
 		}{}
 		if err := json.Unmarshal(data, &sp1); err == nil {
-			r.Error = NewErrJsonRpcException(
+			r.Error = NewErrJsonRpcExceptionExternal(
 				sp1.Code,
-				0,
 				sp1.Message,
-				nil,
 			)
 			return nil
 		}
@@ -118,20 +116,16 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 			Error string `json:"error"`
 		}{}
 		if err := json.Unmarshal(data, &sp2); err == nil {
-			r.Error = NewErrJsonRpcException(
+			r.Error = NewErrJsonRpcExceptionExternal(
 				int(JsonRpcErrorServerSideException),
-				0,
 				sp2.Error,
-				nil,
 			)
 			return nil
 		}
 
-		r.Error = NewErrJsonRpcException(
+		r.Error = NewErrJsonRpcExceptionExternal(
 			int(JsonRpcErrorServerSideException),
-			0,
 			string(data),
-			nil,
 		)
 		return nil
 	}
@@ -154,11 +148,9 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 			msg = m.(string)
 		}
 
-		r.Error = NewErrJsonRpcException(
+		r.Error = NewErrJsonRpcExceptionExternal(
 			code,
-			0,
 			msg,
-			nil,
 		)
 	}
 

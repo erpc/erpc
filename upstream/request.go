@@ -13,6 +13,8 @@ import (
 )
 
 type NormalizedRequest struct {
+	Attempt int
+	
 	network        common.Network
 	upstream       common.Upstream
 	body           []byte

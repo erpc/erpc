@@ -114,7 +114,7 @@ func handleErrorResponse(logger *zerolog.Logger, err error, hrw http.ResponseWri
 		hrw.WriteHeader(http.StatusInternalServerError)
 	}
 
-	jre := &common.ErrJsonRpcException{}
+	jre := &common.ErrJsonRpcExceptionInternal{}
 	if errors.As(err, &jre) {
 		json.NewEncoder(hrw).Encode(map[string]interface{}{
 			"code":    jre.NormalizedCode(),

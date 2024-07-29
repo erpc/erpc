@@ -162,12 +162,9 @@ func executeStressTest(config StressTestConfig) (*StressTestResult, error) {
 	}
 
 	// Initialize eRPC
-	shutdown, err := initializeERPC(fs, erpcConfig)
+	err = initializeERPC(fs, erpcConfig)
 	if err != nil {
 		return nil, err
-	}
-	if shutdown != nil {
-		defer shutdown()
 	}
 
 	// Wait for servers to start
@@ -188,6 +185,9 @@ func executeStressTest(config StressTestConfig) (*StressTestResult, error) {
 
 	// Wait for all servers to finish
 	wg.Wait()
+
+	// Wait for 5 seconds to ensure all metrics are collected
+	time.Sleep(5 * time.Second)
 
 	// Fetch prometheus metrics used for assertions
 	return fetchPrometheusMetrics(config.MetricsPort)
@@ -212,16 +212,30 @@ func prepareERPCConfig(fs afero.Fs, config StressTestConfig) (string, string, er
 		upsList = append(upsList, ucfg)
 	}
 
+	nwCfg := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm: &common.EvmNetworkConfig{
+			ChainId: 123,
+		},
+	}
+
+	if config.AdditionalNetworkConfig != nil {
+		if config.AdditionalNetworkConfig.Failsafe != nil {
+			nwCfg.Failsafe = config.AdditionalNetworkConfig.Failsafe
+		}
+	}
+
 	prjCfg := &common.ProjectConfig{
 		Id:        "main",
 		Upstreams: upsList,
+		Networks:  []*common.NetworkConfig{nwCfg},
 	}
 	if config.AdditionalProjectConfig != nil {
 		prjCfg = MergeStructs(prjCfg, config.AdditionalProjectConfig)
 	}
 
 	mergedConfig := &common.Config{
-		LogLevel: "DEBUG",
+		LogLevel: "ERROR",
 		Server: &common.ServerConfig{
 			HttpHost: "localhost",
 			HttpPort: config.ServicePort,
@@ -265,11 +279,10 @@ func prepareERPCConfig(fs afero.Fs, config StressTestConfig) (string, string, er
 // 	return upstreamsCfg
 // }
 
-func initializeERPC(fs afero.Fs, configPath string) (func() error, error) {
+func initializeERPC(fs afero.Fs, configPath string) error {
 	args := []string{"erpc-test", configPath}
 	logger := log.With().Logger()
-	err := erpc.Init(context.Background(), logger, fs, args)
-	return nil, err
+	return erpc.Init(context.Background(), logger, fs, args)
 }
 
 func runK6StressTest(fs afero.Fs, baseUrl string, config StressTestConfig) error {
@@ -419,7 +432,6 @@ func fetchPrometheusMetrics(port int) (*StressTestResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch prometheus metrics: %w", err)
 	}
-
 	body, _ := io.ReadAll(resp.Body)
 	os.Stdout.Write(body)
 
@@ -435,7 +447,7 @@ func fetchPrometheusMetrics(port int) (*StressTestResult, error) {
 	for _, mf := range mfs {
 		for _, m := range mf.GetMetric() {
 			labels := m.GetLabel()
-			var project, network, upstream, category string
+			var project, network, upstream, category, errorType string
 			for _, label := range labels {
 				if label.GetName() == "project" {
 					project = label.GetValue()
@@ -449,17 +461,27 @@ func fetchPrometheusMetrics(port int) (*StressTestResult, error) {
 				if label.GetName() == "category" {
 					category = label.GetValue()
 				}
+				if label.GetName() == "error" {
+					errorType = label.GetValue()
+				}
 			}
 
 			if strings.HasSuffix(mf.GetName(), "total") {
+				var value float64
+				if m.GetCounter().GetValue() > 0 {
+					value = m.GetCounter().GetValue()
+				} else if m.GetGauge().GetValue() > 0 {
+					value = m.GetGauge().GetValue()
+				}
 				mt := &CounterMetric{
 					Name:  mf.GetName(),
-					Value: m.GetCounter().GetValue(),
+					Value: value,
 					Labels: map[string]string{
-						"project":  project,
-						"network":  network,
-						"upstream": upstream,
-						"category": category,
+						"project":   project,
+						"network":   network,
+						"upstream":  upstream,
+						"category":  category,
+						"errorType": errorType,
 					},
 				}
 

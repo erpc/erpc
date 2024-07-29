@@ -95,7 +95,7 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 	case common.UpstreamTypeEvm:
 	case common.UpstreamTypeEvmAlchemy:
 		if u.Client == nil {
-			return common.NewErrJsonRpcException(
+			return common.NewErrJsonRpcExceptionInternal(
 				0,
 				common.JsonRpcErrorServerSideException,
 				fmt.Sprintf("client not initialized for evm upstream: %s", cfg.Id),
@@ -106,7 +106,7 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 		if u.Client.GetType() == ClientTypeHttpJsonRpc || u.Client.GetType() == ClientTypeAlchemyHttpJsonRpc {
 			jsonRpcReq, err := normalizedReq.JsonRpcRequest()
 			if err != nil {
-				return common.NewErrJsonRpcException(
+				return common.NewErrJsonRpcExceptionInternal(
 					0,
 					common.JsonRpcErrorParseException,
 					"failed to unmarshal jsonrpc request",
@@ -115,7 +115,7 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 			}
 			err = evm.NormalizeHttpJsonRpc(normalizedReq, jsonRpcReq)
 			if err != nil {
-				return common.NewErrJsonRpcException(
+				return common.NewErrJsonRpcExceptionInternal(
 					0,
 					common.JsonRpcErrorServerSideException,
 					"failed to normalize jsonrpc request",
@@ -123,7 +123,7 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 				)
 			}
 		} else {
-			return common.NewErrJsonRpcException(
+			return common.NewErrJsonRpcExceptionInternal(
 				0,
 				common.JsonRpcErrorServerSideException,
 				fmt.Sprintf("unsupported evm client type: %s upstream: %s", u.Client.GetType(), cfg.Id),
@@ -131,7 +131,7 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 			)
 		}
 	default:
-		return common.NewErrJsonRpcException(
+		return common.NewErrJsonRpcExceptionInternal(
 			0,
 			common.JsonRpcErrorServerSideException,
 			fmt.Sprintf("unsupported architecture: %s for upstream: %s", cfg.Type, cfg.Id),
@@ -217,7 +217,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 		ClientTypeHttpJsonRpc:
 		jsonRpcClient, okClient := u.Client.(HttpJsonRpcClient)
 		if !okClient {
-			return nil, false, common.NewErrJsonRpcException(
+			return nil, false, common.NewErrJsonRpcExceptionInternal(
 				0,
 				common.JsonRpcErrorServerSideException,
 				fmt.Sprintf("failed to initialize client for upstream %s", cfg.Id),
@@ -272,14 +272,16 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 		}
 
 		if u.failsafePolicies != nil && len(u.failsafePolicies) > 0 {
+			var execution failsafe.Execution[common.NormalizedResponse]
 			resp, execErr := u.failsafeExecutor.
 				WithContext(ctx).
 				GetWithExecution(func(exec failsafe.Execution[common.NormalizedResponse]) (common.NormalizedResponse, error) {
+					execution = exec
 					return tryForward(ctx)
 				})
 
 			if execErr != nil {
-				return nil, false, TranslateFailsafeError(execErr)
+				return nil, false, TranslateFailsafeError(execution, execErr)
 			}
 
 			return resp, false, execErr

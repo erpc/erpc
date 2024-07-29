@@ -8,6 +8,7 @@ import (
 
 	"github.com/flair-sdk/erpc/common"
 	"github.com/flair-sdk/erpc/upstream"
+	"github.com/flair-sdk/erpc/util"
 )
 
 type EvmBlockTracker struct {
@@ -28,12 +29,17 @@ func NewEvmBlockTracker(network *Network) *EvmBlockTracker {
 }
 
 func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
-	var blockTrackerInterval = 60 * time.Second // default value
+	var blockTrackerInterval = 0 * time.Second
 	var err error
 	if e.network.Config.Evm != nil && e.network.Config.Evm.BlockTrackerInterval != "" {
 		blockTrackerInterval, err = time.ParseDuration(e.network.Config.Evm.BlockTrackerInterval)
 		if err != nil {
 			return err
+		}
+
+		if !util.IsTest() {
+			// For non-test environments, set a default interval of 60 seconds
+			blockTrackerInterval = 60 * time.Second
 		}
 	}
 
@@ -62,6 +68,10 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 		}
 
 		// TODO should we return error here?
+		return nil
+	}
+
+	if blockTrackerInterval == 0 {
 		return nil
 	}
 

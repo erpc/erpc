@@ -299,12 +299,14 @@ func createTimeoutPolicy(component string, cfg *common.TimeoutPolicyConfig) (fai
 	return builder.Build(), nil
 }
 
-func TranslateFailsafeError(execErr error) error {
+func TranslateFailsafeError(exec failsafe.Execution[common.NormalizedResponse], execErr error) error {
 	var retryExceededErr *retrypolicy.ExceededError
 	if errors.As(execErr, &retryExceededErr) {
 		return common.NewErrFailsafeRetryExceeded(
 			retryExceededErr.LastError(),
 			retryExceededErr.LastResult(),
+			exec.Attempts(),
+			exec.Retries(),
 		)
 	}
 
