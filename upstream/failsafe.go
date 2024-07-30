@@ -11,6 +11,7 @@ import (
 	"github.com/failsafe-go/failsafe-go/hedgepolicy"
 	"github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/failsafe-go/failsafe-go/timeout"
+	"github.com/rs/zerolog/log"
 )
 
 type Scope string
@@ -116,6 +117,16 @@ func createCircuitBreakerPolicy(component string, cfg *common.CircuitBreakerPoli
 		builder = builder.WithDelay(dur)
 	}
 
+	builder.OnHalfOpen(func(event circuitbreaker.StateChangedEvent) {
+		log.Debug().Msgf("circuitBreaker half open: %v", event)
+	})
+	builder.OnOpen(func(event circuitbreaker.StateChangedEvent) {
+		log.Debug().Msgf("circuitBreaker open: %v", event)
+	})
+	builder.OnClose(func(event circuitbreaker.StateChangedEvent) {
+		log.Debug().Msgf("circuitBreaker close: %v", event)
+	})
+
 	builder.HandleIf(func(result common.NormalizedResponse, err error) bool {
 		// 5xx or other non-retryable server-side errors -> open the circuit
 		if common.HasCode(err, common.ErrCodeEndpointServerSideException) {
@@ -138,7 +149,7 @@ func createCircuitBreakerPolicy(component string, cfg *common.CircuitBreakerPoli
 		}
 
 		if result != nil && result.Request() != nil {
-			up := result.Request().Upstream()
+			up := result.Request().LastUpstream()
 
 			// if "syncing" and null/empty response -> open the circuit
 			cfg := up.Config()
@@ -238,26 +249,28 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 			return false
 		}
 
-		// Donot try when 3rd-party providers run out of monthly capacity
+		// Do not try when 3rd-party providers run out of monthly capacity
 		if scope == ScopeUpstream && common.HasCode(err, common.ErrCodeEndpointCapacityExceeded) {
 			return false
 		}
 
-		if result != nil && !result.IsObjectNull() {
-			req := result.Request()
-			isEmpty := result.IsResultEmptyish()
+		// Retry empty responses on network-level to give a chance for another upstream to
+		// try fetching the data as the current upstream is less likely to have the data ready on the next retry attempt.
+		if scope == ScopeNetwork {
+			if result != nil && !result.IsObjectNull() {
+				req := result.Request()
+				isEmpty := result.IsResultEmptyish()
 
-			// no Retry-Empty directive + "empty" response -> No Retry
-			rds := req.Directives()
-			if !rds.RetryEmpty && isEmpty {
-				return false
-			}
+				// no Retry-Empty directive + "empty" response -> No Retry
+				rds := req.Directives()
+				if !rds.RetryEmpty && isEmpty {
+					return false
+				}
 
-			ucfg := req.Upstream().Config()
-			if ucfg.Evm != nil {
-				if ucfg.Evm.NodeType == common.EvmNodeTypeFull {
-					// Retry-Empty directive + "empty" response + "full" node + block is far in the past -> No Retry
-					if err != nil && rds.RetryEmpty && isEmpty {
+				ucfg := req.LastUpstream().Config()
+				if ucfg.Evm != nil {
+					// Retry-Empty directive + "empty" response + block is finalized -> No Retry
+					if err == nil && rds.RetryEmpty && isEmpty {
 						bn, ebn := req.EvmBlockNumber()
 						if ebn == nil {
 							fin, efin := req.Network().EvmIsBlockFinalized(bn)
@@ -267,9 +280,9 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 						}
 					}
 				}
-			}
-			if rds.RetryEmpty && isEmpty {
-				return true
+				if rds.RetryEmpty && isEmpty {
+					return true
+				}
 			}
 		}
 
@@ -307,11 +320,17 @@ func createTimeoutPolicy(component string, cfg *common.TimeoutPolicyConfig) (fai
 func TranslateFailsafeError(exec failsafe.Execution[common.NormalizedResponse], execErr error) error {
 	var retryExceededErr *retrypolicy.ExceededError
 	if errors.As(execErr, &retryExceededErr) {
+		var attempts int
+		var retries int
+		if exec != nil {
+			attempts = exec.Attempts()
+			retries = exec.Retries()
+		}
 		return common.NewErrFailsafeRetryExceeded(
 			retryExceededErr.LastError(),
 			retryExceededErr.LastResult(),
-			exec.Attempts(),
-			exec.Retries(),
+			attempts,
+			retries,
 		)
 	}
 

@@ -6,11 +6,12 @@ type RequestDirectives struct {
 
 type NormalizedRequest interface {
 	Network() Network
-	Upstream() Upstream
 	Method() (string, error)
 	Directives() *RequestDirectives
 	EvmBlockNumber() (uint64, error)
-	Clone() NormalizedRequest
+
+	LastUpstream() Upstream
+	LastValidResponse() NormalizedResponse
 }
 
 type NormalizedResponse interface {

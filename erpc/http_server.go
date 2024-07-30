@@ -62,9 +62,9 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 				handleErrorResponse(logger, err, hrw)
 				return
 			}
-			nq := upstream.NewNormalizedRequest(body).
-				WithNetwork(nw).
-				ApplyDirectivesFromHttpHeaders(r.Header)
+			nq := upstream.NewNormalizedRequest(body)
+			nq.SetNetwork(nw)
+			nq.ApplyDirectivesFromHttpHeaders(r.Header)
 
 			resp, err = project.Forward(r.Context(), networkId, nq)
 			if err == nil && resp != nil {
