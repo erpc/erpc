@@ -138,6 +138,12 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 
 		resp, skipped, err = u.Forward(ctx, req)
 		if !common.IsNull(err) {
+			// If upstream complains that the method is not supported let's dynamically add it ignoreMethods config
+			if common.HasCode(err, common.ErrCodeEndpointUnsupported) {
+				u.IgnoreMethod(method)
+				lg.Warn().Err(err).Str("method", method).Msgf("upstream does not support method, dynamically adding to ignoreMethods")
+			}
+
 			return nil, skipped, err
 		}
 
