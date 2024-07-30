@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/util"
-	"github.com/rs/zerolog/log"
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
+	"github.com/rs/zerolog"
 )
 
 type HttpJsonRpcClient interface {
@@ -25,22 +25,25 @@ type HttpJsonRpcClient interface {
 type GenericHttpJsonRpcClient struct {
 	Url *url.URL
 
+	logger     *zerolog.Logger
 	upstream   *Upstream
 	httpClient *http.Client
 }
 
-func NewGenericHttpJsonRpcClient(pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
+func NewGenericHttpJsonRpcClient(logger *zerolog.Logger, pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
 	var client HttpJsonRpcClient
 
 	if util.IsTest() {
 		client = &GenericHttpJsonRpcClient{
 			Url:        parsedUrl,
+			logger:     logger,
 			upstream:   pu,
 			httpClient: &http.Client{},
 		}
 	} else {
 		client = &GenericHttpJsonRpcClient{
 			Url:      parsedUrl,
+			logger:   logger,
 			upstream: pu,
 			httpClient: &http.Client{
 				Timeout: 30 * time.Second, // Set a timeout
@@ -86,7 +89,7 @@ func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *Normali
 		return nil, err
 	}
 
-	log.Debug().Msgf("sending json rpc POST request to %s: %s", c.Url.String(), requestBody)
+	c.logger.Debug().Msgf("sending json rpc POST request to %s: %s", c.Url.String(), requestBody)
 
 	httpReq, errReq := http.NewRequestWithContext(ctx, "POST", c.Url.String(), bytes.NewBuffer(requestBody))
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -122,7 +125,7 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *N
 	jr, err := nr.JsonRpcResponse()
 
 	if err != nil {
-		e := common.NewErrJsonRpcException(
+		e := common.NewErrJsonRpcExceptionInternal(
 			0,
 			common.JsonRpcErrorParseException,
 			"could not parse json rpc response from upstream",
@@ -145,7 +148,7 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *N
 		return e
 	}
 
-	e := common.NewErrJsonRpcException(0, common.JsonRpcErrorServerSideException, "unknown json-rpc response", nil)
+	e := common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorServerSideException, "unknown json-rpc response", nil)
 	e.Details = map[string]interface{}{
 		"upstream":   c.upstream.Config().Id,
 		"statusCode": r.StatusCode,
@@ -164,7 +167,7 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 			return ver
 		}
 
-		code := common.JsonRpcErrorNumber(err.OriginalCode())
+		code := common.JsonRpcErrorNumber(err.Code)
 
 		// Infer from known status codes
 		if r.StatusCode == 401 || r.StatusCode == 403 {

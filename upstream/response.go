@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/flair-sdk/erpc/common"
+	"github.com/erpc/erpc/common"
 )
 
 type NormalizedResponse struct {
@@ -47,6 +47,9 @@ func (r *NormalizedResponse) Request() common.NormalizedRequest {
 }
 
 func (r *NormalizedResponse) Body() []byte {
+	if r == nil {
+		return nil
+	}
 	if r.body != nil {
 		return r.body
 	}
@@ -75,7 +78,7 @@ func (r *NormalizedResponse) Error() error {
 func (r *NormalizedResponse) IsResultEmptyish() bool {
 	jrr, err := r.JsonRpcResponse()
 	if err == nil {
-		if jrr.Result == nil {
+		if jrr == nil || jrr.Result == nil {
 			return true
 		}
 
@@ -103,11 +106,9 @@ func (r *NormalizedResponse) JsonRpcResponse() (*common.JsonRpcResponse, error) 
 	jrr := &common.JsonRpcResponse{}
 	err := json.Unmarshal(r.body, jrr)
 	if err != nil {
-		jrr.Error = common.NewErrJsonRpcException(
+		jrr.Error = common.NewErrJsonRpcExceptionExternal(
 			int(common.JsonRpcErrorServerSideException),
-			0,
 			fmt.Sprintf("%s -> %s", err, string(r.body)),
-			nil,
 		)
 	}
 	r.jsonRpcResponse = jrr
@@ -126,4 +127,21 @@ func (r *NormalizedResponse) IsObjectNull() bool {
 	}
 
 	return false
+}
+
+func (r *NormalizedResponse) String() string {
+	if r == nil {
+		return "<nil>"
+	}
+	if r.body != nil && len(r.body) > 0 {
+		return string(r.body)
+	}
+	if r.err != nil {
+		return r.err.Error()
+	}
+	if r.jsonRpcResponse != nil {
+		b, _ := json.Marshal(r.jsonRpcResponse)
+		return string(b)
+	}
+	return "<nil>"
 }

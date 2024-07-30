@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/flair-sdk/erpc/common"
+	"github.com/erpc/erpc/common"
 )
 
 type InfuraVendor struct {
@@ -26,12 +26,12 @@ func (v *InfuraVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr inte
 	}
 
 	err := bodyMap.Error
-	if code := err.OriginalCode(); code != 0 {
+	if code := err.Code; code != 0 {
 		msg := err.Message
 
 		if code == -32600 && (strings.Contains(msg, "be authenticated") || strings.Contains(msg, "access key")) {
 			return common.NewErrEndpointUnauthorized(
-				common.NewErrJsonRpcException(
+				common.NewErrJsonRpcExceptionInternal(
 					code,
 					common.JsonRpcErrorUnauthorized,
 					msg,
@@ -40,7 +40,7 @@ func (v *InfuraVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr inte
 			)
 		} else if code == -32001 || code == -32004 {
 			return common.NewErrEndpointUnsupported(
-				common.NewErrJsonRpcException(
+				common.NewErrJsonRpcExceptionInternal(
 					code,
 					common.JsonRpcErrorUnsupportedException,
 					msg,
@@ -49,7 +49,7 @@ func (v *InfuraVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr inte
 			)
 		} else if code == -32005 {
 			return common.NewErrEndpointCapacityExceeded(
-				common.NewErrJsonRpcException(
+				common.NewErrJsonRpcExceptionInternal(
 					code,
 					common.JsonRpcErrorCapacityExceeded,
 					msg,

@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/flair-sdk/erpc/common"
+	"github.com/erpc/erpc/common"
 )
 
 type AlchemyVendor struct {
@@ -26,12 +26,12 @@ func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr int
 	}
 
 	err := bodyMap.Error
-	if code := err.OriginalCode(); code != 0 {
+	if code := err.Code; code != 0 {
 		msg := err.Message
 
 		if code == -32600 && (strings.Contains(msg, "be authenticated") || strings.Contains(msg, "access key")) {
 			return common.NewErrEndpointUnauthorized(
-				common.NewErrJsonRpcException(
+				common.NewErrJsonRpcExceptionInternal(
 					code,
 					common.JsonRpcErrorUnauthorized,
 					msg,
@@ -40,7 +40,7 @@ func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr int
 			)
 		} else if code == -32600 && (strings.Contains(msg, "limit exceeded")) {
 			return common.NewErrEndpointCapacityExceeded(
-				common.NewErrJsonRpcException(
+				common.NewErrJsonRpcExceptionInternal(
 					code,
 					common.JsonRpcErrorCapacityExceeded,
 					msg,
@@ -49,7 +49,7 @@ func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr int
 			)
 		} else if code >= -32000 && code <= -32099 {
 			return common.NewErrEndpointServerSideException(
-				common.NewErrJsonRpcException(
+				common.NewErrJsonRpcExceptionInternal(
 					code,
 					common.JsonRpcErrorServerSideException,
 					msg,
@@ -58,7 +58,7 @@ func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr int
 			)
 		} else if code >= -32099 && code <= -32599 || code >= -32603 && code <= -32699 || code >= -32701 && code <= -32768 {
 			return common.NewErrEndpointClientSideException(
-				common.NewErrJsonRpcException(
+				common.NewErrJsonRpcExceptionInternal(
 					code,
 					common.JsonRpcErrorClientSideException,
 					msg,
@@ -67,7 +67,7 @@ func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr int
 			)
 		} else if code == 3 {
 			return common.NewErrEndpointClientSideException(
-				common.NewErrJsonRpcException(
+				common.NewErrJsonRpcExceptionInternal(
 					code,
 					common.JsonRpcErrorEvmReverted,
 					msg,

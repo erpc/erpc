@@ -8,10 +8,11 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
-	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/upstream"
-	"github.com/rs/zerolog/log"
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/upstream"
+	"github.com/rs/zerolog"
 )
 
 type HttpServer struct {
@@ -19,7 +20,7 @@ type HttpServer struct {
 	server *http.Server
 }
 
-func NewHttpServer(cfg *common.ServerConfig, erpc *ERPC) *HttpServer {
+func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.ServerConfig, erpc *ERPC) *HttpServer {
 	addr := fmt.Sprintf("%s:%d", cfg.HttpHost, cfg.HttpPort)
 
 	handler := http.NewServeMux()
@@ -27,7 +28,7 @@ func NewHttpServer(cfg *common.ServerConfig, erpc *ERPC) *HttpServer {
 		var resp common.NormalizedResponse
 		var err error
 
-		log.Debug().Msgf("received request on path: %s with body length: %d", r.URL.Path, r.ContentLength)
+		logger.Debug().Msgf("received request on path: %s with body length: %d", r.URL.Path, r.ContentLength)
 
 		// Split the URL path into segments
 		segments := strings.Split(r.URL.Path, "/")
@@ -43,7 +44,7 @@ func NewHttpServer(cfg *common.ServerConfig, erpc *ERPC) *HttpServer {
 
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			log.Error().Err(err).Msgf("failed to read request body")
+			logger.Error().Err(err).Msgf("failed to read request body")
 
 			hrw.Header().Set("Content-Type", "application/json")
 			hrw.WriteHeader(http.StatusBadRequest)
@@ -51,14 +52,14 @@ func NewHttpServer(cfg *common.ServerConfig, erpc *ERPC) *HttpServer {
 			return
 		}
 
-		log.Debug().Msgf("received request for projectId: %s, networkId: %s with body: %s", projectId, networkId, body)
+		logger.Debug().Msgf("received request for projectId: %s, networkId: %s with body: %s", projectId, networkId, body)
 
 		project, err := erpc.GetProject(projectId)
 		if err == nil {
 			nw, err := erpc.GetNetwork(projectId, networkId)
 			if err != nil {
-				log.Error().Err(err).Msgf("failed to get network %s for project %s", networkId, projectId)
-				handleErrorResponse(err, hrw)
+				logger.Error().Err(err).Msgf("failed to get network %s for project %s", networkId, projectId)
+				handleErrorResponse(logger, err, hrw)
 				return
 			}
 			nq := upstream.NewNormalizedRequest(body).
@@ -66,30 +67,44 @@ func NewHttpServer(cfg *common.ServerConfig, erpc *ERPC) *HttpServer {
 				ApplyDirectivesFromHttpHeaders(r.Header)
 
 			resp, err = project.Forward(r.Context(), networkId, nq)
-			if err == nil {
+			if err == nil && resp != nil {
 				hrw.Header().Set("Content-Type", "application/json")
 				hrw.WriteHeader(http.StatusOK)
 				hrw.Write(resp.Body())
-				log.Debug().Msgf("request forwarded successfully for projectId: %s, networkId: %s", projectId, networkId)
+				logger.Debug().Msgf("request forwarded successfully for projectId: %s, networkId: %s", projectId, networkId)
 			} else {
-				handleErrorResponse(err, hrw)
+				handleErrorResponse(logger, err, hrw)
 			}
 		} else {
-			handleErrorResponse(err, hrw)
+			handleErrorResponse(logger, err, hrw)
 		}
 	})
 
-	return &HttpServer{
+	srv := &HttpServer{
 		config: cfg,
 		server: &http.Server{
 			Addr:    addr,
 			Handler: handler,
 		},
 	}
+
+	go func() {
+		<-ctx.Done()
+		logger.Info().Msg("shutting down http server...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx, logger); err != nil {
+			logger.Error().Msgf("http server forced to shutdown: %s", err)
+		} else {
+			logger.Info().Msg("http server stopped")
+		}
+	}()
+
+	return srv
 }
 
-func handleErrorResponse(err error, hrw http.ResponseWriter) {
-	log.Error().Err(err).Msgf("failed to forward request")
+func handleErrorResponse(logger *zerolog.Logger, err error, hrw http.ResponseWriter) {
+	logger.Error().Err(err).Msgf("failed to forward request")
 
 	hrw.Header().Set("Content-Type", "application/json")
 	var httpErr common.ErrorWithStatusCode
@@ -99,7 +114,7 @@ func handleErrorResponse(err error, hrw http.ResponseWriter) {
 		hrw.WriteHeader(http.StatusInternalServerError)
 	}
 
-	jre := &common.ErrJsonRpcException{}
+	jre := &common.ErrJsonRpcExceptionInternal{}
 	if errors.As(err, &jre) {
 		json.NewEncoder(hrw).Encode(map[string]interface{}{
 			"code":    jre.NormalizedCode(),
@@ -127,7 +142,7 @@ func handleErrorResponse(err error, hrw http.ResponseWriter) {
 	}
 
 	if writeErr != nil {
-		log.Error().Err(writeErr).Msgf("failed to encode error response body")
+		logger.Error().Err(writeErr).Msgf("failed to encode error response body")
 		hrw.WriteHeader(http.StatusInternalServerError)
 
 		var cause interface{}
@@ -145,12 +160,12 @@ func handleErrorResponse(err error, hrw http.ResponseWriter) {
 	}
 }
 
-func (s *HttpServer) Start() error {
-	log.Info().Msgf("starting http server on %s", s.server.Addr)
+func (s *HttpServer) Start(logger *zerolog.Logger) error {
+	logger.Info().Msgf("starting http server on %s", s.server.Addr)
 	return s.server.ListenAndServe()
 }
 
-func (s *HttpServer) Shutdown() error {
-	log.Info().Msg("shutting down http server")
-	return s.server.Shutdown(context.Background())
+func (s *HttpServer) Shutdown(ctx context.Context, logger *zerolog.Logger) error {
+	logger.Info().Msg("shutting down http server")
+	return s.server.Shutdown(ctx)
 }

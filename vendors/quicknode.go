@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/flair-sdk/erpc/common"
+	"github.com/erpc/erpc/common"
 )
 
 type QuicknodeVendor struct {
@@ -26,50 +26,50 @@ func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr i
 	}
 
 	err := bodyMap.Error
-	if code := err.OriginalCode(); code != 0 {
+	if code := err.Code; code != 0 {
 		msg := err.Message
 
 		if code == -32602 && strings.Contains(msg, "eth_getLogs") && strings.Contains(msg, "limited") {
 			return common.NewErrEndpointEvmLargeRange(
-				common.NewErrJsonRpcException(code, common.JsonRpcErrorEvmLogsLargeRange, msg, nil),
+				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorEvmLogsLargeRange, msg, nil),
 			)
 		} else if code == -32000 {
 			if strings.Contains(msg, "header not found") || strings.Contains(msg, "could not find block") {
 				return common.NewErrEndpointNotSyncedYet(
-					common.NewErrJsonRpcException(code, common.JsonRpcErrorNotSyncedYet, msg, nil),
+					common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorNotSyncedYet, msg, nil),
 				)
 			} else if strings.Contains(msg, "execution timeout") {
 				return common.NewErrEndpointNodeTimeout(
-					common.NewErrJsonRpcException(code, common.JsonRpcErrorNodeTimeout, msg, nil),
+					common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorNodeTimeout, msg, nil),
 				)
 			}
 		} else if code == -32009 || code == -32007 {
 			return common.NewErrEndpointCapacityExceeded(
-				common.NewErrJsonRpcException(code, common.JsonRpcErrorCapacityExceeded, msg, nil),
+				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorCapacityExceeded, msg, nil),
 			)
 		} else if code == -32612 || code == -32613 {
 			return common.NewErrEndpointUnsupported(
-				common.NewErrJsonRpcException(code, common.JsonRpcErrorCapacityExceeded, msg, nil),
+				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorCapacityExceeded, msg, nil),
 			)
 		} else if strings.Contains(msg, "failed to parse") {
 			return common.NewErrEndpointClientSideException(
-				common.NewErrJsonRpcException(code, common.JsonRpcErrorParseException, msg, nil),
+				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorParseException, msg, nil),
 			)
 		} else if code == -32010 || code == -32015 {
 			return common.NewErrEndpointClientSideException(
-				common.NewErrJsonRpcException(code, common.JsonRpcErrorClientSideException, msg, nil),
+				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorClientSideException, msg, nil),
 			)
 		} else if code == -32602 {
 			return common.NewErrEndpointClientSideException(
-				common.NewErrJsonRpcException(code, common.JsonRpcErrorInvalidArgument, msg, nil),
+				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorInvalidArgument, msg, nil),
 			)
 		} else if code == -32011 || code == -32603 {
 			return common.NewErrEndpointServerSideException(
-				common.NewErrJsonRpcException(code, common.JsonRpcErrorServerSideException, msg, nil),
+				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorServerSideException, msg, nil),
 			)
 		} else if code == 3 {
 			return common.NewErrEndpointClientSideException(
-				common.NewErrJsonRpcException(
+				common.NewErrJsonRpcExceptionInternal(
 					code,
 					common.JsonRpcErrorEvmReverted,
 					msg,

@@ -6,14 +6,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/upstream"
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/upstream"
+	"github.com/erpc/erpc/util"
 )
 
 type EvmBlockTracker struct {
-	ctx       context.Context
-	ctxCancel context.CancelFunc
-	network   *Network
+	network *Network
 
 	updateMu             sync.Mutex
 	latestBlockNumber    uint64
@@ -30,19 +29,16 @@ func NewEvmBlockTracker(network *Network) *EvmBlockTracker {
 }
 
 func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
-	if e.ctx != nil {
-		return nil
-	}
-
-	e.ctx, e.ctxCancel = context.WithCancel(ctx)
-
-	var blockTrackerInterval = 60 * time.Second // default value
+	var blockTrackerInterval = 0 * time.Second
 	var err error
 	if e.network.Config.Evm != nil && e.network.Config.Evm.BlockTrackerInterval != "" {
 		blockTrackerInterval, err = time.ParseDuration(e.network.Config.Evm.BlockTrackerInterval)
 		if err != nil {
 			return err
 		}
+	} else if !util.IsTest() {
+		// For non-test environments, set a default interval of 60 seconds
+		blockTrackerInterval = 60 * time.Second
 	}
 
 	var updateBlockNumbers = func() error {
@@ -51,7 +47,7 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 		e.updateMu.Lock()
 		defer e.updateMu.Unlock()
 
-		lb, err := e.fetchLatestBlockNumber(e.ctx)
+		lb, err := e.fetchLatestBlockNumber(ctx)
 		if err != nil {
 			e.network.Logger.Error().Err(err).Msg("failed to get latest block number in block tracker")
 		}
@@ -60,7 +56,7 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 			e.latestBlockNumber = lb
 		}
 
-		fb, err := e.fetchFinalizedBlockNumber(e.ctx)
+		fb, err := e.fetchFinalizedBlockNumber(ctx)
 		if err != nil {
 			e.network.Logger.Error().Err(err).Msg("failed to get finalized block number in block tracker")
 		}
@@ -73,12 +69,16 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 		return nil
 	}
 
+	if blockTrackerInterval == 0 {
+		return nil
+	}
+
 	go (func() {
 		ticker := time.NewTicker(blockTrackerInterval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-e.ctx.Done():
+			case <-ctx.Done():
 				e.network.Logger.Debug().Msg("shutting down block tracker due to context cancellation")
 				return
 			case <-e.shutdownChan:
@@ -90,16 +90,7 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 		}
 	})()
 
-	return updateBlockNumbers()
-}
-
-func (e *EvmBlockTracker) Shutdown() error {
-	if e.ctxCancel != nil {
-		e.ctxCancel()
-	}
-
-	close(e.shutdownChan)
-
+	go updateBlockNumbers()
 	return nil
 }
 
@@ -131,7 +122,7 @@ func (e *EvmBlockTracker) fetchBlock(ctx context.Context, blockTag string) (uint
 		return 0, err
 	}
 
-	if jrr.Error != nil {
+	if jrr == nil || jrr.Error != nil {
 		return 0, jrr.Error
 	}
 

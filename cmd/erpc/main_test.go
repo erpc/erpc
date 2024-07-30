@@ -15,10 +15,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/flair-sdk/erpc/erpc"
-	"github.com/flair-sdk/erpc/util"
+	"github.com/erpc/erpc/erpc"
+	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
-	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/afero"
 )
@@ -194,10 +193,7 @@ projects:
 	args := []string{"erpc-test", cfg.Name()}
 
 	logger := log.With().Logger()
-	shutdown, err := erpc.Init(context.Background(), &logger, fs, args)
-	defer shutdown()
-	time.Sleep(1000 * time.Millisecond)
-
+	err = erpc.Init(context.Background(), logger, fs, args)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,12 +253,7 @@ func TestInit_InvalidConfig(t *testing.T) {
 	args := []string{"erpc-test", cfg.Name()}
 
 	logger := log.With().Logger()
-	shutdown, err := erpc.Init(context.Background(), &logger, fs, args)
-	if shutdown != nil {
-		defer shutdown()
-	}
-	time.Sleep(1000 * time.Millisecond)
-
+	err = erpc.Init(context.Background(), logger, fs, args)
 	if err == nil {
 		t.Fatal("expected an error, got nil")
 	}
@@ -280,11 +271,7 @@ func TestInit_ConfigFileDoesNotExist(t *testing.T) {
 	args := []string{"erpc-test", "non-existent-file.yaml"}
 
 	logger := log.With().Logger()
-	shutdown, err := erpc.Init(context.Background(), &logger, fs, args)
-	if shutdown != nil {
-		defer shutdown()
-	}
-	time.Sleep(1000 * time.Millisecond)
+	err := erpc.Init(context.Background(), logger, fs, args)
 
 	if err == nil {
 		t.Fatal("expected an error, got nil")
@@ -294,79 +281,3 @@ func TestInit_ConfigFileDoesNotExist(t *testing.T) {
 		t.Errorf("unexpected error: %s", err)
 	}
 }
-
-func TestInit_InvalidLogLevel(t *testing.T) {
-	mainMutex.Lock()
-	defer mainMutex.Unlock()
-
-	fs := afero.NewMemMapFs()
-	cfg, err := afero.TempFile(fs, "", "erpc.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.WriteString(`
-logLevel: invalid
-`)
-
-	args := []string{"erpc-test", cfg.Name()}
-
-	logger := log.With().Logger()
-	shutdown, err := erpc.Init(context.Background(), &logger, fs, args)
-	if shutdown != nil {
-		defer shutdown()
-	}
-	time.Sleep(1000 * time.Millisecond)
-
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	logLevel := zerolog.GlobalLevel()
-	if logLevel != zerolog.DebugLevel {
-		t.Errorf("expected log level to be DEBUG, got %s", logLevel)
-	}
-}
-
-// func TestInit_BootstrapFailure(t *testing.T) {
-// 	mainMutex.Lock()
-// 	defer mainMutex.Unlock()
-
-// 	fs := afero.NewMemMapFs()
-
-// 	cfg, err := afero.TempFile(fs, "", "erpc.yaml")
-// 	if err != nil {
-// 		t.Fatal(err)
-// 	}
-
-// 	localHost := "localhost"
-// 	localPort := fmt.Sprint(rand.Intn(1000) + 2000)
-// 	cfg.WriteString(`
-// logLevel: DEBUG
-
-// server:
-//   httpHost: "` + localHost + `"
-//   httpPort: ` + localPort + `
-
-// projects:
-//   - id: main
-//     upstreams:
-//     - id: good-evm-rpc
-//       endpoint: http://google.com
-// `)
-// 	args := []string{"erpc-test", cfg.Name()}
-
-// 	logger := log.With().Logger()
-// 	shutdown, err := Init(context.Background(), &logger, fs, args)
-// 	if shutdown != nil {
-// 		defer shutdown()
-// 	}
-// 	time.Sleep(1000 * time.Millisecond)
-
-// 	if err == nil {
-// 		t.Fatal("expected an error, got nil")
-// 	}
-
-// 	if !strings.Contains(err.Error(), "network not detected") {
-// 		t.Errorf("unexpected error: %s", err)
-// 	}
-// }

@@ -3,8 +3,8 @@ package data
 import (
 	"context"
 
-	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/upstream"
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/upstream"
 )
 
 type CacheDAL interface {

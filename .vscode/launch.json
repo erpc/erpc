@@ -10,7 +10,7 @@
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}/cmd/erpc",
-            "args": ["${workspaceFolder}/erpc.yaml"]
+            "args": ["${workspaceFolder}/erpc.yaml"],
         }
     ]
 }

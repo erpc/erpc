@@ -5,13 +5,12 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/erpc/erpc/common"
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/failsafe-go/failsafe-go/circuitbreaker"
 	"github.com/failsafe-go/failsafe-go/hedgepolicy"
 	"github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/failsafe-go/failsafe-go/timeout"
-	"github.com/flair-sdk/erpc/common"
-	"github.com/rs/zerolog/log"
 )
 
 type Scope string
@@ -116,10 +115,6 @@ func createCircuitBreakerPolicy(component string, cfg *common.CircuitBreakerPoli
 
 		builder = builder.WithDelay(dur)
 	}
-
-	builder.OnStateChanged(func(e circuitbreaker.StateChangedEvent) {
-		log.Debug().Msgf("CircuitBreaker state changed oldState: %s newState: %s", e.OldState, e.NewState)
-	})
 
 	builder.HandleIf(func(result common.NormalizedResponse, err error) bool {
 		// 5xx or other non-retryable server-side errors -> open the circuit
@@ -304,12 +299,14 @@ func createTimeoutPolicy(component string, cfg *common.TimeoutPolicyConfig) (fai
 	return builder.Build(), nil
 }
 
-func TranslateFailsafeError(execErr error) error {
+func TranslateFailsafeError(exec failsafe.Execution[common.NormalizedResponse], execErr error) error {
 	var retryExceededErr *retrypolicy.ExceededError
 	if errors.As(execErr, &retryExceededErr) {
 		return common.NewErrFailsafeRetryExceeded(
 			retryExceededErr.LastError(),
 			retryExceededErr.LastResult(),
+			exec.Attempts(),
+			exec.Retries(),
 		)
 	}
 

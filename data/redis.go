@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/flair-sdk/erpc/common"
+	"github.com/erpc/erpc/common"
 	"github.com/redis/go-redis/v9"
-	"github.com/rs/zerolog/log"
+	"github.com/rs/zerolog"
 )
 
 const (
@@ -18,14 +18,16 @@ const (
 var _ Connector = (*RedisConnector)(nil)
 
 type RedisConnector struct {
+	logger *zerolog.Logger
 	client *redis.Client
 }
 
 func NewRedisConnector(
 	ctx context.Context,
+	logger *zerolog.Logger,
 	cfg *common.RedisConnectorConfig,
 ) (*RedisConnector, error) {
-	log.Debug().Msgf("creating RedisConnector with config: %+v", cfg)
+	logger.Debug().Msgf("creating RedisConnector with config: %+v", cfg)
 
 	client := redis.NewClient(&redis.Options{
 		Addr:     cfg.Addr,
@@ -39,13 +41,19 @@ func NewRedisConnector(
 		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
 	}
 
+	go func() {
+		<-ctx.Done()
+		client.Close()
+	}()
+
 	return &RedisConnector{
+		logger: logger,
 		client: client,
 	}, nil
 }
 
 func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey, value string) error {
-	log.Debug().Msgf("writing to Redis with partition key: %s and range key: %s", partitionKey, rangeKey)
+	r.logger.Debug().Msgf("writing to Redis with partition key: %s and range key: %s", partitionKey, rangeKey)
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
 	rs := r.client.Set(ctx, key, value, 0)
 	return rs.Err()
@@ -68,7 +76,7 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 		key = keys[0]
 	}
 
-	log.Debug().Msgf("getting item from Redis with key: %s", key)
+	r.logger.Debug().Msgf("getting item from Redis with key: %s", key)
 	value, err = r.client.Get(ctx, key).Result()
 
 	if err == redis.Nil {
