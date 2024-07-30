@@ -248,10 +248,14 @@ func extractBlockReferenceFromResponse(rpcReq *common.JsonRpcRequest, rpcResp *c
 	}
 
 	switch rpcReq.Method {
-	case "eth_getTransactionReceipt":
+	case "eth_getTransactionReceipt",
+		"eth_getTransactionByHash":
 		if rpcResp.Result != nil {
-			if receipt, ok := rpcResp.Result.(map[string]interface{}); ok {
-				if blockNumber, ok := receipt["blockNumber"].(string); ok {
+			if tx, ok := rpcResp.Result.(map[string]interface{}); ok {
+				if blockHash, ok := tx["blockHash"].(string); ok && blockHash != "" {
+					return blockHash, 0, nil
+				}
+				if blockNumber, ok := tx["blockNumber"].(string); ok && blockNumber != "" {
 					bn, err := hexutil.DecodeUint64(blockNumber)
 					if err != nil {
 						return "", bn, err

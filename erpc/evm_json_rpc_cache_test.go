@@ -57,6 +57,49 @@ func TestExtractBlockReferenceFromResponse(t *testing.T) {
 			expErr:   false,
 		},
 		{
+			name: "eth_getTransactionByHash with blockHash",
+			rpcReq: &common.JsonRpcRequest{
+				Method: "eth_getTransactionByHash",
+			},
+			rpcResp: &common.JsonRpcResponse{
+				Result: map[string]interface{}{
+					"blockHash": "0xabc123",
+				},
+			},
+			expected: "0xabc123",
+			expUint:  0,
+			expErr:   false,
+		},
+		{
+			name: "eth_getTransactionByHash with blockNumber",
+			rpcReq: &common.JsonRpcRequest{
+				Method: "eth_getTransactionByHash",
+			},
+			rpcResp: &common.JsonRpcResponse{
+				Result: map[string]interface{}{
+					"blockNumber": "0x1b4",
+				},
+			},
+			expected: "436",
+			expUint:  436,
+			expErr:   false,
+		},
+		{
+			name: "eth_getTransactionByHash with pending transaction",
+			rpcReq: &common.JsonRpcRequest{
+				Method: "eth_getTransactionByHash",
+			},
+			rpcResp: &common.JsonRpcResponse{
+				Result: map[string]interface{}{
+					"blockHash":   nil,
+					"blockNumber": nil,
+				},
+			},
+			expected: "",
+			expUint:  0,
+			expErr:   false,
+		},
+		{
 			name: "arbtrace_replayTransaction",
 			rpcReq: &common.JsonRpcRequest{
 				Method: "arbtrace_replayTransaction",
