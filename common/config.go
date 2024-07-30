@@ -234,14 +234,14 @@ func (c *ServerConfig) MarshalZerologObject(e *zerolog.Event) {
 }
 
 func (s *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
-    type rawUpstreamConfig UpstreamConfig
-    raw := rawUpstreamConfig{
+	type rawUpstreamConfig UpstreamConfig
+	raw := rawUpstreamConfig{
 		AutoIgnoreUnsupportedMethods: true,
 	}
-    if err := unmarshal(&raw); err != nil {
-        return err
-    }
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
 
-    *s = UpstreamConfig(raw)
-    return nil
+	*s = UpstreamConfig(raw)
+	return nil
 }
