@@ -219,7 +219,7 @@ func getVendorSpecificErrorIfAny(
 		return nil
 	}
 
-	ups := req.Upstream()
+	ups := req.LastUpstream()
 	if ups == nil {
 		return nil
 	}
