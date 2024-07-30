@@ -64,7 +64,7 @@ func (n *Network) Architecture() common.NetworkArchitecture {
 
 func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) (common.NormalizedResponse, error) {
 	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
-	req.WithNetwork(n)
+	req.SetNetwork(n)
 
 	method, _ := req.Method()
 	lg := n.Logger.With().Str("method", method).Logger()
@@ -218,14 +218,14 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 
 	if execErr != nil {
 		err := upstream.TranslateFailsafeError(execution, execErr)
-		// if error is due to empty response be generous and accept it
+		// If error is due to empty response be generous and accept it,
+		// because this means after many retries still no data is available.
 		if common.HasCode(err, common.ErrCodeFailsafeRetryExceeded) {
-			lr := tryExtractLastResult(err)
-			if lr != nil && lr.IsResultEmptyish() {
-				resp = lr
-			} else {
-				inf.Close(nil, err)
-				return nil, err
+			lvr := req.LastValidResponse()
+			if !lvr.IsObjectNull() && lvr.IsResultEmptyish() {
+				// We don't need to worry about replying wrongly empty responses for unfinalized data
+				// because cache layer already is not caching unfinalized data.
+				resp = lvr
 			}
 		} else {
 			inf.Close(nil, err)
@@ -377,28 +377,4 @@ func (n *Network) acquireRateLimitPermit(req *upstream.NormalizedRequest) error 
 	}
 
 	return nil
-}
-
-func tryExtractLastResult(err interface{}) common.NormalizedResponse {
-	re, ok := err.(*common.ErrFailsafeRetryExceeded)
-	var lr common.NormalizedResponse
-	if ok {
-		if r := re.LastResult(); r != nil {
-			lr = r.(common.NormalizedResponse)
-		}
-	}
-
-	if lr == nil || lr.IsObjectNull() {
-		if be, ok := err.(interface {
-			GetCause() error
-		}); ok {
-			c := be.GetCause()
-			if c != nil && common.HasCode(c, common.ErrCodeFailsafeRetryExceeded) {
-				return tryExtractLastResult(c)
-			}
-		}
-		return nil
-	}
-
-	return lr
 }

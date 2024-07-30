@@ -378,6 +378,10 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 	})
 
+	// TODO add unit test to not retry when block is finalized
+	// TODO add unit test to not retry when block is not finalized
+	// TODO add unit test to not retry when block finalization is not available
+
 	t.Run("ForwardMustNotRetryCapacityIssues", func(t *testing.T) {
 		defer gock.Off()
 		defer gock.Clean()

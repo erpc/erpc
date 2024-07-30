@@ -202,8 +202,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 	//
 	// Prepare and normalize the request object
 	//
-	req = req.Clone().(*NormalizedRequest)
-	req.WithUpstream(u)
+	req.SetLastUpstream(u)
 	err = u.prepareRequest(req)
 	if err != nil {
 		return nil, false, err
@@ -244,6 +243,10 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 			defer timer.ObserveDuration()
 			resp, errCall := jsonRpcClient.SendRequest(ctx, req)
 			if resp != nil {
+				jrr, _ := resp.JsonRpcResponse()
+				if jrr != nil && jrr.Error == nil && jrr.Result != nil {
+					req.SetLastValidResponse(resp)
+				}
 				lg.Debug().Err(errCall).Str("response", resp.String()).Msgf("upstream call result received")
 			} else {
 				lg.Debug().Err(errCall).Msgf("upstream call result received")
