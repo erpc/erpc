@@ -378,6 +378,115 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 	})
 
+	t.Run("ForwardMustNotRetryCapacityIssues", func(t *testing.T) {
+		defer gock.Off()
+		defer gock.Clean()
+		defer gock.CleanUnmatchedRequest()
+
+		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":9199,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+
+		gock.New("http://rpc1.alchemy.com.localhost").
+			Times(1).
+			Post("").
+			Reply(503).
+			JSON(json.RawMessage(`{"jsonrpc":"2.0","id":9179,"error":{"code":-32600,"message":"Monthly capacity limit exceeded."}}`))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		clr := upstream.NewClientRegistry(&log.Logger)
+
+		fsCfg := &common.FailsafeConfig{
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 3,
+			},
+		}
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+			Budgets: []*common.RateLimitBudgetConfig{},
+		}, &log.Logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		vndr := vendors.NewVendorsRegistry()
+		mt := health.NewTracker("prjA", 2*time.Second)
+		up1 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "test",
+			Endpoint: "http://rpc1.alchemy.com.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+			Failsafe: fsCfg,
+		}
+		upr := upstream.NewUpstreamsRegistry(
+			&log.Logger,
+			"prjA",
+			[]*common.UpstreamConfig{
+				up1,
+			},
+			rlr,
+			vndr,
+			mt,
+		)
+		err = upr.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup, err := upr.NewUpstream(
+			"prjA",
+			up1,
+			&log.Logger,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl, err := clr.GetOrCreateClient(pup)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup.Client = cl
+		ntw, err := NewNetwork(
+			&log.Logger,
+			"prjA",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+				},
+			},
+			rlr,
+			upr,
+			health.NewTracker("prjA", 10*time.Second),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		_, err = ntw.Forward(ctx, fakeReq)
+
+		if len(gock.Pending()) > 0 {
+			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
+			for _, pending := range gock.Pending() {
+				t.Errorf("Pending mock: %v", pending)
+			}
+		}
+
+		if err == nil {
+			t.Errorf("Expected an error, got nil")
+		}
+		if strings.Contains(err.Error(), "ErrFailsafeRetryExceeded") {
+			t.Errorf("Did not expect ErrFailsafeRetryExceeded, got %v", err)
+		}
+		if !strings.Contains(err.Error(), "ErrEndpointCapacityExceeded") {
+			t.Errorf("Expected ErrEndpointCapacityExceeded, got %v", err)
+		}
+	})
+
 	t.Run("ForwardNotRateLimitedOnNetworkLevel", func(t *testing.T) {
 		defer gock.Off()
 		defer gock.Clean()

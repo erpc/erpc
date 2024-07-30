@@ -62,7 +62,7 @@
             "uid": "PBFA97CFB590B2093",
             "type": "prometheus"
           },
-          "expr": "sum(rate(erpc_network_requests_received_total{}[30s])) by (project, network, category)",
+          "expr": "sum(rate(erpc_network_request_received_total{}[30s])) by (project, network, category)",
           "interval": "",
           "legendFormat": "{ {{category}}, {{network}}, {{project}} }",
           "refId": "A",
@@ -358,7 +358,7 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "sum(rate(erpc_network_failed_requests_total{}[1m])) by (project, network, upstream, error)",
+          "expr": "sum(rate(erpc_network_failed_request_total{}[1m])) by (project, network, upstream, error)",
           "interval": "",
           "legendFormat": "{ {{error}}, {{network}}, {{project}} }",
           "refId": "A"

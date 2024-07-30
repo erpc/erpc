@@ -64,7 +64,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *ups
 		health.MetricNetworkSuccessfulRequests.WithLabelValues(network.ProjectId, network.NetworkId, method).Inc()
 		return resp, nil
 	} else {
-		p.Logger.Warn().Err(err).Msgf("failed to forward request for network")
+		p.Logger.Warn().Err(err).Str("method", method).Msgf("failed to forward request for network")
 		health.MetricNetworkFailedRequests.WithLabelValues(network.ProjectId, network.NetworkId, method, common.ErrorSummary(err)).Inc()
 	}
 

@@ -67,7 +67,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 
 	lg := r.logger.With().Str("project", prjCfg.Id).Logger()
 
-	ws := "30s"
+	ws := "30m"
 	if prjCfg.HealthCheck != nil && prjCfg.HealthCheck.ScoreMetricsWindowSize != "" {
 		ws = prjCfg.HealthCheck.ScoreMetricsWindowSize
 	}

@@ -24,7 +24,7 @@ type PostgreSQLConnector struct {
 }
 
 func NewPostgreSQLConnector(ctx context.Context, logger *zerolog.Logger, cfg *common.PostgreSQLConnectorConfig) (*PostgreSQLConnector, error) {
-	logger.Debug().Msgf("creating PostgreSQLConnector with config: %+v", cfg)
+	logger.Debug().Msgf("creating PostgreSQLConnector with for table: %s", cfg.Table)
 
 	conn, err := pgxpool.Connect(ctx, cfg.ConnectionUri)
 	if err != nil {
