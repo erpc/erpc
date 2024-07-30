@@ -265,8 +265,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		if err == nil {
 			t.Errorf("Expected an error, got nil")
-		}
-		if !strings.Contains(err.Error(), "ErrFailsafeRetryExceeded") {
+		} else if !strings.Contains(err.Error(), "ErrFailsafeRetryExceeded") {
 			t.Errorf("Expected %v, got %v", "ErrFailsafeRetryExceeded", err)
 		}
 	})
@@ -379,8 +378,8 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	// TODO add unit test to not retry when block is finalized
-	// TODO add unit test to not retry when block is not finalized
-	// TODO add unit test to not retry when block finalization is not available
+	// TODO add unit test to retry when block is not finalized
+	// TODO add unit test to retry when block finalization is not available
 
 	t.Run("ForwardMustNotRetryCapacityIssues", func(t *testing.T) {
 		defer gock.Off()
