@@ -3,7 +3,7 @@ package erpc
 import (
 	"testing"
 
-	"github.com/flair-sdk/erpc/common"
+	"github.com/erpc/erpc/common"
 	"github.com/stretchr/testify/assert"
 )
 
