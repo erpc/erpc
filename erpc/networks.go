@@ -226,6 +226,9 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 				// We don't need to worry about replying wrongly empty responses for unfinalized data
 				// because cache layer already is not caching unfinalized data.
 				resp = lvr
+			} else {
+				inf.Close(nil, err)
+				return nil, err
 			}
 		} else {
 			inf.Close(nil, err)
