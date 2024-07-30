@@ -274,7 +274,8 @@ func extractBlockReferenceFromResponse(rpcReq *common.JsonRpcRequest, rpcResp *c
 		// TODO is there a way to find block number without a new request? (e.g. adding a flag to such requests that exposes block number)
 		return "nil", 1, nil
 	case "eth_chainId",
-		"web3_sha3":
+		"web3_sha3",
+		"net_version":
 		// This request is supposed to always return the same response.
 		// "all" means this applies to all blocks
 		// "1" is a placeholder to pass the block number check (is there a cleaner nicer way?)
