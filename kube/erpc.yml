@@ -81,7 +81,6 @@ data:
         - id: alchemy-main
           endpoint: alchemy://xxxxxxxxxxxxxxxxxxxxxx
           rateLimitBudget: global
-          healthCheckGroup: aggressive
           failsafe:
             timeout:
               duration: 5s
@@ -94,7 +93,6 @@ data:
         - id: blast-42161
           endpoint: https://arbitrum-one.blastapi.io/xxxxxxxxxxxxxxxxxxxxxx
           rateLimitBudget: global
-          healthCheckGroup: aggressive
           failsafe:
             timeout:
               duration: 5s
@@ -107,7 +105,6 @@ data:
         - id: quicknode-42161
           endpoint: https://chaotic-late-sanctuary.arbitrum-mainnet.quiknode.pro/xxxxxxxxxxxxxxxxxxxxxx/
           rateLimitBudget: global
-          healthCheckGroup: aggressive
           failsafe:
             timeout:
               duration: 5s

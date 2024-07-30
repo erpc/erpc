@@ -358,6 +358,10 @@ func (u *Upstream) SupportsNetwork(networkId string) (bool, error) {
 }
 
 func (u *Upstream) IgnoreMethod(method string) {
+	if !u.config.AutoIgnoreUnsupportedMethods {
+		return
+	}
+	
 	u.methodCheckResultsMu.Lock()
 	u.config.IgnoreMethods = append(u.config.IgnoreMethods, method)
 	if u.methodCheckResults == nil {
@@ -400,7 +404,6 @@ func (u *Upstream) shouldHandleMethod(method string) (v bool) {
 	}
 
 	// TODO if method is one of exclusiveMethods by another upstream (e.g. alchemy_*) skip
-	// TODO if onlyMethods is defined and method is not one of "onlyMethods" skip
 
 	// Cache the result
 	u.methodCheckResultsMu.Lock()
