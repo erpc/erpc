@@ -202,8 +202,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 	//
 	// Prepare and normalize the request object
 	//
-	req = req.Clone().(*NormalizedRequest)
-	req.WithUpstream(u)
+	req.SetLastUpstream(u)
 	err = u.prepareRequest(req)
 	if err != nil {
 		return nil, false, err
@@ -244,6 +243,10 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 			defer timer.ObserveDuration()
 			resp, errCall := jsonRpcClient.SendRequest(ctx, req)
 			if resp != nil {
+				jrr, _ := resp.JsonRpcResponse()
+				if jrr != nil && jrr.Error == nil && jrr.Result != nil {
+					req.SetLastValidResponse(resp)
+				}
 				lg.Debug().Err(errCall).Str("response", resp.String()).Msgf("upstream call result received")
 			} else {
 				lg.Debug().Err(errCall).Msgf("upstream call result received")
@@ -354,6 +357,20 @@ func (u *Upstream) SupportsNetwork(networkId string) (bool, error) {
 	return supports, nil
 }
 
+func (u *Upstream) IgnoreMethod(method string) {
+	if !u.config.AutoIgnoreUnsupportedMethods {
+		return
+	}
+	
+	u.methodCheckResultsMu.Lock()
+	u.config.IgnoreMethods = append(u.config.IgnoreMethods, method)
+	if u.methodCheckResults == nil {
+		u.methodCheckResults = map[string]bool{}
+	}
+	delete(u.methodCheckResults, method)
+	u.methodCheckResultsMu.Unlock()
+}
+
 func (u *Upstream) shouldHandleMethod(method string) (v bool) {
 	cfg := u.Config()
 	u.methodCheckResultsMu.RLock()
@@ -365,6 +382,9 @@ func (u *Upstream) shouldHandleMethod(method string) (v bool) {
 
 	v = true
 
+	// First check if method is ignored, and then check if it is explicitly mentioned to be allowed.
+	// This order allows an upstream for example to define "ignore all except eth_getLogs".
+
 	if cfg.IgnoreMethods != nil {
 		for _, m := range cfg.IgnoreMethods {
 			if common.WildcardMatch(m, method) {
@@ -373,6 +393,17 @@ func (u *Upstream) shouldHandleMethod(method string) (v bool) {
 			}
 		}
 	}
+
+	if cfg.AllowMethods != nil {
+		for _, m := range cfg.AllowMethods {
+			if common.WildcardMatch(m, method) {
+				v = true
+				break
+			}
+		}
+	}
+
+	// TODO if method is one of exclusiveMethods by another upstream (e.g. alchemy_*) skip
 
 	// Cache the result
 	u.methodCheckResultsMu.Lock()
@@ -443,6 +474,8 @@ func (u *Upstream) shouldSkip(req *NormalizedRequest) (reason error, skip bool) 
 		u.Logger.Debug().Str("method", method).Msg("method not allowed or ignored by upstread")
 		return common.NewErrUpstreamMethodIgnored(method, u.config.Id), true
 	}
+
+	// TODO evm: if block can be determined from request and upstream is only full-node and block is historical skip
 
 	return nil, false
 }

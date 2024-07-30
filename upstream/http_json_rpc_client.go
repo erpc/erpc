@@ -195,7 +195,7 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 		// Text-based common errors
 		if strings.Contains(err.Message, "missing trie node") {
 			return common.NewErrEndpointNotSyncedYet(err)
-		} else if strings.Contains(err.Message, "not supported") {
+		} else if code == -32601 && (strings.Contains(err.Message, "not supported") || strings.Contains(err.Message, "not found")) {
 			return common.NewErrEndpointUnsupported(err)
 		} else if strings.Contains(err.Message, "genesis is not traceable") {
 			// This usually happens when sending a trace_* request to a newly created block
@@ -219,7 +219,7 @@ func getVendorSpecificErrorIfAny(
 		return nil
 	}
 
-	ups := req.Upstream()
+	ups := req.LastUpstream()
 	if ups == nil {
 		return nil
 	}

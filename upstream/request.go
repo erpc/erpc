@@ -6,20 +6,26 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"sync"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/evm"
 	"github.com/rs/zerolog"
 )
 
+var _ common.NormalizedRequest = &NormalizedRequest{}
+
 type NormalizedRequest struct {
 	Attempt int
 
 	network        common.Network
-	upstream       common.Upstream
 	body           []byte
 	directives     *common.RequestDirectives
 	jsonRpcRequest *common.JsonRpcRequest
+
+	respMu            sync.Mutex
+	lastValidResponse *NormalizedResponse
+	lastUpstream      common.Upstream
 }
 
 type UniqueRequestKey struct {
@@ -36,14 +42,28 @@ func NewNormalizedRequest(body []byte) *NormalizedRequest {
 	}
 }
 
-func (r *NormalizedRequest) Clone() common.NormalizedRequest {
-	return &NormalizedRequest{
-		network:        r.network,
-		upstream:       r.upstream,
-		body:           r.body,
-		directives:     r.directives,
-		jsonRpcRequest: r.jsonRpcRequest,
+func (r *NormalizedRequest) SetLastUpstream(upstream common.Upstream) *NormalizedRequest {
+	r.lastUpstream = upstream
+	return r
+}
+
+func (r *NormalizedRequest) LastUpstream() common.Upstream {
+	if r == nil {
+		return nil
 	}
+	return r.lastUpstream
+}
+
+func (r *NormalizedRequest) SetLastValidResponse(response *NormalizedResponse) {
+	r.respMu.Lock()
+	defer r.respMu.Unlock()
+	r.lastValidResponse = response
+}
+
+func (r *NormalizedRequest) LastValidResponse() common.NormalizedResponse {
+	r.respMu.Lock()
+	defer r.respMu.Unlock()
+	return r.lastValidResponse
 }
 
 func (r *NormalizedRequest) Network() common.Network {
@@ -53,29 +73,15 @@ func (r *NormalizedRequest) Network() common.Network {
 	return r.network
 }
 
-func (r *NormalizedRequest) Upstream() common.Upstream {
-	if r == nil {
-		return nil
-	}
-	return r.upstream
-}
-
-func (r *NormalizedRequest) WithNetwork(network common.Network) *NormalizedRequest {
+func (r *NormalizedRequest) SetNetwork(network common.Network) {
 	r.network = network
-	return r
 }
 
-func (r *NormalizedRequest) WithUpstream(upstream common.Upstream) *NormalizedRequest {
-	r.upstream = upstream
-	return r
-}
-
-func (r *NormalizedRequest) ApplyDirectivesFromHttpHeaders(headers http.Header) *NormalizedRequest {
+func (r *NormalizedRequest) ApplyDirectivesFromHttpHeaders(headers http.Header) {
 	drc := &common.RequestDirectives{
 		RetryEmpty: headers.Get("x-erpc-retry-empty") != "false",
 	}
 	r.directives = drc
-	return r
 }
 
 func (r *NormalizedRequest) Directives() *common.RequestDirectives {

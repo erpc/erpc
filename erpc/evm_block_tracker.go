@@ -111,7 +111,11 @@ func (e *EvmBlockTracker) fetchFinalizedBlockNumber(ctx context.Context) (uint64
 }
 
 func (e *EvmBlockTracker) fetchBlock(ctx context.Context, blockTag string) (uint64, error) {
-	pr := upstream.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["%s",false]}`, blockTag))).WithNetwork(e.network)
+	pr := upstream.NewNormalizedRequest([]byte(
+		fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["%s",false]}`, blockTag),
+	))
+	pr.SetNetwork(e.network)
+
 	resp, err := e.network.Forward(ctx, pr)
 	if err != nil {
 		return 0, err
