@@ -1,0 +1,27 @@
+# Monitoring and metrics
+
+Network-level and upstream-level metrics are available via [Prometheus](https://prometheus.io/) and [Grafana](https://grafana.com/).
+
+Refer to [erpc/docker-compose.yml](https://github.com/erpc/erpc/blob/main/docker-compose.yml#L4-L17) and [erpc/monitoring](https://github.com/erpc/erpc/tree/main/monitoring) for ready-made templates to bring up montoring.
+
+### Available metrics
+
+To get full list of available metrics check the source code of [erpc/health/metrics.go](https://github.com/erpc/erpc/blob/main/health/metrics.go).
+
+Here is a list of some of the most important metrics:
+
+| Metric | Description |
+| --- | --- |
+| erpc_upstream_request_total | Total number of actual requests to upstreams. |
+| erpc_upstream_request_duration_seconds | Duration of requests to upstreams. |
+| erpc_upstream_request_errors_total | Total number of errors for requests to upstreams. |
+| erpc_upstream_request_self_rate_limited_total | Total number of self-imposed rate limited requests before sending to upstreams. |
+| erpc_upstream_request_remote_rate_limited_total | Total number of remote rate limited requests by upstreams. |
+| erpc_network_requests_received_total | Total number of requests received by the network. |
+| erpc_network_multiplexed_requests_total | Total number of multiplexed requests (exactly similar requests made at the same time) received by the network. |
+| erpc_network_failed_requests_total | Total number of failed requests received by the network. |
+| erpc_network_request_self_rate_limited_total | Total number of self-imposed rate limited requests before sending to upstreams. |
+| erpc_network_successful_requests_total | Total number of successful requests received by the network. |
+| erpc_network_cache_hits_total | Total number of cache hits for requests received by the network. |
+| erpc_network_cache_misses_total | Total number of cache misses for requests received by the network. |
+| erpc_network_request_duration_seconds | Duration of requests received by the network. |
