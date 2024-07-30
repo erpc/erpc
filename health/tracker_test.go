@@ -370,9 +370,9 @@ func simulateRequestMetricsWithLatency(tracker *Tracker, network, upstream, meth
 }
 
 func resetMetrics() {
-	metricRequestTotal.Reset()
-	metricRequestDuration.Reset()
-	metricErrorTotal.Reset()
-	metricSelfRateLimitedTotal.Reset()
-	metricRemoteRateLimitedTotal.Reset()
+	MetricUpstreamRequestTotal.Reset()
+	MetricUpstreamRequestDuration.Reset()
+	MetricUpstreamErrorTotal.Reset()
+	MetricUpstreamSelfRateLimitedTotal.Reset()
+	MetricUpstreamRemoteRateLimitedTotal.Reset()
 }

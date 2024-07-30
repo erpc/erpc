@@ -14,10 +14,9 @@ module.exports = {
 	// 	title: "Deployment",
 	// },
 	// deployment: { title: "Deployment", display: "children" },
-	// "-- Operation": {
-	// 	type: "separator",
-	// 	title: "Operation",
-	// 	display: "hidden",
-	// },
-	// operation: { title: "Operation", display: "children" },
+	"-- Operation": {
+		type: "separator",
+		title: "Operation",
+	},
+	operation: { title: "Operation", display: "children" },
 };

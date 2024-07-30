@@ -4,45 +4,7 @@ import (
 	"context"
 	"sync"
 	"time"
-
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
 )
-
-var metricRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-	Namespace: "erpc",
-	Name:      "upstream_request_total",
-	Help:      "Total number of requests to upstreams in the current window.",
-}, []string{"project", "network", "upstream", "method"})
-
-var metricRequestDuration = promauto.NewSummaryVec(prometheus.SummaryOpts{
-	Namespace: "erpc",
-	Name:      "upstream_request_duration_seconds",
-	Help:      "Duration of requests to upstreams.",
-	Objectives: map[float64]float64{
-		0.5:  0.05,
-		0.9:  0.01,
-		0.99: 0.001,
-	},
-}, []string{"project", "network", "upstream", "method"})
-
-var metricErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-	Namespace: "erpc",
-	Name:      "upstream_request_errors_total",
-	Help:      "Total number of errors for requests to upstreams in the current window.",
-}, []string{"project", "network", "upstream", "method", "error"})
-
-var metricSelfRateLimitedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-	Namespace: "erpc",
-	Name:      "upstream_request_self_rate_limited_total",
-	Help:      "Total number of self-imposed rate limited requests to upstreams in the current window.",
-}, []string{"project", "network", "upstream", "method"})
-
-var metricRemoteRateLimitedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-	Namespace: "erpc",
-	Name:      "upstream_request_remote_rate_limited_total",
-	Help:      "Total number of remote rate limited requests by upstreams in the current window.",
-}, []string{"project", "network", "upstream", "method"})
 
 type TrackedMetrics struct {
 	Mutex                  sync.RWMutex
@@ -150,7 +112,7 @@ func (t *Tracker) RecordUpstreamRequest(ups, network, method string) {
 		t.metrics[key].Mutex.Unlock()
 	}
 
-	metricRequestTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
+	MetricUpstreamRequestTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
 }
 
 func (t *Tracker) RecordUpstreamDurationStart(ups, network, method string) *Timer {
@@ -172,7 +134,7 @@ func (t *Tracker) RecordUpstreamDuration(ups, network, method string, duration t
 		t.metrics[key].LatencySecs.Add(duration.Seconds())
 	}
 
-	metricRequestDuration.WithLabelValues(t.projectId, network, ups, method).Observe(duration.Seconds())
+	MetricUpstreamRequestDuration.WithLabelValues(t.projectId, network, ups, method).Observe(duration.Seconds())
 }
 
 func (t *Tracker) RecordUpstreamFailure(ups, network, method, errorType string) {
@@ -186,7 +148,7 @@ func (t *Tracker) RecordUpstreamFailure(ups, network, method, errorType string) 
 		t.metrics[key].Mutex.Unlock()
 	}
 
-	metricErrorTotal.WithLabelValues(t.projectId, network, ups, method, errorType).Inc()
+	MetricUpstreamErrorTotal.WithLabelValues(t.projectId, network, ups, method, errorType).Inc()
 }
 
 func (t *Tracker) RecordUpstreamSelfRateLimited(ups, network, method string) {
@@ -200,7 +162,7 @@ func (t *Tracker) RecordUpstreamSelfRateLimited(ups, network, method string) {
 		t.metrics[key].Mutex.Unlock()
 	}
 
-	metricSelfRateLimitedTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
+	MetricUpstreamSelfRateLimitedTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
 }
 
 func (t *Tracker) RecordUpstreamRemoteRateLimited(ups, network, method string) {
@@ -214,7 +176,7 @@ func (t *Tracker) RecordUpstreamRemoteRateLimited(ups, network, method string) {
 		t.metrics[key].Mutex.Unlock()
 	}
 
-	metricRemoteRateLimitedTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
+	MetricUpstreamRemoteRateLimitedTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
 }
 
 func (t *Tracker) GetUpstreamMethodMetrics(ups, network, method string) *TrackedMetrics {

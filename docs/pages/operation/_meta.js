@@ -3,9 +3,12 @@ module.exports = {
 		title: "URL",
 	},
 	"production": {
-		title: "Production checklist",
+		title: "Production",
 	},
 	monitoring: {
 		title: "Monitoring",
+	},
+	cloud: {
+		title: "Cloud",
 	}
 };
