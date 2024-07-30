@@ -10,7 +10,7 @@ var (
 		Namespace: "erpc",
 		Name:      "upstream_request_total",
 		Help:      "Total number of actual requests to upstreams.",
-	}, []string{"project", "network", "upstream", "method"})
+	}, []string{"project", "network", "upstream", "category"})
 
 	MetricUpstreamRequestDuration = promauto.NewSummaryVec(prometheus.SummaryOpts{
 		Namespace: "erpc",
@@ -21,25 +21,25 @@ var (
 			0.9:  0.01,
 			0.99: 0.001,
 		},
-	}, []string{"project", "network", "upstream", "method"})
+	}, []string{"project", "network", "upstream", "category"})
 
 	MetricUpstreamErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_errors_total",
 		Help:      "Total number of errors for actual requests towards upstreams.",
-	}, []string{"project", "network", "upstream", "method", "error"})
+	}, []string{"project", "network", "upstream", "category", "error"})
 
 	MetricUpstreamSelfRateLimitedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_self_rate_limited_total",
 		Help:      "Total number of self-imposed rate limited requests before sending to upstreams.",
-	}, []string{"project", "network", "upstream", "method"})
+	}, []string{"project", "network", "upstream", "category"})
 
 	MetricUpstreamRemoteRateLimitedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_remote_rate_limited_total",
 		Help:      "Total number of remote rate limited requests by upstreams.",
-	}, []string{"project", "network", "upstream", "method"})
+	}, []string{"project", "network", "upstream", "category"})
 
 	MetricNetworkRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
@@ -49,25 +49,25 @@ var (
 
 	MetricNetworkRequestsReceived = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
-		Name:      "network_requests_received_total",
+		Name:      "network_request_received_total",
 		Help:      "Total number of requests received for a network.",
 	}, []string{"project", "network", "category"})
 
 	MetricNetworkMultiplexedRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
-		Name:      "network_multiplexed_requests_total",
+		Name:      "network_multiplexed_request_total",
 		Help:      "Total number of multiplexed requests for a network.",
 	}, []string{"project", "network", "category"})
 
 	MetricNetworkFailedRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
-		Name:      "network_failed_requests_total",
+		Name:      "network_failed_request_total",
 		Help:      "Total number of failed requests for a network.",
 	}, []string{"project", "network", "category", "error"})
 
 	MetricNetworkSuccessfulRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
-		Name:      "network_successful_requests_total",
+		Name:      "network_successful_request_total",
 		Help:      "Total number of successful requests for a network.",
 	}, []string{"project", "network", "category"})
 
