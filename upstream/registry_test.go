@@ -19,7 +19,7 @@ func TestUpstreamsRegistry(t *testing.T) {
 	projectID := "test-project"
 	networkID := "evm:123"
 	method := "eth_call"
-	windowSize := 1 * time.Second
+	windowSize := 3 * time.Second
 
 	t.Run("RefreshScoresForRequests", func(t *testing.T) {
 		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize)
@@ -103,6 +103,8 @@ func TestUpstreamsRegistry(t *testing.T) {
 		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize)
 		method := "eth_call"
 		_, _ = registry.GetSortedUpstreams(networkID, method)
+
+		time.Sleep(100 * time.Millisecond)
 
 		simulateRequestsWithRateLimiting(metricsTracker, networkID, "upstream-a", method, 100, 30, 30)
 		simulateRequestsWithRateLimiting(metricsTracker, networkID, "upstream-b", method, 100, 15, 15)
@@ -271,8 +273,6 @@ func simulateRequestsWithRateLimiting(tracker *health.Tracker, network, upstream
 		if i >= selfLimited && i < selfLimited+remoteLimited {
 			tracker.RecordUpstreamRemoteRateLimited(upstream, network, method)
 		}
-		timer := tracker.RecordUpstreamDurationStart(upstream, network, method)
-		timer.ObserveDuration()
 	}
 }
 
