@@ -238,6 +238,11 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 			return false
 		}
 
+		// Donot try when 3rd-party providers run out of monthly capacity
+		if scope == ScopeUpstream && common.HasCode(err, common.ErrCodeEndpointCapacityExceeded) {
+			return false
+		}
+
 		if result != nil && !result.IsObjectNull() {
 			req := result.Request()
 			isEmpty := result.IsResultEmptyish()

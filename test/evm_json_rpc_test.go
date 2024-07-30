@@ -37,13 +37,13 @@ func TestStress_EvmJsonRpc_SimpleVariedFailures(t *testing.T) {
 	}
 
 	totalNetworkRequests := 0
-	sums := result.SumCounter("erpc_network_requests_received_total", []string{})
+	sums := result.SumCounter("erpc_network_request_received_total", []string{})
 	for _, sum := range sums {
 		totalNetworkRequests += int(sum.Value)
 	}
 
 	totalNetworkSuccess := 0
-	sums = result.SumCounter("erpc_network_successful_requests_total", []string{})
+	sums = result.SumCounter("erpc_network_successful_request_total", []string{})
 	for _, sum := range sums {
 		totalNetworkSuccess += int(sum.Value)
 	}
@@ -52,7 +52,7 @@ func TestStress_EvmJsonRpc_SimpleVariedFailures(t *testing.T) {
 	}
 
 	totalNetworkErrors := 0.0
-	sums = result.SumCounter("erpc_network_failed_requests_total", []string{"errorType"})
+	sums = result.SumCounter("erpc_network_failed_request_total", []string{"errorType"})
 	for _, sum := range sums {
 		totalNetworkErrors += sum.Value
 	}
