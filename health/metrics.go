@@ -6,6 +6,41 @@ import (
 )
 
 var (
+	MetricUpstreamRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_request_total",
+		Help:      "Total number of actual requests to upstreams.",
+	}, []string{"project", "network", "upstream", "method"})
+
+	MetricUpstreamRequestDuration = promauto.NewSummaryVec(prometheus.SummaryOpts{
+		Namespace: "erpc",
+		Name:      "upstream_request_duration_seconds",
+		Help:      "Duration of actual requests towards upstreams.",
+		Objectives: map[float64]float64{
+			0.5:  0.05,
+			0.9:  0.01,
+			0.99: 0.001,
+		},
+	}, []string{"project", "network", "upstream", "method"})
+
+	MetricUpstreamErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_request_errors_total",
+		Help:      "Total number of errors for actual requests towards upstreams.",
+	}, []string{"project", "network", "upstream", "method", "error"})
+
+	MetricUpstreamSelfRateLimitedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_request_self_rate_limited_total",
+		Help:      "Total number of self-imposed rate limited requests before sending to upstreams.",
+	}, []string{"project", "network", "upstream", "method"})
+
+	MetricUpstreamRemoteRateLimitedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_request_remote_rate_limited_total",
+		Help:      "Total number of remote rate limited requests by upstreams.",
+	}, []string{"project", "network", "upstream", "method"})
+
 	MetricNetworkRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_request_self_rate_limited_total",
