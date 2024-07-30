@@ -477,39 +477,6 @@ var NewErrResponseWriteLock = func(writerId string) error {
 }
 
 //
-// Health Checks
-//
-
-type ErrHealthCheckGroupNotFound struct{ BaseError }
-
-var NewErrHealthCheckGroupNotFound = func(healthCheckGroupId string) error {
-	return &ErrHealthCheckGroupNotFound{
-		BaseError{
-			Code:    "ErrHealthCheckGroupNotFound",
-			Message: "health check group not found",
-			Details: map[string]interface{}{
-				"healthCheckGroupId": healthCheckGroupId,
-			},
-		},
-	}
-}
-
-type ErrInvalidHealthCheckConfig struct{ BaseError }
-
-var NewErrInvalidHealthCheckConfig = func(cause error, healthCheckGroupId string) error {
-	return &ErrInvalidHealthCheckConfig{
-		BaseError{
-			Code:    "ErrInvalidHealthCheckConfig",
-			Message: "invalid health check config",
-			Cause:   cause,
-			Details: map[string]interface{}{
-				"healthCheckGroupId": healthCheckGroupId,
-			},
-		},
-	}
-}
-
-//
 // Clients
 //
 
