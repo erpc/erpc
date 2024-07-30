@@ -361,7 +361,7 @@ func (u *Upstream) IgnoreMethod(method string) {
 	if !u.config.AutoIgnoreUnsupportedMethods {
 		return
 	}
-	
+
 	u.methodCheckResultsMu.Lock()
 	u.config.IgnoreMethods = append(u.config.IgnoreMethods, method)
 	if u.methodCheckResults == nil {
