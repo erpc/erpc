@@ -20,7 +20,7 @@ groups:
       description: "95th percentile of request duration for upstream {{ $labels.upstream }} is {{ $value | humanizeDuration }} over the last 5 minutes"
 
   - alert: HighRateLimiting
-    expr: sum(rate(erpc_upstream_request_local_rate_limited_total[5m])) by (upstream) / sum(rate(erpc_upstream_request_total[5m])) by (upstream) > 0.1
+    expr: sum(rate(erpc_upstream_request_self_rate_limited_total[5m])) by (upstream) / sum(rate(erpc_upstream_request_total[5m])) by (upstream) > 0.1
     for: 5m
     labels:
       severity: warning
@@ -29,7 +29,7 @@ groups:
       description: "Rate limiting for upstream {{ $labels.upstream }} is {{ $value | humanizePercentage }} over the last 5 minutes"
 
   - alert: NetworkRateLimiting
-    expr: sum(rate(erpc_network_request_local_rate_limited_total[5m])) by (network) > 10
+    expr: sum(rate(erpc_network_request_self_rate_limited_total[5m])) by (network) > 10
     for: 5m
     labels:
       severity: warning

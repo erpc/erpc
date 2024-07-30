@@ -37,13 +37,9 @@ projects:
         evm:
           chainId: 42161
 
-        # Which methods are allowed to be called on this upstream.
-        # If this is empty, all methods are allowed.
-        allowedMethods:
-          - "eth_getBlockNumber"
         # Which methods must never be sent to this upstream.
         # For example this can be used to avoid archive calls (traces) to full nodes
-        ignoredMethods:
+        ignoreMethods:
           - "eth_traceTransaction"
           - "alchemy_*"
 

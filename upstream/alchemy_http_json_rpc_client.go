@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/flair-sdk/erpc/common"
+	"github.com/erpc/erpc/common"
 )
 
 var alchemyNetworkSubdomains = map[uint64]string{
@@ -148,7 +148,7 @@ func (c *AlchemyHttpJsonRpcClient) getOrCreateClient(network common.Network) (Ht
 		return nil, err
 	}
 
-	client, err = NewGenericHttpJsonRpcClient(c.upstream, parsedURL)
+	client, err = NewGenericHttpJsonRpcClient(&c.upstream.Logger, c.upstream, parsedURL)
 	if err != nil {
 		return nil, err
 	}

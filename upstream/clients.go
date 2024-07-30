@@ -5,7 +5,8 @@ import (
 	"net/url"
 	"sync"
 
-	"github.com/flair-sdk/erpc/common"
+	"github.com/erpc/erpc/common"
+	"github.com/rs/zerolog"
 )
 
 type ClientType string
@@ -27,12 +28,13 @@ type Client struct {
 
 // ClientRegistry manages client instances
 type ClientRegistry struct {
+	logger  *zerolog.Logger
 	clients sync.Map
 }
 
 // NewClientRegistry creates a new client registry
-func NewClientRegistry() *ClientRegistry {
-	return &ClientRegistry{}
+func NewClientRegistry(logger *zerolog.Logger) *ClientRegistry {
+	return &ClientRegistry{logger: logger}
 }
 
 // GetOrCreateClient retrieves an existing client for a given endpoint or creates a new one if it doesn't exist
@@ -60,14 +62,14 @@ func (manager *ClientRegistry) CreateClient(ups *Upstream) (ClientInterface, err
 			switch cfg.Type {
 			case common.UpstreamTypeEvm:
 				if parsedUrl.Scheme == "http" || parsedUrl.Scheme == "https" {
-					newClient, err = NewGenericHttpJsonRpcClient(ups, parsedUrl)
+					newClient, err = NewGenericHttpJsonRpcClient(manager.logger, ups, parsedUrl)
 					if err != nil {
 						clientErr = fmt.Errorf("failed to create HTTP client for upstream: %v", cfg.Id)
 					}
 				} else if parsedUrl.Scheme == "ws" || parsedUrl.Scheme == "wss" {
 					clientErr = fmt.Errorf("websocket client not implemented yet")
 				} else {
-					clientErr = fmt.Errorf("unsupported EVM scheme: %v for upstream: %v", parsedUrl.Scheme, cfg.Id)
+					clientErr = fmt.Errorf("unsupported endpoint scheme: %v for upstream: %v", parsedUrl.Scheme, cfg.Id)
 				}
 
 			case common.UpstreamTypeEvmAlchemy:

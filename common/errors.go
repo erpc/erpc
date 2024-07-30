@@ -37,7 +37,7 @@ func ErrorSummary(err interface{}) string {
 	return s
 }
 
-var ddg = regexp.MustCompile(`\d+`)
+var ddg = regexp.MustCompile(`\d\d+`)
 var ethAddr = regexp.MustCompile(`0x[a-fA-F0-9]+`)
 var revertAddr = regexp.MustCompile(`.*execution reverted.*`)
 
@@ -45,6 +45,11 @@ func cleanUpMessage(s string) string {
 	s = ethAddr.ReplaceAllString(s, "0xREDACTED")
 	s = revertAddr.ReplaceAllString(s, "execution reverted")
 	s = ddg.ReplaceAllString(s, "XX")
+
+	if len(s) > 512 {
+		s = s[:512]
+	}
+
 	return s
 }
 
@@ -65,6 +70,7 @@ type StandardError interface {
 	HasCode(code ErrorCode) bool
 	CodeChain() string
 	DeepestMessage() string
+	GetCause() error
 }
 
 func (e *BaseError) GetCode() ErrorCode {
@@ -118,6 +124,10 @@ func (e *BaseError) DeepestMessage() string {
 	}
 
 	return e.Message
+}
+
+func (e *BaseError) GetCause() error {
+	return e.Cause
 }
 
 func (e BaseError) MarshalJSON() ([]byte, error) {
@@ -420,6 +430,38 @@ var NewErrUpstreamInitialization = func(cause error, upstreamId string) error {
 	}
 }
 
+type ErrUpstreamRequestSkipped struct{ BaseError }
+
+var NewErrUpstreamRequestSkipped = func(reason error, upstreamId string, req NormalizedRequest) error {
+	m, _ := req.Method()
+	return &ErrUpstreamRequestSkipped{
+		BaseError{
+			Code:    "ErrUpstreamRequestSkipped",
+			Message: "skipped forwarding request to upstream",
+			Cause:   reason,
+			Details: map[string]interface{}{
+				"upstreamId": upstreamId,
+				"method":     m,
+			},
+		},
+	}
+}
+
+type ErrUpstreamMethodIgnored struct{ BaseError }
+
+var NewErrUpstreamMethodIgnored = func(method string, upstreamId string) error {
+	return &ErrUpstreamMethodIgnored{
+		BaseError{
+			Code:    "ErrUpstreamMethodIgnored",
+			Message: "method ignored by upstream configuration",
+			Details: map[string]interface{}{
+				"method":     method,
+				"upstreamId": upstreamId,
+			},
+		},
+	}
+}
+
 type ErrResponseWriteLock struct{ BaseError }
 
 var NewErrResponseWriteLock = func(writerId string) error {
@@ -557,7 +599,7 @@ type ErrFailsafeRetryExceeded struct{ BaseError }
 
 var ErrCodeFailsafeRetryExceeded ErrorCode = "ErrFailsafeRetryExceeded"
 
-var NewErrFailsafeRetryExceeded = func(cause error, lastResult interface{}) error {
+var NewErrFailsafeRetryExceeded = func(cause error, lastResult interface{}, attempts int, retries int) error {
 	return &ErrFailsafeRetryExceeded{
 		BaseError{
 			Code:    ErrCodeFailsafeRetryExceeded,
@@ -565,6 +607,8 @@ var NewErrFailsafeRetryExceeded = func(cause error, lastResult interface{}) erro
 			Cause:   cause,
 			Details: map[string]interface{}{
 				"lastResult": lastResult,
+				"attempts":   attempts,
+				"retries":    retries,
 			},
 		},
 	}
@@ -575,7 +619,11 @@ func (e *ErrFailsafeRetryExceeded) ErrorStatusCode() int {
 }
 
 func (e *ErrFailsafeRetryExceeded) LastResult() interface{} {
-	return e.Details["lastResult"]
+	r, ok := e.Details["lastResult"]
+	if !ok {
+		return nil
+	}
+	return r
 }
 
 type ErrFailsafeCircuitBreakerOpen struct{ BaseError }
@@ -894,9 +942,10 @@ const (
 	JsonRpcErrorUnauthorized      JsonRpcErrorNumber = -32016
 )
 
-type ErrJsonRpcException struct{ BaseError }
+// This struct represents an json-rpc error with erpc structure (i.e. code is string)
+type ErrJsonRpcExceptionInternal struct{ BaseError }
 
-func (e *ErrJsonRpcException) ErrorStatusCode() int {
+func (e *ErrJsonRpcExceptionInternal) ErrorStatusCode() int {
 	if e.Cause != nil {
 		if er, ok := e.Cause.(ErrorWithStatusCode); ok {
 			return er.ErrorStatusCode()
@@ -905,27 +954,27 @@ func (e *ErrJsonRpcException) ErrorStatusCode() int {
 	return 400
 }
 
-func (e *ErrJsonRpcException) CodeChain() string {
+func (e *ErrJsonRpcExceptionInternal) CodeChain() string {
 	return fmt.Sprintf("%d <- %s", e.NormalizedCode(), e.BaseError.CodeChain())
 }
 
-func (e *ErrJsonRpcException) NormalizedCode() JsonRpcErrorNumber {
+func (e *ErrJsonRpcExceptionInternal) NormalizedCode() JsonRpcErrorNumber {
 	if code, ok := e.Details["normalizedCode"]; ok {
 		return code.(JsonRpcErrorNumber)
 	}
 	return 0
 }
 
-func (e *ErrJsonRpcException) OriginalCode() int {
+func (e *ErrJsonRpcExceptionInternal) OriginalCode() int {
 	if code, ok := e.Details["originalCode"]; ok {
 		return code.(int)
 	}
 	return 0
 }
 
-const ErrCodeJsonRpcException = "ErrJsonRpcException"
+const ErrCodeJsonRpcExceptionInternal = "ErrJsonRpcExceptionInternal"
 
-var NewErrJsonRpcException = func(originalCode int, normalizedCode JsonRpcErrorNumber, message string, cause error) *ErrJsonRpcException {
+var NewErrJsonRpcExceptionInternal = func(originalCode int, normalizedCode JsonRpcErrorNumber, message string, cause error) *ErrJsonRpcExceptionInternal {
 	var dt map[string]interface{} = make(map[string]interface{})
 	if originalCode != 0 {
 		dt["originalCode"] = originalCode
@@ -934,21 +983,50 @@ var NewErrJsonRpcException = func(originalCode int, normalizedCode JsonRpcErrorN
 		dt["normalizedCode"] = normalizedCode
 	}
 
-	// var msg string
-	// if normalizedCode != 0 {
-	// 	msg = fmt.Sprintf("%s <- %s", GetJsonRpcErrorName(normalizedCode), message)
-	// } else {
-	// 	msg = message
-	// }
-
-	return &ErrJsonRpcException{
+	return &ErrJsonRpcExceptionInternal{
 		BaseError{
-			Code:    ErrCodeJsonRpcException,
+			Code:    ErrCodeJsonRpcExceptionInternal,
 			Message: message,
 			Details: dt,
 			Cause:   cause,
 		},
 	}
+}
+
+// This struct represents an json-rpc error with standard structure (i.e. code is int)
+type ErrJsonRpcExceptionExternal struct {
+	Code    int    `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+func NewErrJsonRpcExceptionExternal(code int, message string) *ErrJsonRpcExceptionExternal {
+	return &ErrJsonRpcExceptionExternal{
+		Code:    code,
+		Message: message,
+	}
+}
+
+func (e *ErrJsonRpcExceptionExternal) Error() string {
+	return fmt.Sprintf("%d: %s", e.Code, e.Message)
+}
+
+func (e *ErrJsonRpcExceptionExternal) CodeChain() string {
+	return fmt.Sprintf("%d", e.Code)
+}
+
+func (e *ErrJsonRpcExceptionExternal) HasCode(code ErrorCode) bool {
+	// This specific type does not have "cause" as it's directly returned by upstreams
+	return false
+}
+
+func (e *ErrJsonRpcExceptionExternal) DeepestMessage() string {
+	// This specific type does not have "cause" as it's directly returned by upstreams
+	return e.Message
+}
+
+func (e *ErrJsonRpcExceptionExternal) GetCause() error {
+	// This specific type does not have "cause" as it's directly returned by upstreams
+	return nil
 }
 
 //

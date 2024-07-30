@@ -3,7 +3,7 @@ package evm
 import (
 	"fmt"
 
-	"github.com/flair-sdk/erpc/common"
+	"github.com/erpc/erpc/common"
 )
 
 func NormalizeHttpJsonRpc(nrq common.NormalizedRequest, r *common.JsonRpcRequest) error {

@@ -1,11 +1,12 @@
 package common
 
 import (
-	"github.com/flair-sdk/erpc/util"
+	"os"
+
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v2"
-	"os"
 )
 
 // Config represents the configuration of the application.
@@ -15,7 +16,6 @@ type Config struct {
 	Database     *DatabaseConfig    `yaml:"database"`
 	Projects     []*ProjectConfig   `yaml:"projects"`
 	RateLimiters *RateLimiterConfig `yaml:"rateLimiters"`
-	HealthChecks *HealthCheckConfig `yaml:"healthChecks"`
 	Metrics      *MetricsConfig     `yaml:"metrics"`
 }
 
@@ -73,10 +73,11 @@ type AwsAuthConfig struct {
 }
 
 type ProjectConfig struct {
-	Id              string            `yaml:"id"`
-	Upstreams       []*UpstreamConfig `yaml:"upstreams"`
-	Networks        []*NetworkConfig  `yaml:"networks"`
-	RateLimitBudget string            `yaml:"rateLimitBudget"`
+	Id              string             `yaml:"id"`
+	Upstreams       []*UpstreamConfig  `yaml:"upstreams"`
+	Networks        []*NetworkConfig   `yaml:"networks"`
+	RateLimitBudget string             `yaml:"rateLimitBudget"`
+	HealthCheck     *HealthCheckConfig `yaml:"healthCheck"`
 }
 
 type UpstreamConfig struct {
@@ -85,11 +86,9 @@ type UpstreamConfig struct {
 	VendorName        string             `yaml:"vendorName"`
 	Endpoint          string             `yaml:"endpoint"`
 	Evm               *EvmUpstreamConfig `yaml:"evm"`
-	AllowMethods      []string           `yaml:"allowMethods"`
 	IgnoreMethods     []string           `yaml:"ignoreMethods"`
 	Failsafe          *FailsafeConfig    `yaml:"failsafe"`
 	RateLimitBudget   string             `yaml:"rateLimitBudget"`
-	HealthCheckGroup  string             `yaml:"healthCheckGroup"`
 	CreditUnitMapping string             `yaml:"creditUnitMapping"`
 }
 
@@ -143,7 +142,6 @@ type RateLimitBudgetConfig struct {
 }
 
 type RateLimitRuleConfig struct {
-	Scope    string `yaml:"scope"`
 	Method   string `yaml:"method"`
 	MaxCount int    `yaml:"maxCount"`
 	Period   string `yaml:"period"`
@@ -151,25 +149,7 @@ type RateLimitRuleConfig struct {
 }
 
 type HealthCheckConfig struct {
-	Groups []*HealthCheckGroupConfig `yaml:"groups"`
-}
-
-func (c *HealthCheckConfig) GetGroupConfig(groupId string) *HealthCheckGroupConfig {
-	for _, group := range c.Groups {
-		if group.Id == groupId {
-			return group
-		}
-	}
-
-	return nil
-}
-
-type HealthCheckGroupConfig struct {
-	Id                  string `yaml:"id"`
-	CheckInterval       string `yaml:"checkInterval"`
-	MaxErrorRatePercent int    `yaml:"maxErrorRatePercent"`
-	MaxP90Latency       string `yaml:"maxP90Latency"`
-	MaxBlocksLag        int    `yaml:"maxBlocksLag"`
+	ScoreMetricsWindowSize string `yaml:"scoreMetricsWindowSize"`
 }
 
 type NetworkConfig struct {
@@ -201,8 +181,8 @@ func LoadConfig(fs afero.Fs, filename string) (*Config, error) {
 		return nil, err
 	}
 
-    // Expand environment variables
-    expandedData := []byte(os.ExpandEnv(string(data)))
+	// Expand environment variables
+	expandedData := []byte(os.ExpandEnv(string(data)))
 
 	var cfg Config
 	err = yaml.Unmarshal(expandedData, &cfg)
@@ -231,8 +211,7 @@ func (c *Config) GetProjectConfig(projectId string) *ProjectConfig {
 }
 
 func (c *RateLimitRuleConfig) MarshalZerologObject(e *zerolog.Event) {
-	e.Str("scope", c.Scope).
-		Str("method", c.Method).
+	e.Str("method", c.Method).
 		Int("maxCount", c.MaxCount).
 		Str("period", c.Period).
 		Str("waitTime", c.WaitTime)

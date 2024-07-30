@@ -11,8 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
-	"github.com/flair-sdk/erpc/common"
-	"github.com/rs/zerolog/log"
+	"github.com/erpc/erpc/common"
+	"github.com/rs/zerolog"
 )
 
 const (
@@ -22,6 +22,7 @@ const (
 var _ Connector = (*DynamoDBConnector)(nil)
 
 type DynamoDBConnector struct {
+	logger           *zerolog.Logger
 	client           *dynamodb.DynamoDB
 	table            string
 	partitionKeyName string
@@ -31,9 +32,10 @@ type DynamoDBConnector struct {
 
 func NewDynamoDBConnector(
 	ctx context.Context,
+	logger *zerolog.Logger,
 	cfg *common.DynamoDBConnectorConfig,
 ) (*DynamoDBConnector, error) {
-	log.Debug().Msgf("creating DynamoDBConnector with config: %+v", cfg)
+	logger.Debug().Msgf("creating DynamoDBConnector with config: %+v", cfg)
 
 	sess, err := createSession(cfg)
 	if err != nil {
@@ -54,17 +56,18 @@ func NewDynamoDBConnector(
 	sctx, done := context.WithTimeout(ctx, 15*time.Second)
 	defer done()
 
-	err = createTableIfNotExists(sctx, client, cfg)
+	err = createTableIfNotExists(sctx, logger, client, cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	err = ensureGlobalSecondaryIndexes(sctx, client, cfg)
+	err = ensureGlobalSecondaryIndexes(sctx, logger, client, cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	return &DynamoDBConnector{
+		logger:           logger,
 		client:           client,
 		table:            cfg.Table,
 		partitionKeyName: cfg.PartitionKeyName,
@@ -111,10 +114,11 @@ func createSession(cfg *common.DynamoDBConnectorConfig) (*session.Session, error
 
 func createTableIfNotExists(
 	ctx context.Context,
+	logger *zerolog.Logger,
 	client *dynamodb.DynamoDB,
 	cfg *common.DynamoDBConnectorConfig,
 ) error {
-	log.Debug().Msgf("creating dynamodb table '%s' if not exists with partition key '%s' and range key %s", cfg.Table, cfg.PartitionKeyName, cfg.RangeKeyName)
+	logger.Debug().Msgf("creating dynamodb table '%s' if not exists with partition key '%s' and range key %s", cfg.Table, cfg.PartitionKeyName, cfg.RangeKeyName)
 	_, err := client.CreateTableWithContext(ctx, &dynamodb.CreateTableInput{
 		TableName: aws.String(cfg.Table),
 		KeySchema: []*dynamodb.KeySchemaElement{
@@ -159,24 +163,25 @@ func createTableIfNotExists(
 	})
 
 	if err != nil && !strings.Contains(err.Error(), dynamodb.ErrCodeResourceInUseException) {
-		log.Error().Err(err).Msgf("failed to create dynamodb table %s", cfg.Table)
+		logger.Error().Err(err).Msgf("failed to create dynamodb table %s", cfg.Table)
 		return err
 	}
 
 	if err := client.WaitUntilTableExistsWithContext(ctx, &dynamodb.DescribeTableInput{
 		TableName: aws.String(cfg.Table),
 	}); err != nil {
-		log.Error().Err(err).Msgf("failed to wait for dynamodb table %s to be created", cfg.Table)
+		logger.Error().Err(err).Msgf("failed to wait for dynamodb table %s to be created", cfg.Table)
 		return err
 	}
 
-	log.Debug().Msgf("dynamodb table '%s' is ready", cfg.Table)
+	logger.Debug().Msgf("dynamodb table '%s' is ready", cfg.Table)
 
 	return nil
 }
 
 func ensureGlobalSecondaryIndexes(
 	ctx context.Context,
+	logger *zerolog.Logger,
 	client *dynamodb.DynamoDB,
 	cfg *common.DynamoDBConnectorConfig,
 ) error {
@@ -184,7 +189,7 @@ func ensureGlobalSecondaryIndexes(
 		return nil
 	}
 
-	log.Debug().Msgf("ensuring global secondary index '%s' for table '%s'", cfg.ReverseIndexName, cfg.Table)
+	logger.Debug().Msgf("ensuring global secondary index '%s' for table '%s'", cfg.ReverseIndexName, cfg.Table)
 
 	currentTable, err := client.DescribeTableWithContext(ctx, &dynamodb.DescribeTableInput{
 		TableName: aws.String(cfg.Table),
@@ -196,7 +201,7 @@ func ensureGlobalSecondaryIndexes(
 
 	for _, gsi := range currentTable.Table.GlobalSecondaryIndexes {
 		if *gsi.IndexName == cfg.ReverseIndexName {
-			log.Debug().Msgf("global secondary index '%s' already exists", cfg.ReverseIndexName)
+			logger.Debug().Msgf("global secondary index '%s' already exists", cfg.ReverseIndexName)
 			return nil
 		}
 	}
@@ -226,16 +231,16 @@ func ensureGlobalSecondaryIndexes(
 	})
 
 	if err != nil {
-		log.Error().Err(err).Msgf("failed to create global secondary index '%s' for table %s", cfg.ReverseIndexName, cfg.Table)
+		logger.Error().Err(err).Msgf("failed to create global secondary index '%s' for table %s", cfg.ReverseIndexName, cfg.Table)
 	} else {
-		log.Debug().Msgf("global secondary index '%s' created for table %s", cfg.ReverseIndexName, cfg.Table)
+		logger.Debug().Msgf("global secondary index '%s' created for table %s", cfg.ReverseIndexName, cfg.Table)
 	}
 
 	return err
 }
 
 func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, value string) error {
-	log.Debug().Msgf("writing to dynamodb with partition key: %s and range key: %s", partitionKey, rangeKey)
+	d.logger.Debug().Msgf("writing to dynamodb with partition key: %s and range key: %s", partitionKey, rangeKey)
 
 	item := map[string]*dynamodb.AttributeValue{
 		d.partitionKeyName: {
@@ -293,7 +298,7 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 			ExpressionAttributeNames:  exprAttrNames,
 			ExpressionAttributeValues: exprAttrValues,
 		}
-		log.Debug().Msgf("getting item from dynamodb with input: %+v", qi)
+		d.logger.Debug().Msgf("getting item from dynamodb with input: %+v", qi)
 		result, err := d.client.QueryWithContext(ctx, qi)
 		if err != nil {
 			return "", err
@@ -312,7 +317,7 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 				S: aws.String(rangeKey),
 			},
 		}
-		log.Debug().Msgf("getting item from dynamodb with key: %+v", ky)
+		d.logger.Debug().Msgf("getting item from dynamodb with key: %+v", ky)
 		result, err := d.client.GetItemWithContext(ctx, &dynamodb.GetItemInput{
 			TableName: aws.String(d.table),
 			Key:       ky,

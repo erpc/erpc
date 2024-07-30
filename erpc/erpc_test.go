@@ -3,34 +3,20 @@ package erpc
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math/rand"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/upstream"
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/upstream"
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog/log"
+	"github.com/stretchr/testify/assert"
 )
 
 var erpcMu sync.Mutex
-
-func TestErpc_GracefulShutdown(t *testing.T) {
-	erpcMu.Lock()
-	defer erpcMu.Unlock()
-
-	cfg := &common.Config{
-		Server: &common.ServerConfig{
-			HttpHost: "localhost",
-			HttpPort: rand.Intn(1000) + 2000,
-		},
-	}
-	db := &EvmJsonRpcCache{}
-	lg := log.With().Logger()
-	erpc, _ := NewERPC(&lg, db, cfg)
-	erpc.Shutdown()
-}
 
 func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 	erpcMu.Lock()
@@ -71,7 +57,6 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 						Evm: &common.EvmUpstreamConfig{
 							ChainId: 123,
 						},
-						HealthCheckGroup: "test-hcg",
 					},
 					{
 						Id:       "rpc2",
@@ -80,16 +65,7 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 						Evm: &common.EvmUpstreamConfig{
 							ChainId: 123,
 						},
-						HealthCheckGroup: "test-hcg",
 					},
-				},
-			},
-		},
-		HealthChecks: &common.HealthCheckConfig{
-			Groups: []*common.HealthCheckGroupConfig{
-				{
-					Id:            "test-hcg",
-					CheckInterval: "1s",
 				},
 			},
 		},
@@ -117,46 +93,48 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 		JSON(json.RawMessage(`{"result":{"hash":"0x123456789","fromHost":"rpc2"}}`))
 
 	lg := log.With().Logger()
-	erpcInstance, err := NewERPC(&lg, nil, cfg)
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	erpcInstance, err := NewERPC(ctx1, &lg, nil, cfg)
 	if err != nil {
 		t.Errorf("expected nil, got %v", err)
 	}
 
 	nw, err := erpcInstance.GetNetwork("test", "evm:123")
-	upsA := nw.Upstreams[0]
-	upsB := nw.Upstreams[1]
-
 	if err != nil {
 		t.Errorf("expected nil, got %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	for i := 0; i < 500; i++ {
-		nr := upstream.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0x123456789"],"id":1}`))
-		_, _ = nw.Forward(ctx, nr)
+	nw.upstreamsRegistry.PrepareUpstreamsForNetwork("evm:123")
+	time.Sleep(100 * time.Millisecond)
+	nw.upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
+	time.Sleep(100 * time.Millisecond)
+	nw.evmBlockTracker.Bootstrap(ctx1)
+	time.Sleep(100 * time.Millisecond)
+
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	wg := sync.WaitGroup{}
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			nr := upstream.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0x123456789"],"id":1}`))
+			_, _ = nw.Forward(ctx2, nr)
+		}()
+		time.Sleep(10 * time.Millisecond)
 	}
-	
+	wg.Wait()
+
 	// wait until scores are calculated and erpc is shutdown down properly
-	time.Sleep(6 * time.Second)
-	cancel()
-	erpcInstance.Shutdown()
-	time.Sleep(6 * time.Second)
+	time.Sleep(1 * time.Second)
+	cancel1()
+	cancel2()
 
-	// TODO can we do this without exposing metrics mutex?
-	var up1Score, up2Score int
-	upsA.MetricsMu.RLock()
-	upsB.MetricsMu.RLock()
-	if upsA.Config().Id == "rpc1" {
-		up1Score = upsA.Score
-		up2Score = upsB.Score
-	} else {
-		up1Score = upsB.Score
-		up2Score = upsA.Score
-	}
-	upsA.MetricsMu.RUnlock()
-	upsB.MetricsMu.RUnlock()
+	sortedUpstreams, err := nw.upstreamsRegistry.GetSortedUpstreams("evm:123", "eth_getTransactionReceipt")
+	fmt.Printf("Checking upstream order: %v\n", sortedUpstreams)
 
-	if up1Score >= up2Score {
-		t.Errorf("expected up1 to have lower score, got %v up1 failed/total: %f/%f up2 failed/total: %f/%f", up1Score, nw.Upstreams[0].Metrics.ErrorsTotal, nw.Upstreams[0].Metrics.RequestsTotal, nw.Upstreams[1].Metrics.ErrorsTotal, nw.Upstreams[1].Metrics.RequestsTotal)
+	expectedOrder := []string{"rpc2", "rpc1"}
+	assert.NoError(t, err)
+	for i, ups := range sortedUpstreams {
+		assert.Equal(t, expectedOrder[i], ups.Config().Id)
 	}
 }

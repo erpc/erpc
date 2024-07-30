@@ -28,9 +28,9 @@ healthChecks:
       # How often to recalculate the health status of the upstreams.
       checkInterval: 30s
       # The maximum allowed error rate for assigned upstream.
-      maxErrorRatePercent: 10
+      maxErrorRate: 0.3 # after 30% error rate mark as unhealthy
       # The maximum allowed P90 latency for assigned upstreams.
-      maxP90LatencyMs: 5s
+      maxP90LatencySecs: 5s
       # The maximum allowed blocks behind for assigned upstreams.
       maxBlocksBehind: 5
 ```

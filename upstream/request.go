@@ -7,12 +7,14 @@ import (
 	"math/rand"
 	"net/http"
 
-	"github.com/flair-sdk/erpc/common"
-	"github.com/flair-sdk/erpc/evm"
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/evm"
 	"github.com/rs/zerolog"
 )
 
 type NormalizedRequest struct {
+	Attempt int
+
 	network        common.Network
 	upstream       common.Upstream
 	body           []byte

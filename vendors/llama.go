@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/flair-sdk/erpc/common"
+	"github.com/erpc/erpc/common"
 )
 
 type LlamaVendor struct {
@@ -26,12 +26,12 @@ func (v *LlamaVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr inter
 	}
 
 	err := bodyMap.Error
-	code := err.OriginalCode()
+	code := err.Code
 	msg := err.Message
 
 	if strings.Contains(msg, "code: 1015") {
 		return common.NewErrEndpointCapacityExceeded(
-			common.NewErrJsonRpcException(code, common.JsonRpcErrorCapacityExceeded, msg, nil),
+			common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorCapacityExceeded, msg, nil),
 		)
 	}
 

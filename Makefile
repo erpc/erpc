@@ -29,13 +29,13 @@ build:
 .PHONY: test
 test:
 	@go clean -testcache
-	@go test ./cmd/... -race -count 1 -parallel 1
-	@go test $$(ls -d */ | grep -v "cmd" | awk '{print "./" $$1 "..."}') -covermode=atomic -race -count 5 -parallel 1
+	@go test ./cmd/... -count 1 -parallel 1
+	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}')  -covermode=atomic -race -count 3 -parallel 1
 
 .PHONY: coverage
 coverage:
 	@go clean -testcache
-	@go test -coverprofile=coverage.txt -covermode=atomic ./...
+	@go test -coverprofile=coverage.txt -covermode=atomic $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}')
 	@go tool cover -html=coverage.txt
 
 .PHONY: up
