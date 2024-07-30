@@ -357,6 +357,16 @@ func (u *Upstream) SupportsNetwork(networkId string) (bool, error) {
 	return supports, nil
 }
 
+func (u *Upstream) IgnoreMethod(method string) {
+	u.methodCheckResultsMu.Lock()
+	u.config.IgnoreMethods = append(u.config.IgnoreMethods, method)
+	if u.methodCheckResults == nil {
+		u.methodCheckResults = map[string]bool{}
+	}
+	delete(u.methodCheckResults, method)
+	u.methodCheckResultsMu.Unlock()
+}
+
 func (u *Upstream) shouldHandleMethod(method string) (v bool) {
 	cfg := u.Config()
 	u.methodCheckResultsMu.RLock()
@@ -368,6 +378,9 @@ func (u *Upstream) shouldHandleMethod(method string) (v bool) {
 
 	v = true
 
+	// First check if method is ignored, and then check if it is explicitly mentioned to be allowed.
+	// This order allows an upstream for example to define "ignore all except eth_getLogs".
+
 	if cfg.IgnoreMethods != nil {
 		for _, m := range cfg.IgnoreMethods {
 			if common.WildcardMatch(m, method) {
@@ -376,6 +389,18 @@ func (u *Upstream) shouldHandleMethod(method string) (v bool) {
 			}
 		}
 	}
+
+	if cfg.AllowMethods != nil {
+		for _, m := range cfg.AllowMethods {
+			if common.WildcardMatch(m, method) {
+				v = true
+				break
+			}
+		}
+	}
+
+	// TODO if method is one of exclusiveMethods by another upstream (e.g. alchemy_*) skip
+	// TODO if onlyMethods is defined and method is not one of "onlyMethods" skip
 
 	// Cache the result
 	u.methodCheckResultsMu.Lock()
@@ -446,6 +471,8 @@ func (u *Upstream) shouldSkip(req *NormalizedRequest) (reason error, skip bool) 
 		u.Logger.Debug().Str("method", method).Msg("method not allowed or ignored by upstread")
 		return common.NewErrUpstreamMethodIgnored(method, u.config.Id), true
 	}
+
+	// TODO evm: if block can be determined from request and upstream is only full-node and block is historical skip
 
 	return nil, false
 }

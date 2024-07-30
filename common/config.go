@@ -6,7 +6,7 @@ import (
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/spf13/afero"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 // Config represents the configuration of the application.
@@ -81,15 +81,16 @@ type ProjectConfig struct {
 }
 
 type UpstreamConfig struct {
-	Id                string             `yaml:"id"`
-	Type              UpstreamType       `yaml:"type"` // evm, evm-alchemy, solana
-	VendorName        string             `yaml:"vendorName"`
-	Endpoint          string             `yaml:"endpoint"`
-	Evm               *EvmUpstreamConfig `yaml:"evm"`
-	IgnoreMethods     []string           `yaml:"ignoreMethods"`
-	Failsafe          *FailsafeConfig    `yaml:"failsafe"`
-	RateLimitBudget   string             `yaml:"rateLimitBudget"`
-	CreditUnitMapping string             `yaml:"creditUnitMapping"`
+	Id                           string             `yaml:"id"`
+	Type                         UpstreamType       `yaml:"type"` // evm, evm-alchemy, solana
+	VendorName                   string             `yaml:"vendorName"`
+	Endpoint                     string             `yaml:"endpoint"`
+	Evm                          *EvmUpstreamConfig `yaml:"evm"`
+	IgnoreMethods                []string           `yaml:"ignoreMethods"`
+	AllowMethods                 []string           `yaml:"allowMethods"`
+	AutoIgnoreUnsupportedMethods bool               `yaml:"autoIgnoreUnsupportedMethods"`
+	Failsafe                     *FailsafeConfig    `yaml:"failsafe"`
+	RateLimitBudget              string             `yaml:"rateLimitBudget"`
 }
 
 type EvmUpstreamConfig struct {
@@ -230,4 +231,17 @@ func (c *ServerConfig) MarshalZerologObject(e *zerolog.Event) {
 	e.Str("host", c.HttpHost).
 		Int("port", c.HttpPort).
 		Int("maxTimeoutMs", c.MaxTimeoutMs)
+}
+
+func (s *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+    type rawUpstreamConfig UpstreamConfig
+    raw := rawUpstreamConfig{
+		AutoIgnoreUnsupportedMethods: true,
+	}
+    if err := unmarshal(&raw); err != nil {
+        return err
+    }
+
+    *s = UpstreamConfig(raw)
+    return nil
 }
