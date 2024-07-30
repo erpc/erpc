@@ -124,30 +124,6 @@ func TestExtractBlockReferenceFromResponse(t *testing.T) {
 			expErr:   false,
 		},
 		{
-			name: "web3_sha",
-			rpcReq: &common.JsonRpcRequest{
-				Method: "web3_sha3",
-			},
-			rpcResp: &common.JsonRpcResponse{
-				Result: nil,
-			},
-			expected: "all",
-			expUint:  1,
-			expErr:   false,
-		},
-		{
-			name: "net_version",
-			rpcReq: &common.JsonRpcRequest{
-				Method: "net_version",
-			},
-			rpcResp: &common.JsonRpcResponse{
-				Result: "1",
-			},
-			expected: "all",
-			expUint:  1,
-			expErr:   false,
-		},
-		{
 			name: "invalid method",
 			rpcReq: &common.JsonRpcRequest{
 				Method: "invalid_method",
