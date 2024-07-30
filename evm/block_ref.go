@@ -20,7 +20,8 @@ func ExtractBlockReference(r *common.JsonRpcRequest) (string, uint64, error) {
 		"eth_getUncleByBlockNumberAndIndex",
 		"eth_getTransactionByBlockNumberAndIndex",
 		"eth_getUncleCountByBlockNumber",
-		"eth_getBlockTransactionCountByNumber":
+		"eth_getBlockTransactionCountByNumber",
+		"eth_getBlockReceipts":
 		if len(r.Params) > 0 {
 			if bns, ok := r.Params[0].(string); ok {
 				if strings.HasPrefix(bns, "0x") {
@@ -57,11 +58,11 @@ func ExtractBlockReference(r *common.JsonRpcRequest) (string, uint64, error) {
 		return "", 0, nil
 
 	case "eth_getBalance",
-		"eth_getStorageAt",
 		"eth_getCode",
 		"eth_getTransactionCount",
 		"eth_call",
-		"eth_estimateGas":
+		"eth_feeHistory",
+		"eth_getAccount":
 		if len(r.Params) > 1 {
 			if bns, ok := r.Params[1].(string); ok {
 				if strings.HasPrefix(bns, "0x") {
@@ -78,12 +79,33 @@ func ExtractBlockReference(r *common.JsonRpcRequest) (string, uint64, error) {
 			return "", 0, fmt.Errorf("unexpected missing 2nd parameter for method %s: %+v", r.Method, r.Params)
 		}
 
-	case "eth_getBlockByHash":
+	case "eth_getBlockByHash",
+		"eth_getTransactionByBlockHashAndIndex",
+		"eth_getBlockTransactionCountByHash",
+		"eth_getUncleCountByBlockHash":
 		if len(r.Params) > 0 {
 			if blockHash, ok := r.Params[0].(string); ok {
 				return blockHash, 0, nil
 			}
 			return "", 0, fmt.Errorf("first parameter is not a string for method %s it is %+v", r.Method, r.Params)
+		}
+
+	case "eth_getProof",
+		"eth_getStorageAt":
+		if len(r.Params) > 2 {
+			if bns, ok := r.Params[2].(string); ok {
+				if strings.HasPrefix(bns, "0x") {
+					bni, err := hexutil.DecodeUint64(bns)
+					if err != nil {
+						return bns, 0, err
+					}
+					return strconv.FormatUint(bni, 10), bni, nil
+				} else {
+					return "", 0, nil
+				}
+			}
+		} else {
+			return "", 0, fmt.Errorf("unexpected missing 3rd parameter for method %s: %+v", r.Method, r.Params)
 		}
 
 	default:
