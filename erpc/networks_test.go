@@ -1803,8 +1803,6 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		log.Logger = log.Logger.Level(zerolog.DebugLevel)
-
 		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.localhost").
