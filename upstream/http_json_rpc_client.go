@@ -204,6 +204,8 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 			return common.NewErrEndpointClientSideException(
 				common.NewErrEndpointEvmReverted(err),
 			)
+		} else if strings.Contains(err.Message, "insufficient funds") {
+			return common.NewErrEndpointClientSideException(err)
 		}
 
 		// By default we consider a problem on the server so that retry/failover mechanisms try other upstreams
