@@ -766,6 +766,20 @@ func (e *ErrEndpointUnsupported) ErrorStatusCode() int {
 	return 415
 }
 
+type ErrEndpointEvmReverted struct{ BaseError }
+
+var ErrCodeEndpointEvmReverted ErrorCode = "ErrEndpointEvmReverted"
+
+var NewErrEndpointEvmReverted = func(cause error) error {
+	return &ErrEndpointEvmReverted{
+		BaseError{
+			Code:    ErrCodeEndpointEvmReverted,
+			Message: "remote endpoint reverted the transaction",
+			Cause:   cause,
+		},
+	}
+}
+
 type ErrEndpointClientSideException struct{ BaseError }
 
 const ErrCodeEndpointClientSideException = "ErrEndpointClientSideException"

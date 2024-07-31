@@ -202,7 +202,7 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 			return common.NewErrEndpointNotSyncedYet(err)
 		} else if strings.Contains(err.Message, "execution reverted") {
 			return common.NewErrEndpointClientSideException(
-				common.NewErrJsonRpcExceptionInternal(err.Code, common.JsonRpcErrorEvmReverted, err.Message, nil),
+				common.NewErrEndpointEvmReverted(err),
 			)
 		}
 
