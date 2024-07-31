@@ -240,6 +240,7 @@ func createTestRegistry(projectID string, logger *zerolog.Logger, windowSize tim
 		nil, // RateLimitersRegistry not needed for these tests
 		vendors.NewVendorsRegistry(),
 		metricsTracker,
+		1*time.Second,
 	)
 
 	err := registry.Bootstrap(context.Background())

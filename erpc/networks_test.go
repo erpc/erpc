@@ -67,6 +67,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rateLimitersRegistry,
 			vendors.NewVendorsRegistry(),
 			mt,
+			1*time.Second,
 		)
 		ntw, err := NewNetwork(
 			&log.Logger,
@@ -135,6 +136,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rateLimitersRegistry,
 			vendors.NewVendorsRegistry(),
 			mt,
+			1*time.Second,
 		)
 		ntw, err := NewNetwork(
 			&log.Logger,
@@ -211,8 +213,7 @@ func TestNetwork_Forward(t *testing.T) {
 				up1,
 			},
 			rlr,
-			vndr,
-			mt,
+			vndr, mt, 1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -317,8 +318,7 @@ func TestNetwork_Forward(t *testing.T) {
 				up1,
 			},
 			rlr,
-			vndr,
-			mt,
+			vndr, mt, 1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -423,8 +423,7 @@ func TestNetwork_Forward(t *testing.T) {
 				up1,
 			},
 			rlr,
-			vndr,
-			mt,
+			vndr, mt, 1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -534,8 +533,7 @@ func TestNetwork_Forward(t *testing.T) {
 				up1,
 			},
 			rlr,
-			vndr,
-			mt,
+			vndr, mt, 1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -642,8 +640,7 @@ func TestNetwork_Forward(t *testing.T) {
 				up1,
 			},
 			rlr,
-			vndr,
-			mt,
+			vndr, mt, 1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -748,6 +745,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rateLimitersRegistry,
 			vendors.NewVendorsRegistry(),
 			mt,
+			1*time.Second,
 		)
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -840,8 +838,7 @@ func TestNetwork_Forward(t *testing.T) {
 				up1,
 			},
 			rlr,
-			vndr,
-			mt,
+			vndr, mt, 1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -950,8 +947,7 @@ func TestNetwork_Forward(t *testing.T) {
 				up1,
 			},
 			rlr,
-			vndr,
-			mt,
+			vndr, mt, 1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -1068,8 +1064,7 @@ func TestNetwork_Forward(t *testing.T) {
 				up1,
 			},
 			rlr,
-			vndr,
-			mt,
+			vndr, mt, 1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -1178,8 +1173,7 @@ func TestNetwork_Forward(t *testing.T) {
 				up1,
 			},
 			rlr,
-			vndr,
-			mt,
+			vndr, mt, 1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -1299,8 +1293,7 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
 			rlr,
-			vndr,
-			mt,
+			vndr, mt, 1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -1456,8 +1449,7 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
 			rlr,
-			vndr,
-			mt,
+			vndr, mt, 1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -1739,8 +1731,7 @@ func TestNetwork_Forward(t *testing.T) {
 			"test_cb",
 			[]*common.UpstreamConfig{up1},
 			rlr,
-			vndr,
-			mt,
+			vndr, mt, 1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -1795,6 +1786,129 @@ func TestNetwork_Forward(t *testing.T) {
 		var e *common.ErrFailsafeCircuitBreakerOpen
 		if !errors.As(lastErr, &e) {
 			t.Errorf("Expected %v, got %v", "ErrFailsafeCircuitBreakerOpen", lastErr)
+		}
+
+		if len(gock.Pending()) > 0 {
+			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
+			for _, pending := range gock.Pending() {
+				t.Errorf("Pending mock: %v", pending)
+			}
+		} else {
+			t.Logf("All mocks consumed")
+		}
+	})
+
+	t.Run("ForwardSkipsOpenedCB", func(t *testing.T) {
+		defer gock.Off()
+		defer gock.Clean()
+		defer gock.CleanUnmatchedRequest()
+
+		log.Logger = log.Logger.Level(zerolog.DebugLevel)
+
+		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Times(1).
+			Reply(503).
+			JSON(json.RawMessage(`{"error":{"message":"some random provider issue"}}`))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		clr := upstream.NewClientRegistry(&log.Logger)
+		fsCfgNetwork := &common.FailsafeConfig{
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 1,
+			},
+		}
+		fsCfgUp1 := &common.FailsafeConfig{
+			CircuitBreaker: &common.CircuitBreakerPolicyConfig{
+				FailureThresholdCount:    1,
+				FailureThresholdCapacity: 1,
+				HalfOpenAfter:            "20s",
+			},
+		}
+
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+			Budgets: []*common.RateLimitBudgetConfig{},
+		}, &log.Logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		vndr := vendors.NewVendorsRegistry()
+		mt := health.NewTracker("test_cb", 2*time.Second)
+		up1 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "upstream1",
+			Endpoint: "http://rpc1.localhost",
+			Failsafe: fsCfgUp1,
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
+		upr := upstream.NewUpstreamsRegistry(
+			&log.Logger,
+			"test_cb",
+			[]*common.UpstreamConfig{up1},
+			rlr,
+			vndr, mt, 1*time.Hour,
+		)
+		err = upr.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		pup1, err := upr.NewUpstream(
+			"test_cb",
+			up1,
+			&log.Logger,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl1, err := clr.GetOrCreateClient(pup1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1.Client = cl1
+
+		ntw, err := NewNetwork(
+			&log.Logger,
+			"test_cb",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId:              123,
+					BlockTrackerInterval: "10h",
+				},
+				Failsafe: fsCfgNetwork,
+			},
+			rlr,
+			upr,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var lastErr error
+		var resp common.NormalizedResponse
+		for i := 0; i < 2; i++ {
+			fakeReq := upstream.NewNormalizedRequest(requestBytes)
+			resp, lastErr = ntw.Forward(ctx, fakeReq)
+		}
+
+		if lastErr == nil {
+			t.Fatalf("Expected an error, got nil, resp: %v", resp)
+		}
+		if !strings.Contains(lastErr.Error(), "ErrUpstreamsExhausted") {
+			t.Errorf("Expected error message to contain 'ErrUpstreamsExhausted', got %v", lastErr.Error())
 		}
 
 		if len(gock.Pending()) > 0 {
@@ -1864,8 +1978,7 @@ func TestNetwork_Forward(t *testing.T) {
 			"test_cb",
 			[]*common.UpstreamConfig{up1},
 			rlr,
-			vndr,
-			mt,
+			vndr, mt, 1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -1993,8 +2106,7 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1},
 			rlr,
-			vndr,
-			mt,
+			vndr, mt, 1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -2108,8 +2220,7 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
 			rlr,
-			vndr,
-			mt,
+			vndr, mt, 1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -2264,8 +2375,7 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
 			rlr,
-			vndr,
-			mt,
+			vndr, mt, 1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -2426,8 +2536,7 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
 			rlr,
-			vndr,
-			mt,
+			vndr, mt, 1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -2529,8 +2638,7 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1},
 			rlr,
-			vndr,
-			mt,
+			vndr, mt, 1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -2624,8 +2732,7 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1},
 			rlr,
-			vndr,
-			mt,
+			vndr, mt, 1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -2713,6 +2820,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rateLimitersRegistry,
 			vendors.NewVendorsRegistry(),
 			metricsTracker,
+			1*time.Second,
 		)
 
 		err = upstreamsRegistry.Bootstrap(ctx)
@@ -3040,6 +3148,7 @@ func setupTestNetwork(t *testing.T) *Network {
 		rateLimitersRegistry,
 		vendors.NewVendorsRegistry(),
 		metricsTracker,
+		1*time.Second,
 	)
 	network, err := NewNetwork(
 		&log.Logger,

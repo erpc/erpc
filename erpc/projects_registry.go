@@ -83,6 +83,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		r.rateLimitersRegistry,
 		r.vendorsRegistry,
 		metricsTracker,
+		1*time.Second,
 	)
 	err = upstreamsRegistry.Bootstrap(r.appCtx)
 	if err != nil {

@@ -16,6 +16,7 @@ import (
 
 type UpstreamsRegistry struct {
 	prjId                string
+	scoreRefreshInterval time.Duration
 	logger               *zerolog.Logger
 	metricsTracker       *health.Tracker
 	clientRegistry       *ClientRegistry
@@ -38,9 +39,11 @@ func NewUpstreamsRegistry(
 	rlr *RateLimitersRegistry,
 	vr *vendors.VendorsRegistry,
 	mt *health.Tracker,
+	scoreRefreshInterval time.Duration,
 ) *UpstreamsRegistry {
 	return &UpstreamsRegistry{
 		prjId:                prjId,
+		scoreRefreshInterval: scoreRefreshInterval,
 		logger:               logger,
 		clientRegistry:       NewClientRegistry(logger),
 		rateLimitersRegistry: rlr,
@@ -262,7 +265,7 @@ func (u *UpstreamsRegistry) registerUpstreams() error {
 
 func (u *UpstreamsRegistry) scheduleScoreCalculationTimers(ctx context.Context) error {
 	go func() {
-		ticker := time.NewTicker(1 * time.Second)
+		ticker := time.NewTicker(u.scoreRefreshInterval)
 		defer ticker.Stop()
 		for {
 			select {

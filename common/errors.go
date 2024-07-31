@@ -595,10 +595,12 @@ func (e *ErrFailsafeRetryExceeded) LastResult() interface{} {
 
 type ErrFailsafeCircuitBreakerOpen struct{ BaseError }
 
+var ErrCodeFailsafeCircuitBreakerOpen ErrorCode = "ErrFailsafeCircuitBreakerOpen"
+
 var NewErrFailsafeCircuitBreakerOpen = func(cause error) error {
 	return &ErrFailsafeCircuitBreakerOpen{
 		BaseError{
-			Code:    "ErrFailsafeCircuitBreakerOpen",
+			Code:    ErrCodeFailsafeCircuitBreakerOpen,
 			Message: "circuit breaker is open due to high error rate",
 			Cause:   cause,
 		},
