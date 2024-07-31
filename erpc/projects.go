@@ -59,9 +59,12 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *ups
 	p.Logger.Debug().Str("method", method).Msgf("forwarding request to network")
 	resp, err := network.Forward(ctx, nq)
 
-	// TODO can we design a better way to consider reverts as success? Maybe a response with json-rpc error but not a go error.
-	if err == nil || common.HasCode(err, common.ErrCodeEndpointEvmReverted) {
-		p.Logger.Info().Msgf("successfully forward request for network")
+	if err == nil || common.HasCode(err, common.ErrCodeEndpointClientSideException) {
+		if err != nil {
+			p.Logger.Info().Err(err).Msgf("finished forwarding request for network with some client-side exception")
+		} else {
+			p.Logger.Info().Msgf("successfully forward request for network")
+		}
 		health.MetricNetworkSuccessfulRequests.WithLabelValues(network.ProjectId, network.NetworkId, method).Inc()
 		return resp, nil
 	} else {

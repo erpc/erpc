@@ -259,8 +259,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 							netId,
 							method,
 						)
-					} else if !common.HasCode(errCall, common.ErrCodeEndpointEvmReverted) && !common.HasCode(errCall, common.ErrCodeEndpointClientSideException) {
-						// TODO can we design a better way to consider reverts as success? Maybe a response with json-rpc error but not a go error.
+					} else if !common.HasCode(errCall, common.ErrCodeEndpointClientSideException) {
 						u.metricsTracker.RecordUpstreamFailure(
 							cfg.Id,
 							netId,
