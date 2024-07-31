@@ -118,10 +118,10 @@ func createCircuitBreakerPolicy(component string, cfg *common.CircuitBreakerPoli
 	}
 
 	builder.OnHalfOpen(func(event circuitbreaker.StateChangedEvent) {
-		log.Debug().Msgf("circuitBreaker half open: %v", event)
+		log.Warn().Msgf("circuitBreaker half open: %v", event)
 	})
 	builder.OnOpen(func(event circuitbreaker.StateChangedEvent) {
-		log.Debug().Msgf("circuitBreaker open: %v", event)
+		log.Warn().Msgf("circuitBreaker open: %v", event)
 	})
 	builder.OnClose(func(event circuitbreaker.StateChangedEvent) {
 		log.Debug().Msgf("circuitBreaker close: %v", event)

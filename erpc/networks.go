@@ -140,8 +140,8 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		if !common.IsNull(err) {
 			// If upstream complains that the method is not supported let's dynamically add it ignoreMethods config
 			if common.HasCode(err, common.ErrCodeEndpointUnsupported) {
-				u.IgnoreMethod(method)
 				lg.Warn().Err(err).Str("method", method).Msgf("upstream does not support method, dynamically adding to ignoreMethods")
+				u.IgnoreMethod(method)
 			}
 
 			return nil, skipped, err
@@ -201,7 +201,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 					tryForward(u, exec.Context()),
 				)
 
-				if err != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) && exec.Hedges() > 0 {
+				if isHedged && err != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) {
 					lg.Debug().Err(err).Msgf("discarding hedged request to upstream %s: %v", u.Config().Id, skipped)
 					return nil, err
 				}
@@ -324,13 +324,16 @@ func (n *Network) processResponse(resp common.NormalizedResponse, skipped bool, 
 	case common.ArchitectureEvm:
 		if common.HasCode(err, common.ErrCodeJsonRpcExceptionInternal) {
 			return resp, skipped, err
-		}
-		if common.HasCode(err, common.ErrCodeJsonRpcRequestUnmarshal) {
+		} else if common.HasCode(err, common.ErrCodeJsonRpcRequestUnmarshal) {
 			return resp, skipped, common.NewErrJsonRpcExceptionExternal(
 				int(common.JsonRpcErrorParseException),
 				"failed to parse json-rpc request",
 			)
+		} else if common.HasCode(err, common.ErrCodeFailsafeCircuitBreakerOpen) {
+			// Explicitly skip when CB is open to not count the failed request towards network "retries"
+			return resp, true, err
 		}
+
 		return resp, skipped, common.NewErrJsonRpcExceptionInternal(
 			0,
 			common.JsonRpcErrorServerSideException,
