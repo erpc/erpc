@@ -109,6 +109,7 @@ func (r *NormalizedResponse) JsonRpcResponse() (*common.JsonRpcResponse, error) 
 		jrr.Error = common.NewErrJsonRpcExceptionExternal(
 			int(common.JsonRpcErrorServerSideException),
 			fmt.Sprintf("%s -> %s", err, string(r.body)),
+			"",
 		)
 	}
 	r.jsonRpcResponse = jrr

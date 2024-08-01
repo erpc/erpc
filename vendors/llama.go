@@ -28,10 +28,14 @@ func (v *LlamaVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr inter
 	err := bodyMap.Error
 	code := err.Code
 	msg := err.Message
+	var details map[string]interface{} = make(map[string]interface{})
+	if err.Data != "" {
+		details["data"] = err.Data
+	}
 
 	if strings.Contains(msg, "code: 1015") {
 		return common.NewErrEndpointCapacityExceeded(
-			common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorCapacityExceeded, msg, nil),
+			common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorCapacityExceeded, msg, nil, details),
 		)
 	}
 

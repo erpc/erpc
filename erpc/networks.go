@@ -335,9 +335,12 @@ func (n *Network) processResponse(resp common.NormalizedResponse, skipped bool, 
 		if common.HasErrorCode(err, common.ErrCodeJsonRpcExceptionInternal) {
 			return resp, skipped, err
 		} else if common.HasErrorCode(err, common.ErrCodeJsonRpcRequestUnmarshal) {
-			return resp, skipped, common.NewErrJsonRpcExceptionExternal(
-				int(common.JsonRpcErrorParseException),
+			return resp, skipped, common.NewErrJsonRpcExceptionInternal(
+				0,
+				common.JsonRpcErrorParseException,
 				"failed to parse json-rpc request",
+				err,
+				nil,
 			)
 		} else if common.HasErrorCode(err, common.ErrCodeFailsafeCircuitBreakerOpen) {
 			// Explicitly skip when CB is open to not count the failed request towards network "retries"
@@ -349,6 +352,7 @@ func (n *Network) processResponse(resp common.NormalizedResponse, skipped bool, 
 			common.JsonRpcErrorServerSideException,
 			fmt.Sprintf("failed request on evm network %s", n.NetworkId),
 			err,
+			nil,
 		)
 	default:
 		return resp, skipped, err

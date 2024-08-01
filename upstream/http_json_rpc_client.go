@@ -130,13 +130,13 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *N
 			common.JsonRpcErrorParseException,
 			"could not parse json rpc response from upstream",
 			err,
+			map[string]interface{}{
+				"upstream":   c.upstream.Config().Id,
+				"statusCode": r.StatusCode,
+				"headers":    r.Header,
+				"body":       string(nr.Body()),
+			},
 		)
-		e.Details = map[string]interface{}{
-			"upstream":   c.upstream.Config().Id,
-			"statusCode": r.StatusCode,
-			"headers":    r.Header,
-			"body":       string(nr.Body()),
-		}
 		return e
 	}
 
@@ -148,13 +148,18 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *N
 		return e
 	}
 
-	e := common.NewErrJsonRpcExceptionInternal(0, common.JsonRpcErrorServerSideException, "unknown json-rpc response", nil)
-	e.Details = map[string]interface{}{
-		"upstream":   c.upstream.Config().Id,
-		"statusCode": r.StatusCode,
-		"headers":    r.Header,
-		"body":       string(nr.Body()),
-	}
+	e := common.NewErrJsonRpcExceptionInternal(
+		0,
+		common.JsonRpcErrorServerSideException,
+		"unknown json-rpc response",
+		nil,
+		map[string]interface{}{
+			"upstream":   c.upstream.Config().Id,
+			"statusCode": r.StatusCode,
+			"headers":    r.Header,
+			"body":       string(nr.Body()),
+		},
+	)
 
 	return e
 }
@@ -169,6 +174,11 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 
 		code := common.JsonRpcErrorNumber(err.Code)
 
+		var details map[string]interface{} = make(map[string]interface{})
+		if err.Data != "" {
+			details["data"] = err.Data
+		}
+
 		// Infer from known status codes
 		if r.StatusCode == 401 || r.StatusCode == 403 {
 			return common.NewErrEndpointUnauthorized(
@@ -177,6 +187,7 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 					common.JsonRpcErrorUnauthorized,
 					err.Message,
 					nil,
+					details,
 				),
 			)
 		} else if r.StatusCode == 415 || code == common.JsonRpcErrorUnsupportedException {
@@ -186,6 +197,7 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 					common.JsonRpcErrorUnsupportedException,
 					err.Message,
 					nil,
+					details,
 				),
 			)
 		} else if r.StatusCode == 429 || r.StatusCode == 408 {
@@ -198,6 +210,7 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 					common.JsonRpcErrorUnsupportedException,
 					err.Message,
 					nil,
+					details,
 				),
 			)
 		} else if code == -32005 {
@@ -207,6 +220,7 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 					common.JsonRpcErrorCapacityExceeded,
 					err.Message,
 					nil,
+					details,
 				),
 			)
 		} else if strings.Contains(err.Message, "missing trie node") {
@@ -216,6 +230,7 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 					common.JsonRpcErrorNotSyncedYet,
 					err.Message,
 					nil,
+					details,
 				),
 			)
 		} else if strings.Contains(err.Message, "genesis is not traceable") {
@@ -226,6 +241,7 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 					common.JsonRpcErrorNotSyncedYet,
 					err.Message,
 					nil,
+					details,
 				),
 			)
 		} else if strings.Contains(err.Message, "execution reverted") {
@@ -235,6 +251,7 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 					common.JsonRpcErrorEvmReverted,
 					err.Message,
 					nil,
+					details,
 				),
 			)
 		} else if strings.Contains(err.Message, "insufficient funds") || strings.Contains(err.Message, "out of gas") {
@@ -244,6 +261,7 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 					common.JsonRpcErrorCallException,
 					err.Message,
 					nil,
+					details,
 				),
 			)
 		} else if strings.Contains(err.Message, "not found") {
@@ -254,6 +272,7 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 						common.JsonRpcErrorUnsupportedException,
 						err.Message,
 						nil,
+						details,
 					),
 				)
 			} else {
@@ -263,6 +282,7 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 						common.JsonRpcErrorUnsupportedException,
 						err.Message,
 						nil,
+						details,
 					),
 				)
 			}
@@ -275,6 +295,7 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 					common.JsonRpcErrorUnsupportedException,
 					err.Message,
 					nil,
+					details,
 				),
 			)
 		}
@@ -286,6 +307,7 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 				common.JsonRpcErrorServerSideException,
 				err.Message,
 				nil,
+				details,
 			),
 		)
 	}

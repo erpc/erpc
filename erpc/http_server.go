@@ -154,6 +154,7 @@ func handleErrorResponse(logger *zerolog.Logger, err error, hrw http.ResponseWri
 		json.NewEncoder(hrw).Encode(map[string]interface{}{
 			"code":    jre.NormalizedCode(),
 			"message": jre.Message,
+			"data":    jre.Details["data"],
 			"cause":   err,
 		})
 		return
