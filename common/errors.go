@@ -121,6 +121,9 @@ func (e *BaseError) DeepestMessage() string {
 		if be, ok := e.Cause.(StandardError); ok {
 			return be.DeepestMessage()
 		}
+		if e.Cause != nil {
+			return e.Cause.Error()
+		}
 	}
 
 	return e.Message
@@ -367,6 +370,47 @@ var NewErrUpstreamsExhausted = func(ers []error) error {
 
 func (e *ErrUpstreamsExhausted) ErrorStatusCode() int {
 	return 503
+}
+
+func (e *ErrUpstreamsExhausted) CodeChain() string {
+	codeChain := string(e.Code)
+
+	if e.Cause == nil {
+		return codeChain
+	}
+	causesChains := []string{}
+    if joinedErr, ok := e.Cause.(interface{ Unwrap() []error }); ok {
+        for _, e := range joinedErr.Unwrap() {
+            if se, ok := e.(StandardError); ok {
+                causesChains = append(causesChains, se.CodeChain())
+            }
+        }
+
+		codeChain += " <= (" + strings.Join(causesChains, " + ") + ")"
+	}
+
+	return codeChain
+}
+
+func (e *ErrUpstreamsExhausted) DeepestMessage() string {
+	if e.Cause == nil {
+		return e.Message
+	}
+
+	causesDeepestMsgs := []string{}
+    if joinedErr, ok := e.Cause.(interface{ Unwrap() []error }); ok {
+        for _, e := range joinedErr.Unwrap() {
+            if se, ok := e.(StandardError); ok {
+                causesDeepestMsgs = append(causesDeepestMsgs, se.DeepestMessage())
+            }
+        }
+	}
+
+	if len(causesDeepestMsgs) > 0 {
+		return strings.Join(causesDeepestMsgs, " + ")
+	}
+
+	return e.Message
 }
 
 type ErrNoUpstreamsDefined struct{ BaseError }

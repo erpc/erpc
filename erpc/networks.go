@@ -211,10 +211,12 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 				} else {
 					lg.Debug().Err(err).Msgf("forwarded request to upstream %s skipped: %v err: %v", u.Config().Id, skipped, err)
 				}
+				if err != nil {
+					errorsByUpstream = append(errorsByUpstream, err)
+				}
 				if !skipped {
 					return resp, err
 				} else if err != nil {
-					errorsByUpstream = append(errorsByUpstream, err)
 					continue
 				}
 			}
@@ -233,6 +235,9 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 				// because cache layer already is not caching unfinalized data.
 				resp = lvr
 			} else {
+				if len(errorsByUpstream) > 1 {
+					err = common.NewErrUpstreamsExhausted(errorsByUpstream)
+				}
 				inf.Close(nil, err)
 				return nil, err
 			}
