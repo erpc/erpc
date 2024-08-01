@@ -254,6 +254,29 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 			return false
 		}
 
+		// Do not try when upstream returned ErrUpstreamRequestSkipped
+		if scope == ScopeUpstream && common.HasCode(err, common.ErrCodeUpstreamRequestSkipped) {
+			return false
+		}
+
+		// if all upstreams returned ErrUpstreamRequestSkipped then do not retry
+		if scope == ScopeNetwork && common.HasCode(err, common.ErrCodeUpstreamsExhausted) {
+			exher, ok := err.(*common.ErrUpstreamsExhausted)
+			if ok {
+				errs := exher.Errors()
+				if len(errs) > 0 {
+					shouldRetry := false
+					for _, err := range errs {
+						if !common.HasCode(err, common.ErrCodeUpstreamRequestSkipped) {
+							shouldRetry = true
+							break
+						}
+					}
+					return shouldRetry
+				}
+			}
+		}
+
 		// Retry empty responses on network-level to give a chance for another upstream to
 		// try fetching the data as the current upstream is less likely to have the data ready on the next retry attempt.
 		if scope == ScopeNetwork {
