@@ -20,9 +20,9 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	HttpHost     string `yaml:"httpHost"`
-	HttpPort     int    `yaml:"httpPort"`
-	MaxTimeoutMs int    `yaml:"maxTimeoutMs"`
+	HttpHost   string `yaml:"httpHost"`
+	HttpPort   int    `yaml:"httpPort"`
+	MaxTimeout string `yaml:"maxTimeout"`
 }
 
 type DatabaseConfig struct {
@@ -230,16 +230,72 @@ func (c *NetworkConfig) NetworkId() string {
 func (c *ServerConfig) MarshalZerologObject(e *zerolog.Event) {
 	e.Str("host", c.HttpHost).
 		Int("port", c.HttpPort).
-		Int("maxTimeoutMs", c.MaxTimeoutMs)
+		Str("maxTimeout", c.MaxTimeout)
+}
+
+func (s *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type rawConfig Config
+	raw := rawConfig{
+		LogLevel: "INFO",
+		Server: &ServerConfig{
+			HttpHost: "0.0.0.0",
+			HttpPort: 4000,
+		},
+		Database: &DatabaseConfig{
+			EvmJsonRpcCache: &ConnectorConfig{
+				Driver: "memory",
+				Memory: &MemoryConnectorConfig{
+					MaxItems: 10_000,
+				},
+			},
+		},
+		Metrics: &MetricsConfig{
+			Enabled: true,
+			Host:    "0.0.0.0",
+			Port:    4001,
+		},
+	}
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+
+	*s = Config(raw)
+	return nil
 }
 
 func (s *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type rawUpstreamConfig UpstreamConfig
 	raw := rawUpstreamConfig{
+		Failsafe: &FailsafeConfig{
+			Timeout: &TimeoutPolicyConfig{
+				Duration: "15s",
+			},
+			Retry: &RetryPolicyConfig{
+				MaxAttempts:     2,
+				Delay:           "1s",
+				Jitter:          "500ms",
+				BackoffMaxDelay: "10s",
+				BackoffFactor:   2,
+			},
+			CircuitBreaker: &CircuitBreakerPolicyConfig{
+				FailureThresholdCount:    80,
+				FailureThresholdCapacity: 100,
+				HalfOpenAfter:            "5m",
+				SuccessThresholdCount:    3,
+				SuccessThresholdCapacity: 5,
+			},
+		},
 		AutoIgnoreUnsupportedMethods: true,
 	}
 	if err := unmarshal(&raw); err != nil {
 		return err
+	}
+
+	if raw.Endpoint == "" {
+		return NewErrInvalidConfig("upstream.*.endpoint is required")
+	}
+	if raw.Id == "" {
+		raw.Id = util.RedactEndpoint(raw.Endpoint)
 	}
 
 	*s = UpstreamConfig(raw)

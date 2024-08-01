@@ -23,60 +23,87 @@ type HttpServer struct {
 func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.ServerConfig, erpc *ERPC) *HttpServer {
 	addr := fmt.Sprintf("%s:%d", cfg.HttpHost, cfg.HttpPort)
 
+	timeOutDur, err := time.ParseDuration(cfg.MaxTimeout)
+	if err != nil {
+		logger.Error().Err(err).Msgf("failed to parse max timeout duration using 30s default")
+		timeOutDur = 30 * time.Second
+	}
+
 	handler := http.NewServeMux()
 	handler.HandleFunc("/", func(hrw http.ResponseWriter, r *http.Request) {
-		var resp common.NormalizedResponse
-		var err error
+		// Create a new context with timeout
+		requestCtx, cancel := context.WithTimeout(r.Context(), timeOutDur)
+		defer cancel()
 
-		logger.Debug().Msgf("received request on path: %s with body length: %d", r.URL.Path, r.ContentLength)
+		// Use a channel to signal when the request is complete
+		done := make(chan struct{})
 
-		// Split the URL path into segments
-		segments := strings.Split(r.URL.Path, "/")
+		go func() {
+			defer close(done)
 
-		// Check if the URL path has at least three segments ("/main/evm/1")
-		if len(segments) != 4 {
-			http.NotFound(hrw, r)
-			return
-		}
+			var resp common.NormalizedResponse
+			var err error
 
-		projectId := segments[1]
-		networkId := fmt.Sprintf("%s:%s", segments[2], segments[3])
+			logger.Debug().Msgf("received request on path: %s with body length: %d", r.URL.Path, r.ContentLength)
 
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			logger.Error().Err(err).Msgf("failed to read request body")
+			// Split the URL path into segments
+			segments := strings.Split(r.URL.Path, "/")
 
-			hrw.Header().Set("Content-Type", "application/json")
-			hrw.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(hrw).Encode(err)
-			return
-		}
-
-		logger.Debug().Msgf("received request for projectId: %s, networkId: %s with body: %s", projectId, networkId, body)
-
-		project, err := erpc.GetProject(projectId)
-		if err == nil {
-			nw, err := erpc.GetNetwork(projectId, networkId)
-			if err != nil {
-				logger.Error().Err(err).Msgf("failed to get network %s for project %s", networkId, projectId)
-				handleErrorResponse(logger, err, hrw)
+			// Check if the URL path has at least three segments ("/main/evm/1")
+			if len(segments) != 4 {
+				http.NotFound(hrw, r)
 				return
 			}
-			nq := upstream.NewNormalizedRequest(body)
-			nq.SetNetwork(nw)
-			nq.ApplyDirectivesFromHttpHeaders(r.Header)
 
-			resp, err = project.Forward(r.Context(), networkId, nq)
-			if err == nil && resp != nil {
+			projectId := segments[1]
+			networkId := fmt.Sprintf("%s:%s", segments[2], segments[3])
+
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				logger.Error().Err(err).Msgf("failed to read request body")
+
 				hrw.Header().Set("Content-Type", "application/json")
-				hrw.WriteHeader(http.StatusOK)
-				hrw.Write(resp.Body())
-				logger.Debug().Msgf("request forwarded successfully for projectId: %s, networkId: %s", projectId, networkId)
+				hrw.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(hrw).Encode(err)
+				return
+			}
+
+			logger.Debug().Msgf("received request for projectId: %s, networkId: %s with body: %s", projectId, networkId, body)
+
+			project, err := erpc.GetProject(projectId)
+			if err == nil {
+				nw, err := erpc.GetNetwork(projectId, networkId)
+				if err != nil {
+					logger.Error().Err(err).Msgf("failed to get network %s for project %s", networkId, projectId)
+					handleErrorResponse(logger, err, hrw)
+					return
+				}
+				nq := upstream.NewNormalizedRequest(body)
+				nq.SetNetwork(nw)
+				nq.ApplyDirectivesFromHttpHeaders(r.Header)
+
+				resp, err = project.Forward(r.Context(), networkId, nq)
+				if err == nil && resp != nil {
+					hrw.Header().Set("Content-Type", "application/json")
+					hrw.WriteHeader(http.StatusOK)
+					hrw.Write(resp.Body())
+					logger.Debug().Msgf("request forwarded successfully for projectId: %s, networkId: %s", projectId, networkId)
+				} else {
+					handleErrorResponse(logger, err, hrw)
+				}
 			} else {
 				handleErrorResponse(logger, err, hrw)
 			}
-		} else {
-			handleErrorResponse(logger, err, hrw)
+		}()
+
+		// Wait for either the request to complete or the timeout to occur
+		select {
+		case <-done:
+			// Request completed normally
+		case <-requestCtx.Done():
+			// Timeout occurred
+			logger.Error().Msgf("request timed out after %s", timeOutDur)
+			handleErrorResponse(logger, common.NewErrRequestTimeOut(timeOutDur), hrw)
 		}
 	})
 
