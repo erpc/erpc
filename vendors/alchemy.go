@@ -28,6 +28,10 @@ func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr int
 	err := bodyMap.Error
 	if code := err.Code; code != 0 {
 		msg := err.Message
+		var details map[string]interface{} = make(map[string]interface{})
+		if err.Data != "" {
+			details["data"] = err.Data
+		}
 
 		if code == -32600 && (strings.Contains(msg, "be authenticated") || strings.Contains(msg, "access key")) {
 			return common.NewErrEndpointUnauthorized(
@@ -36,6 +40,7 @@ func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr int
 					common.JsonRpcErrorUnauthorized,
 					msg,
 					nil,
+					details,
 				),
 			)
 		} else if code == -32600 && (strings.Contains(msg, "limit exceeded")) {
@@ -45,6 +50,7 @@ func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr int
 					common.JsonRpcErrorCapacityExceeded,
 					msg,
 					nil,
+					details,
 				),
 			)
 		} else if code >= -32000 && code <= -32099 {
@@ -54,6 +60,7 @@ func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr int
 					common.JsonRpcErrorServerSideException,
 					msg,
 					nil,
+					details,
 				),
 			)
 		} else if code >= -32099 && code <= -32599 || code >= -32603 && code <= -32699 || code >= -32701 && code <= -32768 {
@@ -63,6 +70,7 @@ func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr int
 					common.JsonRpcErrorClientSideException,
 					msg,
 					nil,
+					details,
 				),
 			)
 		} else if code == 3 {
@@ -72,6 +80,7 @@ func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr int
 					common.JsonRpcErrorEvmReverted,
 					msg,
 					nil,
+					details,
 				),
 			)
 		}
