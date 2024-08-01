@@ -139,7 +139,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		resp, skipped, err = u.Forward(ctx, req)
 		if !common.IsNull(err) {
 			// If upstream complains that the method is not supported let's dynamically add it ignoreMethods config
-			if common.HasCode(err, common.ErrCodeEndpointUnsupported) {
+			if common.HasErrorCode(err, common.ErrCodeEndpointUnsupported) {
 				lg.Warn().Err(err).Str("method", method).Msgf("upstream does not support method, dynamically adding to ignoreMethods")
 				u.IgnoreMethod(method)
 			}
@@ -228,7 +228,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		err := upstream.TranslateFailsafeError(execution, execErr)
 		// If error is due to empty response be generous and accept it,
 		// because this means after many retries still no data is available.
-		if common.HasCode(err, common.ErrCodeFailsafeRetryExceeded) {
+		if common.HasErrorCode(err, common.ErrCodeFailsafeRetryExceeded) {
 			lvr := req.LastValidResponse()
 			if !lvr.IsObjectNull() && lvr.IsResultEmptyish() {
 				// We don't need to worry about replying wrongly empty responses for unfinalized data
@@ -327,14 +327,14 @@ func (n *Network) processResponse(resp common.NormalizedResponse, skipped bool, 
 
 	switch n.Architecture() {
 	case common.ArchitectureEvm:
-		if common.HasCode(err, common.ErrCodeJsonRpcExceptionInternal) {
+		if common.HasErrorCode(err, common.ErrCodeJsonRpcExceptionInternal) {
 			return resp, skipped, err
-		} else if common.HasCode(err, common.ErrCodeJsonRpcRequestUnmarshal) {
+		} else if common.HasErrorCode(err, common.ErrCodeJsonRpcRequestUnmarshal) {
 			return resp, skipped, common.NewErrJsonRpcExceptionExternal(
 				int(common.JsonRpcErrorParseException),
 				"failed to parse json-rpc request",
 			)
-		} else if common.HasCode(err, common.ErrCodeFailsafeCircuitBreakerOpen) {
+		} else if common.HasErrorCode(err, common.ErrCodeFailsafeCircuitBreakerOpen) {
 			// Explicitly skip when CB is open to not count the failed request towards network "retries"
 			return resp, true, err
 		}

@@ -1121,7 +1121,7 @@ var NewErrRecordNotFound = func(key string, driver string) error {
 	}
 }
 
-func HasCode(err error, code ErrorCode) bool {
+func HasErrorCode(err error, code ErrorCode) bool {
 	if be, ok := err.(StandardError); ok {
 		return be.HasCode(code)
 	}
@@ -1131,4 +1131,25 @@ func HasCode(err error, code ErrorCode) bool {
 	}
 
 	return false
+}
+
+func IsRetryableTowardsUpstream(err error) bool {
+	return (
+	// Circuit breaker is open -> No Retry
+	!HasErrorCode(err, ErrCodeFailsafeCircuitBreakerOpen) &&
+
+		// Unsupported features and methods -> No Retry
+		!HasErrorCode(err, ErrCodeUpstreamRequestSkipped) &&
+
+		// Do not try when 3rd-party providers run out of monthly capacity
+		!HasErrorCode(err, ErrCodeEndpointCapacityExceeded) &&
+
+		// 400 / 404 / 405 / 413 -> No Retry
+		// RPC-RPC client-side error (invalid params) -> No Retry
+		!HasErrorCode(err, ErrCodeEndpointClientSideException) &&
+		!HasErrorCode(err, ErrCodeJsonRpcRequestUnmarshal) &&
+
+		// Upstream-level + 401 / 403 -> No Retry
+		// RPC-RPC vendor billing/capacity/auth -> No Retry
+		!HasErrorCode(err, ErrCodeEndpointUnauthorized))
 }

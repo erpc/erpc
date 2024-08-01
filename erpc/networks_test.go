@@ -2685,7 +2685,7 @@ func TestNetwork_Forward(t *testing.T) {
 			return
 		}
 
-		if !common.HasCode(err, common.ErrCodeEndpointCapacityExceeded) {
+		if !common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded) {
 			t.Errorf("Expected error code %v, got %+v", common.ErrCodeEndpointCapacityExceeded, err)
 		}
 	})
@@ -2779,7 +2779,7 @@ func TestNetwork_Forward(t *testing.T) {
 			return
 		}
 
-		if !common.HasCode(err, common.ErrCodeEndpointCapacityExceeded) {
+		if !common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded) {
 			t.Errorf("Expected error code %v, got %+v", common.ErrCodeEndpointCapacityExceeded, err)
 		}
 	})

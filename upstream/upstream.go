@@ -253,17 +253,17 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 			}
 			if errCall != nil {
 				if !errors.Is(errCall, context.DeadlineExceeded) && !errors.Is(errCall, context.Canceled) {
-					if common.HasCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
+					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
 						u.metricsTracker.RecordUpstreamRemoteRateLimited(
 							cfg.Id,
 							netId,
 							method,
 						)
-					} else if common.HasCode(errCall, common.ErrCodeUpstreamRequestSkipped) {
+					} else if common.HasErrorCode(errCall, common.ErrCodeUpstreamRequestSkipped) {
 						health.MetricUpstreamSkippedTotal.WithLabelValues(u.ProjectId, cfg.Id, netId, method).Inc()
-					} else if common.HasCode(errCall, common.ErrCodeEndpointNotSyncedYet) {
+					} else if common.HasErrorCode(errCall, common.ErrCodeEndpointNotSyncedYet) {
 						health.MetricUpstreamNotSyncedErrorTotal.WithLabelValues(u.ProjectId, cfg.Id, netId, method).Inc()
-					} else if !common.HasCode(errCall, common.ErrCodeEndpointClientSideException) {
+					} else if !common.HasErrorCode(errCall, common.ErrCodeEndpointClientSideException) {
 						u.metricsTracker.RecordUpstreamFailure(
 							cfg.Id,
 							netId,
