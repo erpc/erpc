@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
+	"time"
 )
 
 func IsNull(err interface{}) bool {
@@ -205,6 +207,39 @@ type ErrorWithBody interface {
 }
 
 //
+// Server
+//
+
+type ErrInvalidConfig struct{ BaseError }
+
+var NewErrInvalidConfig = func(message string) error {
+	return &ErrInvalidConfig{
+		BaseError{
+			Code:    "ErrInvalidConfig",
+			Message: message,
+		},
+	}
+}
+
+type ErrRequestTimeOut struct{ BaseError }
+
+var NewErrRequestTimeOut = func(timeout time.Duration) error {
+	return &ErrRequestTimeOut{
+		BaseError{
+			Code:    "ErrRequestTimeOut",
+			Message: "request timed out before any upstream could respond",
+			Details: map[string]interface{}{
+				"timeoutSeconds": timeout.Seconds(),
+			},
+		},
+	}
+}
+
+func (e *ErrRequestTimeOut) ErrorStatusCode() int {
+	return http.StatusRequestTimeout
+}
+
+//
 // Projects
 //
 
@@ -317,14 +352,8 @@ var NewErrUpstreamClientInitialization = func(cause error, upstreamId string) er
 
 type ErrUpstreamRequest struct{ BaseError }
 
-var NewErrUpstreamRequest = func(cause error, upstreamId string, req NormalizedRequest) error {
-	var reqStr string
-	s, err := json.Marshal(req)
-	if err != nil {
-		reqStr = fmt.Sprintf("%v", req)
-	} else if s != nil {
-		reqStr = string(s)
-	}
+var NewErrUpstreamRequest = func(cause error, upstreamId string, duration time.Duration) error {
+
 	return &ErrUpstreamRequest{
 		BaseError{
 			Code:    "ErrUpstreamRequest",
@@ -332,7 +361,7 @@ var NewErrUpstreamRequest = func(cause error, upstreamId string, req NormalizedR
 			Cause:   cause,
 			Details: map[string]interface{}{
 				"upstreamId": upstreamId,
-				"request":    reqStr,
+				"durationMs": duration.Milliseconds(),
 			},
 		},
 	}
@@ -355,15 +384,25 @@ var NewErrUpstreamMalformedResponse = func(cause error, upstreamId string) error
 
 type ErrUpstreamsExhausted struct{ BaseError }
 
-var NewErrUpstreamsExhausted = func(ers []error) error {
+var ErrCodeUpstreamsExhausted ErrorCode = "ErrUpstreamsExhausted"
+
+var NewErrUpstreamsExhausted = func(req NormalizedRequest, ers []error, duration time.Duration) error {
+	var reqStr string
+	s, err := json.Marshal(req)
+	if err != nil {
+		reqStr = fmt.Sprintf("%v", req)
+	} else if s != nil {
+		reqStr = string(s)
+	}
 	return &ErrUpstreamsExhausted{
 		BaseError{
-			Code:    "ErrUpstreamsExhausted",
+			Code:    ErrCodeUpstreamsExhausted,
 			Message: "all available upstreams have been exhausted",
 			Cause:   errors.Join(ers...),
-			// Details: map[string]interface{}{
-			// 	"errors": errors,
-			// },
+			Details: map[string]interface{}{
+				"request":    reqStr,
+				"durationMs": duration.Milliseconds(),
+			},
 		},
 	}
 }
@@ -379,17 +418,30 @@ func (e *ErrUpstreamsExhausted) CodeChain() string {
 		return codeChain
 	}
 	causesChains := []string{}
-    if joinedErr, ok := e.Cause.(interface{ Unwrap() []error }); ok {
-        for _, e := range joinedErr.Unwrap() {
-            if se, ok := e.(StandardError); ok {
-                causesChains = append(causesChains, se.CodeChain())
-            }
-        }
+	if joinedErr, ok := e.Cause.(interface{ Unwrap() []error }); ok {
+		for _, e := range joinedErr.Unwrap() {
+			if se, ok := e.(StandardError); ok {
+				causesChains = append(causesChains, se.CodeChain())
+			}
+		}
 
 		codeChain += " <= (" + strings.Join(causesChains, " + ") + ")"
 	}
 
 	return codeChain
+}
+
+func (e *ErrUpstreamsExhausted) Errors() []error {
+	if e.Cause == nil {
+		return nil
+	}
+
+	errs, ok := e.Cause.(interface{ Unwrap() []error })
+	if !ok {
+		return nil
+	}
+
+	return errs.Unwrap()
 }
 
 func (e *ErrUpstreamsExhausted) DeepestMessage() string {
@@ -398,12 +450,12 @@ func (e *ErrUpstreamsExhausted) DeepestMessage() string {
 	}
 
 	causesDeepestMsgs := []string{}
-    if joinedErr, ok := e.Cause.(interface{ Unwrap() []error }); ok {
-        for _, e := range joinedErr.Unwrap() {
-            if se, ok := e.(StandardError); ok {
-                causesDeepestMsgs = append(causesDeepestMsgs, se.DeepestMessage())
-            }
-        }
+	if joinedErr, ok := e.Cause.(interface{ Unwrap() []error }); ok {
+		for _, e := range joinedErr.Unwrap() {
+			if se, ok := e.(StandardError); ok {
+				causesDeepestMsgs = append(causesDeepestMsgs, se.DeepestMessage())
+			}
+		}
 	}
 
 	if len(causesDeepestMsgs) > 0 {
@@ -476,11 +528,13 @@ var NewErrUpstreamInitialization = func(cause error, upstreamId string) error {
 
 type ErrUpstreamRequestSkipped struct{ BaseError }
 
+var ErrCodeUpstreamRequestSkipped ErrorCode = "ErrUpstreamRequestSkipped"
+
 var NewErrUpstreamRequestSkipped = func(reason error, upstreamId string, req NormalizedRequest) error {
 	m, _ := req.Method()
 	return &ErrUpstreamRequestSkipped{
 		BaseError{
-			Code:    "ErrUpstreamRequestSkipped",
+			Code:    ErrCodeUpstreamRequestSkipped,
 			Message: "skipped forwarding request to upstream",
 			Cause:   reason,
 			Details: map[string]interface{}{
@@ -610,31 +664,23 @@ type ErrFailsafeRetryExceeded struct{ BaseError }
 
 var ErrCodeFailsafeRetryExceeded ErrorCode = "ErrFailsafeRetryExceeded"
 
-var NewErrFailsafeRetryExceeded = func(cause error, lastResult interface{}, attempts int, retries int) error {
+var NewErrFailsafeRetryExceeded = func(cause error, attempts int, retries int) error {
+	dets := map[string]interface{}{
+		"attempts": attempts,
+		"retries":  retries,
+	}
 	return &ErrFailsafeRetryExceeded{
 		BaseError{
 			Code:    ErrCodeFailsafeRetryExceeded,
 			Message: "failsafe retry policy exceeded",
 			Cause:   cause,
-			Details: map[string]interface{}{
-				"lastResult": lastResult,
-				"attempts":   attempts,
-				"retries":    retries,
-			},
+			Details: dets,
 		},
 	}
 }
 
 func (e *ErrFailsafeRetryExceeded) ErrorStatusCode() int {
 	return 503
-}
-
-func (e *ErrFailsafeRetryExceeded) LastResult() interface{} {
-	r, ok := e.Details["lastResult"]
-	if !ok {
-		return nil
-	}
-	return r
 }
 
 type ErrFailsafeCircuitBreakerOpen struct{ BaseError }
@@ -953,6 +999,7 @@ const (
 	JsonRpcErrorNotSyncedYet      JsonRpcErrorNumber = -32014
 	JsonRpcErrorNodeTimeout       JsonRpcErrorNumber = -32015
 	JsonRpcErrorUnauthorized      JsonRpcErrorNumber = -32016
+	JsonRpcErrorCallException     JsonRpcErrorNumber = -32017
 )
 
 // This struct represents an json-rpc error with erpc structure (i.e. code is string)
@@ -1079,7 +1126,7 @@ var NewErrRecordNotFound = func(key string, driver string) error {
 	}
 }
 
-func HasCode(err error, code ErrorCode) bool {
+func HasErrorCode(err error, code ErrorCode) bool {
 	if be, ok := err.(StandardError); ok {
 		return be.HasCode(code)
 	}
@@ -1089,4 +1136,25 @@ func HasCode(err error, code ErrorCode) bool {
 	}
 
 	return false
+}
+
+func IsRetryableTowardsUpstream(err error) bool {
+	return (
+	// Circuit breaker is open -> No Retry
+	!HasErrorCode(err, ErrCodeFailsafeCircuitBreakerOpen) &&
+
+		// Unsupported features and methods -> No Retry
+		!HasErrorCode(err, ErrCodeUpstreamRequestSkipped) &&
+
+		// Do not try when 3rd-party providers run out of monthly capacity
+		!HasErrorCode(err, ErrCodeEndpointCapacityExceeded) &&
+
+		// 400 / 404 / 405 / 413 -> No Retry
+		// RPC-RPC client-side error (invalid params) -> No Retry
+		!HasErrorCode(err, ErrCodeEndpointClientSideException) &&
+		!HasErrorCode(err, ErrCodeJsonRpcRequestUnmarshal) &&
+
+		// Upstream-level + 401 / 403 -> No Retry
+		// RPC-RPC vendor billing/capacity/auth -> No Retry
+		!HasErrorCode(err, ErrCodeEndpointUnauthorized))
 }

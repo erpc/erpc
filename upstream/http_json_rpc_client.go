@@ -75,7 +75,7 @@ func (c *GenericHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, erro
 func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *NormalizedRequest) (*NormalizedResponse, error) {
 	jrReq, err := req.JsonRpcRequest()
 	if err != nil {
-		return nil, common.NewErrUpstreamRequest(err, c.upstream.Config().Id, req)
+		return nil, common.NewErrUpstreamRequest(err, c.upstream.Config().Id, 0)
 	}
 
 	requestBody, err := json.Marshal(common.JsonRpcRequest{
@@ -171,45 +171,123 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 
 		// Infer from known status codes
 		if r.StatusCode == 401 || r.StatusCode == 403 {
-			return common.NewErrEndpointUnauthorized(err)
+			return common.NewErrEndpointUnauthorized(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorUnauthorized,
+					err.Message,
+					nil,
+				),
+			)
 		} else if r.StatusCode == 415 || code == common.JsonRpcErrorUnsupportedException {
-			return common.NewErrEndpointUnsupported(err)
+			return common.NewErrEndpointUnsupported(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorUnsupportedException,
+					err.Message,
+					nil,
+				),
+			)
 		} else if r.StatusCode == 429 || r.StatusCode == 408 {
 			return common.NewErrEndpointCapacityExceeded(err)
-		} else if r.StatusCode >= 500 {
-			return common.NewErrEndpointServerSideException(err)
-
 			// Wrap rpc exception with endpoint-specific errors (useful for erpc specialized handling)
-		} else if code == common.JsonRpcErrorUnsupportedException {
-			return common.NewErrEndpointUnsupported(err)
-		} else if code == common.JsonRpcErrorServerSideException {
-			return common.NewErrEndpointServerSideException(err)
-
-			// Wrap stanard EIP-1474 rpc error codes with endpoint-specific errors (useful for erpc specialized handling)
 		} else if code == -32004 || code == -32001 {
-			return common.NewErrEndpointUnsupported(err)
+			return common.NewErrEndpointUnsupported(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorUnsupportedException,
+					err.Message,
+					nil,
+				),
+			)
 		} else if code == -32005 {
-			return common.NewErrEndpointCapacityExceeded(err)
-		}
-
-		// Text-based common errors
-		if strings.Contains(err.Message, "missing trie node") {
-			return common.NewErrEndpointNotSyncedYet(err)
-		} else if code == -32601 && (strings.Contains(err.Message, "not supported") || strings.Contains(err.Message, "not found")) {
-			return common.NewErrEndpointUnsupported(err)
+			return common.NewErrEndpointCapacityExceeded(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorCapacityExceeded,
+					err.Message,
+					nil,
+				),
+			)
+		} else if strings.Contains(err.Message, "missing trie node") {
+			return common.NewErrEndpointNotSyncedYet(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorNotSyncedYet,
+					err.Message,
+					nil,
+				),
+			)
 		} else if strings.Contains(err.Message, "genesis is not traceable") {
 			// This usually happens when sending a trace_* request to a newly created block
-			return common.NewErrEndpointNotSyncedYet(err)
+			return common.NewErrEndpointNotSyncedYet(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorNotSyncedYet,
+					err.Message,
+					nil,
+				),
+			)
 		} else if strings.Contains(err.Message, "execution reverted") {
-			return common.NewErrEndpointClientSideException(err)
-		} else if strings.Contains(err.Message, "insufficient funds") {
-			return common.NewErrEndpointClientSideException(err)
+			return common.NewErrEndpointClientSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorEvmReverted,
+					err.Message,
+					nil,
+				),
+			)
+		} else if strings.Contains(err.Message, "insufficient funds") || strings.Contains(err.Message, "out of gas") {
+			return common.NewErrEndpointClientSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorCallException,
+					err.Message,
+					nil,
+				),
+			)
 		} else if strings.Contains(err.Message, "not found") {
-			return common.NewErrEndpointClientSideException(err)
+			if strings.Contains(err.Message, "Method") || strings.Contains(err.Message, "method") {
+				return common.NewErrEndpointUnsupported(
+					common.NewErrJsonRpcExceptionInternal(
+						int(code),
+						common.JsonRpcErrorUnsupportedException,
+						err.Message,
+						nil,
+					),
+				)
+			} else {
+				return common.NewErrEndpointClientSideException(
+					common.NewErrJsonRpcExceptionInternal(
+						int(code),
+						common.JsonRpcErrorUnsupportedException,
+						err.Message,
+						nil,
+					),
+				)
+			}
+		} else if strings.Contains(err.Message, "Unsupported method") ||
+			strings.Contains(err.Message, "not supported") ||
+			strings.Contains(err.Message, "method is not whitelisted") {
+			return common.NewErrEndpointUnsupported(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorUnsupportedException,
+					err.Message,
+					nil,
+				),
+			)
 		}
 
 		// By default we consider a problem on the server so that retry/failover mechanisms try other upstreams
-		return common.NewErrEndpointServerSideException(err)
+		return common.NewErrEndpointServerSideException(
+			common.NewErrJsonRpcExceptionInternal(
+				int(code),
+				common.JsonRpcErrorServerSideException,
+				err.Message,
+				nil,
+			),
+		)
 	}
 
 	return nil

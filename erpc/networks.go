@@ -63,6 +63,8 @@ func (n *Network) Architecture() common.NetworkArchitecture {
 }
 
 func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) (common.NormalizedResponse, error) {
+	startTime := time.Now()
+
 	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
 	req.SetNetwork(n)
 
@@ -127,7 +129,6 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 	}
 
 	// 4) Iterate over upstreams and forward the request until success or fatal failure
-	var errorsByUpstream = []error{}
 	tryForward := func(
 		u *upstream.Upstream,
 		ctx context.Context,
@@ -139,7 +140,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		resp, skipped, err = u.Forward(ctx, req)
 		if !common.IsNull(err) {
 			// If upstream complains that the method is not supported let's dynamically add it ignoreMethods config
-			if common.HasCode(err, common.ErrCodeEndpointUnsupported) {
+			if common.HasErrorCode(err, common.ErrCodeEndpointUnsupported) {
 				lg.Warn().Err(err).Str("method", method).Msgf("upstream does not support method, dynamically adding to ignoreMethods")
 				u.IgnoreMethod(method)
 			}
@@ -164,6 +165,8 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		return nil, err
 	}
 	var execution failsafe.Execution[common.NormalizedResponse]
+	var errorsByUpstream = []error{}
+	var errorsMutex sync.Mutex
 	resp, execErr := n.failsafeExecutor.
 		WithContext(ctx).
 		GetWithExecution(func(exec failsafe.Execution[common.NormalizedResponse]) (common.NormalizedResponse, error) {
@@ -212,7 +215,9 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 					lg.Debug().Err(err).Msgf("forwarded request to upstream %s skipped: %v err: %v", u.Config().Id, skipped, err)
 				}
 				if err != nil {
+					errorsMutex.Lock()
 					errorsByUpstream = append(errorsByUpstream, err)
+					errorsMutex.Unlock()
 				}
 				if !skipped {
 					return resp, err
@@ -221,22 +226,22 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 				}
 			}
 
-			return nil, common.NewErrUpstreamsExhausted(errorsByUpstream)
+			return nil, common.NewErrUpstreamsExhausted(req, errorsByUpstream, time.Since(startTime))
 		})
 
 	if execErr != nil {
 		err := upstream.TranslateFailsafeError(execution, execErr)
 		// If error is due to empty response be generous and accept it,
 		// because this means after many retries still no data is available.
-		if common.HasCode(err, common.ErrCodeFailsafeRetryExceeded) {
+		if common.HasErrorCode(err, common.ErrCodeFailsafeRetryExceeded) {
 			lvr := req.LastValidResponse()
 			if !lvr.IsObjectNull() && lvr.IsResultEmptyish() {
 				// We don't need to worry about replying wrongly empty responses for unfinalized data
 				// because cache layer already is not caching unfinalized data.
 				resp = lvr
 			} else {
-				if len(errorsByUpstream) > 1 {
-					err = common.NewErrUpstreamsExhausted(errorsByUpstream)
+				if len(errorsByUpstream) > 0 {
+					err = common.NewErrUpstreamsExhausted(req, errorsByUpstream, time.Since(startTime))
 				}
 				inf.Close(nil, err)
 				return nil, err
@@ -327,14 +332,14 @@ func (n *Network) processResponse(resp common.NormalizedResponse, skipped bool, 
 
 	switch n.Architecture() {
 	case common.ArchitectureEvm:
-		if common.HasCode(err, common.ErrCodeJsonRpcExceptionInternal) {
+		if common.HasErrorCode(err, common.ErrCodeJsonRpcExceptionInternal) {
 			return resp, skipped, err
-		} else if common.HasCode(err, common.ErrCodeJsonRpcRequestUnmarshal) {
+		} else if common.HasErrorCode(err, common.ErrCodeJsonRpcRequestUnmarshal) {
 			return resp, skipped, common.NewErrJsonRpcExceptionExternal(
 				int(common.JsonRpcErrorParseException),
 				"failed to parse json-rpc request",
 			)
-		} else if common.HasCode(err, common.ErrCodeFailsafeCircuitBreakerOpen) {
+		} else if common.HasErrorCode(err, common.ErrCodeFailsafeCircuitBreakerOpen) {
 			// Explicitly skip when CB is open to not count the failed request towards network "retries"
 			return resp, true, err
 		}

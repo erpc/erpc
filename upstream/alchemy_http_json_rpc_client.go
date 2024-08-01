@@ -76,7 +76,7 @@ type AlchemyHttpJsonRpcClient struct {
 }
 
 func NewAlchemyHttpJsonRpcClient(pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
-	if !strings.HasPrefix(parsedUrl.Scheme, "alchemy") {
+	if !strings.HasSuffix(parsedUrl.Scheme, "alchemy") {
 		return nil, fmt.Errorf("invalid Alchemy URL scheme: %s", parsedUrl.Scheme)
 	}
 

@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -59,14 +60,14 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *ups
 	p.Logger.Debug().Str("method", method).Msgf("forwarding request to network")
 	resp, err := network.Forward(ctx, nq)
 
-	if err == nil || common.HasCode(err, common.ErrCodeEndpointClientSideException) {
+	if err == nil || common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
 		if err != nil {
 			p.Logger.Info().Err(err).Msgf("finished forwarding request for network with some client-side exception")
 		} else {
 			p.Logger.Info().Msgf("successfully forward request for network")
 		}
 		health.MetricNetworkSuccessfulRequests.WithLabelValues(network.ProjectId, network.NetworkId, method).Inc()
-		return resp, nil
+		return resp, err
 	} else {
 		p.Logger.Warn().Err(err).Str("method", method).Msgf("failed to forward request for network")
 		health.MetricNetworkFailedRequests.WithLabelValues(network.ProjectId, network.NetworkId, method, common.ErrorSummary(err)).Inc()
@@ -92,7 +93,28 @@ func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) 
 	}
 
 	if nwCfg == nil {
-		nwCfg = &common.NetworkConfig{}
+		allUps, err := p.upstreamsRegistry.GetSortedUpstreams(networkId, "*")
+		if err != nil {
+			return nil, err
+		}
+		nwCfg = &common.NetworkConfig{
+			Failsafe: &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts:     int(math.Min(float64(len(allUps)), 3)),
+					Delay:           "1s",
+					Jitter:          "500ms",
+					BackoffMaxDelay: "10s",
+					BackoffFactor:   2,
+				},
+				Timeout: &common.TimeoutPolicyConfig{
+					Duration: "30s",
+				},
+				Hedge: &common.HedgePolicyConfig{
+					Delay:    "500ms",
+					MaxCount: 1,
+				},
+			},
+		}
 
 		s := strings.Split(networkId, ":")
 		if len(s) != 2 {

@@ -5,10 +5,10 @@ import { Callout } from "nextra/components";
 An upstream is defined to handle 1 or more networks (a.k.a. chains). There are currently these types of upstreams:
 
 - [`evm`](#evm) A generic EVM-compatible JSON-RPC endpoint. This is the default and most-used type.
-- [`evm-alchemy`](#alchemy) A special upstream type that accepts Alchemy API-KEY and automatically adds all their EVM chains.
+- [`evm+alchemy`](#alchemy) A special upstream type that accepts Alchemy API-KEY and automatically adds all their EVM chains.
 
 <Callout type='info'>
-  eRPC supports any EVM-compatible JSON-RPC endpoint when using `evm` type. Specialized types like "evm-alchemy" are built for well-known providers to make it easier to import "all supported evm chains" with just an API-KEY.
+  eRPC supports any EVM-compatible JSON-RPC endpoint when using `evm` type. Specialized types like "evm+alchemy" are built for well-known providers to make it easier to import "all supported evm chains" with just an API-KEY.
 </Callout>
 
 ## Selection mechanism
@@ -105,7 +105,7 @@ projects:
         # ...
 ```
 
-### `evm-alchemy` JSON-RPC
+### `evm+alchemy` JSON-RPC
 
 This upstream type is built specially for [Alchemy](https://alchemy.com) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
 
@@ -116,8 +116,8 @@ projects:
     # ...
     upstreams:
       - id: my-alchemy
-        type: evm-alchemy # Optional. It will automatically detect this if the endpoint starts with "evm-alchemy://"
-        endpoint: evm-alchemy://YOUR_ALCHEMY_API_KEY
+        type: evm+alchemy # Optional. It will automatically detect this if the endpoint starts with "evm+alchemy://"
+        endpoint: evm+alchemy://YOUR_ALCHEMY_API_KEY
         # ...
 ```
 
