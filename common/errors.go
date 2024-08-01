@@ -659,7 +659,7 @@ type ErrFailsafeRetryExceeded struct{ BaseError }
 
 var ErrCodeFailsafeRetryExceeded ErrorCode = "ErrFailsafeRetryExceeded"
 
-var NewErrFailsafeRetryExceeded = func(cause error, lastResult interface{}, attempts int, retries int) error {
+var NewErrFailsafeRetryExceeded = func(cause error, attempts int, retries int) error {
 	dets := map[string]interface{}{
 		"attempts": attempts,
 		"retries":  retries,
@@ -676,14 +676,6 @@ var NewErrFailsafeRetryExceeded = func(cause error, lastResult interface{}, atte
 
 func (e *ErrFailsafeRetryExceeded) ErrorStatusCode() int {
 	return 503
-}
-
-func (e *ErrFailsafeRetryExceeded) LastResult() interface{} {
-	r, ok := e.Details["lastResult"]
-	if !ok {
-		return nil
-	}
-	return r
 }
 
 type ErrFailsafeCircuitBreakerOpen struct{ BaseError }
