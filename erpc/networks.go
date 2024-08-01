@@ -129,7 +129,6 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 	}
 
 	// 4) Iterate over upstreams and forward the request until success or fatal failure
-	var errorsByUpstream = []error{}
 	tryForward := func(
 		u *upstream.Upstream,
 		ctx context.Context,
@@ -166,6 +165,8 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		return nil, err
 	}
 	var execution failsafe.Execution[common.NormalizedResponse]
+	var errorsByUpstream = []error{}
+	var errorsMutex sync.Mutex
 	resp, execErr := n.failsafeExecutor.
 		WithContext(ctx).
 		GetWithExecution(func(exec failsafe.Execution[common.NormalizedResponse]) (common.NormalizedResponse, error) {
@@ -214,7 +215,9 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 					lg.Debug().Err(err).Msgf("forwarded request to upstream %s skipped: %v err: %v", u.Config().Id, skipped, err)
 				}
 				if err != nil {
+					errorsMutex.Lock()
 					errorsByUpstream = append(errorsByUpstream, err)
+					errorsMutex.Unlock()
 				}
 				if !skipped {
 					return resp, err
@@ -223,7 +226,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 				}
 			}
 
-			return nil, common.NewErrUpstreamsExhausted(errorsByUpstream, time.Since(startTime))
+			return nil, common.NewErrUpstreamsExhausted(req, errorsByUpstream, time.Since(startTime))
 		})
 
 	if execErr != nil {
@@ -237,8 +240,8 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 				// because cache layer already is not caching unfinalized data.
 				resp = lvr
 			} else {
-				if len(errorsByUpstream) > 1 {
-					err = common.NewErrUpstreamsExhausted(errorsByUpstream, time.Since(startTime))
+				if len(errorsByUpstream) > 0 {
+					err = common.NewErrUpstreamsExhausted(req, errorsByUpstream, time.Since(startTime))
 				}
 				inf.Close(nil, err)
 				return nil, err
