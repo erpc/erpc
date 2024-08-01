@@ -14,7 +14,7 @@
 ✅ Receive consistent error codes with details across 5+ third-party providers and reporting of occured errors.<br/>
 ✅ Single dashboard to observe rps throughput, errors, and avg. latency of all your RPC providers.<br/>
 🏭 Smart batching to aggregates multiple RPC or contract calls into one.<br/>
-🏭 web-socekt support for new blocks and logs load-balanced across upstreams.<br/>
+🏭 web-socket support for new blocks and logs load-balanced across upstreams.<br/>
 
 ## Roadmap
 
