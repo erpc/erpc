@@ -988,6 +988,7 @@ const (
 	JsonRpcErrorNotSyncedYet      JsonRpcErrorNumber = -32014
 	JsonRpcErrorNodeTimeout       JsonRpcErrorNumber = -32015
 	JsonRpcErrorUnauthorized      JsonRpcErrorNumber = -32016
+	JsonRpcErrorCallException     JsonRpcErrorNumber = -32017
 )
 
 // This struct represents an json-rpc error with erpc structure (i.e. code is string)

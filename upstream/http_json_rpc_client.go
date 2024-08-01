@@ -237,11 +237,11 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 					nil,
 				),
 			)
-		} else if strings.Contains(err.Message, "insufficient funds") {
+		} else if strings.Contains(err.Message, "insufficient funds") || strings.Contains(err.Message, "out of gas") {
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
-					common.JsonRpcErrorClientSideException,
+					common.JsonRpcErrorCallException,
 					err.Message,
 					nil,
 				),
