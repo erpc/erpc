@@ -16,11 +16,16 @@ func RedactEndpoint(endpoint string) string {
 	parsedURL, err := url.Parse(endpoint)
 	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
 		// If parsing fails or the URL is incomplete, return just the hash
-		return hash
+		return "redacted=" + hash
 	}
 
 	// Construct the redacted endpoint
-	redactedEndpoint := parsedURL.Scheme + "://" + parsedURL.Host + "#hash=" + hash
+	var redactedEndpoint string
+	if parsedURL.Scheme == "http" || parsedURL.Scheme == "https" || parsedURL.Scheme == "ws" || parsedURL.Scheme == "wss" {
+		redactedEndpoint = parsedURL.Scheme + "#" + parsedURL.Host + "#redacted=" + hash
+	} else {
+		redactedEndpoint = parsedURL.Scheme + "#redacted=" + hash
+	}
 
 	return redactedEndpoint
 }

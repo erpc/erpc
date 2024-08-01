@@ -82,7 +82,7 @@ type ProjectConfig struct {
 
 type UpstreamConfig struct {
 	Id                           string             `yaml:"id"`
-	Type                         UpstreamType       `yaml:"type"` // evm, evm-alchemy, solana
+	Type                         UpstreamType       `yaml:"type"` // evm, evm+alchemy, solana
 	VendorName                   string             `yaml:"vendorName"`
 	Endpoint                     string             `yaml:"endpoint"`
 	Evm                          *EvmUpstreamConfig `yaml:"evm"`

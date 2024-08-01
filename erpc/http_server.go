@@ -25,7 +25,9 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 
 	timeOutDur, err := time.ParseDuration(cfg.MaxTimeout)
 	if err != nil {
-		logger.Error().Err(err).Msgf("failed to parse max timeout duration using 30s default")
+		if cfg.MaxTimeout != "" {
+			logger.Error().Err(err).Msgf("failed to parse max timeout duration using 30s default")
+		}
 		timeOutDur = 30 * time.Second
 	}
 
