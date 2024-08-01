@@ -75,7 +75,7 @@ func (c *GenericHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, erro
 func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *NormalizedRequest) (*NormalizedResponse, error) {
 	jrReq, err := req.JsonRpcRequest()
 	if err != nil {
-		return nil, common.NewErrUpstreamRequest(err, c.upstream.Config().Id, req)
+		return nil, common.NewErrUpstreamRequest(err, c.upstream.Config().Id, req, 0)
 	}
 
 	requestBody, err := json.Marshal(common.JsonRpcRequest{

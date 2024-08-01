@@ -352,7 +352,7 @@ var NewErrUpstreamClientInitialization = func(cause error, upstreamId string) er
 
 type ErrUpstreamRequest struct{ BaseError }
 
-var NewErrUpstreamRequest = func(cause error, upstreamId string, req NormalizedRequest) error {
+var NewErrUpstreamRequest = func(cause error, upstreamId string, req NormalizedRequest, duration time.Duration) error {
 	var reqStr string
 	s, err := json.Marshal(req)
 	if err != nil {
@@ -368,6 +368,7 @@ var NewErrUpstreamRequest = func(cause error, upstreamId string, req NormalizedR
 			Details: map[string]interface{}{
 				"upstreamId": upstreamId,
 				"request":    reqStr,
+				"durationMs": duration.Milliseconds(),
 			},
 		},
 	}
@@ -392,12 +393,15 @@ type ErrUpstreamsExhausted struct{ BaseError }
 
 var ErrCodeUpstreamsExhausted ErrorCode = "ErrUpstreamsExhausted"
 
-var NewErrUpstreamsExhausted = func(ers []error) error {
+var NewErrUpstreamsExhausted = func(ers []error, duration time.Duration) error {
 	return &ErrUpstreamsExhausted{
 		BaseError{
 			Code:    ErrCodeUpstreamsExhausted,
 			Message: "all available upstreams have been exhausted",
 			Cause:   errors.Join(ers...),
+			Details: map[string]interface{}{
+				"durationMs": duration.Milliseconds(),
+			},
 		},
 	}
 }
