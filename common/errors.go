@@ -390,15 +390,14 @@ var NewErrUpstreamMalformedResponse = func(cause error, upstreamId string) error
 
 type ErrUpstreamsExhausted struct{ BaseError }
 
+var ErrCodeUpstreamsExhausted ErrorCode = "ErrUpstreamsExhausted"
+
 var NewErrUpstreamsExhausted = func(ers []error) error {
 	return &ErrUpstreamsExhausted{
 		BaseError{
-			Code:    "ErrUpstreamsExhausted",
+			Code:    ErrCodeUpstreamsExhausted,
 			Message: "all available upstreams have been exhausted",
 			Cause:   errors.Join(ers...),
-			// Details: map[string]interface{}{
-			// 	"errors": errors,
-			// },
 		},
 	}
 }
@@ -425,6 +424,19 @@ func (e *ErrUpstreamsExhausted) CodeChain() string {
 	}
 
 	return codeChain
+}
+
+func (e *ErrUpstreamsExhausted) Errors() []error {
+	if e.Cause == nil {
+		return nil
+	}
+
+	errs, ok := e.Cause.(interface{ Unwrap() []error })
+	if !ok {
+		return nil
+	}
+
+	return errs.Unwrap()
 }
 
 func (e *ErrUpstreamsExhausted) DeepestMessage() string {
@@ -511,11 +523,13 @@ var NewErrUpstreamInitialization = func(cause error, upstreamId string) error {
 
 type ErrUpstreamRequestSkipped struct{ BaseError }
 
+var ErrCodeUpstreamRequestSkipped ErrorCode = "ErrUpstreamRequestSkipped"
+
 var NewErrUpstreamRequestSkipped = func(reason error, upstreamId string, req NormalizedRequest) error {
 	m, _ := req.Method()
 	return &ErrUpstreamRequestSkipped{
 		BaseError{
-			Code:    "ErrUpstreamRequestSkipped",
+			Code:    ErrCodeUpstreamRequestSkipped,
 			Message: "skipped forwarding request to upstream",
 			Cause:   reason,
 			Details: map[string]interface{}{
