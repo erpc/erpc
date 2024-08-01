@@ -201,11 +201,22 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 			// This usually happens when sending a trace_* request to a newly created block
 			return common.NewErrEndpointNotSyncedYet(err)
 		} else if strings.Contains(err.Message, "execution reverted") {
-			return common.NewErrEndpointClientSideException(err)
+			return common.NewErrEndpointClientSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorEvmReverted,
+					err.Message,
+					nil,
+				),
+			)
 		} else if strings.Contains(err.Message, "insufficient funds") {
 			return common.NewErrEndpointClientSideException(err)
 		} else if strings.Contains(err.Message, "not found") {
-			return common.NewErrEndpointClientSideException(err)
+			if strings.Contains(err.Message, "Method") || strings.Contains(err.Message, "method") {
+				return common.NewErrEndpointUnsupported(err)
+			} else {
+				return common.NewErrEndpointClientSideException(err)
+			}
 		} else if strings.Contains(err.Message, "Unsupported method") {
 			return common.NewErrEndpointUnsupported(err)
 		}
