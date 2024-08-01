@@ -357,7 +357,6 @@ func TranslateFailsafeError(exec failsafe.Execution[common.NormalizedResponse], 
 		}
 		return common.NewErrFailsafeRetryExceeded(
 			ler,
-			retryExceededErr.LastResult(),
 			attempts,
 			retries,
 		)
