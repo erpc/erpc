@@ -259,7 +259,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 							netId,
 							method,
 						)
-					} else {
+					} else if !common.HasCode(errCall, common.ErrCodeEndpointClientSideException) {
 						u.metricsTracker.RecordUpstreamFailure(
 							cfg.Id,
 							netId,
