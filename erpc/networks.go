@@ -63,6 +63,8 @@ func (n *Network) Architecture() common.NetworkArchitecture {
 }
 
 func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) (common.NormalizedResponse, error) {
+	startTime := time.Now()
+
 	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
 	req.SetNetwork(n)
 
@@ -221,7 +223,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 				}
 			}
 
-			return nil, common.NewErrUpstreamsExhausted(errorsByUpstream)
+			return nil, common.NewErrUpstreamsExhausted(errorsByUpstream, time.Since(startTime))
 		})
 
 	if execErr != nil {
@@ -236,7 +238,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 				resp = lvr
 			} else {
 				if len(errorsByUpstream) > 1 {
-					err = common.NewErrUpstreamsExhausted(errorsByUpstream)
+					err = common.NewErrUpstreamsExhausted(errorsByUpstream, time.Since(startTime))
 				}
 				inf.Close(nil, err)
 				return nil, err

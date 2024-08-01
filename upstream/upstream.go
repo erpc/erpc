@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/evm"
@@ -144,6 +145,7 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 
 // Forward is used during lifecycle of a proxied request, it uses writers and readers for better performance
 func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.NormalizedResponse, bool, error) {
+	startTime := time.Now()
 	cfg := u.Config()
 
 	if reason, skip := u.shouldSkip(req); skip {
@@ -166,7 +168,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 
 	method, err := req.Method()
 	if err != nil {
-		return nil, false, common.NewErrUpstreamRequest(err, cfg.Id, req)
+		return nil, false, common.NewErrUpstreamRequest(err, cfg.Id, req, time.Since(startTime))
 	}
 
 	lg := u.Logger.With().Str("method", method).Logger()
@@ -276,6 +278,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 					errCall,
 					cfg.Id,
 					req,
+					time.Since(startTime),
 				)
 			}
 
