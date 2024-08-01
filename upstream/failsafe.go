@@ -259,6 +259,11 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 			return false
 		}
 
+		// Do not retry when CB is open
+		if common.HasCode(err, common.ErrCodeFailsafeCircuitBreakerOpen) {
+			return false
+		}
+
 		// if all upstreams returned ErrUpstreamRequestSkipped then do not retry
 		if scope == ScopeNetwork && common.HasCode(err, common.ErrCodeUpstreamsExhausted) {
 			exher, ok := err.(*common.ErrUpstreamsExhausted)
@@ -355,8 +360,12 @@ func TranslateFailsafeError(exec failsafe.Execution[common.NormalizedResponse], 
 				ler = lexr.GetCause()
 			}
 		}
+		var translatedCause error
+		if ler != nil {
+			translatedCause = TranslateFailsafeError(exec, ler)
+		}
 		return common.NewErrFailsafeRetryExceeded(
-			ler,
+			translatedCause,
 			attempts,
 			retries,
 		)
