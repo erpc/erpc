@@ -129,22 +129,22 @@ func createCircuitBreakerPolicy(component string, cfg *common.CircuitBreakerPoli
 
 	builder.HandleIf(func(result common.NormalizedResponse, err error) bool {
 		// 5xx or other non-retryable server-side errors -> open the circuit
-		if common.HasCode(err, common.ErrCodeEndpointServerSideException) {
+		if common.HasErrorCode(err, common.ErrCodeEndpointServerSideException) {
 			return true
 		}
 
 		// 401 / 403 / RPC-RPC vendor auth -> open the circuit
-		if common.HasCode(err, common.ErrCodeEndpointUnauthorized) {
+		if common.HasErrorCode(err, common.ErrCodeEndpointUnauthorized) {
 			return true
 		}
 
 		// remote vendor capacity exceeded -> open the circuit
-		if common.HasCode(err, common.ErrCodeEndpointCapacityExceeded) {
+		if common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded) {
 			return true
 		}
 
 		// remote vendor billing issue -> open the circuit
-		if common.HasCode(err, common.ErrCodeEndpointBillingIssue) {
+		if common.HasErrorCode(err, common.ErrCodeEndpointBillingIssue) {
 			return true
 		}
 
@@ -234,45 +234,29 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 	builder.HandleIf(func(result common.NormalizedResponse, err error) bool {
 		// 400 / 404 / 405 / 413 -> No Retry
 		// RPC-RPC client-side error (invalid params) -> No Retry
-		if common.HasCode(err, common.ErrCodeEndpointClientSideException) {
+		if common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
 			return false
 		}
 
-		// Upstream-level + 401 / 403 -> No Retry
-		// RPC-RPC vendor billing/capacity/auth -> No Retry
-		if scope == ScopeUpstream && common.HasCode(err, common.ErrCodeEndpointUnauthorized) {
+		// Any error that cannot be retried against an upstream
+		if scope == ScopeUpstream && !common.IsRetryableTowardsUpstream(err) {
 			return false
 		}
 
-		// Unsupported features and methods
-		if scope == ScopeUpstream && common.HasCode(err, common.ErrCodeEndpointUnsupported) {
+		// Do not retry when CB is open (network-level or upstream-level)
+		if common.HasErrorCode(err, common.ErrCodeFailsafeCircuitBreakerOpen) {
 			return false
 		}
 
-		// Do not try when 3rd-party providers run out of monthly capacity
-		if scope == ScopeUpstream && common.HasCode(err, common.ErrCodeEndpointCapacityExceeded) {
-			return false
-		}
-
-		// Do not try when upstream returned ErrUpstreamRequestSkipped
-		if scope == ScopeUpstream && common.HasCode(err, common.ErrCodeUpstreamRequestSkipped) {
-			return false
-		}
-
-		// Do not retry when CB is open
-		if common.HasCode(err, common.ErrCodeFailsafeCircuitBreakerOpen) {
-			return false
-		}
-
-		// if all upstreams returned ErrUpstreamRequestSkipped then do not retry
-		if scope == ScopeNetwork && common.HasCode(err, common.ErrCodeUpstreamsExhausted) {
+		// On network-level if all upstreams returned non-retryable errors then do not retry
+		if scope == ScopeNetwork && common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
 			exher, ok := err.(*common.ErrUpstreamsExhausted)
 			if ok {
 				errs := exher.Errors()
 				if len(errs) > 0 {
 					shouldRetry := false
 					for _, err := range errs {
-						if !common.HasCode(err, common.ErrCodeUpstreamRequestSkipped) {
+						if common.IsRetryableTowardsUpstream(err) {
 							shouldRetry = true
 							break
 						}
@@ -314,9 +298,6 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 			}
 		}
 
-		// X-Empty directive + "empty" response + block is unfinalized -> Retry
-		// X-ERPC-Retry-Empty directive + null response + block is unfinalized -> Retry
-		// 429 / 408 -> Retry
 		// 5xx -> Retry
 		return err != nil
 	})

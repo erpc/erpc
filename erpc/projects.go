@@ -60,7 +60,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *ups
 	p.Logger.Debug().Str("method", method).Msgf("forwarding request to network")
 	resp, err := network.Forward(ctx, nq)
 
-	if err == nil || common.HasCode(err, common.ErrCodeEndpointClientSideException) {
+	if err == nil || common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
 		if err != nil {
 			p.Logger.Info().Err(err).Msgf("finished forwarding request for network with some client-side exception")
 		} else {
