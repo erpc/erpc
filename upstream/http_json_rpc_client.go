@@ -266,7 +266,9 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 					),
 				)
 			}
-		} else if strings.Contains(err.Message, "Unsupported method") || strings.Contains(err.Message, "not supported") {
+		} else if strings.Contains(err.Message, "Unsupported method") ||
+			strings.Contains(err.Message, "not supported") ||
+			strings.Contains(err.Message, "method is not whitelisted") {
 			return common.NewErrEndpointUnsupported(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
