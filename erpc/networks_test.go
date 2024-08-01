@@ -2075,7 +2075,7 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(500).
-			JSON(json.RawMessage(`{"error":{"code":-32603,"message":"Internal error"}}`))
+			JSON(json.RawMessage(`{"error":{"code":-39999,"message":"Internal error"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -2155,9 +2155,8 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil error, got nil")
 		}
 
-		cc := err.(*common.ErrJsonRpcExceptionInternal).CodeChain()
-		if !strings.Contains(cc, "-32603") {
-			t.Fatalf("Expected error code -32603, got %v", cc)
+		if !strings.Contains(common.ErrorSummary(err), "-32603") {
+			t.Fatalf("Expected error code -32603, got %v", common.ErrorSummary(err))
 		}
 	})
 
