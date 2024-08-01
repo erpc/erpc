@@ -201,9 +201,11 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 			// This usually happens when sending a trace_* request to a newly created block
 			return common.NewErrEndpointNotSyncedYet(err)
 		} else if strings.Contains(err.Message, "execution reverted") {
-			return common.NewErrEndpointClientSideException(
-				common.NewErrJsonRpcExceptionInternal(err.Code, common.JsonRpcErrorEvmReverted, err.Message, nil),
-			)
+			return common.NewErrEndpointClientSideException(err)
+		} else if strings.Contains(err.Message, "insufficient funds") {
+			return common.NewErrEndpointClientSideException(err)
+		} else if strings.Contains(err.Message, "not found") {
+			return common.NewErrEndpointClientSideException(err)
 		}
 
 		// By default we consider a problem on the server so that retry/failover mechanisms try other upstreams

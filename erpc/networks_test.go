@@ -266,8 +266,8 @@ func TestNetwork_Forward(t *testing.T) {
 
 		if err == nil {
 			t.Errorf("Expected an error, got nil")
-		} else if !strings.Contains(err.Error(), "ErrFailsafeRetryExceeded") {
-			t.Errorf("Expected %v, got %v", "ErrFailsafeRetryExceeded", err)
+		} else if !strings.Contains(common.ErrorSummary(err), "ErrUpstreamsExhausted") {
+			t.Errorf("Expected %v, got %v", "ErrUpstreamsExhausted", err)
 		}
 	})
 
@@ -372,8 +372,9 @@ func TestNetwork_Forward(t *testing.T) {
 		if err == nil {
 			t.Errorf("Expected an error, got nil")
 		}
-		if !strings.Contains(err.Error(), "ErrFailsafeRetryExceeded") {
-			t.Errorf("Expected %v, got %v", "ErrFailsafeRetryExceeded", err)
+
+		if !strings.Contains(common.ErrorSummary(err), "ErrUpstreamsExhausted") {
+			t.Errorf("Expected %v, got %v", "ErrUpstreamsExhausted", err)
 		}
 	})
 
@@ -892,8 +893,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err == nil {
 			t.Errorf("Expected an error, got nil")
 		}
-		if !strings.Contains(err.Error(), "ErrFailsafeRetryExceeded") {
-			t.Errorf("Expected %v, got %v", "ErrFailsafeRetryExceeded", err)
+		if !strings.Contains(common.ErrorSummary(err), "ErrUpstreamsExhausted") {
+			t.Errorf("Expected %v, got %v", "ErrUpstreamsExhausted", err)
 		}
 	})
 

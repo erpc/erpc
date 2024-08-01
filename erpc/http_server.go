@@ -104,7 +104,9 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 }
 
 func handleErrorResponse(logger *zerolog.Logger, err error, hrw http.ResponseWriter) {
-	logger.Error().Err(err).Msgf("failed to forward request")
+	if !common.IsNull(err) {
+		logger.Error().Err(err).Msgf("failed to forward request")
+	}
 
 	hrw.Header().Set("Content-Type", "application/json")
 	var httpErr common.ErrorWithStatusCode
