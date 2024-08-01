@@ -7,14 +7,14 @@
 
 # Features
 
-✅ **Fault-tolerant Proxy**: Retries, circuit-breakers, failovers and hedged requests make sure fastest most-reliable upstream is used.
-✅ **Flexible Rate-limiters**: Define hourly, daily rate limits for each upstream provider, to control usage, costs and high-scale usage.
-✅ **Permanent Caching**: Avoid redundant upstream costs by locally caching RPC responses, with reorg-aware caching layer.
-✅ **Request Auto-routing**: You don't need to think about which upstream supports which eth\_\* method; eRPC automatically does that.
-✅ **Normalized Errors**: Receive consistent error codes with details across 5+ third-party providers. With useful reporting of occured errors.
-✅ **RPC Metrics & Observability**: Single dashboard to observe rps throughput, errors, and avg. latency of all your RPC providers.
-🏭 **Smart Batching**: Aggregates multiple RPC or contract calls into one.
-🏭 **Websocket**: For new blocks and logs load-balanced across upstreams
+✅ **Fault-tolerant Proxy**: Retries, circuit-breakers, failovers and hedged requests make sure fastest most-reliable upstream is used. <br/>
+✅ **Flexible Rate-limiters**: Define hourly, daily rate limits for each upstream provider, to control usage, costs and high-scale usage.<br/>
+✅ **Permanent Caching**: Avoid redundant upstream costs by locally caching RPC responses, with reorg-aware caching layer.<br/>
+✅ **Request Auto-routing**: You don't need to think about which upstream supports which eth\_\* method; eRPC automatically does that.<br/>
+✅ **Normalized Errors**: Receive consistent error codes with details across 5+ third-party providers. With useful reporting of occured errors.<br/>
+✅ **RPC Metrics & Observability**: Single dashboard to observe rps throughput, errors, and avg. latency of all your RPC providers.<br/>
+🏭 **Smart Batching**: Aggregates multiple RPC or contract calls into one.<br/>
+🏭 **Websocket**: For new blocks and logs load-balanced across upstreams<br/>
 
 ## Roadmap
 
