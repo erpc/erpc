@@ -206,6 +206,8 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 			return common.NewErrEndpointClientSideException(err)
 		} else if strings.Contains(err.Message, "not found") {
 			return common.NewErrEndpointClientSideException(err)
+		} else if strings.Contains(err.Message, "Unsupported method") {
+			return common.NewErrEndpointUnsupported(err)
 		}
 
 		// By default we consider a problem on the server so that retry/failover mechanisms try other upstreams

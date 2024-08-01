@@ -45,7 +45,7 @@ func NewNetwork(
 	metricsTracker *health.Tracker,
 ) (*Network, error) {
 	var policies []failsafe.Policy[common.NormalizedResponse]
-	if (nwCfg != nil) && (nwCfg.Failsafe != nil) {
+	if nwCfg.Failsafe != nil {
 		key := fmt.Sprintf("%s-%s", prjId, nwCfg.NetworkId())
 		pls, err := upstream.CreateFailSafePolicies(upstream.ScopeNetwork, key, nwCfg.Failsafe)
 		if err != nil {

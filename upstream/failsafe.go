@@ -326,8 +326,14 @@ func TranslateFailsafeError(exec failsafe.Execution[common.NormalizedResponse], 
 			attempts = exec.Attempts()
 			retries = exec.Retries()
 		}
+		ler := retryExceededErr.LastError()
+		if common.IsNull(ler) {
+			if lexr, ok := execErr.(common.StandardError); ok {
+				ler = lexr.GetCause()
+			}
+		}
 		return common.NewErrFailsafeRetryExceeded(
-			retryExceededErr.LastError(),
+			ler,
 			retryExceededErr.LastResult(),
 			attempts,
 			retries,

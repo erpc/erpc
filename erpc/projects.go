@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -92,7 +93,28 @@ func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) 
 	}
 
 	if nwCfg == nil {
-		nwCfg = &common.NetworkConfig{}
+		allUps, err := p.upstreamsRegistry.GetSortedUpstreams(networkId, "*")
+		if err != nil {
+			return nil, err
+		}
+		nwCfg = &common.NetworkConfig{
+			Failsafe: &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts:     int(math.Min(float64(len(allUps)), 3)),
+					Delay:           "1s",
+					Jitter:          "500ms",
+					BackoffMaxDelay: "10s",
+					BackoffFactor:   2,
+				},
+				Timeout: &common.TimeoutPolicyConfig{
+					Duration: "30s",
+				},
+				Hedge: &common.HedgePolicyConfig{
+					Delay:    "500ms",
+					MaxCount: 1,
+				},
+			},
+		}
 
 		s := strings.Split(networkId, ":")
 		if len(s) != 2 {

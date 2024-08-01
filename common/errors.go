@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
+	"time"
 )
 
 func IsNull(err interface{}) bool {
@@ -205,6 +207,39 @@ type ErrorWithBody interface {
 }
 
 //
+// Server
+//
+
+type ErrInvalidConfig struct{ BaseError }
+
+var NewErrInvalidConfig = func(message string) error {
+	return &ErrInvalidConfig{
+		BaseError{
+			Code:    "ErrInvalidConfig",
+			Message: message,
+		},
+	}
+}
+
+type ErrRequestTimeOut struct{ BaseError }
+
+var NewErrRequestTimeOut = func(timeout time.Duration) error {
+	return &ErrRequestTimeOut{
+		BaseError{
+			Code:    "ErrRequestTimeOut",
+			Message: "request timed out before any upstream could respond",
+			Details: map[string]interface{}{
+				"timeout": timeout,
+			},
+		},
+	}
+}
+
+func (e *ErrRequestTimeOut) ErrorStatusCode() int {
+	return http.StatusRequestTimeout
+}
+
+//
 // Projects
 //
 
@@ -379,12 +414,12 @@ func (e *ErrUpstreamsExhausted) CodeChain() string {
 		return codeChain
 	}
 	causesChains := []string{}
-    if joinedErr, ok := e.Cause.(interface{ Unwrap() []error }); ok {
-        for _, e := range joinedErr.Unwrap() {
-            if se, ok := e.(StandardError); ok {
-                causesChains = append(causesChains, se.CodeChain())
-            }
-        }
+	if joinedErr, ok := e.Cause.(interface{ Unwrap() []error }); ok {
+		for _, e := range joinedErr.Unwrap() {
+			if se, ok := e.(StandardError); ok {
+				causesChains = append(causesChains, se.CodeChain())
+			}
+		}
 
 		codeChain += " <= (" + strings.Join(causesChains, " + ") + ")"
 	}
@@ -398,12 +433,12 @@ func (e *ErrUpstreamsExhausted) DeepestMessage() string {
 	}
 
 	causesDeepestMsgs := []string{}
-    if joinedErr, ok := e.Cause.(interface{ Unwrap() []error }); ok {
-        for _, e := range joinedErr.Unwrap() {
-            if se, ok := e.(StandardError); ok {
-                causesDeepestMsgs = append(causesDeepestMsgs, se.DeepestMessage())
-            }
-        }
+	if joinedErr, ok := e.Cause.(interface{ Unwrap() []error }); ok {
+		for _, e := range joinedErr.Unwrap() {
+			if se, ok := e.(StandardError); ok {
+				causesDeepestMsgs = append(causesDeepestMsgs, se.DeepestMessage())
+			}
+		}
 	}
 
 	if len(causesDeepestMsgs) > 0 {
@@ -611,16 +646,16 @@ type ErrFailsafeRetryExceeded struct{ BaseError }
 var ErrCodeFailsafeRetryExceeded ErrorCode = "ErrFailsafeRetryExceeded"
 
 var NewErrFailsafeRetryExceeded = func(cause error, lastResult interface{}, attempts int, retries int) error {
+	dets := map[string]interface{}{
+		"attempts": attempts,
+		"retries":  retries,
+	}
 	return &ErrFailsafeRetryExceeded{
 		BaseError{
 			Code:    ErrCodeFailsafeRetryExceeded,
 			Message: "failsafe retry policy exceeded",
 			Cause:   cause,
-			Details: map[string]interface{}{
-				"lastResult": lastResult,
-				"attempts":   attempts,
-				"retries":    retries,
-			},
+			Details: dets,
 		},
 	}
 }
