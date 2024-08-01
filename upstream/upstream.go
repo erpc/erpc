@@ -101,6 +101,7 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 				common.JsonRpcErrorServerSideException,
 				fmt.Sprintf("client not initialized for evm upstream: %s", cfg.Id),
 				nil,
+				nil,
 			)
 		}
 
@@ -112,6 +113,7 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 					common.JsonRpcErrorParseException,
 					"failed to unmarshal jsonrpc request",
 					err,
+					nil,
 				)
 			}
 			err = evm.NormalizeHttpJsonRpc(normalizedReq, jsonRpcReq)
@@ -121,6 +123,7 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 					common.JsonRpcErrorServerSideException,
 					"failed to normalize jsonrpc request",
 					err,
+					nil,
 				)
 			}
 		} else {
@@ -129,6 +132,7 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 				common.JsonRpcErrorServerSideException,
 				fmt.Sprintf("unsupported evm client type: %s upstream: %s", u.Client.GetType(), cfg.Id),
 				nil,
+				nil,
 			)
 		}
 	default:
@@ -136,6 +140,7 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 			0,
 			common.JsonRpcErrorServerSideException,
 			fmt.Sprintf("unsupported architecture: %s for upstream: %s", cfg.Type, cfg.Id),
+			nil,
 			nil,
 		)
 	}
@@ -226,6 +231,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 					fmt.Errorf("failed to cast client to HttpJsonRpcClient"),
 					cfg.Id,
 				),
+				nil,
 			)
 		}
 

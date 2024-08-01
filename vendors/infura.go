@@ -28,6 +28,10 @@ func (v *InfuraVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr inte
 	err := bodyMap.Error
 	if code := err.Code; code != 0 {
 		msg := err.Message
+		var details map[string]interface{} = make(map[string]interface{})
+		if err.Data != "" {
+			details["data"] = err.Data
+		}
 
 		if code == -32600 && (strings.Contains(msg, "be authenticated") || strings.Contains(msg, "access key")) {
 			return common.NewErrEndpointUnauthorized(
@@ -36,6 +40,7 @@ func (v *InfuraVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr inte
 					common.JsonRpcErrorUnauthorized,
 					msg,
 					nil,
+					details,
 				),
 			)
 		} else if code == -32001 || code == -32004 {
@@ -45,6 +50,7 @@ func (v *InfuraVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr inte
 					common.JsonRpcErrorUnsupportedException,
 					msg,
 					nil,
+					details,
 				),
 			)
 		} else if code == -32005 {
@@ -54,6 +60,7 @@ func (v *InfuraVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr inte
 					common.JsonRpcErrorCapacityExceeded,
 					msg,
 					nil,
+					details,
 				),
 			)
 		}

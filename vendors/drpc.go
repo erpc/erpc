@@ -28,6 +28,10 @@ func (v *DrpcVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interf
 	err := bodyMap.Error
 	if code := err.Code; code != 0 {
 		msg := err.Message
+		var details map[string]interface{} = make(map[string]interface{})
+		if err.Data != "" {
+			details["data"] = err.Data
+		}
 
 		if code == 4 && strings.Contains(msg, "token is invalid") {
 			return common.NewErrEndpointUnauthorized(
@@ -36,6 +40,7 @@ func (v *DrpcVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interf
 					common.JsonRpcErrorUnauthorized,
 					msg,
 					nil,
+					details,
 				),
 			)
 		}

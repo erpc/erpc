@@ -384,7 +384,7 @@ var NewErrUpstreamMalformedResponse = func(cause error, upstreamId string) error
 
 type ErrUpstreamsExhausted struct{ BaseError }
 
-var ErrCodeUpstreamsExhausted ErrorCode = "ErrUpstreamsExhausted"
+const ErrCodeUpstreamsExhausted ErrorCode = "ErrUpstreamsExhausted"
 
 var NewErrUpstreamsExhausted = func(req NormalizedRequest, ers []error, duration time.Duration) error {
 	var reqStr string
@@ -528,7 +528,7 @@ var NewErrUpstreamInitialization = func(cause error, upstreamId string) error {
 
 type ErrUpstreamRequestSkipped struct{ BaseError }
 
-var ErrCodeUpstreamRequestSkipped ErrorCode = "ErrUpstreamRequestSkipped"
+const ErrCodeUpstreamRequestSkipped ErrorCode = "ErrUpstreamRequestSkipped"
 
 var NewErrUpstreamRequestSkipped = func(reason error, upstreamId string, req NormalizedRequest) error {
 	m, _ := req.Method()
@@ -662,7 +662,7 @@ func (e *ErrFailsafeTimeoutExceeded) ErrorStatusCode() int {
 
 type ErrFailsafeRetryExceeded struct{ BaseError }
 
-var ErrCodeFailsafeRetryExceeded ErrorCode = "ErrFailsafeRetryExceeded"
+const ErrCodeFailsafeRetryExceeded ErrorCode = "ErrFailsafeRetryExceeded"
 
 var NewErrFailsafeRetryExceeded = func(cause error, attempts int, retries int) error {
 	dets := map[string]interface{}{
@@ -685,7 +685,7 @@ func (e *ErrFailsafeRetryExceeded) ErrorStatusCode() int {
 
 type ErrFailsafeCircuitBreakerOpen struct{ BaseError }
 
-var ErrCodeFailsafeCircuitBreakerOpen ErrorCode = "ErrFailsafeCircuitBreakerOpen"
+const ErrCodeFailsafeCircuitBreakerOpen ErrorCode = "ErrFailsafeCircuitBreakerOpen"
 
 var NewErrFailsafeCircuitBreakerOpen = func(cause error) error {
 	return &ErrFailsafeCircuitBreakerOpen{
@@ -871,6 +871,15 @@ var NewErrEndpointClientSideException = func(cause error) error {
 }
 
 func (e *ErrEndpointClientSideException) ErrorStatusCode() int {
+	if e.Cause != nil {
+		if er, ok := e.Cause.(*ErrJsonRpcExceptionInternal); ok {
+			switch er.NormalizedCode() {
+			case JsonRpcErrorEvmReverted, JsonRpcErrorCallException:
+				return 200
+			}
+		}
+	}
+
 	return 400
 }
 
@@ -992,10 +1001,12 @@ const (
 	JsonRpcErrorServerSideException  JsonRpcErrorNumber = -32603
 	JsonRpcErrorParseException       JsonRpcErrorNumber = -32700
 
+	// Defacto codes used by majority of 3rd-party providers
+	JsonRpcErrorEvmReverted JsonRpcErrorNumber = 3
+
 	// Normalized blockchain-specific codes by eRPC
 	JsonRpcErrorCapacityExceeded  JsonRpcErrorNumber = -32005
 	JsonRpcErrorEvmLogsLargeRange JsonRpcErrorNumber = -32012
-	JsonRpcErrorEvmReverted       JsonRpcErrorNumber = -32013
 	JsonRpcErrorNotSyncedYet      JsonRpcErrorNumber = -32014
 	JsonRpcErrorNodeTimeout       JsonRpcErrorNumber = -32015
 	JsonRpcErrorUnauthorized      JsonRpcErrorNumber = -32016
@@ -1034,20 +1045,22 @@ func (e *ErrJsonRpcExceptionInternal) OriginalCode() int {
 
 const ErrCodeJsonRpcExceptionInternal = "ErrJsonRpcExceptionInternal"
 
-var NewErrJsonRpcExceptionInternal = func(originalCode int, normalizedCode JsonRpcErrorNumber, message string, cause error) *ErrJsonRpcExceptionInternal {
-	var dt map[string]interface{} = make(map[string]interface{})
+var NewErrJsonRpcExceptionInternal = func(originalCode int, normalizedCode JsonRpcErrorNumber, message string, cause error, details map[string]interface{}) *ErrJsonRpcExceptionInternal {
+	if details == nil {
+		details = make(map[string]interface{})
+	}
 	if originalCode != 0 {
-		dt["originalCode"] = originalCode
+		details["originalCode"] = originalCode
 	}
 	if normalizedCode != 0 {
-		dt["normalizedCode"] = normalizedCode
+		details["normalizedCode"] = normalizedCode
 	}
 
 	return &ErrJsonRpcExceptionInternal{
 		BaseError{
 			Code:    ErrCodeJsonRpcExceptionInternal,
 			Message: message,
-			Details: dt,
+			Details: details,
 			Cause:   cause,
 		},
 	}
@@ -1057,12 +1070,16 @@ var NewErrJsonRpcExceptionInternal = func(originalCode int, normalizedCode JsonR
 type ErrJsonRpcExceptionExternal struct {
 	Code    int    `json:"code,omitempty"`
 	Message string `json:"message,omitempty"`
+
+	// Some errors such as execution reverted carry "data" field which has additional information
+	Data string `json:"data,omitempty"`
 }
 
-func NewErrJsonRpcExceptionExternal(code int, message string) *ErrJsonRpcExceptionExternal {
+func NewErrJsonRpcExceptionExternal(code int, message string, data string) *ErrJsonRpcExceptionExternal {
 	return &ErrJsonRpcExceptionExternal{
 		Code:    code,
 		Message: message,
+		Data:    data,
 	}
 }
 
