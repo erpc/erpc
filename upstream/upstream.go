@@ -334,8 +334,6 @@ func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 		return "", jrr.Error
 	}
 
-	u.Logger.Debug().Msgf("eth_chainId response: %+v", jrr)
-
 	hex, err := common.NormalizeHex(jrr.Result)
 	if err != nil {
 		return "", err
