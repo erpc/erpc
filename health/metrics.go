@@ -41,6 +41,12 @@ var (
 		Help:      "Total number of remote rate limited requests by upstreams.",
 	}, []string{"project", "network", "upstream", "category"})
 
+	MetricUpstreamSkippedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_request_skipped_total",
+		Help:      "Total number of requests skipped by upstreams.",
+	}, []string{"project", "network", "upstream", "category"})
+
 	MetricNetworkRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_request_self_rate_limited_total",
