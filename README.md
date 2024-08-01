@@ -10,7 +10,7 @@
 ✅ Retries, circuit-breakers, failovers and hedged requests make sure fastest most-reliable upstream is used. <br/>
 ✅ Define hourly, daily rate limits for each upstream provider, to control usage, costs and high-scale usage.<br/>
 ✅ Avoid redundant upstream costs by locally caching RPC responses, with reorg-aware caching layer.<br/>
-✅ You don't need to think about which upstream supports which `eth\_\*` method; eRPC automatically does that.<br/>
+✅ You don't need to think about which upstream supports which `eth_*` method; eRPC automatically does that.<br/>
 ✅ Receive consistent error codes with details across 5+ third-party providers and reporting of occured errors.<br/>
 ✅ Single dashboard to observe rps throughput, errors, and avg. latency of all your RPC providers.<br/>
 🏭 Aggregates multiple RPC or contract calls into one.<br/>
