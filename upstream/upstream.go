@@ -48,7 +48,7 @@ func NewUpstream(
 ) (*Upstream, error) {
 	lg := logger.With().Str("upstream", cfg.Id).Logger()
 
-	policies, err := CreateFailSafePolicies(ScopeUpstream, cfg.Id, cfg.Failsafe)
+	policies, err := CreateFailSafePolicies(&lg, ScopeUpstream, cfg.Id, cfg.Failsafe)
 	if err != nil {
 		return nil, err
 	}

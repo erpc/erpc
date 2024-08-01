@@ -11,7 +11,7 @@ import (
 	"github.com/failsafe-go/failsafe-go/hedgepolicy"
 	"github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/failsafe-go/failsafe-go/timeout"
-	"github.com/rs/zerolog/log"
+	"github.com/rs/zerolog"
 )
 
 type Scope string
@@ -26,7 +26,7 @@ const (
 	ScopeUpstream Scope = "upstream"
 )
 
-func CreateFailSafePolicies(scope Scope, component string, fsCfg *common.FailsafeConfig) ([]failsafe.Policy[common.NormalizedResponse], error) {
+func CreateFailSafePolicies(logger *zerolog.Logger, scope Scope, component string, fsCfg *common.FailsafeConfig) ([]failsafe.Policy[common.NormalizedResponse], error) {
 	// The order of policies below are important as per docs of failsafe-go
 	var policies = []failsafe.Policy[common.NormalizedResponse]{}
 
@@ -56,7 +56,7 @@ func CreateFailSafePolicies(scope Scope, component string, fsCfg *common.Failsaf
 	// CircuitBreaker does not make sense for network-level requests
 	if scope == ScopeUpstream {
 		if fsCfg.CircuitBreaker != nil {
-			p, err := createCircuitBreakerPolicy(component, fsCfg.CircuitBreaker)
+			p, err := createCircuitBreakerPolicy(logger, component, fsCfg.CircuitBreaker)
 			if err != nil {
 				return nil, err
 			}
@@ -86,7 +86,7 @@ func CreateFailSafePolicies(scope Scope, component string, fsCfg *common.Failsaf
 	return policies, nil
 }
 
-func createCircuitBreakerPolicy(component string, cfg *common.CircuitBreakerPolicyConfig) (failsafe.Policy[common.NormalizedResponse], error) {
+func createCircuitBreakerPolicy(logger *zerolog.Logger, component string, cfg *common.CircuitBreakerPolicyConfig) (failsafe.Policy[common.NormalizedResponse], error) {
 	builder := circuitbreaker.Builder[common.NormalizedResponse]()
 
 	if cfg.FailureThresholdCount > 0 {
@@ -117,14 +117,16 @@ func createCircuitBreakerPolicy(component string, cfg *common.CircuitBreakerPoli
 		builder = builder.WithDelay(dur)
 	}
 
-	builder.OnHalfOpen(func(event circuitbreaker.StateChangedEvent) {
-		log.Warn().Msgf("circuitBreaker half open: %v", event)
+	builder.OnStateChanged(func(event circuitbreaker.StateChangedEvent) {
+		logger.Warn().Msgf("circuit breaker state changed from %s to %s", event.OldState, event.NewState)
 	})
-	builder.OnOpen(func(event circuitbreaker.StateChangedEvent) {
-		log.Warn().Msgf("circuitBreaker open: %v", event)
-	})
-	builder.OnClose(func(event circuitbreaker.StateChangedEvent) {
-		log.Debug().Msgf("circuitBreaker close: %v", event)
+	builder.OnFailure(func(event failsafe.ExecutionEvent[common.NormalizedResponse]) {
+		err := event.LastError()
+		if err != nil {
+			logger.Warn().Err(err).Msgf("failure caught that will be considered for circuit breaker")
+		} else {
+			logger.Warn().Msgf("failure caught that will be considered for circuit breaker")
+		}
 	})
 
 	builder.HandleIf(func(result common.NormalizedResponse, err error) bool {
