@@ -168,7 +168,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 
 	method, err := req.Method()
 	if err != nil {
-		return nil, false, common.NewErrUpstreamRequest(err, cfg.Id, req, time.Since(startTime))
+		return nil, false, common.NewErrUpstreamRequest(err, cfg.Id, time.Since(startTime))
 	}
 
 	lg := u.Logger.With().Str("method", method).Logger()
@@ -277,7 +277,6 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 				return nil, common.NewErrUpstreamRequest(
 					errCall,
 					cfg.Id,
-					req,
 					time.Since(startTime),
 				)
 			}

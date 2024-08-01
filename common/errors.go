@@ -352,14 +352,8 @@ var NewErrUpstreamClientInitialization = func(cause error, upstreamId string) er
 
 type ErrUpstreamRequest struct{ BaseError }
 
-var NewErrUpstreamRequest = func(cause error, upstreamId string, req NormalizedRequest, duration time.Duration) error {
-	var reqStr string
-	s, err := json.Marshal(req)
-	if err != nil {
-		reqStr = fmt.Sprintf("%v", req)
-	} else if s != nil {
-		reqStr = string(s)
-	}
+var NewErrUpstreamRequest = func(cause error, upstreamId string, duration time.Duration) error {
+
 	return &ErrUpstreamRequest{
 		BaseError{
 			Code:    "ErrUpstreamRequest",
@@ -367,7 +361,6 @@ var NewErrUpstreamRequest = func(cause error, upstreamId string, req NormalizedR
 			Cause:   cause,
 			Details: map[string]interface{}{
 				"upstreamId": upstreamId,
-				"request":    reqStr,
 				"durationMs": duration.Milliseconds(),
 			},
 		},
@@ -393,13 +386,21 @@ type ErrUpstreamsExhausted struct{ BaseError }
 
 var ErrCodeUpstreamsExhausted ErrorCode = "ErrUpstreamsExhausted"
 
-var NewErrUpstreamsExhausted = func(ers []error, duration time.Duration) error {
+var NewErrUpstreamsExhausted = func(req NormalizedRequest, ers []error, duration time.Duration) error {
+	var reqStr string
+	s, err := json.Marshal(req)
+	if err != nil {
+		reqStr = fmt.Sprintf("%v", req)
+	} else if s != nil {
+		reqStr = string(s)
+	}
 	return &ErrUpstreamsExhausted{
 		BaseError{
 			Code:    ErrCodeUpstreamsExhausted,
 			Message: "all available upstreams have been exhausted",
 			Cause:   errors.Join(ers...),
 			Details: map[string]interface{}{
+				"request":    reqStr,
 				"durationMs": duration.Milliseconds(),
 			},
 		},
