@@ -3,7 +3,18 @@
 [![CI status][ci-badge]][ci-url]
 [![Telegram chat][tg-badge]][tg-url]
 
-Open-source EVM RPC proxy & cache service built to scale horizontally from small traffic to million RPS across many chains, optimized for read-heavy use-cases such as Indexers, Frontends, MEV bots, etc.
+[eRPC](https://erpc.cloud/) is a fault-tolerant EVM RPC proxy and re-org aware permanent caching solution. It is built with read-heavy use-cases in mind such as data indexing and high-load frontend usage.
+
+# Features
+
+✅ **Fault-tolerant Proxy**: Retries, circuit-breakers, failovers and hedged requests make sure fastest most-reliable upstream is used.
+✅ **Flexible Rate-limiters**: Define hourly, daily rate limits for each upstream provider, to control usage, costs and high-scale usage.
+✅ **Permanent Caching**: Avoid redundant upstream costs by locally caching RPC responses, with reorg-aware caching layer.
+✅ **Request Auto-routing**: You don't need to think about which upstream supports which eth\_\* method; eRPC automatically does that.
+✅ **Normalized Errors**: Receive consistent error codes with details across 5+ third-party providers. With useful reporting of occured errors.
+✅ **RPC Metrics & Observability**: Single dashboard to observe rps throughput, errors, and avg. latency of all your RPC providers.
+🏭 **Smart Batching**: Aggregates multiple RPC or contract calls into one.
+🏭 **Websocket**: For new blocks and logs load-balanced across upstreams
 
 ## Roadmap
 
@@ -18,7 +29,7 @@ Open-source EVM RPC proxy & cache service built to scale horizontally from small
 
 # Usage & Docs
 
-* [docs.erpc.cloud](https://docs.erpc.cloud)
+- [docs.erpc.cloud](https://docs.erpc.cloud)
 
 ## Local Development
 
@@ -50,7 +61,6 @@ make run
 # License
 
 AGPL-3.0
-
 
 [ci-badge]: https://github.com/erpc/erpc/actions/workflows/development.yml/badge.svg
 [ci-url]: https://github.com/erpc/erpc/actions/workflows/development.yml
