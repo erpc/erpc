@@ -229,7 +229,7 @@ var NewErrRequestTimeOut = func(timeout time.Duration) error {
 			Code:    "ErrRequestTimeOut",
 			Message: "request timed out before any upstream could respond",
 			Details: map[string]interface{}{
-				"timeout": timeout,
+				"timeoutSeconds": timeout.Seconds(),
 			},
 		},
 	}
