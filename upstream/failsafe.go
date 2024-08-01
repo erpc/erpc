@@ -243,11 +243,6 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 			return false
 		}
 
-		// Do not retry when CB is open (network-level or upstream-level)
-		if common.HasErrorCode(err, common.ErrCodeFailsafeCircuitBreakerOpen) {
-			return false
-		}
-
 		// On network-level if all upstreams returned non-retryable errors then do not retry
 		if scope == ScopeNetwork && common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
 			exher, ok := err.(*common.ErrUpstreamsExhausted)
