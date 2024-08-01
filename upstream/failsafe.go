@@ -11,7 +11,7 @@ import (
 	"github.com/failsafe-go/failsafe-go/hedgepolicy"
 	"github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/failsafe-go/failsafe-go/timeout"
-	"github.com/rs/zerolog/log"
+	"github.com/rs/zerolog"
 )
 
 type Scope string
@@ -26,7 +26,7 @@ const (
 	ScopeUpstream Scope = "upstream"
 )
 
-func CreateFailSafePolicies(scope Scope, component string, fsCfg *common.FailsafeConfig) ([]failsafe.Policy[common.NormalizedResponse], error) {
+func CreateFailSafePolicies(logger *zerolog.Logger, scope Scope, component string, fsCfg *common.FailsafeConfig) ([]failsafe.Policy[common.NormalizedResponse], error) {
 	// The order of policies below are important as per docs of failsafe-go
 	var policies = []failsafe.Policy[common.NormalizedResponse]{}
 
@@ -56,7 +56,7 @@ func CreateFailSafePolicies(scope Scope, component string, fsCfg *common.Failsaf
 	// CircuitBreaker does not make sense for network-level requests
 	if scope == ScopeUpstream {
 		if fsCfg.CircuitBreaker != nil {
-			p, err := createCircuitBreakerPolicy(component, fsCfg.CircuitBreaker)
+			p, err := createCircuitBreakerPolicy(logger, component, fsCfg.CircuitBreaker)
 			if err != nil {
 				return nil, err
 			}
@@ -86,7 +86,7 @@ func CreateFailSafePolicies(scope Scope, component string, fsCfg *common.Failsaf
 	return policies, nil
 }
 
-func createCircuitBreakerPolicy(component string, cfg *common.CircuitBreakerPolicyConfig) (failsafe.Policy[common.NormalizedResponse], error) {
+func createCircuitBreakerPolicy(logger *zerolog.Logger, component string, cfg *common.CircuitBreakerPolicyConfig) (failsafe.Policy[common.NormalizedResponse], error) {
 	builder := circuitbreaker.Builder[common.NormalizedResponse]()
 
 	if cfg.FailureThresholdCount > 0 {
@@ -117,34 +117,36 @@ func createCircuitBreakerPolicy(component string, cfg *common.CircuitBreakerPoli
 		builder = builder.WithDelay(dur)
 	}
 
-	builder.OnHalfOpen(func(event circuitbreaker.StateChangedEvent) {
-		log.Warn().Msgf("circuitBreaker half open: %v", event)
+	builder.OnStateChanged(func(event circuitbreaker.StateChangedEvent) {
+		logger.Warn().Msgf("circuit breaker state changed from %s to %s", event.OldState, event.NewState)
 	})
-	builder.OnOpen(func(event circuitbreaker.StateChangedEvent) {
-		log.Warn().Msgf("circuitBreaker open: %v", event)
-	})
-	builder.OnClose(func(event circuitbreaker.StateChangedEvent) {
-		log.Debug().Msgf("circuitBreaker close: %v", event)
+	builder.OnFailure(func(event failsafe.ExecutionEvent[common.NormalizedResponse]) {
+		err := event.LastError()
+		if err != nil {
+			logger.Warn().Err(err).Msgf("failure caught that will be considered for circuit breaker")
+		} else {
+			logger.Warn().Msgf("failure caught that will be considered for circuit breaker")
+		}
 	})
 
 	builder.HandleIf(func(result common.NormalizedResponse, err error) bool {
 		// 5xx or other non-retryable server-side errors -> open the circuit
-		if common.HasCode(err, common.ErrCodeEndpointServerSideException) {
+		if common.HasErrorCode(err, common.ErrCodeEndpointServerSideException) {
 			return true
 		}
 
 		// 401 / 403 / RPC-RPC vendor auth -> open the circuit
-		if common.HasCode(err, common.ErrCodeEndpointUnauthorized) {
+		if common.HasErrorCode(err, common.ErrCodeEndpointUnauthorized) {
 			return true
 		}
 
 		// remote vendor capacity exceeded -> open the circuit
-		if common.HasCode(err, common.ErrCodeEndpointCapacityExceeded) {
+		if common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded) {
 			return true
 		}
 
 		// remote vendor billing issue -> open the circuit
-		if common.HasCode(err, common.ErrCodeEndpointBillingIssue) {
+		if common.HasErrorCode(err, common.ErrCodeEndpointBillingIssue) {
 			return true
 		}
 
@@ -234,24 +236,31 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 	builder.HandleIf(func(result common.NormalizedResponse, err error) bool {
 		// 400 / 404 / 405 / 413 -> No Retry
 		// RPC-RPC client-side error (invalid params) -> No Retry
-		if common.HasCode(err, common.ErrCodeEndpointClientSideException) {
+		if common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
 			return false
 		}
 
-		// Upstream-level + 401 / 403 -> No Retry
-		// RPC-RPC vendor billing/capacity/auth -> No Retry
-		if scope == ScopeUpstream && common.HasCode(err, common.ErrCodeEndpointUnauthorized) {
+		// Any error that cannot be retried against an upstream
+		if scope == ScopeUpstream && !common.IsRetryableTowardsUpstream(err) {
 			return false
 		}
 
-		// Unsupported features and methods
-		if scope == ScopeUpstream && common.HasCode(err, common.ErrCodeEndpointUnsupported) {
-			return false
-		}
-
-		// Do not try when 3rd-party providers run out of monthly capacity
-		if scope == ScopeUpstream && common.HasCode(err, common.ErrCodeEndpointCapacityExceeded) {
-			return false
+		// On network-level if all upstreams returned non-retryable errors then do not retry
+		if scope == ScopeNetwork && common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
+			exher, ok := err.(*common.ErrUpstreamsExhausted)
+			if ok {
+				errs := exher.Errors()
+				if len(errs) > 0 {
+					shouldRetry := false
+					for _, err := range errs {
+						if common.IsRetryableTowardsUpstream(err) {
+							shouldRetry = true
+							break
+						}
+					}
+					return shouldRetry
+				}
+			}
 		}
 
 		// Retry empty responses on network-level to give a chance for another upstream to
@@ -286,9 +295,6 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 			}
 		}
 
-		// X-Empty directive + "empty" response + block is unfinalized -> Retry
-		// X-ERPC-Retry-Empty directive + null response + block is unfinalized -> Retry
-		// 429 / 408 -> Retry
 		// 5xx -> Retry
 		return err != nil
 	})
@@ -326,9 +332,18 @@ func TranslateFailsafeError(exec failsafe.Execution[common.NormalizedResponse], 
 			attempts = exec.Attempts()
 			retries = exec.Retries()
 		}
+		ler := retryExceededErr.LastError()
+		if common.IsNull(ler) {
+			if lexr, ok := execErr.(common.StandardError); ok {
+				ler = lexr.GetCause()
+			}
+		}
+		var translatedCause error
+		if ler != nil {
+			translatedCause = TranslateFailsafeError(exec, ler)
+		}
 		return common.NewErrFailsafeRetryExceeded(
-			retryExceededErr.LastError(),
-			retryExceededErr.LastResult(),
+			translatedCause,
 			attempts,
 			retries,
 		)

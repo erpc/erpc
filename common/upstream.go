@@ -6,7 +6,7 @@ type UpstreamType string
 
 const (
 	UpstreamTypeEvm        UpstreamType = "evm"
-	UpstreamTypeEvmAlchemy UpstreamType = "evm-alchemy"
+	UpstreamTypeEvmAlchemy UpstreamType = "evm+alchemy"
 )
 
 type Upstream interface {

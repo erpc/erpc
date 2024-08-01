@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/evm"
@@ -47,7 +48,7 @@ func NewUpstream(
 ) (*Upstream, error) {
 	lg := logger.With().Str("upstream", cfg.Id).Logger()
 
-	policies, err := CreateFailSafePolicies(ScopeUpstream, cfg.Id, cfg.Failsafe)
+	policies, err := CreateFailSafePolicies(&lg, ScopeUpstream, cfg.Id, cfg.Failsafe)
 	if err != nil {
 		return nil, err
 	}
@@ -144,6 +145,7 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 
 // Forward is used during lifecycle of a proxied request, it uses writers and readers for better performance
 func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.NormalizedResponse, bool, error) {
+	startTime := time.Now()
 	cfg := u.Config()
 
 	if reason, skip := u.shouldSkip(req); skip {
@@ -166,7 +168,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 
 	method, err := req.Method()
 	if err != nil {
-		return nil, false, common.NewErrUpstreamRequest(err, cfg.Id, req)
+		return nil, false, common.NewErrUpstreamRequest(err, cfg.Id, time.Since(startTime))
 	}
 
 	lg := u.Logger.With().Str("method", method).Logger()
@@ -253,13 +255,17 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 			}
 			if errCall != nil {
 				if !errors.Is(errCall, context.DeadlineExceeded) && !errors.Is(errCall, context.Canceled) {
-					if common.HasCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
+					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
 						u.metricsTracker.RecordUpstreamRemoteRateLimited(
 							cfg.Id,
 							netId,
 							method,
 						)
-					} else if !common.HasCode(errCall, common.ErrCodeEndpointClientSideException) {
+					} else if common.HasErrorCode(errCall, common.ErrCodeUpstreamRequestSkipped) {
+						health.MetricUpstreamSkippedTotal.WithLabelValues(u.ProjectId, cfg.Id, netId, method).Inc()
+					} else if common.HasErrorCode(errCall, common.ErrCodeEndpointNotSyncedYet) {
+						health.MetricUpstreamNotSyncedErrorTotal.WithLabelValues(u.ProjectId, cfg.Id, netId, method).Inc()
+					} else if !common.HasErrorCode(errCall, common.ErrCodeEndpointClientSideException) {
 						u.metricsTracker.RecordUpstreamFailure(
 							cfg.Id,
 							netId,
@@ -271,7 +277,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 				return nil, common.NewErrUpstreamRequest(
 					errCall,
 					cfg.Id,
-					req,
+					time.Since(startTime),
 				)
 			}
 
