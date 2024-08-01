@@ -231,9 +231,10 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 		return nil
 	}
 
-	u.logger.Debug().Str("projectId", u.prjId).Msgf("refreshing upstreams scores")
+	ln := len(u.sortedUpstreams)
+	u.logger.Trace().Str("projectId", u.prjId).Int("networks", ln).Msgf("refreshing upstreams scores")
 
-	allNetworks := make([]string, 0, len(u.sortedUpstreams))
+	allNetworks := make([]string, 0, ln)
 	for networkId := range u.sortedUpstreams {
 		allNetworks = append(allNetworks, networkId)
 	}
@@ -331,7 +332,7 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 		newSortStr += fmt.Sprintf("%s ", ups.Config().Id)
 	}
 
-	u.logger.Debug().Str("projectId", u.prjId).Str("networkId", networkId).Str("method", method).Str("newSort", newSortStr).Msgf("sorted upstreams")
+	u.logger.Trace().Str("projectId", u.prjId).Str("networkId", networkId).Str("method", method).Str("newSort", newSortStr).Msgf("sorted upstreams")
 }
 
 func (u *UpstreamsRegistry) calculateScore(normTotalRequests, normP90Latency, normErrorRate, normThrottledRate int) int {

@@ -104,17 +104,19 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 	if aux.Error == nil && aux.Result == nil && aux.ID == nil {
 		// Special case #1: there is numeric "code" and "message" in the "data"
 		sp1 := &struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
+			Code    int    `json:"code,omitempty"`
+			Message string `json:"message,omitempty"`
+			Data    string `json:"data,omitempty"`
 		}{}
 		if err := json.Unmarshal(data, &sp1); err == nil {
 			r.Error = NewErrJsonRpcExceptionExternal(
 				sp1.Code,
 				sp1.Message,
+				sp1.Data,
 			)
 			return nil
 		}
-		// Special case #2: there is "error" field with string in the body
+		// Special case #2: there is only "error" field with string in the body
 		sp2 := &struct {
 			Error string `json:"error"`
 		}{}
@@ -122,6 +124,7 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 			r.Error = NewErrJsonRpcExceptionExternal(
 				int(JsonRpcErrorServerSideException),
 				sp2.Error,
+				"",
 			)
 			return nil
 		}
@@ -129,6 +132,7 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 		r.Error = NewErrJsonRpcExceptionExternal(
 			int(JsonRpcErrorServerSideException),
 			string(data),
+			"",
 		)
 		return nil
 	}
@@ -140,6 +144,7 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 		}
 		var code int
 		var msg string
+		var data string
 
 		if c, ok := customError["code"]; ok {
 			cf, ok := c.(float64)
@@ -150,10 +155,14 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 		if m, ok := customError["message"]; ok {
 			msg = m.(string)
 		}
+		if d, ok := customError["data"]; ok {
+			data = d.(string)
+		}
 
 		r.Error = NewErrJsonRpcExceptionExternal(
 			code,
 			msg,
+			data,
 		)
 	}
 
