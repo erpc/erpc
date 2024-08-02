@@ -99,6 +99,8 @@ func (e *EvmBlockTracker) LatestBlock() uint64 {
 }
 
 func (e *EvmBlockTracker) FinalizedBlock() uint64 {
+	e.updateMu.Lock()
+	defer e.updateMu.Unlock()
 	return e.finalizedBlockNumber
 }
 
