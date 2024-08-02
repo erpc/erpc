@@ -19,7 +19,6 @@ type HttpServer struct {
 	config *common.ServerConfig
 	server *http.Server
 }
-
 func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.ServerConfig, erpc *ERPC) *HttpServer {
 	addr := fmt.Sprintf("%s:%d", cfg.HttpHost, cfg.HttpPort)
 
@@ -33,27 +32,19 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 
 	handler := http.NewServeMux()
 	handler.HandleFunc("/", func(hrw http.ResponseWriter, r *http.Request) {
-		// Create a new context with timeout
 		requestCtx, cancel := context.WithTimeout(r.Context(), timeOutDur)
 		defer cancel()
 
-		// Use a channel to signal when the request is complete
-		done := make(chan struct{})
+		resultChan := make(chan common.NormalizedResponse, 1)
+		errChan := make(chan error, 1)
 
 		go func() {
-			defer close(done)
-
-			var resp common.NormalizedResponse
-			var err error
-
 			logger.Debug().Msgf("received request on path: %s with body length: %d", r.URL.Path, r.ContentLength)
 
-			// Split the URL path into segments
 			segments := strings.Split(r.URL.Path, "/")
-
 			// Check if the URL path has at least three segments ("/main/evm/1")
 			if len(segments) != 4 {
-				http.NotFound(hrw, r)
+				errChan <- errors.New("invalid URL path")
 				return
 			}
 
@@ -63,47 +54,47 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
 				logger.Error().Err(err).Msgf("failed to read request body")
-
-				hrw.Header().Set("Content-Type", "application/json")
-				hrw.WriteHeader(http.StatusBadRequest)
-				json.NewEncoder(hrw).Encode(err)
+				errChan <- err
 				return
 			}
 
 			logger.Debug().Msgf("received request for projectId: %s, networkId: %s with body: %s", projectId, networkId, body)
 
 			project, err := erpc.GetProject(projectId)
-			if err == nil {
-				nw, err := erpc.GetNetwork(projectId, networkId)
-				if err != nil {
-					logger.Error().Err(err).Msgf("failed to get network %s for project %s", networkId, projectId)
-					handleErrorResponse(logger, err, hrw)
-					return
-				}
-				nq := upstream.NewNormalizedRequest(body)
-				nq.SetNetwork(nw)
-				nq.ApplyDirectivesFromHttpHeaders(r.Header)
-
-				resp, err = project.Forward(r.Context(), networkId, nq)
-				if err == nil && resp != nil {
-					hrw.Header().Set("Content-Type", "application/json")
-					hrw.WriteHeader(http.StatusOK)
-					hrw.Write(resp.Body())
-					logger.Debug().Msgf("request forwarded successfully for projectId: %s, networkId: %s", projectId, networkId)
-				} else {
-					handleErrorResponse(logger, err, hrw)
-				}
-			} else {
-				handleErrorResponse(logger, err, hrw)
+			if err != nil {
+				logger.Error().Err(err).Msgf("failed to get project %s", projectId)
+				errChan <- err
+				return
 			}
+
+			nw, err := erpc.GetNetwork(projectId, networkId)
+			if err != nil {
+				logger.Error().Err(err).Msgf("failed to get network %s for project %s", networkId, projectId)
+				errChan <- err
+				return
+			}
+
+			nq := upstream.NewNormalizedRequest(body)
+			nq.SetNetwork(nw)
+			nq.ApplyDirectivesFromHttpHeaders(r.Header)
+
+			resp, err := project.Forward(requestCtx, networkId, nq)
+			if err != nil {
+				errChan <- err
+				return
+			}
+			logger.Debug().Msgf("request forwarded successfully for projectId: %s, networkId: %s", projectId, networkId)
+			resultChan <- resp
 		}()
 
-		// Wait for either the request to complete or the timeout to occur
 		select {
-		case <-done:
-			// Request completed normally
+		case resp := <-resultChan:
+			hrw.Header().Set("Content-Type", "application/json")
+			hrw.WriteHeader(http.StatusOK)
+			hrw.Write(resp.Body())
+		case err := <-errChan:
+			handleErrorResponse(logger, err, hrw)
 		case <-requestCtx.Done():
-			// Timeout occurred
 			logger.Error().Msgf("request timed out after %s", timeOutDur)
 			handleErrorResponse(logger, common.NewErrRequestTimeOut(timeOutDur), hrw)
 		}
@@ -168,31 +159,21 @@ func handleErrorResponse(logger *zerolog.Logger, err error, hrw http.ResponseWri
 	} else if _, ok := err.(*common.BaseError); ok {
 		writeErr = json.NewEncoder(hrw).Encode(err)
 	} else {
-		writeErr = json.NewEncoder(hrw).Encode(
-			common.BaseError{
-				Code:    "ErrUnknown",
-				Message: "unexpected server error",
-				Cause:   err,
-			},
-		)
+		if serr, ok := err.(common.StandardError); ok {
+			writeErr = json.NewEncoder(hrw).Encode(serr)
+		} else {
+			writeErr = json.NewEncoder(hrw).Encode(
+				common.BaseError{
+					Code:    "ErrUnknown",
+					Message: "unexpected server error",
+					Cause:   err,
+				},
+			)
+		}
 	}
 
 	if writeErr != nil {
 		logger.Error().Err(writeErr).Msgf("failed to encode error response body")
-		hrw.WriteHeader(http.StatusInternalServerError)
-
-		var cause interface{}
-		if be, ok := writeErr.(*common.BaseError); ok {
-			cause = be
-		} else {
-			cause = writeErr.Error()
-		}
-
-		json.NewEncoder(hrw).Encode(map[string]interface{}{
-			"code":    common.JsonRpcErrorServerSideException,
-			"message": "unexpected server error",
-			"cause":   cause,
-		})
 	}
 }
 
