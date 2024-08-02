@@ -44,7 +44,7 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 			segments := strings.Split(r.URL.Path, "/")
 			// Check if the URL path has at least three segments ("/main/evm/1")
 			if len(segments) != 4 {
-				errChan <- errors.New("invalid URL path")
+				errChan <- common.NewErrInvalidUrlPath(r.URL.Path)
 				return
 			}
 
@@ -54,7 +54,7 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
 				logger.Error().Err(err).Msgf("failed to read request body")
-				errChan <- err
+				errChan <- common.NewErrInvalidRequest(err)
 				return
 			}
 
