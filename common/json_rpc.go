@@ -147,8 +147,7 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 		var data string
 
 		if c, ok := customError["code"]; ok {
-			cf, ok := c.(float64)
-			if ok {
+			if cf, ok := c.(float64); ok {
 				code = int(cf)
 			}
 		}
@@ -156,7 +155,11 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 			msg = m.(string)
 		}
 		if d, ok := customError["data"]; ok {
-			data = d.(string)
+			if dt, ok := d.(string); ok {
+				data = dt
+			} else {
+				data = fmt.Sprintf("%v", d)
+			}
 		}
 
 		r.Error = NewErrJsonRpcExceptionExternal(
