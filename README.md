@@ -60,7 +60,7 @@ make run
 
 # License
 
-AGPL-3.0
+Apache 2.0
 
 [ci-badge]: https://github.com/erpc/erpc/actions/workflows/development.yml/badge.svg
 [ci-url]: https://github.com/erpc/erpc/actions/workflows/development.yml
