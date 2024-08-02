@@ -469,11 +469,21 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 			Failsafe: fsCfg,
 		}
+		up2 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "test",
+			Endpoint: "http://rpc2.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+			Failsafe: fsCfg,
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
 				up1,
+				up2,
 			},
 			rlr,
 			vndr, mt, 1*time.Second,
@@ -486,7 +496,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup, err := upr.NewUpstream(
+		pup1, err := upr.NewUpstream(
 			"prjA",
 			up1,
 			&log.Logger,
@@ -495,11 +505,27 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup)
+		cl1, err := clr.GetOrCreateClient(pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup.Client = cl
+		pup1.Client = cl1
+
+		pup2, err := upr.NewUpstream(
+			"prjA",
+			up2,
+			&log.Logger,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl2, err := clr.GetOrCreateClient(pup2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup2.Client = cl2
+
 		ntw, err := NewNetwork(
 			&log.Logger,
 			"prjA",
