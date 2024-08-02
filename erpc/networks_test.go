@@ -382,6 +382,172 @@ func TestNetwork_Forward(t *testing.T) {
 	// TODO add unit test to retry when block is not finalized
 	// TODO add unit test to retry when block finalization is not available
 
+	t.Run("NoRetryOnFinalizedBlock", func(t *testing.T) {
+		defer gock.Off()
+		defer gock.Clean()
+		defer gock.CleanUnmatchedRequest()
+
+		var requestBytes = json.RawMessage(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getLogs",
+			"params": [{
+				"address": "0x1234567890abcdef1234567890abcdef12345678",
+				"fromBlock": "0x0",
+				"toBlock": "0x1273c18"
+			}],
+			"id": 1
+		}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				val := safeReadBody(request)
+				result := strings.Contains(val, "eth_getLogs")
+				return result
+			}).
+			Reply(200).
+			JSON(json.RawMessage(`{"result":[]}`))
+
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				val := safeReadBody(request)
+				result := strings.Contains(val, "eth_getLogs")
+				return result
+			}).
+			Reply(200).
+			JSON(json.RawMessage(`{"result":[{"logIndex":444}, "fromHost":"rpc2"]}`))
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				val := safeReadBody(request)
+				result := strings.Contains(val, "latest")
+				return result
+			}).
+			Reply(200).
+			JSON(json.RawMessage(`{"result": {"number":"0x1273c18"}}`))
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				val := safeReadBody(request)
+				result := strings.Contains(val, "finalized")
+				return result
+			}).
+			Reply(200).
+			JSON(json.RawMessage(`{"result": {"number":"0x1273c19"}}`))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		clr := upstream.NewClientRegistry(&log.Logger)
+
+		fsCfg := &common.FailsafeConfig{
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 1,
+			},
+		}
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+			Budgets: []*common.RateLimitBudgetConfig{},
+		}, &log.Logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		vndr := vendors.NewVendorsRegistry()
+		mt := health.NewTracker("prjA", 2*time.Second)
+		up1 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "test",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+			Failsafe: fsCfg,
+		}
+		upr := upstream.NewUpstreamsRegistry(
+			&log.Logger,
+			"prjA",
+			[]*common.UpstreamConfig{
+				up1,
+			},
+			rlr,
+			vndr, mt, 1*time.Second,
+		)
+		err = upr.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup, err := upr.NewUpstream(
+			"prjA",
+			up1,
+			&log.Logger,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl, err := clr.GetOrCreateClient(pup)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup.Client = cl
+		ntw, err := NewNetwork(
+			&log.Logger,
+			"prjA",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId:              123,
+					BlockTrackerInterval: "10h",
+				},
+				Failsafe: fsCfg,
+			},
+			rlr,
+			upr,
+			health.NewTracker("prjA", 2*time.Second),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		ntw.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
+
+		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		resp, err := ntw.Forward(ctx, fakeReq)
+
+		if err != nil {
+			t.Fatalf("Expected nil error, got %v", err)
+		}
+
+		jrr, err := resp.JsonRpcResponse()
+		if err != nil {
+			t.Fatalf("Expected nil error, got %v", err)
+		}
+
+		if jrr.Result == nil {
+			t.Fatalf("Expected result, got nil")
+		}
+
+		result, ok := jrr.Result.([]interface{})
+		if !ok {
+			t.Fatalf("Expected Result to be map[string]interface{}, got %T", jrr.Result)
+		}
+
+		if len(result) != 0 {
+			t.Errorf("Expected length to be %v, got %v", 0, len(result))
+		}
+	})
+
 	t.Run("ForwardDynamicallyAddsIgnoredMethods", func(t *testing.T) {
 		defer gock.Off()
 		defer gock.Clean()
@@ -880,6 +1046,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		ntw.Bootstrap(ctx)
 		fakeReq := upstream.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -3184,7 +3351,7 @@ func setupMocksForEvmBlockTracker() {
 			return strings.Contains(safeReadBody(request), "eth_getBlockByNumber")
 		}).
 		Reply(200).
-		JSON(json.RawMessage(`{"result": "0x1273c18"}`))
+		JSON(json.RawMessage(`{"result": {"number":"0x1273c18"}}`))
 	gock.New("http://rpc2.localhost").
 		Post("").
 		Persist().
@@ -3192,7 +3359,7 @@ func setupMocksForEvmBlockTracker() {
 			return strings.Contains(safeReadBody(request), "eth_getBlockByNumber")
 		}).
 		Reply(200).
-		JSON(json.RawMessage(`{"result": "0x1273c18"}`))
+		JSON(json.RawMessage(`{"result": {"number":"0x1273c18"}}`))
 }
 
 func anyTestMocksLeft() int {
