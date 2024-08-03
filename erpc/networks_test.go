@@ -1468,7 +1468,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ntw.Bootstrap(ctx)
 		fakeReq := upstream.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
