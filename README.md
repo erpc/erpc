@@ -4,7 +4,7 @@
 [![CI][ci-badge]][ci-url]
 [![Telegram chat][tg-badge]][tg-url]
 [![License][license-badge]][license-url]
-<a href="https://twitter.com/intent/tweet?text=EVM%20RPC%20proxy%20to%20increase%20reliability%20and%20reduce%20costs%20of%20your%20RPC%20usage%20https://www.erpc.cloud&hashtags=rpc,proxy,load-balancer,caching">
+<a href="https://twitter.com/intent/tweet?text=EVM%20RPC%20proxy%20to%20increase%20reliability%20and%20reduce%20costs%20of%20your%20RPC%20usage%20https://www.erpc.cloud&hashtags=rpc,proxy,caching">
 <img alt="tweet" src="https://img.shields.io/twitter/url/http/shields.io.svg?style=social"/>
 </a>
 
