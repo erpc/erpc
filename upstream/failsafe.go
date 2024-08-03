@@ -323,7 +323,7 @@ func createTimeoutPolicy(component string, cfg *common.TimeoutPolicyConfig) (fai
 	return builder.Build(), nil
 }
 
-func TranslateFailsafeError(exec failsafe.Execution[common.NormalizedResponse], execErr error) error {
+func TranslateFailsafeError(exec failsafe.Execution[common.NormalizedResponse], execErr error, details map[string]interface{}) error {
 	var retryExceededErr *retrypolicy.ExceededError
 	if errors.As(execErr, &retryExceededErr) {
 		var attempts int
@@ -340,21 +340,22 @@ func TranslateFailsafeError(exec failsafe.Execution[common.NormalizedResponse], 
 		}
 		var translatedCause error
 		if ler != nil {
-			translatedCause = TranslateFailsafeError(exec, ler)
+			translatedCause = TranslateFailsafeError(exec, ler, details)
 		}
 		return common.NewErrFailsafeRetryExceeded(
 			translatedCause,
 			attempts,
 			retries,
+			details,
 		)
 	}
 
 	if errors.Is(execErr, timeout.ErrExceeded) {
-		return common.NewErrFailsafeTimeoutExceeded(execErr)
+		return common.NewErrFailsafeTimeoutExceeded(execErr, details)
 	}
 
 	if errors.Is(execErr, circuitbreaker.ErrOpen) {
-		return common.NewErrFailsafeCircuitBreakerOpen(execErr)
+		return common.NewErrFailsafeCircuitBreakerOpen(execErr, details)
 	}
 
 	return execErr

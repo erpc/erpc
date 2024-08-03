@@ -300,7 +300,11 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 				})
 
 			if execErr != nil {
-				return nil, false, TranslateFailsafeError(execution, execErr)
+				return nil, false, TranslateFailsafeError(execution, execErr, map[string]interface{}{
+					"projectId":  u.ProjectId,
+					"networkId":  req.Network().Id(),
+					"upstreamId": cfg.Id,
+				})
 			}
 
 			return resp, false, execErr
