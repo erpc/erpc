@@ -16,7 +16,7 @@ func NormalizeHttpJsonRpc(nrq common.NormalizedRequest, r *common.JsonRpcRequest
 		if len(r.Params) > 0 {
 			bks, ok := r.Params[0].(string)
 			if !ok {
-				return fmt.Errorf("invalid block number, must be 0x hex string, or numer or latest/finalized")
+				return fmt.Errorf("invalid block number, must be 0x hex string, or number or latest/finalized")
 			}
 			ntw := nrq.Network()
 			if ntw != nil {
