@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -19,11 +20,12 @@ type PreparedProject struct {
 	Networks map[string]*Network
 	Logger   *zerolog.Logger
 
-	appCtx            context.Context
-	networksMu        sync.RWMutex
-	networksRegistry  *NetworksRegistry
-	upstreamsRegistry *upstream.UpstreamsRegistry
-	evmJsonRpcCache   *EvmJsonRpcCache
+	appCtx               context.Context
+	networksMu           sync.RWMutex
+	networksRegistry     *NetworksRegistry
+	rateLimitersRegistry *upstream.RateLimitersRegistry
+	upstreamsRegistry    *upstream.UpstreamsRegistry
+	evmJsonRpcCache      *EvmJsonRpcCache
 }
 
 func (p *PreparedProject) GetNetwork(networkId string) (network *Network, err error) {
@@ -49,14 +51,18 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *ups
 	}
 	method, _ := nq.Method()
 
+	if err := p.acquireRateLimitPermit(nq); err != nil {
+		return nil, err
+	}
+
 	timer := prometheus.NewTimer(health.MetricNetworkRequestDuration.WithLabelValues(
-		network.ProjectId,
+		p.Config.Id,
 		network.NetworkId,
 		method,
 	))
 	defer timer.ObserveDuration()
 
-	health.MetricNetworkRequestsReceived.WithLabelValues(network.ProjectId, network.NetworkId, method).Inc()
+	health.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.NetworkId, method).Inc()
 	p.Logger.Debug().Str("method", method).Msgf("forwarding request to network")
 	resp, err := network.Forward(ctx, nq)
 
@@ -66,7 +72,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *ups
 		} else {
 			p.Logger.Info().Msgf("successfully forward request for network")
 		}
-		health.MetricNetworkSuccessfulRequests.WithLabelValues(network.ProjectId, network.NetworkId, method).Inc()
+		health.MetricNetworkSuccessfulRequests.WithLabelValues(p.Config.Id, network.NetworkId, method).Inc()
 		return resp, err
 	} else {
 		p.Logger.Warn().Err(err).Str("method", method).Msgf("failed to forward request for network")
@@ -150,4 +156,48 @@ func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) 
 	}
 
 	return nw, nil
+}
+
+func (p *PreparedProject) acquireRateLimitPermit(req *upstream.NormalizedRequest) error {
+	if p.Config.RateLimitBudget == "" {
+		return nil
+	}
+
+	rlb, errNetLimit := p.rateLimitersRegistry.GetBudget(p.Config.RateLimitBudget)
+	if errNetLimit != nil {
+		return errNetLimit
+	}
+	if rlb == nil {
+		return nil
+	}
+
+	method, errMethod := req.Method()
+	if errMethod != nil {
+		return errMethod
+	}
+	lg := p.Logger.With().Str("method", method).Logger()
+
+	rules := rlb.GetRulesByMethod(method)
+	lg.Debug().Msgf("found %d network-level rate limiters", len(rules))
+
+	if len(rules) > 0 {
+		for _, rule := range rules {
+			permit := rule.Limiter.TryAcquirePermit()
+			if !permit {
+				health.MetricProjectRequestSelfRateLimited.WithLabelValues(
+					p.Config.Id,
+					method,
+				).Inc()
+				return common.NewErrProjectRateLimitRuleExceeded(
+					p.Config.Id,
+					p.Config.RateLimitBudget,
+					fmt.Sprintf("%+v", rule.Config),
+				)
+			} else {
+				lg.Debug().Object("rateLimitRule", rule.Config).Msgf("project-level rate limit passed")
+			}
+		}
+	}
+
+	return nil
 }

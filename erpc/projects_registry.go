@@ -100,10 +100,11 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		Config: prjCfg,
 		Logger: &lg,
 
-		appCtx:            r.appCtx,
-		networksRegistry:  networksRegistry,
-		upstreamsRegistry: upstreamsRegistry,
-		evmJsonRpcCache:   r.evmJsonRpcCache,
+		appCtx:               r.appCtx,
+		networksRegistry:     networksRegistry,
+		upstreamsRegistry:    upstreamsRegistry,
+		rateLimitersRegistry: r.rateLimitersRegistry,
+		evmJsonRpcCache:      r.evmJsonRpcCache,
 	}
 	pp.Networks = make(map[string]*Network)
 
