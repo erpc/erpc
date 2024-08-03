@@ -420,13 +420,13 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":[]}`))
+			JSON(json.RawMessage(`{"result":[], "fromHost":"rpc1"}`))
 
 		// Mock a non-empty logs response from the second upstream
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":[{"logIndex":444, "fromHost":"rpc2"}]}`))
+			JSON(json.RawMessage(`{"result":[{"logIndex":444}], "fromHost":"rpc2"}`))
 
 		// Set up a context and a cancellation function
 		ctx, cancel := context.WithCancel(context.Background())
@@ -546,19 +546,28 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
 
-		// Parse and validate the JSON-RPC response
-		jrr, err := resp.JsonRpcResponse()
+		// Convert the raw response to a map to access custom fields like fromHost
+		var responseMap map[string]interface{}
+		err = json.Unmarshal(resp.Body(), &responseMap)
 		if err != nil {
-			t.Fatalf("Failed to get JSON-RPC response: %v", err)
+			t.Fatalf("Failed to unmarshal response body: %v", err)
 		}
 
-		if jrr.Result == nil {
-			t.Fatalf("Expected non-nil result")
-		}
-
-		result, ok := jrr.Result.([]interface{})
+		// Check if fromHost exists and is a string
+		fromHost, ok := responseMap["fromHost"].(string)
 		if !ok {
-			t.Fatalf("Expected Result to be []interface{}, got %T", jrr.Result)
+			t.Fatalf("Expected fromHost to be a string, got %T", responseMap["fromHost"])
+		}
+
+		// Assert the value of fromHost
+		if fromHost != "rpc1" {
+			t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
+		}
+
+		// Check that the result field is an empty array as expected
+		result, ok := responseMap["result"].([]interface{})
+		if !ok {
+			t.Fatalf("Expected result to be []interface{}, got %T", responseMap["result"])
 		}
 
 		if len(result) != 0 {
