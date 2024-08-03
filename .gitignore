@@ -7,5 +7,5 @@ vendor/
 *.pprof
 *.cover
 coverage.txt
-
+.DS_Store
 erpc.yaml

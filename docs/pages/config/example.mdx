@@ -9,13 +9,30 @@ This example config demonstrates all features of eRPC in one place. For more exp
 - [Rate limiters](/config/rate-limiters): to configure various self-imposed budgets to prevent pressure on upstreams.
 - [Failsafe](/config/failsafe): explains different policies such as retry, timeout, and hedges, used for networks and upstreams.
 
-### `erpc.yaml`
-
 By default `erpc` binary will look for `./erpc.yaml` file in the current directory. You can change this path by passing an argument to the binary:
 
 ```bash
 $ erpc /path/to/your/erpc.yaml
 ```
+
+### Minimal `erpc.yaml`
+
+eRPC will auto-detect or use sane defaults for various configs such as retries, timeouts, circuit-breaker, hedges, node architecture etc.
+
+```yaml filename="erpc.yaml"
+logLevel: debug
+projects:
+ - id: main
+   upstreams:
+   # You don't need to define architecture (e.g. evm) or chain id (e.g. 42161)
+   # as they will be detected automatically by eRPC.
+   - endpoint: https://arbitrum-one.blastapi.io/xxxx
+   - endpoint: evm+alchemy://xxxx-my-alchemy-api-key-xxxx
+```
+
+### Full `erpc.yaml`
+
+To have more control over the configuration, you can use the example below.
 
 ```yaml filename="erpc.yaml"
 # Log level helps in debugging or error detection:
@@ -55,6 +72,10 @@ metrics:
 # The main purpose of multiple projects is different failsafe policies (more aggressive and costly, or less costly and more error-prone)
 projects:
   - id: main
+
+    # Optionally you can define a self-imposed rate limite budget for each project
+    # This is useful if you want to limit the number of requests per second or daily allowance.
+    rateLimitBudget: frontend-budget
 
     # This array configures network-specific (a.k.a chain-specific) features.
     # For each network "architecture" and corresponding network id (e.g. evm.chainId) is required.
@@ -190,6 +211,11 @@ rateLimiters:
       rules:
         - method: "*"
           maxCount: 300
+          period: 1s
+    - id: frontend-budget
+      rules:
+        - method: "*"
+          maxCount: 500
           period: 1s
 ```
 

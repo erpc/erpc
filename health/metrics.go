@@ -100,4 +100,10 @@ var (
 		Name:      "network_request_duration_seconds",
 		Help:      "Duration of requests for a network.",
 	}, []string{"project", "network", "category"})
+
+	MetricProjectRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "project_request_self_rate_limited_total",
+		Help:      "Total number of self-imposed (locally) rate limited requests towards the project.",
+	}, []string{"project", "category"})
 )

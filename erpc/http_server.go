@@ -19,6 +19,7 @@ type HttpServer struct {
 	config *common.ServerConfig
 	server *http.Server
 }
+
 func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.ServerConfig, erpc *ERPC) *HttpServer {
 	addr := fmt.Sprintf("%s:%d", cfg.HttpHost, cfg.HttpPort)
 
