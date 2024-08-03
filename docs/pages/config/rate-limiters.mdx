@@ -11,6 +11,14 @@ A "budget" can be assigned to one or more upstreams, and those upstreams will sh
 projects:
   - id: main
     # ...
+
+    # A project can have a budget that applies to all requests (any network or upstream)
+    # Useful to prevent a project (e.g. frontend, or indexer) to send too much requests.
+    rateLimitBudget: frontend
+
+    # ...
+
+    # Each upstream can have its own budget
     upstreams:
       - id: blastapi-chain-42161
         type: evm
@@ -32,6 +40,14 @@ projects:
 # For example upstream A and B can use the same budget, which means both of them together must not exceed the defined limits.
 rateLimiters:
   budgets:
+    - id: frontend
+      rules:
+        - method: '*'
+          maxCount: 1000
+          period: 1s
+        - method: 'eth_trace*'
+          maxCount: 100
+          period: 1s
     - id: global-blast
       rules:
         # You can limit which methods apply to this rule e.g. eth_getLogs or eth_* or * (all methods).
