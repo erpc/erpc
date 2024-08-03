@@ -2,7 +2,6 @@
 
 [![CI][ci-badge]][ci-url]
 [![Telegram chat][tg-badge]][tg-url]
-[![X (formerly Twitter) URL](https://img.shields.io/twitter/url?url=https%3A%2F%2Fx.com%2Ferpc)]
 [![License][license-badge]][license-url]
 
 > ⚠️ This project is still under development, and for now should be used as "a fallback" for RPC calls.
