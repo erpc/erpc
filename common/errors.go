@@ -672,12 +672,13 @@ var NewErrFailsafeConfiguration = func(cause error, details map[string]interface
 
 type ErrFailsafeTimeoutExceeded struct{ BaseError }
 
-var NewErrFailsafeTimeoutExceeded = func(cause error) error {
+var NewErrFailsafeTimeoutExceeded = func(cause error, details map[string]interface{}) error {
 	return &ErrFailsafeTimeoutExceeded{
 		BaseError{
 			Code:    "ErrFailsafeTimeoutExceeded",
 			Message: "failsafe timeout policy exceeded",
 			Cause:   cause,
+			Details: details,
 		},
 	}
 }
@@ -690,10 +691,13 @@ type ErrFailsafeRetryExceeded struct{ BaseError }
 
 const ErrCodeFailsafeRetryExceeded ErrorCode = "ErrFailsafeRetryExceeded"
 
-var NewErrFailsafeRetryExceeded = func(cause error, attempts int, retries int) error {
+var NewErrFailsafeRetryExceeded = func(cause error, attempts int, retries int, details map[string]interface{}) error {
 	dets := map[string]interface{}{
 		"attempts": attempts,
 		"retries":  retries,
+	}
+	for k, v := range details {
+		dets[k] = v
 	}
 	return &ErrFailsafeRetryExceeded{
 		BaseError{
@@ -713,24 +717,26 @@ type ErrFailsafeCircuitBreakerOpen struct{ BaseError }
 
 const ErrCodeFailsafeCircuitBreakerOpen ErrorCode = "ErrFailsafeCircuitBreakerOpen"
 
-var NewErrFailsafeCircuitBreakerOpen = func(cause error) error {
+var NewErrFailsafeCircuitBreakerOpen = func(cause error, details map[string]interface{}) error {
 	return &ErrFailsafeCircuitBreakerOpen{
 		BaseError{
 			Code:    ErrCodeFailsafeCircuitBreakerOpen,
 			Message: "circuit breaker is open due to high error rate",
 			Cause:   cause,
+			Details: details,
 		},
 	}
 }
 
 type ErrFailsafeUnexpected struct{ BaseError }
 
-var NewErrFailsafeUnexpected = func(cause error) error {
+var NewErrFailsafeUnexpected = func(cause error, details map[string]interface{}) error {
 	return &ErrFailsafeUnexpected{
 		BaseError{
 			Code:    "ErrFailsafeUnexpected",
 			Message: "unexpected failsafe error type encountered",
 			Cause:   cause,
+			Details: details,
 		},
 	}
 }
