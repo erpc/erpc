@@ -12,7 +12,6 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-
 func TestProject_Forward(t *testing.T) {
 
 	t.Run("ForwardCorrectlyRateLimitedOnProjectLevel", func(t *testing.T) {
@@ -48,7 +47,7 @@ func TestProject_Forward(t *testing.T) {
 			&log.Logger,
 			[]*common.ProjectConfig{
 				{
-					Id: "prjA",
+					Id:              "prjA",
 					RateLimitBudget: "MyLimiterBudget_Test1",
 					Networks: []*common.NetworkConfig{
 						{

@@ -230,7 +230,10 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		})
 
 	if execErr != nil {
-		err := upstream.TranslateFailsafeError(execution, execErr)
+		err := upstream.TranslateFailsafeError(execution, execErr, map[string]interface{}{
+			"projectId": n.ProjectId,
+			"networkId": n.NetworkId,
+		})
 		// If error is due to empty response be generous and accept it,
 		// because this means after many retries still no data is available.
 		if common.HasErrorCode(err, common.ErrCodeFailsafeRetryExceeded) {
