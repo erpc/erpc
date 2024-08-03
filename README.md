@@ -1,9 +1,15 @@
 # eRPC
 
-[![CI status][ci-badge]][ci-url]
+[![CI][ci-badge]][ci-url]
 [![Telegram chat][tg-badge]][tg-url]
+[![X (formerly Twitter) URL](https://img.shields.io/twitter/url?url=https%3A%2F%2Fx.com%2Ferpc)]
+[![License][license-badge]][license-url]
+
+> ⚠️ This project is still under development, and for now should be used as "a fallback" for RPC calls.
 
 [eRPC](https://erpc.cloud/) is a fault-tolerant EVM RPC proxy and re-org aware permanent caching solution. It is built with read-heavy use-cases in mind such as data indexing and high-load frontend usage.
+
+![Architecture](./assets/hla-diagram.svg)
 
 # Features
 
@@ -16,20 +22,11 @@
 🏭 Smart batching to aggregates multiple RPC or contract calls into one.<br/>
 🏭 Authentication modules such as basic auth, key-based, JWT and SIWE.<br/>
 
-## Roadmap
-
-- Join [eRPC's Telegram](https://t.me/+eEik0_G1VMhmN2U8) for technical discussions and feedbacks.
-- Request a feature in [Featurebase](https://erpc.featurebase.app)
-
-### Disclaimer
-
-> ⚠️ This project is still under development, and for now should be used as "a fallback" for RPC calls.
-
-![Architecture](./assets/hla-diagram.svg)
-
 # Usage & Docs
 
-- [docs.erpc.cloud](https://docs.erpc.cloud)
+- Visit [docs.erpc.cloud](https://docs.erpc.cloud) for documentation and guides.
+- Join [eRPC's Telegram](https://t.me/+eEik0_G1VMhmN2U8) for technical discussions and feedbacks.
+- Request a feature in [Featurebase](https://erpc.featurebase.app).
 
 ## Local Development
 
@@ -62,11 +59,9 @@ make run
 
 Apache 2.0
 
-[ci-badge]: https://github.com/erpc/erpc/actions/workflows/development.yml/badge.svg
+[ci-badge]: https://img.shields.io/badge/CI-passing-brightgreen
 [ci-url]: https://github.com/erpc/erpc/actions/workflows/development.yml
 [tg-badge]: https://img.shields.io/endpoint?color=neon&logo=telegram&label=Chat&url=https%3A%2F%2Fmogyo.ro%2Fquart-apis%2Ftgmembercount%3Fchat_id%3Derpc_cloud
 [tg-url]: https://t.me/erpc_cloud
 [license-badge]: https://img.shields.io/github/license/erpc/erpc
 [license-url]: https://github.com/erpc/erpc/blob/main/LICENSE
-[version-badge]: https://img.shields.io/github/version/erpc/erpc
-[version-url]: https://github.com/erpc/erpc/releases
