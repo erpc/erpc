@@ -14,7 +14,7 @@ import (
 type EvmBlockTracker struct {
 	network *Network
 
-	RWMutex              sync.RWMutex
+	mu              sync.RWMutex
 	latestBlockNumber    uint64
 	finalizedBlockNumber uint64
 
