@@ -4,21 +4,15 @@ A single instance of eRPC can be used for various projects, any number of chains
 
 You can have separate `backend`, `indexer` and `frontend` projects, so that you control self-imposed rate-limits, or supported methods. This allows you to decide different **"cost"** vs **"reliability"** strategies for each project.
 
-## `projects:`
+## Config
 
-This array is the top-most configuration, and it is required to have at least 1 project. Each project has the following properties:
+The `projects:` array is the top-most configuration, and it is required to have at least 1 project. Each project has the following properties:
 
 - `id:` a unique identifier used in logs and metrics.
+- [`rateLimitBudget:`](/config/rate-limiters) a budget for the total number of requests that this project is allowed to serve.
 - [`networks:`](#networks) an array of custom configuration for one or more of the supported networks.
 - [`upstreams:`](#upstreams) an array of all upstreams to use in this project.
 
 #### Example
 
-Refer to [`erpc.yaml`](/config/example)
-
-#### Roadmap
-
-On some doc pages we like to share our ideas for related future implementations, feel free to open a PR if you're up for a challenge:
-
-<br />
-- [ ] Add rate limiter budget on project-level to self-imposed total RPS or requests per month.
+Refer to [`erpc.yaml`](/config/example) and "projects" section.
