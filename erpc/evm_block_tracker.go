@@ -14,7 +14,7 @@ import (
 type EvmBlockTracker struct {
 	network *Network
 
-	updateMu             sync.Mutex
+	RWMutex              sync.RWMutex
 	latestBlockNumber    uint64
 	finalizedBlockNumber uint64
 
@@ -44,8 +44,8 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 	var updateBlockNumbers = func() error {
 		e.network.Logger.Debug().Msg("fetching latest and finalized block")
 
-		e.updateMu.Lock()
-		defer e.updateMu.Unlock()
+		e.RWMutex.Lock()
+		defer e.RWMutex.Unlock()
 
 		lb, err := e.fetchLatestBlockNumber(ctx)
 		if err != nil {
@@ -99,8 +99,8 @@ func (e *EvmBlockTracker) LatestBlock() uint64 {
 }
 
 func (e *EvmBlockTracker) FinalizedBlock() uint64 {
-	e.updateMu.Lock()
-	defer e.updateMu.Unlock()
+	e.RWMutex.Lock()
+	defer e.RWMutex.Unlock()
 	return e.finalizedBlockNumber
 }
 

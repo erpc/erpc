@@ -431,7 +431,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Reply(200).
 			JSON(json.RawMessage(`{"result": {"number":"0x1273c18"}}`))
 
-		gock.New("http://rpc1.localhost").
+		gock.New("http://rpc2.localhost").
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
@@ -573,6 +573,201 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Errorf("Expected length to be %v, got %v", 0, len(result))
 		}
 	})
+
+	// t.Run("RetryWhenBlockIsNotFinalized", func(t *testing.T) {
+	// 	// Clean up gock mocks after the test runs
+	// 	defer gock.Off()
+	// 	defer gock.Clean()
+	// 	defer gock.CleanUnmatchedRequest()
+
+	// 	// Set up the request to be forwarded
+	// 	var requestBytes = json.RawMessage(`{
+	// 		"jsonrpc": "2.0",
+	// 		"method": "eth_getLogs",
+	// 		"params": [{
+	// 			"address": "0x1234567890abcdef1234567890abcdef12345678",
+	// 			"fromBlock": "0x0",
+	// 			"toBlock": "0x1273c18"
+	// 		}],
+	// 		"id": 1
+	// 	}`)
+
+	// 	// Mock response for eth_getLogs that returns an empty result
+	// 	gock.New("http://rpc1.localhost").
+	// 		Post("").
+	// 		Persist().
+	// 		Filter(func(request *http.Request) bool {
+	// 			return strings.Contains(safeReadBody(request), "eth_getLogs")
+	// 		}).
+	// 		Reply(200).
+	// 		JSON(json.RawMessage(`{"result":[]}`))
+
+	// 	// Mock response for eth_getLogs from a different RPC that returns logs
+	// 	gock.New("http://rpc2.localhost").
+	// 		Post("").
+	// 		Persist().
+	// 		Filter(func(request *http.Request) bool {
+	// 			return strings.Contains(safeReadBody(request), "eth_getLogs")
+	// 		}).
+	// 		Reply(200).
+	// 		JSON(json.RawMessage(`{"result":[{"logIndex":444}, "fromHost":"rpc2"]}`))
+
+	// 	// Mock the latest block number
+	// 	gock.New("http://rpc1.localhost").
+	// 		Post("").
+	// 		Persist().
+	// 		Filter(func(request *http.Request) bool {
+	// 			return strings.Contains(safeReadBody(request), "latest")
+	// 		}).
+	// 		Reply(200).
+	// 		JSON(json.RawMessage(`{"result": {"number":"0x0"}}`))
+
+	// 	// Mock the finalized block number which is lower than the `toBlock`
+	// 	gock.New("http://rpc2.localhost").
+	// 		Post("").
+	// 		Persist().
+	// 		Filter(func(request *http.Request) bool {
+	// 			return strings.Contains(safeReadBody(request), "finalized")
+	// 		}).
+	// 		Reply(200).
+	// 		JSON(json.RawMessage(`{"result": {"number":"0x0"}}`)) // Non-finalized scenario
+
+	// 	// Set up context and other dependencies for the test
+	// 	ctx, cancel := context.WithCancel(context.Background())
+	// 	defer cancel()
+
+	// 	// Set up other components like client registry, rate limiters, etc.
+	// 	clr := upstream.NewClientRegistry(&log.Logger)
+
+	// 	fsCfg := &common.FailsafeConfig{
+	// 		Retry: &common.RetryPolicyConfig{
+	// 			MaxAttempts: 1,
+	// 		},
+	// 	}
+	// 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+	// 		Budgets: []*common.RateLimitBudgetConfig{},
+	// 	}, &log.Logger)
+	// 	if err != nil {
+	// 		t.Fatal(err)
+	// 	}
+	// 	vndr := vendors.NewVendorsRegistry()
+	// 	mt := health.NewTracker("prjA", 2*time.Second)
+
+	// 	// Set up upstream configurations
+	// 	up1 := &common.UpstreamConfig{
+	// 		Type:     common.UpstreamTypeEvm,
+	// 		Id:       "test",
+	// 		Endpoint: "http://rpc1.localhost",
+	// 		Evm: &common.EvmUpstreamConfig{
+	// 			ChainId: 123,
+	// 		},
+	// 		Failsafe: fsCfg,
+	// 	}
+	// 	up2 := &common.UpstreamConfig{
+	// 		Type:     common.UpstreamTypeEvm,
+	// 		Id:       "test",
+	// 		Endpoint: "http://rpc2.localhost",
+	// 		Evm: &common.EvmUpstreamConfig{
+	// 			ChainId: 123,
+	// 		},
+	// 		Failsafe: fsCfg,
+	// 	}
+
+	// 	// Initialize the upstream registry and bootstrap the network
+	// 	upr := upstream.NewUpstreamsRegistry(
+	// 		&log.Logger,
+	// 		"prjA",
+	// 		[]*common.UpstreamConfig{
+	// 			up1,
+	// 			up2,
+	// 		},
+	// 		rlr,
+	// 		vndr, mt, 1*time.Second,
+	// 	)
+	// 	err = upr.Bootstrap(ctx)
+	// 	if err != nil {
+	// 		t.Fatal(err)
+	// 	}
+	// 	err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+	// 	if err != nil {
+	// 		t.Fatal(err)
+	// 	}
+	// 	pup1, err := upr.NewUpstream(
+	// 		"prjA",
+	// 		up1,
+	// 		&log.Logger,
+	// 		mt,
+	// 	)
+	// 	if err != nil {
+	// 		t.Fatal(err)
+	// 	}
+	// 	cl1, err := clr.GetOrCreateClient(pup1)
+	// 	if err != nil {
+	// 		t.Fatal(err)
+	// 	}
+	// 	pup1.Client = cl1
+
+	// 	pup2, err := upr.NewUpstream(
+	// 		"prjA",
+	// 		up2,
+	// 		&log.Logger,
+	// 		mt,
+	// 	)
+	// 	if err != nil {
+	// 		t.Fatal(err)
+	// 	}
+	// 	cl2, err := clr.GetOrCreateClient(pup2)
+	// 	if err != nil {
+	// 		t.Fatal(err)
+	// 	}
+	// 	pup2.Client = cl2
+
+	// 	// Set up the network
+	// 	ntw, err := NewNetwork(
+	// 		&log.Logger,
+	// 		"prjA",
+	// 		&common.NetworkConfig{
+	// 			Architecture: common.ArchitectureEvm,
+	// 			Evm: &common.EvmNetworkConfig{
+	// 				ChainId:              123,
+	// 				BlockTrackerInterval: "10h",
+	// 			},
+	// 			Failsafe: fsCfg,
+	// 		},
+	// 		rlr,
+	// 		upr,
+	// 		health.NewTracker("prjA", 2*time.Second),
+	// 	)
+	// 	if err != nil {
+	// 		t.Fatal(err)
+	// 	}
+
+	// 	// Bootstrap the network and simulate the request
+	// 	ntw.Bootstrap(ctx)
+	// 	time.Sleep(100 * time.Millisecond)
+
+	// 	fakeReq := upstream.NewNormalizedRequest(requestBytes)
+	// 	resp, err := ntw.Forward(ctx, fakeReq)
+
+	// 	if err != nil {
+	// 		t.Fatalf("Expected nil error, got %v", err)
+	// 	}
+
+	// 	jrr, err := resp.JsonRpcResponse()
+	// 	if err != nil {
+	// 		t.Fatalf("Expected nil error, got %v", err)
+	// 	}
+
+	// 	// Verify the response
+	// 	result, ok := jrr.Result.([]interface{})
+	// 	if !ok {
+	// 		t.Fatalf("Expected Result to be []interface{}, got %T", jrr.Result)
+	// 	}
+
+	// 	if len(result) == 0 {
+	// 		t.Errorf("Expected non-empty result due to retry, got empty")
+	// 	}
+	// })
 
 	t.Run("ForwardDynamicallyAddsIgnoredMethods", func(t *testing.T) {
 		defer gock.Off()
