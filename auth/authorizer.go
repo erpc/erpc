@@ -46,6 +46,14 @@ func NewAuthorizer(logger *zerolog.Logger, projectId string, cfg *common.AuthStr
 			return nil, common.NewErrInvalidConfig("SIWE strategy config is nil")
 		}
 		strategy = NewSiweStrategy(cfg.Siwe)
+	case common.AuthTypeNetwork:
+		if cfg.Network == nil {
+			return nil, common.NewErrInvalidConfig("network strategy config is nil")
+		}
+		strategy, err = NewNetworkStrategy(cfg.Network)
+		if err != nil {
+			return nil, err
+		}
 	default:
 		return nil, common.NewErrInvalidConfig(fmt.Sprintf("unknown auth strategy type: %s", cfg.Type))
 	}

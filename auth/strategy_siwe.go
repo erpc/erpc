@@ -24,28 +24,28 @@ func (s *SiweStrategy) Supports(ap *AuthPayload) bool {
 
 func (s *SiweStrategy) Authenticate(ctx context.Context, ap *AuthPayload) error {
 	if ap.Siwe == nil {
-		return common.NewErrAuthUnauthorized("siwe", fmt.Errorf("missing SIWE payload"))
+		return common.NewErrAuthUnauthorized("siwe", "missing SIWE payload")
 	}
 
 	// Parse the SIWE message
 	message, err := siwe.ParseMessage(ap.Siwe.Message)
 	if err != nil {
-		return common.NewErrAuthUnauthorized("siwe", fmt.Errorf("failed to parse SIWE message: %w", err))
+		return common.NewErrAuthUnauthorized("siwe", fmt.Sprintf("failed to parse SIWE message: %s", err))
 	}
 
 	// Verify the signature
 	if _, err := message.VerifyEIP191(ap.Siwe.Signature); err != nil {
-		return common.NewErrAuthUnauthorized("siwe", fmt.Errorf("invalid signature: %w", err))
+		return common.NewErrAuthUnauthorized("siwe", fmt.Sprintf("failed to verify SIWE signature: %s", err))
 	}
 
 	// Check if the domain is allowed
 	if !s.isDomainAllowed(message.GetDomain()) {
-		return common.NewErrAuthUnauthorized("siwe", fmt.Errorf("domain %s is not allowed", message.GetDomain()))
+		return common.NewErrAuthUnauthorized("siwe", fmt.Sprintf("domain %s is not allowed", message.GetDomain()))
 	}
 
 	// Verify the message is not expired
 	if ok, err := message.ValidNow(); !ok {
-		return common.NewErrAuthUnauthorized("siwe", err)
+		return common.NewErrAuthUnauthorized("siwe", fmt.Sprintf("SIWE message expired: %s", err))
 	}
 
 	return nil

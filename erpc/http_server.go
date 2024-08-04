@@ -80,7 +80,7 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 			nq.SetNetwork(nw)
 			nq.ApplyDirectivesFromHttpHeaders(r.Header)
 
-			ap, err := auth.NewPayloadFromHttp(projectId, nq, r)
+			ap, err := auth.NewPayloadFromHttp(project.Config, nq, r)
 			if err != nil {
 				logger.Error().Err(err).Str("projectId", projectId).Msgf("failed to parse authentication payload")
 				errChan <- err

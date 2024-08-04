@@ -275,12 +275,11 @@ type ErrAuthUnauthorized struct{ BaseError }
 
 const ErrCodeAuthUnauthorized ErrorCode = "ErrAuthUnauthorized"
 
-var NewErrAuthUnauthorized = func(strategy string, cause error) error {
+var NewErrAuthUnauthorized = func(strategy string, message string) error {
 	return &ErrAuthUnauthorized{
 		BaseError{
 			Code:    ErrCodeAuthUnauthorized,
-			Message: "unauthorized",
-			Cause:   cause,
+			Message: message,
 			Details: map[string]interface{}{
 				"strategy": strategy,
 			},
