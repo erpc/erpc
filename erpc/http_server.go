@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/upstream"
 	"github.com/rs/zerolog"
@@ -64,6 +65,13 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 			project, err := erpc.GetProject(projectId)
 			if err != nil {
 				logger.Error().Err(err).Msgf("failed to get project %s", projectId)
+				errChan <- err
+				return
+			}
+
+			ap := auth.NewPayloadFromHttp(r)
+			if err := project.Authenticate(requestCtx, ap); err != nil {
+				logger.Error().Err(err).Str("projectId", projectId).Msgf("failed to authenticate")
 				errChan <- err
 				return
 			}
