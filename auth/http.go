@@ -61,15 +61,23 @@ func NewPayloadFromHttp(projectId string, nq common.NormalizedRequest, r *http.R
 		ap.Type = common.AuthTypeSiwe
 		ap.Siwe = &SiwePayload{
 			Signature: r.URL.Query().Get("signature"),
-			Message:   r.URL.Query().Get("message"),
+			Message:   normalizeSiweMessage(r.URL.Query().Get("message")),
 		}
 	} else if r.Header.Get("X-Siwe-Message") != "" && r.Header.Get("X-Siwe-Signature") != "" {
 		ap.Type = common.AuthTypeSiwe
 		ap.Siwe = &SiwePayload{
-			Message:   r.Header.Get("X-Siwe-Message"),
 			Signature: r.Header.Get("X-Siwe-Signature"),
+			Message:   normalizeSiweMessage(r.Header.Get("X-Siwe-Message")),
 		}
 	}
 
 	return ap, nil
+}
+
+func normalizeSiweMessage(msg string) string {
+	decoded, err := base64.StdEncoding.DecodeString(msg)
+	if err != nil {
+		return msg
+	}
+	return string(decoded)
 }

@@ -57,6 +57,8 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, nq common.NormalizedReq
 		return fmt.Errorf("failed to get method from request: %w", err)
 	}
 
+	var errs []error
+
 	for _, az := range r.strategies {
 		if !az.shouldApplyToMethod(method) {
 			continue
@@ -66,11 +68,13 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, nq common.NormalizedReq
 			continue
 		}
 
-		if err := az.acquireRateLimitPermit(nq); err != nil {
-			return err
+		if err := az.strategy.Authenticate(ctx, ap); err != nil {
+			errs = append(errs, err)
+			continue
 		}
 
-		if err := az.strategy.Authenticate(ctx, ap); err != nil {
+		// If authentication is passed then apply and consume the rate limit
+		if err := az.acquireRateLimitPermit(nq); err != nil {
 			return err
 		}
 
@@ -79,5 +83,5 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, nq common.NormalizedReq
 	}
 
 	// If no strategy matched or succeeded, consider the request unauthorized
-	return common.NewErrAuthUnauthorized("", errors.New("no matching auth strategy found"))
+	return common.NewErrAuthUnauthorized("all", errors.Join(errs...))
 }
