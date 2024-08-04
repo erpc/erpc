@@ -193,7 +193,7 @@ type AuthStrategyConfig struct {
 }
 
 type SecretStrategyConfig struct {
-	Secret string `yaml:"secret"`
+	Value string `yaml:"value"`
 }
 
 type JwtStrategyConfig struct {

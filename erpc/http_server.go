@@ -104,7 +104,6 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 		case err := <-errChan:
 			handleErrorResponse(logger, err, hrw)
 		case <-requestCtx.Done():
-			logger.Error().Msgf("request timed out after %s", timeOutDur)
 			handleErrorResponse(logger, common.NewErrRequestTimeOut(timeOutDur), hrw)
 		}
 	})
