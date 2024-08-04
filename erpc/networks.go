@@ -88,8 +88,6 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 
 		select {
 		case <-inf.done:
-			// inf.mu.RLock()
-			// defer inf.mu.RUnlock()
 			return inf.resp, inf.err
 		case <-ctx.Done():
 			return nil, ctx.Err()

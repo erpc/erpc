@@ -44,16 +44,15 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 	var updateBlockNumbers = func() error {
 		e.network.Logger.Debug().Msg("fetching latest and finalized block")
 
-		e.mu.Lock()
-		defer e.mu.Unlock()
-
 		lb, err := e.fetchLatestBlockNumber(ctx)
 		if err != nil {
 			e.network.Logger.Error().Err(err).Msg("failed to get latest block number in block tracker")
 		}
 		e.network.Logger.Debug().Uint64("blockNumber", lb).Msg("fetched latest block")
 		if lb > 0 {
+			e.mu.Lock()
 			e.latestBlockNumber = lb
+			e.mu.Unlock()
 		}
 
 		fb, err := e.fetchFinalizedBlockNumber(ctx)
@@ -62,7 +61,9 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 		}
 		e.network.Logger.Debug().Uint64("blockNumber", fb).Msg("fetched finalized block")
 		if fb > 0 {
+			e.mu.Lock()
 			e.finalizedBlockNumber = fb
+			e.mu.Unlock()
 		}
 
 		// TODO should we return error here?
@@ -99,8 +100,8 @@ func (e *EvmBlockTracker) LatestBlock() uint64 {
 }
 
 func (e *EvmBlockTracker) FinalizedBlock() uint64 {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 	return e.finalizedBlockNumber
 }
 

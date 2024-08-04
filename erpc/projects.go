@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/upstream"
@@ -23,6 +24,7 @@ type PreparedProject struct {
 	appCtx               context.Context
 	networksMu           sync.RWMutex
 	networksRegistry     *NetworksRegistry
+	authRegistry         *auth.AuthRegistry
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	upstreamsRegistry    *upstream.UpstreamsRegistry
 	evmJsonRpcCache      *EvmJsonRpcCache
@@ -42,6 +44,17 @@ func (p *PreparedProject) GetNetwork(networkId string) (network *Network, err er
 		p.Networks[networkId] = network
 	}
 	return
+}
+
+func (p *PreparedProject) Authenticate(ctx context.Context, nq common.NormalizedRequest, ap *auth.AuthPayload) error {
+	if p.authRegistry != nil {
+		err := p.authRegistry.Authenticate(ctx, nq, ap)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *upstream.NormalizedRequest) (common.NormalizedResponse, error) {
