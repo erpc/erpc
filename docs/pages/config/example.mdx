@@ -25,6 +25,11 @@ $ erpc /path/to/your/erpc.yaml
 
 eRPC will auto-detect or use sane defaults for various configs such as retries, timeouts, circuit-breaker, hedges, node architecture etc.
 
+<Callout type="info">
+  <b>eRPC is Multi-chain</b><br />
+  A single instance of eRPC can server multiple projects (frontend, indexer, etc) and multiple chains.
+</Callout>
+
 ```yaml filename="erpc.yaml"
 logLevel: debug
 projects:
