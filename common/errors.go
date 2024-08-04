@@ -266,6 +266,25 @@ func (e *ErrRequestTimeOut) ErrorStatusCode() int {
 }
 
 //
+// Auth
+//
+
+type ErrAuthUnauthorized struct{ BaseError }
+
+var NewErrAuthUnauthorized = func(strategy string, cause error) error {
+	return &ErrAuthUnauthorized{
+		BaseError{
+			Code:    "ErrAuthUnauthorized",
+			Message: "unauthorized",
+			Cause:   cause,
+			Details: map[string]interface{}{
+				"strategy": strategy,
+			},
+		},
+	}
+}
+
+//
 // Projects
 //
 

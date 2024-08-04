@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/upstream"
@@ -42,6 +43,10 @@ func (p *PreparedProject) GetNetwork(networkId string) (network *Network, err er
 		p.Networks[networkId] = network
 	}
 	return
+}
+
+func (p *PreparedProject) Authenticate(ctx context.Context, ap *auth.AuthPayload) error {
+	return nil
 }
 
 func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *upstream.NormalizedRequest) (common.NormalizedResponse, error) {
