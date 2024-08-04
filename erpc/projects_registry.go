@@ -6,6 +6,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/upstream"
@@ -96,11 +97,20 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		r.rateLimitersRegistry,
 	)
 
+	var authRegistry *auth.AuthRegistry
+	if prjCfg.Auth != nil {
+		authRegistry, err = auth.NewAuthRegistry(&lg, prjCfg.Id, prjCfg.Auth, r.rateLimitersRegistry)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	pp := &PreparedProject{
 		Config: prjCfg,
 		Logger: &lg,
 
 		appCtx:               r.appCtx,
+		authRegistry:         authRegistry,
 		networksRegistry:     networksRegistry,
 		upstreamsRegistry:    upstreamsRegistry,
 		rateLimitersRegistry: r.rateLimitersRegistry,

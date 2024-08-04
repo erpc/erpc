@@ -1,29 +1,83 @@
 package auth
 
 import (
+	"context"
+	"errors"
+	"fmt"
+
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/upstream"
+	"github.com/rs/zerolog"
 )
 
+// AuthRegistry holds the authentication strategies for a project
 type AuthRegistry struct {
-	authorizers []*Authorizer
+	projectId            string
+	rateLimitersRegistry *upstream.RateLimitersRegistry
+	strategies           []*Authorizer
 }
 
-func NewAuthRegistry(cfg *common.AuthConfig) (*AuthRegistry, error) {
+// NewAuthRegistry creates a new group of authorizers for a project
+func NewAuthRegistry(logger *zerolog.Logger, projectId string, cfg *common.AuthConfig, rateLimitersRegistry *upstream.RateLimitersRegistry) (*AuthRegistry, error) {
+	if cfg == nil {
+		return nil, common.NewErrInvalidConfig("auth config is nil")
+	}
+
 	r := &AuthRegistry{
-		authorizers: make([]*Authorizer, 0),
+		projectId:            projectId,
+		strategies:           make([]*Authorizer, 0, len(cfg.Strategies)),
+		rateLimitersRegistry: rateLimitersRegistry,
 	}
 
 	for _, strategy := range cfg.Strategies {
-		az, err := NewAuthorizer(strategy)
+		lg := logger.With().Str("strategy", string(strategy.Type)).Logger()
+		az, err := NewAuthorizer(&lg, projectId, strategy, rateLimitersRegistry)
 		if err != nil {
-			return nil, err
+			return nil, common.NewErrInvalidConfig(fmt.Sprintf("failed to create authorizer for project %s with strategy %s: %v", projectId, strategy.Type, err))
 		}
-		r.Register(az)
+		r.strategies = append(r.strategies, az)
 	}
 
 	return r, nil
 }
 
-func (r *AuthRegistry) Register(strategy *Authorizer) {
-	r.authorizers = append(r.authorizers, strategy)
+// Authenticate checks the authentication payload against all registered strategies
+func (r *AuthRegistry) Authenticate(ctx context.Context, nq common.NormalizedRequest, ap *AuthPayload) error {
+	if ap == nil {
+		return common.NewErrAuthUnauthorized("", errors.New("auth payload is nil"))
+	}
+
+	if len(r.strategies) == 0 {
+		// If no strategies are configured, allow all requests
+		return nil
+	}
+
+	method, err := nq.Method()
+	if err != nil {
+		return fmt.Errorf("failed to get method from request: %w", err)
+	}
+
+	for _, az := range r.strategies {
+		if !az.shouldApplyToMethod(method) {
+			continue
+		}
+
+		if !az.strategy.Supports(ap) {
+			continue
+		}
+
+		if err := az.acquireRateLimitPermit(nq); err != nil {
+			return err
+		}
+
+		if err := az.strategy.Authenticate(ctx, ap); err != nil {
+			return err
+		}
+
+		// If a strategy succeeds, we consider the request authenticated
+		return nil
+	}
+
+	// If no strategy matched or succeeded, consider the request unauthorized
+	return common.NewErrAuthUnauthorized("", errors.New("no matching auth strategy found"))
 }

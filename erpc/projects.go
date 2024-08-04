@@ -24,6 +24,7 @@ type PreparedProject struct {
 	appCtx               context.Context
 	networksMu           sync.RWMutex
 	networksRegistry     *NetworksRegistry
+	authRegistry         *auth.AuthRegistry
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	upstreamsRegistry    *upstream.UpstreamsRegistry
 	evmJsonRpcCache      *EvmJsonRpcCache
@@ -45,7 +46,14 @@ func (p *PreparedProject) GetNetwork(networkId string) (network *Network, err er
 	return
 }
 
-func (p *PreparedProject) Authenticate(ctx context.Context, ap *auth.AuthPayload) error {
+func (p *PreparedProject) Authenticate(ctx context.Context, nq common.NormalizedRequest, ap *auth.AuthPayload) error {
+	if p.authRegistry != nil {
+		err := p.authRegistry.Authenticate(ctx, nq, ap)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
