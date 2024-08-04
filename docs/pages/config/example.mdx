@@ -1,3 +1,5 @@
+import { Callout } from "nextra/components";
+
 # Complete config example
 
 This example config demonstrates all features of eRPC in one place. For more explanation of each section, refer to dedicated pages:
@@ -14,6 +16,10 @@ By default `erpc` binary will look for `./erpc.yaml` file in the current directo
 ```bash
 $ erpc /path/to/your/erpc.yaml
 ```
+
+<Callout type="info">
+  A single instance of eRPC can server multiple projects (frontend, indexer, etc) and multiple networks and chains.
+</Callout>
 
 ### Minimal `erpc.yaml`
 
