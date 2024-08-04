@@ -7,6 +7,7 @@ require (
 	github.com/aws/aws-sdk-go v1.55.4
 	github.com/ethereum/go-ethereum v1.14.7
 	github.com/failsafe-go/failsafe-go v0.6.3
+	github.com/golang-jwt/jwt/v4 v4.5.0
 	github.com/h2non/gock v1.2.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/jackc/pgx/v4 v4.18.3

@@ -25,17 +25,22 @@ func NewAuthorizer(logger *zerolog.Logger, projectId string, cfg *common.AuthStr
 	}
 
 	var strategy AuthStrategy
+	var err error
+
 	switch cfg.Type {
 	case common.AuthTypeSecret:
 		if cfg.Secret == nil {
 			return nil, common.NewErrInvalidConfig("secret strategy config is nil")
 		}
 		strategy = NewSecretStrategy(cfg.Secret)
-	// case common.AuthTypeJwt:
-	// 	if cfg.Jwt == nil {
-	// 		return nil, common.NewErrInvalidConfig("JWT strategy config is nil")
-	// 	}
-	// 	strategy = NewJwtStrategy(cfg.Jwt)
+	case common.AuthTypeJwt:
+		if cfg.Jwt == nil {
+			return nil, common.NewErrInvalidConfig("JWT strategy config is nil")
+		}
+		strategy, err = NewJwtStrategy(cfg.Jwt)
+		if err != nil {
+			return nil, err
+		}
 	// case common.AuthTypeSiwe:
 	// 	if cfg.Siwe == nil {
 	// 		return nil, common.NewErrInvalidConfig("SIWE strategy config is nil")
