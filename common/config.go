@@ -197,11 +197,11 @@ type SecretStrategyConfig struct {
 }
 
 type JwtStrategyConfig struct {
-	AllowedIssuers    []string               `yaml:"allowedIssuers"`
-	AllowedAudiences  []string               `yaml:"allowedAudiences"`
-	AllowedAlgorithms []string               `yaml:"allowedAlgorithms"`
+	AllowedIssuers    []string          `yaml:"allowedIssuers"`
+	AllowedAudiences  []string          `yaml:"allowedAudiences"`
+	AllowedAlgorithms []string          `yaml:"allowedAlgorithms"`
+	RequiredClaims    []string          `yaml:"requiredClaims"`
 	VerificationKeys  map[string]string `yaml:"verificationKeys"`
-	RequiredClaims    []string               `yaml:"requiredClaims"`
 }
 
 type SiweStrategyConfig struct {

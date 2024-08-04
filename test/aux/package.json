@@ -2,10 +2,13 @@
     "name": "test-aux",
     "description": "test-aux",
     "scripts": {
-        "jwt-generate": "ts-node jwt-generate.ts"
+        "jwt-generate": "ts-node jwt-generate.ts",
+        "siwe-generate": "ts-node siwe-generate.ts"
     },
     "dependencies": {
-        "jsonwebtoken": "^9.0.2"
+        "ethers": "^6.13.2",
+        "jsonwebtoken": "^9.0.2",
+        "siwe": "^2.3.2"
     },
     "devDependencies": {
         "@types/jsonwebtoken": "^9.0.6",
