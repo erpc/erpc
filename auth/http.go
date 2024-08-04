@@ -1,13 +1,15 @@
 package auth
 
 import (
+	"encoding/base64"
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/erpc/erpc/common"
 )
 
-func NewPayloadFromHttp(projectId string, nq common.NormalizedRequest, r *http.Request) *AuthPayload {
+func NewPayloadFromHttp(projectId string, nq common.NormalizedRequest, r *http.Request) (*AuthPayload, error) {
 	method, _ := nq.Method()
 	ap := &AuthPayload{
 		ProjectId: projectId,
@@ -27,22 +29,25 @@ func NewPayloadFromHttp(projectId string, nq common.NormalizedRequest, r *http.R
 	} else if r.Header.Get("Authorization") != "" {
 		auth := strings.TrimSpace(r.Header.Get("Authorization"))
 		label := strings.ToLower(auth[0:6])
+
 		if strings.EqualFold(label, "basic") {
-			// parse basic auth and take the password
-			parts := strings.Split(auth, " ")
+			basicAuthB64 := strings.TrimSpace(auth[6:])
+			basicAuth, err := base64.StdEncoding.DecodeString(basicAuthB64)
+			if err != nil {
+				return nil, err
+			}
+			parts := strings.Split(string(basicAuth), ":")
 			if len(parts) != 2 {
-				return nil
+				return nil, errors.New("invalid basic auth must be base64 of username:password")
 			}
 			ap.Type = common.AuthTypeSecret
 			ap.Secret = &SecretPayload{
+				// Password will be considered the secret value provided
+				// and username will be ignored.
 				Value: parts[1],
 			}
-		}
-	} else if r.Header.Get("Authorization") != "" {
-		ap.Type = common.AuthTypeJwt
-		auth := strings.TrimSpace(r.Header.Get("Authorization"))
-		label := strings.ToLower(auth[0:6])
-		if strings.EqualFold(label, "bearer") {
+		} else if strings.EqualFold(label, "bearer") {
+			ap.Type = common.AuthTypeJwt
 			ap.Jwt = &JwtPayload{
 				Token: auth[7:],
 			}
@@ -66,5 +71,5 @@ func NewPayloadFromHttp(projectId string, nq common.NormalizedRequest, r *http.R
 		}
 	}
 
-	return ap
+	return ap, nil
 }
