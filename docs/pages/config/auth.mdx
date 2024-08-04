@@ -1,0 +1,272 @@
+import { Callout } from "nextra/components";
+
+# Authentication
+
+Each project can have one or more authentication strategies enabled. When any authentication strategy is defined all requests towards the project must comply with at least one of the strategies.
+
+## Config
+
+The appropriate strategy will be activated based on request payload. For example if "token" is present as a query string then "secret" strategy will be activated. These are currently supported strategies:
+- [`secret`](#secret)
+- [`network`](#network)
+- [`jwt`](#jwt)
+- [`siwe`](#siwe)
+
+```yaml filename="erpc.yaml"
+logLevel: debug
+projects:
+  - id: frontend
+    auth:
+      strategies:
+      # Define a simple secret token for authentication of this project:
+      - type: secret
+        rateLimitBudget: free-tier
+        secret:
+          value: "some-random-secret-value"
+      # Define another secret token, that can also be used, but with higher rate limit:
+      - type: secret
+        rateLimitBudget: premium
+        secret:
+          value: "some-other-random-secret-value"
+    upstreams:
+    # ...
+rateLimiters:
+  # ...
+```
+
+#### Method filtering
+
+You can allow or disallow certain methods when a client is authenticated by a specific strategy. For example you can limit types of method available for a certain IP (or token), or define multiple secret tokens with different allowed methods.
+
+<Callout type="info">
+    `allowMethods` takes precedence over `ignoreMethods`. For example if you only want to allow eth_getLogs for a certain IP, you can:
+</Callout>
+
+Both allowMethods and ignoreMethods support wildcard `*` anywhere in the method name.
+
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    auth:
+      strategies:
+      - type: secret
+        ignoreMethods:
+        - eth_getLogs
+        - alchemy_*
+        allowMethods:
+        - alchemy_getAssetTransfers
+        # ...
+    upstreams:
+    # ...
+rateLimiters:
+  # ...
+```
+
+#### Rate limiter
+
+For each strategy item defined for a project you can enforce a separate rate limit budget. For example to limit users providing secret A to 100 requests per second, and users providing secret B to 1000 requests per second.
+
+<Callout type="warning">
+    At the moment, rate limit budgets apply across all clients authenticated by a specific strategy, and **NOT** per user.
+    
+    For example in sample below, no matter how many actual clients use the premium secret token, all of them **together** cannot exceed 1000 requests per second.
+</Callout>
+
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    auth:
+      strategies:
+      - type: secret
+        rateLimitBudget: free-tier
+        # ...
+      - type: jwt
+        rateLimitBudget: premium
+        # ...
+    upstreams:
+    # ...
+rateLimiters:
+  budgets:
+  - id: low-tier
+    rules:
+    - method: '*'
+        maxCount: 10
+        period: 1s
+  - id: premium
+    rules:
+    - method: '*'
+        maxCount: 1000
+        period: 1s
+```
+
+## `secret` strategy
+
+A simple strategy that allows you to define a secret value that will be checked against a provided `token` provided as a query string parameter, or as a `X-ERPC-Secret-Token` header.
+
+<Callout type="info">
+    This strategy mainly recommended for backend to backend communication. Exposing this token on your frontend allows users to impersonate the requests from anywhere.
+
+    If you still want to use this strategy on frontend, make sure CORS configuration are defined to reduce the potential abuse.
+</Callout>
+
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    auth:
+      strategies:
+      - type: secret
+        ignoreMethods:
+        - eth_getLogs
+        - alchemy_*
+        allowMethods:
+        - alchemy_getAssetTransfers
+        rateLimitBudget: premium
+        secret:
+          value: "some-random-secret-value" # To use env vars: ${MY_SECRET_VALUE}
+    upstreams:
+    # ...
+rateLimiters:
+  budgets:
+  - id: premium
+    rules:
+    - method: '*'
+        maxCount: 1000
+        period: 1s
+```
+
+The client must provide this value either via a query string parameter:
+```bash
+curl -X POST https://localhost:4000?token=some-random-secret-value \
+  # ...
+```
+
+Or via a header:
+```bash
+curl -X POST https://localhost:4000 \
+  -H "X-ERPC-Secret-Token: some-random-secret-value"
+  # ...
+```
+
+## `network` strategy
+
+To prevent requests based on IP address of the client, use `network` strategy:
+
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    auth:
+      strategies:
+      - type: network
+        network:
+          # To allow requests coming from the same host (localhost, 127.0.0.1, ::1)
+          allowLocalhost: true
+
+          # To allow requests coming from the specific IPs
+          allowedIPs:
+          - "89.123.123.123"
+
+          # To allow requests coming from the specific CIDR ranges
+          allowedCIDRs:
+          - "78.13.0.0/16"
+
+          # When requests carry X-Forwarded-For header, you can define trusted proxies
+          # that are allowed to override the client's IP address.
+          #
+          # These will evaluate X-Forwarded-For value from the left to the right,
+          # and will use the first IP address that is not in the trustedProxies list.
+          #
+          # Example 1:
+          #   X-Forwarded-For: 192.168.1.123, 22.22.22.22, 33.33.33.33
+          #   trustedProxies:
+          #   - "192.168.1.123"
+          #   \_____ Detected client IP: 22.22.22.22
+          #
+          # Example 2:
+          #   X-Forwarded-For: 11.11.11.11, 22.22.22.22, 33.33.33.33
+          #   trustedProxies:
+          #   - "192.168.1.123"
+          #   \_____ Detected client IP: 11.11.11.11
+          trustedProxies:
+          - "192.168.1.123"
+    upstreams:
+    # ...
+rateLimiters:
+  # ...
+```
+
+## `jwt` strategy
+
+Use [JWT](https://jwt.io/) strategy to only allow requests carrying a JWT token signed by you or a trusted party. The main requirement for this strategy is public key(s) that you trust.
+
+<Callout type="info">
+    For frontend dApps this strategy is the **most recommended** because it allows control over how many users can hit your RPC endpoint and the "expiration" prevents users from abusing the RPC by copying the RPC in multiple places.
+
+    If you already use a JWT for your frontend, you can use the same token for eRPC, only providing the proper public key(s).
+</Callout>
+
+This strategy respects the JWT token's expiration (`exp` claim) and will reject the token if it has expired.
+
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    auth:
+      strategies:
+      - type: jwt
+        jwt:
+          # At least one public key must be provided, you can either provide the public key PEM as plain value,
+          # or provide a path to the file containing the public key.
+          #
+          # The for each verification key you can use their "kid" (e.g. rsa-kid-1) as a key, and provide the PEM as a value.
+          verificationKeys:
+            "rsa-kid-1": "file:///Users/aram/www/0xflair/erpc/test/aux/public_key.pem"
+            "rsa-kid-2": "${MY_RSA_KEY_2_PEM}"
+          
+          # Optional list of issuers that are allowed, if token has a different "iss" claim it will be rejected.
+          allowedIssuers:
+            - "https://erpc.web3-project.xyz"
+
+          # Optional list of audiences that are allowed, if token has a different "aud" claim it will be rejected.
+          allowedAudiences:
+            - "https://frontend.web3-project.xyz"
+
+          # Optional list of algorithms that are allowed, if token has a different "alg" header it will be rejected.
+          allowedAlgorithms:
+            - "RS256"
+            - "HS256"
+
+          # Optional list of claims that are required to be present in the token, otherwise the token will be rejected.
+          requiredClaims:
+            - "sub"
+            - "role"
+    upstreams:
+    # ...
+rateLimiters:
+  # ...
+```
+
+## `siwe` strategy
+
+Many frontend dApps already use [Sign-in with Ethereum](https://eips.ethereum.org/EIPS/eip-4361) (SIWE) to authenticate wallets. You can use `siwe` strategy to allow requests from these dApps, by providing the signature and signed message:
+
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    auth:
+      strategies:
+      - type: siwe
+        siwe:
+          # A list of domains from which SIWE messages are allowed to be signed.
+          allowedDomains:
+            - "my-web3-project.xyz"
+    upstreams:
+    # ...
+rateLimiters:
+  # ...
+```
+
+#### Roadmap
+
+On some doc pages we like to share our ideas for related future implementations, feel free to open a PR if you're up for a challenge:
+
+<br />
+- [ ] Allow defining rate-limits per user (vs across all users), for more granular control over usage.

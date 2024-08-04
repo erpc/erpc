@@ -5,6 +5,15 @@ module.exports = {
 	"projects": {
 		title: "Projects",
 	},
+	auth: {
+		title: "Auth",
+		children: [
+			{name: "Secret", href: "/config/auth#secret-strategy"},
+			{name: "IP / CIDR", href: "/config/auth#network-strategy"},
+			{name: "JWT Token", href: "/config/auth#jwt-strategy"},
+			{name: "Sign-in with Ethereum", href: "/config/auth#siwe-strategy"},
+		],
+	},
 	failsafe: {
 		title: "Failsafe",
 		children: [
