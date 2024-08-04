@@ -101,12 +101,12 @@ rateLimiters:
 
 ## `secret` strategy
 
-A simple strategy that allows you to define a secret value that will be checked against a provided `token` provided as a query string parameter, or as a `X-ERPC-Secret-Token` header.
+A simple strategy that allows you to define a secret value that will be checked against a `token` provided via query string, or via `X-ERPC-Secret-Token` header.
 
 <Callout type="info">
-    This strategy mainly recommended for backend to backend communication. Exposing this token on your frontend allows users to impersonate the requests from anywhere.
+    This strategy is mainly recommended for backend to backend communication. Exposing this token on your frontend allows users to impersonate the requests from anywhere.
 
-    If you still want to use this strategy on frontend, make sure CORS configuration are defined to reduce the potential abuse.
+    If you still want to use this strategy on frontend, make sure [CORS configuration](/config/projects/cors) are defined to reduce the potential abuse.
 </Callout>
 
 ```yaml filename="erpc.yaml"
@@ -136,7 +136,7 @@ rateLimiters:
 
 The client must provide this value either via a query string parameter:
 ```bash
-curl -X POST https://localhost:4000?token=some-random-secret-value \
+curl -X POST https://localhost:4000/main/evm/42161?token=some-random-secret-value \
   # ...
 ```
 
@@ -199,12 +199,12 @@ rateLimiters:
 Use [JWT](https://jwt.io/) strategy to only allow requests carrying a JWT token signed by you or a trusted party. The main requirement for this strategy is public key(s) that you trust.
 
 <Callout type="info">
-    For frontend dApps this strategy is the **most recommended** because it allows control over how many users can hit your RPC endpoint and the "expiration" prevents users from abusing the RPC by copying the RPC in multiple places.
+    For frontend dApps this strategy is the **most recommended** because it allows control over how many users can hit your RPC endpoint and the "expiration" prevents users from abusing the RPC by copying the jwt token in multiple places.
 
     If you already use a JWT for your frontend, you can use the same token for eRPC, only providing the proper public key(s).
 </Callout>
 
-This strategy respects the JWT token's expiration (`exp` claim) and will reject the token if it has expired.
+This strategy respects the JWT token's expiration (`exp` claim) and will reject the request if token has expired.
 
 ```yaml filename="erpc.yaml"
 projects:
@@ -246,7 +246,11 @@ rateLimiters:
 
 ## `siwe` strategy
 
-Many frontend dApps already use [Sign-in with Ethereum](https://eips.ethereum.org/EIPS/eip-4361) (SIWE) to authenticate wallets. You can use `siwe` strategy to allow requests from these dApps, by providing the signature and signed message:
+Many frontend dApps already use [Sign-in with Ethereum](https://eips.ethereum.org/EIPS/eip-4361) (SIWE) to authenticate wallets. You can use `siwe` strategy to allow requests from your dApp by providing the signature and signed message:
+
+<Callout type="info">
+    Message (which includes your statement, domain, expiration, etc) must be provided as base64 encoded string.
+</Callout>
 
 ```yaml filename="erpc.yaml"
 projects:
@@ -261,6 +265,22 @@ projects:
     upstreams:
     # ...
 rateLimiters:
+  # ...
+```
+
+Message and signature can be provided via query string parameters:
+
+```bash
+curl -X POST https://localhost:4000/main/evm/42161?message=my_message_base64_ecnoded&signature=0x123456 \
+  # ...
+```
+
+or via `X-ERPC-SIWE-Message` and `X-ERPC-SIWE-Signature` headers:
+
+```bash
+curl -X POST https://localhost:4000 \
+  -H "X-ERPC-SIWE-Message: my_message_base64_ecnoded"
+  -H "X-ERPC-SIWE-Signature: 0x123456"
   # ...
 ```
 
