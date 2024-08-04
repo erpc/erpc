@@ -1,0 +1,130 @@
+# Cross-Origin Resource Sharing (CORS)
+
+When using eRPC directly from the browser (i.e., frontend), you might need to enable Cross-Origin Resource Sharing (CORS) so that only your domains are allowed to access eRPC endpoints.
+
+## Config
+
+Here's an example of how to configure CORS in your `erpc.yaml` file:
+
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    cors:
+      # List of allowed origins. Use ["*"] to allow any origin
+      allowedOrigins: 
+        - "https://example.com"
+        - "https://*.example.com"
+      # HTTP methods allowed for CORS requests
+      allowedMethods: 
+        - "GET"
+        - "POST"
+        - "OPTIONS"
+      # Headers allowed in actual requests
+      allowedHeaders:
+        - "Content-Type"
+        - "Authorization"
+      # Headers exposed to the browser
+      exposedHeaders:
+        - "X-Request-ID"
+      # Whether the browser should include credentials with requests
+      allowCredentials: true
+      # How long (in seconds) browsers should cache preflight request results
+      maxAge: 3600
+    upstreams:
+    # ...
+rateLimiters:
+  # ...
+```
+
+#### `allowedOrigins`
+- Type: array of strings
+- Description: Specifies which origins are allowed to make requests to your eRPC endpoint.
+- Example: `["https://example.com", "https://*.example.com"]`
+- Use `["*"]` to allow any origin (not recommended for production)
+
+#### `allowedMethods`
+- Type: array of strings
+- Description: HTTP methods that are allowed when accessing the resource.
+- Example: `["GET", "POST", "OPTIONS"]`
+
+#### `allowedHeaders`
+- Type: array of strings
+- Description: Headers that are allowed in actual requests.
+- Example: `["Content-Type", "Authorization"]`
+
+#### `exposedHeaders`
+- Type: array of strings
+- Description: Headers that browsers are allowed to access.
+- Example: `["X-Request-ID"]`
+
+#### `allowCredentials`
+- Type: boolean
+- Description: Indicates whether the request can include user credentials like cookies, HTTP authentication or client side SSL certificates.
+- Example: `true`
+
+#### `maxAge`
+- Type: integer
+- Description: Indicates how long (in seconds) the results of a preflight request can be cached.
+- Example: `3600` (1 hour)
+
+## Examples
+
+### Basic Web Application
+
+For a basic web application where you want to allow requests only from your main domain:
+
+```yaml
+cors:
+  allowedOrigins: 
+    - "https://myapp.com"
+  allowedMethods: 
+    - "GET"
+    - "POST"
+  allowedHeaders:
+    - "Content-Type"
+  allowCredentials: false
+  maxAge: 300
+```
+
+### Multiple Subdomains
+
+If your application spans multiple subdomains:
+
+```yaml
+cors:
+  allowedOrigins: 
+    - "https://*.myapp.com"
+  allowedMethods: 
+    - "GET"
+    - "POST"
+    - "PUT"
+    - "DELETE"
+  allowedHeaders:
+    - "Content-Type"
+    - "Authorization"
+  exposedHeaders:
+    - "X-Request-ID"
+  allowCredentials: true
+  maxAge: 3600
+```
+
+### Development Environment
+
+For a development environment where you need more permissive settings:
+
+```yaml
+cors:
+  allowedOrigins: 
+    - "http://localhost:3000"
+    - "http://127.0.0.1:3000"
+  allowedMethods: 
+    - "GET"
+    - "POST"
+    - "PUT"
+    - "DELETE"
+    - "OPTIONS"
+  allowedHeaders:
+    - "*"
+  allowCredentials: true
+  maxAge: 86400
+```

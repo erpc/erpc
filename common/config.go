@@ -75,10 +75,20 @@ type AwsAuthConfig struct {
 type ProjectConfig struct {
 	Id              string             `yaml:"id"`
 	Auth            *AuthConfig        `yaml:"auth"`
+	CORS            *CORSConfig        `yaml:"cors"`
 	Upstreams       []*UpstreamConfig  `yaml:"upstreams"`
 	Networks        []*NetworkConfig   `yaml:"networks"`
 	RateLimitBudget string             `yaml:"rateLimitBudget"`
 	HealthCheck     *HealthCheckConfig `yaml:"healthCheck"`
+}
+
+type CORSConfig struct {
+	AllowedOrigins   []string `yaml:"allowedOrigins"`
+	AllowedMethods   []string `yaml:"allowedMethods"`
+	AllowedHeaders   []string `yaml:"allowedHeaders"`
+	ExposedHeaders   []string `yaml:"exposedHeaders"`
+	AllowCredentials bool     `yaml:"allowCredentials"`
+	MaxAge           int      `yaml:"maxAge"`
 }
 
 type UpstreamConfig struct {

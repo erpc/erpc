@@ -5,4 +5,7 @@ module.exports = {
 	upstreams: {
 		title: "Upstreams",
 	},
+	cors: {
+		title: "CORS",
+	},
 };
