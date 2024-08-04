@@ -170,10 +170,10 @@ type EvmNetworkConfig struct {
 type AuthType string
 
 const (
-	AuthTypeSecret AuthType = "secret"
-	AuthTypeJwt    AuthType = "jwt"
-	AuthTypeSiwe   AuthType = "siwe"
-	AuthTypeIP     AuthType = "ip"
+	AuthTypeSecret  AuthType = "secret"
+	AuthTypeJwt     AuthType = "jwt"
+	AuthTypeSiwe    AuthType = "siwe"
+	AuthTypeNetwork AuthType = "network"
 )
 
 type AuthConfig struct {
@@ -185,11 +185,11 @@ type AuthStrategyConfig struct {
 	AllowMethods    []string `yaml:"allowMethods"`
 	RateLimitBudget string   `yaml:"rateLimitBudget"`
 
-	Type   AuthType              `yaml:"type"`
-	Secret *SecretStrategyConfig `yaml:"secret"`
-	Jwt    *JwtStrategyConfig    `yaml:"jwt"`
-	Siwe   *SiweStrategyConfig   `yaml:"siwe"`
-	IP     *IPStrategyConfig     `yaml:"ip"`
+	Type    AuthType               `yaml:"type"`
+	Network *NetworkStrategyConfig `yaml:"network"`
+	Secret  *SecretStrategyConfig  `yaml:"secret"`
+	Jwt     *JwtStrategyConfig     `yaml:"jwt"`
+	Siwe    *SiweStrategyConfig    `yaml:"siwe"`
 }
 
 type SecretStrategyConfig struct {
@@ -208,8 +208,11 @@ type SiweStrategyConfig struct {
 	AllowedDomains []string `yaml:"allowedDomains"`
 }
 
-type IPStrategyConfig struct {
-	AllowedAddresses []string `yaml:"allowedAddresses"`
+type NetworkStrategyConfig struct {
+	AllowedIPs     []string `yaml:"allowedIPs"`
+	AllowedCIDRs   []string `yaml:"allowedCIDRs"`
+	AllowLocalhost bool     `yaml:"allowLocalhost"`
+	TrustedProxies []string `yaml:"trustedProxies"`
 }
 
 type MetricsConfig struct {

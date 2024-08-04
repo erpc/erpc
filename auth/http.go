@@ -9,10 +9,10 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
-func NewPayloadFromHttp(projectId string, nq common.NormalizedRequest, r *http.Request) (*AuthPayload, error) {
+func NewPayloadFromHttp(projectCfg *common.ProjectConfig, nq common.NormalizedRequest, r *http.Request) (*AuthPayload, error) {
 	method, _ := nq.Method()
 	ap := &AuthPayload{
-		ProjectId: projectId,
+		ProjectId: projectCfg.Id,
 		Method:    method,
 	}
 
@@ -69,6 +69,16 @@ func NewPayloadFromHttp(projectId string, nq common.NormalizedRequest, r *http.R
 			Signature: r.Header.Get("X-Siwe-Signature"),
 			Message:   normalizeSiweMessage(r.Header.Get("X-Siwe-Message")),
 		}
+	}
+
+	// Add IP-based authentication
+	if ap.Type == "" {
+		ap.Type = common.AuthTypeNetwork
+		ap.Network = &NetworkPayload{
+			Address:        r.RemoteAddr,
+			ForwardProxies: strings.Split(r.Header.Get("X-Forwarded-For"), ","),
+		}
+
 	}
 
 	return ap, nil

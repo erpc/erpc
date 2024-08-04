@@ -44,7 +44,7 @@ func NewAuthRegistry(logger *zerolog.Logger, projectId string, cfg *common.AuthC
 // Authenticate checks the authentication payload against all registered strategies
 func (r *AuthRegistry) Authenticate(ctx context.Context, nq common.NormalizedRequest, ap *AuthPayload) error {
 	if ap == nil {
-		return common.NewErrAuthUnauthorized("", errors.New("auth payload is nil"))
+		return common.NewErrAuthUnauthorized("", "auth payload is nil")
 	}
 
 	if len(r.strategies) == 0 {
@@ -82,6 +82,10 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, nq common.NormalizedReq
 		return nil
 	}
 
+	if len(errs) == 1 {
+		return errs[0]
+	}
+
 	// If no strategy matched or succeeded, consider the request unauthorized
-	return common.NewErrAuthUnauthorized("all", errors.Join(errs...))
+	return common.NewErrAuthUnauthorized("all", errors.Join(errs...).Error())
 }

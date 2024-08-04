@@ -48,32 +48,32 @@ func (s *JwtStrategy) Supports(ap *AuthPayload) bool {
 func (s *JwtStrategy) Authenticate(ctx context.Context, ap *AuthPayload) error {
 	token, _, err := s.parser.ParseUnverified(ap.Jwt.Token, jwt.MapClaims{})
 	if err != nil {
-		return common.NewErrAuthUnauthorized("jwt", fmt.Errorf("failed to parse JWT: %w", err))
+		return common.NewErrAuthUnauthorized("jwt", "failed to parse JWT")
 	}
 
 	if len(s.cfg.AllowedAlgorithms) > 0 {
 		if !contains(s.cfg.AllowedAlgorithms, token.Method.Alg()) {
-			return common.NewErrAuthUnauthorized("jwt", fmt.Errorf("unexpected signing method: %v", token.Header["alg"]))
+			return common.NewErrAuthUnauthorized("jwt", "unexpected signing method")
 		}
 	}
 
 	key, err := s.findVerificationKey(token)
 	if err != nil {
-		return common.NewErrAuthUnauthorized("jwt", err)
+		return common.NewErrAuthUnauthorized("jwt", err.Error())
 	}
 
 	// Verify the signature
 	if _, err := jwt.Parse(ap.Jwt.Token, key); err != nil {
-		return common.NewErrAuthUnauthorized("jwt", fmt.Errorf("invalid signature: %w", err))
+		return common.NewErrAuthUnauthorized("jwt", "invalid signature")
 	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
-		return common.NewErrAuthUnauthorized("jwt", fmt.Errorf("invalid JWT claims"))
+		return common.NewErrAuthUnauthorized("jwt", "invalid JWT claims")
 	}
 
 	if err := s.validateClaims(claims); err != nil {
-		return common.NewErrAuthUnauthorized("jwt", err)
+		return common.NewErrAuthUnauthorized("jwt", err.Error())
 	}
 
 	return nil
