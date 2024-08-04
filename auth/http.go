@@ -7,9 +7,11 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
-func NewPayloadFromHttp(r *http.Request) *AuthPayload {
+func NewPayloadFromHttp(projectId string, nq common.NormalizedRequest, r *http.Request) *AuthPayload {
+	method, _ := nq.Method()
 	ap := &AuthPayload{
-		Type: common.AuthNone,
+		ProjectId: projectId,
+		Method:    method,
 	}
 
 	if r.URL.Query().Get("token") != "" {
@@ -44,6 +46,11 @@ func NewPayloadFromHttp(r *http.Request) *AuthPayload {
 			ap.Jwt = &JwtPayload{
 				Token: auth[7:],
 			}
+		}
+	} else if r.URL.Query().Get("jwt") != "" {
+		ap.Type = common.AuthTypeJwt
+		ap.Jwt = &JwtPayload{
+			Token: r.URL.Query().Get("jwt"),
 		}
 	} else if r.URL.Query().Get("signature") != "" && r.URL.Query().Get("message") != "" {
 		ap.Type = common.AuthTypeSiwe

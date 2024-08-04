@@ -69,7 +69,7 @@ type BaseError struct {
 }
 
 type StandardError interface {
-	HasCode(code ErrorCode) bool
+	HasCode(...ErrorCode) bool
 	CodeChain() string
 	DeepestMessage() string
 	GetCause() error
@@ -184,14 +184,16 @@ func (e *BaseError) Is(err error) bool {
 	return is
 }
 
-func (e *BaseError) HasCode(code ErrorCode) bool {
-	if e.Code == code {
-		return true
+func (e *BaseError) HasCode(codes ...ErrorCode) bool {
+	for _, code := range codes {
+		if e.Code == code {
+			return true
+		}
 	}
 
 	if e.Cause != nil {
 		if be, ok := e.Cause.(StandardError); ok {
-			return be.HasCode(code)
+			return be.HasCode(codes...)
 		}
 	}
 
@@ -271,10 +273,12 @@ func (e *ErrRequestTimeOut) ErrorStatusCode() int {
 
 type ErrAuthUnauthorized struct{ BaseError }
 
+const ErrCodeAuthUnauthorized ErrorCode = "ErrAuthUnauthorized"
+
 var NewErrAuthUnauthorized = func(strategy string, cause error) error {
 	return &ErrAuthUnauthorized{
 		BaseError{
-			Code:    "ErrAuthUnauthorized",
+			Code:    ErrCodeAuthUnauthorized,
 			Message: "unauthorized",
 			Cause:   cause,
 			Details: map[string]interface{}{
@@ -282,6 +286,33 @@ var NewErrAuthUnauthorized = func(strategy string, cause error) error {
 			},
 		},
 	}
+}
+
+func (e *ErrAuthUnauthorized) ErrorStatusCode() int {
+	return http.StatusUnauthorized
+}
+
+type ErrAuthRateLimitRuleExceeded struct{ BaseError }
+
+const ErrCodeAuthRateLimitRuleExceeded ErrorCode = "ErrAuthRateLimitRuleExceeded"
+
+var NewErrAuthRateLimitRuleExceeded = func(projectId, strategy, budget, rule string) error {
+	return &ErrAuthRateLimitRuleExceeded{
+		BaseError{
+			Code:    ErrCodeAuthRateLimitRuleExceeded,
+			Message: "auth-level rate limit rule exceeded",
+			Details: map[string]interface{}{
+				"projectId": projectId,
+				"strategy":  strategy,
+				"budget":    budget,
+				"rule":      rule,
+			},
+		},
+	}
+}
+
+func (e *ErrAuthRateLimitRuleExceeded) ErrorStatusCode() int {
+	return http.StatusTooManyRequests
 }
 
 //
@@ -807,10 +838,12 @@ var NewErrRateLimitInvalidConfig = func(cause error) error {
 
 type ErrProjectRateLimitRuleExceeded struct{ BaseError }
 
+const ErrCodeProjectRateLimitRuleExceeded ErrorCode = "ErrProjectRateLimitRuleExceeded"
+
 var NewErrProjectRateLimitRuleExceeded = func(project string, budget string, rule string) error {
 	return &ErrProjectRateLimitRuleExceeded{
 		BaseError{
-			Code:    "ErrProjectRateLimitRuleExceeded",
+			Code:    ErrCodeProjectRateLimitRuleExceeded,
 			Message: "project-level rate limit rule exceeded",
 			Details: map[string]interface{}{
 				"project": project,
@@ -822,15 +855,17 @@ var NewErrProjectRateLimitRuleExceeded = func(project string, budget string, rul
 }
 
 func (e *ErrProjectRateLimitRuleExceeded) ErrorStatusCode() int {
-	return 429
+	return http.StatusTooManyRequests
 }
 
 type ErrNetworkRateLimitRuleExceeded struct{ BaseError }
 
+const ErrCodeNetworkRateLimitRuleExceeded ErrorCode = "ErrNetworkRateLimitRuleExceeded"
+
 var NewErrNetworkRateLimitRuleExceeded = func(project string, network string, budget string, rule string) error {
 	return &ErrNetworkRateLimitRuleExceeded{
 		BaseError{
-			Code:    "ErrNetworkRateLimitRuleExceeded",
+			Code:    ErrCodeNetworkRateLimitRuleExceeded,
 			Message: "network-level rate limit rule exceeded",
 			Details: map[string]interface{}{
 				"project": project,
@@ -843,15 +878,17 @@ var NewErrNetworkRateLimitRuleExceeded = func(project string, network string, bu
 }
 
 func (e *ErrNetworkRateLimitRuleExceeded) ErrorStatusCode() int {
-	return 429
+	return http.StatusTooManyRequests
 }
 
 type ErrUpstreamRateLimitRuleExceeded struct{ BaseError }
 
+const ErrCodeUpstreamRateLimitRuleExceeded ErrorCode = "ErrUpstreamRateLimitRuleExceeded"
+
 var NewErrUpstreamRateLimitRuleExceeded = func(upstream string, budget string, rule string) error {
 	return &ErrUpstreamRateLimitRuleExceeded{
 		BaseError{
-			Code:    "ErrUpstreamRateLimitRuleExceeded",
+			Code:    ErrCodeUpstreamRateLimitRuleExceeded,
 			Message: "upstream-level rate limit rule exceeded",
 			Details: map[string]interface{}{
 				"upstream": upstream,
@@ -863,7 +900,7 @@ var NewErrUpstreamRateLimitRuleExceeded = func(upstream string, budget string, r
 }
 
 func (e *ErrUpstreamRateLimitRuleExceeded) ErrorStatusCode() int {
-	return 429
+	return http.StatusTooManyRequests
 }
 
 //
@@ -1067,6 +1104,29 @@ const (
 // This struct represents an json-rpc error with erpc structure (i.e. code is string)
 type ErrJsonRpcExceptionInternal struct{ BaseError }
 
+const ErrCodeJsonRpcExceptionInternal = "ErrJsonRpcExceptionInternal"
+
+var NewErrJsonRpcExceptionInternal = func(originalCode int, normalizedCode JsonRpcErrorNumber, message string, cause error, details map[string]interface{}) *ErrJsonRpcExceptionInternal {
+	if details == nil {
+		details = make(map[string]interface{})
+	}
+	if originalCode != 0 {
+		details["originalCode"] = originalCode
+	}
+	if normalizedCode != 0 {
+		details["normalizedCode"] = normalizedCode
+	}
+
+	return &ErrJsonRpcExceptionInternal{
+		BaseError{
+			Code:    ErrCodeJsonRpcExceptionInternal,
+			Message: message,
+			Details: details,
+			Cause:   cause,
+		},
+	}
+}
+
 func (e *ErrJsonRpcExceptionInternal) ErrorStatusCode() int {
 	if e.Cause != nil {
 		if er, ok := e.Cause.(ErrorWithStatusCode); ok {
@@ -1092,29 +1152,6 @@ func (e *ErrJsonRpcExceptionInternal) OriginalCode() int {
 		return code.(int)
 	}
 	return 0
-}
-
-const ErrCodeJsonRpcExceptionInternal = "ErrJsonRpcExceptionInternal"
-
-var NewErrJsonRpcExceptionInternal = func(originalCode int, normalizedCode JsonRpcErrorNumber, message string, cause error, details map[string]interface{}) *ErrJsonRpcExceptionInternal {
-	if details == nil {
-		details = make(map[string]interface{})
-	}
-	if originalCode != 0 {
-		details["originalCode"] = originalCode
-	}
-	if normalizedCode != 0 {
-		details["normalizedCode"] = normalizedCode
-	}
-
-	return &ErrJsonRpcExceptionInternal{
-		BaseError{
-			Code:    ErrCodeJsonRpcExceptionInternal,
-			Message: message,
-			Details: details,
-			Cause:   cause,
-		},
-	}
 }
 
 // This struct represents an json-rpc error with standard structure (i.e. code is int)
@@ -1194,13 +1231,17 @@ var NewErrRecordNotFound = func(key string, driver string) error {
 	}
 }
 
-func HasErrorCode(err error, code ErrorCode) bool {
+func HasErrorCode(err error, codes ...ErrorCode) bool {
 	if be, ok := err.(StandardError); ok {
-		return be.HasCode(code)
+		return be.HasCode(codes...)
 	}
 
 	if be, ok := err.(*BaseError); ok {
-		return be.Code == code
+		for _, code := range codes {
+			if be.Code == code {
+				return true
+			}
+		}
 	}
 
 	return false

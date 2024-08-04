@@ -170,10 +170,10 @@ type EvmNetworkConfig struct {
 type AuthType string
 
 const (
-	AuthNone       AuthType = "none"
 	AuthTypeSecret AuthType = "secret"
 	AuthTypeJwt    AuthType = "jwt"
 	AuthTypeSiwe   AuthType = "siwe"
+	AuthTypeIP     AuthType = "ip"
 )
 
 type AuthConfig struct {
@@ -181,14 +181,15 @@ type AuthConfig struct {
 }
 
 type AuthStrategyConfig struct {
-	Type            AuthType              `yaml:"type"`
-	IgnoreMethods   []string              `yaml:"ignoreMethods"`
-	AllowMethods    []string              `yaml:"allowMethods"`
-	RateLimitBudget string                `yaml:"rateLimitBudget"`
-	Secret          *SecretStrategyConfig `yaml:"secret"`
-	Jwt             *JwtStrategyConfig    `yaml:"jwt"`
-	Siwe            *SiweStrategyConfig   `yaml:"siwe"`
-	IP              *IPStrategyConfig     `yaml:"ip"`
+	IgnoreMethods   []string `yaml:"ignoreMethods"`
+	AllowMethods    []string `yaml:"allowMethods"`
+	RateLimitBudget string   `yaml:"rateLimitBudget"`
+
+	Type   AuthType              `yaml:"type"`
+	Secret *SecretStrategyConfig `yaml:"secret"`
+	Jwt    *JwtStrategyConfig    `yaml:"jwt"`
+	Siwe   *SiweStrategyConfig   `yaml:"siwe"`
+	IP     *IPStrategyConfig     `yaml:"ip"`
 }
 
 type SecretStrategyConfig struct {
