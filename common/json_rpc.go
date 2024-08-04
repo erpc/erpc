@@ -171,3 +171,53 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 
 	return nil
 }
+
+// TranslateToJsonRpcException is mainly responsible to translate internal eRPC errors (not those coming from upstreams) to
+// a proper json-rpc error with correct numeric code.
+func TranslateToJsonRpcException(err error) error {
+	if HasErrorCode(err, ErrCodeJsonRpcExceptionInternal) {
+		return err
+	}
+
+	if HasErrorCode(
+		err,
+		ErrCodeAuthRateLimitRuleExceeded,
+		ErrCodeProjectRateLimitRuleExceeded,
+		ErrCodeNetworkRateLimitRuleExceeded,
+		ErrCodeUpstreamRateLimitRuleExceeded,
+	) {
+		return NewErrJsonRpcExceptionInternal(
+			0,
+			JsonRpcErrorCapacityExceeded,
+			"rate-limit exceeded",
+			err,
+			nil,
+		)
+	}
+
+	if HasErrorCode(
+		err,
+		ErrCodeAuthUnauthorized,
+	) {
+		return NewErrJsonRpcExceptionInternal(
+			0,
+			JsonRpcErrorUnauthorized,
+			"unauthorized",
+			err,
+			nil,
+		)
+	}
+
+	var msg = "internal server error"
+	if se, ok := err.(StandardError); ok {
+		msg = se.DeepestMessage()
+	}
+
+	return NewErrJsonRpcExceptionInternal(
+		0,
+		JsonRpcErrorServerSideException,
+		msg,
+		err,
+		nil,
+	)
+}

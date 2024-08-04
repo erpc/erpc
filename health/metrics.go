@@ -106,4 +106,10 @@ var (
 		Name:      "project_request_self_rate_limited_total",
 		Help:      "Total number of self-imposed (locally) rate limited requests towards the project.",
 	}, []string{"project", "category"})
+
+	MetricAuthRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "auth_request_self_rate_limited_total",
+		Help:      "Total number of self-imposed (locally) rate limited requests due to auth config for a project.",
+	}, []string{"project", "strategy", "category"})
 )

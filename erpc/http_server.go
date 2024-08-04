@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/upstream"
 	"github.com/rs/zerolog"
@@ -79,6 +80,18 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 			nq.SetNetwork(nw)
 			nq.ApplyDirectivesFromHttpHeaders(r.Header)
 
+			ap, err := auth.NewPayloadFromHttp(project.Config, nq, r)
+			if err != nil {
+				logger.Error().Err(err).Str("projectId", projectId).Msgf("failed to parse authentication payload")
+				errChan <- err
+				return
+			}
+			if err := project.Authenticate(requestCtx, nq, ap); err != nil {
+				logger.Error().Err(err).Str("projectId", projectId).Msgf("unauthorized request rejected")
+				errChan <- err
+				return
+			}
+
 			resp, err := project.Forward(requestCtx, networkId, nq)
 			if err != nil {
 				errChan <- err
@@ -96,7 +109,6 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 		case err := <-errChan:
 			handleErrorResponse(logger, err, hrw)
 		case <-requestCtx.Done():
-			logger.Error().Msgf("request timed out after %s", timeOutDur)
 			handleErrorResponse(logger, common.NewErrRequestTimeOut(timeOutDur), hrw)
 		}
 	})
@@ -133,6 +145,9 @@ func handleErrorResponse(logger *zerolog.Logger, err error, hrw http.ResponseWri
 		}
 	}
 
+	//
+	// 1) Decide on the http status code
+	//
 	hrw.Header().Set("Content-Type", "application/json")
 	var httpErr common.ErrorWithStatusCode
 	if errors.As(err, &httpErr) {
@@ -141,17 +156,30 @@ func handleErrorResponse(logger *zerolog.Logger, err error, hrw http.ResponseWri
 		hrw.WriteHeader(http.StatusInternalServerError)
 	}
 
+	//
+	// 2) Write the body based on the transport type
+	//
+
+	// TODO when the second transport is implemented we need to detect which transport is used and translate the error accordingly
+	err = common.TranslateToJsonRpcException(err)
+
 	jre := &common.ErrJsonRpcExceptionInternal{}
 	if errors.As(err, &jre) {
-		json.NewEncoder(hrw).Encode(map[string]interface{}{
+		writeErr := json.NewEncoder(hrw).Encode(map[string]interface{}{
 			"code":    jre.NormalizedCode(),
 			"message": jre.Message,
 			"data":    jre.Details["data"],
 			"cause":   err,
 		})
+		if writeErr != nil {
+			logger.Error().Err(writeErr).Msgf("failed to encode error response body")
+		}
 		return
 	}
 
+	//
+	// 3) Final fallback if an unexpected error happens, this code path is very unlikely to happen
+	//
 	var bodyErr common.ErrorWithBody
 	var writeErr error
 

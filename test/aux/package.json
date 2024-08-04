@@ -1,0 +1,19 @@
+{
+    "name": "test-aux",
+    "description": "test-aux",
+    "scripts": {
+        "jwt-generate": "ts-node jwt-generate.ts",
+        "siwe-generate": "ts-node siwe-generate.ts"
+    },
+    "dependencies": {
+        "ethers": "^6.13.2",
+        "jsonwebtoken": "^9.0.2",
+        "siwe": "^2.3.2"
+    },
+    "devDependencies": {
+        "@types/jsonwebtoken": "^9.0.6",
+        "@types/node": "^22.1.0",
+        "ts-node": "^10.9.2",
+        "typescript": "^5.5.4"
+    }
+}

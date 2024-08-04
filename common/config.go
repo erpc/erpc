@@ -74,6 +74,7 @@ type AwsAuthConfig struct {
 
 type ProjectConfig struct {
 	Id              string             `yaml:"id"`
+	Auth            *AuthConfig        `yaml:"auth"`
 	Upstreams       []*UpstreamConfig  `yaml:"upstreams"`
 	Networks        []*NetworkConfig   `yaml:"networks"`
 	RateLimitBudget string             `yaml:"rateLimitBudget"`
@@ -164,6 +165,54 @@ type EvmNetworkConfig struct {
 	ChainId              int    `yaml:"chainId"`
 	FinalityDepth        uint64 `yaml:"finalityDepth"`
 	BlockTrackerInterval string `yaml:"blockTrackerInterval"`
+}
+
+type AuthType string
+
+const (
+	AuthTypeSecret  AuthType = "secret"
+	AuthTypeJwt     AuthType = "jwt"
+	AuthTypeSiwe    AuthType = "siwe"
+	AuthTypeNetwork AuthType = "network"
+)
+
+type AuthConfig struct {
+	Strategies []*AuthStrategyConfig `yaml:"strategies"`
+}
+
+type AuthStrategyConfig struct {
+	IgnoreMethods   []string `yaml:"ignoreMethods"`
+	AllowMethods    []string `yaml:"allowMethods"`
+	RateLimitBudget string   `yaml:"rateLimitBudget"`
+
+	Type    AuthType               `yaml:"type"`
+	Network *NetworkStrategyConfig `yaml:"network"`
+	Secret  *SecretStrategyConfig  `yaml:"secret"`
+	Jwt     *JwtStrategyConfig     `yaml:"jwt"`
+	Siwe    *SiweStrategyConfig    `yaml:"siwe"`
+}
+
+type SecretStrategyConfig struct {
+	Value string `yaml:"value"`
+}
+
+type JwtStrategyConfig struct {
+	AllowedIssuers    []string          `yaml:"allowedIssuers"`
+	AllowedAudiences  []string          `yaml:"allowedAudiences"`
+	AllowedAlgorithms []string          `yaml:"allowedAlgorithms"`
+	RequiredClaims    []string          `yaml:"requiredClaims"`
+	VerificationKeys  map[string]string `yaml:"verificationKeys"`
+}
+
+type SiweStrategyConfig struct {
+	AllowedDomains []string `yaml:"allowedDomains"`
+}
+
+type NetworkStrategyConfig struct {
+	AllowedIPs     []string `yaml:"allowedIPs"`
+	AllowedCIDRs   []string `yaml:"allowedCIDRs"`
+	AllowLocalhost bool     `yaml:"allowLocalhost"`
+	TrustedProxies []string `yaml:"trustedProxies"`
 }
 
 type MetricsConfig struct {
