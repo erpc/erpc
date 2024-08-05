@@ -69,6 +69,13 @@ func NewUpstream(
 		supportedNetworkIds:  map[string]bool{},
 	}
 
+	if vn != nil {
+		err = vn.OverrideConfig(cfg)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	pup.guessUpstreamType()
 	if client, err := cr.GetOrCreateClient(pup); err != nil {
 		return nil, err
@@ -252,7 +259,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 			resp, errCall := jsonRpcClient.SendRequest(ctx, req)
 			if resp != nil {
 				jrr, _ := resp.JsonRpcResponse()
-				if jrr != nil && jrr.Error == nil && jrr.Result != nil {
+				if jrr != nil && jrr.Error == nil {
 					req.SetLastValidResponse(resp)
 				}
 				lg.Debug().Err(errCall).Str("response", resp.String()).Msgf("upstream call result received")

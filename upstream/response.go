@@ -146,3 +146,16 @@ func (r *NormalizedResponse) String() string {
 	}
 	return "<nil>"
 }
+
+// Custom unmarsheller for json.NewEncoder(w).Encode
+func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
+	if r.body != nil {
+		return r.body, nil
+	}
+
+	if r.jsonRpcResponse != nil {
+		return json.Marshal(r.jsonRpcResponse)
+	}
+
+	return nil, nil
+}

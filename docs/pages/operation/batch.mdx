@@ -1,0 +1,112 @@
+import { Callout } from "nextra/components";
+
+# Batch requests
+
+eRPC automatically batches requests towards upstreams which support it. Additionally you can send batched requests (an array of multiple requests) to eRPC itself.
+
+### How it works?
+
+* When an upstream is configured to support batching, eRPC will accumulate as many requests as possible for that upstream, even if you send many single requests.
+* Batching mechanism respects other aspects of eRPC such as allowed/ignored methods, rate limits, supported/unsupported methods, therefore one huge batch request might be split into smaller ones depending on the most efficient distribution among upstreams.
+* Requests will be handled separately (or in mini-batches) and at the end results will be merged back together.
+* Response status code will always be `200 OK` because there might be a mix of successful and failed requests.
+* At the moment self-imposed rate limiters work as-if these requests are sent individually (Ping our engineers if this becomes an issue).
+
+<Callout type="info">
+  Even if you send many single requests to eRPC they might be batched together if the upstream supports it. This minimizes the need to actually batch the requests on client-side, unless "network traffic" is a concern.
+
+  In this scenario auto-batching mechanism is transparent to you.
+</Callout>
+
+## Upstream config
+
+You can explicitly enable batching for an upstream as follows:
+
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    upstreams:
+      - id: blastapi-chain-42161
+        # ...
+        endpoint: https://arbitrum-one.blastapi.io/xxxxxx
+        jsonRpc:
+          # When enabled eRPC will wait for a specified amount of time to batch as many requests as possible.
+          supportsBatch: true
+          # The maximum amount of time to wait to collect requests for a batch.
+          # After this 
+          batchMaxWait: 100ms
+          # The maximum amount of requests in a single batch, which is usually enforced by the provider.
+          batchMaxSize: 100
+```
+
+<Callout type="info">
+  For certain known providers (Alchemy, Infura, etc) batching is enabled by default.
+</Callout>
+
+### Example single chain
+
+When all the requests are for the same chain, you can send them to the URL that includes chain id.
+
+```bash
+curl --location 'http://localhost:4000/main/evm/1' \
+--header 'Content-Type: application/json' \
+--data '[
+    {
+        "method": "eth_getBlockByNumber",
+        "params": [
+            "0x1203318888888888",
+            false
+        ],
+        "id": 8888,
+        "jsonrpc": "2.0"
+    },
+    {
+        "method": "eth_getBlockByNumber",
+        "params": [
+            "0x1203319",
+            false
+        ],
+        "id": 9999,
+        "jsonrpc": "2.0"
+    }
+]'
+```
+
+### Example multi-chain
+
+You can provide "networkId" within each request to specify which chain it is for by sending the request to project endpoint:
+
+```bash
+curl --location 'http://localhost:4000/main' \
+--header 'Content-Type: application/json' \
+--data '[
+    {
+        "networkId": "evm:1",
+        "method": "eth_getBlockByNumber",
+        "params": [
+            "0x1203888",
+            false
+        ],
+        "id": 888,
+        "jsonrpc": "2.0"
+    },
+    {
+        "networkId": "evm:42161",
+        "method": "eth_getBlockByNumber",
+        "params": [
+            "0x1203999",
+            false
+        ],
+        "id": 999,
+        "jsonrpc": "2.0"
+    }
+]'
+```
+
+#### Roadmap
+
+On some doc pages we like to share our ideas for related future implementations, feel free to open a PR if you're up for a challenge:
+
+<br />
+- [ ] Auto-batch multiple `eth_call`s for evm upstreams using multicall3 contracts if available on that chain.
