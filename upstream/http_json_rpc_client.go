@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -28,33 +29,65 @@ type GenericHttpJsonRpcClient struct {
 	logger     *zerolog.Logger
 	upstream   *Upstream
 	httpClient *http.Client
+
+	supportsBatch bool
+	batchMaxSize  int
+	batchMaxWait  time.Duration
+
+	batchMu       sync.Mutex
+	batchRequests map[interface{}]*batchRequest
+	batchTimer    *time.Timer
+}
+
+type batchRequest struct {
+	ctx      context.Context
+	request  *NormalizedRequest
+	response chan *NormalizedResponse
+	err      chan error
 }
 
 func NewGenericHttpJsonRpcClient(logger *zerolog.Logger, pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
-	var client HttpJsonRpcClient
+	client := &GenericHttpJsonRpcClient{
+		Url:      parsedUrl,
+		logger:   logger,
+		upstream: pu,
+	}
+
+	if pu.config.JsonRpc != nil {
+		jc := pu.config.JsonRpc
+		if jc.SupportsBatch {
+			client.supportsBatch = true
+
+			if jc.BatchMaxSize > 0 {
+				client.batchMaxSize = jc.BatchMaxSize
+			} else {
+				client.batchMaxSize = 100
+			}
+			if jc.BatchMaxWait != "" {
+				duration, err := time.ParseDuration(jc.BatchMaxWait)
+				if err != nil {
+					return nil, err
+				}
+				client.batchMaxWait = duration
+			} else {
+				client.batchMaxWait = 50 * time.Millisecond
+			}
+
+			client.batchRequests = make(map[interface{}]*batchRequest)
+		}
+	}
 
 	if util.IsTest() {
-		client = &GenericHttpJsonRpcClient{
-			Url:        parsedUrl,
-			logger:     logger,
-			upstream:   pu,
-			httpClient: &http.Client{},
-		}
+		client.httpClient = &http.Client{}
 	} else {
-		client = &GenericHttpJsonRpcClient{
-			Url:      parsedUrl,
-			logger:   logger,
-			upstream: pu,
-			httpClient: &http.Client{
-				Timeout: 30 * time.Second, // Set a timeout
-				Transport: &http.Transport{
-					MaxIdleConns:        100,
-					IdleConnTimeout:     90 * time.Second,
-					MaxIdleConnsPerHost: 10,
-				},
+		client.httpClient = &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				IdleConnTimeout:     90 * time.Second,
+				MaxIdleConnsPerHost: 10,
 			},
 		}
-
 	}
 
 	return client, nil
@@ -73,6 +106,150 @@ func (c *GenericHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, erro
 }
 
 func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *NormalizedRequest) (*NormalizedResponse, error) {
+	if !c.supportsBatch {
+		return c.sendSingleRequest(ctx, req)
+	}
+
+	responseChan := make(chan *NormalizedResponse, 1)
+	errChan := make(chan error, 1)
+
+	jrReq, err := req.JsonRpcRequest()
+	if err != nil {
+		return nil, common.NewErrUpstreamRequest(err, c.upstream.Config().Id, 0)
+	}
+
+	bReq := &batchRequest{
+		ctx:      ctx,
+		request:  req,
+		response: responseChan,
+		err:      errChan,
+	}
+
+	c.queueRequest(jrReq.ID, bReq)
+
+	select {
+	case response := <-responseChan:
+		return response, nil
+	case err := <-errChan:
+		return nil, err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchRequest) {
+	c.batchMu.Lock()
+	defer c.batchMu.Unlock()
+
+	c.batchRequests[id] = req
+	c.logger.Debug().Msgf("queued request %v for batch", id)
+
+	if len(c.batchRequests) == 1 {
+		c.batchTimer = time.AfterFunc(c.batchMaxWait, c.processBatch)
+	} else if len(c.batchRequests) >= c.batchMaxSize {
+		c.batchTimer.Stop()
+		go c.processBatch()
+	}
+}
+
+func (c *GenericHttpJsonRpcClient) processBatch() {
+	c.batchMu.Lock()
+	requests := c.batchRequests
+	c.batchRequests = make(map[interface{}]*batchRequest)
+	c.batchMu.Unlock()
+
+	ln := len(requests)
+	if ln == 0 {
+		return
+	}
+	c.logger.Debug().Msgf("processing batch with %d requests", ln)
+
+	batchReq := make([]common.JsonRpcRequest, 0, ln)
+	for _, req := range requests {
+		jrReq, err := req.request.JsonRpcRequest()
+		if err != nil {
+			req.err <- common.NewErrUpstreamRequest(err, c.upstream.Config().Id, 0)
+			continue
+		}
+		batchReq = append(batchReq, common.JsonRpcRequest{
+			JSONRPC: jrReq.JSONRPC,
+			Method:  jrReq.Method,
+			Params:  jrReq.Params,
+			ID:      jrReq.ID,
+		})
+	}
+
+	requestBody, err := json.Marshal(batchReq)
+	if err != nil {
+		for _, req := range requests {
+			req.err <- err
+		}
+		return
+	}
+
+	c.logger.Debug().Msgf("sending batch json rpc POST request to %s: %s", c.Url.String(), requestBody)
+
+	httpReq, errReq := http.NewRequestWithContext(context.Background(), "POST", c.Url.String(), bytes.NewBuffer(requestBody))
+	httpReq.Header.Set("Content-Type", "application/json")
+	if errReq != nil {
+		for _, req := range requests {
+			req.err <- errReq
+		}
+		return
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		for _, req := range requests {
+			req.err <- err
+		}
+		return
+	}
+
+	respBody, err := io.ReadAll(resp.Body)
+	defer resp.Body.Close()
+	if err != nil {
+		for _, req := range requests {
+			req.err <- err
+		}
+		return
+	}
+
+	var batchResp []json.RawMessage
+	err = json.Unmarshal(respBody, &batchResp)
+	if err != nil {
+		for _, req := range requests {
+			req.err <- err
+		}
+		return
+	}
+
+	for _, rawResp := range batchResp {
+		var jrResp common.JsonRpcResponse
+		err := json.Unmarshal(rawResp, &jrResp)
+		if err != nil {
+			continue
+		}
+
+		if req, ok := requests[jrResp.ID]; ok {
+			nr := NewNormalizedResponse().WithRequest(req.request).WithBody(rawResp)
+			err := c.normalizeJsonRpcError(resp, nr)
+			if err != nil {
+				req.err <- err
+			} else {
+				req.response <- nr
+			}
+			delete(requests, jrResp.ID)
+		}
+	}
+
+	// Handle any remaining requests that didn't receive a response
+	for _, req := range requests {
+		req.err <- fmt.Errorf("no response received for request")
+	}
+}
+
+func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *NormalizedRequest) (*NormalizedResponse, error) {
 	jrReq, err := req.JsonRpcRequest()
 	if err != nil {
 		return nil, common.NewErrUpstreamRequest(err, c.upstream.Config().Id, 0)
@@ -208,6 +385,16 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorUnsupportedException,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+		} else if code == -32602 {
+			return common.NewErrEndpointClientSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorInvalidArgument,
 					err.Message,
 					nil,
 					details,
