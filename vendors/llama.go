@@ -19,6 +19,20 @@ func (v *LlamaVendor) Name() string {
 	return "llama"
 }
 
+func (v *LlamaVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
+	if upstream.JsonRpc == nil {
+		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
+	}
+
+	if upstream.JsonRpc.SupportsBatch == nil {
+		upstream.JsonRpc.SupportsBatch = &TRUE
+		upstream.JsonRpc.BatchMaxWait = "100ms"
+		upstream.JsonRpc.BatchMaxSize = 100
+	}
+
+	return nil
+}
+
 func (v *LlamaVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}) error {
 	bodyMap, ok := jrr.(*common.JsonRpcResponse)
 	if !ok {

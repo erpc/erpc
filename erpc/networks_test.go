@@ -1222,12 +1222,16 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
+		FALSE := false
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "test",
 			Endpoint: "http://rpc1.alchemy.com.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
+			},
+			JsonRpc: &common.JsonRpcUpstreamConfig{
+				SupportsBatch: &FALSE,
 			},
 			Failsafe: fsCfg,
 		}
@@ -3313,12 +3317,16 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
+		FALSE := false
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
+			},
+			JsonRpc: &common.JsonRpcUpstreamConfig{
+				SupportsBatch: &FALSE,
 			},
 			VendorName: "llama",
 		}
