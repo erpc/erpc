@@ -20,8 +20,8 @@ Caching mechanism is non-blocking on critical path, and is used as best-effort. 
   blocks + 10m txs + 10m traces on Arbitrum needs 200GB of storage.
 </Callout>
 
-### Cacheable Methods Overview
-Methods are cached if they include a `blockNumber` or `blockHash` in the request or response, allowing cache invalidation during blockchain reorgs. If no blockNumber is present, caching is still viable if the method returns data unaffected by reorgs, like `eth_chainId`, or if the data won't change after a reorg, such as `eth_getTransactionReceipt`.
+#### Cacheable Methods Overview
+Methods are cached if they include a `blockNumber` or `blockHash` in the request or response, allowing cache invalidation during blockchain reorgs. If no blockNumber is present, caching is still viable if the method returns data unaffected by reorgs, like `eth_chainId`, or if the data won't change after a reorg, such as `eth_getTransactionReceipt`. Here is an overview of cacheable methods:
 
 | Method Name                                 | Description                                                                                                                                           |
 |---------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------|
