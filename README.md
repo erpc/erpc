@@ -8,11 +8,11 @@
 <img alt="tweet" src="https://img.shields.io/twitter/url/http/shields.io.svg?style=social"/>
 </a>
 
-> ⚠️ eRPC is still under development, and for now should be used for "testnets" or as "a fallback" for RPC calls.
-
 [eRPC](https://erpc.cloud/) is a fault-tolerant EVM RPC proxy and re-org aware permanent caching solution. It is built with read-heavy use-cases in mind such as data indexing and high-load frontend usage.
 
 ![Architecture](./assets/hla-diagram.svg)
+
+> ⚠️ eRPC is still under development, and for now should be used for "testnets" or as "a fallback" for RPC calls.
 
 # Features
 

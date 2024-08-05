@@ -66,9 +66,11 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 
 func (s *HttpServer) handleRequest(timeOutDur time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		var nq *upstream.NormalizedRequest
+
 		segments := strings.Split(r.URL.Path, "/")
 		if len(segments) != 4 {
-			handleErrorResponse(s.logger, common.NewErrInvalidUrlPath(r.URL.Path), w)
+			handleErrorResponse(s.logger, nq, common.NewErrInvalidUrlPath(r.URL.Path), w)
 			return
 		}
 
@@ -77,7 +79,7 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) http.HandlerFunc {
 
 		project, err := s.erpc.GetProject(projectId)
 		if err != nil {
-			handleErrorResponse(s.logger, err, w)
+			handleErrorResponse(s.logger, nq, err, w)
 			return
 		}
 
@@ -113,7 +115,7 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) http.HandlerFunc {
 				return
 			}
 
-			nq := upstream.NewNormalizedRequest(body)
+			nq = upstream.NewNormalizedRequest(body)
 			nq.SetNetwork(nw)
 			nq.ApplyDirectivesFromHttpHeaders(r.Header)
 
@@ -144,9 +146,9 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) http.HandlerFunc {
 			w.WriteHeader(http.StatusOK)
 			w.Write(resp.Body())
 		case err := <-errChan:
-			handleErrorResponse(s.logger, err, w)
+			handleErrorResponse(s.logger, nq, err, w)
 		case <-requestCtx.Done():
-			handleErrorResponse(s.logger, common.NewErrRequestTimeOut(timeOutDur), w)
+			handleErrorResponse(s.logger, nq, common.NewErrRequestTimeOut(timeOutDur), w)
 		}
 	}
 }
@@ -171,7 +173,7 @@ func (s *HttpServer) handleCORS(w http.ResponseWriter, r *http.Request, corsConf
 	if !allowed {
 		s.logger.Debug().Str("origin", origin).Msg("CORS request from disallowed origin")
 		health.MetricCORSDisallowedOriginTotal.WithLabelValues(r.URL.Path, origin).Inc()
-		
+
 		if r.Method == http.MethodOptions {
 			// For preflight requests, return 204 No Content
 			w.WriteHeader(http.StatusNoContent)
@@ -206,7 +208,7 @@ func (s *HttpServer) handleCORS(w http.ResponseWriter, r *http.Request, corsConf
 	return true
 }
 
-func handleErrorResponse(logger *zerolog.Logger, err error, hrw http.ResponseWriter) {
+func handleErrorResponse(logger *zerolog.Logger, nq *upstream.NormalizedRequest, err error, hrw http.ResponseWriter) {
 	if !common.IsNull(err) {
 		if common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
 			logger.Debug().Err(err).Msgf("forward request errored with client-side exception")
@@ -233,13 +235,27 @@ func handleErrorResponse(logger *zerolog.Logger, err error, hrw http.ResponseWri
 	// TODO when the second transport is implemented we need to detect which transport is used and translate the error accordingly
 	err = common.TranslateToJsonRpcException(err)
 
+	var jsonrpcVersion string = "2.0"
+	var reqId interface{} = nil
+	if nq != nil {
+		jrr, _ := nq.JsonRpcRequest()
+		if jrr != nil {
+			jsonrpcVersion = jrr.JSONRPC
+			reqId = jrr.ID
+		}
+	}
+
 	jre := &common.ErrJsonRpcExceptionInternal{}
 	if errors.As(err, &jre) {
 		writeErr := json.NewEncoder(hrw).Encode(map[string]interface{}{
-			"code":    jre.NormalizedCode(),
-			"message": jre.Message,
-			"data":    jre.Details["data"],
-			"cause":   err,
+			"jsonrpc": jsonrpcVersion,
+			"id":      reqId,
+			"error": map[string]interface{}{
+				"code":    jre.NormalizedCode(),
+				"message": jre.Message,
+				"data":    jre.Details["data"],
+				"cause":   err,
+			},
 		})
 		if writeErr != nil {
 			logger.Error().Err(writeErr).Msgf("failed to encode error response body")
