@@ -106,7 +106,7 @@ type UpstreamConfig struct {
 }
 
 type JsonRpcUpstreamConfig struct {
-	SupportsBatch bool   `yaml:"supportsBatch"`
+	SupportsBatch *bool  `yaml:"supportsBatch"`
 	BatchMaxSize  int    `yaml:"batchMaxSize"`
 	BatchMaxWait  string `yaml:"batchMaxWait"`
 }

@@ -11,12 +11,28 @@ type AlchemyVendor struct {
 	common.Vendor
 }
 
+var TRUE bool = true
+
 func CreateAlchemyVendor() common.Vendor {
 	return &AlchemyVendor{}
 }
 
 func (v *AlchemyVendor) Name() string {
 	return "alchemy"
+}
+
+func (v *AlchemyVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
+	if upstream.JsonRpc == nil {
+		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
+	}
+
+	if upstream.JsonRpc.SupportsBatch == nil {
+		upstream.JsonRpc.SupportsBatch = &TRUE
+		upstream.JsonRpc.BatchMaxWait = "100ms"
+		upstream.JsonRpc.BatchMaxSize = 100
+	}
+
+	return nil
 }
 
 func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}) error {
@@ -91,7 +107,7 @@ func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr int
 }
 
 func (v *AlchemyVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
-	if strings.HasPrefix(ups.Endpoint, "alchemy://") {
+	if strings.HasPrefix(ups.Endpoint, "alchemy://") || strings.HasPrefix(ups.Endpoint, "evm+alchemy://") {
 		return true
 	}
 

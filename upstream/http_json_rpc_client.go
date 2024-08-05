@@ -55,7 +55,7 @@ func NewGenericHttpJsonRpcClient(logger *zerolog.Logger, pu *Upstream, parsedUrl
 
 	if pu.config.JsonRpc != nil {
 		jc := pu.config.JsonRpc
-		if jc.SupportsBatch {
+		if jc.SupportsBatch != nil && *jc.SupportsBatch {
 			client.supportsBatch = true
 
 			if jc.BatchMaxSize > 0 {

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -65,21 +64,26 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 
 	return srv
 }
-
 func (s *HttpServer) handleRequest(timeOutDur time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		segments := strings.Split(r.URL.Path, "/")
-		if len(segments) < 3 || len(segments) > 4 {
+		if len(segments) < 2 || len(segments) > 4 {
 			handleErrorResponse(s.logger, nil, common.NewErrInvalidUrlPath(r.URL.Path), w)
 			return
 		}
 
 		projectId := segments[1]
-		architecture := segments[2]
-		var chainId *string
+		var architecture, chainId string
 
 		if len(segments) == 4 {
-			chainId = &segments[3]
+			// URL format: /main/evm/111
+			architecture = segments[2]
+			chainId = segments[3]
+		} else {
+			// URL format: /main
+			// networkId will be provided in the request body
+			architecture = ""
+			chainId = ""
 		}
 
 		project, err := s.erpc.GetProject(projectId)
@@ -129,40 +133,31 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) http.HandlerFunc {
 				nq := upstream.NewNormalizedRequest(rawReq)
 				nq.ApplyDirectivesFromHttpHeaders(r.Header)
 
-				requestChainId := chainId
+				var networkId string
 
-				// TODO how to improve this to avoid Unmarshal?
-				if requestChainId == nil {
+				if architecture == "" || chainId == "" {
+					// Extract networkId from the request body
 					var req map[string]interface{}
 					if err := json.Unmarshal(rawReq, &req); err != nil {
-						responses[index] = err
+						responses[index] = processErrorBody(s.logger, nq, common.NewErrInvalidRequest(err))
 						return
 					}
-					if chainIdFromBody, ok := req["chainId"]; ok {
-						if chainIdFloat, ok := chainIdFromBody.(float64); ok {
-							chainIdStr := strconv.FormatFloat(chainIdFloat, 'f', -1, 64)
-							requestChainId = &chainIdStr
+					if networkIdFromBody, ok := req["networkId"].(string); ok {
+						networkId = networkIdFromBody
+						parts := strings.Split(networkId, ":")
+						if len(parts) != 2 {
+							responses[index] = processErrorBody(s.logger, nq, common.NewErrInvalidRequest(fmt.Errorf("invalid networkId format")))
+							return
 						}
-						if chainIdInt, ok := chainIdFromBody.(int); ok {
-							chainIdStr := strconv.Itoa(chainIdInt)
-							requestChainId = &chainIdStr
-						}
-						if chainIdStr, ok := chainIdFromBody.(string); ok {
-							requestChainId = &chainIdStr
-						}
+						architecture = parts[0]
+						chainId = parts[1]
+					} else {
+						responses[index] = processErrorBody(s.logger, nq, common.NewErrInvalidRequest(fmt.Errorf("networkId not provided in request body")))
+						return
 					}
+				} else {
+					networkId = fmt.Sprintf("%s:%s", architecture, chainId)
 				}
-
-				if requestChainId == nil {
-					responses[index] = processErrorBody(
-						s.logger,
-						nq,
-						common.NewErrInvalidRequest(fmt.Errorf("chainId not provided in URL nor in json-rpc payload")),
-					)
-					return
-				}
-
-				networkId := fmt.Sprintf("%s:%s", architecture, *requestChainId)
 
 				nw, err := project.GetNetwork(networkId)
 				if err != nil {
