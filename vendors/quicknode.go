@@ -19,6 +19,10 @@ func (v *QuicknodeVendor) Name() string {
 	return "quicknode"
 }
 
+func (v *QuicknodeVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
+	return nil
+}
+
 func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}) error {
 	bodyMap, ok := jrr.(*common.JsonRpcResponse)
 	if !ok {

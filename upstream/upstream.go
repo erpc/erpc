@@ -69,6 +69,13 @@ func NewUpstream(
 		supportedNetworkIds:  map[string]bool{},
 	}
 
+	if vn != nil {
+		err = vn.OverrideConfig(cfg)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	pup.guessUpstreamType()
 	if client, err := cr.GetOrCreateClient(pup); err != nil {
 		return nil, err

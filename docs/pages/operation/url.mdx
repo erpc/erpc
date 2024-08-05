@@ -2,7 +2,11 @@ import { Callout } from "nextra/components";
 
 # URL
 
-When making requests towards eRPC you can use this URL structure:
+eRPC supports two endpoints, one for single-chain requests and one for multi-chain requests.
+
+## Single-chain requests
+
+When making requests only for a single chain, you can use this URL structure:
 
 <Callout type='info'>
   https://&lt;your-erpc-hostname&gt;/&lt;project-id&gt;/&lt;network-architecture&gt;/&lt;chain-id&gt;
@@ -21,11 +25,6 @@ Target network architecture you configured in [erpc.yaml](/config/example), for 
 Target chain ID that one or more upstreams support, for example `1` or `42161`.
 
 
-<Callout type='default'>
-  One upstream can potentially support more than 1 chain, eRPC will automatically detect what are the supported chains.
-</Callout>
-
-
 ```bash
 # A cURL example of sending a request to a project named "main" and Ethereum mainnet chain:
 
@@ -41,3 +40,33 @@ curl --location 'http://localhost:4000/main/evm/1' \
     "jsonrpc": "2.0"
 }'
 ```
+
+## Multi-chain requests
+
+When making requests for multiple chains, you can use the project endpoint only and must include "networkId" within the request body:
+
+<Callout type='info'>
+  https://&lt;your-erpc-hostname&gt;/&lt;project-id&gt;
+</Callout>
+
+
+```bash
+# A cURL example of sending a request to a project named "main" and Ethereum mainnet chain:
+
+curl --location 'http://localhost:4000/main' \
+--header 'Content-Type: application/json' \
+--data '{
+    "networkId": "evm:1",
+    "method": "eth_getBlockByNumber",
+    "params": [
+        "0x1203319",
+        false
+    ],
+    "id": 9199,
+    "jsonrpc": "2.0"
+}'
+```
+
+# Batch requests
+
+You can batch multiple calls across any number of networks, in a single request. Read more about it in [Batch requests](/operation/batch) page.
