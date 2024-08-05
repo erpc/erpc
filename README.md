@@ -23,7 +23,7 @@
 ✅ Receive consistent error codes with details across 5+ third-party providers and reporting of occured errors.<br/>
 ✅ Single dashboard to observe rps throughput, errors, and avg. latency of all your RPC providers.<br/>
 ✅ [Authentication](https://docs.erpc.cloud/config/auth) modules such as basic auth, secret-based, JWT and SIWE.<br/>
-🏭 Smart batching to aggregates multiple RPC or contract calls into one.<br/>
+✅ [Smart batching](https://docs.erpc.cloud/operation/batch) to aggregates multiple RPC or contract calls into one.<br/>
 
 # Usage & Docs
 
