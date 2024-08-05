@@ -14,6 +14,7 @@ type ClientType string
 const (
 	ClientTypeHttpJsonRpc        ClientType = "HttpJsonRpc"
 	ClientTypeAlchemyHttpJsonRpc ClientType = "AlchemyHttpJsonRpc"
+	ClientTypeEnvioHttpJsonRpc   ClientType = "EnvioHttpJsonRpc"
 )
 
 // Define a shared interface for all types of Clients
@@ -77,6 +78,13 @@ func (manager *ClientRegistry) CreateClient(ups *Upstream) (ClientInterface, err
 				if err != nil {
 					clientErr = fmt.Errorf("failed to create Alchemy client for upstream: %v", cfg.Id)
 				}
+
+			case common.UpstreamTypeEvmEnvio:
+				newClient, err = NewEnvioHttpJsonRpcClient(ups, parsedUrl)
+				if err != nil {
+					clientErr = fmt.Errorf("failed to create Envio client for upstream: %v", cfg.Id)
+				}
+
 			default:
 				clientErr = fmt.Errorf("unsupported upstream type: %v for upstream: %v", cfg.Type, cfg.Id)
 			}

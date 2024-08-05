@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -41,6 +42,8 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 		blockTrackerInterval = 60 * time.Second
 	}
 
+	var doesNotSupportFinalized = false
+
 	var updateBlockNumbers = func() error {
 		e.network.Logger.Debug().Msg("fetching latest and finalized block")
 
@@ -55,15 +58,22 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 			e.mu.Unlock()
 		}
 
-		fb, err := e.fetchFinalizedBlockNumber(ctx)
-		if err != nil {
-			e.network.Logger.Error().Err(err).Msg("failed to get finalized block number in block tracker")
-		}
-		e.network.Logger.Debug().Uint64("blockNumber", fb).Msg("fetched finalized block")
-		if fb > 0 {
-			e.mu.Lock()
-			e.finalizedBlockNumber = fb
-			e.mu.Unlock()
+		if !doesNotSupportFinalized {
+			fb, err := e.fetchFinalizedBlockNumber(ctx)
+			if err != nil {
+				if common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
+					doesNotSupportFinalized = true
+					e.network.Logger.Warn().Err(err).Msg("this chain does not support fetching finalized block number")
+				} else {
+					e.network.Logger.Error().Err(err).Msg("failed to get finalized block number in block tracker")
+				}
+			}
+			e.network.Logger.Debug().Uint64("blockNumber", fb).Msg("fetched finalized block")
+			if fb > 0 {
+				e.mu.Lock()
+				e.finalizedBlockNumber = fb
+				e.mu.Unlock()
+			}
 		}
 
 		// TODO should we return error here?
@@ -114,8 +124,9 @@ func (e *EvmBlockTracker) fetchFinalizedBlockNumber(ctx context.Context) (uint64
 }
 
 func (e *EvmBlockTracker) fetchBlock(ctx context.Context, blockTag string) (uint64, error) {
+	randId := rand.Intn(10_000_000)
 	pr := upstream.NewNormalizedRequest([]byte(
-		fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["%s",false]}`, blockTag),
+		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, randId, blockTag),
 	))
 	pr.SetNetwork(e.network)
 
