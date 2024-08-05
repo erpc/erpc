@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/erpc/erpc/auth"
@@ -66,20 +68,23 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 
 func (s *HttpServer) handleRequest(timeOutDur time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var nq *upstream.NormalizedRequest
-
 		segments := strings.Split(r.URL.Path, "/")
-		if len(segments) != 4 {
-			handleErrorResponse(s.logger, nq, common.NewErrInvalidUrlPath(r.URL.Path), w)
+		if len(segments) < 3 || len(segments) > 4 {
+			handleErrorResponse(s.logger, nil, common.NewErrInvalidUrlPath(r.URL.Path), w)
 			return
 		}
 
 		projectId := segments[1]
-		networkId := fmt.Sprintf("%s:%s", segments[2], segments[3])
+		architecture := segments[2]
+		var chainId *string
+
+		if len(segments) == 4 {
+			chainId = &segments[3]
+		}
 
 		project, err := s.erpc.GetProject(projectId)
 		if err != nil {
-			handleErrorResponse(s.logger, nq, err, w)
+			handleErrorResponse(s.logger, nil, err, w)
 			return
 		}
 
@@ -97,61 +102,115 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) http.HandlerFunc {
 		requestCtx, cancel := context.WithTimeout(r.Context(), timeOutDur)
 		defer cancel()
 
-		resultChan := make(chan common.NormalizedResponse, 1)
-		errChan := make(chan error, 1)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			handleErrorResponse(s.logger, nil, common.NewErrInvalidRequest(err), w)
+			return
+		}
 
-		go func() {
-			body, err := io.ReadAll(r.Body)
-			if err != nil {
-				errChan <- common.NewErrInvalidRequest(err)
-				return
-			}
+		s.logger.Debug().Msgf("received request for projectId: %s, architecture: %s with body: %s", projectId, architecture, body)
 
-			s.logger.Debug().Msgf("received request for projectId: %s, networkId: %s with body: %s", projectId, networkId, body)
+		var requests []json.RawMessage
+		err = json.Unmarshal(body, &requests)
+		isBatch := err == nil
 
-			nw, err := s.erpc.GetNetwork(projectId, networkId)
-			if err != nil {
-				errChan <- err
-				return
-			}
+		if !isBatch {
+			requests = []json.RawMessage{body}
+		}
 
-			nq = upstream.NewNormalizedRequest(body)
-			nq.SetNetwork(nw)
-			nq.ApplyDirectivesFromHttpHeaders(r.Header)
+		responses := make([]interface{}, len(requests))
+		var wg sync.WaitGroup
+		wg.Add(len(requests))
 
-			ap, err := auth.NewPayloadFromHttp(project.Config, nq, r)
-			if err != nil {
-				errChan <- err
-				return
-			}
+		for i, reqBody := range requests {
+			go func(index int, rawReq json.RawMessage) {
+				defer wg.Done()
 
-			if err := project.Authenticate(requestCtx, nq, ap); err != nil {
-				errChan <- err
-				return
-			}
+				nq := upstream.NewNormalizedRequest(rawReq)
+				nq.ApplyDirectivesFromHttpHeaders(r.Header)
 
-			resp, err := project.Forward(requestCtx, networkId, nq)
-			if err != nil {
-				errChan <- err
-				return
-			}
+				requestChainId := chainId
 
-			s.logger.Debug().Msgf("request forwarded successfully for projectId: %s, networkId: %s", projectId, networkId)
-			resultChan <- resp
-		}()
+				// TODO how to improve this to avoid Unmarshal?
+				if requestChainId == nil {
+					var req map[string]interface{}
+					if err := json.Unmarshal(rawReq, &req); err != nil {
+						responses[index] = err
+						return
+					}
+					if chainIdFromBody, ok := req["chainId"]; ok {
+						if chainIdFloat, ok := chainIdFromBody.(float64); ok {
+							chainIdStr := strconv.FormatFloat(chainIdFloat, 'f', -1, 64)
+							requestChainId = &chainIdStr
+						}
+						if chainIdInt, ok := chainIdFromBody.(int); ok {
+							chainIdStr := strconv.Itoa(chainIdInt)
+							requestChainId = &chainIdStr
+						}
+						if chainIdStr, ok := chainIdFromBody.(string); ok {
+							requestChainId = &chainIdStr
+						}
+					}
+				}
 
-		select {
-		case resp := <-resultChan:
-			w.Header().Set("Content-Type", "application/json")
+				if requestChainId == nil {
+					responses[index] = processErrorBody(
+						s.logger,
+						nq,
+						common.NewErrInvalidRequest(fmt.Errorf("chainId not provided in URL nor in json-rpc payload")),
+					)
+					return
+				}
+
+				networkId := fmt.Sprintf("%s:%s", architecture, *requestChainId)
+
+				nw, err := project.GetNetwork(networkId)
+				if err != nil {
+					responses[index] = processErrorBody(s.logger, nq, err)
+					return
+				}
+				nq.SetNetwork(nw)
+
+				ap, err := auth.NewPayloadFromHttp(project.Config, nq, r)
+				if err != nil {
+					responses[index] = processErrorBody(s.logger, nq, err)
+					return
+				}
+
+				if err := project.Authenticate(requestCtx, nq, ap); err != nil {
+					responses[index] = processErrorBody(s.logger, nq, err)
+					return
+				}
+
+				resp, err := project.Forward(requestCtx, networkId, nq)
+				if err != nil {
+					responses[index] = processErrorBody(s.logger, nq, err)
+					return
+				}
+
+				responses[index] = resp
+			}(i, reqBody)
+		}
+
+		wg.Wait()
+
+		w.Header().Set("Content-Type", "application/json")
+
+		if isBatch {
 			w.WriteHeader(http.StatusOK)
-			w.Write(resp.Body())
-		case err := <-errChan:
-			handleErrorResponse(s.logger, nq, err, w)
-		case <-requestCtx.Done():
-			handleErrorResponse(s.logger, nq, common.NewErrRequestTimeOut(timeOutDur), w)
+			json.NewEncoder(w).Encode(responses)
+		} else {
+			if _, ok := responses[0].(error); ok {
+				w.WriteHeader(processErrorStatusCode(responses[0].(error)))
+			} else {
+				w.WriteHeader(http.StatusOK)
+			}
+
+			json.NewEncoder(w).Encode(responses[0])
 		}
 	}
 }
+
 func (s *HttpServer) handleCORS(w http.ResponseWriter, r *http.Request, corsConfig *common.CORSConfig) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
@@ -206,6 +265,65 @@ func (s *HttpServer) handleCORS(w http.ResponseWriter, r *http.Request, corsConf
 	}
 
 	return true
+}
+
+func processErrorBody(logger *zerolog.Logger, nq *upstream.NormalizedRequest, err error) interface{} {
+	if !common.IsNull(err) {
+		if common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
+			logger.Debug().Err(err).Msgf("forward request errored with client-side exception")
+		} else {
+			logger.Error().Err(err).Msgf("failed to forward request")
+		}
+	}
+
+	err = common.TranslateToJsonRpcException(err)
+
+	var jsonrpcVersion string = "2.0"
+	var reqId interface{} = nil
+	if nq != nil {
+		jrr, _ := nq.JsonRpcRequest()
+		if jrr != nil {
+			jsonrpcVersion = jrr.JSONRPC
+			reqId = jrr.ID
+		}
+	}
+
+	jre := &common.ErrJsonRpcExceptionInternal{}
+	if errors.As(err, &jre) {
+		return map[string]interface{}{
+			"jsonrpc": jsonrpcVersion,
+			"id":      reqId,
+			"error": map[string]interface{}{
+				"code":    jre.NormalizedCode(),
+				"message": jre.Message,
+				"data":    jre.Details["data"],
+				"cause":   err,
+			},
+		}
+	}
+
+	var bodyErr common.ErrorWithBody
+	if errors.As(err, &bodyErr) {
+		return bodyErr.ErrorResponseBody()
+	} else if _, ok := err.(*common.BaseError); ok {
+		return err
+	} else if serr, ok := err.(common.StandardError); ok {
+		return serr
+	}
+
+	return common.BaseError{
+		Code:    "ErrUnknown",
+		Message: "unexpected server error",
+		Cause:   err,
+	}
+}
+
+func processErrorStatusCode(err error) int {
+	var httpErr common.ErrorWithStatusCode
+	if errors.As(err, &httpErr) {
+		return httpErr.ErrorStatusCode()
+	}
+	return http.StatusInternalServerError
 }
 
 func handleErrorResponse(logger *zerolog.Logger, nq *upstream.NormalizedRequest, err error, hrw http.ResponseWriter) {

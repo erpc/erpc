@@ -92,16 +92,23 @@ type CORSConfig struct {
 }
 
 type UpstreamConfig struct {
-	Id                           string             `yaml:"id"`
-	Type                         UpstreamType       `yaml:"type"` // evm, evm+alchemy, solana
-	VendorName                   string             `yaml:"vendorName"`
-	Endpoint                     string             `yaml:"endpoint"`
-	Evm                          *EvmUpstreamConfig `yaml:"evm"`
-	IgnoreMethods                []string           `yaml:"ignoreMethods"`
-	AllowMethods                 []string           `yaml:"allowMethods"`
-	AutoIgnoreUnsupportedMethods bool               `yaml:"autoIgnoreUnsupportedMethods"`
-	Failsafe                     *FailsafeConfig    `yaml:"failsafe"`
-	RateLimitBudget              string             `yaml:"rateLimitBudget"`
+	Id                           string                 `yaml:"id"`
+	Type                         UpstreamType           `yaml:"type"` // evm, evm+alchemy, solana
+	VendorName                   string                 `yaml:"vendorName"`
+	Endpoint                     string                 `yaml:"endpoint"`
+	Evm                          *EvmUpstreamConfig     `yaml:"evm"`
+	JsonRpc                      *JsonRpcUpstreamConfig `yaml:"jsonRpc"`
+	IgnoreMethods                []string               `yaml:"ignoreMethods"`
+	AllowMethods                 []string               `yaml:"allowMethods"`
+	AutoIgnoreUnsupportedMethods bool                   `yaml:"autoIgnoreUnsupportedMethods"`
+	Failsafe                     *FailsafeConfig        `yaml:"failsafe"`
+	RateLimitBudget              string                 `yaml:"rateLimitBudget"`
+}
+
+type JsonRpcUpstreamConfig struct {
+	SupportsBatch bool   `yaml:"supportsBatch"`
+	BatchMaxSize  int    `yaml:"batchMaxSize"`
+	BatchMaxWait  string `yaml:"batchMaxWait"`
 }
 
 type EvmUpstreamConfig struct {
