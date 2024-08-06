@@ -4,9 +4,9 @@ import { Callout } from "nextra/components";
 
 An upstream is defined to handle 1 or more networks (a.k.a. chains). There are currently these types of upstreams:
 
-- [`evm`](#evm) A generic EVM-compatible JSON-RPC endpoint. This is the default and most-used type.
-- [`evm+alchemy`](#alchemy) A special upstream type that accepts Alchemy API-KEY and automatically adds all their EVM chains.
-- [`evm+envio`](#evm+envio) A special upstream type for Envio HyperRPC endpoint and automatically adds all chains by HyperRPC.
+- [`evm`](#evm-json-rpc) A generic EVM-compatible JSON-RPC endpoint. This is the default and most-used type.
+- [`evm+alchemy`](#evmalchemy-json-rpc) A special upstream type that accepts Alchemy API-KEY and automatically adds all their EVM chains.
+- [`evm+envio`](#evmenvio-json-rpc) A special upstream type for Envio HyperRPC endpoint and automatically adds all chains by HyperRPC.
 
 <Callout type='info'>
   eRPC supports any EVM-compatible JSON-RPC endpoint when using `evm` type. Specialized types like "evm+alchemy" are built for well-known providers to make it easier to import "all supported evm chains" with just an API-KEY.
