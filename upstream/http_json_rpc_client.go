@@ -218,8 +218,19 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 	var batchResp []json.RawMessage
 	err = json.Unmarshal(respBody, &batchResp)
 	if err != nil {
-		for _, req := range requests {
-			req.err <- err
+		// Try parsing as single json-rpc object,
+		// some providers return a single object on some errors even when request is batch.
+		// this is a workaround to handle those cases.
+		var singleResp common.JsonRpcResponse
+		errsg := json.Unmarshal(respBody, &singleResp)
+		if errsg != nil {
+			for _, req := range requests {
+				req.err <- errsg
+			}
+		} else {
+			for _, req := range requests {
+				req.err <- err
+			}
 		}
 		return
 	}
