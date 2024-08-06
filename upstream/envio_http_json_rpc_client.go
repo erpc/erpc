@@ -59,11 +59,11 @@ var supportedChains = map[uint64]struct{}{
 	534352:     {}, // Scroll
 	11155111:   {}, // Sepolia
 	148:        {}, // Shimmer Evm
-	196:     {}, // X Layer
-	195:     {}, // X Layer Testnet
-	7000:    {}, // Zeta
-	324:     {}, // ZKsync
-	7777777: {}, // Zora
+	196:        {}, // X Layer
+	195:        {}, // X Layer Testnet
+	7000:       {}, // Zeta
+	324:        {}, // ZKsync
+	7777777:    {}, // Zora
 }
 
 type EnvioHttpJsonRpcClient struct {

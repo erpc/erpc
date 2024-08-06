@@ -225,11 +225,29 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 		errsg := json.Unmarshal(respBody, &singleResp)
 		if errsg != nil {
 			for _, req := range requests {
-				req.err <- errsg
+				req.err <- common.NewErrEndpointServerSideException(
+					fmt.Errorf("failed to parse upstream response: %w body: %s", err, respBody),
+				)
 			}
 		} else {
-			for _, req := range requests {
-				req.err <- err
+			if singleResp.JSONRPC != "" {
+				// This case happens when upstreams a single valid json-rpc object as response
+				// to a batch request (e.g. BlastAPI).
+				for _, req := range requests {
+					nr := NewNormalizedResponse().WithRequest(req.request).WithBody(respBody)
+					err := c.normalizeJsonRpcError(resp, nr)
+					if err != nil {
+						req.err <- err
+					} else {
+						req.response <- nr
+					}
+				}
+			} else {
+				for _, req := range requests {
+					req.err <- common.NewErrEndpointServerSideException(
+						fmt.Errorf("failed to parse upstream response: %w body: %s", err, respBody),
+					)
+				}
 			}
 		}
 		return
