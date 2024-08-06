@@ -6,6 +6,7 @@ An upstream is defined to handle 1 or more networks (a.k.a. chains). There are c
 
 - [`evm`](#evm) A generic EVM-compatible JSON-RPC endpoint. This is the default and most-used type.
 - [`evm+alchemy`](#alchemy) A special upstream type that accepts Alchemy API-KEY and automatically adds all their EVM chains.
+- [`evm+envio`](#evm+envio) A special upstream type for Envio HyperRPC endpoint and automatically adds all chains by HyperRPC.
 
 <Callout type='info'>
   eRPC supports any EVM-compatible JSON-RPC endpoint when using `evm` type. Specialized types like "evm+alchemy" are built for well-known providers to make it easier to import "all supported evm chains" with just an API-KEY.
@@ -116,10 +117,28 @@ projects:
     # ...
     upstreams:
       - id: my-alchemy
-        type: evm+alchemy # Optional. It will automatically detect this if the endpoint starts with "evm+alchemy://"
         endpoint: evm+alchemy://YOUR_ALCHEMY_API_KEY
         # ...
 ```
+
+### `evm+envio` JSON-RPC
+
+Envio [HyperRPC](https://docs.envio.dev/docs/HyperSync/hyperrpc-supported-networks) service provides a higher-performance alternative for certain read methods. When handling requests if a [method is supported by HyperRPC](https://docs.envio.dev/docs/HyperSync/overview-hyperrpc), then this upstream may be used.
+
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - id: envio-public
+        endpoint: evm+envio://rpc.hypersync.xyz
+        # ...
+```
+
+<Callout type='info'>
+  For indexing use-cases it is recommended to this upstream. This will automatically add all supported EVM chains by HyperRPC.
+</Callout>
 
 #### Roadmap
 
