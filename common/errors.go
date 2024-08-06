@@ -332,6 +332,10 @@ var NewErrProjectNotFound = func(projectId string) error {
 	}
 }
 
+func (e *ErrProjectNotFound) ErrorStatusCode() int {
+	return http.StatusNotFound
+}
+
 type ErrProjectAlreadyExists struct{ BaseError }
 
 var NewErrProjectAlreadyExists = func(projectId string) error {
@@ -364,6 +368,10 @@ var NewErrNetworkNotFound = func(networkId string) error {
 	}
 }
 
+func (e *ErrNetworkNotFound) ErrorStatusCode() int {
+	return http.StatusNotFound
+}
+
 type ErrUnknownNetworkID struct{ BaseError }
 
 var NewErrUnknownNetworkID = func(arch NetworkArchitecture) error {
@@ -376,6 +384,10 @@ var NewErrUnknownNetworkID = func(arch NetworkArchitecture) error {
 			},
 		},
 	}
+}
+
+func (e *ErrUnknownNetworkID) ErrorStatusCode() int {
+	return http.StatusBadRequest
 }
 
 type ErrUnknownNetworkArchitecture struct{ BaseError }
@@ -392,6 +404,10 @@ var NewErrUnknownNetworkArchitecture = func(arch NetworkArchitecture) error {
 	}
 }
 
+func (e *ErrUnknownNetworkArchitecture) ErrorStatusCode() int {
+	return http.StatusBadRequest
+}
+
 type ErrInvalidEvmChainId struct{ BaseError }
 
 var NewErrInvalidEvmChainId = func(chainId any) error {
@@ -404,6 +420,10 @@ var NewErrInvalidEvmChainId = func(chainId any) error {
 			},
 		},
 	}
+}
+
+func (e *ErrInvalidEvmChainId) ErrorStatusCode() int {
+	return http.StatusBadRequest
 }
 
 //
@@ -455,6 +475,10 @@ var NewErrUpstreamMalformedResponse = func(cause error, upstreamId string) error
 			},
 		},
 	}
+}
+
+func (e *ErrUpstreamMalformedResponse) ErrorStatusCode() int {
+	return http.StatusBadRequest
 }
 
 type ErrUpstreamsExhausted struct{ BaseError }
