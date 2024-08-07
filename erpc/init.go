@@ -49,7 +49,7 @@ func Init(
 	//
 	// 2) Initialize eRPC
 	//
-	logger.Info().Msg("bootstrapping eRPC")
+	logger.Info().Msg("initializing eRPC")
 	var evmJsonRpcCache *EvmJsonRpcCache
 	if cfg.Database != nil {
 		if cfg.Database.EvmJsonRpcCache != nil {
@@ -67,7 +67,7 @@ func Init(
 	//
 	// 3) Expose Transports
 	//
-	logger.Info().Msg("bootstrapping transports")
+	logger.Info().Msg("initializing transports")
 	var httpServer *HttpServer
 	if cfg.Server != nil {
 		httpServer = NewHttpServer(ctx, &logger, cfg.Server, erpcInstance)

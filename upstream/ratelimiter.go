@@ -45,7 +45,7 @@ func (r *RateLimitersRegistry) bootstrap() error {
 	}
 
 	for _, budgetCfg := range r.cfg.Budgets {
-		r.logger.Debug().Msgf("bootstrapping rate limiter budget: %s", budgetCfg.Id)
+		r.logger.Debug().Msgf("initializing rate limiter budget: %s", budgetCfg.Id)
 		budget := &RateLimiterBudget{
 			Id:       budgetCfg.Id,
 			Rules:    make([]*RateLimitRule, 0),
