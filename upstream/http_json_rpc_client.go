@@ -542,6 +542,16 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 					details,
 				),
 			)
+		} else if strings.Contains(err.Message, "Invalid Request") || strings.Contains(err.Message, "validation errors") {
+			return common.NewErrEndpointClientSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorInvalidArgument,
+					err.Message,
+					nil,
+					details,
+				),
+			)
 		}
 
 		// By default we consider a problem on the server so that retry/failover mechanisms try other upstreams
