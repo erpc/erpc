@@ -74,6 +74,7 @@ func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr i
 		} else if code == -32011 || code == -32603 {
 			return common.NewErrEndpointServerSideException(
 				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorServerSideException, msg, nil, details),
+				nil,
 			)
 		} else if code == 3 {
 			return common.NewErrEndpointClientSideException(

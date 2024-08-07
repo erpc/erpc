@@ -998,12 +998,13 @@ type ErrEndpointServerSideException struct{ BaseError }
 
 const ErrCodeEndpointServerSideException = "ErrEndpointServerSideException"
 
-var NewErrEndpointServerSideException = func(cause error) error {
+var NewErrEndpointServerSideException = func(cause error, details map[string]interface{}) error {
 	return &ErrEndpointServerSideException{
 		BaseError{
 			Code:    ErrCodeEndpointServerSideException,
 			Message: "an internal error on remote endpoint",
 			Cause:   cause,
+			Details: details,
 		},
 	}
 }

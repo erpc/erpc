@@ -201,7 +201,10 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		for _, req := range requests {
-			req.err <- err
+			req.err <- common.NewErrEndpointServerSideException(
+				fmt.Errorf(strings.ReplaceAll(err.Error(), c.Url.String(), "")),
+				nil,
+			)
 		}
 		return
 	}
@@ -211,6 +214,21 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 	if err != nil {
 		for _, req := range requests {
 			req.err <- err
+		}
+		return
+	}
+
+	// Usually when upstream is dead and returns a non-JSON response body
+	if respBody[0] == '<' {
+		for _, req := range requests {
+			req.err <- common.NewErrEndpointServerSideException(
+				fmt.Errorf("upstream returned non-JSON response body"),
+				map[string]interface{}{
+					"statusCode": resp.StatusCode,
+					"headers":    resp.Header,
+					"body":       string(respBody),
+				},
+			)
 		}
 		return
 	}
@@ -226,7 +244,12 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 		if errsg != nil {
 			for _, req := range requests {
 				req.err <- common.NewErrEndpointServerSideException(
-					fmt.Errorf("failed to parse upstream response: %w body: %s", err, respBody),
+					fmt.Errorf("failed to parse upstream response: %w", err),
+					map[string]interface{}{
+						"statusCode": resp.StatusCode,
+						"headers":    resp.Header,
+						"body":       string(respBody),
+					},
 				)
 			}
 		} else {
@@ -245,7 +268,12 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 			} else {
 				for _, req := range requests {
 					req.err <- common.NewErrEndpointServerSideException(
-						fmt.Errorf("failed to parse upstream response: %w body: %s", err, respBody),
+						fmt.Errorf("failed to parse upstream response: %w", err),
+						map[string]interface{}{
+							"statusCode": resp.StatusCode,
+							"headers":    resp.Header,
+							"body":       string(respBody),
+						},
 					)
 				}
 			}
@@ -525,6 +553,7 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 				nil,
 				details,
 			),
+			nil,
 		)
 	}
 

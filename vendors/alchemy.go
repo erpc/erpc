@@ -78,6 +78,7 @@ func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr int
 					nil,
 					details,
 				),
+				nil,
 			)
 		} else if code >= -32099 && code <= -32599 || code >= -32603 && code <= -32699 || code >= -32701 && code <= -32768 {
 			return common.NewErrEndpointClientSideException(

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/url"
+	"strings"
 )
 
 func RedactEndpoint(endpoint string) string {
@@ -22,7 +23,9 @@ func RedactEndpoint(endpoint string) string {
 	// Construct the redacted endpoint
 	var redactedEndpoint string
 	if parsedURL.Scheme == "http" || parsedURL.Scheme == "https" || parsedURL.Scheme == "ws" || parsedURL.Scheme == "wss" {
-		redactedEndpoint = parsedURL.Scheme + "#" + parsedURL.Host + "#redacted=" + hash
+		redactedEndpoint = parsedURL.Scheme + "://" + parsedURL.Host + "#redacted=" + hash
+	} else if strings.HasSuffix(parsedURL.Scheme, "envio") {
+		redactedEndpoint = parsedURL.Scheme + "://" + parsedURL.Host
 	} else {
 		redactedEndpoint = parsedURL.Scheme + "#redacted=" + hash
 	}

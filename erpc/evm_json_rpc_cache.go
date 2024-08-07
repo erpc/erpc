@@ -26,6 +26,7 @@ const (
 )
 
 func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common.ConnectorConfig) (*EvmJsonRpcCache, error) {
+	logger.Info().Msg("initializing evm json rpc cache...")
 	err := populateDefaults(cfg)
 	if err != nil {
 		return nil, err
