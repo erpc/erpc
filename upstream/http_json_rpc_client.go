@@ -434,9 +434,20 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 					details,
 				),
 			)
-		} else if r.StatusCode == 429 || r.StatusCode == 408 {
-			return common.NewErrEndpointCapacityExceeded(err)
-			// Wrap rpc exception with endpoint-specific errors (useful for erpc specialized handling)
+		} else if r.StatusCode == 429 ||
+			r.StatusCode == 408 ||
+			code == -32005 ||
+			strings.Contains(err.Message, "has exceeded") ||
+			strings.Contains(err.Message, "Exceeded the quota") {
+			return common.NewErrEndpointCapacityExceeded(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorCapacityExceeded,
+					err.Message,
+					nil,
+					details,
+				),
+			)
 		} else if code == -32004 || code == -32001 {
 			return common.NewErrEndpointUnsupported(
 				common.NewErrJsonRpcExceptionInternal(
@@ -452,16 +463,6 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorInvalidArgument,
-					err.Message,
-					nil,
-					details,
-				),
-			)
-		} else if code == -32005 {
-			return common.NewErrEndpointCapacityExceeded(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorCapacityExceeded,
 					err.Message,
 					nil,
 					details,
@@ -508,7 +509,7 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 					details,
 				),
 			)
-		} else if strings.Contains(err.Message, "not found") {
+		} else if strings.Contains(err.Message, "not found") || strings.Contains(err.Message, "does not exist/is not available") {
 			if strings.Contains(err.Message, "Method") || strings.Contains(err.Message, "method") {
 				return common.NewErrEndpointUnsupported(
 					common.NewErrJsonRpcExceptionInternal(

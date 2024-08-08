@@ -86,7 +86,7 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(networkId string) error {
 				Str("upstream", ups.Config().Id).
 				Str("network", networkId).
 				Msgf("failed to check if upstream supports network")
-				return e
+			return e
 		}
 	}
 	if len(upstreams) == 0 {
