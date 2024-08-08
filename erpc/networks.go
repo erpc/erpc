@@ -303,7 +303,7 @@ func (n *Network) EvmIsBlockFinalized(blockNumber uint64) (bool, error) {
 	if n.Config.Evm != nil {
 		fb = latestBlock - n.Config.Evm.FinalityDepth
 	} else {
-		fb = latestBlock - 128
+		fb = latestBlock - 1024
 	}
 
 	n.Logger.Debug().
