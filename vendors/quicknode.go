@@ -43,8 +43,8 @@ func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr i
 			)
 		} else if code == -32000 {
 			if strings.Contains(msg, "header not found") || strings.Contains(msg, "could not find block") {
-				return common.NewErrEndpointNotSyncedYet(
-					common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorNotSyncedYet, msg, nil, details),
+				return common.NewErrEndpointMissingData(
+					common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorMissingData, msg, nil, details),
 				)
 			} else if strings.Contains(msg, "execution timeout") {
 				return common.NewErrEndpointNodeTimeout(

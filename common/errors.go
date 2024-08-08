@@ -1063,15 +1063,15 @@ var NewErrEndpointNodeTimeout = func(cause error) error {
 	}
 }
 
-type ErrEndpointNotSyncedYet struct{ BaseError }
+type ErrEndpointMissingData struct{ BaseError }
 
-const ErrCodeEndpointNotSyncedYet = "ErrEndpointNotSyncedYet"
+const ErrCodeEndpointMissingData = "ErrEndpointMissingData"
 
-var NewErrEndpointNotSyncedYet = func(cause error) error {
-	return &ErrEndpointNotSyncedYet{
+var NewErrEndpointMissingData = func(cause error) error {
+	return &ErrEndpointMissingData{
 		BaseError{
-			Code:    ErrCodeEndpointNotSyncedYet,
-			Message: "remote endpoint not synced yet for this specific data or block",
+			Code:    ErrCodeEndpointMissingData,
+			Message: "remote endpoint does not have this data/block or not synced yet",
 			Cause:   cause,
 		},
 	}
@@ -1119,7 +1119,7 @@ const (
 	// Normalized blockchain-specific codes by eRPC
 	JsonRpcErrorCapacityExceeded  JsonRpcErrorNumber = -32005
 	JsonRpcErrorEvmLogsLargeRange JsonRpcErrorNumber = -32012
-	JsonRpcErrorNotSyncedYet      JsonRpcErrorNumber = -32014
+	JsonRpcErrorMissingData       JsonRpcErrorNumber = -32014
 	JsonRpcErrorNodeTimeout       JsonRpcErrorNumber = -32015
 	JsonRpcErrorUnauthorized      JsonRpcErrorNumber = -32016
 	JsonRpcErrorCallException     JsonRpcErrorNumber = -32017

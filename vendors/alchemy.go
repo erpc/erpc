@@ -59,7 +59,7 @@ func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr int
 					details,
 				),
 			)
-		} else if code == -32600 && (strings.Contains(msg, "limit exceeded")) {
+		} else if strings.Contains(msg, "limit exceeded") {
 			return common.NewErrEndpointCapacityExceeded(
 				common.NewErrJsonRpcExceptionInternal(
 					code,

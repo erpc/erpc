@@ -280,8 +280,8 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 						)
 					} else if common.HasErrorCode(errCall, common.ErrCodeUpstreamRequestSkipped) {
 						health.MetricUpstreamSkippedTotal.WithLabelValues(u.ProjectId, cfg.Id, netId, method).Inc()
-					} else if common.HasErrorCode(errCall, common.ErrCodeEndpointNotSyncedYet) {
-						health.MetricUpstreamNotSyncedErrorTotal.WithLabelValues(u.ProjectId, cfg.Id, netId, method).Inc()
+					} else if common.HasErrorCode(errCall, common.ErrCodeEndpointMissingData) {
+						health.MetricUpstreamMissingDataErrorTotal.WithLabelValues(u.ProjectId, cfg.Id, netId, method).Inc()
 					} else if !common.HasErrorCode(errCall, common.ErrCodeEndpointClientSideException) {
 						u.metricsTracker.RecordUpstreamFailure(
 							cfg.Id,

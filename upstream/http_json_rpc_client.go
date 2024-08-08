@@ -438,7 +438,8 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 			r.StatusCode == 408 ||
 			code == -32005 ||
 			strings.Contains(err.Message, "has exceeded") ||
-			strings.Contains(err.Message, "Exceeded the quota") {
+			strings.Contains(err.Message, "Exceeded the quota") ||
+			strings.Contains(err.Message, "under too much load") {
 			return common.NewErrEndpointCapacityExceeded(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -468,22 +469,18 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 					details,
 				),
 			)
-		} else if strings.Contains(err.Message, "missing trie node") {
-			return common.NewErrEndpointNotSyncedYet(
+		} else if strings.Contains(err.Message, "missing trie node") ||
+			// Usually happens on Avalanche when querying a pretty recent block:
+			strings.Contains(err.Message, "cannot query unfinalized") ||
+			strings.Contains(err.Message, "height is not available") ||
+			// This usually happens when sending a trace_* request to a newly created block:
+			strings.Contains(err.Message, "genesis is not traceable") ||
+			strings.Contains(err.Message, "could not find FinalizeBlock") ||
+			(strings.Contains(err.Message, "blocks specified") && strings.Contains(err.Message, "cannot be found")) {
+			return common.NewErrEndpointMissingData(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
-					common.JsonRpcErrorNotSyncedYet,
-					err.Message,
-					nil,
-					details,
-				),
-			)
-		} else if strings.Contains(err.Message, "genesis is not traceable") {
-			// This usually happens when sending a trace_* request to a newly created block
-			return common.NewErrEndpointNotSyncedYet(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorNotSyncedYet,
+					common.JsonRpcErrorMissingData,
 					err.Message,
 					nil,
 					details,
@@ -543,7 +540,9 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 					details,
 				),
 			)
-		} else if strings.Contains(err.Message, "Invalid Request") || strings.Contains(err.Message, "validation errors") {
+		} else if strings.Contains(err.Message, "Invalid Request") ||
+			strings.Contains(err.Message, "validation errors") ||
+			strings.Contains(err.Message, "height must be less than or equal") {
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
