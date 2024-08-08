@@ -47,10 +47,10 @@ var (
 		Help:      "Total number of requests skipped by upstreams.",
 	}, []string{"project", "network", "upstream", "category"})
 
-	MetricUpstreamNotSyncedErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricUpstreamMissingDataErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
-		Name:      "upstream_request_not_synced_error_total",
-		Help:      "Total number of requests where upstream is not synced yet.",
+		Name:      "upstream_request_missing_data_error_total",
+		Help:      "Total number of requests where upstream is missing data or not synced yet.",
 	}, []string{"project", "network", "upstream", "category"})
 
 	MetricNetworkRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
