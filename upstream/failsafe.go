@@ -281,7 +281,7 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 					// Retry-Empty directive + "empty" response + block is finalized -> No Retry
 					if err == nil && rds.RetryEmpty && isEmpty {
 						bn, ebn := req.EvmBlockNumber()
-						if ebn == nil {
+						if ebn == nil && bn > 0 {
 							fin, efin := req.Network().EvmIsBlockFinalized(bn)
 							if efin == nil && fin {
 								return false

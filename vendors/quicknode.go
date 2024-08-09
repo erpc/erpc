@@ -47,8 +47,9 @@ func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr i
 					common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorMissingData, msg, nil, details),
 				)
 			} else if strings.Contains(msg, "execution timeout") {
-				return common.NewErrEndpointNodeTimeout(
+				return common.NewErrEndpointServerSideException(
 					common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorNodeTimeout, msg, nil, details),
+					nil,
 				)
 			}
 		} else if code == -32009 || code == -32007 {
@@ -63,7 +64,7 @@ func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr i
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorParseException, msg, nil, details),
 			)
-		} else if code == -32010 || code == -32015 {
+		} else if code == -32010 {
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorClientSideException, msg, nil, details),
 			)
