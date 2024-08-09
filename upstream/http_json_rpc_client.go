@@ -410,7 +410,13 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 
 		var details map[string]interface{} = make(map[string]interface{})
 		if err.Data != "" {
-			details["data"] = err.Data
+			// Some providers such as Alchemy prefix the data with this string
+			// we omit this prefix for standardization.
+			if strings.HasPrefix(err.Data, "Reverted ") {
+				details["data"] = err.Data[9:]
+			} else {
+				details["data"] = err.Data
+			}
 		}
 
 		// Infer from known status codes
@@ -486,7 +492,7 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 					details,
 				),
 			)
-		} else if strings.Contains(err.Message, "execution reverted") {
+		} else if strings.Contains(err.Message, "execution reverted") || strings.Contains(err.Message, "VM execution error") {
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -530,7 +536,8 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 			}
 		} else if strings.Contains(err.Message, "Unsupported method") ||
 			strings.Contains(err.Message, "not supported") ||
-			strings.Contains(err.Message, "method is not whitelisted") {
+			strings.Contains(err.Message, "method is not whitelisted") ||
+			strings.Contains(err.Message, "module is disabled") {
 			return common.NewErrEndpointUnsupported(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -565,6 +572,26 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 			),
 			nil,
 		)
+	}
+
+	// There's a special case for certain clients that return a normal response for reverts:
+	if jr != nil && jr.Result != nil {
+		if dt, ok := jr.Result.(string); ok {
+			// keccak256("Error(string)")
+			if strings.HasPrefix(dt, "0x08c379a0") {
+				return common.NewErrEndpointClientSideException(
+					common.NewErrJsonRpcExceptionInternal(
+						0,
+						common.JsonRpcErrorEvmReverted,
+						"transaction reverted",
+						nil,
+						map[string]interface{}{
+							"data": dt,
+						},
+					),
+				)
+			}
+		}
 	}
 
 	return nil
