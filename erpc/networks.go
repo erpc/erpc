@@ -333,7 +333,13 @@ func (n *Network) processResponse(resp common.NormalizedResponse, skipped bool, 
 
 	switch n.Architecture() {
 	case common.ArchitectureEvm:
-		if common.HasErrorCode(err, common.ErrCodeJsonRpcExceptionInternal) {
+		if common.HasErrorCode(err, common.ErrCodeFailsafeCircuitBreakerOpen) {
+			// Explicitly skip when CB is open to not count the failed request towards network "retries"
+			return resp, true, err
+		} else if common.HasErrorCode(err, common.ErrCodeEndpointUnsupported) || common.HasErrorCode(err, common.ErrCodeUpstreamRequestSkipped) {
+			// Explicitly skip when method is not supported so it is not counted towards retries
+			return resp, true, err
+		} else if common.HasErrorCode(err, common.ErrCodeJsonRpcExceptionInternal) {
 			return resp, skipped, err
 		} else if common.HasErrorCode(err, common.ErrCodeJsonRpcRequestUnmarshal) {
 			return resp, skipped, common.NewErrJsonRpcExceptionInternal(
@@ -343,9 +349,6 @@ func (n *Network) processResponse(resp common.NormalizedResponse, skipped bool, 
 				err,
 				nil,
 			)
-		} else if common.HasErrorCode(err, common.ErrCodeFailsafeCircuitBreakerOpen) {
-			// Explicitly skip when CB is open to not count the failed request towards network "retries"
-			return resp, true, err
 		}
 
 		return resp, skipped, common.NewErrJsonRpcExceptionInternal(
