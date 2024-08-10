@@ -134,6 +134,10 @@ func (r *NormalizedRequest) Method() (string, error) {
 	return rpcReq.Method, nil
 }
 
+func (r *NormalizedRequest) Body() []byte {
+	return r.body
+}
+
 func (r *NormalizedRequest) MarshalZerologObject(e *zerolog.Event) {
 	e.Str("body", string(r.body))
 }

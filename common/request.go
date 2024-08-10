@@ -7,6 +7,7 @@ type RequestDirectives struct {
 type NormalizedRequest interface {
 	Network() Network
 	Method() (string, error)
+	Body() []byte
 	Directives() *RequestDirectives
 	EvmBlockNumber() (uint64, error)
 

@@ -8,6 +8,7 @@ const (
 	UpstreamTypeEvm        UpstreamType = "evm"
 	UpstreamTypeEvmAlchemy UpstreamType = "evm+alchemy"
 	UpstreamTypeEvmEnvio   UpstreamType = "evm+envio"
+	UpstreamTypeEvmPimlico UpstreamType = "evm+pimlico"
 )
 
 type Upstream interface {

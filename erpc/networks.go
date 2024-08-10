@@ -68,7 +68,10 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
 	req.SetNetwork(n)
 
-	method, _ := req.Method()
+	method, err := req.Method()
+	if err != nil {
+		return nil, err
+	}
 	lg := n.Logger.With().Str("method", method).Logger()
 
 	// 1) In-flight multiplexing
