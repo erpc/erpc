@@ -9,7 +9,7 @@ type NormalizedRequest interface {
 	Method() (string, error)
 	Body() []byte
 	Directives() *RequestDirectives
-	EvmBlockNumber() (uint64, error)
+	EvmBlockNumber() (int64, error)
 
 	LastUpstream() Upstream
 	LastValidResponse() NormalizedResponse

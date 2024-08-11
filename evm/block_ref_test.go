@@ -12,14 +12,14 @@ func TestExtractBlockReference(t *testing.T) {
 		name     string
 		request  *common.JsonRpcRequest
 		expected string
-		expUint  uint64
+		expInt   int64
 		expErr   bool
 	}{
 		{
 			name:     "nil request",
 			request:  nil,
 			expected: "",
-			expUint:  0,
+			expInt:   0,
 			expErr:   true,
 		},
 		{
@@ -29,7 +29,7 @@ func TestExtractBlockReference(t *testing.T) {
 				Params: []interface{}{"0xc5043f", false},
 			},
 			expected: "12911679",
-			expUint:  12911679,
+			expInt:   12911679,
 			expErr:   false,
 		},
 		{
@@ -39,7 +39,7 @@ func TestExtractBlockReference(t *testing.T) {
 				Params: []interface{}{"invalidHex"},
 			},
 			expected: "",
-			expUint:  0,
+			expInt:   0,
 			expErr:   false,
 		},
 		{
@@ -49,7 +49,7 @@ func TestExtractBlockReference(t *testing.T) {
 				Params: []interface{}{"0x1b4"},
 			},
 			expected: "436",
-			expUint:  436,
+			expInt:   436,
 			expErr:   false,
 		},
 		{
@@ -59,7 +59,7 @@ func TestExtractBlockReference(t *testing.T) {
 				Params: []interface{}{"0xc5043f", "0x0"},
 			},
 			expected: "12911679",
-			expUint:  12911679,
+			expInt:   12911679,
 			expErr:   false,
 		},
 		{
@@ -69,7 +69,7 @@ func TestExtractBlockReference(t *testing.T) {
 				Params: []interface{}{"0xc5043f"},
 			},
 			expected: "12911679",
-			expUint:  12911679,
+			expInt:   12911679,
 			expErr:   false,
 		},
 		{
@@ -79,7 +79,7 @@ func TestExtractBlockReference(t *testing.T) {
 				Params: []interface{}{"0xc5043f"},
 			},
 			expected: "12911679",
-			expUint:  12911679,
+			expInt:   12911679,
 			expErr:   false,
 		},
 		{
@@ -89,7 +89,7 @@ func TestExtractBlockReference(t *testing.T) {
 				Params: []interface{}{"0xc5043f"},
 			},
 			expected: "12911679",
-			expUint:  12911679,
+			expInt:   12911679,
 			expErr:   false,
 		},
 		{
@@ -104,7 +104,7 @@ func TestExtractBlockReference(t *testing.T) {
 				},
 			},
 			expected: "0x1b4-0x1b5",
-			expUint:  437,
+			expInt:   437,
 			expErr:   false,
 		},
 		{
@@ -114,7 +114,7 @@ func TestExtractBlockReference(t *testing.T) {
 				Params: []interface{}{},
 			},
 			expected: "",
-			expUint:  0,
+			expInt:   0,
 			expErr:   false,
 		},
 		{
@@ -124,7 +124,7 @@ func TestExtractBlockReference(t *testing.T) {
 				Params: []interface{}{"0xAddress", "0x1b4"},
 			},
 			expected: "436",
-			expUint:  436,
+			expInt:   436,
 			expErr:   false,
 		},
 		{
@@ -134,7 +134,7 @@ func TestExtractBlockReference(t *testing.T) {
 				Params: []interface{}{"0xAddress"},
 			},
 			expected: "",
-			expUint:  0,
+			expInt:   0,
 			expErr:   true,
 		},
 		{
@@ -144,7 +144,7 @@ func TestExtractBlockReference(t *testing.T) {
 				Params: []interface{}{"0xAddress", "0x1b4"},
 			},
 			expected: "436",
-			expUint:  436,
+			expInt:   436,
 			expErr:   false,
 		},
 		{
@@ -154,7 +154,7 @@ func TestExtractBlockReference(t *testing.T) {
 				Params: []interface{}{"0xAddress", "0x1b4"},
 			},
 			expected: "436",
-			expUint:  436,
+			expInt:   436,
 			expErr:   false,
 		},
 		{
@@ -176,7 +176,7 @@ func TestExtractBlockReference(t *testing.T) {
 				},
 			},
 			expected: "436",
-			expUint:  436,
+			expInt:   436,
 			expErr:   false,
 		},
 		{
@@ -186,7 +186,7 @@ func TestExtractBlockReference(t *testing.T) {
 				Params: []interface{}{"0x8D97689C9818892B700e27F316cc3E41e17fBeb9", "0x1b4"},
 			},
 			expected: "436",
-			expUint:  436,
+			expInt:   436,
 			expErr:   false,
 		},
 		{
@@ -196,7 +196,7 @@ func TestExtractBlockReference(t *testing.T) {
 				Params: []interface{}{4, "0x1b4", []interface{}{25, 75}},
 			},
 			expected: "436",
-			expUint:  436,
+			expInt:   436,
 			expErr:   false,
 		},
 		{
@@ -206,7 +206,7 @@ func TestExtractBlockReference(t *testing.T) {
 				Params: []interface{}{"0x3f07a9c83155594c000642e7d60e8a8a00038d03e9849171a05ed0e2d47acbb3", false},
 			},
 			expected: "0x3f07a9c83155594c000642e7d60e8a8a00038d03e9849171a05ed0e2d47acbb3",
-			expUint:  0,
+			expInt:   0,
 			expErr:   false,
 		},
 		{
@@ -216,7 +216,7 @@ func TestExtractBlockReference(t *testing.T) {
 				Params: []interface{}{"0x829df9bb801fc0494abf2f443423a49ffa32964554db71b098d332d87b70a48b", "0x0"},
 			},
 			expected: "0x829df9bb801fc0494abf2f443423a49ffa32964554db71b098d332d87b70a48b",
-			expUint:  0,
+			expInt:   0,
 			expErr:   false,
 		},
 		{
@@ -226,7 +226,7 @@ func TestExtractBlockReference(t *testing.T) {
 				Params: []interface{}{"0x829df9bb801fc0494abf2f443423a49ffa32964554db71b098d332d87b70a48b"},
 			},
 			expected: "0x829df9bb801fc0494abf2f443423a49ffa32964554db71b098d332d87b70a48b",
-			expUint:  0,
+			expInt:   0,
 			expErr:   false,
 		},
 		{
@@ -236,7 +236,7 @@ func TestExtractBlockReference(t *testing.T) {
 				Params: []interface{}{"0x829df9bb801fc0494abf2f443423a49ffa32964554db71b098d332d87b70a48b"},
 			},
 			expected: "0x829df9bb801fc0494abf2f443423a49ffa32964554db71b098d332d87b70a48b",
-			expUint:  0,
+			expInt:   0,
 			expErr:   false,
 		},
 		{
@@ -250,7 +250,7 @@ func TestExtractBlockReference(t *testing.T) {
 				},
 			},
 			expected: "436",
-			expUint:  436,
+			expInt:   436,
 			expErr:   false,
 		},
 		{
@@ -264,7 +264,7 @@ func TestExtractBlockReference(t *testing.T) {
 				},
 			},
 			expected: "436",
-			expUint:  436,
+			expInt:   436,
 			expErr:   false,
 		},
 	}
@@ -278,7 +278,7 @@ func TestExtractBlockReference(t *testing.T) {
 				assert.NoError(t, err)
 			}
 			assert.Equal(t, tt.expected, result)
-			assert.Equal(t, tt.expUint, resultUint)
+			assert.Equal(t, tt.expInt, resultUint)
 		})
 	}
 }

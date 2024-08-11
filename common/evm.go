@@ -10,6 +10,6 @@ const (
 )
 
 type EvmBlockTracker interface {
-	LatestBlock() uint64
-	FinalizedBlock() uint64
+	LatestBlock() int64
+	FinalizedBlock() int64
 }

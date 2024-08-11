@@ -142,7 +142,7 @@ func (r *NormalizedRequest) MarshalZerologObject(e *zerolog.Event) {
 	e.Str("body", string(r.body))
 }
 
-func (r *NormalizedRequest) EvmBlockNumber() (uint64, error) {
+func (r *NormalizedRequest) EvmBlockNumber() (int64, error) {
 	rpcReq, err := r.JsonRpcRequest()
 	if err != nil {
 		return 0, err

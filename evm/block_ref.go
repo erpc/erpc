@@ -7,10 +7,9 @@ import (
 	"strings"
 
 	"github.com/erpc/erpc/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
 )
 
-func ExtractBlockReference(r *common.JsonRpcRequest) (string, uint64, error) {
+func ExtractBlockReference(r *common.JsonRpcRequest) (string, int64, error) {
 	if r == nil {
 		return "", 0, errors.New("cannot extract block reference when json-rpc request is nil")
 	}
@@ -25,11 +24,11 @@ func ExtractBlockReference(r *common.JsonRpcRequest) (string, uint64, error) {
 		if len(r.Params) > 0 {
 			if bns, ok := r.Params[0].(string); ok {
 				if strings.HasPrefix(bns, "0x") {
-					bni, err := hexutil.DecodeUint64(bns)
+					bni, err := common.HexToInt64(bns)
 					if err != nil {
 						return "", 0, err
 					}
-					return strconv.FormatUint(bni, 10), bni, nil
+					return strconv.FormatInt(bni, 10), bni, nil
 				} else {
 					return "", 0, nil
 				}
@@ -43,13 +42,13 @@ func ExtractBlockReference(r *common.JsonRpcRequest) (string, uint64, error) {
 			if logsFilter, ok := r.Params[0].(map[string]interface{}); ok {
 				if from, ok := logsFilter["fromBlock"].(string); ok {
 					if to, ok := logsFilter["toBlock"].(string); ok && strings.HasPrefix(to, "0x") {
-						toUint, err := hexutil.DecodeUint64(to)
+						toInt, err := common.HexToInt64(to)
 						if err != nil {
 							return "", 0, err
 						}
 						// Block ref is combo of from-to which makes sure cache key is unique for this range.
 						// Block number is the highest value to ensure non-finalized ranges are not cached.
-						return strings.ToLower(fmt.Sprintf("%s-%s", from, to)), toUint, nil
+						return strings.ToLower(fmt.Sprintf("%s-%s", from, to)), toInt, nil
 					}
 				}
 			}
@@ -66,11 +65,11 @@ func ExtractBlockReference(r *common.JsonRpcRequest) (string, uint64, error) {
 		if len(r.Params) > 1 {
 			if bns, ok := r.Params[1].(string); ok {
 				if strings.HasPrefix(bns, "0x") {
-					bni, err := hexutil.DecodeUint64(bns)
+					bni, err := common.HexToInt64(bns)
 					if err != nil {
 						return bns, 0, err
 					}
-					return strconv.FormatUint(bni, 10), bni, nil
+					return strconv.FormatInt(bni, 10), bni, nil
 				} else {
 					return "", 0, nil
 				}
@@ -95,11 +94,11 @@ func ExtractBlockReference(r *common.JsonRpcRequest) (string, uint64, error) {
 		if len(r.Params) > 2 {
 			if bns, ok := r.Params[2].(string); ok {
 				if strings.HasPrefix(bns, "0x") {
-					bni, err := hexutil.DecodeUint64(bns)
+					bni, err := common.HexToInt64(bns)
 					if err != nil {
 						return bns, 0, err
 					}
-					return strconv.FormatUint(bni, 10), bni, nil
+					return strconv.FormatInt(bni, 10), bni, nil
 				} else {
 					return "", 0, nil
 				}

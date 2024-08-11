@@ -11,7 +11,7 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
-var alchemyNetworkSubdomains = map[uint64]string{
+var alchemyNetworkSubdomains = map[int64]string{
 	// Ethereum
 	1:        "eth-mainnet",
 	5:        "eth-goerli",
@@ -101,7 +101,7 @@ func (c *AlchemyHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, erro
 		return false, nil
 	}
 
-	chainId, err := strconv.ParseUint(networkId[4:], 10, 64)
+	chainId, err := strconv.ParseInt(networkId[4:], 10, 64)
 	if err != nil {
 		return false, err
 	}

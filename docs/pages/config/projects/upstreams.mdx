@@ -7,7 +7,7 @@ An upstream is defined to handle 1 or more networks (a.k.a. chains). There are c
 - [`evm`](#evm-json-rpc) A generic EVM-compatible JSON-RPC endpoint. This is the default and most-used type.
 - [`alchemy`](#alchemy-json-rpc) A special upstream type that accepts Alchemy API-KEY and automatically adds all their EVM chains.
 - [`envio`](#envio-json-rpc) A special upstream type for Envio HyperRPC endpoint and automatically adds all chains by HyperRPC.
-- [`pimlico`](#pimlico-json-rpc) A special upstream type for Pimlico account-abstract (ERC-4337) support.
+- [`pimlico`](#pimlico-json-rpc) A special upstream type for Pimlico account-abstraction (ERC-4337) support.
 
 <Callout type='info'>
   eRPC supports any EVM-compatible JSON-RPC endpoint when using `evm` type. Specialized types like "evm+alchemy" are built for well-known providers to make it easier to import "all supported evm chains" with just an API-KEY.
@@ -143,7 +143,7 @@ projects:
 
 ### `pimlico` JSON-RPC
 
-[Pimlico](https://pimlico.io) adds account-abstract (ERC-4337) support to your eRPC instance. With this upstream added when a AA-related request arrives it'll be forwarded to Pimlico, which allows you to use the same RPC endpoint for both usual eth_* methods along with ERC-4337 methods.
+[Pimlico](https://pimlico.io) adds account-abstraction (ERC-4337) support to your eRPC instance. With this upstream added when a AA-related request arrives it'll be forwarded to Pimlico, which allows you to use the same RPC endpoint for both usual eth_* methods along with ERC-4337 methods.
 
 ```yaml filename="erpc.yaml"
 # ...

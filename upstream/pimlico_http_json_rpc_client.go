@@ -3,18 +3,20 @@ package upstream
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/erpc/erpc/common"
 )
 
-var pimlicoSupportedChains = map[uint64]struct{}{
+var pimlicoSupportedChains = map[int64]struct{}{
 	1:           {}, // ethereum
 	11155111:    {}, // sepolia
-	42161:       {}, // arbitrum
+	// 42161:       {}, // arbitrum
 	421614:      {}, // arbitrum-sepolia
 	137:         {}, // polygon
 	80002:       {}, // polygon-amoy
@@ -84,7 +86,7 @@ var pimlicoSupportedChains = map[uint64]struct{}{
 type PimlicoHttpJsonRpcClient struct {
 	upstream *Upstream
 	apiKey   string
-	clients  map[string]HttpJsonRpcClient
+	clients  map[int64]HttpJsonRpcClient
 	mu       sync.RWMutex
 }
 
@@ -101,7 +103,7 @@ func NewPimlicoHttpJsonRpcClient(pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcC
 	return &PimlicoHttpJsonRpcClient{
 		upstream: pu,
 		apiKey:   apiKey,
-		clients:  make(map[string]HttpJsonRpcClient),
+		clients:  make(map[int64]HttpJsonRpcClient),
 	}, nil
 }
 
@@ -114,7 +116,7 @@ func (c *PimlicoHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, erro
 		return false, nil
 	}
 
-	chainId, err := strconv.ParseUint(networkId[4:], 10, 64)
+	chainId, err := strconv.ParseInt(networkId[4:], 10, 64)
 	if err != nil {
 		return false, err
 	}
@@ -123,13 +125,54 @@ func (c *PimlicoHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, erro
 		return true, nil
 	}
 
-	return false, nil
+	// Check against endpoint to see if eth_chainId responds successfully
+	client, err := c.createClient(chainId)
+	if err != nil {
+		return false, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	rid := rand.Intn(1000000)
+	pr := NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, rid)))
+	resp, err := client.SendRequest(ctx, pr)
+	if err != nil {
+		return false, err
+	}
+
+	jrr, err := resp.JsonRpcResponse()
+	if err != nil {
+		return false, err
+	}
+
+	cidh, err := common.NormalizeHex(jrr.Result)
+	if err != nil {
+		return false, err
+	}
+
+	cid, err := common.HexToInt64(cidh)
+	if err != nil {
+		return false, err
+	}
+
+	return cid == chainId, nil
 }
 
 func (c *PimlicoHttpJsonRpcClient) getOrCreateClient(network common.Network) (HttpJsonRpcClient, error) {
-	networkID := network.Id()
+	if network.Architecture() != common.ArchitectureEvm {
+		return nil, fmt.Errorf("unsupported network architecture for Pimlico client: %s", network.Architecture())
+	}
+
+	chainID, err := network.EvmChainId()
+	if err != nil {
+		return nil, err
+	}
+
+	return c.createClient(chainID)
+}
+
+func (c *PimlicoHttpJsonRpcClient) createClient(chainID int64) (HttpJsonRpcClient, error) {
 	c.mu.RLock()
-	client, exists := c.clients[networkID]
+	client, exists := c.clients[chainID]
 	c.mu.RUnlock()
 
 	if exists {
@@ -140,17 +183,8 @@ func (c *PimlicoHttpJsonRpcClient) getOrCreateClient(network common.Network) (Ht
 	defer c.mu.Unlock()
 
 	// Double-check to ensure another goroutine hasn't created the client
-	if client, exists := c.clients[networkID]; exists {
+	if client, exists := c.clients[chainID]; exists {
 		return client, nil
-	}
-
-	if network.Architecture() != common.ArchitectureEvm {
-		return nil, fmt.Errorf("unsupported network architecture for Pimlico client: %s", network.Architecture())
-	}
-
-	chainID, err := network.EvmChainId()
-	if err != nil {
-		return nil, err
 	}
 
 	var pimlicoURL string
@@ -169,7 +203,7 @@ func (c *PimlicoHttpJsonRpcClient) getOrCreateClient(network common.Network) (Ht
 		return nil, err
 	}
 
-	c.clients[networkID] = client
+	c.clients[chainID] = client
 	return client, nil
 }
 

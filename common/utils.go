@@ -30,6 +30,11 @@ func HexToUint64(hexValue string) (uint64, error) {
 	return n.Uint64(), nil
 }
 
+func HexToInt64(hexValue string) (int64, error) {
+	hexValue = strings.TrimPrefix(hexValue, "0x")
+	return strconv.ParseInt(hexValue, 16, 64)
+}
+
 type ContextKey string
 
 func NormalizeHex(value interface{}) (string, error) {
