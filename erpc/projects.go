@@ -148,7 +148,7 @@ func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) 
 				return nil, e
 			}
 			nwCfg.Evm = &common.EvmNetworkConfig{
-				ChainId: c,
+				ChainId: int64(c),
 			}
 		}
 	}

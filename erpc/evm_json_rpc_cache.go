@@ -11,7 +11,6 @@ import (
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/evm"
 	"github.com/erpc/erpc/upstream"
-	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/rs/zerolog"
 )
 
@@ -142,7 +141,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *upstream.NormalizedReque
 		// Do not cache if we can't resolve a block reference (e.g. latest block requests)
 		lg.Debug().
 			Str("blockRef", blockRef).
-			Uint64("blockNumber", blockNumber).
+			Int64("blockNumber", blockNumber).
 			Msg("will not cache the response because it has no block reference or block number")
 		return nil
 	}
@@ -152,7 +151,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *upstream.NormalizedReque
 		lg.Debug().
 			Err(e).
 			Str("blockRef", blockRef).
-			Uint64("blockNumber", blockNumber).
+			Int64("blockNumber", blockNumber).
 			Interface("result", rpcResp.Result).
 			Msg("will not cache the response because block is not finalized")
 		return e
@@ -160,7 +159,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *upstream.NormalizedReque
 
 	lg.Debug().
 		Str("blockRef", blockRef).
-		Uint64("blockNumber", blockNumber).
+		Int64("blockNumber", blockNumber).
 		Interface("result", rpcResp.Result).
 		Msg("caching the response")
 
@@ -190,7 +189,7 @@ func (c *EvmJsonRpcCache) DeleteByGroupKey(ctx context.Context, groupKeys ...str
 	return nil
 }
 
-func (c *EvmJsonRpcCache) shouldCacheForBlock(blockNumber uint64) (bool, error) {
+func (c *EvmJsonRpcCache) shouldCacheForBlock(blockNumber int64) (bool, error) {
 	b, e := c.network.EvmIsBlockFinalized(blockNumber)
 	return b, e
 }
@@ -239,7 +238,7 @@ func populateDefaults(cfg *common.ConnectorConfig) error {
 	return nil
 }
 
-func extractBlockReferenceFromResponse(rpcReq *common.JsonRpcRequest, rpcResp *common.JsonRpcResponse) (string, uint64, error) {
+func extractBlockReferenceFromResponse(rpcReq *common.JsonRpcRequest, rpcResp *common.JsonRpcResponse) (string, int64, error) {
 	if rpcReq == nil {
 		return "", 0, errors.New("cannot extract block reference when json-rpc request is nil")
 	}
@@ -257,7 +256,7 @@ func extractBlockReferenceFromResponse(rpcReq *common.JsonRpcRequest, rpcResp *c
 					return blockHash, 0, nil
 				}
 				if blockNumber, ok := tx["blockNumber"].(string); ok && blockNumber != "" {
-					bn, err := hexutil.DecodeUint64(blockNumber)
+					bn, err := common.HexToInt64(blockNumber)
 					if err != nil {
 						return "", bn, err
 					}

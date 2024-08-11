@@ -15,6 +15,7 @@ const (
 	ClientTypeHttpJsonRpc        ClientType = "HttpJsonRpc"
 	ClientTypeAlchemyHttpJsonRpc ClientType = "AlchemyHttpJsonRpc"
 	ClientTypeEnvioHttpJsonRpc   ClientType = "EnvioHttpJsonRpc"
+	ClientTypePimlicoHttpJsonRpc ClientType = "PimlicoHttpJsonRpc"
 )
 
 // Define a shared interface for all types of Clients
@@ -83,6 +84,12 @@ func (manager *ClientRegistry) CreateClient(ups *Upstream) (ClientInterface, err
 				newClient, err = NewEnvioHttpJsonRpcClient(ups, parsedUrl)
 				if err != nil {
 					clientErr = fmt.Errorf("failed to create Envio client for upstream: %v", cfg.Id)
+				}
+
+			case common.UpstreamTypeEvmPimlico:
+				newClient, err = NewPimlicoHttpJsonRpcClient(ups, parsedUrl)
+				if err != nil {
+					clientErr = fmt.Errorf("failed to create Pimlico client for upstream: %v", cfg.Id)
 				}
 
 			default:

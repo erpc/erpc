@@ -179,8 +179,8 @@ type NetworkConfig struct {
 }
 
 type EvmNetworkConfig struct {
-	ChainId              int    `yaml:"chainId"`
-	FinalityDepth        uint64 `yaml:"finalityDepth"`
+	ChainId              int64  `yaml:"chainId"`
+	FinalityDepth        int64  `yaml:"finalityDepth"`
 	BlockTrackerInterval string `yaml:"blockTrackerInterval"`
 }
 

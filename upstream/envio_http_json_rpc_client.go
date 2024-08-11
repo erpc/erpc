@@ -11,7 +11,7 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
-var supportedChains = map[uint64]struct{}{
+var envioSupportedChains = map[uint64]struct{}{
 	42161:      {}, // Arbitrum
 	42170:      {}, // Arbitrum Nova
 	421614:     {}, // Arbitrum Sepolia
@@ -104,7 +104,7 @@ func (c *EnvioHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, error)
 		return false, err
 	}
 
-	if _, ok := supportedChains[chainId]; ok {
+	if _, ok := envioSupportedChains[chainId]; ok {
 		return true, nil
 	}
 
