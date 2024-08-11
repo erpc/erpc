@@ -5,8 +5,9 @@ import { Callout } from "nextra/components";
 An upstream is defined to handle 1 or more networks (a.k.a. chains). There are currently these types of upstreams:
 
 - [`evm`](#evm-json-rpc) A generic EVM-compatible JSON-RPC endpoint. This is the default and most-used type.
-- [`evm+alchemy`](#evmalchemy-json-rpc) A special upstream type that accepts Alchemy API-KEY and automatically adds all their EVM chains.
-- [`evm+envio`](#evmenvio-json-rpc) A special upstream type for Envio HyperRPC endpoint and automatically adds all chains by HyperRPC.
+- [`alchemy`](#alchemy-json-rpc) A special upstream type that accepts Alchemy API-KEY and automatically adds all their EVM chains.
+- [`envio`](#envio-json-rpc) A special upstream type for Envio HyperRPC endpoint and automatically adds all chains by HyperRPC.
+- [`pimlico`](#pimlico-json-rpc) A special upstream type for Pimlico account-abstraction (ERC-4337) support.
 
 <Callout type='info'>
   eRPC supports any EVM-compatible JSON-RPC endpoint when using `evm` type. Specialized types like "evm+alchemy" are built for well-known providers to make it easier to import "all supported evm chains" with just an API-KEY.
@@ -106,7 +107,7 @@ projects:
         # ...
 ```
 
-### `evm+alchemy` JSON-RPC
+### `alchemy` JSON-RPC
 
 This upstream type is built specially for [Alchemy](https://alchemy.com) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
 
@@ -117,11 +118,11 @@ projects:
     # ...
     upstreams:
       - id: my-alchemy
-        endpoint: evm+alchemy://YOUR_ALCHEMY_API_KEY
+        endpoint: alchemy://YOUR_ALCHEMY_API_KEY
         # ...
 ```
 
-### `evm+envio` JSON-RPC
+### `envio` JSON-RPC
 
 Envio [HyperRPC](https://docs.envio.dev/docs/HyperSync/hyperrpc-supported-networks) service provides a higher-performance alternative for certain read methods. When handling requests if a [method is supported by HyperRPC](https://docs.envio.dev/docs/HyperSync/overview-hyperrpc), then this upstream may be used.
 
@@ -132,13 +133,30 @@ projects:
     # ...
     upstreams:
       - id: envio-public
-        endpoint: evm+envio://rpc.hypersync.xyz
+        endpoint: envio://rpc.hypersync.xyz
         # ...
 ```
 
 <Callout type='info'>
   For indexing use-cases it is recommended to this upstream. This will automatically add all supported EVM chains by HyperRPC.
 </Callout>
+
+### `pimlico` JSON-RPC
+
+[Pimlico](https://pimlico.io) adds account-abstraction (ERC-4337) support to your eRPC instance. With this upstream added when a AA-related request arrives it'll be forwarded to Pimlico, which allows you to use the same RPC endpoint for both usual eth_* methods along with ERC-4337 methods.
+
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - id: pimlico-public
+        endpoint: pimlico://public
+        # Or provide your API-KEY as:
+        # endpoint: pimlico://xxxxxmy-api-key
+        # ...
+```
 
 #### Roadmap
 

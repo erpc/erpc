@@ -68,7 +68,10 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
 	req.SetNetwork(n)
 
-	method, _ := req.Method()
+	method, err := req.Method()
+	if err != nil {
+		return nil, err
+	}
 	lg := n.Logger.With().Str("method", method).Logger()
 
 	// 1) In-flight multiplexing
@@ -268,7 +271,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 	return resp, nil
 }
 
-func (n *Network) EvmIsBlockFinalized(blockNumber uint64) (bool, error) {
+func (n *Network) EvmIsBlockFinalized(blockNumber int64) (bool, error) {
 	if n.evmBlockTracker == nil {
 		return false, nil
 	}
@@ -277,17 +280,17 @@ func (n *Network) EvmIsBlockFinalized(blockNumber uint64) (bool, error) {
 	latestBlock := n.evmBlockTracker.LatestBlock()
 	if latestBlock == 0 && finalizedBlock == 0 {
 		n.Logger.Debug().
-			Uint64("finalizedBlock", finalizedBlock).
-			Uint64("latestBlock", latestBlock).
-			Uint64("blockNumber", blockNumber).
+			Int64("finalizedBlock", finalizedBlock).
+			Int64("latestBlock", latestBlock).
+			Int64("blockNumber", blockNumber).
 			Msgf("finalized/latest blocks are not available yet when checking block finality")
 		return false, nil
 	}
 
 	n.Logger.Debug().
-		Uint64("finalizedBlock", finalizedBlock).
-		Uint64("latestBlock", latestBlock).
-		Uint64("blockNumber", blockNumber).
+		Int64("finalizedBlock", finalizedBlock).
+		Int64("latestBlock", latestBlock).
+		Int64("blockNumber", blockNumber).
 		Msgf("calculating block finality")
 
 	if finalizedBlock > 0 {
@@ -298,18 +301,26 @@ func (n *Network) EvmIsBlockFinalized(blockNumber uint64) (bool, error) {
 		return false, nil
 	}
 
-	var fb uint64
+	var fb int64
 
 	if n.Config.Evm != nil {
-		fb = latestBlock - n.Config.Evm.FinalityDepth
+		if latestBlock > n.Config.Evm.FinalityDepth {
+			fb = latestBlock - n.Config.Evm.FinalityDepth
+		} else {
+			fb = 0
+		}
 	} else {
-		fb = latestBlock - 1024
+		if latestBlock > 1024 {
+			fb = latestBlock - 1024
+		} else {
+			fb = 0
+		}
 	}
 
 	n.Logger.Debug().
-		Uint64("inferredFinalizedBlock", fb).
-		Uint64("latestBlock", latestBlock).
-		Uint64("blockNumber", blockNumber).
+		Int64("inferredFinalizedBlock", fb).
+		Int64("latestBlock", latestBlock).
+		Int64("blockNumber", blockNumber).
 		Msgf("calculating block finality using inferred finalized block")
 
 	return blockNumber <= fb, nil
@@ -319,11 +330,11 @@ func (n *Network) EvmBlockTracker() common.EvmBlockTracker {
 	return n.evmBlockTracker
 }
 
-func (n *Network) EvmChainId() (uint64, error) {
+func (n *Network) EvmChainId() (int64, error) {
 	if n.Config == nil || n.Config.Evm == nil {
 		return 0, common.NewErrUnknownNetworkID(n.Architecture())
 	}
-	return uint64(n.Config.Evm.ChainId), nil
+	return n.Config.Evm.ChainId, nil
 }
 
 func (n *Network) processResponse(resp common.NormalizedResponse, skipped bool, err error) (common.NormalizedResponse, bool, error) {

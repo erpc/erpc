@@ -16,8 +16,8 @@ type EvmBlockTracker struct {
 	network *Network
 
 	mu                   sync.RWMutex
-	latestBlockNumber    uint64
-	finalizedBlockNumber uint64
+	latestBlockNumber    int64
+	finalizedBlockNumber int64
 
 	shutdownChan chan struct{}
 }
@@ -51,7 +51,7 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 		if err != nil {
 			e.network.Logger.Error().Err(err).Msg("failed to get latest block number in block tracker")
 		}
-		e.network.Logger.Debug().Uint64("blockNumber", lb).Msg("fetched latest block")
+		e.network.Logger.Debug().Int64("blockNumber", lb).Msg("fetched latest block")
 		if lb > 0 {
 			e.mu.Lock()
 			e.latestBlockNumber = lb
@@ -68,7 +68,7 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 					e.network.Logger.Error().Err(err).Msg("failed to get finalized block number in block tracker")
 				}
 			}
-			e.network.Logger.Debug().Uint64("blockNumber", fb).Msg("fetched finalized block")
+			e.network.Logger.Debug().Int64("blockNumber", fb).Msg("fetched finalized block")
 			if fb > 0 {
 				e.mu.Lock()
 				e.finalizedBlockNumber = fb
@@ -105,25 +105,27 @@ func (e *EvmBlockTracker) Bootstrap(ctx context.Context) error {
 	return nil
 }
 
-func (e *EvmBlockTracker) LatestBlock() uint64 {
-	return e.latestBlockNumber
+func (e *EvmBlockTracker) LatestBlock() int64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return int64(e.latestBlockNumber)
 }
 
-func (e *EvmBlockTracker) FinalizedBlock() uint64 {
+func (e *EvmBlockTracker) FinalizedBlock() int64 {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.finalizedBlockNumber
 }
 
-func (e *EvmBlockTracker) fetchLatestBlockNumber(ctx context.Context) (uint64, error) {
+func (e *EvmBlockTracker) fetchLatestBlockNumber(ctx context.Context) (int64, error) {
 	return e.fetchBlock(ctx, "latest")
 }
 
-func (e *EvmBlockTracker) fetchFinalizedBlockNumber(ctx context.Context) (uint64, error) {
+func (e *EvmBlockTracker) fetchFinalizedBlockNumber(ctx context.Context) (int64, error) {
 	return e.fetchBlock(ctx, "finalized")
 }
 
-func (e *EvmBlockTracker) fetchBlock(ctx context.Context, blockTag string) (uint64, error) {
+func (e *EvmBlockTracker) fetchBlock(ctx context.Context, blockTag string) (int64, error) {
 	randId := rand.Intn(10_000_000)
 	pr := upstream.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, randId, blockTag),
@@ -169,5 +171,5 @@ func (e *EvmBlockTracker) fetchBlock(ctx context.Context, blockTag string) (uint
 		}
 	}
 
-	return common.HexToUint64(numberStr)
+	return common.HexToInt64(numberStr)
 }

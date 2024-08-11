@@ -13,7 +13,7 @@ func TestExtractBlockReferenceFromResponse(t *testing.T) {
 		rpcReq   *common.JsonRpcRequest
 		rpcResp  *common.JsonRpcResponse
 		expected string
-		expUint  uint64
+		expInt   int64
 		expErr   bool
 	}{
 		{
@@ -27,7 +27,7 @@ func TestExtractBlockReferenceFromResponse(t *testing.T) {
 				},
 			},
 			expected: "436",
-			expUint:  436,
+			expInt:   436,
 			expErr:   false,
 		},
 		{
@@ -41,7 +41,7 @@ func TestExtractBlockReferenceFromResponse(t *testing.T) {
 				},
 			},
 			expected: "",
-			expUint:  0,
+			expInt:   0,
 			expErr:   true,
 		},
 		{
@@ -53,7 +53,7 @@ func TestExtractBlockReferenceFromResponse(t *testing.T) {
 				Result: map[string]interface{}{},
 			},
 			expected: "",
-			expUint:  0,
+			expInt:   0,
 			expErr:   false,
 		},
 		{
@@ -67,7 +67,7 @@ func TestExtractBlockReferenceFromResponse(t *testing.T) {
 				},
 			},
 			expected: "0xabc123",
-			expUint:  0,
+			expInt:   0,
 			expErr:   false,
 		},
 		{
@@ -81,7 +81,7 @@ func TestExtractBlockReferenceFromResponse(t *testing.T) {
 				},
 			},
 			expected: "436",
-			expUint:  436,
+			expInt:   436,
 			expErr:   false,
 		},
 		{
@@ -96,7 +96,7 @@ func TestExtractBlockReferenceFromResponse(t *testing.T) {
 				},
 			},
 			expected: "",
-			expUint:  0,
+			expInt:   0,
 			expErr:   false,
 		},
 		{
@@ -108,7 +108,7 @@ func TestExtractBlockReferenceFromResponse(t *testing.T) {
 				Result: nil,
 			},
 			expected: "nil",
-			expUint:  1,
+			expInt:   1,
 			expErr:   false,
 		},
 		{
@@ -120,7 +120,7 @@ func TestExtractBlockReferenceFromResponse(t *testing.T) {
 				Result: nil,
 			},
 			expected: "all",
-			expUint:  1,
+			expInt:   1,
 			expErr:   false,
 		},
 		{
@@ -132,7 +132,7 @@ func TestExtractBlockReferenceFromResponse(t *testing.T) {
 				Result: nil,
 			},
 			expected: "",
-			expUint:  0,
+			expInt:   0,
 			expErr:   false,
 		},
 		{
@@ -142,7 +142,7 @@ func TestExtractBlockReferenceFromResponse(t *testing.T) {
 				Result: nil,
 			},
 			expected: "",
-			expUint:  0,
+			expInt:   0,
 			expErr:   true,
 		},
 		{
@@ -152,7 +152,7 @@ func TestExtractBlockReferenceFromResponse(t *testing.T) {
 			},
 			rpcResp:  nil,
 			expected: "",
-			expUint:  0,
+			expInt:   0,
 			expErr:   true,
 		},
 	}
@@ -166,7 +166,7 @@ func TestExtractBlockReferenceFromResponse(t *testing.T) {
 				assert.NoError(t, err)
 			}
 			assert.Equal(t, tt.expected, result)
-			assert.Equal(t, tt.expUint, resultUint)
+			assert.Equal(t, tt.expInt, resultUint)
 		})
 	}
 }

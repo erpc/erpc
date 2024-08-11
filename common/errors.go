@@ -143,6 +143,24 @@ func (e BaseError) MarshalJSON() ([]byte, error) {
 	type Alias BaseError
 	cause := e.Cause
 	if cc, ok := cause.(StandardError); ok {
+		if je, ok := cc.(interface{ Errors() []error }); ok {
+			// Handle joined errors
+			causes := make([]interface{}, 0)
+			for _, err := range je.Errors() {
+				if se, ok := err.(StandardError); ok {
+					causes = append(causes, se)
+				} else {
+					causes = append(causes, err.Error())
+				}
+			}
+			return json.Marshal(&struct {
+				Alias
+				Cause []interface{} `json:"cause"`
+			}{
+				Alias: (Alias)(e),
+				Cause: causes,
+			})
+		}
 		return json.Marshal(&struct {
 			Alias
 			Cause interface{} `json:"cause"`
@@ -493,7 +511,7 @@ var NewErrUpstreamsExhausted = func(req NormalizedRequest, ers []error, duration
 	var reqStr string
 	s, err := json.Marshal(req)
 	if err != nil {
-		reqStr = fmt.Sprintf("%v", req)
+		reqStr = string(req.Body())
 	} else if s != nil {
 		reqStr = string(s)
 	}

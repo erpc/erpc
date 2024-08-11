@@ -14,6 +14,7 @@ func NewVendorsRegistry() *VendorsRegistry {
 	r.Register(CreateDrpcVendor())
 	r.Register(CreateEnvioVendor())
 	r.Register(CreateInfuraVendor())
+	r.Register(CreatePimlicoVendor())
 	r.Register(CreateQuicknodeVendor())
 	r.Register(CreateLlamaVendor())
 
