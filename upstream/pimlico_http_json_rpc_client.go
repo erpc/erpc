@@ -16,7 +16,7 @@ import (
 var pimlicoSupportedChains = map[int64]struct{}{
 	1:           {}, // ethereum
 	11155111:    {}, // sepolia
-	// 42161:       {}, // arbitrum
+	42161:       {}, // arbitrum
 	421614:      {}, // arbitrum-sepolia
 	137:         {}, // polygon
 	80002:       {}, // polygon-amoy

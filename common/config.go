@@ -103,6 +103,7 @@ type UpstreamConfig struct {
 	AutoIgnoreUnsupportedMethods bool                   `yaml:"autoIgnoreUnsupportedMethods"`
 	Failsafe                     *FailsafeConfig        `yaml:"failsafe"`
 	RateLimitBudget              string                 `yaml:"rateLimitBudget"`
+	RateLimitAutoTune            bool                   `yaml:"rateLimitAutoTune"`
 }
 
 type JsonRpcUpstreamConfig struct {

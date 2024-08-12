@@ -140,11 +140,6 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, component string, cfg *c
 			return true
 		}
 
-		// remote vendor capacity exceeded -> open the circuit
-		if common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded) {
-			return true
-		}
-
 		// remote vendor billing issue -> open the circuit
 		if common.HasErrorCode(err, common.ErrCodeEndpointBillingIssue) {
 			return true
