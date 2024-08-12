@@ -163,9 +163,12 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		inf.Close(nil, err)
 		return nil, err
 	}
+	
 	var execution failsafe.Execution[common.NormalizedResponse]
 	var errorsByUpstream = []error{}
 	var errorsMutex sync.Mutex
+	imtx := sync.Mutex{}
+	i := 0
 	resp, execErr := n.failsafeExecutor.
 		WithContext(ctx).
 		GetWithExecution(func(exec failsafe.Execution[common.NormalizedResponse]) (common.NormalizedResponse, error) {
@@ -176,8 +179,6 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 			// across different executions of the failsafe we pick up next upstream vs retrying the same upstream.
 			// This mimicks a round-robin behavior, for example when doing hedge or retries.
 			// Upstream-level retry is handled by the upstream itself (and its own failsafe policies).
-			imtx := sync.Mutex{}
-			i := 0
 			ln := len(upsList)
 			for count := 0; count < ln; count++ {
 				imtx.Lock()
