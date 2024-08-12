@@ -30,7 +30,7 @@ type Upstream struct {
 	failsafePolicies     []failsafe.Policy[common.NormalizedResponse]
 	failsafeExecutor     failsafe.Executor[common.NormalizedResponse]
 	rateLimitersRegistry *RateLimitersRegistry
-	adaptiveRateLimiter  *RateLimitAutoTuner
+	rateLimiterAutoTuner  *RateLimitAutoTuner
 
 	methodCheckResults    map[string]bool
 	methodCheckResultsMu  sync.RWMutex
@@ -403,17 +403,25 @@ func (u *Upstream) IgnoreMethod(method string) {
 
 // Add this method to the Upstream struct
 func (u *Upstream) initRateLimitAutoTuner() {
-	if u.config.RateLimitBudget != "" && u.config.RateLimitAutoTune {
-		budget, err := u.rateLimitersRegistry.GetBudget(u.config.RateLimitBudget)
-		if err == nil {
-			u.adaptiveRateLimiter = NewRateLimitAutoTuner(budget, 1*time.Minute, 0, 10_000)
+	if u.config.RateLimitBudget != "" && u.config.RateLimitAutoTune != nil {
+		cfg := u.config.RateLimitAutoTune
+		if cfg.Enabled {
+			budget, err := u.rateLimitersRegistry.GetBudget(u.config.RateLimitBudget)
+			if err == nil {
+				dur, err := time.ParseDuration(cfg.AdjustmentPeriod)
+				if err != nil {
+					u.Logger.Error().Err(err).Msgf("failed to parse rate limit auto-tune adjustment period: %s", cfg.AdjustmentPeriod)
+					return
+				}
+				u.rateLimiterAutoTuner = NewRateLimitAutoTuner(budget, dur, cfg.MinBudget, cfg.MaxBudget)
+			}
 		}
 	}
 }
 
 func (u *Upstream) recordRequestSuccess(method string) {
-	if u.adaptiveRateLimiter != nil {
-		u.adaptiveRateLimiter.RecordSuccess(method)
+	if u.rateLimiterAutoTuner != nil {
+		u.rateLimiterAutoTuner.RecordSuccess(method)
 	}
 }
 
@@ -424,8 +432,8 @@ func (u *Upstream) recordRemoteRateLimit(netId, method string) {
 		method,
 	)
 
-	if u.adaptiveRateLimiter != nil {
-		u.adaptiveRateLimiter.RecordError(method)
+	if u.rateLimiterAutoTuner != nil {
+		u.rateLimiterAutoTuner.RecordError(method)
 	}
 }
 

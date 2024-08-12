@@ -163,7 +163,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		inf.Close(nil, err)
 		return nil, err
 	}
-	
+
 	var execution failsafe.Execution[common.NormalizedResponse]
 	var errorsByUpstream = []error{}
 	var errorsMutex sync.Mutex
