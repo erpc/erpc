@@ -107,10 +107,13 @@ type UpstreamConfig struct {
 }
 
 type RateLimitAutoTuneConfig struct {
-	Enabled          bool   `yaml:"enabled"`
-	AdjustmentPeriod string `yaml:"adjustmentPeriod"`
-	MinBudget        int    `yaml:"minBudget"`
-	MaxBudget        int    `yaml:"maxBudget"`
+	Enabled            bool    `yaml:"enabled"`
+	AdjustmentPeriod   string  `yaml:"adjustmentPeriod"`
+	ErrorRateThreshold float64 `yaml:"errorRateThreshold"`
+	IncreaseFactor     float64 `yaml:"increaseFactor"`
+	DecreaseFactor     float64 `yaml:"decreaseFactor"`
+	MinBudget          int     `yaml:"minBudget"`
+	MaxBudget          int     `yaml:"maxBudget"`
 }
 
 type JsonRpcUpstreamConfig struct {
@@ -361,10 +364,13 @@ func (s *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 		},
 		AutoIgnoreUnsupportedMethods: true,
 		RateLimitAutoTune: &RateLimitAutoTuneConfig{
-			Enabled:          true,
-			AdjustmentPeriod: "1m",
-			MinBudget:        0,
-			MaxBudget:        10_000,
+			Enabled:            true,
+			AdjustmentPeriod:   "1m",
+			ErrorRateThreshold: 0.1,
+			IncreaseFactor:     1.05,
+			DecreaseFactor:     0.9,
+			MinBudget:          0,
+			MaxBudget:          10_000,
 		},
 	}
 	if err := unmarshal(&raw); err != nil {

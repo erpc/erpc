@@ -30,7 +30,7 @@ type Upstream struct {
 	failsafePolicies     []failsafe.Policy[common.NormalizedResponse]
 	failsafeExecutor     failsafe.Executor[common.NormalizedResponse]
 	rateLimitersRegistry *RateLimitersRegistry
-	rateLimiterAutoTuner  *RateLimitAutoTuner
+	rateLimiterAutoTuner *RateLimitAutoTuner
 
 	methodCheckResults    map[string]bool
 	methodCheckResultsMu  sync.RWMutex
@@ -413,7 +413,15 @@ func (u *Upstream) initRateLimitAutoTuner() {
 					u.Logger.Error().Err(err).Msgf("failed to parse rate limit auto-tune adjustment period: %s", cfg.AdjustmentPeriod)
 					return
 				}
-				u.rateLimiterAutoTuner = NewRateLimitAutoTuner(budget, dur, cfg.MinBudget, cfg.MaxBudget)
+				u.rateLimiterAutoTuner = NewRateLimitAutoTuner(
+					budget,
+					dur,
+					cfg.ErrorRateThreshold,
+					cfg.IncreaseFactor,
+					cfg.DecreaseFactor,
+					cfg.MinBudget,
+					cfg.MaxBudget,
+				)
 			}
 		}
 	}

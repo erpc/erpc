@@ -7,13 +7,16 @@ import (
 )
 
 type RateLimitAutoTuner struct {
-	budget           *RateLimiterBudget
-	errorCounts      map[string]*ErrorCounter
-	lastAdjustments  map[string]time.Time
-	adjustmentPeriod time.Duration
-	minBudget        int
-	maxBudget        int
-	mu               sync.RWMutex
+	budget             *RateLimiterBudget
+	errorCounts        map[string]*ErrorCounter
+	lastAdjustments    map[string]time.Time
+	adjustmentPeriod   time.Duration
+	errorRateThreshold float64
+	increaseFactor     float64
+	decreaseFactor     float64
+	minBudget          int
+	maxBudget          int
+	mu                 sync.RWMutex
 }
 
 type ErrorCounter struct {
@@ -22,14 +25,25 @@ type ErrorCounter struct {
 	lastSeen   time.Time
 }
 
-func NewRateLimitAutoTuner(budget *RateLimiterBudget, adjustmentPeriod time.Duration, minBudget, maxBudget int) *RateLimitAutoTuner {
+func NewRateLimitAutoTuner(
+	budget *RateLimiterBudget,
+	adjustmentPeriod time.Duration,
+	errorRateThreshold,
+	increaseFactor,
+	decreaseFactor float64,
+	minBudget,
+	maxBudget int,
+) *RateLimitAutoTuner {
 	return &RateLimitAutoTuner{
-		budget:           budget,
-		errorCounts:      make(map[string]*ErrorCounter),
-		lastAdjustments:  make(map[string]time.Time),
-		adjustmentPeriod: adjustmentPeriod,
-		minBudget:        minBudget,
-		maxBudget:        maxBudget,
+		budget:             budget,
+		errorCounts:        make(map[string]*ErrorCounter),
+		lastAdjustments:    make(map[string]time.Time),
+		adjustmentPeriod:   adjustmentPeriod,
+		errorRateThreshold: errorRateThreshold,
+		increaseFactor:     increaseFactor,
+		decreaseFactor:     decreaseFactor,
+		minBudget:          minBudget,
+		maxBudget:          maxBudget,
 	}
 }
 
@@ -75,10 +89,10 @@ func (arl *RateLimitAutoTuner) adjustBudget(method string) {
 			errorRate := float64(erc) / float64(ttc)
 
 			var newMaxCount int
-			if errorRate > 0.1 {
-				newMaxCount = int(math.Ceil(float64(currentMax) * 0.9))
+			if errorRate > arl.errorRateThreshold {
+				newMaxCount = int(math.Ceil(float64(currentMax) * arl.decreaseFactor))
 			} else if errorRate == 0 {
-				newMaxCount = int(math.Ceil(float64(currentMax) * 1.05))
+				newMaxCount = int(math.Ceil(float64(currentMax) * arl.increaseFactor))
 			} else {
 				continue
 			}
