@@ -56,6 +56,23 @@ projects:
         # to ensure you're not hitting them more than your account allows.
         rateLimitBudget: global-blast
 
+        # Rate limit budget can be automatically adjusted based on the "rate-limited" error rate,
+        # received from upstream. Auto-tuning is enabled by default with values below.
+        # This is useful to automatically increase the budget if an upstream is capable of handling more requests,
+        # and decrease the budget if upstream is degraded.
+        # Every "adjustmentPeriod" total number of requests vs rate-limited will be calculated,
+        # if the value (0 to 1) is above "errorRateThreshold" then budget will be decreased by "decreaseFactor",
+        # if the value is below "errorRateThreshold" then budget will be increased by "increaseFactor".
+        # Note that the new budget will be applied to any upstream using this budget (e.g. Quicknode budget decreases).
+        rateLimitAutoTune:
+          enabled: true
+          adjustmentPeriod: 1m
+          errorRateThreshold: 0.1
+          increaseFactor: 1.05
+          decreaseFactor: 0.9
+          minBudget: 0
+          maxBudget: 10_000
+
         # chainId is optional and will be detected from the endpoint (eth_chainId),
         # but it is recommended to set it explicitly, for faster initialization.
         evm:
