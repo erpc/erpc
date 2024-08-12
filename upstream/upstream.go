@@ -27,7 +27,6 @@ type Upstream struct {
 	vendor common.Vendor
 
 	metricsTracker       *health.Tracker
-	failsafeMu           *sync.RWMutex
 	failsafePolicies     []failsafe.Policy[common.NormalizedResponse]
 	failsafeExecutor     failsafe.Executor[common.NormalizedResponse]
 	rateLimitersRegistry *RateLimitersRegistry
@@ -64,7 +63,6 @@ func NewUpstream(
 		config:               cfg,
 		vendor:               vn,
 		metricsTracker:       mt,
-		failsafeMu:           &sync.RWMutex{},
 		failsafePolicies:     policies,
 		failsafeExecutor:     failsafe.NewExecutor[common.NormalizedResponse](policies...),
 		rateLimitersRegistry: rlr,
@@ -309,9 +307,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 
 		if u.failsafePolicies != nil && len(u.failsafePolicies) > 0 {
 			var execution failsafe.Execution[common.NormalizedResponse]
-			u.failsafeMu.RLock()
 			executor := u.failsafeExecutor
-			u.failsafeMu.RUnlock()
 			resp, execErr := executor.
 				WithContext(ctx).
 				GetWithExecution(func(exec failsafe.Execution[common.NormalizedResponse]) (common.NormalizedResponse, error) {
@@ -341,8 +337,6 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 }
 
 func (u *Upstream) Executor() failsafe.Executor[common.NormalizedResponse] {
-	u.failsafeMu.RLock()
-	defer u.failsafeMu.RUnlock()
 	return u.failsafeExecutor
 }
 
