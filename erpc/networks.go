@@ -158,16 +158,17 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		return resp, skipped, err
 	}
 
-	imtx := sync.Mutex{}
-	i := 0
 	upsList, err := n.upstreamsRegistry.GetSortedUpstreams(n.NetworkId, method)
 	if err != nil {
 		inf.Close(nil, err)
 		return nil, err
 	}
+
 	var execution failsafe.Execution[common.NormalizedResponse]
 	var errorsByUpstream = []error{}
 	var errorsMutex sync.Mutex
+	imtx := sync.Mutex{}
+	i := 0
 	resp, execErr := n.failsafeExecutor.
 		WithContext(ctx).
 		GetWithExecution(func(exec failsafe.Execution[common.NormalizedResponse]) (common.NormalizedResponse, error) {

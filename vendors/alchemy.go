@@ -59,6 +59,16 @@ func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr int
 					details,
 				),
 			)
+		} else if strings.Contains(msg, "Monthly capacity limit exceeded") {
+			return common.NewErrEndpointBillingIssue(
+				common.NewErrJsonRpcExceptionInternal(
+					code,
+					common.JsonRpcErrorCapacityExceeded,
+					msg,
+					nil,
+					details,
+				),
+			)
 		} else if strings.Contains(msg, "limit exceeded") {
 			return common.NewErrEndpointCapacityExceeded(
 				common.NewErrJsonRpcExceptionInternal(
