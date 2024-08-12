@@ -92,18 +92,25 @@ type CORSConfig struct {
 }
 
 type UpstreamConfig struct {
-	Id                           string                 `yaml:"id"`
-	Type                         UpstreamType           `yaml:"type"` // evm, evm+alchemy, solana
-	VendorName                   string                 `yaml:"vendorName"`
-	Endpoint                     string                 `yaml:"endpoint"`
-	Evm                          *EvmUpstreamConfig     `yaml:"evm"`
-	JsonRpc                      *JsonRpcUpstreamConfig `yaml:"jsonRpc"`
-	IgnoreMethods                []string               `yaml:"ignoreMethods"`
-	AllowMethods                 []string               `yaml:"allowMethods"`
-	AutoIgnoreUnsupportedMethods bool                   `yaml:"autoIgnoreUnsupportedMethods"`
-	Failsafe                     *FailsafeConfig        `yaml:"failsafe"`
-	RateLimitBudget              string                 `yaml:"rateLimitBudget"`
-	RateLimitAutoTune            bool                   `yaml:"rateLimitAutoTune"`
+	Id                           string                   `yaml:"id"`
+	Type                         UpstreamType             `yaml:"type"` // evm, evm+alchemy, solana
+	VendorName                   string                   `yaml:"vendorName"`
+	Endpoint                     string                   `yaml:"endpoint"`
+	Evm                          *EvmUpstreamConfig       `yaml:"evm"`
+	JsonRpc                      *JsonRpcUpstreamConfig   `yaml:"jsonRpc"`
+	IgnoreMethods                []string                 `yaml:"ignoreMethods"`
+	AllowMethods                 []string                 `yaml:"allowMethods"`
+	AutoIgnoreUnsupportedMethods bool                     `yaml:"autoIgnoreUnsupportedMethods"`
+	Failsafe                     *FailsafeConfig          `yaml:"failsafe"`
+	RateLimitBudget              string                   `yaml:"rateLimitBudget"`
+	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune"`
+}
+
+type RateLimitAutoTuneConfig struct {
+	Enabled          bool   `yaml:"enabled"`
+	AdjustmentPeriod string `yaml:"adjustmentPeriod"`
+	MinBudget        int    `yaml:"minBudget"`
+	MaxBudget        int    `yaml:"maxBudget"`
 }
 
 type JsonRpcUpstreamConfig struct {
@@ -353,6 +360,12 @@ func (s *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 			},
 		},
 		AutoIgnoreUnsupportedMethods: true,
+		RateLimitAutoTune: &RateLimitAutoTuneConfig{
+			Enabled:          true,
+			AdjustmentPeriod: "1m",
+			MinBudget:        0,
+			MaxBudget:        10_000,
+		},
 	}
 	if err := unmarshal(&raw); err != nil {
 		return err
