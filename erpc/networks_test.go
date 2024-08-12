@@ -1191,7 +1191,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 	})
 
-	t.Run("ForwardMustNotRetryCapacityIssues", func(t *testing.T) {
+	t.Run("ForwardMustNotRetryBillingIssues", func(t *testing.T) {
 		defer gock.Off()
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
@@ -1298,8 +1298,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if strings.Contains(err.Error(), "ErrFailsafeRetryExceeded") {
 			t.Errorf("Did not expect ErrFailsafeRetryExceeded, got %v", err)
 		}
-		if !strings.Contains(err.Error(), "ErrEndpointCapacityExceeded") {
-			t.Errorf("Expected ErrEndpointCapacityExceeded, got %v", err)
+		if !strings.Contains(err.Error(), "ErrEndpointBillingIssue") {
+			t.Errorf("Expected ErrEndpointBillingIssue, got %v", err)
 		}
 	})
 
