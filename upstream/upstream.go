@@ -194,12 +194,12 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 	lg := u.Logger.With().Str("method", method).Logger()
 
 	if limitersBudget != nil {
-		lg.Trace().Msgf("checking upstream-level rate limiters budget: %s", cfg.RateLimitBudget)
+		lg.Trace().Str("budget", cfg.RateLimitBudget).Msgf("checking upstream-level rate limiters budget")
 		rules := limitersBudget.GetRulesByMethod(method)
 		if len(rules) > 0 {
 			for _, rule := range rules {
 				if !rule.Limiter.TryAcquirePermit() {
-					lg.Warn().Msgf("upstream-level rate limit '%v' exceeded", rule.Config)
+					lg.Warn().Str("budget", cfg.RateLimitBudget).Msgf("upstream-level rate limit '%v' exceeded", rule.Config)
 					netId := "n/a"
 					if req.Network() != nil {
 						netId = req.Network().Id()
@@ -215,7 +215,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 						fmt.Sprintf("%+v", rule.Config),
 					)
 				} else {
-					lg.Debug().Object("rule", rule.Config).Msgf("upstream-level rate limit passed")
+					lg.Trace().Str("budget", cfg.RateLimitBudget).Object("rule", rule.Config).Msgf("upstream-level rate limit passed")
 				}
 			}
 		}
