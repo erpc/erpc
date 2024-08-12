@@ -27,9 +27,11 @@ type Upstream struct {
 	vendor common.Vendor
 
 	metricsTracker       *health.Tracker
+	failsafeMu           *sync.RWMutex
 	failsafePolicies     []failsafe.Policy[common.NormalizedResponse]
 	failsafeExecutor     failsafe.Executor[common.NormalizedResponse]
 	rateLimitersRegistry *RateLimitersRegistry
+	adaptiveRateLimiter  *RateLimitAutoTuner
 
 	methodCheckResults    map[string]bool
 	methodCheckResultsMu  sync.RWMutex
@@ -62,12 +64,15 @@ func NewUpstream(
 		config:               cfg,
 		vendor:               vn,
 		metricsTracker:       mt,
+		failsafeMu:           &sync.RWMutex{},
 		failsafePolicies:     policies,
 		failsafeExecutor:     failsafe.NewExecutor[common.NormalizedResponse](policies...),
 		rateLimitersRegistry: rlr,
 		methodCheckResults:   map[string]bool{},
 		supportedNetworkIds:  map[string]bool{},
 	}
+
+	pup.initRateLimitAutoTuner()
 
 	if vn != nil {
 		err = vn.OverrideConfig(cfg)
@@ -276,11 +281,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 			if errCall != nil {
 				if !errors.Is(errCall, context.DeadlineExceeded) && !errors.Is(errCall, context.Canceled) {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
-						u.metricsTracker.RecordUpstreamRemoteRateLimited(
-							cfg.Id,
-							netId,
-							method,
-						)
+						u.recordRemoteRateLimit(netId, method)
 					} else if common.HasErrorCode(errCall, common.ErrCodeUpstreamRequestSkipped) {
 						health.MetricUpstreamSkippedTotal.WithLabelValues(u.ProjectId, cfg.Id, netId, method).Inc()
 					} else if common.HasErrorCode(errCall, common.ErrCodeEndpointMissingData) {
@@ -301,12 +302,17 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 				)
 			}
 
+			u.recordRequestSuccess(method)
+
 			return resp, nil
 		}
 
 		if u.failsafePolicies != nil && len(u.failsafePolicies) > 0 {
 			var execution failsafe.Execution[common.NormalizedResponse]
-			resp, execErr := u.failsafeExecutor.
+			u.failsafeMu.RLock()
+			executor := u.failsafeExecutor
+			u.failsafeMu.RUnlock()
+			resp, execErr := executor.
 				WithContext(ctx).
 				GetWithExecution(func(exec failsafe.Execution[common.NormalizedResponse]) (common.NormalizedResponse, error) {
 					execution = exec
@@ -335,6 +341,8 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 }
 
 func (u *Upstream) Executor() failsafe.Executor[common.NormalizedResponse] {
+	u.failsafeMu.RLock()
+	defer u.failsafeMu.RUnlock()
 	return u.failsafeExecutor
 }
 
@@ -397,6 +405,34 @@ func (u *Upstream) IgnoreMethod(method string) {
 	}
 	delete(u.methodCheckResults, method)
 	u.methodCheckResultsMu.Unlock()
+}
+
+// Add this method to the Upstream struct
+func (u *Upstream) initRateLimitAutoTuner() {
+	if u.config.RateLimitBudget != "" && u.config.RateLimitAutoTune {
+		budget, err := u.rateLimitersRegistry.GetBudget(u.config.RateLimitBudget)
+		if err == nil {
+			u.adaptiveRateLimiter = NewRateLimitAutoTuner(budget, 1*time.Minute, 0, 10_000)
+		}
+	}
+}
+
+func (u *Upstream) recordRequestSuccess(method string) {
+	if u.adaptiveRateLimiter != nil {
+		u.adaptiveRateLimiter.RecordSuccess(method)
+	}
+}
+
+func (u *Upstream) recordRemoteRateLimit(netId, method string) {
+	u.metricsTracker.RecordUpstreamRemoteRateLimited(
+		u.config.Id,
+		netId,
+		method,
+	)
+
+	if u.adaptiveRateLimiter != nil {
+		u.adaptiveRateLimiter.RecordError(method)
+	}
 }
 
 func (u *Upstream) shouldHandleMethod(method string) (v bool) {
