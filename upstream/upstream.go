@@ -30,6 +30,7 @@ type Upstream struct {
 	failsafePolicies     []failsafe.Policy[common.NormalizedResponse]
 	failsafeExecutor     failsafe.Executor[common.NormalizedResponse]
 	rateLimitersRegistry *RateLimitersRegistry
+	rateLimiterAutoTuner *RateLimitAutoTuner
 
 	methodCheckResults    map[string]bool
 	methodCheckResultsMu  sync.RWMutex
@@ -68,6 +69,8 @@ func NewUpstream(
 		methodCheckResults:   map[string]bool{},
 		supportedNetworkIds:  map[string]bool{},
 	}
+
+	pup.initRateLimitAutoTuner()
 
 	if vn != nil {
 		err = vn.OverrideConfig(cfg)
@@ -191,12 +194,12 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 	lg := u.Logger.With().Str("method", method).Logger()
 
 	if limitersBudget != nil {
-		lg.Trace().Msgf("checking upstream-level rate limiters budget: %s", cfg.RateLimitBudget)
+		lg.Trace().Str("budget", cfg.RateLimitBudget).Msgf("checking upstream-level rate limiters budget")
 		rules := limitersBudget.GetRulesByMethod(method)
 		if len(rules) > 0 {
 			for _, rule := range rules {
 				if !rule.Limiter.TryAcquirePermit() {
-					lg.Warn().Msgf("upstream-level rate limit '%v' exceeded", rule.Config)
+					lg.Warn().Str("budget", cfg.RateLimitBudget).Msgf("upstream-level rate limit '%v' exceeded", rule.Config)
 					netId := "n/a"
 					if req.Network() != nil {
 						netId = req.Network().Id()
@@ -212,7 +215,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 						fmt.Sprintf("%+v", rule.Config),
 					)
 				} else {
-					lg.Debug().Object("rule", rule.Config).Msgf("upstream-level rate limit passed")
+					lg.Trace().Str("budget", cfg.RateLimitBudget).Object("rule", rule.Config).Msgf("upstream-level rate limit passed")
 				}
 			}
 		}
@@ -276,11 +279,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 			if errCall != nil {
 				if !errors.Is(errCall, context.DeadlineExceeded) && !errors.Is(errCall, context.Canceled) {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
-						u.metricsTracker.RecordUpstreamRemoteRateLimited(
-							cfg.Id,
-							netId,
-							method,
-						)
+						u.recordRemoteRateLimit(netId, method)
 					} else if common.HasErrorCode(errCall, common.ErrCodeUpstreamRequestSkipped) {
 						health.MetricUpstreamSkippedTotal.WithLabelValues(u.ProjectId, cfg.Id, netId, method).Inc()
 					} else if common.HasErrorCode(errCall, common.ErrCodeEndpointMissingData) {
@@ -301,12 +300,15 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 				)
 			}
 
+			u.recordRequestSuccess(method)
+
 			return resp, nil
 		}
 
 		if u.failsafePolicies != nil && len(u.failsafePolicies) > 0 {
 			var execution failsafe.Execution[common.NormalizedResponse]
-			resp, execErr := u.failsafeExecutor.
+			executor := u.failsafeExecutor
+			resp, execErr := executor.
 				WithContext(ctx).
 				GetWithExecution(func(exec failsafe.Execution[common.NormalizedResponse]) (common.NormalizedResponse, error) {
 					execution = exec
@@ -397,6 +399,50 @@ func (u *Upstream) IgnoreMethod(method string) {
 	}
 	delete(u.methodCheckResults, method)
 	u.methodCheckResultsMu.Unlock()
+}
+
+// Add this method to the Upstream struct
+func (u *Upstream) initRateLimitAutoTuner() {
+	if u.config.RateLimitBudget != "" && u.config.RateLimitAutoTune != nil {
+		cfg := u.config.RateLimitAutoTune
+		if cfg.Enabled {
+			budget, err := u.rateLimitersRegistry.GetBudget(u.config.RateLimitBudget)
+			if err == nil {
+				dur, err := time.ParseDuration(cfg.AdjustmentPeriod)
+				if err != nil {
+					u.Logger.Error().Err(err).Msgf("failed to parse rate limit auto-tune adjustment period: %s", cfg.AdjustmentPeriod)
+					return
+				}
+				u.rateLimiterAutoTuner = NewRateLimitAutoTuner(
+					budget,
+					dur,
+					cfg.ErrorRateThreshold,
+					cfg.IncreaseFactor,
+					cfg.DecreaseFactor,
+					cfg.MinBudget,
+					cfg.MaxBudget,
+				)
+			}
+		}
+	}
+}
+
+func (u *Upstream) recordRequestSuccess(method string) {
+	if u.rateLimiterAutoTuner != nil {
+		u.rateLimiterAutoTuner.RecordSuccess(method)
+	}
+}
+
+func (u *Upstream) recordRemoteRateLimit(netId, method string) {
+	u.metricsTracker.RecordUpstreamRemoteRateLimited(
+		u.config.Id,
+		netId,
+		method,
+	)
+
+	if u.rateLimiterAutoTuner != nil {
+		u.rateLimiterAutoTuner.RecordError(method)
+	}
 }
 
 func (u *Upstream) shouldHandleMethod(method string) (v bool) {

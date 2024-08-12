@@ -17,18 +17,6 @@ type RateLimitersRegistry struct {
 	budgetsLimiters sync.Map
 }
 
-type RateLimiterBudget struct {
-	Id       string
-	Rules    []*RateLimitRule
-	registry *RateLimitersRegistry
-	rulesMu  sync.RWMutex
-}
-
-type RateLimitRule struct {
-	Config  *common.RateLimitRuleConfig
-	Limiter ratelimiter.RateLimiter[interface{}]
-}
-
 func NewRateLimitersRegistry(cfg *common.RateLimiterConfig, logger *zerolog.Logger) (*RateLimitersRegistry, error) {
 	r := &RateLimitersRegistry{
 		cfg:    cfg,
@@ -45,11 +33,13 @@ func (r *RateLimitersRegistry) bootstrap() error {
 	}
 
 	for _, budgetCfg := range r.cfg.Budgets {
-		r.logger.Debug().Msgf("initializing rate limiter budget: %s", budgetCfg.Id)
+		lg := r.logger.With().Str("budget", budgetCfg.Id).Logger()
+		lg.Debug().Msgf("initializing rate limiter budget")
 		budget := &RateLimiterBudget{
 			Id:       budgetCfg.Id,
 			Rules:    make([]*RateLimitRule, 0),
 			registry: r,
+			logger:   &lg,
 		}
 
 		for _, rule := range budgetCfg.Rules {
@@ -104,26 +94,9 @@ func (r *RateLimitersRegistry) GetBudget(budgetId string) (*RateLimiterBudget, e
 		return nil, nil
 	}
 
-	r.logger.Debug().Msgf("getting rate limiter budget: %s", budgetId)
-
 	if budget, ok := r.budgetsLimiters.Load(budgetId); ok {
 		return budget.(*RateLimiterBudget), nil
 	}
 
 	return nil, common.NewErrRateLimitBudgetNotFound(budgetId)
-}
-
-func (b *RateLimiterBudget) GetRulesByMethod(method string) []*RateLimitRule {
-	b.rulesMu.RLock()
-	defer b.rulesMu.RUnlock()
-
-	rules := make([]*RateLimitRule, 0)
-
-	for _, rule := range b.Rules {
-		if rule.Config.Method == method || common.WildcardMatch(rule.Config.Method, method) {
-			rules = append(rules, rule)
-		}
-	}
-
-	return rules
 }
