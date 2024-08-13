@@ -7,19 +7,19 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
-type EtherSpotVendor struct {
+type EtherspotVendor struct {
 	common.Vendor
 }
 
-func CreateEtherSpotVendor() common.Vendor {
-	return &EtherSpotVendor{}
+func CreateEtherspotVendor() common.Vendor {
+	return &EtherspotVendor{}
 }
 
-func (v *EtherSpotVendor) Name() string {
+func (v *EtherspotVendor) Name() string {
 	return "etherspot"
 }
 
-func (v *EtherSpotVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
+func (v *EtherspotVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
@@ -47,11 +47,11 @@ func (v *EtherSpotVendor) OverrideConfig(upstream *common.UpstreamConfig) error 
 	return nil
 }
 
-func (v *EtherSpotVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}) error {
+func (v *EtherspotVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}) error {
 	return nil
 }
 
-func (v *EtherSpotVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
+func (v *EtherspotVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 	return strings.HasPrefix(ups.Endpoint, "etherspot") ||
 		strings.HasPrefix(ups.Endpoint, "evm+etherspot") ||
 		strings.Contains(ups.Endpoint, "etherspot.io")
