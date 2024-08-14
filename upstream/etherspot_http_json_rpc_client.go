@@ -149,6 +149,10 @@ func (c *EtherspotHttpJsonRpcClient) createClient(chainID int64) (HttpJsonRpcCli
 		etherspotURL = fmt.Sprintf("https://testnet-rpc.etherspot.io/v1/%d", chainID)
 	}
 
+	if c.apiKey != "public" {
+		etherspotURL = fmt.Sprintf("%s?apikey=%s", etherspotURL, c.apiKey)
+	}
+
 	parsedURL, err := url.Parse(etherspotURL)
 	if err != nil {
 		return nil, err
