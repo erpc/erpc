@@ -20,12 +20,21 @@ func (p *PreparedProject) HandleAdminRequest(ctx context.Context, nq *common.Nor
 		if err != nil {
 			return nil, err
 		}
+		type configResult struct {
+			Project          *common.ProjectConfig           `json:"project"`
+			RateLimitBudgets []*common.RateLimitBudgetConfig `json:"rateLimitBudgets"`
+		}
+		result := configResult{
+			Project: p.Config,
+			// TODO should we just return 'relevant' budgets to avoid irrelevant data?
+			RateLimitBudgets: p.rateLimitersRegistry.GetBudgets(),
+		}
 		return common.NewNormalizedResponse().WithJsonRpcResponse(
 			&common.JsonRpcResponse{
 				JSONRPC: jrr.JSONRPC,
 				ID:      jrr.ID,
 				Error:   nil,
-				Result:  p.Config,
+				Result:  result,
 			},
 		), nil
 	case "erpc_health":

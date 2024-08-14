@@ -100,3 +100,7 @@ func (r *RateLimitersRegistry) GetBudget(budgetId string) (*RateLimiterBudget, e
 
 	return nil, common.NewErrRateLimitBudgetNotFound(budgetId)
 }
+
+func (r *RateLimitersRegistry) GetBudgets() []*common.RateLimitBudgetConfig {
+	return r.cfg.Budgets
+}
