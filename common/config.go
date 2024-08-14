@@ -17,12 +17,17 @@ type Config struct {
 	Projects     []*ProjectConfig   `yaml:"projects"`
 	RateLimiters *RateLimiterConfig `yaml:"rateLimiters"`
 	Metrics      *MetricsConfig     `yaml:"metrics"`
+	Admin        *AdminConfig       `yaml:"admin"`
 }
 
 type ServerConfig struct {
 	HttpHost   string `yaml:"httpHost"`
 	HttpPort   int    `yaml:"httpPort"`
 	MaxTimeout string `yaml:"maxTimeout"`
+}
+
+type AdminConfig struct {
+	Auth *AuthConfig `yaml:"auth"`
 }
 
 type DatabaseConfig struct {
@@ -74,6 +79,7 @@ type AwsAuthConfig struct {
 
 type ProjectConfig struct {
 	Id              string             `yaml:"id"`
+	Admin           *AdminConfig       `yaml:"admin"`
 	Auth            *AuthConfig        `yaml:"auth"`
 	CORS            *CORSConfig        `yaml:"cors"`
 	Upstreams       []*UpstreamConfig  `yaml:"upstreams"`

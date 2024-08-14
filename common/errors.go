@@ -507,7 +507,7 @@ type ErrUpstreamsExhausted struct{ BaseError }
 
 const ErrCodeUpstreamsExhausted ErrorCode = "ErrUpstreamsExhausted"
 
-var NewErrUpstreamsExhausted = func(req NormalizedRequest, ers []error, duration time.Duration) error {
+var NewErrUpstreamsExhausted = func(req *NormalizedRequest, ers []error, duration time.Duration) error {
 	var reqStr string
 	s, err := json.Marshal(req)
 	if err != nil {
@@ -651,7 +651,7 @@ type ErrUpstreamRequestSkipped struct{ BaseError }
 
 const ErrCodeUpstreamRequestSkipped ErrorCode = "ErrUpstreamRequestSkipped"
 
-var NewErrUpstreamRequestSkipped = func(reason error, upstreamId string, req NormalizedRequest) error {
+var NewErrUpstreamRequestSkipped = func(reason error, upstreamId string, req *NormalizedRequest) error {
 	m, _ := req.Method()
 	return &ErrUpstreamRequestSkipped{
 		BaseError{

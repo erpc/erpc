@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 )
 
@@ -127,7 +126,7 @@ func (e *EvmBlockTracker) fetchFinalizedBlockNumber(ctx context.Context) (int64,
 
 func (e *EvmBlockTracker) fetchBlock(ctx context.Context, blockTag string) (int64, error) {
 	randId := rand.Intn(10_000_000)
-	pr := upstream.NewNormalizedRequest([]byte(
+	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, randId, blockTag),
 	))
 	pr.SetNetwork(e.network)

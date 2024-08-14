@@ -20,7 +20,7 @@ import (
 type HttpJsonRpcClient interface {
 	GetType() ClientType
 	SupportsNetwork(networkId string) (bool, error)
-	SendRequest(ctx context.Context, req *NormalizedRequest) (*NormalizedResponse, error)
+	SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
 }
 
 type GenericHttpJsonRpcClient struct {
@@ -41,8 +41,8 @@ type GenericHttpJsonRpcClient struct {
 
 type batchRequest struct {
 	ctx      context.Context
-	request  *NormalizedRequest
-	response chan *NormalizedResponse
+	request  *common.NormalizedRequest
+	response chan *common.NormalizedResponse
 	err      chan error
 }
 
@@ -105,12 +105,12 @@ func (c *GenericHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, erro
 	return false, nil
 }
 
-func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *NormalizedRequest) (*NormalizedResponse, error) {
+func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	if !c.supportsBatch {
 		return c.sendSingleRequest(ctx, req)
 	}
 
-	responseChan := make(chan *NormalizedResponse, 1)
+	responseChan := make(chan *common.NormalizedResponse, 1)
 	errChan := make(chan error, 1)
 
 	jrReq, err := req.JsonRpcRequest()
@@ -257,7 +257,7 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 				// This case happens when upstreams a single valid json-rpc object as response
 				// to a batch request (e.g. BlastAPI).
 				for _, req := range requests {
-					nr := NewNormalizedResponse().WithRequest(req.request).WithBody(respBody)
+					nr := common.NewNormalizedResponse().WithRequest(req.request).WithBody(respBody)
 					err := c.normalizeJsonRpcError(resp, nr)
 					if err != nil {
 						req.err <- err
@@ -289,7 +289,7 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 		}
 
 		if req, ok := requests[jrResp.ID]; ok {
-			nr := NewNormalizedResponse().WithRequest(req.request).WithBody(rawResp)
+			nr := common.NewNormalizedResponse().WithRequest(req.request).WithBody(rawResp)
 			err := c.normalizeJsonRpcError(resp, nr)
 			if err != nil {
 				req.err <- err
@@ -306,7 +306,7 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 	}
 }
 
-func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *NormalizedRequest) (*NormalizedResponse, error) {
+func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	jrReq, err := req.JsonRpcRequest()
 	if err != nil {
 		return nil, common.NewErrUpstreamRequest(err, c.upstream.Config().Id, 0)
@@ -350,12 +350,12 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *N
 		return nil, err
 	}
 
-	nr := NewNormalizedResponse().WithRequest(req).WithBody(respBody)
+	nr := common.NewNormalizedResponse().WithRequest(req).WithBody(respBody)
 
 	return nr, c.normalizeJsonRpcError(resp, nr)
 }
 
-func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *NormalizedResponse) error {
+func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *common.NormalizedResponse) error {
 	jr, err := nr.JsonRpcResponse()
 
 	if err != nil {
@@ -398,7 +398,7 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *N
 	return e
 }
 
-func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *common.JsonRpcResponse) error {
+func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *common.JsonRpcResponse) error {
 	if jr != nil && jr.Error != nil {
 		err := jr.Error
 
@@ -599,7 +599,7 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 
 func getVendorSpecificErrorIfAny(
 	rp *http.Response,
-	nr common.NormalizedResponse,
+	nr *common.NormalizedResponse,
 	jr *common.JsonRpcResponse,
 ) error {
 	req := nr.Request()

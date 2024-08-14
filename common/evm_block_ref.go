@@ -1,15 +1,13 @@
-package evm
+package common
 
 import (
 	"errors"
 	"fmt"
 	"strconv"
 	"strings"
-
-	"github.com/erpc/erpc/common"
 )
 
-func ExtractBlockReference(r *common.JsonRpcRequest) (string, int64, error) {
+func ExtractEvmBlockReference(r *JsonRpcRequest) (string, int64, error) {
 	if r == nil {
 		return "", 0, errors.New("cannot extract block reference when json-rpc request is nil")
 	}
@@ -24,7 +22,7 @@ func ExtractBlockReference(r *common.JsonRpcRequest) (string, int64, error) {
 		if len(r.Params) > 0 {
 			if bns, ok := r.Params[0].(string); ok {
 				if strings.HasPrefix(bns, "0x") {
-					bni, err := common.HexToInt64(bns)
+					bni, err := HexToInt64(bns)
 					if err != nil {
 						return "", 0, err
 					}
@@ -42,7 +40,7 @@ func ExtractBlockReference(r *common.JsonRpcRequest) (string, int64, error) {
 			if logsFilter, ok := r.Params[0].(map[string]interface{}); ok {
 				if from, ok := logsFilter["fromBlock"].(string); ok {
 					if to, ok := logsFilter["toBlock"].(string); ok && strings.HasPrefix(to, "0x") {
-						toInt, err := common.HexToInt64(to)
+						toInt, err := HexToInt64(to)
 						if err != nil {
 							return "", 0, err
 						}
@@ -65,7 +63,7 @@ func ExtractBlockReference(r *common.JsonRpcRequest) (string, int64, error) {
 		if len(r.Params) > 1 {
 			if bns, ok := r.Params[1].(string); ok {
 				if strings.HasPrefix(bns, "0x") {
-					bni, err := common.HexToInt64(bns)
+					bni, err := HexToInt64(bns)
 					if err != nil {
 						return bns, 0, err
 					}
@@ -94,7 +92,7 @@ func ExtractBlockReference(r *common.JsonRpcRequest) (string, int64, error) {
 		if len(r.Params) > 2 {
 			if bns, ok := r.Params[2].(string); ok {
 				if strings.HasPrefix(bns, "0x") {
-					bni, err := common.HexToInt64(bns)
+					bni, err := HexToInt64(bns)
 					if err != nil {
 						return bns, 0, err
 					}

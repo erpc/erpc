@@ -9,8 +9,6 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
-	"github.com/erpc/erpc/evm"
-	"github.com/erpc/erpc/upstream"
 	"github.com/rs/zerolog"
 )
 
@@ -51,13 +49,13 @@ func (c *EvmJsonRpcCache) WithNetwork(network *Network) *EvmJsonRpcCache {
 	}
 }
 
-func (c *EvmJsonRpcCache) Get(ctx context.Context, req *upstream.NormalizedRequest) (common.NormalizedResponse, error) {
+func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
 		return nil, err
 	}
 
-	blockRef, blockNumber, err := evm.ExtractBlockReference(rpcReq)
+	blockRef, blockNumber, err := common.ExtractEvmBlockReference(rpcReq)
 	if err != nil {
 		return nil, err
 	}
@@ -102,12 +100,12 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *upstream.NormalizedReque
 		Result:  resultObj,
 	}
 
-	return upstream.NewNormalizedResponse().
+	return common.NewNormalizedResponse().
 		WithRequest(req).
 		WithJsonRpcResponse(jrr), nil
 }
 
-func (c *EvmJsonRpcCache) Set(ctx context.Context, req *upstream.NormalizedRequest, resp common.NormalizedResponse) error {
+func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
 	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
 		return err
@@ -125,7 +123,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *upstream.NormalizedReque
 		return nil
 	}
 
-	blockRef, blockNumber, err := evm.ExtractBlockReference(rpcReq)
+	blockRef, blockNumber, err := common.ExtractEvmBlockReference(rpcReq)
 	if err != nil {
 		return err
 	}
@@ -194,7 +192,7 @@ func (c *EvmJsonRpcCache) shouldCacheForBlock(blockNumber int64) (bool, error) {
 	return b, e
 }
 
-func generateKeysForJsonRpcRequest(req *upstream.NormalizedRequest, blockRef string) (string, string, error) {
+func generateKeysForJsonRpcRequest(req *common.NormalizedRequest, blockRef string) (string, string, error) {
 	cacheKey, err := req.CacheHash()
 	if err != nil {
 		return "", "", err

@@ -153,7 +153,7 @@ func (c *EnvioHttpJsonRpcClient) getOrCreateClient(network common.Network) (Http
 	return client, nil
 }
 
-func (c *EnvioHttpJsonRpcClient) SendRequest(ctx context.Context, req *NormalizedRequest) (*NormalizedResponse, error) {
+func (c *EnvioHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	network := req.Network()
 	if network == nil {
 		return nil, fmt.Errorf("network information is missing in the request")
