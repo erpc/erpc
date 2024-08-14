@@ -12,10 +12,11 @@ import (
 type ClientType string
 
 const (
-	ClientTypeHttpJsonRpc        ClientType = "HttpJsonRpc"
-	ClientTypeAlchemyHttpJsonRpc ClientType = "AlchemyHttpJsonRpc"
-	ClientTypeEnvioHttpJsonRpc   ClientType = "EnvioHttpJsonRpc"
-	ClientTypePimlicoHttpJsonRpc ClientType = "PimlicoHttpJsonRpc"
+	ClientTypeHttpJsonRpc          ClientType = "HttpJsonRpc"
+	ClientTypeAlchemyHttpJsonRpc   ClientType = "AlchemyHttpJsonRpc"
+	ClientTypeEnvioHttpJsonRpc     ClientType = "EnvioHttpJsonRpc"
+	ClientTypePimlicoHttpJsonRpc   ClientType = "PimlicoHttpJsonRpc"
+	ClientTypeEtherspotHttpJsonRpc ClientType = "EtherspotHttpJsonRpc"
 )
 
 // Define a shared interface for all types of Clients
