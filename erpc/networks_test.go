@@ -86,10 +86,10 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		var lastErr error
-		var lastResp common.NormalizedResponse
+		var lastResp *common.NormalizedResponse
 
 		for i := 0; i < 5; i++ {
-			fakeReq := upstream.NewNormalizedRequest([]byte(`{"method": "eth_chainId","params":[]}`))
+			fakeReq := common.NewNormalizedRequest([]byte(`{"method": "eth_chainId","params":[]}`))
 			lastResp, lastErr = ntw.Forward(ctx, fakeReq)
 		}
 
@@ -157,7 +157,7 @@ func TestNetwork_Forward(t *testing.T) {
 		var lastErr error
 
 		for i := 0; i < 10; i++ {
-			fakeReq := upstream.NewNormalizedRequest([]byte(`{"method": "eth_chainId","params":[]}`))
+			fakeReq := common.NewNormalizedRequest([]byte(`{"method": "eth_chainId","params":[]}`))
 			_, lastErr = ntw.Forward(ctx, fakeReq)
 		}
 
@@ -254,7 +254,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
 		if len(gock.Pending()) > 0 {
@@ -359,7 +359,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
 		if len(gock.Pending()) > 0 {
@@ -539,7 +539,7 @@ func TestNetwork_Forward(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// Create a fake request and forward it through the network
-		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -736,7 +736,7 @@ func TestNetwork_Forward(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// Create a fake request and forward it through the network
-		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -938,7 +938,7 @@ func TestNetwork_Forward(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// Create a fake request and forward it through the network
-		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -1061,7 +1061,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest(requestBytes)
 
 		// First request marks the method as ignored
 		_, _ = ntw.Forward(ctx, fakeReq)
@@ -1172,7 +1172,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest(requestBytes)
 
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -1282,7 +1282,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
 		if len(gock.Pending()) > 0 {
@@ -1384,7 +1384,7 @@ func TestNetwork_Forward(t *testing.T) {
 		var lastErr error
 
 		for i := 0; i < 10; i++ {
-			fakeReq := upstream.NewNormalizedRequest([]byte(`{"method": "eth_chainId","params":[]}`))
+			fakeReq := common.NewNormalizedRequest([]byte(`{"method": "eth_chainId","params":[]}`))
 			_, lastErr = ntw.Forward(ctx, fakeReq)
 		}
 
@@ -1481,7 +1481,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
 		if len(gock.Pending()) > 0 {
@@ -1590,7 +1590,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if len(gock.Pending()) > 0 {
@@ -1708,7 +1708,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
 		if len(gock.Pending()) > 0 {
@@ -1817,7 +1817,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
 		if len(gock.Pending()) > 0 {
@@ -1953,7 +1953,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if len(gock.Pending()) > 0 {
@@ -2109,7 +2109,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if len(gock.Pending()) > 0 {
@@ -2250,7 +2250,7 @@ func TestNetwork_Forward(t *testing.T) {
 	// 	if err != nil {
 	// 		t.Fatal(err)
 	// 	}
-	// 	fakeReq := upstream.NewNormalizedRequest(requestBytes)
+	// 	fakeReq := common.NewNormalizedRequest(requestBytes)
 	// 	resp, err := ntw.Forward(ctx, fakeReq)
 	// 	time.Sleep(50 * time.Millisecond)
 	// 	if len(gock.Pending()) > 0 {
@@ -2377,7 +2377,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		var lastErr error
 		for i := 0; i < 10; i++ {
-			fakeReq := upstream.NewNormalizedRequest(requestBytes)
+			fakeReq := common.NewNormalizedRequest(requestBytes)
 			_, lastErr = ntw.Forward(ctx, fakeReq)
 		}
 
@@ -2498,9 +2498,9 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		var lastErr error
-		var resp common.NormalizedResponse
+		var resp *common.NormalizedResponse
 		for i := 0; i < 2; i++ {
-			fakeReq := upstream.NewNormalizedRequest(requestBytes)
+			fakeReq := common.NewNormalizedRequest(requestBytes)
 			resp, lastErr = ntw.Forward(ctx, fakeReq)
 		}
 
@@ -2624,7 +2624,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		var lastErr error
 		for i := 0; i < 4+2; i++ {
-			fakeReq := upstream.NewNormalizedRequest(requestBytes)
+			fakeReq := common.NewNormalizedRequest(requestBytes)
 			_, lastErr = ntw.Forward(ctx, fakeReq)
 		}
 
@@ -2634,9 +2634,9 @@ func TestNetwork_Forward(t *testing.T) {
 
 		time.Sleep(2 * time.Second)
 
-		var resp common.NormalizedResponse
+		var resp *common.NormalizedResponse
 		for i := 0; i < 3; i++ {
-			fakeReq := upstream.NewNormalizedRequest(requestBytes)
+			fakeReq := common.NewNormalizedRequest(requestBytes)
 			resp, lastErr = ntw.Forward(ctx, fakeReq)
 		}
 
@@ -2749,7 +2749,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
 		if err == nil {
@@ -2877,7 +2877,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if len(gock.Pending()) > 0 {
@@ -3032,7 +3032,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if len(gock.Pending()) > 0 {
@@ -3164,7 +3164,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Failed to create network: %v", err)
 		}
 
-		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if len(gock.Pending()) > 0 {
@@ -3266,7 +3266,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if len(gock.Pending()) > 1 {
@@ -3364,7 +3364,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		fakeReq := upstream.NewNormalizedRequest(requestBytes)
+		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if len(gock.Pending()) > 0 {
@@ -3489,7 +3489,7 @@ func TestNetwork_Forward(t *testing.T) {
 				go func(method string) {
 					defer wg.Done()
 					upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
-					req := upstream.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":[],"id":1}`, method)))
+					req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":[],"id":1}`, method)))
 					_, err := network.Forward(ctx, req)
 					assert.NoError(t, err)
 				}(method)
@@ -3538,7 +3538,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				req := upstream.NewNormalizedRequest(requestBytes)
+				req := common.NewNormalizedRequest(requestBytes)
 				resp, err := network.Forward(context.Background(), req)
 				assert.NoError(t, err)
 				assert.NotNil(t, resp)
@@ -3576,7 +3576,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				req := upstream.NewNormalizedRequest(requestBytes)
+				req := common.NewNormalizedRequest(requestBytes)
 				resp, err := network.Forward(context.Background(), req)
 				assert.Error(t, err)
 				assert.Nil(t, resp)
@@ -3616,7 +3616,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 				defer wg.Done()
 				ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 				defer cancel()
-				req := upstream.NewNormalizedRequest(requestBytes)
+				req := common.NewNormalizedRequest(requestBytes)
 				resp, err := network.Forward(ctx, req)
 				assert.Error(t, err)
 				assert.True(t, errors.Is(err, context.DeadlineExceeded))
@@ -3666,7 +3666,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 
 		go func() {
 			defer wg.Done()
-			req := upstream.NewNormalizedRequest(successRequestBytes)
+			req := common.NewNormalizedRequest(successRequestBytes)
 			resp, err := network.Forward(context.Background(), req)
 			assert.NoError(t, err)
 			assert.NotNil(t, resp)
@@ -3674,7 +3674,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 
 		go func() {
 			defer wg.Done()
-			req := upstream.NewNormalizedRequest(failureRequestBytes)
+			req := common.NewNormalizedRequest(failureRequestBytes)
 			resp, err := network.Forward(context.Background(), req)
 			assert.Error(t, err)
 			assert.Nil(t, resp)
@@ -3708,13 +3708,13 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 			BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
 
 		// First request
-		req1 := upstream.NewNormalizedRequest(requestBytes)
+		req1 := common.NewNormalizedRequest(requestBytes)
 		resp1, err1 := network.Forward(context.Background(), req1)
 		assert.NoError(t, err1)
 		assert.NotNil(t, resp1)
 
 		// Second request (should not be in-flight)
-		req2 := upstream.NewNormalizedRequest(requestBytes)
+		req2 := common.NewNormalizedRequest(requestBytes)
 		resp2, err2 := network.Forward(context.Background(), req2)
 		assert.NoError(t, err2)
 		assert.NotNil(t, resp2)

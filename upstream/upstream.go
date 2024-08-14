@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -10,7 +11,6 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/evm"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/util"
 	"github.com/erpc/erpc/vendors"
@@ -27,8 +27,8 @@ type Upstream struct {
 	vendor common.Vendor
 
 	metricsTracker       *health.Tracker
-	failsafePolicies     []failsafe.Policy[common.NormalizedResponse]
-	failsafeExecutor     failsafe.Executor[common.NormalizedResponse]
+	failsafePolicies     []failsafe.Policy[*common.NormalizedResponse]
+	failsafeExecutor     failsafe.Executor[*common.NormalizedResponse]
 	rateLimitersRegistry *RateLimitersRegistry
 	rateLimiterAutoTuner *RateLimitAutoTuner
 
@@ -64,7 +64,7 @@ func NewUpstream(
 		vendor:               vn,
 		metricsTracker:       mt,
 		failsafePolicies:     policies,
-		failsafeExecutor:     failsafe.NewExecutor[common.NormalizedResponse](policies...),
+		failsafeExecutor:     failsafe.NewExecutor[*common.NormalizedResponse](policies...),
 		rateLimitersRegistry: rlr,
 		methodCheckResults:   map[string]bool{},
 		supportedNetworkIds:  map[string]bool{},
@@ -100,7 +100,7 @@ func (u *Upstream) Vendor() common.Vendor {
 	return u.vendor
 }
 
-func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
+func (u *Upstream) prepareRequest(normalizedReq *common.NormalizedRequest) error {
 	cfg := u.Config()
 	switch cfg.Type {
 	case common.UpstreamTypeEvm,
@@ -131,7 +131,7 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 					nil,
 				)
 			}
-			err = evm.NormalizeHttpJsonRpc(normalizedReq, jsonRpcReq)
+			err = common.NormalizeEvmHttpJsonRpc(normalizedReq, jsonRpcReq)
 			if err != nil {
 				return common.NewErrJsonRpcExceptionInternal(
 					0,
@@ -164,7 +164,7 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 }
 
 // Forward is used during lifecycle of a proxied request, it uses writers and readers for better performance
-func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.NormalizedResponse, bool, error) {
+func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, bool, error) {
 	startTime := time.Now()
 	cfg := u.Config()
 
@@ -254,7 +254,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 
 		tryForward := func(
 			ctx context.Context,
-		) (*NormalizedResponse, error) {
+		) (*common.NormalizedResponse, error) {
 			netId := "n/a"
 			if req.Network() != nil {
 				netId = req.Network().Id()
@@ -306,11 +306,11 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 		}
 
 		if u.failsafePolicies != nil && len(u.failsafePolicies) > 0 {
-			var execution failsafe.Execution[common.NormalizedResponse]
+			var execution failsafe.Execution[*common.NormalizedResponse]
 			executor := u.failsafeExecutor
 			resp, execErr := executor.
 				WithContext(ctx).
-				GetWithExecution(func(exec failsafe.Execution[common.NormalizedResponse]) (common.NormalizedResponse, error) {
+				GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
 					execution = exec
 					return tryForward(ctx)
 				})
@@ -336,12 +336,12 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 	}
 }
 
-func (u *Upstream) Executor() failsafe.Executor[common.NormalizedResponse] {
+func (u *Upstream) Executor() failsafe.Executor[*common.NormalizedResponse] {
 	return u.failsafeExecutor
 }
 
 func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
-	pr := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_chainId","params":[]}`))
+	pr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_chainId","params":[]}`))
 	resp, _, err := u.Forward(ctx, pr)
 	if err != nil {
 		return "", err
@@ -549,7 +549,7 @@ func (u *Upstream) detectFeatures() error {
 	return nil
 }
 
-func (u *Upstream) shouldSkip(req *NormalizedRequest) (reason error, skip bool) {
+func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip bool) {
 	method, _ := req.Method()
 
 	if !u.shouldHandleMethod(method) {
@@ -560,4 +560,29 @@ func (u *Upstream) shouldSkip(req *NormalizedRequest) (reason error, skip bool) 
 	// TODO evm: if block can be determined from request and upstream is only full-node and block is historical skip
 
 	return nil, false
+}
+
+func (u *Upstream) MarshalJSON() ([]byte, error) {
+	type upstreamPublic struct {
+		Id             string                            `json:"id"`
+		Metrics        map[string]*health.TrackedMetrics `json:"metrics"`
+		ActiveNetworks []string                          `json:"activeNetworks"`
+	}
+
+	var activeNetworks []string
+	u.supportedNetworkIdsMu.RLock()
+	for netId := range u.supportedNetworkIds {
+		activeNetworks = append(activeNetworks, netId)
+	}
+	u.supportedNetworkIdsMu.RUnlock()
+
+	metrics := u.metricsTracker.GetUpstreamMetrics(u.config.Id)
+
+	uppub := upstreamPublic{
+		Id:             u.config.Id,
+		Metrics:        metrics,
+		ActiveNetworks: activeNetworks,
+	}
+
+	return json.Marshal(uppub)
 }

@@ -1,10 +1,8 @@
-package upstream
+package common
 
 import (
 	"encoding/json"
 	"fmt"
-
-	"github.com/erpc/erpc/common"
 )
 
 type NormalizedResponse struct {
@@ -12,7 +10,7 @@ type NormalizedResponse struct {
 	body    []byte
 	err     error
 
-	jsonRpcResponse *common.JsonRpcResponse
+	jsonRpcResponse *JsonRpcResponse
 }
 
 func NewNormalizedResponse() *NormalizedResponse {
@@ -34,12 +32,12 @@ func (r *NormalizedResponse) WithError(err error) *NormalizedResponse {
 	return r
 }
 
-func (r *NormalizedResponse) WithJsonRpcResponse(jrr *common.JsonRpcResponse) *NormalizedResponse {
+func (r *NormalizedResponse) WithJsonRpcResponse(jrr *JsonRpcResponse) *NormalizedResponse {
 	r.jsonRpcResponse = jrr
 	return r
 }
 
-func (r *NormalizedResponse) Request() common.NormalizedRequest {
+func (r *NormalizedResponse) Request() *NormalizedRequest {
 	if r == nil {
 		return nil
 	}
@@ -94,7 +92,7 @@ func (r *NormalizedResponse) IsResultEmptyish() bool {
 	return false
 }
 
-func (r *NormalizedResponse) JsonRpcResponse() (*common.JsonRpcResponse, error) {
+func (r *NormalizedResponse) JsonRpcResponse() (*JsonRpcResponse, error) {
 	if r == nil {
 		return nil, nil
 	}
@@ -103,11 +101,11 @@ func (r *NormalizedResponse) JsonRpcResponse() (*common.JsonRpcResponse, error) 
 		return r.jsonRpcResponse, nil
 	}
 
-	jrr := &common.JsonRpcResponse{}
+	jrr := &JsonRpcResponse{}
 	err := json.Unmarshal(r.body, jrr)
 	if err != nil {
-		jrr.Error = common.NewErrJsonRpcExceptionExternal(
-			int(common.JsonRpcErrorServerSideException),
+		jrr.Error = NewErrJsonRpcExceptionExternal(
+			int(JsonRpcErrorServerSideException),
 			fmt.Sprintf("%s -> %s", err, string(r.body)),
 			"",
 		)

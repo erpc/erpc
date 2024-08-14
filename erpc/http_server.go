@@ -14,7 +14,6 @@ import (
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
-	"github.com/erpc/erpc/upstream"
 	"github.com/rs/zerolog"
 )
 
@@ -64,27 +63,36 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 
 	return srv
 }
+
 func (s *HttpServer) handleRequest(timeOutDur time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		segments := strings.Split(r.URL.Path, "/")
-		if len(segments) < 2 || len(segments) > 4 {
+		if len(segments) != 2 && len(segments) != 3 && len(segments) != 4 {
 			handleErrorResponse(s.logger, nil, common.NewErrInvalidUrlPath(r.URL.Path), w)
 			return
 		}
 
 		projectId := segments[1]
-		var architecture, chainId string
+		architecture, chainId := "", ""
+		isAdmin := false
 
 		if len(segments) == 4 {
 			// URL format: /main/evm/111
 			architecture = segments[2]
 			chainId = segments[3]
-		} else {
-			// URL format: /main
-			// networkId will be provided in the request body
-			architecture = ""
-			chainId = ""
+		} else if len(segments) == 3 {
+			if segments[2] == "admin" {
+				// URL format: /main/admin
+				// for admin methods and frequests
+				isAdmin = true
+			} else {
+				handleErrorResponse(s.logger, nil, common.NewErrInvalidUrlPath(r.URL.Path), w)
+				return
+			}
 		}
+		// else:
+		// 	 URL format: /main
+		// 	 networkId will be provided in the request body
 
 		project, err := s.erpc.GetProject(projectId)
 		if err != nil {
@@ -130,8 +138,48 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) http.HandlerFunc {
 			go func(index int, rawReq json.RawMessage) {
 				defer wg.Done()
 
-				nq := upstream.NewNormalizedRequest(rawReq)
+				nq := common.NewNormalizedRequest(rawReq)
 				nq.ApplyDirectivesFromHttpHeaders(r.Header)
+
+				ap, err := auth.NewPayloadFromHttp(project.Config.Id, nq, r)
+				if err != nil {
+					responses[index] = processErrorBody(s.logger, nq, err)
+					return
+				}
+
+				if isAdmin {
+					if err := project.AuthenticateAdmin(requestCtx, nq, ap); err != nil {
+						responses[index] = processErrorBody(s.logger, nq, err)
+						return
+					}
+				} else {
+					if err := project.AuthenticateConsumer(requestCtx, nq, ap); err != nil {
+						responses[index] = processErrorBody(s.logger, nq, err)
+						return
+					}
+				}
+
+				if isAdmin {
+					if project.Config.Admin != nil {
+						resp, err := project.HandleAdminRequest(requestCtx, nq)
+						if err != nil {
+							responses[index] = processErrorBody(s.logger, nq, err)
+							return
+						}
+						responses[index] = resp
+						return
+					} else {
+						responses[index] = processErrorBody(
+							s.logger,
+							nq,
+							common.NewErrAuthUnauthorized(
+								"",
+								"admin is not enabled for this project",
+							),
+						)
+						return
+					}
+				}
 
 				var networkId string
 
@@ -165,17 +213,6 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) http.HandlerFunc {
 					return
 				}
 				nq.SetNetwork(nw)
-
-				ap, err := auth.NewPayloadFromHttp(project.Config, nq, r)
-				if err != nil {
-					responses[index] = processErrorBody(s.logger, nq, err)
-					return
-				}
-
-				if err := project.Authenticate(requestCtx, nq, ap); err != nil {
-					responses[index] = processErrorBody(s.logger, nq, err)
-					return
-				}
 
 				resp, err := project.Forward(requestCtx, networkId, nq)
 				if err != nil {
@@ -262,7 +299,7 @@ func (s *HttpServer) handleCORS(w http.ResponseWriter, r *http.Request, corsConf
 	return true
 }
 
-func processErrorBody(logger *zerolog.Logger, nq *upstream.NormalizedRequest, err error) interface{} {
+func processErrorBody(logger *zerolog.Logger, nq *common.NormalizedRequest, err error) interface{} {
 	if !common.IsNull(err) {
 		if common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
 			logger.Debug().Err(err).Msgf("forward request errored with client-side exception")
@@ -321,7 +358,7 @@ func processErrorStatusCode(err error) int {
 	return http.StatusInternalServerError
 }
 
-func handleErrorResponse(logger *zerolog.Logger, nq *upstream.NormalizedRequest, err error, hrw http.ResponseWriter) {
+func handleErrorResponse(logger *zerolog.Logger, nq *common.NormalizedRequest, err error, hrw http.ResponseWriter) {
 	if !common.IsNull(err) {
 		if common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
 			logger.Debug().Err(err).Msgf("forward request errored with client-side exception")

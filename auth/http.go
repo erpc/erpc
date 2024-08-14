@@ -9,10 +9,10 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
-func NewPayloadFromHttp(projectCfg *common.ProjectConfig, nq common.NormalizedRequest, r *http.Request) (*AuthPayload, error) {
+func NewPayloadFromHttp(projectId string, nq *common.NormalizedRequest, r *http.Request) (*AuthPayload, error) {
 	method, _ := nq.Method()
 	ap := &AuthPayload{
-		ProjectId: projectCfg.Id,
+		ProjectId: projectId,
 		Method:    method,
 	}
 

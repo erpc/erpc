@@ -7,7 +7,7 @@ import (
 )
 
 type Multiplexer struct {
-	resp common.NormalizedResponse
+	resp *common.NormalizedResponse
 	err  error
 	done chan struct{}
 	mu   *sync.RWMutex
@@ -20,7 +20,7 @@ func NewMultiplexer() *Multiplexer {
 	}
 }
 
-func (inf *Multiplexer) Close(resp common.NormalizedResponse, err error) {
+func (inf *Multiplexer) Close(resp *common.NormalizedResponse, err error) {
 	inf.mu.Lock()
 	defer inf.mu.Unlock()
 	inf.resp = resp

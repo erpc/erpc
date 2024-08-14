@@ -24,7 +24,8 @@ type PreparedProject struct {
 	appCtx               context.Context
 	networksMu           sync.RWMutex
 	networksRegistry     *NetworksRegistry
-	authRegistry         *auth.AuthRegistry
+	consumerAuthRegistry *auth.AuthRegistry
+	adminAuthRegistry    *auth.AuthRegistry
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	upstreamsRegistry    *upstream.UpstreamsRegistry
 	evmJsonRpcCache      *EvmJsonRpcCache
@@ -46,9 +47,9 @@ func (p *PreparedProject) GetNetwork(networkId string) (network *Network, err er
 	return
 }
 
-func (p *PreparedProject) Authenticate(ctx context.Context, nq common.NormalizedRequest, ap *auth.AuthPayload) error {
-	if p.authRegistry != nil {
-		err := p.authRegistry.Authenticate(ctx, nq, ap)
+func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, nq *common.NormalizedRequest, ap *auth.AuthPayload) error {
+	if p.consumerAuthRegistry != nil {
+		err := p.consumerAuthRegistry.Authenticate(ctx, nq, ap)
 		if err != nil {
 			return err
 		}
@@ -57,7 +58,17 @@ func (p *PreparedProject) Authenticate(ctx context.Context, nq common.Normalized
 	return nil
 }
 
-func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *upstream.NormalizedRequest) (common.NormalizedResponse, error) {
+func (p *PreparedProject) AuthenticateAdmin(ctx context.Context, nq *common.NormalizedRequest, ap *auth.AuthPayload) error {
+	if p.adminAuthRegistry != nil {
+		err := p.adminAuthRegistry.Authenticate(ctx, nq, ap)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	network, err := p.GetNetwork(networkId)
 	if err != nil {
 		return nil, err
@@ -171,7 +182,7 @@ func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) 
 	return nw, nil
 }
 
-func (p *PreparedProject) acquireRateLimitPermit(req *upstream.NormalizedRequest) error {
+func (p *PreparedProject) acquireRateLimitPermit(req *common.NormalizedRequest) error {
 	if p.Config.RateLimitBudget == "" {
 		return nil
 	}

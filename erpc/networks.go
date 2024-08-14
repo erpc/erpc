@@ -25,8 +25,8 @@ type Network struct {
 	inFlightMutex    *sync.Mutex
 	inFlightRequests map[string]*Multiplexer
 
-	failsafePolicies     []failsafe.Policy[common.NormalizedResponse]
-	failsafeExecutor     failsafe.Executor[common.NormalizedResponse]
+	failsafePolicies     []failsafe.Policy[*common.NormalizedResponse]
+	failsafeExecutor     failsafe.Executor[*common.NormalizedResponse]
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	// rateLimiterDal       data.RateLimitersDAL
 	cacheDal          data.CacheDAL
@@ -62,7 +62,7 @@ func (n *Network) Architecture() common.NetworkArchitecture {
 	return n.Config.Architecture
 }
 
-func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) (common.NormalizedResponse, error) {
+func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	startTime := time.Now()
 
 	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
@@ -133,7 +133,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 	tryForward := func(
 		u *upstream.Upstream,
 		ctx context.Context,
-	) (resp common.NormalizedResponse, skipped bool, err error) {
+	) (resp *common.NormalizedResponse, skipped bool, err error) {
 		lg := u.Logger.With().Str("upstream", u.Config().Id).Logger()
 
 		lg.Debug().Str("method", method).Str("rid", fmt.Sprintf("%p", req)).Msgf("trying to forward request to upstream")
@@ -164,14 +164,14 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		return nil, err
 	}
 
-	var execution failsafe.Execution[common.NormalizedResponse]
+	var execution failsafe.Execution[*common.NormalizedResponse]
 	var errorsByUpstream = []error{}
 	var errorsMutex sync.Mutex
 	imtx := sync.Mutex{}
 	i := 0
 	resp, execErr := n.failsafeExecutor.
 		WithContext(ctx).
-		GetWithExecution(func(exec failsafe.Execution[common.NormalizedResponse]) (common.NormalizedResponse, error) {
+		GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
 			execution = exec
 			isHedged := exec.Hedges() > 0
 
@@ -258,7 +258,7 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 	}
 
 	if n.cacheDal != nil && resp != nil {
-		go (func(resp common.NormalizedResponse) {
+		go (func(resp *common.NormalizedResponse) {
 			c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			err := n.cacheDal.Set(c, req, resp)
@@ -338,7 +338,7 @@ func (n *Network) EvmChainId() (int64, error) {
 	return n.Config.Evm.ChainId, nil
 }
 
-func (n *Network) processResponse(resp common.NormalizedResponse, skipped bool, err error) (common.NormalizedResponse, bool, error) {
+func (n *Network) processResponse(resp *common.NormalizedResponse, skipped bool, err error) (*common.NormalizedResponse, bool, error) {
 	if err == nil {
 		return resp, skipped, nil
 	}
@@ -375,7 +375,7 @@ func (n *Network) processResponse(resp common.NormalizedResponse, skipped bool, 
 	}
 }
 
-func (n *Network) acquireRateLimitPermit(req *upstream.NormalizedRequest) error {
+func (n *Network) acquireRateLimitPermit(req *common.NormalizedRequest) error {
 	if n.Config.RateLimitBudget == "" {
 		return nil
 	}

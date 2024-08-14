@@ -46,7 +46,7 @@ func NewNetwork(
 ) (*Network, error) {
 	lg := logger.With().Str("network", nwCfg.NetworkId()).Logger()
 
-	var policies []failsafe.Policy[common.NormalizedResponse]
+	var policies []failsafe.Policy[*common.NormalizedResponse]
 	if nwCfg.Failsafe != nil {
 		key := fmt.Sprintf("%s-%s", prjId, nwCfg.NetworkId())
 		pls, err := upstream.CreateFailSafePolicies(&lg, upstream.ScopeNetwork, key, nwCfg.Failsafe)

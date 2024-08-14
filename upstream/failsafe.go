@@ -26,9 +26,9 @@ const (
 	ScopeUpstream Scope = "upstream"
 )
 
-func CreateFailSafePolicies(logger *zerolog.Logger, scope Scope, component string, fsCfg *common.FailsafeConfig) ([]failsafe.Policy[common.NormalizedResponse], error) {
+func CreateFailSafePolicies(logger *zerolog.Logger, scope Scope, component string, fsCfg *common.FailsafeConfig) ([]failsafe.Policy[*common.NormalizedResponse], error) {
 	// The order of policies below are important as per docs of failsafe-go
-	var policies = []failsafe.Policy[common.NormalizedResponse]{}
+	var policies = []failsafe.Policy[*common.NormalizedResponse]{}
 
 	if fsCfg == nil {
 		return policies, nil
@@ -86,8 +86,8 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope Scope, component strin
 	return policies, nil
 }
 
-func createCircuitBreakerPolicy(logger *zerolog.Logger, component string, cfg *common.CircuitBreakerPolicyConfig) (failsafe.Policy[common.NormalizedResponse], error) {
-	builder := circuitbreaker.Builder[common.NormalizedResponse]()
+func createCircuitBreakerPolicy(logger *zerolog.Logger, component string, cfg *common.CircuitBreakerPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+	builder := circuitbreaker.Builder[*common.NormalizedResponse]()
 
 	if cfg.FailureThresholdCount > 0 {
 		if cfg.FailureThresholdCapacity > 0 {
@@ -120,7 +120,7 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, component string, cfg *c
 	builder.OnStateChanged(func(event circuitbreaker.StateChangedEvent) {
 		logger.Warn().Msgf("circuit breaker state changed from %s to %s", event.OldState, event.NewState)
 	})
-	builder.OnFailure(func(event failsafe.ExecutionEvent[common.NormalizedResponse]) {
+	builder.OnFailure(func(event failsafe.ExecutionEvent[*common.NormalizedResponse]) {
 		err := event.LastError()
 		if err != nil {
 			logger.Warn().Err(err).Msgf("failure caught that will be considered for circuit breaker")
@@ -129,7 +129,7 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, component string, cfg *c
 		}
 	})
 
-	builder.HandleIf(func(result common.NormalizedResponse, err error) bool {
+	builder.HandleIf(func(result *common.NormalizedResponse, err error) bool {
 		// 5xx or other non-retryable server-side errors -> open the circuit
 		if common.HasErrorCode(err, common.ErrCodeEndpointServerSideException) {
 			return true
@@ -166,7 +166,7 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, component string, cfg *c
 	return builder.Build(), nil
 }
 
-func createHedgePolicy(component string, cfg *common.HedgePolicyConfig) (failsafe.Policy[common.NormalizedResponse], error) {
+func createHedgePolicy(component string, cfg *common.HedgePolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
 	delay, err := time.ParseDuration(cfg.Delay)
 	if err != nil {
 		return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse hedge.delay: %v", err), map[string]interface{}{
@@ -174,7 +174,7 @@ func createHedgePolicy(component string, cfg *common.HedgePolicyConfig) (failsaf
 			"policy":    cfg,
 		})
 	}
-	builder := hedgepolicy.BuilderWithDelay[common.NormalizedResponse](delay)
+	builder := hedgepolicy.BuilderWithDelay[*common.NormalizedResponse](delay)
 
 	if cfg.MaxCount > 0 {
 		builder = builder.WithMaxHedges(cfg.MaxCount)
@@ -183,8 +183,8 @@ func createHedgePolicy(component string, cfg *common.HedgePolicyConfig) (failsaf
 	return builder.Build(), nil
 }
 
-func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyConfig) (failsafe.Policy[common.NormalizedResponse], error) {
-	builder := retrypolicy.Builder[common.NormalizedResponse]()
+func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+	builder := retrypolicy.Builder[*common.NormalizedResponse]()
 
 	if cfg.MaxAttempts > 0 {
 		builder = builder.WithMaxAttempts(cfg.MaxAttempts)
@@ -228,7 +228,7 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 		builder = builder.WithJitter(jitterDuration)
 	}
 
-	builder.HandleIf(func(result common.NormalizedResponse, err error) bool {
+	builder.HandleIf(func(result *common.NormalizedResponse, err error) bool {
 		// 400 / 404 / 405 / 413 -> No Retry
 		// RPC-RPC client-side error (invalid params) -> No Retry
 		if common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
@@ -297,7 +297,7 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 	return builder.Build(), nil
 }
 
-func createTimeoutPolicy(component string, cfg *common.TimeoutPolicyConfig) (failsafe.Policy[common.NormalizedResponse], error) {
+func createTimeoutPolicy(component string, cfg *common.TimeoutPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
 	if cfg.Duration == "" {
 		return nil, common.NewErrFailsafeConfiguration(errors.New("missing timeout"), map[string]interface{}{
 			"component": component,
@@ -306,7 +306,7 @@ func createTimeoutPolicy(component string, cfg *common.TimeoutPolicyConfig) (fai
 	}
 
 	timeoutDuration, err := time.ParseDuration(cfg.Duration)
-	builder := timeout.Builder[common.NormalizedResponse](timeoutDuration)
+	builder := timeout.Builder[*common.NormalizedResponse](timeoutDuration)
 
 	if err != nil {
 		return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse timeout: %v", err), map[string]interface{}{
@@ -318,7 +318,7 @@ func createTimeoutPolicy(component string, cfg *common.TimeoutPolicyConfig) (fai
 	return builder.Build(), nil
 }
 
-func TranslateFailsafeError(exec failsafe.Execution[common.NormalizedResponse], execErr error, details map[string]interface{}) error {
+func TranslateFailsafeError(exec failsafe.Execution[*common.NormalizedResponse], execErr error, details map[string]interface{}) error {
 	var retryExceededErr *retrypolicy.ExceededError
 	if errors.As(execErr, &retryExceededErr) {
 		var attempts int
