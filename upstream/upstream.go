@@ -106,6 +106,7 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 	case common.UpstreamTypeEvm,
 		common.UpstreamTypeEvmAlchemy,
 		common.UpstreamTypeEvmEnvio,
+		common.UpstreamTypeEvmEtherspot,
 		common.UpstreamTypeEvmPimlico:
 		if u.Client == nil {
 			return common.NewErrJsonRpcExceptionInternal(
@@ -120,7 +121,8 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 		if u.Client.GetType() == ClientTypeHttpJsonRpc ||
 			u.Client.GetType() == ClientTypeAlchemyHttpJsonRpc ||
 			u.Client.GetType() == ClientTypeEnvioHttpJsonRpc ||
-			u.Client.GetType() == ClientTypePimlicoHttpJsonRpc {
+			u.Client.GetType() == ClientTypePimlicoHttpJsonRpc ||
+			u.Client.GetType() == ClientTypeEtherspotHttpJsonRpc {
 			jsonRpcReq, err := normalizedReq.JsonRpcRequest()
 			if err != nil {
 				return common.NewErrJsonRpcExceptionInternal(
@@ -237,6 +239,7 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 	case ClientTypeHttpJsonRpc,
 		ClientTypeAlchemyHttpJsonRpc,
 		ClientTypeEnvioHttpJsonRpc,
+		ClientTypeEtherspotHttpJsonRpc,
 		ClientTypePimlicoHttpJsonRpc:
 		jsonRpcClient, okClient := u.Client.(HttpJsonRpcClient)
 		if !okClient {

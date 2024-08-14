@@ -93,6 +93,12 @@ func (manager *ClientRegistry) CreateClient(ups *Upstream) (ClientInterface, err
 					clientErr = fmt.Errorf("failed to create Pimlico client for upstream: %v", cfg.Id)
 				}
 
+			case common.UpstreamTypeEvmEtherspot:
+				newClient, err = NewEtherspotHttpJsonRpcClient(ups, parsedUrl)
+				if err != nil {
+					clientErr = fmt.Errorf("failed to create Etherspot client for upstream: %v", cfg.Id)
+				}
+
 			default:
 				clientErr = fmt.Errorf("unsupported upstream type: %v for upstream: %v", cfg.Type, cfg.Id)
 			}

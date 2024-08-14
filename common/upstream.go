@@ -5,10 +5,11 @@ import "context"
 type UpstreamType string
 
 const (
-	UpstreamTypeEvm        UpstreamType = "evm"
-	UpstreamTypeEvmAlchemy UpstreamType = "evm+alchemy"
-	UpstreamTypeEvmEnvio   UpstreamType = "evm+envio"
-	UpstreamTypeEvmPimlico UpstreamType = "evm+pimlico"
+	UpstreamTypeEvm          UpstreamType = "evm"
+	UpstreamTypeEvmAlchemy   UpstreamType = "evm+alchemy"
+	UpstreamTypeEvmEnvio     UpstreamType = "evm+envio"
+	UpstreamTypeEvmPimlico   UpstreamType = "evm+pimlico"
+	UpstreamTypeEvmEtherspot UpstreamType = "evm+etherspot"
 )
 
 type Upstream interface {
