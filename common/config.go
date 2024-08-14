@@ -11,194 +11,194 @@ import (
 
 // Config represents the configuration of the application.
 type Config struct {
-	LogLevel     string             `yaml:"logLevel"`
-	Server       *ServerConfig      `yaml:"server"`
-	Database     *DatabaseConfig    `yaml:"database"`
-	Projects     []*ProjectConfig   `yaml:"projects"`
-	RateLimiters *RateLimiterConfig `yaml:"rateLimiters"`
-	Metrics      *MetricsConfig     `yaml:"metrics"`
-	Admin        *AdminConfig       `yaml:"admin"`
+	LogLevel     string             `yaml:"logLevel" json:"logLevel"`
+	Server       *ServerConfig      `yaml:"server" json:"server"`
+	Database     *DatabaseConfig    `yaml:"database" json:"database"`
+	Projects     []*ProjectConfig   `yaml:"projects" json:"projects"`
+	RateLimiters *RateLimiterConfig `yaml:"rateLimiters" json:"rateLimiters"`
+	Metrics      *MetricsConfig     `yaml:"metrics" json:"metrics"`
+	Admin        *AdminConfig       `yaml:"admin" json:"admin"`
 }
 
 type ServerConfig struct {
-	HttpHost   string `yaml:"httpHost"`
-	HttpPort   int    `yaml:"httpPort"`
-	MaxTimeout string `yaml:"maxTimeout"`
+	HttpHost   string `yaml:"httpHost" json:"httpHost"`
+	HttpPort   int    `yaml:"httpPort" json:"httpPort"`
+	MaxTimeout string `yaml:"maxTimeout" json:"maxTimeout"`
 }
 
 type AdminConfig struct {
-	Auth *AuthConfig `yaml:"auth"`
+	Auth *AuthConfig `yaml:"auth" json:"auth"`
 }
 
 type DatabaseConfig struct {
-	EvmJsonRpcCache    *ConnectorConfig `yaml:"evmJsonRpcCache"`
-	EvmBlockIngestions *ConnectorConfig `yaml:"evmBlockIngestions"`
-	RateLimitSnapshots *ConnectorConfig `yaml:"rateLimitSnapshots"`
+	EvmJsonRpcCache    *ConnectorConfig `yaml:"evmJsonRpcCache" json:"evmJsonRpcCache"`
+	EvmBlockIngestions *ConnectorConfig `yaml:"evmBlockIngestions" json:"evmBlockIngestions"`
+	RateLimitSnapshots *ConnectorConfig `yaml:"rateLimitSnapshots" json:"rateLimitSnapshots"`
 }
 
 type ConnectorConfig struct {
-	Driver     string                     `yaml:"driver"`
-	Memory     *MemoryConnectorConfig     `yaml:"memory"`
-	Redis      *RedisConnectorConfig      `yaml:"redis"`
-	DynamoDB   *DynamoDBConnectorConfig   `yaml:"dynamodb"`
-	PostgreSQL *PostgreSQLConnectorConfig `yaml:"postgresql"`
+	Driver     string                     `yaml:"driver" json:"driver"`
+	Memory     *MemoryConnectorConfig     `yaml:"memory" json:"memory"`
+	Redis      *RedisConnectorConfig      `yaml:"redis" json:"redis"`
+	DynamoDB   *DynamoDBConnectorConfig   `yaml:"dynamodb" json:"dynamodb"`
+	PostgreSQL *PostgreSQLConnectorConfig `yaml:"postgresql" json:"postgresql"`
 }
 
 type MemoryConnectorConfig struct {
-	MaxItems int `yaml:"maxItems"`
+	MaxItems int `yaml:"maxItems" json:"maxItems"`
 }
 
 type RedisConnectorConfig struct {
-	Addr     string `yaml:"addr"`
-	Password string `yaml:"password"`
-	DB       int    `yaml:"db"`
+	Addr     string `yaml:"addr" json:"addr"`
+	Password string `yaml:"password" json:"password"`
+	DB       int    `yaml:"db" json:"db"`
 }
 
 type DynamoDBConnectorConfig struct {
-	Table            string         `yaml:"table"`
-	Region           string         `yaml:"region"`
-	Endpoint         string         `yaml:"endpoint"`
-	Auth             *AwsAuthConfig `yaml:"auth"`
-	PartitionKeyName string         `yaml:"partitionKeyName"`
-	RangeKeyName     string         `yaml:"rangeKeyName"`
-	ReverseIndexName string         `yaml:"reverseIndexName"`
+	Table            string         `yaml:"table" json:"table"`
+	Region           string         `yaml:"region" json:"region"`
+	Endpoint         string         `yaml:"endpoint" json:"endpoint"`
+	Auth             *AwsAuthConfig `yaml:"auth" json:"auth"`
+	PartitionKeyName string         `yaml:"partitionKeyName" json:"partitionKeyName"`
+	RangeKeyName     string         `yaml:"rangeKeyName" json:"rangeKeyName"`
+	ReverseIndexName string         `yaml:"reverseIndexName" json:"reverseIndexName"`
 }
 
 type PostgreSQLConnectorConfig struct {
-	ConnectionUri string `yaml:"connectionUri"`
-	Table         string `yaml:"table"`
+	ConnectionUri string `yaml:"connectionUri" json:"connectionUri"`
+	Table         string `yaml:"table" json:"table"`
 }
 
 type AwsAuthConfig struct {
-	Mode            string `yaml:"mode"` // "file", "env", "secret"
-	CredentialsFile string `yaml:"credentialsFile"`
-	Profile         string `yaml:"profile"`
-	AccessKeyID     string `yaml:"accessKeyID"`
-	SecretAccessKey string `yaml:"secretAccessKey"`
+	Mode            string `yaml:"mode" json:"mode"` // "file", "env", "secret"
+	CredentialsFile string `yaml:"credentialsFile" json:"credentialsFile"`
+	Profile         string `yaml:"profile" json:"profile"`
+	AccessKeyID     string `yaml:"accessKeyID" json:"accessKeyID"`
+	SecretAccessKey string `yaml:"secretAccessKey" json:"secretAccessKey"`
 }
 
 type ProjectConfig struct {
-	Id              string             `yaml:"id"`
-	Admin           *AdminConfig       `yaml:"admin"`
-	Auth            *AuthConfig        `yaml:"auth"`
-	CORS            *CORSConfig        `yaml:"cors"`
-	Upstreams       []*UpstreamConfig  `yaml:"upstreams"`
-	Networks        []*NetworkConfig   `yaml:"networks"`
-	RateLimitBudget string             `yaml:"rateLimitBudget"`
-	HealthCheck     *HealthCheckConfig `yaml:"healthCheck"`
+	Id              string             `yaml:"id" json:"id"`
+	Admin           *AdminConfig       `yaml:"admin" json:"admin"`
+	Auth            *AuthConfig        `yaml:"auth" json:"auth"`
+	CORS            *CORSConfig        `yaml:"cors" json:"cors"`
+	Upstreams       []*UpstreamConfig  `yaml:"upstreams" json:"upstreams"`
+	Networks        []*NetworkConfig   `yaml:"networks" json:"networks"`
+	RateLimitBudget string             `yaml:"rateLimitBudget" json:"rateLimitBudget"`
+	HealthCheck     *HealthCheckConfig `yaml:"healthCheck" json:"healthCheck"`
 }
 
 type CORSConfig struct {
-	AllowedOrigins   []string `yaml:"allowedOrigins"`
-	AllowedMethods   []string `yaml:"allowedMethods"`
-	AllowedHeaders   []string `yaml:"allowedHeaders"`
-	ExposedHeaders   []string `yaml:"exposedHeaders"`
-	AllowCredentials bool     `yaml:"allowCredentials"`
-	MaxAge           int      `yaml:"maxAge"`
+	AllowedOrigins   []string `yaml:"allowedOrigins" json:"allowedOrigins"`
+	AllowedMethods   []string `yaml:"allowedMethods" json:"allowedMethods"`
+	AllowedHeaders   []string `yaml:"allowedHeaders" json:"allowedHeaders"`
+	ExposedHeaders   []string `yaml:"exposedHeaders" json:"exposedHeaders"`
+	AllowCredentials bool     `yaml:"allowCredentials" json:"allowCredentials"`
+	MaxAge           int      `yaml:"maxAge" json:"maxAge"`
 }
 
 type UpstreamConfig struct {
-	Id                           string                   `yaml:"id"`
-	Type                         UpstreamType             `yaml:"type"` // evm, evm+alchemy, solana
-	VendorName                   string                   `yaml:"vendorName"`
-	Endpoint                     string                   `yaml:"endpoint"`
-	Evm                          *EvmUpstreamConfig       `yaml:"evm"`
-	JsonRpc                      *JsonRpcUpstreamConfig   `yaml:"jsonRpc"`
-	IgnoreMethods                []string                 `yaml:"ignoreMethods"`
-	AllowMethods                 []string                 `yaml:"allowMethods"`
-	AutoIgnoreUnsupportedMethods bool                     `yaml:"autoIgnoreUnsupportedMethods"`
-	Failsafe                     *FailsafeConfig          `yaml:"failsafe"`
-	RateLimitBudget              string                   `yaml:"rateLimitBudget"`
-	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune"`
+	Id                           string                   `yaml:"id" json:"id"`
+	Type                         UpstreamType             `yaml:"type" json:"type"` // evm, evm+alchemy, solana
+	VendorName                   string                   `yaml:"vendorName" json:"vendorName"`
+	Endpoint                     string                   `yaml:"endpoint" json:"endpoint"`
+	Evm                          *EvmUpstreamConfig       `yaml:"evm" json:"evm"`
+	JsonRpc                      *JsonRpcUpstreamConfig   `yaml:"jsonRpc" json:"jsonRpc"`
+	IgnoreMethods                []string                 `yaml:"ignoreMethods" json:"ignoreMethods"`
+	AllowMethods                 []string                 `yaml:"allowMethods" json:"allowMethods"`
+	AutoIgnoreUnsupportedMethods bool                     `yaml:"autoIgnoreUnsupportedMethods" json:"autoIgnoreUnsupportedMethods"`
+	Failsafe                     *FailsafeConfig          `yaml:"failsafe" json:"failsafe"`
+	RateLimitBudget              string                   `yaml:"rateLimitBudget" json:"rateLimitBudget"`
+	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune" json:"rateLimitAutoTune"`
 }
 
 type RateLimitAutoTuneConfig struct {
-	Enabled            bool    `yaml:"enabled"`
-	AdjustmentPeriod   string  `yaml:"adjustmentPeriod"`
-	ErrorRateThreshold float64 `yaml:"errorRateThreshold"`
-	IncreaseFactor     float64 `yaml:"increaseFactor"`
-	DecreaseFactor     float64 `yaml:"decreaseFactor"`
-	MinBudget          int     `yaml:"minBudget"`
-	MaxBudget          int     `yaml:"maxBudget"`
+	Enabled            bool    `yaml:"enabled" json:"enabled"`
+	AdjustmentPeriod   string  `yaml:"adjustmentPeriod" json:"adjustmentPeriod"`
+	ErrorRateThreshold float64 `yaml:"errorRateThreshold" json:"errorRateThreshold"`
+	IncreaseFactor     float64 `yaml:"increaseFactor" json:"increaseFactor"`
+	DecreaseFactor     float64 `yaml:"decreaseFactor" json:"decreaseFactor"`
+	MinBudget          int     `yaml:"minBudget" json:"minBudget"`
+	MaxBudget          int     `yaml:"maxBudget" json:"maxBudget"`
 }
 
 type JsonRpcUpstreamConfig struct {
-	SupportsBatch *bool  `yaml:"supportsBatch"`
-	BatchMaxSize  int    `yaml:"batchMaxSize"`
-	BatchMaxWait  string `yaml:"batchMaxWait"`
+	SupportsBatch *bool  `yaml:"supportsBatch" json:"supportsBatch"`
+	BatchMaxSize  int    `yaml:"batchMaxSize" json:"batchMaxSize"`
+	BatchMaxWait  string `yaml:"batchMaxWait" json:"batchMaxWait"`
 }
 
 type EvmUpstreamConfig struct {
-	ChainId              int         `yaml:"chainId"`
-	NodeType             EvmNodeType `yaml:"nodeType"`
-	Engine               string      `yaml:"engine"`
-	GetLogsMaxBlockRange int         `yaml:"getLogsMaxBlockRange"`
-	Syncing              bool        `yaml:"syncing"`
+	ChainId              int         `yaml:"chainId" json:"chainId"`
+	NodeType             EvmNodeType `yaml:"nodeType" json:"nodeType"`
+	Engine               string      `yaml:"engine" json:"engine"`
+	GetLogsMaxBlockRange int         `yaml:"getLogsMaxBlockRange" json:"getLogsMaxBlockRange"`
+	Syncing              bool        `yaml:"syncing" json:"syncing"`
 }
 
 type FailsafeConfig struct {
-	Retry          *RetryPolicyConfig          `yaml:"retry"`
-	CircuitBreaker *CircuitBreakerPolicyConfig `yaml:"circuitBreaker"`
-	Timeout        *TimeoutPolicyConfig        `yaml:"timeout"`
-	Hedge          *HedgePolicyConfig          `yaml:"hedge"`
+	Retry          *RetryPolicyConfig          `yaml:"retry" json:"retry"`
+	CircuitBreaker *CircuitBreakerPolicyConfig `yaml:"circuitBreaker" json:"circuitBreaker"`
+	Timeout        *TimeoutPolicyConfig        `yaml:"timeout" json:"timeout"`
+	Hedge          *HedgePolicyConfig          `yaml:"hedge" json:"hedge"`
 }
 
 type RetryPolicyConfig struct {
-	MaxAttempts     int     `yaml:"maxAttempts"`
-	Delay           string  `yaml:"delay"`
-	BackoffMaxDelay string  `yaml:"backoffMaxDelay"`
-	BackoffFactor   float32 `yaml:"backoffFactor"`
-	Jitter          string  `yaml:"jitter"`
+	MaxAttempts     int     `yaml:"maxAttempts" json:"maxAttempts"`
+	Delay           string  `yaml:"delay" json:"delay"`
+	BackoffMaxDelay string  `yaml:"backoffMaxDelay" json:"backoffMaxDelay"`
+	BackoffFactor   float32 `yaml:"backoffFactor" json:"backoffFactor"`
+	Jitter          string  `yaml:"jitter" json:"jitter"`
 }
 
 type CircuitBreakerPolicyConfig struct {
-	FailureThresholdCount    int    `yaml:"failureThresholdCount"`
-	FailureThresholdCapacity int    `yaml:"failureThresholdCapacity"`
-	HalfOpenAfter            string `yaml:"halfOpenAfter"`
-	SuccessThresholdCount    int    `yaml:"successThresholdCount"`
-	SuccessThresholdCapacity int    `yaml:"successThresholdCapacity"`
+	FailureThresholdCount    int    `yaml:"failureThresholdCount" json:"failureThresholdCount"`
+	FailureThresholdCapacity int    `yaml:"failureThresholdCapacity" json:"failureThresholdCapacity"`
+	HalfOpenAfter            string `yaml:"halfOpenAfter" json:"halfOpenAfter"`
+	SuccessThresholdCount    int    `yaml:"successThresholdCount" json:"successThresholdCount"`
+	SuccessThresholdCapacity int    `yaml:"successThresholdCapacity" json:"successThresholdCapacity"`
 }
 
 type TimeoutPolicyConfig struct {
-	Duration string `yaml:"duration"`
+	Duration string `yaml:"duration" json:"duration"`
 }
 
 type HedgePolicyConfig struct {
-	Delay    string `yaml:"delay"`
-	MaxCount int    `yaml:"maxCount"`
+	Delay    string `yaml:"delay" json:"delay"`
+	MaxCount int    `yaml:"maxCount" json:"maxCount"`
 }
 
 type RateLimiterConfig struct {
-	Budgets []*RateLimitBudgetConfig `yaml:"budgets"`
+	Budgets []*RateLimitBudgetConfig `yaml:"budgets" json:"budgets"`
 }
 
 type RateLimitBudgetConfig struct {
-	Id    string                 `yaml:"id"`
-	Rules []*RateLimitRuleConfig `yaml:"rules"`
+	Id    string                 `yaml:"id" json:"id"`
+	Rules []*RateLimitRuleConfig `yaml:"rules" json:"rules"`
 }
 
 type RateLimitRuleConfig struct {
-	Method   string `yaml:"method"`
-	MaxCount int    `yaml:"maxCount"`
-	Period   string `yaml:"period"`
-	WaitTime string `yaml:"waitTime"`
+	Method   string `yaml:"method" json:"method"`
+	MaxCount int    `yaml:"maxCount" json:"maxCount"`
+	Period   string `yaml:"period" json:"period"`
+	WaitTime string `yaml:"waitTime" json:"waitTime"`
 }
 
 type HealthCheckConfig struct {
-	ScoreMetricsWindowSize string `yaml:"scoreMetricsWindowSize"`
+	ScoreMetricsWindowSize string `yaml:"scoreMetricsWindowSize" json:"scoreMetricsWindowSize"`
 }
 
 type NetworkConfig struct {
-	Architecture    NetworkArchitecture `yaml:"architecture"`
-	RateLimitBudget string              `yaml:"rateLimitBudget"`
-	Failsafe        *FailsafeConfig     `yaml:"failsafe"`
-	Evm             *EvmNetworkConfig   `yaml:"evm"`
+	Architecture    NetworkArchitecture `yaml:"architecture" json:"architecture"`
+	RateLimitBudget string              `yaml:"rateLimitBudget" json:"rateLimitBudget"`
+	Failsafe        *FailsafeConfig     `yaml:"failsafe" json:"failsafe"`
+	Evm             *EvmNetworkConfig   `yaml:"evm" json:"evm"`
 }
 
 type EvmNetworkConfig struct {
-	ChainId              int64  `yaml:"chainId"`
-	FinalityDepth        int64  `yaml:"finalityDepth"`
-	BlockTrackerInterval string `yaml:"blockTrackerInterval"`
+	ChainId              int64  `yaml:"chainId" json:"chainId"`
+	FinalityDepth        int64  `yaml:"finalityDepth" json:"finalityDepth"`
+	BlockTrackerInterval string `yaml:"blockTrackerInterval" json:"blockTrackerInterval"`
 }
 
 type AuthType string
@@ -211,48 +211,48 @@ const (
 )
 
 type AuthConfig struct {
-	Strategies []*AuthStrategyConfig `yaml:"strategies"`
+	Strategies []*AuthStrategyConfig `yaml:"strategies" json:"strategies"`
 }
 
 type AuthStrategyConfig struct {
-	IgnoreMethods   []string `yaml:"ignoreMethods"`
-	AllowMethods    []string `yaml:"allowMethods"`
-	RateLimitBudget string   `yaml:"rateLimitBudget"`
+	IgnoreMethods   []string `yaml:"ignoreMethods" json:"ignoreMethods"`
+	AllowMethods    []string `yaml:"allowMethods" json:"allowMethods"`
+	RateLimitBudget string   `yaml:"rateLimitBudget" json:"rateLimitBudget"`
 
-	Type    AuthType               `yaml:"type"`
-	Network *NetworkStrategyConfig `yaml:"network"`
-	Secret  *SecretStrategyConfig  `yaml:"secret"`
-	Jwt     *JwtStrategyConfig     `yaml:"jwt"`
-	Siwe    *SiweStrategyConfig    `yaml:"siwe"`
+	Type    AuthType               `yaml:"type" json:"type"`
+	Network *NetworkStrategyConfig `yaml:"network" json:"network"`
+	Secret  *SecretStrategyConfig  `yaml:"secret" json:"secret"`
+	Jwt     *JwtStrategyConfig     `yaml:"jwt" json:"jwt"`
+	Siwe    *SiweStrategyConfig    `yaml:"siwe" json:"siwe"`
 }
 
 type SecretStrategyConfig struct {
-	Value string `yaml:"value"`
+	Value string `yaml:"value" json:"value"`
 }
 
 type JwtStrategyConfig struct {
-	AllowedIssuers    []string          `yaml:"allowedIssuers"`
-	AllowedAudiences  []string          `yaml:"allowedAudiences"`
-	AllowedAlgorithms []string          `yaml:"allowedAlgorithms"`
-	RequiredClaims    []string          `yaml:"requiredClaims"`
-	VerificationKeys  map[string]string `yaml:"verificationKeys"`
+	AllowedIssuers    []string          `yaml:"allowedIssuers" json:"allowedIssuers"`
+	AllowedAudiences  []string          `yaml:"allowedAudiences" json:"allowedAudiences"`
+	AllowedAlgorithms []string          `yaml:"allowedAlgorithms" json:"allowedAlgorithms"`
+	RequiredClaims    []string          `yaml:"requiredClaims" json:"requiredClaims"`
+	VerificationKeys  map[string]string `yaml:"verificationKeys" json:"verificationKeys"`
 }
 
 type SiweStrategyConfig struct {
-	AllowedDomains []string `yaml:"allowedDomains"`
+	AllowedDomains []string `yaml:"allowedDomains" json:"allowedDomains"`
 }
 
 type NetworkStrategyConfig struct {
-	AllowedIPs     []string `yaml:"allowedIPs"`
-	AllowedCIDRs   []string `yaml:"allowedCIDRs"`
-	AllowLocalhost bool     `yaml:"allowLocalhost"`
-	TrustedProxies []string `yaml:"trustedProxies"`
+	AllowedIPs     []string `yaml:"allowedIPs" json:"allowedIPs"`
+	AllowedCIDRs   []string `yaml:"allowedCIDRs" json:"allowedCIDRs"`
+	AllowLocalhost bool     `yaml:"allowLocalhost" json:"allowLocalhost"`
+	TrustedProxies []string `yaml:"trustedProxies" json:"trustedProxies"`
 }
 
 type MetricsConfig struct {
-	Enabled bool   `toml:"enabled"`
-	Host    string `toml:"host"`
-	Port    int    `toml:"port"`
+	Enabled bool   `yaml:"enabled" json:"enabled"`
+	Host    string `yaml:"host" json:"host"`
+	Port    int    `yaml:"port" json:"port"`
 }
 
 var cfgInstance *Config
