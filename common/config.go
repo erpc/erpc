@@ -1,6 +1,7 @@
 package common
 
 import (
+	"encoding/json"
 	"os"
 
 	"github.com/erpc/erpc/util"
@@ -54,6 +55,14 @@ type RedisConnectorConfig struct {
 	DB       int    `yaml:"db" json:"db"`
 }
 
+func (r *RedisConnectorConfig) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]interface{}{
+		"addr":     r.Addr,
+		"password": "REDACTED",
+		"db":       r.DB,
+	})
+}
+
 type DynamoDBConnectorConfig struct {
 	Table            string         `yaml:"table" json:"table"`
 	Region           string         `yaml:"region" json:"region"`
@@ -69,12 +78,29 @@ type PostgreSQLConnectorConfig struct {
 	Table         string `yaml:"table" json:"table"`
 }
 
+func (p *PostgreSQLConnectorConfig) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]string{
+		"connectionUri": util.RedactEndpoint(p.ConnectionUri),
+		"table":         p.Table,
+	})
+}
+
 type AwsAuthConfig struct {
 	Mode            string `yaml:"mode" json:"mode"` // "file", "env", "secret"
 	CredentialsFile string `yaml:"credentialsFile" json:"credentialsFile"`
 	Profile         string `yaml:"profile" json:"profile"`
 	AccessKeyID     string `yaml:"accessKeyID" json:"accessKeyID"`
 	SecretAccessKey string `yaml:"secretAccessKey" json:"secretAccessKey"`
+}
+
+func (a *AwsAuthConfig) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]interface{}{
+		"mode":             a.Mode,
+		"credentialsFile": a.CredentialsFile,
+		"profile":         a.Profile,
+		"accessKeyID":     a.AccessKeyID,
+		"secretAccessKey": "REDACTED",
+	})
 }
 
 type ProjectConfig struct {
@@ -110,6 +136,18 @@ type UpstreamConfig struct {
 	Failsafe                     *FailsafeConfig          `yaml:"failsafe" json:"failsafe"`
 	RateLimitBudget              string                   `yaml:"rateLimitBudget" json:"rateLimitBudget"`
 	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune" json:"rateLimitAutoTune"`
+}
+
+// redact Endpoint
+func (u *UpstreamConfig) MarshalJSON() ([]byte, error) {
+	type Alias UpstreamConfig
+	return json.Marshal(&struct {
+		Endpoint string `json:"endpoint"`
+		*Alias
+	}{
+		Endpoint: util.RedactEndpoint(u.Endpoint),
+		Alias:    (*Alias)(u),
+	})
 }
 
 type RateLimitAutoTuneConfig struct {
@@ -228,6 +266,13 @@ type AuthStrategyConfig struct {
 
 type SecretStrategyConfig struct {
 	Value string `yaml:"value" json:"value"`
+}
+
+// custom json marshaller to redact the secret value
+func (s *SecretStrategyConfig) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]string{
+		"value": "REDACTED",
+	})
 }
 
 type JwtStrategyConfig struct {
