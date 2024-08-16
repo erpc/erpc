@@ -514,6 +514,10 @@ func (u *Upstream) guessUpstreamType() error {
 		cfg.Type = common.UpstreamTypeEvmPimlico
 		return nil
 	}
+	if strings.HasPrefix(cfg.Endpoint, "etherspot://") || strings.HasPrefix(cfg.Endpoint, "evm+etherspot://") {
+		cfg.Type = common.UpstreamTypeEvmEtherspot
+		return nil
+	}
 
 	// TODO make actual calls to detect other types (solana, btc, etc)
 	cfg.Type = common.UpstreamTypeEvm
