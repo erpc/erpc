@@ -418,6 +418,7 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				details["data"] = err.Data
 			}
 		}
+		details["headers"] = util.ExtractUsefulHeaders(r.Header)
 
 		// Infer from known status codes
 		if r.StatusCode == 401 || r.StatusCode == 403 {

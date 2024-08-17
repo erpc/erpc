@@ -21,6 +21,14 @@ setup:
 run:
 	@go run ./cmd/erpc/main.go
 
+.PHONY: run-fake-rpcs
+run-fake-rpcs:
+	@go run ./test/cmd/main.go
+
+.PHONY: run-k6
+run-k6:
+	@k6 run ./test/k6/run.js
+
 .PHONY: build
 build:
 	@CGO_ENABLED=0 go build -ldflags="-w -s" -o ./bin/erpc ./cmd/erpc/main.go

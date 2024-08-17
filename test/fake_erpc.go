@@ -99,7 +99,7 @@ func (s *StressTestResult) SumCounter(name string, groupBy []string) []*CounterM
 	return result
 }
 
-func createFakeServers(configs []ServerConfig) []*FakeServer {
+func CreateFakeServers(configs []ServerConfig) []*FakeServer {
 	var fakeServers []*FakeServer
 	for _, config := range configs {
 		server, err := NewFakeServer(
@@ -144,7 +144,7 @@ func loadSamples(filename string) ([]RequestResponseSample, error) {
 
 func executeStressTest(config StressTestConfig) (*StressTestResult, error) {
 	// Create fake servers
-	fakeServers := createFakeServers(config.ServerConfigs)
+	fakeServers := CreateFakeServers(config.ServerConfigs)
 
 	// Start all fake servers
 	var wg sync.WaitGroup
@@ -391,41 +391,6 @@ func createTempFile(fs afero.Fs, pattern, content string) (afero.File, error) {
 
 	return tmpfile, nil
 }
-
-// func parseK6Results(fs afero.Fs, resultsFile afero.File) (StressTestResult, error) {
-// 	// This is a simplified parser. You might need to adjust it based on the actual k6 output format.
-// 	result := StressTestResult{
-// 		Success:          true,
-// 		FailuresByError:  make(map[string]ErrorStat),
-// 		ServerStatistics: make(map[int]ServerStats),
-// 	}
-
-// 	resultsStr, err := afero.ReadFile(fs, resultsFile.Name())
-// 	if err != nil {
-// 		return StressTestResult{}, fmt.Errorf("failed to read results file: %w", err)
-// 	}
-
-// 	// parse every line in resultsStr to an object
-// 	lines := strings.Split(string(resultsStr), "\n")
-// 	for _, line := range lines {
-// 		var resultLine map[string]interface{}
-// 		if err := json.Unmarshal([]byte(line), &resultLine); err != nil {
-// 			log.Error().Err(err).Str("line", line).Msg("failed to unmarshal results line")
-// 			continue
-// 			// return StressTestResult{}, fmt.Errorf("failed to unmarshal results line: %w", err)
-// 		}
-
-// 		log.Debug().Interface("resultLine", resultLine).Msg("Result line")
-// 	}
-
-// 	// TODO
-// 	//
-// 	// request failure rate overall and per upstream and per error type
-// 	// total avg./p90 latency overall and per upstream
-// 	//
-
-// 	return result, nil
-// }
 
 func fetchPrometheusMetrics(port int) (*StressTestResult, error) {
 	resp, err := http.Get(fmt.Sprintf("http://localhost:%d/metrics", port))
