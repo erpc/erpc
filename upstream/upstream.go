@@ -191,7 +191,12 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 		return nil, false, common.NewErrUpstreamRequest(err, cfg.Id, time.Since(startTime))
 	}
 
-	lg := u.Logger.With().Str("method", method).Logger()
+	// For certain requests such as internal eth_chainId requests, network might not be available yet.
+	netId := "n/a"
+	if req.Network() != nil {
+		netId = req.Network().Id()
+	}
+	lg := u.Logger.With().Str("method", method).Str("network", netId).Logger()
 
 	if limitersBudget != nil {
 		lg.Trace().Str("budget", cfg.RateLimitBudget).Msgf("checking upstream-level rate limiters budget")
@@ -200,10 +205,6 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 			for _, rule := range rules {
 				if !rule.Limiter.TryAcquirePermit() {
 					lg.Warn().Str("budget", cfg.RateLimitBudget).Msgf("upstream-level rate limit '%v' exceeded", rule.Config)
-					netId := "n/a"
-					if req.Network() != nil {
-						netId = req.Network().Id()
-					}
 					u.metricsTracker.RecordUpstreamSelfRateLimited(
 						netId,
 						cfg.Id,
@@ -255,10 +256,6 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 		tryForward := func(
 			ctx context.Context,
 		) (*common.NormalizedResponse, error) {
-			netId := "n/a"
-			if req.Network() != nil {
-				netId = req.Network().Id()
-			}
 			u.metricsTracker.RecordUpstreamRequest(
 				cfg.Id,
 				netId,
@@ -318,7 +315,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 			if execErr != nil {
 				return nil, false, TranslateFailsafeError(execution, execErr, map[string]interface{}{
 					"projectId":  u.ProjectId,
-					"networkId":  req.Network().Id(),
+					"networkId":  netId,
 					"upstreamId": cfg.Id,
 				})
 			}
