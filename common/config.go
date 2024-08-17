@@ -95,7 +95,7 @@ type AwsAuthConfig struct {
 
 func (a *AwsAuthConfig) MarshalJSON() ([]byte, error) {
 	return json.Marshal(map[string]interface{}{
-		"mode":             a.Mode,
+		"mode":            a.Mode,
 		"credentialsFile": a.CredentialsFile,
 		"profile":         a.Profile,
 		"accessKeyID":     a.AccessKeyID,
