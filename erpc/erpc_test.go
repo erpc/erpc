@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -9,7 +10,6 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/goccy/go-json"
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"

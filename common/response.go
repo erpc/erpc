@@ -3,7 +3,7 @@ package common
 import (
 	"fmt"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 )
 
 type NormalizedResponse struct {
@@ -58,7 +58,7 @@ func (r *NormalizedResponse) Body() []byte {
 		return nil
 	}
 
-	r.body, err = json.Marshal(jrr)
+	r.body, err = sonic.Marshal(jrr)
 	if err != nil {
 		return nil
 	}
@@ -103,7 +103,7 @@ func (r *NormalizedResponse) JsonRpcResponse() (*JsonRpcResponse, error) {
 	}
 
 	jrr := &JsonRpcResponse{}
-	err := json.Unmarshal(r.body, jrr)
+	err := sonic.Unmarshal(r.body, jrr)
 	if err != nil {
 		jrr.Error = NewErrJsonRpcExceptionExternal(
 			int(JsonRpcErrorServerSideException),
@@ -140,7 +140,7 @@ func (r *NormalizedResponse) String() string {
 		return r.err.Error()
 	}
 	if r.jsonRpcResponse != nil {
-		b, _ := json.Marshal(r.jsonRpcResponse)
+		b, _ := sonic.Marshal(r.jsonRpcResponse)
 		return string(b)
 	}
 	return "<nil>"
@@ -153,7 +153,7 @@ func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
 	}
 
 	if r.jsonRpcResponse != nil {
-		return json.Marshal(r.jsonRpcResponse)
+		return sonic.Marshal(r.jsonRpcResponse)
 	}
 
 	return nil, nil

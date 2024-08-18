@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 )
 
 func IsNull(err interface{}) bool {
@@ -92,7 +92,7 @@ func (e *BaseError) Error() string {
 	var detailsStr string
 
 	if e.Details != nil && len(e.Details) > 0 {
-		s, er := json.Marshal(e.Details)
+		s, er := sonic.Marshal(e.Details)
 		if er == nil {
 			detailsStr = fmt.Sprintf("(%s)", s)
 		} else {
@@ -154,7 +154,7 @@ func (e BaseError) MarshalJSON() ([]byte, error) {
 					causes = append(causes, err.Error())
 				}
 			}
-			return json.Marshal(&struct {
+			return sonic.Marshal(&struct {
 				Alias
 				Cause []interface{} `json:"cause"`
 			}{
@@ -162,7 +162,7 @@ func (e BaseError) MarshalJSON() ([]byte, error) {
 				Cause: causes,
 			})
 		}
-		return json.Marshal(&struct {
+		return sonic.Marshal(&struct {
 			Alias
 			Cause interface{} `json:"cause"`
 		}{
@@ -170,7 +170,7 @@ func (e BaseError) MarshalJSON() ([]byte, error) {
 			Cause: cc,
 		})
 	} else if cause != nil {
-		return json.Marshal(&struct {
+		return sonic.Marshal(&struct {
 			Alias
 			Cause BaseError `json:"cause"`
 		}{
@@ -182,7 +182,7 @@ func (e BaseError) MarshalJSON() ([]byte, error) {
 		})
 	}
 
-	return json.Marshal(&struct {
+	return sonic.Marshal(&struct {
 		Alias
 		Cause interface{} `json:"cause"`
 	}{
@@ -510,7 +510,7 @@ const ErrCodeUpstreamsExhausted ErrorCode = "ErrUpstreamsExhausted"
 
 var NewErrUpstreamsExhausted = func(req *NormalizedRequest, ers []error, duration time.Duration) error {
 	var reqStr string
-	s, err := json.Marshal(req)
+	s, err := sonic.Marshal(req)
 	if err != nil {
 		reqStr = string(req.Body())
 	} else if s != nil {

@@ -2,6 +2,8 @@ package erpc
 
 import (
 	"context"
+	"encoding/json"
+
 	"errors"
 	"fmt"
 	"io"
@@ -10,10 +12,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bytedance/sonic"
+
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
-	"github.com/goccy/go-json"
 	"github.com/rs/zerolog"
 )
 
@@ -123,7 +126,7 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) http.HandlerFunc {
 		s.logger.Debug().Msgf("received request for projectId: %s, architecture: %s with body: %s", projectId, architecture, body)
 
 		var requests []json.RawMessage
-		err = json.Unmarshal(body, &requests)
+		err = sonic.Unmarshal(body, &requests)
 		isBatch := err == nil
 
 		if !isBatch {
@@ -186,7 +189,7 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) http.HandlerFunc {
 				if architecture == "" || chainId == "" {
 					// Extract networkId from the request body
 					var req map[string]interface{}
-					if err := json.Unmarshal(rawReq, &req); err != nil {
+					if err := sonic.Unmarshal(rawReq, &req); err != nil {
 						responses[index] = processErrorBody(s.logger, nq, common.NewErrInvalidRequest(err))
 						return
 					}

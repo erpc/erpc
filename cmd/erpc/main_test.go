@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/erpc"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
@@ -229,7 +230,7 @@ projects:
 	// 4) Assert the response
 	//
 	respObject := make(map[string]interface{})
-	err = json.Unmarshal(respBody, &respObject)
+	err = sonic.Unmarshal(respBody, &respObject)
 	if err != nil {
 		t.Fatalf("error unmarshalling: %s response body: %s", err, respBody)
 	}

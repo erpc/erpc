@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
-	"github.com/goccy/go-json"
 	"github.com/rs/zerolog"
 )
 
@@ -88,7 +88,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	}
 
 	var resultObj interface{}
-	err = json.Unmarshal([]byte(resultString), &resultObj)
+	err = sonic.Unmarshal([]byte(resultString), &resultObj)
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +166,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		return err
 	}
 
-	resultStr, err := json.Marshal(rpcResp.Result)
+	resultStr, err := sonic.Marshal(rpcResp.Result)
 	if err != nil {
 		return err
 	}
