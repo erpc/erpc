@@ -29,14 +29,15 @@ func (p *PreparedProject) HandleAdminRequest(ctx context.Context, nq *common.Nor
 			// TODO should we just return 'relevant' budgets to avoid irrelevant data?
 			RateLimitBudgets: p.rateLimitersRegistry.GetBudgets(),
 		}
-		return common.NewNormalizedResponse().WithJsonRpcResponse(
-			&common.JsonRpcResponse{
-				JSONRPC: jrr.JSONRPC,
-				ID:      jrr.ID,
-				Error:   nil,
-				Result:  result,
-			},
-		), nil
+		jrrs, err := common.NewJsonRpcResponse(
+			jrr.ID,
+			result,
+			nil,
+		)
+		if err != nil {
+			return nil, err
+		}
+		return common.NewNormalizedResponse().WithJsonRpcResponse(jrrs), nil
 	case "erpc_health":
 		jrr, err := nq.JsonRpcRequest()
 		if err != nil {
@@ -46,14 +47,15 @@ func (p *PreparedProject) HandleAdminRequest(ctx context.Context, nq *common.Nor
 		if err != nil {
 			return nil, err
 		}
-		return common.NewNormalizedResponse().WithJsonRpcResponse(
-			&common.JsonRpcResponse{
-				JSONRPC: jrr.JSONRPC,
-				ID:      jrr.ID,
-				Error:   nil,
-				Result:  health,
-			},
-		), nil
+		jrrs, err := common.NewJsonRpcResponse(
+			jrr.ID,
+			health,
+			nil,
+		)
+		if err != nil {
+			return nil, err
+		}
+		return common.NewNormalizedResponse().WithJsonRpcResponse(jrrs), nil
 	default:
 		return nil, common.NewErrEndpointUnsupported(
 			fmt.Errorf("admin method %s is not supported", method),

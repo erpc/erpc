@@ -20,8 +20,40 @@ type JsonRpcRequest struct {
 type JsonRpcResponse struct {
 	JSONRPC string                       `json:"jsonrpc,omitempty"`
 	ID      interface{}                  `json:"id,omitempty"`
-	Result  interface{}                  `json:"result,omitempty"`
+	Result  json.RawMessage              `json:"result,omitempty"`
 	Error   *ErrJsonRpcExceptionExternal `json:"error,omitempty"`
+
+	parsedResult interface{}
+}
+
+func NewJsonRpcResponse(id interface{}, result interface{}, rpcError *ErrJsonRpcExceptionExternal) (*JsonRpcResponse, error) {
+	resultRaw, err := sonic.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	return &JsonRpcResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Result:  resultRaw,
+		Error:   rpcError,
+	}, nil
+}
+
+func (r *JsonRpcResponse) ParsedResult() (interface{}, error) {
+	if r.parsedResult != nil {
+		return r.parsedResult, nil
+	}
+
+	if r.Result == nil {
+		return nil, nil
+	}
+
+	err := sonic.Unmarshal(r.Result, &r.parsedResult)
+	if err != nil {
+		return nil, err
+	}
+
+	return r.parsedResult, nil
 }
 
 func (r *JsonRpcRequest) MarshalZerologObject(e *zerolog.Event) {

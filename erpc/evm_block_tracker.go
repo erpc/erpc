@@ -146,7 +146,11 @@ func (e *EvmBlockTracker) fetchBlock(ctx context.Context, blockTag string) (int6
 	}
 
 	// If result is nil or has an invalid structure, return an error
-	resultMap, ok := jrr.Result.(map[string]interface{})
+	result, err := jrr.ParsedResult()
+	if err != nil {
+		return 0, err
+	}
+	resultMap, ok := result.(map[string]interface{})
 	if !ok || resultMap == nil || resultMap["number"] == nil {
 		return 0, &common.BaseError{
 			Code:    "ErrEvmBlockTracker",

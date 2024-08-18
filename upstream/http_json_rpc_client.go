@@ -578,7 +578,11 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 
 	// There's a special case for certain clients that return a normal response for reverts:
 	if jr != nil && jr.Result != nil {
-		if dt, ok := jr.Result.(string); ok {
+		res, err := jr.ParsedResult()
+		if err != nil {
+			return err
+		}
+		if dt, ok := res.(string); ok {
 			// keccak256("Error(string)")
 			if strings.HasPrefix(dt, "0x08c379a0") {
 				return common.NewErrEndpointClientSideException(

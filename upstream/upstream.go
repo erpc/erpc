@@ -85,7 +85,10 @@ func NewUpstream(
 	} else {
 		pup.Client = client
 	}
-	pup.detectFeatures()
+	err = pup.detectFeatures()
+	if err != nil {
+		return nil, err
+	}
 
 	lg.Debug().Msgf("prepared upstream")
 
@@ -351,7 +354,11 @@ func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 		return "", jrr.Error
 	}
 
-	hex, err := common.NormalizeHex(jrr.Result)
+	res, err := jrr.ParsedResult()
+	if err != nil {
+		return "", err
+	}
+	hex, err := common.NormalizeHex(res)
 	if err != nil {
 		return "", err
 	}
@@ -528,11 +535,17 @@ func (u *Upstream) detectFeatures() error {
 		if cfg.Evm.ChainId == 0 {
 			nid, err := u.EvmGetChainId(context.Background())
 			if err != nil {
-				return err
+				return common.NewErrUpstreamClientInitialization(
+					fmt.Errorf("failed to get chain id: %w", err),
+					cfg.Id,
+				)
 			}
 			cfg.Evm.ChainId, err = strconv.Atoi(nid)
 			if err != nil {
-				return err
+				return common.NewErrUpstreamClientInitialization(
+					fmt.Errorf("failed to parse chain id: %w", err),
+					cfg.Id,
+				)
 			}
 			u.supportedNetworkIdsMu.Lock()
 			u.supportedNetworkIds[util.EvmNetworkId(cfg.Evm.ChainId)] = true
