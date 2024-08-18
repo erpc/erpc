@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
-	"net/http"
 	"sync"
 
 	"github.com/bytedance/sonic"
 	"github.com/rs/zerolog"
+	"github.com/valyala/fasthttp"
 )
 
 type RequestDirectives struct {
@@ -77,9 +77,9 @@ func (r *NormalizedRequest) SetNetwork(network Network) {
 	r.network = network
 }
 
-func (r *NormalizedRequest) ApplyDirectivesFromHttpHeaders(headers http.Header) {
+func (r *NormalizedRequest) ApplyDirectivesFromHttpHeaders(headers *fasthttp.RequestHeader) {
 	drc := &RequestDirectives{
-		RetryEmpty: headers.Get("x-erpc-retry-empty") != "false",
+		RetryEmpty: string(headers.Peek("x-erpc-retry-empty")) != "false",
 	}
 	r.directives = drc
 }

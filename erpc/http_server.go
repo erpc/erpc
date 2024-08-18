@@ -4,38 +4,35 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
-
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/rs/zerolog"
+	"github.com/valyala/fasthttp"
 )
 
 type HttpServer struct {
 	config *common.ServerConfig
-	server *http.Server
+	server *fasthttp.Server
 	erpc   *ERPC
 	logger *zerolog.Logger
 }
 
 var bufPool = sync.Pool{
-    New: func() interface{} {
-        return new(bytes.Buffer)
-    },
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
 }
 
 func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.ServerConfig, erpc *ERPC) *HttpServer {
-	addr := fmt.Sprintf("%s:%d", cfg.HttpHost, cfg.HttpPort)
+	// addr := fmt.Sprintf("%s:%d", cfg.HttpHost, cfg.HttpPort)
 
 	timeOutDur, err := time.ParseDuration(cfg.MaxTimeout)
 	if err != nil {
@@ -51,20 +48,16 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 		logger: logger,
 	}
 
-	handler := http.NewServeMux()
-	handler.HandleFunc("/", srv.handleRequest(timeOutDur))
-
-	srv.server = &http.Server{
-		Addr:    addr,
-		Handler: handler,
+	srv.server = &fasthttp.Server{
+		Handler:      srv.handleRequest(timeOutDur),
+		ReadTimeout:  timeOutDur,
+		WriteTimeout: timeOutDur,
 	}
 
 	go func() {
 		<-ctx.Done()
 		logger.Info().Msg("shutting down http server...")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(shutdownCtx, logger); err != nil {
+		if err := srv.Shutdown(logger); err != nil {
 			logger.Error().Msgf("http server forced to shutdown: %s", err)
 		} else {
 			logger.Info().Msg("http server stopped")
@@ -74,16 +67,16 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 	return srv
 }
 
-func (s *HttpServer) handleRequest(timeOutDur time.Duration) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+func (s *HttpServer) handleRequest(timeOutDur time.Duration) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
 		buf := bufPool.Get().(*bytes.Buffer)
 		defer bufPool.Put(buf)
-		buf.Reset()		
+		buf.Reset()
 		encoder := json.NewEncoder(buf)
-	
-		segments := strings.Split(r.URL.Path, "/")
+
+		segments := strings.Split(string(ctx.Path()), "/")
 		if len(segments) != 2 && len(segments) != 3 && len(segments) != 4 {
-			handleErrorResponse(s.logger, nil, common.NewErrInvalidUrlPath(r.URL.Path), w)
+			handleErrorResponse(s.logger, nil, common.NewErrInvalidUrlPath(string(ctx.Path())), ctx)
 			return
 		}
 
@@ -92,48 +85,37 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) http.HandlerFunc {
 		isAdmin := false
 
 		if len(segments) == 4 {
-			// URL format: /main/evm/111
 			architecture = segments[2]
 			chainId = segments[3]
 		} else if len(segments) == 3 {
 			if segments[2] == "admin" {
-				// URL format: /main/admin
-				// for admin methods and frequests
 				isAdmin = true
 			} else {
-				handleErrorResponse(s.logger, nil, common.NewErrInvalidUrlPath(r.URL.Path), w)
+				handleErrorResponse(s.logger, nil, common.NewErrInvalidUrlPath(string(ctx.Path())), ctx)
 				return
 			}
 		}
-		// else:
-		// 	 URL format: /main
-		// 	 networkId will be provided in the request body
 
 		project, err := s.erpc.GetProject(projectId)
 		if err != nil {
-			handleErrorResponse(s.logger, nil, err, w)
+			handleErrorResponse(s.logger, nil, err, ctx)
 			return
 		}
 
-		// Apply CORS if configured
 		if project.Config.CORS != nil {
-			if !s.handleCORS(w, r, project.Config.CORS) {
+			if !s.handleCORS(ctx, project.Config.CORS) {
 				return
 			}
 
-			if r.Method == http.MethodOptions {
-				return // CORS preflight request handled
+			if string(ctx.Method()) == fasthttp.MethodOptions {
+				return
 			}
 		}
 
-		requestCtx, cancel := context.WithTimeout(r.Context(), timeOutDur)
+		requestCtx, cancel := context.WithTimeout(context.Background(), timeOutDur)
 		defer cancel()
 
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			handleErrorResponse(s.logger, nil, common.NewErrInvalidRequest(err), w)
-			return
-		}
+		body := ctx.PostBody()
 
 		s.logger.Debug().Msgf("received request for projectId: %s, architecture: %s with body: %s", projectId, architecture, body)
 
@@ -154,9 +136,9 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) http.HandlerFunc {
 				defer wg.Done()
 
 				nq := common.NewNormalizedRequest(rawReq)
-				nq.ApplyDirectivesFromHttpHeaders(r.Header)
+				nq.ApplyDirectivesFromHttpHeaders(&ctx.Request.Header)
 
-				ap, err := auth.NewPayloadFromHttp(project.Config.Id, nq, r)
+				ap, err := auth.NewPayloadFromHttp(project.Config.Id, nq, ctx)
 				if err != nil {
 					responses[index] = processErrorBody(s.logger, nq, err)
 					return
@@ -199,7 +181,6 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) http.HandlerFunc {
 				var networkId string
 
 				if architecture == "" || chainId == "" {
-					// Extract networkId from the request body
 					var req map[string]interface{}
 					if err := sonic.Unmarshal(rawReq, &req); err != nil {
 						responses[index] = processErrorBody(s.logger, nq, common.NewErrInvalidRequest(err))
@@ -241,34 +222,32 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) http.HandlerFunc {
 
 		wg.Wait()
 
-		w.Header().Set("Content-Type", "application/json")
+		ctx.Response.Header.SetContentType("application/json")
 
 		if isBatch {
-			w.WriteHeader(http.StatusOK)
+			ctx.SetStatusCode(fasthttp.StatusOK)
 			encoder.Encode(responses)
 		} else {
 			if _, ok := responses[0].(error); ok {
-				w.WriteHeader(processErrorStatusCode(responses[0].(error)))
+				ctx.SetStatusCode(processErrorStatusCode(responses[0].(error)))
 			} else {
-				w.WriteHeader(http.StatusOK)
+				ctx.SetStatusCode(fasthttp.StatusOK)
 			}
 			encoder.Encode(responses[0])
 		}
 
-		w.Write(buf.Bytes())
+		ctx.SetBody(buf.Bytes())
 	}
 }
 
-func (s *HttpServer) handleCORS(w http.ResponseWriter, r *http.Request, corsConfig *common.CORSConfig) bool {
-	origin := r.Header.Get("Origin")
+func (s *HttpServer) handleCORS(ctx *fasthttp.RequestCtx, corsConfig *common.CORSConfig) bool {
+	origin := string(ctx.Request.Header.Peek("Origin"))
 	if origin == "" {
-		return true // Not a CORS request
+		return true
 	}
 
-	// Count all CORS requests
-	health.MetricCORSRequestsTotal.WithLabelValues(r.URL.Path, origin).Inc()
+	health.MetricCORSRequestsTotal.WithLabelValues(string(ctx.Path()), origin).Inc()
 
-	// Check if the origin is allowed
 	allowed := false
 	for _, allowedOrigin := range corsConfig.AllowedOrigins {
 		if common.WildcardMatch(allowedOrigin, origin) {
@@ -279,36 +258,32 @@ func (s *HttpServer) handleCORS(w http.ResponseWriter, r *http.Request, corsConf
 
 	if !allowed {
 		s.logger.Debug().Str("origin", origin).Msg("CORS request from disallowed origin")
-		health.MetricCORSDisallowedOriginTotal.WithLabelValues(r.URL.Path, origin).Inc()
+		health.MetricCORSDisallowedOriginTotal.WithLabelValues(string(ctx.Path()), origin).Inc()
 
-		if r.Method == http.MethodOptions {
-			// For preflight requests, return 204 No Content
-			w.WriteHeader(http.StatusNoContent)
+		if string(ctx.Method()) == fasthttp.MethodOptions {
+			ctx.SetStatusCode(fasthttp.StatusNoContent)
 		} else {
-			// For actual requests, return 403 Forbidden
-			http.Error(w, "CORS request from disallowed origin", http.StatusForbidden)
+			ctx.Error("CORS request from disallowed origin", fasthttp.StatusForbidden)
 		}
 		return false
 	}
 
-	// Set CORS headers
-	w.Header().Set("Access-Control-Allow-Origin", origin)
-	w.Header().Set("Access-Control-Allow-Methods", strings.Join(corsConfig.AllowedMethods, ", "))
-	w.Header().Set("Access-Control-Allow-Headers", strings.Join(corsConfig.AllowedHeaders, ", "))
-	w.Header().Set("Access-Control-Expose-Headers", strings.Join(corsConfig.ExposedHeaders, ", "))
+	ctx.Response.Header.Set("Access-Control-Allow-Origin", origin)
+	ctx.Response.Header.Set("Access-Control-Allow-Methods", strings.Join(corsConfig.AllowedMethods, ", "))
+	ctx.Response.Header.Set("Access-Control-Allow-Headers", strings.Join(corsConfig.AllowedHeaders, ", "))
+	ctx.Response.Header.Set("Access-Control-Expose-Headers", strings.Join(corsConfig.ExposedHeaders, ", "))
 
 	if corsConfig.AllowCredentials {
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
 	}
 
 	if corsConfig.MaxAge > 0 {
-		w.Header().Set("Access-Control-Max-Age", fmt.Sprintf("%d", corsConfig.MaxAge))
+		ctx.Response.Header.Set("Access-Control-Max-Age", fmt.Sprintf("%d", corsConfig.MaxAge))
 	}
 
-	// Handle preflight request
-	if r.Method == http.MethodOptions {
-		health.MetricCORSPreflightRequestsTotal.WithLabelValues(r.URL.Path, origin).Inc()
-		w.WriteHeader(http.StatusNoContent)
+	if string(ctx.Method()) == fasthttp.MethodOptions {
+		health.MetricCORSPreflightRequestsTotal.WithLabelValues(string(ctx.Path()), origin).Inc()
+		ctx.SetStatusCode(fasthttp.StatusNoContent)
 		return false
 	}
 
@@ -371,10 +346,10 @@ func processErrorStatusCode(err error) int {
 	if errors.As(err, &httpErr) {
 		return httpErr.ErrorStatusCode()
 	}
-	return http.StatusInternalServerError
+	return fasthttp.StatusInternalServerError
 }
 
-func handleErrorResponse(logger *zerolog.Logger, nq *common.NormalizedRequest, err error, hrw http.ResponseWriter) {
+func handleErrorResponse(logger *zerolog.Logger, nq *common.NormalizedRequest, err error, ctx *fasthttp.RequestCtx) {
 	if !common.IsNull(err) {
 		if common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
 			logger.Debug().Err(err).Msgf("forward request errored with client-side exception")
@@ -383,22 +358,14 @@ func handleErrorResponse(logger *zerolog.Logger, nq *common.NormalizedRequest, e
 		}
 	}
 
-	//
-	// 1) Decide on the http status code
-	//
-	hrw.Header().Set("Content-Type", "application/json")
+	ctx.Response.Header.SetContentType("application/json")
 	var httpErr common.ErrorWithStatusCode
 	if errors.As(err, &httpErr) {
-		hrw.WriteHeader(httpErr.ErrorStatusCode())
+		ctx.SetStatusCode(httpErr.ErrorStatusCode())
 	} else {
-		hrw.WriteHeader(http.StatusInternalServerError)
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 	}
 
-	//
-	// 2) Write the body based on the transport type
-	//
-
-	// TODO when the second transport is implemented we need to detect which transport is used and translate the error accordingly
 	err = common.TranslateToJsonRpcException(err)
 
 	var jsonrpcVersion string = "2.0"
@@ -413,7 +380,7 @@ func handleErrorResponse(logger *zerolog.Logger, nq *common.NormalizedRequest, e
 
 	jre := &common.ErrJsonRpcExceptionInternal{}
 	if errors.As(err, &jre) {
-		writeErr := json.NewEncoder(hrw).Encode(map[string]interface{}{
+		writeErr := json.NewEncoder(ctx).Encode(map[string]interface{}{
 			"jsonrpc": jsonrpcVersion,
 			"id":      reqId,
 			"error": map[string]interface{}{
@@ -429,21 +396,18 @@ func handleErrorResponse(logger *zerolog.Logger, nq *common.NormalizedRequest, e
 		return
 	}
 
-	//
-	// 3) Final fallback if an unexpected error happens, this code path is very unlikely to happen
-	//
 	var bodyErr common.ErrorWithBody
 	var writeErr error
 
 	if errors.As(err, &bodyErr) {
-		writeErr = json.NewEncoder(hrw).Encode(bodyErr.ErrorResponseBody())
+		writeErr = json.NewEncoder(ctx).Encode(bodyErr.ErrorResponseBody())
 	} else if _, ok := err.(*common.BaseError); ok {
-		writeErr = json.NewEncoder(hrw).Encode(err)
+		writeErr = json.NewEncoder(ctx).Encode(err)
 	} else {
 		if serr, ok := err.(common.StandardError); ok {
-			writeErr = json.NewEncoder(hrw).Encode(serr)
+			writeErr = json.NewEncoder(ctx).Encode(serr)
 		} else {
-			writeErr = json.NewEncoder(hrw).Encode(
+			writeErr = json.NewEncoder(ctx).Encode(
 				common.BaseError{
 					Code:    "ErrUnknown",
 					Message: "unexpected server error",
@@ -459,11 +423,11 @@ func handleErrorResponse(logger *zerolog.Logger, nq *common.NormalizedRequest, e
 }
 
 func (s *HttpServer) Start(logger *zerolog.Logger) error {
-	logger.Info().Msgf("starting http server on %s", s.server.Addr)
-	return s.server.ListenAndServe()
+	logger.Info().Msgf("starting http server on %s:%d", s.config.HttpHost, s.config.HttpPort)
+	return s.server.ListenAndServe(fmt.Sprintf("%s:%d", s.config.HttpHost, s.config.HttpPort))
 }
 
-func (s *HttpServer) Shutdown(ctx context.Context, logger *zerolog.Logger) error {
+func (s *HttpServer) Shutdown(logger *zerolog.Logger) error {
 	logger.Info().Msg("shutting down http server")
-	return s.server.Shutdown(ctx)
+	return s.server.Shutdown()
 }
