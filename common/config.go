@@ -1,10 +1,10 @@
 package common
 
 import (
-	"encoding/json"
 	"os"
 
 	"github.com/erpc/erpc/util"
+	"github.com/goccy/go-json"
 	"github.com/rs/zerolog"
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v3"
@@ -363,25 +363,28 @@ func (c *ServerConfig) MarshalZerologObject(e *zerolog.Event) {
 
 func (s *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type rawConfig Config
-	raw := rawConfig{
-		LogLevel: "INFO",
-		Server: &ServerConfig{
-			HttpHost: "0.0.0.0",
-			HttpPort: 4000,
-		},
-		Database: &DatabaseConfig{
-			EvmJsonRpcCache: &ConnectorConfig{
-				Driver: "memory",
-				Memory: &MemoryConnectorConfig{
-					MaxItems: 10_000,
+	var raw rawConfig
+	if !util.IsTest() {
+		raw = rawConfig{
+			LogLevel: "INFO",
+			Server: &ServerConfig{
+				HttpHost: "0.0.0.0",
+				HttpPort: 4000,
+			},
+			Database: &DatabaseConfig{
+				EvmJsonRpcCache: &ConnectorConfig{
+					Driver: "memory",
+					Memory: &MemoryConnectorConfig{
+						MaxItems: 10_000,
+					},
 				},
 			},
-		},
-		Metrics: &MetricsConfig{
-			Enabled: true,
-			Host:    "0.0.0.0",
-			Port:    4001,
-		},
+			Metrics: &MetricsConfig{
+				Enabled: true,
+				Host:    "0.0.0.0",
+				Port:    4001,
+			},
+		}
 	}
 	if err := unmarshal(&raw); err != nil {
 		return err

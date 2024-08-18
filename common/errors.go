@@ -1,13 +1,14 @@
 package common
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/goccy/go-json"
 )
 
 func IsNull(err interface{}) bool {

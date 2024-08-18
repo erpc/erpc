@@ -3,7 +3,6 @@ package erpc
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +18,7 @@ import (
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/erpc/erpc/vendors"
+	"github.com/goccy/go-json"
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -1601,23 +1601,23 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		if err != nil {
-			t.Errorf("Expected nil error, got %v", err)
+			t.Fatalf("Expected nil error, got %v", err)
 		}
 
 		jrr, err := resp.JsonRpcResponse()
 		if err != nil {
-			t.Errorf("Expected nil error, got %v", err)
+			t.Fatalf("Expected nil error, got %v", err)
 		}
 		if jrr.Result == nil {
-			t.Errorf("Expected result, got %v", jrr)
+			t.Fatalf("Expected result, got %v", jrr)
 		}
 
 		result, ok := jrr.Result.(map[string]interface{})
 		if !ok {
-			t.Errorf("Expected result to be a map, got %T", jrr.Result)
+			t.Fatalf("Expected result to be a map, got %T", jrr.Result)
 		}
 		if hash, ok := result["hash"]; !ok || hash == "" {
-			t.Errorf("Expected hash to exist and be non-empty, got %v", result)
+			t.Fatalf("Expected hash to exist and be non-empty, got %v", result)
 		}
 	})
 
