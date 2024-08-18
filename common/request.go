@@ -1,13 +1,13 @@
 package common
 
 import (
-	"encoding/json"
 	"fmt"
 	"math"
 	"math/rand"
 	"net/http"
 	"sync"
 
+	"github.com/goccy/go-json"
 	"github.com/rs/zerolog"
 )
 

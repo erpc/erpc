@@ -8,8 +8,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/rs/zerolog/log"
 	"github.com/erpc/erpc/test"
+	"github.com/rs/zerolog/log"
 )
 
 func main() {

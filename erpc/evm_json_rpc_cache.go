@@ -2,13 +2,13 @@ package erpc
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
+	"github.com/goccy/go-json"
 	"github.com/rs/zerolog"
 )
 

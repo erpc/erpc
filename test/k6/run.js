@@ -6,8 +6,8 @@ const errorRate = new Rate('errors');
 
 export const options = {
   stages: [
-    { duration: '20s', target: 1000 },
-    { duration: '1m', target: 1000 },
+    { duration: '10s', target: 800 },
+    { duration: '30s', target: 800 },
   ],
 };
 
@@ -25,8 +25,8 @@ export default function () {
     headers: { 'Content-Type': 'application/json' },
   };
 
-  const res = http.post('http://localhost:8081', samplePayload, params);
-  // const res = http.post('http://localhost:4000/main/evm/123', samplePayload, params);
+  // const res = http.post('http://localhost:8081', samplePayload, params);
+  const res = http.post('http://localhost:4000/main/evm/123', samplePayload, params);
 
   check(res, {
     'status is 200': (r) => r.status === 200,

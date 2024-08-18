@@ -31,8 +31,8 @@ run-k6:
 
 .PHONY: build
 build:
-	@CGO_ENABLED=0 go build -ldflags="-w -s" -o ./bin/erpc ./cmd/erpc/main.go
-	@echo executable file \"erpc\" saved in ./bin/erpc
+	@CGO_ENABLED=0 go build -ldflags="-w -s" -o ./bin/erpc-server ./cmd/erpc/main.go
+	@CGO_ENABLED=0 go build -ldflags="-w -s" -tags pprof -o ./bin/erpc-server-pprof ./cmd/erpc/*.go
 
 .PHONY: test
 test:
