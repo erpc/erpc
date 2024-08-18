@@ -6,9 +6,17 @@ const errorRate = new Rate('errors');
 
 export const options = {
   stages: [
-    { duration: '10s', target: 800 },
-    { duration: '30s', target: 800 },
+    { duration: '20s', target: 10000 },
+    { duration: '5m', target: 10000 },
   ],
+  ext: {
+    loadimpact: {
+      distribution: {
+        distributionLabel1: { loadZone: 'amazon:de:frankfurt', percent: 80 },
+        distributionLabel2: { loadZone: 'amazon:gb:london', percent: 20 },
+      },
+    },
+  },
 };
 
 const samplePayload = JSON.stringify({
