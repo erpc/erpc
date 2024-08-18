@@ -88,12 +88,6 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		return nil, err
 	}
 
-	// var resultObj interface{}
-	// err = sonic.Unmarshal([]byte(resultString), &resultObj)
-	// if err != nil {
-	// 	return nil, err
-	// }
-
 	jrr := &common.JsonRpcResponse{
 		JSONRPC: rpcReq.JSONRPC,
 		ID:      rpcReq.ID,
