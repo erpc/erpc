@@ -82,11 +82,11 @@ func NewGenericHttpJsonRpcClient(logger *zerolog.Logger, pu *Upstream, parsedUrl
 		client.httpClient = &http.Client{}
 	} else {
 		client.httpClient = &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 60 * time.Second,
 			Transport: &http.Transport{
-				MaxIdleConns:        100,
+				MaxIdleConns:        400,
+				MaxIdleConnsPerHost: 400,
 				IdleConnTimeout:     90 * time.Second,
-				MaxIdleConnsPerHost: 10,
 			},
 		}
 	}
