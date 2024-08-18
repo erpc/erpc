@@ -1,6 +1,7 @@
 package erpc
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 
@@ -25,6 +26,12 @@ type HttpServer struct {
 	server *http.Server
 	erpc   *ERPC
 	logger *zerolog.Logger
+}
+
+var bufPool = sync.Pool{
+    New: func() interface{} {
+        return new(bytes.Buffer)
+    },
 }
 
 func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.ServerConfig, erpc *ERPC) *HttpServer {
@@ -69,6 +76,11 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 
 func (s *HttpServer) handleRequest(timeOutDur time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		buf := bufPool.Get().(*bytes.Buffer)
+		defer bufPool.Put(buf)
+		buf.Reset()		
+		encoder := json.NewEncoder(buf)
+	
 		segments := strings.Split(r.URL.Path, "/")
 		if len(segments) != 2 && len(segments) != 3 && len(segments) != 4 {
 			handleErrorResponse(s.logger, nil, common.NewErrInvalidUrlPath(r.URL.Path), w)
@@ -233,16 +245,17 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) http.HandlerFunc {
 
 		if isBatch {
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(responses)
+			encoder.Encode(responses)
 		} else {
 			if _, ok := responses[0].(error); ok {
 				w.WriteHeader(processErrorStatusCode(responses[0].(error)))
 			} else {
 				w.WriteHeader(http.StatusOK)
 			}
-
-			json.NewEncoder(w).Encode(responses[0])
+			encoder.Encode(responses[0])
 		}
+
+		w.Write(buf.Bytes())
 	}
 }
 
