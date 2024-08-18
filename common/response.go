@@ -77,16 +77,17 @@ func (r *NormalizedResponse) Error() error {
 func (r *NormalizedResponse) IsResultEmptyish() bool {
 	jrr, err := r.JsonRpcResponse()
 	if err == nil {
-		if jrr == nil || jrr.Result == nil {
+		if jrr == nil {
 			return true
 		}
 
-		if s, ok := jrr.Result.(string); ok {
-			return s == "" || s == "0x"
-		}
-
-		if arr, ok := jrr.Result.([]interface{}); ok {
-			return len(arr) == 0
+		// Use raw result to avoid json unmarshalling for performance reasons
+		if jrr.Result == nil ||
+			len(jrr.Result) == 0 ||
+			(jrr.Result[0] == '0' && jrr.Result[1] == 'x' && len(jrr.Result) == 2) ||
+			(jrr.Result[0] == '[' && jrr.Result[1] == ']' && len(jrr.Result) == 2) ||
+			(jrr.Result[0] == '{' && jrr.Result[1] == '}' && len(jrr.Result) == 2) {
+			return true
 		}
 	}
 

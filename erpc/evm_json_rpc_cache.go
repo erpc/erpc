@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -87,17 +88,17 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		return nil, err
 	}
 
-	var resultObj interface{}
-	err = sonic.Unmarshal([]byte(resultString), &resultObj)
-	if err != nil {
-		return nil, err
-	}
+	// var resultObj interface{}
+	// err = sonic.Unmarshal([]byte(resultString), &resultObj)
+	// if err != nil {
+	// 	return nil, err
+	// }
 
 	jrr := &common.JsonRpcResponse{
 		JSONRPC: rpcReq.JSONRPC,
 		ID:      rpcReq.ID,
 		Error:   nil,
-		Result:  resultObj,
+		Result:  json.RawMessage(resultString),
 	}
 
 	return common.NewNormalizedResponse().
@@ -249,7 +250,11 @@ func extractBlockReferenceFromResponse(rpcReq *common.JsonRpcRequest, rpcResp *c
 	case "eth_getTransactionReceipt",
 		"eth_getTransactionByHash":
 		if rpcResp.Result != nil {
-			if tx, ok := rpcResp.Result.(map[string]interface{}); ok {
+			result, err := rpcResp.ParsedResult()
+			if err != nil {
+				return "", 0, err
+			}
+			if tx, ok := result.(map[string]interface{}); ok {
 				if blockHash, ok := tx["blockHash"].(string); ok && blockHash != "" {
 					return blockHash, 0, nil
 				}

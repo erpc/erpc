@@ -754,7 +754,11 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		result, ok := jrr.Result.([]interface{})
+		res, err := jrr.ParsedResult()
+		if err != nil {
+			t.Fatalf("Failed to get parsed result: %v", err)
+		}
+		result, ok := res.([]interface{})
 		if !ok {
 			t.Fatalf("Expected Result to be []interface{}, got %T", jrr.Result)
 		}
@@ -956,7 +960,11 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		result, ok := jrr.Result.([]interface{})
+		res, err := jrr.ParsedResult()
+		if err != nil {
+			t.Fatalf("Failed to get parsed result: %v", err)
+		}
+		result, ok := res.([]interface{})
 		if !ok {
 			t.Fatalf("Expected Result to be []interface{}, got %T", jrr.Result)
 		}
@@ -1613,7 +1621,11 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected result, got %v", jrr)
 		}
 
-		result, ok := jrr.Result.(map[string]interface{})
+		res, err := jrr.ParsedResult()
+		if err != nil {
+			t.Fatalf("Failed to get parsed result: %v", err)
+		}
+		result, ok := res.(map[string]interface{})
 		if !ok {
 			t.Fatalf("Expected result to be a map, got %T", jrr.Result)
 		}
@@ -1977,7 +1989,11 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected result, got nil")
 		}
 
-		result, ok := jrr.Result.(map[string]interface{})
+		res, err := jrr.ParsedResult()
+		if err != nil {
+			t.Fatalf("Failed to get parsed result: %v", err)
+		}
+		result, ok := res.(map[string]interface{})
 		if !ok {
 			t.Fatalf("Expected Result to be map[string]interface{}, got %T", jrr.Result)
 		}
@@ -2133,7 +2149,12 @@ func TestNetwork_Forward(t *testing.T) {
 		if jrr.Result == nil {
 			t.Fatalf("Expected result, got nil")
 		}
-		result, ok := jrr.Result.(map[string]interface{})
+
+		res, err := jrr.ParsedResult()
+		if err != nil {
+			t.Fatalf("Failed to get parsed result: %v", err)
+		}
+		result, ok := res.(map[string]interface{})
 		if !ok {
 			t.Fatalf("Expected result to be map[string]interface{}, got %T", jrr.Result)
 		}
@@ -2658,7 +2679,11 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
-		result, ok := jrr.Result.(map[string]interface{})
+		res, err := jrr.ParsedResult()
+		if err != nil {
+			t.Fatalf("Failed to get parsed result: %v", err)
+		}
+		result, ok := res.(map[string]interface{})
 		if !ok {
 			t.Fatalf("Expected result to be map[string]interface{}, got %T", jrr.Result)
 		}
@@ -2905,7 +2930,11 @@ func TestNetwork_Forward(t *testing.T) {
 		t.Logf("jrr.Result type: %T", jrr.Result)
 		t.Logf("jrr.Result content: %+v", jrr.Result)
 
-		result, ok := jrr.Result.(map[string]interface{})
+		res, err := jrr.ParsedResult()
+		if err != nil {
+			t.Fatalf("Failed to get parsed result: %v", err)
+		}
+		result, ok := res.(map[string]interface{})
 		if !ok {
 			t.Fatalf("Expected Result to be map[string]interface{}, got %T", jrr.Result)
 		}
@@ -3056,7 +3085,11 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		result, ok := jrr.Result.([]interface{})
+		res, err := jrr.ParsedResult()
+		if err != nil {
+			t.Fatalf("Failed to get parsed result: %v", err)
+		}
+		result, ok := res.([]interface{})
 		if !ok {
 			t.Fatalf("Expected Result to be []interface{}, got %T", jrr.Result)
 		}
@@ -3188,7 +3221,11 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		result, ok := jrr.Result.([]interface{})
+		res, err := jrr.ParsedResult()
+		if err != nil {
+			t.Fatalf("Failed to get parsed result: %v", err)
+		}
+		result, ok := res.([]interface{})
 		if !ok {
 			t.Fatalf("Expected Result to be []interface{}, got %T", jrr.Result)
 		}
