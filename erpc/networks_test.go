@@ -3,6 +3,7 @@ package erpc
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,12 +14,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/erpc/erpc/vendors"
-	"github.com/goccy/go-json"
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -548,7 +549,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Convert the raw response to a map to access custom fields like fromHost
 		var responseMap map[string]interface{}
-		err = json.Unmarshal(resp.Body(), &responseMap)
+		err = sonic.Unmarshal(resp.Body(), &responseMap)
 		if err != nil {
 			t.Fatalf("Failed to unmarshal response body: %v", err)
 		}

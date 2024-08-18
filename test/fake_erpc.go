@@ -2,7 +2,6 @@ package test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/erpc"
 	"github.com/prometheus/client_golang/prometheus"
@@ -135,7 +135,7 @@ func loadSamples(filename string) ([]RequestResponseSample, error) {
 	}
 
 	var samples []RequestResponseSample
-	if err := json.Unmarshal(data, &samples); err != nil {
+	if err := sonic.Unmarshal(data, &samples); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal samples: %w", err)
 	}
 
@@ -334,7 +334,7 @@ func loadAllSamples(configs []ServerConfig) ([]RequestResponseSample, error) {
 }
 
 func createK6Script(baseUrl string, samples []RequestResponseSample, config StressTestConfig) string {
-	samplesJSON, _ := json.Marshal(samples)
+	samplesJSON, _ := sonic.Marshal(samples)
 	return fmt.Sprintf(`
 		import http from 'k6/http';
 		import { check, sleep } from 'k6';

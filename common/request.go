@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/rs/zerolog"
 )
 
@@ -103,7 +103,7 @@ func (r *NormalizedRequest) JsonRpcRequest() (*JsonRpcRequest, error) {
 	}
 
 	rpcReq := new(JsonRpcRequest)
-	if err := json.Unmarshal(r.body, rpcReq); err != nil {
+	if err := sonic.Unmarshal(r.body, rpcReq); err != nil {
 		return nil, NewErrJsonRpcRequestUnmarshal(err)
 	}
 
@@ -162,11 +162,11 @@ func (r *NormalizedRequest) MarshalJSON() ([]byte, error) {
 	}
 
 	if r.jsonRpcRequest != nil {
-		return json.Marshal(r.jsonRpcRequest)
+		return sonic.Marshal(r.jsonRpcRequest)
 	}
 
 	if m, _ := r.Method(); m != "" {
-		return json.Marshal(map[string]interface{}{
+		return sonic.Marshal(map[string]interface{}{
 			"method": m,
 		})
 	}

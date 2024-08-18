@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
@@ -179,7 +180,7 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 		})
 	}
 
-	requestBody, err := json.Marshal(batchReq)
+	requestBody, err := sonic.Marshal(batchReq)
 	if err != nil {
 		for _, req := range requests {
 			req.err <- err
@@ -234,13 +235,13 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 	}
 
 	var batchResp []json.RawMessage
-	err = json.Unmarshal(respBody, &batchResp)
+	err = sonic.Unmarshal(respBody, &batchResp)
 	if err != nil {
 		// Try parsing as single json-rpc object,
 		// some providers return a single object on some errors even when request is batch.
 		// this is a workaround to handle those cases.
 		var singleResp common.JsonRpcResponse
-		errsg := json.Unmarshal(respBody, &singleResp)
+		errsg := sonic.Unmarshal(respBody, &singleResp)
 		if errsg != nil {
 			for _, req := range requests {
 				req.err <- common.NewErrEndpointServerSideException(
@@ -283,7 +284,7 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 
 	for _, rawResp := range batchResp {
 		var jrResp common.JsonRpcResponse
-		err := json.Unmarshal(rawResp, &jrResp)
+		err := sonic.Unmarshal(rawResp, &jrResp)
 		if err != nil {
 			continue
 		}
@@ -312,7 +313,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		return nil, common.NewErrUpstreamRequest(err, c.upstream.Config().Id, 0)
 	}
 
-	requestBody, err := json.Marshal(common.JsonRpcRequest{
+	requestBody, err := sonic.Marshal(common.JsonRpcRequest{
 		JSONRPC: jrReq.JSONRPC,
 		Method:  jrReq.Method,
 		Params:  jrReq.Params,

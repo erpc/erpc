@@ -2,10 +2,11 @@ package common
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 
-	"github.com/goccy/go-json"
+	"github.com/bytedance/sonic"
 	"github.com/rs/zerolog"
 )
 
@@ -96,7 +97,7 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 		Alias: (*Alias)(r),
 	}
 
-	if err := json.Unmarshal(data, &aux); err != nil {
+	if err := sonic.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 
@@ -108,7 +109,7 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 			Message string `json:"message,omitempty"`
 			Data    string `json:"data,omitempty"`
 		}{}
-		if err := json.Unmarshal(data, &sp1); err == nil {
+		if err := sonic.Unmarshal(data, &sp1); err == nil {
 			r.Error = NewErrJsonRpcExceptionExternal(
 				sp1.Code,
 				sp1.Message,
@@ -120,7 +121,7 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 		sp2 := &struct {
 			Error string `json:"error"`
 		}{}
-		if err := json.Unmarshal(data, &sp2); err == nil {
+		if err := sonic.Unmarshal(data, &sp2); err == nil {
 			r.Error = NewErrJsonRpcExceptionExternal(
 				int(JsonRpcErrorServerSideException),
 				sp2.Error,
@@ -139,7 +140,7 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 
 	if aux.Error != nil {
 		var customError map[string]interface{}
-		if err := json.Unmarshal(aux.Error, &customError); err != nil {
+		if err := sonic.Unmarshal(aux.Error, &customError); err != nil {
 			return err
 		}
 		var code int

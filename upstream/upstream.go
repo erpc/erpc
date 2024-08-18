@@ -2,7 +2,6 @@ package upstream
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -10,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/util"
@@ -581,5 +581,5 @@ func (u *Upstream) MarshalJSON() ([]byte, error) {
 		ActiveNetworks: activeNetworks,
 	}
 
-	return json.Marshal(uppub)
+	return sonic.Marshal(uppub)
 }

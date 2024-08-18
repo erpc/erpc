@@ -3,8 +3,8 @@ package common
 import (
 	"os"
 
+	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/util"
-	"github.com/goccy/go-json"
 	"github.com/rs/zerolog"
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v3"
@@ -56,7 +56,7 @@ type RedisConnectorConfig struct {
 }
 
 func (r *RedisConnectorConfig) MarshalJSON() ([]byte, error) {
-	return json.Marshal(map[string]interface{}{
+	return sonic.Marshal(map[string]interface{}{
 		"addr":     r.Addr,
 		"password": "REDACTED",
 		"db":       r.DB,
@@ -79,7 +79,7 @@ type PostgreSQLConnectorConfig struct {
 }
 
 func (p *PostgreSQLConnectorConfig) MarshalJSON() ([]byte, error) {
-	return json.Marshal(map[string]string{
+	return sonic.Marshal(map[string]string{
 		"connectionUri": util.RedactEndpoint(p.ConnectionUri),
 		"table":         p.Table,
 	})
@@ -94,7 +94,7 @@ type AwsAuthConfig struct {
 }
 
 func (a *AwsAuthConfig) MarshalJSON() ([]byte, error) {
-	return json.Marshal(map[string]interface{}{
+	return sonic.Marshal(map[string]interface{}{
 		"mode":            a.Mode,
 		"credentialsFile": a.CredentialsFile,
 		"profile":         a.Profile,
@@ -141,7 +141,7 @@ type UpstreamConfig struct {
 // redact Endpoint
 func (u *UpstreamConfig) MarshalJSON() ([]byte, error) {
 	type Alias UpstreamConfig
-	return json.Marshal(&struct {
+	return sonic.Marshal(&struct {
 		Endpoint string `json:"endpoint"`
 		*Alias
 	}{
@@ -270,7 +270,7 @@ type SecretStrategyConfig struct {
 
 // custom json marshaller to redact the secret value
 func (s *SecretStrategyConfig) MarshalJSON() ([]byte, error) {
-	return json.Marshal(map[string]string{
+	return sonic.Marshal(map[string]string{
 		"value": "REDACTED",
 	})
 }
