@@ -21,17 +21,17 @@ func NewPayloadFromHttp(projectId string, nq *common.NormalizedRequest, r *fasth
 		ap.Secret = &SecretPayload{
 			Value: string(r.QueryArgs().Peek("token")),
 		}
-	} else if string(r.Request.Header.Peek("X-ERPC-Secret-Token")) != "" {
+	} else if tkn := r.Request.Header.Peek("X-ERPC-Secret-Token"); tkn != nil {
 		ap.Type = common.AuthTypeSecret
 		ap.Secret = &SecretPayload{
-			Value: string(r.Request.Header.Peek("X-ERPC-Secret-Token")),
+			Value: string(tkn),
 		}
-	} else if string(r.Request.Header.Peek("Authorization")) != "" {
-		auth := strings.TrimSpace(string(r.Request.Header.Peek("Authorization")))
-		label := strings.ToLower(auth[0:6])
+	} else if ath := r.Request.Header.Peek("Authorization"); ath != nil {
+		ath := strings.TrimSpace(string(ath))
+		label := strings.ToLower(ath[0:6])
 
 		if strings.EqualFold(label, "basic") {
-			basicAuthB64 := strings.TrimSpace(auth[6:])
+			basicAuthB64 := strings.TrimSpace(ath[6:])
 			basicAuth, err := base64.StdEncoding.DecodeString(basicAuthB64)
 			if err != nil {
 				return nil, err
@@ -49,7 +49,7 @@ func NewPayloadFromHttp(projectId string, nq *common.NormalizedRequest, r *fasth
 		} else if strings.EqualFold(label, "bearer") {
 			ap.Type = common.AuthTypeJwt
 			ap.Jwt = &JwtPayload{
-				Token: auth[7:],
+				Token: ath[7:],
 			}
 		}
 	} else if r.QueryArgs().Has("jwt") {
@@ -63,11 +63,13 @@ func NewPayloadFromHttp(projectId string, nq *common.NormalizedRequest, r *fasth
 			Signature: string(r.QueryArgs().Peek("signature")),
 			Message:   normalizeSiweMessage(string(r.QueryArgs().Peek("message"))),
 		}
-	} else if string(r.Request.Header.Peek("X-Siwe-Message")) != "" && string(r.Request.Header.Peek("X-Siwe-Signature")) != "" {
-		ap.Type = common.AuthTypeSiwe
-		ap.Siwe = &SiwePayload{
-			Signature: string(r.Request.Header.Peek("X-Siwe-Signature")),
-			Message:   normalizeSiweMessage(string(r.Request.Header.Peek("X-Siwe-Message"))),
+	} else if msg := r.Request.Header.Peek("X-Siwe-Message"); msg != nil {
+		if sig := r.Request.Header.Peek("X-Siwe-Signature"); sig != nil {
+			ap.Type = common.AuthTypeSiwe
+			ap.Siwe = &SiwePayload{
+				Signature: string(sig),
+				Message:   normalizeSiweMessage(string(msg)),
+			}
 		}
 	}
 
