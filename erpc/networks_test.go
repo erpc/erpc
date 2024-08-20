@@ -1021,7 +1021,6 @@ func TestNetwork_Forward(t *testing.T) {
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
-			AutoIgnoreUnsupportedMethods: true,
 		}
 		upr := upstream.NewUpstreamsRegistry(
 			&log.Logger,
@@ -1130,8 +1129,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
-			Failsafe:                     fsCfg,
-			AutoIgnoreUnsupportedMethods: true,
+			Failsafe: fsCfg,
 		}
 		upr := upstream.NewUpstreamsRegistry(
 			&log.Logger,

@@ -479,6 +479,7 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				),
 			)
 		} else if strings.Contains(err.Message, "missing trie node") ||
+		 	strings.Contains(err.Message, "header not found") ||
 			// Usually happens on Avalanche when querying a pretty recent block:
 			strings.Contains(err.Message, "cannot query unfinalized") ||
 			strings.Contains(err.Message, "height is not available") ||
@@ -526,11 +527,21 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 						details,
 					),
 				)
+			} else if strings.Contains(err.Message, "header") {
+				return common.NewErrEndpointMissingData(
+						common.NewErrJsonRpcExceptionInternal(
+							int(code),
+							common.JsonRpcErrorMissingData,
+							err.Message,
+							nil,
+							details,
+						),
+					)
 			} else {
 				return common.NewErrEndpointClientSideException(
 					common.NewErrJsonRpcExceptionInternal(
 						int(code),
-						common.JsonRpcErrorUnsupportedException,
+						common.JsonRpcErrorClientSideException,
 						err.Message,
 						nil,
 						details,

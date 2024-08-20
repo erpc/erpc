@@ -7,6 +7,8 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
+var FALSE = false
+
 type DrpcVendor struct {
 	common.Vendor
 }
@@ -28,6 +30,12 @@ func (v *DrpcVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
 		upstream.JsonRpc.SupportsBatch = &TRUE
 		upstream.JsonRpc.BatchMaxWait = "100ms"
 		upstream.JsonRpc.BatchMaxSize = 100
+	}
+
+	// By default disable auto-ignore because free-tier plans of dRPC
+	// might give wrong responses when using public nodes.
+	if upstream.AutoIgnoreUnsupportedMethods == nil {
+		upstream.AutoIgnoreUnsupportedMethods = &FALSE
 	}
 
 	return nil
