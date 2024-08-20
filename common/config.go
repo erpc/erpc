@@ -10,6 +10,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+var TRUE = true
+
 // Config represents the configuration of the application.
 type Config struct {
 	LogLevel     string             `yaml:"logLevel" json:"logLevel"`
@@ -132,7 +134,7 @@ type UpstreamConfig struct {
 	JsonRpc                      *JsonRpcUpstreamConfig   `yaml:"jsonRpc" json:"jsonRpc"`
 	IgnoreMethods                []string                 `yaml:"ignoreMethods" json:"ignoreMethods"`
 	AllowMethods                 []string                 `yaml:"allowMethods" json:"allowMethods"`
-	AutoIgnoreUnsupportedMethods bool                     `yaml:"autoIgnoreUnsupportedMethods" json:"autoIgnoreUnsupportedMethods"`
+	AutoIgnoreUnsupportedMethods *bool                    `yaml:"autoIgnoreUnsupportedMethods" json:"autoIgnoreUnsupportedMethods"`
 	Failsafe                     *FailsafeConfig          `yaml:"failsafe" json:"failsafe"`
 	RateLimitBudget              string                   `yaml:"rateLimitBudget" json:"rateLimitBudget"`
 	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune" json:"rateLimitAutoTune"`
@@ -416,7 +418,7 @@ func (s *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 				SuccessThresholdCapacity: 5,
 			},
 		},
-		AutoIgnoreUnsupportedMethods: true,
+		AutoIgnoreUnsupportedMethods: &TRUE,
 		RateLimitAutoTune: &RateLimitAutoTuneConfig{
 			Enabled:            true,
 			AdjustmentPeriod:   "1m",
