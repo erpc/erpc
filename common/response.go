@@ -135,7 +135,9 @@ func (r *NormalizedResponse) IsResultEmptyish() bool {
 		// Use raw result to avoid json unmarshalling for performance reasons
 		if jrr.Result == nil ||
 			len(jrr.Result) == 0 ||
-			(jrr.Result[0] == '0' && jrr.Result[1] == 'x' && len(jrr.Result) == 2) ||
+			(jrr.Result[0] == '"' && jrr.Result[1] == '0' && jrr.Result[2] == 'x' && jrr.Result[3] == '"' && len(jrr.Result) == 4) ||
+			(jrr.Result[0] == 'n' && jrr.Result[1] == 'u' && jrr.Result[2] == 'l' && jrr.Result[3] == 'l' && len(jrr.Result) == 4) ||
+			(jrr.Result[0] == '"' && jrr.Result[1] == '"' && len(jrr.Result) == 2) ||
 			(jrr.Result[0] == '[' && jrr.Result[1] == ']' && len(jrr.Result) == 2) ||
 			(jrr.Result[0] == '{' && jrr.Result[1] == '}' && len(jrr.Result) == 2) {
 			return true
