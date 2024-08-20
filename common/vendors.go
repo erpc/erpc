@@ -8,5 +8,5 @@ type Vendor interface {
 	Name() string
 	OwnsUpstream(upstream *UpstreamConfig) bool
 	OverrideConfig(upstream *UpstreamConfig) error
-	GetVendorSpecificErrorIfAny(resp *http.Response, bodyObject interface{}) error
+	GetVendorSpecificErrorIfAny(resp *http.Response, bodyObject interface{}, details map[string]interface{}) error
 }

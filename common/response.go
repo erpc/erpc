@@ -11,11 +11,62 @@ type NormalizedResponse struct {
 	body    []byte
 	err     error
 
+	fromCache bool
+	attempts  int
+	retries   int
+	hedges    int
+	upstream  Upstream
+
 	jsonRpcResponse *JsonRpcResponse
 }
 
 func NewNormalizedResponse() *NormalizedResponse {
 	return &NormalizedResponse{}
+}
+
+func (r *NormalizedResponse) FromCache() bool {
+	return r.fromCache
+}
+
+func (r *NormalizedResponse) SetFromCache(fromCache bool) *NormalizedResponse {
+	r.fromCache = fromCache
+	return r
+}
+
+func (r *NormalizedResponse) Attempts() int {
+	return r.attempts
+}
+
+func (r *NormalizedResponse) SetAttempts(attempts int) *NormalizedResponse {
+	r.attempts = attempts
+	return r
+}
+
+func (r *NormalizedResponse) Retries() int {
+	return r.retries
+}
+
+func (r *NormalizedResponse) SetRetries(retries int) *NormalizedResponse {
+	r.retries = retries
+	return r
+}
+
+func (r *NormalizedResponse) Hedges() int {
+	return r.hedges
+}
+
+func (r *NormalizedResponse) SetHedges(hedges int) *NormalizedResponse {
+	r.hedges = hedges
+	return r
+}
+
+func (r *NormalizedResponse) Upstream() Upstream {
+	return r.upstream
+}
+
+func (r *NormalizedResponse) SetUpstream(upstream Upstream) *NormalizedResponse {
+	r.upstream = upstream
+	return r
 }
 
 func (r *NormalizedResponse) WithRequest(req *NormalizedRequest) *NormalizedResponse {

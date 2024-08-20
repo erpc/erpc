@@ -71,6 +71,8 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		if !s {
 			return nil, nil
 		}
+	} else {
+		return nil, nil
 	}
 
 	groupKey, requestKey, err := generateKeysForJsonRpcRequest(req, blockRef)

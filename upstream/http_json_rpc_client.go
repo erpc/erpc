@@ -403,13 +403,15 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 	if jr != nil && jr.Error != nil {
 		err := jr.Error
 
-		if ver := getVendorSpecificErrorIfAny(r, nr, jr); ver != nil {
+		var details map[string]interface{} = make(map[string]interface{})
+		details["headers"] = util.ExtractUsefulHeaders(r.Header)
+
+		if ver := getVendorSpecificErrorIfAny(r, nr, jr, details); ver != nil {
 			return ver
 		}
 
 		code := common.JsonRpcErrorNumber(err.Code)
 
-		var details map[string]interface{} = make(map[string]interface{})
 		if err.Data != "" {
 			// Some providers such as Alchemy prefix the data with this string
 			// we omit this prefix for standardization.
@@ -419,7 +421,6 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				details["data"] = err.Data
 			}
 		}
-		details["headers"] = util.ExtractUsefulHeaders(r.Header)
 
 		// Infer from known status codes
 		if r.StatusCode == 401 || r.StatusCode == 403 {
@@ -607,6 +608,7 @@ func getVendorSpecificErrorIfAny(
 	rp *http.Response,
 	nr *common.NormalizedResponse,
 	jr *common.JsonRpcResponse,
+	details map[string]interface{},
 ) error {
 	req := nr.Request()
 	if req == nil {
@@ -623,5 +625,5 @@ func getVendorSpecificErrorIfAny(
 		return nil
 	}
 
-	return vn.GetVendorSpecificErrorIfAny(rp, jr)
+	return vn.GetVendorSpecificErrorIfAny(rp, jr, details)
 }

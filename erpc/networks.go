@@ -111,11 +111,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 		resp, err := n.cacheDal.Get(cctx, req)
-		lg.Debug().Err(err).Msgf("cache response: %v", resp)
 		if err != nil {
 			lg.Debug().Err(err).Msgf("could not find response in cache")
 			health.MetricNetworkCacheMisses.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 		} else if resp != nil {
+			resp.SetFromCache(true)
 			lg.Info().Object("req", req).Err(err).Msgf("response served from cache")
 			health.MetricNetworkCacheHits.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 			inf.Close(resp, err)
@@ -222,6 +222,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					errorsMutex.Unlock()
 				}
 				if !skipped {
+					if resp != nil {
+						resp.SetUpstream(u)
+					}
 					return resp, err
 				} else if err != nil {
 					continue
@@ -257,15 +260,23 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 	}
 
-	if n.cacheDal != nil && resp != nil {
-		go (func(resp *common.NormalizedResponse) {
-			c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			err := n.cacheDal.Set(c, req, resp)
-			if err != nil {
-				lg.Warn().Err(err).Msgf("could not store response in cache")
-			}
-		})(resp)
+	if resp != nil {
+		if execution != nil {
+			resp.SetAttempts(execution.Attempts())
+			resp.SetRetries(execution.Retries())
+			resp.SetHedges(execution.Hedges())
+		}
+
+		if n.cacheDal != nil {
+			go (func(resp *common.NormalizedResponse) {
+				c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				err := n.cacheDal.Set(c, req, resp)
+				if err != nil {
+					lg.Warn().Err(err).Msgf("could not store response in cache")
+				}
+			})(resp)
+		}
 	}
 
 	inf.Close(resp, nil)
