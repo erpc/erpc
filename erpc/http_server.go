@@ -112,7 +112,7 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) fasthttp.RequestHan
 			}
 		}
 
-		requestCtx, cancel := context.WithTimeout(context.Background(), timeOutDur)
+		requestCtx, cancel := context.WithTimeout(ctx, timeOutDur)
 		defer cancel()
 
 		body := ctx.PostBody()
