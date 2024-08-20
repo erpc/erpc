@@ -26,6 +26,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+var TRUE = true
+
 func init() {
 	log.Logger = log.Level(zerolog.ErrorLevel).Output(zerolog.ConsoleWriter{Out: os.Stderr})
 }
@@ -1021,6 +1023,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
+			AutoIgnoreUnsupportedMethods: &TRUE,
 		}
 		upr := upstream.NewUpstreamsRegistry(
 			&log.Logger,
