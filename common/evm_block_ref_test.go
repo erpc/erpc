@@ -270,7 +270,7 @@ func TestExtractBlockReference(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, resultUint, err := ExtractEvmBlockReference(tt.request)
+			result, resultUint, err := ExtractEvmBlockReferenceFromRequest(tt.request)
 			if tt.expErr {
 				assert.Error(t, err)
 			} else {

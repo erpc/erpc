@@ -149,7 +149,7 @@ func TestExtractBlockReferenceFromResponse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, resultUint, err := extractBlockReferenceFromResponse(tt.rpcReq, tt.rpcResp)
+			result, resultUint, err := common.ExtractEvmBlockReferenceFromResponse(tt.rpcReq, tt.rpcResp)
 			if tt.expErr {
 				assert.Error(t, err)
 			} else {

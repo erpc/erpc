@@ -181,6 +181,28 @@ func (r *NormalizedResponse) IsObjectNull() bool {
 	return false
 }
 
+func (r *NormalizedResponse) EvmBlockNumber() (int64, error) {
+	if r == nil {
+		return 0, nil
+	}
+
+	if r.request == nil {
+		return 0, nil
+	}
+
+	rq, err := r.request.JsonRpcRequest()
+	if err != nil {
+		return 0, err
+	}
+
+	_, bn, err := ExtractEvmBlockReferenceFromResponse(rq, r.jsonRpcResponse)
+	if err != nil {
+		return 0, err
+	}
+
+	return bn, nil
+}
+
 func (r *NormalizedResponse) String() string {
 	if r == nil {
 		return "<nil>"
@@ -198,7 +220,6 @@ func (r *NormalizedResponse) String() string {
 	return "<nil>"
 }
 
-// Custom unmarsheller for json.NewEncoder(w).Encode
 func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
 	if r.body != nil {
 		return r.body, nil

@@ -3,7 +3,6 @@ package erpc
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
@@ -56,7 +55,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		return nil, err
 	}
 
-	blockRef, blockNumber, err := common.ExtractEvmBlockReference(rpcReq)
+	blockRef, blockNumber, err := common.ExtractEvmBlockReferenceFromRequest(rpcReq)
 	if err != nil {
 		return nil, err
 	}
@@ -120,13 +119,13 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		return nil
 	}
 
-	blockRef, blockNumber, err := common.ExtractEvmBlockReference(rpcReq)
+	blockRef, blockNumber, err := common.ExtractEvmBlockReferenceFromRequest(rpcReq)
 	if err != nil {
 		return err
 	}
 
 	if blockRef == "" {
-		blockRef, blockNumber, err = extractBlockReferenceFromResponse(rpcReq, rpcResp)
+		blockRef, blockNumber, err = common.ExtractEvmBlockReferenceFromResponse(rpcReq, rpcResp)
 		if err != nil {
 			return err
 		}
@@ -231,60 +230,4 @@ func populateDefaults(cfg *common.ConnectorConfig) error {
 	}
 
 	return nil
-}
-
-func extractBlockReferenceFromResponse(rpcReq *common.JsonRpcRequest, rpcResp *common.JsonRpcResponse) (string, int64, error) {
-	if rpcReq == nil {
-		return "", 0, errors.New("cannot extract block reference when json-rpc request is nil")
-	}
-
-	if rpcResp == nil {
-		return "", 0, errors.New("cannot extract block reference when json-rpc response is nil")
-	}
-
-	switch rpcReq.Method {
-	case "eth_getTransactionReceipt",
-		"eth_getTransactionByHash":
-		if rpcResp.Result != nil {
-			result, err := rpcResp.ParsedResult()
-			if err != nil {
-				return "", 0, err
-			}
-			if tx, ok := result.(map[string]interface{}); ok {
-				if blockHash, ok := tx["blockHash"].(string); ok && blockHash != "" {
-					return blockHash, 0, nil
-				}
-				if blockNumber, ok := tx["blockNumber"].(string); ok && blockNumber != "" {
-					bn, err := common.HexToInt64(blockNumber)
-					if err != nil {
-						return "", bn, err
-					}
-					return fmt.Sprintf("%d", bn), bn, nil
-				}
-			}
-		}
-
-	case "arbtrace_replayTransaction",
-		"trace_replayTransaction",
-		"debug_traceTransaction",
-		"trace_transaction":
-		// We cannot extract block number from trace responses, but we will cache them
-		// because after a reorg the consumer must not even request this transaction hash,
-		// it is not part of the final reorged block.
-		// "nil" means there's no specific block reference for this cache item
-		// "1" is a placeholder to pass the block number check (is there a cleaner nicer way?)
-		//
-		// TODO is there a way to find block number without a new request? (e.g. adding a flag to such requests that exposes block number)
-		return "nil", 1, nil
-	case "eth_chainId":
-		// This request is supposed to always return the same response.
-		// "all" means this applies to all blocks
-		// "1" is a placeholder to pass the block number check (is there a cleaner nicer way?)
-		return "all", 1, nil
-
-	default:
-		return "", 0, nil
-	}
-
-	return "", 0, nil
 }
