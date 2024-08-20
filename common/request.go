@@ -148,7 +148,18 @@ func (r *NormalizedRequest) EvmBlockNumber() (int64, error) {
 		return 0, err
 	}
 
-	_, bn, err := ExtractEvmBlockReference(rpcReq)
+	_, bn, err := ExtractEvmBlockReferenceFromRequest(rpcReq)
+	if err != nil {
+		return 0, err
+	} else if bn > 0 {
+		return bn, nil
+	}
+
+	if r.lastValidResponse == nil {
+		return 0, nil
+	}
+
+	bn, err = r.lastValidResponse.EvmBlockNumber()
 	if err != nil {
 		return 0, err
 	}
