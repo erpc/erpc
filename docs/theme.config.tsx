@@ -77,7 +77,7 @@ export default {
 			/>
 			<meta
 				property="og:image"
-				content="https://i.imgur.com/Nq4yoEP.png"
+				content="https://i.imgur.com/kGC41ms.png"
 			/>
 			<meta
 				property="og:url"
@@ -97,7 +97,7 @@ export default {
 			/>
 			<meta
 				name="twitter:image"
-				content="https://i.imgur.com/Nq4yoEP.png"
+				content="https://i.imgur.com/kGC41ms.png"
 			/>
 			<script defer data-domain="erpc.cloud" src="https://plausible.io/js/script.js"></script>
 		</>
