@@ -396,7 +396,8 @@ func (u *Upstream) SupportsNetwork(networkId string) (bool, error) {
 }
 
 func (u *Upstream) IgnoreMethod(method string) {
-	if !*u.config.AutoIgnoreUnsupportedMethods {
+	ai := u.config.AutoIgnoreUnsupportedMethods
+	if ai == nil || !*ai {
 		return
 	}
 
