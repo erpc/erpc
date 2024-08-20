@@ -228,12 +228,30 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) fasthttp.RequestHan
 			ctx.SetStatusCode(fasthttp.StatusOK)
 			encoder.Encode(responses)
 		} else {
-			if _, ok := responses[0].(error); ok {
-				ctx.SetStatusCode(processErrorStatusCode(responses[0].(error)))
+			res := responses[0]
+			if nr, ok := res.(*common.NormalizedResponse); ok {
+				if nr.FromCache() {
+					ctx.Response.Header.Set("X-ERPC-Cache", "HIT")
+				} else {
+					ctx.Response.Header.Set("X-ERPC-Cache", "MISS")
+				}
+
+				u := nr.Upstream()
+				if u != nil {
+					ctx.Response.Header.Set("X-ERPC-Upstream", u.Config().Id)
+				}
+
+				ctx.Response.Header.Set("X-ERPC-Attempts", fmt.Sprintf("%d", nr.Attempts()))
+				ctx.Response.Header.Set("X-ERPC-Retries", fmt.Sprintf("%d", nr.Retries()))
+				ctx.Response.Header.Set("X-ERPC-Hedges", fmt.Sprintf("%d", nr.Hedges()))
+			}
+
+			if err, ok := res.(error); ok {
+				ctx.SetStatusCode(processErrorStatusCode(err))
 			} else {
 				ctx.SetStatusCode(fasthttp.StatusOK)
 			}
-			encoder.Encode(responses[0])
+			encoder.Encode(res)
 		}
 
 		ctx.SetBody(buf.Bytes())

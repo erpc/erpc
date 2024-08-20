@@ -23,7 +23,7 @@ func (v *QuicknodeVendor) OverrideConfig(upstream *common.UpstreamConfig) error 
 	return nil
 }
 
-func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}) error {
+func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {
 	bodyMap, ok := jrr.(*common.JsonRpcResponse)
 	if !ok {
 		return nil

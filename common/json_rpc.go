@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
+	"strings"
 
 	"github.com/bytedance/sonic"
 	"github.com/rs/zerolog"
@@ -89,7 +91,7 @@ func hashValue(h io.Writer, v interface{}) error {
 		_, err := h.Write([]byte(fmt.Sprintf("%f", t)))
 		return err
 	case string:
-		_, err := h.Write([]byte(t))
+		_, err := h.Write([]byte(strings.ToLower(t)))
 		return err
 	case []interface{}:
 		for _, i := range t {
@@ -100,11 +102,16 @@ func hashValue(h io.Writer, v interface{}) error {
 		}
 		return nil
 	case map[string]interface{}:
-		for k, i := range t {
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
 			if _, err := h.Write([]byte(k)); err != nil {
 				return err
 			}
-			err := hashValue(h, i)
+			err := hashValue(h, t[k])
 			if err != nil {
 				return err
 			}

@@ -55,7 +55,7 @@ func (v *EnvioVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
 	return nil
 }
 
-func (v *EnvioVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}) error {
+func (v *EnvioVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {
 	return nil
 }
 

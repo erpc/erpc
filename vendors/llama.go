@@ -33,7 +33,7 @@ func (v *LlamaVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
 	return nil
 }
 
-func (v *LlamaVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}) error {
+func (v *LlamaVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {
 	bodyMap, ok := jrr.(*common.JsonRpcResponse)
 	if !ok {
 		return nil
@@ -42,7 +42,6 @@ func (v *LlamaVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr inter
 	err := bodyMap.Error
 	code := err.Code
 	msg := err.Message
-	var details map[string]interface{} = make(map[string]interface{})
 	if err.Data != "" {
 		details["data"] = err.Data
 	}

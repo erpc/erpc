@@ -298,6 +298,10 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 					cfg.Id,
 					time.Since(startTime),
 				)
+			} else {
+				if resp.IsResultEmptyish() {
+					health.MetricUpstreamEmptyResponseTotal.WithLabelValues(u.ProjectId, cfg.Id, netId, method).Inc()
+				}
 			}
 
 			u.recordRequestSuccess(method)
