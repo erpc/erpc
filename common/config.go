@@ -51,10 +51,19 @@ type MemoryConnectorConfig struct {
 	MaxItems int `yaml:"maxItems" json:"maxItems"`
 }
 
+type TLSConfig struct {
+	Enabled            bool   `yaml:"enabled" json:"enabled"`
+	CertFile           string `yaml:"certFile" json:"certFile"`
+	KeyFile            string `yaml:"keyFile" json:"keyFile"`
+	CAFile             string `yaml:"caFile" json:"caFile"`
+	InsecureSkipVerify bool   `yaml:"insecureSkipVerify" json:"insecureSkipVerify"`
+}
+
 type RedisConnectorConfig struct {
 	Addr     string `yaml:"addr" json:"addr"`
 	Password string `yaml:"password" json:"password"`
 	DB       int    `yaml:"db" json:"db"`
+	TLS      *TLSConfig `yaml:"tls" json:"tls"`
 }
 
 func (r *RedisConnectorConfig) MarshalJSON() ([]byte, error) {

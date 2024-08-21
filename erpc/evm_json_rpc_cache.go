@@ -112,7 +112,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		return err
 	}
 
-	lg := c.logger.With().Str("network", req.Network().Id()).Str("method", rpcReq.Method).Logger()
+	lg := c.logger.With().Str("network", req.NetworkId()).Str("method", rpcReq.Method).Logger()
 
 	if rpcResp == nil || rpcResp.Result == nil || rpcResp.Error != nil {
 		lg.Debug().Msg("not caching response because it has no result or has error")
@@ -195,9 +195,9 @@ func generateKeysForJsonRpcRequest(req *common.NormalizedRequest, blockRef strin
 	}
 
 	if blockRef != "" {
-		return fmt.Sprintf("%s:%s", req.Network().Id(), blockRef), cacheKey, nil
+		return fmt.Sprintf("%s:%s", req.NetworkId(), blockRef), cacheKey, nil
 	} else {
-		return fmt.Sprintf("%s:nil", req.Network().Id()), cacheKey, nil
+		return fmt.Sprintf("%s:nil", req.NetworkId()), cacheKey, nil
 	}
 }
 

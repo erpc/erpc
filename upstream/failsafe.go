@@ -240,6 +240,11 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 			return false
 		}
 
+		// When error is "missing data" retry on network-level
+		if scope == ScopeNetwork && common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+			return true
+		}
+
 		// On network-level if all upstreams returned non-retryable errors then do not retry
 		if scope == ScopeNetwork && common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
 			exher, ok := err.(*common.ErrUpstreamsExhausted)
@@ -318,15 +323,9 @@ func createTimeoutPolicy(component string, cfg *common.TimeoutPolicyConfig) (fai
 	return builder.Build(), nil
 }
 
-func TranslateFailsafeError(exec failsafe.Execution[*common.NormalizedResponse], execErr error, details map[string]interface{}) error {
+func TranslateFailsafeError(execErr error) error {
 	var retryExceededErr *retrypolicy.ExceededError
 	if errors.As(execErr, &retryExceededErr) {
-		var attempts int
-		var retries int
-		if exec != nil {
-			attempts = exec.Attempts()
-			retries = exec.Retries()
-		}
 		ler := retryExceededErr.LastError()
 		if common.IsNull(ler) {
 			if lexr, ok := execErr.(common.StandardError); ok {
@@ -335,22 +334,17 @@ func TranslateFailsafeError(exec failsafe.Execution[*common.NormalizedResponse],
 		}
 		var translatedCause error
 		if ler != nil {
-			translatedCause = TranslateFailsafeError(exec, ler, details)
+			translatedCause = TranslateFailsafeError(ler)
 		}
-		return common.NewErrFailsafeRetryExceeded(
-			translatedCause,
-			attempts,
-			retries,
-			details,
-		)
+		return common.NewErrFailsafeRetryExceeded(translatedCause)
 	}
 
 	if errors.Is(execErr, timeout.ErrExceeded) {
-		return common.NewErrFailsafeTimeoutExceeded(execErr, details)
+		return common.NewErrFailsafeTimeoutExceeded(execErr)
 	}
 
 	if errors.Is(execErr, circuitbreaker.ErrOpen) {
-		return common.NewErrFailsafeCircuitBreakerOpen(execErr, details)
+		return common.NewErrFailsafeCircuitBreakerOpen(execErr)
 	}
 
 	return execErr
