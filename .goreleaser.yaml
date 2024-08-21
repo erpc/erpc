@@ -1,0 +1,64 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/goreleaser/goreleaser/v2.2.0/www/docs/static/schema.json
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    main: ./cmd/erpc/main.go
+    ldflags:
+      - -s -w -X main.version={{.Env.SEMVER}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+
+archives:
+  - format: tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    format_overrides:
+    - goos: windows
+      format: zip
+    files: [LICENSE, README.md]
+
+checksum:
+  name_template: 'checksums.txt'
+
+release:
+  github:
+    owner: erpc
+    name: erpc
+  draft: false
+  prerelease: auto
+  make_latest: true
+  name_template: "{{.Env.SEMVER}}"
+  header: |
+    ## eRPC Release {{.Env.SEMVER}} ({{ .Date }})
+    
+    <!-- Release notes generated using configuration in .github/release.yml at {{ .Tag }} -->
+    
+    Welcome to eRPC release {{.Env.SEMVER}}!
+  footer: |
+    **Full changelog**: https://github.com/erpc/erpc/compare/{{ .PreviousTag }}...{{ .Tag }}
+    
+    ## What's changed
+    
+    {{ .Changelog }}
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^ci:'
+      - '^chore:'
