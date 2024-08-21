@@ -1,6 +1,7 @@
 package erpc
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/erpc/erpc/common"
@@ -22,9 +23,7 @@ func TestExtractBlockReferenceFromResponse(t *testing.T) {
 				Method: "eth_getTransactionReceipt",
 			},
 			rpcResp: &common.JsonRpcResponse{
-				Result: map[string]interface{}{
-					"blockNumber": "0x1b4",
-				},
+				Result: json.RawMessage(`{"blockNumber": "0x1b4"}`),
 			},
 			expected: "436",
 			expInt:   436,
@@ -36,9 +35,7 @@ func TestExtractBlockReferenceFromResponse(t *testing.T) {
 				Method: "eth_getTransactionReceipt",
 			},
 			rpcResp: &common.JsonRpcResponse{
-				Result: map[string]interface{}{
-					"blockNumber": "invalid",
-				},
+				Result: json.RawMessage(`{"blockNumber": "invalid"}`),
 			},
 			expected: "",
 			expInt:   0,
@@ -50,7 +47,7 @@ func TestExtractBlockReferenceFromResponse(t *testing.T) {
 				Method: "eth_getTransactionReceipt",
 			},
 			rpcResp: &common.JsonRpcResponse{
-				Result: map[string]interface{}{},
+				Result: json.RawMessage(`{}`),
 			},
 			expected: "",
 			expInt:   0,
@@ -62,9 +59,7 @@ func TestExtractBlockReferenceFromResponse(t *testing.T) {
 				Method: "eth_getTransactionByHash",
 			},
 			rpcResp: &common.JsonRpcResponse{
-				Result: map[string]interface{}{
-					"blockHash": "0xabc123",
-				},
+				Result: json.RawMessage(`{"blockHash": "0xabc123"}`),
 			},
 			expected: "0xabc123",
 			expInt:   0,
@@ -76,9 +71,7 @@ func TestExtractBlockReferenceFromResponse(t *testing.T) {
 				Method: "eth_getTransactionByHash",
 			},
 			rpcResp: &common.JsonRpcResponse{
-				Result: map[string]interface{}{
-					"blockNumber": "0x1b4",
-				},
+				Result: json.RawMessage(`{"blockNumber": "0x1b4"}`),
 			},
 			expected: "436",
 			expInt:   436,
@@ -90,10 +83,7 @@ func TestExtractBlockReferenceFromResponse(t *testing.T) {
 				Method: "eth_getTransactionByHash",
 			},
 			rpcResp: &common.JsonRpcResponse{
-				Result: map[string]interface{}{
-					"blockHash":   nil,
-					"blockNumber": nil,
-				},
+				Result: json.RawMessage(`{"blockHash":null,"blockNumber":null}`),
 			},
 			expected: "",
 			expInt:   0,
@@ -159,7 +149,7 @@ func TestExtractBlockReferenceFromResponse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, resultUint, err := extractBlockReferenceFromResponse(tt.rpcReq, tt.rpcResp)
+			result, resultUint, err := common.ExtractEvmBlockReferenceFromResponse(tt.rpcReq, tt.rpcResp)
 			if tt.expErr {
 				assert.Error(t, err)
 			} else {

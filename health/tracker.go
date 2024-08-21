@@ -2,12 +2,13 @@ package health
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 )
 
 type TrackedMetrics struct {
-	Mutex                  sync.RWMutex
+	Mutex                  sync.RWMutex     `json:"-"`
 	LatencySecs            *QuantileTracker `json:"latencySecs"`
 	ErrorsTotal            float64          `json:"errorsTotal"`
 	SelfRateLimitedTotal   float64          `json:"selfRateLimitedTotal"`
@@ -191,4 +192,20 @@ func (t *Tracker) GetUpstreamMethodMetrics(ups, network, method string) *Tracked
 	}
 
 	return metrics
+}
+
+func (t *Tracker) GetUpstreamMetrics(upsId string) map[string]*TrackedMetrics {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	// network:method -> metrics
+	var result = make(map[string]*TrackedMetrics)
+
+	for key, value := range t.metrics {
+		if strings.HasPrefix(key, upsId) {
+			result[strings.TrimPrefix(key, upsId+":")] = value
+		}
+	}
+
+	return result
 }

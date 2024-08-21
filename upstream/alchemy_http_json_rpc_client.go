@@ -157,7 +157,7 @@ func (c *AlchemyHttpJsonRpcClient) getOrCreateClient(network common.Network) (Ht
 	return client, nil
 }
 
-func (c *AlchemyHttpJsonRpcClient) SendRequest(ctx context.Context, req *NormalizedRequest) (*NormalizedResponse, error) {
+func (c *AlchemyHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	network := req.Network()
 	if network == nil {
 		return nil, fmt.Errorf("network information is missing in the request")

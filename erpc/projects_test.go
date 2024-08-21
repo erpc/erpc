@@ -81,10 +81,10 @@ func TestProject_Forward(t *testing.T) {
 		}
 
 		var lastErr error
-		var lastResp common.NormalizedResponse
+		var lastResp *common.NormalizedResponse
 
 		for i := 0; i < 5; i++ {
-			fakeReq := upstream.NewNormalizedRequest([]byte(`{"method": "eth_chainId","params":[]}`))
+			fakeReq := common.NewNormalizedRequest([]byte(`{"method": "eth_chainId","params":[]}`))
 			lastResp, lastErr = prj.Forward(context.Background(), "evm:123", fakeReq)
 		}
 

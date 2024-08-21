@@ -32,6 +32,12 @@ type UpstreamsRegistry struct {
 	upstreamScores map[string]map[string]map[string]int
 }
 
+type UpstreamsHealth struct {
+	Upstreams       []*Upstream                          `json:"upstreams"`
+	SortedUpstreams map[string]map[string][]string       `json:"sortedUpstreams"`
+	UpstreamScores  map[string]map[string]map[string]int `json:"upstreamScores"`
+}
+
 func NewUpstreamsRegistry(
 	logger *zerolog.Logger,
 	prjId string,
@@ -374,4 +380,42 @@ func normalizeIntValues(values []float64, scale int) []int {
 		}
 	}
 	return normalized
+}
+
+func (u *UpstreamsRegistry) GetUpstreamsHealth() (*UpstreamsHealth, error) {
+	sortedUpstreams := make(map[string]map[string][]string)
+	upstreamScores := make(map[string]map[string]map[string]int)
+
+	for nw, methods := range u.sortedUpstreams {
+		for method, ups := range methods {
+			upstreamIds := make([]string, len(ups))
+			for i, ups := range ups {
+				upstreamIds[i] = ups.Config().Id
+			}
+			if _, ok := sortedUpstreams[nw]; !ok {
+				sortedUpstreams[nw] = make(map[string][]string)
+			}
+			sortedUpstreams[nw][method] = upstreamIds
+		}
+	}
+
+	for upsId, nwMethods := range u.upstreamScores {
+		for nw, methods := range nwMethods {
+			for method, score := range methods {
+				if _, ok := upstreamScores[upsId]; !ok {
+					upstreamScores[upsId] = make(map[string]map[string]int)
+				}
+				if _, ok := upstreamScores[upsId][nw]; !ok {
+					upstreamScores[upsId][nw] = make(map[string]int)
+				}
+				upstreamScores[upsId][nw][method] = score
+			}
+		}
+	}
+
+	return &UpstreamsHealth{
+		Upstreams:       u.allUpstreams,
+		SortedUpstreams: sortedUpstreams,
+		UpstreamScores:  upstreamScores,
+	}, nil
 }

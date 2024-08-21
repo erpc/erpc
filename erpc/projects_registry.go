@@ -97,9 +97,16 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		r.rateLimitersRegistry,
 	)
 
-	var authRegistry *auth.AuthRegistry
+	var consumerAuthRegistry *auth.AuthRegistry
 	if prjCfg.Auth != nil {
-		authRegistry, err = auth.NewAuthRegistry(&lg, prjCfg.Id, prjCfg.Auth, r.rateLimitersRegistry)
+		consumerAuthRegistry, err = auth.NewAuthRegistry(&lg, prjCfg.Id, prjCfg.Auth, r.rateLimitersRegistry)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var adminAuthRegistry *auth.AuthRegistry
+	if prjCfg.Admin != nil && prjCfg.Admin.Auth != nil {
+		adminAuthRegistry, err = auth.NewAuthRegistry(&lg, prjCfg.Id, prjCfg.Admin.Auth, r.rateLimitersRegistry)
 		if err != nil {
 			return nil, err
 		}
@@ -110,7 +117,8 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		Logger: &lg,
 
 		appCtx:               r.appCtx,
-		authRegistry:         authRegistry,
+		consumerAuthRegistry: consumerAuthRegistry,
+		adminAuthRegistry:    adminAuthRegistry,
 		networksRegistry:     networksRegistry,
 		upstreamsRegistry:    upstreamsRegistry,
 		rateLimitersRegistry: r.rateLimitersRegistry,

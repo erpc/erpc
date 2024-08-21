@@ -1,13 +1,14 @@
 package common
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/bytedance/sonic"
 )
 
 func IsNull(err interface{}) bool {
@@ -91,7 +92,7 @@ func (e *BaseError) Error() string {
 	var detailsStr string
 
 	if e.Details != nil && len(e.Details) > 0 {
-		s, er := json.Marshal(e.Details)
+		s, er := sonic.Marshal(e.Details)
 		if er == nil {
 			detailsStr = fmt.Sprintf("(%s)", s)
 		} else {
@@ -153,7 +154,7 @@ func (e BaseError) MarshalJSON() ([]byte, error) {
 					causes = append(causes, err.Error())
 				}
 			}
-			return json.Marshal(&struct {
+			return sonic.Marshal(&struct {
 				Alias
 				Cause []interface{} `json:"cause"`
 			}{
@@ -161,7 +162,7 @@ func (e BaseError) MarshalJSON() ([]byte, error) {
 				Cause: causes,
 			})
 		}
-		return json.Marshal(&struct {
+		return sonic.Marshal(&struct {
 			Alias
 			Cause interface{} `json:"cause"`
 		}{
@@ -169,7 +170,7 @@ func (e BaseError) MarshalJSON() ([]byte, error) {
 			Cause: cc,
 		})
 	} else if cause != nil {
-		return json.Marshal(&struct {
+		return sonic.Marshal(&struct {
 			Alias
 			Cause BaseError `json:"cause"`
 		}{
@@ -181,7 +182,7 @@ func (e BaseError) MarshalJSON() ([]byte, error) {
 		})
 	}
 
-	return json.Marshal(&struct {
+	return sonic.Marshal(&struct {
 		Alias
 		Cause interface{} `json:"cause"`
 	}{
@@ -469,19 +470,67 @@ var NewErrUpstreamClientInitialization = func(cause error, upstreamId string) er
 
 type ErrUpstreamRequest struct{ BaseError }
 
-var NewErrUpstreamRequest = func(cause error, upstreamId string, duration time.Duration) error {
-
+var NewErrUpstreamRequest = func(cause error, prjId, netId, upsId string, duration time.Duration, attempts, retries, hedges int) error {
 	return &ErrUpstreamRequest{
 		BaseError{
 			Code:    "ErrUpstreamRequest",
 			Message: "failed to make request to upstream",
 			Cause:   cause,
 			Details: map[string]interface{}{
-				"upstreamId": upstreamId,
 				"durationMs": duration.Milliseconds(),
+				"projectId":  prjId,
+				"networkId":  netId,
+				"upstreamId": upsId,
+				"attempts":   attempts,
+				"retries":    retries,
+				"hedges":     hedges,
 			},
 		},
 	}
+}
+
+func (e *ErrUpstreamRequest) UpstreamId() string {
+	if e.Details == nil {
+		return ""
+	}
+	if upstreamId, ok := e.Details["upstreamId"].(string); ok {
+		return upstreamId
+	}
+	return ""
+}
+
+func (e *ErrUpstreamRequest) FromCache() bool {
+	return false
+}
+
+func (e *ErrUpstreamRequest) Attempts() int {
+	if e.Details == nil {
+		return 0
+	}
+	if attempts, ok := e.Details["attempts"].(int); ok {
+		return attempts
+	}
+	return 0
+}
+
+func (e *ErrUpstreamRequest) Retries() int {
+	if e.Details == nil {
+		return 0
+	}
+	if retries, ok := e.Details["retries"].(int); ok {
+		return retries
+	}
+	return 0
+}
+
+func (e *ErrUpstreamRequest) Hedges() int {
+	if e.Details == nil {
+		return 0
+	}
+	if hedges, ok := e.Details["hedges"].(int); ok {
+		return hedges
+	}
+	return 0
 }
 
 type ErrUpstreamMalformedResponse struct{ BaseError }
@@ -507,9 +556,15 @@ type ErrUpstreamsExhausted struct{ BaseError }
 
 const ErrCodeUpstreamsExhausted ErrorCode = "ErrUpstreamsExhausted"
 
-var NewErrUpstreamsExhausted = func(req NormalizedRequest, ers []error, duration time.Duration) error {
+var NewErrUpstreamsExhausted = func(
+	req *NormalizedRequest,
+	ers []error,
+	prjId, netId string,
+	duration time.Duration,
+	attempts, retries, hedges int,
+) error {
 	var reqStr string
-	s, err := json.Marshal(req)
+	s, err := sonic.Marshal(req)
 	if err != nil {
 		reqStr = string(req.Body())
 	} else if s != nil {
@@ -523,6 +578,11 @@ var NewErrUpstreamsExhausted = func(req NormalizedRequest, ers []error, duration
 			Details: map[string]interface{}{
 				"request":    reqStr,
 				"durationMs": duration.Milliseconds(),
+				"projectId":  prjId,
+				"networkId":  netId,
+				"attempts":   attempts,
+				"retries":    retries,
+				"hedges":     hedges,
 			},
 		},
 	}
@@ -584,6 +644,44 @@ func (e *ErrUpstreamsExhausted) DeepestMessage() string {
 	}
 
 	return e.Message
+}
+
+func (e *ErrUpstreamsExhausted) UpstreamId() string {
+	return ""
+}
+
+func (e *ErrUpstreamsExhausted) FromCache() bool {
+	return false
+}
+
+func (e *ErrUpstreamsExhausted) Attempts() int {
+	if e.Details == nil {
+		return 0
+	}
+	if attempts, ok := e.Details["attempts"].(int); ok {
+		return attempts
+	}
+	return 0
+}
+
+func (e *ErrUpstreamsExhausted) Retries() int {
+	if e.Details == nil {
+		return 0
+	}
+	if retries, ok := e.Details["retries"].(int); ok {
+		return retries
+	}
+	return 0
+}
+
+func (e *ErrUpstreamsExhausted) Hedges() int {
+	if e.Details == nil {
+		return 0
+	}
+	if hedges, ok := e.Details["hedges"].(int); ok {
+		return hedges
+	}
+	return 0
 }
 
 type ErrNoUpstreamsDefined struct{ BaseError }
@@ -651,7 +749,7 @@ type ErrUpstreamRequestSkipped struct{ BaseError }
 
 const ErrCodeUpstreamRequestSkipped ErrorCode = "ErrUpstreamRequestSkipped"
 
-var NewErrUpstreamRequestSkipped = func(reason error, upstreamId string, req NormalizedRequest) error {
+var NewErrUpstreamRequestSkipped = func(reason error, upstreamId string, req *NormalizedRequest) error {
 	m, _ := req.Method()
 	return &ErrUpstreamRequestSkipped{
 		BaseError{
@@ -767,13 +865,12 @@ var NewErrFailsafeConfiguration = func(cause error, details map[string]interface
 
 type ErrFailsafeTimeoutExceeded struct{ BaseError }
 
-var NewErrFailsafeTimeoutExceeded = func(cause error, details map[string]interface{}) error {
+var NewErrFailsafeTimeoutExceeded = func(cause error) error {
 	return &ErrFailsafeTimeoutExceeded{
 		BaseError{
 			Code:    "ErrFailsafeTimeoutExceeded",
 			Message: "failsafe timeout policy exceeded",
 			Cause:   cause,
-			Details: details,
 		},
 	}
 }
@@ -786,20 +883,12 @@ type ErrFailsafeRetryExceeded struct{ BaseError }
 
 const ErrCodeFailsafeRetryExceeded ErrorCode = "ErrFailsafeRetryExceeded"
 
-var NewErrFailsafeRetryExceeded = func(cause error, attempts int, retries int, details map[string]interface{}) error {
-	dets := map[string]interface{}{
-		"attempts": attempts,
-		"retries":  retries,
-	}
-	for k, v := range details {
-		dets[k] = v
-	}
+var NewErrFailsafeRetryExceeded = func(cause error) error {
 	return &ErrFailsafeRetryExceeded{
 		BaseError{
 			Code:    ErrCodeFailsafeRetryExceeded,
 			Message: "failsafe retry policy exceeded",
 			Cause:   cause,
-			Details: dets,
 		},
 	}
 }
@@ -812,13 +901,12 @@ type ErrFailsafeCircuitBreakerOpen struct{ BaseError }
 
 const ErrCodeFailsafeCircuitBreakerOpen ErrorCode = "ErrFailsafeCircuitBreakerOpen"
 
-var NewErrFailsafeCircuitBreakerOpen = func(cause error, details map[string]interface{}) error {
+var NewErrFailsafeCircuitBreakerOpen = func(cause error) error {
 	return &ErrFailsafeCircuitBreakerOpen{
 		BaseError{
 			Code:    ErrCodeFailsafeCircuitBreakerOpen,
 			Message: "circuit breaker is open due to high error rate",
 			Cause:   cause,
-			Details: details,
 		},
 	}
 }

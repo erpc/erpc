@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
+	"strings"
 
+	"github.com/bytedance/sonic"
 	"github.com/rs/zerolog"
 )
 
@@ -19,8 +22,40 @@ type JsonRpcRequest struct {
 type JsonRpcResponse struct {
 	JSONRPC string                       `json:"jsonrpc,omitempty"`
 	ID      interface{}                  `json:"id,omitempty"`
-	Result  interface{}                  `json:"result,omitempty"`
+	Result  json.RawMessage              `json:"result,omitempty"`
 	Error   *ErrJsonRpcExceptionExternal `json:"error,omitempty"`
+
+	parsedResult interface{}
+}
+
+func NewJsonRpcResponse(id interface{}, result interface{}, rpcError *ErrJsonRpcExceptionExternal) (*JsonRpcResponse, error) {
+	resultRaw, err := sonic.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	return &JsonRpcResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Result:  resultRaw,
+		Error:   rpcError,
+	}, nil
+}
+
+func (r *JsonRpcResponse) ParsedResult() (interface{}, error) {
+	if r.parsedResult != nil {
+		return r.parsedResult, nil
+	}
+
+	if r.Result == nil {
+		return nil, nil
+	}
+
+	err := sonic.Unmarshal(r.Result, &r.parsedResult)
+	if err != nil {
+		return nil, err
+	}
+
+	return r.parsedResult, nil
 }
 
 func (r *JsonRpcRequest) MarshalZerologObject(e *zerolog.Event) {
@@ -56,7 +91,7 @@ func hashValue(h io.Writer, v interface{}) error {
 		_, err := h.Write([]byte(fmt.Sprintf("%f", t)))
 		return err
 	case string:
-		_, err := h.Write([]byte(t))
+		_, err := h.Write([]byte(strings.ToLower(t)))
 		return err
 	case []interface{}:
 		for _, i := range t {
@@ -67,11 +102,16 @@ func hashValue(h io.Writer, v interface{}) error {
 		}
 		return nil
 	case map[string]interface{}:
-		for k, i := range t {
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
 			if _, err := h.Write([]byte(k)); err != nil {
 				return err
 			}
-			err := hashValue(h, i)
+			err := hashValue(h, t[k])
 			if err != nil {
 				return err
 			}
@@ -96,7 +136,7 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 		Alias: (*Alias)(r),
 	}
 
-	if err := json.Unmarshal(data, &aux); err != nil {
+	if err := sonic.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 
@@ -108,7 +148,7 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 			Message string `json:"message,omitempty"`
 			Data    string `json:"data,omitempty"`
 		}{}
-		if err := json.Unmarshal(data, &sp1); err == nil {
+		if err := sonic.Unmarshal(data, &sp1); err == nil {
 			r.Error = NewErrJsonRpcExceptionExternal(
 				sp1.Code,
 				sp1.Message,
@@ -120,7 +160,7 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 		sp2 := &struct {
 			Error string `json:"error"`
 		}{}
-		if err := json.Unmarshal(data, &sp2); err == nil {
+		if err := sonic.Unmarshal(data, &sp2); err == nil {
 			r.Error = NewErrJsonRpcExceptionExternal(
 				int(JsonRpcErrorServerSideException),
 				sp2.Error,
@@ -139,7 +179,7 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 
 	if aux.Error != nil {
 		var customError map[string]interface{}
-		if err := json.Unmarshal(aux.Error, &customError); err != nil {
+		if err := sonic.Unmarshal(aux.Error, &customError); err != nil {
 			return err
 		}
 		var code int
