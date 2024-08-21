@@ -87,7 +87,7 @@ func (r *NormalizedRequest) SetNetwork(network Network) {
 
 func (r *NormalizedRequest) ApplyDirectivesFromHttpHeaders(headers *fasthttp.RequestHeader) {
 	drc := &RequestDirectives{
-		RetryEmpty: string(headers.Peek("x-erpc-retry-empty")) != "false",
+		RetryEmpty: string(headers.Peek("X-ERPC-Retry-Empty")) != "false",
 	}
 	r.directives = drc
 }
