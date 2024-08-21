@@ -16,7 +16,7 @@ func CreateInfuraVendor() common.Vendor {
 }
 
 func (v *InfuraVendor) Name() string {
-	return "alchemy"
+	return "infura"
 }
 
 func (v *InfuraVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
