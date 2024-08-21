@@ -1,4 +1,6 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/goreleaser/goreleaser/v2.2.0/www/docs/static/schema.json
+version: 2
+
 builds:
   - env:
       - CGO_ENABLED=0
@@ -14,10 +16,10 @@ builds:
         goarch: arm64
     main: ./cmd/erpc/main.go
     ldflags:
-      - -s -w -X main.version={{.Env.SEMVER}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
 
 archives:
-  - format: tar.gz
+  - format: binary
     name_template: >-
       {{ .ProjectName }}_
       {{- .Os }}_
@@ -25,10 +27,6 @@ archives:
       {{- else if eq .Arch "386" }}i386
       {{- else }}{{ .Arch }}{{ end }}
       {{- if .Arm }}v{{ .Arm }}{{ end }}
-    format_overrides:
-    - goos: windows
-      format: zip
-    files: [LICENSE, README.md]
 
 checksum:
   name_template: 'checksums.txt'
@@ -38,23 +36,50 @@ release:
     owner: erpc
     name: erpc
   draft: false
-  prerelease: auto
+  mode: replace
   make_latest: true
-  name_template: "{{.Env.SEMVER}}"
+  name_template: "{{.Version}}"
   header: |
-    ## eRPC Release {{.Env.SEMVER}} ({{ .Date }})
-    
-    <!-- Release notes generated using configuration in .github/release.yml at {{ .Tag }} -->
-    
-    Welcome to eRPC release {{.Env.SEMVER}}!
+    * **Full changelog**: https://github.com/erpc/erpc/compare/{{ .PreviousTag }}...{{ .Tag }}
+    * **Docker Image**: `ghcr.io/erpc/erpc:{{ .Version }}`
+
   footer: |
-    **Full changelog**: https://github.com/erpc/erpc/compare/{{ .PreviousTag }}...{{ .Tag }}
-    
-    ## What's changed
-    
-    {{ .Changelog }}
+    ## Quick start
+
+    1. Create your [`erpc.yaml`](https://docs.erpc.cloud/config/example) configuration file:
+
+    ```bash
+    touch erpc.yaml
+    code erpc.yaml
+    ```
+
+    2. Use the Docker image:
+
+    ```bash
+    docker run \
+      -v $(pwd)/erpc.yaml:/root/erpc.yaml 
+      -p 4000:4000 -p 4001:4001 \
+      ghcr.io/erpc/erpc:{{ .Version }}
+    ```
+
+    3. Send your first request:
+
+    ```bash
+    curl --location 'http://localhost:4000/main/evm/42161' \
+    --header 'Content-Type: application/json' \
+    --data '{
+        "method": "eth_getBlockByNumber",
+        "params": [
+            "0x1203319",
+            false
+        ],
+        "id": 9199,
+        "jsonrpc": "2.0"
+    }'
+    ```
 
 changelog:
+  use: github
   sort: asc
   filters:
     exclude:

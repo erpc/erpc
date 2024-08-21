@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -167,7 +168,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeoutCause(ctx, 10*time.Second, errors.New("cache driver timeout during set"))
 	defer cancel()
 	return c.conn.Set(ctx, pk, rk, string(resultStr))
 }

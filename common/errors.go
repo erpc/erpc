@@ -1018,15 +1018,15 @@ type ErrUpstreamRateLimitRuleExceeded struct{ BaseError }
 
 const ErrCodeUpstreamRateLimitRuleExceeded ErrorCode = "ErrUpstreamRateLimitRuleExceeded"
 
-var NewErrUpstreamRateLimitRuleExceeded = func(upstream string, budget string, rule string) error {
+var NewErrUpstreamRateLimitRuleExceeded = func(upstreamId string, budget string, rule string) error {
 	return &ErrUpstreamRateLimitRuleExceeded{
 		BaseError{
 			Code:    ErrCodeUpstreamRateLimitRuleExceeded,
 			Message: "upstream-level rate limit rule exceeded",
 			Details: map[string]interface{}{
-				"upstream": upstream,
-				"budget":   budget,
-				"rule":     rule,
+				"upstreamId": upstreamId,
+				"budget":     budget,
+				"rule":       rule,
 			},
 		},
 	}

@@ -245,7 +245,7 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 		if errsg != nil {
 			for _, req := range requests {
 				req.err <- common.NewErrEndpointServerSideException(
-					fmt.Errorf("failed to parse upstream response: %w", err),
+					fmt.Errorf("failed to parse upstream response, batch: %w single: %w", err, errsg),
 					map[string]interface{}{
 						"statusCode": resp.StatusCode,
 						"headers":    resp.Header,
@@ -333,9 +333,9 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 			Code:    "ErrHttp",
 			Message: fmt.Sprintf("%v", errReq),
 			Details: map[string]interface{}{
-				"url":      c.Url.String(),
-				"upstream": c.upstream.Config().Id,
-				"request":  requestBody,
+				"url":        c.Url.String(),
+				"upstreamId": c.upstream.Config().Id,
+				"request":    requestBody,
 			},
 		}
 	}
@@ -366,7 +366,7 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 			"could not parse json rpc response from upstream",
 			err,
 			map[string]interface{}{
-				"upstream":   c.upstream.Config().Id,
+				"upstreamId": c.upstream.Config().Id,
 				"statusCode": r.StatusCode,
 				"headers":    r.Header,
 				"body":       string(nr.Body()),
@@ -389,7 +389,7 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 		"unknown json-rpc response",
 		nil,
 		map[string]interface{}{
-			"upstream":   c.upstream.Config().Id,
+			"upstreamId": c.upstream.Config().Id,
 			"statusCode": r.StatusCode,
 			"headers":    r.Header,
 			"body":       string(nr.Body()),

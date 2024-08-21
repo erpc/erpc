@@ -178,27 +178,34 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 	}
 
 	if aux.Error != nil {
-		var customError map[string]interface{}
-		if err := sonic.Unmarshal(aux.Error, &customError); err != nil {
-			return err
-		}
 		var code int
 		var msg string
 		var data string
 
-		if c, ok := customError["code"]; ok {
-			if cf, ok := c.(float64); ok {
-				code = int(cf)
+		var customObjectError map[string]interface{}
+		if err := sonic.Unmarshal(aux.Error, &customObjectError); err == nil {
+			if c, ok := customObjectError["code"]; ok {
+				if cf, ok := c.(float64); ok {
+					code = int(cf)
+				}
 			}
-		}
-		if m, ok := customError["message"]; ok {
-			msg = m.(string)
-		}
-		if d, ok := customError["data"]; ok {
-			if dt, ok := d.(string); ok {
-				data = dt
-			} else {
-				data = fmt.Sprintf("%v", d)
+			if m, ok := customObjectError["message"]; ok {
+				if tm, ok := m.(string); ok {
+					msg = tm
+				}
+			}
+			if d, ok := customObjectError["data"]; ok {
+				if dt, ok := d.(string); ok {
+					data = dt
+				} else {
+					data = fmt.Sprintf("%v", d)
+				}
+			}
+		} else {
+			var customStringError string
+			if err := sonic.Unmarshal(aux.Error, &customStringError); err == nil {
+				code = int(JsonRpcErrorServerSideException)
+				msg = customStringError
 			}
 		}
 
