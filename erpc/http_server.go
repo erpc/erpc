@@ -105,7 +105,7 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) fasthttp.RequestHan
 				return
 			}
 
-			if string(ctx.Method()) == fasthttp.MethodOptions {
+			if ctx.IsOptions() {
 				return
 			}
 		}
@@ -256,8 +256,9 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) fasthttp.RequestHan
 				} else {
 					ctx.Response.Header.Set("X-ERPC-Cache", "MISS")
 				}
-
-				ctx.Response.Header.Set("X-ERPC-Upstream", rm.UpstreamId())
+				if rm.UpstreamId() != "" {
+					ctx.Response.Header.Set("X-ERPC-Upstream", rm.UpstreamId())
+				}
 				ctx.Response.Header.Set("X-ERPC-Attempts", fmt.Sprintf("%d", rm.Attempts()))
 				ctx.Response.Header.Set("X-ERPC-Retries", fmt.Sprintf("%d", rm.Retries()))
 				ctx.Response.Header.Set("X-ERPC-Hedges", fmt.Sprintf("%d", rm.Hedges()))
@@ -295,7 +296,7 @@ func (s *HttpServer) handleCORS(ctx *fasthttp.RequestCtx, corsConfig *common.COR
 		s.logger.Debug().Str("origin", origin).Msg("CORS request from disallowed origin")
 		health.MetricCORSDisallowedOriginTotal.WithLabelValues(string(ctx.Path()), origin).Inc()
 
-		if string(ctx.Method()) == fasthttp.MethodOptions {
+		if ctx.IsOptions() {
 			ctx.SetStatusCode(fasthttp.StatusNoContent)
 		} else {
 			ctx.Error("CORS request from disallowed origin", fasthttp.StatusForbidden)
@@ -316,7 +317,7 @@ func (s *HttpServer) handleCORS(ctx *fasthttp.RequestCtx, corsConfig *common.COR
 		ctx.Response.Header.Set("Access-Control-Max-Age", fmt.Sprintf("%d", corsConfig.MaxAge))
 	}
 
-	if string(ctx.Method()) == fasthttp.MethodOptions {
+	if ctx.IsOptions() {
 		health.MetricCORSPreflightRequestsTotal.WithLabelValues(string(ctx.Path()), origin).Inc()
 		ctx.SetStatusCode(fasthttp.StatusNoContent)
 		return false
