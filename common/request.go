@@ -73,6 +73,14 @@ func (r *NormalizedRequest) Network() Network {
 	return r.network
 }
 
+func (r *NormalizedRequest) NetworkId() string {
+	if r == nil || r.network == nil {
+		// For certain requests such as internal eth_chainId requests, network might not be available yet.
+		return "n/a"
+	}
+	return r.network.Id()
+}
+
 func (r *NormalizedRequest) SetNetwork(network Network) {
 	r.network = network
 }

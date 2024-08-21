@@ -32,8 +32,6 @@ var bufPool = sync.Pool{
 }
 
 func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.ServerConfig, erpc *ERPC) *HttpServer {
-	// addr := fmt.Sprintf("%s:%d", cfg.HttpHost, cfg.HttpPort)
-
 	timeOutDur, err := time.ParseDuration(cfg.MaxTimeout)
 	if err != nil {
 		if cfg.MaxTimeout != "" {
@@ -229,21 +227,40 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) fasthttp.RequestHan
 			encoder.Encode(responses)
 		} else {
 			res := responses[0]
-			if nr, ok := res.(*common.NormalizedResponse); ok {
-				if nr.FromCache() {
+
+			var rm common.ResponseMetadata
+			var ok bool
+			rm, ok = res.(common.ResponseMetadata)
+			if !ok {
+				var jrsp, errObj map[string]interface{}
+				if jrsp, ok = res.(map[string]interface{}); ok {
+					if errObj, ok = jrsp["error"].(map[string]interface{}); ok {
+						if err, ok = errObj["cause"].(error); ok {
+							uer := &common.ErrUpstreamsExhausted{}
+							if ok = errors.As(err, &uer); ok {
+								rm = uer
+							} else {
+								uer := &common.ErrUpstreamRequest{}
+								if ok = errors.As(err, &uer); ok {
+									rm = uer
+								}
+							}
+						}
+					}
+				}
+			}
+
+			if ok {
+				if rm.FromCache() {
 					ctx.Response.Header.Set("X-ERPC-Cache", "HIT")
 				} else {
 					ctx.Response.Header.Set("X-ERPC-Cache", "MISS")
 				}
 
-				u := nr.Upstream()
-				if u != nil {
-					ctx.Response.Header.Set("X-ERPC-Upstream", u.Config().Id)
-				}
-
-				ctx.Response.Header.Set("X-ERPC-Attempts", fmt.Sprintf("%d", nr.Attempts()))
-				ctx.Response.Header.Set("X-ERPC-Retries", fmt.Sprintf("%d", nr.Retries()))
-				ctx.Response.Header.Set("X-ERPC-Hedges", fmt.Sprintf("%d", nr.Hedges()))
+				ctx.Response.Header.Set("X-ERPC-Upstream", rm.UpstreamId())
+				ctx.Response.Header.Set("X-ERPC-Attempts", fmt.Sprintf("%d", rm.Attempts()))
+				ctx.Response.Header.Set("X-ERPC-Retries", fmt.Sprintf("%d", rm.Retries()))
+				ctx.Response.Header.Set("X-ERPC-Hedges", fmt.Sprintf("%d", rm.Hedges()))
 			}
 
 			if err, ok := res.(error); ok {
@@ -317,8 +334,8 @@ func processErrorBody(logger *zerolog.Logger, nq *common.NormalizedRequest, err 
 		}
 	}
 
+	// TODO extend this section to detect transport mode (besides json-rpc) when more modes are added.
 	err = common.TranslateToJsonRpcException(err)
-
 	var jsonrpcVersion string = "2.0"
 	var reqId interface{} = nil
 	if nq != nil {
@@ -328,7 +345,6 @@ func processErrorBody(logger *zerolog.Logger, nq *common.NormalizedRequest, err 
 			reqId = jrr.ID
 		}
 	}
-
 	jre := &common.ErrJsonRpcExceptionInternal{}
 	if errors.As(err, &jre) {
 		return map[string]interface{}{

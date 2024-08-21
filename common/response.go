@@ -20,6 +20,14 @@ type NormalizedResponse struct {
 	jsonRpcResponse *JsonRpcResponse
 }
 
+type ResponseMetadata interface {
+	FromCache() bool
+	Attempts() int
+	Retries() int
+	Hedges() int
+	UpstreamId() string
+}
+
 func NewNormalizedResponse() *NormalizedResponse {
 	return &NormalizedResponse{}
 }
@@ -60,8 +68,12 @@ func (r *NormalizedResponse) SetHedges(hedges int) *NormalizedResponse {
 	return r
 }
 
-func (r *NormalizedResponse) Upstream() Upstream {
-	return r.upstream
+func (r *NormalizedResponse) UpstreamId() string {
+	if r.upstream == nil {
+		return ""
+	}
+
+	return r.upstream.Config().Id
 }
 
 func (r *NormalizedResponse) SetUpstream(upstream Upstream) *NormalizedResponse {

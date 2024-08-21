@@ -231,14 +231,20 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 			}
 
-			return nil, common.NewErrUpstreamsExhausted(req, errorsByUpstream, time.Since(startTime))
+			return nil, common.NewErrUpstreamsExhausted(
+				req,
+				errorsByUpstream,
+				n.ProjectId,
+				n.NetworkId,
+				time.Since(startTime),
+				exec.Attempts(),
+				exec.Retries(),
+				exec.Hedges(),
+			)
 		})
 
 	if execErr != nil {
-		err := upstream.TranslateFailsafeError(execution, execErr, map[string]interface{}{
-			"projectId": n.ProjectId,
-			"networkId": n.NetworkId,
-		})
+		err := upstream.TranslateFailsafeError(execErr)
 		// If error is due to empty response be generous and accept it,
 		// because this means after many retries still no data is available.
 		if common.HasErrorCode(err, common.ErrCodeFailsafeRetryExceeded) {
@@ -249,7 +255,16 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				resp = lvr
 			} else {
 				if len(errorsByUpstream) > 0 {
-					err = common.NewErrUpstreamsExhausted(req, errorsByUpstream, time.Since(startTime))
+					err = common.NewErrUpstreamsExhausted(
+						req,
+						errorsByUpstream,
+						n.ProjectId,
+						n.NetworkId,
+						time.Since(startTime),
+						execution.Attempts(),
+						execution.Retries(),
+						execution.Hedges(),
+					)
 				}
 				inf.Close(nil, err)
 				return nil, err

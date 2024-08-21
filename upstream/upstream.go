@@ -189,16 +189,12 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 		}
 	}
 
+	netId := req.NetworkId()
 	method, err := req.Method()
 	if err != nil {
-		return nil, false, common.NewErrUpstreamRequest(err, cfg.Id, time.Since(startTime))
+		return nil, false, common.NewErrUpstreamRequest(err, u.ProjectId, netId, cfg.Id, time.Since(startTime), 0, 0, 0)
 	}
 
-	// For certain requests such as internal eth_chainId requests, network might not be available yet.
-	netId := "n/a"
-	if req.Network() != nil {
-		netId = req.Network().Id()
-	}
 	lg := u.Logger.With().Str("method", method).Str("network", netId).Logger()
 
 	if limitersBudget != nil {
@@ -258,6 +254,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 
 		tryForward := func(
 			ctx context.Context,
+			exec failsafe.Execution[*common.NormalizedResponse],
 		) (*common.NormalizedResponse, error) {
 			u.metricsTracker.RecordUpstreamRequest(
 				cfg.Id,
@@ -293,11 +290,30 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 						)
 					}
 				}
-				return nil, common.NewErrUpstreamRequest(
-					errCall,
-					cfg.Id,
-					time.Since(startTime),
-				)
+
+				if exec != nil {
+					return nil, common.NewErrUpstreamRequest(
+						errCall,
+						u.ProjectId,
+						netId,
+						cfg.Id,
+						time.Since(startTime),
+						exec.Attempts(),
+						exec.Retries(),
+						exec.Hedges(),
+					)
+				} else {
+					return nil, common.NewErrUpstreamRequest(
+						errCall,
+						u.ProjectId,
+						netId,
+						cfg.Id,
+						time.Since(startTime),
+						1,
+						0,
+						0,
+					)
+				}
 			} else {
 				if resp.IsResultEmptyish() {
 					health.MetricUpstreamEmptyResponseTotal.WithLabelValues(u.ProjectId, cfg.Id, netId, method).Inc()
@@ -310,26 +326,20 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 		}
 
 		if u.failsafePolicies != nil && len(u.failsafePolicies) > 0 {
-			var execution failsafe.Execution[*common.NormalizedResponse]
 			executor := u.failsafeExecutor
 			resp, execErr := executor.
 				WithContext(ctx).
 				GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
-					execution = exec
-					return tryForward(ctx)
+					return tryForward(ctx, exec)
 				})
 
 			if execErr != nil {
-				return nil, false, TranslateFailsafeError(execution, execErr, map[string]interface{}{
-					"projectId":  u.ProjectId,
-					"networkId":  netId,
-					"upstreamId": cfg.Id,
-				})
+				return nil, false, TranslateFailsafeError(execErr)
 			}
 
-			return resp, false, execErr
+			return resp, false, nil
 		} else {
-			r, e := tryForward(ctx)
+			r, e := tryForward(ctx, nil)
 			return r, false, e
 		}
 	default:
