@@ -35,8 +35,6 @@ type AdminConfig struct {
 
 type DatabaseConfig struct {
 	EvmJsonRpcCache    *ConnectorConfig `yaml:"evmJsonRpcCache" json:"evmJsonRpcCache"`
-	EvmBlockIngestions *ConnectorConfig `yaml:"evmBlockIngestions" json:"evmBlockIngestions"`
-	RateLimitSnapshots *ConnectorConfig `yaml:"rateLimitSnapshots" json:"rateLimitSnapshots"`
 }
 
 type ConnectorConfig struct {
