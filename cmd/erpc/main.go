@@ -12,8 +12,16 @@ import (
 	"github.com/spf13/afero"
 )
 
+var (
+	version   = "dev"
+	commitSHA = "none"
+	buildDate = "unknown"
+)
+
 func main() {
 	logger := log.With().Logger()
+
+	logger.Info().Msgf("starting eRPC version: %s, commit: %s, built at: %s", version, commitSHA, buildDate)
 
 	err := erpc.Init(context.Background(), logger, afero.NewOsFs(), os.Args)
 	if err != nil {
