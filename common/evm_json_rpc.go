@@ -1,12 +1,10 @@
-package evm
+package common
 
 import (
 	"fmt"
-
-	"github.com/erpc/erpc/common"
 )
 
-func NormalizeHttpJsonRpc(nrq common.NormalizedRequest, r *common.JsonRpcRequest) error {
+func NormalizeEvmHttpJsonRpc(nrq *NormalizedRequest, r *JsonRpcRequest) error {
 	switch r.Method {
 	case "eth_getBlockByNumber",
 		"eth_getUncleByBlockNumberAndIndex",
@@ -26,7 +24,7 @@ func NormalizeHttpJsonRpc(nrq common.NormalizedRequest, r *common.JsonRpcRequest
 					case "latest":
 						lb := etk.LatestBlock()
 						if lb > 0 {
-							lbh, err := common.NormalizeHex(lb)
+							lbh, err := NormalizeHex(lb)
 							if err == nil {
 								r.Params[0] = lbh
 							}
@@ -34,13 +32,13 @@ func NormalizeHttpJsonRpc(nrq common.NormalizedRequest, r *common.JsonRpcRequest
 					case "finalized":
 						fb := etk.FinalizedBlock()
 						if fb > 0 {
-							fbh, err := common.NormalizeHex(fb)
+							fbh, err := NormalizeHex(fb)
 							if err == nil {
 								r.Params[0] = fbh
 							}
 						}
 					default:
-						b, err := common.NormalizeHex(r.Params[0])
+						b, err := NormalizeHex(r.Params[0])
 						if err == nil {
 							r.Params[0] = b
 						}
@@ -56,7 +54,7 @@ func NormalizeHttpJsonRpc(nrq common.NormalizedRequest, r *common.JsonRpcRequest
 		"eth_call",
 		"eth_estimateGas":
 		if len(r.Params) > 1 {
-			b, err := common.NormalizeHex(r.Params[1])
+			b, err := NormalizeHex(r.Params[1])
 			if err != nil {
 				return err
 			}
@@ -66,14 +64,14 @@ func NormalizeHttpJsonRpc(nrq common.NormalizedRequest, r *common.JsonRpcRequest
 		if len(r.Params) > 0 {
 			if paramsMap, ok := r.Params[0].(map[string]interface{}); ok {
 				if fromBlock, ok := paramsMap["fromBlock"]; ok {
-					b, err := common.NormalizeHex(fromBlock)
+					b, err := NormalizeHex(fromBlock)
 					if err != nil {
 						return err
 					}
 					paramsMap["fromBlock"] = b
 				}
 				if toBlock, ok := paramsMap["toBlock"]; ok {
-					b, err := common.NormalizeHex(toBlock)
+					b, err := NormalizeHex(toBlock)
 					if err != nil {
 						return err
 					}

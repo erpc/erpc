@@ -2,7 +2,10 @@ package data
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/erpc/erpc/common"
@@ -29,11 +32,21 @@ func NewRedisConnector(
 ) (*RedisConnector, error) {
 	logger.Debug().Msgf("creating RedisConnector with config: %+v", cfg)
 
-	client := redis.NewClient(&redis.Options{
+	options := &redis.Options{
 		Addr:     cfg.Addr,
 		Password: cfg.Password,
 		DB:       cfg.DB,
-	})
+	}
+
+	if cfg.TLS != nil && cfg.TLS.Enabled {
+		tlsConfig, err := createTLSConfig(cfg.TLS)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create TLS config: %w", err)
+		}
+		options.TLSConfig = tlsConfig
+	}
+
+	client := redis.NewClient(options)
 
 	// Test the connection
 	_, err := client.Ping(ctx).Result()
@@ -50,6 +63,32 @@ func NewRedisConnector(
 		logger: logger,
 		client: client,
 	}, nil
+}
+
+func createTLSConfig(tlsCfg *common.TLSConfig) (*tls.Config, error) {
+	config := &tls.Config{
+		InsecureSkipVerify: tlsCfg.InsecureSkipVerify,
+	}
+
+	if tlsCfg.CertFile != "" && tlsCfg.KeyFile != "" {
+		cert, err := tls.LoadX509KeyPair(tlsCfg.CertFile, tlsCfg.KeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load client cert/key pair: %w", err)
+		}
+		config.Certificates = []tls.Certificate{cert}
+	}
+
+	if tlsCfg.CAFile != "" {
+		caCert, err := os.ReadFile(tlsCfg.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CA file: %w", err)
+		}
+		caCertPool := x509.NewCertPool()
+		caCertPool.AppendCertsFromPEM(caCert)
+		config.RootCAs = caCertPool
+	}
+
+	return config, nil
 }
 
 func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey, value string) error {

@@ -33,14 +33,13 @@ func (v *BlastApiVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
 	return nil
 }
 
-func (v *BlastApiVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}) error {
+func (v *BlastApiVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {
 	bodyMap, ok := jrr.(*common.JsonRpcResponse)
 	if !ok {
 		return nil
 	}
 
 	err := bodyMap.Error
-	var details map[string]interface{} = make(map[string]interface{})
 	if err.Data != "" {
 		details["data"] = err.Data
 	}

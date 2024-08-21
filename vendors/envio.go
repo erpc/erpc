@@ -55,7 +55,33 @@ func (v *EnvioVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
 	return nil
 }
 
-func (v *EnvioVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}) error {
+func (v *EnvioVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {
+	bodyMap, ok := jrr.(*common.JsonRpcResponse)
+	if !ok {
+		return nil
+	}
+
+	err := bodyMap.Error
+	if code := err.Code; code != 0 {
+		msg := err.Message
+		if err.Data != "" {
+			details["data"] = err.Data
+		}
+
+		if strings.Contains(msg, "greater than latest block") {
+			// Consider this missing data because most often it's because a block is not yet indexed
+			return common.NewErrEndpointMissingData(
+				common.NewErrJsonRpcExceptionInternal(
+					code,
+					common.JsonRpcErrorMissingData,
+					msg,
+					nil,
+					details,
+				),
+			)
+		}
+	}
+
 	return nil
 }
 

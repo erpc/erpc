@@ -7,6 +7,8 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
+var FALSE = false
+
 type DrpcVendor struct {
 	common.Vendor
 }
@@ -30,10 +32,16 @@ func (v *DrpcVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
 		upstream.JsonRpc.BatchMaxSize = 100
 	}
 
+	// By default disable auto-ignore because free-tier plans of dRPC
+	// might give wrong responses when using public nodes.
+	if upstream.AutoIgnoreUnsupportedMethods == nil {
+		upstream.AutoIgnoreUnsupportedMethods = &FALSE
+	}
+
 	return nil
 }
 
-func (v *DrpcVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}) error {
+func (v *DrpcVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {
 	bodyMap, ok := jrr.(*common.JsonRpcResponse)
 	if !ok {
 		return nil
@@ -42,7 +50,6 @@ func (v *DrpcVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interf
 	err := bodyMap.Error
 	if code := err.Code; code != 0 {
 		msg := err.Message
-		var details map[string]interface{} = make(map[string]interface{})
 		if err.Data != "" {
 			details["data"] = err.Data
 		}

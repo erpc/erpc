@@ -52,7 +52,7 @@ func (v *PimlicoVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
 	return nil
 }
 
-func (v *PimlicoVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}) error {
+func (v *PimlicoVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {
 	return nil
 }
 

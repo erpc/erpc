@@ -21,10 +21,18 @@ setup:
 run:
 	@go run ./cmd/erpc/main.go
 
+.PHONY: run-fake-rpcs
+run-fake-rpcs:
+	@go run ./test/cmd/main.go
+
+.PHONY: run-k6
+run-k6:
+	@k6 run ./test/k6/run.js
+
 .PHONY: build
 build:
-	@CGO_ENABLED=0 go build -ldflags="-w -s" -o ./bin/erpc ./cmd/erpc/main.go
-	@echo executable file \"erpc\" saved in ./bin/erpc
+	@CGO_ENABLED=0 go build -ldflags="-w -s" -o ./bin/erpc-server ./cmd/erpc/main.go
+	@CGO_ENABLED=0 go build -ldflags="-w -s" -tags pprof -o ./bin/erpc-server-pprof ./cmd/erpc/*.go
 
 .PHONY: test
 test:

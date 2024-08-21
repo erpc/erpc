@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/evm"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/util"
 	"github.com/erpc/erpc/vendors"
@@ -27,8 +27,8 @@ type Upstream struct {
 	vendor common.Vendor
 
 	metricsTracker       *health.Tracker
-	failsafePolicies     []failsafe.Policy[common.NormalizedResponse]
-	failsafeExecutor     failsafe.Executor[common.NormalizedResponse]
+	failsafePolicies     []failsafe.Policy[*common.NormalizedResponse]
+	failsafeExecutor     failsafe.Executor[*common.NormalizedResponse]
 	rateLimitersRegistry *RateLimitersRegistry
 	rateLimiterAutoTuner *RateLimitAutoTuner
 
@@ -64,7 +64,7 @@ func NewUpstream(
 		vendor:               vn,
 		metricsTracker:       mt,
 		failsafePolicies:     policies,
-		failsafeExecutor:     failsafe.NewExecutor[common.NormalizedResponse](policies...),
+		failsafeExecutor:     failsafe.NewExecutor[*common.NormalizedResponse](policies...),
 		rateLimitersRegistry: rlr,
 		methodCheckResults:   map[string]bool{},
 		supportedNetworkIds:  map[string]bool{},
@@ -85,7 +85,10 @@ func NewUpstream(
 	} else {
 		pup.Client = client
 	}
-	pup.detectFeatures()
+	err = pup.detectFeatures()
+	if err != nil {
+		return nil, err
+	}
 
 	lg.Debug().Msgf("prepared upstream")
 
@@ -100,7 +103,7 @@ func (u *Upstream) Vendor() common.Vendor {
 	return u.vendor
 }
 
-func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
+func (u *Upstream) prepareRequest(normalizedReq *common.NormalizedRequest) error {
 	cfg := u.Config()
 	switch cfg.Type {
 	case common.UpstreamTypeEvm,
@@ -131,7 +134,7 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 					nil,
 				)
 			}
-			err = evm.NormalizeHttpJsonRpc(normalizedReq, jsonRpcReq)
+			err = common.NormalizeEvmHttpJsonRpc(normalizedReq, jsonRpcReq)
 			if err != nil {
 				return common.NewErrJsonRpcExceptionInternal(
 					0,
@@ -164,7 +167,7 @@ func (u *Upstream) prepareRequest(normalizedReq *NormalizedRequest) error {
 }
 
 // Forward is used during lifecycle of a proxied request, it uses writers and readers for better performance
-func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.NormalizedResponse, bool, error) {
+func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, bool, error) {
 	startTime := time.Now()
 	cfg := u.Config()
 
@@ -186,12 +189,13 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 		}
 	}
 
+	netId := req.NetworkId()
 	method, err := req.Method()
 	if err != nil {
-		return nil, false, common.NewErrUpstreamRequest(err, cfg.Id, time.Since(startTime))
+		return nil, false, common.NewErrUpstreamRequest(err, u.ProjectId, netId, cfg.Id, time.Since(startTime), 0, 0, 0)
 	}
 
-	lg := u.Logger.With().Str("method", method).Logger()
+	lg := u.Logger.With().Str("method", method).Str("network", netId).Logger()
 
 	if limitersBudget != nil {
 		lg.Trace().Str("budget", cfg.RateLimitBudget).Msgf("checking upstream-level rate limiters budget")
@@ -200,10 +204,6 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 			for _, rule := range rules {
 				if !rule.Limiter.TryAcquirePermit() {
 					lg.Warn().Str("budget", cfg.RateLimitBudget).Msgf("upstream-level rate limit '%v' exceeded", rule.Config)
-					netId := "n/a"
-					if req.Network() != nil {
-						netId = req.Network().Id()
-					}
 					u.metricsTracker.RecordUpstreamSelfRateLimited(
 						netId,
 						cfg.Id,
@@ -254,11 +254,8 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 
 		tryForward := func(
 			ctx context.Context,
-		) (*NormalizedResponse, error) {
-			netId := "n/a"
-			if req.Network() != nil {
-				netId = req.Network().Id()
-			}
+			exec failsafe.Execution[*common.NormalizedResponse],
+		) (*common.NormalizedResponse, error) {
 			u.metricsTracker.RecordUpstreamRequest(
 				cfg.Id,
 				netId,
@@ -293,11 +290,34 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 						)
 					}
 				}
-				return nil, common.NewErrUpstreamRequest(
-					errCall,
-					cfg.Id,
-					time.Since(startTime),
-				)
+
+				if exec != nil {
+					return nil, common.NewErrUpstreamRequest(
+						errCall,
+						u.ProjectId,
+						netId,
+						cfg.Id,
+						time.Since(startTime),
+						exec.Attempts(),
+						exec.Retries(),
+						exec.Hedges(),
+					)
+				} else {
+					return nil, common.NewErrUpstreamRequest(
+						errCall,
+						u.ProjectId,
+						netId,
+						cfg.Id,
+						time.Since(startTime),
+						1,
+						0,
+						0,
+					)
+				}
+			} else {
+				if resp.IsResultEmptyish() {
+					health.MetricUpstreamEmptyResponseTotal.WithLabelValues(u.ProjectId, cfg.Id, netId, method).Inc()
+				}
 			}
 
 			u.recordRequestSuccess(method)
@@ -306,26 +326,20 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 		}
 
 		if u.failsafePolicies != nil && len(u.failsafePolicies) > 0 {
-			var execution failsafe.Execution[common.NormalizedResponse]
 			executor := u.failsafeExecutor
 			resp, execErr := executor.
 				WithContext(ctx).
-				GetWithExecution(func(exec failsafe.Execution[common.NormalizedResponse]) (common.NormalizedResponse, error) {
-					execution = exec
-					return tryForward(ctx)
+				GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+					return tryForward(ctx, exec)
 				})
 
 			if execErr != nil {
-				return nil, false, TranslateFailsafeError(execution, execErr, map[string]interface{}{
-					"projectId":  u.ProjectId,
-					"networkId":  req.Network().Id(),
-					"upstreamId": cfg.Id,
-				})
+				return nil, false, TranslateFailsafeError(execErr)
 			}
 
-			return resp, false, execErr
+			return resp, false, nil
 		} else {
-			r, e := tryForward(ctx)
+			r, e := tryForward(ctx, nil)
 			return r, false, e
 		}
 	default:
@@ -336,12 +350,12 @@ func (u *Upstream) Forward(ctx context.Context, req *NormalizedRequest) (common.
 	}
 }
 
-func (u *Upstream) Executor() failsafe.Executor[common.NormalizedResponse] {
+func (u *Upstream) Executor() failsafe.Executor[*common.NormalizedResponse] {
 	return u.failsafeExecutor
 }
 
 func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
-	pr := NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_chainId","params":[]}`))
+	pr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_chainId","params":[]}`))
 	resp, _, err := u.Forward(ctx, pr)
 	if err != nil {
 		return "", err
@@ -354,7 +368,11 @@ func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 		return "", jrr.Error
 	}
 
-	hex, err := common.NormalizeHex(jrr.Result)
+	res, err := jrr.ParsedResult()
+	if err != nil {
+		return "", err
+	}
+	hex, err := common.NormalizeHex(res)
 	if err != nil {
 		return "", err
 	}
@@ -388,7 +406,8 @@ func (u *Upstream) SupportsNetwork(networkId string) (bool, error) {
 }
 
 func (u *Upstream) IgnoreMethod(method string) {
-	if !u.config.AutoIgnoreUnsupportedMethods {
+	ai := u.config.AutoIgnoreUnsupportedMethods
+	if ai == nil || !*ai {
 		return
 	}
 
@@ -531,11 +550,17 @@ func (u *Upstream) detectFeatures() error {
 		if cfg.Evm.ChainId == 0 {
 			nid, err := u.EvmGetChainId(context.Background())
 			if err != nil {
-				return err
+				return common.NewErrUpstreamClientInitialization(
+					fmt.Errorf("failed to get chain id: %w", err),
+					cfg.Id,
+				)
 			}
 			cfg.Evm.ChainId, err = strconv.Atoi(nid)
 			if err != nil {
-				return err
+				return common.NewErrUpstreamClientInitialization(
+					fmt.Errorf("failed to parse chain id: %w", err),
+					cfg.Id,
+				)
 			}
 			u.supportedNetworkIdsMu.Lock()
 			u.supportedNetworkIds[util.EvmNetworkId(cfg.Evm.ChainId)] = true
@@ -549,7 +574,7 @@ func (u *Upstream) detectFeatures() error {
 	return nil
 }
 
-func (u *Upstream) shouldSkip(req *NormalizedRequest) (reason error, skip bool) {
+func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip bool) {
 	method, _ := req.Method()
 
 	if !u.shouldHandleMethod(method) {
@@ -560,4 +585,29 @@ func (u *Upstream) shouldSkip(req *NormalizedRequest) (reason error, skip bool) 
 	// TODO evm: if block can be determined from request and upstream is only full-node and block is historical skip
 
 	return nil, false
+}
+
+func (u *Upstream) MarshalJSON() ([]byte, error) {
+	type upstreamPublic struct {
+		Id             string                            `json:"id"`
+		Metrics        map[string]*health.TrackedMetrics `json:"metrics"`
+		ActiveNetworks []string                          `json:"activeNetworks"`
+	}
+
+	var activeNetworks []string
+	u.supportedNetworkIdsMu.RLock()
+	for netId := range u.supportedNetworkIds {
+		activeNetworks = append(activeNetworks, netId)
+	}
+	u.supportedNetworkIdsMu.RUnlock()
+
+	metrics := u.metricsTracker.GetUpstreamMetrics(u.config.Id)
+
+	uppub := upstreamPublic{
+		Id:             u.config.Id,
+		Metrics:        metrics,
+		ActiveNetworks: activeNetworks,
+	}
+
+	return sonic.Marshal(uppub)
 }

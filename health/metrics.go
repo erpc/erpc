@@ -53,6 +53,12 @@ var (
 		Help:      "Total number of requests where upstream is missing data or not synced yet.",
 	}, []string{"project", "network", "upstream", "category"})
 
+	MetricUpstreamEmptyResponseTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_request_empty_response_total",
+		Help:      "Total number of empty responses from upstreams.",
+	}, []string{"project", "network", "upstream", "category"})
+
 	MetricNetworkRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_request_self_rate_limited_total",

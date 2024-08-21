@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
@@ -20,7 +21,7 @@ import (
 type HttpJsonRpcClient interface {
 	GetType() ClientType
 	SupportsNetwork(networkId string) (bool, error)
-	SendRequest(ctx context.Context, req *NormalizedRequest) (*NormalizedResponse, error)
+	SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
 }
 
 type GenericHttpJsonRpcClient struct {
@@ -41,8 +42,8 @@ type GenericHttpJsonRpcClient struct {
 
 type batchRequest struct {
 	ctx      context.Context
-	request  *NormalizedRequest
-	response chan *NormalizedResponse
+	request  *common.NormalizedRequest
+	response chan *common.NormalizedResponse
 	err      chan error
 }
 
@@ -81,11 +82,11 @@ func NewGenericHttpJsonRpcClient(logger *zerolog.Logger, pu *Upstream, parsedUrl
 		client.httpClient = &http.Client{}
 	} else {
 		client.httpClient = &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 60 * time.Second,
 			Transport: &http.Transport{
-				MaxIdleConns:        100,
+				MaxIdleConns:        400,
+				MaxIdleConnsPerHost: 400,
 				IdleConnTimeout:     90 * time.Second,
-				MaxIdleConnsPerHost: 10,
 			},
 		}
 	}
@@ -105,17 +106,17 @@ func (c *GenericHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, erro
 	return false, nil
 }
 
-func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *NormalizedRequest) (*NormalizedResponse, error) {
+func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	if !c.supportsBatch {
 		return c.sendSingleRequest(ctx, req)
 	}
 
-	responseChan := make(chan *NormalizedResponse, 1)
+	responseChan := make(chan *common.NormalizedResponse, 1)
 	errChan := make(chan error, 1)
 
 	jrReq, err := req.JsonRpcRequest()
 	if err != nil {
-		return nil, common.NewErrUpstreamRequest(err, c.upstream.Config().Id, 0)
+		return nil, common.NewErrUpstreamRequest(err, c.upstream.ProjectId, req.NetworkId(), c.upstream.Config().Id, 0, 0, 0, 0)
 	}
 
 	bReq := &batchRequest{
@@ -168,7 +169,7 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 	for _, req := range requests {
 		jrReq, err := req.request.JsonRpcRequest()
 		if err != nil {
-			req.err <- common.NewErrUpstreamRequest(err, c.upstream.Config().Id, 0)
+			req.err <- common.NewErrUpstreamRequest(err, c.upstream.ProjectId, req.request.NetworkId(), c.upstream.Config().Id, 0, 0, 0, 0)
 			continue
 		}
 		batchReq = append(batchReq, common.JsonRpcRequest{
@@ -179,7 +180,7 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 		})
 	}
 
-	requestBody, err := json.Marshal(batchReq)
+	requestBody, err := sonic.Marshal(batchReq)
 	if err != nil {
 		for _, req := range requests {
 			req.err <- err
@@ -234,13 +235,13 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 	}
 
 	var batchResp []json.RawMessage
-	err = json.Unmarshal(respBody, &batchResp)
+	err = sonic.Unmarshal(respBody, &batchResp)
 	if err != nil {
 		// Try parsing as single json-rpc object,
 		// some providers return a single object on some errors even when request is batch.
 		// this is a workaround to handle those cases.
 		var singleResp common.JsonRpcResponse
-		errsg := json.Unmarshal(respBody, &singleResp)
+		errsg := sonic.Unmarshal(respBody, &singleResp)
 		if errsg != nil {
 			for _, req := range requests {
 				req.err <- common.NewErrEndpointServerSideException(
@@ -257,7 +258,7 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 				// This case happens when upstreams a single valid json-rpc object as response
 				// to a batch request (e.g. BlastAPI).
 				for _, req := range requests {
-					nr := NewNormalizedResponse().WithRequest(req.request).WithBody(respBody)
+					nr := common.NewNormalizedResponse().WithRequest(req.request).WithBody(respBody)
 					err := c.normalizeJsonRpcError(resp, nr)
 					if err != nil {
 						req.err <- err
@@ -283,13 +284,13 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 
 	for _, rawResp := range batchResp {
 		var jrResp common.JsonRpcResponse
-		err := json.Unmarshal(rawResp, &jrResp)
+		err := sonic.Unmarshal(rawResp, &jrResp)
 		if err != nil {
 			continue
 		}
 
 		if req, ok := requests[jrResp.ID]; ok {
-			nr := NewNormalizedResponse().WithRequest(req.request).WithBody(rawResp)
+			nr := common.NewNormalizedResponse().WithRequest(req.request).WithBody(rawResp)
 			err := c.normalizeJsonRpcError(resp, nr)
 			if err != nil {
 				req.err <- err
@@ -306,13 +307,13 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 	}
 }
 
-func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *NormalizedRequest) (*NormalizedResponse, error) {
+func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	jrReq, err := req.JsonRpcRequest()
 	if err != nil {
-		return nil, common.NewErrUpstreamRequest(err, c.upstream.Config().Id, 0)
+		return nil, common.NewErrUpstreamRequest(err, c.upstream.ProjectId, req.NetworkId(), c.upstream.Config().Id, 0, 0, 0, 0)
 	}
 
-	requestBody, err := json.Marshal(common.JsonRpcRequest{
+	requestBody, err := sonic.Marshal(common.JsonRpcRequest{
 		JSONRPC: jrReq.JSONRPC,
 		Method:  jrReq.Method,
 		Params:  jrReq.Params,
@@ -350,12 +351,12 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *N
 		return nil, err
 	}
 
-	nr := NewNormalizedResponse().WithRequest(req).WithBody(respBody)
+	nr := common.NewNormalizedResponse().WithRequest(req).WithBody(respBody)
 
 	return nr, c.normalizeJsonRpcError(resp, nr)
 }
 
-func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *NormalizedResponse) error {
+func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *common.NormalizedResponse) error {
 	jr, err := nr.JsonRpcResponse()
 
 	if err != nil {
@@ -398,17 +399,19 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *N
 	return e
 }
 
-func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *common.JsonRpcResponse) error {
+func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *common.JsonRpcResponse) error {
 	if jr != nil && jr.Error != nil {
 		err := jr.Error
 
-		if ver := getVendorSpecificErrorIfAny(r, nr, jr); ver != nil {
+		var details map[string]interface{} = make(map[string]interface{})
+		details["headers"] = util.ExtractUsefulHeaders(r.Header)
+
+		if ver := getVendorSpecificErrorIfAny(r, nr, jr, details); ver != nil {
 			return ver
 		}
 
 		code := common.JsonRpcErrorNumber(err.Code)
 
-		var details map[string]interface{} = make(map[string]interface{})
 		if err.Data != "" {
 			// Some providers such as Alchemy prefix the data with this string
 			// we omit this prefix for standardization.
@@ -476,6 +479,7 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 				),
 			)
 		} else if strings.Contains(err.Message, "missing trie node") ||
+			strings.Contains(err.Message, "header not found") ||
 			// Usually happens on Avalanche when querying a pretty recent block:
 			strings.Contains(err.Message, "cannot query unfinalized") ||
 			strings.Contains(err.Message, "height is not available") ||
@@ -523,11 +527,21 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 						details,
 					),
 				)
+			} else if strings.Contains(err.Message, "header") {
+				return common.NewErrEndpointMissingData(
+					common.NewErrJsonRpcExceptionInternal(
+						int(code),
+						common.JsonRpcErrorMissingData,
+						err.Message,
+						nil,
+						details,
+					),
+				)
 			} else {
 				return common.NewErrEndpointClientSideException(
 					common.NewErrJsonRpcExceptionInternal(
 						int(code),
-						common.JsonRpcErrorUnsupportedException,
+						common.JsonRpcErrorClientSideException,
 						err.Message,
 						nil,
 						details,
@@ -576,7 +590,11 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 
 	// There's a special case for certain clients that return a normal response for reverts:
 	if jr != nil && jr.Result != nil {
-		if dt, ok := jr.Result.(string); ok {
+		res, err := jr.ParsedResult()
+		if err != nil {
+			return err
+		}
+		if dt, ok := res.(string); ok {
 			// keccak256("Error(string)")
 			if strings.HasPrefix(dt, "0x08c379a0") {
 				return common.NewErrEndpointClientSideException(
@@ -599,8 +617,9 @@ func extractJsonRpcError(r *http.Response, nr common.NormalizedResponse, jr *com
 
 func getVendorSpecificErrorIfAny(
 	rp *http.Response,
-	nr common.NormalizedResponse,
+	nr *common.NormalizedResponse,
 	jr *common.JsonRpcResponse,
+	details map[string]interface{},
 ) error {
 	req := nr.Request()
 	if req == nil {
@@ -617,5 +636,5 @@ func getVendorSpecificErrorIfAny(
 		return nil
 	}
 
-	return vn.GetVendorSpecificErrorIfAny(rp, jr)
+	return vn.GetVendorSpecificErrorIfAny(rp, jr, details)
 }

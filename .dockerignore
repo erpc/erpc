@@ -1,3 +1,4 @@
 erpc.yaml
 _ignore.*
 coverage.txt
+node_modules

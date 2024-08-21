@@ -17,9 +17,9 @@ func TestStress_EvmJsonRpc_SimpleVariedFailures(t *testing.T) {
 			{Port: 8082, FailureRate: 0.2, MinDelay: 100 * time.Millisecond, MaxDelay: 300 * time.Millisecond, SampleFile: "samples/evm-json-rpc.json"},
 			{Port: 8083, FailureRate: 0.05, MinDelay: 30 * time.Millisecond, MaxDelay: 150 * time.Millisecond, SampleFile: "samples/evm-json-rpc.json"},
 		},
-		Duration: "20s",
-		VUs:      30,
-		MaxRPS:   10,
+		Duration: "60s",
+		VUs:      50,
+		MaxRPS:   10000,
 		AdditionalNetworkConfig: &common.NetworkConfig{
 			Failsafe: &common.FailsafeConfig{
 				Retry: &common.RetryPolicyConfig{

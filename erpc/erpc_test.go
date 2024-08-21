@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/upstream"
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
@@ -117,7 +116,7 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			nr := upstream.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0x123456789"],"id":1}`))
+			nr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0x123456789"],"id":1}`))
 			_, _ = nw.Forward(ctx2, nr)
 		}()
 		time.Sleep(10 * time.Millisecond)
