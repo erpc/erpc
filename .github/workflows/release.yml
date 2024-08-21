@@ -1,52 +1,72 @@
-name: Release
+name: release
+
 on:
-  push:
-    branches:
-      - 'main'
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: 'Version tag for the release (e.g., v1.0.0)'
+        required: true
+      commit_sha:
+        description: 'Commit SHA (default: last commit of the current branch)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+  packages: write
 
 jobs:
-  test:
+  tag:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          go-version: '1.22.x'
-      - run: make setup
-      - run: make build
-      - run: make test
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.commit_sha || github.ref }}
+
+      - name: Configure Git
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+
+      - name: Tag commit and push
+        run: |
+          git tag ${{ github.event.inputs.version_tag }} -f
+          git push origin ${{ github.event.inputs.version_tag }} -f
 
   release:
     runs-on: ubuntu-latest
-    needs: test
-    permissions:
-      contents: write
-      packages: write
+    needs: tag
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.commit_sha || github.ref }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.x'
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  docker-image:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.22.x'
-      
-      - name: Run Semantic Release
-        id: semrel
-        uses: go-semantic-release/action@v1
-        with:
-          hooks: goreleaser
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          config-file: .semrelrc
-      
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v5
-        with:
-          distribution: goreleaser
-          version: latest
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      
+          ref: ${{ github.event.inputs.version_tag }}
+
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -67,5 +87,5 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/erpc/erpc:test-latest
-            ghcr.io/erpc/erpc:test-${{ steps.semrel.outputs.version }}
+            ghcr.io/erpc/erpc:latest
+            ghcr.io/erpc/erpc:${{ github.event.inputs.version_tag }}

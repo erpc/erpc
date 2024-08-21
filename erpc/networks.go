@@ -108,7 +108,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// 2) Get from cache if exists
 	if n.cacheDal != nil {
 		lg.Debug().Msgf("checking cache for request")
-		cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		cctx, cancel := context.WithTimeoutCause(ctx, 2*time.Second, errors.New("cache driver timeout during get"))
 		defer cancel()
 		resp, err := n.cacheDal.Get(cctx, req)
 		if err != nil {
@@ -134,7 +134,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		u *upstream.Upstream,
 		ctx context.Context,
 	) (resp *common.NormalizedResponse, skipped bool, err error) {
-		lg := u.Logger.With().Str("upstream", u.Config().Id).Logger()
+		lg := u.Logger.With().Str("upstreamId", u.Config().Id).Logger()
 
 		lg.Debug().Str("method", method).Str("rid", fmt.Sprintf("%p", req)).Msgf("trying to forward request to upstream")
 
@@ -191,12 +191,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 				if isHedged {
 					lg.Debug().
-						Str("upstream", u.Config().Id).
+						Str("upstreamId", u.Config().Id).
 						Int("index", i).
 						Msgf("executing hedged forward to upstream")
 				} else {
 					lg.Debug().
-						Str("upstream", u.Config().Id).
+						Str("upstreamId", u.Config().Id).
 						Int("index", i).
 						Msgf("executing forward to upstream")
 				}
@@ -284,7 +284,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 		if n.cacheDal != nil {
 			go (func(resp *common.NormalizedResponse) {
-				c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				c, cancel := context.WithTimeoutCause(context.Background(), 10*time.Second, errors.New("cache driver timeout during set"))
 				defer cancel()
 				err := n.cacheDal.Set(c, req, resp)
 				if err != nil {

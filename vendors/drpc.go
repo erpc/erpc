@@ -29,7 +29,7 @@ func (v *DrpcVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
 	if upstream.JsonRpc.SupportsBatch == nil {
 		upstream.JsonRpc.SupportsBatch = &TRUE
 		upstream.JsonRpc.BatchMaxWait = "100ms"
-		upstream.JsonRpc.BatchMaxSize = 100
+		upstream.JsonRpc.BatchMaxSize = 3
 	}
 
 	// By default disable auto-ignore because free-tier plans of dRPC

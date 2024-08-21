@@ -34,7 +34,7 @@ type AdminConfig struct {
 }
 
 type DatabaseConfig struct {
-	EvmJsonRpcCache    *ConnectorConfig `yaml:"evmJsonRpcCache" json:"evmJsonRpcCache"`
+	EvmJsonRpcCache *ConnectorConfig `yaml:"evmJsonRpcCache" json:"evmJsonRpcCache"`
 }
 
 type ConnectorConfig struct {
@@ -58,9 +58,9 @@ type TLSConfig struct {
 }
 
 type RedisConnectorConfig struct {
-	Addr     string `yaml:"addr" json:"addr"`
-	Password string `yaml:"password" json:"password"`
-	DB       int    `yaml:"db" json:"db"`
+	Addr     string     `yaml:"addr" json:"addr"`
+	Password string     `yaml:"password" json:"password"`
+	DB       int        `yaml:"db" json:"db"`
 	TLS      *TLSConfig `yaml:"tls" json:"tls"`
 }
 
