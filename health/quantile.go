@@ -1,10 +1,11 @@
 package health
 
 import (
-	"encoding/json"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/bytedance/sonic"
 )
 
 type QuantileTracker struct {
@@ -73,7 +74,7 @@ func (p *QuantileTracker) Reset() {
 }
 
 func (p *QuantileTracker) MarshalJSON() ([]byte, error) {
-	return json.Marshal(struct {
+	return sonic.Marshal(struct {
 		P90 float64 `json:"p90"`
 	}{
 		P90: p.P90(),

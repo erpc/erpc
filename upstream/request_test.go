@@ -2,10 +2,12 @@ package upstream
 
 import (
 	"testing"
+
+	"github.com/erpc/erpc/common"
 )
 
 func TestNormalizedRequest_BodyCannotBeDecoded(t *testing.T) {
-	normReq := NewNormalizedRequest([]byte(`{"method": "test", "params": "invalid"}`))
+	normReq := common.NewNormalizedRequest([]byte(`{"method": "test", "params": "invalid"}`))
 
 	// Call the JsonRpcRequest method to parse and normalize the request
 	jsonRpcReq, err := normReq.JsonRpcRequest()

@@ -25,8 +25,8 @@ type Network struct {
 	inFlightMutex    *sync.Mutex
 	inFlightRequests map[string]*Multiplexer
 
-	failsafePolicies     []failsafe.Policy[common.NormalizedResponse]
-	failsafeExecutor     failsafe.Executor[common.NormalizedResponse]
+	failsafePolicies     []failsafe.Policy[*common.NormalizedResponse]
+	failsafeExecutor     failsafe.Executor[*common.NormalizedResponse]
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	// rateLimiterDal       data.RateLimitersDAL
 	cacheDal          data.CacheDAL
@@ -62,7 +62,7 @@ func (n *Network) Architecture() common.NetworkArchitecture {
 	return n.Config.Architecture
 }
 
-func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) (common.NormalizedResponse, error) {
+func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	startTime := time.Now()
 
 	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
@@ -108,14 +108,14 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 	// 2) Get from cache if exists
 	if n.cacheDal != nil {
 		lg.Debug().Msgf("checking cache for request")
-		cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		cctx, cancel := context.WithTimeoutCause(ctx, 2*time.Second, errors.New("cache driver timeout during get"))
 		defer cancel()
 		resp, err := n.cacheDal.Get(cctx, req)
-		lg.Debug().Err(err).Msgf("cache response: %v", resp)
 		if err != nil {
 			lg.Debug().Err(err).Msgf("could not find response in cache")
 			health.MetricNetworkCacheMisses.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 		} else if resp != nil {
+			resp.SetFromCache(true)
 			lg.Info().Object("req", req).Err(err).Msgf("response served from cache")
 			health.MetricNetworkCacheHits.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 			inf.Close(resp, err)
@@ -133,8 +133,8 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 	tryForward := func(
 		u *upstream.Upstream,
 		ctx context.Context,
-	) (resp common.NormalizedResponse, skipped bool, err error) {
-		lg := u.Logger.With().Str("upstream", u.Config().Id).Logger()
+	) (resp *common.NormalizedResponse, skipped bool, err error) {
+		lg := u.Logger.With().Str("upstreamId", u.Config().Id).Logger()
 
 		lg.Debug().Str("method", method).Str("rid", fmt.Sprintf("%p", req)).Msgf("trying to forward request to upstream")
 
@@ -164,14 +164,14 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		return nil, err
 	}
 
-	var execution failsafe.Execution[common.NormalizedResponse]
+	var execution failsafe.Execution[*common.NormalizedResponse]
 	var errorsByUpstream = []error{}
 	var errorsMutex sync.Mutex
 	imtx := sync.Mutex{}
 	i := 0
 	resp, execErr := n.failsafeExecutor.
 		WithContext(ctx).
-		GetWithExecution(func(exec failsafe.Execution[common.NormalizedResponse]) (common.NormalizedResponse, error) {
+		GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
 			execution = exec
 			isHedged := exec.Hedges() > 0
 
@@ -191,12 +191,12 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 				}
 				if isHedged {
 					lg.Debug().
-						Str("upstream", u.Config().Id).
+						Str("upstreamId", u.Config().Id).
 						Int("index", i).
 						Msgf("executing hedged forward to upstream")
 				} else {
 					lg.Debug().
-						Str("upstream", u.Config().Id).
+						Str("upstreamId", u.Config().Id).
 						Int("index", i).
 						Msgf("executing forward to upstream")
 				}
@@ -222,20 +222,29 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 					errorsMutex.Unlock()
 				}
 				if !skipped {
+					if resp != nil {
+						resp.SetUpstream(u)
+					}
 					return resp, err
 				} else if err != nil {
 					continue
 				}
 			}
 
-			return nil, common.NewErrUpstreamsExhausted(req, errorsByUpstream, time.Since(startTime))
+			return nil, common.NewErrUpstreamsExhausted(
+				req,
+				errorsByUpstream,
+				n.ProjectId,
+				n.NetworkId,
+				time.Since(startTime),
+				exec.Attempts(),
+				exec.Retries(),
+				exec.Hedges(),
+			)
 		})
 
 	if execErr != nil {
-		err := upstream.TranslateFailsafeError(execution, execErr, map[string]interface{}{
-			"projectId": n.ProjectId,
-			"networkId": n.NetworkId,
-		})
+		err := upstream.TranslateFailsafeError(execErr)
 		// If error is due to empty response be generous and accept it,
 		// because this means after many retries still no data is available.
 		if common.HasErrorCode(err, common.ErrCodeFailsafeRetryExceeded) {
@@ -246,7 +255,16 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 				resp = lvr
 			} else {
 				if len(errorsByUpstream) > 0 {
-					err = common.NewErrUpstreamsExhausted(req, errorsByUpstream, time.Since(startTime))
+					err = common.NewErrUpstreamsExhausted(
+						req,
+						errorsByUpstream,
+						n.ProjectId,
+						n.NetworkId,
+						time.Since(startTime),
+						execution.Attempts(),
+						execution.Retries(),
+						execution.Hedges(),
+					)
 				}
 				inf.Close(nil, err)
 				return nil, err
@@ -257,15 +275,23 @@ func (n *Network) Forward(ctx context.Context, req *upstream.NormalizedRequest) 
 		}
 	}
 
-	if n.cacheDal != nil && resp != nil {
-		go (func(resp common.NormalizedResponse) {
-			c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			err := n.cacheDal.Set(c, req, resp)
-			if err != nil {
-				lg.Warn().Err(err).Msgf("could not store response in cache")
-			}
-		})(resp)
+	if resp != nil {
+		if execution != nil {
+			resp.SetAttempts(execution.Attempts())
+			resp.SetRetries(execution.Retries())
+			resp.SetHedges(execution.Hedges())
+		}
+
+		if n.cacheDal != nil {
+			go (func(resp *common.NormalizedResponse) {
+				c, cancel := context.WithTimeoutCause(context.Background(), 10*time.Second, errors.New("cache driver timeout during set"))
+				defer cancel()
+				err := n.cacheDal.Set(c, req, resp)
+				if err != nil {
+					lg.Warn().Err(err).Msgf("could not store response in cache")
+				}
+			})(resp)
+		}
 	}
 
 	inf.Close(resp, nil)
@@ -338,7 +364,7 @@ func (n *Network) EvmChainId() (int64, error) {
 	return n.Config.Evm.ChainId, nil
 }
 
-func (n *Network) processResponse(resp common.NormalizedResponse, skipped bool, err error) (common.NormalizedResponse, bool, error) {
+func (n *Network) processResponse(resp *common.NormalizedResponse, skipped bool, err error) (*common.NormalizedResponse, bool, error) {
 	if err == nil {
 		return resp, skipped, nil
 	}
@@ -375,7 +401,7 @@ func (n *Network) processResponse(resp common.NormalizedResponse, skipped bool, 
 	}
 }
 
-func (n *Network) acquireRateLimitPermit(req *upstream.NormalizedRequest) error {
+func (n *Network) acquireRateLimitPermit(req *common.NormalizedRequest) error {
 	if n.Config.RateLimitBudget == "" {
 		return nil
 	}

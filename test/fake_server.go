@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
 )
 
@@ -65,7 +66,7 @@ func (fs *FakeServer) loadSamples(filePath string) error {
 		return fmt.Errorf("failed to read sample file: %w", err)
 	}
 
-	if err := json.Unmarshal(data, &fs.samples); err != nil {
+	if err := sonic.Unmarshal(data, &fs.samples); err != nil {
 		return fmt.Errorf("failed to unmarshal samples: %w", err)
 	}
 

@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net/url"
@@ -130,10 +131,10 @@ func (c *PimlicoHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, erro
 	if err != nil {
 		return false, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeoutCause(context.Background(), 10*time.Second, errors.New("pimlico client timeout during eth_chainId"))
 	defer cancel()
 	rid := rand.Intn(1000000)
-	pr := NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, rid)))
+	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, rid)))
 	resp, err := client.SendRequest(ctx, pr)
 	if err != nil {
 		return false, err
@@ -207,7 +208,7 @@ func (c *PimlicoHttpJsonRpcClient) createClient(chainID int64) (HttpJsonRpcClien
 	return client, nil
 }
 
-func (c *PimlicoHttpJsonRpcClient) SendRequest(ctx context.Context, req *NormalizedRequest) (*NormalizedResponse, error) {
+func (c *PimlicoHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	network := req.Network()
 	if network == nil {
 		return nil, fmt.Errorf("network information is missing in the request")

@@ -16,11 +16,11 @@ func TestUpstream_SkipLogic(t *testing.T) {
 			},
 		}
 
-		reason, skip := upstream.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
+		reason, skip := upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.True(t, skip)
 		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_getBalance", "test"))
 
-		reason, skip = upstream.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_getBlockByNumber"}`)))
+		reason, skip = upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBlockByNumber"}`)))
 		assert.False(t, skip)
 		assert.Nil(t, reason)
 	})
@@ -33,11 +33,11 @@ func TestUpstream_SkipLogic(t *testing.T) {
 			},
 		}
 
-		reason, skip := upstream.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
+		reason, skip := upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.True(t, skip)
 		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_getBalance", "test"))
 
-		reason, skip = upstream.shouldSkip(NewNormalizedRequest([]byte(`{"method":"net_version"}`)))
+		reason, skip = upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"net_version"}`)))
 		assert.False(t, skip)
 		assert.Nil(t, reason)
 	})
@@ -50,15 +50,15 @@ func TestUpstream_SkipLogic(t *testing.T) {
 			},
 		}
 
-		reason, skip := upstream.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
+		reason, skip := upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.True(t, skip)
 		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_getBalance", "test"))
 
-		reason, skip = upstream.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_getBlockByNumber"}`)))
+		reason, skip = upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBlockByNumber"}`)))
 		assert.True(t, skip)
 		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_getBlockByNumber", "test"))
 
-		reason, skip = upstream.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_call"}`)))
+		reason, skip = upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_call"}`)))
 		assert.False(t, skip)
 		assert.Nil(t, reason)
 	})
@@ -71,15 +71,15 @@ func TestUpstream_SkipLogic(t *testing.T) {
 			},
 		}
 
-		reason, skip := upstream.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
+		reason, skip := upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.True(t, skip)
 		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_getBalance", "test"))
 
-		reason, skip = upstream.shouldSkip(NewNormalizedRequest([]byte(`{"method":"net_version"}`)))
+		reason, skip = upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"net_version"}`)))
 		assert.True(t, skip)
 		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("net_version", "test"))
 
-		reason, skip = upstream.shouldSkip(NewNormalizedRequest([]byte(`{"method":"web3_clientVersion"}`)))
+		reason, skip = upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"web3_clientVersion"}`)))
 		assert.False(t, skip)
 		assert.Nil(t, reason)
 	})
@@ -97,11 +97,11 @@ func TestUpstream_SkipLogic(t *testing.T) {
 			},
 		}
 
-		reason, skip := upstream1.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
+		reason, skip := upstream1.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.True(t, skip)
 		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_getBalance", "test1"))
 
-		reason, skip = upstream2.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
+		reason, skip = upstream2.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.False(t, skip)
 		assert.Nil(t, reason)
 	})
@@ -120,19 +120,19 @@ func TestUpstream_SkipLogic(t *testing.T) {
 			},
 		}
 
-		reason, skip := upstream1.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
+		reason, skip := upstream1.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.True(t, skip)
 		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_getBalance", "test1"))
 
-		reason, skip = upstream2.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
+		reason, skip = upstream2.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.False(t, skip)
 		assert.Nil(t, reason)
 
-		reason, skip = upstream1.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_getBlockByNumber"}`)))
+		reason, skip = upstream1.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBlockByNumber"}`)))
 		assert.False(t, skip)
 		assert.Nil(t, reason)
 
-		reason, skip = upstream2.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_getBlockByNumber"}`)))
+		reason, skip = upstream2.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBlockByNumber"}`)))
 		assert.True(t, skip)
 		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_getBlockByNumber", "test2"))
 	})
@@ -151,11 +151,11 @@ func TestUpstream_SkipLogic(t *testing.T) {
 			},
 		}
 
-		reason, skip := upstream1.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
+		reason, skip := upstream1.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.True(t, skip)
 		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_getBalance", "test1"))
 
-		reason, skip = upstream2.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
+		reason, skip = upstream2.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.True(t, skip)
 		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_getBalance", "test2"))
 	})
@@ -167,11 +167,11 @@ func TestUpstream_SkipLogic(t *testing.T) {
 			},
 		}
 
-		reason, skip := upstream.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
+		reason, skip := upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.False(t, skip)
 		assert.Nil(t, reason)
 
-		reason, skip = upstream.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_getBlockByNumber"}`)))
+		reason, skip = upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBlockByNumber"}`)))
 		assert.False(t, skip)
 		assert.Nil(t, reason)
 	})
@@ -188,19 +188,19 @@ func TestUpstream_SkipLogic(t *testing.T) {
 			},
 		}
 
-		reason, skip := upstream1.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
+		reason, skip := upstream1.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.False(t, skip)
 		assert.Nil(t, reason)
 
-		reason, skip = upstream2.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
+		reason, skip = upstream2.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.False(t, skip)
 		assert.Nil(t, reason)
 
-		reason, skip = upstream1.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_getBlockByNumber"}`)))
+		reason, skip = upstream1.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBlockByNumber"}`)))
 		assert.False(t, skip)
 		assert.Nil(t, reason)
 
-		reason, skip = upstream2.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_getBlockByNumber"}`)))
+		reason, skip = upstream2.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBlockByNumber"}`)))
 		assert.False(t, skip)
 		assert.Nil(t, reason)
 	})
@@ -213,19 +213,19 @@ func TestUpstream_SkipLogic(t *testing.T) {
 			},
 		}
 
-		reason, skip := upstream.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
+		reason, skip := upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.True(t, skip)
 		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_getBalance", "test"))
 
-		reason, skip = upstream.shouldSkip(NewNormalizedRequest([]byte(`{"method":"net_version"}`)))
+		reason, skip = upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"net_version"}`)))
 		assert.True(t, skip)
 		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("net_version", "test"))
 
-		reason, skip = upstream.shouldSkip(NewNormalizedRequest([]byte(`{"method":"web3_clientVersion"}`)))
+		reason, skip = upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"web3_clientVersion"}`)))
 		assert.True(t, skip)
 		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("web3_clientVersion", "test"))
 
-		reason, skip = upstream.shouldSkip(NewNormalizedRequest([]byte(`{"method":"personal_sign"}`)))
+		reason, skip = upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"personal_sign"}`)))
 		assert.False(t, skip)
 		assert.Nil(t, reason)
 	})
@@ -238,15 +238,15 @@ func TestUpstream_SkipLogic(t *testing.T) {
 			},
 		}
 
-		reason, skip := upstream.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_get_balance"}`)))
+		reason, skip := upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_get_balance"}`)))
 		assert.True(t, skip)
 		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_get_balance", "test"))
 
-		reason, skip = upstream.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
+		reason, skip = upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.False(t, skip)
 		assert.Nil(t, reason)
 
-		reason, skip = upstream.shouldSkip(NewNormalizedRequest([]byte(`{"method":"eth_get_block_by_number"}`)))
+		reason, skip = upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_get_block_by_number"}`)))
 		assert.True(t, skip)
 		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_get_block_by_number", "test"))
 	})

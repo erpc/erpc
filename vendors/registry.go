@@ -18,6 +18,7 @@ func NewVendorsRegistry() *VendorsRegistry {
 	r.Register(CreatePimlicoVendor())
 	r.Register(CreateQuicknodeVendor())
 	r.Register(CreateLlamaVendor())
+	r.Register(CreateThirdwebVendor())
 
 	return r
 }

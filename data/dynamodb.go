@@ -2,6 +2,7 @@ package data
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -53,7 +54,7 @@ func NewDynamoDBConnector(
 		return nil, fmt.Errorf("missing table name for dynamodb connector")
 	}
 
-	sctx, done := context.WithTimeout(ctx, 15*time.Second)
+	sctx, done := context.WithTimeoutCause(ctx, 15*time.Second, errors.New("dynamodb connector timeout during create table"))
 	defer done()
 
 	err = createTableIfNotExists(sctx, logger, client, cfg)

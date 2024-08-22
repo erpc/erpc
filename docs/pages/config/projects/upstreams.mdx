@@ -6,6 +6,7 @@ An upstream is defined to handle 1 or more networks (a.k.a. chains). There are c
 
 - [`evm`](#evm-json-rpc) A generic EVM-compatible JSON-RPC endpoint. This is the default and most-used type.
 - [`alchemy`](#alchemy-json-rpc) A special upstream type that accepts Alchemy API-KEY and automatically adds all their EVM chains.
+- [`thirdweb`](#thirdweb-json-rpc) A special upstream type that accepts Thirdweb API-KEY and automatically adds all their EVM chains.
 - [`envio`](#envio-json-rpc) A special upstream type for Envio HyperRPC endpoint and automatically adds all chains by HyperRPC.
 - [`pimlico`](#pimlico-json-rpc) A special upstream type for Pimlico account-abstraction (ERC-4337) support.
 - [`etherspot`](#etherspot-json-rpc) A special upstream type for Etherspot account-abstraction (ERC-4337) support.
@@ -137,6 +138,21 @@ projects:
     upstreams:
       - id: my-alchemy
         endpoint: alchemy://YOUR_ALCHEMY_API_KEY
+        # ...
+```
+
+### `thirdweb` JSON-RPC
+
+This upstream type is built specially for [Thirdweb](https://thirdweb.com/chainlist) 3rd-party provider to make it easier to import "all supported evm chains" with just a CLIENT-ID.
+
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - id: my-thirdweb
+        endpoint: thirdweb://YOUR_THIRDWEB_CLIENT_ID
         # ...
 ```
 

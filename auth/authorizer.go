@@ -93,7 +93,7 @@ func (a *Authorizer) shouldApplyToMethod(method string) bool {
 	return shouldApply
 }
 
-func (a *Authorizer) acquireRateLimitPermit(req common.NormalizedRequest) error {
+func (a *Authorizer) acquireRateLimitPermit(req *common.NormalizedRequest) error {
 	if a.cfg.RateLimitBudget == "" {
 		return nil
 	}

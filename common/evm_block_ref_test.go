@@ -1,16 +1,15 @@
-package evm
+package common
 
 import (
 	"testing"
 
-	"github.com/erpc/erpc/common"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestExtractBlockReference(t *testing.T) {
 	tests := []struct {
 		name     string
-		request  *common.JsonRpcRequest
+		request  *JsonRpcRequest
 		expected string
 		expInt   int64
 		expErr   bool
@@ -24,7 +23,7 @@ func TestExtractBlockReference(t *testing.T) {
 		},
 		{
 			name: "eth_getBlockByNumber",
-			request: &common.JsonRpcRequest{
+			request: &JsonRpcRequest{
 				Method: "eth_getBlockByNumber",
 				Params: []interface{}{"0xc5043f", false},
 			},
@@ -34,7 +33,7 @@ func TestExtractBlockReference(t *testing.T) {
 		},
 		{
 			name: "invalid hex in eth_getBlockByNumber",
-			request: &common.JsonRpcRequest{
+			request: &JsonRpcRequest{
 				Method: "eth_getBlockByNumber",
 				Params: []interface{}{"invalidHex"},
 			},
@@ -44,7 +43,7 @@ func TestExtractBlockReference(t *testing.T) {
 		},
 		{
 			name: "eth_getUncleByBlockNumberAndIndex",
-			request: &common.JsonRpcRequest{
+			request: &JsonRpcRequest{
 				Method: "eth_getUncleByBlockNumberAndIndex",
 				Params: []interface{}{"0x1b4"},
 			},
@@ -54,7 +53,7 @@ func TestExtractBlockReference(t *testing.T) {
 		},
 		{
 			name: "eth_getTransactionByBlockNumberAndIndex",
-			request: &common.JsonRpcRequest{
+			request: &JsonRpcRequest{
 				Method: "eth_getTransactionByBlockNumberAndIndex",
 				Params: []interface{}{"0xc5043f", "0x0"},
 			},
@@ -64,7 +63,7 @@ func TestExtractBlockReference(t *testing.T) {
 		},
 		{
 			name: "eth_getUncleCountByBlockNumber",
-			request: &common.JsonRpcRequest{
+			request: &JsonRpcRequest{
 				Method: "eth_getUncleCountByBlockNumber",
 				Params: []interface{}{"0xc5043f"},
 			},
@@ -74,7 +73,7 @@ func TestExtractBlockReference(t *testing.T) {
 		},
 		{
 			name: "eth_getBlockTransactionCountByNumber",
-			request: &common.JsonRpcRequest{
+			request: &JsonRpcRequest{
 				Method: "eth_getBlockTransactionCountByNumber",
 				Params: []interface{}{"0xc5043f"},
 			},
@@ -84,7 +83,7 @@ func TestExtractBlockReference(t *testing.T) {
 		},
 		{
 			name: "eth_getBlockReceipts",
-			request: &common.JsonRpcRequest{
+			request: &JsonRpcRequest{
 				Method: "eth_getBlockReceipts",
 				Params: []interface{}{"0xc5043f"},
 			},
@@ -94,7 +93,7 @@ func TestExtractBlockReference(t *testing.T) {
 		},
 		{
 			name: "eth_getLogs",
-			request: &common.JsonRpcRequest{
+			request: &JsonRpcRequest{
 				Method: "eth_getLogs",
 				Params: []interface{}{
 					map[string]interface{}{
@@ -109,7 +108,7 @@ func TestExtractBlockReference(t *testing.T) {
 		},
 		{
 			name: "missing parameters in eth_getLogs",
-			request: &common.JsonRpcRequest{
+			request: &JsonRpcRequest{
 				Method: "eth_getLogs",
 				Params: []interface{}{},
 			},
@@ -119,7 +118,7 @@ func TestExtractBlockReference(t *testing.T) {
 		},
 		{
 			name: "eth_getBalance",
-			request: &common.JsonRpcRequest{
+			request: &JsonRpcRequest{
 				Method: "eth_getBalance",
 				Params: []interface{}{"0xAddress", "0x1b4"},
 			},
@@ -129,7 +128,7 @@ func TestExtractBlockReference(t *testing.T) {
 		},
 		{
 			name: "missing parameters in eth_getBalance",
-			request: &common.JsonRpcRequest{
+			request: &JsonRpcRequest{
 				Method: "eth_getBalance",
 				Params: []interface{}{"0xAddress"},
 			},
@@ -139,7 +138,7 @@ func TestExtractBlockReference(t *testing.T) {
 		},
 		{
 			name: "eth_getCode",
-			request: &common.JsonRpcRequest{
+			request: &JsonRpcRequest{
 				Method: "eth_getCode",
 				Params: []interface{}{"0xAddress", "0x1b4"},
 			},
@@ -149,7 +148,7 @@ func TestExtractBlockReference(t *testing.T) {
 		},
 		{
 			name: "eth_getTransactionCount",
-			request: &common.JsonRpcRequest{
+			request: &JsonRpcRequest{
 				Method: "eth_getTransactionCount",
 				Params: []interface{}{"0xAddress", "0x1b4"},
 			},
@@ -159,7 +158,7 @@ func TestExtractBlockReference(t *testing.T) {
 		},
 		{
 			name: "eth_call",
-			request: &common.JsonRpcRequest{
+			request: &JsonRpcRequest{
 				Method: "eth_call",
 				Params: []interface{}{
 					map[string]interface{}{
@@ -181,7 +180,7 @@ func TestExtractBlockReference(t *testing.T) {
 		},
 		{
 			name: "eth_feeHistory",
-			request: &common.JsonRpcRequest{
+			request: &JsonRpcRequest{
 				Method: "eth_feeHistory",
 				Params: []interface{}{"0x8D97689C9818892B700e27F316cc3E41e17fBeb9", "0x1b4"},
 			},
@@ -191,7 +190,7 @@ func TestExtractBlockReference(t *testing.T) {
 		},
 		{
 			name: "eth_getAccount",
-			request: &common.JsonRpcRequest{
+			request: &JsonRpcRequest{
 				Method: "eth_getAccount",
 				Params: []interface{}{4, "0x1b4", []interface{}{25, 75}},
 			},
@@ -201,7 +200,7 @@ func TestExtractBlockReference(t *testing.T) {
 		},
 		{
 			name: "eth_getBlockByHash",
-			request: &common.JsonRpcRequest{
+			request: &JsonRpcRequest{
 				Method: "eth_getBlockByHash",
 				Params: []interface{}{"0x3f07a9c83155594c000642e7d60e8a8a00038d03e9849171a05ed0e2d47acbb3", false},
 			},
@@ -211,7 +210,7 @@ func TestExtractBlockReference(t *testing.T) {
 		},
 		{
 			name: "eth_getTransactionByBlockHashAndIndex",
-			request: &common.JsonRpcRequest{
+			request: &JsonRpcRequest{
 				Method: "eth_getTransactionByBlockHashAndIndex",
 				Params: []interface{}{"0x829df9bb801fc0494abf2f443423a49ffa32964554db71b098d332d87b70a48b", "0x0"},
 			},
@@ -221,7 +220,7 @@ func TestExtractBlockReference(t *testing.T) {
 		},
 		{
 			name: "eth_getBlockTransactionCountByHash",
-			request: &common.JsonRpcRequest{
+			request: &JsonRpcRequest{
 				Method: "eth_getBlockTransactionCountByHash",
 				Params: []interface{}{"0x829df9bb801fc0494abf2f443423a49ffa32964554db71b098d332d87b70a48b"},
 			},
@@ -231,7 +230,7 @@ func TestExtractBlockReference(t *testing.T) {
 		},
 		{
 			name: "eth_getUncleCountByBlockHash",
-			request: &common.JsonRpcRequest{
+			request: &JsonRpcRequest{
 				Method: "eth_getUncleCountByBlockHash",
 				Params: []interface{}{"0x829df9bb801fc0494abf2f443423a49ffa32964554db71b098d332d87b70a48b"},
 			},
@@ -241,7 +240,7 @@ func TestExtractBlockReference(t *testing.T) {
 		},
 		{
 			name: "eth_getProof",
-			request: &common.JsonRpcRequest{
+			request: &JsonRpcRequest{
 				Method: "eth_getProof",
 				Params: []interface{}{
 					"0x7F0d15C7FAae65896648C8273B6d7E43f58Fa842",
@@ -255,7 +254,7 @@ func TestExtractBlockReference(t *testing.T) {
 		},
 		{
 			name: "eth_getStorageAt",
-			request: &common.JsonRpcRequest{
+			request: &JsonRpcRequest{
 				Method: "eth_getStorageAt",
 				Params: []interface{}{
 					"0xE592427A0AEce92De3Edee1F18E0157C05861564",
@@ -271,7 +270,7 @@ func TestExtractBlockReference(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, resultUint, err := ExtractBlockReference(tt.request)
+			result, resultUint, err := ExtractEvmBlockReferenceFromRequest(tt.request)
 			if tt.expErr {
 				assert.Error(t, err)
 			} else {

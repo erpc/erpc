@@ -3,35 +3,35 @@ package auth
 import (
 	"encoding/base64"
 	"errors"
-	"net/http"
 	"strings"
 
 	"github.com/erpc/erpc/common"
+	"github.com/valyala/fasthttp"
 )
 
-func NewPayloadFromHttp(projectCfg *common.ProjectConfig, nq common.NormalizedRequest, r *http.Request) (*AuthPayload, error) {
+func NewPayloadFromHttp(projectId string, nq *common.NormalizedRequest, r *fasthttp.RequestCtx) (*AuthPayload, error) {
 	method, _ := nq.Method()
 	ap := &AuthPayload{
-		ProjectId: projectCfg.Id,
+		ProjectId: projectId,
 		Method:    method,
 	}
 
-	if r.URL.Query().Get("token") != "" {
+	if r.QueryArgs().Has("token") {
 		ap.Type = common.AuthTypeSecret
 		ap.Secret = &SecretPayload{
-			Value: r.URL.Query().Get("token"),
+			Value: string(r.QueryArgs().Peek("token")),
 		}
-	} else if r.Header.Get("X-ERPC-Secret-Token") != "" {
+	} else if tkn := r.Request.Header.Peek("X-ERPC-Secret-Token"); tkn != nil {
 		ap.Type = common.AuthTypeSecret
 		ap.Secret = &SecretPayload{
-			Value: r.Header.Get("X-ERPC-Secret-Token"),
+			Value: string(tkn),
 		}
-	} else if r.Header.Get("Authorization") != "" {
-		auth := strings.TrimSpace(r.Header.Get("Authorization"))
-		label := strings.ToLower(auth[0:6])
+	} else if ath := r.Request.Header.Peek("Authorization"); ath != nil {
+		ath := strings.TrimSpace(string(ath))
+		label := strings.ToLower(ath[0:6])
 
 		if strings.EqualFold(label, "basic") {
-			basicAuthB64 := strings.TrimSpace(auth[6:])
+			basicAuthB64 := strings.TrimSpace(ath[6:])
 			basicAuth, err := base64.StdEncoding.DecodeString(basicAuthB64)
 			if err != nil {
 				return nil, err
@@ -49,25 +49,27 @@ func NewPayloadFromHttp(projectCfg *common.ProjectConfig, nq common.NormalizedRe
 		} else if strings.EqualFold(label, "bearer") {
 			ap.Type = common.AuthTypeJwt
 			ap.Jwt = &JwtPayload{
-				Token: auth[7:],
+				Token: ath[7:],
 			}
 		}
-	} else if r.URL.Query().Get("jwt") != "" {
+	} else if r.QueryArgs().Has("jwt") {
 		ap.Type = common.AuthTypeJwt
 		ap.Jwt = &JwtPayload{
-			Token: r.URL.Query().Get("jwt"),
+			Token: string(r.QueryArgs().Peek("jwt")),
 		}
-	} else if r.URL.Query().Get("signature") != "" && r.URL.Query().Get("message") != "" {
+	} else if r.QueryArgs().Has("signature") && r.QueryArgs().Has("message") {
 		ap.Type = common.AuthTypeSiwe
 		ap.Siwe = &SiwePayload{
-			Signature: r.URL.Query().Get("signature"),
-			Message:   normalizeSiweMessage(r.URL.Query().Get("message")),
+			Signature: string(r.QueryArgs().Peek("signature")),
+			Message:   normalizeSiweMessage(string(r.QueryArgs().Peek("message"))),
 		}
-	} else if r.Header.Get("X-Siwe-Message") != "" && r.Header.Get("X-Siwe-Signature") != "" {
-		ap.Type = common.AuthTypeSiwe
-		ap.Siwe = &SiwePayload{
-			Signature: r.Header.Get("X-Siwe-Signature"),
-			Message:   normalizeSiweMessage(r.Header.Get("X-Siwe-Message")),
+	} else if msg := r.Request.Header.Peek("X-Siwe-Message"); msg != nil {
+		if sig := r.Request.Header.Peek("X-Siwe-Signature"); sig != nil {
+			ap.Type = common.AuthTypeSiwe
+			ap.Siwe = &SiwePayload{
+				Signature: string(sig),
+				Message:   normalizeSiweMessage(string(msg)),
+			}
 		}
 	}
 
@@ -75,8 +77,8 @@ func NewPayloadFromHttp(projectCfg *common.ProjectConfig, nq common.NormalizedRe
 	if ap.Type == "" {
 		ap.Type = common.AuthTypeNetwork
 		ap.Network = &NetworkPayload{
-			Address:        r.RemoteAddr,
-			ForwardProxies: strings.Split(r.Header.Get("X-Forwarded-For"), ","),
+			Address:        r.RemoteAddr().String(),
+			ForwardProxies: strings.Split(string(r.Request.Header.Peek("X-Forwarded-For")), ","),
 		}
 
 	}
