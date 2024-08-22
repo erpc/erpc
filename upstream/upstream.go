@@ -108,6 +108,7 @@ func (u *Upstream) prepareRequest(normalizedReq *common.NormalizedRequest) error
 	switch cfg.Type {
 	case common.UpstreamTypeEvm,
 		common.UpstreamTypeEvmAlchemy,
+		common.UpstreamTypeEvmThirdweb,
 		common.UpstreamTypeEvmEnvio,
 		common.UpstreamTypeEvmPimlico:
 		if u.Client == nil {
@@ -122,6 +123,7 @@ func (u *Upstream) prepareRequest(normalizedReq *common.NormalizedRequest) error
 
 		if u.Client.GetType() == ClientTypeHttpJsonRpc ||
 			u.Client.GetType() == ClientTypeAlchemyHttpJsonRpc ||
+			u.Client.GetType() == ClientTypeThirdwebHttpJsonRpc ||
 			u.Client.GetType() == ClientTypeEnvioHttpJsonRpc ||
 			u.Client.GetType() == ClientTypePimlicoHttpJsonRpc {
 			jsonRpcReq, err := normalizedReq.JsonRpcRequest()
@@ -236,6 +238,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 	switch clientType {
 	case ClientTypeHttpJsonRpc,
 		ClientTypeAlchemyHttpJsonRpc,
+		ClientTypeThirdwebHttpJsonRpc,
 		ClientTypeEnvioHttpJsonRpc,
 		ClientTypePimlicoHttpJsonRpc:
 		jsonRpcClient, okClient := u.Client.(HttpJsonRpcClient)
@@ -520,6 +523,10 @@ func (u *Upstream) guessUpstreamType() error {
 
 	if strings.HasPrefix(cfg.Endpoint, "alchemy://") || strings.HasPrefix(cfg.Endpoint, "evm+alchemy://") {
 		cfg.Type = common.UpstreamTypeEvmAlchemy
+		return nil
+	}
+	if strings.HasPrefix(cfg.Endpoint, "thirdweb://") || strings.HasPrefix(cfg.Endpoint, "evm+thirdweb://") {
+		cfg.Type = common.UpstreamTypeEvmThirdweb
 		return nil
 	}
 	if strings.HasPrefix(cfg.Endpoint, "envio://") || strings.HasPrefix(cfg.Endpoint, "evm+envio://") {
