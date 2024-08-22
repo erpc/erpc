@@ -99,7 +99,7 @@ func (c *EtherspotHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, er
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	rid := rand.Intn(1000000)
-	pr := NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, rid)))
+	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, rid)))
 	resp, err := client.SendRequest(ctx, pr)
 	if err != nil {
 		return false, err
@@ -180,7 +180,7 @@ func (c *EtherspotHttpJsonRpcClient) getOrCreateClient(network common.Network) (
 	return c.createClient(chainID)
 }
 
-func (c *EtherspotHttpJsonRpcClient) SendRequest(ctx context.Context, req *NormalizedRequest) (*NormalizedResponse, error) {
+func (c *EtherspotHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	network := req.Network()
 	if network == nil {
 		return nil, fmt.Errorf("network information is missing in the request")

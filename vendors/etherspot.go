@@ -47,7 +47,7 @@ func (v *EtherspotVendor) OverrideConfig(upstream *common.UpstreamConfig) error 
 	return nil
 }
 
-func (v *EtherspotVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}) error {
+func (v *EtherspotVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {
 	return nil
 }
 
