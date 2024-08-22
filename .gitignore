@@ -8,4 +8,4 @@ vendor/
 *.cover
 coverage.txt
 .DS_Store
-erpc.yaml
+bin/

@@ -1,0 +1,208 @@
+logLevel: warn
+database:
+  evmJsonRpcCache:
+    # driver: memory
+    driver: postgresql
+    postgresql:
+      connectionUri: ${DATABASE_PUBLIC_URL}
+      table: rpc_cache
+server:
+  httpHost: 0.0.0.0
+  httpPort: 4000
+metrics:
+  enabled: true
+  host: 0.0.0.0
+  port: 4001
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 8453
+        failsafe:
+          timeout:
+            duration: 30s
+          retry:
+            maxCount: 3
+            delay: 500ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 200ms
+          hedge:
+            delay: 1000ms
+            maxCount: 2
+      - architecture: evm
+        evm:
+          chainId: 10
+        failsafe:
+          timeout:
+            duration: 30s
+          retry:
+            maxCount: 3
+            delay: 500ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 200ms
+          hedge:
+            delay: 1000ms
+            maxCount: 2
+      - architecture: evm
+        evm:
+          chainId: 1284
+        failsafe:
+          timeout:
+            duration: 30s
+          retry:
+            maxCount: 3
+            delay: 500ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 200ms
+          hedge:
+            delay: 1000ms
+            maxCount: 2
+      - architecture: evm
+        evm:
+          chainId: 1285
+        failsafe:
+          timeout:
+            duration: 30s
+          retry:
+            maxCount: 3
+            delay: 500ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 200ms
+          hedge:
+            delay: 1000ms
+            maxCount: 2
+    upstreams:
+      - id: alchemy-global
+        endpoint: ${ALCHEMY_ENDPOINT}
+        rateLimitBudget: global-alchemy
+        failsafe:
+          timeout:
+            duration: 15s
+          retry:
+            maxCount: 2
+            delay: 1000ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 500ms
+      - id: cdp-chain-8453
+        type: evm
+        endpoint: ${CDP_BASE_RPC_URL}
+        jsonRpc:
+          supportsBatch: true
+          batchMaxWait: 100ms
+          batchMaxSize: 100
+        rateLimitBudget: global-cdp
+        evm:
+          chainId: 8453
+        failsafe:
+          timeout:
+            duration: 15s
+          retry:
+            maxCount: 2
+            delay: 1000ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 500ms
+      - id: blastapi-chain-8453
+        type: evm
+        endpoint: ${BASE_RPC_URL}
+        jsonRpc:
+          supportsBatch: true
+          batchMaxWait: 100ms
+          batchMaxSize: 100
+        rateLimitBudget: global-blast
+        evm:
+          chainId: 8453
+        failsafe:
+          timeout:
+            duration: 15s
+          retry:
+            maxCount: 2
+            delay: 1000ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 500ms
+      - id: blastapi-chain-10
+        type: evm
+        endpoint: ${OP_RPC_URL}
+        jsonRpc:
+          supportsBatch: true
+          batchMaxWait: 100ms
+          batchMaxSize: 100
+        rateLimitBudget: global-blast
+        evm:
+          chainId: 10
+        failsafe:
+          timeout:
+            duration: 15s
+          retry:
+            maxCount: 2
+            delay: 1000ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 500ms
+      - id: blastapi-chain-1284
+        type: evm
+        endpoint: ${MOONBEAM_RPC_URL}
+        jsonRpc:
+          supportsBatch: true
+          batchMaxWait: 100ms
+          batchMaxSize: 100
+        rateLimitBudget: global-blast
+        evm:
+          chainId: 1284
+        failsafe:
+          timeout:
+            duration: 15s
+          retry:
+            maxCount: 2
+            delay: 1000ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 500ms
+      - id: blastapi-chain-1285
+        type: evm
+        endpoint: ${MOONRIVER_RPC_URL}
+        jsonRpc:
+          supportsBatch: true
+          batchMaxWait: 100ms
+          batchMaxSize: 100
+        rateLimitBudget: global-blast
+        evm:
+          chainId: 1285
+        failsafe:
+          timeout:
+            duration: 15s
+          retry:
+            maxCount: 2
+            delay: 1000ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 500ms
+rateLimiters:
+  budgets:
+    - id: default-budget
+      rules:
+        - method: '*'
+          maxCount: 10000
+          period: 1s
+    - id: global-cdp
+      rules:
+        - method: '*'
+          maxCount: 5000
+          period: 1s
+    - id: global-blast
+      rules:
+        - method: '*'
+          maxCount: 5000
+          period: 1s
+    - id: global-alchemy
+      rules:
+        - method: '*'
+          maxCount: 40
+          period: 1s
