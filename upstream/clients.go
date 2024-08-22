@@ -12,10 +12,11 @@ import (
 type ClientType string
 
 const (
-	ClientTypeHttpJsonRpc        ClientType = "HttpJsonRpc"
-	ClientTypeAlchemyHttpJsonRpc ClientType = "AlchemyHttpJsonRpc"
-	ClientTypeEnvioHttpJsonRpc   ClientType = "EnvioHttpJsonRpc"
-	ClientTypePimlicoHttpJsonRpc ClientType = "PimlicoHttpJsonRpc"
+	ClientTypeHttpJsonRpc         ClientType = "HttpJsonRpc"
+	ClientTypeAlchemyHttpJsonRpc  ClientType = "AlchemyHttpJsonRpc"
+	ClientTypeEnvioHttpJsonRpc    ClientType = "EnvioHttpJsonRpc"
+	ClientTypePimlicoHttpJsonRpc  ClientType = "PimlicoHttpJsonRpc"
+	ClientTypeThirdwebHttpJsonRpc ClientType = "ThirdwebHttpJsonRpc"
 )
 
 // Define a shared interface for all types of Clients
@@ -78,6 +79,12 @@ func (manager *ClientRegistry) CreateClient(ups *Upstream) (ClientInterface, err
 				newClient, err = NewAlchemyHttpJsonRpcClient(ups, parsedUrl)
 				if err != nil {
 					clientErr = fmt.Errorf("failed to create Alchemy client for upstream: %v", cfg.Id)
+				}
+
+			case common.UpstreamTypeEvmThirdweb:
+				newClient, err = NewThirdwebHttpJsonRpcClient(ups, parsedUrl)
+				if err != nil {
+					clientErr = fmt.Errorf("failed to create Thirdweb client for upstream: %v", cfg.Id)
 				}
 
 			case common.UpstreamTypeEvmEnvio:

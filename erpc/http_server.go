@@ -188,13 +188,17 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) fasthttp.RequestHan
 						networkId = networkIdFromBody
 						parts := strings.Split(networkId, ":")
 						if len(parts) != 2 {
-							responses[index] = processErrorBody(s.logger, nq, common.NewErrInvalidRequest(fmt.Errorf("invalid networkId format")))
+							errorMsg := "Invalid networkId format. Expected format: 'architecture:chainId'. " +
+								"For example, 'evm:42161'."
+							responses[index] = processErrorBody(s.logger, nq, common.NewErrInvalidRequest(fmt.Errorf(errorMsg)))
 							return
 						}
 						architecture = parts[0]
 						chainId = parts[1]
 					} else {
-						responses[index] = processErrorBody(s.logger, nq, common.NewErrInvalidRequest(fmt.Errorf("networkId not provided in request body")))
+						errorMsg := "networkId not provided in request body. Please provide in the format 'architecture:chainId'. " +
+							"For example, 'evm:42161'."
+						responses[index] = processErrorBody(s.logger, nq, common.NewErrInvalidRequest(fmt.Errorf(errorMsg)))
 						return
 					}
 				} else {
