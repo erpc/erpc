@@ -61,6 +61,7 @@ jobs:
 
   docker-image:
     runs-on: ubuntu-latest
+    needs: tag
     steps:
       - uses: actions/checkout@v4
         with:
