@@ -48,7 +48,6 @@ func NormalizeEvmHttpJsonRpc(nrq *NormalizedRequest, r *JsonRpcRequest) error {
 
 		}
 	case "eth_getBalance",
-		"eth_getStorageAt",
 		"eth_getCode",
 		"eth_getTransactionCount",
 		"eth_call",
@@ -59,6 +58,14 @@ func NormalizeEvmHttpJsonRpc(nrq *NormalizedRequest, r *JsonRpcRequest) error {
 				return err
 			}
 			r.Params[1] = b
+		}
+	case "eth_getStorageAt":
+		if len(r.Params) > 2 {
+			b, err := NormalizeHex(r.Params[2])
+			if err != nil {
+				return err
+			}
+			r.Params[2] = b
 		}
 	case "eth_getLogs":
 		if len(r.Params) > 0 {
