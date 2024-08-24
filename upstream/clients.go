@@ -15,6 +15,7 @@ const (
 	ClientTypeHttpJsonRpc          ClientType = "HttpJsonRpc"
 	ClientTypeAlchemyHttpJsonRpc   ClientType = "AlchemyHttpJsonRpc"
 	ClientTypeDrpcHttpJsonRpc      ClientType = "DrpcHttpJsonRpc"
+	ClientTypeBlastapiHttpJsonRpc  ClientType = "BlastapiHttpJsonRpc"
 	ClientTypeEnvioHttpJsonRpc     ClientType = "EnvioHttpJsonRpc"
 	ClientTypePimlicoHttpJsonRpc   ClientType = "PimlicoHttpJsonRpc"
 	ClientTypeEtherspotHttpJsonRpc ClientType = "EtherspotHttpJsonRpc"
@@ -87,6 +88,12 @@ func (manager *ClientRegistry) CreateClient(ups *Upstream) (ClientInterface, err
 				newClient, err = NewDrpcHttpJsonRpcClient(ups, parsedUrl)
 				if err != nil {
 					clientErr = fmt.Errorf("failed to create DRPC client for upstream: %v", cfg.Id)
+				}
+
+			case common.UpstreamTypeEvmBlastapi:
+				newClient, err = NewBlastapiHttpJsonRpcClient(ups, parsedUrl)
+				if err != nil {
+					clientErr = fmt.Errorf("failed to create BlastAPI client for upstream: %v", cfg.Id)
 				}
 
 			case common.UpstreamTypeEvmThirdweb:

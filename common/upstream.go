@@ -8,6 +8,7 @@ const (
 	UpstreamTypeEvm          UpstreamType = "evm"
 	UpstreamTypeEvmAlchemy   UpstreamType = "evm+alchemy"
 	UpstreamTypeEvmDrpc      UpstreamType = "evm+drpc"
+	UpstreamTypeEvmBlastapi  UpstreamType = "evm+blastapi"
 	UpstreamTypeEvmEnvio     UpstreamType = "evm+envio"
 	UpstreamTypeEvmPimlico   UpstreamType = "evm+pimlico"
 	UpstreamTypeEvmThirdweb  UpstreamType = "evm+thirdweb"

@@ -31,13 +31,14 @@ logLevel: debug
 projects:
  - id: main
    upstreams:
+   # Put all your RPC endpoints for any network here.
    # You don't need to define architecture (e.g. evm) or chain id (e.g. 42161)
    # as they will be detected automatically by eRPC.
-   - endpoint: https://eth-mainnet.g.alchemy.com/v2/xxxxx
-   - endpoint: https://optimism-mainnet.blastapi.io/xxxx
-   - endpoint: https://arbitrum-one.blastapi.io/xxxx
-   - endpoint: evm+alchemy://xxxx-my-alchemy-api-key-xxxx # Add all supported Alchemy chains
-   - endpoint: evm+envio://rpc.hypersync.xyz # Add all supported methods and chains of Envio's HyperRPC
+   - endpoint: https://xxxxx.matic.quiknode.pro/xxxxxxxxxx/
+   - endpoint: drpc://XXX_MY_DRPC.ORG_API_KEY_XXX # Add all supported chains of drpc.org
+   - endpoint: blastapi://XXX_MY_BLASTAPI.IO_API_KEY_XXX # Add all supported chains of blastapi.io
+   - endpoint: alchemy://XXX_MY_ALCHEMY.COM_API_KEY_XXX # Add all supported chains of alchemy.com
+   - endpoint: envio://rpc.hypersync.xyz # Add all supported methods and chains of envio.dev HyperRPC
 ```
 
 ### Full `erpc.yaml`
