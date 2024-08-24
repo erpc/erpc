@@ -221,7 +221,7 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 		return
 	}
 
-	c.logger.Debug().Msgf("sending batch json rpc POST request to %s: %s", c.Url.String(), requestBody)
+	c.logger.Debug().Msgf("sending batch json rpc POST request to %s: %s", c.Url.Host, requestBody)
 
 	httpReq, errReq := http.NewRequestWithContext(batchCtx, "POST", c.Url.String(), bytes.NewBuffer(requestBody))
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -367,7 +367,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		return nil, err
 	}
 
-	c.logger.Debug().Msgf("sending json rpc POST request to %s: %s", c.Url.String(), requestBody)
+	c.logger.Debug().Msgf("sending json rpc POST request to %s: %s", c.Url.Host, requestBody)
 
 	httpReq, errReq := http.NewRequestWithContext(ctx, "POST", c.Url.String(), bytes.NewBuffer(requestBody))
 	httpReq.Header.Set("Content-Type", "application/json")

@@ -31,6 +31,9 @@ func (v *AlchemyVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
 		upstream.JsonRpc.BatchMaxWait = "100ms"
 		upstream.JsonRpc.BatchMaxSize = 100
 	}
+	if upstream.AutoIgnoreUnsupportedMethods == nil {
+		upstream.AutoIgnoreUnsupportedMethods = &TRUE
+	}
 
 	return nil
 }

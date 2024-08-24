@@ -14,6 +14,7 @@ type ClientType string
 const (
 	ClientTypeHttpJsonRpc          ClientType = "HttpJsonRpc"
 	ClientTypeAlchemyHttpJsonRpc   ClientType = "AlchemyHttpJsonRpc"
+	ClientTypeDrpcHttpJsonRpc      ClientType = "DrpcHttpJsonRpc"
 	ClientTypeEnvioHttpJsonRpc     ClientType = "EnvioHttpJsonRpc"
 	ClientTypePimlicoHttpJsonRpc   ClientType = "PimlicoHttpJsonRpc"
 	ClientTypeEtherspotHttpJsonRpc ClientType = "EtherspotHttpJsonRpc"
@@ -80,6 +81,12 @@ func (manager *ClientRegistry) CreateClient(ups *Upstream) (ClientInterface, err
 				newClient, err = NewAlchemyHttpJsonRpcClient(ups, parsedUrl)
 				if err != nil {
 					clientErr = fmt.Errorf("failed to create Alchemy client for upstream: %v", cfg.Id)
+				}
+
+			case common.UpstreamTypeEvmDrpc:
+				newClient, err = NewDrpcHttpJsonRpcClient(ups, parsedUrl)
+				if err != nil {
+					clientErr = fmt.Errorf("failed to create DRPC client for upstream: %v", cfg.Id)
 				}
 
 			case common.UpstreamTypeEvmThirdweb:

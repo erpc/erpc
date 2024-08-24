@@ -29,6 +29,9 @@ func (v *EtherspotVendor) OverrideConfig(upstream *common.UpstreamConfig) error 
 		upstream.JsonRpc.BatchMaxWait = "100ms"
 		upstream.JsonRpc.BatchMaxSize = 100
 	}
+	if upstream.AutoIgnoreUnsupportedMethods == nil {
+		upstream.AutoIgnoreUnsupportedMethods = &TRUE
+	}
 
 	if upstream.IgnoreMethods == nil {
 		upstream.IgnoreMethods = []string{"*"}

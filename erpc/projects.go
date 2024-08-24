@@ -141,7 +141,7 @@ func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) 
 				},
 				Hedge: &common.HedgePolicyConfig{
 					Delay:    "500ms",
-					MaxCount: 1,
+					MaxCount: 2,
 				},
 			},
 		}
