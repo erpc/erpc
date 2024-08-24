@@ -7,6 +7,7 @@ type UpstreamType string
 const (
 	UpstreamTypeEvm          UpstreamType = "evm"
 	UpstreamTypeEvmAlchemy   UpstreamType = "evm+alchemy"
+	UpstreamTypeEvmDrpc      UpstreamType = "evm+drpc"
 	UpstreamTypeEvmEnvio     UpstreamType = "evm+envio"
 	UpstreamTypeEvmPimlico   UpstreamType = "evm+pimlico"
 	UpstreamTypeEvmThirdweb  UpstreamType = "evm+thirdweb"

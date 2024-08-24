@@ -411,11 +411,11 @@ func (s *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 				Duration: "15s",
 			},
 			Retry: &RetryPolicyConfig{
-				MaxAttempts:     2,
-				Delay:           "1s",
+				MaxAttempts:     4,
+				Delay:           "500ms",
 				Jitter:          "500ms",
-				BackoffMaxDelay: "10s",
-				BackoffFactor:   2,
+				BackoffMaxDelay: "5s",
+				BackoffFactor:   1.5,
 			},
 			CircuitBreaker: &CircuitBreakerPolicyConfig{
 				FailureThresholdCount:    80,
@@ -425,7 +425,6 @@ func (s *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 				SuccessThresholdCapacity: 5,
 			},
 		},
-		AutoIgnoreUnsupportedMethods: &TRUE,
 		RateLimitAutoTune: &RateLimitAutoTuneConfig{
 			Enabled:            true,
 			AdjustmentPeriod:   "1m",
