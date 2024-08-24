@@ -290,6 +290,18 @@ func (e *ErrRequestTimeOut) ErrorStatusCode() int {
 	return http.StatusRequestTimeout
 }
 
+type ErrInternalServerError struct{ BaseError }
+
+var NewErrInternalServerError = func(cause error) error {
+	return &ErrInternalServerError{
+		BaseError{
+			Code:    "ErrInternalServerError",
+			Message: "internal server error",
+			Cause:   cause,
+		},
+	}
+}
+
 //
 // Auth
 //

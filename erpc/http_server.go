@@ -67,6 +67,15 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 
 func (s *HttpServer) handleRequest(timeOutDur time.Duration) fasthttp.RequestHandler {
 	return func(ctx *fasthttp.RequestCtx) {
+		defer func() {
+			if r := recover(); r != nil {
+				s.logger.Error().Msgf("unexpected server panic: %v", r)
+				handleErrorResponse(s.logger, nil, common.NewErrInternalServerError(
+					fmt.Errorf("unexpected panic: %v", r),
+				), ctx)
+			}
+		}()
+
 		buf := bufPool.Get().(*bytes.Buffer)
 		defer bufPool.Put(buf)
 		buf.Reset()
@@ -188,17 +197,17 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) fasthttp.RequestHan
 						networkId = networkIdFromBody
 						parts := strings.Split(networkId, ":")
 						if len(parts) != 2 {
-							errorMsg := "Invalid networkId format. Expected format: 'architecture:chainId'. " +
-								"For example, 'evm:42161'."
-							responses[index] = processErrorBody(s.logger, nq, common.NewErrInvalidRequest(fmt.Errorf(errorMsg)))
+							responses[index] = processErrorBody(s.logger, nq, common.NewErrInvalidRequest(fmt.Errorf(
+								"networkId must follow this format: 'architecture:chainId' for example 'evm:42161'",
+							)))
 							return
 						}
 						architecture = parts[0]
 						chainId = parts[1]
 					} else {
-						errorMsg := "networkId not provided in request body. Please provide in the format 'architecture:chainId'. " +
-							"For example, 'evm:42161'."
-						responses[index] = processErrorBody(s.logger, nq, common.NewErrInvalidRequest(fmt.Errorf(errorMsg)))
+						responses[index] = processErrorBody(s.logger, nq, common.NewErrInvalidRequest(fmt.Errorf(
+							"networkId must follow this format: 'architecture:chainId' for example 'evm:42161'",
+						)))
 						return
 					}
 				} else {
