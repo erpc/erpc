@@ -20,6 +20,16 @@ func (v *QuicknodeVendor) Name() string {
 }
 
 func (v *QuicknodeVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
+	if upstream.JsonRpc == nil {
+		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
+	}
+
+	if upstream.JsonRpc.SupportsBatch == nil {
+		upstream.JsonRpc.SupportsBatch = &TRUE
+		upstream.JsonRpc.BatchMaxWait = "100ms"
+		upstream.JsonRpc.BatchMaxSize = 100
+	}
+
 	return nil
 }
 
