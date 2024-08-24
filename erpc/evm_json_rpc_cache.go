@@ -118,22 +118,9 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		return nil
 	}
 
-	blockRef, blockNumber, err := common.ExtractEvmBlockReferenceFromRequest(rpcReq)
+	blockRef, blockNumber, err := common.ExtractEvmBlockReference(rpcReq, rpcResp)
 	if err != nil {
 		return err
-	}
-
-	if blockRef == "" || blockNumber == 0 {
-		brf, bnm, err := common.ExtractEvmBlockReferenceFromResponse(rpcReq, rpcResp)
-		if err != nil {
-			return err
-		}
-		if blockRef == "" && brf != "" {
-			blockRef = brf
-		}
-		if blockNumber == 0 && bnm != 0 {
-			blockNumber = bnm
-		}
 	}
 
 	if blockRef == "" && blockNumber == 0 {
@@ -145,7 +132,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		return nil
 	}
 
-	if blockRef != "*" {
+	if blockNumber > 0 {
 		s, e := c.shouldCacheForBlock(blockNumber)
 		if !s || e != nil {
 			lg.Debug().
