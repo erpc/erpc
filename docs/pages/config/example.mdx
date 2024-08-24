@@ -89,6 +89,7 @@ projects:
 
     # This array configures network-specific (a.k.a chain-specific) features.
     # For each network "architecture" and corresponding network id (e.g. evm.chainId) is required.
+    # Remember defining networks is OPTIONAL, so only provide these only if you want to override defaults.
     networks:
       - architecture: evm
         evm:
@@ -174,6 +175,16 @@ projects:
         type: evm
         endpoint: https://xxxxxx-xxxxxx.arbitrum-mainnet.quiknode.pro/xxxxxxxxxxxxxxxxxxxxxxxx/
         rateLimitBudget: global-quicknode
+        # You can disable auto-ignoring unsupported methods, and instead define them explicitly.
+        # This is useful if provider (e.g. dRPC) is not consistent with "unsupported method" responses.
+        autoIgnoreUnsupportedMethods: false
+        # To allow auto-batching requests towards the upstream, use these settings.
+        # Remember if "supportsBatch" is false, you still can send batch requests to eRPC
+        # but they will be sent to upstream as individual requests.
+        jsonRpc:
+          supportsBatch: true
+          batchMaxSize: 10
+          batchMaxWait: 100ms
         evm:
           chainId: 42161
         failsafe:
