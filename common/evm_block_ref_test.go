@@ -1,6 +1,7 @@
 package common
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -8,18 +9,19 @@ import (
 
 func TestExtractBlockReference(t *testing.T) {
 	tests := []struct {
-		name     string
-		request  *JsonRpcRequest
-		expected string
-		expInt   int64
-		expErr   bool
+		name        string
+		request     *JsonRpcRequest
+		response    *JsonRpcResponse
+		expectedRef string
+		expectedNum int64
+		expectedErr bool
 	}{
 		{
-			name:     "nil request",
-			request:  nil,
-			expected: "",
-			expInt:   0,
-			expErr:   true,
+			name:        "nil request",
+			request:     nil,
+			expectedRef: "",
+			expectedNum: 0,
+			expectedErr: true,
 		},
 		{
 			name: "eth_getBlockByNumber",
@@ -27,9 +29,9 @@ func TestExtractBlockReference(t *testing.T) {
 				Method: "eth_getBlockByNumber",
 				Params: []interface{}{"0xc5043f", false},
 			},
-			expected: "12911679",
-			expInt:   12911679,
-			expErr:   false,
+			expectedRef: "12911679",
+			expectedNum: 12911679,
+			expectedErr: false,
 		},
 		{
 			name: "invalid hex in eth_getBlockByNumber",
@@ -37,9 +39,9 @@ func TestExtractBlockReference(t *testing.T) {
 				Method: "eth_getBlockByNumber",
 				Params: []interface{}{"invalidHex"},
 			},
-			expected: "",
-			expInt:   0,
-			expErr:   false,
+			expectedRef: "",
+			expectedNum: 0,
+			expectedErr: false,
 		},
 		{
 			name: "eth_getUncleByBlockNumberAndIndex",
@@ -47,9 +49,9 @@ func TestExtractBlockReference(t *testing.T) {
 				Method: "eth_getUncleByBlockNumberAndIndex",
 				Params: []interface{}{"0x1b4"},
 			},
-			expected: "436",
-			expInt:   436,
-			expErr:   false,
+			expectedRef: "436",
+			expectedNum: 436,
+			expectedErr: false,
 		},
 		{
 			name: "eth_getTransactionByBlockNumberAndIndex",
@@ -57,9 +59,9 @@ func TestExtractBlockReference(t *testing.T) {
 				Method: "eth_getTransactionByBlockNumberAndIndex",
 				Params: []interface{}{"0xc5043f", "0x0"},
 			},
-			expected: "12911679",
-			expInt:   12911679,
-			expErr:   false,
+			expectedRef: "12911679",
+			expectedNum: 12911679,
+			expectedErr: false,
 		},
 		{
 			name: "eth_getUncleCountByBlockNumber",
@@ -67,9 +69,9 @@ func TestExtractBlockReference(t *testing.T) {
 				Method: "eth_getUncleCountByBlockNumber",
 				Params: []interface{}{"0xc5043f"},
 			},
-			expected: "12911679",
-			expInt:   12911679,
-			expErr:   false,
+			expectedRef: "12911679",
+			expectedNum: 12911679,
+			expectedErr: false,
 		},
 		{
 			name: "eth_getBlockTransactionCountByNumber",
@@ -77,9 +79,9 @@ func TestExtractBlockReference(t *testing.T) {
 				Method: "eth_getBlockTransactionCountByNumber",
 				Params: []interface{}{"0xc5043f"},
 			},
-			expected: "12911679",
-			expInt:   12911679,
-			expErr:   false,
+			expectedRef: "12911679",
+			expectedNum: 12911679,
+			expectedErr: false,
 		},
 		{
 			name: "eth_getBlockReceipts",
@@ -87,9 +89,9 @@ func TestExtractBlockReference(t *testing.T) {
 				Method: "eth_getBlockReceipts",
 				Params: []interface{}{"0xc5043f"},
 			},
-			expected: "12911679",
-			expInt:   12911679,
-			expErr:   false,
+			expectedRef: "12911679",
+			expectedNum: 12911679,
+			expectedErr: false,
 		},
 		{
 			name: "eth_getLogs",
@@ -102,9 +104,9 @@ func TestExtractBlockReference(t *testing.T) {
 					},
 				},
 			},
-			expected: "0x1b4-0x1b5",
-			expInt:   437,
-			expErr:   false,
+			expectedRef: "0x1b4-0x1b5",
+			expectedNum: 437,
+			expectedErr: false,
 		},
 		{
 			name: "missing parameters in eth_getLogs",
@@ -112,9 +114,9 @@ func TestExtractBlockReference(t *testing.T) {
 				Method: "eth_getLogs",
 				Params: []interface{}{},
 			},
-			expected: "",
-			expInt:   0,
-			expErr:   false,
+			expectedRef: "",
+			expectedNum: 0,
+			expectedErr: false,
 		},
 		{
 			name: "eth_getBalance",
@@ -122,9 +124,9 @@ func TestExtractBlockReference(t *testing.T) {
 				Method: "eth_getBalance",
 				Params: []interface{}{"0xAddress", "0x1b4"},
 			},
-			expected: "436",
-			expInt:   436,
-			expErr:   false,
+			expectedRef: "436",
+			expectedNum: 436,
+			expectedErr: false,
 		},
 		{
 			name: "missing parameters in eth_getBalance",
@@ -132,9 +134,9 @@ func TestExtractBlockReference(t *testing.T) {
 				Method: "eth_getBalance",
 				Params: []interface{}{"0xAddress"},
 			},
-			expected: "",
-			expInt:   0,
-			expErr:   true,
+			expectedRef: "",
+			expectedNum: 0,
+			expectedErr: true,
 		},
 		{
 			name: "eth_getCode",
@@ -142,9 +144,9 @@ func TestExtractBlockReference(t *testing.T) {
 				Method: "eth_getCode",
 				Params: []interface{}{"0xAddress", "0x1b4"},
 			},
-			expected: "436",
-			expInt:   436,
-			expErr:   false,
+			expectedRef: "436",
+			expectedNum: 436,
+			expectedErr: false,
 		},
 		{
 			name: "eth_getTransactionCount",
@@ -152,9 +154,9 @@ func TestExtractBlockReference(t *testing.T) {
 				Method: "eth_getTransactionCount",
 				Params: []interface{}{"0xAddress", "0x1b4"},
 			},
-			expected: "436",
-			expInt:   436,
-			expErr:   false,
+			expectedRef: "436",
+			expectedNum: 436,
+			expectedErr: false,
 		},
 		{
 			name: "eth_call",
@@ -174,9 +176,9 @@ func TestExtractBlockReference(t *testing.T) {
 					},
 				},
 			},
-			expected: "436",
-			expInt:   436,
-			expErr:   false,
+			expectedRef: "436",
+			expectedNum: 436,
+			expectedErr: false,
 		},
 		{
 			name: "eth_feeHistory",
@@ -184,9 +186,9 @@ func TestExtractBlockReference(t *testing.T) {
 				Method: "eth_feeHistory",
 				Params: []interface{}{"0x8D97689C9818892B700e27F316cc3E41e17fBeb9", "0x1b4"},
 			},
-			expected: "436",
-			expInt:   436,
-			expErr:   false,
+			expectedRef: "436",
+			expectedNum: 436,
+			expectedErr: false,
 		},
 		{
 			name: "eth_getAccount",
@@ -194,9 +196,9 @@ func TestExtractBlockReference(t *testing.T) {
 				Method: "eth_getAccount",
 				Params: []interface{}{4, "0x1b4", []interface{}{25, 75}},
 			},
-			expected: "436",
-			expInt:   436,
-			expErr:   false,
+			expectedRef: "436",
+			expectedNum: 436,
+			expectedErr: false,
 		},
 		{
 			name: "eth_getBlockByHash",
@@ -204,9 +206,9 @@ func TestExtractBlockReference(t *testing.T) {
 				Method: "eth_getBlockByHash",
 				Params: []interface{}{"0x3f07a9c83155594c000642e7d60e8a8a00038d03e9849171a05ed0e2d47acbb3", false},
 			},
-			expected: "0x3f07a9c83155594c000642e7d60e8a8a00038d03e9849171a05ed0e2d47acbb3",
-			expInt:   0,
-			expErr:   false,
+			expectedRef: "0x3f07a9c83155594c000642e7d60e8a8a00038d03e9849171a05ed0e2d47acbb3",
+			expectedNum: 0,
+			expectedErr: false,
 		},
 		{
 			name: "eth_getTransactionByBlockHashAndIndex",
@@ -214,9 +216,9 @@ func TestExtractBlockReference(t *testing.T) {
 				Method: "eth_getTransactionByBlockHashAndIndex",
 				Params: []interface{}{"0x829df9bb801fc0494abf2f443423a49ffa32964554db71b098d332d87b70a48b", "0x0"},
 			},
-			expected: "0x829df9bb801fc0494abf2f443423a49ffa32964554db71b098d332d87b70a48b",
-			expInt:   0,
-			expErr:   false,
+			expectedRef: "0x829df9bb801fc0494abf2f443423a49ffa32964554db71b098d332d87b70a48b",
+			expectedNum: 0,
+			expectedErr: false,
 		},
 		{
 			name: "eth_getBlockTransactionCountByHash",
@@ -224,9 +226,9 @@ func TestExtractBlockReference(t *testing.T) {
 				Method: "eth_getBlockTransactionCountByHash",
 				Params: []interface{}{"0x829df9bb801fc0494abf2f443423a49ffa32964554db71b098d332d87b70a48b"},
 			},
-			expected: "0x829df9bb801fc0494abf2f443423a49ffa32964554db71b098d332d87b70a48b",
-			expInt:   0,
-			expErr:   false,
+			expectedRef: "0x829df9bb801fc0494abf2f443423a49ffa32964554db71b098d332d87b70a48b",
+			expectedNum: 0,
+			expectedErr: false,
 		},
 		{
 			name: "eth_getUncleCountByBlockHash",
@@ -234,9 +236,9 @@ func TestExtractBlockReference(t *testing.T) {
 				Method: "eth_getUncleCountByBlockHash",
 				Params: []interface{}{"0x829df9bb801fc0494abf2f443423a49ffa32964554db71b098d332d87b70a48b"},
 			},
-			expected: "0x829df9bb801fc0494abf2f443423a49ffa32964554db71b098d332d87b70a48b",
-			expInt:   0,
-			expErr:   false,
+			expectedRef: "0x829df9bb801fc0494abf2f443423a49ffa32964554db71b098d332d87b70a48b",
+			expectedNum: 0,
+			expectedErr: false,
 		},
 		{
 			name: "eth_getProof",
@@ -248,9 +250,9 @@ func TestExtractBlockReference(t *testing.T) {
 					"0x1b4",
 				},
 			},
-			expected: "436",
-			expInt:   436,
-			expErr:   false,
+			expectedRef: "436",
+			expectedNum: 436,
+			expectedErr: false,
 		},
 		{
 			name: "eth_getStorageAt",
@@ -262,22 +264,53 @@ func TestExtractBlockReference(t *testing.T) {
 					"0x1b4",
 				},
 			},
-			expected: "436",
-			expInt:   436,
-			expErr:   false,
+			expectedRef: "436",
+			expectedNum: 436,
+			expectedErr: false,
+		},
+		{
+			name: "eth_getTransactionReceipt with valid block number",
+			request: &JsonRpcRequest{
+				Method: "eth_getTransactionReceipt",
+			},
+			response: &JsonRpcResponse{
+				Result: json.RawMessage(`{"blockNumber":"0x1b4","blockHash":"0xaaaaaabbbbccccc"}`),
+			},
+			expectedRef: "*",
+			expectedNum: 436,
+			expectedErr: false,
+		},
+		{
+			name: "eth_chainId",
+			request: &JsonRpcRequest{
+				Method: "eth_chainId",
+			},
+			expectedRef: "*",
+			expectedNum: 0,
+			expectedErr: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, resultUint, err := ExtractEvmBlockReferenceFromRequest(tt.request)
-			if tt.expErr {
+			var blkRef string
+			var blkNum int64
+			var err error
+
+			if tt.response == nil {
+				blkRef, blkNum, err = ExtractEvmBlockReferenceFromRequest(tt.request)
+			} else {
+				blkRef, blkNum, err = ExtractEvmBlockReference(tt.request, tt.response)
+			}
+
+			if tt.expectedErr {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
 			}
-			assert.Equal(t, tt.expected, result)
-			assert.Equal(t, tt.expInt, resultUint)
+
+			assert.Equal(t, tt.expectedRef, blkRef)
+			assert.Equal(t, tt.expectedNum, blkNum)
 		})
 	}
 }

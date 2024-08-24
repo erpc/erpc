@@ -7,6 +7,28 @@ import (
 	"strings"
 )
 
+func ExtractEvmBlockReference(rpcReq *JsonRpcRequest, rpcResp *JsonRpcResponse) (string, int64, error) {
+	blockRef, blockNumber, err := ExtractEvmBlockReferenceFromRequest(rpcReq)
+	if err != nil {
+		return "", 0, err
+	}
+
+	if blockRef == "" || blockNumber == 0 {
+		brf, bnm, err := ExtractEvmBlockReferenceFromResponse(rpcReq, rpcResp)
+		if err != nil {
+			return "", 0, err
+		}
+		if blockRef == "" && brf != "" {
+			blockRef = brf
+		}
+		if blockNumber == 0 && bnm != 0 {
+			blockNumber = bnm
+		}
+	}
+
+	return blockRef, blockNumber, nil
+}
+
 func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, error) {
 	if r == nil {
 		return "", 0, errors.New("cannot extract block reference when json-rpc request is nil")
@@ -78,7 +100,11 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 
 	case "eth_chainId",
 		"eth_getTransactionReceipt",
-		"eth_getTransactionByHash":
+		"eth_getTransactionByHash",
+		"arbtrace_replayTransaction",
+		"trace_replayTransaction",
+		"debug_traceTransaction",
+		"trace_transaction":
 		// For certain data it is safe to keep the data in cache even after reorg,
 		// because if client explcitly querying such data (e.g. a specific tx hash receipt)
 		// they know it might be reorged from a separate process.
@@ -141,12 +167,9 @@ func ExtractEvmBlockReferenceFromResponse(rpcReq *JsonRpcRequest, rpcResp *JsonR
 				return "", 0, err
 			}
 			if tx, ok := result.(map[string]interface{}); ok {
-				var blockHash string
+				var blockRef string
 				var blockNumber int64
-
-				if blockHash, ok := tx["blockHash"].(string); !ok || blockHash == "" {
-					return "", 0, nil
-				}
+				blockRef, _ = tx["blockHash"].(string)
 				if bns, ok := tx["blockNumber"].(string); ok && bns != "" {
 					bn, err := HexToInt64(bns)
 					if err != nil {
@@ -154,28 +177,12 @@ func ExtractEvmBlockReferenceFromResponse(rpcReq *JsonRpcRequest, rpcResp *JsonR
 					}
 					blockNumber = bn
 				}
-
-				return blockHash, blockNumber, nil
+				if blockRef == "" && blockNumber > 0 {
+					blockRef = strconv.FormatInt(blockNumber, 10)
+				}
+				return blockRef, blockNumber, nil
 			}
 		}
-
-	case "arbtrace_replayTransaction",
-		"trace_replayTransaction",
-		"debug_traceTransaction",
-		"trace_transaction":
-		// We cannot extract block number from trace responses, but we will cache them
-		// because after a reorg the consumer must not even request this transaction hash,
-		// it is not part of the final reorged block.
-		// "nil" means there's no specific block reference for this cache item
-		// "1" is a placeholder to pass the block number check (is there a cleaner nicer way?)
-		//
-		// TODO is there a way to find block number without a new request? (e.g. adding a flag to such requests that exposes block number)
-		return "nil", 1, nil
-	case "eth_chainId":
-		// This request is supposed to always return the same response.
-		// "all" means this applies to all blocks
-		// "1" is a placeholder to pass the block number check (is there a cleaner nicer way?)
-		return "all", 1, nil
 
 	default:
 		return "", 0, nil
