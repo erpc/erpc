@@ -76,6 +76,17 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 			return "", 0, fmt.Errorf("unexpected missing 2nd parameter for method %s: %+v", r.Method, r.Params)
 		}
 
+	case "eth_chainId",
+		"eth_getTransactionReceipt",
+		"eth_getTransactionByHash":
+		// For certain data it is safe to keep the data in cache even after reorg,
+		// because if client explcitly querying such data (e.g. a specific tx hash receipt)
+		// they know it might be reorged from a separate process.
+		// For example this is not safe to do for eth_getBlockByNumber because users
+		// require this method always give them current accurate data (even if it's reorged).
+		// Returning "*" as blockRef means that these data can be cached irrevelant of their block.
+		return "*", 0, nil
+
 	case "eth_getBlockByHash",
 		"eth_getTransactionByBlockHashAndIndex",
 		"eth_getBlockTransactionCountByHash",
@@ -105,9 +116,6 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 			return "", 0, fmt.Errorf("unexpected missing 3rd parameter for method %s: %+v", r.Method, r.Params)
 		}
 
-	case "eth_chainId":
-		return "all", 1, nil
-
 	default:
 		return "", 0, nil
 	}
@@ -133,16 +141,21 @@ func ExtractEvmBlockReferenceFromResponse(rpcReq *JsonRpcRequest, rpcResp *JsonR
 				return "", 0, err
 			}
 			if tx, ok := result.(map[string]interface{}); ok {
-				if blockHash, ok := tx["blockHash"].(string); ok && blockHash != "" {
-					return blockHash, 0, nil
+				var blockHash string
+				var blockNumber int64
+
+				if blockHash, ok := tx["blockHash"].(string); !ok || blockHash == "" {
+					return "", 0, nil
 				}
-				if blockNumber, ok := tx["blockNumber"].(string); ok && blockNumber != "" {
-					bn, err := HexToInt64(blockNumber)
+				if bns, ok := tx["blockNumber"].(string); ok && bns != "" {
+					bn, err := HexToInt64(bns)
 					if err != nil {
-						return "", bn, err
+						return "", 0, err
 					}
-					return fmt.Sprintf("%d", bn), bn, nil
+					blockNumber = bn
 				}
+
+				return blockHash, blockNumber, nil
 			}
 		}
 
