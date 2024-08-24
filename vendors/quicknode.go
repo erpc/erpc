@@ -72,6 +72,10 @@ func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr i
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorInvalidArgument, msg, nil, details),
 			)
+		} else if strings.Contains(msg, "UNAUTHORIZED") {
+			return common.NewErrEndpointUnauthorized(
+				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorUnauthorized, msg, nil, details),
+			)
 		} else if code == -32011 || code == -32603 {
 			return common.NewErrEndpointServerSideException(
 				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorServerSideException, msg, nil, details),

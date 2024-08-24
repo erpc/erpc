@@ -47,7 +47,7 @@ func NewUpstream(
 	logger *zerolog.Logger,
 	mt *health.Tracker,
 ) (*Upstream, error) {
-	lg := logger.With().Str("upstream", cfg.Id).Logger()
+	lg := logger.With().Str("upstreamId", cfg.Id).Logger()
 
 	policies, err := CreateFailSafePolicies(&lg, ScopeUpstream, cfg.Id, cfg.Failsafe)
 	if err != nil {
@@ -85,10 +85,13 @@ func NewUpstream(
 	} else {
 		pup.Client = client
 	}
-	err = pup.detectFeatures()
-	if err != nil {
-		return nil, err
-	}
+
+	go func() {
+		err = pup.detectFeatures()
+		if err != nil {
+			lg.Error().Err(err).Msgf("could not fully detect features for upstream")
+		}
+	}()
 
 	lg.Debug().Msgf("prepared upstream")
 
@@ -196,7 +199,17 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 	netId := req.NetworkId()
 	method, err := req.Method()
 	if err != nil {
-		return nil, false, common.NewErrUpstreamRequest(err, u.ProjectId, netId, cfg.Id, time.Since(startTime), 0, 0, 0)
+		return nil, false, common.NewErrUpstreamRequest(
+			err,
+			u.ProjectId,
+			netId,
+			cfg.Id,
+			method,
+			time.Since(startTime),
+			0,
+			0,
+			0,
+		)
 	}
 
 	lg := u.Logger.With().Str("method", method).Str("network", netId).Logger()
@@ -303,6 +316,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 						u.ProjectId,
 						netId,
 						cfg.Id,
+						method,
 						time.Since(startTime),
 						exec.Attempts(),
 						exec.Retries(),
@@ -314,6 +328,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 						u.ProjectId,
 						netId,
 						cfg.Id,
+						method,
 						time.Since(startTime),
 						1,
 						0,
