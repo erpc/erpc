@@ -470,7 +470,7 @@ var NewErrUpstreamClientInitialization = func(cause error, upstreamId string) er
 
 type ErrUpstreamRequest struct{ BaseError }
 
-var NewErrUpstreamRequest = func(cause error, prjId, netId, upsId string, duration time.Duration, attempts, retries, hedges int) error {
+var NewErrUpstreamRequest = func(cause error, prjId, netId, upsId, method string, duration time.Duration, attempts, retries, hedges int) error {
 	return &ErrUpstreamRequest{
 		BaseError{
 			Code:    "ErrUpstreamRequest",
@@ -481,6 +481,7 @@ var NewErrUpstreamRequest = func(cause error, prjId, netId, upsId string, durati
 				"projectId":  prjId,
 				"networkId":  netId,
 				"upstreamId": upsId,
+				"method":     method,
 				"attempts":   attempts,
 				"retries":    retries,
 				"hedges":     hedges,
