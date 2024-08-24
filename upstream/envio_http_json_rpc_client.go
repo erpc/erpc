@@ -3,15 +3,17 @@ package upstream
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/erpc/erpc/common"
 )
 
-var envioSupportedChains = map[uint64]struct{}{
+var envioKnownSupportedChains = map[int64]struct{}{
 	42161:      {}, // Arbitrum
 	42170:      {}, // Arbitrum Nova
 	421614:     {}, // Arbitrum Sepolia
@@ -69,7 +71,7 @@ var envioSupportedChains = map[uint64]struct{}{
 type EnvioHttpJsonRpcClient struct {
 	upstream   *Upstream
 	rootDomain string
-	clients    map[string]HttpJsonRpcClient
+	clients    map[int64]HttpJsonRpcClient
 	mu         sync.RWMutex
 }
 
@@ -86,7 +88,7 @@ func NewEnvioHttpJsonRpcClient(pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcCli
 	return &EnvioHttpJsonRpcClient{
 		upstream:   pu,
 		rootDomain: rootDomain,
-		clients:    make(map[string]HttpJsonRpcClient),
+		clients:    make(map[int64]HttpJsonRpcClient),
 	}, nil
 }
 
@@ -99,22 +101,50 @@ func (c *EnvioHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, error)
 		return false, nil
 	}
 
-	chainId, err := strconv.ParseUint(networkId[4:], 10, 64)
+	chainId, err := strconv.ParseInt(networkId[4:], 10, 64)
 	if err != nil {
 		return false, err
 	}
 
-	if _, ok := envioSupportedChains[chainId]; ok {
+	if _, ok := envioKnownSupportedChains[chainId]; ok {
 		return true, nil
 	}
 
-	return false, nil
+	// Check against endpoint to see if eth_chainId responds successfully
+	client, err := c.createClient(chainId)
+	if err != nil {
+		return false, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	rid := rand.Intn(1000000)
+	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, rid)))
+	resp, err := client.SendRequest(ctx, pr)
+	if err != nil {
+		return false, err
+	}
+
+	jrr, err := resp.JsonRpcResponse()
+	if err != nil {
+		return false, err
+	}
+
+	cidh, err := common.NormalizeHex(jrr.Result)
+	if err != nil {
+		return false, err
+	}
+
+	cid, err := common.HexToInt64(cidh)
+	if err != nil {
+		return false, err
+	}
+
+	return cid == chainId, nil
 }
 
-func (c *EnvioHttpJsonRpcClient) getOrCreateClient(network common.Network) (HttpJsonRpcClient, error) {
-	networkID := network.Id()
+func (c *EnvioHttpJsonRpcClient) createClient(chainID int64) (HttpJsonRpcClient, error) {
 	c.mu.RLock()
-	client, exists := c.clients[networkID]
+	client, exists := c.clients[chainID]
 	c.mu.RUnlock()
 
 	if exists {
@@ -125,17 +155,8 @@ func (c *EnvioHttpJsonRpcClient) getOrCreateClient(network common.Network) (Http
 	defer c.mu.Unlock()
 
 	// Double-check to ensure another goroutine hasn't created the client
-	if client, exists := c.clients[networkID]; exists {
+	if client, exists := c.clients[chainID]; exists {
 		return client, nil
-	}
-
-	if network.Architecture() != common.ArchitectureEvm {
-		return nil, fmt.Errorf("unsupported network architecture for Envio client: %s", network.Architecture())
-	}
-
-	chainID, err := network.EvmChainId()
-	if err != nil {
-		return nil, err
 	}
 
 	envioURL := fmt.Sprintf("https://%d.%s", chainID, c.rootDomain)
@@ -149,8 +170,21 @@ func (c *EnvioHttpJsonRpcClient) getOrCreateClient(network common.Network) (Http
 		return nil, err
 	}
 
-	c.clients[networkID] = client
+	c.clients[chainID] = client
 	return client, nil
+}
+
+func (c *EnvioHttpJsonRpcClient) getOrCreateClient(network common.Network) (HttpJsonRpcClient, error) {
+	if network.Architecture() != common.ArchitectureEvm {
+		return nil, fmt.Errorf("unsupported network architecture for Envio client: %s", network.Architecture())
+	}
+
+	chainID, err := network.EvmChainId()
+	if err != nil {
+		return nil, err
+	}
+
+	return c.createClient(chainID)
 }
 
 func (c *EnvioHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
