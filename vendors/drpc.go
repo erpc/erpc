@@ -64,6 +64,20 @@ func (v *DrpcVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interf
 					details,
 				),
 			)
+		} else if code == 32601 && strings.Contains(msg, "does not exist/is not available") {
+			// Intentionally consider missing methods as server-side exceptions
+			// because dRPC might give a false error when their underlying nodes
+			// have issues e.g. you might falsly get "eth_blockNumber not supported" errors.
+			return common.NewErrEndpointServerSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					code,
+					common.JsonRpcErrorServerSideException,
+					msg,
+					nil,
+					details,
+				),
+				details,
+			)
 		}
 	}
 
@@ -72,5 +86,9 @@ func (v *DrpcVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interf
 }
 
 func (v *DrpcVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
+	if strings.HasPrefix(ups.Endpoint, "drpc://") || strings.HasPrefix(ups.Endpoint, "evm+drpc://") {
+		return true
+	}
+
 	return strings.Contains(ups.Endpoint, ".drpc.org")
 }
