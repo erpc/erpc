@@ -52,5 +52,9 @@ func (v *BlastApiVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr in
 }
 
 func (v *BlastApiVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
+	if strings.HasPrefix(ups.Endpoint, "blastapi://") || strings.HasPrefix(ups.Endpoint, "evm+blastapi://") {
+		return true
+	}
+
 	return strings.Contains(ups.Endpoint, ".blastapi.io")
 }
