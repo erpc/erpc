@@ -225,6 +225,7 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 
 	httpReq, errReq := http.NewRequestWithContext(batchCtx, "POST", c.Url.String(), bytes.NewBuffer(requestBody))
 	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("User-Agent", fmt.Sprintf("erpc (%s; %s)", c.upstream.ProjectId, c.upstream.config.RateLimitBudget))
 	if errReq != nil {
 		for _, req := range requests {
 			req.err <- errReq
