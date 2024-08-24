@@ -79,7 +79,15 @@ projects:
         # chainId is optional and will be detected from the endpoint (eth_chainId),
         # but it is recommended to set it explicitly, for faster initialization.
         evm:
-          chainId: 42161
+          chainId: 42161]
+
+        # To allow auto-batching requests towards the upstream.
+        # Remember even if "supportsBatch" is false, you still can send batch requests to eRPC
+        # but they will be sent to upstream as individual requests.
+        jsonRpc:
+          supportsBatch: true
+          batchMaxSize: 100
+          batchMaxWait: 100ms
 
         # Which methods must never be sent to this upstream.
         # For example this can be used to avoid archive calls (traces) to full nodes
