@@ -155,8 +155,11 @@ func (c *BlastapiHttpJsonRpcClient) getOrCreateClient(network common.Network) (H
 	if !ok {
 		return nil, fmt.Errorf("unsupported network chain ID for BlastAPI: %d", chainID)
 	}
-
 	blastapiURL := fmt.Sprintf("https://%s.blastapi.io/%s", netName, c.apiKey)
+	if netName == "ava-mainnet" || netName == "ava-testnet" {
+		// Avalanche endpoints need an extra path `/ext/bc/C/rpc`
+		blastapiURL = fmt.Sprintf("%s/ext/bc/C/rpc", blastapiURL)
+	}
 	parsedURL, err := url.Parse(blastapiURL)
 	if err != nil {
 		return nil, err
