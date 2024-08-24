@@ -60,8 +60,8 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	if err != nil {
 		return nil, err
 	}
-	if blockRef == "" {
-		blockRef = "*"
+	if blockRef == "" && blockNumber == 0 {
+		return nil, nil
 	}
 	if blockNumber != 0 {
 		s, err := c.shouldCacheForBlock(blockNumber)
@@ -71,8 +71,6 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		if !s {
 			return nil, nil
 		}
-	} else {
-		return nil, nil
 	}
 
 	groupKey, requestKey, err := generateKeysForJsonRpcRequest(req, blockRef)
@@ -125,14 +123,20 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		return err
 	}
 
-	if blockRef == "" {
-		blockRef, blockNumber, err = common.ExtractEvmBlockReferenceFromResponse(rpcReq, rpcResp)
+	if blockRef == "" || blockNumber == 0 {
+		brf, bnm, err := common.ExtractEvmBlockReferenceFromResponse(rpcReq, rpcResp)
 		if err != nil {
 			return err
 		}
+		if blockRef == "" && brf != "" {
+			blockRef = brf
+		}
+		if blockNumber == 0 && bnm != 0 {
+			blockNumber = bnm
+		}
 	}
 
-	if blockRef == "" || blockNumber == 0 {
+	if blockRef == "" && blockNumber == 0 {
 		// Do not cache if we can't resolve a block reference (e.g. latest block requests)
 		lg.Debug().
 			Str("blockRef", blockRef).
@@ -141,27 +145,31 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		return nil
 	}
 
-	s, e := c.shouldCacheForBlock(blockNumber)
-	if !s || e != nil {
-		lg.Debug().
-			Err(e).
-			Str("blockRef", blockRef).
-			Int64("blockNumber", blockNumber).
-			Interface("result", rpcResp.Result).
-			Msg("will not cache the response because block is not finalized")
-		return e
+	if blockRef != "*" {
+		s, e := c.shouldCacheForBlock(blockNumber)
+		if !s || e != nil {
+			lg.Debug().
+				Err(e).
+				Str("blockRef", blockRef).
+				Int64("blockNumber", blockNumber).
+				Interface("result", rpcResp.Result).
+				Msg("will not cache the response because block is not finalized")
+			return e
+		}
 	}
-
-	lg.Debug().
-		Str("blockRef", blockRef).
-		Int64("blockNumber", blockNumber).
-		Interface("result", rpcResp.Result).
-		Msg("caching the response")
 
 	pk, rk, err := generateKeysForJsonRpcRequest(req, blockRef)
 	if err != nil {
 		return err
 	}
+
+	lg.Debug().
+		Str("blockRef", blockRef).
+		Str("primaryKey", pk).
+		Str("rangeKey", rk).
+		Int64("blockNumber", blockNumber).
+		Interface("result", rpcResp.Result).
+		Msg("caching the response")
 
 	resultStr, err := sonic.Marshal(rpcResp.Result)
 	if err != nil {
