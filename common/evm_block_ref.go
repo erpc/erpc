@@ -105,6 +105,9 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 			return "", 0, fmt.Errorf("unexpected missing 3rd parameter for method %s: %+v", r.Method, r.Params)
 		}
 
+	case "eth_chainId":
+		return "all", 1, nil
+
 	default:
 		return "", 0, nil
 	}
