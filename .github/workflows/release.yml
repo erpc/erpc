@@ -80,7 +80,7 @@ jobs:
       
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-      
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
@@ -89,7 +89,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           build-args: |
             VERSION=${{ github.event.inputs.version_tag }}
-            COMMIT_SHA=${{ github.event.inputs.commit_sha }}
+            COMMIT_SHA=${{ env.GITHUB_SHA }}
           tags: |
             ghcr.io/erpc/erpc:latest
             ghcr.io/erpc/erpc:${{ github.event.inputs.version_tag }}
