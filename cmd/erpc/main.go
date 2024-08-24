@@ -22,7 +22,12 @@ func main() {
 
 	logger.Info().Msgf("starting eRPC version: %s, commit: %s", version, commitSHA)
 
-	err := erpc.Init(context.Background(), logger, afero.NewOsFs(), os.Args)
+	err := erpc.Init(
+		context.Background(),
+		logger,
+		afero.NewOsFs(),
+		os.Args,
+	)
 	if err != nil {
 		logger.Error().Msgf("failed to start eRPC: %v", err)
 		util.OsExit(util.ExitCodeERPCStartFailed)
