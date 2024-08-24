@@ -3,12 +3,10 @@ package upstream
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/erpc/erpc/common"
 )
@@ -91,36 +89,7 @@ func (c *EtherspotHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, er
 		return true, nil
 	}
 
-	// Check against endpoint to see if eth_chainId responds successfully
-	client, err := c.createClient(chainId)
-	if err != nil {
-		return false, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	rid := rand.Intn(1000000)
-	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, rid)))
-	resp, err := client.SendRequest(ctx, pr)
-	if err != nil {
-		return false, err
-	}
-
-	jrr, err := resp.JsonRpcResponse()
-	if err != nil {
-		return false, err
-	}
-
-	cidh, err := common.NormalizeHex(jrr.Result)
-	if err != nil {
-		return false, err
-	}
-
-	cid, err := common.HexToInt64(cidh)
-	if err != nil {
-		return false, err
-	}
-
-	return cid == chainId, nil
+	return false, nil
 }
 
 func (c *EtherspotHttpJsonRpcClient) createClient(chainID int64) (HttpJsonRpcClient, error) {
