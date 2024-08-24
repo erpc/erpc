@@ -37,6 +37,7 @@ type GenericHttpJsonRpcClient struct {
 
 	batchMu       sync.Mutex
 	batchRequests map[interface{}]*batchRequest
+	batchDeadline *time.Time
 	batchTimer    *time.Timer
 }
 
@@ -151,6 +152,12 @@ func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchReques
 	defer c.batchMu.Unlock()
 
 	c.batchRequests[id] = req
+	ctxd, ok := req.ctx.Deadline()
+	if ctxd.After(time.Now()) && ok {
+		if c.batchDeadline == nil || ctxd.After(*c.batchDeadline) {
+			c.batchDeadline = &ctxd
+		}
+	}
 	c.logger.Debug().Msgf("queued request %v for batch", id)
 
 	if len(c.batchRequests) == 1 {
@@ -162,9 +169,19 @@ func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchReques
 }
 
 func (c *GenericHttpJsonRpcClient) processBatch() {
+	var batchCtx context.Context
+	var cancelCtx context.CancelFunc
+
 	c.batchMu.Lock()
 	requests := c.batchRequests
+	if c.batchDeadline != nil {
+		batchCtx, cancelCtx = context.WithDeadline(context.Background(), *c.batchDeadline)
+		defer cancelCtx()
+	} else {
+		batchCtx = context.Background()
+	}
 	c.batchRequests = make(map[interface{}]*batchRequest)
+	c.batchDeadline = nil
 	c.batchMu.Unlock()
 
 	ln := len(requests)
@@ -206,7 +223,7 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 
 	c.logger.Debug().Msgf("sending batch json rpc POST request to %s: %s", c.Url.String(), requestBody)
 
-	httpReq, errReq := http.NewRequestWithContext(context.Background(), "POST", c.Url.String(), bytes.NewBuffer(requestBody))
+	httpReq, errReq := http.NewRequestWithContext(batchCtx, "POST", c.Url.String(), bytes.NewBuffer(requestBody))
 	httpReq.Header.Set("Content-Type", "application/json")
 	if errReq != nil {
 		for _, req := range requests {
@@ -234,6 +251,8 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 		}
 		return
 	}
+
+	c.logger.Debug().Str("body", string(respBody)).Msgf("received batch response")
 
 	// Usually when upstream is dead and returns a non-JSON response body
 	if respBody[0] == '<' {

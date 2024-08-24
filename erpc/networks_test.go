@@ -3262,6 +3262,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
+		FALSE := false
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
@@ -3270,6 +3271,9 @@ func TestNetwork_Forward(t *testing.T) {
 				ChainId: 123,
 			},
 			VendorName: "quicknode",
+			JsonRpc: &common.JsonRpcUpstreamConfig{
+				SupportsBatch: &FALSE,
+			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
 			&log.Logger,
