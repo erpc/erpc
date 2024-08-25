@@ -150,7 +150,16 @@ func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.
 
 func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchRequest) {
 	c.batchMu.Lock()
-	defer c.batchMu.Unlock()
+
+	if _, ok := c.batchRequests[id]; ok {
+		// We must not include multiple requests with same ID in batch requests
+		// to avoid issues when mapping responses.
+		c.batchTimer.Stop()
+		c.batchMu.Unlock()
+		c.processBatch()
+		c.queueRequest(id, req)
+		return
+	}
 
 	c.batchRequests[id] = req
 	ctxd, ok := req.ctx.Deadline()
@@ -159,13 +168,17 @@ func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchReques
 			c.batchDeadline = &ctxd
 		}
 	}
-	c.logger.Debug().Msgf("queued request %v for batch", id)
+	c.logger.Debug().Msgf("queuing request %s for batch (current batch: %d)", id, len(c.batchRequests))
 
 	if len(c.batchRequests) == 1 {
 		c.batchTimer = time.AfterFunc(c.batchMaxWait, c.processBatch)
+		c.batchMu.Unlock()
 	} else if len(c.batchRequests) >= c.batchMaxSize {
 		c.batchTimer.Stop()
-		go c.processBatch()
+		c.batchMu.Unlock()
+		c.processBatch()
+	} else {
+		c.batchMu.Unlock()
 	}
 }
 
@@ -234,8 +247,30 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 		return
 	}
 
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
+	batchRespChan := make(chan *http.Response, 1)
+	batchErrChan := make(chan error, 1)
+
+	startedAt := time.Now()
+	go func() {
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			batchErrChan <- err
+		} else {
+			batchRespChan <- resp
+		}
+	}()
+
+	select {
+	case <-batchCtx.Done():
+		for _, req := range requests {
+			err := batchCtx.Err()
+			if errors.Is(err, context.DeadlineExceeded) {
+				err = common.NewErrEndpointRequestTimeout(time.Since(startedAt))
+			}
+			req.err <- err
+		}
+		return
+	case err := <-batchErrChan:
 		for _, req := range requests {
 			req.err <- common.NewErrEndpointServerSideException(
 				fmt.Errorf(strings.ReplaceAll(err.Error(), c.Url.String(), "")),
@@ -243,8 +278,13 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 			)
 		}
 		return
+	case resp := <-batchRespChan:
+		c.processBatchResponse(requests, resp)
+		return
 	}
+}
 
+func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}]*batchRequest, resp *http.Response) {
 	respBody, err := io.ReadAll(resp.Body)
 	defer resp.Body.Close()
 	if err != nil {
@@ -338,9 +378,10 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 		}
 	}
 
-	// Handle any remaining requests that didn't receive a response
+	// Handle any remaining requests that didn't receive a response which is very unexpected
+	// it means the upstream response did not include any item with request.ID for one or more the requests
 	for _, req := range requests {
-		req.err <- fmt.Errorf("no response received for request")
+		req.err <- fmt.Errorf("unexpected no response received for request")
 	}
 }
 
