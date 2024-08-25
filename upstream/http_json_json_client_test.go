@@ -106,20 +106,22 @@ func TestHttpJsonRpcClient_NoResponseErrors(t *testing.T) {
 
 		gock.New("http://rpc1.localhost:8545").
 			Post("/").
+			Times(3).
 			Reply(200).
 			Delay(50 * time.Millisecond).
-			BodyString(`[{"jsonrpc":"2.0","id":1,"result":"0x1"}]`)
+			BodyString(`[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"result":"0x2"},{"jsonrpc":"2.0","id":3,"result":"0x3"},{"jsonrpc":"2.0","id":4,"result":"0x4"},{"jsonrpc":"2.0","id":5,"result":"0x5"},{"jsonrpc":"2.0","id":6,"result":"0x6"}]`)
 
 		var wg sync.WaitGroup
 		for i := 0; i < 5; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
+				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_blockNumber","params":[]}`, i+1)))
 				_, err := client.SendRequest(context.Background(), req)
 				if err != nil {
-					assert.Contains(t, err.Error(), "no response received for request")
+					assert.NotContains(t, err.Error(), "no response received for request")
 				}
+				assert.NoError(t, err)
 			}()
 		}
 		wg.Wait()
@@ -143,7 +145,7 @@ func TestHttpJsonRpcClient_NoResponseErrors(t *testing.T) {
 		gock.New("http://rpc1.localhost:8545").
 			Post("/").
 			Reply(200).
-			BodyString(`[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"result":"0x2"}]`)
+			BodyString(`[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"result":"0x2"},{"jsonrpc":"2.0","id":3,"result":"0x3"}]`)
 
 		var wg sync.WaitGroup
 		for i := 0; i < 3; i++ {
@@ -153,8 +155,9 @@ func TestHttpJsonRpcClient_NoResponseErrors(t *testing.T) {
 				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_blockNumber","params":[]}`, id)))
 				_, err := client.SendRequest(context.Background(), req)
 				if err != nil {
-					assert.Contains(t, err.Error(), "no response received for request")
+					assert.NotContains(t, err.Error(), "no response received for request")
 				}
+				assert.NoError(t, err)
 			}(i + 1)
 		}
 		wg.Wait()
@@ -237,7 +240,11 @@ func TestHttpJsonRpcClient_BatchRequestErrors(t *testing.T) {
 			go func(id int) {
 				defer wg.Done()
 				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_blockNumber","params":[]}`, id)))
+				start := time.Now()
 				_, err := client.SendRequest(ctx, req)
+				dur := time.Since(start)
+				assert.GreaterOrEqual(t, dur, 750*time.Millisecond)
+				assert.Less(t, dur, 755*time.Millisecond)
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), "context deadline exceeded")
 			}(i + 1)
