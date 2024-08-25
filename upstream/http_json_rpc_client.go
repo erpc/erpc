@@ -116,6 +116,7 @@ func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.
 	responseChan := make(chan *common.NormalizedResponse, 1)
 	errChan := make(chan error, 1)
 
+	startedAt := time.Now()
 	jrReq, err := req.JsonRpcRequest()
 	if err != nil {
 		m, _ := req.Method()
@@ -144,7 +145,11 @@ func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.
 	case err := <-errChan:
 		return nil, err
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		err := ctx.Err()
+		if errors.Is(err, context.DeadlineExceeded) {
+			err = common.NewErrEndpointRequestTimeout(time.Since(startedAt))
+		}
+		return nil, err
 	}
 }
 
