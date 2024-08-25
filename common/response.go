@@ -171,11 +171,19 @@ func (r *NormalizedResponse) JsonRpcResponse() (*JsonRpcResponse, error) {
 	jrr := &JsonRpcResponse{}
 	err := sonic.Unmarshal(r.body, jrr)
 	if err != nil {
-		jrr.Error = NewErrJsonRpcExceptionExternal(
-			int(JsonRpcErrorServerSideException),
-			fmt.Sprintf("%s -> %s", err, string(r.body)),
-			"",
-		)
+		if len(r.body) == 0 {
+			jrr.Error = NewErrJsonRpcExceptionExternal(
+				int(JsonRpcErrorServerSideException),
+				"unexpected empty response from upstream endpoint",
+				"",
+			)
+		} else {
+			jrr.Error = NewErrJsonRpcExceptionExternal(
+				int(JsonRpcErrorServerSideException),
+				fmt.Sprintf("%s -> %s", err, string(r.body)),
+				"",
+			)
+		}
 	}
 	r.jsonRpcResponse = jrr
 
