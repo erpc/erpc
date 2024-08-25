@@ -1027,6 +1027,22 @@ func (e *ErrNetworkRateLimitRuleExceeded) ErrorStatusCode() int {
 	return http.StatusTooManyRequests
 }
 
+type ErrNetworkRequestTimeout struct{ BaseError }
+
+const ErrCodeNetworkRequestTimeout ErrorCode = "ErrNetworkRequestTimeout"
+
+var NewErrNetworkRequestTimeout = func(duration time.Duration) error {
+	return &ErrNetworkRequestTimeout{
+		BaseError{
+			Code:    ErrCodeNetworkRequestTimeout,
+			Message: "network-level request towards one or more upstreams timed out",
+			Details: map[string]interface{}{
+				"durationMs": duration.Milliseconds(),
+			},
+		},
+	}
+}
+
 type ErrUpstreamRateLimitRuleExceeded struct{ BaseError }
 
 const ErrCodeUpstreamRateLimitRuleExceeded ErrorCode = "ErrUpstreamRateLimitRuleExceeded"
