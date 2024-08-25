@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -370,6 +371,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 
 	c.logger.Debug().Msgf("sending json rpc POST request to %s: %s", c.Url.Host, requestBody)
 
+	reqStartTime := time.Now()
 	httpReq, errReq := http.NewRequestWithContext(ctx, "POST", c.Url.String(), bytes.NewBuffer(requestBody))
 	httpReq.Header.Set("Content-Type", "application/json")
 	if errReq != nil {
@@ -386,6 +388,9 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, common.NewErrEndpointRequestTimeout(time.Since(reqStartTime))
+		}
 		return nil, err
 	}
 
@@ -448,6 +453,7 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		err := jr.Error
 
 		var details map[string]interface{} = make(map[string]interface{})
+		details["statusCode"] = r.StatusCode
 		details["headers"] = util.ExtractUsefulHeaders(r.Header)
 
 		if ver := getVendorSpecificErrorIfAny(r, nr, jr, details); ver != nil {
