@@ -299,7 +299,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 				lg.Debug().Err(errCall).Msgf("upstream call result received")
 			}
 			if errCall != nil {
-				if !errors.Is(errCall, context.DeadlineExceeded) && !errors.Is(errCall, context.Canceled) {
+				if !errors.Is(errCall, context.Canceled) {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
 						u.recordRemoteRateLimit(netId, method)
 					} else if common.HasErrorCode(errCall, common.ErrCodeUpstreamRequestSkipped) {

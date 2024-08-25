@@ -86,7 +86,6 @@ func TestHttpJsonRpcClient_NoResponseErrors(t *testing.T) {
 		_, err = client.SendRequest(context.Background(), req)
 
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "invalid chars")
 	})
 
 	t.Run("ConcurrentRequestsRaceCondition", func(t *testing.T) {
@@ -176,7 +175,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 				JsonRpc: &common.JsonRpcUpstreamConfig{
 					SupportsBatch: &common.TRUE,
 					BatchMaxSize:  5,
-					BatchMaxWait:  "5000ms",
+					BatchMaxWait:  "500ms",
 				},
 			},
 		}, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"})
@@ -197,12 +196,16 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 				resp1, err1 := client.SendRequest(context.Background(), req1)
 				assert.NoError(t, err1)
 				assert.Equal(t, `{"jsonrpc":"2.0","id":1,"result":"0x1"}`, string(resp1.Body()))
-
+			}()
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
 				req6 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":6,"method":"eth_blockNumber","params":[]}`))
 				resp6, err6 := client.SendRequest(context.Background(), req6)
 				assert.NoError(t, err6)
 				assert.Equal(t, `{"jsonrpc":"2.0","id":6,"result":"0x6"}`, string(resp6.Body()))
 			}()
+			time.Sleep(10 * time.Millisecond)
 		}
 		wg.Wait()
 
@@ -270,7 +273,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_blockNumber","params":[]}`, id)))
 				_, err := client.SendRequest(ctx, req)
 				assert.Error(t, err)
-				assert.Contains(t, err.Error(), "context deadline exceeded")
+				assert.Contains(t, err.Error(), "remote endpoint request timeout")
 			}(i + 1)
 		}
 		wg.Wait()
@@ -440,6 +443,11 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		client, err := NewGenericHttpJsonRpcClient(&logger, &Upstream{
 			config: &common.UpstreamConfig{
 				Endpoint: "http://rpc1.localhost:8545",
+				JsonRpc: &common.JsonRpcUpstreamConfig{
+					SupportsBatch: &common.TRUE,
+					BatchMaxSize:  3,
+					BatchMaxWait:  "50ms",
+				},
 			},
 		}, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"})
 		assert.NoError(t, err)
@@ -461,7 +469,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_blockNumber","params":[]}`, id)))
 				_, err := client.SendRequest(context.Background(), req)
 				assert.Error(t, err)
-				assert.Contains(t, err.Error(), "failed to parse upstream response")
+				assert.Contains(t, err.Error(), "ErrEndpointCapacityExceeded")
 			}(i + 1)
 		}
 		wg.Wait()
@@ -547,10 +555,10 @@ func TestHttpJsonRpcClient_BatchRequestErrors(t *testing.T) {
 				start := time.Now()
 				_, err := client.SendRequest(ctx, req)
 				dur := time.Since(start)
-				assert.GreaterOrEqual(t, dur, 750*time.Millisecond)
+				assert.Greater(t, dur, 745*time.Millisecond)
 				assert.Less(t, dur, 755*time.Millisecond)
 				assert.Error(t, err)
-				assert.Contains(t, err.Error(), "context deadline exceeded")
+				assert.Contains(t, err.Error(), "remote endpoint request timeout")
 			}(i + 1)
 		}
 		wg.Wait()

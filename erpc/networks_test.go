@@ -3649,11 +3649,11 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 				return strings.Contains(safeReadBody(request), "eth_getLogs")
 			}).
 			Reply(200).
-			Delay(2 * time.Second).
+			Delay(100 * time.Second).
 			BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
 
 		var wg sync.WaitGroup
-		for i := 0; i < 10; i++ {
+		for i := 0; i < 20; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -3662,7 +3662,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 				req := common.NewNormalizedRequest(requestBytes)
 				resp, err := network.Forward(ctx, req)
 				assert.Error(t, err)
-				assert.True(t, errors.Is(err, context.DeadlineExceeded))
+				assert.True(t, common.HasErrorCode(err, "ErrNetworkRequestTimeout") || common.HasErrorCode(err, "ErrEndpointRequestTimeout"))
 				assert.Nil(t, resp)
 			}()
 		}

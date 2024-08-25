@@ -93,7 +93,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		case <-inf.done:
 			return inf.resp, inf.err
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			err := ctx.Err()
+			if errors.Is(err, context.DeadlineExceeded) {
+				return nil, common.NewErrNetworkRequestTimeout(time.Since(startTime))
+			}
+
+			return nil, err
 		}
 	}
 	inf := NewMultiplexer()
@@ -206,7 +211,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					tryForward(u, exec.Context()),
 				)
 
-				if isHedged && err != nil && (errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)) {
+				if isHedged && err != nil && errors.Is(err, context.Canceled) {
 					lg.Debug().Err(err).Msgf("discarding hedged request to upstream %s: %v", u.Config().Id, skipped)
 					return nil, err
 				}
