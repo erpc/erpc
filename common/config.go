@@ -11,6 +11,7 @@ import (
 )
 
 var TRUE = true
+var FALSE = false
 
 // Config represents the configuration of the application.
 type Config struct {

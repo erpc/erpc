@@ -1136,6 +1136,22 @@ func (e *ErrEndpointServerSideException) ErrorStatusCode() int {
 	return 500
 }
 
+type ErrEndpointRequestTimeout struct{ BaseError }
+
+const ErrCodeEndpointRequestTimeout = "ErrEndpointRequestTimeout"
+
+var NewErrEndpointRequestTimeout = func(dur time.Duration) error {
+	return &ErrEndpointRequestTimeout{
+		BaseError{
+			Code:    ErrCodeEndpointRequestTimeout,
+			Message: "remote endpoint request timeout",
+			Details: map[string]interface{}{
+				"durationMs": dur.Milliseconds(),
+			},
+		},
+	}
+}
+
 type ErrEndpointCapacityExceeded struct{ BaseError }
 
 const ErrCodeEndpointCapacityExceeded = "ErrEndpointCapacityExceeded"
