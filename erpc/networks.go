@@ -316,7 +316,7 @@ func (n *Network) EvmIsBlockFinalized(blockNumber int64) (bool, error) {
 			Int64("latestBlock", latestBlock).
 			Int64("blockNumber", blockNumber).
 			Msgf("finalized/latest blocks are not available yet when checking block finality")
-		return false, nil
+		return false, common.NewErrFinalizedBlockUnavailable(blockNumber)
 	}
 
 	n.Logger.Debug().

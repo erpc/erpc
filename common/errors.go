@@ -461,6 +461,20 @@ func (e *ErrInvalidEvmChainId) ErrorStatusCode() int {
 	return http.StatusBadRequest
 }
 
+type ErrFinalizedBlockUnavailable struct{ BaseError }
+
+var NewErrFinalizedBlockUnavailable = func(blockNumber int64) error {
+	return &ErrFinalizedBlockUnavailable{
+		BaseError{
+			Code:    "ErrFinalizedBlockUnavailable",
+			Message: "finalized/latest blocks are not available yet when checking block finality",
+			Details: map[string]interface{}{
+				"blockNumber": fmt.Sprintf("%+v", blockNumber),
+			},
+		},
+	}
+}
+
 //
 // Upstreams
 //
