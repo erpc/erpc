@@ -65,10 +65,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	}
 	if blockNumber != 0 {
 		s, err := c.shouldCacheForBlock(blockNumber)
-		if err != nil {
-			return nil, err
-		}
-		if !s {
+		if err == nil && !s {
 			return nil, nil
 		}
 	}
