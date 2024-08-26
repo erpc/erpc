@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -471,11 +472,91 @@ func handleErrorResponse(logger *zerolog.Logger, nq *common.NormalizedRequest, e
 }
 
 func (s *HttpServer) Start(logger *zerolog.Logger) error {
-	logger.Info().Msgf("starting http server on %s:%d", s.config.HttpHost, s.config.HttpPort)
-	return s.server.ListenAndServe(fmt.Sprintf("%s:%d", s.config.HttpHost, s.config.HttpPort))
+	addrV4 := fmt.Sprintf("%s:%d", s.config.HttpHostV4, s.config.HttpPort)
+	addrV6 := fmt.Sprintf("%s:%d", s.config.HttpHostV6, s.config.HttpPort)
+
+	var err error
+	var ln net.Listener
+	var ln4 net.Listener
+	var ln6 net.Listener
+
+	if s.config.HttpHostV4 != "" {
+		logger.Info().Msgf("starting http server on port: %d IPv4: %s", s.config.HttpPort, addrV4)
+		ln4, err = net.Listen("tcp4", addrV4)
+		if err != nil {
+			return fmt.Errorf("error listening on IPv4: %w", err)
+		}
+	}
+	if s.config.HttpHostV6 != "" {
+		logger.Info().Msgf("starting http server on port: %d IPv6: %s", s.config.HttpPort, addrV6)
+		ln6, err = net.Listen("tcp6", addrV6)
+		if err != nil {
+			if ln4 != nil {
+				ln4.Close()
+			}
+			return fmt.Errorf("error listening on IPv6: %w", err)
+		}
+	}
+
+	if ln4 != nil && ln6 != nil {
+		ln = &dualStackListener{ln4, ln6}
+	} else if ln4 != nil {
+		ln = ln4
+	} else if ln6 != nil {
+		ln = ln6
+	}
+
+	return s.server.Serve(ln)
 }
 
 func (s *HttpServer) Shutdown(logger *zerolog.Logger) error {
 	logger.Info().Msg("shutting down http server")
 	return s.server.Shutdown()
+}
+
+type dualStackListener struct {
+	ln4, ln6 net.Listener
+}
+
+func (dl *dualStackListener) Accept() (net.Conn, error) {
+	// Use a channel to communicate the result of Accept
+	type result struct {
+		conn net.Conn
+		err  error
+	}
+	ch := make(chan result, 2)
+
+	// Try to accept from both listeners
+	go func() {
+		conn, err := dl.ln4.Accept()
+		ch <- result{conn, err}
+	}()
+	go func() {
+		conn, err := dl.ln6.Accept()
+		ch <- result{conn, err}
+	}()
+
+	// Return the first successful connection, or the last error
+	var lastErr error
+	for i := 0; i < 2; i++ {
+		res := <-ch
+		if res.err == nil {
+			return res.conn, nil
+		}
+		lastErr = res.err
+	}
+	return nil, lastErr
+}
+
+func (dl *dualStackListener) Close() error {
+	err4 := dl.ln4.Close()
+	err6 := dl.ln6.Close()
+	if err4 != nil {
+		return err4
+	}
+	return err6
+}
+
+func (dl *dualStackListener) Addr() net.Addr {
+	return dl.ln4.Addr()
 }

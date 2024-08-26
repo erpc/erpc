@@ -229,7 +229,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1"})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
-		
+
 		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 		defer cancel()
 

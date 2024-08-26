@@ -28,8 +28,9 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 	port := rand.Intn(1000) + 2000
 	cfg := &common.Config{
 		Server: &common.ServerConfig{
-			HttpHost: "localhost",
-			HttpPort: port,
+			HttpHostV4: "0.0.0.0",
+			HttpHostV6: "[::]",
+			HttpPort:   port,
 		},
 		Projects: []*common.ProjectConfig{
 			{
