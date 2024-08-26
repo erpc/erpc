@@ -386,7 +386,12 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 	// Handle any remaining requests that didn't receive a response which is very unexpected
 	// it means the upstream response did not include any item with request.ID for one or more the requests
 	for _, req := range requests {
-		req.err <- fmt.Errorf("unexpected no response received for request")
+		jrReq, err := req.request.JsonRpcRequest()
+		if err != nil {
+			req.err <- fmt.Errorf("unexpected no response received for request: %w", err)
+		} else {
+			req.err <- fmt.Errorf("unexpected no response received for request %s", jrReq.ID)
+		}
 	}
 }
 
