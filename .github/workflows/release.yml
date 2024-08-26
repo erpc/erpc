@@ -89,7 +89,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           build-args: |
             VERSION=${{ github.event.inputs.version_tag }}
-            COMMIT_SHA=${{ env.GITHUB_SHA }}
+            COMMIT_SHA=${{ github.sha }}
           tags: |
             ghcr.io/erpc/erpc:latest
             ghcr.io/erpc/erpc:${{ github.event.inputs.version_tag }}
