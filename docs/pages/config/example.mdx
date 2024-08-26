@@ -69,13 +69,15 @@ database:
 
 # The main server for eRPC to listen for requests.
 server:
-  httpHost: 0.0.0.0
+  httpHostV4: "0.0.0.0"
+  httpHostV6: "[::]"
   httpPort: 4000
 
 # Optional Prometheus metrics server.
 metrics:
   enabled: true
-  host: 0.0.0.0
+  hostV4: "0.0.0.0"
+  hostV6: "[::]"
   port: 4001
 
 # Each project is a collection of networks and upstreams.

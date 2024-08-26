@@ -58,14 +58,14 @@ data:
       evmJsonRpcCache:
         driver: postgresql
         postgresql:
-          connectionUri: postgres://postgres:erpc-pg-password-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX@erpc-pg.erpc.svc.cluster.local:5432/erpc
+          connectionUri: postgres://postgres:xxxxxxxxxxxxxxxxxxxx@erpc-pg.erpc.svc.cluster.local:5432/erpc
           table: rpc_cache
     server:
-      httpHost: 0.0.0.0
+      httpHostV4: 0.0.0.0
       httpPort: 4000
     metrics:
       enabled: true
-      host: 0.0.0.0
+      hostV4: 0.0.0.0
       port: 4001
     networks:
     - architecture: evm
@@ -79,7 +79,7 @@ data:
       - id: main
         upstreams:
         - id: alchemy-main
-          endpoint: alchemy://xxxxxxxxxxxxxxxxxxxxxx
+          endpoint: alchemy://xxxxxxxxxxxxxxxxxxxx
           rateLimitBudget: global
           failsafe:
             timeout:
@@ -91,7 +91,7 @@ data:
               backoffFactor: 0.3
               jitter: 200ms
         - id: blast-42161
-          endpoint: https://arbitrum-one.blastapi.io/xxxxxxxxxxxxxxxxxxxxxx
+          endpoint: https://arbitrum-one.blastapi.io/xxxxxxxxxxxxxxxxxxxx
           rateLimitBudget: global
           failsafe:
             timeout:
@@ -103,7 +103,7 @@ data:
               backoffFactor: 0.3
               jitter: 200ms
         - id: quicknode-42161
-          endpoint: https://chaotic-late-sanctuary.arbitrum-mainnet.quiknode.pro/xxxxxxxxxxxxxxxxxxxxxx/
+          endpoint: https://xxxxxxxxxxxxxxxxxxxx.arbitrum-mainnet.quiknode.pro/xxxxxxxxxxxxxxxxxxxx/
           rateLimitBudget: global
           failsafe:
             timeout:
