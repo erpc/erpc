@@ -125,7 +125,7 @@ func (r *NormalizedRequest) JsonRpcRequest() (*JsonRpcRequest, error) {
 	}
 
 	if rpcReq.ID == nil {
-		rpcReq.ID = rand.Intn(math.MaxInt32)
+		rpcReq.ID = float64(rand.Intn(math.MaxInt32))
 	}
 
 	r.jsonRpcRequest = rpcReq
