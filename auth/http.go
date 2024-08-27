@@ -9,24 +9,24 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-func NewPayloadFromHttp(projectId string, nq *common.NormalizedRequest, r *fasthttp.RequestCtx) (*AuthPayload, error) {
+func NewPayloadFromHttp(projectId string, nq *common.NormalizedRequest, headers *fasthttp.RequestHeader, args *fasthttp.Args) (*AuthPayload, error) {
 	method, _ := nq.Method()
 	ap := &AuthPayload{
 		ProjectId: projectId,
 		Method:    method,
 	}
 
-	if r.QueryArgs().Has("token") {
+	if args.Has("token") {
 		ap.Type = common.AuthTypeSecret
 		ap.Secret = &SecretPayload{
-			Value: string(r.QueryArgs().Peek("token")),
+			Value: string(args.Peek("token")),
 		}
-	} else if tkn := r.Request.Header.Peek("X-ERPC-Secret-Token"); tkn != nil {
+	} else if tkn := headers.Peek("X-ERPC-Secret-Token"); tkn != nil {
 		ap.Type = common.AuthTypeSecret
 		ap.Secret = &SecretPayload{
 			Value: string(tkn),
 		}
-	} else if ath := r.Request.Header.Peek("Authorization"); ath != nil {
+	} else if ath := headers.Peek("Authorization"); ath != nil {
 		ath := strings.TrimSpace(string(ath))
 		label := strings.ToLower(ath[0:6])
 
@@ -52,19 +52,19 @@ func NewPayloadFromHttp(projectId string, nq *common.NormalizedRequest, r *fasth
 				Token: ath[7:],
 			}
 		}
-	} else if r.QueryArgs().Has("jwt") {
+	} else if args.Has("jwt") {
 		ap.Type = common.AuthTypeJwt
 		ap.Jwt = &JwtPayload{
-			Token: string(r.QueryArgs().Peek("jwt")),
+			Token: string(args.Peek("jwt")),
 		}
-	} else if r.QueryArgs().Has("signature") && r.QueryArgs().Has("message") {
+	} else if args.Has("signature") && args.Has("message") {
 		ap.Type = common.AuthTypeSiwe
 		ap.Siwe = &SiwePayload{
-			Signature: string(r.QueryArgs().Peek("signature")),
-			Message:   normalizeSiweMessage(string(r.QueryArgs().Peek("message"))),
+			Signature: string(args.Peek("signature")),
+			Message:   normalizeSiweMessage(string(args.Peek("message"))),
 		}
-	} else if msg := r.Request.Header.Peek("X-Siwe-Message"); msg != nil {
-		if sig := r.Request.Header.Peek("X-Siwe-Signature"); sig != nil {
+	} else if msg := headers.Peek("X-Siwe-Message"); msg != nil {
+		if sig := headers.Peek("X-Siwe-Signature"); sig != nil {
 			ap.Type = common.AuthTypeSiwe
 			ap.Siwe = &SiwePayload{
 				Signature: string(sig),
@@ -77,8 +77,8 @@ func NewPayloadFromHttp(projectId string, nq *common.NormalizedRequest, r *fasth
 	if ap.Type == "" {
 		ap.Type = common.AuthTypeNetwork
 		ap.Network = &NetworkPayload{
-			Address:        r.RemoteAddr().String(),
-			ForwardProxies: strings.Split(string(r.Request.Header.Peek("X-Forwarded-For")), ","),
+			Address:        string(headers.Peek("X-Forwarded-For")),
+			ForwardProxies: strings.Split(string(headers.Peek("X-Forwarded-For")), ","),
 		}
 
 	}
