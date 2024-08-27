@@ -26,7 +26,7 @@ func NewMemoryConnector(ctx context.Context, logger *zerolog.Logger, cfg *common
 		return nil, fmt.Errorf("maxItems must be greater than 0")
 	}
 
-	maxItems := 1000
+	maxItems := 100
 	if cfg != nil && cfg.MaxItems > 0 {
 		maxItems = cfg.MaxItems
 	}

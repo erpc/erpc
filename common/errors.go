@@ -78,6 +78,7 @@ type StandardError interface {
 	CodeChain() string
 	DeepestMessage() string
 	GetCause() error
+	ErrorStatusCode() int
 }
 
 func (e *BaseError) GetCode() ErrorCode {
@@ -218,17 +219,25 @@ func (e *BaseError) HasCode(codes ...ErrorCode) bool {
 		if be, ok := e.Cause.(StandardError); ok {
 			return be.HasCode(codes...)
 		}
+		if cs, ok := e.Cause.(interface{ Unwrap() []error }); ok {
+			for _, err := range cs.Unwrap() {
+				if be, ok := err.(StandardError); ok {
+					return be.HasCode(codes...)
+				}
+			}
+		}
 	}
 
 	return false
 }
 
-type ErrorWithStatusCode interface {
-	ErrorStatusCode() int
-}
-
-type ErrorWithBody interface {
-	ErrorResponseBody() interface{}
+func (e *BaseError) ErrorStatusCode() int {
+	if e.Cause != nil {
+		if be, ok := e.Cause.(StandardError); ok {
+			return be.ErrorStatusCode()
+		}
+	}
+	return http.StatusInternalServerError
 }
 
 //
@@ -272,12 +281,12 @@ var NewErrInvalidConfig = func(message string) error {
 	}
 }
 
-type ErrRequestTimeOut struct{ BaseError }
+type ErrRequestTimeout struct{ BaseError }
 
-var NewErrRequestTimeOut = func(timeout time.Duration) error {
-	return &ErrRequestTimeOut{
+var NewErrRequestTimeout = func(timeout time.Duration) error {
+	return &ErrRequestTimeout{
 		BaseError{
-			Code:    "ErrRequestTimeOut",
+			Code:    "ErrRequestTimeout",
 			Message: "request timed out before any upstream could respond",
 			Details: map[string]interface{}{
 				"timeoutSeconds": timeout.Seconds(),
@@ -286,7 +295,7 @@ var NewErrRequestTimeOut = func(timeout time.Duration) error {
 	}
 }
 
-func (e *ErrRequestTimeOut) ErrorStatusCode() int {
+func (e *ErrRequestTimeout) ErrorStatusCode() int {
 	return http.StatusRequestTimeout
 }
 
@@ -903,7 +912,7 @@ var NewErrFailsafeTimeoutExceeded = func(cause error) error {
 }
 
 func (e *ErrFailsafeTimeoutExceeded) ErrorStatusCode() int {
-	return 504
+	return http.StatusGatewayTimeout
 }
 
 type ErrFailsafeRetryExceeded struct{ BaseError }
@@ -1057,6 +1066,10 @@ var NewErrNetworkRequestTimeout = func(duration time.Duration) error {
 	}
 }
 
+func (e *ErrNetworkRequestTimeout) ErrorStatusCode() int {
+	return http.StatusRequestTimeout
+}
+
 type ErrUpstreamRateLimitRuleExceeded struct{ BaseError }
 
 const ErrCodeUpstreamRateLimitRuleExceeded ErrorCode = "ErrUpstreamRateLimitRuleExceeded"
@@ -1144,7 +1157,7 @@ func (e *ErrEndpointClientSideException) ErrorStatusCode() int {
 		}
 	}
 
-	return 400
+	return http.StatusBadRequest
 }
 
 type ErrEndpointServerSideException struct{ BaseError }
@@ -1182,6 +1195,10 @@ var NewErrEndpointRequestTimeout = func(dur time.Duration) error {
 	}
 }
 
+func (e *ErrEndpointRequestTimeout) ErrorStatusCode() int {
+	return http.StatusGatewayTimeout
+}
+
 type ErrEndpointCapacityExceeded struct{ BaseError }
 
 const ErrCodeEndpointCapacityExceeded = "ErrEndpointCapacityExceeded"
@@ -1215,7 +1232,7 @@ var NewErrEndpointBillingIssue = func(cause error) error {
 }
 
 func (e *ErrEndpointBillingIssue) ErrorStatusCode() int {
-	return 402
+	return http.StatusPaymentRequired
 }
 
 type ErrEndpointMissingData struct{ BaseError }
@@ -1308,11 +1325,11 @@ var NewErrJsonRpcExceptionInternal = func(originalCode int, normalizedCode JsonR
 
 func (e *ErrJsonRpcExceptionInternal) ErrorStatusCode() int {
 	if e.Cause != nil {
-		if er, ok := e.Cause.(ErrorWithStatusCode); ok {
+		if er, ok := e.Cause.(StandardError); ok {
 			return er.ErrorStatusCode()
 		}
 	}
-	return 400
+	return http.StatusBadRequest
 }
 
 func (e *ErrJsonRpcExceptionInternal) CodeChain() string {

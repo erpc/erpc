@@ -81,6 +81,16 @@ func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr int
 					details,
 				),
 			)
+		} else if strings.Contains(msg, "transaction not found") || strings.Contains(msg, "cannot find transaction") {
+			return common.NewErrEndpointMissingData(
+				common.NewErrJsonRpcExceptionInternal(
+					code,
+					common.JsonRpcErrorMissingData,
+					msg,
+					nil,
+					details,
+				),
+			)
 		} else if code >= -32000 && code <= -32099 {
 			return common.NewErrEndpointServerSideException(
 				common.NewErrJsonRpcExceptionInternal(

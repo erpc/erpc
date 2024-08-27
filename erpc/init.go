@@ -82,10 +82,11 @@ func Init(
 	}
 
 	if cfg.Metrics != nil && cfg.Metrics.Enabled {
-		addr := fmt.Sprintf("%s:%d", cfg.Metrics.Host, cfg.Metrics.Port)
-		logger.Info().Msgf("starting metrics server on addr: %s", addr)
+		addrV4 := fmt.Sprintf("%s:%d", cfg.Metrics.HostV4, cfg.Metrics.Port)
+		addrV6 := fmt.Sprintf("%s:%d", cfg.Metrics.HostV6, cfg.Metrics.Port)
+		logger.Info().Msgf("starting metrics server on port: %d addrV4: %s addrV6: %s", cfg.Metrics.Port, addrV4, addrV6)
 		srv := &http.Server{
-			Addr:    addr,
+			Addr:    fmt.Sprintf(":%d", cfg.Metrics.Port),
 			Handler: promhttp.Handler(),
 		}
 		go func() {

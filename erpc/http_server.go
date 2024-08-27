@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -32,12 +33,12 @@ var bufPool = sync.Pool{
 }
 
 func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.ServerConfig, erpc *ERPC) *HttpServer {
-	timeOutDur, err := time.ParseDuration(cfg.MaxTimeout)
+	reqMaxTimeout, err := time.ParseDuration(cfg.MaxTimeout)
 	if err != nil {
 		if cfg.MaxTimeout != "" {
 			logger.Error().Err(err).Msgf("failed to parse max timeout duration using 30s default")
 		}
-		timeOutDur = 30 * time.Second
+		reqMaxTimeout = 30 * time.Second
 	}
 
 	srv := &HttpServer{
@@ -47,14 +48,18 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 	}
 
 	srv.server = &fasthttp.Server{
-		Handler:      srv.handleRequest(timeOutDur),
-		ReadTimeout:  timeOutDur,
-		WriteTimeout: timeOutDur,
+		Handler: fasthttp.TimeoutHandler(
+			srv.createRequestHandler(reqMaxTimeout),
+			// This is the last resort timeout if nothing could be done in time
+			reqMaxTimeout + 1 * time.Second,
+			`{"jsonrpc":"2.0","error":{"code":-32603,"message":"request timeout before any upstream responded"}}`,
+		),
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
 	}
 
 	go func() {
 		<-ctx.Done()
-		logger.Info().Msg("shutting down http server...")
 		if err := srv.Shutdown(logger); err != nil {
 			logger.Error().Msgf("http server forced to shutdown: %s", err)
 		} else {
@@ -65,14 +70,11 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 	return srv
 }
 
-func (s *HttpServer) handleRequest(timeOutDur time.Duration) fasthttp.RequestHandler {
-	return func(ctx *fasthttp.RequestCtx) {
+func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) fasthttp.RequestHandler {
+	return func(fastCtx *fasthttp.RequestCtx) {
 		defer func() {
 			if r := recover(); r != nil {
 				s.logger.Error().Msgf("unexpected server panic: %v", r)
-				handleErrorResponse(s.logger, nil, common.NewErrInternalServerError(
-					fmt.Errorf("unexpected panic: %v", r),
-				), ctx)
 			}
 		}()
 
@@ -81,9 +83,9 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) fasthttp.RequestHan
 		buf.Reset()
 		encoder := json.NewEncoder(buf)
 
-		segments := strings.Split(string(ctx.Path()), "/")
+		segments := strings.Split(string(fastCtx.Path()), "/")
 		if len(segments) != 2 && len(segments) != 3 && len(segments) != 4 {
-			handleErrorResponse(s.logger, nil, common.NewErrInvalidUrlPath(string(ctx.Path())), ctx)
+			handleErrorResponse(s.logger, nil, common.NewErrInvalidUrlPath(string(fastCtx.Path())), fastCtx)
 			return
 		}
 
@@ -98,31 +100,28 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) fasthttp.RequestHan
 			if segments[2] == "admin" {
 				isAdmin = true
 			} else {
-				handleErrorResponse(s.logger, nil, common.NewErrInvalidUrlPath(string(ctx.Path())), ctx)
+				handleErrorResponse(s.logger, nil, common.NewErrInvalidUrlPath(string(fastCtx.Path())), fastCtx)
 				return
 			}
 		}
 
 		project, err := s.erpc.GetProject(projectId)
 		if err != nil {
-			handleErrorResponse(s.logger, nil, err, ctx)
+			handleErrorResponse(s.logger, nil, err, fastCtx)
 			return
 		}
 
 		if project.Config.CORS != nil {
-			if !s.handleCORS(ctx, project.Config.CORS) {
+			if !s.handleCORS(fastCtx, project.Config.CORS) {
 				return
 			}
 
-			if ctx.IsOptions() {
+			if fastCtx.IsOptions() {
 				return
 			}
 		}
 
-		requestCtx, cancel := context.WithTimeoutCause(ctx, timeOutDur, common.NewErrRequestTimeOut(timeOutDur))
-		defer cancel()
-
-		body := ctx.PostBody()
+		body := fastCtx.PostBody()
 
 		s.logger.Debug().Msgf("received request for projectId: %s, architecture: %s with body: %s", projectId, architecture, body)
 
@@ -136,16 +135,30 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) fasthttp.RequestHan
 
 		responses := make([]interface{}, len(requests))
 		var wg sync.WaitGroup
-		wg.Add(len(requests))
 
+		var headersCopy fasthttp.RequestHeader
+		var argsCopy fasthttp.Args
+		fastCtx.Request.Header.CopyTo(&headersCopy)
+		fastCtx.QueryArgs().CopyTo(&argsCopy)
+  
 		for i, reqBody := range requests {
-			go func(index int, rawReq json.RawMessage) {
+			wg.Add(1)
+			go func(index int, rawReq json.RawMessage, headersCopy *fasthttp.RequestHeader, argsCopy *fasthttp.Args) {
+				defer func() {
+					if r := recover(); r != nil {
+						s.logger.Error().Msgf("unexpected server panic: %v", r)
+					}
+				}()
+		
 				defer wg.Done()
 
-				nq := common.NewNormalizedRequest(rawReq)
-				nq.ApplyDirectivesFromHttpHeaders(&ctx.Request.Header)
+				requestCtx, cancel := context.WithTimeoutCause(fastCtx, reqMaxTimeout, common.NewErrRequestTimeout(reqMaxTimeout))
+				defer cancel()
 
-				ap, err := auth.NewPayloadFromHttp(project.Config.Id, nq, ctx)
+				nq := common.NewNormalizedRequest(rawReq)
+				nq.ApplyDirectivesFromHttpHeaders(headersCopy)
+
+				ap, err := auth.NewPayloadFromHttp(project.Config.Id, nq, headersCopy, argsCopy)
 				if err != nil {
 					responses[index] = processErrorBody(s.logger, nq, err)
 					return
@@ -228,15 +241,15 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) fasthttp.RequestHan
 				}
 
 				responses[index] = resp
-			}(i, reqBody)
+			}(i, reqBody, &headersCopy, &argsCopy)
 		}
 
 		wg.Wait()
 
-		ctx.Response.Header.SetContentType("application/json")
+		fastCtx.Response.Header.SetContentType("application/json")
 
 		if isBatch {
-			ctx.SetStatusCode(fasthttp.StatusOK)
+			fastCtx.SetStatusCode(fasthttp.StatusOK)
 			encoder.Encode(responses)
 		} else {
 			res := responses[0]
@@ -265,27 +278,37 @@ func (s *HttpServer) handleRequest(timeOutDur time.Duration) fasthttp.RequestHan
 
 			if ok {
 				if rm.FromCache() {
-					ctx.Response.Header.Set("X-ERPC-Cache", "HIT")
+					fastCtx.Response.Header.Set("X-ERPC-Cache", "HIT")
 				} else {
-					ctx.Response.Header.Set("X-ERPC-Cache", "MISS")
+					fastCtx.Response.Header.Set("X-ERPC-Cache", "MISS")
 				}
 				if rm.UpstreamId() != "" {
-					ctx.Response.Header.Set("X-ERPC-Upstream", rm.UpstreamId())
+					fastCtx.Response.Header.Set("X-ERPC-Upstream", rm.UpstreamId())
 				}
-				ctx.Response.Header.Set("X-ERPC-Attempts", fmt.Sprintf("%d", rm.Attempts()))
-				ctx.Response.Header.Set("X-ERPC-Retries", fmt.Sprintf("%d", rm.Retries()))
-				ctx.Response.Header.Set("X-ERPC-Hedges", fmt.Sprintf("%d", rm.Hedges()))
+				fastCtx.Response.Header.Set("X-ERPC-Attempts", fmt.Sprintf("%d", rm.Attempts()))
+				fastCtx.Response.Header.Set("X-ERPC-Retries", fmt.Sprintf("%d", rm.Retries()))
+				fastCtx.Response.Header.Set("X-ERPC-Hedges", fmt.Sprintf("%d", rm.Hedges()))
 			}
 
 			if err, ok := res.(error); ok {
-				ctx.SetStatusCode(processErrorStatusCode(err))
+				fastCtx.SetStatusCode(processErrorStatusCode(err))
+			} else if resp, ok := res.(map[string]interface{}); ok {
+				if errObj, ok := resp["error"].(map[string]interface{}); ok {
+					if cause, ok := errObj["cause"].(error); ok {
+						fastCtx.SetStatusCode(processErrorStatusCode(cause))
+					} else {
+						fastCtx.SetStatusCode(fasthttp.StatusOK)
+					}
+				} else {
+					fastCtx.SetStatusCode(fasthttp.StatusOK)
+				}
 			} else {
-				ctx.SetStatusCode(fasthttp.StatusOK)
+				fastCtx.SetStatusCode(fasthttp.StatusOK)
 			}
 			encoder.Encode(res)
 		}
 
-		ctx.SetBody(buf.Bytes())
+		fastCtx.SetBody(buf.Bytes())
 	}
 }
 
@@ -373,10 +396,7 @@ func processErrorBody(logger *zerolog.Logger, nq *common.NormalizedRequest, err 
 		}
 	}
 
-	var bodyErr common.ErrorWithBody
-	if errors.As(err, &bodyErr) {
-		return bodyErr.ErrorResponseBody()
-	} else if _, ok := err.(*common.BaseError); ok {
+	if _, ok := err.(*common.BaseError); ok {
 		return err
 	} else if serr, ok := err.(common.StandardError); ok {
 		return serr
@@ -390,9 +410,8 @@ func processErrorBody(logger *zerolog.Logger, nq *common.NormalizedRequest, err 
 }
 
 func processErrorStatusCode(err error) int {
-	var httpErr common.ErrorWithStatusCode
-	if errors.As(err, &httpErr) {
-		return httpErr.ErrorStatusCode()
+	if e, ok := err.(common.StandardError); ok {
+		return e.ErrorStatusCode()
 	}
 	return fasthttp.StatusInternalServerError
 }
@@ -407,9 +426,8 @@ func handleErrorResponse(logger *zerolog.Logger, nq *common.NormalizedRequest, e
 	}
 
 	ctx.Response.Header.SetContentType("application/json")
-	var httpErr common.ErrorWithStatusCode
-	if errors.As(err, &httpErr) {
-		ctx.SetStatusCode(httpErr.ErrorStatusCode())
+	if e, ok := err.(common.StandardError); ok {
+		ctx.SetStatusCode(e.ErrorStatusCode())
 	} else {
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 	}
@@ -444,12 +462,9 @@ func handleErrorResponse(logger *zerolog.Logger, nq *common.NormalizedRequest, e
 		return
 	}
 
-	var bodyErr common.ErrorWithBody
 	var writeErr error
 
-	if errors.As(err, &bodyErr) {
-		writeErr = json.NewEncoder(ctx).Encode(bodyErr.ErrorResponseBody())
-	} else if _, ok := err.(*common.BaseError); ok {
+	if _, ok := err.(*common.BaseError); ok {
 		writeErr = json.NewEncoder(ctx).Encode(err)
 	} else {
 		if serr, ok := err.(common.StandardError); ok {
@@ -471,11 +486,95 @@ func handleErrorResponse(logger *zerolog.Logger, nq *common.NormalizedRequest, e
 }
 
 func (s *HttpServer) Start(logger *zerolog.Logger) error {
-	logger.Info().Msgf("starting http server on %s:%d", s.config.HttpHost, s.config.HttpPort)
-	return s.server.ListenAndServe(fmt.Sprintf("%s:%d", s.config.HttpHost, s.config.HttpPort))
+	addrV4 := fmt.Sprintf("%s:%d", s.config.HttpHostV4, s.config.HttpPort)
+	addrV6 := fmt.Sprintf("%s:%d", s.config.HttpHostV6, s.config.HttpPort)
+
+	var err error
+	var ln net.Listener
+	var ln4 net.Listener
+	var ln6 net.Listener
+
+	if s.config.HttpHostV4 != "" {
+		logger.Info().Msgf("starting http server on port: %d IPv4: %s", s.config.HttpPort, addrV4)
+		ln4, err = net.Listen("tcp4", addrV4)
+		if err != nil {
+			return fmt.Errorf("error listening on IPv4: %w", err)
+		}
+	}
+	if s.config.HttpHostV6 != "" {
+		logger.Info().Msgf("starting http server on port: %d IPv6: %s", s.config.HttpPort, addrV6)
+		ln6, err = net.Listen("tcp6", addrV6)
+		if err != nil {
+			if ln4 != nil {
+				ln4.Close()
+			}
+			return fmt.Errorf("error listening on IPv6: %w", err)
+		}
+	}
+
+	if ln4 != nil && ln6 != nil {
+		ln = &dualStackListener{ln4, ln6}
+	} else if ln4 != nil {
+		ln = ln4
+	} else if ln6 != nil {
+		ln = ln6
+	}
+
+	if ln == nil {
+		return fmt.Errorf("you must configure at least one of server.httpPortV4 or server.httpPortV6")
+	}
+
+	return s.server.Serve(ln)
 }
 
 func (s *HttpServer) Shutdown(logger *zerolog.Logger) error {
-	logger.Info().Msg("shutting down http server")
+	logger.Info().Msg("stopping http server...")
 	return s.server.Shutdown()
+}
+
+type dualStackListener struct {
+	ln4, ln6 net.Listener
+}
+
+func (dl *dualStackListener) Accept() (net.Conn, error) {
+	// Use a channel to communicate the result of Accept
+	type result struct {
+		conn net.Conn
+		err  error
+	}
+	ch := make(chan result, 2)
+
+	// Try to accept from both listeners
+	go func() {
+		conn, err := dl.ln4.Accept()
+		ch <- result{conn, err}
+	}()
+	go func() {
+		conn, err := dl.ln6.Accept()
+		ch <- result{conn, err}
+	}()
+
+	// Return the first successful connection, or the last error
+	var lastErr error
+	for i := 0; i < 2; i++ {
+		res := <-ch
+		if res.err == nil {
+			return res.conn, nil
+		}
+		lastErr = res.err
+	}
+	return nil, lastErr
+}
+
+func (dl *dualStackListener) Close() error {
+	err4 := dl.ln4.Close()
+	err6 := dl.ln6.Close()
+	if err4 != nil {
+		return err4
+	}
+	return err6
+}
+
+func (dl *dualStackListener) Addr() net.Addr {
+	return dl.ln4.Addr()
 }

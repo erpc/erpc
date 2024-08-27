@@ -237,12 +237,14 @@ func prepareERPCConfig(fs afero.Fs, config StressTestConfig) (string, string, er
 	mergedConfig := &common.Config{
 		LogLevel: "ERROR",
 		Server: &common.ServerConfig{
-			HttpHost: "localhost",
-			HttpPort: config.ServicePort,
+			HttpHostV4: "0.0.0.0",
+			HttpHostV6: "[::]",
+			HttpPort:   config.ServicePort,
 		},
 		Metrics: &common.MetricsConfig{
 			Enabled: true,
-			Host:    "localhost",
+			HostV4:  "0.0.0.0",
+			HostV6:  "[::]",
 			Port:    config.MetricsPort,
 		},
 		Projects: []*common.ProjectConfig{prjCfg},

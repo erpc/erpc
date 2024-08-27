@@ -42,7 +42,7 @@ func TestMain_RealConfigFile(t *testing.T) {
 logLevel: DEBUG
 
 server:
-  httpHost: "` + localHost + `"
+  httpHostV4: "` + localHost + `"
   httpPort: ` + localPort + `
 `)
 
@@ -102,7 +102,7 @@ func TestMain_InvalidHttpPort(t *testing.T) {
 logLevel: DEBUG
 
 server:
-  httpHost: "localhost"
+  httpHostV4: "localhost"
   httpPort: -1
 `)
 
@@ -174,7 +174,7 @@ func TestInit_HappyPath(t *testing.T) {
 logLevel: DEBUG
 
 server:
-  httpHost: "` + localHost + `"
+  httpHostV4: "` + localHost + `"
   httpPort: ` + localPort + `
 
 projects:

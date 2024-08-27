@@ -64,7 +64,7 @@ func NewGenericHttpJsonRpcClient(logger *zerolog.Logger, pu *Upstream, parsedUrl
 			if jc.BatchMaxSize > 0 {
 				client.batchMaxSize = jc.BatchMaxSize
 			} else {
-				client.batchMaxSize = 100
+				client.batchMaxSize = 10
 			}
 			if jc.BatchMaxWait != "" {
 				duration, err := time.ParseDuration(jc.BatchMaxWait)
@@ -336,7 +336,7 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 				)
 			}
 		} else {
-			if singleResp.JSONRPC != "" {
+			if singleResp.JSONRPC != "" || singleResp.Error != nil {
 				// This case happens when upstreams a single valid json-rpc object as response
 				// to a batch request (e.g. BlastAPI).
 				for _, req := range requests {
@@ -554,6 +554,17 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorCapacityExceeded,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+		} else if strings.Contains(err.Message, "transaction not found") ||
+			strings.Contains(err.Message, "cannot find transaction") {
+			return common.NewErrEndpointMissingData(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorMissingData,
 					err.Message,
 					nil,
 					details,

@@ -25,7 +25,8 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	HttpHost   string `yaml:"httpHost" json:"httpHost"`
+	HttpHostV4 string `yaml:"httpHostV4" json:"httpHostV4"`
+	HttpHostV6 string `yaml:"httpHostV6" json:"httpHostV6"`
 	HttpPort   int    `yaml:"httpPort" json:"httpPort"`
 	MaxTimeout string `yaml:"maxTimeout" json:"maxTimeout"`
 }
@@ -306,7 +307,8 @@ type NetworkStrategyConfig struct {
 
 type MetricsConfig struct {
 	Enabled bool   `yaml:"enabled" json:"enabled"`
-	Host    string `yaml:"host" json:"host"`
+	HostV4  string `yaml:"hostV4" json:"hostV4"`
+	HostV6  string `yaml:"hostV6" json:"hostV6"`
 	Port    int    `yaml:"port" json:"port"`
 }
 
@@ -366,7 +368,8 @@ func (c *NetworkConfig) NetworkId() string {
 }
 
 func (c *ServerConfig) MarshalZerologObject(e *zerolog.Event) {
-	e.Str("host", c.HttpHost).
+	e.Str("hostV4", c.HttpHostV4).
+		Str("hostV6", c.HttpHostV6).
 		Int("port", c.HttpPort).
 		Str("maxTimeout", c.MaxTimeout)
 }
@@ -378,20 +381,22 @@ func (s *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		raw = rawConfig{
 			LogLevel: "INFO",
 			Server: &ServerConfig{
-				HttpHost: "0.0.0.0",
-				HttpPort: 4000,
+				HttpHostV4: "0.0.0.0",
+				HttpHostV6: "[::]",
+				HttpPort:   4000,
 			},
 			Database: &DatabaseConfig{
 				EvmJsonRpcCache: &ConnectorConfig{
 					Driver: "memory",
 					Memory: &MemoryConnectorConfig{
-						MaxItems: 10_000,
+						MaxItems: 100,
 					},
 				},
 			},
 			Metrics: &MetricsConfig{
 				Enabled: true,
-				Host:    "0.0.0.0",
+				HostV4:  "0.0.0.0",
+				HostV6:  "[::]",
 				Port:    4001,
 			},
 		}

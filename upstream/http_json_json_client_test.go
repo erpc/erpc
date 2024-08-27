@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"sync"
@@ -229,7 +230,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 			JSON(map[string]interface{}{"jsonrpc": "2.0", "id": 1, "result": "0x1"})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
-		
+
 		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 		defer cancel()
 
@@ -380,6 +381,42 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 				_, err := client.SendRequest(context.Background(), req)
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), "failed to parse upstream response")
+			}(i + 1)
+		}
+		wg.Wait()
+	})
+
+	t.Run("SingleObjectResponseForBatchRequest", func(t *testing.T) {
+		defer gock.Off()
+
+		client, err := NewGenericHttpJsonRpcClient(&logger, &Upstream{
+			config: &common.UpstreamConfig{
+				Endpoint: "http://rpc1.localhost:8545",
+				JsonRpc: &common.JsonRpcUpstreamConfig{
+					SupportsBatch: &common.TRUE,
+					BatchMaxSize:  5,
+					BatchMaxWait:  "50ms",
+				},
+				VendorName: "quicknode",
+			},
+		}, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"})
+		assert.NoError(t, err)
+
+		gock.New("http://rpc1.localhost:8545").
+			Post("/").
+			Reply(429).
+			BodyString(`{"code":-32007,"message":"300/second request limit reached - reduce calls per second or upgrade your account at quicknode.com"}`)
+
+		var wg sync.WaitGroup
+		for i := 0; i < 3; i++ {
+			wg.Add(1)
+			go func(id int) {
+				defer wg.Done()
+				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_blockNumber","params":[]}`, id)))
+				_, err := client.SendRequest(context.Background(), req)
+				assert.Error(t, err)
+				txt, _ := json.Marshal(err)
+				assert.Contains(t, string(txt), "ErrEndpointCapacityExceeded")
 			}(i + 1)
 		}
 		wg.Wait()
