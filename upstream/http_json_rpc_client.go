@@ -336,7 +336,7 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 				)
 			}
 		} else {
-			if singleResp.JSONRPC != "" {
+			if singleResp.JSONRPC != "" || singleResp.Error != nil {
 				// This case happens when upstreams a single valid json-rpc object as response
 				// to a batch request (e.g. BlastAPI).
 				for _, req := range requests {
