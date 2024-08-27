@@ -3,6 +3,7 @@ module.exports = {
 		title: "Quick start",
 	},
 	why: { title: "Why eRPC?" },
+	faq: { title: "FAQ" },
 	"-- Config": {
 		type: "separator",
 		title: "Config",

@@ -1,0 +1,19 @@
+## Frequently Asked Questions
+
+### How can I set env variables inside the config file?
+
+To use env variables in [erpc.yaml](https://docs.erpc.cloud/config/example), follow these steps:
+
+1. **Set env variables**: Define the env variables in your system or shell before running your application:
+
+```bash
+export ETHEREUM_RPC_URL=https://mainnet.infura.io/v3/YOUR_INFURA_KEY
+````
+
+2. **Use placeholders in config**: Add placeholders in your config file where you want the env variables to be used:
+```yaml 
+...
+
+ upstreams:
+      - endpoint: ${ETHEREUM_RPC_URL}
+```
