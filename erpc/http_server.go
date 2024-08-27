@@ -121,9 +121,6 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) fasthttp.
 			}
 		}
 
-		requestCtx, cancel := context.WithTimeoutCause(fastCtx, reqMaxTimeout, common.NewErrRequestTimeout(reqMaxTimeout))
-		defer cancel()
-
 		body := fastCtx.PostBody()
 
 		s.logger.Debug().Msgf("received request for projectId: %s, architecture: %s with body: %s", projectId, architecture, body)
@@ -148,6 +145,9 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) fasthttp.
 			wg.Add(1)
 			go func(index int, rawReq json.RawMessage) {
 				defer wg.Done()
+
+				requestCtx, cancel := context.WithTimeoutCause(fastCtx, reqMaxTimeout, common.NewErrRequestTimeout(reqMaxTimeout))
+				defer cancel()
 
 				nq := common.NewNormalizedRequest(rawReq)
 				nq.ApplyDirectivesFromHttpHeaders(&headersCopy)
@@ -512,6 +512,10 @@ func (s *HttpServer) Start(logger *zerolog.Logger) error {
 		ln = ln4
 	} else if ln6 != nil {
 		ln = ln6
+	}
+
+	if ln == nil {
+		return fmt.Errorf("you must configure at least one of server.httpPortV4 or server.httpPortV6")
 	}
 
 	return s.server.Serve(ln)

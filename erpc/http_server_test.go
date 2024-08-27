@@ -1,24 +1,8 @@
 package erpc
 
-// import (
-// 	"context"
-// 	"encoding/json"
-// 	"net/http"
-// 	"net/http/httptest"
-// 	"strings"
-// 	"sync"
-// 	"testing"
-// 	"time"
-
-// 	"github.com/erpc/erpc/common"
-// 	"github.com/h2non/gock"
-// 	"github.com/rs/zerolog"
-// 	"github.com/stretchr/testify/assert"
-// 	"github.com/stretchr/testify/require"
-// )
-
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math/rand"
@@ -30,7 +14,6 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	// "github.com/erpc/erpc/health"
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
@@ -103,7 +86,9 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
 
 	sendRequest := func() (int, string) {
-		body := strings.NewReader(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`)
+		body := strings.NewReader(
+			fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["%d", false],"id":1}`, rand.Intn(100000000)),
+		)
 		req, err := http.NewRequest("POST", baseURL+"/test_project/evm/1", body)
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", "application/json")
@@ -181,14 +166,14 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 	})
 
 	t.Run("MixedTimeoutAndNonTimeoutRequests", func(t *testing.T) {
-		totalReqs := 20
+		totalReqs := 100
 
 		for i := 0; i < totalReqs; i++ {
 			var delay time.Duration
 			if i % 2 == 0 {
 				delay = 1 * time.Millisecond // shorter than the server timeout
 			} else {
-				delay = 400 * time.Millisecond // longer than the server timeout
+				delay = 200 * time.Millisecond // longer than the server timeout
 			}
 			gock.New("http://rpc1.localhost").
 				Post("/").
@@ -198,7 +183,9 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 					r.JSON(map[string]interface{}{
 						"jsonrpc": "2.0",
 						"id":      rand.Intn(100000000),
-						"result":  "0x1234",
+						"result":  map[string]interface{}{
+							"blockNumber": rand.Intn(100000000),
+						},
 					})
 				}).
 				Delay(delay)
@@ -228,7 +215,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 				assert.Contains(t, result.body, "Timeout")
 			} else {
 				successes++
-				assert.Contains(t, result.body, "0x1234")
+				assert.Contains(t, result.body, "blockNumber")
 			}
 		}
 
@@ -238,245 +225,232 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 	})
 }
 
-// func TestHttpServer_HandleRequest_EthGetBlockNumber(t *testing.T) {
-// 	defer gock.Off()
+func TestHttpServer_HandleRequest_EthGetBlockNumber(t *testing.T) {
+	gock.EnableNetworking()
+	gock.NetworkingFilter(func(req *http.Request) bool {
+		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
+		return shouldMakeRealCall
+	})
+	defer gock.Off()
 
-// 	// Setup
-// 	logger := zerolog.New(zerolog.NewConsoleWriter())
-// 	ctx := context.Background()
+	// Setup
+	logger := zerolog.New(zerolog.NewConsoleWriter())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-// 	cfg := &common.Config{
-// 		Server: &common.ServerConfig{
-// 			MaxTimeout: "5s",
-// 		},
-// 		Projects: []*common.ProjectConfig{
-// 			{
-// 				Id: "test_project",
-// 				Networks: []*common.NetworkConfig{
-// 					{
-// 						Architecture: common.ArchitectureEvm,
-// 						Evm: &common.EvmNetworkConfig{
-// 							ChainId: 1,
-// 						},
-// 					},
-// 				},
-// 			},
-// 		},
-// 		RateLimiters: &common.RateLimiterConfig{},
-// 	}
+	cfg := &common.Config{
+		Server: &common.ServerConfig{
+			MaxTimeout: "5s",
+		},
+		Projects: []*common.ProjectConfig{
+			{
+				Id: "test_project",
+				Networks: []*common.NetworkConfig{
+					{
+						Architecture: common.ArchitectureEvm,
+						Evm: &common.EvmNetworkConfig{
+							ChainId: 1,
+						},
+					},
+				},
+				Upstreams: []*common.UpstreamConfig{
+					{
+						Type:     common.UpstreamTypeEvm,
+						Endpoint: "http://rpc1.localhost",
+						Evm: &common.EvmUpstreamConfig{
+							ChainId: 1,
+						},
+					},
+				},
+			},
+		},
+		RateLimiters: &common.RateLimiterConfig{},
+	}
 
-// 	erpcInstance, err := NewERPC(ctx, &logger, nil, cfg)
-// 	require.NoError(t, err)
+	erpcInstance, err := NewERPC(ctx, &logger, nil, cfg)
+	require.NoError(t, err)
 
-// 	httpServer := NewHttpServer(ctx, &logger, cfg.Server, erpcInstance)
+	httpServer := NewHttpServer(ctx, &logger, cfg.Server, erpcInstance)
 
-// 	// Test case: Multiple concurrent eth_getBlockNumber requests
-// 	t.Run("ConcurrentEthGetBlockNumber", func(t *testing.T) {
-// 		gock.New("http://rpc1.localhost").
-// 			Post("/").
-// 			Times(10).
-// 			Reply(200).
-// 			JSON(map[string]interface{}{
-// 				"jsonrpc": "2.0",
-// 				"id":      1,
-// 				"result":  "0x1234",
-// 			})
+	// Start the server on a random port
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := listener.Addr().(*net.TCPAddr).Port
 
-// 		const concurrentRequests = 10
-// 		var wg sync.WaitGroup
-// 		responses := make([]*http.Response, concurrentRequests)
-// 		errors := make([]error, concurrentRequests)
+	go func() {
+		err := httpServer.server.Serve(listener)
+		if err != nil && err != http.ErrServerClosed {
+			t.Errorf("Server error: %v", err)
+		}
+	}()
+	defer httpServer.server.Shutdown()
 
-// 		for i := 0; i < concurrentRequests; i++ {
-// 			wg.Add(1)
-// 			go func(index int) {
-// 				defer wg.Done()
-// 				body := strings.NewReader(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`)
-// 				req := httptest.NewRequest("POST", "/test_project/evm:1", body)
-// 				req.Header.Set("Content-Type", "application/json")
-// 				w := httptest.NewRecorder()
-// 				httpServer.server.Handler.ServeHTTP(w, req)
-// 				responses[index] = w.Result()
-// 			}(i)
-// 		}
+	// Wait for the server to start
+	time.Sleep(1000 * time.Millisecond)
 
-// 		wg.Wait()
+	baseURL := fmt.Sprintf("http://localhost:%d", port)
 
-// 		for i, resp := range responses {
-// 			assert.NotNil(t, resp, "Response should not be nil for request %d", i)
-// 			assert.Equal(t, http.StatusOK, resp.StatusCode, "Status code should be 200 for request %d", i)
+	sendRequest := func(body string) (int, string) {
+		req, err := http.NewRequest("POST", baseURL+"/test_project/evm/1", strings.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
 
-// 			var result map[string]interface{}
-// 			err := json.NewDecoder(resp.Body).Decode(&result)
-// 			assert.NoError(t, err, "Should be able to decode response for request %d", i)
-// 			assert.Equal(t, "0x1234", result["result"], "Unexpected result for request %d", i)
-// 			resp.Body.Close()
-// 		}
+		client := &http.Client{
+			Timeout: 10 * time.Second,
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return 0, err.Error()
+		}
+		defer resp.Body.Close()
 
-// 		assert.True(t, gock.IsDone(), "All mocks should have been called")
-// 	})
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return resp.StatusCode, err.Error()
+		}
+		return resp.StatusCode, string(respBody)
+	}
 
-// 	// Test case: Request with invalid JSON
-// 	t.Run("InvalidJSON", func(t *testing.T) {
-// 		body := strings.NewReader(`{"invalid json`)
-// 		req := httptest.NewRequest("POST", "/test_project/evm:1", body)
-// 		req.Header.Set("Content-Type", "application/json")
-// 		w := httptest.NewRecorder()
-// 		httpServer.server.Handler.ServeHTTP(w, req)
+	t.Run("ConcurrentEthGetBlockNumber", func(t *testing.T) {
+		const concurrentRequests = 10
 
-// 		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Times(concurrentRequests).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x1234",
+			})
 
-// 		var errorResponse map[string]interface{}
-// 		err := json.NewDecoder(w.Body).Decode(&errorResponse)
-// 		require.NoError(t, err)
+		var wg sync.WaitGroup
+		results := make([]struct {
+			statusCode int
+			body       string
+		}, concurrentRequests)
 
-// 		assert.Contains(t, errorResponse, "error")
-// 		errorObj := errorResponse["error"].(map[string]interface{})
-// 		assert.Contains(t, errorObj["message"], "unexpected end of JSON input")
-// 	})
+		for i := 0; i < concurrentRequests; i++ {
+			wg.Add(1)
+			go func(index int) {
+				defer wg.Done()
+				body := `{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`
+				results[index].statusCode, results[index].body = sendRequest(body)
+			}(i)
+			time.Sleep(50 * time.Millisecond)
+		}
 
-// 	// Test case: Request with unsupported method
-// 	t.Run("UnsupportedMethod", func(t *testing.T) {
-// 		gock.New("http://rpc1.localhost").
-// 			Post("/").
-// 			Reply(200).
-// 			JSON(map[string]interface{}{
-// 				"jsonrpc": "2.0",
-// 				"id":      1,
-// 				"error": map[string]interface{}{
-// 					"code":    -32601,
-// 					"message": "Method not found",
-// 				},
-// 			})
+		wg.Wait()
 
-// 		body := strings.NewReader(`{"jsonrpc":"2.0","method":"unsupported_method","params":[],"id":1}`)
-// 		req := httptest.NewRequest("POST", "/test_project/evm:1", body)
-// 		req.Header.Set("Content-Type", "application/json")
-// 		w := httptest.NewRecorder()
-// 		httpServer.server.Handler.ServeHTTP(w, req)
+		for i, result := range results {
+			assert.Equal(t, http.StatusOK, result.statusCode, "Status code should be 200 for request %d", i)
 
-// 		assert.Equal(t, http.StatusOK, w.Code) // JSON-RPC errors are returned with 200 OK
+			var response map[string]interface{}
+			err := json.Unmarshal([]byte(result.body), &response)
+			assert.NoError(t, err, "Should be able to decode response for request %d", i)
+			assert.Equal(t, "0x1234", response["result"], "Unexpected result for request %d", i)
+		}
 
-// 		var errorResponse map[string]interface{}
-// 		err := json.NewDecoder(w.Body).Decode(&errorResponse)
-// 		require.NoError(t, err)
+		assert.True(t, gock.IsDone(), "All mocks should have been called")
+	})
 
-// 		assert.Contains(t, errorResponse, "error")
-// 		errorObj := errorResponse["error"].(map[string]interface{})
-// 		assert.Equal(t, float64(-32601), errorObj["code"])
-// 		assert.Contains(t, errorObj["message"], "Method not found")
+	t.Run("InvalidJSON", func(t *testing.T) {
+		statusCode, body := sendRequest(`{"invalid json`)
 
-// 		assert.True(t, gock.IsDone(), "All mocks should have been called")
-// 	})
+		fmt.Println(body)
 
-// 	// Test case: Request with invalid project ID
-// 	t.Run("InvalidProjectID", func(t *testing.T) {
-// 		body := strings.NewReader(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`)
-// 		req := httptest.NewRequest("POST", "/invalid_project/evm:1", body)
-// 		req.Header.Set("Content-Type", "application/json")
-// 		w := httptest.NewRecorder()
-// 		httpServer.server.Handler.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusBadRequest, statusCode)
 
-// 		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		var errorResponse map[string]interface{}
+		err := json.Unmarshal([]byte(body), &errorResponse)
+		require.NoError(t, err)
 
-// 		var errorResponse map[string]interface{}
-// 		err := json.NewDecoder(w.Body).Decode(&errorResponse)
-// 		require.NoError(t, err)
+		assert.Contains(t, errorResponse, "error")
+		errorObj := errorResponse["error"].(map[string]interface{})
+		errStr, _ := json.Marshal(errorObj)
+		assert.Contains(t, string(errStr), "ErrJsonRpcRequestUnmarshal")
+	})
 
-// 		assert.Contains(t, errorResponse, "error")
-// 		errorObj := errorResponse["error"].(map[string]interface{})
-// 		assert.Contains(t, errorObj["message"], "project not found")
-// 	})
+	t.Run("UnsupportedMethod", func(t *testing.T) {
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"error": map[string]interface{}{
+					"code":    -32601,
+					"message": "Method not found",
+				},
+			})
 
-// 	// Test case: Simulating upstream latency and timeout
-// 	t.Run("UpstreamLatencyAndTimeout", func(t *testing.T) {
-// 		gock.New("http://rpc1.localhost").
-// 			Post("/").
-// 			Reply(200).
-// 			Delay(6 * time.Second). // Delay longer than the server timeout
-// 			JSON(map[string]interface{}{
-// 				"jsonrpc": "2.0",
-// 				"id":      1,
-// 				"result":  "0x1234",
-// 			})
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"unsupported_method","params":[],"id":1}`)
 
-// 		body := strings.NewReader(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`)
-// 		req := httptest.NewRequest("POST", "/test_project/evm:1", body)
-// 		req.Header.Set("Content-Type", "application/json")
-// 		w := httptest.NewRecorder()
-// 		httpServer.server.Handler.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusServiceUnavailable, statusCode)
 
-// 		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		var errorResponse map[string]interface{}
+		err := json.Unmarshal([]byte(body), &errorResponse)
+		require.NoError(t, err)
 
-// 		var errorResponse map[string]interface{}
-// 		err := json.NewDecoder(w.Body).Decode(&errorResponse)
-// 		require.NoError(t, err)
+		assert.Contains(t, errorResponse, "error")
+		errorObj := errorResponse["error"].(map[string]interface{})
+		assert.Equal(t, float64(-32601), errorObj["code"])
+		assert.Contains(t, errorObj["message"], "Method not found")
 
-// 		assert.Contains(t, errorResponse, "error")
-// 		errorObj := errorResponse["error"].(map[string]interface{})
-// 		assert.Contains(t, errorObj["message"], "timeout")
+		assert.True(t, gock.IsDone(), "All mocks should have been called")
+	})
 
-// 		assert.True(t, gock.IsDone(), "All mocks should have been called")
-// 	})
+	// Test case: Request with invalid project ID
+	t.Run("InvalidProjectID", func(t *testing.T) {
+		req, err := http.NewRequest("POST", baseURL+"/invalid_project/evm/1", strings.NewReader(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
 
-// 	// Test case: Multiple different concurrent requests
-// 	t.Run("MultipleDifferentConcurrentRequests", func(t *testing.T) {
-// 		gock.New("http://rpc1.localhost").
-// 			Post("/").
-// 			Times(5).
-// 			Reply(200).
-// 			JSON(map[string]interface{}{
-// 				"jsonrpc": "2.0",
-// 				"id":      1,
-// 				"result":  "0x1234",
-// 			})
+		client := &http.Client{
+			Timeout: 10 * time.Second,
+		}
+		resp, err := client.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
 
-// 		gock.New("http://rpc1.localhost").
-// 			Post("/").
-// 			Times(5).
-// 			Reply(200).
-// 			JSON(map[string]interface{}{
-// 				"jsonrpc": "2.0",
-// 				"id":      1,
-// 				"result":  "0x5678",
-// 			})
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 
-// 		const concurrentRequests = 10
-// 		var wg sync.WaitGroup
-// 		responses := make([]*http.Response, concurrentRequests)
-// 		errors := make([]error, concurrentRequests)
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
 
-// 		for i := 0; i < concurrentRequests; i++ {
-// 			wg.Add(1)
-// 			go func(index int) {
-// 				defer wg.Done()
-// 				var body string
-// 				if index%2 == 0 {
-// 					body = `{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`
-// 				} else {
-// 					body = `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x742d35Cc6634C0532925a3b844Bc454e4438f44e"],"id":1}`
-// 				}
-// 				req := httptest.NewRequest("POST", "/test_project/evm:1", strings.NewReader(body))
-// 				req.Header.Set("Content-Type", "application/json")
-// 				w := httptest.NewRecorder()
-// 				httpServer.server.Handler.ServeHTTP(w, req)
-// 				responses[index] = w.Result()
-// 			}(i)
-// 		}
+		var errorResponse map[string]interface{}
+		err = json.Unmarshal(body, &errorResponse)
+		require.NoError(t, err)
 
-// 		wg.Wait()
+		assert.Contains(t, errorResponse, "error")
+		errorObj := errorResponse["error"].(map[string]interface{})
+		assert.Contains(t, errorObj["message"], "project not configured")
+	})
 
-// 		for i, resp := range responses {
-// 			assert.NotNil(t, resp, "Response should not be nil for request %d", i)
-// 			assert.Equal(t, http.StatusOK, resp.StatusCode, "Status code should be 200 for request %d", i)
+	t.Run("UpstreamLatencyAndTimeout", func(t *testing.T) {
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Reply(200).
+			Delay(6 * time.Second). // Delay longer than the server timeout
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x1234",
+			})
 
-// 			var result map[string]interface{}
-// 			err := json.NewDecoder(resp.Body).Decode(&result)
-// 			assert.NoError(t, err, "Should be able to decode response for request %d", i)
-// 			assert.Contains(t, []string{"0x1234", "0x5678"}, result["result"], "Unexpected result for request %d", i)
-// 			resp.Body.Close()
-// 		}
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`)
 
-// 		assert.True(t, gock.IsDone(), "All mocks should have been called")
-// 	})
-// }
+		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
+
+		var errorResponse map[string]interface{}
+		err := json.Unmarshal([]byte(body), &errorResponse)
+		require.NoError(t, err)
+
+		assert.Contains(t, errorResponse, "error")
+		errorObj := errorResponse["error"].(map[string]interface{})
+		errStr, _ := json.Marshal(errorObj)
+		assert.Contains(t, string(errStr), "ErrEndpointRequestTimeout")
+
+		assert.True(t, gock.IsDone(), "All mocks should have been called")
+	})
+}
