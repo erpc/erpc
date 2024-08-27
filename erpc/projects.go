@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	// "time"
 
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
@@ -88,6 +89,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 
 	health.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.NetworkId, method).Inc()
 	p.Logger.Debug().Str("method", method).Msgf("forwarding request to network")
+	// time.Sleep(15 * time.Second)// TODO remove
 	resp, err := network.Forward(ctx, nq)
 
 	if err == nil || common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {

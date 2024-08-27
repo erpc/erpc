@@ -559,6 +559,17 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
+		} else if strings.Contains(err.Message, "transaction not found") ||
+			strings.Contains(err.Message, "cannot find transaction") {
+			return common.NewErrEndpointMissingData(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorMissingData,
+					err.Message,
+					nil,
+					details,
+				),
+			)
 		} else if code == -32004 || code == -32001 {
 			return common.NewErrEndpointUnsupported(
 				common.NewErrJsonRpcExceptionInternal(

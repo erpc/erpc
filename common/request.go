@@ -23,9 +23,10 @@ type NormalizedRequest struct {
 	directives     *RequestDirectives
 	jsonRpcRequest *JsonRpcRequest
 
-	respMu            sync.Mutex
 	lastValidResponse *NormalizedResponse
 	lastUpstream      Upstream
+
+	Mu sync.Mutex
 }
 
 type UniqueRequestKey struct {
@@ -55,14 +56,14 @@ func (r *NormalizedRequest) LastUpstream() Upstream {
 }
 
 func (r *NormalizedRequest) SetLastValidResponse(response *NormalizedResponse) {
-	r.respMu.Lock()
-	defer r.respMu.Unlock()
+	r.Mu.Lock()
+	defer r.Mu.Unlock()
 	r.lastValidResponse = response
 }
 
 func (r *NormalizedRequest) LastValidResponse() *NormalizedResponse {
-	r.respMu.Lock()
-	defer r.respMu.Unlock()
+	r.Mu.Lock()
+	defer r.Mu.Unlock()
 	return r.lastValidResponse
 }
 
