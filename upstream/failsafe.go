@@ -326,7 +326,7 @@ func createTimeoutPolicy(component string, cfg *common.TimeoutPolicyConfig) (fai
 func TranslateFailsafeError(execErr error) error {
 	var retryExceededErr *retrypolicy.ExceededError
 	if errors.As(execErr, &retryExceededErr) {
-		ler := retryExceededErr.LastError()
+		ler := retryExceededErr.LastError
 		if common.IsNull(ler) {
 			if lexr, ok := execErr.(common.StandardError); ok {
 				ler = lexr.GetCause()
