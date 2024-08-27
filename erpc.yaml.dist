@@ -8,11 +8,11 @@ database:
     #     postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name
     #   table: rpc_cache
 server:
-  httpHost: 0.0.0.0
+  httpHostV4: 0.0.0.0
   httpPort: 4000
 metrics:
   enabled: true
-  host: 0.0.0.0
+  hostV4: 0.0.0.0
   port: 4001
 projects:
   - id: main
