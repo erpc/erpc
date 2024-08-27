@@ -1,6 +1,6 @@
 ## Frequently Asked Questions
 
-### How can I set env variables inside the config file?
+### How to set env variables?
 
 To use env variables in [erpc.yaml](https://docs.erpc.cloud/config/example), follow these steps:
 
@@ -16,4 +16,15 @@ export ETHEREUM_RPC_URL=https://mainnet.infura.io/v3/YOUR_INFURA_KEY
 
  upstreams:
       - endpoint: ${ETHEREUM_RPC_URL}
+```
+
+### How to disable caching?
+
+To disable caching, set [`evmJsonRpcCache`](https://docs.erpc.cloud/config/database#evmjsonrpccache) to `null` in your configuration:
+
+```yaml
+...
+
+database:
+  evmJsonRpcCache: ~
 ```
