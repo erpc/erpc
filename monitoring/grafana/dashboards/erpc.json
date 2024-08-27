@@ -788,8 +788,8 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "sum(rate(erpc_network_multiplexed_request_total{}[1m])) by (project, network)",
-          "legendFormat": "{{project}}, {{network}}",
+          "expr": "sum(rate(erpc_network_multiplexed_request_total{}[1m])) by (project, network, category)",
+          "legendFormat": "{{project}}, {{network}}, {{category}}",
           "refId": "A"
         }
       ],
