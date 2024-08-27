@@ -143,16 +143,22 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) fasthttp.
   
 		for i, reqBody := range requests {
 			wg.Add(1)
-			go func(index int, rawReq json.RawMessage) {
+			go func(index int, rawReq json.RawMessage, headersCopy *fasthttp.RequestHeader, argsCopy *fasthttp.Args) {
+				defer func() {
+					if r := recover(); r != nil {
+						s.logger.Error().Msgf("unexpected server panic: %v", r)
+					}
+				}()
+		
 				defer wg.Done()
 
 				requestCtx, cancel := context.WithTimeoutCause(fastCtx, reqMaxTimeout, common.NewErrRequestTimeout(reqMaxTimeout))
 				defer cancel()
 
 				nq := common.NewNormalizedRequest(rawReq)
-				nq.ApplyDirectivesFromHttpHeaders(&headersCopy)
+				nq.ApplyDirectivesFromHttpHeaders(headersCopy)
 
-				ap, err := auth.NewPayloadFromHttp(project.Config.Id, nq, &headersCopy, &argsCopy)
+				ap, err := auth.NewPayloadFromHttp(project.Config.Id, nq, headersCopy, argsCopy)
 				if err != nil {
 					responses[index] = processErrorBody(s.logger, nq, err)
 					return
@@ -235,7 +241,7 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) fasthttp.
 				}
 
 				responses[index] = resp
-			}(i, reqBody)
+			}(i, reqBody, &headersCopy, &argsCopy)
 		}
 
 		wg.Wait()
