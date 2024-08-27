@@ -12,14 +12,16 @@ var (
 		Help:      "Total number of actual requests to upstreams.",
 	}, []string{"project", "network", "upstream", "category"})
 
-	MetricUpstreamRequestDuration = promauto.NewSummaryVec(prometheus.SummaryOpts{
+	MetricUpstreamRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_duration_seconds",
 		Help:      "Duration of actual requests towards upstreams.",
-		Objectives: map[float64]float64{
-			0.5:  0.05,
-			0.9:  0.01,
-			0.99: 0.001,
+		Buckets: []float64{
+			0.1,  // 100ms
+			0.5,  // 500ms
+			1,    // 1s
+			5,    // 5s
+			10,   // 10s
 		},
 	}, []string{"project", "network", "upstream", "category"})
 
@@ -101,14 +103,16 @@ var (
 		Help:      "Total number of cache misses for a network.",
 	}, []string{"project", "network", "category"})
 
-	MetricNetworkRequestDuration = promauto.NewSummaryVec(prometheus.SummaryOpts{
+	MetricNetworkRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "network_request_duration_seconds",
 		Help:      "Duration of requests for a network.",
-		Objectives: map[float64]float64{
-			0.5:  0.05,
-			0.9:  0.01,
-			0.99: 0.001,
+		Buckets: []float64{
+			0.1,  // 100ms
+			0.5,  // 500ms
+			1,    // 1s
+			5,    // 5s
+			10,   // 10s
 		},
 	}, []string{"project", "network", "category"})
 

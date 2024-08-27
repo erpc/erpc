@@ -80,16 +80,17 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		return nil, err
 	}
 
-	timer := prometheus.NewTimer(health.MetricNetworkRequestDuration.WithLabelValues(
-		p.Config.Id,
-		network.NetworkId,
-		method,
-	))
+	timer := prometheus.NewTimer(prometheus.ObserverFunc(func(v float64) {
+		health.MetricNetworkRequestDuration.WithLabelValues(
+			p.Config.Id,
+			network.NetworkId,
+			method,
+		).Observe(v)
+	}))
 	defer timer.ObserveDuration()
 
 	health.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.NetworkId, method).Inc()
 	p.Logger.Debug().Str("method", method).Msgf("forwarding request to network")
-	// time.Sleep(15 * time.Second)// TODO remove
 	resp, err := network.Forward(ctx, nq)
 
 	if err == nil || common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
