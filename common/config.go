@@ -389,7 +389,7 @@ func (s *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
 				EvmJsonRpcCache: &ConnectorConfig{
 					Driver: "memory",
 					Memory: &MemoryConnectorConfig{
-						MaxItems: 10_000,
+						MaxItems: 100,
 					},
 				},
 			},
