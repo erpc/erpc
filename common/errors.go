@@ -219,6 +219,13 @@ func (e *BaseError) HasCode(codes ...ErrorCode) bool {
 		if be, ok := e.Cause.(StandardError); ok {
 			return be.HasCode(codes...)
 		}
+		if cs, ok := e.Cause.(interface{ Unwrap() []error }); ok {
+			for _, err := range cs.Unwrap() {
+				if be, ok := err.(StandardError); ok {
+					return be.HasCode(codes...)
+				}
+			}
+		}
 	}
 
 	return false
