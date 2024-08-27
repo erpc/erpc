@@ -64,7 +64,7 @@ func NewGenericHttpJsonRpcClient(logger *zerolog.Logger, pu *Upstream, parsedUrl
 			if jc.BatchMaxSize > 0 {
 				client.batchMaxSize = jc.BatchMaxSize
 			} else {
-				client.batchMaxSize = 100
+				client.batchMaxSize = 10
 			}
 			if jc.BatchMaxWait != "" {
 				duration, err := time.ParseDuration(jc.BatchMaxWait)
