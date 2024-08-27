@@ -85,7 +85,7 @@
       ],
       "thresholds": [],
       "timeRegions": [],
-      "title": "total number of requests received by the network",
+      "title": "Total Requests per Chain",
       "tooltip": {
         "shared": true,
         "sort": 0,
@@ -175,7 +175,7 @@
       ],
       "thresholds": [],
       "timeRegions": [],
-      "title": "total number of requests received by the network (per method)",
+      "title": "Total Requests per Method",
       "tooltip": {
         "shared": true,
         "sort": 0,
@@ -225,7 +225,7 @@
       "hiddenSeries": false,
       "id": 14,
       "legend": {
-        "alignAsTable": false,
+        "alignAsTable": true,
         "avg": false,
         "current": false,
         "max": false,
@@ -268,7 +268,7 @@
       ],
       "thresholds": [],
       "timeRegions": [],
-      "title": "total network errors per second",
+      "title": "Total Errors per Chain",
       "tooltip": {
         "shared": true,
         "sort": 0,
@@ -316,6 +316,7 @@
       "hiddenSeries": false,
       "id": 15,
       "legend": {
+        "alignAsTable": true,
         "avg": false,
         "current": false,
         "max": false,
@@ -355,7 +356,7 @@
       ],
       "thresholds": [],
       "timeRegions": [],
-      "title": "total upstream errors per second",
+      "title": "Total Errors per Upstream",
       "tooltip": {
         "shared": true,
         "sort": 0,
@@ -451,7 +452,7 @@
       ],
       "thresholds": [],
       "timeRegions": [],
-      "title": "total number of cache hits and misses for requests received by the network",
+      "title": "Total Cache Hits and Misses per Method",
       "tooltip": {
         "shared": true,
         "sort": 0,
@@ -536,7 +537,7 @@
       ],
       "thresholds": [],
       "timeRegions": [],
-      "title": "duration of requests received by the network",
+      "title": "Request Latency per Chain",
       "tooltip": {
         "shared": true,
         "sort": 0,
@@ -621,7 +622,7 @@
       ],
       "thresholds": [],
       "timeRegions": [],
-      "title": "duration of requests to upstreams",
+      "title": "Request Latency per Upstream",
       "tooltip": {
         "shared": true,
         "sort": 0,
@@ -709,7 +710,7 @@
       ],
       "thresholds": [],
       "timeRegions": [],
-      "title": "total number of actual requests to upstreams",
+      "title": "Upstream Real Requests",
       "tooltip": {
         "shared": true,
         "sort": 0,
@@ -794,7 +795,7 @@
       ],
       "thresholds": [],
       "timeRegions": [],
-      "title": "total number of multiplexed requests received by the network",
+      "title": "Network Multiplexed Requests",
       "tooltip": {
         "shared": true,
         "sort": 0,
@@ -879,7 +880,7 @@
       ],
       "thresholds": [],
       "timeRegions": [],
-      "title": "total number of self-imposed rate limited requests before sending to upstreams (per network)",
+      "title": "Network Self-Imposed Rate Limited Requests",
       "tooltip": {
         "shared": true,
         "sort": 0,
@@ -964,7 +965,7 @@
       ],
       "thresholds": [],
       "timeRegions": [],
-      "title": "total number of self-imposed rate limited requests before sending to upstreams (per upstream)",
+      "title": "Upstream Self-Imposed Rate Limited Requests",
       "tooltip": {
         "shared": true,
         "sort": 0,
@@ -1049,7 +1050,7 @@
       ],
       "thresholds": [],
       "timeRegions": [],
-      "title": "total number of remote rate limited requests by upstreams",
+      "title": "Upstream Remote Rate Limited Requests",
       "tooltip": {
         "shared": true,
         "sort": 0,
@@ -1086,7 +1087,7 @@
     "list": []
   },
   "time": {
-    "from": "now-5m",
+    "from": "now-15m",
     "to": "now"
   },
   "timepicker": {},
