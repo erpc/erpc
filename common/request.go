@@ -18,8 +18,11 @@ type RequestDirectives struct {
 type NormalizedRequest struct {
 	Attempt int
 
-	network        Network
-	body           []byte
+	network Network
+	body    []byte
+
+	uid            string
+	method         string
 	directives     *RequestDirectives
 	jsonRpcRequest *JsonRpcRequest
 
@@ -44,6 +47,8 @@ func NewNormalizedRequest(body []byte) *NormalizedRequest {
 }
 
 func (r *NormalizedRequest) SetLastUpstream(upstream Upstream) *NormalizedRequest {
+	r.Mu.Lock()
+	defer r.Mu.Unlock()
 	r.lastUpstream = upstream
 	return r
 }
@@ -72,6 +77,47 @@ func (r *NormalizedRequest) Network() Network {
 		return nil
 	}
 	return r.network
+}
+
+func (r *NormalizedRequest) Id() string {
+	if r == nil {
+		return ""
+	}
+
+	r.Mu.Lock()
+	defer r.Mu.Unlock()
+
+	if r.uid != "" {
+		return r.uid
+	}
+
+	if r.jsonRpcRequest != nil {
+		if id, ok := r.jsonRpcRequest.ID.(string); ok {
+			r.uid = id
+			return id
+		} else if id, ok := r.jsonRpcRequest.ID.(float64); ok {
+			r.uid = fmt.Sprintf("%d", int64(id))
+			return r.uid
+		} else {
+			r.uid = fmt.Sprintf("%v", r.jsonRpcRequest.ID)
+			return r.uid
+		}
+	}
+
+	if len(r.body) > 0 {
+		idn, err := sonic.Get(r.body, "id")
+		if err == nil {
+			id, err := idn.String()
+			if err == nil {
+				r.uid = "n/a"
+			} else {
+				r.uid = id
+			}
+			return id
+		}
+	}
+
+	return ""
 }
 
 func (r *NormalizedRequest) NetworkId() string {
@@ -135,12 +181,27 @@ func (r *NormalizedRequest) JsonRpcRequest() (*JsonRpcRequest, error) {
 }
 
 func (r *NormalizedRequest) Method() (string, error) {
-	rpcReq, err := r.JsonRpcRequest()
-	if err != nil {
-		return "", err
+	if r.method != "" {
+		return r.method, nil
 	}
 
-	return rpcReq.Method, nil
+	if r.jsonRpcRequest != nil {
+		r.method = r.jsonRpcRequest.Method
+		return r.jsonRpcRequest.Method, nil
+	}
+
+	if len(r.body) > 0 {
+		method, err := sonic.Get(r.body, "method")
+		if err != nil {
+			r.method = "n/a"
+			return r.method, err
+		}
+		m, err := method.String()
+		r.method = m
+		return m, err
+	}
+
+	return "", NewErrJsonRpcRequestUnresolvableMethod(r.body)
 }
 
 func (r *NormalizedRequest) Body() []byte {
