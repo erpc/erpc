@@ -86,8 +86,8 @@ func NewGenericHttpJsonRpcClient(logger *zerolog.Logger, pu *Upstream, parsedUrl
 		client.httpClient = &http.Client{
 			Timeout: 60 * time.Second,
 			Transport: &http.Transport{
-				MaxIdleConns:        400,
-				MaxIdleConnsPerHost: 400,
+				MaxIdleConns:        1024,
+				MaxIdleConnsPerHost: 256,
 				IdleConnTimeout:     90 * time.Second,
 			},
 		}
@@ -322,43 +322,14 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 		// Try parsing as single json-rpc object,
 		// some providers return a single object on some errors even when request is batch.
 		// this is a workaround to handle those cases.
-		var singleResp common.JsonRpcResponse
-		errsg := sonic.Unmarshal(respBody, &singleResp)
-		if errsg != nil {
-			for _, req := range requests {
-				req.err <- common.NewErrEndpointServerSideException(
-					fmt.Errorf("failed to parse upstream response, batch: %w single: %w", err, errsg),
-					map[string]interface{}{
-						"statusCode": resp.StatusCode,
-						"headers":    resp.Header,
-						"body":       string(respBody),
-					},
-				)
-			}
-		} else {
-			if singleResp.JSONRPC != "" || singleResp.Error != nil {
-				// This case happens when upstreams a single valid json-rpc object as response
-				// to a batch request (e.g. BlastAPI).
-				for _, req := range requests {
-					nr := common.NewNormalizedResponse().WithRequest(req.request).WithBody(respBody)
-					err := c.normalizeJsonRpcError(resp, nr)
-					if err != nil {
-						req.err <- err
-					} else {
-						req.response <- nr
-					}
-				}
+		nr := common.NewNormalizedResponse().WithBody(respBody)
+		for _, br := range requests {
+			nr.WithRequest(br.request)
+			err := c.normalizeJsonRpcError(resp, nr)
+			if err != nil {
+				br.err <- err
 			} else {
-				for _, req := range requests {
-					req.err <- common.NewErrEndpointServerSideException(
-						fmt.Errorf("failed to parse upstream response: %w", err),
-						map[string]interface{}{
-							"statusCode": resp.StatusCode,
-							"headers":    resp.Header,
-							"body":       string(respBody),
-						},
-					)
-				}
+				br.response <- nr
 			}
 		}
 		return
