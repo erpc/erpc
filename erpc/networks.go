@@ -141,6 +141,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		lg.Debug().Msgf("trying to forward request to upstream")
 
 		resp, skipped, err = u.Forward(ctx, req)
+
 		if !common.IsNull(err) {
 			// If upstream complains that the method is not supported let's dynamically add it ignoreMethods config
 			if common.HasErrorCode(err, common.ErrCodeEndpointUnsupported) {
@@ -177,7 +178,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			coordMu.Lock()
 			execution = exec
 			coordMu.Unlock()
-			isHedged := exec.Hedges() > 0
 
 			// We should try all upstreams at least once, but using "i" we make sure
 			// across different executions of the failsafe we pick up next upstream vs retrying the same upstream.
@@ -193,33 +193,24 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				if i >= ln {
 					i = 0
 				}
-				if isHedged {
-					lg.Debug().
-						Str("upstreamId", u.Config().Id).
-						Int("index", i).
-						Msgf("executing hedged forward to upstream")
-				} else {
-					lg.Debug().
-						Str("upstreamId", u.Config().Id).
-						Int("index", i).
-						Msgf("executing forward to upstream")
-				}
 				coordMu.Unlock()
 
 				resp, skipped, err := n.processResponse(
 					tryForward(u, exec.Context()),
 				)
 
+				isHedged := exec.Hedges() > 0
+
 				if isHedged && err != nil && errors.Is(err, context.Canceled) {
 					lg.Debug().Err(err).Msgf("discarding hedged request to upstream %s: %v", u.Config().Id, skipped)
-					return nil, err
+					return nil, common.NewErrUpstreamHedgeCancelled(u.Config().Id)
 				}
-
 				if isHedged {
 					lg.Debug().Msgf("forwarded hedged request to upstream %s skipped: %v", u.Config().Id, skipped)
 				} else {
 					lg.Debug().Msgf("forwarded request to upstream %s skipped: %v", u.Config().Id, skipped)
 				}
+
 				if err != nil {
 					coordMu.Lock()
 					errorsByUpstream = append(errorsByUpstream, err)
