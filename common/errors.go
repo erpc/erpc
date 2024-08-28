@@ -1355,6 +1355,10 @@ var NewErrEndpointEvmLargeRange = func(cause error) error {
 	}
 }
 
+func (e *ErrEndpointEvmLargeRange) ErrorStatusCode() int {
+	return http.StatusRequestEntityTooLarge
+}
+
 //
 // JSON-RPC
 //
