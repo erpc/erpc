@@ -65,21 +65,18 @@ func (n *Network) Architecture() common.NetworkArchitecture {
 func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	startTime := time.Now()
 
-	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
+	n.Logger.Trace().Object("req", req).Msgf("forwarding request")
 	req.SetNetwork(n)
 
-	method, err := req.Method()
-	if err != nil {
-		return nil, err
-	}
-	lg := n.Logger.With().Str("method", method).Logger()
+	method, _ := req.Method()
+	lg := n.Logger.With().Str("method", method).Str("id", req.Id()).Str("ptr", fmt.Sprintf("%p", req)).Logger()
 
 	// 1) In-flight multiplexing
 	mlxHash, _ := req.CacheHash()
 	n.inFlightMutex.Lock()
 	if inf, exists := n.inFlightRequests[mlxHash]; exists {
 		n.inFlightMutex.Unlock()
-		lg.Debug().Object("req", req).Msgf("found similar in-flight request, waiting for result")
+		lg.Debug().Msgf("found similar in-flight request, waiting for result")
 		health.MetricNetworkMultiplexedRequests.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 
 		inf.mu.RLock()
@@ -119,9 +116,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		if err != nil {
 			lg.Debug().Err(err).Msgf("could not find response in cache")
 			health.MetricNetworkCacheMisses.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
-		} else if resp != nil {
+		} else if resp != nil && !resp.IsObjectNull() && !resp.IsResultEmptyish() {
 			resp.SetFromCache(true)
-			lg.Info().Object("req", req).Err(err).Msgf("response served from cache")
+			lg.Info().Msgf("response served from cache")
 			health.MetricNetworkCacheHits.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 			inf.Close(resp, err)
 			return resp, err
@@ -139,15 +136,15 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		u *upstream.Upstream,
 		ctx context.Context,
 	) (resp *common.NormalizedResponse, skipped bool, err error) {
-		lg := u.Logger.With().Str("upstreamId", u.Config().Id).Logger()
+		lg := u.Logger.With().Str("upstreamId", u.Config().Id).Str("method", method).Str("id", req.Id()).Str("ptr", fmt.Sprintf("%p", req)).Logger()
 
-		lg.Debug().Str("method", method).Str("rid", fmt.Sprintf("%p", req)).Msgf("trying to forward request to upstream")
+		lg.Debug().Msgf("trying to forward request to upstream")
 
 		resp, skipped, err = u.Forward(ctx, req)
 		if !common.IsNull(err) {
 			// If upstream complains that the method is not supported let's dynamically add it ignoreMethods config
 			if common.HasErrorCode(err, common.ErrCodeEndpointUnsupported) {
-				lg.Warn().Err(err).Str("method", method).Msgf("upstream does not support method, dynamically adding to ignoreMethods")
+				lg.Warn().Err(err).Msgf("upstream does not support method, dynamically adding to ignoreMethods")
 				u.IgnoreMethod(method)
 			}
 
@@ -171,13 +168,15 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	var execution failsafe.Execution[*common.NormalizedResponse]
 	var errorsByUpstream = []error{}
-	var errorsMutex sync.Mutex
-	imtx := sync.Mutex{}
+
+	coordMu := sync.Mutex{}
 	i := 0
 	resp, execErr := n.failsafeExecutor.
 		WithContext(ctx).
 		GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+			coordMu.Lock()
 			execution = exec
+			coordMu.Unlock()
 			isHedged := exec.Hedges() > 0
 
 			// We should try all upstreams at least once, but using "i" we make sure
@@ -186,7 +185,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			// Upstream-level retry is handled by the upstream itself (and its own failsafe policies).
 			ln := len(upsList)
 			for count := 0; count < ln; count++ {
-				imtx.Lock()
+				coordMu.Lock()
 				n.upstreamsRegistry.RLockUpstreams()
 				u := upsList[i]
 				n.upstreamsRegistry.RUnlockUpstreams()
@@ -205,7 +204,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						Int("index", i).
 						Msgf("executing forward to upstream")
 				}
-				imtx.Unlock()
+				coordMu.Unlock()
 
 				resp, skipped, err := n.processResponse(
 					tryForward(u, exec.Context()),
@@ -217,14 +216,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 
 				if isHedged {
-					lg.Debug().Err(err).Msgf("forwarded hedged request to upstream %s skipped: %v err: %v", u.Config().Id, skipped, err)
+					lg.Debug().Msgf("forwarded hedged request to upstream %s skipped: %v", u.Config().Id, skipped)
 				} else {
-					lg.Debug().Err(err).Msgf("forwarded request to upstream %s skipped: %v err: %v", u.Config().Id, skipped, err)
+					lg.Debug().Msgf("forwarded request to upstream %s skipped: %v", u.Config().Id, skipped)
 				}
 				if err != nil {
-					errorsMutex.Lock()
+					coordMu.Lock()
 					errorsByUpstream = append(errorsByUpstream, err)
-					errorsMutex.Unlock()
+					coordMu.Unlock()
 				}
 				if !skipped {
 					if resp != nil {

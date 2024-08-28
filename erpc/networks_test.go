@@ -3334,7 +3334,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 	})
 
-	t.Run("ForwardLlamaRPCEndpointRateLimitResponse", func(t *testing.T) {
+	t.Run("ForwardLlamaRPCEndpointRateLimitResponseSingle", func(t *testing.T) {
 		defer gock.Off()
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
@@ -3360,7 +3360,6 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
-		FALSE := false
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
@@ -3369,7 +3368,104 @@ func TestNetwork_Forward(t *testing.T) {
 				ChainId: 123,
 			},
 			JsonRpc: &common.JsonRpcUpstreamConfig{
-				SupportsBatch: &FALSE,
+				SupportsBatch: &common.FALSE,
+			},
+			VendorName: "llama",
+		}
+		upr := upstream.NewUpstreamsRegistry(
+			&log.Logger,
+			"prjA",
+			[]*common.UpstreamConfig{up1},
+			rlr,
+			vndr, mt, 1*time.Second,
+		)
+		err = upr.Bootstrap(ctx)
+		if err != nil {
+			t.Fatalf("Failed to bootstrap upstreams registry: %v", err)
+		}
+		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		if err != nil {
+			t.Fatalf("Failed to prepare upstreams for network: %v", err)
+		}
+
+		ntw, err := NewNetwork(
+			&log.Logger,
+			"prjA",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+				},
+				Failsafe: fsCfg,
+			},
+			rlr,
+			upr,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		fakeReq := common.NewNormalizedRequest(requestBytes)
+		resp, err := ntw.Forward(ctx, fakeReq)
+
+		if len(gock.Pending()) > 0 {
+			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
+			for _, pending := range gock.Pending() {
+				t.Errorf("Pending mock: %v", pending)
+			}
+		}
+
+		if err == nil {
+			t.Errorf("Expected non-nil error, got nil")
+			return
+		}
+
+		if resp != nil {
+			t.Errorf("Expected nil response, got %v", resp)
+			return
+		}
+
+		if !common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded) {
+			t.Errorf("Expected error code %v, got %+v", common.ErrCodeEndpointCapacityExceeded, err)
+		}
+	})
+
+	t.Run("ForwardLlamaRPCEndpointRateLimitResponseBatch", func(t *testing.T) {
+		defer gock.Off()
+		defer gock.Clean()
+		defer gock.CleanUnmatchedRequest()
+
+		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Reply(200).
+			BodyString(`error code: 1015`)
+
+		log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		fsCfg := &common.FailsafeConfig{}
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+			Budgets: []*common.RateLimitBudgetConfig{},
+		}, &log.Logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		vndr := vendors.NewVendorsRegistry()
+		mt := health.NewTracker("prjA", 2*time.Second)
+		up1 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc1",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+			JsonRpc: &common.JsonRpcUpstreamConfig{
+				SupportsBatch: &common.TRUE,
 			},
 			VendorName: "llama",
 		}
