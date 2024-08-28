@@ -85,6 +85,10 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		return nil, err
 	}
 
+	if resultString == `""` || resultString == "null" || resultString == "[]" || resultString == "{}" {
+		return nil, nil
+	}
+
 	jrr := &common.JsonRpcResponse{
 		JSONRPC: rpcReq.JSONRPC,
 		ID:      rpcReq.ID,
@@ -110,7 +114,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 
 	lg := c.logger.With().Str("network", req.NetworkId()).Str("method", rpcReq.Method).Logger()
 
-	if rpcResp == nil || rpcResp.Result == nil || rpcResp.Error != nil {
+	if resp == nil || resp.IsObjectNull() || resp.IsResultEmptyish() || rpcResp == nil || rpcResp.Result == nil || rpcResp.Error != nil {
 		lg.Debug().Msg("not caching response because it has no result or has error")
 		return nil
 	}
@@ -155,14 +159,14 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		Interface("result", rpcResp.Result).
 		Msg("caching the response")
 
-	resultStr, err := sonic.Marshal(rpcResp.Result)
+	resultBytes, err := sonic.Marshal(rpcResp.Result)
 	if err != nil {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeoutCause(ctx, 10*time.Second, errors.New("cache driver timeout during set"))
+	ctx, cancel := context.WithTimeoutCause(ctx, 5*time.Second, errors.New("evm json-rpc cache driver timeout during set"))
 	defer cancel()
-	return c.conn.Set(ctx, pk, rk, string(resultStr))
+	return c.conn.Set(ctx, pk, rk, string(resultBytes))
 }
 
 func (c *EvmJsonRpcCache) DeleteByGroupKey(ctx context.Context, groupKeys ...string) error {

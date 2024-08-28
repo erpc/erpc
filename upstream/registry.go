@@ -294,7 +294,7 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 	for _, ups := range upsList {
 		metrics := u.metricsTracker.GetUpstreamMethodMetrics(ups.Config().Id, networkId, method)
 		metrics.Mutex.RLock()
-		u.logger.Debug().
+		u.logger.Trace().
 			Str("projectId", u.prjId).
 			Str("networkId", networkId).
 			Str("method", method).
@@ -323,7 +323,7 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 	for i, ups := range upsList {
 		score := u.calculateScore(normTotalRequests[i], normP90Latencies[i], normErrorRates[i], normThrottledRates[i])
 		u.upstreamScores[ups.Config().Id][networkId][method] = score
-		u.logger.Debug().Str("projectId", u.prjId).
+		u.logger.Trace().Str("projectId", u.prjId).
 			Str("upstream", ups.Config().Id).
 			Str("networkId", networkId).
 			Str("method", method).

@@ -17,11 +17,11 @@ var (
 		Name:      "upstream_request_duration_seconds",
 		Help:      "Duration of actual requests towards upstreams.",
 		Buckets: []float64{
-			0.1,  // 100ms
-			0.5,  // 500ms
-			1,    // 1s
-			5,    // 5s
-			10,   // 10s
+			0.1, // 100ms
+			0.5, // 500ms
+			1,   // 1s
+			5,   // 5s
+			10,  // 10s
 		},
 	}, []string{"project", "network", "upstream", "category"})
 
@@ -108,11 +108,11 @@ var (
 		Name:      "network_request_duration_seconds",
 		Help:      "Duration of requests for a network.",
 		Buckets: []float64{
-			0.1,  // 100ms
-			0.5,  // 500ms
-			1,    // 1s
-			5,    // 5s
-			10,   // 10s
+			0.1, // 100ms
+			0.5, // 500ms
+			1,   // 1s
+			5,   // 5s
+			10,  // 10s
 		},
 	}, []string{"project", "network", "category"})
 
