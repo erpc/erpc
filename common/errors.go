@@ -1,6 +1,7 @@
 package common
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -42,6 +43,7 @@ func ErrorSummary(err interface{}) string {
 
 var longHash = regexp.MustCompile(`0x[a-fA-F0-9][a-fA-F0-9]+`)
 var txHashErr = regexp.MustCompile(`transaction [a-fA-F0-9][a-fA-F0-9][a-fA-F0-9]+`)
+var trieNodeErr = regexp.MustCompile(`trie node [a-fA-F0-9][a-fA-F0-9][a-fA-F0-9]+`)
 var revertAddr = regexp.MustCompile(`.*execution reverted.*`)
 var ipAddr = regexp.MustCompile(`\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}`)
 var ddg = regexp.MustCompile(`\d\d+`)
@@ -49,6 +51,7 @@ var ddg = regexp.MustCompile(`\d\d+`)
 func cleanUpMessage(s string) string {
 	s = longHash.ReplaceAllString(s, "0xREDACTED")
 	s = txHashErr.ReplaceAllString(s, "transaction 0xREDACTED")
+	s = trieNodeErr.ReplaceAllString(s, "trie node 0xREDACTED")
 	s = revertAddr.ReplaceAllString(s, "execution reverted")
 	s = ipAddr.ReplaceAllString(s, "X.X.X.X")
 	s = ddg.ReplaceAllString(s, "XX")
@@ -144,31 +147,30 @@ func (e *BaseError) GetCause() error {
 func (e BaseError) MarshalJSON() ([]byte, error) {
 	type Alias BaseError
 	cause := e.Cause
-	if cc, ok := cause.(StandardError); ok {
-		if je, ok := cc.(interface{ Errors() []error }); ok {
-			// Handle joined errors
-			causes := make([]interface{}, 0)
-			for _, err := range je.Errors() {
-				if se, ok := err.(StandardError); ok {
-					causes = append(causes, se)
-				} else {
-					causes = append(causes, err.Error())
-				}
+	if cs, ok := cause.(interface{ Unwrap() []error }); ok {
+		// Handle joined errors
+		causes := make([]interface{}, 0)
+		for _, err := range cs.Unwrap() {
+			if se, ok := err.(StandardError); ok {
+				causes = append(causes, se)
+			} else {
+				causes = append(causes, err.Error())
 			}
-			return sonic.Marshal(&struct {
-				Alias
-				Cause []interface{} `json:"cause"`
-			}{
-				Alias: (Alias)(e),
-				Cause: causes,
-			})
 		}
 		return sonic.Marshal(&struct {
 			Alias
-			Cause interface{} `json:"cause"`
+			Cause []interface{} `json:"cause"`
 		}{
 			Alias: (Alias)(e),
-			Cause: cc,
+			Cause: causes,
+		})
+	} else if cs, ok := cause.(StandardError); ok {
+		return sonic.Marshal(&struct {
+			Alias
+			Cause StandardError `json:"cause"`
+		}{
+			Alias: (Alias)(e),
+			Cause: cs,
 		})
 	} else if cause != nil {
 		return sonic.Marshal(&struct {
@@ -606,10 +608,10 @@ var NewErrUpstreamsExhausted = func(
 	} else if s != nil {
 		reqStr = string(s)
 	}
-	return &ErrUpstreamsExhausted{
+	e := &ErrUpstreamsExhausted{
 		BaseError{
 			Code:    ErrCodeUpstreamsExhausted,
-			Message: "all available upstreams have been exhausted",
+			Message: "all upstreams exhausted",
 			Cause:   errors.Join(ers...),
 			Details: map[string]interface{}{
 				"request":    reqStr,
@@ -622,6 +624,13 @@ var NewErrUpstreamsExhausted = func(
 			},
 		},
 	}
+
+	sm := e.SummarizeCauses()
+	if sm != "" {
+		e.Message += " (" + sm + ")"
+	}
+
+	return e
 }
 
 func (e *ErrUpstreamsExhausted) ErrorStatusCode() int {
@@ -634,18 +643,91 @@ func (e *ErrUpstreamsExhausted) CodeChain() string {
 	if e.Cause == nil {
 		return codeChain
 	}
-	causesChains := []string{}
-	if joinedErr, ok := e.Cause.(interface{ Unwrap() []error }); ok {
-		for _, e := range joinedErr.Unwrap() {
-			if se, ok := e.(StandardError); ok {
-				causesChains = append(causesChains, se.CodeChain())
-			}
-		}
 
-		codeChain += " <= (" + strings.Join(causesChains, " + ") + ")"
+	s := e.SummarizeCauses()
+	if s != "" {
+		return codeChain + " (" + s + ")"
 	}
 
 	return codeChain
+}
+
+func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
+	if joinedErr, ok := e.Cause.(interface{ Unwrap() []error }); ok {
+		unsupported := 0
+		missing := 0
+		timeout := 0
+		serverError := 0
+		rateLimit := 0
+		down := 0
+		billing := 0
+		other := 0
+		cancelled := 0
+
+		for _, e := range joinedErr.Unwrap() {
+			if HasErrorCode(e, ErrCodeUpstreamMethodIgnored) ||
+				HasErrorCode(e, ErrCodeEndpointUnsupported) {
+				unsupported++
+				continue
+			} else if HasErrorCode(e, ErrCodeEndpointMissingData) {
+				missing++
+				continue
+			} else if HasErrorCode(e, ErrCodeEndpointCapacityExceeded) {
+				rateLimit++
+				continue
+			} else if HasErrorCode(e, ErrCodeEndpointBillingIssue) {
+				billing++
+				continue
+			} else if HasErrorCode(e, ErrCodeFailsafeCircuitBreakerOpen) {
+				down++
+				continue
+			} else if errors.Is(e, context.DeadlineExceeded) || HasErrorCode(e, ErrCodeEndpointRequestTimeout) {
+				timeout++
+				continue
+			} else if HasErrorCode(e, ErrCodeEndpointServerSideException) {
+				serverError++
+				continue
+			} else if HasErrorCode(e, ErrCodeUpstreamHedgeCancelled) {
+				cancelled++
+				continue
+			} else {
+				other++
+			}
+		}
+
+		reasons := []string{}
+		if unsupported > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d unsupported method", unsupported))
+		}
+		if missing > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d missing data", missing))
+		}
+		if timeout > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d timeout", timeout))
+		}
+		if serverError > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d server errors", serverError))
+		}
+		if rateLimit > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d rate limited", rateLimit))
+		}
+		if down > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d down", down))
+		}
+		if billing > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d billing issues", billing))
+		}
+		if other > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d other errors", other))
+		}
+		if cancelled > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d hedges cancelled", cancelled))
+		}
+
+		return strings.Join(reasons, " + ")
+	}
+
+	return ""
 }
 
 func (e *ErrUpstreamsExhausted) Errors() []error {
@@ -666,17 +748,9 @@ func (e *ErrUpstreamsExhausted) DeepestMessage() string {
 		return e.Message
 	}
 
-	causesDeepestMsgs := []string{}
-	if joinedErr, ok := e.Cause.(interface{ Unwrap() []error }); ok {
-		for _, e := range joinedErr.Unwrap() {
-			if se, ok := e.(StandardError); ok {
-				causesDeepestMsgs = append(causesDeepestMsgs, se.DeepestMessage())
-			}
-		}
-	}
-
-	if len(causesDeepestMsgs) > 0 {
-		return strings.Join(causesDeepestMsgs, " + ")
+	s := e.SummarizeCauses()
+	if s != "" {
+		return s
 	}
 
 	return e.Message
@@ -802,13 +876,31 @@ var NewErrUpstreamRequestSkipped = func(reason error, upstreamId string, req *No
 
 type ErrUpstreamMethodIgnored struct{ BaseError }
 
+const ErrCodeUpstreamMethodIgnored ErrorCode = "ErrUpstreamMethodIgnored"
+
 var NewErrUpstreamMethodIgnored = func(method string, upstreamId string) error {
 	return &ErrUpstreamMethodIgnored{
 		BaseError{
-			Code:    "ErrUpstreamMethodIgnored",
+			Code:    ErrCodeUpstreamMethodIgnored,
 			Message: "method ignored by upstream configuration",
 			Details: map[string]interface{}{
 				"method":     method,
+				"upstreamId": upstreamId,
+			},
+		},
+	}
+}
+
+type ErrUpstreamHedgeCancelled struct{ BaseError }
+
+const ErrCodeUpstreamHedgeCancelled ErrorCode = "ErrUpstreamHedgeCancelled"
+
+var NewErrUpstreamHedgeCancelled = func(upstreamId string) error {
+	return &ErrUpstreamHedgeCancelled{
+		BaseError{
+			Code:    ErrCodeUpstreamHedgeCancelled,
+			Message: "hedged request cancelled in favor another response",
+			Details: map[string]interface{}{
 				"upstreamId": upstreamId,
 			},
 		},
