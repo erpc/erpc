@@ -466,7 +466,7 @@ func TestHttpServer_HandleRequest_EthGetBlockNumber(t *testing.T) {
 
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`)
 
-		assert.Equal(t, http.StatusInternalServerError, statusCode)
+		assert.Equal(t, http.StatusTooManyRequests, statusCode)
 		assert.Contains(t, body, "error code: 1015")
 
 		assert.True(t, gock.IsDone(), "All mocks should have been called")
