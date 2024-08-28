@@ -40,14 +40,14 @@ func ErrorSummary(err interface{}) string {
 	return s
 }
 
-var ethAddr = regexp.MustCompile(`0x[a-fA-F0-9]+`)
-var txHashErr = regexp.MustCompile(`transaction [a-fA-F0-9]+`)
+var longHash = regexp.MustCompile(`0x[a-fA-F0-9][a-fA-F0-9]+`)
+var txHashErr = regexp.MustCompile(`transaction [a-fA-F0-9][a-fA-F0-9][a-fA-F0-9]+`)
 var revertAddr = regexp.MustCompile(`.*execution reverted.*`)
 var ipAddr = regexp.MustCompile(`\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}`)
 var ddg = regexp.MustCompile(`\d\d+`)
 
 func cleanUpMessage(s string) string {
-	s = ethAddr.ReplaceAllString(s, "0xREDACTED")
+	s = longHash.ReplaceAllString(s, "0xREDACTED")
 	s = txHashErr.ReplaceAllString(s, "transaction 0xREDACTED")
 	s = revertAddr.ReplaceAllString(s, "execution reverted")
 	s = ipAddr.ReplaceAllString(s, "X.X.X.X")

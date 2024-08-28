@@ -343,7 +343,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 				}
 			} else {
 				if resp.IsResultEmptyish() {
-					health.MetricUpstreamEmptyResponseTotal.WithLabelValues(u.ProjectId, cfg.Id, netId, method).Inc()
+					health.MetricUpstreamEmptyResponseTotal.WithLabelValues(u.ProjectId, netId, cfg.Id, method).Inc()
 				}
 			}
 
