@@ -3917,7 +3917,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		wg := sync.WaitGroup{}
 		for _, method := range allMethods {
-			for i := 0; i < 100; i++ {
+			for i := 0; i < 500; i++ {
 				wg.Add(1)
 				go func(method string) {
 					defer wg.Done()
@@ -3926,7 +3926,7 @@ func TestNetwork_Forward(t *testing.T) {
 					_, err := network.Forward(ctx, req)
 					assert.NoError(t, err)
 				}(method)
-				time.Sleep(10 * time.Millisecond)
+				time.Sleep(1 * time.Millisecond)
 			}
 		}
 		wg.Wait()
