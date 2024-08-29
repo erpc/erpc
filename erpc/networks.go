@@ -213,6 +213,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 				if err != nil {
 					coordMu.Lock()
+					if ser, ok := err.(common.StandardError); ok {
+						ber := ser.Base()
+						if ber.Details == nil {
+							ber.Details = map[string]interface{}{}
+						}
+						ber.Details["timestampMs"] = time.Now().UnixMilli()
+					}
 					errorsByUpstream = append(errorsByUpstream, err)
 					coordMu.Unlock()
 				}
