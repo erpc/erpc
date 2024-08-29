@@ -1249,7 +1249,7 @@ var NewErrEndpointUnsupported = func(cause error) error {
 }
 
 func (e *ErrEndpointUnsupported) ErrorStatusCode() int {
-	return 415
+	return http.StatusUnsupportedMediaType
 }
 
 type ErrEndpointClientSideException struct{ BaseError }

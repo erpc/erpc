@@ -208,17 +208,17 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					tryForward(u, exec.Context()),
 				)
 
-				shouldSkip := n.shouldSkipUpstream(err)
+				isClientErr := err != nil && common.HasErrorCode(err, common.ErrCodeEndpointClientSideException)
 				isHedged := exec.Hedges() > 0
-				
+
 				if isHedged && err != nil && errors.Is(err, context.Canceled) {
-					lg.Debug().Err(err).Msgf("discarding hedged request to upstream %s: skipped: %v", u.Config().Id, shouldSkip)
+					lg.Debug().Err(err).Msgf("discarding hedged request to upstream %s", u.Config().Id)
 					return nil, common.NewErrUpstreamHedgeCancelled(u.Config().Id)
 				}
 				if isHedged {
-					lg.Debug().Msgf("forwarded hedged request to upstream %s skipped: %v", u.Config().Id, shouldSkip)
+					lg.Debug().Msgf("forwarded hedged request to upstream %s", u.Config().Id)
 				} else {
-					lg.Debug().Msgf("forwarded request to upstream %s skipped: %v", u.Config().Id, shouldSkip)
+					lg.Debug().Msgf("forwarded request to upstream %s", u.Config().Id)
 				}
 
 				if err != nil {
@@ -234,7 +234,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					coordMu.Unlock()
 				}
 
-				if !shouldSkip {
+				if err == nil || isClientErr {
 					if resp != nil {
 						resp.SetUpstream(u)
 					}
@@ -311,22 +311,22 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	return resp, nil
 }
 
-func (n *Network) shouldSkipUpstream(err error) bool {
-	if err == nil {
-		return false
-	}
+// func (n *Network) shouldJumpUpstream(err error) bool {
+// 	if err == nil {
+// 		return false
+// 	}
 
-	// When it is not retryable towards upstream, continue on other upstreams,
-	// and skip on network-level retries.
-	if !common.IsRetryableTowardsUpstream(err) {
-		return false
-	}
+// 	// When it is not retryable towards upstream, continue on other upstreams,
+// 	// and skip on network-level retries.
+// 	if !common.IsRetryableTowardsUpstream(err) {
+// 		return true
+// 	}
 
-	// By default skip all errors.
-	// If there are errors that does not make sense to continue forwarding to other upstreams,
-	// it must be added to above conditions.
-	return true
-}
+// 	// By default skip all errors.
+// 	// If there are errors that does not make sense to continue forwarding to other upstreams,
+// 	// it must be added to above conditions.
+// 	return false
+// }
 
 func (n *Network) EvmIsBlockFinalized(blockNumber int64) (bool, error) {
 	if n.evmBlockTracker == nil {
