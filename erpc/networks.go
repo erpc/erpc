@@ -162,8 +162,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	upsList, err := n.upstreamsRegistry.GetSortedUpstreams(n.NetworkId, method)
-	n.upstreamsRegistry.RLockUpstreams()
-	defer n.upstreamsRegistry.RUnlockUpstreams()
 	if err != nil {
 		inf.Close(nil, err)
 		return nil, err
@@ -257,7 +255,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		})
 
 	if execErr != nil {
-		err := upstream.TranslateFailsafeError(execErr)
+		err := upstream.TranslateFailsafeError("", method, execErr)
 		// If error is due to empty response be generous and accept it,
 		// because this means after many retries still no data is available.
 		if common.HasErrorCode(err, common.ErrCodeFailsafeRetryExceeded) {

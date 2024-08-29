@@ -217,7 +217,7 @@ func TestUpstreamScoring(t *testing.T) {
 		name           string
 		windowSize     time.Duration
 		upstreamConfig []upstreamMetrics
-		expectedOrder []string
+		expectedOrder  []string
 	}{
 		{
 			name:       "MixedLatencyAndFailureRate",

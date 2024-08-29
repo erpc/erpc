@@ -119,13 +119,9 @@ func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.
 	startedAt := time.Now()
 	jrReq, err := req.JsonRpcRequest()
 	if err != nil {
-		m, _ := req.Method()
 		return nil, common.NewErrUpstreamRequest(
 			err,
-			c.upstream.ProjectId,
-			req.NetworkId(),
 			c.upstream.Config().Id,
-			m,
 			0, 0, 0, 0,
 		)
 	}
@@ -213,13 +209,9 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 	for _, req := range requests {
 		jrReq, err := req.request.JsonRpcRequest()
 		if err != nil {
-			m, _ := req.request.Method()
 			req.err <- common.NewErrUpstreamRequest(
 				err,
-				c.upstream.ProjectId,
-				req.request.NetworkId(),
 				c.upstream.Config().Id,
-				m,
 				0, 0, 0, 0,
 			)
 			continue
@@ -369,13 +361,9 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	jrReq, err := req.JsonRpcRequest()
 	if err != nil {
-		m, _ := req.Method()
 		return nil, common.NewErrUpstreamRequest(
 			err,
-			c.upstream.ProjectId,
-			req.NetworkId(),
 			c.upstream.Config().Id,
-			m,
 			0, 0, 0, 0,
 		)
 	}
@@ -536,7 +524,6 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				),
 			)
 		} else if r.StatusCode == 429 ||
-			r.StatusCode == 408 ||
 			code == -32005 ||
 			strings.Contains(err.Message, "has exceeded") ||
 			strings.Contains(err.Message, "Exceeded the quota") ||

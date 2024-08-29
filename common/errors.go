@@ -303,7 +303,7 @@ var NewErrRequestTimeout = func(timeout time.Duration) error {
 }
 
 func (e *ErrRequestTimeout) ErrorStatusCode() int {
-	return http.StatusRequestTimeout
+	return http.StatusGatewayTimeout
 }
 
 type ErrInternalServerError struct{ BaseError }
@@ -512,7 +512,7 @@ var NewErrUpstreamClientInitialization = func(cause error, upstreamId string) er
 
 type ErrUpstreamRequest struct{ BaseError }
 
-var NewErrUpstreamRequest = func(cause error, prjId, netId, upsId, method string, duration time.Duration, attempts, retries, hedges int) error {
+var NewErrUpstreamRequest = func(cause error, upsId string, duration time.Duration, attempts, retries, hedges int) error {
 	return &ErrUpstreamRequest{
 		BaseError{
 			Code:    "ErrUpstreamRequest",
@@ -520,10 +520,7 @@ var NewErrUpstreamRequest = func(cause error, prjId, netId, upsId, method string
 			Cause:   cause,
 			Details: map[string]interface{}{
 				"durationMs": duration.Milliseconds(),
-				"projectId":  prjId,
-				"networkId":  netId,
 				"upstreamId": upsId,
-				"method":     method,
 				"attempts":   attempts,
 				"retries":    retries,
 				"hedges":     hedges,
@@ -687,7 +684,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		timeout := 0
 		serverError := 0
 		rateLimit := 0
-		down := 0
+		cbOpen := 0
 		billing := 0
 		other := 0
 		cancelled := 0
@@ -706,7 +703,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 				billing++
 				continue
 			} else if HasErrorCode(e, ErrCodeFailsafeCircuitBreakerOpen) {
-				down++
+				cbOpen++
 				continue
 			} else if errors.Is(e, context.DeadlineExceeded) || HasErrorCode(e, ErrCodeEndpointRequestTimeout) {
 				timeout++
@@ -738,20 +735,20 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		if rateLimit > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d rate limited", rateLimit))
 		}
-		if down > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d down", down))
+		if cbOpen > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d circuit breaker open", cbOpen))
 		}
 		if billing > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d billing issues", billing))
 		}
-		if other > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d other errors", other))
-		}
 		if cancelled > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d hedges cancelled", cancelled))
 		}
+		if other > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d other errors", other))
+		}
 
-		return strings.Join(reasons, " + ")
+		return strings.Join(reasons, ", ")
 	}
 
 	return ""
@@ -886,8 +883,7 @@ type ErrUpstreamRequestSkipped struct{ BaseError }
 
 const ErrCodeUpstreamRequestSkipped ErrorCode = "ErrUpstreamRequestSkipped"
 
-var NewErrUpstreamRequestSkipped = func(reason error, upstreamId string, req *NormalizedRequest) error {
-	m, _ := req.Method()
+var NewErrUpstreamRequestSkipped = func(reason error, upstreamId string) error {
 	return &ErrUpstreamRequestSkipped{
 		BaseError{
 			Code:    ErrCodeUpstreamRequestSkipped,
@@ -895,7 +891,6 @@ var NewErrUpstreamRequestSkipped = func(reason error, upstreamId string, req *No
 			Cause:   reason,
 			Details: map[string]interface{}{
 				"upstreamId": upstreamId,
-				"method":     m,
 			},
 		},
 	}
@@ -1186,7 +1181,7 @@ var NewErrNetworkRequestTimeout = func(duration time.Duration) error {
 }
 
 func (e *ErrNetworkRequestTimeout) ErrorStatusCode() int {
-	return http.StatusRequestTimeout
+	return http.StatusGatewayTimeout
 }
 
 type ErrUpstreamRateLimitRuleExceeded struct{ BaseError }

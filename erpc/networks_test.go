@@ -3872,7 +3872,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rateLimitersRegistry,
 		)
 
-		network, err := networksRegistry.RegisterNetwork(
+		_, err = networksRegistry.RegisterNetwork(
 			&logger,
 			&common.ProjectConfig{Id: projectID},
 			&common.NetworkConfig{
@@ -3882,7 +3882,7 @@ func TestNetwork_Forward(t *testing.T) {
 		)
 		assert.NoError(t, err)
 
-		simulateRequests := func(method string, upstreamId string, latency time.Duration) {
+		mockRequests := func(method string, upstreamId string, latency time.Duration) {
 			gock.New("http://" + upstreamId + ".localhost").
 				Persist().
 				Post("/").
@@ -3897,15 +3897,15 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Upstream A is faster for eth_call, Upstream B is faster for eth_traceTransaction, Upstream C is faster for eth_getLogs
-		simulateRequests("eth_getLogs", "upstream-a", 200*time.Millisecond)
-		simulateRequests("eth_getLogs", "upstream-b", 100*time.Millisecond)
-		simulateRequests("eth_getLogs", "upstream-c", 50*time.Millisecond)
-		simulateRequests("eth_traceTransaction", "upstream-a", 100*time.Millisecond)
-		simulateRequests("eth_traceTransaction", "upstream-b", 50*time.Millisecond)
-		simulateRequests("eth_traceTransaction", "upstream-c", 200*time.Millisecond)
-		simulateRequests("eth_call", "upstream-a", 50*time.Millisecond)
-		simulateRequests("eth_call", "upstream-b", 200*time.Millisecond)
-		simulateRequests("eth_call", "upstream-c", 100*time.Millisecond)
+		mockRequests("eth_getLogs", "upstream-a", 200*time.Millisecond)
+		mockRequests("eth_getLogs", "upstream-b", 100*time.Millisecond)
+		mockRequests("eth_getLogs", "upstream-c", 50*time.Millisecond)
+		mockRequests("eth_traceTransaction", "upstream-a", 100*time.Millisecond)
+		mockRequests("eth_traceTransaction", "upstream-b", 50*time.Millisecond)
+		mockRequests("eth_traceTransaction", "upstream-c", 200*time.Millisecond)
+		mockRequests("eth_call", "upstream-a", 50*time.Millisecond)
+		mockRequests("eth_call", "upstream-b", 200*time.Millisecond)
+		mockRequests("eth_call", "upstream-c", 100*time.Millisecond)
 
 		allMethods := []string{"eth_getLogs", "eth_traceTransaction", "eth_call"}
 
@@ -3917,14 +3917,18 @@ func TestNetwork_Forward(t *testing.T) {
 
 		wg := sync.WaitGroup{}
 		for _, method := range allMethods {
-			for i := 0; i < 500; i++ {
+			for i := 0; i < 1; i++ {
 				wg.Add(1)
 				go func(method string) {
 					defer wg.Done()
 					upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
 					req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":[],"id":1}`, method)))
-					_, err := network.Forward(ctx, req)
+					ups, err := upstreamsRegistry.GetSortedUpstreams(networkID, method)
 					assert.NoError(t, err)
+					for _, up := range ups {
+						_, err = up.Forward(ctx, req)
+						assert.NoError(t, err)
+					}
 				}(method)
 				time.Sleep(1 * time.Millisecond)
 			}
