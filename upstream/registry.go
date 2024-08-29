@@ -34,8 +34,8 @@ type UpstreamsRegistry struct {
 }
 
 type UpstreamsHealth struct {
-	Upstreams       []*Upstream                          `json:"upstreams"`
-	SortedUpstreams map[string]map[string][]string       `json:"sortedUpstreams"`
+	Upstreams       []*Upstream                              `json:"upstreams"`
+	SortedUpstreams map[string]map[string][]string           `json:"sortedUpstreams"`
 	UpstreamScores  map[string]map[string]map[string]float64 `json:"upstreamScores"`
 }
 
@@ -350,13 +350,13 @@ func (u *UpstreamsRegistry) calculateScore(normTotalRequests, normP90Latency, no
 	score += expCurve(1 - normTotalRequests)
 
 	// Higher score for lower p90 latency
-	score += expCurve(1 - normP90Latency) * 4
+	score += expCurve(1-normP90Latency) * 4
 
 	// Higher score for lower error rate
-	score += expCurve(1 - normErrorRate) * 8
+	score += expCurve(1-normErrorRate) * 8
 
 	// Higher score for lower throttled rate
-	score += expCurve(1 - normThrottledRate) * 3
+	score += expCurve(1-normThrottledRate) * 3
 
 	return score
 }

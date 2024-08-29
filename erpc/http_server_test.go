@@ -139,7 +139,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		wg.Wait()
 
 		for _, result := range results {
-			if result.statusCode != http.StatusGatewayTimeout && result.statusCode != http.StatusRequestTimeout {
+			if result.statusCode != http.StatusGatewayTimeout {
 				t.Errorf("unexpected status code: %d", result.statusCode)
 			}
 			assert.Contains(t, result.body, "Timeout")
@@ -210,7 +210,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		timeouts := 0
 		successes := 0
 		for _, result := range results {
-			if result.statusCode == http.StatusGatewayTimeout || result.statusCode == http.StatusRequestTimeout {
+			if result.statusCode == http.StatusGatewayTimeout {
 				timeouts++
 				assert.Contains(t, result.body, "Timeout")
 			} else {

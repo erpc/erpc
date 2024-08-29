@@ -183,7 +183,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 	cfg := u.Config()
 
 	if reason, skip := u.shouldSkip(req); skip {
-		return nil, common.NewErrUpstreamRequestSkipped(reason, cfg.Id, req)
+		return nil, common.NewErrUpstreamRequestSkipped(reason, cfg.Id)
 	}
 
 	clientType := u.Client.GetType()
@@ -205,10 +205,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 	if err != nil {
 		return nil, common.NewErrUpstreamRequest(
 			err,
-			u.ProjectId,
-			netId,
 			cfg.Id,
-			method,
 			time.Since(startTime),
 			0,
 			0,
@@ -319,10 +316,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 				if exec != nil {
 					return nil, common.NewErrUpstreamRequest(
 						errCall,
-						u.ProjectId,
-						netId,
 						cfg.Id,
-						method,
 						time.Since(startTime),
 						exec.Attempts(),
 						exec.Retries(),
@@ -331,10 +325,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 				} else {
 					return nil, common.NewErrUpstreamRequest(
 						errCall,
-						u.ProjectId,
-						netId,
 						cfg.Id,
-						method,
 						time.Since(startTime),
 						1,
 						0,
@@ -361,7 +352,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 				})
 
 			if execErr != nil {
-				return nil, TranslateFailsafeError(execErr)
+				return nil, TranslateFailsafeError(u.config.Id, method, execErr)
 			}
 
 			return resp, nil
