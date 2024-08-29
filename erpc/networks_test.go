@@ -29,7 +29,7 @@ import (
 var TRUE = true
 
 func init() {
-	log.Logger = log.Level(zerolog.ErrorLevel).Output(zerolog.ConsoleWriter{Out: os.Stderr})
+	log.Logger = log.Level(zerolog.TraceLevel).Output(zerolog.ConsoleWriter{Out: os.Stderr})
 }
 
 func TestNetwork_Forward(t *testing.T) {
@@ -170,10 +170,8 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 	})
 
-	t.Run("ForwardRetryFailuresWithoutSuccessNoCode", func(t *testing.T) {
+	t.Run("ForwardUpstreamRetryIntermittentFailuresWithoutSuccessAndNoErrCode", func(t *testing.T) {
 		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
 
 		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
@@ -208,6 +206,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
+			Failsafe: fsCfg,
 		}
 		upr := upstream.NewUpstreamsRegistry(
 			&log.Logger,
@@ -248,7 +247,6 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
 			},
 			rlr,
 			upr,
@@ -353,7 +351,6 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
 			},
 			rlr,
 			upr,
@@ -378,6 +375,288 @@ func TestNetwork_Forward(t *testing.T) {
 
 		if !strings.Contains(common.ErrorSummary(err), "ErrUpstreamsExhausted") {
 			t.Errorf("Expected %v, got %v", "ErrUpstreamsExhausted", err)
+		}
+	})
+
+	t.Run("ForwardSkipsNonRetryableFailuresFromUpstreams", func(t *testing.T) {
+		defer gock.Off()
+
+		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+
+		gock.New("http://rpc1.localhost").
+			Times(1).
+			Post("").
+			Reply(401).
+			JSON(json.RawMessage(`{"error":{"code":-32016,"message":"unauthorized"}}`))
+
+		gock.New("http://rpc2.localhost").
+			Times(1).
+			Post("").
+			Reply(200).
+			JSON(json.RawMessage(`{"result":"0x1234567"}`))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		clr := upstream.NewClientRegistry(&log.Logger)
+
+		upsFsCfg := &common.FailsafeConfig{
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 3,
+			},
+		}
+		ntwFsCfg := &common.FailsafeConfig{
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 2,
+			},
+		}
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+			Budgets: []*common.RateLimitBudgetConfig{},
+		}, &log.Logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		vndr := vendors.NewVendorsRegistry()
+		mt := health.NewTracker("prjA", 2*time.Second)
+		up1 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "test",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+			Failsafe: upsFsCfg,
+		}
+		up2 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "test",
+			Endpoint: "http://rpc2.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+			Failsafe: upsFsCfg,
+		}
+		upr := upstream.NewUpstreamsRegistry(
+			&log.Logger,
+			"prjA",
+			[]*common.UpstreamConfig{
+				up1,
+				up2,
+			},
+			rlr,
+			vndr, mt, 1*time.Second,
+		)
+		err = upr.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1, err := upr.NewUpstream(
+			"prjA",
+			up1,
+			&log.Logger,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl, err := clr.GetOrCreateClient(pup1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1.Client = cl
+
+		pup2, err := upr.NewUpstream(
+			"prjA",
+			up2,
+			&log.Logger,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl2, err := clr.GetOrCreateClient(pup2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup2.Client = cl2
+
+		ntw, err := NewNetwork(
+			&log.Logger,
+			"prjA",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+				},
+				Failsafe: ntwFsCfg,
+			},
+			rlr,
+			upr,
+			health.NewTracker("prjA", 2*time.Second),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fakeReq := common.NewNormalizedRequest(requestBytes)
+		_, err = ntw.Forward(ctx, fakeReq)
+
+		if len(gock.Pending()) > 0 {
+			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
+			for _, pending := range gock.Pending() {
+				t.Errorf("Pending mock: %v", pending)
+			}
+		}
+
+		if err != nil {
+			t.Errorf("Expected an nil, got error %v", err)
+		}
+	})
+
+	t.Run("ForwardNotSkipsRetryableFailuresFromUpstreams", func(t *testing.T) {
+		defer gock.Off()
+
+		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+
+		gock.New("http://rpc1.localhost").
+			Times(3).
+			Post("").
+			Reply(503).
+			JSON(json.RawMessage(`{"error":"random rpc1 unavailable"}`))
+
+		gock.New("http://rpc2.localhost").
+			Times(3).
+			Post("").
+			Reply(503).
+			JSON(json.RawMessage(`{"error":"random rpc2 unavailable"}`))
+
+		gock.New("http://rpc2.localhost").
+			Times(1).
+			Post("").
+			Reply(200).
+			JSON(json.RawMessage(`{"result":"0x1234567"}`))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		clr := upstream.NewClientRegistry(&log.Logger)
+
+		upsFsCfg := &common.FailsafeConfig{
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 3,
+			},
+		}
+		ntwFsCfg := &common.FailsafeConfig{
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 2,
+			},
+		}
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+			Budgets: []*common.RateLimitBudgetConfig{},
+		}, &log.Logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		vndr := vendors.NewVendorsRegistry()
+		mt := health.NewTracker("prjA", 2*time.Second)
+		up1 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc1",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+			Failsafe: upsFsCfg,
+		}
+		up2 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc2",
+			Endpoint: "http://rpc2.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+			Failsafe: upsFsCfg,
+		}
+		upr := upstream.NewUpstreamsRegistry(
+			&log.Logger,
+			"prjA",
+			[]*common.UpstreamConfig{
+				up1,
+				up2,
+			},
+			rlr,
+			vndr, mt, 1*time.Second,
+		)
+		err = upr.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1, err := upr.NewUpstream(
+			"prjA",
+			up1,
+			&log.Logger,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl, err := clr.GetOrCreateClient(pup1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1.Client = cl
+
+		pup2, err := upr.NewUpstream(
+			"prjA",
+			up2,
+			&log.Logger,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl2, err := clr.GetOrCreateClient(pup2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup2.Client = cl2
+
+		ntw, err := NewNetwork(
+			&log.Logger,
+			"prjA",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+				},
+				Failsafe: ntwFsCfg,
+			},
+			rlr,
+			upr,
+			health.NewTracker("prjA", 2*time.Second),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fakeReq := common.NewNormalizedRequest(requestBytes)
+		_, err = ntw.Forward(ctx, fakeReq)
+
+		if len(gock.Pending()) > 0 {
+			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
+			for _, pending := range gock.Pending() {
+				t.Errorf("Pending mock: %s => status %d, body %s", pending.Request().URLStruct, pending.Response().StatusCode, string(pending.Response().BodyBuffer))
+			}
+		}
+
+		if err != nil {
+			t.Errorf("Expected an nil, got error %v", err)
 		}
 	})
 

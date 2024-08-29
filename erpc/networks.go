@@ -65,7 +65,7 @@ func (n *Network) Architecture() common.NetworkArchitecture {
 func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	startTime := time.Now()
 
-	n.Logger.Trace().Object("req", req).Msgf("forwarding request")
+	n.Logger.Trace().Object("req", req).Msgf("forwarding request for network")
 	req.SetNetwork(n)
 
 	method, _ := req.Method()
@@ -162,6 +162,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	upsList, err := n.upstreamsRegistry.GetSortedUpstreams(n.NetworkId, method)
+	n.upstreamsRegistry.RLockUpstreams()
+	defer n.upstreamsRegistry.RUnlockUpstreams()
 	if err != nil {
 		inf.Close(nil, err)
 		return nil, err
@@ -186,18 +188,17 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			ln := len(upsList)
 			for count := 0; count < ln; count++ {
 				coordMu.Lock()
-				n.upstreamsRegistry.RLockUpstreams()
 				u := upsList[i]
-				n.upstreamsRegistry.RUnlockUpstreams()
 				i++
 				if i >= ln {
 					i = 0
 				}
 				upsId := u.Config().Id
 				if prevErr, exists := errorsByUpstream[upsId]; exists {
-					if n.shouldSkipUpstream(prevErr) {
+					if !common.IsRetryableTowardsUpstream(prevErr) {
 						// Do not even try this upstream if we already know
 						// the previous error was not retryable. e.g. Billing issues
+						coordMu.Unlock()
 						continue
 					}
 				}
@@ -208,8 +209,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				)
 
 				shouldSkip := n.shouldSkipUpstream(err)
-
 				isHedged := exec.Hedges() > 0
+				
 				if isHedged && err != nil && errors.Is(err, context.Canceled) {
 					lg.Debug().Err(err).Msgf("discarding hedged request to upstream %s: skipped: %v", u.Config().Id, shouldSkip)
 					return nil, common.NewErrUpstreamHedgeCancelled(u.Config().Id)
@@ -315,16 +316,14 @@ func (n *Network) shouldSkipUpstream(err error) bool {
 		return false
 	}
 
-	if common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
-		// Client-side errors must not be retried nor continue to other upstreams.
-		return false
-	} else if common.HasErrorCode(err, common.ErrCodeJsonRpcRequestUnmarshal) {
-		// When a request body is malformed, it must not be retried nor continue to other upstreams.
+	// When it is not retryable towards upstream, continue on other upstreams,
+	// and skip on network-level retries.
+	if !common.IsRetryableTowardsUpstream(err) {
 		return false
 	}
 
 	// By default skip all errors.
-	// If there are erors that does not make sense to continue forwarding to other upstreams,
+	// If there are errors that does not make sense to continue forwarding to other upstreams,
 	// it must be added to above conditions.
 	return true
 }
