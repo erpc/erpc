@@ -4,19 +4,19 @@ module.exports = {
 	},
 	why: { title: "Why eRPC?" },
 	faq: { title: "FAQ" },
-	"-- Deployment": {
-		type: "separator",
-		title: "Deployment",
-	},
-	deployment: { title: "Deployment", display: "children" },
 	"-- Config": {
 		type: "separator",
 		title: "Config",
 	},
 	config: { display: "children", title: "Config" },
-	"-- Operation": {
+	"-- Deployment": {
 		type: "separator",
-		title: "Operation",
+		title: "Deployment",
+	},
+	deployment: { title: "Deployment", display: "children" },
+	"-- Operations": {
+		type: "separator",
+		title: "Operations",
 	},
 	operation: { title: "Operation", display: "children" },
 };
