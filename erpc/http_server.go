@@ -111,6 +111,8 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 			}
 		}
 
+		lg := s.logger.With().Str("projectId", projectId).Str("architecture", architecture).Str("chainId", chainId).Logger()
+
 		project, err := s.erpc.GetProject(projectId)
 		if err != nil {
 			handleErrorResponse(s.logger, nil, err, fastCtx, encoder, buf)
@@ -129,7 +131,7 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 
 		body := fastCtx.PostBody()
 
-		s.logger.Debug().Msgf("received request for projectId: %s, architecture: %s with body: %s", projectId, architecture, body)
+		lg.Debug().Msgf("received request with body: %s", body)
 
 		var requests []json.RawMessage
 		err = sonic.Unmarshal(body, &requests)
@@ -154,7 +156,7 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 					defer func() { recover() }()
 					if r := recover(); r != nil {
 						msg := fmt.Sprintf("unexpected server panic on per-request handler: %v -> %s", r, string(debug.Stack()))
-						s.logger.Error().Msgf(msg)
+						lg.Error().Msgf(msg)
 						fastCtx.SetStatusCode(fasthttp.StatusInternalServerError)
 						fastCtx.Response.Header.Set("Content-Type", "application/json")
 						fastCtx.SetBodyString(fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, msg))
@@ -169,20 +171,23 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 				nq := common.NewNormalizedRequest(rawReq)
 				nq.ApplyDirectivesFromHttpHeaders(headersCopy)
 
+				m, _ := nq.Method()
+				rlg := lg.With().Str("method", m).Logger()
+
 				ap, err := auth.NewPayloadFromHttp(project.Config.Id, nq, headersCopy, argsCopy)
 				if err != nil {
-					responses[index] = processErrorBody(s.logger, nq, err)
+					responses[index] = processErrorBody(&rlg, nq, err)
 					return
 				}
 
 				if isAdmin {
 					if err := project.AuthenticateAdmin(requestCtx, nq, ap); err != nil {
-						responses[index] = processErrorBody(s.logger, nq, err)
+						responses[index] = processErrorBody(&rlg, nq, err)
 						return
 					}
 				} else {
 					if err := project.AuthenticateConsumer(requestCtx, nq, ap); err != nil {
-						responses[index] = processErrorBody(s.logger, nq, err)
+						responses[index] = processErrorBody(&rlg, nq, err)
 						return
 					}
 				}
@@ -191,14 +196,14 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 					if project.Config.Admin != nil {
 						resp, err := project.HandleAdminRequest(requestCtx, nq)
 						if err != nil {
-							responses[index] = processErrorBody(s.logger, nq, err)
+							responses[index] = processErrorBody(&rlg, nq, err)
 							return
 						}
 						responses[index] = resp
 						return
 					} else {
 						responses[index] = processErrorBody(
-							s.logger,
+							&rlg,
 							nq,
 							common.NewErrAuthUnauthorized(
 								"",
@@ -214,14 +219,14 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 				if architecture == "" || chainId == "" {
 					var req map[string]interface{}
 					if err := sonic.Unmarshal(rawReq, &req); err != nil {
-						responses[index] = processErrorBody(s.logger, nq, common.NewErrInvalidRequest(err))
+						responses[index] = processErrorBody(&rlg, nq, common.NewErrInvalidRequest(err))
 						return
 					}
 					if networkIdFromBody, ok := req["networkId"].(string); ok {
 						networkId = networkIdFromBody
 						parts := strings.Split(networkId, ":")
 						if len(parts) != 2 {
-							responses[index] = processErrorBody(s.logger, nq, common.NewErrInvalidRequest(fmt.Errorf(
+							responses[index] = processErrorBody(&rlg, nq, common.NewErrInvalidRequest(fmt.Errorf(
 								"networkId must follow this format: 'architecture:chainId' for example 'evm:42161'",
 							)))
 							return
@@ -229,7 +234,7 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 						architecture = parts[0]
 						chainId = parts[1]
 					} else {
-						responses[index] = processErrorBody(s.logger, nq, common.NewErrInvalidRequest(fmt.Errorf(
+						responses[index] = processErrorBody(&rlg, nq, common.NewErrInvalidRequest(fmt.Errorf(
 							"networkId must follow this format: 'architecture:chainId' for example 'evm:42161'",
 						)))
 						return
@@ -240,14 +245,14 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 
 				nw, err := project.GetNetwork(networkId)
 				if err != nil {
-					responses[index] = processErrorBody(s.logger, nq, err)
+					responses[index] = processErrorBody(&rlg, nq, err)
 					return
 				}
 				nq.SetNetwork(nw)
 
 				resp, err := project.Forward(requestCtx, networkId, nq)
 				if err != nil {
-					responses[index] = processErrorBody(s.logger, nq, err)
+					responses[index] = processErrorBody(&rlg, nq, err)
 					return
 				}
 
@@ -440,6 +445,7 @@ func handleErrorResponse(logger *zerolog.Logger, nq *common.NormalizedRequest, e
 	resp := processErrorBody(logger, nq, err)
 	setResponseStatusCode(err, ctx)
 	encoder.Encode(resp)
+	ctx.Response.Header.Set("Content-Type", "application/json")
 	ctx.SetBody(buf.Bytes())
 }
 

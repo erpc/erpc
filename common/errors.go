@@ -82,6 +82,7 @@ type StandardError interface {
 	DeepestMessage() string
 	GetCause() error
 	ErrorStatusCode() int
+	Base() *BaseError
 }
 
 func (e *BaseError) GetCode() ErrorCode {
@@ -240,6 +241,10 @@ func (e *BaseError) ErrorStatusCode() int {
 		}
 	}
 	return http.StatusInternalServerError
+}
+
+func (e *BaseError) Base() *BaseError {
+	return e
 }
 
 //
@@ -665,8 +670,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		cancelled := 0
 
 		for _, e := range joinedErr.Unwrap() {
-			if HasErrorCode(e, ErrCodeUpstreamMethodIgnored) ||
-				HasErrorCode(e, ErrCodeEndpointUnsupported) {
+			if HasErrorCode(e, ErrCodeEndpointUnsupported) {
 				unsupported++
 				continue
 			} else if HasErrorCode(e, ErrCodeEndpointMissingData) {
@@ -690,7 +694,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			} else if HasErrorCode(e, ErrCodeUpstreamHedgeCancelled) {
 				cancelled++
 				continue
-			} else {
+			} else if !HasErrorCode(e, ErrCodeUpstreamMethodIgnored) {
 				other++
 			}
 		}
