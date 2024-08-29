@@ -601,7 +601,7 @@ const ErrCodeUpstreamsExhausted ErrorCode = "ErrUpstreamsExhausted"
 
 var NewErrUpstreamsExhausted = func(
 	req *NormalizedRequest,
-	ers []error,
+	ersObj map[string]error,
 	prjId, netId string,
 	duration time.Duration,
 	attempts, retries, hedges int,
@@ -613,10 +613,15 @@ var NewErrUpstreamsExhausted = func(
 	} else if s != nil {
 		reqStr = string(s)
 	}
+	// TODO create a new error type that holds a map to avoid creating a new array
+	ers := []error{}
+	for _, err := range ersObj {
+		ers = append(ers, err)
+	}
 	e := &ErrUpstreamsExhausted{
 		BaseError{
 			Code:    ErrCodeUpstreamsExhausted,
-			Message: "all upstreams exhausted",
+			Message: "all upstream attempts failed",
 			Cause:   errors.Join(ers...),
 			Details: map[string]interface{}{
 				"request":    reqStr,
