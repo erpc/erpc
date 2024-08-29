@@ -644,6 +644,24 @@ var NewErrUpstreamsExhausted = func(
 }
 
 func (e *ErrUpstreamsExhausted) ErrorStatusCode() int {
+	if e.Cause != nil {
+		if be, ok := e.Cause.(StandardError); ok {
+			return be.ErrorStatusCode()
+		}
+		// if it's an array of errors (Unwrap)
+		if joinedErr, ok := e.Cause.(interface{ Unwrap() []error }); ok {
+			fsc := 503
+			for _, e := range joinedErr.Unwrap() {
+				if be, ok := e.(StandardError); ok {
+					sc := be.ErrorStatusCode()
+					if sc != 503 {
+						fsc = sc
+					}
+				}
+			}
+			return fsc
+		}
+	}
 	return 503
 }
 
