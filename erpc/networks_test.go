@@ -387,7 +387,13 @@ func TestNetwork_Forward(t *testing.T) {
 			Times(1).
 			Post("").
 			Reply(401).
-			JSON(json.RawMessage(`{"error":{"code":-32016,"message":"unauthorized"}}`))
+			JSON(json.RawMessage(`{"error":{"code":-32016,"message":"unauthorized rpc1"}}`))
+
+		gock.New("http://rpc2.localhost").
+			Times(2).
+			Post("").
+			Reply(503).
+			JSON(json.RawMessage(`{"error":"random rpc2 unavailable"}`))
 
 		gock.New("http://rpc2.localhost").
 			Times(1).
@@ -402,7 +408,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		upsFsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 3,
+				MaxAttempts: 2,
 			},
 		}
 		ntwFsCfg := &common.FailsafeConfig{
@@ -420,7 +426,7 @@ func TestNetwork_Forward(t *testing.T) {
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
-			Id:       "test",
+			Id:       "rpc1",
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -429,7 +435,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		up2 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
-			Id:       "test",
+			Id:       "rpc2",
 			Endpoint: "http://rpc2.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -2982,7 +2988,7 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(500).
-			JSON(json.RawMessage(`{"error":{"code":-39999,"message":"Internal error"}}`))
+			JSON(json.RawMessage(`{"error":{"code":-39999,"message":"my funky random error"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -3062,8 +3068,17 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil error, got nil")
 		}
 
-		if !strings.Contains(common.ErrorSummary(err), "-32603") {
-			t.Fatalf("Expected error code -32603, got %v", common.ErrorSummary(err))
+		ser, ok := err.(common.StandardError)
+		if !ok {
+			t.Fatalf("Expected error to be StandardError, got %T", err)
+		}
+		sum := common.ErrorSummary(ser.GetCause())
+
+		if !strings.Contains(sum, "ErrEndpointServerSideException") {
+			t.Fatalf("Expected error code ErrEndpointServerSideException, got %v", sum)
+		}
+		if !strings.Contains(sum, "my funky random error") {
+			t.Fatalf("Expected error text 'my funky random error', but was missing %v", sum)
 		}
 	})
 

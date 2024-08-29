@@ -389,7 +389,7 @@ func TestHttpServer_HandleRequest_EthGetBlockNumber(t *testing.T) {
 
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"unsupported_method","params":[],"id":1}`)
 
-		assert.Equal(t, http.StatusServiceUnavailable, statusCode)
+		assert.Equal(t, http.StatusUnsupportedMediaType, statusCode)
 
 		var errorResponse map[string]interface{}
 		err := json.Unmarshal([]byte(body), &errorResponse)
@@ -468,6 +468,22 @@ func TestHttpServer_HandleRequest_EthGetBlockNumber(t *testing.T) {
 
 		assert.Equal(t, http.StatusTooManyRequests, statusCode)
 		assert.Contains(t, body, "error code: 1015")
+
+		assert.True(t, gock.IsDone(), "All mocks should have been called")
+	})
+
+	t.Run("UnexpectedServerErrorResponseFromUpstream", func(t *testing.T) {
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Times(1).
+			Reply(500).
+			BodyString(`{"error":{"code":-39999,"message":"my funky error"}}`)
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`)
+
+		assert.Equal(t, http.StatusInternalServerError, statusCode)
+		assert.Contains(t, body, "-32603")
+		assert.Contains(t, body, "my funky error")
 
 		assert.True(t, gock.IsDone(), "All mocks should have been called")
 	})
