@@ -25,7 +25,9 @@ type Config struct {
 }
 
 type ServerConfig struct {
+	ListenV4   bool   `yaml:"listenV4" json:"listenV4"`
 	HttpHostV4 string `yaml:"httpHostV4" json:"httpHostV4"`
+	ListenV6   bool   `yaml:"listenV6" json:"listenV6"`
 	HttpHostV6 string `yaml:"httpHostV6" json:"httpHostV6"`
 	HttpPort   int    `yaml:"httpPort" json:"httpPort"`
 	MaxTimeout string `yaml:"maxTimeout" json:"maxTimeout"`
@@ -306,10 +308,12 @@ type NetworkStrategyConfig struct {
 }
 
 type MetricsConfig struct {
-	Enabled bool   `yaml:"enabled" json:"enabled"`
-	HostV4  string `yaml:"hostV4" json:"hostV4"`
-	HostV6  string `yaml:"hostV6" json:"hostV6"`
-	Port    int    `yaml:"port" json:"port"`
+	Enabled  bool   `yaml:"enabled" json:"enabled"`
+	ListenV4 bool   `yaml:"listenV4" json:"listenV4"`
+	HostV4   string `yaml:"hostV4" json:"hostV4"`
+	ListenV6 bool   `yaml:"listenV6" json:"listenV6"`
+	HostV6   string `yaml:"hostV6" json:"hostV6"`
+	Port     int    `yaml:"port" json:"port"`
 }
 
 var cfgInstance *Config
@@ -382,7 +386,9 @@ func (s *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
 			LogLevel: "INFO",
 			Server: &ServerConfig{
 				HttpHostV4: "0.0.0.0",
+				ListenV4:   true,
 				HttpHostV6: "[::]",
+				ListenV6:   false,
 				HttpPort:   4000,
 			},
 			Database: &DatabaseConfig{
@@ -394,10 +400,12 @@ func (s *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
 				},
 			},
 			Metrics: &MetricsConfig{
-				Enabled: true,
-				HostV4:  "0.0.0.0",
-				HostV6:  "[::]",
-				Port:    4001,
+				Enabled:  true,
+				HostV4:   "0.0.0.0",
+				ListenV4: true,
+				HostV6:   "[::]",
+				ListenV6: false,
+				Port:     4001,
 			},
 		}
 	}
