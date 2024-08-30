@@ -65,21 +65,18 @@ func (n *Network) Architecture() common.NetworkArchitecture {
 func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	startTime := time.Now()
 
-	n.Logger.Debug().Object("req", req).Msgf("forwarding request")
+	n.Logger.Trace().Object("req", req).Msgf("forwarding request for network")
 	req.SetNetwork(n)
 
-	method, err := req.Method()
-	if err != nil {
-		return nil, err
-	}
-	lg := n.Logger.With().Str("method", method).Logger()
+	method, _ := req.Method()
+	lg := n.Logger.With().Str("method", method).Str("id", req.Id()).Str("ptr", fmt.Sprintf("%p", req)).Logger()
 
 	// 1) In-flight multiplexing
 	mlxHash, _ := req.CacheHash()
 	n.inFlightMutex.Lock()
 	if inf, exists := n.inFlightRequests[mlxHash]; exists {
 		n.inFlightMutex.Unlock()
-		lg.Debug().Object("req", req).Msgf("found similar in-flight request, waiting for result")
+		lg.Debug().Msgf("found similar in-flight request, waiting for result")
 		health.MetricNetworkMultiplexedRequests.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 
 		inf.mu.RLock()
@@ -119,9 +116,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		if err != nil {
 			lg.Debug().Err(err).Msgf("could not find response in cache")
 			health.MetricNetworkCacheMisses.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
-		} else if resp != nil {
+		} else if resp != nil && !resp.IsObjectNull() && !resp.IsResultEmptyish() {
 			resp.SetFromCache(true)
-			lg.Info().Object("req", req).Err(err).Msgf("response served from cache")
+			lg.Info().Msgf("response served from cache")
 			health.MetricNetworkCacheHits.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 			inf.Close(resp, err)
 			return resp, err
@@ -138,29 +135,30 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	tryForward := func(
 		u *upstream.Upstream,
 		ctx context.Context,
-	) (resp *common.NormalizedResponse, skipped bool, err error) {
-		lg := u.Logger.With().Str("upstreamId", u.Config().Id).Logger()
+	) (resp *common.NormalizedResponse, err error) {
+		lg := u.Logger.With().Str("upstreamId", u.Config().Id).Str("method", method).Str("id", req.Id()).Str("ptr", fmt.Sprintf("%p", req)).Logger()
 
-		lg.Debug().Str("method", method).Str("rid", fmt.Sprintf("%p", req)).Msgf("trying to forward request to upstream")
+		lg.Debug().Msgf("trying to forward request to upstream")
 
-		resp, skipped, err = u.Forward(ctx, req)
+		resp, err = u.Forward(ctx, req)
+
 		if !common.IsNull(err) {
 			// If upstream complains that the method is not supported let's dynamically add it ignoreMethods config
 			if common.HasErrorCode(err, common.ErrCodeEndpointUnsupported) {
-				lg.Warn().Err(err).Str("method", method).Msgf("upstream does not support method, dynamically adding to ignoreMethods")
+				lg.Warn().Err(err).Msgf("upstream does not support method, dynamically adding to ignoreMethods")
 				u.IgnoreMethod(method)
 			}
 
-			return nil, skipped, err
+			return nil, err
 		}
 
-		if skipped {
-			lg.Debug().Err(err).Msgf("skipped forwarding request to upstream")
+		if err != nil {
+			lg.Debug().Err(err).Msgf("finished forwarding request to upstream with error")
 		} else {
-			lg.Info().Msgf("finished forwarding request to upstream")
+			lg.Info().Msgf("finished forwarding request to upstream with success")
 		}
 
-		return resp, skipped, err
+		return resp, err
 	}
 
 	upsList, err := n.upstreamsRegistry.GetSortedUpstreams(n.NetworkId, method)
@@ -170,15 +168,16 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	var execution failsafe.Execution[*common.NormalizedResponse]
-	var errorsByUpstream = []error{}
-	var errorsMutex sync.Mutex
-	imtx := sync.Mutex{}
+	var errorsByUpstream = map[string]error{}
+
+	coordMu := sync.Mutex{}
 	i := 0
 	resp, execErr := n.failsafeExecutor.
 		WithContext(ctx).
 		GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+			coordMu.Lock()
 			execution = exec
-			isHedged := exec.Hedges() > 0
+			coordMu.Unlock()
 
 			// We should try all upstreams at least once, but using "i" we make sure
 			// across different executions of the failsafe we pick up next upstream vs retrying the same upstream.
@@ -186,47 +185,54 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			// Upstream-level retry is handled by the upstream itself (and its own failsafe policies).
 			ln := len(upsList)
 			for count := 0; count < ln; count++ {
-				imtx.Lock()
-				n.upstreamsRegistry.RLockUpstreams()
+				coordMu.Lock()
 				u := upsList[i]
-				n.upstreamsRegistry.RUnlockUpstreams()
 				i++
 				if i >= ln {
 					i = 0
 				}
-				if isHedged {
-					lg.Debug().
-						Str("upstreamId", u.Config().Id).
-						Int("index", i).
-						Msgf("executing hedged forward to upstream")
-				} else {
-					lg.Debug().
-						Str("upstreamId", u.Config().Id).
-						Int("index", i).
-						Msgf("executing forward to upstream")
+				upsId := u.Config().Id
+				if prevErr, exists := errorsByUpstream[upsId]; exists {
+					if !common.IsRetryableTowardsUpstream(prevErr) {
+						// Do not even try this upstream if we already know
+						// the previous error was not retryable. e.g. Billing issues
+						coordMu.Unlock()
+						continue
+					}
 				}
-				imtx.Unlock()
+				coordMu.Unlock()
 
-				resp, skipped, err := n.processResponse(
+				resp, err := n.normalizeResponse(
 					tryForward(u, exec.Context()),
 				)
 
+				isClientErr := err != nil && common.HasErrorCode(err, common.ErrCodeEndpointClientSideException)
+				isHedged := exec.Hedges() > 0
+
 				if isHedged && err != nil && errors.Is(err, context.Canceled) {
-					lg.Debug().Err(err).Msgf("discarding hedged request to upstream %s: %v", u.Config().Id, skipped)
-					return nil, err
+					lg.Debug().Err(err).Msgf("discarding hedged request to upstream %s", u.Config().Id)
+					return nil, common.NewErrUpstreamHedgeCancelled(u.Config().Id)
+				}
+				if isHedged {
+					lg.Debug().Msgf("forwarded hedged request to upstream %s", u.Config().Id)
+				} else {
+					lg.Debug().Msgf("forwarded request to upstream %s", u.Config().Id)
 				}
 
-				if isHedged {
-					lg.Debug().Err(err).Msgf("forwarded hedged request to upstream %s skipped: %v err: %v", u.Config().Id, skipped, err)
-				} else {
-					lg.Debug().Err(err).Msgf("forwarded request to upstream %s skipped: %v err: %v", u.Config().Id, skipped, err)
-				}
 				if err != nil {
-					errorsMutex.Lock()
-					errorsByUpstream = append(errorsByUpstream, err)
-					errorsMutex.Unlock()
+					coordMu.Lock()
+					if ser, ok := err.(common.StandardError); ok {
+						ber := ser.Base()
+						if ber.Details == nil {
+							ber.Details = map[string]interface{}{}
+						}
+						ber.Details["timestampMs"] = time.Now().UnixMilli()
+					}
+					errorsByUpstream[upsId] = err
+					coordMu.Unlock()
 				}
-				if !skipped {
+
+				if err == nil || isClientErr {
 					if resp != nil {
 						resp.SetUpstream(u)
 					}
@@ -249,7 +255,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		})
 
 	if execErr != nil {
-		err := upstream.TranslateFailsafeError(execErr)
+		err := upstream.TranslateFailsafeError("", method, execErr)
 		// If error is due to empty response be generous and accept it,
 		// because this means after many retries still no data is available.
 		if common.HasErrorCode(err, common.ErrCodeFailsafeRetryExceeded) {
@@ -302,6 +308,23 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	inf.Close(resp, nil)
 	return resp, nil
 }
+
+// func (n *Network) shouldJumpUpstream(err error) bool {
+// 	if err == nil {
+// 		return false
+// 	}
+
+// 	// When it is not retryable towards upstream, continue on other upstreams,
+// 	// and skip on network-level retries.
+// 	if !common.IsRetryableTowardsUpstream(err) {
+// 		return true
+// 	}
+
+// 	// By default skip all errors.
+// 	// If there are errors that does not make sense to continue forwarding to other upstreams,
+// 	// it must be added to above conditions.
+// 	return false
+// }
 
 func (n *Network) EvmIsBlockFinalized(blockNumber int64) (bool, error) {
 	if n.evmBlockTracker == nil {
@@ -369,23 +392,17 @@ func (n *Network) EvmChainId() (int64, error) {
 	return n.Config.Evm.ChainId, nil
 }
 
-func (n *Network) processResponse(resp *common.NormalizedResponse, skipped bool, err error) (*common.NormalizedResponse, bool, error) {
+func (n *Network) normalizeResponse(resp *common.NormalizedResponse, err error) (*common.NormalizedResponse, error) {
 	if err == nil {
-		return resp, skipped, nil
+		return resp, nil
 	}
 
 	switch n.Architecture() {
 	case common.ArchitectureEvm:
-		if common.HasErrorCode(err, common.ErrCodeFailsafeCircuitBreakerOpen) {
-			// Explicitly skip when CB is open to not count the failed request towards network "retries"
-			return resp, true, err
-		} else if common.HasErrorCode(err, common.ErrCodeEndpointUnsupported) || common.HasErrorCode(err, common.ErrCodeUpstreamRequestSkipped) {
-			// Explicitly skip when method is not supported so it is not counted towards retries
-			return resp, true, err
-		} else if common.HasErrorCode(err, common.ErrCodeJsonRpcExceptionInternal) {
-			return resp, skipped, err
+		if common.HasErrorCode(err, common.ErrCodeJsonRpcExceptionInternal) {
+			return resp, err
 		} else if common.HasErrorCode(err, common.ErrCodeJsonRpcRequestUnmarshal) {
-			return resp, skipped, common.NewErrJsonRpcExceptionInternal(
+			return resp, common.NewErrJsonRpcExceptionInternal(
 				0,
 				common.JsonRpcErrorParseException,
 				"failed to parse json-rpc request",
@@ -394,7 +411,7 @@ func (n *Network) processResponse(resp *common.NormalizedResponse, skipped bool,
 			)
 		}
 
-		return resp, skipped, common.NewErrJsonRpcExceptionInternal(
+		return resp, common.NewErrJsonRpcExceptionInternal(
 			0,
 			common.JsonRpcErrorServerSideException,
 			fmt.Sprintf("failed request on evm network %s", n.NetworkId),
@@ -402,7 +419,7 @@ func (n *Network) processResponse(resp *common.NormalizedResponse, skipped bool,
 			nil,
 		)
 	default:
-		return resp, skipped, err
+		return resp, err
 	}
 }
 

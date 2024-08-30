@@ -1,8 +1,6 @@
 package common
 
 import (
-	"fmt"
-
 	"github.com/bytedance/sonic"
 )
 
@@ -180,7 +178,7 @@ func (r *NormalizedResponse) JsonRpcResponse() (*JsonRpcResponse, error) {
 		} else {
 			jrr.Error = NewErrJsonRpcExceptionExternal(
 				int(JsonRpcErrorServerSideException),
-				fmt.Sprintf("%s -> %s", err, string(r.body)),
+				string(r.body),
 				"",
 			)
 		}

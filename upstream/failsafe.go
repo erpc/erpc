@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -323,8 +324,9 @@ func createTimeoutPolicy(component string, cfg *common.TimeoutPolicyConfig) (fai
 	return builder.Build(), nil
 }
 
-func TranslateFailsafeError(execErr error) error {
-	var retryExceededErr *retrypolicy.ExceededError
+func TranslateFailsafeError(upstreamId, method string, execErr error) error {
+	var err error
+	var retryExceededErr retrypolicy.ExceededError
 	if errors.As(execErr, &retryExceededErr) {
 		ler := retryExceededErr.LastError
 		if common.IsNull(ler) {
@@ -334,17 +336,35 @@ func TranslateFailsafeError(execErr error) error {
 		}
 		var translatedCause error
 		if ler != nil {
-			translatedCause = TranslateFailsafeError(ler)
+			translatedCause = TranslateFailsafeError("", "", ler)
 		}
-		return common.NewErrFailsafeRetryExceeded(translatedCause)
+		err = common.NewErrFailsafeRetryExceeded(translatedCause)
+	} else if errors.Is(execErr, timeout.ErrExceeded) ||
+		errors.Is(execErr, context.DeadlineExceeded) {
+		err = common.NewErrFailsafeTimeoutExceeded(execErr)
+	} else if errors.Is(execErr, circuitbreaker.ErrOpen) {
+		err = common.NewErrFailsafeCircuitBreakerOpen(execErr)
 	}
 
-	if errors.Is(execErr, timeout.ErrExceeded) {
-		return common.NewErrFailsafeTimeoutExceeded(execErr)
-	}
-
-	if errors.Is(execErr, circuitbreaker.ErrOpen) {
-		return common.NewErrFailsafeCircuitBreakerOpen(execErr)
+	if err != nil {
+		if method != "" {
+			if ser, ok := execErr.(common.StandardError); ok {
+				be := ser.Base()
+				if be != nil {
+					if upstreamId != "" {
+						be.Details = map[string]interface{}{
+							"upstreamId": upstreamId,
+							"method":     method,
+						}
+					} else {
+						be.Details = map[string]interface{}{
+							"method": method,
+						}
+					}
+				}
+			}
+		}
+		return err
 	}
 
 	return execErr

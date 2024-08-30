@@ -370,7 +370,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		gock.New("http://rpc1.localhost:8545").
 			Post("/").
 			Reply(200).
-			BodyString("Internal Server Error")
+			BodyString("my random something error")
 
 		var wg sync.WaitGroup
 		for i := 0; i < 3; i++ {
@@ -380,7 +380,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_blockNumber","params":[]}`, id)))
 				_, err := client.SendRequest(context.Background(), req)
 				assert.Error(t, err)
-				assert.Contains(t, err.Error(), "failed to parse upstream response")
+				assert.Contains(t, err.Error(), "my random something error")
 			}(i + 1)
 		}
 		wg.Wait()

@@ -94,7 +94,7 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 		args = []interface{}{partitionKey, rangeKey}
 	}
 
-	p.logger.Debug().Msgf("getting item from PostgreSQL with query: %s", query)
+	p.logger.Debug().Msgf("getting item from PostgreSQL with query: %s args: %v", query, args)
 
 	var value string
 	err := p.conn.QueryRow(ctx, query, args...).Scan(&value)
@@ -134,7 +134,7 @@ func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, index, partit
 		}
 	}
 
-	p.logger.Debug().Msgf("getting item from PostgreSQL with wildcard query: %s", query)
+	p.logger.Debug().Msgf("getting item from PostgreSQL with wildcard query: %s args: %v", query, args)
 
 	var value string
 	err := p.conn.QueryRow(ctx, query, args...).Scan(&value)

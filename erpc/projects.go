@@ -90,19 +90,20 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	defer timer.ObserveDuration()
 
 	health.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.NetworkId, method).Inc()
-	p.Logger.Debug().Str("method", method).Msgf("forwarding request to network")
+	lg := p.Logger.With().Str("method", method).Str("id", nq.Id()).Str("ptr", fmt.Sprintf("%p", nq)).Logger()
+	lg.Debug().Msgf("forwarding request to network")
 	resp, err := network.Forward(ctx, nq)
 
 	if err == nil || common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
 		if err != nil {
-			p.Logger.Info().Err(err).Msgf("finished forwarding request for network with some client-side exception")
+			lg.Info().Err(err).Msgf("finished forwarding request for network with some client-side exception")
 		} else {
-			p.Logger.Info().Msgf("successfully forward request for network")
+			lg.Info().Msgf("successfully forwarded request for network")
 		}
 		health.MetricNetworkSuccessfulRequests.WithLabelValues(p.Config.Id, network.NetworkId, method).Inc()
 		return resp, err
 	} else {
-		p.Logger.Warn().Err(err).Str("method", method).Msgf("failed to forward request for network")
+		lg.Warn().Err(err).Msgf("failed to forward request for network")
 		health.MetricNetworkFailedRequests.WithLabelValues(network.ProjectId, network.NetworkId, method, common.ErrorSummary(err)).Inc()
 	}
 
