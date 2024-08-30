@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"fmt"
+	"math"
 	"math/rand"
 	"sort"
 	"sync"
@@ -29,13 +30,13 @@ type UpstreamsRegistry struct {
 	// map of network -> method (or *) => upstreams
 	sortedUpstreams map[string]map[string][]*Upstream
 	// map of upstream -> network (or *) -> method (or *) => score
-	upstreamScores map[string]map[string]map[string]int
+	upstreamScores map[string]map[string]map[string]float64
 }
 
 type UpstreamsHealth struct {
-	Upstreams       []*Upstream                          `json:"upstreams"`
-	SortedUpstreams map[string]map[string][]string       `json:"sortedUpstreams"`
-	UpstreamScores  map[string]map[string]map[string]int `json:"upstreamScores"`
+	Upstreams       []*Upstream                              `json:"upstreams"`
+	SortedUpstreams map[string]map[string][]string           `json:"sortedUpstreams"`
+	UpstreamScores  map[string]map[string]map[string]float64 `json:"upstreamScores"`
 }
 
 func NewUpstreamsRegistry(
@@ -57,7 +58,7 @@ func NewUpstreamsRegistry(
 		metricsTracker:       mt,
 		upsCfg:               upsCfg,
 		sortedUpstreams:      make(map[string]map[string][]*Upstream),
-		upstreamScores:       make(map[string]map[string]map[string]int),
+		upstreamScores:       make(map[string]map[string]map[string]float64),
 		upstreamsMu:          &sync.RWMutex{},
 	}
 }
@@ -119,18 +120,18 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(networkId string) error {
 	// Initialize score for this or any network and any method for each upstream
 	for _, ups := range upstreams {
 		if _, ok := u.upstreamScores[ups.Config().Id]; !ok {
-			u.upstreamScores[ups.Config().Id] = make(map[string]map[string]int)
+			u.upstreamScores[ups.Config().Id] = make(map[string]map[string]float64)
 		}
 
 		if _, ok := u.upstreamScores[ups.Config().Id][networkId]; !ok {
-			u.upstreamScores[ups.Config().Id][networkId] = make(map[string]int)
+			u.upstreamScores[ups.Config().Id][networkId] = make(map[string]float64)
 		}
 		if _, ok := u.upstreamScores[ups.Config().Id][networkId]["*"]; !ok {
 			u.upstreamScores[ups.Config().Id][networkId]["*"] = 0
 		}
 
 		if _, ok := u.upstreamScores[ups.Config().Id]["*"]; !ok {
-			u.upstreamScores[ups.Config().Id]["*"] = make(map[string]int)
+			u.upstreamScores[ups.Config().Id]["*"] = make(map[string]float64)
 		}
 		if _, ok := u.upstreamScores[ups.Config().Id]["*"]["*"]; !ok {
 			u.upstreamScores[ups.Config().Id]["*"]["*"] = 0
@@ -192,7 +193,7 @@ func (u *UpstreamsRegistry) RUnlockUpstreams() {
 
 func (u *UpstreamsRegistry) sortUpstreams(networkId, method string, upstreams []*Upstream) {
 	// Calculate total score
-	totalScore := 0
+	totalScore := 0.0
 	for _, ups := range upstreams {
 		score := u.upstreamScores[ups.Config().Id][networkId][method]
 		if score < 0 {
@@ -294,7 +295,7 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 	for _, ups := range upsList {
 		metrics := u.metricsTracker.GetUpstreamMethodMetrics(ups.Config().Id, networkId, method)
 		metrics.Mutex.RLock()
-		u.logger.Debug().
+		u.logger.Trace().
 			Str("projectId", u.prjId).
 			Str("networkId", networkId).
 			Str("method", method).
@@ -315,19 +316,19 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 		metrics.Mutex.RUnlock()
 	}
 
-	normP90Latencies := normalizeIntValues(p90Latencies, 100)
-	normErrorRates := normalizeIntValues(errorRates, 100)
-	normThrottledRates := normalizeIntValues(throttledRates, 100)
-	normTotalRequests := normalizeIntValues(totalRequests, 100)
+	normP90Latencies := normalizeValues(p90Latencies)
+	normErrorRates := normalizeValues(errorRates)
+	normThrottledRates := normalizeValues(throttledRates)
+	normTotalRequests := normalizeValues(totalRequests)
 
 	for i, ups := range upsList {
 		score := u.calculateScore(normTotalRequests[i], normP90Latencies[i], normErrorRates[i], normThrottledRates[i])
 		u.upstreamScores[ups.Config().Id][networkId][method] = score
-		u.logger.Debug().Str("projectId", u.prjId).
+		u.logger.Trace().Str("projectId", u.prjId).
 			Str("upstream", ups.Config().Id).
 			Str("networkId", networkId).
 			Str("method", method).
-			Int("score", score).
+			Float64("score", score).
 			Msgf("refreshed score")
 	}
 
@@ -342,39 +343,48 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 	u.logger.Trace().Str("projectId", u.prjId).Str("networkId", networkId).Str("method", method).Str("newSort", newSortStr).Msgf("sorted upstreams")
 }
 
-func (u *UpstreamsRegistry) calculateScore(normTotalRequests, normP90Latency, normErrorRate, normThrottledRate int) int {
-	score := 0
+func (u *UpstreamsRegistry) calculateScore(normTotalRequests, normP90Latency, normErrorRate, normThrottledRate float64) float64 {
+	score := 0.0
 
 	// Higher score for lower total requests (to balance the load)
-	score += 100 - normTotalRequests
+	score += expCurve(1 - normTotalRequests)
 
 	// Higher score for lower p90 latency
-	score += 100 - normP90Latency*4
+	score += expCurve(1-normP90Latency) * 4
 
 	// Higher score for lower error rate
-	score += (100 - normErrorRate) * 8
+	score += expCurve(1-normErrorRate) * 8
 
 	// Higher score for lower throttled rate
-	score += (100 - normThrottledRate) * 3
+	score += expCurve(1-normThrottledRate) * 3
 
 	return score
 }
 
-func normalizeIntValues(values []float64, scale int) []int {
+func expCurve(x float64) float64 {
+	return math.Pow(x, 2.0)
+}
+
+func normalizeValues(values []float64) []float64 {
 	if len(values) == 0 {
-		return []int{}
+		return []float64{}
 	}
-	var min float64 = 0
+	var min float64 = values[0]
 	max := values[0]
+	// Find min and max
 	for _, value := range values {
 		if value > max {
 			max = value
 		}
+		if value < min {
+			min = value
+		}
 	}
-	normalized := make([]int, len(values))
+
+	normalized := make([]float64, len(values))
 	for i, value := range values {
 		if (max - min) > 0 {
-			normalized[i] = int((value - min) / (max - min) * float64(scale))
+			normalized[i] = (value - min) / (max - min)
 		} else {
 			normalized[i] = 0
 		}
@@ -384,7 +394,7 @@ func normalizeIntValues(values []float64, scale int) []int {
 
 func (u *UpstreamsRegistry) GetUpstreamsHealth() (*UpstreamsHealth, error) {
 	sortedUpstreams := make(map[string]map[string][]string)
-	upstreamScores := make(map[string]map[string]map[string]int)
+	upstreamScores := make(map[string]map[string]map[string]float64)
 
 	for nw, methods := range u.sortedUpstreams {
 		for method, ups := range methods {
@@ -403,10 +413,10 @@ func (u *UpstreamsRegistry) GetUpstreamsHealth() (*UpstreamsHealth, error) {
 		for nw, methods := range nwMethods {
 			for method, score := range methods {
 				if _, ok := upstreamScores[upsId]; !ok {
-					upstreamScores[upsId] = make(map[string]map[string]int)
+					upstreamScores[upsId] = make(map[string]map[string]float64)
 				}
 				if _, ok := upstreamScores[upsId][nw]; !ok {
-					upstreamScores[upsId][nw] = make(map[string]int)
+					upstreamScores[upsId][nw] = make(map[string]float64)
 				}
 				upstreamScores[upsId][nw][method] = score
 			}

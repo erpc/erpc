@@ -11,6 +11,7 @@ import (
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/vendors"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -119,8 +120,8 @@ func TestUpstreamsRegistry(t *testing.T) {
 		method := "eth_call"
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
-		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 0)
-		simulateRequests(metricsTracker, networkID, "upstream-b", method, 200, 0)
+		simulateRequests(metricsTracker, networkID, "upstream-a", method, 1000, 0)
+		simulateRequests(metricsTracker, networkID, "upstream-b", method, 20000, 0)
 		simulateRequests(metricsTracker, networkID, "upstream-c", method, 10, 0)
 
 		expectedOrder := []string{"upstream-c", "upstream-a", "upstream-b"}
@@ -198,29 +199,165 @@ func TestUpstreamsRegistry(t *testing.T) {
 		expectedOrderMethod2Phase2 := []string{"upstream-a", "upstream-c", "upstream-b"}
 		checkUpstreamScoreOrder(t, registry, networkID, method2, expectedOrderMethod2Phase2)
 	})
+}
 
-	t.Run("CorrectOrderForLatencyVsReliability", func(t *testing.T) {
-		largerWindowSize := 6 * time.Second
-		registry, metricsTracker := createTestRegistry(projectID, &logger, largerWindowSize)
+func TestUpstreamScoring(t *testing.T) {
+	projectID := "test-project"
+	networkID := "evm:123"
+	method := "eth_call"
 
-		method := "eth_call"
-		_, _ = registry.GetSortedUpstreams(networkID, method)
+	type upstreamMetrics struct {
+		id           string
+		latency      float64
+		successRate  float64
+		requestCount int
+	}
 
-		// Simulate upstream A: 500ms latency, 20% failure rate
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method, 80, 0.5)
-		simulateFailedRequests(metricsTracker, networkID, "upstream-a", method, 20)
+	scenarios := []struct {
+		name           string
+		windowSize     time.Duration
+		upstreamConfig []upstreamMetrics
+		expectedOrder  []string
+	}{
+		{
+			name:       "MixedLatencyAndFailureRate",
+			windowSize: 6 * time.Second,
+			upstreamConfig: []upstreamMetrics{
+				{"upstream-a", 0.5, 0.8, 100},
+				{"upstream-b", 1.0, 0.99, 100},
+				{"upstream-c", 0.75, 0.9, 100},
+			},
+			expectedOrder: []string{"upstream-b", "upstream-a", "upstream-c"},
+		},
+		{
+			name:       "ExtremeFailureRate",
+			windowSize: 6 * time.Second,
+			upstreamConfig: []upstreamMetrics{
+				{"upstream-a", 1, 0.05, 100},
+				{"upstream-b", 1, 0.1, 100},
+				{"upstream-c", 1, 0.01, 100},
+			},
+			expectedOrder: []string{"upstream-b", "upstream-a", "upstream-c"},
+		},
+	}
 
-		// Simulate upstream B: 1000ms latency, 1% failure rate
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", method, 99, 1.0)
-		simulateFailedRequests(metricsTracker, networkID, "upstream-b", method, 1)
+	for _, scenario := range scenarios {
+		t.Run(scenario.name, func(t *testing.T) {
+			registry, metricsTracker := createTestRegistry(projectID, &log.Logger, scenario.windowSize)
+			_, _ = registry.GetSortedUpstreams(networkID, method)
 
-		// Simulate upstream C: 750ms latency, 10% failure rate
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-c", method, 90, 0.75)
-		simulateFailedRequests(metricsTracker, networkID, "upstream-c", method, 10)
+			for _, upstream := range scenario.upstreamConfig {
+				successfulRequests := int(float64(upstream.requestCount) * upstream.successRate)
+				failedRequests := upstream.requestCount - successfulRequests
 
-		expectedOrder := []string{"upstream-b", "upstream-c", "upstream-a"}
-		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
-	})
+				simulateRequestsWithLatency(metricsTracker, networkID, upstream.id, method, successfulRequests, upstream.latency)
+				simulateFailedRequests(metricsTracker, networkID, upstream.id, method, failedRequests)
+			}
+
+			checkUpstreamScoreOrder(t, registry, networkID, method, scenario.expectedOrder)
+		})
+	}
+}
+
+func TestCalculateScoreDynamicScenarios(t *testing.T) {
+	registry := &UpstreamsRegistry{
+		scoreRefreshInterval: time.Second,
+		logger:               &log.Logger,
+	}
+
+	type upstreamMetrics struct {
+		totalRequests float64
+		p90Latency    float64
+		errorRate     float64
+		throttledRate float64
+	}
+
+	type percentRange struct {
+		min float64
+		max float64
+	}
+
+	type testScenario struct {
+		name             string
+		upstreams        []upstreamMetrics
+		expectedPercents []percentRange
+	}
+
+	scenarios := []testScenario{
+		{
+			name: "Two upstreams with significant difference",
+			upstreams: []upstreamMetrics{
+				{1, 0.1, 0.01, 0.02},
+				{0.8, 0.8, 0.4, 0.1},
+			},
+			expectedPercents: []percentRange{
+				{0.65, 0.75},
+				{0.25, 0.35},
+			},
+		},
+		{
+			name: "Three upstreams with varying performance",
+			upstreams: []upstreamMetrics{
+				{1, 0.2, 0.02, 0.01},
+				{0.7, 0.5, 0.1, 0.05},
+				{0.3, 1.0, 0.3, 0.2},
+			},
+			expectedPercents: []percentRange{
+				{0.40, 0.55},
+				{0.30, 0.40},
+				{0.10, 0.30},
+			},
+		},
+		{
+			name: "Four upstreams with similar performance",
+			upstreams: []upstreamMetrics{
+				{0.9, 0.3, 0.05, 0.03},
+				{0.8, 0.4, 0.06, 0.04},
+				{1.0, 0.2, 0.04, 0.02},
+				{0.7, 0.5, 0.07, 0.05},
+			},
+			expectedPercents: []percentRange{
+				{0.20, 0.30},
+				{0.20, 0.30},
+				{0.25, 0.35},
+				{0.15, 0.25},
+			},
+		},
+		{
+			name: "Two upstreams with extreme differences",
+			upstreams: []upstreamMetrics{
+				{1.0, 0.05, 0.001, 0.001},
+				{1.0, 1.0, 0.5, 0.5},
+			},
+			expectedPercents: []percentRange{
+				{0.80, 1.00},
+				{0.00, 0.2},
+			},
+		},
+	}
+
+	for _, scenario := range scenarios {
+		t.Run(scenario.name, func(t *testing.T) {
+			scores := make([]float64, len(scenario.upstreams))
+			totalScore := 0.0
+
+			for i, ups := range scenario.upstreams {
+				score := registry.calculateScore(ups.totalRequests, ups.p90Latency, ups.errorRate, ups.throttledRate)
+				scores[i] = float64(score)
+				totalScore += float64(score)
+			}
+
+			for i, score := range scores {
+				percent := score / totalScore
+				t.Logf("Upstream %d: Score: %f, Percent: %f", i+1, score, percent)
+
+				assert.GreaterOrEqual(t, percent, scenario.expectedPercents[i].min,
+					"Upstream %d percent should be greater than or equal to %f", i+1, scenario.expectedPercents[i].min)
+				assert.LessOrEqual(t, percent, scenario.expectedPercents[i].max,
+					"Upstream %d percent should be less than or equal to %f", i+1, scenario.expectedPercents[i].max)
+			}
+		})
+	}
 }
 
 func createTestRegistry(projectID string, logger *zerolog.Logger, windowSize time.Duration) (*UpstreamsRegistry, *health.Tracker) {

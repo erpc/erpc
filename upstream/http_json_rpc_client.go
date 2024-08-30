@@ -86,8 +86,8 @@ func NewGenericHttpJsonRpcClient(logger *zerolog.Logger, pu *Upstream, parsedUrl
 		client.httpClient = &http.Client{
 			Timeout: 60 * time.Second,
 			Transport: &http.Transport{
-				MaxIdleConns:        400,
-				MaxIdleConnsPerHost: 400,
+				MaxIdleConns:        1024,
+				MaxIdleConnsPerHost: 256,
 				IdleConnTimeout:     90 * time.Second,
 			},
 		}
@@ -119,13 +119,9 @@ func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.
 	startedAt := time.Now()
 	jrReq, err := req.JsonRpcRequest()
 	if err != nil {
-		m, _ := req.Method()
 		return nil, common.NewErrUpstreamRequest(
 			err,
-			c.upstream.ProjectId,
-			req.NetworkId(),
 			c.upstream.Config().Id,
-			m,
 			0, 0, 0, 0,
 		)
 	}
@@ -213,13 +209,9 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 	for _, req := range requests {
 		jrReq, err := req.request.JsonRpcRequest()
 		if err != nil {
-			m, _ := req.request.Method()
 			req.err <- common.NewErrUpstreamRequest(
 				err,
-				c.upstream.ProjectId,
-				req.request.NetworkId(),
 				c.upstream.Config().Id,
-				m,
 				0, 0, 0, 0,
 			)
 			continue
@@ -322,43 +314,14 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 		// Try parsing as single json-rpc object,
 		// some providers return a single object on some errors even when request is batch.
 		// this is a workaround to handle those cases.
-		var singleResp common.JsonRpcResponse
-		errsg := sonic.Unmarshal(respBody, &singleResp)
-		if errsg != nil {
-			for _, req := range requests {
-				req.err <- common.NewErrEndpointServerSideException(
-					fmt.Errorf("failed to parse upstream response, batch: %w single: %w", err, errsg),
-					map[string]interface{}{
-						"statusCode": resp.StatusCode,
-						"headers":    resp.Header,
-						"body":       string(respBody),
-					},
-				)
-			}
-		} else {
-			if singleResp.JSONRPC != "" || singleResp.Error != nil {
-				// This case happens when upstreams a single valid json-rpc object as response
-				// to a batch request (e.g. BlastAPI).
-				for _, req := range requests {
-					nr := common.NewNormalizedResponse().WithRequest(req.request).WithBody(respBody)
-					err := c.normalizeJsonRpcError(resp, nr)
-					if err != nil {
-						req.err <- err
-					} else {
-						req.response <- nr
-					}
-				}
+		nr := common.NewNormalizedResponse().WithBody(respBody)
+		for _, br := range requests {
+			nr.WithRequest(br.request)
+			err := c.normalizeJsonRpcError(resp, nr)
+			if err != nil {
+				br.err <- err
 			} else {
-				for _, req := range requests {
-					req.err <- common.NewErrEndpointServerSideException(
-						fmt.Errorf("failed to parse upstream response: %w", err),
-						map[string]interface{}{
-							"statusCode": resp.StatusCode,
-							"headers":    resp.Header,
-							"body":       string(respBody),
-						},
-					)
-				}
+				br.response <- nr
 			}
 		}
 		return
@@ -398,13 +361,9 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	jrReq, err := req.JsonRpcRequest()
 	if err != nil {
-		m, _ := req.Method()
 		return nil, common.NewErrUpstreamRequest(
 			err,
-			c.upstream.ProjectId,
-			req.NetworkId(),
 			c.upstream.Config().Id,
-			m,
 			0, 0, 0, 0,
 		)
 	}
@@ -544,12 +503,32 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
+		} else if strings.Contains(err.Message, "block range") ||
+			strings.Contains(err.Message, "exceeds the range") ||
+			strings.Contains(err.Message, "Max range") ||
+			strings.Contains(err.Message, "limited to") ||
+			strings.Contains(err.Message, "response size should not") ||
+			strings.Contains(err.Message, "returned more than") ||
+			strings.Contains(err.Message, "exceeds max results") ||
+			strings.Contains(err.Message, "response too large") ||
+			strings.Contains(err.Message, "query exceeds limit") ||
+			strings.Contains(err.Message, "exceeds the range") ||
+			strings.Contains(err.Message, "range limit exceeded") {
+			return common.NewErrEndpointEvmLargeRange(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorCapacityExceeded,
+					err.Message,
+					nil,
+					details,
+				),
+			)
 		} else if r.StatusCode == 429 ||
-			r.StatusCode == 408 ||
 			code == -32005 ||
 			strings.Contains(err.Message, "has exceeded") ||
 			strings.Contains(err.Message, "Exceeded the quota") ||
 			strings.Contains(err.Message, "under too much load") {
+
 			return common.NewErrEndpointCapacityExceeded(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -560,7 +539,8 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				),
 			)
 		} else if strings.Contains(err.Message, "transaction not found") ||
-			strings.Contains(err.Message, "cannot find transaction") {
+			strings.Contains(err.Message, "cannot find transaction") ||
+			strings.Contains(err.Message, "after last accepted block") {
 			return common.NewErrEndpointMissingData(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),

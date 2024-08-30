@@ -118,7 +118,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
-				"result":  "0x1234",
+				"result":  "0x222222",
 			})
 
 		const concurrentRequests = 5
@@ -139,7 +139,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		wg.Wait()
 
 		for _, result := range results {
-			if result.statusCode != http.StatusGatewayTimeout && result.statusCode != http.StatusRequestTimeout {
+			if result.statusCode != http.StatusGatewayTimeout {
 				t.Errorf("unexpected status code: %d", result.statusCode)
 			}
 			assert.Contains(t, result.body, "Timeout")
@@ -155,7 +155,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
-				"result":  "0x1234",
+				"result":  "0x333333",
 			})
 
 		for i := 0; i < 10; i++ {
@@ -170,7 +170,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 
 		for i := 0; i < totalReqs; i++ {
 			var delay time.Duration
-			if i % 2 == 0 {
+			if i%2 == 0 {
 				delay = 1 * time.Millisecond // shorter than the server timeout
 			} else {
 				delay = 200 * time.Millisecond // longer than the server timeout
@@ -183,7 +183,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 					r.JSON(map[string]interface{}{
 						"jsonrpc": "2.0",
 						"id":      rand.Intn(100000000),
-						"result":  map[string]interface{}{
+						"result": map[string]interface{}{
 							"blockNumber": rand.Intn(100000000),
 						},
 					})
@@ -210,7 +210,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		timeouts := 0
 		successes := 0
 		for _, result := range results {
-			if result.statusCode == http.StatusGatewayTimeout || result.statusCode == http.StatusRequestTimeout {
+			if result.statusCode == http.StatusGatewayTimeout {
 				timeouts++
 				assert.Contains(t, result.body, "Timeout")
 			} else {
@@ -260,6 +260,7 @@ func TestHttpServer_HandleRequest_EthGetBlockNumber(t *testing.T) {
 						Evm: &common.EvmUpstreamConfig{
 							ChainId: 1,
 						},
+						VendorName: "llama",
 					},
 				},
 			},
@@ -312,6 +313,7 @@ func TestHttpServer_HandleRequest_EthGetBlockNumber(t *testing.T) {
 	}
 
 	t.Run("ConcurrentEthGetBlockNumber", func(t *testing.T) {
+		defer gock.Off()
 		const concurrentRequests = 10
 
 		gock.New("http://rpc1.localhost").
@@ -321,7 +323,7 @@ func TestHttpServer_HandleRequest_EthGetBlockNumber(t *testing.T) {
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
-				"result":  "0x1234",
+				"result":  "0x444444",
 			})
 
 		var wg sync.WaitGroup
@@ -334,10 +336,9 @@ func TestHttpServer_HandleRequest_EthGetBlockNumber(t *testing.T) {
 			wg.Add(1)
 			go func(index int) {
 				defer wg.Done()
-				body := `{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`
+				body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[%d],"id":1}`, index)
 				results[index].statusCode, results[index].body = sendRequest(body)
 			}(i)
-			time.Sleep(50 * time.Millisecond)
 		}
 
 		wg.Wait()
@@ -348,7 +349,7 @@ func TestHttpServer_HandleRequest_EthGetBlockNumber(t *testing.T) {
 			var response map[string]interface{}
 			err := json.Unmarshal([]byte(result.body), &response)
 			assert.NoError(t, err, "Should be able to decode response for request %d", i)
-			assert.Equal(t, "0x1234", response["result"], "Unexpected result for request %d", i)
+			assert.Equal(t, "0x444444", response["result"], "Unexpected result for request %d", i)
 		}
 
 		assert.True(t, gock.IsDone(), "All mocks should have been called")
@@ -372,6 +373,8 @@ func TestHttpServer_HandleRequest_EthGetBlockNumber(t *testing.T) {
 	})
 
 	t.Run("UnsupportedMethod", func(t *testing.T) {
+		defer gock.Off()
+
 		gock.New("http://rpc1.localhost").
 			Post("/").
 			Reply(200).
@@ -386,7 +389,7 @@ func TestHttpServer_HandleRequest_EthGetBlockNumber(t *testing.T) {
 
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"unsupported_method","params":[],"id":1}`)
 
-		assert.Equal(t, http.StatusServiceUnavailable, statusCode)
+		assert.Equal(t, http.StatusUnsupportedMediaType, statusCode)
 
 		var errorResponse map[string]interface{}
 		err := json.Unmarshal([]byte(body), &errorResponse)
@@ -435,7 +438,7 @@ func TestHttpServer_HandleRequest_EthGetBlockNumber(t *testing.T) {
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
-				"result":  "0x1234",
+				"result":  "0x1111111",
 			})
 
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`)
@@ -450,6 +453,37 @@ func TestHttpServer_HandleRequest_EthGetBlockNumber(t *testing.T) {
 		errorObj := errorResponse["error"].(map[string]interface{})
 		errStr, _ := json.Marshal(errorObj)
 		assert.Contains(t, string(errStr), "ErrEndpointRequestTimeout")
+
+		assert.True(t, gock.IsDone(), "All mocks should have been called")
+	})
+
+	t.Run("UnexpectedPlainErrorResponseFromUpstream", func(t *testing.T) {
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Times(1).
+			Reply(200).
+			BodyString("error code: 1015")
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`)
+
+		assert.Equal(t, http.StatusTooManyRequests, statusCode)
+		assert.Contains(t, body, "error code: 1015")
+
+		assert.True(t, gock.IsDone(), "All mocks should have been called")
+	})
+
+	t.Run("UnexpectedServerErrorResponseFromUpstream", func(t *testing.T) {
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Times(1).
+			Reply(500).
+			BodyString(`{"error":{"code":-39999,"message":"my funky error"}}`)
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`)
+
+		assert.Equal(t, http.StatusInternalServerError, statusCode)
+		assert.Contains(t, body, "-32603")
+		assert.Contains(t, body, "my funky error")
 
 		assert.True(t, gock.IsDone(), "All mocks should have been called")
 	})

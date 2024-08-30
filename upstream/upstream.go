@@ -178,12 +178,12 @@ func (u *Upstream) prepareRequest(normalizedReq *common.NormalizedRequest) error
 }
 
 // Forward is used during lifecycle of a proxied request, it uses writers and readers for better performance
-func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, bool, error) {
+func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	startTime := time.Now()
 	cfg := u.Config()
 
 	if reason, skip := u.shouldSkip(req); skip {
-		return nil, true, common.NewErrUpstreamRequestSkipped(reason, cfg.Id, req)
+		return nil, common.NewErrUpstreamRequestSkipped(reason, cfg.Id)
 	}
 
 	clientType := u.Client.GetType()
@@ -196,19 +196,16 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 		var errLimiters error
 		limitersBudget, errLimiters = u.rateLimitersRegistry.GetBudget(cfg.RateLimitBudget)
 		if errLimiters != nil {
-			return nil, false, errLimiters
+			return nil, errLimiters
 		}
 	}
 
 	netId := req.NetworkId()
 	method, err := req.Method()
 	if err != nil {
-		return nil, false, common.NewErrUpstreamRequest(
+		return nil, common.NewErrUpstreamRequest(
 			err,
-			u.ProjectId,
-			netId,
 			cfg.Id,
-			method,
 			time.Since(startTime),
 			0,
 			0,
@@ -230,7 +227,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 						cfg.Id,
 						method,
 					)
-					return nil, true, common.NewErrUpstreamRateLimitRuleExceeded(
+					return nil, common.NewErrUpstreamRateLimitRuleExceeded(
 						cfg.Id,
 						cfg.RateLimitBudget,
 						fmt.Sprintf("%+v", rule.Config),
@@ -248,7 +245,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 	req.SetLastUpstream(u)
 	err = u.prepareRequest(req)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
 	//
@@ -265,7 +262,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 		ClientTypePimlicoHttpJsonRpc:
 		jsonRpcClient, okClient := u.Client.(HttpJsonRpcClient)
 		if !okClient {
-			return nil, false, common.NewErrJsonRpcExceptionInternal(
+			return nil, common.NewErrJsonRpcExceptionInternal(
 				0,
 				common.JsonRpcErrorServerSideException,
 				fmt.Sprintf("failed to initialize client for upstream %s", cfg.Id),
@@ -319,10 +316,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 				if exec != nil {
 					return nil, common.NewErrUpstreamRequest(
 						errCall,
-						u.ProjectId,
-						netId,
 						cfg.Id,
-						method,
 						time.Since(startTime),
 						exec.Attempts(),
 						exec.Retries(),
@@ -331,10 +325,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 				} else {
 					return nil, common.NewErrUpstreamRequest(
 						errCall,
-						u.ProjectId,
-						netId,
 						cfg.Id,
-						method,
 						time.Since(startTime),
 						1,
 						0,
@@ -343,7 +334,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 				}
 			} else {
 				if resp.IsResultEmptyish() {
-					health.MetricUpstreamEmptyResponseTotal.WithLabelValues(u.ProjectId, cfg.Id, netId, method).Inc()
+					health.MetricUpstreamEmptyResponseTotal.WithLabelValues(u.ProjectId, netId, cfg.Id, method).Inc()
 				}
 			}
 
@@ -361,16 +352,15 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 				})
 
 			if execErr != nil {
-				return nil, false, TranslateFailsafeError(execErr)
+				return nil, TranslateFailsafeError(u.config.Id, method, execErr)
 			}
 
-			return resp, false, nil
+			return resp, nil
 		} else {
-			r, e := tryForward(ctx, nil)
-			return r, false, e
+			return tryForward(ctx, nil)
 		}
 	default:
-		return nil, false, common.NewErrUpstreamClientInitialization(
+		return nil, common.NewErrUpstreamClientInitialization(
 			fmt.Errorf("unsupported client type during forward: %s", clientType),
 			cfg.Id,
 		)
@@ -383,7 +373,7 @@ func (u *Upstream) Executor() failsafe.Executor[*common.NormalizedResponse] {
 
 func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 	pr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_chainId","params":[]}`))
-	resp, _, err := u.Forward(ctx, pr)
+	resp, err := u.Forward(ctx, pr)
 	if err != nil {
 		return "", err
 	}
