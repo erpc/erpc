@@ -29,8 +29,10 @@ FROM alpine:3.18
 WORKDIR /root/
 
 # Copy the binaries from the builder stage
-COPY --from=builder /app/erpc-server .
-COPY --from=builder /app/erpc-server-pprof .
+COPY --from=builder /app/erpc-server /usr/bin/erpc-server
+COPY --from=builder /app/erpc-server-pprof /usr/bin/erpc-server-pprof
+
+RUN chmod 777 /usr/bin/erpc-server*
 
 # 8080 -> erpc
 # 6060 -> pprof (optional)
@@ -40,4 +42,4 @@ EXPOSE 8080 6060
 ENV PPROF=false
 
 # Run the appropriate binary based on the environment variable
-CMD if [ "$PPROF" = "true" ]; then ./erpc-server-pprof; else ./erpc-server; fi
+CMD if [ "$PPROF" = "true" ]; then /usr/bin/erpc-server-pprof; else /usr/bin/erpc-server; fi
