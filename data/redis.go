@@ -133,10 +133,11 @@ func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey, value 
 	}
 
 	r.logger.Debug().Msgf("writing to Redis with partition key: %s and range key: %s", partitionKey, rangeKey)
-	method := strings.ToLower(strings.Split(rangeKey, ":")[0])
-	ttl, found := r.ttls[method]
-	if !found {
-		ttl = time.Duration(0)
+
+	ttl := time.Duration(0)
+	if strings.HasSuffix(partitionKey, ":nil") {
+		method := strings.ToLower(strings.Split(rangeKey, ":")[0])
+		ttl = r.ttls[method]
 	}
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
 	rs := r.client.Set(ctx, key, value, ttl)
