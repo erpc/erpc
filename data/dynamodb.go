@@ -261,6 +261,15 @@ func ensureGlobalSecondaryIndexes(
 	return err
 }
 
+func (d *DynamoDBConnector) SetTTL(_ string, _ string) error {
+	d.logger.Debug().Msgf("Method TTLs not implemented for DynamoDBConnector")
+	return nil
+}
+
+func (d *DynamoDBConnector) HasTTL(_ string) bool {
+	return false
+}
+
 func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, value string) error {
 	if d.client == nil {
 		return fmt.Errorf("DynamoDB client not initialized yet")

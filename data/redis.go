@@ -24,6 +24,7 @@ var _ Connector = (*RedisConnector)(nil)
 type RedisConnector struct {
 	logger *zerolog.Logger
 	client *redis.Client
+	ttls   map[string]time.Duration
 }
 
 func NewRedisConnector(
@@ -112,14 +113,33 @@ func createTLSConfig(tlsCfg *common.TLSConfig) (*tls.Config, error) {
 	return config, nil
 }
 
+func (r *RedisConnector) SetTTL(method string, ttlStr string) error {
+	ttl, err := time.ParseDuration(ttlStr)
+	if err != nil {
+		return err
+	}
+	r.ttls[strings.ToLower(method)] = ttl
+	return nil
+}
+
+func (r *RedisConnector) HasTTL(method string) bool {
+	_, found := r.ttls[strings.ToLower(method)]
+	return found
+}
+
 func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey, value string) error {
 	if r.client == nil {
 		return fmt.Errorf("redis client not initialized yet")
 	}
 
 	r.logger.Debug().Msgf("writing to Redis with partition key: %s and range key: %s", partitionKey, rangeKey)
+	method := strings.ToLower(strings.Split(rangeKey, ":")[0])
+	ttl, found := r.ttls[method]
+	if !found {
+		ttl = time.Duration(0)
+	}
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
-	rs := r.client.Set(ctx, key, value, 0)
+	rs := r.client.Set(ctx, key, value, ttl)
 	return rs.Err()
 }
 
