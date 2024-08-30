@@ -3872,7 +3872,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rateLimitersRegistry,
 		)
 
-		_, err = networksRegistry.RegisterNetwork(
+		ntw, err := networksRegistry.RegisterNetwork(
 			&logger,
 			&common.ProjectConfig{Id: projectID},
 			&common.NetworkConfig{
@@ -3917,20 +3917,25 @@ func TestNetwork_Forward(t *testing.T) {
 
 		wg := sync.WaitGroup{}
 		for _, method := range allMethods {
-			for i := 0; i < 1; i++ {
+			for i := 0; i < 100; i++ {
 				wg.Add(1)
 				go func(method string) {
 					defer wg.Done()
 					upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
 					req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":[],"id":1}`, method)))
-					ups, err := upstreamsRegistry.GetSortedUpstreams(networkID, method)
+					req.SetNetwork(ntw)
+					oups, err := upstreamsRegistry.GetSortedUpstreams(networkID, method)
+					upstreamsRegistry.RLockUpstreams()
+					ups := []*upstream.Upstream{}
+					ups = append(ups, oups...)
+					upstreamsRegistry.RUnlockUpstreams()
 					assert.NoError(t, err)
 					for _, up := range ups {
 						_, err = up.Forward(ctx, req)
 						assert.NoError(t, err)
 					}
 				}(method)
-				time.Sleep(1 * time.Millisecond)
+				// time.Sleep(1 * time.Millisecond)
 			}
 		}
 		wg.Wait()
