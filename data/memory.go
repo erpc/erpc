@@ -42,6 +42,15 @@ func NewMemoryConnector(ctx context.Context, logger *zerolog.Logger, cfg *common
 	}, nil
 }
 
+func (m *MemoryConnector) SetTTL(_ string, _ string) error {
+	m.logger.Debug().Msgf("Method TTLs not implemented for MemoryConnector")
+	return nil
+}
+
+func (d *MemoryConnector) HasTTL(_ string) bool {
+	return false
+}
+
 func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey, value string) error {
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
 	m.cache.Add(key, value)
