@@ -113,7 +113,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		return err
 	}
 
-	lg := c.logger.With().Str("network", req.NetworkId()).Str("method", rpcReq.Method).Logger()
+	lg := c.logger.With().Str("networkId", req.NetworkId()).Str("method", rpcReq.Method).Logger()
 
 	shouldCache, err := shouldCache(lg, resp, rpcReq, rpcResp)
 	if !shouldCache || err != nil {

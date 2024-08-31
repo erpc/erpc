@@ -90,8 +90,8 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(networkId string) error {
 			upstreams = append(upstreams, ups)
 		} else if e != nil {
 			u.logger.Warn().Err(e).
-				Str("upstream", ups.Config().Id).
-				Str("network", networkId).
+				Str("upstreamId", ups.Config().Id).
+				Str("networkId", networkId).
 				Msgf("failed to check if upstream supports network")
 			return e
 		}
@@ -273,6 +273,10 @@ func (u *UpstreamsRegistry) registerUpstreams() error {
 }
 
 func (u *UpstreamsRegistry) scheduleScoreCalculationTimers(ctx context.Context) error {
+	if u.scoreRefreshInterval == 0 {
+		return nil
+	}
+
 	go func() {
 		ticker := time.NewTicker(u.scoreRefreshInterval)
 		defer ticker.Stop()
@@ -299,7 +303,7 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 			Str("projectId", u.prjId).
 			Str("networkId", networkId).
 			Str("method", method).
-			Str("upstream", ups.Config().Id).
+			Str("upstreamId", ups.Config().Id).
 			Interface("metrics", metrics).
 			Msg("queried upstream metrics")
 		p90Latencies = append(p90Latencies, metrics.LatencySecs.P90())
@@ -325,7 +329,7 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 		score := u.calculateScore(normTotalRequests[i], normP90Latencies[i], normErrorRates[i], normThrottledRates[i])
 		u.upstreamScores[ups.Config().Id][networkId][method] = score
 		u.logger.Trace().Str("projectId", u.prjId).
-			Str("upstream", ups.Config().Id).
+			Str("upstreamId", ups.Config().Id).
 			Str("networkId", networkId).
 			Str("method", method).
 			Float64("score", score).

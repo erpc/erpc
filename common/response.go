@@ -16,6 +16,7 @@ type NormalizedResponse struct {
 	upstream  Upstream
 
 	jsonRpcResponse *JsonRpcResponse
+	evmBlockNumber  int64
 }
 
 type ResponseMetadata interface {
@@ -64,6 +65,14 @@ func (r *NormalizedResponse) Hedges() int {
 func (r *NormalizedResponse) SetHedges(hedges int) *NormalizedResponse {
 	r.hedges = hedges
 	return r
+}
+
+func (r *NormalizedResponse) Upstream() Upstream {
+	if r.upstream == nil {
+		return nil
+	}
+
+	return r.upstream
 }
 
 func (r *NormalizedResponse) UpstreamId() string {
@@ -212,6 +221,10 @@ func (r *NormalizedResponse) EvmBlockNumber() (int64, error) {
 		return 0, nil
 	}
 
+	if r.evmBlockNumber != 0 {
+		return r.evmBlockNumber, nil
+	}
+
 	if r.request == nil {
 		return 0, nil
 	}
@@ -225,6 +238,8 @@ func (r *NormalizedResponse) EvmBlockNumber() (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+
+	r.evmBlockNumber = bn
 
 	return bn, nil
 }

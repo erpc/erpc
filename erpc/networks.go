@@ -134,9 +134,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	tryForward := func(
 		u *upstream.Upstream,
 		ctx context.Context,
+		lg *zerolog.Logger,
 	) (resp *common.NormalizedResponse, err error) {
-		lg := u.Logger.With().Str("upstreamId", u.Config().Id).Str("method", method).Str("id", req.Id()).Str("ptr", fmt.Sprintf("%p", req)).Logger()
-
 		lg.Debug().Msgf("trying to forward request to upstream")
 
 		resp, err = u.Forward(ctx, req)
@@ -201,21 +200,22 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 				coordMu.Unlock()
 
+				ulg := lg.With().Str("upstreamId", u.Config().Id).Logger()
 				resp, err := n.normalizeResponse(
-					tryForward(u, exec.Context()),
+					tryForward(u, exec.Context(), &ulg),
 				)
 
 				isClientErr := err != nil && common.HasErrorCode(err, common.ErrCodeEndpointClientSideException)
 				isHedged := exec.Hedges() > 0
 
 				if isHedged && err != nil && errors.Is(err, context.Canceled) {
-					lg.Debug().Err(err).Msgf("discarding hedged request to upstream %s", u.Config().Id)
+					ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
 					return nil, common.NewErrUpstreamHedgeCancelled(u.Config().Id)
 				}
 				if isHedged {
-					lg.Debug().Msgf("forwarded hedged request to upstream %s", u.Config().Id)
+					ulg.Debug().Msgf("forwarded hedged request to upstream")
 				} else {
-					lg.Debug().Msgf("forwarded request to upstream %s", u.Config().Id)
+					ulg.Debug().Msgf("forwarded request to upstream")
 				}
 
 				if err != nil {
