@@ -264,23 +264,23 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 			}
 		}
 
-		// Retry empty responses on network-level to give a chance for another upstream to
-		// try fetching the data as the current upstream is less likely to have the data ready on the next retry attempt.
-		if scope == ScopeNetwork {
-			if result != nil && !result.IsObjectNull() {
-				req := result.Request()
-				isEmpty := result.IsResultEmptyish()
+		if scope == ScopeNetwork && result != nil && !result.IsObjectNull() {
+			req := result.Request()
+			rds := req.Directives()
 
+			// Retry empty responses on network-level to give a chance for another upstream to
+			// try fetching the data as the current upstream is less likely to have the data ready on the next retry attempt.
+			if rds.RetryEmpty {
+				isEmpty := result.IsResultEmptyish()
 				// no Retry-Empty directive + "empty" response -> No Retry
-				rds := req.Directives()
 				if !rds.RetryEmpty && isEmpty {
 					return false
 				}
-
-				ucfg := req.LastUpstream().Config()
+				ups := result.Upstream()
+				ucfg := ups.Config()
 				if ucfg.Evm != nil {
-					// Retry-Empty directive + "empty" response + block is finalized -> No Retry
-					if err == nil && rds.RetryEmpty && isEmpty {
+					// has Retry-Empty directive + "empty" response + node is synced + block is finalized -> No Retry
+					if err == nil && rds.RetryEmpty && isEmpty && !ucfg.Evm.Syncing {
 						bn, ebn := req.EvmBlockNumber()
 						if ebn == nil && bn > 0 {
 							fin, efin := req.Network().EvmIsBlockFinalized(bn)
@@ -290,8 +290,26 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 						}
 					}
 				}
-				if rds.RetryEmpty && isEmpty {
+				if isEmpty {
 					return true
+				}
+			}
+
+			// For pending transactions retry on network-level to give a chance of receiving
+			// the full TX data when it is available.
+			if rds.RetryPending {
+				method, _ := result.Request().Method()
+				switch method {
+				case "eth_getTransactionReceipt",
+					"eth_getTransactionByHash",
+					"eth_getTransactionByBlockHashAndIndex",
+					"eth_getTransactionByBlockNumberAndIndex":
+					blkNum, err := result.EvmBlockNumber()
+					if err == nil {
+						if blkNum == 0 {
+							return true
+						}
+					}
 				}
 			}
 		}

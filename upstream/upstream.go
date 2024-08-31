@@ -213,7 +213,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 		)
 	}
 
-	lg := u.Logger.With().Str("method", method).Str("network", netId).Logger()
+	lg := u.Logger.With().Str("method", method).Str("networkId", netId).Logger()
 
 	if limitersBudget != nil {
 		lg.Trace().Str("budget", cfg.RateLimitBudget).Msgf("checking upstream-level rate limiters budget")
@@ -339,24 +339,6 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 			}
 
 			u.recordRequestSuccess(method)
-
-			m, _ := resp.Request().Method()
-			if m == "eth_getTransactionByHash" || m == "eth_getTransactionReceipt" {
-				jrr, _ := resp.JsonRpcResponse()
-				if jrr != nil && jrr.Result != nil {
-					res, err := jrr.ParsedResult()
-					if err == nil {
-						r, ok := res.(map[string]interface{})
-						if ok {
-							bs, es := r["blockNumber"].(string)
-							if !es && bs == "" {
-								lg.Warn().Str("method", m).Interface("result", res).Msgf("BAAAAAD RESPONSE")
-							}
-						}
-					}
-				}
-
-			}
 
 			return resp, nil
 		}
@@ -596,7 +578,9 @@ func (u *Upstream) detectFeatures() error {
 
 	if cfg.Type == common.UpstreamTypeEvm {
 		if cfg.Evm == nil {
-			cfg.Evm = &common.EvmUpstreamConfig{}
+			cfg.Evm = &common.EvmUpstreamConfig{
+				Syncing: true,
+			}
 		}
 		if cfg.Evm.ChainId == 0 {
 			nid, err := u.EvmGetChainId(context.Background())
