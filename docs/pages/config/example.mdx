@@ -69,14 +69,18 @@ database:
 
 # The main server for eRPC to listen for requests.
 server:
+  listenV4: true
   httpHostV4: "0.0.0.0"
+  listenV6: false
   httpHostV6: "[::]"
   httpPort: 4000
 
 # Optional Prometheus metrics server.
 metrics:
   enabled: true
+  listenV4: true
   hostV4: "0.0.0.0"
+  listenV6: false
   hostV6: "[::]"
   port: 4001
 
