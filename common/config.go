@@ -87,8 +87,8 @@ type DynamoDBConnectorConfig struct {
 }
 
 type PostgreSQLConnectorConfig struct {
-	ConnectionUri string `yaml:"connectionUri" json:"connectionUri"`
-	Table         string `yaml:"table" json:"table"`
+	ConnectionUri         string `yaml:"connectionUri" json:"connectionUri"`
+	Table                 string `yaml:"table" json:"table"`
 }
 
 func (p *PostgreSQLConnectorConfig) MarshalJSON() ([]byte, error) {

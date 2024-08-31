@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/redis/go-redis/v9"
@@ -32,6 +33,34 @@ func NewRedisConnector(
 ) (*RedisConnector, error) {
 	logger.Debug().Msgf("creating RedisConnector with config: %+v", cfg)
 
+	connector := &RedisConnector{
+		logger: logger,
+	}
+
+	// Attempt the actual connecting in background to avoid blocking the main thread.
+	go func() {
+		for i := 0; i < 30; i++ {
+			select {
+			case <-ctx.Done():
+				logger.Error().Msg("Context cancelled while attempting to connect to Redis")
+				return
+			default:
+				logger.Debug().Msgf("attempting to connect to Redis (attempt %d of 30)", i+1)
+				err := connector.connect(ctx, cfg)
+				if err == nil {
+					return
+				}
+				logger.Warn().Msgf("failed to connect to Redis (attempt %d of 30): %s", i+1, err)
+				time.Sleep(10 * time.Second)
+			}
+		}
+		logger.Error().Msg("Failed to connect to Redis after maximum attempts")
+	}()
+
+	return connector, nil
+}
+
+func (r *RedisConnector) connect(ctx context.Context, cfg *common.RedisConnectorConfig) error {
 	options := &redis.Options{
 		Addr:     cfg.Addr,
 		Password: cfg.Password,
@@ -41,28 +70,20 @@ func NewRedisConnector(
 	if cfg.TLS != nil && cfg.TLS.Enabled {
 		tlsConfig, err := createTLSConfig(cfg.TLS)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create TLS config: %w", err)
+			return fmt.Errorf("failed to create TLS config: %w", err)
 		}
 		options.TLSConfig = tlsConfig
 	}
 
-	client := redis.NewClient(options)
+	r.client = redis.NewClient(options)
 
 	// Test the connection
-	_, err := client.Ping(ctx).Result()
+	_, err := r.client.Ping(ctx).Result()
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
+		return fmt.Errorf("failed to connect to Redis: %w", err)
 	}
 
-	go func() {
-		<-ctx.Done()
-		client.Close()
-	}()
-
-	return &RedisConnector{
-		logger: logger,
-		client: client,
-	}, nil
+	return nil
 }
 
 func createTLSConfig(tlsCfg *common.TLSConfig) (*tls.Config, error) {
@@ -92,6 +113,10 @@ func createTLSConfig(tlsCfg *common.TLSConfig) (*tls.Config, error) {
 }
 
 func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey, value string) error {
+	if r.client == nil {
+		return fmt.Errorf("redis client not initialized yet")
+	}
+
 	r.logger.Debug().Msgf("writing to Redis with partition key: %s and range key: %s", partitionKey, rangeKey)
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
 	rs := r.client.Set(ctx, key, value, 0)
@@ -99,6 +124,10 @@ func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey, value 
 }
 
 func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) (string, error) {
+	if r.client == nil {
+		return "", fmt.Errorf("redis client not initialized yet")
+	}
+
 	var err error
 	var value string
 
@@ -128,6 +157,10 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 }
 
 func (r *RedisConnector) Delete(ctx context.Context, index, partitionKey, rangeKey string) error {
+	if r.client == nil {
+		return fmt.Errorf("redis client not initialized yet")
+	}
+
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
 
 	if strings.Contains(key, "*") {
@@ -141,8 +174,4 @@ func (r *RedisConnector) Delete(ctx context.Context, index, partitionKey, rangeK
 		rs := r.client.Del(ctx, key)
 		return rs.Err()
 	}
-}
-
-func (r *RedisConnector) Close(ctx context.Context) error {
-	return r.client.Close()
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/jackc/pgx/v4"
@@ -18,6 +19,7 @@ const (
 var _ Connector = (*PostgreSQLConnector)(nil)
 
 type PostgreSQLConnector struct {
+	cfg    *common.PostgreSQLConnectorConfig
 	logger *zerolog.Logger
 	conn   *pgxpool.Pool
 	table  string
@@ -25,10 +27,41 @@ type PostgreSQLConnector struct {
 
 func NewPostgreSQLConnector(ctx context.Context, logger *zerolog.Logger, cfg *common.PostgreSQLConnectorConfig) (*PostgreSQLConnector, error) {
 	logger.Debug().Msgf("creating PostgreSQLConnector with for table: %s", cfg.Table)
+	p := &PostgreSQLConnector{
+		cfg:    cfg,
+		logger: logger,
+		table:  cfg.Table,
+	}
 
-	conn, err := pgxpool.Connect(ctx, cfg.ConnectionUri)
+	// Attempt the actual connecting in background to avoid blocking the main thread.
+	// Retry every 10 seconds until success and give up after 30 failed attempts.
+	go func() {
+		for i := 0; i < 30; i++ {
+			select {
+			case <-ctx.Done():
+				logger.Error().Msg("Context cancelled while attempting to connect to PostgreSQL")
+				return
+			default:
+				logger.Debug().Msgf("attempting to connect to PostgreSQL (attempt %d of 30)", i+1)
+				err := p.connect(ctx)
+				if err == nil {
+					return
+				}
+				logger.Warn().Msgf("failed to connect to PostgreSQL (attempt %d of 30): %s", i+1, err)
+				time.Sleep(10 * time.Second)
+			}
+		}
+		logger.Error().Msg("Failed to connect to PostgreSQL after maximum attempts")
+	}()
+
+
+	return p, nil
+}
+
+func (p *PostgreSQLConnector) connect(ctx context.Context) error {
+	conn, err := pgxpool.Connect(ctx, p.cfg.ConnectionUri)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to PostgreSQL: %w", err)
+		return fmt.Errorf("failed to connect to PostgreSQL: %w", err)
 	}
 
 	// Create table if not exists
@@ -39,27 +72,29 @@ func NewPostgreSQLConnector(ctx context.Context, logger *zerolog.Logger, cfg *co
 			value TEXT,
 			PRIMARY KEY (partition_key, range_key)
 		)
-	`, cfg.Table))
+	`, p.cfg.Table))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create table: %w", err)
+		return fmt.Errorf("failed to create table: %w", err)
 	}
 
 	// Create index for reverse lookups
 	_, err = conn.Exec(ctx, fmt.Sprintf(`
 		CREATE INDEX IF NOT EXISTS idx_reverse ON %s (range_key, partition_key)
-	`, cfg.Table))
+	`, p.cfg.Table))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create reverse index: %w", err)
+		return fmt.Errorf("failed to create reverse index: %w", err)
 	}
 
-	return &PostgreSQLConnector{
-		logger: logger,
-		conn:   conn,
-		table:  cfg.Table,
-	}, nil
+	p.conn = conn
+
+	return nil
 }
 
 func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey, value string) error {
+	if p.conn == nil {
+		return fmt.Errorf("PostgreSQLConnector not connected yet")
+	}
+
 	p.logger.Debug().Msgf("writing to PostgreSQL with partition key: %s and range key: %s", partitionKey, rangeKey)
 
 	_, err := p.conn.Exec(ctx, fmt.Sprintf(`
@@ -73,6 +108,10 @@ func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey, v
 }
 
 func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) (string, error) {
+	if p.conn == nil {
+		return "", fmt.Errorf("PostgreSQLConnector not connected yet")
+	}
+
 	var query string
 	var args []interface{}
 
@@ -149,6 +188,10 @@ func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, index, partit
 }
 
 func (p *PostgreSQLConnector) Delete(ctx context.Context, index, partitionKey, rangeKey string) error {
+	if p.conn == nil {
+		return fmt.Errorf("PostgreSQLConnector not connected yet")
+	}
+
 	if strings.HasSuffix(rangeKey, "*") {
 		return p.deleteWithPrefix(ctx, index, partitionKey, rangeKey)
 	} else {
@@ -191,9 +234,4 @@ func (p *PostgreSQLConnector) deleteWithPrefix(ctx context.Context, index, parti
 
 	_, err := p.conn.Exec(ctx, query, args...)
 	return err
-}
-
-func (p *PostgreSQLConnector) Close(ctx context.Context) error {
-	p.conn.Close()
-	return nil
 }
