@@ -5,6 +5,9 @@ module.exports = {
 	"batch": {
 		title: "Batching",
 	},
+	"directives": {
+		title: "Directives",
+	},
 	"production": {
 		title: "Production",
 	},
