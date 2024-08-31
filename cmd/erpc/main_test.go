@@ -103,6 +103,7 @@ logLevel: DEBUG
 
 server:
   httpHostV4: "localhost"
+  listenV4: true
   httpPort: -1
 `)
 
@@ -175,6 +176,7 @@ logLevel: DEBUG
 
 server:
   httpHostV4: "` + localHost + `"
+  listenV4: true
   httpPort: ` + localPort + `
 
 projects:

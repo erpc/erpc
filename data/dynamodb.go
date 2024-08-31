@@ -2,7 +2,6 @@ package data
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -38,12 +37,44 @@ func NewDynamoDBConnector(
 ) (*DynamoDBConnector, error) {
 	logger.Debug().Msgf("creating DynamoDBConnector with config: %+v", cfg)
 
-	sess, err := createSession(cfg)
-	if err != nil {
-		return nil, err
+	connector := &DynamoDBConnector{
+		logger:           logger,
+		table:            cfg.Table,
+		partitionKeyName: cfg.PartitionKeyName,
+		rangeKeyName:     cfg.RangeKeyName,
+		reverseIndexName: cfg.ReverseIndexName,
 	}
 
-	client := dynamodb.New(sess, &aws.Config{
+	// Attempt the actual connecting in background to avoid blocking the main thread.
+	go func() {
+		for i := 0; i < 30; i++ {
+			select {
+			case <-ctx.Done():
+				logger.Error().Msg("Context cancelled while attempting to connect to DynamoDB")
+				return
+			default:
+				logger.Debug().Msgf("attempting to connect to DynamoDB (attempt %d of 30)", i+1)
+				err := connector.connect(ctx, cfg)
+				if err == nil {
+					return
+				}
+				logger.Warn().Msgf("failed to connect to DynamoDB (attempt %d of 30): %s", i+1, err)
+				time.Sleep(10 * time.Second)
+			}
+		}
+		logger.Error().Msg("Failed to connect to DynamoDB after maximum attempts")
+	}()
+
+	return connector, nil
+}
+
+func (d *DynamoDBConnector) connect(ctx context.Context, cfg *common.DynamoDBConnectorConfig) error {
+	sess, err := createSession(cfg)
+	if err != nil {
+		return err
+	}
+
+	d.client = dynamodb.New(sess, &aws.Config{
 		Endpoint: aws.String(cfg.Endpoint),
 		HTTPClient: &http.Client{
 			Timeout: 3 * time.Second,
@@ -51,30 +82,20 @@ func NewDynamoDBConnector(
 	})
 
 	if cfg.Table == "" {
-		return nil, fmt.Errorf("missing table name for dynamodb connector")
+		return fmt.Errorf("missing table name for dynamodb connector")
 	}
 
-	sctx, done := context.WithTimeoutCause(ctx, 15*time.Second, errors.New("dynamodb connector timeout during create table"))
-	defer done()
-
-	err = createTableIfNotExists(sctx, logger, client, cfg)
+	err = createTableIfNotExists(ctx, d.logger, d.client, cfg)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	err = ensureGlobalSecondaryIndexes(sctx, logger, client, cfg)
+	err = ensureGlobalSecondaryIndexes(ctx, d.logger, d.client, cfg)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	return &DynamoDBConnector{
-		logger:           logger,
-		client:           client,
-		table:            cfg.Table,
-		partitionKeyName: cfg.PartitionKeyName,
-		rangeKeyName:     cfg.RangeKeyName,
-		reverseIndexName: cfg.ReverseIndexName,
-	}, nil
+	return nil
 }
 
 func createSession(cfg *common.DynamoDBConnectorConfig) (*session.Session, error) {
@@ -241,6 +262,10 @@ func ensureGlobalSecondaryIndexes(
 }
 
 func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, value string) error {
+	if d.client == nil {
+		return fmt.Errorf("DynamoDB client not initialized yet")
+	}
+
 	d.logger.Debug().Msgf("writing to dynamodb with partition key: %s and range key: %s", partitionKey, rangeKey)
 
 	item := map[string]*dynamodb.AttributeValue{
@@ -264,6 +289,10 @@ func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, val
 }
 
 func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) (string, error) {
+	if d.client == nil {
+		return "", fmt.Errorf("DynamoDB client not initialized yet")
+	}
+
 	var value string
 
 	if index == ConnectorReverseIndex {
@@ -339,6 +368,10 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 }
 
 func (d *DynamoDBConnector) Delete(ctx context.Context, index, partitionKey, rangeKey string) error {
+	if d.client == nil {
+		return fmt.Errorf("DynamoDB client not initialized yet")
+	}
+
 	if strings.HasSuffix(rangeKey, "*") {
 		return d.deleteWithPrefix(ctx, index, partitionKey, rangeKey)
 	} else {
@@ -452,8 +485,4 @@ func (d *DynamoDBConnector) deleteKeys(ctx context.Context, keys []map[string]*d
 	})
 
 	return err
-}
-
-func (d *DynamoDBConnector) Close(ctx context.Context) error {
-	return nil
 }
