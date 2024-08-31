@@ -340,6 +340,24 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 
 			u.recordRequestSuccess(method)
 
+			m, _ := resp.Request().Method()
+			if m == "eth_getTransactionByHash" || m == "eth_getTransactionReceipt" {
+				jrr, _ := resp.JsonRpcResponse()
+				if jrr != nil && jrr.Result != nil {
+					res, err := jrr.ParsedResult()
+					if err == nil {
+						r, ok := res.(map[string]interface{})
+						if ok {
+							bs, es := r["blockNumber"].(string)
+							if !es && bs == "" {
+								lg.Warn().Str("method", m).Interface("result", res).Msgf("BAAAAAD RESPONSE")
+							}
+						}
+					}
+				}
+
+			}
+
 			return resp, nil
 		}
 

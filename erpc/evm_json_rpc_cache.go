@@ -98,6 +98,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).
+		WithFromCache(true).
 		WithJsonRpcResponse(jrr), nil
 }
 
@@ -114,9 +115,9 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 
 	lg := c.logger.With().Str("network", req.NetworkId()).Str("method", rpcReq.Method).Logger()
 
-	if resp == nil || resp.IsObjectNull() || resp.IsResultEmptyish() || rpcResp == nil || rpcResp.Result == nil || rpcResp.Error != nil {
-		lg.Debug().Msg("not caching response because it has no result or has error")
-		return nil
+	shouldCache, err := shouldCache(lg, resp, rpcReq, rpcResp)
+	if !shouldCache || err != nil {
+		return err
 	}
 
 	blockRef, blockNumber, err := common.ExtractEvmBlockReference(rpcReq, rpcResp)
@@ -167,6 +168,38 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 	ctx, cancel := context.WithTimeoutCause(ctx, 5*time.Second, errors.New("evm json-rpc cache driver timeout during set"))
 	defer cancel()
 	return c.conn.Set(ctx, pk, rk, string(resultBytes))
+}
+
+func shouldCache(lg zerolog.Logger, resp *common.NormalizedResponse, rpcReq *common.JsonRpcRequest, rpcResp *common.JsonRpcResponse) (bool, error) {
+	if resp == nil || resp.IsObjectNull() || resp.IsResultEmptyish() || rpcResp == nil || rpcResp.Result == nil || rpcResp.Error != nil {
+		lg.Debug().Msg("skip caching because it has no result or has error")
+		return false, nil
+	}
+
+	switch rpcReq.Method {
+	case "eth_getTransactionByHash",
+		"eth_getTransactionReceipt",
+		"eth_getTransactionByBlockHashAndIndex",
+		"eth_getTransactionByBlockNumberAndIndex":
+
+		// When transactions are not yet included in a block blockNumber/blockHash is still unknown
+		// For these transaction for now we will not cache the response, but still must be returned
+		// to the client because they might be intentionally looking for pending txs.
+		// Is there a reliable way to cache these and bust in-case of a reorg?
+		blkRef, blkNum, err := common.ExtractEvmBlockReferenceFromResponse(rpcReq, rpcResp)
+		if err != nil {
+			lg.Error().Err(err).Msg("skip caching because error extracting block reference from response")
+			return false, err
+		}
+		if blkRef == "" && blkNum == 0 {
+			lg.Debug().Msg("skip caching because block number/hash is not yet available (unconfirmed tx?)")
+			return false, nil
+		}
+
+		return true, nil
+	}
+
+	return true, nil
 }
 
 func (c *EvmJsonRpcCache) DeleteByGroupKey(ctx context.Context, groupKeys ...string) error {

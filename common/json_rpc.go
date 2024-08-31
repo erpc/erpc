@@ -149,18 +149,20 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 			Data    string `json:"data,omitempty"`
 		}{}
 		if err := sonic.Unmarshal(data, &sp1); err == nil {
-			r.Error = NewErrJsonRpcExceptionExternal(
-				sp1.Code,
-				sp1.Message,
-				sp1.Data,
-			)
-			return nil
+			if sp1.Code != 0 || sp1.Message != "" || sp1.Data != "" {
+				r.Error = NewErrJsonRpcExceptionExternal(
+					sp1.Code,
+					sp1.Message,
+					sp1.Data,
+				)
+				return nil
+			}
 		}
 		// Special case #2: there is only "error" field with string in the body
 		sp2 := &struct {
 			Error string `json:"error"`
 		}{}
-		if err := sonic.Unmarshal(data, &sp2); err == nil {
+		if err := sonic.Unmarshal(data, &sp2); err == nil && sp2.Error != "" {
 			r.Error = NewErrJsonRpcExceptionExternal(
 				int(JsonRpcErrorServerSideException),
 				sp2.Error,
@@ -169,11 +171,25 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 			return nil
 		}
 
-		r.Error = NewErrJsonRpcExceptionExternal(
-			int(JsonRpcErrorServerSideException),
-			string(data),
-			"",
-		)
+		if len(data) == 0 {
+			r.Error = NewErrJsonRpcExceptionExternal(
+				int(JsonRpcErrorServerSideException),
+				"unexpected empty response from upstream endpoint",
+				"",
+			)
+		} else if data[0] == '{' || data[0] == '[' {
+			r.Error = NewErrJsonRpcExceptionExternal(
+				int(JsonRpcErrorServerSideException),
+				fmt.Sprintf("unexpected response json structure from upstream: %s", string(data)),
+				"",
+			)
+		} else {
+			r.Error = NewErrJsonRpcExceptionExternal(
+				int(JsonRpcErrorServerSideException),
+				string(data),
+				"",
+			)
+		}
 		return nil
 	}
 
