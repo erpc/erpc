@@ -84,6 +84,11 @@ func (r *NormalizedResponse) WithRequest(req *NormalizedRequest) *NormalizedResp
 	return r
 }
 
+func (r *NormalizedResponse) WithFromCache(fromCache bool) *NormalizedResponse {
+	r.fromCache = fromCache
+	return r
+}
+
 func (r *NormalizedResponse) WithBody(body []byte) *NormalizedResponse {
 	r.body = body
 	return r
@@ -183,6 +188,7 @@ func (r *NormalizedResponse) JsonRpcResponse() (*JsonRpcResponse, error) {
 			)
 		}
 	}
+
 	r.jsonRpcResponse = jrr
 
 	return jrr, nil

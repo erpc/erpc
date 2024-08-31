@@ -117,7 +117,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			lg.Debug().Err(err).Msgf("could not find response in cache")
 			health.MetricNetworkCacheMisses.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 		} else if resp != nil && !resp.IsObjectNull() && !resp.IsResultEmptyish() {
-			resp.SetFromCache(true)
 			lg.Info().Msgf("response served from cache")
 			health.MetricNetworkCacheHits.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 			inf.Close(resp, err)
@@ -328,7 +327,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 func (n *Network) EvmIsBlockFinalized(blockNumber int64) (bool, error) {
 	if n.evmBlockTracker == nil {
-		return false, nil
+		return false, common.NewErrFinalizedBlockUnavailable(blockNumber)
 	}
 
 	finalizedBlock := n.evmBlockTracker.FinalizedBlock()

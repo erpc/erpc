@@ -485,7 +485,7 @@ var NewErrFinalizedBlockUnavailable = func(blockNumber int64) error {
 			Code:    "ErrFinalizedBlockUnavailable",
 			Message: "finalized/latest blocks are not available yet when checking block finality",
 			Details: map[string]interface{}{
-				"blockNumber": fmt.Sprintf("%+v", blockNumber),
+				"blockNumber": blockNumber,
 			},
 		},
 	}

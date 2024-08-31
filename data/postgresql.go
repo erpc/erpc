@@ -54,7 +54,6 @@ func NewPostgreSQLConnector(ctx context.Context, logger *zerolog.Logger, cfg *co
 		logger.Error().Msg("Failed to connect to PostgreSQL after maximum attempts")
 	}()
 
-
 	return p, nil
 }
 
