@@ -81,6 +81,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Set up Docker tags
+        id: tag_param
+        run: |
+          REPO="${{ github.repository }}"
+          echo "repo=${REPO@L}" >> "$GITHUB_OUTPUT"
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
@@ -91,5 +97,5 @@ jobs:
             VERSION=${{ github.event.inputs.version_tag }}
             COMMIT_SHA=${{ github.sha }}
           tags: |
-            ghcr.io/erpc/erpc:latest
-            ghcr.io/erpc/erpc:${{ github.event.inputs.version_tag }}
+            ghcr.io/${{ steps.tag_param.outputs.repo }}:latest
+            ghcr.io/${{ steps.tag_param.outputs.repo }}:${{ github.event.inputs.version_tag }}
