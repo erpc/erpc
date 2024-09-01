@@ -115,7 +115,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 
 	lg := c.logger.With().Str("networkId", req.NetworkId()).Str("method", rpcReq.Method).Logger()
 
-	shouldCache, err := shouldCache(lg, resp, rpcReq, rpcResp)
+	shouldCache, err := shouldCache(lg, req, resp, rpcReq, rpcResp)
 	if !shouldCache || err != nil {
 		return err
 	}
@@ -170,9 +170,38 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 	return c.conn.Set(ctx, pk, rk, string(resultBytes))
 }
 
-func shouldCache(lg zerolog.Logger, resp *common.NormalizedResponse, rpcReq *common.JsonRpcRequest, rpcResp *common.JsonRpcResponse) (bool, error) {
-	if resp == nil || resp.IsObjectNull() || resp.IsResultEmptyish() || rpcResp == nil || rpcResp.Result == nil || rpcResp.Error != nil {
-		lg.Debug().Msg("skip caching because it has no result or has error")
+func shouldCache(
+	lg zerolog.Logger,
+	req *common.NormalizedRequest,
+	resp *common.NormalizedResponse,
+	rpcReq *common.JsonRpcRequest,
+	rpcResp *common.JsonRpcResponse,
+) (bool, error) {
+	if resp == nil ||
+		resp.IsObjectNull() ||
+		resp.IsResultEmptyish() ||
+		rpcResp == nil ||
+		rpcResp.Result == nil ||
+		rpcResp.Error != nil {
+		ups := resp.Upstream()
+		if ups != nil {
+			upsCfg := ups.Config()
+			if upsCfg.Evm != nil {
+				if upsCfg.Evm.Syncing != nil && !*upsCfg.Evm.Syncing {
+					blkNum, err := req.EvmBlockNumber()
+					if err != nil && blkNum > 0 {
+						ntw := req.Network()
+						if ntw != nil {
+							if fin, err := ntw.EvmIsBlockFinalized(blkNum); err != nil && fin {
+								return fin, nil
+							}
+						}
+					}
+				}
+			}
+		}
+
+		lg.Debug().Msg("skip caching because it has no result or has error and we cannot determine finality and sync-state")
 		return false, nil
 	}
 
