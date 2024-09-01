@@ -121,7 +121,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	// 2) Get from cache if exists
-	if n.cacheDal != nil {
+	if n.cacheDal != nil && !req.SkipCacheRead() {
 		lg.Debug().Msgf("checking cache for request")
 		cctx, cancel := context.WithTimeoutCause(ctx, 2*time.Second, errors.New("cache driver timeout during get"))
 		defer cancel()
