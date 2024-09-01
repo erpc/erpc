@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/mock"
 )
 
-func createFixtures(finBlockNumber int64, latestBlockNumber int64) (*data.MockConnector, *Network, *EvmJsonRpcCache) {
+func createFixtures(finBlockNumber int64, latestBlockNumber int64, syncing *bool) (*data.MockConnector, *Network, *EvmJsonRpcCache) {
 	logger := zerolog.New(zerolog.NewConsoleWriter())
 
 	mockConnector := &data.MockConnector{}
@@ -33,6 +33,7 @@ func createFixtures(finBlockNumber int64, latestBlockNumber int64) (*data.MockCo
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId: 123,
+			Syncing: syncing,
 		},
 	}, clr, nil, vnr, &logger, nil)
 	if err != nil {
@@ -57,7 +58,7 @@ func createFixtures(finBlockNumber int64, latestBlockNumber int64) (*data.MockCo
 
 func TestEvmJsonRpcCache_Set(t *testing.T) {
 	t.Run("DoNotCacheWhenEthGetTransactionByHashMissingBlockNumber", func(t *testing.T) {
-		mockConnector, _, cache := createFixtures(10, 15)
+		mockConnector, _, cache := createFixtures(10, 15, nil)
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionByHash","params":["0x123"],"id":1}`))
 		resp := common.NewNormalizedResponse().WithBody([]byte(`{"hash":"0x123","blockNumber":null}`))
@@ -69,7 +70,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("CacheIfBlockNumberIsFinalizedWhenBlockIsIrrelevantForPrimaryKey", func(t *testing.T) {
-		mockConnector, mockNetwork, cache := createFixtures(10, 15)
+		mockConnector, mockNetwork, cache := createFixtures(10, 15, nil)
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xabc",false],"id":1}`))
 		req.SetNetwork(mockNetwork)
@@ -84,7 +85,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("CacheIfBlockNumberIsFinalizedWhenBlockIsUsedForPrimaryKey", func(t *testing.T) {
-		mockConnector, mockNetwork, cache := createFixtures(10, 15)
+		mockConnector, mockNetwork, cache := createFixtures(10, 15, nil)
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x2",false],"id":1}`))
 		req.SetNetwork(mockNetwork)
@@ -99,7 +100,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("SkipWhenNoRefAndNoBlockNumberFound", func(t *testing.T) {
-		mockConnector, _, cache := createFixtures(10, 15)
+		mockConnector, _, cache := createFixtures(10, 15, nil)
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
 		resp := common.NewNormalizedResponse().WithBody([]byte(`"0x1234"`))
@@ -111,7 +112,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("CacheIfBlockRefFoundWhetherBlockNumberExistsOrNot", func(t *testing.T) {
-		mockConnector, mockNetwork, cache := createFixtures(10, 15)
+		mockConnector, mockNetwork, cache := createFixtures(10, 15, nil)
 
 		testCases := []struct {
 			name        string
@@ -155,7 +156,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("CacheResponseForFinalizedBlock", func(t *testing.T) {
-		mockConnector, mockNetwork, cache := createFixtures(10, 15)
+		mockConnector, mockNetwork, cache := createFixtures(10, 15, nil)
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1",false],"id":1}`))
 		req.SetNetwork(mockNetwork)
@@ -170,7 +171,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("SkipCachingForUnfinalizedBlock", func(t *testing.T) {
-		mockConnector, _, cache := createFixtures(10, 15)
+		mockConnector, _, cache := createFixtures(10, 15, nil)
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x399",false],"id":1}`))
 		resp := common.NewNormalizedResponse().WithBody([]byte(`{"result":{"number":"0x399","hash":"0xdef"}}`))
@@ -180,11 +181,78 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		assert.NoError(t, err)
 		mockConnector.AssertNotCalled(t, "Set")
 	})
+
+	t.Run("ShouldNotCacheEmptyResponseIfNodeNotSynced", func(t *testing.T) {
+		mockConnector, mockNetwork, cache := createFixtures(10, 15, &common.TRUE)
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
+		req.SetNetwork(mockNetwork)
+		resp := common.NewNormalizedResponse().WithBody([]byte(`{"result":"0x0"}`))
+
+		err := cache.Set(context.Background(), req, resp)
+
+		assert.NoError(t, err)
+		mockConnector.AssertNotCalled(t, "Set")
+	})
+
+	t.Run("ShouldNotCacheEmptyResponseIfUnknownSyncState", func(t *testing.T) {
+		mockConnector, mockNetwork, cache := createFixtures(10, 15, nil)
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
+		req.SetNetwork(mockNetwork)
+		resp := common.NewNormalizedResponse().WithBody([]byte(`{"result":"0x0"}`))
+
+		err := cache.Set(context.Background(), req, resp)
+
+		assert.NoError(t, err)
+		mockConnector.AssertNotCalled(t, "Set")
+	})
+
+	t.Run("ShouldNotCacheEmptyResponseIfBlockNotFinalized", func(t *testing.T) {
+		mockConnector, mockNetwork, cache := createFixtures(10, 15, &common.FALSE)
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x14"],"id":1}`))
+		req.SetNetwork(mockNetwork)
+		resp := common.NewNormalizedResponse().WithBody([]byte(`{"result":"0x0"}`))
+
+		err := cache.Set(context.Background(), req, resp)
+
+		assert.NoError(t, err)
+		mockConnector.AssertNotCalled(t, "Set")
+	})
+
+	t.Run("ShouldNotCacheEmptyResponseIfCannotDetermineBlockNumber", func(t *testing.T) {
+		mockConnector, mockNetwork, cache := createFixtures(10, 15, &common.FALSE)
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
+		req.SetNetwork(mockNetwork)
+		resp := common.NewNormalizedResponse().WithBody([]byte(`{"result":"0x0"}`))
+
+		err := cache.Set(context.Background(), req, resp)
+
+		assert.NoError(t, err)
+		mockConnector.AssertNotCalled(t, "Set")
+	})
+
+	t.Run("ShouldCacheEmptyResponseIfNodeSyncedAndBlockFinalized", func(t *testing.T) {
+		mockConnector, mockNetwork, cache := createFixtures(10, 15, &common.FALSE)
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
+		req.SetNetwork(mockNetwork)
+		resp := common.NewNormalizedResponse().WithBody([]byte(`{"result":"0x0"}`))
+
+		mockConnector.On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+		err := cache.Set(context.Background(), req, resp)
+
+		assert.NoError(t, err)
+		mockConnector.AssertCalled(t, "Set", mock.Anything, "evm:123:5", mock.Anything, mock.Anything)
+	})
 }
 
 func TestEvmJsonRpcCache_Get(t *testing.T) {
 	t.Run("ReturnCachedResponseForFinalizedBlock", func(t *testing.T) {
-		mockConnector, mockNetwork, cache := createFixtures(10, 15)
+		mockConnector, mockNetwork, cache := createFixtures(10, 15, nil)
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1",false],"id":1}`))
 		req.SetNetwork(mockNetwork)
@@ -203,7 +271,7 @@ func TestEvmJsonRpcCache_Get(t *testing.T) {
 	})
 
 	t.Run("SkipCacheForUnfinalizedBlock", func(t *testing.T) {
-		mockConnector, mockNetwork, cache := createFixtures(10, 15)
+		mockConnector, mockNetwork, cache := createFixtures(10, 15, nil)
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x32345",false],"id":1}`))
 		req.SetNetwork(mockNetwork)

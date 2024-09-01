@@ -2152,19 +2152,19 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Off()
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
-	
+
 		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":9199,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
-	
+
 		// Mock the upstream response
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Times(2). // Expect two calls
 			Reply(200).
 			JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`))
-	
+
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-	
+
 		clr := upstream.NewClientRegistry(&log.Logger)
 		fsCfg := &common.FailsafeConfig{}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
@@ -2212,7 +2212,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 		pup1.Client = cl1
-	
+
 		ntw, err := NewNetwork(
 			&log.Logger,
 			"prjA",
@@ -2230,14 +2230,14 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	
+
 		// First request (should be cached)
 		fakeReq1 := common.NewNormalizedRequest(requestBytes)
 		resp1, err := ntw.Forward(ctx, fakeReq1)
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
-	
+
 		// Second request with no-cache directive
 		fakeReq2 := common.NewNormalizedRequest(requestBytes)
 		hdr := &fasthttp.RequestHeader{}
@@ -2247,7 +2247,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
-	
+
 		// Check that both responses are not nil and different
 		if resp1 == nil || resp2 == nil {
 			t.Fatalf("Expected non-nil responses")
@@ -5246,4 +5246,4 @@ func safeReadBody(request *http.Request) string {
 	}
 	request.Body = io.NopCloser(bytes.NewBuffer(body))
 	return string(body)
-		}
+}
