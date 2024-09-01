@@ -87,8 +87,8 @@ type DynamoDBConnectorConfig struct {
 }
 
 type PostgreSQLConnectorConfig struct {
-	ConnectionUri         string `yaml:"connectionUri" json:"connectionUri"`
-	Table                 string `yaml:"table" json:"table"`
+	ConnectionUri string `yaml:"connectionUri" json:"connectionUri"`
+	Table         string `yaml:"table" json:"table"`
 }
 
 func (p *PostgreSQLConnectorConfig) MarshalJSON() ([]byte, error) {
@@ -184,7 +184,11 @@ type EvmUpstreamConfig struct {
 	NodeType             EvmNodeType `yaml:"nodeType" json:"nodeType"`
 	Engine               string      `yaml:"engine" json:"engine"`
 	GetLogsMaxBlockRange int         `yaml:"getLogsMaxBlockRange" json:"getLogsMaxBlockRange"`
-	Syncing              bool        `yaml:"syncing" json:"syncing"`
+	StatePollerInterval  string      `yaml:"statePollerInterval" json:"statePollerInterval"`
+
+	// By default "Syncing" is marked as unknown (nil) and that means we will be retrying empty responses
+	// from such upstream, unless we explicitly know that the upstream is fully synced (false).
+	Syncing *bool `yaml:"syncing" json:"syncing"`
 }
 
 type FailsafeConfig struct {
@@ -425,7 +429,7 @@ func (s *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 				Duration: "15s",
 			},
 			Retry: &RetryPolicyConfig{
-				MaxAttempts:     4,
+				MaxAttempts:     3,
 				Delay:           "500ms",
 				Jitter:          "500ms",
 				BackoffMaxDelay: "5s",
@@ -435,7 +439,7 @@ func (s *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 				FailureThresholdCount:    80,
 				FailureThresholdCapacity: 100,
 				HalfOpenAfter:            "5m",
-				SuccessThresholdCount:    3,
+				SuccessThresholdCount:    5,
 				SuccessThresholdCapacity: 5,
 			},
 		},

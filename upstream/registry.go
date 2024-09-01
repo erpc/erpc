@@ -90,8 +90,8 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(networkId string) error {
 			upstreams = append(upstreams, ups)
 		} else if e != nil {
 			u.logger.Warn().Err(e).
-				Str("upstream", ups.Config().Id).
-				Str("network", networkId).
+				Str("upstreamId", ups.Config().Id).
+				Str("networkId", networkId).
 				Msgf("failed to check if upstream supports network")
 			return e
 		}
@@ -273,6 +273,10 @@ func (u *UpstreamsRegistry) registerUpstreams() error {
 }
 
 func (u *UpstreamsRegistry) scheduleScoreCalculationTimers(ctx context.Context) error {
+	if u.scoreRefreshInterval == 0 {
+		return nil
+	}
+
 	go func() {
 		ticker := time.NewTicker(u.scoreRefreshInterval)
 		defer ticker.Stop()
@@ -290,7 +294,7 @@ func (u *UpstreamsRegistry) scheduleScoreCalculationTimers(ctx context.Context) 
 }
 
 func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsList []*Upstream) {
-	var p90Latencies, errorRates, totalRequests, throttledRates []float64
+	var p90Latencies, errorRates, totalRequests, throttledRates, blockHeadLags, finalizationLags []float64
 
 	for _, ups := range upsList {
 		metrics := u.metricsTracker.GetUpstreamMethodMetrics(ups.Config().Id, networkId, method)
@@ -299,10 +303,12 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 			Str("projectId", u.prjId).
 			Str("networkId", networkId).
 			Str("method", method).
-			Str("upstream", ups.Config().Id).
+			Str("upstreamId", ups.Config().Id).
 			Interface("metrics", metrics).
 			Msg("queried upstream metrics")
 		p90Latencies = append(p90Latencies, metrics.LatencySecs.P90())
+		blockHeadLags = append(blockHeadLags, metrics.BlockHeadLag)
+		finalizationLags = append(finalizationLags, metrics.FinalizationLag)
 		rateLimitedTotal := metrics.RemoteRateLimitedTotal + metrics.SelfRateLimitedTotal
 		if metrics.RequestsTotal > 0 {
 			errorRates = append(errorRates, metrics.ErrorsTotal/metrics.RequestsTotal)
@@ -320,12 +326,20 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 	normErrorRates := normalizeValues(errorRates)
 	normThrottledRates := normalizeValues(throttledRates)
 	normTotalRequests := normalizeValues(totalRequests)
-
+	normBlockHeadLags := normalizeValues(blockHeadLags)
+	normFinalizationLags := normalizeValues(finalizationLags)
 	for i, ups := range upsList {
-		score := u.calculateScore(normTotalRequests[i], normP90Latencies[i], normErrorRates[i], normThrottledRates[i])
+		score := u.calculateScore(
+			normTotalRequests[i],
+			normP90Latencies[i],
+			normErrorRates[i],
+			normThrottledRates[i],
+			normBlockHeadLags[i],
+			normFinalizationLags[i],
+		)
 		u.upstreamScores[ups.Config().Id][networkId][method] = score
 		u.logger.Trace().Str("projectId", u.prjId).
-			Str("upstream", ups.Config().Id).
+			Str("upstreamId", ups.Config().Id).
 			Str("networkId", networkId).
 			Str("method", method).
 			Float64("score", score).
@@ -343,7 +357,14 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 	u.logger.Trace().Str("projectId", u.prjId).Str("networkId", networkId).Str("method", method).Str("newSort", newSortStr).Msgf("sorted upstreams")
 }
 
-func (u *UpstreamsRegistry) calculateScore(normTotalRequests, normP90Latency, normErrorRate, normThrottledRate float64) float64 {
+func (u *UpstreamsRegistry) calculateScore(
+	normTotalRequests,
+	normP90Latency,
+	normErrorRate,
+	normThrottledRate,
+	normBlockHeadLag,
+	normFinalizationLag float64,
+) float64 {
 	score := 0.0
 
 	// Higher score for lower total requests (to balance the load)
@@ -358,6 +379,12 @@ func (u *UpstreamsRegistry) calculateScore(normTotalRequests, normP90Latency, no
 	// Higher score for lower throttled rate
 	score += expCurve(1-normThrottledRate) * 3
 
+	// Higher score for lower block head lag
+	score += expCurve(1-normBlockHeadLag) * 2
+
+	// Higher score for lower finalization lag
+	score += expCurve(1 - normFinalizationLag)
+
 	return score
 }
 
@@ -369,22 +396,16 @@ func normalizeValues(values []float64) []float64 {
 	if len(values) == 0 {
 		return []float64{}
 	}
-	var min float64 = values[0]
 	max := values[0]
-	// Find min and max
 	for _, value := range values {
 		if value > max {
 			max = value
 		}
-		if value < min {
-			min = value
-		}
 	}
-
 	normalized := make([]float64, len(values))
 	for i, value := range values {
-		if (max - min) > 0 {
-			normalized[i] = (value - min) / (max - min)
+		if max > 0 {
+			normalized[i] = value / max
 		} else {
 			normalized[i] = 0
 		}
