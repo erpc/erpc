@@ -213,7 +213,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 		)
 	}
 
-	lg := u.Logger.With().Str("method", method).Str("network", netId).Logger()
+	lg := u.Logger.With().Str("method", method).Str("networkId", netId).Logger()
 
 	if limitersBudget != nil {
 		lg.Trace().Str("budget", cfg.RateLimitBudget).Msgf("checking upstream-level rate limiters budget")

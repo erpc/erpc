@@ -61,6 +61,18 @@ var (
 		Help:      "Total number of empty responses from upstreams.",
 	}, []string{"project", "network", "upstream", "category"})
 
+	MetricUpstreamBlockHeadLag = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_block_head_lag",
+		Help:      "Total number of blocks (head) behind the most up-to-date upstream.",
+	}, []string{"project", "network", "upstream"})
+
+	MetricUpstreamFinalizationLag = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_finalization_lag",
+		Help:      "Total number of finalized blocks behind the most up-to-date upstream.",
+	}, []string{"project", "network", "upstream"})
+
 	MetricNetworkRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_request_self_rate_limited_total",

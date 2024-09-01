@@ -12,7 +12,22 @@ import (
 )
 
 type RequestDirectives struct {
+	// Instruct the proxy to retry if response from the upstream appears to be empty
+	// indicating a missing data or non-synced data (empty array for logs, null for block, null for tx receipt, etc).
+	// This value is "true" by default which means more requests for such cases will be sent.
+	// You can override this directive via Headers if you expect results to be empty and fine with eventual consistency (i.e. receiving empty results intermittently).
 	RetryEmpty bool
+
+	// Instruct the proxy to retry if response from the upstream appears to be a pending tx,
+	// for example when blockNumber/blockHash are still null.
+	// This value is "true" by default, to give a chance to receive the full TX.
+	// If you intentionally require to get pending TX data immediately without waiting,
+	// you can set this value to "false" via Headers.
+	RetryPending bool
+
+	// Instruct the proxy to skip cache reads for example to force freshness,
+	// or override some cache corruption.
+	SkipCacheRead bool
 }
 
 type NormalizedRequest struct {
@@ -134,9 +149,21 @@ func (r *NormalizedRequest) SetNetwork(network Network) {
 
 func (r *NormalizedRequest) ApplyDirectivesFromHttpHeaders(headers *fasthttp.RequestHeader) {
 	drc := &RequestDirectives{
-		RetryEmpty: string(headers.Peek("X-ERPC-Retry-Empty")) != "false",
+		RetryEmpty:   string(headers.Peek("X-ERPC-Retry-Empty")) != "false",
+		RetryPending: string(headers.Peek("X-ERPC-Retry-Pending")) != "false",
+		SkipCacheRead: string(headers.Peek("X-ERPC-Skip-Cache-Read")) == "true",
 	}
 	r.directives = drc
+}
+
+func (r *NormalizedRequest) SkipCacheRead() bool {
+	if r == nil {
+		return false
+	}
+	if r.directives == nil {
+		return false
+	}
+	return r.directives.SkipCacheRead
 }
 
 func (r *NormalizedRequest) Directives() *RequestDirectives {
@@ -256,7 +283,11 @@ func (r *NormalizedRequest) MarshalJSON() ([]byte, error) {
 }
 
 func (r *NormalizedRequest) CacheHash() (string, error) {
-	rq, _ := r.JsonRpcRequest()
+	rq, err := r.JsonRpcRequest()
+	if err != nil {
+		return "", err
+	}
+
 	if rq != nil {
 		return rq.CacheHash()
 	}

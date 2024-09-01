@@ -133,6 +133,10 @@ func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) 
 		}
 		nwCfg = &common.NetworkConfig{
 			Failsafe: &common.FailsafeConfig{
+				Hedge: &common.HedgePolicyConfig{
+					Delay:    "200ms",
+					MaxCount: 3,
+				},
 				Retry: &common.RetryPolicyConfig{
 					MaxAttempts:     int(math.Min(float64(len(allUps)), 3)),
 					Delay:           "1s",
@@ -142,10 +146,6 @@ func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) 
 				},
 				Timeout: &common.TimeoutPolicyConfig{
 					Duration: "30s",
-				},
-				Hedge: &common.HedgePolicyConfig{
-					Delay:    "500ms",
-					MaxCount: 2,
 				},
 			},
 		}

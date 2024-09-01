@@ -9,7 +9,7 @@ const (
 type Network interface {
 	Id() string
 	Architecture() NetworkArchitecture
+	Config() *NetworkConfig
 	EvmChainId() (int64, error)
 	EvmIsBlockFinalized(blockNumber int64) (bool, error)
-	EvmBlockTracker() EvmBlockTracker
 }

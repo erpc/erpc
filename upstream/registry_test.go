@@ -64,6 +64,46 @@ func TestUpstreamsRegistry(t *testing.T) {
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
 	})
 
+	t.Run("CorrectOrderForBlockLag", func(t *testing.T) {
+		registry, metricsTracker := createTestRegistry(projectID, &logger, 10*time.Hour)
+		_, _ = registry.GetSortedUpstreams(networkID, method)
+
+		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 0)
+		metricsTracker.SetLatestBlockNumber("upstream-a", networkID, 4000090)
+		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 0)
+		metricsTracker.SetLatestBlockNumber("upstream-b", networkID, 4000100)
+		simulateRequests(metricsTracker, networkID, "upstream-c", method, 100, 0)
+		metricsTracker.SetLatestBlockNumber("upstream-c", networkID, 3005020)
+
+		registry.RefreshUpstreamNetworkMethodScores()
+
+		expectedOrder := []string{"upstream-b", "upstream-a", "upstream-c"}
+		// It should work for upstream's reference "*" item
+		checkUpstreamScoreOrder(t, registry, networkID, "*", expectedOrder)
+		// As well as for all method-specific metrics
+		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
+	})
+
+	t.Run("CorrectOrderForFinalizationLag", func(t *testing.T) {
+		registry, metricsTracker := createTestRegistry(projectID, &logger, 10*time.Hour)
+		_, _ = registry.GetSortedUpstreams(networkID, method)
+
+		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 0)
+		metricsTracker.SetFinalizedBlockNumber("upstream-a", networkID, 4000090)
+		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 0)
+		metricsTracker.SetFinalizedBlockNumber("upstream-b", networkID, 3005020)
+		simulateRequests(metricsTracker, networkID, "upstream-c", method, 100, 0)
+		metricsTracker.SetFinalizedBlockNumber("upstream-c", networkID, 4000100)
+
+		registry.RefreshUpstreamNetworkMethodScores()
+
+		expectedOrder := []string{"upstream-c", "upstream-a", "upstream-b"}
+		// It should work for upstream's reference "*" item
+		checkUpstreamScoreOrder(t, registry, networkID, "*", expectedOrder)
+		// As well as for all method-specific metrics
+		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
+	})
+
 	t.Run("CorrectOrderForP90Latency", func(t *testing.T) {
 		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize)
 		_, _ = registry.GetSortedUpstreams(networkID, method)
@@ -220,14 +260,14 @@ func TestUpstreamScoring(t *testing.T) {
 		expectedOrder  []string
 	}{
 		{
-			name:       "MixedLatencyAndFailureRate",
-			windowSize: 6 * time.Second,
+			name:       "MixedLatencyAndFailureRatePreferLowErrorRate",
+			windowSize: 10 * time.Second,
 			upstreamConfig: []upstreamMetrics{
 				{"upstream-a", 0.5, 0.8, 100},
 				{"upstream-b", 1.0, 0.99, 100},
 				{"upstream-c", 0.75, 0.9, 100},
 			},
-			expectedOrder: []string{"upstream-b", "upstream-a", "upstream-c"},
+			expectedOrder: []string{"upstream-b", "upstream-c", "upstream-a"},
 		},
 		{
 			name:       "ExtremeFailureRate",
@@ -266,10 +306,12 @@ func TestCalculateScoreDynamicScenarios(t *testing.T) {
 	}
 
 	type upstreamMetrics struct {
-		totalRequests float64
-		p90Latency    float64
-		errorRate     float64
-		throttledRate float64
+		totalRequests   float64
+		p90Latency      float64
+		errorRate       float64
+		throttledRate   float64
+		blockHeadLag    float64
+		finalizationLag float64
 	}
 
 	type percentRange struct {
@@ -287,8 +329,8 @@ func TestCalculateScoreDynamicScenarios(t *testing.T) {
 		{
 			name: "Two upstreams with significant difference",
 			upstreams: []upstreamMetrics{
-				{1, 0.1, 0.01, 0.02},
-				{0.8, 0.8, 0.4, 0.1},
+				{1, 0.1, 0.01, 0.02, 0, 0},
+				{0.8, 0.8, 0.4, 0.1, 0, 0},
 			},
 			expectedPercents: []percentRange{
 				{0.65, 0.75},
@@ -298,9 +340,9 @@ func TestCalculateScoreDynamicScenarios(t *testing.T) {
 		{
 			name: "Three upstreams with varying performance",
 			upstreams: []upstreamMetrics{
-				{1, 0.2, 0.02, 0.01},
-				{0.7, 0.5, 0.1, 0.05},
-				{0.3, 1.0, 0.3, 0.2},
+				{1, 0.2, 0.02, 0.01, 0, 0},
+				{0.7, 0.5, 0.1, 0.05, 0, 0},
+				{0.3, 1.0, 0.3, 0.2, 0, 0},
 			},
 			expectedPercents: []percentRange{
 				{0.40, 0.55},
@@ -311,10 +353,10 @@ func TestCalculateScoreDynamicScenarios(t *testing.T) {
 		{
 			name: "Four upstreams with similar performance",
 			upstreams: []upstreamMetrics{
-				{0.9, 0.3, 0.05, 0.03},
-				{0.8, 0.4, 0.06, 0.04},
-				{1.0, 0.2, 0.04, 0.02},
-				{0.7, 0.5, 0.07, 0.05},
+				{0.9, 0.3, 0.05, 0.03, 0, 0.0},
+				{0.8, 0.4, 0.06, 0.04, 0, 0.0},
+				{1.0, 0.2, 0.04, 0.02, 0, 0.0},
+				{0.7, 0.5, 0.07, 0.05, 0, 0.0},
 			},
 			expectedPercents: []percentRange{
 				{0.20, 0.30},
@@ -326,12 +368,45 @@ func TestCalculateScoreDynamicScenarios(t *testing.T) {
 		{
 			name: "Two upstreams with extreme differences",
 			upstreams: []upstreamMetrics{
-				{1.0, 0.05, 0.001, 0.001},
-				{1.0, 1.0, 0.5, 0.5},
+				{1.0, 0.05, 0.001, 0.001, 0, 0.0},
+				{1.0, 1.0, 0.5, 0.5, 0, 0.0},
 			},
 			expectedPercents: []percentRange{
-				{0.80, 1.00},
-				{0.00, 0.2},
+				{0.70, 1.00},
+				{0.00, 0.30},
+			},
+		},
+		{
+			name: "Two upstreams with extreme block lags",
+			upstreams: []upstreamMetrics{
+				{1.0, 0.05, 0.001, 0.001, 1.0, 0.0},
+				{1.0, 0.05, 0.001, 0.001, 0.1, 0.0},
+			},
+			expectedPercents: []percentRange{
+				{0.30, 0.50},
+				{0.50, 0.60},
+			},
+		},
+		{
+			name: "Two upstreams with extreme finalization lags",
+			upstreams: []upstreamMetrics{
+				{1.0, 0.05, 0.001, 0.001, 0.0, 1.0},
+				{1.0, 0.05, 0.001, 0.001, 0.0, 0.1},
+			},
+			expectedPercents: []percentRange{
+				{0.30, 0.50},
+				{0.50, 0.60},
+			},
+		},
+		{
+			name: "Two upstreams with small block lag",
+			upstreams: []upstreamMetrics{
+				{1.0, 0.05, 0.001, 0.001, 0.4, 0.0},
+				{1.0, 0.05, 0.001, 0.001, 0.5, 0.0},
+			},
+			expectedPercents: []percentRange{
+				{0.5, 0.6},
+				{0.4, 0.5},
 			},
 		},
 	}
@@ -342,14 +417,21 @@ func TestCalculateScoreDynamicScenarios(t *testing.T) {
 			totalScore := 0.0
 
 			for i, ups := range scenario.upstreams {
-				score := registry.calculateScore(ups.totalRequests, ups.p90Latency, ups.errorRate, ups.throttledRate)
+				score := registry.calculateScore(
+					ups.totalRequests,
+					ups.p90Latency,
+					ups.errorRate,
+					ups.throttledRate,
+					ups.blockHeadLag,
+					ups.finalizationLag,
+				)
 				scores[i] = float64(score)
 				totalScore += float64(score)
 			}
 
 			for i, score := range scores {
 				percent := score / totalScore
-				t.Logf("Upstream %d: Score: %f, Percent: %f", i+1, score, percent)
+				// fmt.Printf("Upstream %d: Score: %f, Percent: %f\n", i+1, score, percent)
 
 				assert.GreaterOrEqual(t, percent, scenario.expectedPercents[i].min,
 					"Upstream %d percent should be greater than or equal to %f", i+1, scenario.expectedPercents[i].min)

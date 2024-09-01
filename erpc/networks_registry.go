@@ -44,7 +44,7 @@ func NewNetwork(
 	upstreamsRegistry *upstream.UpstreamsRegistry,
 	metricsTracker *health.Tracker,
 ) (*Network, error) {
-	lg := logger.With().Str("network", nwCfg.NetworkId()).Logger()
+	lg := logger.With().Str("networkId", nwCfg.NetworkId()).Logger()
 
 	var policies []failsafe.Policy[*common.NormalizedResponse]
 	if nwCfg.Failsafe != nil {
@@ -59,8 +59,9 @@ func NewNetwork(
 	network := &Network{
 		ProjectId: prjId,
 		NetworkId: nwCfg.NetworkId(),
-		Config:    nwCfg,
 		Logger:    &lg,
+
+		cfg: nwCfg,
 
 		upstreamsRegistry:    upstreamsRegistry,
 		metricsTracker:       metricsTracker,
