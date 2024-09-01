@@ -578,9 +578,7 @@ func (u *Upstream) detectFeatures() error {
 
 	if cfg.Type == common.UpstreamTypeEvm {
 		if cfg.Evm == nil {
-			cfg.Evm = &common.EvmUpstreamConfig{
-				Syncing: true,
-			}
+			cfg.Evm = &common.EvmUpstreamConfig{}
 		}
 		if cfg.Evm.ChainId == 0 {
 			nid, err := u.EvmGetChainId(context.Background())

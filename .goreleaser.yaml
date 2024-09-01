@@ -32,9 +32,6 @@ checksum:
   name_template: 'checksums.txt'
 
 release:
-  github:
-    owner: erpc
-    name: erpc
   draft: false
   mode: replace
   make_latest: true

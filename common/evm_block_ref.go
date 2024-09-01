@@ -183,6 +183,30 @@ func ExtractEvmBlockReferenceFromResponse(rpcReq *JsonRpcRequest, rpcResp *JsonR
 				return blockRef, blockNumber, nil
 			}
 		}
+	case "eth_getBlockByNumber":
+		if rpcResp.Result != nil {
+			result, err := rpcResp.ParsedResult()
+			if err != nil {
+				return "", 0, err
+			}
+
+			if blk, ok := result.(map[string]interface{}); ok {
+				var blockRef string
+				var blockNumber int64
+				blockRef, _ = blk["hash"].(string)
+				if bns, ok := blk["number"].(string); ok && bns != "" {
+					bn, err := HexToInt64(bns)
+					if err != nil {
+						return "", 0, err
+					}
+					blockNumber = bn
+				}
+				if blockRef == "" && blockNumber > 0 {
+					blockRef = strconv.FormatInt(blockNumber, 10)
+				}
+				return blockRef, blockNumber, nil
+			}
+		}
 
 	default:
 		return "", 0, nil

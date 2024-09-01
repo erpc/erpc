@@ -16,7 +16,7 @@ import (
 )
 
 type Network struct {
-	Config *common.NetworkConfig
+	cfg *common.NetworkConfig
 
 	NetworkId string
 	ProjectId string
@@ -28,18 +28,27 @@ type Network struct {
 	failsafePolicies     []failsafe.Policy[*common.NormalizedResponse]
 	failsafeExecutor     failsafe.Executor[*common.NormalizedResponse]
 	rateLimitersRegistry *upstream.RateLimitersRegistry
-	// rateLimiterDal       data.RateLimitersDAL
-	cacheDal          data.CacheDAL
-	evmBlockTracker   *EvmBlockTracker
-	metricsTracker    *health.Tracker
-	upstreamsRegistry *upstream.UpstreamsRegistry
+	cacheDal             data.CacheDAL
+	metricsTracker       *health.Tracker
+	upstreamsRegistry    *upstream.UpstreamsRegistry
+
+	evmStatePollers map[string]*upstream.EvmStatePoller
 }
 
 func (n *Network) Bootstrap(ctx context.Context) error {
 	if n.Architecture() == common.ArchitectureEvm {
-		n.evmBlockTracker = NewEvmBlockTracker(n)
-		if err := n.evmBlockTracker.Bootstrap(ctx); err != nil {
+		upsList, err := n.upstreamsRegistry.GetSortedUpstreams(n.NetworkId, "*")
+		if err != nil {
 			return err
+		}
+		n.evmStatePollers = make(map[string]*upstream.EvmStatePoller, len(upsList))
+		for _, u := range upsList {
+			poller, err := upstream.NewEvmStatePoller(ctx, n.Logger, n, u)
+			if err != nil {
+				return err
+			}
+			n.evmStatePollers[u.Config().Id] = poller
+			n.Logger.Info().Str("upstreamId", u.Config().Id).Msgf("bootstraped evm state poller to track upstream latest, finalized blocks and syncing states")
 		}
 	} else {
 		return fmt.Errorf("network architecture not supported: %s", n.Architecture())
@@ -53,13 +62,13 @@ func (n *Network) Id() string {
 }
 
 func (n *Network) Architecture() common.NetworkArchitecture {
-	if n.Config.Architecture == "" {
-		if n.Config.Evm != nil {
-			n.Config.Architecture = common.ArchitectureEvm
+	if n.cfg.Architecture == "" {
+		if n.cfg.Evm != nil {
+			n.cfg.Architecture = common.ArchitectureEvm
 		}
 	}
 
-	return n.Config.Architecture
+	return n.cfg.Architecture
 }
 
 func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
@@ -304,91 +313,71 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 	}
 
+	if execErr == nil && resp != nil && !resp.IsObjectNull() {
+		n.enrichStatePoller(method, req, resp)
+	}
+
 	inf.Close(resp, nil)
 	return resp, nil
 }
 
-// func (n *Network) shouldJumpUpstream(err error) bool {
-// 	if err == nil {
-// 		return false
-// 	}
-
-// 	// When it is not retryable towards upstream, continue on other upstreams,
-// 	// and skip on network-level retries.
-// 	if !common.IsRetryableTowardsUpstream(err) {
-// 		return true
-// 	}
-
-// 	// By default skip all errors.
-// 	// If there are errors that does not make sense to continue forwarding to other upstreams,
-// 	// it must be added to above conditions.
-// 	return false
-// }
-
 func (n *Network) EvmIsBlockFinalized(blockNumber int64) (bool, error) {
-	if n.evmBlockTracker == nil {
-		return false, common.NewErrFinalizedBlockUnavailable(blockNumber)
-	}
-
-	finalizedBlock := n.evmBlockTracker.FinalizedBlock()
-	latestBlock := n.evmBlockTracker.LatestBlock()
-	if latestBlock == 0 && finalizedBlock == 0 {
-		n.Logger.Debug().
-			Int64("finalizedBlock", finalizedBlock).
-			Int64("latestBlock", latestBlock).
-			Int64("blockNumber", blockNumber).
-			Msgf("finalized/latest blocks are not available yet when checking block finality")
-		return false, common.NewErrFinalizedBlockUnavailable(blockNumber)
-	}
-
-	n.Logger.Debug().
-		Int64("finalizedBlock", finalizedBlock).
-		Int64("latestBlock", latestBlock).
-		Int64("blockNumber", blockNumber).
-		Msgf("calculating block finality")
-
-	if finalizedBlock > 0 {
-		return blockNumber <= finalizedBlock, nil
-	}
-
-	if latestBlock == 0 {
-		return false, nil
-	}
-
-	var fb int64
-
-	if n.Config.Evm != nil {
-		if latestBlock > n.Config.Evm.FinalityDepth {
-			fb = latestBlock - n.Config.Evm.FinalityDepth
-		} else {
-			fb = 0
-		}
-	} else {
-		if latestBlock > 1024 {
-			fb = latestBlock - 1024
-		} else {
-			fb = 0
+	for _, poller := range n.evmStatePollers {
+		if fin, err := poller.IsBlockFinalized(blockNumber); err != nil {
+			if common.HasErrorCode(err, common.ErrCodeFinalizedBlockUnavailable) {
+				continue
+			}
+			return false, err
+		} else if fin {
+			return true, nil
 		}
 	}
-
-	n.Logger.Debug().
-		Int64("inferredFinalizedBlock", fb).
-		Int64("latestBlock", latestBlock).
-		Int64("blockNumber", blockNumber).
-		Msgf("calculating block finality using inferred finalized block")
-
-	return blockNumber <= fb, nil
+	return false, nil
 }
 
-func (n *Network) EvmBlockTracker() common.EvmBlockTracker {
-	return n.evmBlockTracker
+func (n *Network) Config() *common.NetworkConfig {
+	return n.cfg
 }
 
 func (n *Network) EvmChainId() (int64, error) {
-	if n.Config == nil || n.Config.Evm == nil {
+	if n.cfg == nil || n.cfg.Evm == nil {
 		return 0, common.NewErrUnknownNetworkID(n.Architecture())
 	}
-	return n.Config.Evm.ChainId, nil
+	return n.cfg.Evm.ChainId, nil
+}
+
+func (n *Network) enrichStatePoller(method string, req *common.NormalizedRequest, resp *common.NormalizedResponse) {
+	switch n.Architecture() {
+	case common.ArchitectureEvm:
+		if method == "eth_getBlockByNumber" {
+			jrq, _ := req.JsonRpcRequest()
+			if blkTag, ok := jrq.Params[0].(string); ok {
+				if blkTag == "finalized" || blkTag == "latest" {
+					jrs, _ := resp.JsonRpcResponse()
+					if jrs != nil {
+						res, err := jrs.ParsedResult()
+						if err == nil {
+							blk, ok := res.(map[string]interface{})
+							if ok {
+								bnh, ok := blk["number"].(string)
+								if ok {
+									blockNumber, err := common.HexToInt64(bnh)
+									if err == nil {
+										poller := n.evmStatePollers[resp.Upstream().Config().Id]
+										if blkTag == "finalized" {
+											poller.SuggestFinalizedBlock(blockNumber)
+										} else if blkTag == "latest" {
+											poller.SuggestLatestBlock(blockNumber)
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 func (n *Network) normalizeResponse(resp *common.NormalizedResponse, err error) (*common.NormalizedResponse, error) {
@@ -423,11 +412,11 @@ func (n *Network) normalizeResponse(resp *common.NormalizedResponse, err error) 
 }
 
 func (n *Network) acquireRateLimitPermit(req *common.NormalizedRequest) error {
-	if n.Config.RateLimitBudget == "" {
+	if n.cfg.RateLimitBudget == "" {
 		return nil
 	}
 
-	rlb, errNetLimit := n.rateLimitersRegistry.GetBudget(n.Config.RateLimitBudget)
+	rlb, errNetLimit := n.rateLimitersRegistry.GetBudget(n.cfg.RateLimitBudget)
 	if errNetLimit != nil {
 		return errNetLimit
 	}
@@ -456,7 +445,7 @@ func (n *Network) acquireRateLimitPermit(req *common.NormalizedRequest) error {
 				return common.NewErrNetworkRateLimitRuleExceeded(
 					n.ProjectId,
 					n.NetworkId,
-					n.Config.RateLimitBudget,
+					n.cfg.RateLimitBudget,
 					fmt.Sprintf("%+v", rule.Config),
 				)
 			} else {

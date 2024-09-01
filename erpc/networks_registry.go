@@ -59,8 +59,9 @@ func NewNetwork(
 	network := &Network{
 		ProjectId: prjId,
 		NetworkId: nwCfg.NetworkId(),
-		Config:    nwCfg,
 		Logger:    &lg,
+
+		cfg: nwCfg,
 
 		upstreamsRegistry:    upstreamsRegistry,
 		metricsTracker:       metricsTracker,
