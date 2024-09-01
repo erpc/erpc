@@ -260,14 +260,14 @@ func TestUpstreamScoring(t *testing.T) {
 		expectedOrder  []string
 	}{
 		{
-			name:       "MixedLatencyAndFailureRate",
-			windowSize: 6 * time.Second,
+			name:       "MixedLatencyAndFailureRatePreferLowErrorRate",
+			windowSize: 10 * time.Second,
 			upstreamConfig: []upstreamMetrics{
 				{"upstream-a", 0.5, 0.8, 100},
 				{"upstream-b", 1.0, 0.99, 100},
 				{"upstream-c", 0.75, 0.9, 100},
 			},
-			expectedOrder: []string{"upstream-b", "upstream-a", "upstream-c"},
+			expectedOrder: []string{"upstream-b", "upstream-c", "upstream-a"},
 		},
 		{
 			name:       "ExtremeFailureRate",

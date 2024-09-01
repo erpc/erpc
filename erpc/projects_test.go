@@ -18,7 +18,7 @@ func TestProject_Forward(t *testing.T) {
 		defer gock.Off()
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
-		setupMocksForEvmBlockTracker()
+		setupMocksForEvmStatePoller()
 
 		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
 			&common.RateLimiterConfig{

@@ -8,8 +8,3 @@ const (
 	EvmNodeTypeSequencer EvmNodeType = "sequencer"
 	EvmNodeTypeExecution EvmNodeType = "execution"
 )
-
-// type EvmBlockTracker interface {
-// 	LatestBlock() int64
-// 	FinalizedBlock() int64
-// }

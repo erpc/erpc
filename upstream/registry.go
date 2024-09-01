@@ -396,22 +396,16 @@ func normalizeValues(values []float64) []float64 {
 	if len(values) == 0 {
 		return []float64{}
 	}
-	var min float64 = 0
 	max := values[0]
-	// Find min and max
 	for _, value := range values {
 		if value > max {
 			max = value
 		}
-		// if value < min {
-		// 	min = value
-		// }
 	}
-
 	normalized := make([]float64, len(values))
 	for i, value := range values {
-		if (max - min) > 0 {
-			normalized[i] = (value - min) / (max - min)
+		if max > 0 {
+			normalized[i] = value / max
 		} else {
 			normalized[i] = 0
 		}

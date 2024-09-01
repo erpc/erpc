@@ -89,19 +89,22 @@ func (e *EvmStatePoller) initialize(ctx context.Context) error {
 				e.logger.Debug().Msg("shutting down evm state poller due to context cancellation")
 				return
 			case <-ticker.C:
-				e.run(ctx)
+				e.poll(ctx)
 			}
 		}
 	})()
 
-	go e.run(ctx)
+	go e.poll(ctx)
 
 	return nil
 }
 
-func (e *EvmStatePoller) run(ctx context.Context) {
+func (e *EvmStatePoller) poll(ctx context.Context) {
+	var wg sync.WaitGroup
 	// Fetch latest block
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		lb, err := e.fetchLatestBlockNumber(ctx)
 		if err != nil {
 			e.logger.Warn().Err(err).Msg("failed to get latest block number in evm state poller")
@@ -114,7 +117,9 @@ func (e *EvmStatePoller) run(ctx context.Context) {
 	}()
 
 	// Fetch finalized block (if supports)
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		if e.skipFinalizedCheck {
 			return
 		}
@@ -135,7 +140,9 @@ func (e *EvmStatePoller) run(ctx context.Context) {
 	}()
 
 	// Fetch "syncing" state
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		if e.synced > FullySyncedThreshold || e.skipSyncingCheck {
 			return
 		}
@@ -174,6 +181,8 @@ func (e *EvmStatePoller) run(ctx context.Context) {
 			e.logger.Debug().Bool("syncingResult", syncing).Msgf("node is marked as still syncing %d out of %d confirmations done so far", e.synced, FullySyncedThreshold)
 		}
 	}()
+
+	wg.Wait()
 }
 
 func (e *EvmStatePoller) setLatestBlockNumber(blockNumber int64) {
@@ -307,7 +316,7 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 	resultMap, ok := result.(map[string]interface{})
 	if !ok || resultMap == nil || resultMap["number"] == nil {
 		return 0, &common.BaseError{
-			Code:    "ErrEvmBlockTracker",
+			Code:    "ErrEvmStatePoller",
 			Message: "block not found",
 			Details: map[string]interface{}{
 				"blockTag": blockTag,
@@ -319,7 +328,7 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 	numberStr, ok := resultMap["number"].(string)
 	if !ok {
 		return 0, &common.BaseError{
-			Code:    "ErrEvmBlockTracker",
+			Code:    "ErrEvmStatePoller",
 			Message: "block number is not a string",
 			Details: map[string]interface{}{
 				"blockTag": blockTag,
