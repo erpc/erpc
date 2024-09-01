@@ -81,40 +81,44 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	lg := n.Logger.With().Str("method", method).Str("id", req.Id()).Str("ptr", fmt.Sprintf("%p", req)).Logger()
 
 	// 1) In-flight multiplexing
-	mlxHash, _ := req.CacheHash()
-	n.inFlightMutex.Lock()
-	if inf, exists := n.inFlightRequests[mlxHash]; exists {
-		n.inFlightMutex.Unlock()
-		lg.Debug().Msgf("found similar in-flight request, waiting for result")
-		health.MetricNetworkMultiplexedRequests.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
-
-		inf.mu.RLock()
-		if inf.resp != nil || inf.err != nil {
-			inf.mu.RUnlock()
-			return inf.resp, inf.err
-		}
-		inf.mu.RUnlock()
-
-		select {
-		case <-inf.done:
-			return inf.resp, inf.err
-		case <-ctx.Done():
-			err := ctx.Err()
-			if errors.Is(err, context.DeadlineExceeded) {
-				return nil, common.NewErrNetworkRequestTimeout(time.Since(startTime))
-			}
-
-			return nil, err
-		}
-	}
-	inf := NewMultiplexer()
-	n.inFlightRequests[mlxHash] = inf
-	n.inFlightMutex.Unlock()
-	defer func() {
+	var inf *Multiplexer
+	mlxHash, err := req.CacheHash()
+	if err == nil && mlxHash != "" {
 		n.inFlightMutex.Lock()
-		defer n.inFlightMutex.Unlock()
-		delete(n.inFlightRequests, mlxHash)
-	}()
+		var exists bool
+		if inf, exists = n.inFlightRequests[mlxHash]; exists {
+			n.inFlightMutex.Unlock()
+			lg.Debug().Msgf("found similar in-flight request, waiting for result")
+			health.MetricNetworkMultiplexedRequests.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
+
+			inf.mu.RLock()
+			if inf.resp != nil || inf.err != nil {
+				inf.mu.RUnlock()
+				return inf.resp, inf.err
+			}
+			inf.mu.RUnlock()
+
+			select {
+			case <-inf.done:
+				return inf.resp, inf.err
+			case <-ctx.Done():
+				err := ctx.Err()
+				if errors.Is(err, context.DeadlineExceeded) {
+					return nil, common.NewErrNetworkRequestTimeout(time.Since(startTime))
+				}
+
+				return nil, err
+			}
+		}
+		inf = NewMultiplexer()
+		n.inFlightRequests[mlxHash] = inf
+		n.inFlightMutex.Unlock()
+		defer func() {
+			n.inFlightMutex.Lock()
+			defer n.inFlightMutex.Unlock()
+			delete(n.inFlightRequests, mlxHash)
+		}()
+	}
 
 	// 2) Get from cache if exists
 	if n.cacheDal != nil {
@@ -128,14 +132,18 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		} else if resp != nil && !resp.IsObjectNull() && !resp.IsResultEmptyish() {
 			lg.Info().Msgf("response served from cache")
 			health.MetricNetworkCacheHits.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
-			inf.Close(resp, err)
+			if inf != nil {
+				inf.Close(resp, err)
+			}
 			return resp, err
 		}
 	}
 
 	// 3) Apply rate limits
 	if err := n.acquireRateLimitPermit(req); err != nil {
-		inf.Close(nil, err)
+		if inf != nil {
+			inf.Close(nil, err)
+		}
 		return nil, err
 	}
 
@@ -170,7 +178,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	upsList, err := n.upstreamsRegistry.GetSortedUpstreams(n.NetworkId, method)
 	if err != nil {
-		inf.Close(nil, err)
+		if inf != nil {
+			inf.Close(nil, err)
+		}
 		return nil, err
 	}
 
@@ -285,11 +295,15 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						execution.Hedges(),
 					)
 				}
-				inf.Close(nil, err)
+				if inf != nil {
+					inf.Close(nil, err)
+				}
 				return nil, err
 			}
 		} else {
-			inf.Close(nil, err)
+			if inf != nil {
+				inf.Close(nil, err)
+			}
 			return nil, err
 		}
 	}
@@ -316,8 +330,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	if execErr == nil && resp != nil && !resp.IsObjectNull() {
 		n.enrichStatePoller(method, req, resp)
 	}
-
-	inf.Close(resp, nil)
+	if inf != nil {
+		inf.Close(resp, nil)
+	}
 	return resp, nil
 }
 

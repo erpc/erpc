@@ -268,7 +268,11 @@ func (r *NormalizedRequest) MarshalJSON() ([]byte, error) {
 }
 
 func (r *NormalizedRequest) CacheHash() (string, error) {
-	rq, _ := r.JsonRpcRequest()
+	rq, err := r.JsonRpcRequest()
+	if err != nil {
+		return "", err
+	}
+
 	if rq != nil {
 		return rq.CacheHash()
 	}
