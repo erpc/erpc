@@ -152,7 +152,7 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, component string, cfg *c
 			// if "syncing" and null/empty response -> open the circuit
 			cfg := up.Config()
 			if cfg.Evm != nil {
-				if cfg.Evm.Syncing {
+				if cfg.Evm.Syncing != nil && *cfg.Evm.Syncing {
 					if result.IsResultEmptyish() {
 						return true
 					}
@@ -280,9 +280,10 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 				ucfg := ups.Config()
 				if ucfg.Evm != nil {
 					// has Retry-Empty directive + "empty" response + node is synced + block is finalized -> No Retry
-					if err == nil && rds.RetryEmpty && isEmpty && !ucfg.Evm.Syncing {
+					if err == nil && rds.RetryEmpty && isEmpty && (ucfg.Evm.Syncing != nil && !*ucfg.Evm.Syncing) {
 						bn, ebn := req.EvmBlockNumber()
 						if ebn == nil && bn > 0 {
+							// TODO Should only use "ups"'s state_poller vs all upstreams?
 							fin, efin := req.Network().EvmIsBlockFinalized(bn)
 							if efin == nil && fin {
 								return false

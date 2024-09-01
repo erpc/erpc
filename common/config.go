@@ -184,7 +184,11 @@ type EvmUpstreamConfig struct {
 	NodeType             EvmNodeType `yaml:"nodeType" json:"nodeType"`
 	Engine               string      `yaml:"engine" json:"engine"`
 	GetLogsMaxBlockRange int         `yaml:"getLogsMaxBlockRange" json:"getLogsMaxBlockRange"`
-	Syncing              bool        `yaml:"syncing" json:"syncing"`
+	StatePollerInterval  string      `yaml:"statePollerInterval" json:"statePollerInterval"`
+
+	// By default "Syncing" is marked as unknown (nil) and that means we will be retrying empty responses
+	// from such upstream, unless we explicitly know that the upstream is fully synced (false).
+	Syncing *bool `yaml:"syncing" json:"syncing"`
 }
 
 type FailsafeConfig struct {

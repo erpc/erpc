@@ -2,11 +2,12 @@ package erpc
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/upstream"
+	"github.com/erpc/erpc/vendors"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -19,16 +20,32 @@ func createFixtures(finBlockNumber int64, latestBlockNumber int64) (*data.MockCo
 	mockNetwork := &Network{
 		NetworkId: "evm:123",
 		Logger:    &logger,
-		Config: &common.NetworkConfig{
+		cfg: &common.NetworkConfig{
 			Architecture: common.ArchitectureEvm,
 			Evm: &common.EvmNetworkConfig{
 				ChainId: 123,
 			},
 		},
-		evmBlockTracker: &EvmBlockTracker{
-			finalizedBlockNumber: finBlockNumber,
-			latestBlockNumber:    latestBlockNumber,
+	}
+	vnr := vendors.NewVendorsRegistry()
+	clr := upstream.NewClientRegistry(&logger)
+	mockUpstream, err := upstream.NewUpstream("test", &common.UpstreamConfig{
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId: 123,
 		},
+	}, clr, nil, vnr, &logger, nil)
+	if err != nil {
+		panic(err)
+	}
+	poller, err := upstream.NewEvmStatePoller(context.Background(), &logger, mockNetwork, mockUpstream)
+	if err != nil {
+		panic(err)
+	}
+	poller.SuggestFinalizedBlock(finBlockNumber)
+	poller.SuggestLatestBlock(latestBlockNumber)
+	mockNetwork.evmStatePollers = map[string]*upstream.EvmStatePoller{
+		"upsA": poller,
 	}
 	cache := &EvmJsonRpcCache{
 		conn:    mockConnector,
@@ -153,18 +170,10 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("SkipCachingForUnfinalizedBlock", func(t *testing.T) {
-		mockConnector, mockNetwork, cache := createFixtures(10, 15)
+		mockConnector, _, cache := createFixtures(10, 15)
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x3",false],"id":1}`))
-		resp := common.NewNormalizedResponse().
-			WithJsonRpcResponse(&common.JsonRpcResponse{
-				Result: json.RawMessage(`{"number":"0x3","hash":"0xdef"}`),
-			})
-
-		mockNetwork.evmBlockTracker = &EvmBlockTracker{
-			finalizedBlockNumber: 2,
-			latestBlockNumber:    3,
-		}
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x399",false],"id":1}`))
+		resp := common.NewNormalizedResponse().WithBody([]byte(`{"result":{"number":"0x399","hash":"0xdef"}}`))
 
 		err := cache.Set(context.Background(), req, resp)
 
