@@ -135,7 +135,7 @@ func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) 
 			Failsafe: &common.FailsafeConfig{
 				Hedge: &common.HedgePolicyConfig{
 					Delay:    "200ms",
-					MaxCount: 2,
+					MaxCount: 3,
 				},
 				Retry: &common.RetryPolicyConfig{
 					MaxAttempts:     int(math.Min(float64(len(allUps)), 3)),
