@@ -114,8 +114,6 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	nw.upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
 	time.Sleep(100 * time.Millisecond)
-	// nw.evmBlockTracker.Bootstrap(ctx1)
-	// time.Sleep(100 * time.Millisecond)
 
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	wg := sync.WaitGroup{}

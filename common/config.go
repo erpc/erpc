@@ -429,7 +429,7 @@ func (s *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 				Duration: "15s",
 			},
 			Retry: &RetryPolicyConfig{
-				MaxAttempts:     4,
+				MaxAttempts:     3,
 				Delay:           "500ms",
 				Jitter:          "500ms",
 				BackoffMaxDelay: "5s",
@@ -439,7 +439,7 @@ func (s *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 				FailureThresholdCount:    80,
 				FailureThresholdCapacity: 100,
 				HalfOpenAfter:            "5m",
-				SuccessThresholdCount:    3,
+				SuccessThresholdCount:    5,
 				SuccessThresholdCapacity: 5,
 			},
 		},
