@@ -43,7 +43,7 @@ func (n *Network) Bootstrap(ctx context.Context) error {
 		}
 		n.evmStatePollers = make(map[string]*upstream.EvmStatePoller, len(upsList))
 		for _, u := range upsList {
-			poller, err := upstream.NewEvmStatePoller(ctx, n.Logger, n, u)
+			poller, err := upstream.NewEvmStatePoller(ctx, n.Logger, n, u, n.metricsTracker)
 			if err != nil {
 				return err
 			}
