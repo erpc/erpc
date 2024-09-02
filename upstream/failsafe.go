@@ -119,7 +119,14 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, component string, cfg *c
 	}
 
 	builder.OnStateChanged(func(event circuitbreaker.StateChangedEvent) {
-		logger.Warn().Msgf("circuit breaker state changed from %s to %s", event.OldState, event.NewState)
+		mt := event.Metrics()
+		logger.Warn().
+			Uint("executions", mt.Executions()).
+			Uint("successes", mt.Successes()).
+			Uint("failures", mt.Failures()).
+			Uint("failureRate", mt.FailureRate()).
+			Uint("successRate", mt.SuccessRate()).
+			Msgf("circuit breaker state changed from %s to %s", event.OldState, event.NewState)
 	})
 	builder.OnFailure(func(event failsafe.ExecutionEvent[*common.NormalizedResponse]) {
 		err := event.LastError()
