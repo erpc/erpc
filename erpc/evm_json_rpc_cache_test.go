@@ -3,9 +3,11 @@ package erpc
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/vendors"
 	"github.com/rs/zerolog"
@@ -39,7 +41,8 @@ func createFixtures(finBlockNumber int64, latestBlockNumber int64, syncing *bool
 	if err != nil {
 		panic(err)
 	}
-	poller, err := upstream.NewEvmStatePoller(context.Background(), &logger, mockNetwork, mockUpstream)
+	metricsTracker := health.NewTracker("prjA", 100*time.Second)
+	poller, err := upstream.NewEvmStatePoller(context.Background(), &logger, mockNetwork, mockUpstream, metricsTracker)
 	if err != nil {
 		panic(err)
 	}

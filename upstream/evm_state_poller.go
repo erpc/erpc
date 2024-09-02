@@ -47,12 +47,19 @@ type EvmStatePoller struct {
 	mu sync.RWMutex
 }
 
-func NewEvmStatePoller(ctx context.Context, logger *zerolog.Logger, ntw common.Network, up *Upstream) (*EvmStatePoller, error) {
+func NewEvmStatePoller(
+	ctx context.Context,
+	logger *zerolog.Logger,
+	ntw common.Network,
+	up *Upstream,
+	tracker *health.Tracker,
+) (*EvmStatePoller, error) {
 	lg := logger.With().Str("upstreamId", up.config.Id).Logger()
 	e := &EvmStatePoller{
 		logger:   &lg,
 		network:  ntw,
 		upstream: up,
+		tracker:  tracker,
 	}
 
 	if err := e.initialize(ctx); err != nil {
@@ -368,5 +375,15 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
-	return res.(bool), nil
+	if syncing, ok := res.(bool); ok {
+		return syncing, nil
+	}
+
+	return false, &common.BaseError{
+		Code:    "ErrEvmStatePoller",
+		Message: "invalid syncing state result type (must be boolean)",
+		Details: map[string]interface{}{
+			"result": res,
+		},
+	}
 }
