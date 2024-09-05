@@ -239,6 +239,15 @@ func TestUpstreamsRegistry(t *testing.T) {
 		expectedOrderMethod2Phase2 := []string{"upstream-a", "upstream-c", "upstream-b"}
 		checkUpstreamScoreOrder(t, registry, networkID, method2, expectedOrderMethod2Phase2)
 	})
+
+	t.Run("PrepareUpstreamsForNetworkWithUnsupported", func(t *testing.T) {
+		registry, _ := createTestRegistryWithUnsupportedNetwork(projectID, &logger, windowSize)
+		ups, _ := registry.GetSortedUpstreams(networkID, method)
+
+		// Assert that only supported upstreams are prepared
+		assert.Len(t, ups, 2, "Expected 2 upstreams to be prepared due to unsupported network for upstream-c")
+	})
+
 }
 
 func TestUpstreamScoring(t *testing.T) {
@@ -298,7 +307,6 @@ func TestUpstreamScoring(t *testing.T) {
 		})
 	}
 }
-
 func TestCalculateScoreDynamicScenarios(t *testing.T) {
 	registry := &UpstreamsRegistry{
 		scoreRefreshInterval: time.Second,
@@ -467,6 +475,43 @@ func createTestRegistry(projectID string, logger *zerolog.Logger, windowSize tim
 		panic(err)
 	}
 
+	err = registry.PrepareUpstreamsForNetwork("evm:123")
+	if err != nil {
+		panic(err)
+	}
+
+	return registry, metricsTracker
+}
+
+func createTestRegistryWithUnsupportedNetwork(projectID string, logger *zerolog.Logger, windowSize time.Duration) (*UpstreamsRegistry, *health.Tracker) {
+	metricsTracker := health.NewTracker(projectID, windowSize)
+	metricsTracker.Bootstrap(context.Background())
+
+	// Create upstream configs
+	upstreamConfigs := []*common.UpstreamConfig{
+		{Id: "upstream-a", Endpoint: "http://upstream-a.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		{Id: "upstream-b", Endpoint: "http://upstream-b.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+		{Id: "upstream-c", Endpoint: "http://upstream-c.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 456}}, // Different ChainId, unsupported
+	}
+
+	// Initialize registry
+	registry := NewUpstreamsRegistry(
+		logger,
+		projectID,
+		upstreamConfigs,
+		nil, // RateLimitersRegistry not needed for these tests
+		vendors.NewVendorsRegistry(),
+		metricsTracker,
+		1*time.Second,
+	)
+
+	// Bootstrap registry
+	err := registry.Bootstrap(context.Background())
+	if err != nil {
+		panic(err)
+	}
+
+	// Prepare upstreams but skip error for unsupported network
 	err = registry.PrepareUpstreamsForNetwork("evm:123")
 	if err != nil {
 		panic(err)
