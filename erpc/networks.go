@@ -187,14 +187,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	var execution failsafe.Execution[*common.NormalizedResponse]
 	var errorsByUpstream = map[string]error{}
 
-	coordMu := sync.Mutex{}
 	i := 0
 	resp, execErr := n.failsafeExecutor.
 		WithContext(ctx).
 		GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
-			coordMu.Lock()
+			req.Mu.Lock()
 			execution = exec
-			coordMu.Unlock()
+			req.Mu.Unlock()
 
 			// We should try all upstreams at least once, but using "i" we make sure
 			// across different executions of the failsafe we pick up next upstream vs retrying the same upstream.
@@ -202,7 +201,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			// Upstream-level retry is handled by the upstream itself (and its own failsafe policies).
 			ln := len(upsList)
 			for count := 0; count < ln; count++ {
-				coordMu.Lock()
+				req.Mu.Lock()
 				u := upsList[i]
 				i++
 				if i >= ln {
@@ -213,11 +212,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					if !common.IsRetryableTowardsUpstream(prevErr) {
 						// Do not even try this upstream if we already know
 						// the previous error was not retryable. e.g. Billing issues
-						coordMu.Unlock()
+						req.Mu.Unlock()
 						continue
 					}
 				}
-				coordMu.Unlock()
+				req.Mu.Unlock()
 
 				ulg := lg.With().Str("upstreamId", u.Config().Id).Logger()
 				resp, err := n.normalizeResponse(
@@ -238,7 +237,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 
 				if err != nil {
-					coordMu.Lock()
+					req.Mu.Lock()
 					if ser, ok := err.(common.StandardError); ok {
 						ber := ser.Base()
 						if ber.Details == nil {
@@ -247,7 +246,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						ber.Details["timestampMs"] = time.Now().UnixMilli()
 					}
 					errorsByUpstream[upsId] = err
-					coordMu.Unlock()
+					req.Mu.Unlock()
 				}
 
 				if err == nil || isClientErr {
