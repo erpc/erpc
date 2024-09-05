@@ -122,6 +122,8 @@ func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.
 		return nil, common.NewErrUpstreamRequest(
 			err,
 			c.upstream.Config().Id,
+			req.NetworkId(),
+			jrReq.Method,
 			0, 0, 0, 0,
 		)
 	}
@@ -212,6 +214,8 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 			req.err <- common.NewErrUpstreamRequest(
 				err,
 				c.upstream.Config().Id,
+				req.request.NetworkId(),
+				jrReq.Method,
 				0, 0, 0, 0,
 			)
 			continue
@@ -364,6 +368,8 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		return nil, common.NewErrUpstreamRequest(
 			err,
 			c.upstream.Config().Id,
+			req.NetworkId(),
+			jrReq.Method,
 			0, 0, 0, 0,
 		)
 	}
@@ -524,7 +530,6 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				),
 			)
 		} else if r.StatusCode == 429 ||
-			code == -32005 ||
 			strings.Contains(err.Message, "has exceeded") ||
 			strings.Contains(err.Message, "Exceeded the quota") ||
 			strings.Contains(err.Message, "under too much load") {
@@ -538,7 +543,19 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if strings.Contains(err.Message, "transaction not found") ||
+		} else if strings.Contains(err.Message, "missing trie node") ||
+			strings.Contains(err.Message, "header not found") ||
+			strings.Contains(err.Message, "unknown block") ||
+			strings.Contains(err.Message, "height must be less than or equal") ||
+			strings.Contains(err.Message, "finalized block not found") ||
+			// Usually happens on Avalanche when querying a pretty recent block:
+			strings.Contains(err.Message, "cannot query unfinalized") ||
+			strings.Contains(err.Message, "height is not available") ||
+			// This usually happens when sending a trace_* request to a newly created block:
+			strings.Contains(err.Message, "genesis is not traceable") ||
+			strings.Contains(err.Message, "could not find FinalizeBlock") ||
+			(strings.Contains(err.Message, "blocks specified") && strings.Contains(err.Message, "cannot be found")) ||
+			strings.Contains(err.Message, "transaction not found") ||
 			strings.Contains(err.Message, "cannot find transaction") ||
 			strings.Contains(err.Message, "after last accepted block") {
 			return common.NewErrEndpointMissingData(
@@ -565,24 +582,6 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorInvalidArgument,
-					err.Message,
-					nil,
-					details,
-				),
-			)
-		} else if strings.Contains(err.Message, "missing trie node") ||
-			strings.Contains(err.Message, "header not found") ||
-			// Usually happens on Avalanche when querying a pretty recent block:
-			strings.Contains(err.Message, "cannot query unfinalized") ||
-			strings.Contains(err.Message, "height is not available") ||
-			// This usually happens when sending a trace_* request to a newly created block:
-			strings.Contains(err.Message, "genesis is not traceable") ||
-			strings.Contains(err.Message, "could not find FinalizeBlock") ||
-			(strings.Contains(err.Message, "blocks specified") && strings.Contains(err.Message, "cannot be found")) {
-			return common.NewErrEndpointMissingData(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorMissingData,
 					err.Message,
 					nil,
 					details,
@@ -654,8 +653,7 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				),
 			)
 		} else if strings.Contains(err.Message, "Invalid Request") ||
-			strings.Contains(err.Message, "validation errors") ||
-			strings.Contains(err.Message, "height must be less than or equal") {
+			strings.Contains(err.Message, "validation errors") {
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),

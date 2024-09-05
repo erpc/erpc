@@ -206,6 +206,8 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 		return nil, common.NewErrUpstreamRequest(
 			err,
 			cfg.Id,
+			netId,
+			method,
 			time.Since(startTime),
 			0,
 			0,
@@ -317,6 +319,8 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 					return nil, common.NewErrUpstreamRequest(
 						errCall,
 						cfg.Id,
+						netId,
+						method,
 						time.Since(startTime),
 						exec.Attempts(),
 						exec.Retries(),
@@ -326,6 +330,8 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 					return nil, common.NewErrUpstreamRequest(
 						errCall,
 						cfg.Id,
+						netId,
+						method,
 						time.Since(startTime),
 						1,
 						0,
