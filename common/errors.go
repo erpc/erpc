@@ -700,7 +700,8 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			} else if HasErrorCode(e, ErrCodeEndpointMissingData) {
 				missing++
 				continue
-			} else if HasErrorCode(e, ErrCodeEndpointCapacityExceeded) {
+			} else if HasErrorCode(e, ErrCodeEndpointCapacityExceeded) ||
+				HasErrorCode(e, ErrCodeUpstreamRateLimitRuleExceeded) {
 				rateLimit++
 				continue
 			} else if HasErrorCode(e, ErrCodeEndpointBillingIssue) {
