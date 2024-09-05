@@ -543,6 +543,17 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
+		} else if strings.Contains(err.Message, "reached the free tier") ||
+			strings.Contains(err.Message, "Monthly capacity limit") {
+			return common.NewErrEndpointBillingIssue(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorCapacityExceeded,
+					err.Message,
+					nil,
+					details,
+				),
+			)
 		} else if strings.Contains(err.Message, "missing trie node") ||
 			strings.Contains(err.Message, "header not found") ||
 			strings.Contains(err.Message, "unknown block") ||
@@ -554,6 +565,7 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			// This usually happens when sending a trace_* request to a newly created block:
 			strings.Contains(err.Message, "genesis is not traceable") ||
 			strings.Contains(err.Message, "could not find FinalizeBlock") ||
+			strings.Contains(err.Message, "no historical rpc") ||
 			(strings.Contains(err.Message, "blocks specified") && strings.Contains(err.Message, "cannot be found")) ||
 			strings.Contains(err.Message, "transaction not found") ||
 			strings.Contains(err.Message, "cannot find transaction") ||
