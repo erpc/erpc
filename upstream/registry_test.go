@@ -240,7 +240,7 @@ func TestUpstreamsRegistry(t *testing.T) {
 		checkUpstreamScoreOrder(t, registry, networkID, method2, expectedOrderMethod2Phase2)
 	})
 
-	t.Run("PrepareUpstreamsForNetworkWithUnsupported", func(t *testing.T) {
+	t.Run("PrepareUpstreamsWithUnsupportedNetwork", func(t *testing.T) {
 		registry, _ := createTestRegistryWithUnsupportedNetwork(projectID, &logger, windowSize)
 		ups, _ := registry.GetSortedUpstreams(networkID, method)
 
