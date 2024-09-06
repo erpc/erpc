@@ -272,3 +272,40 @@ func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
 
 	return nil, nil
 }
+
+func CopyResponseForRequest(resp *NormalizedResponse, req *NormalizedRequest) (*NormalizedResponse, error) {
+	req.Mu.Lock()
+	defer req.Mu.Unlock()
+
+	if resp == nil {
+		return nil, nil
+	}
+
+	r := NewNormalizedResponse()
+	r.WithRequest(req)
+
+	// We need to use request ID because response ID can be different
+	// in case of multiplexed requests, where we only sent 1 actual request to the upstream.
+	if resp.jsonRpcResponse != nil {
+		jrr, err := req.JsonRpcRequest()
+		if err != nil {
+			return nil, err
+		}
+		r.WithJsonRpcResponse(&JsonRpcResponse{
+			JSONRPC: resp.jsonRpcResponse.JSONRPC,
+			ID:      jrr.ID,
+			Result:  resp.jsonRpcResponse.Result,
+			Error:   resp.jsonRpcResponse.Error,
+		})
+	} else if resp.body != nil {
+		r.WithBody(resp.body)
+		jrr, err := r.JsonRpcResponse()
+		if err != nil {
+			return nil, err
+		}
+		r.body = nil // This enforces re-marshalling the response body if anyone needs it
+		jrr.ID = req.jsonRpcRequest.ID
+	}
+
+	return r, nil
+}
