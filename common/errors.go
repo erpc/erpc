@@ -1580,3 +1580,11 @@ func IsRetryableTowardsUpstream(err error) bool {
 		// RPC-RPC vendor billing/capacity/auth -> No Retry
 		!HasErrorCode(err, ErrCodeEndpointUnauthorized))
 }
+
+func IsCapacityIssue(err error) bool {
+	return HasErrorCode(err, ErrCodeProjectRateLimitRuleExceeded) ||
+		HasErrorCode(err, ErrCodeNetworkRateLimitRuleExceeded) ||
+		HasErrorCode(err, ErrCodeUpstreamRateLimitRuleExceeded) ||
+		HasErrorCode(err, ErrCodeAuthRateLimitRuleExceeded) ||
+		HasErrorCode(err, ErrCodeEndpointCapacityExceeded)
+}

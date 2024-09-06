@@ -217,9 +217,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 				upsId := u.Config().Id
 				if prevErr, exists := errorsByUpstream[upsId]; exists {
-					if !common.IsRetryableTowardsUpstream(prevErr) {
+					if !common.IsRetryableTowardsUpstream(prevErr) || common.IsCapacityIssue(prevErr) {
 						// Do not even try this upstream if we already know
 						// the previous error was not retryable. e.g. Billing issues
+						// Or there was a rate-limit error.
 						req.Mu.Unlock()
 						continue
 					}
