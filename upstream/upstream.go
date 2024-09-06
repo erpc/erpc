@@ -106,7 +106,7 @@ func (u *Upstream) Vendor() common.Vendor {
 	return u.vendor
 }
 
-func (u *Upstream) prepareRequest(normalizedReq *common.NormalizedRequest) error {
+func (u *Upstream) prepareRequest(nr *common.NormalizedRequest) error {
 	cfg := u.Config()
 	switch cfg.Type {
 	case common.UpstreamTypeEvm,
@@ -135,7 +135,7 @@ func (u *Upstream) prepareRequest(normalizedReq *common.NormalizedRequest) error
 			u.Client.GetType() == ClientTypeEnvioHttpJsonRpc ||
 			u.Client.GetType() == ClientTypePimlicoHttpJsonRpc ||
 			u.Client.GetType() == ClientTypeEtherspotHttpJsonRpc {
-			jsonRpcReq, err := normalizedReq.JsonRpcRequest()
+			jsonRpcReq, err := nr.JsonRpcRequest()
 			if err != nil {
 				return common.NewErrJsonRpcExceptionInternal(
 					0,
@@ -145,7 +145,7 @@ func (u *Upstream) prepareRequest(normalizedReq *common.NormalizedRequest) error
 					nil,
 				)
 			}
-			err = common.NormalizeEvmHttpJsonRpc(normalizedReq, jsonRpcReq)
+			err = common.NormalizeEvmHttpJsonRpc(nr, jsonRpcReq)
 			if err != nil {
 				return common.NewErrJsonRpcExceptionInternal(
 					0,

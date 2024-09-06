@@ -130,6 +130,24 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, component string, cfg *c
 	})
 	builder.OnFailure(func(event failsafe.ExecutionEvent[*common.NormalizedResponse]) {
 		err := event.LastError()
+		res := event.LastResult()
+		if res != nil && !res.IsObjectNull() {
+			rq := res.Request()
+			if rq != nil {
+				up := rq.LastUpstream()
+				if up != nil {
+					cfg := up.Config()
+					if cfg.Evm != nil {
+						logger.Warn().Err(err).Interface("lastResult", res).Interface("upstreamSyncing", cfg.Evm.Syncing).Msgf("failure caught that will be considered for circuit breaker")
+						return
+					} else {
+						logger.Warn().Err(err).Interface("lastResult", res).Msgf("failure caught that will be considered for circuit breaker")
+						return
+					}
+				}
+			}
+		}
+
 		logger.Warn().Err(err).Msgf("failure caught that will be considered for circuit breaker")
 	})
 

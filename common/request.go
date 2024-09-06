@@ -44,7 +44,7 @@ type NormalizedRequest struct {
 	lastValidResponse *NormalizedResponse
 	lastUpstream      Upstream
 
-	Mu sync.Mutex
+	Mu sync.RWMutex
 }
 
 type UniqueRequestKey struct {
@@ -82,8 +82,8 @@ func (r *NormalizedRequest) SetLastValidResponse(response *NormalizedResponse) {
 }
 
 func (r *NormalizedRequest) LastValidResponse() *NormalizedResponse {
-	r.Mu.Lock()
-	defer r.Mu.Unlock()
+	r.Mu.RLock()
+	defer r.Mu.RUnlock()
 	return r.lastValidResponse
 }
 
@@ -120,15 +120,25 @@ func (r *NormalizedRequest) Id() string {
 	}
 
 	if len(r.body) > 0 {
-		idn, err := sonic.Get(r.body, "id")
+		idnode, err := sonic.Get(r.body, "id")
 		if err == nil {
-			id, err := idn.String()
+			ids, err := idnode.String()
 			if err == nil {
-				r.uid = "n/a"
+				idf, err := idnode.Float64()
+				if err != nil {
+					idn, err := idnode.Int64()
+					if err != nil {
+						r.uid = fmt.Sprintf("%d", idn)
+						return r.uid
+					}
+				} else {
+					r.uid = fmt.Sprintf("%f", idf)
+					return r.uid
+				}
 			} else {
-				r.uid = id
+				r.uid = ids
 			}
-			return id
+			return r.uid
 		}
 	}
 
