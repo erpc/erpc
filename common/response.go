@@ -274,8 +274,8 @@ func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
 }
 
 func CopyResponseForRequest(resp *NormalizedResponse, req *NormalizedRequest) (*NormalizedResponse, error) {
-	req.Mu.Lock()
-	defer req.Mu.Unlock()
+	req.Mu.RLock()
+	defer req.Mu.RUnlock()
 
 	if resp == nil {
 		return nil, nil
