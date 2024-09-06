@@ -227,7 +227,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				req.Mu.Unlock()
 
 				ulg := lg.With().Str("upstreamId", u.Config().Id).Logger()
-				
+
 				rp, er := tryForward(u, exec.Context(), &ulg)
 				resp, err := n.normalizeResponse(req, rp, er)
 
