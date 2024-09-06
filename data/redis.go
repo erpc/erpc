@@ -36,6 +36,7 @@ func NewRedisConnector(
 
 	connector := &RedisConnector{
 		logger: logger,
+		ttls:   make(map[string]time.Duration),
 	}
 
 	// Attempt the actual connecting in background to avoid blocking the main thread.
