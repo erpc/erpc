@@ -246,8 +246,12 @@ func (r *NormalizedRequest) Body() []byte {
 }
 
 func (r *NormalizedRequest) MarshalZerologObject(e *zerolog.Event) {
-	if r != nil && r.body != nil {
-		e.Str("body", string(r.body))
+	if r != nil {
+		if r.body != nil {
+			e.Str("request", string(r.body))
+		} else if r.jsonRpcRequest != nil {
+			e.Object("request", r.jsonRpcRequest)
+		}
 	}
 }
 

@@ -607,13 +607,6 @@ var NewErrUpstreamsExhausted = func(
 	duration time.Duration,
 	attempts, retries, hedges int,
 ) error {
-	var reqStr string
-	s, err := sonic.Marshal(req)
-	if err != nil {
-		reqStr = string(req.Body())
-	} else if s != nil {
-		reqStr = string(s)
-	}
 	// TODO create a new error type that holds a map to avoid creating a new array
 	ers := []error{}
 	req.Mu.RLock()
@@ -627,7 +620,6 @@ var NewErrUpstreamsExhausted = func(
 			Message: "all upstream attempts failed",
 			Cause:   errors.Join(ers...),
 			Details: map[string]interface{}{
-				"request":    reqStr,
 				"durationMs": duration.Milliseconds(),
 				"projectId":  prjId,
 				"networkId":  netId,
