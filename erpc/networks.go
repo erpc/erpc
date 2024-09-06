@@ -94,13 +94,21 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			inf.mu.RLock()
 			if inf.resp != nil || inf.err != nil {
 				inf.mu.RUnlock()
-				return inf.resp, inf.err
+				resp, err := common.CopyResponseForRequest(inf.resp, req)
+				if err != nil {
+					return nil, err
+				}
+				return resp, inf.err
 			}
 			inf.mu.RUnlock()
 
 			select {
 			case <-inf.done:
-				return inf.resp, inf.err
+				resp, err := common.CopyResponseForRequest(inf.resp, req)
+				if err != nil {
+					return nil, err
+				}
+				return resp, inf.err
 			case <-ctx.Done():
 				err := ctx.Err()
 				if errors.Is(err, context.DeadlineExceeded) {
@@ -219,9 +227,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				req.Mu.Unlock()
 
 				ulg := lg.With().Str("upstreamId", u.Config().Id).Logger()
-				resp, err := n.normalizeResponse(
-					tryForward(u, exec.Context(), &ulg),
-				)
+				
+				rp, er := tryForward(u, exec.Context(), &ulg)
+				resp, err := n.normalizeResponse(req, rp, er)
 
 				isClientErr := err != nil && common.HasErrorCode(err, common.ErrCodeEndpointClientSideException)
 				isHedged := exec.Hedges() > 0
@@ -394,13 +402,25 @@ func (n *Network) enrichStatePoller(method string, req *common.NormalizedRequest
 	}
 }
 
-func (n *Network) normalizeResponse(resp *common.NormalizedResponse, err error) (*common.NormalizedResponse, error) {
-	if err == nil {
-		return resp, nil
-	}
-
+func (n *Network) normalizeResponse(req *common.NormalizedRequest, resp *common.NormalizedResponse, err error) (*common.NormalizedResponse, error) {
 	switch n.Architecture() {
 	case common.ArchitectureEvm:
+		if resp != nil {
+			// This ensures that even if upstream gives us wrong/missing ID we'll
+			// use correct one from original incoming request.
+			jrr, _ := resp.JsonRpcResponse()
+			if jrr != nil {
+				jrq, _ := req.JsonRpcRequest()
+				if jrq != nil {
+					jrr.ID = jrq.ID
+				}
+			}
+		}
+
+		if err == nil {
+			return resp, nil
+		}
+
 		if common.HasErrorCode(err, common.ErrCodeJsonRpcExceptionInternal) {
 			return resp, err
 		} else if common.HasErrorCode(err, common.ErrCodeJsonRpcRequestUnmarshal) {

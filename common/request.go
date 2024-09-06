@@ -236,7 +236,9 @@ func (r *NormalizedRequest) Body() []byte {
 }
 
 func (r *NormalizedRequest) MarshalZerologObject(e *zerolog.Event) {
-	e.Str("body", string(r.body))
+	if r != nil && r.body != nil {
+		e.Str("body", string(r.body))
+	}
 }
 
 func (r *NormalizedRequest) EvmBlockNumber() (int64, error) {
