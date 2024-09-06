@@ -386,12 +386,12 @@ func setResponseStatusCode(respOrErr interface{}, fastCtx *fasthttp.RequestCtx) 
 func processErrorBody(logger *zerolog.Logger, nq *common.NormalizedRequest, err error) interface{} {
 	if !common.IsNull(err) {
 		if common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
-			logger.Debug().Err(err).Msgf("forward request errored with client-side exception")
+			logger.Debug().Object("request", nq).Err(err).Msgf("forward request errored with client-side exception")
 		} else {
 			if e, ok := err.(common.StandardError); ok {
-				logger.Error().Err(err).Msgf("failed to forward request: %s", e.DeepestMessage())
+				logger.Error().Object("request", nq).Err(err).Msgf("failed to forward request: %s", e.DeepestMessage())
 			} else {
-				logger.Error().Err(err).Msgf("failed to forward request: %s", err.Error())
+				logger.Error().Object("request", nq).Err(err).Msgf("failed to forward request: %s", err.Error())
 			}
 		}
 	}
