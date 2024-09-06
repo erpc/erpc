@@ -320,8 +320,12 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 		// this is a workaround to handle those cases.
 		nr := common.NewNormalizedResponse().WithBody(respBody)
 		for _, br := range requests {
-			nr.WithRequest(br.request)
-			err := c.normalizeJsonRpcError(resp, nr)
+			inr, err := common.CopyResponseForRequest(nr, br.request)
+			if err != nil {
+				br.err <- err
+				continue
+			}
+			err = c.normalizeJsonRpcError(resp, inr)
 			if err != nil {
 				br.err <- err
 			} else {
@@ -557,6 +561,7 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		} else if strings.Contains(err.Message, "missing trie node") ||
 			strings.Contains(err.Message, "header not found") ||
 			strings.Contains(err.Message, "unknown block") ||
+			strings.Contains(err.Message, "Unknown block") ||
 			strings.Contains(err.Message, "height must be less than or equal") ||
 			strings.Contains(err.Message, "finalized block not found") ||
 			// Usually happens on Avalanche when querying a pretty recent block:
