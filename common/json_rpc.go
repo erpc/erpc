@@ -62,7 +62,9 @@ func (r *JsonRpcRequest) MarshalZerologObject(e *zerolog.Event) {
 	if r == nil {
 		return
 	}
-	e.Str("method", r.Method).Interface("params", r.Params).Interface("id", r.ID)
+	e.Str("method", r.Method).
+		Interface("params", r.Params).
+		Interface("id", r.ID)
 }
 
 func (r *JsonRpcRequest) CacheHash() (string, error) {
@@ -123,7 +125,12 @@ func hashValue(h io.Writer, v interface{}) error {
 }
 
 func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
-	e.Interface("id", r.ID).Interface("result", r.Result).Interface("error", r.Error)
+	if r == nil {
+		return
+	}
+	e.Interface("id", r.ID).
+		Interface("result", r.Result).
+		Interface("error", r.Error)
 }
 
 // Custom unmarshal method for JsonRpcResponse
