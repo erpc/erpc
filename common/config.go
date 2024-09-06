@@ -396,12 +396,7 @@ func (s *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
 				HttpPort:   4000,
 			},
 			Database: &DatabaseConfig{
-				EvmJsonRpcCache: &ConnectorConfig{
-					Driver: "memory",
-					Memory: &MemoryConnectorConfig{
-						MaxItems: 100,
-					},
-				},
+				EvmJsonRpcCache: nil,
 			},
 			Metrics: &MetricsConfig{
 				Enabled:  true,
