@@ -258,8 +258,10 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 		}
 
 		// Any error that cannot be retried against an upstream
-		if scope == ScopeUpstream && !common.IsRetryableTowardsUpstream(err) {
-			return false
+		if scope == ScopeUpstream {
+			if !common.IsRetryableTowardsUpstream(err) || common.IsCapacityIssue(err) {
+				return false
+			}
 		}
 
 		// When error is "missing data" retry on network-level
@@ -275,7 +277,7 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 				if len(errs) > 0 {
 					shouldRetry := false
 					for _, err := range errs {
-						if common.IsRetryableTowardsUpstream(err) {
+						if common.IsRetryableTowardsUpstream(err) && !common.IsCapacityIssue(err) {
 							shouldRetry = true
 							break
 						}
