@@ -23,7 +23,7 @@ type EvmStatePoller struct {
 
 	// When node is fully synced we don't need to query syncing state anymore.
 	// A number is used so that at least X times the upstream tells us it's synced.
-	// During checks if a syncing=true is return we must reset this counter.
+	// During checks, if a syncing=true is returned we must reset this counter.
 	//
 	// This approach slightly helps in two scenarios:
 	// - When self-hosted nodes have issues flipping back and forth between syncing state.
@@ -33,7 +33,7 @@ type EvmStatePoller struct {
 	// we haven't received enough "synced" responses to assume it's fully synced.
 	synced int8
 
-	// Vertain upstreams do not support calling such method,
+	// Certain upstreams do not support calling such method,
 	// therefore we must avoid sending redundant requests.
 	// We will return "nil" as status for syncing which means we don't know for certain.
 	skipSyncingCheck bool
@@ -114,7 +114,7 @@ func (e *EvmStatePoller) poll(ctx context.Context) {
 		defer wg.Done()
 		lb, err := e.fetchLatestBlockNumber(ctx)
 		if err != nil {
-			e.logger.Warn().Err(err).Msg("failed to get latest block number in evm state poller")
+			e.logger.Debug().Err(err).Msg("failed to get latest block number in evm state poller")
 			return
 		}
 		e.logger.Debug().Int64("blockNumber", lb).Msg("fetched latest block")
@@ -136,7 +136,7 @@ func (e *EvmStatePoller) poll(ctx context.Context) {
 				e.skipFinalizedCheck = true
 				e.logger.Warn().Err(err).Msg("cannot fetch finalized block number in evm state poller")
 			} else {
-				e.logger.Warn().Err(err).Msg("failed to get finalized block number in evm state poller")
+				e.logger.Debug().Err(err).Msg("failed to get finalized block number in evm state poller")
 			}
 			return
 		}
@@ -156,7 +156,7 @@ func (e *EvmStatePoller) poll(ctx context.Context) {
 
 		syncing, err := e.fetchSyncingState(ctx)
 		if err != nil {
-			e.logger.Warn().Bool("syncingResult", syncing).Err(err).Msg("failed to get syncing state in evm state poller")
+			e.logger.Debug().Bool("syncingResult", syncing).Err(err).Msg("failed to get syncing state in evm state poller")
 			return
 		}
 
@@ -181,7 +181,7 @@ func (e *EvmStatePoller) poll(ctx context.Context) {
 		// if we have received enough consecutive "synced" responses, we can assume it's fully synced.
 		if e.synced >= FullySyncedThreshold {
 			upsCfg.Evm.Syncing = &common.FALSE
-			e.logger.Debug().Bool("syncingResult", syncing).Msg("node is marked as fully synced")
+			e.logger.Info().Bool("syncingResult", syncing).Msg("node is marked as fully synced")
 		} else if e.synced >= 0 {
 			// If we have received at least one response (syncing or not-syncing) we explicitly assume it's syncing.
 			upsCfg.Evm.Syncing = &common.TRUE

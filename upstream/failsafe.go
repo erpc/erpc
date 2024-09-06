@@ -130,11 +130,7 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, component string, cfg *c
 	})
 	builder.OnFailure(func(event failsafe.ExecutionEvent[*common.NormalizedResponse]) {
 		err := event.LastError()
-		if err != nil {
-			logger.Warn().Err(err).Msgf("failure caught that will be considered for circuit breaker")
-		} else {
-			logger.Warn().Msgf("failure caught that will be considered for circuit breaker")
-		}
+		logger.Warn().Err(err).Msgf("failure caught that will be considered for circuit breaker")
 	})
 
 	builder.HandleIf(func(result *common.NormalizedResponse, err error) bool {

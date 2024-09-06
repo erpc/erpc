@@ -604,7 +604,7 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if strings.Contains(err.Message, "execution reverted") || strings.Contains(err.Message, "VM execution error") {
+		} else if strings.Contains(err.Message, "reverted") || strings.Contains(err.Message, "VM execution error") {
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
