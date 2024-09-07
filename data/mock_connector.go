@@ -32,6 +32,18 @@ func (m *MockConnector) Delete(ctx context.Context, index, partitionKey, rangeKe
 	return args.Error(0)
 }
 
+// SetTTL mocks the SetTTL method of the Connector interface
+func (m *MockConnector) SetTTL(method string, ttlStr string) error {
+	args := m.Called(method, ttlStr)
+	return args.Error(0)
+}
+
+// HasTTL mocks the HasTTL method of the Connector interface
+func (m *MockConnector) HasTTL(method string) bool {
+	args := m.Called(method)
+	return args.Bool(0)
+}
+
 // NewMockConnector creates a new instance of MockConnector
 func NewMockConnector() *MockConnector {
 	return &MockConnector{}
