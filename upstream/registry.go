@@ -168,11 +168,18 @@ func (u *UpstreamsRegistry) GetSortedUpstreams(networkId, method string) ([]*Ups
 
 		// Initialize scores for this method on this network and "any" network
 		for _, ups := range methodUpsList {
-			if _, ok := u.upstreamScores[ups.Config().Id][networkId][method]; !ok {
-				u.upstreamScores[ups.Config().Id][networkId][method] = 0
+			upid := ups.Config().Id
+			if _, ok := u.upstreamScores[upid]; !ok {
+				u.upstreamScores[upid] = make(map[string]map[string]float64)
 			}
-			if _, ok := u.upstreamScores[ups.Config().Id]["*"][method]; !ok {
-				u.upstreamScores[ups.Config().Id]["*"][method] = 0
+			if _, ok := u.upstreamScores[upid][networkId]; !ok {
+				u.upstreamScores[upid][networkId] = make(map[string]float64)
+			}
+			if _, ok := u.upstreamScores[upid][networkId][method]; !ok {
+				u.upstreamScores[upid][networkId][method] = 0
+			}
+			if _, ok := u.upstreamScores[upid]["*"][method]; !ok {
+				u.upstreamScores[upid]["*"][method] = 0
 			}
 		}
 
