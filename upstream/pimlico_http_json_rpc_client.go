@@ -133,7 +133,7 @@ func (c *PimlicoHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, erro
 	}
 	ctx, cancel := context.WithTimeoutCause(context.Background(), 10*time.Second, errors.New("pimlico client timeout during eth_chainId"))
 	defer cancel()
-	rid := rand.Intn(1000000)
+	rid := rand.Intn(100_000_000) // #nosec G404
 	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, rid)))
 	resp, err := client.SendRequest(ctx, pr)
 	if err != nil {

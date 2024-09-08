@@ -284,7 +284,10 @@ func (u *UpstreamsRegistry) scheduleScoreCalculationTimers(ctx context.Context) 
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				u.RefreshUpstreamNetworkMethodScores()
+				err := u.RefreshUpstreamNetworkMethodScores()
+				if err != nil {
+					u.logger.Warn().Err(err).Msgf("failed to refresh upstream network method scores")
+				}
 			}
 		}
 	}()

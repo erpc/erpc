@@ -182,7 +182,7 @@ func (e *EvmStatePoller) poll(ctx context.Context) {
 		if e.synced >= FullySyncedThreshold {
 			upsCfg.Evm.Syncing = &common.FALSE
 			e.logger.Info().Bool("syncingResult", syncing).Msg("node is marked as fully synced")
-		} else if e.synced >= 0 {
+		} else if e.synced >= 0 && syncing {
 			// If we have received at least one response (syncing or not-syncing) we explicitly assume it's syncing.
 			upsCfg.Evm.Syncing = &common.TRUE
 			e.logger.Debug().Bool("syncingResult", syncing).Msgf("node is marked as still syncing %d out of %d confirmations done so far", e.synced, FullySyncedThreshold)
@@ -295,7 +295,7 @@ func (e *EvmStatePoller) fetchFinalizedBlockNumber(ctx context.Context) (int64, 
 }
 
 func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64, error) {
-	randId := rand.Intn(10_000_000)
+	randId := rand.Intn(100_000_000) // #nosec G404
 	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, randId, blockTag),
 	))

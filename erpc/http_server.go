@@ -145,13 +145,13 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 		var wg sync.WaitGroup
 
 		var headersCopy fasthttp.RequestHeader
-		var argsCopy fasthttp.Args
+		var queryArgsCopy fasthttp.Args
 		fastCtx.Request.Header.CopyTo(&headersCopy)
-		fastCtx.QueryArgs().CopyTo(&argsCopy)
+		fastCtx.QueryArgs().CopyTo(&queryArgsCopy)
 
 		for i, reqBody := range requests {
 			wg.Add(1)
-			go func(index int, rawReq json.RawMessage, headersCopy *fasthttp.RequestHeader, argsCopy *fasthttp.Args) {
+			go func(index int, rawReq json.RawMessage, headersCopy *fasthttp.RequestHeader, queryArgsCopy *fasthttp.Args) {
 				defer func() {
 					defer func() { recover() }()
 					if r := recover(); r != nil {
@@ -169,12 +169,12 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 				defer cancel()
 
 				nq := common.NewNormalizedRequest(rawReq)
-				nq.ApplyDirectivesFromHttpHeaders(headersCopy)
+				nq.ApplyDirectivesFromHttp(headersCopy, queryArgsCopy)
 
 				m, _ := nq.Method()
 				rlg := lg.With().Str("method", m).Logger()
 
-				ap, err := auth.NewPayloadFromHttp(project.Config.Id, nq, headersCopy, argsCopy)
+				ap, err := auth.NewPayloadFromHttp(project.Config.Id, nq, headersCopy, queryArgsCopy)
 				if err != nil {
 					responses[index] = processErrorBody(&rlg, nq, err)
 					return
@@ -257,7 +257,7 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 				}
 
 				responses[index] = resp
-			}(i, reqBody, &headersCopy, &argsCopy)
+			}(i, reqBody, &headersCopy, &queryArgsCopy)
 		}
 
 		wg.Wait()
@@ -266,12 +266,23 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 
 		if isBatch {
 			fastCtx.SetStatusCode(fasthttp.StatusOK)
-			encoder.Encode(responses)
+			err = encoder.Encode(responses)
+			if err != nil {
+				fastCtx.SetStatusCode(fasthttp.StatusInternalServerError)
+				fastCtx.Response.Header.Set("Content-Type", "application/json")
+				fastCtx.SetBodyString(fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, err.Error()))
+				return
+			}
 		} else {
 			res := responses[0]
 			setResponseHeaders(res, fastCtx)
 			setResponseStatusCode(res, fastCtx)
-			encoder.Encode(res)
+			err = encoder.Encode(res)
+			if err != nil {
+				fastCtx.SetStatusCode(fasthttp.StatusInternalServerError)
+				fastCtx.SetBodyString(fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, err.Error()))
+				return
+			}
 		}
 
 		fastCtx.SetBody(buf.Bytes())
@@ -450,9 +461,16 @@ func decideErrorStatusCode(err error) int {
 func handleErrorResponse(logger *zerolog.Logger, nq *common.NormalizedRequest, err error, ctx *fasthttp.RequestCtx, encoder sonic.Encoder, buf *bytes.Buffer) {
 	resp := processErrorBody(logger, nq, err)
 	setResponseStatusCode(err, ctx)
-	encoder.Encode(resp)
-	ctx.Response.Header.Set("Content-Type", "application/json")
-	ctx.SetBody(buf.Bytes())
+	err = encoder.Encode(resp)
+	if err != nil {
+		logger.Error().Err(err).Msgf("failed to encode error response")
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		ctx.Response.Header.Set("Content-Type", "application/json")
+		ctx.SetBodyString(fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, err.Error()))
+	} else {
+		ctx.Response.Header.Set("Content-Type", "application/json")
+		ctx.SetBody(buf.Bytes())
+	}
 }
 
 func (s *HttpServer) Start(logger *zerolog.Logger) error {
@@ -476,7 +494,10 @@ func (s *HttpServer) Start(logger *zerolog.Logger) error {
 		ln6, err = net.Listen("tcp6", addrV6)
 		if err != nil {
 			if ln4 != nil {
-				ln4.Close()
+				err := ln4.Close()
+				if err != nil {
+					logger.Error().Err(err).Msgf("failed to close IPv4 listener")
+				}
 			}
 			return fmt.Errorf("error listening on IPv6: %w", err)
 		}
