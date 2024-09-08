@@ -1883,7 +1883,7 @@ func TestNetwork_Forward(t *testing.T) {
 			"params": ["0xabcdef"],
 			"id": 1
 		}`))
-		fakeReq.ApplyDirectivesFromHttpHeaders(&fasthttp.RequestHeader{})
+		fakeReq.ApplyDirectivesFromHttp(&fasthttp.RequestHeader{}, &fasthttp.Args{})
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -2104,7 +2104,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}`))
 		hdr := &fasthttp.RequestHeader{}
 		hdr.Set("x-erpc-retry-pending", "false")
-		fakeReq.ApplyDirectivesFromHttpHeaders(hdr)
+		fakeReq.ApplyDirectivesFromHttp(hdr, &fasthttp.Args{})
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -2242,7 +2242,7 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq2 := common.NewNormalizedRequest(requestBytes)
 		hdr := &fasthttp.RequestHeader{}
 		hdr.Set("x-erpc-skip-cache-read", "true")
-		fakeReq2.ApplyDirectivesFromHttpHeaders(hdr)
+		fakeReq2.ApplyDirectivesFromHttp(hdr, &fasthttp.Args{})
 		resp2, err := ntw.Forward(ctx, fakeReq2)
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)

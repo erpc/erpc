@@ -79,7 +79,10 @@ func NewUpstream(
 		}
 	}
 
-	pup.guessUpstreamType()
+	err = pup.guessUpstreamType()
+	if err != nil {
+		return nil, err
+	}
 	if client, err := cr.GetOrCreateClient(pup); err != nil {
 		return nil, err
 	} else {
@@ -456,6 +459,7 @@ func (u *Upstream) initRateLimitAutoTuner() {
 					return
 				}
 				u.rateLimiterAutoTuner = NewRateLimitAutoTuner(
+					&u.Logger,
 					budget,
 					dur,
 					cfg.ErrorRateThreshold,
@@ -616,9 +620,22 @@ func (u *Upstream) detectFeatures() error {
 func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip bool) {
 	method, _ := req.Method()
 
+	if u.config.Evm != nil {
+		if u.config.Evm.Syncing != nil && *u.config.Evm.Syncing {
+			return common.NewErrUpstreamSyncing(u.config.Id), true
+		}
+	}
+
 	if !u.shouldHandleMethod(method) {
 		u.Logger.Debug().Str("method", method).Msg("method not allowed or ignored by upstread")
 		return common.NewErrUpstreamMethodIgnored(method, u.config.Id), true
+	}
+
+	dirs := req.Directives()
+	if dirs.UseUpstream != "" {
+		if !common.WildcardMatch(dirs.UseUpstream, u.config.Id) {
+			return common.NewErrUpstreamNotAllowed(u.config.Id), true
+		}
 	}
 
 	// TODO evm: if block can be determined from request and upstream is only full-node and block is historical skip

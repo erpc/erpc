@@ -4,9 +4,12 @@ import (
 	"math"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 type RateLimitAutoTuner struct {
+	logger             *zerolog.Logger
 	budget             *RateLimiterBudget
 	errorCounts        map[string]*ErrorCounter
 	lastAdjustments    map[string]time.Time
@@ -26,6 +29,7 @@ type ErrorCounter struct {
 }
 
 func NewRateLimitAutoTuner(
+	logger *zerolog.Logger,
 	budget *RateLimiterBudget,
 	adjustmentPeriod time.Duration,
 	errorRateThreshold,
@@ -88,16 +92,19 @@ func (arl *RateLimitAutoTuner) adjustBudget(method string) {
 
 			errorRate := float64(erc) / float64(ttc)
 
-			var newMaxCount int
+			var newMaxCount uint
 			if errorRate > arl.errorRateThreshold {
-				newMaxCount = int(math.Ceil(float64(currentMax) * arl.decreaseFactor))
+				newMaxCount = uint(math.Ceil(float64(currentMax) * arl.decreaseFactor))
 			} else if errorRate == 0 {
-				newMaxCount = int(math.Ceil(float64(currentMax) * arl.increaseFactor))
+				newMaxCount = uint(math.Ceil(float64(currentMax) * arl.increaseFactor))
 			} else {
 				continue
 			}
 
-			arl.budget.AdjustBudget(rule, newMaxCount)
+			err := arl.budget.AdjustBudget(rule, newMaxCount)
+			if err != nil {
+				arl.logger.Warn().Err(err).Msgf("failed to adjust budget for method %s", method)
+			}
 		}
 
 		arl.lastAdjustments[method] = time.Now()

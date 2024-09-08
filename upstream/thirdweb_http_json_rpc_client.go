@@ -59,7 +59,7 @@ func (c *ThirdwebHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, err
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	rid := rand.Intn(1000000)
+	rid := rand.Intn(100_000_000) // #nosec G404
 	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, rid)))
 	resp, err := client.SendRequest(ctx, pr)
 	if err != nil {
