@@ -86,8 +86,9 @@ func Init(
 		addrV6 := fmt.Sprintf("%s:%d", cfg.Metrics.HostV6, cfg.Metrics.Port)
 		logger.Info().Msgf("starting metrics server on port: %d addrV4: %s addrV6: %s", cfg.Metrics.Port, addrV4, addrV6)
 		srv := &http.Server{
-			Addr:    fmt.Sprintf(":%d", cfg.Metrics.Port),
-			Handler: promhttp.Handler(),
+			Addr:              fmt.Sprintf(":%d", cfg.Metrics.Port),
+			Handler:           promhttp.Handler(),
+			ReadHeaderTimeout: 10 * time.Second,
 		}
 		go func() {
 			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

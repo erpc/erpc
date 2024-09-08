@@ -167,10 +167,10 @@ func (r *NormalizedRequest) ApplyDirectivesFromHttp(
 	queryArgs *fasthttp.Args,
 ) {
 	drc := &RequestDirectives{
-		RetryEmpty:     string(headers.Peek("X-ERPC-Retry-Empty")) != "false",
-		RetryPending:   string(headers.Peek("X-ERPC-Retry-Pending")) != "false",
-		SkipCacheRead:  string(headers.Peek("X-ERPC-Skip-Cache-Read")) == "true",
-		UseUpstream: string(headers.Peek("X-ERPC-Use-Upstream")),
+		RetryEmpty:    string(headers.Peek("X-ERPC-Retry-Empty")) != "false",
+		RetryPending:  string(headers.Peek("X-ERPC-Retry-Pending")) != "false",
+		SkipCacheRead: string(headers.Peek("X-ERPC-Skip-Cache-Read")) == "true",
+		UseUpstream:   string(headers.Peek("X-ERPC-Use-Upstream")),
 	}
 
 	if useUpstream := string(queryArgs.Peek("use-upstream")); useUpstream != "" {
@@ -235,7 +235,7 @@ func (r *NormalizedRequest) JsonRpcRequest() (*JsonRpcRequest, error) {
 	}
 
 	if rpcReq.ID == nil {
-		rpcReq.ID = float64(rand.Intn(math.MaxInt32))
+		rpcReq.ID = rand.Intn(math.MaxInt32) // #nosec G404
 	}
 
 	r.jsonRpcRequest = rpcReq

@@ -79,7 +79,10 @@ func NewUpstream(
 		}
 	}
 
-	pup.guessUpstreamType()
+	err = pup.guessUpstreamType()
+	if err != nil {
+		return nil, err
+	}
 	if client, err := cr.GetOrCreateClient(pup); err != nil {
 		return nil, err
 	} else {
@@ -456,6 +459,7 @@ func (u *Upstream) initRateLimitAutoTuner() {
 					return
 				}
 				u.rateLimiterAutoTuner = NewRateLimitAutoTuner(
+					&u.Logger,
 					budget,
 					dur,
 					cfg.ErrorRateThreshold,
@@ -621,7 +625,7 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 			return common.NewErrUpstreamSyncing(u.config.Id), true
 		}
 	}
-	
+
 	if !u.shouldHandleMethod(method) {
 		u.Logger.Debug().Str("method", method).Msg("method not allowed or ignored by upstread")
 		return common.NewErrUpstreamMethodIgnored(method, u.config.Id), true

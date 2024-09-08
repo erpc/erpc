@@ -16,6 +16,10 @@ jobs:
         run: make build
       - name: Test with the Go CLI
         run: make test
+      - name: Run Gosec Security Scanner
+        uses: securego/gosec@master
+        with:
+          args: -exclude-dir=test -tests=false ./...
       - name: Generate coverage report
         run: make coverage
       - name: Upload coverage reports to Codecov
