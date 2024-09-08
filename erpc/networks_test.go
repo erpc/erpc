@@ -30,7 +30,7 @@ import (
 var TRUE = true
 
 func init() {
-	log.Logger = log.Level(zerolog.TraceLevel).Output(zerolog.ConsoleWriter{Out: os.Stderr})
+	log.Logger = log.Level(zerolog.ErrorLevel).Output(zerolog.ConsoleWriter{Out: os.Stderr})
 }
 
 func TestNetwork_Forward(t *testing.T) {
@@ -64,10 +64,20 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		mt := health.NewTracker("prjA", 2*time.Second)
+		up1 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "test",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
 		upsReg := upstream.NewUpstreamsRegistry(
 			&log.Logger,
 			"prjA",
-			[]*common.UpstreamConfig{},
+			[]*common.UpstreamConfig{
+				up1,
+			},
 			rateLimitersRegistry,
 			vendors.NewVendorsRegistry(),
 			mt,
@@ -77,12 +87,24 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+				},
 				RateLimitBudget: "MyLimiterBudget_Test1",
 			},
 			rateLimitersRegistry,
 			upsReg,
 			mt,
 		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = upsReg.Bootstrap(context.TODO())
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = upsReg.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -133,10 +155,20 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		mt := health.NewTracker("prjA", 2*time.Second)
+		up1 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "test",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
 		upsReg := upstream.NewUpstreamsRegistry(
 			&log.Logger,
 			"prjA",
-			[]*common.UpstreamConfig{},
+			[]*common.UpstreamConfig{
+				up1,
+			},
 			rateLimitersRegistry,
 			vendors.NewVendorsRegistry(),
 			mt,
@@ -146,12 +178,24 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+				},
 				RateLimitBudget: "MyLimiterBudget_Test2",
 			},
 			rateLimitersRegistry,
 			upsReg,
 			mt,
 		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = upsReg.Bootstrap(context.TODO())
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = upsReg.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
