@@ -617,8 +617,8 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 	method, _ := req.Method()
 
 	if u.config.Evm != nil {
-		if u.config.Evm.Syncing != nil && !*u.config.Evm.Syncing {
-			return nil, true
+		if u.config.Evm.Syncing != nil && *u.config.Evm.Syncing {
+			return common.NewErrUpstreamSyncing(u.config.Id), true
 		}
 	}
 	
@@ -629,8 +629,8 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 
 	dirs := req.Directives()
 	if dirs.UseUpstream != "" {
-		if common.WildcardMatch(dirs.UseUpstream, u.config.Id) {
-			return nil, true
+		if !common.WildcardMatch(dirs.UseUpstream, u.config.Id) {
+			return common.NewErrUpstreamNotAllowed(u.config.Id), true
 		}
 	}
 

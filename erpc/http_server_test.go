@@ -225,19 +225,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 	})
 }
 
-func TestHttpServer_HandleRequest_EthGetBlockNumber(t *testing.T) {
-	gock.EnableNetworking()
-	gock.NetworkingFilter(func(req *http.Request) bool {
-		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
-		return shouldMakeRealCall
-	})
-	defer gock.Off()
-
-	// Setup
-	logger := zerolog.New(zerolog.NewConsoleWriter())
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
+func TestHttpServer_SingleUpstream(t *testing.T) {
 	cfg := &common.Config{
 		Server: &common.ServerConfig{
 			MaxTimeout: "5s",
@@ -268,49 +256,7 @@ func TestHttpServer_HandleRequest_EthGetBlockNumber(t *testing.T) {
 		RateLimiters: &common.RateLimiterConfig{},
 	}
 
-	erpcInstance, err := NewERPC(ctx, &logger, nil, cfg)
-	require.NoError(t, err)
-
-	httpServer := NewHttpServer(ctx, &logger, cfg.Server, erpcInstance)
-
-	// Start the server on a random port
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	port := listener.Addr().(*net.TCPAddr).Port
-
-	go func() {
-		err := httpServer.server.Serve(listener)
-		if err != nil && err != http.ErrServerClosed {
-			t.Errorf("Server error: %v", err)
-		}
-	}()
-	defer httpServer.server.Shutdown()
-
-	// Wait for the server to start
-	time.Sleep(1000 * time.Millisecond)
-
-	baseURL := fmt.Sprintf("http://localhost:%d", port)
-
-	sendRequest := func(body string) (int, string) {
-		req, err := http.NewRequest("POST", baseURL+"/test_project/evm/1", strings.NewReader(body))
-		require.NoError(t, err)
-		req.Header.Set("Content-Type", "application/json")
-
-		client := &http.Client{
-			Timeout: 10 * time.Second,
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			return 0, err.Error()
-		}
-		defer resp.Body.Close()
-
-		respBody, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return resp.StatusCode, err.Error()
-		}
-		return resp.StatusCode, string(respBody)
-	}
+	sendRequest, baseURL := createServerTestFixtures(cfg, t)
 
 	t.Run("ConcurrentEthGetBlockNumber", func(t *testing.T) {
 		defer gock.Off()
@@ -337,7 +283,7 @@ func TestHttpServer_HandleRequest_EthGetBlockNumber(t *testing.T) {
 			go func(index int) {
 				defer wg.Done()
 				body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[%d],"id":1}`, index)
-				results[index].statusCode, results[index].body = sendRequest(body)
+				results[index].statusCode, results[index].body = sendRequest(body, nil, nil)
 			}(i)
 		}
 
@@ -356,7 +302,7 @@ func TestHttpServer_HandleRequest_EthGetBlockNumber(t *testing.T) {
 	})
 
 	t.Run("InvalidJSON", func(t *testing.T) {
-		statusCode, body := sendRequest(`{"invalid json`)
+		statusCode, body := sendRequest(`{"invalid json`, nil, nil)
 
 		fmt.Println(body)
 
@@ -387,7 +333,7 @@ func TestHttpServer_HandleRequest_EthGetBlockNumber(t *testing.T) {
 				},
 			})
 
-		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"unsupported_method","params":[],"id":1}`)
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"unsupported_method","params":[],"id":1}`, nil, nil)
 
 		assert.Equal(t, http.StatusUnsupportedMediaType, statusCode)
 
@@ -441,7 +387,7 @@ func TestHttpServer_HandleRequest_EthGetBlockNumber(t *testing.T) {
 				"result":  "0x1111111",
 			})
 
-		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`)
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`, nil, nil)
 
 		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
 
@@ -464,7 +410,7 @@ func TestHttpServer_HandleRequest_EthGetBlockNumber(t *testing.T) {
 			Reply(200).
 			BodyString("error code: 1015")
 
-		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`)
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`, nil, nil)
 
 		assert.Equal(t, http.StatusTooManyRequests, statusCode)
 		assert.Contains(t, body, "error code: 1015")
@@ -479,11 +425,190 @@ func TestHttpServer_HandleRequest_EthGetBlockNumber(t *testing.T) {
 			Reply(500).
 			BodyString(`{"error":{"code":-39999,"message":"my funky error"}}`)
 
-		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`)
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`, nil, nil)
 
 		assert.Equal(t, http.StatusInternalServerError, statusCode)
 		assert.Contains(t, body, "-32603")
 		assert.Contains(t, body, "my funky error")
+
+		assert.True(t, gock.IsDone(), "All mocks should have been called")
+	})
+}
+
+func createServerTestFixtures(cfg *common.Config, t *testing.T) (
+	func(body string, headers map[string]string, queryParams map[string]string) (int, string),
+	string,
+) {
+	gock.EnableNetworking()
+	gock.NetworkingFilter(func(req *http.Request) bool {
+		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
+		return shouldMakeRealCall
+	})
+	defer gock.Off()
+
+	logger := zerolog.New(zerolog.NewConsoleWriter())
+	ctx := context.Background()
+	// ctx, cancel := context.WithCancel(context.Background())
+	// defer cancel()
+
+	erpcInstance, err := NewERPC(ctx, &logger, nil, cfg)
+	require.NoError(t, err)
+
+	httpServer := NewHttpServer(ctx, &logger, cfg.Server, erpcInstance)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	go func() {
+		err := httpServer.server.Serve(listener)
+		if err != nil && err != http.ErrServerClosed {
+			t.Errorf("Server error: %v", err)
+		}
+	}()
+	// defer httpServer.server.Shutdown()
+
+	time.Sleep(1000 * time.Millisecond)
+
+	baseURL := fmt.Sprintf("http://localhost:%d", port)
+
+	sendRequest := func(body string, headers map[string]string, queryParams map[string]string) (int, string) {
+		req, err := http.NewRequest("POST", baseURL+"/test_project/evm/1", strings.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		q := req.URL.Query()
+		for k, v := range queryParams {
+			q.Add(k, v)
+		}
+		req.URL.RawQuery = q.Encode()
+
+		client := &http.Client{
+			Timeout: 10 * time.Second,
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return 0, err.Error()
+		}
+		defer resp.Body.Close()
+
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return resp.StatusCode, err.Error()
+		}
+		return resp.StatusCode, string(respBody)
+	}
+
+	return sendRequest, baseURL
+}
+
+func TestHttpServer_MultipleUpstreams(t *testing.T) {
+	cfg := &common.Config{
+		Server: &common.ServerConfig{
+			MaxTimeout: "5s",
+		},
+		Projects: []*common.ProjectConfig{
+			{
+				Id: "test_project",
+				Networks: []*common.NetworkConfig{
+					{
+						Architecture: common.ArchitectureEvm,
+						Evm: &common.EvmNetworkConfig{
+							ChainId: 1,
+						},
+					},
+				},
+				Upstreams: []*common.UpstreamConfig{
+					{
+						Id: "rpc1",
+						Type:     common.UpstreamTypeEvm,
+						Endpoint: "http://rpc1.localhost",
+						Evm: &common.EvmUpstreamConfig{
+							ChainId: 1,
+						},
+						VendorName: "llama",
+					},
+					{
+						Id: "rpc2",
+						Type:     common.UpstreamTypeEvm,
+						Endpoint: "http://rpc2.localhost",
+						Evm: &common.EvmUpstreamConfig{
+							ChainId: 1,
+						},
+						VendorName: "",
+					},
+				},
+			},
+		},
+		RateLimiters: &common.RateLimiterConfig{},
+	}
+
+	sendRequest, _ := createServerTestFixtures(cfg, t)
+
+	t.Run("UpstreamNotAllowedByDirectiveViaHeaders", func(t *testing.T) {
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      111,
+				"result":  "0x1111111",
+			})
+		gock.New("http://rpc2.localhost").
+			Post("/").
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      222,
+				"result":  "0x2222222",
+			})
+
+		statusCode2, body2 := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`, map[string]string{
+			"X-ERPC-Use-Upstream": "rpc2",
+		}, nil)
+
+		assert.Equal(t, http.StatusOK, statusCode2)
+		assert.Contains(t, body2, "0x2222222")
+
+		statusCode1, body1 := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`, nil, nil)
+
+		assert.Equal(t, http.StatusOK, statusCode1)
+		assert.Contains(t, body1, "0x1111111")
+
+		assert.True(t, gock.IsDone(), "All mocks should have been called")
+	})
+
+	t.Run("UpstreamNotAllowedByDirectiveViaQueryParams", func(t *testing.T) {
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      111,
+				"result":  "0x1111111",
+			})
+		gock.New("http://rpc2.localhost").
+			Post("/").
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      222,
+				"result":  "0x2222222",
+			})
+
+		statusCode2, body2 := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`, nil, map[string]string{
+			"use-upstream": "rpc2",
+		})
+
+		assert.Equal(t, http.StatusOK, statusCode2)
+		assert.Contains(t, body2, "0x2222222")
+
+		statusCode1, body1 := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`, nil, nil)
+
+		assert.Equal(t, http.StatusOK, statusCode1)
+		assert.Contains(t, body1, "0x1111111")
 
 		assert.True(t, gock.IsDone(), "All mocks should have been called")
 	})
