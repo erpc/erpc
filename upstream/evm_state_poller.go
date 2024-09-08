@@ -295,7 +295,7 @@ func (e *EvmStatePoller) fetchFinalizedBlockNumber(ctx context.Context) (int64, 
 }
 
 func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64, error) {
-	randId := rand.Intn(10_000_000)
+	randId := rand.Intn(100_000_000) // #nosec G404
 	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, randId, blockTag),
 	))

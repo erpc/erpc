@@ -70,7 +70,7 @@ func (r *RateLimitersRegistry) createRateLimiter(rule *common.RateLimitRuleConfi
 		return nil, common.NewErrRateLimitInvalidConfig(fmt.Errorf("failed to parse duration for limit %v: %w", rule, err))
 	}
 
-	builder := ratelimiter.BurstyBuilder[interface{}](uint(rule.MaxCount), duration)
+	builder := ratelimiter.BurstyBuilder[interface{}](rule.MaxCount, duration)
 
 	if rule.WaitTime != "" {
 		waitTime, err := time.ParseDuration(rule.WaitTime)

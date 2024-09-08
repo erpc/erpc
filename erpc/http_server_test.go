@@ -182,7 +182,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 					r.Status(200)
 					r.JSON(map[string]interface{}{
 						"jsonrpc": "2.0",
-						"id":      rand.Intn(100000000),
+						"id":      rand.Intn(100_000_000),
 						"result": map[string]interface{}{
 							"blockNumber": rand.Intn(100000000),
 						},
@@ -522,7 +522,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 				},
 				Upstreams: []*common.UpstreamConfig{
 					{
-						Id: "rpc1",
+						Id:       "rpc1",
 						Type:     common.UpstreamTypeEvm,
 						Endpoint: "http://rpc1.localhost",
 						Evm: &common.EvmUpstreamConfig{
@@ -531,7 +531,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 						VendorName: "llama",
 					},
 					{
-						Id: "rpc2",
+						Id:       "rpc2",
 						Type:     common.UpstreamTypeEvm,
 						Endpoint: "http://rpc2.localhost",
 						Evm: &common.EvmUpstreamConfig{

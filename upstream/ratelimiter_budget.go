@@ -36,7 +36,7 @@ func (b *RateLimiterBudget) GetRulesByMethod(method string) []*RateLimitRule {
 	return rules
 }
 
-func (b *RateLimiterBudget) AdjustBudget(rule *RateLimitRule, newMaxCount int) error {
+func (b *RateLimiterBudget) AdjustBudget(rule *RateLimitRule, newMaxCount uint) error {
 	b.rulesMu.Lock()
 	defer b.rulesMu.Unlock()
 

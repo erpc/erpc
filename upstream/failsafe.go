@@ -92,17 +92,17 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, component string, cfg *c
 
 	if cfg.FailureThresholdCount > 0 {
 		if cfg.FailureThresholdCapacity > 0 {
-			builder = builder.WithFailureThresholdRatio(uint(cfg.FailureThresholdCount), uint(cfg.FailureThresholdCapacity))
+			builder = builder.WithFailureThresholdRatio(cfg.FailureThresholdCount, cfg.FailureThresholdCapacity)
 		} else {
-			builder = builder.WithFailureThreshold(uint(cfg.FailureThresholdCount))
+			builder = builder.WithFailureThreshold(cfg.FailureThresholdCount)
 		}
 	}
 
 	if cfg.SuccessThresholdCount > 0 {
 		if cfg.SuccessThresholdCapacity > 0 {
-			builder = builder.WithSuccessThresholdRatio(uint(cfg.SuccessThresholdCount), uint(cfg.SuccessThresholdCapacity))
+			builder = builder.WithSuccessThresholdRatio(cfg.SuccessThresholdCount, cfg.SuccessThresholdCapacity)
 		} else {
-			builder = builder.WithSuccessThreshold(uint(cfg.SuccessThresholdCount))
+			builder = builder.WithSuccessThreshold(cfg.SuccessThresholdCount)
 		}
 	}
 

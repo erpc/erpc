@@ -207,11 +207,11 @@ type RetryPolicyConfig struct {
 }
 
 type CircuitBreakerPolicyConfig struct {
-	FailureThresholdCount    int    `yaml:"failureThresholdCount" json:"failureThresholdCount"`
-	FailureThresholdCapacity int    `yaml:"failureThresholdCapacity" json:"failureThresholdCapacity"`
+	FailureThresholdCount    uint   `yaml:"failureThresholdCount" json:"failureThresholdCount"`
+	FailureThresholdCapacity uint   `yaml:"failureThresholdCapacity" json:"failureThresholdCapacity"`
 	HalfOpenAfter            string `yaml:"halfOpenAfter" json:"halfOpenAfter"`
-	SuccessThresholdCount    int    `yaml:"successThresholdCount" json:"successThresholdCount"`
-	SuccessThresholdCapacity int    `yaml:"successThresholdCapacity" json:"successThresholdCapacity"`
+	SuccessThresholdCount    uint   `yaml:"successThresholdCount" json:"successThresholdCount"`
+	SuccessThresholdCapacity uint   `yaml:"successThresholdCapacity" json:"successThresholdCapacity"`
 }
 
 type TimeoutPolicyConfig struct {
@@ -234,7 +234,7 @@ type RateLimitBudgetConfig struct {
 
 type RateLimitRuleConfig struct {
 	Method   string `yaml:"method" json:"method"`
-	MaxCount int    `yaml:"maxCount" json:"maxCount"`
+	MaxCount uint   `yaml:"maxCount" json:"maxCount"`
 	Period   string `yaml:"period" json:"period"`
 	WaitTime string `yaml:"waitTime" json:"waitTime"`
 }
@@ -361,7 +361,7 @@ func (c *Config) GetProjectConfig(projectId string) *ProjectConfig {
 
 func (c *RateLimitRuleConfig) MarshalZerologObject(e *zerolog.Event) {
 	e.Str("method", c.Method).
-		Int("maxCount", c.MaxCount).
+		Uint("maxCount", c.MaxCount).
 		Str("period", c.Period).
 		Str("waitTime", c.WaitTime)
 }

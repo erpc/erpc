@@ -259,6 +259,12 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 	go func() {
 		resp, err := c.httpClient.Do(httpReq)
 		if err != nil {
+			if resp != nil {
+				er := resp.Body.Close()
+				if er != nil {
+					c.logger.Error().Err(er).Msgf("failed to close response body")
+				}
+			}
 			batchErrChan <- err
 		} else {
 			batchRespChan <- resp
@@ -290,8 +296,8 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 }
 
 func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}]*batchRequest, resp *http.Response) {
-	respBody, err := io.ReadAll(resp.Body)
 	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		for _, req := range requests {
 			req.err <- err
@@ -299,7 +305,9 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 		return
 	}
 
-	c.logger.Debug().Str("body", string(respBody)).Msgf("received batch response")
+	if c.logger.GetLevel() == zerolog.DebugLevel {
+		c.logger.Debug().Str("body", string(respBody)).Msgf("received batch response")
+	}
 
 	// Usually when upstream is dead and returns a non-JSON response body
 	if respBody[0] == '<' {
@@ -419,9 +427,8 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		}
 		return nil, err
 	}
-
-	respBody, err := io.ReadAll(resp.Body)
 	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}

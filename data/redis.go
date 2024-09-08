@@ -88,7 +88,7 @@ func (r *RedisConnector) connect(ctx context.Context, cfg *common.RedisConnector
 
 func createTLSConfig(tlsCfg *common.TLSConfig) (*tls.Config, error) {
 	config := &tls.Config{
-		InsecureSkipVerify: tlsCfg.InsecureSkipVerify,
+		InsecureSkipVerify: tlsCfg.InsecureSkipVerify, // #nosec G402
 	}
 
 	if tlsCfg.CertFile != "" && tlsCfg.KeyFile != "" {
