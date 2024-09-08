@@ -147,6 +147,22 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 	}
 
+	upsList, err := n.upstreamsRegistry.GetSortedUpstreams(n.NetworkId, method)
+	if err != nil {
+		if inf != nil {
+			inf.Close(nil, err)
+		}
+		return nil, err
+	}
+
+	// 3) Check if we should handle this method on this network
+	if err := n.shouldHandleMethod(method, upsList); err != nil {
+		if inf != nil {
+			inf.Close(nil, err)
+		}
+		return nil, err
+	}
+
 	// 3) Apply rate limits
 	if err := n.acquireRateLimitPermit(req); err != nil {
 		if inf != nil {
@@ -184,14 +200,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		return resp, err
 	}
 
-	upsList, err := n.upstreamsRegistry.GetSortedUpstreams(n.NetworkId, method)
-	if err != nil {
-		if inf != nil {
-			inf.Close(nil, err)
-		}
-		return nil, err
-	}
-
+	// 5) Actual forwarding logic
 	var execution failsafe.Execution[*common.NormalizedResponse]
 	var errorsByUpstream = map[string]error{}
 
@@ -367,6 +376,18 @@ func (n *Network) EvmChainId() (int64, error) {
 		return 0, common.NewErrUnknownNetworkID(n.Architecture())
 	}
 	return n.cfg.Evm.ChainId, nil
+}
+
+func (n *Network) shouldHandleMethod(method string, upsList []*upstream.Upstream) error {
+	if method == "eth_newFilter" ||
+		method == "eth_newBlockFilter" ||
+		method == "eth_newPendingTransactionFilter" {
+		if len(upsList) > 1 {
+			return common.NewErrNotImplemented("eth_newFilter, eth_newBlockFilter and eth_newPendingTransactionFilter are not supported yet when there are more than 1 upstream defined")
+		}
+	}
+
+	return nil
 }
 
 func (n *Network) enrichStatePoller(method string, req *common.NormalizedRequest, resp *common.NormalizedResponse) {

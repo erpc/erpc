@@ -459,6 +459,21 @@ func (e *ErrUnknownNetworkArchitecture) ErrorStatusCode() int {
 	return http.StatusBadRequest
 }
 
+type ErrNotImplemented struct{ BaseError }
+
+var NewErrNotImplemented = func(msg string) error {
+	return &ErrNotImplemented{
+		BaseError{
+			Code:    "ErrNotImplemented",
+			Message: msg,
+		},
+	}
+}
+
+func (e *ErrNotImplemented) ErrorStatusCode() int {
+	return http.StatusNotImplemented
+}
+
 type ErrInvalidEvmChainId struct{ BaseError }
 
 var NewErrInvalidEvmChainId = func(chainId any) error {
