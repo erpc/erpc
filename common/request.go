@@ -28,6 +28,11 @@ type RequestDirectives struct {
 	// Instruct the proxy to skip cache reads for example to force freshness,
 	// or override some cache corruption.
 	SkipCacheRead bool
+
+	// Instruct the proxy to forward the request to a specific upstream(s) only.
+	// Value can use "*" star char as a wildcard to target multiple upstreams.
+	// For example "alchemy" or "my-own-*", etc.
+	UseUpstream string
 }
 
 type NormalizedRequest struct {
@@ -132,7 +137,7 @@ func (r *NormalizedRequest) Id() string {
 						return r.uid
 					}
 				} else {
-					r.uid = fmt.Sprintf("%f", idf)
+					r.uid = fmt.Sprintf("%d", int64(idf))
 					return r.uid
 				}
 			} else {
@@ -157,12 +162,33 @@ func (r *NormalizedRequest) SetNetwork(network Network) {
 	r.network = network
 }
 
-func (r *NormalizedRequest) ApplyDirectivesFromHttpHeaders(headers *fasthttp.RequestHeader) {
+func (r *NormalizedRequest) ApplyDirectivesFromHttp(
+	headers *fasthttp.RequestHeader,
+	queryArgs *fasthttp.Args,
+) {
 	drc := &RequestDirectives{
-		RetryEmpty:    string(headers.Peek("X-ERPC-Retry-Empty")) != "false",
-		RetryPending:  string(headers.Peek("X-ERPC-Retry-Pending")) != "false",
-		SkipCacheRead: string(headers.Peek("X-ERPC-Skip-Cache-Read")) == "true",
+		RetryEmpty:     string(headers.Peek("X-ERPC-Retry-Empty")) != "false",
+		RetryPending:   string(headers.Peek("X-ERPC-Retry-Pending")) != "false",
+		SkipCacheRead:  string(headers.Peek("X-ERPC-Skip-Cache-Read")) == "true",
+		UseUpstream: string(headers.Peek("X-ERPC-Use-Upstream")),
 	}
+
+	if useUpstream := string(queryArgs.Peek("use-upstream")); useUpstream != "" {
+		drc.UseUpstream = useUpstream
+	}
+
+	if retryEmpty := string(queryArgs.Peek("retry-empty")); retryEmpty != "" {
+		drc.RetryEmpty = retryEmpty != "false"
+	}
+
+	if retryPending := string(queryArgs.Peek("retry-pending")); retryPending != "" {
+		drc.RetryPending = retryPending != "false"
+	}
+
+	if skipCacheRead := string(queryArgs.Peek("skip-cache-read")); skipCacheRead != "" {
+		drc.SkipCacheRead = skipCacheRead != "false"
+	}
+
 	r.directives = drc
 }
 

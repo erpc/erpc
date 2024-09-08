@@ -616,9 +616,22 @@ func (u *Upstream) detectFeatures() error {
 func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip bool) {
 	method, _ := req.Method()
 
+	if u.config.Evm != nil {
+		if u.config.Evm.Syncing != nil && !*u.config.Evm.Syncing {
+			return nil, true
+		}
+	}
+	
 	if !u.shouldHandleMethod(method) {
 		u.Logger.Debug().Str("method", method).Msg("method not allowed or ignored by upstread")
 		return common.NewErrUpstreamMethodIgnored(method, u.config.Id), true
+	}
+
+	dirs := req.Directives()
+	if dirs.UseUpstream != "" {
+		if common.WildcardMatch(dirs.UseUpstream, u.config.Id) {
+			return nil, true
+		}
 	}
 
 	// TODO evm: if block can be determined from request and upstream is only full-node and block is historical skip

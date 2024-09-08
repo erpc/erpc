@@ -912,6 +912,22 @@ var NewErrUpstreamMethodIgnored = func(method string, upstreamId string) error {
 	}
 }
 
+type ErrUpstreamSyncing struct{ BaseError }
+
+const ErrCodeUpstreamSyncing ErrorCode = "ErrUpstreamSyncing"
+
+var NewErrUpstreamSyncing = func(upstreamId string) error {
+	return &ErrUpstreamSyncing{
+		BaseError{
+			Code:    ErrCodeUpstreamSyncing,
+			Message: "upstream is syncing",
+			Details: map[string]interface{}{
+				"upstreamId": upstreamId,
+			},
+		},
+	}
+}
+
 type ErrUpstreamHedgeCancelled struct{ BaseError }
 
 const ErrCodeUpstreamHedgeCancelled ErrorCode = "ErrUpstreamHedgeCancelled"

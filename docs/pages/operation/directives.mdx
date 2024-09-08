@@ -7,6 +7,7 @@ To instruct eRPC behavior on a per-request basis, you can provide directive "Hea
 * [Retry empty responses](#retry-empty-responses)
 * [Retry pending transactions](#retry-pending-transactions)
 * [Skip cache read](#skip-cache-read)
+* [Use specific upstream(s)](#use-specific-upstream)
 
 ## Retry empty responses
 
@@ -17,7 +18,15 @@ Emptyish means any of these:
 * Response is `null` or `{}` empty object for example for eth_getTransactionReceipt
 * Response is `""` or `0x` empty hashed byte, for example for certain eth_call responses
 
-To explicitly disable this behavior for certain requests, you can set the `X-ERPC-Retry-Empty` header to `false`. For example when you're requesting eth_getTransactionReceipt of mostly reecent transactions and prefer to immeditely get an empty response and handle it on your client side:
+To explicitly disable this behavior for certain requests, you can use either:
+* Header `X-ERPC-Retry-Empty: false`
+* Or query parameter `?retry-empty=false`
+
+<Callout type="info">
+    Empty-response retry behavior only applies when dealing with unfinalized data (recent blocks). For blocks in far past, empty responses are treated as final and won't be retried.
+</Callout>
+
+For example when you're requesting eth_getTransactionReceipt of mostly reecent transactions and prefer to immeditely get an empty response and handle it on your client side:
 ```bash
 curl --location 'http://localhost:4000/main/evm/42161' \
 --header 'Content-Type: application/json' \
@@ -30,6 +39,10 @@ curl --location 'http://localhost:4000/main/evm/42161' \
     "id": 9199,
     "jsonrpc": "2.0"
 }'
+
+# OR
+curl --location 'http://localhost:4000/main/evm/42161?retry-empty=false'
+# ...
 ```
 
 ## Retry pending transactions
@@ -42,7 +55,11 @@ This behavior is applied to these methods:
 * eth_getTransactionByBlockNumberAndIndex
 * eth_getTransactionReceipt
 
-To disable this behavior, you can set the `X-ERPC-Retry-Pending` header to `false`. For example if you're intentionally looking to query data of pending transactions (e.g. MEV bot) and prefer to immeditely get the pending tx data:
+To disable this behavior, you can use either:
+* Header `X-ERPC-Retry-Pending: false`
+* Or query parameter `?retry-pending=false`
+
+For example if you're intentionally looking to query data of pending transactions (e.g. MEV bot) and prefer to immeditely get the pending tx data:
 ```bash
 curl --location 'http://localhost:4000/main/evm/42161' \
 --header 'Content-Type: application/json' \
@@ -55,6 +72,10 @@ curl --location 'http://localhost:4000/main/evm/42161' \
     "id": 9199,
     "jsonrpc": "2.0"
 }'
+
+# OR
+curl --location 'http://localhost:4000/main/evm/42161?retry-pending=false'
+# ...
 ```
 
 <Callout type="info">
@@ -63,7 +84,11 @@ curl --location 'http://localhost:4000/main/evm/42161' \
 
 ## Skip cache read
 
-This directive is "false" by default, which means cache will be used. To skip a cache read for certain requests, you can set the `X-ERPC-Skip-Cache-Read` header to `true`. Useful when you need to force-refresh some data or override an already cached response.
+To instruct eRPC to skip 'reading' responses from cache, and make actual calls to upstreams. This directive is "false" by default, which means cache will be used.
+Useful when you need to force-refresh some data or override an already cached response.
+
+* Header `X-ERPC-Skip-Cache-Read: true`
+* Or query parameter `?skip-cache-read=true`
 
 ```bash
 curl --location 'http://localhost:4000/main/evm/42161' \
@@ -77,6 +102,41 @@ curl --location 'http://localhost:4000/main/evm/42161' \
     "id": 9199,
     "jsonrpc": "2.0"
 }'
+
+# OR
+curl --location 'http://localhost:4000/main/evm/42161?skip-cache-read=true'
+# ...
 ```
 
 > The new response will still be subject to caching as per usual.
+
+## Use specific upstream(s)
+
+When sending requests to eRPC you can instruct to use only one specific upstream (or multiple via wildcard match) using:
+* Header `X-ERPC-Use-Upstream: <xxx>` 
+* Or query parameter `?use-upstream=<xxx>`
+
+This will skip over any upstream that does not match the value you've provided.
+
+<Callout type="info">
+    You can use "*" as wildcard character to match a group of upstreams. e.g. "priv-*" will match any upstream IDs starting with "priv-"
+</Callout>
+
+For example if you want to make sure that request is sent to a specific upstream:
+```bash
+curl --location 'http://localhost:4000/main/evm/42161' \
+--header 'Content-Type: application/json' \
+--header 'X-ERPC-Use-Upstream: up123' \
+--data '{
+    "method": "eth_getTransactionReceipt",
+    "params": [
+        "0xe014f359cb3988f9944cd8003aac58812730383041993fdf762efcee21172d15",
+    ],
+    "id": 9199,
+    "jsonrpc": "2.0"
+}'
+
+# OR
+curl --location 'http://localhost:4000/main/evm/42161?use-upstream=up123'
+# ...
+```

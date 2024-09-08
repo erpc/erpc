@@ -145,13 +145,13 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 		var wg sync.WaitGroup
 
 		var headersCopy fasthttp.RequestHeader
-		var argsCopy fasthttp.Args
+		var queryArgsCopy fasthttp.Args
 		fastCtx.Request.Header.CopyTo(&headersCopy)
-		fastCtx.QueryArgs().CopyTo(&argsCopy)
+		fastCtx.QueryArgs().CopyTo(&queryArgsCopy)
 
 		for i, reqBody := range requests {
 			wg.Add(1)
-			go func(index int, rawReq json.RawMessage, headersCopy *fasthttp.RequestHeader, argsCopy *fasthttp.Args) {
+			go func(index int, rawReq json.RawMessage, headersCopy *fasthttp.RequestHeader, queryArgsCopy *fasthttp.Args) {
 				defer func() {
 					defer func() { recover() }()
 					if r := recover(); r != nil {
@@ -169,12 +169,12 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 				defer cancel()
 
 				nq := common.NewNormalizedRequest(rawReq)
-				nq.ApplyDirectivesFromHttpHeaders(headersCopy)
+				nq.ApplyDirectivesFromHttp(headersCopy, queryArgsCopy)
 
 				m, _ := nq.Method()
 				rlg := lg.With().Str("method", m).Logger()
 
-				ap, err := auth.NewPayloadFromHttp(project.Config.Id, nq, headersCopy, argsCopy)
+				ap, err := auth.NewPayloadFromHttp(project.Config.Id, nq, headersCopy, queryArgsCopy)
 				if err != nil {
 					responses[index] = processErrorBody(&rlg, nq, err)
 					return
@@ -257,7 +257,7 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 				}
 
 				responses[index] = resp
-			}(i, reqBody, &headersCopy, &argsCopy)
+			}(i, reqBody, &headersCopy, &queryArgsCopy)
 		}
 
 		wg.Wait()
