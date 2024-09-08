@@ -298,6 +298,7 @@ func TestUpstreamScoring(t *testing.T) {
 		})
 	}
 }
+
 func TestCalculateScoreDynamicScenarios(t *testing.T) {
 	registry := &UpstreamsRegistry{
 		scoreRefreshInterval: time.Second,
