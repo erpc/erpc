@@ -928,6 +928,20 @@ var NewErrUpstreamSyncing = func(upstreamId string) error {
 	}
 }
 
+type ErrUpstreamNotAllowed struct{ BaseError }
+
+var NewErrUpstreamNotAllowed = func(upstreamId string) error {
+	return &ErrUpstreamNotAllowed{
+		BaseError{
+			Code:    "ErrUpstreamNotAllowed",
+			Message: "upstream not allowed based on use-upstream directive",
+			Details: map[string]interface{}{
+				"upstreamId": upstreamId,
+			},
+		},
+	}
+}
+
 type ErrUpstreamHedgeCancelled struct{ BaseError }
 
 const ErrCodeUpstreamHedgeCancelled ErrorCode = "ErrUpstreamHedgeCancelled"
