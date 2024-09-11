@@ -4993,7 +4993,6 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.CleanUnmatchedRequest()
 
 		var requestBytes = json.RawMessage(`{"jsonrpc": "2.0","method": "eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
-		emptyResponse := json.RawMessage(`{"jsonrpc": "2.0","id": 1,"result":[]}`)
 
 		gock.New("https://rpc.hypersync.xyz").
 			Post("").
@@ -5003,7 +5002,7 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(200).
-			JSON(emptyResponse)
+			JSON(json.RawMessage(`{"result":[{"logIndex":444}], "fromHost":"rpc1"}`))
 
 		log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
 
@@ -5082,6 +5081,9 @@ func TestNetwork_Forward(t *testing.T) {
 
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
+		if err != nil {
+			t.Fatalf("Expected nil error, got %v", err)
+		}
 
 		if len(gock.Pending()) > 0 {
 			t.Errorf("Expected all mocks to be consumed, got %d left", len(gock.Pending()))
@@ -5090,30 +5092,32 @@ func TestNetwork_Forward(t *testing.T) {
 			}
 		}
 
+		// Convert the raw response to a map to access custom fields like fromHost
+		var responseMap map[string]interface{}
+		err = sonic.Unmarshal(resp.Body(), &responseMap)
 		if err != nil {
-			t.Fatalf("Expected nil error, got %v", err)
+			t.Fatalf("Failed to unmarshal response body: %v", err)
 		}
 
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Failed to get JSON-RPC response: %v", err)
-		}
-
-		if jrr.Result == nil {
-			t.Fatalf("Expected non-nil result")
-		}
-
-		res, err := jrr.ParsedResult()
-		if err != nil {
-			t.Fatalf("Failed to get parsed result: %v", err)
-		}
-		result, ok := res.([]interface{})
+		// Check if fromHost exists and is a string
+		fromHost, ok := responseMap["fromHost"].(string)
 		if !ok {
-			t.Fatalf("Expected Result to be []interface{}, got %T", jrr.Result)
+			t.Fatalf("Expected fromHost to be a string, got %T", responseMap["fromHost"])
 		}
 
-		if len(result) != 0 {
-			t.Errorf("Expected empty array result, got array of length %d", len(result))
+		// Assert the value of fromHost
+		if fromHost != "rpc1" {
+			t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
+		}
+
+		// Check that the result field is an empty array as expected
+		result, ok := responseMap["result"].([]interface{})
+		if !ok {
+			t.Fatalf("Expected result to be []interface{}, got %T", responseMap["result"])
+		}
+
+		if len(result) == 0 {
+			t.Fatalf("Expected non-empty result array")
 		}
 	})
 
