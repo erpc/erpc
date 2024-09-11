@@ -24,6 +24,7 @@ import (
 type ServerConfig struct {
 	Port             int
 	FailureRate      float64
+	LimitedRate      float64
 	MinDelay         time.Duration
 	MaxDelay         time.Duration
 	SampleFile       string
@@ -105,6 +106,7 @@ func CreateFakeServers(configs []ServerConfig) []*FakeServer {
 		server, err := NewFakeServer(
 			config.Port,
 			config.FailureRate,
+			config.LimitedRate,
 			config.MinDelay,
 			config.MaxDelay,
 			config.SampleFile,

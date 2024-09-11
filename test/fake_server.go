@@ -36,20 +36,23 @@ type RequestResponseSample struct {
 type FakeServer struct {
 	Port            int
 	FailureRate     float64
+	LimitedRate     float64
 	MinDelay        time.Duration
 	MaxDelay        time.Duration
 	server          *http.Server
 	mu              sync.Mutex
 	requestsHandled int64
 	requestsFailed  int64
+	requestsLimited int64
 	requestsSuccess int64
 	samples         []RequestResponseSample
 }
 
-func NewFakeServer(port int, failureRate float64, minDelay, maxDelay time.Duration, sampleFilePath string) (*FakeServer, error) {
+func NewFakeServer(port int, failureRate float64, limitedRate float64, minDelay, maxDelay time.Duration, sampleFilePath string) (*FakeServer, error) {
 	fs := &FakeServer{
 		Port:        port,
 		FailureRate: failureRate,
+		LimitedRate: limitedRate,
 		MinDelay:    minDelay,
 		MaxDelay:    maxDelay,
 	}
@@ -109,6 +112,14 @@ func (fs *FakeServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 		fs.requestsFailed++
 		fs.mu.Unlock()
 		http.Error(w, "Invalid JSON-RPC request", http.StatusBadRequest)
+		return
+	}
+
+	if rand.Float64() < fs.LimitedRate {
+		fs.mu.Lock()
+		fs.requestsLimited++
+		fs.mu.Unlock()
+		http.Error(w, "Request limited", http.StatusTooManyRequests)
 		return
 	}
 

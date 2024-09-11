@@ -2,13 +2,13 @@ package upstream
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog"
@@ -415,7 +415,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_blockNumber","params":[]}`, id)))
 				_, err := client.SendRequest(context.Background(), req)
 				assert.Error(t, err)
-				txt, _ := json.Marshal(err)
+				txt, _ := sonic.Marshal(err)
 				assert.Contains(t, string(txt), "ErrEndpointCapacityExceeded")
 			}(i + 1)
 		}

@@ -2,7 +2,6 @@ package erpc
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"math/rand"
@@ -13,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog"
@@ -293,7 +293,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			assert.Equal(t, http.StatusOK, result.statusCode, "Status code should be 200 for request %d", i)
 
 			var response map[string]interface{}
-			err := json.Unmarshal([]byte(result.body), &response)
+			err := sonic.Unmarshal([]byte(result.body), &response)
 			assert.NoError(t, err, "Should be able to decode response for request %d", i)
 			assert.Equal(t, "0x444444", response["result"], "Unexpected result for request %d", i)
 		}
@@ -309,12 +309,12 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, statusCode)
 
 		var errorResponse map[string]interface{}
-		err := json.Unmarshal([]byte(body), &errorResponse)
+		err := sonic.Unmarshal([]byte(body), &errorResponse)
 		require.NoError(t, err)
 
 		assert.Contains(t, errorResponse, "error")
 		errorObj := errorResponse["error"].(map[string]interface{})
-		errStr, _ := json.Marshal(errorObj)
+		errStr, _ := sonic.Marshal(errorObj)
 		assert.Contains(t, string(errStr), "ErrJsonRpcRequestUnmarshal")
 	})
 
@@ -338,7 +338,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		assert.Equal(t, http.StatusUnsupportedMediaType, statusCode)
 
 		var errorResponse map[string]interface{}
-		err := json.Unmarshal([]byte(body), &errorResponse)
+		err := sonic.Unmarshal([]byte(body), &errorResponse)
 		require.NoError(t, err)
 
 		assert.Contains(t, errorResponse, "error")
@@ -368,7 +368,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		require.NoError(t, err)
 
 		var errorResponse map[string]interface{}
-		err = json.Unmarshal(body, &errorResponse)
+		err = sonic.Unmarshal(body, &errorResponse)
 		require.NoError(t, err)
 
 		assert.Contains(t, errorResponse, "error")
@@ -392,12 +392,12 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
 
 		var errorResponse map[string]interface{}
-		err := json.Unmarshal([]byte(body), &errorResponse)
+		err := sonic.Unmarshal([]byte(body), &errorResponse)
 		require.NoError(t, err)
 
 		assert.Contains(t, errorResponse, "error")
 		errorObj := errorResponse["error"].(map[string]interface{})
-		errStr, _ := json.Marshal(errorObj)
+		errStr, _ := sonic.Marshal(errorObj)
 		assert.Contains(t, string(errStr), "ErrEndpointRequestTimeout")
 
 		assert.True(t, gock.IsDone(), "All mocks should have been called")
