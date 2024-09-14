@@ -4986,6 +4986,141 @@ func TestNetwork_Forward(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, "upstream-a", sortedUpstreamsCall[0].Config().Id, "Expected upstream-a to be preferred for eth_call in Phase 1")
 	})
+
+	t.Run("ForwardEnvioUnsupportedNetwork", func(t *testing.T) {
+		defer gock.Off()
+		defer gock.Clean()
+		defer gock.CleanUnmatchedRequest()
+
+		var requestBytes = json.RawMessage(`{"jsonrpc": "2.0","method": "eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
+
+		gock.New("https://rpc.hypersync.xyz").
+			Post("").
+			Reply(500).
+			BodyString(`{"error": "Internal Server Error"}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Reply(200).
+			JSON(json.RawMessage(`{"result":[{"logIndex":444}], "fromHost":"rpc1"}`))
+
+		log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		fsCfg := &common.FailsafeConfig{}
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+			Budgets: []*common.RateLimitBudgetConfig{},
+		}, &log.Logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		vndr := vendors.NewVendorsRegistry()
+		mt := health.NewTracker("prjA", 2*time.Second)
+
+		// First upstream (Envio) with unsupported network
+		upEnvio := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvmEnvio,
+			Id:       "envio",
+			Endpoint: "envio://rpc.hypersync.xyz",
+			JsonRpc: &common.JsonRpcUpstreamConfig{
+				SupportsBatch: &common.TRUE,
+			},
+			VendorName: "envio",
+		}
+
+		// Second upstream (RPC1)
+		upRpc1 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc1",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+			JsonRpc: &common.JsonRpcUpstreamConfig{
+				SupportsBatch: &common.TRUE,
+			},
+			VendorName: "llama",
+		}
+
+		upr := upstream.NewUpstreamsRegistry(
+			&log.Logger,
+			"prjA",
+			[]*common.UpstreamConfig{upEnvio, upRpc1}, // Both upstreams
+			rlr,
+			vndr, mt, 1*time.Second,
+		)
+		err = upr.Bootstrap(ctx)
+		if err != nil {
+			t.Fatalf("Failed to bootstrap upstreams registry: %v", err)
+		}
+
+		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		if err != nil {
+			t.Fatalf("Failed to prepare upstreams for network: %v", err)
+		}
+
+		ntw, err := NewNetwork(
+			&log.Logger,
+			"prjA",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+				},
+				Failsafe: fsCfg,
+			},
+			rlr,
+			upr,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		fakeReq := common.NewNormalizedRequest(requestBytes)
+		resp, err := ntw.Forward(ctx, fakeReq)
+		if err != nil {
+			t.Fatalf("Expected nil error, got %v", err)
+		}
+
+		if len(gock.Pending()) > 0 {
+			t.Errorf("Expected all mocks to be consumed, got %d left", len(gock.Pending()))
+			for _, pending := range gock.Pending() {
+				t.Errorf("Pending mock: %v", pending)
+			}
+		}
+
+		// Convert the raw response to a map to access custom fields like fromHost
+		var responseMap map[string]interface{}
+		err = sonic.Unmarshal(resp.Body(), &responseMap)
+		if err != nil {
+			t.Fatalf("Failed to unmarshal response body: %v", err)
+		}
+
+		// Check if fromHost exists and is a string
+		fromHost, ok := responseMap["fromHost"].(string)
+		if !ok {
+			t.Fatalf("Expected fromHost to be a string, got %T", responseMap["fromHost"])
+		}
+
+		// Assert the value of fromHost
+		if fromHost != "rpc1" {
+			t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
+		}
+
+		// Check that the result field is an empty array as expected
+		result, ok := responseMap["result"].([]interface{})
+		if !ok {
+			t.Fatalf("Expected result to be []interface{}, got %T", responseMap["result"])
+		}
+
+		if len(result) == 0 {
+			t.Fatalf("Expected non-empty result array")
+		}
+	})
+
 }
 
 func TestNetwork_InFlightRequests(t *testing.T) {
