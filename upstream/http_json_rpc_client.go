@@ -683,7 +683,8 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				),
 			)
 		} else if strings.Contains(err.Message, "Invalid Request") ||
-			strings.Contains(err.Message, "validation errors") {
+			strings.Contains(err.Message, "validation errors") ||
+			strings.Contains(err.Message, "invalid argument") {
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),

@@ -21,6 +21,10 @@ setup:
 run:
 	@go run ./cmd/erpc/main.go
 
+.PHONY: run-pprof
+run-pprof:
+	@go run ./cmd/erpc/main.go ./cmd/erpc/pprof.go
+
 .PHONY: run-fake-rpcs
 run-fake-rpcs:
 	@go run ./test/cmd/main.go
