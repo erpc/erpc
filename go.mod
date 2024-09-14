@@ -5,7 +5,7 @@ go 1.22.3
 require (
 	github.com/IGLOU-EU/go-wildcard/v2 v2.0.2
 	github.com/aws/aws-sdk-go v1.55.4
-	github.com/bytedance/sonic v1.12.1
+	github.com/bytedance/sonic v1.12.2
 	github.com/ethereum/go-ethereum v1.14.7
 	github.com/failsafe-go/failsafe-go v0.6.8
 	github.com/golang-jwt/jwt/v4 v4.5.0
