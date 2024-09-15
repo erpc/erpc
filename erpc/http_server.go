@@ -115,7 +115,7 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 
 		project, err := s.erpc.GetProject(projectId)
 		if err != nil {
-			handleErrorResponse(s.logger, nil, err, fastCtx, encoder, buf)
+			handleErrorResponse(&lg, nil, err, fastCtx, encoder, buf)
 			return
 		}
 
