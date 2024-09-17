@@ -208,9 +208,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	resp, execErr := n.failsafeExecutor.
 		WithContext(ctx).
 		GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
-			req.Mu.Lock()
+			req.Lock()
 			execution = exec
-			req.Mu.Unlock()
+			req.Unlock()
 
 			// We should try all upstreams at least once, but using "i" we make sure
 			// across different executions of the failsafe we pick up next upstream vs retrying the same upstream.
@@ -218,7 +218,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			// Upstream-level retry is handled by the upstream itself (and its own failsafe policies).
 			ln := len(upsList)
 			for count := 0; count < ln; count++ {
-				req.Mu.Lock()
+				// We need to use write-lock here because "i" is being updated.
+				req.Lock()
 				u := upsList[i]
 				i++
 				if i >= ln {
@@ -230,11 +231,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						// Do not even try this upstream if we already know
 						// the previous error was not retryable. e.g. Billing issues
 						// Or there was a rate-limit error.
-						req.Mu.Unlock()
+						req.Unlock()
 						continue
 					}
 				}
-				req.Mu.Unlock()
+				req.Unlock()
 
 				ulg := lg.With().Str("upstreamId", u.Config().Id).Logger()
 
@@ -255,7 +256,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 
 				if err != nil {
-					req.Mu.Lock()
+					req.Lock()
 					if ser, ok := err.(common.StandardError); ok {
 						ber := ser.Base()
 						if ber.Details == nil {
@@ -264,7 +265,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						ber.Details["timestampMs"] = time.Now().UnixMilli()
 					}
 					errorsByUpstream[upsId] = err
-					req.Mu.Unlock()
+					req.Unlock()
 				}
 
 				if err == nil || isClientErr {

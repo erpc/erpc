@@ -624,11 +624,11 @@ var NewErrUpstreamsExhausted = func(
 ) error {
 	// TODO create a new error type that holds a map to avoid creating a new array
 	ers := []error{}
-	req.Mu.RLock()
+	req.RLock()
 	for _, err := range ersObj {
 		ers = append(ers, err)
 	}
-	req.Mu.RUnlock()
+	req.RUnlock()
 	e := &ErrUpstreamsExhausted{
 		BaseError{
 			Code:    ErrCodeUpstreamsExhausted,

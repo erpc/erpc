@@ -34,6 +34,9 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 		return "", 0, errors.New("cannot extract block reference when json-rpc request is nil")
 	}
 
+	r.RLock()
+	defer r.RUnlock()
+
 	switch r.Method {
 	case "eth_getBlockByNumber",
 		"eth_getUncleByBlockNumberAndIndex",
@@ -166,6 +169,8 @@ func ExtractEvmBlockReferenceFromResponse(rpcReq *JsonRpcRequest, rpcResp *JsonR
 			if err != nil {
 				return "", 0, err
 			}
+			rpcResp.RLock()
+			defer rpcResp.RUnlock()
 			if tx, ok := result.(map[string]interface{}); ok {
 				var blockRef string
 				var blockNumber int64
@@ -189,7 +194,8 @@ func ExtractEvmBlockReferenceFromResponse(rpcReq *JsonRpcRequest, rpcResp *JsonR
 			if err != nil {
 				return "", 0, err
 			}
-
+			rpcResp.RLock()
+			defer rpcResp.RUnlock()
 			if blk, ok := result.(map[string]interface{}); ok {
 				var blockRef string
 				var blockNumber int64

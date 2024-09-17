@@ -36,6 +36,8 @@ type RequestDirectives struct {
 }
 
 type NormalizedRequest struct {
+	sync.RWMutex
+
 	Attempt int
 
 	network Network
@@ -48,8 +50,6 @@ type NormalizedRequest struct {
 
 	lastValidResponse *NormalizedResponse
 	lastUpstream      Upstream
-
-	Mu sync.RWMutex
 }
 
 type UniqueRequestKey struct {
@@ -67,8 +67,11 @@ func NewNormalizedRequest(body []byte) *NormalizedRequest {
 }
 
 func (r *NormalizedRequest) SetLastUpstream(upstream Upstream) *NormalizedRequest {
-	r.Mu.Lock()
-	defer r.Mu.Unlock()
+	if r == nil {
+		return r
+	}
+	r.Lock()
+	defer r.Unlock()
 	r.lastUpstream = upstream
 	return r
 }
@@ -77,18 +80,26 @@ func (r *NormalizedRequest) LastUpstream() Upstream {
 	if r == nil {
 		return nil
 	}
+	r.Lock()
+	defer r.Unlock()
 	return r.lastUpstream
 }
 
 func (r *NormalizedRequest) SetLastValidResponse(response *NormalizedResponse) {
-	r.Mu.Lock()
-	defer r.Mu.Unlock()
+	if r == nil {
+		return
+	}
+	r.Lock()
+	defer r.Unlock()
 	r.lastValidResponse = response
 }
 
 func (r *NormalizedRequest) LastValidResponse() *NormalizedResponse {
-	r.Mu.RLock()
-	defer r.Mu.RUnlock()
+	if r == nil {
+		return nil
+	}
+	r.RLock()
+	defer r.RUnlock()
 	return r.lastValidResponse
 }
 
@@ -104,14 +115,13 @@ func (r *NormalizedRequest) Id() string {
 		return ""
 	}
 
-	r.Mu.Lock()
-	defer r.Mu.Unlock()
-
 	if r.uid != "" {
 		return r.uid
 	}
 
+	r.RLock()
 	if r.jsonRpcRequest != nil {
+		defer r.RUnlock()
 		if id, ok := r.jsonRpcRequest.ID.(string); ok {
 			r.uid = id
 			return id
@@ -122,6 +132,14 @@ func (r *NormalizedRequest) Id() string {
 			r.uid = fmt.Sprintf("%v", r.jsonRpcRequest.ID)
 			return r.uid
 		}
+	}
+	r.RUnlock()
+
+	r.Lock()
+	defer r.Unlock()
+
+	if r.uid != "" {
+		return r.uid
 	}
 
 	if len(r.body) > 0 {
@@ -215,7 +233,17 @@ func (r *NormalizedRequest) JsonRpcRequest() (*JsonRpcRequest, error) {
 	if r == nil {
 		return nil, nil
 	}
+	r.RLock()
+	if r.jsonRpcRequest != nil {
+		r.RUnlock()
+		return r.jsonRpcRequest, nil
+	}
+	r.RUnlock()
 
+	r.Lock()
+	defer r.Unlock()
+
+	// Double-check in case another goroutine initialized it
 	if r.jsonRpcRequest != nil {
 		return r.jsonRpcRequest, nil
 	}
@@ -285,9 +313,6 @@ func (r *NormalizedRequest) EvmBlockNumber() (int64, error) {
 	if r == nil {
 		return 0, nil
 	}
-
-	r.Mu.RLock()
-	defer r.Mu.RUnlock()
 
 	rpcReq, err := r.JsonRpcRequest()
 	if err != nil {
