@@ -4,9 +4,9 @@
 package main
 
 import (
-	"runtime"
 	"net/http"
 	_ "net/http/pprof"
+	"runtime"
 
 	"github.com/rs/zerolog/log"
 )

@@ -56,9 +56,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		return nil, err
 	}
 
-	req.Mu.RLock()
 	blockRef, blockNumber, err := common.ExtractEvmBlockReferenceFromRequest(rpcReq)
-	req.Mu.RUnlock()
 	if err != nil {
 		return nil, err
 	}
@@ -122,9 +120,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		return err
 	}
 
-	req.Mu.RLock()
 	blockRef, blockNumber, err := common.ExtractEvmBlockReference(rpcReq, rpcResp)
-	req.Mu.RUnlock()
 	if err != nil {
 		return err
 	}

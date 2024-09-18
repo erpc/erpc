@@ -6,8 +6,8 @@ import (
 )
 
 func NormalizeEvmHttpJsonRpc(nrq *NormalizedRequest, r *JsonRpcRequest) error {
-	nrq.Mu.Lock()
-	defer nrq.Mu.Unlock()
+	r.Lock()
+	defer r.Unlock()
 
 	switch r.Method {
 	case "eth_getBlockByNumber",

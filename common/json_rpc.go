@@ -7,19 +7,15 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/bytedance/sonic"
 	"github.com/rs/zerolog"
 )
 
-type JsonRpcRequest struct {
-	JSONRPC string        `json:"jsonrpc,omitempty"`
-	ID      interface{}   `json:"id,omitempty"`
-	Method  string        `json:"method"`
-	Params  []interface{} `json:"params"`
-}
-
 type JsonRpcResponse struct {
+	sync.RWMutex
+
 	JSONRPC string                       `json:"jsonrpc,omitempty"`
 	ID      interface{}                  `json:"id,omitempty"`
 	Result  json.RawMessage              `json:"result,omitempty"`
@@ -42,6 +38,17 @@ func NewJsonRpcResponse(id interface{}, result interface{}, rpcError *ErrJsonRpc
 }
 
 func (r *JsonRpcResponse) ParsedResult() (interface{}, error) {
+	r.RLock()
+	if r.parsedResult != nil {
+		defer r.RUnlock()
+		return r.parsedResult, nil
+	}
+	r.RUnlock()
+
+	r.Lock()
+	defer r.Unlock()
+
+	// Double-check in case another goroutine initialized it
 	if r.parsedResult != nil {
 		return r.parsedResult, nil
 	}
@@ -58,76 +65,14 @@ func (r *JsonRpcResponse) ParsedResult() (interface{}, error) {
 	return r.parsedResult, nil
 }
 
-func (r *JsonRpcRequest) MarshalZerologObject(e *zerolog.Event) {
-	if r == nil {
-		return
-	}
-	e.Str("method", r.Method).
-		Interface("params", r.Params).
-		Interface("id", r.ID)
-}
-
-func (r *JsonRpcRequest) CacheHash() (string, error) {
-	hasher := sha256.New()
-
-	for _, p := range r.Params {
-		err := hashValue(hasher, p)
-		if err != nil {
-			return "", err
-		}
-	}
-
-	b := sha256.Sum256(hasher.Sum(nil))
-	return fmt.Sprintf("%s:%x", r.Method, b), nil
-}
-
-func hashValue(h io.Writer, v interface{}) error {
-	switch t := v.(type) {
-	case bool:
-		_, err := h.Write([]byte(fmt.Sprintf("%t", t)))
-		return err
-	case int:
-		_, err := h.Write([]byte(fmt.Sprintf("%d", t)))
-		return err
-	case float64:
-		_, err := h.Write([]byte(fmt.Sprintf("%f", t)))
-		return err
-	case string:
-		_, err := h.Write([]byte(strings.ToLower(t)))
-		return err
-	case []interface{}:
-		for _, i := range t {
-			err := hashValue(h, i)
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	case map[string]interface{}:
-		keys := make([]string, 0, len(t))
-		for k := range t {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			if _, err := h.Write([]byte(k)); err != nil {
-				return err
-			}
-			err := hashValue(h, t[k])
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	default:
-		return fmt.Errorf("unsupported type for value during hash: %+v", v)
-	}
-}
-
 func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 	if r == nil {
 		return
 	}
+
+	r.Lock()
+	defer r.Unlock()
+
 	e.Interface("id", r.ID).
 		Interface("result", r.Result).
 		Interface("error", r.Error)
@@ -135,6 +80,13 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 
 // Custom unmarshal method for JsonRpcResponse
 func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
+	if r == nil {
+		return nil
+	}
+
+	r.Lock()
+	defer r.Unlock()
+
 	type Alias JsonRpcResponse
 	aux := &struct {
 		Error json.RawMessage `json:"error,omitempty"`
@@ -240,6 +192,88 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
+}
+
+type JsonRpcRequest struct {
+	sync.RWMutex
+
+	JSONRPC string        `json:"jsonrpc,omitempty"`
+	ID      interface{}   `json:"id,omitempty"`
+	Method  string        `json:"method"`
+	Params  []interface{} `json:"params"`
+}
+
+func (r *JsonRpcRequest) MarshalZerologObject(e *zerolog.Event) {
+	if r == nil {
+		return
+	}
+	e.Str("method", r.Method).
+		Interface("params", r.Params).
+		Interface("id", r.ID)
+}
+
+func (r *JsonRpcRequest) CacheHash() (string, error) {
+	if r == nil {
+		return "", nil
+	}
+
+	r.RLock()
+	defer r.RUnlock()
+
+	hasher := sha256.New()
+
+	for _, p := range r.Params {
+		err := hashValue(hasher, p)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	b := sha256.Sum256(hasher.Sum(nil))
+	return fmt.Sprintf("%s:%x", r.Method, b), nil
+}
+
+func hashValue(h io.Writer, v interface{}) error {
+	switch t := v.(type) {
+	case bool:
+		_, err := h.Write([]byte(fmt.Sprintf("%t", t)))
+		return err
+	case int:
+		_, err := h.Write([]byte(fmt.Sprintf("%d", t)))
+		return err
+	case float64:
+		_, err := h.Write([]byte(fmt.Sprintf("%f", t)))
+		return err
+	case string:
+		_, err := h.Write([]byte(strings.ToLower(t)))
+		return err
+	case []interface{}:
+		for _, i := range t {
+			err := hashValue(h, i)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	case map[string]interface{}:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if _, err := h.Write([]byte(k)); err != nil {
+				return err
+			}
+			err := hashValue(h, t[k])
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported type for value during hash: %+v", v)
+	}
 }
 
 // TranslateToJsonRpcException is mainly responsible to translate internal eRPC errors (not those coming from upstreams) to
