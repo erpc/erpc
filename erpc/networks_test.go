@@ -753,13 +753,13 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":[], "fromHost":"rpc1"}`))
+			JSON(json.RawMessage(`{"result":[]}`))
 
 		// Mock a non-empty logs response from the second upstream
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":[{"logIndex":444}], "fromHost":"rpc2"}`))
+			JSON(json.RawMessage(`{"result":[{"logIndex":444}]}`))
 
 		// Set up a context and a cancellation function
 		ctx, cancel := context.WithCancel(context.Background())
@@ -893,17 +893,6 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Failed to unmarshal response body: %v", err)
 		}
 
-		// Check if fromHost exists and is a string
-		fromHost, ok := responseMap["fromHost"].(string)
-		if !ok {
-			t.Fatalf("Expected fromHost to be a string, got %T", responseMap["fromHost"])
-		}
-
-		// Assert the value of fromHost
-		if fromHost != "rpc1" {
-			t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
-		}
-
 		// Check that the result field is an empty array as expected
 		result, ok := responseMap["result"].([]interface{})
 		if !ok {
@@ -957,13 +946,13 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":[], "fromHost":"rpc1"}`))
+			JSON(json.RawMessage(`{"result":[]}`))
 
 		// Mock a non-empty logs response from the second upstream
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":[{"logIndex":444}], "fromHost":"rpc2"}`))
+			JSON(json.RawMessage(`{"result":[{"logIndex":444}]}`))
 
 		// Set up a context and a cancellation function
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1101,17 +1090,6 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Failed to unmarshal response body: %v", err)
 		}
 
-		// Check if fromHost exists and is a string
-		fromHost, ok := responseMap["fromHost"].(string)
-		if !ok {
-			t.Fatalf("Expected fromHost to be a string, got %T", responseMap["fromHost"])
-		}
-
-		// Assert the value of fromHost
-		if fromHost != "rpc2" {
-			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
-		}
-
 		result, ok := responseMap["result"].([]interface{})
 		if !ok {
 			t.Fatalf("Expected result to be []interface{}, got %T", responseMap["result"])
@@ -1164,13 +1142,13 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":[], "fromHost":"rpc1"}`))
+			JSON(json.RawMessage(`{"result":[]}`))
 
 		// Mock a non-empty logs response from the second upstream
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":[{"logIndex":444}], "fromHost":"rpc2"}`))
+			JSON(json.RawMessage(`{"result":[{"logIndex":444}]}`))
 
 		// Set up a context and a cancellation function
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1307,17 +1285,6 @@ func TestNetwork_Forward(t *testing.T) {
 		err = sonic.Unmarshal(resp.Body(), &responseMap)
 		if err != nil {
 			t.Fatalf("Failed to unmarshal response body: %v", err)
-		}
-
-		// Check if fromHost exists and is a string
-		fromHost, ok := responseMap["fromHost"].(string)
-		if !ok {
-			t.Fatalf("Expected fromHost to be a string, got %T", responseMap["fromHost"])
-		}
-
-		// Assert the value of fromHost
-		if fromHost != "rpc2" {
-			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
 		}
 
 		result, ok := responseMap["result"].([]interface{})

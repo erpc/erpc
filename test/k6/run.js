@@ -6,8 +6,8 @@ const errorRate = new Rate('errors');
 
 export const options = {
   stages: [
-    { duration: '20s', target: 10000 },
-    { duration: '5m', target: 10000 },
+    { duration: '20s', target: 100 },
+    { duration: '5m', target: 100 },
   ],
   ext: {
     loadimpact: {
@@ -19,12 +19,19 @@ export const options = {
   },
 };
 
+// const samplePayload = JSON.stringify({
+//   "jsonrpc": "2.0",
+//   "method": "eth_getBlockByNumber",
+//   "params": [
+//     "0x1346edf",
+//     false
+//   ]
+// });
 const samplePayload = JSON.stringify({
   "jsonrpc": "2.0",
-  "method": "eth_getBlockByNumber",
+  "method": "debug_traceTransaction",
   "params": [
-    "0x1346edf",
-    false
+    "0xe6c2decd68012e0245599ddf93c232bf92884758393a502852cbf2f393e3d99c"
   ]
 });
 

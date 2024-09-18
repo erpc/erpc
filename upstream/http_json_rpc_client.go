@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
@@ -297,20 +299,59 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 
 func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}]*batchRequest, resp *http.Response) {
 	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		for _, req := range requests {
-			req.err <- err
+
+	bufReader := bufio.NewReader(resp.Body)
+
+	// Skip leading whitespace
+	var firstNonWSByte byte
+	for {
+		b, err := bufReader.Peek(1)
+		if err != nil {
+			// Handle error
+			for _, req := range requests {
+				req.err <- err
+			}
+			return
 		}
-		return
+		if len(b) == 0 {
+			// EOF
+			for _, req := range requests {
+				req.err <- fmt.Errorf("empty response")
+			}
+			return
+		}
+		if !unicode.IsSpace(rune(b[0])) {
+			firstNonWSByte = b[0]
+			break
+		}
+		// Consume the whitespace byte
+		_, err = bufReader.ReadByte()
+		if err != nil {
+			// Handle error
+			for _, req := range requests {
+				req.err <- err
+			}
+			return
+		}
 	}
 
-	if c.logger.GetLevel() == zerolog.DebugLevel {
-		c.logger.Debug().Str("body", string(respBody)).Msgf("received batch response")
+	if c.logger.GetLevel() == zerolog.TraceLevel {
+		// For debugging, read the entire body without consuming it
+		bodyBytes, _ := io.ReadAll(bufReader)
+		c.logger.Trace().Str("body", string(bodyBytes)).Msgf("received batch response")
+		// Reset the buffer to include the bodyBytes again
+		bufReader = bufio.NewReader(io.MultiReader(bytes.NewReader(bodyBytes), bufReader))
 	}
 
-	// Usually when upstream is dead and returns a non-JSON response body
-	if respBody[0] == '<' {
+	if firstNonWSByte == '<' {
+		// HTML response
+		respBody, err := io.ReadAll(bufReader)
+		if err != nil {
+			for _, req := range requests {
+				req.err <- err
+			}
+			return
+		}
 		for _, req := range requests {
 			req.err <- common.NewErrEndpointServerSideException(
 				fmt.Errorf("upstream returned non-JSON response body"),
@@ -324,57 +365,104 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 		return
 	}
 
-	var batchResp []json.RawMessage
-	err = sonic.Unmarshal(respBody, &batchResp)
-	if err != nil {
-		// Try parsing as single json-rpc object,
-		// some providers return a single object on some errors even when request is batch.
-		// this is a workaround to handle those cases.
-		nr := common.NewNormalizedResponse().WithBody(respBody)
-		for _, br := range requests {
-			inr, err := common.CopyResponseForRequest(nr, br.request)
+	dec := sonic.ConfigFastest.NewDecoder(bufReader)
+	if firstNonWSByte == '[' {
+		// Batch response
+		var batchResp []json.RawMessage
+		err := dec.Decode(&batchResp)
+		if err != nil {
+			// Try parsing as a single JSON-RPC object
+			var jrResp common.JsonRpcResponse
+			dec = sonic.ConfigFastest.NewDecoder(bufReader)
+			err = dec.Decode(&jrResp)
 			if err != nil {
-				br.err <- err
+				// Handle error
+				for _, req := range requests {
+					req.err <- err
+				}
+				return
+			}
+			// Handle single response
+			if req, ok := requests[jrResp.ID]; ok {
+				nr := common.NewNormalizedResponse().WithRequest(req.request).WithJsonRpcResponse(&jrResp)
+				err := c.normalizeJsonRpcError(resp, nr)
+				if err != nil {
+					req.err <- err
+				} else {
+					req.response <- nr
+				}
+				delete(requests, jrResp.ID)
+			} else {
+				// Unexpected ID
+				for _, req := range requests {
+					req.err <- fmt.Errorf("unexpected response ID %v", jrResp.ID)
+				}
+			}
+			return
+		}
+
+		// Process batch response
+		for _, rawResp := range batchResp {
+			var jrResp common.JsonRpcResponse
+			err := sonic.Unmarshal(rawResp, &jrResp)
+			if err != nil {
 				continue
 			}
-			err = c.normalizeJsonRpcError(resp, inr)
+			if req, ok := requests[jrResp.ID]; ok {
+				nr := common.NewNormalizedResponse().WithRequest(req.request).WithJsonRpcResponse(&jrResp)
+				err := c.normalizeJsonRpcError(resp, nr)
+				if err != nil {
+					req.err <- err
+				} else {
+					req.response <- nr
+				}
+				delete(requests, jrResp.ID)
+			}
+		}
+		// Handle any remaining requests that didn't receive a response
+		for _, req := range requests {
+			jrReq, err := req.request.JsonRpcRequest()
 			if err != nil {
-				br.err <- err
+				req.err <- fmt.Errorf("unexpected no response received for request: %w", err)
 			} else {
-				br.response <- nr
+				req.err <- fmt.Errorf("unexpected no response received for request %s", jrReq.ID)
 			}
 		}
 		return
-	}
-
-	for _, rawResp := range batchResp {
+	} else if firstNonWSByte == '{' {
+		// Single object response
 		var jrResp common.JsonRpcResponse
-		err := sonic.Unmarshal(rawResp, &jrResp)
+		err := dec.Decode(&jrResp)
 		if err != nil {
-			continue
+			for _, req := range requests {
+				req.err <- err
+			}
+			return
 		}
-
-		if req, ok := requests[jrResp.ID]; ok {
-			nr := common.NewNormalizedResponse().WithRequest(req.request).WithBody(rawResp)
+		for _, req := range requests {
+			nr := common.NewNormalizedResponse().WithRequest(req.request).WithJsonRpcResponse(&jrResp)
 			err := c.normalizeJsonRpcError(resp, nr)
 			if err != nil {
 				req.err <- err
 			} else {
 				req.response <- nr
 			}
-			delete(requests, jrResp.ID)
 		}
-	}
-
-	// Handle any remaining requests that didn't receive a response which is very unexpected
-	// it means the upstream response did not include any item with request.ID for one or more the requests
-	for _, req := range requests {
-		jrReq, err := req.request.JsonRpcRequest()
+		return
+	} else {
+		// Text-based response or unexpected format
+		respBody, err := io.ReadAll(bufReader)
 		if err != nil {
-			req.err <- fmt.Errorf("unexpected no response received for request: %w", err)
-		} else {
-			req.err <- fmt.Errorf("unexpected no response received for request %s", jrReq.ID)
+			for _, req := range requests {
+				req.err <- err
+			}
+			return
 		}
+		for _, req := range requests {
+			nr := common.NewNormalizedResponse().WithRequest(req.request).WithBody(respBody)
+			req.response <- nr
+		}
+		return
 	}
 }
 
@@ -408,6 +496,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 	reqStartTime := time.Now()
 	httpReq, errReq := http.NewRequestWithContext(ctx, "POST", c.Url.String(), bytes.NewBuffer(requestBody))
 	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("User-Agent", fmt.Sprintf("erpc (Project/%s; Budget/%s)", c.upstream.ProjectId, c.upstream.config.RateLimitBudget))
 	if errReq != nil {
 		return nil, &common.BaseError{
 			Code:    "ErrHttp",
@@ -415,7 +504,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 			Details: map[string]interface{}{
 				"url":        c.Url.String(),
 				"upstreamId": c.upstream.Config().Id,
-				"request":    requestBody,
+				"request":    string(requestBody),
 			},
 		}
 	}
@@ -428,12 +517,82 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		return nil, err
 	}
 	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
+
+	// Use a buffered reader to handle leading whitespace and streaming
+	bufReader := bufio.NewReader(resp.Body)
+
+	// Skip leading whitespace
+	var firstNonWSByte byte
+	for {
+		b, err := bufReader.Peek(1)
+		if err != nil {
+			// Handle error
+			return nil, err
+		}
+		if len(b) == 0 {
+			// EOF
+			return nil, fmt.Errorf("empty response")
+		}
+		if !unicode.IsSpace(rune(b[0])) {
+			firstNonWSByte = b[0]
+			break
+		}
+		// Consume the whitespace byte
+		_, err = bufReader.ReadByte()
+		if err != nil {
+			// Handle error
+			return nil, err
+		}
 	}
 
-	nr := common.NewNormalizedResponse().WithRequest(req).WithBody(respBody)
+	if c.logger.GetLevel() == zerolog.TraceLevel {
+		// For debugging, read the entire body without consuming it
+		bodyBytes, err := io.ReadAll(bufReader)
+		if err != nil {
+			return nil, err
+		}
+		c.logger.Debug().Str("body", string(bodyBytes)).Msgf("received response")
+		// Reset the buffer to include the bodyBytes again
+		bufReader = bufio.NewReader(bytes.NewReader(bodyBytes))
+	}
+
+	if firstNonWSByte == '<' {
+		// HTML response
+		respBody, err := io.ReadAll(bufReader)
+		if err != nil {
+			return nil, err
+		}
+		return nil, common.NewErrEndpointServerSideException(
+			fmt.Errorf("upstream returned non-JSON response body"),
+			map[string]interface{}{
+				"statusCode": resp.StatusCode,
+				"headers":    resp.Header,
+				"body":       string(respBody),
+			},
+		)
+	}
+
+	if firstNonWSByte != '{' {
+		// Unexpected response format
+		respBody, err := io.ReadAll(bufReader)
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("unexpected response format: %s", string(respBody))
+	}
+
+	// At this point, we expect a JSON object
+	dec := sonic.ConfigFastest.NewDecoder(bufReader)
+
+	var jrResp common.JsonRpcResponse
+	err = dec.Decode(&jrResp)
+	if err != nil {
+		// Attempt to read the remaining body for debugging
+		respBody, _ := io.ReadAll(bufReader)
+		return nil, fmt.Errorf("failed to decode JSON-RPC response: %v, body: %s", err, string(respBody))
+	}
+
+	nr := common.NewNormalizedResponse().WithRequest(req).WithJsonRpcResponse(&jrResp)
 
 	return nr, c.normalizeJsonRpcError(resp, nr)
 }
@@ -576,7 +735,7 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(err.Message, "unknown block") ||
 			strings.Contains(err.Message, "Unknown block") ||
 			strings.Contains(err.Message, "height must be less than or equal") ||
-			strings.Contains(err.Message, "finalized block not found") ||
+			strings.Contains(err.Message, "block not found") ||
 			// Usually happens on Avalanche when querying a pretty recent block:
 			strings.Contains(err.Message, "cannot query unfinalized") ||
 			strings.Contains(err.Message, "height is not available") ||
@@ -637,7 +796,9 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if strings.Contains(err.Message, "not found") || strings.Contains(err.Message, "does not exist/is not available") {
+		} else if strings.Contains(err.Message, "not found") ||
+			strings.Contains(err.Message, "does not exist") ||
+			strings.Contains(err.Message, "is not available") {
 			if strings.Contains(err.Message, "Method") || strings.Contains(err.Message, "method") {
 				return common.NewErrEndpointUnsupported(
 					common.NewErrJsonRpcExceptionInternal(
@@ -648,7 +809,10 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 						details,
 					),
 				)
-			} else if strings.Contains(err.Message, "header") {
+			} else if strings.Contains(err.Message, "header") ||
+				strings.Contains(err.Message, "block") ||
+				strings.Contains(err.Message, "Header") ||
+				strings.Contains(err.Message, "Block") {
 				return common.NewErrEndpointMissingData(
 					common.NewErrJsonRpcExceptionInternal(
 						int(code),
