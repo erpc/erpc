@@ -218,6 +218,7 @@ func (r *NormalizedResponse) EvmBlockNumber() (int64, error) {
 	if n := r.evmBlockNumber.Load(); n != 0 {
 		return n, nil
 	}
+	r.RUnlock()
 
 	if r.request == nil {
 		return 0, nil

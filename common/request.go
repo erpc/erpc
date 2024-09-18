@@ -111,8 +111,17 @@ func (r *NormalizedRequest) Id() int64 {
 		return 0
 	}
 
+	r.RLock()
 	if r.jsonRpcRequest != nil {
 		return r.jsonRpcRequest.ID
+	}
+	r.RUnlock()
+
+	r.Lock()
+	defer r.Unlock()
+
+	if r.uid != "" {
+		return r.uid
 	}
 
 	if len(r.body) > 0 {
