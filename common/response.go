@@ -1,10 +1,14 @@
 package common
 
 import (
+	"sync"
+
 	"github.com/bytedance/sonic"
 )
 
 type NormalizedResponse struct {
+	sync.RWMutex
+
 	request *NormalizedRequest
 	body    []byte
 	err     error
@@ -221,9 +225,12 @@ func (r *NormalizedResponse) EvmBlockNumber() (int64, error) {
 		return 0, nil
 	}
 
+	r.RLock()
 	if r.evmBlockNumber != 0 {
+		defer r.RUnlock()
 		return r.evmBlockNumber, nil
 	}
+	r.RUnlock()
 
 	if r.request == nil {
 		return 0, nil
@@ -239,7 +246,9 @@ func (r *NormalizedResponse) EvmBlockNumber() (int64, error) {
 		return 0, err
 	}
 
+	r.Lock()
 	r.evmBlockNumber = bn
+	r.Unlock()
 
 	return bn, nil
 }
@@ -274,8 +283,8 @@ func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
 }
 
 func CopyResponseForRequest(resp *NormalizedResponse, req *NormalizedRequest) (*NormalizedResponse, error) {
-	req.Mu.RLock()
-	defer req.Mu.RUnlock()
+	req.RLock()
+	defer req.RUnlock()
 
 	if resp == nil {
 		return nil, nil

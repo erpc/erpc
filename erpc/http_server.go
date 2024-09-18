@@ -397,7 +397,7 @@ func setResponseStatusCode(respOrErr interface{}, fastCtx *fasthttp.RequestCtx) 
 func processErrorBody(logger *zerolog.Logger, nq *common.NormalizedRequest, err error) interface{} {
 	if !common.IsNull(err) {
 		if nq != nil {
-			nq.Mu.RLock()
+			nq.RLock()
 		}
 		if common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
 			logger.Debug().Err(err).Object("request", nq).Msgf("forward request errored with client-side exception")
@@ -409,7 +409,7 @@ func processErrorBody(logger *zerolog.Logger, nq *common.NormalizedRequest, err 
 			}
 		}
 		if nq != nil {
-			nq.Mu.RUnlock()
+			nq.RUnlock()
 		}
 	}
 
