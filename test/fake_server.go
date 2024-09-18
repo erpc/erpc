@@ -7,6 +7,8 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -163,6 +165,18 @@ func (fs *FakeServer) findMatchingSample(req JSONRPCRequest) *JSONRPCResponse {
 					if param != req.Params.([]interface{})[i] {
 						break
 					}
+				}
+			}
+
+			if txt, ok := sample.Response.Result.(string); ok {
+				if strings.HasPrefix(txt, "bigfake:") {
+					size, err := strconv.Atoi(txt[len("bigfake:"):])
+					fmt.Printf("Generating big response of size %d\n", size)
+					if err != nil {
+						return nil
+					}
+					// generate a random string with the size of the number
+					sample.Response.Result = make([]byte, size)
 				}
 			}
 

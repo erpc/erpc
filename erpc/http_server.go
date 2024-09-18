@@ -3,7 +3,6 @@ package erpc
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -13,12 +12,17 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/bytedance/sonic/option"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/rs/zerolog"
 	"github.com/valyala/fasthttp"
 )
+
+func init() {
+	option.LimitBufferSize = 1024
+}
 
 type HttpServer struct {
 	config *common.ServerConfig
@@ -87,7 +91,7 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 		buf := bufPool.Get().(*bytes.Buffer)
 		defer bufPool.Put(buf)
 		buf.Reset()
-		encoder := json.NewEncoder(buf)
+		encoder := sonic.ConfigFastest.NewEncoder(buf)
 
 		segments := strings.Split(string(fastCtx.Path()), "/")
 		if len(segments) != 2 && len(segments) != 3 && len(segments) != 4 {
@@ -133,12 +137,11 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 
 		lg.Debug().Msgf("received request with body: %s", body)
 
-		var requests []json.RawMessage
+		var requests [][]byte
 		err = sonic.Unmarshal(body, &requests)
 		isBatch := err == nil
-
 		if !isBatch {
-			requests = []json.RawMessage{body}
+			requests = [][]byte{body}
 		}
 
 		responses := make([]interface{}, len(requests))
@@ -151,7 +154,7 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 
 		for i, reqBody := range requests {
 			wg.Add(1)
-			go func(index int, rawReq json.RawMessage, headersCopy *fasthttp.RequestHeader, queryArgsCopy *fasthttp.Args) {
+			go func(index int, rawReq []byte, headersCopy *fasthttp.RequestHeader, queryArgsCopy *fasthttp.Args) {
 				defer func() {
 					defer func() { recover() }()
 					if r := recover(); r != nil {

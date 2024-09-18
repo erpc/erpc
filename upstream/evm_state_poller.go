@@ -324,7 +324,7 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 	if !ok || resultMap == nil || resultMap["number"] == nil {
 		return 0, &common.BaseError{
 			Code:    "ErrEvmStatePoller",
-			Message: "block not found",
+			Message: "block number does not exist in block data",
 			Details: map[string]interface{}{
 				"blockTag": blockTag,
 				"result":   jrr.Result,

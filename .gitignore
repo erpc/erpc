@@ -11,3 +11,4 @@ coverage.txt
 erpc.yaml
 .generated-go-semantic-release-changelog.md
 .semrel/
+__debug*
