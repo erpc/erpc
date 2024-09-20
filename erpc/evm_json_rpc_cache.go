@@ -2,7 +2,6 @@ package erpc
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -93,7 +92,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		JSONRPC: rpcReq.JSONRPC,
 		ID:      rpcReq.ID,
 		Error:   nil,
-		Result:  json.RawMessage(resultString),
+		Result:  []byte(resultString),
 	}
 
 	return common.NewNormalizedResponse().

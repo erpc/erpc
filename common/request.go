@@ -344,11 +344,13 @@ func (r *NormalizedRequest) MarshalJSON() ([]byte, error) {
 	}
 
 	if r.jsonRpcRequest != nil {
-		return sonic.Marshal(r.jsonRpcRequest)
+		return SonicCfg.Marshal(map[string]interface{}{
+			"method": r.jsonRpcRequest.Method,
+		})
 	}
 
 	if m, _ := r.Method(); m != "" {
-		return sonic.Marshal(map[string]interface{}{
+		return SonicCfg.Marshal(map[string]interface{}{
 			"method": m,
 		})
 	}

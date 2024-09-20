@@ -296,7 +296,11 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 				if jrr != nil && jrr.Error == nil {
 					req.SetLastValidResponse(resp)
 				}
-				lg.Debug().Err(errCall).Str("response", resp.String()).Msgf("upstream call result received")
+				if lg.GetLevel() == zerolog.TraceLevel {
+					lg.Debug().Err(errCall).Str("response", resp.String()).Msgf("upstream call result received")
+				} else {
+					lg.Debug().Err(errCall).Msgf("upstream call result received")
+				}
 			} else {
 				lg.Debug().Err(errCall).Msgf("upstream call result received")
 			}
@@ -382,10 +386,12 @@ func (u *Upstream) Executor() failsafe.Executor[*common.NormalizedResponse] {
 
 func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 	pr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_chainId","params":[]}`))
+
 	resp, err := u.Forward(ctx, pr)
 	if err != nil {
 		return "", err
 	}
+
 	jrr, err := resp.JsonRpcResponse()
 	if err != nil {
 		return "", err
@@ -393,16 +399,14 @@ func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 	if jrr.Error != nil {
 		return "", jrr.Error
 	}
-
-	res, err := jrr.ParsedResult()
+	chainId, err := jrr.PeekStringByPath()
 	if err != nil {
 		return "", err
 	}
-	hex, err := common.NormalizeHex(res)
+	hex, err := common.NormalizeHex(chainId)
 	if err != nil {
 		return "", err
 	}
-
 	dec, err := common.HexToUint64(hex)
 	if err != nil {
 		return "", err

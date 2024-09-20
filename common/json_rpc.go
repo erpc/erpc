@@ -2,7 +2,6 @@ package common
 
 import (
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
@@ -10,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/bytedance/sonic"
+	"github.com/bytedance/sonic/ast"
 	"github.com/rs/zerolog"
 )
 
@@ -18,14 +18,14 @@ type JsonRpcResponse struct {
 
 	JSONRPC string                       `json:"jsonrpc,omitempty"`
 	ID      interface{}                  `json:"id,omitempty"`
-	Result  json.RawMessage              `json:"result,omitempty"`
+	Result  []byte                       `json:"result,omitempty"`
 	Error   *ErrJsonRpcExceptionExternal `json:"error,omitempty"`
 
-	parsedResult interface{}
+	cachedNode *ast.Node
 }
 
 func NewJsonRpcResponse(id interface{}, result interface{}, rpcError *ErrJsonRpcExceptionExternal) (*JsonRpcResponse, error) {
-	resultRaw, err := sonic.Marshal(result)
+	resultRaw, err := SonicCfg.Marshal(result)
 	if err != nil {
 		return nil, err
 	}
@@ -37,32 +37,124 @@ func NewJsonRpcResponse(id interface{}, result interface{}, rpcError *ErrJsonRpc
 	}, nil
 }
 
-func (r *JsonRpcResponse) ParsedResult() (interface{}, error) {
+// PeekStringByPath is a convenience method to get a string value from the json-rpc response.
+// It uses an optimized path-based approach to get the value, which is faster than full json unmarshalling.
+func (r *JsonRpcResponse) PeekStringByPath(path ...interface{}) (string, error) {
 	r.RLock()
-	if r.parsedResult != nil {
+	if r.cachedNode != nil {
 		defer r.RUnlock()
-		return r.parsedResult, nil
+		return r.peekStringFromCachedNode(path...)
 	}
 	r.RUnlock()
 
 	r.Lock()
 	defer r.Unlock()
 
-	// Double-check in case another goroutine initialized it
-	if r.parsedResult != nil {
-		return r.parsedResult, nil
+	// Double-check locking pattern
+	if r.cachedNode == nil {
+		if err := r.ensureCachedNode(); err != nil {
+			return "", err
+		}
 	}
 
-	if r.Result == nil {
-		return nil, nil
+	return r.peekStringFromCachedNode(path...)
+}
+
+func (r *JsonRpcResponse) peekStringFromCachedNode(path ...interface{}) (string, error) {
+	if len(path) == 0 {
+		return r.cachedNode.String()
 	}
 
-	err := sonic.Unmarshal(r.Result, &r.parsedResult)
+	result := r.cachedNode.GetByPath(path...)
+
+	if result.Valid() {
+		return result.String()
+	}
+
+	return "", fmt.Errorf("cannot get string value (path: %v) from json-rpc response: %s", path, result.Error())
+}
+
+// PeekBoolByPath is similar to PeekStringByPath, but for boolean values.
+func (r *JsonRpcResponse) PeekBoolByPath(path ...interface{}) (bool, error) {
+	r.RLock()
+	if r.cachedNode != nil {
+		defer r.RUnlock()
+		return r.peekBoolFromCachedNode(path...)
+	}
+	r.RUnlock()
+
+	r.Lock()
+	defer r.Unlock()
+
+	if r.cachedNode == nil {
+		if err := r.ensureCachedNode(); err != nil {
+			return false, err
+		}
+	}
+
+	return r.peekBoolFromCachedNode(path...)
+}
+
+func (r *JsonRpcResponse) PeekInterfaceByPath(path ...interface{}) (interface{}, error) {
+	r.RLock()
+	if r.cachedNode != nil {
+		defer r.RUnlock()
+		return r.peekInterfaceFromCachedNode(path...)
+	}
+	r.RUnlock()
+
+	r.Lock()
+	defer r.Unlock()
+
+	if r.cachedNode == nil {
+		if err := r.ensureCachedNode(); err != nil {
+			return nil, err
+		}
+	}
+
+	return r.peekInterfaceFromCachedNode(path...)
+}
+
+func (r *JsonRpcResponse) peekInterfaceFromCachedNode(path ...interface{}) (interface{}, error) {
+	if len(path) == 0 {
+		return r.cachedNode.Interface()
+	}
+
+	result := r.cachedNode.GetByPath(path...)
+
+	if result.Valid() {
+		return result.Interface()
+	}
+
+	return nil, fmt.Errorf("cannot get value (path: %v) from json-rpc response: %s", path, result.Error())
+}
+
+func (r *JsonRpcResponse) ensureCachedNode() error {
+	node, err := sonic.GetWithOptions(r.Result, ast.SearchOptions{
+		CopyReturn:     true,
+		ValidateJSON:   false,
+		ConcurrentRead: true,
+	})
+
 	if err != nil {
-		return nil, err
+		return err
+	}
+	r.cachedNode = &node
+	return nil
+}
+
+func (r *JsonRpcResponse) peekBoolFromCachedNode(path ...interface{}) (bool, error) {
+	if len(path) == 0 {
+		return r.cachedNode.Bool()
 	}
 
-	return r.parsedResult, nil
+	result := r.cachedNode.GetByPath(path...)
+
+	if result.Valid() {
+		return result.Bool()
+	}
+
+	return false, fmt.Errorf("cannot get bool value (path: %v) from json-rpc response: %s", path, result.Error())
 }
 
 func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
@@ -89,13 +181,13 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 
 	type Alias JsonRpcResponse
 	aux := &struct {
-		Error json.RawMessage `json:"error,omitempty"`
+		Error []byte `json:"error,omitempty"`
 		*Alias
 	}{
 		Alias: (*Alias)(r),
 	}
 
-	if err := sonic.Unmarshal(data, &aux); err != nil {
+	if err := SonicCfg.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 
@@ -158,7 +250,7 @@ func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
 		var data string
 
 		var customObjectError map[string]interface{}
-		if err := sonic.Unmarshal(aux.Error, &customObjectError); err == nil {
+		if err := SonicCfg.Unmarshal(aux.Error, &customObjectError); err == nil {
 			if c, ok := customObjectError["code"]; ok {
 				if cf, ok := c.(float64); ok {
 					code = int(cf)

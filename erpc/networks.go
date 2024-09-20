@@ -399,23 +399,15 @@ func (n *Network) enrichStatePoller(method string, req *common.NormalizedRequest
 			if blkTag, ok := jrq.Params[0].(string); ok {
 				if blkTag == "finalized" || blkTag == "latest" {
 					jrs, _ := resp.JsonRpcResponse()
-					if jrs != nil {
-						res, err := jrs.ParsedResult()
+					bnh, err := jrs.PeekStringByPath("number")
+					if err == nil {
+						blockNumber, err := common.HexToInt64(bnh)
 						if err == nil {
-							blk, ok := res.(map[string]interface{})
-							if ok {
-								bnh, ok := blk["number"].(string)
-								if ok {
-									blockNumber, err := common.HexToInt64(bnh)
-									if err == nil {
-										poller := n.evmStatePollers[resp.Upstream().Config().Id]
-										if blkTag == "finalized" {
-											poller.SuggestFinalizedBlock(blockNumber)
-										} else if blkTag == "latest" {
-											poller.SuggestLatestBlock(blockNumber)
-										}
-									}
-								}
+							poller := n.evmStatePollers[resp.Upstream().Config().Id]
+							if blkTag == "finalized" {
+								poller.SuggestFinalizedBlock(blockNumber)
+							} else if blkTag == "latest" {
+								poller.SuggestLatestBlock(blockNumber)
 							}
 						}
 					}

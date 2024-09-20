@@ -315,28 +315,11 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 		return 0, jrr.Error
 	}
 
-	// If result is nil or has an invalid structure, return an error
-	result, err := jrr.ParsedResult()
+	numberStr, err := jrr.PeekStringByPath("number")
 	if err != nil {
-		return 0, err
-	}
-	resultMap, ok := result.(map[string]interface{})
-	if !ok || resultMap == nil || resultMap["number"] == nil {
 		return 0, &common.BaseError{
 			Code:    "ErrEvmStatePoller",
-			Message: "block number does not exist in block data",
-			Details: map[string]interface{}{
-				"blockTag": blockTag,
-				"result":   jrr.Result,
-			},
-		}
-	}
-
-	numberStr, ok := resultMap["number"].(string)
-	if !ok {
-		return 0, &common.BaseError{
-			Code:    "ErrEvmStatePoller",
-			Message: "block number is not a string",
+			Message: "cannot get block number from block data",
 			Details: map[string]interface{}{
 				"blockTag": blockTag,
 				"result":   jrr.Result,
@@ -370,20 +353,16 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 		return false, jrr.Error
 	}
 
-	res, err := jrr.ParsedResult()
+	syncing, err := jrr.PeekBoolByPath()
 	if err != nil {
-		return false, err
+		return false, &common.BaseError{
+			Code:    "ErrEvmStatePoller",
+			Message: "cannot get syncing state result type (must be boolean)",
+			Details: map[string]interface{}{
+				"result": jrr.Result,
+			},
+		}
 	}
 
-	if syncing, ok := res.(bool); ok {
-		return syncing, nil
-	}
-
-	return false, &common.BaseError{
-		Code:    "ErrEvmStatePoller",
-		Message: "invalid syncing state result type (must be boolean)",
-		Details: map[string]interface{}{
-			"result": res,
-		},
-	}
+	return syncing, nil
 }

@@ -137,7 +137,7 @@ func (r *NormalizedResponse) Body() []byte {
 		return nil
 	}
 
-	r.body, err = sonic.Marshal(jrr)
+	r.body, err = SonicCfg.Marshal(jrr)
 	if err != nil {
 		return nil
 	}
@@ -276,7 +276,7 @@ func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
 	}
 
 	if r.jsonRpcResponse != nil {
-		return sonic.Marshal(r.jsonRpcResponse)
+		return SonicCfg.Marshal(r.jsonRpcResponse)
 	}
 
 	return nil, nil
