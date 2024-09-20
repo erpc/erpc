@@ -8,8 +8,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
-	"github.com/bytedance/sonic"
 )
 
 func IsNull(err interface{}) bool {
@@ -97,7 +95,7 @@ func (e *BaseError) Error() string {
 	var detailsStr string
 
 	if e.Details != nil && len(e.Details) > 0 {
-		s, er := sonic.Marshal(e.Details)
+		s, er := SonicCfg.Marshal(e.Details)
 		if er == nil {
 			detailsStr = fmt.Sprintf("(%s)", s)
 		} else {
@@ -158,7 +156,7 @@ func (e BaseError) MarshalJSON() ([]byte, error) {
 				causes = append(causes, err.Error())
 			}
 		}
-		return sonic.Marshal(&struct {
+		return SonicCfg.Marshal(&struct {
 			Alias
 			Cause []interface{} `json:"cause"`
 		}{
@@ -166,7 +164,7 @@ func (e BaseError) MarshalJSON() ([]byte, error) {
 			Cause: causes,
 		})
 	} else if cs, ok := cause.(StandardError); ok {
-		return sonic.Marshal(&struct {
+		return SonicCfg.Marshal(&struct {
 			Alias
 			Cause StandardError `json:"cause"`
 		}{
@@ -174,7 +172,7 @@ func (e BaseError) MarshalJSON() ([]byte, error) {
 			Cause: cs,
 		})
 	} else if cause != nil {
-		return sonic.Marshal(&struct {
+		return SonicCfg.Marshal(&struct {
 			Alias
 			Cause BaseError `json:"cause"`
 		}{
@@ -186,7 +184,7 @@ func (e BaseError) MarshalJSON() ([]byte, error) {
 		})
 	}
 
-	return sonic.Marshal(&struct {
+	return SonicCfg.Marshal(&struct {
 		Alias
 		Cause interface{} `json:"cause"`
 	}{

@@ -12,17 +12,12 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
-	"github.com/bytedance/sonic/option"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/rs/zerolog"
 	"github.com/valyala/fasthttp"
 )
-
-func init() {
-	option.LimitBufferSize = 1024
-}
 
 type HttpServer struct {
 	config *common.ServerConfig
@@ -91,7 +86,7 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 		buf := bufPool.Get().(*bytes.Buffer)
 		defer bufPool.Put(buf)
 		buf.Reset()
-		encoder := sonic.ConfigFastest.NewEncoder(buf)
+		encoder := common.SonicCfg.NewEncoder(buf)
 
 		segments := strings.Split(string(fastCtx.Path()), "/")
 		if len(segments) != 2 && len(segments) != 3 && len(segments) != 4 {

@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,7 +14,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
@@ -231,7 +229,7 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 		})
 	}
 
-	requestBody, err := sonic.Marshal(batchReq)
+	requestBody, err := common.SonicCfg.Marshal(batchReq)
 	for _, req := range requests {
 		req.request.RUnlock()
 	}
@@ -365,15 +363,15 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 		return
 	}
 
-	dec := sonic.ConfigFastest.NewDecoder(bufReader)
+	dec := common.SonicCfg.NewDecoder(bufReader)
 	if firstNonWSByte == '[' {
 		// Batch response
-		var batchResp []json.RawMessage
+		var batchResp [][]byte
 		err := dec.Decode(&batchResp)
 		if err != nil {
 			// Try parsing as a single JSON-RPC object
 			var jrResp common.JsonRpcResponse
-			dec = sonic.ConfigFastest.NewDecoder(bufReader)
+			dec = common.SonicCfg.NewDecoder(bufReader)
 			err = dec.Decode(&jrResp)
 			if err != nil {
 				// Handle error
@@ -404,7 +402,7 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 		// Process batch response
 		for _, rawResp := range batchResp {
 			var jrResp common.JsonRpcResponse
-			err := sonic.Unmarshal(rawResp, &jrResp)
+			err := common.SonicCfg.Unmarshal(rawResp, &jrResp)
 			if err != nil {
 				continue
 			}
@@ -479,7 +477,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 	}
 
 	req.RLock()
-	requestBody, err := sonic.Marshal(common.JsonRpcRequest{
+	requestBody, err := common.SonicCfg.Marshal(common.JsonRpcRequest{
 		JSONRPC: jrReq.JSONRPC,
 		Method:  jrReq.Method,
 		Params:  jrReq.Params,
@@ -582,7 +580,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 	}
 
 	// At this point, we expect a JSON object
-	dec := sonic.ConfigFastest.NewDecoder(bufReader)
+	dec := common.SonicCfg.NewDecoder(bufReader)
 
 	var jrResp common.JsonRpcResponse
 	err = dec.Decode(&jrResp)
@@ -875,11 +873,7 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 
 	// There's a special case for certain clients that return a normal response for reverts:
 	if jr != nil && jr.Result != nil {
-		res, err := jr.ParsedResult()
-		if err != nil {
-			return err
-		}
-		if dt, ok := res.(string); ok {
+		if dt, err := jr.PeekStringByPath(); err == nil {
 			// keccak256("Error(string)")
 			if strings.HasPrefix(dt, "0x08c379a0") {
 				return common.NewErrEndpointClientSideException(

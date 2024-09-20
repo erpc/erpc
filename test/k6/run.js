@@ -5,10 +5,16 @@ import { Rate } from 'k6/metrics';
 const errorRate = new Rate('errors');
 
 export const options = {
-  stages: [
-    { duration: '20s', target: 100 },
-    { duration: '5m', target: 100 },
-  ],
+  scenarios: {    
+    constant_request_rate: {
+      executor: 'constant-arrival-rate',
+      rate: 1,
+      timeUnit: '1s',
+      duration: '10m',
+      preAllocatedVUs: 10,
+      maxVUs: 100,
+    },
+  },
   ext: {
     loadimpact: {
       distribution: {

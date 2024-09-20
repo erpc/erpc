@@ -3,7 +3,6 @@ package erpc
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -218,13 +217,13 @@ func TestNetwork_Forward(t *testing.T) {
 	t.Run("ForwardUpstreamRetryIntermittentFailuresWithoutSuccessAndNoErrCode", func(t *testing.T) {
 		defer gock.Off()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.localhost").
 			Times(3).
 			Post("").
 			Reply(503).
-			JSON(json.RawMessage(`{"error":{"message":"some random provider issue"}}`))
+			JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -322,13 +321,13 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":9199,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.localhost").
 			Times(3).
 			Post("").
 			Reply(503).
-			JSON(json.RawMessage(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32600,"message":"some random provider issue"}}`))
+			JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32600,"message":"some random provider issue"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -426,25 +425,25 @@ func TestNetwork_Forward(t *testing.T) {
 	t.Run("ForwardSkipsNonRetryableFailuresFromUpstreams", func(t *testing.T) {
 		defer gock.Off()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.localhost").
 			Times(1).
 			Post("").
 			Reply(401).
-			JSON(json.RawMessage(`{"error":{"code":-32016,"message":"unauthorized rpc1"}}`))
+			JSON([]byte(`{"error":{"code":-32016,"message":"unauthorized rpc1"}}`))
 
 		gock.New("http://rpc2.localhost").
 			Times(2).
 			Post("").
 			Reply(503).
-			JSON(json.RawMessage(`{"error":"random rpc2 unavailable"}`))
+			JSON([]byte(`{"error":"random rpc2 unavailable"}`))
 
 		gock.New("http://rpc2.localhost").
 			Times(1).
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":"0x1234567"}`))
+			JSON([]byte(`{"result":"0x1234567"}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -570,25 +569,25 @@ func TestNetwork_Forward(t *testing.T) {
 	t.Run("ForwardNotSkipsRetryableFailuresFromUpstreams", func(t *testing.T) {
 		defer gock.Off()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.localhost").
 			Times(3).
 			Post("").
 			Reply(503).
-			JSON(json.RawMessage(`{"error":"random rpc1 unavailable"}`))
+			JSON([]byte(`{"error":"random rpc1 unavailable"}`))
 
 		gock.New("http://rpc2.localhost").
 			Times(3).
 			Post("").
 			Reply(503).
-			JSON(json.RawMessage(`{"error":"random rpc2 unavailable"}`))
+			JSON([]byte(`{"error":"random rpc2 unavailable"}`))
 
 		gock.New("http://rpc2.localhost").
 			Times(1).
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":"0x1234567"}`))
+			JSON([]byte(`{"result":"0x1234567"}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -718,7 +717,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.CleanUnmatchedRequest()
 
 		// Prepare a JSON-RPC request payload as a byte array
-		var requestBytes = json.RawMessage(`{
+		var requestBytes = []byte(`{
 			"jsonrpc": "2.0",
 			"method": "eth_getLogs",
 			"params": [{
@@ -737,7 +736,7 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(safeReadBody(request), "latest")
 			}).
 			Reply(200).
-			JSON(json.RawMessage(`{"result": {"number":"0x9"}}`))
+			JSON([]byte(`{"result": {"number":"0x9"}}`))
 
 		// Mock the response for the finalized block number request
 		gock.New("http://rpc1.localhost").
@@ -747,19 +746,19 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(safeReadBody(request), "finalized")
 			}).
 			Reply(200).
-			JSON(json.RawMessage(`{"result": {"number":"0x8"}}`))
+			JSON([]byte(`{"result": {"number":"0x8"}}`))
 
 		// Mock an empty logs response from the first upstream
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":[]}`))
+			JSON([]byte(`{"result":[]}`))
 
 		// Mock a non-empty logs response from the second upstream
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":[{"logIndex":444}]}`))
+			JSON([]byte(`{"result":[{"logIndex":444}]}`))
 
 		// Set up a context and a cancellation function
 		ctx, cancel := context.WithCancel(context.Background())
@@ -911,7 +910,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.CleanUnmatchedRequest()
 
 		// Prepare a JSON-RPC request payload as a byte array
-		var requestBytes = json.RawMessage(`{
+		var requestBytes = []byte(`{
 			"jsonrpc": "2.0",
 			"method": "eth_getLogs",
 			"params": [{
@@ -930,7 +929,7 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(safeReadBody(request), "latest")
 			}).
 			Reply(200).
-			JSON(json.RawMessage(`{"result": {"number":"0x9"}}`))
+			JSON([]byte(`{"result": {"number":"0x9"}}`))
 
 		// Mock the response for the finalized block number request
 		gock.New("http://rpc1.localhost").
@@ -940,19 +939,19 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(safeReadBody(request), "finalized")
 			}).
 			Reply(200).
-			JSON(json.RawMessage(`{"result": {"number":"0x8"}}`))
+			JSON([]byte(`{"result": {"number":"0x8"}}`))
 
 		// Mock an empty logs response from the first upstream
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":[]}`))
+			JSON([]byte(`{"result":[]}`))
 
 		// Mock a non-empty logs response from the second upstream
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":[{"logIndex":444}]}`))
+			JSON([]byte(`{"result":[{"logIndex":444}]}`))
 
 		// Set up a context and a cancellation function
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1107,7 +1106,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.CleanUnmatchedRequest()
 
 		// Prepare a JSON-RPC request payload as a byte array
-		var requestBytes = json.RawMessage(`{
+		var requestBytes = []byte(`{
 			"jsonrpc": "2.0",
 			"method": "eth_getLogs",
 			"params": [{
@@ -1126,7 +1125,7 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(safeReadBody(request), "latest")
 			}).
 			Reply(200).
-			JSON(json.RawMessage(`{"result": {"number":"0x9"}}`))
+			JSON([]byte(`{"result": {"number":"0x9"}}`))
 
 		// Mock the response for the finalized block number request
 		gock.New("http://rpc1.localhost").
@@ -1136,19 +1135,19 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(safeReadBody(request), "finalized")
 			}).
 			Reply(200).
-			JSON(json.RawMessage(`{"result": {"number":"0x8"}}`))
+			JSON([]byte(`{"result": {"number":"0x8"}}`))
 
 		// Mock an empty logs response from the first upstream
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":[]}`))
+			JSON([]byte(`{"result":[]}`))
 
 		// Mock a non-empty logs response from the second upstream
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":[{"logIndex":444}]}`))
+			JSON([]byte(`{"result":[{"logIndex":444}]}`))
 
 		// Set up a context and a cancellation function
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1304,7 +1303,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.CleanUnmatchedRequest()
 
 		// Prepare a JSON-RPC request payload as a byte array
-		var requestBytes = json.RawMessage(`{
+		var requestBytes = []byte(`{
 			"jsonrpc": "2.0",
 			"method": "eth_getLogs",
 			"params": [{
@@ -1323,7 +1322,7 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(safeReadBody(request), "latest")
 			}).
 			Reply(200).
-			JSON(json.RawMessage(`{"result": {"number":"0x1273c17"}}`))
+			JSON([]byte(`{"result": {"number":"0x1273c17"}}`))
 
 		// Mock the response for the finalized block number request
 		gock.New("http://rpc1.localhost").
@@ -1333,19 +1332,19 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(safeReadBody(request), "finalized")
 			}).
 			Reply(200).
-			JSON(json.RawMessage(`{"result": {"number":"0x1273c17"}}`))
+			JSON([]byte(`{"result": {"number":"0x1273c17"}}`))
 
 		// Mock an empty logs response from the first upstream
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":[]}`))
+			JSON([]byte(`{"result":[]}`))
 
 		// Mock a non-empty logs response from the second upstream
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":[{"logIndex":444, "fromHost":"rpc2"}]}`))
+			JSON([]byte(`{"result":[{"logIndex":444, "fromHost":"rpc2"}]}`))
 
 		// Set up a context and a cancellation function
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1475,7 +1474,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		res, err := jrr.ParsedResult()
+		res, err := jrr.PeekInterfaceByPath()
 		if err != nil {
 			t.Fatalf("Failed to get parsed result: %v", err)
 		}
@@ -1510,7 +1509,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.CleanUnmatchedRequest()
 
 		// Prepare a JSON-RPC request payload as a byte array
-		var requestBytes = json.RawMessage(`{
+		var requestBytes = []byte(`{
 			"jsonrpc": "2.0",
 			"method": "eth_getLogs",
 			"params": [{
@@ -1529,7 +1528,7 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(safeReadBody(request), "latest")
 			}).
 			Reply(200).
-			JSON(json.RawMessage(`{"result": {"number":"0x0"}}`)) // latest block not available
+			JSON([]byte(`{"result": {"number":"0x0"}}`)) // latest block not available
 
 		// Mock the response for the finalized block number request
 		gock.New("http://rpc1.localhost").
@@ -1539,19 +1538,19 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(safeReadBody(request), "finalized")
 			}).
 			Reply(200).
-			JSON(json.RawMessage(`{"result": {"number":"0x0"}}`)) //  finalzied block not available
+			JSON([]byte(`{"result": {"number":"0x0"}}`)) //  finalzied block not available
 
 		// Mock an empty logs response from the first upstream
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":[]}`))
+			JSON([]byte(`{"result":[]}`))
 
 		// Mock a non-empty logs response from the second upstream
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":[{"logIndex":444, "fromHost":"rpc2"}]}`))
+			JSON([]byte(`{"result":[{"logIndex":444, "fromHost":"rpc2"}]}`))
 
 		// Set up a context and a cancellation function
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1681,7 +1680,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		res, err := jrr.ParsedResult()
+		res, err := jrr.PeekInterfaceByPath()
 		if err != nil {
 			t.Fatalf("Failed to get parsed result: %v", err)
 		}
@@ -1721,7 +1720,7 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(b, "latest")
 			}).
 			Reply(200).
-			JSON(json.RawMessage(`{"result": {"number":"0xA98AC7"}}`))
+			JSON([]byte(`{"result": {"number":"0xA98AC7"}}`))
 
 		// Mock the response for the finalized block number request
 		gock.New("http://rpc1.localhost").
@@ -1732,7 +1731,7 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(b, "finalized")
 			}).
 			Reply(200).
-			JSON(json.RawMessage(`{"result":{"number":"0x21E88E"}}`))
+			JSON([]byte(`{"result":{"number":"0x21E88E"}}`))
 
 		gock.New("http://rpc2.localhost").
 			Post("").
@@ -1742,7 +1741,7 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(b, "latest")
 			}).
 			Reply(200).
-			JSON(json.RawMessage(`{"result": {"number":"0x32DCD5"}}`))
+			JSON([]byte(`{"result": {"number":"0x32DCD5"}}`))
 
 		// Mock the response for the finalized block number request
 		gock.New("http://rpc2.localhost").
@@ -1753,7 +1752,7 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(b, "finalized")
 			}).
 			Reply(200).
-			JSON(json.RawMessage(`{"result":{"number":"0x2A62B1C"}}`))
+			JSON([]byte(`{"result":{"number":"0x2A62B1C"}}`))
 
 		// Mock a pending transaction response from the first upstream
 		gock.New("http://rpc1.localhost").
@@ -1763,7 +1762,7 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(b, "eth_getTransactionByHash")
 			}).
 			Reply(200).
-			JSON(json.RawMessage(`{"result":{"blockNumber":null,"hash":"0xabcdef","fromHost":"rpc1"}}`))
+			JSON([]byte(`{"result":{"blockNumber":null,"hash":"0xabcdef","fromHost":"rpc1"}}`))
 
 		// Mock a non-pending transaction response from the second upstream
 		gock.New("http://rpc2.localhost").
@@ -1773,7 +1772,7 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(b, "eth_getTransactionByHash")
 			}).
 			Reply(200).
-			JSON(json.RawMessage(`{"result":{"blockNumber":"0x54C563","hash":"0xabcdef","fromHost":"rpc2"}}`))
+			JSON([]byte(`{"result":{"blockNumber":"0x54C563","hash":"0xabcdef","fromHost":"rpc2"}}`))
 
 		// Set up a context and a cancellation function
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1888,7 +1887,7 @@ func TestNetwork_Forward(t *testing.T) {
 		time.Sleep(1000 * time.Millisecond)
 
 		// Create a fake request and forward it through the network
-		fakeReq := common.NewNormalizedRequest(json.RawMessage(`{
+		fakeReq := common.NewNormalizedRequest([]byte(`{
 			"jsonrpc": "2.0",
 			"method": "eth_getTransactionByHash",
 			"params": ["0xabcdef"],
@@ -1911,7 +1910,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		res, err := jrr.ParsedResult()
+		res, err := jrr.PeekInterfaceByPath()
 		if err != nil {
 			t.Fatalf("Failed to get parsed result: %v", err)
 		}
@@ -1950,7 +1949,7 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(b, "latest")
 			}).
 			Reply(200).
-			JSON(json.RawMessage(`{"result": {"number":"0xA98AC7"}}`))
+			JSON([]byte(`{"result": {"number":"0xA98AC7"}}`))
 
 		// Mock the response for the finalized block number request
 		gock.New("http://rpc1.localhost").
@@ -1961,7 +1960,7 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(b, "finalized")
 			}).
 			Reply(200).
-			JSON(json.RawMessage(`{"result":{"number":"0x21E88E"}}`))
+			JSON([]byte(`{"result":{"number":"0x21E88E"}}`))
 
 		gock.New("http://rpc2.localhost").
 			Post("").
@@ -1971,7 +1970,7 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(b, "latest")
 			}).
 			Reply(200).
-			JSON(json.RawMessage(`{"result": {"number":"0x32DCD5"}}`))
+			JSON([]byte(`{"result": {"number":"0x32DCD5"}}`))
 
 		// Mock the response for the finalized block number request
 		gock.New("http://rpc2.localhost").
@@ -1982,7 +1981,7 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(b, "finalized")
 			}).
 			Reply(200).
-			JSON(json.RawMessage(`{"result":{"number":"0x2A62B1C"}}`))
+			JSON([]byte(`{"result":{"number":"0x2A62B1C"}}`))
 
 		// Mock a pending transaction response from the first upstream
 		gock.New("http://rpc1.localhost").
@@ -1992,7 +1991,7 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(b, "eth_getTransactionByHash")
 			}).
 			Reply(200).
-			JSON(json.RawMessage(`{"result":{"blockNumber":null,"hash":"0xabcdef","fromHost":"rpc1"}}`))
+			JSON([]byte(`{"result":{"blockNumber":null,"hash":"0xabcdef","fromHost":"rpc1"}}`))
 
 		// Set up a context and a cancellation function
 		ctx, cancel := context.WithCancel(context.Background())
@@ -2107,7 +2106,7 @@ func TestNetwork_Forward(t *testing.T) {
 		time.Sleep(1000 * time.Millisecond)
 
 		// Create a fake request and forward it through the network
-		fakeReq := common.NewNormalizedRequest(json.RawMessage(`{
+		fakeReq := common.NewNormalizedRequest([]byte(`{
 			"jsonrpc": "2.0",
 			"method": "eth_getTransactionByHash",
 			"params": ["0xabcdef"],
@@ -2132,7 +2131,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		res, err := jrr.ParsedResult()
+		res, err := jrr.PeekInterfaceByPath()
 		if err != nil {
 			t.Fatalf("Failed to get parsed result: %v", err)
 		}
@@ -2164,14 +2163,14 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":9199,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
 		// Mock the upstream response
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Times(2). // Expect two calls
 			Reply(200).
-			JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`))
+			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -2278,13 +2277,13 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":9199,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.localhost").
 			Times(1).
 			Post("").
 			Reply(404).
-			JSON(json.RawMessage(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32601,"message":"Method not supported"}}`))
+			JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32601,"message":"Method not supported"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -2382,13 +2381,13 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":9199,"method":"eth_call","params":[{"to":"0x362fa9d0bca5d19f743db50738345ce2b40ec99f","data":"0xa4baa10c"}]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_call","params":[{"to":"0x362fa9d0bca5d19f743db50738345ce2b40ec99f","data":"0xa4baa10c"}]}`)
 
 		gock.New("http://rpc1.localhost").
 			Times(1).
 			Post("").
 			Reply(404).
-			JSON(json.RawMessage(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32000,"message":"historical backend error: execution reverted: Dai/insufficient-balance"}}`))
+			JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32000,"message":"historical backend error: execution reverted: Dai/insufficient-balance"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -2489,13 +2488,13 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":9199,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.alchemy.com.localhost").
 			Times(1).
 			Post("").
 			Reply(503).
-			JSON(json.RawMessage(`{"jsonrpc":"2.0","id":9179,"error":{"code":-32600,"message":"Monthly capacity limit exceeded."}}`))
+			JSON([]byte(`{"jsonrpc":"2.0","id":9179,"error":{"code":-32600,"message":"Monthly capacity limit exceeded."}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -2692,13 +2691,13 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.localhost").
 			Times(3).
 			Post("").
 			Reply(503).
-			JSON(json.RawMessage(`{"error":{"message":"some random provider issue"}}`))
+			JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -2797,18 +2796,18 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.localhost").
 			Times(3).
 			Post("").
 			Reply(503).
-			JSON(json.RawMessage(`{"error":{"message":"some random provider issue"}}`))
+			JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
 
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
+			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -2905,7 +2904,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected result, got %v", jrr)
 		}
 
-		res, err := jrr.ParsedResult()
+		res, err := jrr.PeekInterfaceByPath()
 		if err != nil {
 			t.Fatalf("Failed to get parsed result: %v", err)
 		}
@@ -2923,13 +2922,13 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(200).
 			Delay(100 * time.Millisecond).
-			JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
+			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -3032,13 +3031,13 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(200).
 			Delay(100 * time.Millisecond).
-			JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
+			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -3139,18 +3138,18 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`)).
+			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`)).
 			Delay(500 * time.Millisecond)
 
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc2"}}`)).
+			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc2"}}`)).
 			Delay(200 * time.Millisecond)
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -3273,7 +3272,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected result, got nil")
 		}
 
-		res, err := jrr.ParsedResult()
+		res, err := jrr.PeekInterfaceByPath()
 		if err != nil {
 			t.Fatalf("Failed to get parsed result: %v", err)
 		}
@@ -3297,18 +3296,18 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`)).
+			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`)).
 			Delay(2000 * time.Millisecond)
 
 		gock.New("http://alchemy.com").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc2"}}`)).
+			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc2"}}`)).
 			Delay(10 * time.Millisecond)
 
 		log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
@@ -3434,7 +3433,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected result, got nil")
 		}
 
-		res, err := jrr.ParsedResult()
+		res, err := jrr.PeekInterfaceByPath()
 		if err != nil {
 			t.Fatalf("Failed to get parsed result: %v", err)
 		}
@@ -3451,13 +3450,13 @@ func TestNetwork_Forward(t *testing.T) {
 	// 	defer gock.Off()
 	// 	defer gock.Clean()
 	// 	defer gock.CleanUnmatchedRequest()
-	// 	var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+	// 	var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 	// 	log.Logger.Info().Msgf("Mocks registered before: %d", len(gock.Pending()))
 	// 	gock.New("http://rpc1.localhost").
 	// 		Post("").
 	// 		Times(3).
 	// 		Reply(200).
-	// 		JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`)).
+	// 		JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`)).
 	// 		Delay(100 * time.Millisecond)
 	// 	log.Logger.Info().Msgf("Mocks registered after: %d", len(gock.Pending()))
 	// 	ctx, cancel := context.WithCancel(context.Background())
@@ -3591,19 +3590,19 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Times(2).
 			Reply(200).
-			JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
+			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
 
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Times(2).
 			Reply(503).
-			JSON(json.RawMessage(`{"error":{"message":"some random provider issue"}}`))
+			JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -3711,13 +3710,13 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Times(1).
 			Reply(503).
-			JSON(json.RawMessage(`{"error":{"message":"some random provider issue"}}`))
+			JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -3832,25 +3831,25 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Times(3).
 			Reply(200).
-			JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
+			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
 
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Times(3).
 			Reply(503).
-			JSON(json.RawMessage(`{"error":{"message":"some random provider issue"}}`))
+			JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
 
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Times(3).
 			Reply(200).
-			JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
+			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -3963,7 +3962,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
-		res, err := jrr.ParsedResult()
+		res, err := jrr.PeekInterfaceByPath()
 		if err != nil {
 			t.Fatalf("Failed to get parsed result: %v", err)
 		}
@@ -3981,12 +3980,12 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(500).
-			JSON(json.RawMessage(`{"error":{"code":-39999,"message":"my funky random error"}}`))
+			JSON([]byte(`{"error":{"code":-39999,"message":"my funky random error"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -4085,17 +4084,17 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(500).
-			JSON(json.RawMessage(`{"error":{"message":"Internal error"}}`))
+			JSON([]byte(`{"error":{"message":"Internal error"}}`))
 
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc2"}}`))
+			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc2"}}`))
 
 		log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
 
@@ -4223,7 +4222,7 @@ func TestNetwork_Forward(t *testing.T) {
 		t.Logf("jrr.Result type: %T", jrr.Result)
 		t.Logf("jrr.Result content: %+v", jrr.Result)
 
-		res, err := jrr.ParsedResult()
+		res, err := jrr.PeekInterfaceByPath()
 		if err != nil {
 			t.Fatalf("Failed to get parsed result: %v", err)
 		}
@@ -4247,17 +4246,17 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc": "2.0","method": "eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
+		var requestBytes = []byte(`{"jsonrpc": "2.0","method": "eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
 
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":[]}`))
+			JSON([]byte(`{"result":[]}`))
 
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":[{"logIndex":444,"fromHost":"rpc2"}]}`))
+			JSON([]byte(`{"result":[{"logIndex":444,"fromHost":"rpc2"}]}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -4378,7 +4377,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		res, err := jrr.ParsedResult()
+		res, err := jrr.PeekInterfaceByPath()
 		if err != nil {
 			t.Fatalf("Failed to get parsed result: %v", err)
 		}
@@ -4411,9 +4410,9 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc": "2.0","method": "eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
+		var requestBytes = []byte(`{"jsonrpc": "2.0","method": "eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
 
-		emptyResponse := json.RawMessage(`{"jsonrpc": "2.0","id": 1,"result":[]}`)
+		emptyResponse := []byte(`{"jsonrpc": "2.0","id": 1,"result":[]}`)
 
 		gock.New("http://rpc1.localhost").
 			Post("").
@@ -4514,7 +4513,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		res, err := jrr.ParsedResult()
+		res, err := jrr.PeekInterfaceByPath()
 		if err != nil {
 			t.Fatalf("Failed to get parsed result: %v", err)
 		}
@@ -4533,12 +4532,12 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":["0x1273c18"]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":["0x1273c18"]}`)
 
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(429).
-			JSON(json.RawMessage(`{"code":-32007,"message":"300/second request limit reached - reduce calls per second or upgrade your account at quicknode.com"}`))
+			JSON([]byte(`{"code":-32007,"message":"300/second request limit reached - reduce calls per second or upgrade your account at quicknode.com"}`))
 
 		log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
 
@@ -4631,7 +4630,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.localhost").
 			Post("").
@@ -4728,7 +4727,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.localhost").
 			Post("").
@@ -4959,7 +4958,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		var requestBytes = json.RawMessage(`{"jsonrpc": "2.0","method": "eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
+		var requestBytes = []byte(`{"jsonrpc": "2.0","method": "eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
 
 		gock.New("https://rpc.hypersync.xyz").
 			Post("").
@@ -4969,7 +4968,7 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(200).
-			JSON(json.RawMessage(`{"result":[{"logIndex":444}], "fromHost":"rpc1"}`))
+			JSON([]byte(`{"result":[{"logIndex":444}], "fromHost":"rpc1"}`))
 
 		log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
 
@@ -5422,7 +5421,7 @@ func setupMocksForEvmStatePoller() {
 			return strings.Contains(safeReadBody(request), "eth_getBlockByNumber")
 		}).
 		Reply(200).
-		JSON(json.RawMessage(`{"result": {"number":"0x1273c18"}}`))
+		JSON([]byte(`{"result": {"number":"0x1273c18"}}`))
 	gock.New("http://rpc2.localhost").
 		Post("").
 		Persist().
@@ -5430,7 +5429,7 @@ func setupMocksForEvmStatePoller() {
 			return strings.Contains(safeReadBody(request), "eth_getBlockByNumber")
 		}).
 		Reply(200).
-		JSON(json.RawMessage(`{"result": {"number":"0x1273c18"}}`))
+		JSON([]byte(`{"result": {"number":"0x1273c18"}}`))
 }
 
 func anyTestMocksLeft() int {
