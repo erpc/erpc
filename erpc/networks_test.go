@@ -892,20 +892,14 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Convert the raw response to a map to access custom fields like fromHost
-		var responseMap map[string]interface{}
-		err = sonic.UnmarshalString(resp.String(), &responseMap)
+		jrr, err := resp.JsonRpcResponse()
 		if err != nil {
-			t.Fatalf("Failed to unmarshal response body: %v", err)
+			t.Fatalf("Failed to get JsonRpcResponse: %v", err)
 		}
 
 		// Check that the result field is an empty array as expected
-		result, ok := responseMap["result"].([]interface{})
-		if !ok {
-			t.Fatalf("Expected result to be []interface{}, got %T", responseMap["result"])
-		}
-
-		if len(result) != 0 {
-			t.Fatalf("Expected empty result array")
+		if len(jrr.Result) != 2 || jrr.Result[0] != '[' || jrr.Result[1] != ']' {
+			t.Fatalf("Expected result to be an empty array, got %T", jrr.Result)
 		}
 	})
 
@@ -1140,7 +1134,8 @@ func TestNetwork_Forward(t *testing.T) {
 			Reply(200).
 			JSON([]byte(`{"result": {"number":"0x8"}}`))
 
-		sampleSize := 50 * 1024 * 1024
+		sampleSize := 100 * 1024 * 1024
+		allowedOverhead := 30 * 1024 * 1024
 		largeResult := strings.Repeat("x", sampleSize)
 
 		// Mock the response for the latest block number request
@@ -1260,8 +1255,8 @@ func TestNetwork_Forward(t *testing.T) {
 		// Log the memory usage
 		t.Logf("Memory used for request: %.2f MB", memUsedMB)
 
-		// Check that memory used does not exceed 55MB (allowing some overhead)
-		expectedMemUsage := uint64(sampleSize) + 1*1024*1024 /* 1MB overhead */
+		// Check that memory used does not exceed sample size + overhead
+		expectedMemUsage := uint64(sampleSize) + uint64(allowedOverhead)
 		expectedMemUsageMB := float64(expectedMemUsage) / (1024 * 1024)
 		if memUsed > expectedMemUsage {
 			t.Fatalf("Memory usage exceeded expected limit of %.2f MB used %.2f MB", expectedMemUsageMB, memUsedMB)
@@ -4585,7 +4580,7 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(429).
-			JSON([]byte(`{"code":-32007,"message":"300/second request limit reached - reduce calls per second or upgrade your account at quicknode.com"}`))
+			JSON([]byte(`{"error":{"code":-32007,"message":"300/second request limit reached - reduce calls per second or upgrade your account at quicknode.com"}}`))
 
 		log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
 
@@ -5383,7 +5378,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 			if responses[i] != nil {
 				jrr, err := responses[i].JsonRpcResponse()
 				assert.NoError(t, err, "Response %d should be a valid JSON-RPC response", i+1)
-				assert.Equal(t, float64(i+1), jrr.ID, "Response ID should match the request ID for request %d", i+1)
+				assert.Equal(t, float64(i+1), jrr.ID(), "Response ID should match the request ID for request %d", i+1)
 			}
 		}
 

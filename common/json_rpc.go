@@ -27,17 +27,6 @@ type JsonRpcResponse struct {
 	cachedNode *ast.Node
 }
 
-type RawNode []byte
-
-func (r RawNode) MarshalJSON() ([]byte, error) {
-	return r, nil
-}
-
-func (r *RawNode) UnmarshalJSON(data []byte) error {
-	*r = data
-	return nil
-}
-
 func NewJsonRpcResponse(id interface{}, result interface{}, rpcError *ErrJsonRpcExceptionExternal) (*JsonRpcResponse, error) {
 	resultRaw, err := SonicCfg.Marshal(result)
 	if err != nil {
@@ -54,15 +43,10 @@ func NewJsonRpcResponseFromBytes(id []byte, resultRaw []byte, errBytes []byte) (
 	jr := &JsonRpcResponse{
 		idBytes:  id,
 		Result:   resultRaw,
-		errBytes: errBytes,
 	}
 
 	if len(errBytes) > 0 {
-		var rpcErr ErrJsonRpcExceptionExternal
-		if err := SonicCfg.UnmarshalFromString(util.Mem2Str(errBytes), &rpcErr); err != nil {
-			return nil, err
-		}
-		jr.Error = &rpcErr
+		jr.ParseError(util.Mem2Str(errBytes))
 	}
 
 	return jr, nil
@@ -113,19 +97,83 @@ func (r *JsonRpcResponse) ParseFromStream(reader io.Reader) error {
 		}
 	} else if errorNode, err := searcher.GetByPath("error"); err == nil {
 		if rawError, err := errorNode.Raw(); err == nil {
-			r.errBytes = util.Str2Mem(rawError)
-			var rpcErr ErrJsonRpcExceptionExternal
-			if err := SonicCfg.UnmarshalFromString(rawError, &rpcErr); err != nil {
+			if err := r.ParseError(rawError); err != nil {
 				return err
 			}
-			r.Error = &rpcErr
 		} else {
 			return err
 		}
-	} else {
-		return fmt.Errorf("neither 'result' nor 'error' found in response")
+	} else if err := r.ParseError(util.Mem2Str(data)); err != nil {
+		return err
 	}
 
+	return nil
+}
+
+func (r *JsonRpcResponse) ParseError(raw string) error {
+	r.Lock()
+	defer r.Unlock()
+
+	r.errBytes = nil
+
+	// First attempt to unmarshal the error as a typical JSON-RPC error
+	var rpcErr ErrJsonRpcExceptionExternal
+	if err := SonicCfg.UnmarshalFromString(raw, &rpcErr); err != nil {
+		// Special case: check for non-standard error structures in the raw data
+		if raw == "" || raw == "null" {
+			r.Error = NewErrJsonRpcExceptionExternal(
+				int(JsonRpcErrorServerSideException),
+				"unexpected empty response from upstream endpoint",
+				"",
+			)
+			return nil
+		}
+	}
+
+	// Check if the error is well-formed and has necessary fields
+	if rpcErr.Code != 0 || rpcErr.Message != "" {
+		r.Error = &rpcErr
+		r.errBytes = util.Str2Mem(raw)	
+		return nil
+	}
+
+	// Handle further special cases
+	// Special case #1: numeric "code", "message", and "data"
+	sp1 := &struct {
+		Code    int    `json:"code,omitempty"`
+		Message string `json:"message,omitempty"`
+		Data    string `json:"data,omitempty"`
+	}{}
+	if err := SonicCfg.UnmarshalFromString(raw, sp1); err == nil {
+		if sp1.Code != 0 || sp1.Message != "" || sp1.Data != "" {
+			r.Error = NewErrJsonRpcExceptionExternal(
+				sp1.Code,
+				sp1.Message,
+				sp1.Data,
+			)
+			return nil
+		}
+	}
+
+	// Special case #2: only "error" field as a string
+	sp2 := &struct {
+		Error string `json:"error"`
+	}{}
+	if err := SonicCfg.UnmarshalFromString(raw, sp2); err == nil && sp2.Error != "" {
+		r.Error = NewErrJsonRpcExceptionExternal(
+			int(JsonRpcErrorServerSideException),
+			sp2.Error,
+			"",
+		)
+		return nil
+	}
+
+	// If no match, treat the raw data as message string
+	r.Error = NewErrJsonRpcExceptionExternal(
+		int(JsonRpcErrorServerSideException),
+		raw,
+		"",
+	)
 	return nil
 }
 
@@ -165,17 +213,17 @@ func (r *JsonRpcResponse) ensureCachedNode() {
 }
 
 func (r *JsonRpcResponse) MarshalJSON() ([]byte, error) {
-	return nil, fmt.Errorf("json-rpc response must be written using WriteTo()")
+	return nil, fmt.Errorf("json-rpc response must be marshalled using WriteTo()")
 }
 
 func (r *JsonRpcResponse) WriteTo(w io.Writer) (int64, error) {
 	var total int64
 
-	if (r.Error == nil || len(r.errBytes) == 0) && (r.Result == nil || len(r.Result) == 0) {
+	if (r.Error == nil && len(r.errBytes) == 0) && (r.Result == nil || len(r.Result) == 0) {
 		return 0, fmt.Errorf("json-rpc response must have an 'error' or a 'result' set")
 	}
 	if len(r.idBytes) == 0 {
-		return 0, fmt.Errorf("json-rpc response must have an ID")
+		return 0, fmt.Errorf("json-rpc response must have an ID set")
 	}
 
 	// Write '{'
@@ -206,7 +254,7 @@ func (r *JsonRpcResponse) WriteTo(w io.Writer) (int64, error) {
 		return total, err
 	}
 
-	if r.Error != nil {
+	if r.Error != nil || len(r.errBytes) > 0 {
 		// Write ',"error":'
 		n, err = w.Write([]byte(`,"error":`))
 		total += int64(n)
@@ -215,10 +263,28 @@ func (r *JsonRpcResponse) WriteTo(w io.Writer) (int64, error) {
 		}
 
 		// Write errBytes
-		n, err = w.Write(r.errBytes)
-		total += int64(n)
-		if err != nil {
-			return total, err
+		if len(r.errBytes) > 0 {
+			n, err = w.Write(r.errBytes)
+			total += int64(n)
+			if err != nil {
+				return total, err
+			}
+		} else if r.Error != nil {
+			r.errBytes, err = SonicCfg.Marshal(r.Error)
+			if err != nil {
+				return 0, err
+			}
+			n, err = w.Write(r.errBytes)
+			total += int64(n)
+			if err != nil {
+				return total, err
+			}
+		} else {
+			n, err = w.Write([]byte(`null`))
+			total += int64(n)
+			if err != nil {
+				return total, err
+			}
 		}
 	} else {
 		// Write ',"result":'

@@ -74,11 +74,11 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	if err != nil {
 		return nil, err
 	}
-	method, _ := nq.Method()
-
 	if err := p.acquireRateLimitPermit(nq); err != nil {
 		return nil, err
 	}
+
+	method, _ := nq.Method()
 
 	timer := prometheus.NewTimer(prometheus.ObserverFunc(func(v float64) {
 		health.MetricNetworkRequestDuration.WithLabelValues(

@@ -4,6 +4,7 @@ import (
 	// "bufio"
 	// "bytes"
 	// "bytes"
+	"fmt"
 	"io"
 	// "fmt"
 	// "strings"
@@ -159,27 +160,6 @@ func (r *NormalizedResponse) Request() *NormalizedRequest {
 	return r.request
 }
 
-// func (r *NormalizedResponse) Body() string {
-// 	if r == nil {
-// 		return ""
-// 	}
-// 	if r.body != "" {
-// 		return r.body
-// 	}
-
-// 	jrr, err := r.JsonRpcResponse()
-// 	if err != nil {
-// 		return ""
-// 	}
-
-// 	r.body, err = SonicCfg.MarshalToString(jrr)
-// 	if err != nil {
-// 		return ""
-// 	}
-
-// 	return r.body
-// }
-
 func (r *NormalizedResponse) Error() error {
 	if r.err != nil {
 		return r.err
@@ -263,11 +243,7 @@ func (r *NormalizedResponse) String() string {
 		return r.err.Error()
 	}
 	if r.jsonRpcResponse != nil {
-		str, err := SonicCfg.MarshalToString(r.jsonRpcResponse)
-		if err != nil {
-			return err.Error()
-		}
-		return str
+		return fmt.Sprintf("ID=%v,Error=%v,ResultSize=%d", r.jsonRpcResponse.ID(), r.jsonRpcResponse.Error, len(r.jsonRpcResponse.Result))
 	}
 	return "<nil>"
 }

@@ -304,8 +304,17 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 
 	rootNode, err := searcher.GetByPath()
 	if err != nil {
+		jrResp := &common.JsonRpcResponse{}
+		jrResp.ParseError(util.Mem2Str(bodyBytes))
 		for _, req := range requests {
-			req.err <- common.NewErrUpstreamMalformedResponse(fmt.Errorf("unexpected response content: %s", util.Mem2Str(bodyBytes)), c.upstream.Config().Id)
+			jrr, err := jrResp.Clone()
+			if err != nil {
+				req.err <- err
+			} else {
+				nr := common.NewNormalizedResponse().WithRequest(req.request).WithJsonRpcResponse(jrr)
+				err = c.normalizeJsonRpcError(resp, nr)
+				req.err <- err
+			}
 		}
 		return
 	}
@@ -375,27 +384,20 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 
 func getJsonRpcResponseFromNode(rootNode ast.Node) (*common.JsonRpcResponse, error) {
 	idNode := rootNode.GetByPath("id")
-	rawID, rawIDErr := idNode.Raw()
+	rawID, _ := idNode.Raw()
 	resultNode := rootNode.GetByPath("result")
 	rawResult, rawResultErr := resultNode.Raw()
 	errorNode := rootNode.GetByPath("error")
 	rawError, rawErrorErr := errorNode.Raw()
 
-	if rawIDErr != nil || (rawResultErr != nil && rawErrorErr != nil) {
+	if rawResultErr != nil && rawErrorErr != nil {
 		var jrResp *common.JsonRpcResponse
 
 		if rawID != "" {
 			jrResp.SetIDBytes(util.Str2Mem(rawID))
 		}
 
-		cause := "cannot parse json rpc response from upstream"
-		if rawIDErr != nil {
-			cause = rawIDErr.Error()
-		} else if rawResultErr != nil {
-			cause = rawResultErr.Error()
-		} else if rawErrorErr != nil {
-			cause = rawErrorErr.Error()
-		}
+		cause := fmt.Sprintf("cannot parse json rpc response from upstream, for result: %s, for error: %s", rawResult, rawError)
 		jrResp = &common.JsonRpcResponse{
 			Result: util.Str2Mem(rawResult),
 			Error: common.NewErrJsonRpcExceptionExternal(
