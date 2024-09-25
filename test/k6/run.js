@@ -8,9 +8,9 @@ export const options = {
   scenarios: {    
     constant_request_rate: {
       executor: 'constant-arrival-rate',
-      rate: 1,
+      rate: 5,
       timeUnit: '1s',
-      duration: '10m',
+      duration: '30m',
       preAllocatedVUs: 10,
       maxVUs: 100,
     },
@@ -52,8 +52,13 @@ export default function () {
   check(res, {
     'status is 200': (r) => r.status === 200,
     'response has no error': (r) => {
-      const body = JSON.parse(r.body);
-      return body && (body.error === undefined || body.error === null);
+      try {
+        const body = JSON.parse(r.body);
+        return body && (body.error === undefined || body.error === null);
+      } catch (e) {
+        console.log(`Unmarshal error: ${e} for body: ${r.body}`);
+        return false;
+      }
     },
   });
 

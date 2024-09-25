@@ -196,7 +196,8 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 				req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
 				resp1, err1 := client.SendRequest(context.Background(), req1)
 				assert.NoError(t, err1)
-				assert.Equal(t, `{"jsonrpc":"2.0","id":1,"result":"0x1"}`, string(resp1.Body()))
+				txt, _ := sonic.MarshalString(resp1)
+				assert.Equal(t, `{"jsonrpc":"2.0","id":1,"result":"0x1"}`, txt)
 			}()
 			wg.Add(1)
 			go func() {
@@ -204,7 +205,8 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 				req6 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":6,"method":"eth_blockNumber","params":[]}`))
 				resp6, err6 := client.SendRequest(context.Background(), req6)
 				assert.NoError(t, err6)
-				assert.Equal(t, `{"jsonrpc":"2.0","id":6,"result":"0x6"}`, string(resp6.Body()))
+				txt, _ := sonic.MarshalString(resp6)
+				assert.Equal(t, `{"jsonrpc":"2.0","id":6,"result":"0x6"}`, txt)
 			}()
 			time.Sleep(10 * time.Millisecond)
 		}

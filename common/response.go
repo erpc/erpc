@@ -1,16 +1,29 @@
 package common
 
 import (
-	"sync"
+	// "bufio"
+	// "bytes"
+	// "bytes"
+	"io"
+	// "fmt"
+	// "strings"
 
-	"github.com/bytedance/sonic"
+	// "io"
+
+	// "strings"
+	"sync"
+	// "unsafe"
+	// "github.com/erpc/erpc/util"
+	// "github.com/erpc/erpc/util"
+	// "github.com/erpc/erpc/util"
+	// "github.com/valyala/fasthttp"
 )
 
 type NormalizedResponse struct {
 	sync.RWMutex
 
 	request *NormalizedRequest
-	body    []byte
+	body    io.ReadCloser
 	err     error
 
 	fromCache bool
@@ -102,7 +115,29 @@ func (r *NormalizedResponse) WithFromCache(fromCache bool) *NormalizedResponse {
 	return r
 }
 
-func (r *NormalizedResponse) WithBody(body []byte) *NormalizedResponse {
+func (r *NormalizedResponse) JsonRpcResponse() (*JsonRpcResponse, error) {
+	if r == nil {
+		return nil, nil
+	}
+
+	if r.jsonRpcResponse != nil {
+		return r.jsonRpcResponse, nil
+	}
+
+	jrr := &JsonRpcResponse{}
+
+	if r.body != nil {
+		err := jrr.ParseFromStream(r.body)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	r.jsonRpcResponse = jrr
+	return jrr, nil
+}
+
+func (r *NormalizedResponse) WithBody(body io.ReadCloser) *NormalizedResponse {
 	r.body = body
 	return r
 }
@@ -124,26 +159,26 @@ func (r *NormalizedResponse) Request() *NormalizedRequest {
 	return r.request
 }
 
-func (r *NormalizedResponse) Body() []byte {
-	if r == nil {
-		return nil
-	}
-	if r.body != nil {
-		return r.body
-	}
+// func (r *NormalizedResponse) Body() string {
+// 	if r == nil {
+// 		return ""
+// 	}
+// 	if r.body != "" {
+// 		return r.body
+// 	}
 
-	jrr, err := r.JsonRpcResponse()
-	if err != nil {
-		return nil
-	}
+// 	jrr, err := r.JsonRpcResponse()
+// 	if err != nil {
+// 		return ""
+// 	}
 
-	r.body, err = SonicCfg.Marshal(jrr)
-	if err != nil {
-		return nil
-	}
+// 	r.body, err = SonicCfg.MarshalToString(jrr)
+// 	if err != nil {
+// 		return ""
+// 	}
 
-	return r.body
-}
+// 	return r.body
+// }
 
 func (r *NormalizedResponse) Error() error {
 	if r.err != nil {
@@ -160,51 +195,18 @@ func (r *NormalizedResponse) IsResultEmptyish() bool {
 			return true
 		}
 
-		// Use raw result to avoid json unmarshalling for performance reasons
-		if jrr.Result == nil ||
-			len(jrr.Result) == 0 ||
-			(jrr.Result[0] == '"' && jrr.Result[1] == '0' && jrr.Result[2] == 'x' && jrr.Result[3] == '"' && len(jrr.Result) == 4) ||
-			(jrr.Result[0] == 'n' && jrr.Result[1] == 'u' && jrr.Result[2] == 'l' && jrr.Result[3] == 'l' && len(jrr.Result) == 4) ||
-			(jrr.Result[0] == '"' && jrr.Result[1] == '"' && len(jrr.Result) == 2) ||
-			(jrr.Result[0] == '[' && jrr.Result[1] == ']' && len(jrr.Result) == 2) ||
-			(jrr.Result[0] == '{' && jrr.Result[1] == '}' && len(jrr.Result) == 2) {
+		lnr := len(jrr.Result)
+		if lnr == 0 ||
+			(lnr == 4 && jrr.Result[0] == '"' && jrr.Result[1] == '0' && jrr.Result[2] == 'x' && jrr.Result[3] == '"') ||
+			(lnr == 4 && jrr.Result[0] == 'n' && jrr.Result[1] == 'u' && jrr.Result[2] == 'l' && jrr.Result[3] == 'l') ||
+			(lnr == 2 && jrr.Result[0] == '"' && jrr.Result[1] == '"') ||
+			(lnr == 2 && jrr.Result[0] == '[' && jrr.Result[1] == ']') ||
+			(lnr == 2 && jrr.Result[0] == '{' && jrr.Result[1] == '}') {
 			return true
 		}
 	}
 
 	return false
-}
-
-func (r *NormalizedResponse) JsonRpcResponse() (*JsonRpcResponse, error) {
-	if r == nil {
-		return nil, nil
-	}
-
-	if r.jsonRpcResponse != nil {
-		return r.jsonRpcResponse, nil
-	}
-
-	jrr := &JsonRpcResponse{}
-	err := sonic.Unmarshal(r.body, jrr)
-	if err != nil {
-		if len(r.body) == 0 {
-			jrr.Error = NewErrJsonRpcExceptionExternal(
-				int(JsonRpcErrorServerSideException),
-				"unexpected empty response from upstream endpoint",
-				"",
-			)
-		} else {
-			jrr.Error = NewErrJsonRpcExceptionExternal(
-				int(JsonRpcErrorServerSideException),
-				string(r.body),
-				"",
-			)
-		}
-	}
-
-	r.jsonRpcResponse = jrr
-
-	return jrr, nil
 }
 
 func (r *NormalizedResponse) IsObjectNull() bool {
@@ -213,7 +215,7 @@ func (r *NormalizedResponse) IsObjectNull() bool {
 	}
 
 	jrr, _ := r.JsonRpcResponse()
-	if jrr == nil && r.body == nil {
+	if jrr == nil || (len(jrr.Result) == 0 && jrr.Error == nil && jrr.ID() == nil) {
 		return true
 	}
 
@@ -257,24 +259,20 @@ func (r *NormalizedResponse) String() string {
 	if r == nil {
 		return "<nil>"
 	}
-	if r.body != nil && len(r.body) > 0 {
-		return string(r.body)
-	}
 	if r.err != nil {
 		return r.err.Error()
 	}
 	if r.jsonRpcResponse != nil {
-		b, _ := sonic.Marshal(r.jsonRpcResponse)
-		return string(b)
+		str, err := SonicCfg.MarshalToString(r.jsonRpcResponse)
+		if err != nil {
+			return err.Error()
+		}
+		return str
 	}
 	return "<nil>"
 }
 
 func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
-	if r.body != nil {
-		return r.body, nil
-	}
-
 	if r.jsonRpcResponse != nil {
 		return SonicCfg.Marshal(r.jsonRpcResponse)
 	}
@@ -282,6 +280,26 @@ func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
 	return nil, nil
 }
 
+func (r *NormalizedResponse) WriteTo(w io.Writer) (int64, error) {
+	if r.jsonRpcResponse != nil {
+		return r.jsonRpcResponse.WriteTo(w)
+	}
+
+	return 0, nil
+}
+
+func (r *NormalizedResponse) Release() {
+	r.Lock()
+	defer r.Unlock()
+
+	// If body is not closed yet, close it
+	if r.body != nil {
+		r.body.Close()
+		r.body = nil
+	}
+}
+
+// CopyResponseForRequest creates a copy of the response for another request.
 func CopyResponseForRequest(resp *NormalizedResponse, req *NormalizedRequest) (*NormalizedResponse, error) {
 	req.RLock()
 	defer req.RUnlock()
@@ -293,27 +311,13 @@ func CopyResponseForRequest(resp *NormalizedResponse, req *NormalizedRequest) (*
 	r := NewNormalizedResponse()
 	r.WithRequest(req)
 
-	// We need to use request ID because response ID can be different
-	// in case of multiplexed requests, where we only sent 1 actual request to the upstream.
 	if resp.jsonRpcResponse != nil {
-		jrr, err := req.JsonRpcRequest()
+		jrr, err := resp.jsonRpcResponse.Clone()
 		if err != nil {
 			return nil, err
 		}
-		r.WithJsonRpcResponse(&JsonRpcResponse{
-			JSONRPC: resp.jsonRpcResponse.JSONRPC,
-			ID:      jrr.ID,
-			Result:  resp.jsonRpcResponse.Result,
-			Error:   resp.jsonRpcResponse.Error,
-		})
-	} else if resp.body != nil {
-		r.WithBody(resp.body)
-		jrr, err := r.JsonRpcResponse()
-		if err != nil {
-			return nil, err
-		}
-		r.body = nil // This enforces re-marshalling the response body if anyone needs it
-		jrr.ID = req.jsonRpcRequest.ID
+		r.WithJsonRpcResponse(jrr)
+		r.jsonRpcResponse.SetID(req.jsonRpcRequest.ID)
 	}
 
 	return r, nil

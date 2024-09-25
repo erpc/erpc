@@ -1,13 +1,14 @@
 package util
 
 import (
-	"net/http"
 	"strings"
+
+	"net/http"
 )
 
-func ExtractUsefulHeaders(headers http.Header) map[string]interface{} {
+func ExtractUsefulHeaders(r *http.Response) map[string]interface{} {
 	var result = make(map[string]interface{})
-	for k, v := range headers {
+	for k := range r.Header {
 		kl := strings.ToLower(k)
 		if strings.HasPrefix(kl, "x-") ||
 			strings.Contains(kl, "trace") ||
@@ -16,7 +17,7 @@ func ExtractUsefulHeaders(headers http.Header) map[string]interface{} {
 			strings.Contains(kl, "-id") ||
 			kl == "content-type" ||
 			kl == "content-length" {
-			result[kl] = v
+			result[kl] = r.Header.Get(k)
 		}
 	}
 

@@ -353,13 +353,14 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 		return false, jrr.Error
 	}
 
-	syncing, err := jrr.PeekBoolByPath()
+	var syncing bool
+	err = common.SonicCfg.Unmarshal(jrr.Result, &syncing)
 	if err != nil {
 		return false, &common.BaseError{
 			Code:    "ErrEvmStatePoller",
 			Message: "cannot get syncing state result type (must be boolean)",
 			Details: map[string]interface{}{
-				"result": jrr.Result,
+				"result": util.Mem2Str(jrr.Result),
 			},
 		}
 	}

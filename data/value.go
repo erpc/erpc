@@ -3,7 +3,6 @@ package data
 import (
 	"sync"
 
-	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
 )
 
@@ -29,7 +28,7 @@ func (d *DataRow) AsJsonRpcResponse() (*common.JsonRpcResponse, error) {
 	}
 
 	var result common.JsonRpcResponse
-	err := sonic.Unmarshal([]byte(d.Value), &result)
+	err := common.SonicCfg.Unmarshal([]byte(d.Value), &result)
 	if err != nil {
 		return nil, err
 	}
