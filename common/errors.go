@@ -698,6 +698,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		cbOpen := 0
 		billing := 0
 		other := 0
+		client := 0
 		cancelled := 0
 
 		for _, e := range joinedErr.Unwrap() {
@@ -725,6 +726,9 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 				continue
 			} else if HasErrorCode(e, ErrCodeUpstreamHedgeCancelled) {
 				cancelled++
+				continue
+			} else if HasErrorCode(e, ErrCodeEndpointClientSideException) || HasErrorCode(e, ErrCodeJsonRpcRequestUnmarshal) {
+				client++
 				continue
 			} else if !HasErrorCode(e, ErrCodeUpstreamMethodIgnored) {
 				other++
@@ -755,6 +759,9 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		}
 		if cancelled > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d hedges cancelled", cancelled))
+		}
+		if client > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d user errors", cancelled))
 		}
 		if other > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d other errors", other))

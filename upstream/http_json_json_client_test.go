@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/url"
@@ -196,7 +197,12 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 				req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
 				resp1, err1 := client.SendRequest(context.Background(), req1)
 				assert.NoError(t, err1)
-				txt, _ := sonic.MarshalString(resp1)
+				resp1.Lock()
+				wr := bytes.NewBuffer([]byte{})
+				_, werr := resp1.WriteTo(wr)
+				assert.NoError(t, werr)
+				txt := wr.String()
+				resp1.Unlock()
 				assert.Equal(t, `{"jsonrpc":"2.0","id":1,"result":"0x1"}`, txt)
 			}()
 			wg.Add(1)
@@ -205,7 +211,12 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 				req6 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":6,"method":"eth_blockNumber","params":[]}`))
 				resp6, err6 := client.SendRequest(context.Background(), req6)
 				assert.NoError(t, err6)
-				txt, _ := sonic.MarshalString(resp6)
+				resp6.Lock()
+				wr := bytes.NewBuffer([]byte{})
+				_, werr := resp6.WriteTo(wr)
+				assert.NoError(t, werr)
+				txt := wr.String()
+				resp6.Unlock()
 				assert.Equal(t, `{"jsonrpc":"2.0","id":6,"result":"0x6"}`, txt)
 			}()
 			time.Sleep(10 * time.Millisecond)
@@ -348,7 +359,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_blockNumber","params":[]}`, id)))
 				_, err := client.SendRequest(context.Background(), req)
 				assert.Error(t, err)
-				assert.Contains(t, err.Error(), "upstream returned non-JSON response body")
+				assert.Contains(t, err.Error(), "503 Service Unavailable")
 			}(i + 1)
 		}
 		wg.Wait()

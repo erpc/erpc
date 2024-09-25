@@ -285,7 +285,7 @@ func (r *NormalizedRequest) Method() (string, error) {
 	if len(r.body) > 0 {
 		method, err := sonic.Get(r.body, "method")
 		if err != nil {
-			return "", err
+			return "", NewErrJsonRpcRequestUnmarshal(err)
 		}
 		m, err := method.String()
 		r.method = m
