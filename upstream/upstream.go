@@ -399,7 +399,8 @@ func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 	if jrr.Error != nil {
 		return "", jrr.Error
 	}
-	chainId, err := jrr.PeekStringByPath()
+	var chainId string
+	err = common.SonicCfg.Unmarshal(jrr.Result, &chainId)
 	if err != nil {
 		return "", err
 	}

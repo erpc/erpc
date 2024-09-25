@@ -34,5 +34,9 @@ func init() {
 		CopyString:              false,
 		NoQuoteTextMarshaler:    true,
 		NoValidateJSONMarshaler: true,
+		EscapeHTML:              false,
+		SortMapKeys:             false,
+		CompactMarshaler:        true,
+		ValidateString:          false,
 	}.Froze()
 }

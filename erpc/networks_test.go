@@ -5,11 +5,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
+	"sync"
+
+	// "fmt"
 	"io"
 	"net/http"
 	"os"
 	"strings"
-	"sync"
+
+	// "sync"
 	"testing"
 	"time"
 
@@ -24,6 +29,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/valyala/fasthttp"
+	// "github.com/valyala/fasthttp"
 )
 
 var TRUE = true
@@ -887,7 +893,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Convert the raw response to a map to access custom fields like fromHost
 		var responseMap map[string]interface{}
-		err = sonic.Unmarshal(resp.Body(), &responseMap)
+		err = sonic.UnmarshalString(resp.String(), &responseMap)
 		if err != nil {
 			t.Fatalf("Failed to unmarshal response body: %v", err)
 		}
@@ -922,7 +928,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}`)
 
 		// Mock the response for the latest block number request
-		gock.New("http://rpc1.localhost").
+		gock.New("http://alchemy.com/rpc1").
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
@@ -932,7 +938,7 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"result": {"number":"0x9"}}`))
 
 		// Mock the response for the finalized block number request
-		gock.New("http://rpc1.localhost").
+		gock.New("http://alchemy.com/rpc1").
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
@@ -942,13 +948,13 @@ func TestNetwork_Forward(t *testing.T) {
 			JSON([]byte(`{"result": {"number":"0x8"}}`))
 
 		// Mock an empty logs response from the first upstream
-		gock.New("http://rpc1.localhost").
+		gock.New("http://alchemy.com/rpc1").
 			Post("").
 			Reply(200).
 			JSON([]byte(`{"result":[]}`))
 
 		// Mock a non-empty logs response from the second upstream
-		gock.New("http://rpc2.localhost").
+		gock.New("http://alchemy.com/rpc2").
 			Post("").
 			Reply(200).
 			JSON([]byte(`{"result":[{"logIndex":444}]}`))
@@ -977,7 +983,7 @@ func TestNetwork_Forward(t *testing.T) {
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
-			Endpoint: "http://rpc1.localhost",
+			Endpoint: "http://alchemy.com/rpc1",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 				Syncing: &common.TRUE,
@@ -986,7 +992,7 @@ func TestNetwork_Forward(t *testing.T) {
 		up2 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc2",
-			Endpoint: "http://rpc2.localhost",
+			Endpoint: "http://alchemy.com/rpc2",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
@@ -1083,15 +1089,14 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Convert the raw response to a map to access custom fields like fromHost
-		var responseMap map[string]interface{}
-		err = sonic.Unmarshal(resp.Body(), &responseMap)
+		jrr, err := resp.JsonRpcResponse()
+		if err != nil {
+			t.Fatalf("Failed to get JsonRpcResponse: %v", err)
+		}
+		var result []interface{}
+		err = sonic.Unmarshal(jrr.Result, &result)
 		if err != nil {
 			t.Fatalf("Failed to unmarshal response body: %v", err)
-		}
-
-		result, ok := responseMap["result"].([]interface{})
-		if !ok {
-			t.Fatalf("Expected result to be []interface{}, got %T", responseMap["result"])
 		}
 
 		if len(result) == 0 {
@@ -1099,7 +1104,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 	})
 
-	t.Run("RetryWhenWeDoNotKnowNodeSyncState", func(t *testing.T) {
+	t.Run("ForwardWithMinimumMemoryAllocation", func(t *testing.T) {
 		// Clean up any gock mocks after the test runs
 		defer gock.Off()
 		defer gock.Clean()
@@ -1108,12 +1113,10 @@ func TestNetwork_Forward(t *testing.T) {
 		// Prepare a JSON-RPC request payload as a byte array
 		var requestBytes = []byte(`{
 			"jsonrpc": "2.0",
-			"method": "eth_getLogs",
-			"params": [{
-				"address": "0x1234567890abcdef1234567890abcdef12345678",
-				"fromBlock": "0x4",
-				"toBlock": "0x7"
-			}],
+			"method": "debug_traceTransaction",
+			"params": [
+				"0x1234567890abcdef1234567890abcdef12345678"
+			],
 			"id": 1
 		}`)
 
@@ -1125,7 +1128,7 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(safeReadBody(request), "latest")
 			}).
 			Reply(200).
-			JSON([]byte(`{"result": {"number":"0x9"}}`))
+			JSON([]byte(`{"result":{"number":"0x9"}}`))
 
 		// Mock the response for the finalized block number request
 		gock.New("http://rpc1.localhost").
@@ -1136,6 +1139,187 @@ func TestNetwork_Forward(t *testing.T) {
 			}).
 			Reply(200).
 			JSON([]byte(`{"result": {"number":"0x8"}}`))
+
+		sampleSize := 50 * 1024 * 1024
+		largeResult := strings.Repeat("x", sampleSize)
+
+		// Mock the response for the latest block number request
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Reply(200).
+			JSON([]byte(fmt.Sprintf(`{"result":"%s"}`, largeResult)))
+
+		// Set up a context and a cancellation function
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Initialize various components for the test environment
+		clr := upstream.NewClientRegistry(&log.Logger)
+		fsCfg := &common.FailsafeConfig{}
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+			Budgets: []*common.RateLimitBudgetConfig{},
+		}, &log.Logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		vndr := vendors.NewVendorsRegistry()
+		mt := health.NewTracker("prjA", 2*time.Second)
+
+		// Set up upstream configurations
+		up1 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc1",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
+		// Initialize the upstreams registry
+		upr := upstream.NewUpstreamsRegistry(
+			&log.Logger,
+			"prjA",
+			[]*common.UpstreamConfig{up1},
+			rlr,
+			vndr, mt, 1*time.Second,
+		)
+		err = upr.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Create and register clients for both upstreams
+		pup1, err := upr.NewUpstream(
+			"prjA",
+			up1,
+			&log.Logger,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl1, err := clr.GetOrCreateClient(pup1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1.Client = cl1
+
+		// Set up the network configuration
+		ntw, err := NewNetwork(
+			&log.Logger,
+			"prjA",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId:              123,
+					BlockTrackerInterval: "10h",
+				},
+				Failsafe: fsCfg,
+			},
+			rlr,
+			upr,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Bootstrap the network and make the simulated request
+		ntw.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
+
+		poller1 := ntw.evmStatePollers["rpc1"]
+		poller1.SuggestLatestBlock(9)
+		poller1.SuggestFinalizedBlock(8)
+
+		time.Sleep(100 * time.Millisecond)
+
+		// Create a fake request and forward it through the network
+		fakeReq := common.NewNormalizedRequest(requestBytes)
+
+		// Measure memory usage before request
+		var mBefore runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&mBefore)
+
+		resp, err := ntw.Forward(ctx, fakeReq)
+
+		// Measure memory usage after parsing
+		var mAfter runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&mAfter)
+
+		// Calculate the difference in memory usage
+		memUsed := mAfter.Alloc - mBefore.Alloc
+		memUsedMB := float64(memUsed) / (1024 * 1024)
+
+		// Log the memory usage
+		t.Logf("Memory used for request: %.2f MB", memUsedMB)
+
+		// Check that memory used does not exceed 55MB (allowing some overhead)
+		expectedMemUsage := uint64(sampleSize) + 1*1024*1024 /* 1MB overhead */
+		expectedMemUsageMB := float64(expectedMemUsage) / (1024 * 1024)
+		if memUsed > expectedMemUsage {
+			t.Fatalf("Memory usage exceeded expected limit of %.2f MB used %.2f MB", expectedMemUsageMB, memUsedMB)
+		}
+
+		if err != nil {
+			t.Fatalf("Expected nil error, got %v", err)
+		}
+
+		// Convert the raw response to a map to access custom fields like fromHost
+		jrr, err := resp.JsonRpcResponse()
+		if err != nil {
+			t.Fatalf("Failed to get JsonRpcResponse: %v", err)
+		}
+
+		// add 2 for quote marks
+		if len(jrr.Result) != sampleSize+2 {
+			t.Fatalf("Expected result to be %d, got %d", sampleSize+2, len(jrr.Result))
+		}
+	})
+
+	t.Run("RetryWhenWeDoNotKnowNodeSyncState", func(t *testing.T) {
+		// Clean up any gock mocks after the test runs
+		defer gock.Off()
+		defer gock.Clean()
+		defer gock.CleanUnmatchedRequest()
+
+		// Prepare a JSON-RPC request payload as a byte array
+		var requestBytes = []byte(`{
+				"jsonrpc": "2.0",
+				"method": "eth_getLogs",
+				"params": [{
+					"address": "0x1234567890abcdef1234567890abcdef12345678",
+					"fromBlock": "0x4",
+					"toBlock": "0x7"
+				}],
+				"id": 1
+			}`)
+
+		// Mock the response for the latest block number request
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(safeReadBody(request), "latest")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x9"}}`))
+
+		// Mock the response for the finalized block number request
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(safeReadBody(request), "finalized")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x8"}}`))
 
 		// Mock an empty logs response from the first upstream
 		gock.New("http://rpc1.localhost").
@@ -1281,7 +1465,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Convert the raw response to a map to access custom fields like fromHost
 		var responseMap map[string]interface{}
-		err = sonic.Unmarshal(resp.Body(), &responseMap)
+		err = sonic.UnmarshalString(resp.String(), &responseMap)
 		if err != nil {
 			t.Fatalf("Failed to unmarshal response body: %v", err)
 		}
@@ -1304,15 +1488,15 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Prepare a JSON-RPC request payload as a byte array
 		var requestBytes = []byte(`{
-			"jsonrpc": "2.0",
-			"method": "eth_getLogs",
-			"params": [{
-				"address": "0x1234567890abcdef1234567890abcdef12345678",
-				"fromBlock": "0x0",
-				"toBlock": "0x1273c18"
-			}],
-			"id": 1
-		}`)
+				"jsonrpc": "2.0",
+				"method": "eth_getLogs",
+				"params": [{
+					"address": "0x1234567890abcdef1234567890abcdef12345678",
+					"fromBlock": "0x0",
+					"toBlock": "0x1273c18"
+				}],
+				"id": 1
+			}`)
 
 		// Mock the response for the latest block number request
 		gock.New("http://rpc1.localhost").
@@ -1474,29 +1658,10 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		res, err := jrr.PeekInterfaceByPath()
+		fromHost, err := jrr.PeekStringByPath(0, "fromHost")
 		if err != nil {
-			t.Fatalf("Failed to get parsed result: %v", err)
+			t.Fatalf("Failed to get fromHost from result: %v", err)
 		}
-		result, ok := res.([]interface{})
-		if !ok {
-			t.Fatalf("Expected Result to be []interface{}, got %T", jrr.Result)
-		}
-
-		if len(result) == 0 {
-			t.Fatalf("Expected non-empty result array")
-		}
-
-		firstLog, ok := result[0].(map[string]interface{})
-		if !ok {
-			t.Fatalf("Expected first log to be map[string]interface{}, got %T", result[0])
-		}
-
-		fromHost, ok := firstLog["fromHost"].(string)
-		if !ok {
-			t.Fatalf("Expected fromHost to be string, got %T", firstLog["fromHost"])
-		}
-
 		if fromHost != "rpc2" {
 			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
 		}
@@ -1510,15 +1675,15 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Prepare a JSON-RPC request payload as a byte array
 		var requestBytes = []byte(`{
-			"jsonrpc": "2.0",
-			"method": "eth_getLogs",
-			"params": [{
-				"address": "0x1234567890abcdef1234567890abcdef12345678",
-				"fromBlock": "0x0",
-				"toBlock": "0x1273c18"
-			}],
-			"id": 1
-		}`)
+				"jsonrpc": "2.0",
+				"method": "eth_getLogs",
+				"params": [{
+					"address": "0x1234567890abcdef1234567890abcdef12345678",
+					"fromBlock": "0x0",
+					"toBlock": "0x1273c18"
+				}],
+				"id": 1
+			}`)
 
 		// Mock the response for the latest block number request
 		gock.New("http://rpc1.localhost").
@@ -1680,29 +1845,10 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		res, err := jrr.PeekInterfaceByPath()
+		fromHost, err := jrr.PeekStringByPath(0, "fromHost")
 		if err != nil {
-			t.Fatalf("Failed to get parsed result: %v", err)
+			t.Fatalf("Failed to get fromHost from result: %v", err)
 		}
-		result, ok := res.([]interface{})
-		if !ok {
-			t.Fatalf("Expected Result to be []interface{}, got %T", jrr.Result)
-		}
-
-		if len(result) == 0 {
-			t.Fatalf("Expected non-empty result array")
-		}
-
-		firstLog, ok := result[0].(map[string]interface{})
-		if !ok {
-			t.Fatalf("Expected first log to be map[string]interface{}, got %T", result[0])
-		}
-
-		fromHost, ok := firstLog["fromHost"].(string)
-		if !ok {
-			t.Fatalf("Expected fromHost to be string, got %T", firstLog["fromHost"])
-		}
-
 		if fromHost != "rpc2" {
 			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
 		}
@@ -1888,11 +2034,11 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest([]byte(`{
-			"jsonrpc": "2.0",
-			"method": "eth_getTransactionByHash",
-			"params": ["0xabcdef"],
-			"id": 1
-		}`))
+				"jsonrpc": "2.0",
+				"method": "eth_getTransactionByHash",
+				"params": ["0xabcdef"],
+				"id": 1
+			}`))
 		fakeReq.ApplyDirectivesFromHttp(&fasthttp.RequestHeader{}, &fasthttp.Args{})
 		resp, err := ntw.Forward(ctx, fakeReq)
 
@@ -1910,28 +2056,18 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		res, err := jrr.PeekInterfaceByPath()
+		blockNumber, err := jrr.PeekStringByPath("blockNumber")
 		if err != nil {
-			t.Fatalf("Failed to get parsed result: %v", err)
-		}
-		result, ok := res.(map[string]interface{})
-		if !ok {
-			t.Fatalf("Expected Result to be map[string]interface{}, got %T", jrr.Result)
-		}
-
-		blockNumber, ok := result["blockNumber"].(string)
-		if !ok {
-			t.Fatalf("Expected blockNumber to be string, got %T", result["blockNumber"])
+			t.Fatalf("Failed to get blockNumber from result: %v", err)
 		}
 		if blockNumber != "0x54C563" {
 			t.Errorf("Expected blockNumber to be %q, got %q", "0x54C563", blockNumber)
 		}
 
-		fromHost, ok := result["fromHost"].(string)
-		if !ok {
-			t.Fatalf("Expected fromHost to be string, got %T", result["fromHost"])
+		fromHost, err := jrr.PeekStringByPath("fromHost")
+		if err != nil {
+			t.Fatalf("Failed to get fromHost from result: %v", err)
 		}
-
 		if fromHost != "rpc2" {
 			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
 		}
@@ -1949,7 +2085,7 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(b, "latest")
 			}).
 			Reply(200).
-			JSON([]byte(`{"result": {"number":"0xA98AC7"}}`))
+			JSON([]byte(`{"result":{"number":"0xA98AC7"}}`))
 
 		// Mock the response for the finalized block number request
 		gock.New("http://rpc1.localhost").
@@ -1970,7 +2106,7 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(b, "latest")
 			}).
 			Reply(200).
-			JSON([]byte(`{"result": {"number":"0x32DCD5"}}`))
+			JSON([]byte(`{"result":{"number":"0x32DCD5"}}`))
 
 		// Mock the response for the finalized block number request
 		gock.New("http://rpc2.localhost").
@@ -2107,11 +2243,11 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest([]byte(`{
-			"jsonrpc": "2.0",
-			"method": "eth_getTransactionByHash",
-			"params": ["0xabcdef"],
-			"id": 1
-		}`))
+				"jsonrpc": "2.0",
+				"method": "eth_getTransactionByHash",
+				"params": ["0xabcdef"],
+				"id": 1
+			}`))
 		hdr := &fasthttp.RequestHeader{}
 		hdr.Set("x-erpc-retry-pending", "false")
 		fakeReq.ApplyDirectivesFromHttp(hdr, &fasthttp.Args{})
@@ -2131,30 +2267,20 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		res, err := jrr.PeekInterfaceByPath()
+		blockNumber, err := jrr.PeekStringByPath("blockNumber")
 		if err != nil {
-			t.Fatalf("Failed to get parsed result: %v", err)
-		}
-		result, ok := res.(map[string]interface{})
-		if !ok {
-			t.Fatalf("Expected Result to be map[string]interface{}, got %T", jrr.Result)
-		}
-
-		blockNumber, ok := result["blockNumber"].(string)
-		if ok {
-			t.Fatalf("Expected blockNumber to be nil, got %v", result["blockNumber"])
+			t.Fatalf("Failed to get blockNumber from result: %v", err)
 		}
 		if blockNumber != "" {
 			t.Errorf("Expected blockNumber to be empty, got %q", blockNumber)
 		}
 
-		fromHost, ok := result["fromHost"].(string)
-		if !ok {
-			t.Fatalf("Expected fromHost to be string, got %T", result["fromHost"])
+		fromHost, err := jrr.PeekStringByPath("fromHost")
+		if err != nil {
+			t.Fatalf("Failed to get fromHost from result: %v", err)
 		}
-
 		if fromHost != "rpc1" {
-			t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
+			t.Fatalf("Expected fromHost to be string, got %T", fromHost)
 		}
 	})
 
@@ -2904,16 +3030,9 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected result, got %v", jrr)
 		}
 
-		res, err := jrr.PeekInterfaceByPath()
-		if err != nil {
-			t.Fatalf("Failed to get parsed result: %v", err)
-		}
-		result, ok := res.(map[string]interface{})
-		if !ok {
-			t.Fatalf("Expected result to be a map, got %T", jrr.Result)
-		}
-		if hash, ok := result["hash"]; !ok || hash == "" {
-			t.Fatalf("Expected hash to exist and be non-empty, got %v", result)
+		hash, err := jrr.PeekStringByPath("hash")
+		if err != nil || hash == "" {
+			t.Fatalf("Expected hash to exist and be non-empty, got %v", hash)
 		}
 	})
 
@@ -3272,21 +3391,8 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected result, got nil")
 		}
 
-		res, err := jrr.PeekInterfaceByPath()
-		if err != nil {
-			t.Fatalf("Failed to get parsed result: %v", err)
-		}
-		result, ok := res.(map[string]interface{})
-		if !ok {
-			t.Fatalf("Expected Result to be map[string]interface{}, got %T", jrr.Result)
-		}
-
-		fromHost, ok := result["fromHost"].(string)
-		if !ok {
-			t.Fatalf("Expected fromHost to be string, got %T", result["fromHost"])
-		}
-
-		if fromHost != "rpc2" {
+		fromHost, err := jrr.PeekStringByPath("fromHost")
+		if err != nil || fromHost != "rpc2" {
 			t.Errorf("Expected fromHost to be %v, got %v", "rpc2", fromHost)
 		}
 	})
@@ -3433,16 +3539,9 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected result, got nil")
 		}
 
-		res, err := jrr.PeekInterfaceByPath()
-		if err != nil {
-			t.Fatalf("Failed to get parsed result: %v", err)
-		}
-		result, ok := res.(map[string]interface{})
-		if !ok {
-			t.Fatalf("Expected result to be map[string]interface{}, got %T", jrr.Result)
-		}
-		if result["fromHost"] != "rpc2" {
-			t.Errorf("Expected fromHost to be %v, got %v", "rpc2", result["fromHost"])
+		fromHost, err := jrr.PeekStringByPath("fromHost")
+		if err != nil || fromHost != "rpc2" {
+			t.Errorf("Expected fromHost to be %v, got %v", "rpc2", fromHost)
 		}
 	})
 
@@ -3962,16 +4061,9 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
-		res, err := jrr.PeekInterfaceByPath()
-		if err != nil {
-			t.Fatalf("Failed to get parsed result: %v", err)
-		}
-		result, ok := res.(map[string]interface{})
-		if !ok {
-			t.Fatalf("Expected result to be map[string]interface{}, got %T", jrr.Result)
-		}
-		if result["hash"] == "" {
-			t.Errorf("Expected hash to exist, got %v", result)
+		hash, err := jrr.PeekStringByPath("hash")
+		if err != nil || hash == "" {
+			t.Fatalf("Expected hash to exist and be non-empty, got %v", hash)
 		}
 	})
 
@@ -4222,21 +4314,8 @@ func TestNetwork_Forward(t *testing.T) {
 		t.Logf("jrr.Result type: %T", jrr.Result)
 		t.Logf("jrr.Result content: %+v", jrr.Result)
 
-		res, err := jrr.PeekInterfaceByPath()
-		if err != nil {
-			t.Fatalf("Failed to get parsed result: %v", err)
-		}
-		result, ok := res.(map[string]interface{})
-		if !ok {
-			t.Fatalf("Expected Result to be map[string]interface{}, got %T", jrr.Result)
-		}
-
-		fromHost, ok := result["fromHost"].(string)
-		if !ok {
-			t.Fatalf("Expected fromHost to be string, got %T", result["fromHost"])
-		}
-
-		if fromHost != "rpc2" {
+		fromHost, err := jrr.PeekStringByPath("fromHost")
+		if err != nil || fromHost != "rpc2" {
 			t.Errorf("Expected fromHost to be %v, got %v", "rpc2", fromHost)
 		}
 	})
@@ -4377,30 +4456,8 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		res, err := jrr.PeekInterfaceByPath()
-		if err != nil {
-			t.Fatalf("Failed to get parsed result: %v", err)
-		}
-		result, ok := res.([]interface{})
-		if !ok {
-			t.Fatalf("Expected Result to be []interface{}, got %T", jrr.Result)
-		}
-
-		if len(result) == 0 {
-			t.Fatalf("Expected non-empty result array")
-		}
-
-		firstLog, ok := result[0].(map[string]interface{})
-		if !ok {
-			t.Fatalf("Expected first log to be map[string]interface{}, got %T", result[0])
-		}
-
-		fromHost, ok := firstLog["fromHost"].(string)
-		if !ok {
-			t.Fatalf("Expected fromHost to be string, got %T", firstLog["fromHost"])
-		}
-
-		if fromHost != "rpc2" {
+		fromHost, err := jrr.PeekStringByPath(0, "fromHost")
+		if err != nil || fromHost != "rpc2" {
 			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
 		}
 	})
@@ -4513,17 +4570,8 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		res, err := jrr.PeekInterfaceByPath()
-		if err != nil {
-			t.Fatalf("Failed to get parsed result: %v", err)
-		}
-		result, ok := res.([]interface{})
-		if !ok {
-			t.Fatalf("Expected Result to be []interface{}, got %T", jrr.Result)
-		}
-
-		if len(result) != 0 {
-			t.Errorf("Expected empty array result, got array of length %d", len(result))
+		if len(jrr.Result) != 2 || jrr.Result[0] != '[' || jrr.Result[1] != ']' {
+			t.Errorf("Expected empty array result, got %s", string(jrr.Result))
 		}
 	})
 
@@ -4958,7 +5006,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		var requestBytes = []byte(`{"jsonrpc": "2.0","method": "eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
 
 		gock.New("https://rpc.hypersync.xyz").
 			Post("").
@@ -4968,7 +5016,7 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(200).
-			JSON([]byte(`{"result":[{"logIndex":444}], "fromHost":"rpc1"}`))
+			JSON([]byte(`{"result":[{"logIndex":444}]}`))
 
 		log.Logger.Info().Msgf("Mocks registered: %d", len(gock.Pending()))
 
@@ -5059,29 +5107,17 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Convert the raw response to a map to access custom fields like fromHost
-		var responseMap map[string]interface{}
-		err = sonic.Unmarshal(resp.Body(), &responseMap)
+		jrr, err := resp.JsonRpcResponse()
 		if err != nil {
-			t.Fatalf("Failed to unmarshal response body: %v", err)
-		}
-
-		// Check if fromHost exists and is a string
-		fromHost, ok := responseMap["fromHost"].(string)
-		if !ok {
-			t.Fatalf("Expected fromHost to be a string, got %T", responseMap["fromHost"])
-		}
-
-		// Assert the value of fromHost
-		if fromHost != "rpc1" {
-			t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
+			t.Fatalf("Failed to get JSON-RPC response: %v", err)
 		}
 
 		// Check that the result field is an empty array as expected
-		result, ok := responseMap["result"].([]interface{})
-		if !ok {
-			t.Fatalf("Expected result to be []interface{}, got %T", responseMap["result"])
+		result := []interface{}{}
+		err = sonic.Unmarshal(jrr.Result, &result)
+		if err != nil {
+			t.Fatalf("Failed to unmarshal result: %v", err)
 		}
-
 		if len(result) == 0 {
 			t.Fatalf("Expected non-empty result array")
 		}

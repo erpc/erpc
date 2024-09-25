@@ -10,18 +10,32 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/bytedance/sonic/ast"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
 
 type JsonRpcResponse struct {
 	sync.RWMutex
 
-	JSONRPC string                       `json:"jsonrpc,omitempty"`
-	ID      interface{}                  `json:"id,omitempty"`
-	Result  []byte                       `json:"result,omitempty"`
-	Error   *ErrJsonRpcExceptionExternal `json:"error,omitempty"`
+	id      interface{}
+	idBytes []byte
 
+	Error    *ErrJsonRpcExceptionExternal
+	errBytes []byte
+
+	Result     []byte
 	cachedNode *ast.Node
+}
+
+type RawNode []byte
+
+func (r RawNode) MarshalJSON() ([]byte, error) {
+	return r, nil
+}
+
+func (r *RawNode) UnmarshalJSON(data []byte) error {
+	*r = data
+	return nil
 }
 
 func NewJsonRpcResponse(id interface{}, result interface{}, rpcError *ErrJsonRpcExceptionExternal) (*JsonRpcResponse, error) {
@@ -30,131 +44,103 @@ func NewJsonRpcResponse(id interface{}, result interface{}, rpcError *ErrJsonRpc
 		return nil, err
 	}
 	return &JsonRpcResponse{
-		JSONRPC: "2.0",
-		ID:      id,
-		Result:  resultRaw,
-		Error:   rpcError,
+		id:     id,
+		Result: resultRaw,
+		Error:  rpcError,
 	}, nil
 }
 
-// PeekStringByPath is a convenience method to get a string value from the json-rpc response.
-// It uses an optimized path-based approach to get the value, which is faster than full json unmarshalling.
-func (r *JsonRpcResponse) PeekStringByPath(path ...interface{}) (string, error) {
-	r.RLock()
-	if r.cachedNode != nil {
-		defer r.RUnlock()
-		return r.peekStringFromCachedNode(path...)
-	}
-	r.RUnlock()
-
-	r.Lock()
-	defer r.Unlock()
-
-	// Double-check locking pattern
-	if r.cachedNode == nil {
-		if err := r.ensureCachedNode(); err != nil {
-			return "", err
-		}
+func NewJsonRpcResponseFromBytes(id []byte, resultRaw []byte, errBytes []byte) (*JsonRpcResponse, error) {
+	jr := &JsonRpcResponse{
+		idBytes:  id,
+		Result:   resultRaw,
+		errBytes: errBytes,
 	}
 
-	return r.peekStringFromCachedNode(path...)
-}
-
-func (r *JsonRpcResponse) peekStringFromCachedNode(path ...interface{}) (string, error) {
-	if len(path) == 0 {
-		return r.cachedNode.String()
-	}
-
-	result := r.cachedNode.GetByPath(path...)
-
-	if result.Valid() {
-		return result.String()
-	}
-
-	return "", fmt.Errorf("cannot get string value (path: %v) from json-rpc response: %s", path, result.Error())
-}
-
-// PeekBoolByPath is similar to PeekStringByPath, but for boolean values.
-func (r *JsonRpcResponse) PeekBoolByPath(path ...interface{}) (bool, error) {
-	r.RLock()
-	if r.cachedNode != nil {
-		defer r.RUnlock()
-		return r.peekBoolFromCachedNode(path...)
-	}
-	r.RUnlock()
-
-	r.Lock()
-	defer r.Unlock()
-
-	if r.cachedNode == nil {
-		if err := r.ensureCachedNode(); err != nil {
-			return false, err
-		}
-	}
-
-	return r.peekBoolFromCachedNode(path...)
-}
-
-func (r *JsonRpcResponse) PeekInterfaceByPath(path ...interface{}) (interface{}, error) {
-	r.RLock()
-	if r.cachedNode != nil {
-		defer r.RUnlock()
-		return r.peekInterfaceFromCachedNode(path...)
-	}
-	r.RUnlock()
-
-	r.Lock()
-	defer r.Unlock()
-
-	if r.cachedNode == nil {
-		if err := r.ensureCachedNode(); err != nil {
+	if len(errBytes) > 0 {
+		var rpcErr ErrJsonRpcExceptionExternal
+		if err := SonicCfg.UnmarshalFromString(util.Mem2Str(errBytes), &rpcErr); err != nil {
 			return nil, err
 		}
+		jr.Error = &rpcErr
 	}
 
-	return r.peekInterfaceFromCachedNode(path...)
+	return jr, nil
 }
 
-func (r *JsonRpcResponse) peekInterfaceFromCachedNode(path ...interface{}) (interface{}, error) {
-	if len(path) == 0 {
-		return r.cachedNode.Interface()
+func (r *JsonRpcResponse) ID() interface{} {
+	if r.id == nil && len(r.idBytes) > 0 {
+		SonicCfg.Unmarshal(r.idBytes, &r.id)
 	}
-
-	result := r.cachedNode.GetByPath(path...)
-
-	if result.Valid() {
-		return result.Interface()
-	}
-
-	return nil, fmt.Errorf("cannot get value (path: %v) from json-rpc response: %s", path, result.Error())
+	return r.id
 }
 
-func (r *JsonRpcResponse) ensureCachedNode() error {
-	node, err := sonic.GetWithOptions(r.Result, ast.SearchOptions{
-		CopyReturn:     true,
-		ValidateJSON:   false,
-		ConcurrentRead: true,
-	})
+func (r *JsonRpcResponse) SetID(id interface{}) {
+	r.id = id
+	if idBytes, err := SonicCfg.Marshal(id); err == nil {
+		r.idBytes = idBytes
+	}
+}
 
+func (r *JsonRpcResponse) SetIDBytes(idBytes []byte) {
+	r.idBytes = idBytes
+}
+
+func (r *JsonRpcResponse) ParseFromStream(reader io.Reader) error {
+	data, err := util.ReadAll(reader, 64*1024) // 64KB
 	if err != nil {
 		return err
 	}
-	r.cachedNode = &node
+
+	// Parse the JSON data into an ast.Node
+	searcher := ast.NewSearcher(util.Mem2Str(data))
+	searcher.CopyReturn = false
+	searcher.ConcurrentRead = false
+	searcher.ValidateJSON = false
+
+	// Extract the "id" field
+	if idNode, err := searcher.GetByPath("id"); err == nil {
+		if rawID, err := idNode.Raw(); err == nil {
+			r.idBytes = util.Str2Mem(rawID)
+		}
+	}
+
+	if resultNode, err := searcher.GetByPath("result"); err == nil {
+		if rawResult, err := resultNode.Raw(); err == nil {
+			r.Result = util.Str2Mem(rawResult)
+		} else {
+			return err
+		}
+	} else if errorNode, err := searcher.GetByPath("error"); err == nil {
+		if rawError, err := errorNode.Raw(); err == nil {
+			r.errBytes = util.Str2Mem(rawError)
+			var rpcErr ErrJsonRpcExceptionExternal
+			if err := SonicCfg.UnmarshalFromString(rawError, &rpcErr); err != nil {
+				return err
+			}
+			r.Error = &rpcErr
+		} else {
+			return err
+		}
+	} else {
+		return fmt.Errorf("neither 'result' nor 'error' found in response")
+	}
+
 	return nil
 }
 
-func (r *JsonRpcResponse) peekBoolFromCachedNode(path ...interface{}) (bool, error) {
-	if len(path) == 0 {
-		return r.cachedNode.Bool()
+func (r *JsonRpcResponse) PeekStringByPath(path ...interface{}) (string, error) {
+	r.ensureCachedNode()
+
+	n := r.cachedNode.GetByPath(path...)
+	if n == nil {
+		return "", fmt.Errorf("could not get '%s' from json-rpc response", path)
+	}
+	if n.Error() != "" {
+		return "", fmt.Errorf("error getting '%s' from json-rpc response: %s", path, n.Error())
 	}
 
-	result := r.cachedNode.GetByPath(path...)
-
-	if result.Valid() {
-		return result.Bool()
-	}
-
-	return false, fmt.Errorf("cannot get bool value (path: %v) from json-rpc response: %s", path, result.Error())
+	return n.String()
 }
 
 func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
@@ -165,126 +151,122 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 	r.Lock()
 	defer r.Unlock()
 
-	e.Interface("id", r.ID).
-		Interface("result", r.Result).
-		Interface("error", r.Error)
+	// e.Interface("id", r.ID).
+	// 	Interface("result", r.Result).
+	// 	Interface("error", r.Error)
+	e.Interface("error", r.Error)
 }
 
-// Custom unmarshal method for JsonRpcResponse
-func (r *JsonRpcResponse) UnmarshalJSON(data []byte) error {
+func (r *JsonRpcResponse) ensureCachedNode() {
+	if r.cachedNode == nil {
+		n, _ := sonic.GetFromString(util.Mem2Str(r.Result))
+		r.cachedNode = &n
+	}
+}
+
+func (r *JsonRpcResponse) MarshalJSON() ([]byte, error) {
+	return nil, fmt.Errorf("json-rpc response must be written using WriteTo()")
+}
+
+func (r *JsonRpcResponse) WriteTo(w io.Writer) (int64, error) {
+	var total int64
+
+	if (r.Error == nil || len(r.errBytes) == 0) && (r.Result == nil || len(r.Result) == 0) {
+		return 0, fmt.Errorf("json-rpc response must have an 'error' or a 'result' set")
+	}
+	if len(r.idBytes) == 0 {
+		return 0, fmt.Errorf("json-rpc response must have an ID")
+	}
+
+	// Write '{'
+	n, err := w.Write([]byte{'{'})
+	total += int64(n)
+	if err != nil {
+		return total, err
+	}
+
+	// Write '"jsonrpc":"2.0"'
+	n, err = w.Write([]byte(`"jsonrpc":"2.0"`))
+	total += int64(n)
+	if err != nil {
+		return total, err
+	}
+
+	// Write ',"id":'
+	n, err = w.Write([]byte(`,"id":`))
+	total += int64(n)
+	if err != nil {
+		return total, err
+	}
+
+	// Write ID
+	n, err = w.Write(r.idBytes)
+	total += int64(n)
+	if err != nil {
+		return total, err
+	}
+
+	if r.Error != nil {
+		// Write ',"error":'
+		n, err = w.Write([]byte(`,"error":`))
+		total += int64(n)
+		if err != nil {
+			return total, err
+		}
+
+		// Write errBytes
+		n, err = w.Write(r.errBytes)
+		total += int64(n)
+		if err != nil {
+			return total, err
+		}
+	} else {
+		// Write ',"result":'
+		n, err = w.Write([]byte(`,"result":`))
+		total += int64(n)
+		if err != nil {
+			return total, err
+		}
+
+		// Write Result
+		n, err = w.Write(r.Result)
+		total += int64(n)
+		if err != nil {
+			return total, err
+		}
+	}
+
+	// Write '}'
+	n, err = w.Write([]byte{'}'})
+	total += int64(n)
+	if err != nil {
+		return total, err
+	}
+
+	return total, nil
+}
+
+func (r *JsonRpcResponse) Clone() (*JsonRpcResponse, error) {
 	if r == nil {
-		return nil
+		return nil, nil
 	}
 
-	r.Lock()
-	defer r.Unlock()
+	r.RLock()
+	defer r.RUnlock()
 
-	type Alias JsonRpcResponse
-	aux := &struct {
-		Error []byte `json:"error,omitempty"`
-		*Alias
-	}{
-		Alias: (*Alias)(r),
-	}
-
-	if err := SonicCfg.Unmarshal(data, &aux); err != nil {
-		return err
-	}
-
-	// Special case upstream does not return proper json-rpc response
-	if aux.Error == nil && aux.Result == nil && aux.ID == nil {
-		// Special case #1: there is numeric "code" and "message" in the "data"
-		sp1 := &struct {
-			Code    int    `json:"code,omitempty"`
-			Message string `json:"message,omitempty"`
-			Data    string `json:"data,omitempty"`
-		}{}
-		if err := sonic.Unmarshal(data, &sp1); err == nil {
-			if sp1.Code != 0 || sp1.Message != "" || sp1.Data != "" {
-				r.Error = NewErrJsonRpcExceptionExternal(
-					sp1.Code,
-					sp1.Message,
-					sp1.Data,
-				)
-				return nil
-			}
-		}
-		// Special case #2: there is only "error" field with string in the body
-		sp2 := &struct {
-			Error string `json:"error"`
-		}{}
-		if err := sonic.Unmarshal(data, &sp2); err == nil && sp2.Error != "" {
-			r.Error = NewErrJsonRpcExceptionExternal(
-				int(JsonRpcErrorServerSideException),
-				sp2.Error,
-				"",
-			)
-			return nil
-		}
-
-		if len(data) == 0 {
-			r.Error = NewErrJsonRpcExceptionExternal(
-				int(JsonRpcErrorServerSideException),
-				"unexpected empty response from upstream endpoint",
-				"",
-			)
-		} else if data[0] == '{' || data[0] == '[' {
-			r.Error = NewErrJsonRpcExceptionExternal(
-				int(JsonRpcErrorServerSideException),
-				fmt.Sprintf("unexpected response json structure from upstream: %s", string(data)),
-				"",
-			)
-		} else {
-			r.Error = NewErrJsonRpcExceptionExternal(
-				int(JsonRpcErrorServerSideException),
-				string(data),
-				"",
-			)
-		}
-		return nil
-	}
-
-	if aux.Error != nil {
-		var code int
-		var msg string
-		var data string
-
-		var customObjectError map[string]interface{}
-		if err := SonicCfg.Unmarshal(aux.Error, &customObjectError); err == nil {
-			if c, ok := customObjectError["code"]; ok {
-				if cf, ok := c.(float64); ok {
-					code = int(cf)
-				}
-			}
-			if m, ok := customObjectError["message"]; ok {
-				if tm, ok := m.(string); ok {
-					msg = tm
-				}
-			}
-			if d, ok := customObjectError["data"]; ok {
-				if dt, ok := d.(string); ok {
-					data = dt
-				} else {
-					data = fmt.Sprintf("%v", d)
-				}
-			}
-		} else {
-			var customStringError string
-			if err := sonic.Unmarshal(aux.Error, &customStringError); err == nil {
-				code = int(JsonRpcErrorServerSideException)
-				msg = customStringError
-			}
-		}
-
-		r.Error = NewErrJsonRpcExceptionExternal(
-			code,
-			msg,
-			data,
-		)
-	}
-
-	return nil
+	return &JsonRpcResponse{
+		id:         r.id,
+		idBytes:    r.idBytes,
+		Error:      r.Error,
+		errBytes:   r.errBytes,
+		Result:     r.Result,
+		cachedNode: r.cachedNode,
+	}, nil
 }
+
+//
+// JSON-RPC Request
+//
 
 type JsonRpcRequest struct {
 	sync.RWMutex
@@ -328,16 +310,16 @@ func (r *JsonRpcRequest) CacheHash() (string, error) {
 func hashValue(h io.Writer, v interface{}) error {
 	switch t := v.(type) {
 	case bool:
-		_, err := h.Write([]byte(fmt.Sprintf("%t", t)))
+		_, err := h.Write(util.Str2Mem(fmt.Sprintf("%t", t)))
 		return err
 	case int:
-		_, err := h.Write([]byte(fmt.Sprintf("%d", t)))
+		_, err := h.Write(util.Str2Mem(fmt.Sprintf("%d", t)))
 		return err
 	case float64:
-		_, err := h.Write([]byte(fmt.Sprintf("%f", t)))
+		_, err := h.Write(util.Str2Mem(fmt.Sprintf("%f", t)))
 		return err
 	case string:
-		_, err := h.Write([]byte(strings.ToLower(t)))
+		_, err := h.Write(util.Str2Mem(strings.ToLower(t)))
 		return err
 	case []interface{}:
 		for _, i := range t {
@@ -354,7 +336,7 @@ func hashValue(h io.Writer, v interface{}) error {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			if _, err := h.Write([]byte(k)); err != nil {
+			if _, err := h.Write(util.Str2Mem(k)); err != nil {
 				return err
 			}
 			err := hashValue(h, t[k])

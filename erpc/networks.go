@@ -426,8 +426,9 @@ func (n *Network) normalizeResponse(req *common.NormalizedRequest, resp *common.
 			jrr, _ := resp.JsonRpcResponse()
 			if jrr != nil {
 				jrq, _ := req.JsonRpcRequest()
-				if jrq != nil {
-					jrr.ID = jrq.ID
+				jrr.SetID(jrq.ID)
+				if err != nil {
+					return resp, err
 				}
 			}
 		}

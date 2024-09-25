@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
 
@@ -89,11 +89,9 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	}
 
 	jrr := &common.JsonRpcResponse{
-		JSONRPC: rpcReq.JSONRPC,
-		ID:      rpcReq.ID,
-		Error:   nil,
-		Result:  []byte(resultString),
+		Result: util.Str2Mem(resultString),
 	}
+	jrr.SetID(rpcReq.ID)
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).
@@ -140,7 +138,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 				Err(e).
 				Str("blockRef", blockRef).
 				Int64("blockNumber", blockNumber).
-				Interface("result", rpcResp.Result).
+				// Interface("result", rpcResp.Result).
 				Msg("will not cache the response because block is not finalized")
 			return e
 		}
@@ -156,17 +154,12 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		Str("primaryKey", pk).
 		Str("rangeKey", rk).
 		Int64("blockNumber", blockNumber).
-		Interface("result", rpcResp.Result).
+		// Interface("result", rpcResp.Result).
 		Msg("caching the response")
-
-	resultBytes, err := sonic.Marshal(rpcResp.Result)
-	if err != nil {
-		return err
-	}
 
 	ctx, cancel := context.WithTimeoutCause(ctx, 5*time.Second, errors.New("evm json-rpc cache driver timeout during set"))
 	defer cancel()
-	return c.conn.Set(ctx, pk, rk, string(resultBytes))
+	return c.conn.Set(ctx, pk, rk, util.Mem2Str(rpcResp.Result))
 }
 
 func shouldCache(
