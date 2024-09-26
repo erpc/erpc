@@ -239,8 +239,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 				ulg := lg.With().Str("upstreamId", u.Config().Id).Logger()
 
-				rp, er := tryForward(u, exec.Context(), &ulg)
-				resp, err := n.normalizeResponse(req, rp, er)
+				resp, err := tryForward(u, exec.Context(), &ulg)
+				if e := n.normalizeResponse(req, resp); e != nil {
+					ulg.Error().Err(e).Msgf("failed to normalize response")
+					err = e
+				}
 
 				isClientErr := err != nil && common.HasErrorCode(err, common.ErrCodeEndpointClientSideException)
 				isHedged := exec.Hedges() > 0
@@ -417,48 +420,23 @@ func (n *Network) enrichStatePoller(method string, req *common.NormalizedRequest
 	}
 }
 
-func (n *Network) normalizeResponse(req *common.NormalizedRequest, resp *common.NormalizedResponse, err error) (*common.NormalizedResponse, error) {
+func (n *Network) normalizeResponse(req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
 	switch n.Architecture() {
 	case common.ArchitectureEvm:
 		if resp != nil {
 			// This ensures that even if upstream gives us wrong/missing ID we'll
 			// use correct one from original incoming request.
-			jrr, _ := resp.JsonRpcResponse()
-			if jrr != nil {
-				jrq, _ := req.JsonRpcRequest()
+			if jrr, err := resp.JsonRpcResponse(); err == nil {
+				jrq, err := req.JsonRpcRequest()
 				jrr.SetID(jrq.ID)
 				if err != nil {
-					return resp, err
+					return err
 				}
 			}
 		}
-
-		if err == nil {
-			return resp, nil
-		}
-
-		if common.HasErrorCode(err, common.ErrCodeJsonRpcExceptionInternal) {
-			return resp, err
-		} else if common.HasErrorCode(err, common.ErrCodeJsonRpcRequestUnmarshal) {
-			return resp, common.NewErrJsonRpcExceptionInternal(
-				0,
-				common.JsonRpcErrorParseException,
-				"failed to parse json-rpc request",
-				err,
-				nil,
-			)
-		}
-
-		return resp, common.NewErrJsonRpcExceptionInternal(
-			0,
-			common.JsonRpcErrorServerSideException,
-			fmt.Sprintf("failed request on evm network %s", n.NetworkId),
-			err,
-			nil,
-		)
-	default:
-		return resp, err
 	}
+
+	return nil
 }
 
 func (n *Network) acquireRateLimitPermit(req *common.NormalizedRequest) error {

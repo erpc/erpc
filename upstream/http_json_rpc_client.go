@@ -305,7 +305,13 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 	rootNode, err := searcher.GetByPath()
 	if err != nil {
 		jrResp := &common.JsonRpcResponse{}
-		jrResp.ParseError(util.Mem2Str(bodyBytes))
+		err = jrResp.ParseError(util.Mem2Str(bodyBytes))
+		if err != nil {
+			for _, req := range requests {
+				req.err <- err
+			}
+			return
+		}
 		for _, req := range requests {
 			jrr, err := jrResp.Clone()
 			if err != nil {

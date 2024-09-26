@@ -264,7 +264,7 @@ func (r *NormalizedRequest) JsonRpcRequest() (*JsonRpcRequest, error) {
 	}
 
 	if rpcReq.ID == nil {
-		rpcReq.ID = rand.Intn(math.MaxInt32) // #nosec G404
+		rpcReq.ID = float64(rand.Intn(math.MaxInt32)) // #nosec G404
 	}
 
 	r.jsonRpcRequest = rpcReq
