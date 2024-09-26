@@ -3540,145 +3540,6 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 	})
 
-	// t.Run("ForwardHedgePolicyIgnoresNegativeScoreUpstream", func(t *testing.T) {
-	// 	defer gock.Off()
-	// 	defer gock.Clean()
-	// 	defer gock.CleanUnmatchedRequest()
-	// 	var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
-	// 	log.Logger.Info().Msgf("Mocks registered before: %d", len(gock.Pending()))
-	// 	gock.New("http://rpc1.localhost").
-	// 		Post("").
-	// 		Times(3).
-	// 		Reply(200).
-	// 		JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9","fromHost":"rpc1"}}`)).
-	// 		Delay(100 * time.Millisecond)
-	// 	log.Logger.Info().Msgf("Mocks registered after: %d", len(gock.Pending()))
-	// 	ctx, cancel := context.WithCancel(context.Background())
-	// 	defer cancel()
-	// 	clr := upstream.NewClientRegistry(&log.Logger)
-	// 	fsCfg := &common.FailsafeConfig{
-	// 		Hedge: &common.HedgePolicyConfig{
-	// 			Delay:    "30ms",
-	// 			MaxCount: 2,
-	// 		},
-	// 	}
-	// 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
-	// 		Budgets: []*common.RateLimitBudgetConfig{},
-	// 	})
-	// 	if err != nil {
-	// 		t.Fatal(err)
-	// 	}
-	// 	vndr := vendors.NewVendorsRegistry()
-	// 	mt := health.NewTracker("prjA", 2*time.Second)
-	// 	up1 := &common.UpstreamConfig{
-	// 		Type:     common.UpstreamTypeEvm,
-	// 		Id:       "rpc1",
-	// 		Endpoint: "http://rpc1.localhost",
-	// 		Evm: &common.EvmUpstreamConfig{
-	// 			ChainId: 123,
-	// 		},
-	// 	}
-	// 	up2 := &common.UpstreamConfig{
-	// 		Type:     common.UpstreamTypeEvm,
-	// 		Id:       "rpc2",
-	// 		Endpoint: "http://alchemy.com",
-	// 		Evm: &common.EvmUpstreamConfig{
-	// 			ChainId: 123,
-	// 		},
-	// 	}
-	// 	upr := upstream.NewUpstreamsRegistry(
-	// 		&log.Logger,
-	// 		"prjA",
-	// 		[]*common.UpstreamConfig{up1, up2},
-	// 		rlr,
-	// 		vndr,
-	// 		mt,
-	// 	)
-	// 	err = upr.Bootstrap(ctx)
-	// 	if err != nil {
-	// 		t.Fatal(err)
-	// 	}
-	// 	err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
-	// 	if err != nil {
-	// 		t.Fatal(err)
-	// 	}
-	// 	pup1, err := upr.NewUpstream(
-	// 		"prjA",
-	// 		up1,
-	// 		&log.Logger,
-	// 		mt,
-	// 	)
-	// 	if err != nil {
-	// 		t.Fatal(err)
-	// 	}
-	// 	cl1, err := clr.CreateClient(pup1)
-	// 	if err != nil {
-	// 		t.Fatal(err)
-	// 	}
-	// 	pup1.Score = 2
-	// 	pup1.Client = cl1
-	// 	pup2, err := upr.NewUpstream(
-	// 		"prjA",
-	// 		up2,
-	// 		&log.Logger,
-	// 		mt,
-	// 	)
-	// 	if err != nil {
-	// 		t.Fatal(err)
-	// 	}
-	// 	cl2, err := clr.CreateClient(pup2)
-	// 	if err != nil {
-	// 		t.Fatal(err)
-	// 	}
-	// 	pup2.Client = cl2
-	// 	pup2.Score = -2
-	// 	ntw, err := NewNetwork(
-	// 		&log.Logger,
-	// 		"prjA",
-	// 		&common.NetworkConfig{
-	// 			Architecture: common.ArchitectureEvm,
-	// 			Evm: &common.EvmNetworkConfig{
-	// 				ChainId: 123,
-	// 			},
-	// 			Failsafe: fsCfg,
-	// 		},
-	// 		rlr,
-	// 		upr,
-	// 		mt,
-	// 	)
-	// 	if err != nil {
-	// 		t.Fatal(err)
-	// 	}
-	// 	fakeReq := common.NewNormalizedRequest(requestBytes)
-	// 	resp, err := ntw.Forward(ctx, fakeReq)
-	// 	time.Sleep(50 * time.Millisecond)
-	// 	if len(gock.Pending()) > 0 {
-	// 		t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
-	// 		for _, pending := range gock.Pending() {
-	// 			t.Errorf("Pending mock: %v", pending)
-	// 		}
-	// 	} else {
-	// 		t.Logf("All mocks consumed")
-	// 	}
-	// 	if err != nil {
-	// 		t.Fatalf("Expected nil error, got %v", err)
-	// 	}
-	// 	jrr, err := resp.JsonRpcResponse()
-	// 	if err != nil {
-	// 		t.Fatalf("Expected nil error, got %v", err)
-	// 	}
-	// 	if jrr.Result == nil {
-	// 		t.Fatalf("Expected result, got nil")
-	// 	}
-	// 	result, ok := jrr.Result.(map[string]interface{})
-	// 	if !ok {
-	// 		t.Fatalf("Expected result to be map[string]interface{}, got %T", jrr.Result)
-	// 	}
-	// 	if result["fromHost"] != "rpc1" {
-	// 		t.Errorf("Expected fromHost to be %v, got %v", "rpc1", result["fromHost"])
-	// 	}
-	// })
-
 	t.Run("ForwardCBOpensAfterConstantFailure", func(t *testing.T) {
 		defer gock.Off()
 		defer gock.Clean()
@@ -4312,6 +4173,96 @@ func TestNetwork_Forward(t *testing.T) {
 		fromHost, err := jrr.PeekStringByPath("fromHost")
 		if err != nil || fromHost != "rpc2" {
 			t.Errorf("Expected fromHost to be %v, got %v", "rpc2", fromHost)
+		}
+	})
+
+	t.Run("ForwardIgnoredMethod", func(t *testing.T) {
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"ignored_method","params":["0x1273c18",false]}`)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		clr := upstream.NewClientRegistry(&log.Logger)
+		fsCfg := &common.FailsafeConfig{
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 2,
+			},
+		}
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+			Budgets: []*common.RateLimitBudgetConfig{},
+		}, &log.Logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		vndr := vendors.NewVendorsRegistry()
+		mt := health.NewTracker("prjA", 2*time.Second)
+		up1 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc1",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+			IgnoreMethods: []string{"ignored_method"},
+		}
+		upr := upstream.NewUpstreamsRegistry(
+			&log.Logger,
+			"prjA",
+			[]*common.UpstreamConfig{up1},
+			rlr,
+			vndr, mt, 1*time.Second,
+		)
+		err = upr.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1, err := upr.NewUpstream(
+			"prjA",
+			up1,
+			&log.Logger,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl1, err := clr.GetOrCreateClient(pup1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1.Client = cl1
+
+		ntw, err := NewNetwork(
+			&log.Logger,
+			"prjA",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+				},
+				Failsafe: fsCfg,
+			},
+			rlr,
+			upr,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		fakeReq := common.NewNormalizedRequest(requestBytes)
+		_, err = ntw.Forward(ctx, fakeReq)
+
+		if err == nil {
+			t.Fatalf("Expected non-nil error, got nil")
+		}
+
+		if !common.HasErrorCode(err, common.ErrCodeUpstreamMethodIgnored) {
+			t.Fatalf("Expected error code %v, got %v", common.ErrCodeUpstreamMethodIgnored, err)
 		}
 	})
 

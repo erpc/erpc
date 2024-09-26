@@ -12,17 +12,33 @@ import (
 	"github.com/bytedance/sonic/ast"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 type JsonRpcResponse struct {
+	// During simultaneous operations such as hedges, setting cache, etc there might be more than 1 goroutine
+	// reading/writing to the same response object. To prevent race conditions we'll use a sync.RWMutex.
 	sync.RWMutex
 
+	// ID is mainly set based on incoming request.
+	// During parsing of response from upstream we'll still parse it
+	// so that batch requests are correctly identified.
+	// The "id" field is already parsed-value used within erpc,
+	// and idBytes is a lazy-loaded byte representation of the ID used when writing responses.
 	id      interface{}
 	idBytes []byte
 
+	// Error is the parsed error from the response bytes, and potentially normalized based on vendor-specific drivers.
+	// errBytes is a lazy-loaded byte representation of the Error used when writing responses.
+	// When upstream response is received we're going to set the errBytes to incoming bytes and parse the error.
+	// Internal components (any error not initiated by upstream) will set the Error field directly and then we'll
+	// lazy-load the errBytes for writing responses by marshalling the Error field.
 	Error    *ErrJsonRpcExceptionExternal
 	errBytes []byte
 
+	// Result is the raw bytes of the result from the response, and is used when writing responses.
+	// Ideally we don't need to parse these bytes. In cases where we need a specific field (e.g. blockNumber)
+	// we use Sonic library to traverse directly to target such field (vs marshalling the whole result in memory).
 	Result     []byte
 	cachedNode *ast.Node
 }
@@ -41,12 +57,15 @@ func NewJsonRpcResponse(id interface{}, result interface{}, rpcError *ErrJsonRpc
 
 func NewJsonRpcResponseFromBytes(id []byte, resultRaw []byte, errBytes []byte) (*JsonRpcResponse, error) {
 	jr := &JsonRpcResponse{
-		idBytes:  id,
-		Result:   resultRaw,
+		idBytes: id,
+		Result:  resultRaw,
 	}
 
 	if len(errBytes) > 0 {
-		jr.ParseError(util.Mem2Str(errBytes))
+		err := jr.ParseError(util.Mem2Str(errBytes))
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return jr, nil
@@ -54,7 +73,10 @@ func NewJsonRpcResponseFromBytes(id []byte, resultRaw []byte, errBytes []byte) (
 
 func (r *JsonRpcResponse) ID() interface{} {
 	if r.id == nil && len(r.idBytes) > 0 {
-		SonicCfg.Unmarshal(r.idBytes, &r.id)
+		err := SonicCfg.Unmarshal(r.idBytes, &r.id)
+		if err != nil {
+			log.Error().Err(err).Interface("response", r).Bytes("idBytes", r.idBytes).Msg("failed to unmarshal id")
+		}
 	}
 	return r.id
 }
@@ -133,7 +155,7 @@ func (r *JsonRpcResponse) ParseError(raw string) error {
 	// Check if the error is well-formed and has necessary fields
 	if rpcErr.Code != 0 || rpcErr.Message != "" {
 		r.Error = &rpcErr
-		r.errBytes = util.Str2Mem(raw)	
+		r.errBytes = util.Str2Mem(raw)
 		return nil
 	}
 
@@ -199,10 +221,9 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 	r.Lock()
 	defer r.Unlock()
 
-	// e.Interface("id", r.ID).
-	// 	Interface("result", r.Result).
-	// 	Interface("error", r.Error)
-	e.Interface("error", r.Error)
+	e.Interface("id", r.ID()).
+		Int("resultSize", len(r.Result)).
+		Interface("error", r.Error)
 }
 
 func (r *JsonRpcResponse) ensureCachedNode() {
@@ -216,6 +237,8 @@ func (r *JsonRpcResponse) MarshalJSON() ([]byte, error) {
 	return nil, fmt.Errorf("json-rpc response must be marshalled using WriteTo()")
 }
 
+// WriteTo is a custom implementation of marshalling json-rpc response to a writer,
+// this approach uses minimum memory allocations and is faster than a generic JSON marshaller.
 func (r *JsonRpcResponse) WriteTo(w io.Writer) (int64, error) {
 	var total int64
 
@@ -226,28 +249,24 @@ func (r *JsonRpcResponse) WriteTo(w io.Writer) (int64, error) {
 		return 0, fmt.Errorf("json-rpc response must have an ID set")
 	}
 
-	// Write '{'
 	n, err := w.Write([]byte{'{'})
 	total += int64(n)
 	if err != nil {
 		return total, err
 	}
 
-	// Write '"jsonrpc":"2.0"'
 	n, err = w.Write([]byte(`"jsonrpc":"2.0"`))
 	total += int64(n)
 	if err != nil {
 		return total, err
 	}
 
-	// Write ',"id":'
 	n, err = w.Write([]byte(`,"id":`))
 	total += int64(n)
 	if err != nil {
 		return total, err
 	}
 
-	// Write ID
 	n, err = w.Write(r.idBytes)
 	total += int64(n)
 	if err != nil {
@@ -255,14 +274,12 @@ func (r *JsonRpcResponse) WriteTo(w io.Writer) (int64, error) {
 	}
 
 	if r.Error != nil || len(r.errBytes) > 0 {
-		// Write ',"error":'
 		n, err = w.Write([]byte(`,"error":`))
 		total += int64(n)
 		if err != nil {
 			return total, err
 		}
 
-		// Write errBytes
 		if len(r.errBytes) > 0 {
 			n, err = w.Write(r.errBytes)
 			total += int64(n)
@@ -287,14 +304,12 @@ func (r *JsonRpcResponse) WriteTo(w io.Writer) (int64, error) {
 			}
 		}
 	} else {
-		// Write ',"result":'
 		n, err = w.Write([]byte(`,"result":`))
 		total += int64(n)
 		if err != nil {
 			return total, err
 		}
 
-		// Write Result
 		n, err = w.Write(r.Result)
 		total += int64(n)
 		if err != nil {
@@ -302,7 +317,6 @@ func (r *JsonRpcResponse) WriteTo(w io.Writer) (int64, error) {
 		}
 	}
 
-	// Write '}'
 	n, err = w.Write([]byte{'}'})
 	total += int64(n)
 	if err != nil {
@@ -447,6 +461,29 @@ func TranslateToJsonRpcException(err error) error {
 			0,
 			JsonRpcErrorUnauthorized,
 			"unauthorized",
+			err,
+			nil,
+		)
+	}
+
+	fmt.Println("HasErrorCode(err, ErrCodeUpstreamMethodIgnored) =====")
+	fmt.Println(HasErrorCode(err, ErrCodeUpstreamMethodIgnored))
+
+	if HasErrorCode(err, ErrCodeUpstreamMethodIgnored) {
+		return NewErrJsonRpcExceptionInternal(
+			0,
+			JsonRpcErrorUnsupportedException,
+			"method ignored by upstream",
+			err,
+			nil,
+		)
+	}
+
+	if HasErrorCode(err, ErrCodeJsonRpcRequestUnmarshal) {
+		return NewErrJsonRpcExceptionInternal(
+			0,
+			JsonRpcErrorParseException,
+			"failed to parse json-rpc request",
 			err,
 			nil,
 		)

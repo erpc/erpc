@@ -1,23 +1,12 @@
 package common
 
 import (
-	// "bufio"
-	// "bytes"
-	// "bytes"
-	"fmt"
+	"bytes"
 	"io"
-	// "fmt"
-	// "strings"
-
-	// "io"
-
-	// "strings"
 	"sync"
-	// "unsafe"
-	// "github.com/erpc/erpc/util"
-	// "github.com/erpc/erpc/util"
-	// "github.com/erpc/erpc/util"
-	// "github.com/valyala/fasthttp"
+
+	"github.com/erpc/erpc/util"
+	"github.com/rs/zerolog/log"
 )
 
 type NormalizedResponse struct {
@@ -243,7 +232,13 @@ func (r *NormalizedResponse) String() string {
 		return r.err.Error()
 	}
 	if r.jsonRpcResponse != nil {
-		return fmt.Sprintf("ID=%v,Error=%v,ResultSize=%d", r.jsonRpcResponse.ID(), r.jsonRpcResponse.Error, len(r.jsonRpcResponse.Result))
+		txt := &bytes.Buffer{}
+		_, err := r.jsonRpcResponse.WriteTo(txt)
+		if err != nil {
+			log.Error().Err(err).Interface("response", r).Msg("failed to write response as string")
+			return "<nil>"
+		}
+		return util.Mem2Str(txt.Bytes())
 	}
 	return "<nil>"
 }
@@ -270,12 +265,16 @@ func (r *NormalizedResponse) Release() {
 
 	// If body is not closed yet, close it
 	if r.body != nil {
-		r.body.Close()
+		err := r.body.Close()
+		if err != nil {
+			log.Error().Err(err).Interface("response", r).Msg("failed to close response body")
+		}
 		r.body = nil
 	}
 }
 
-// CopyResponseForRequest creates a copy of the response for another request.
+// CopyResponseForRequest creates a copy of the response for another request
+// We use references for underlying Result and Error fields to save memory.
 func CopyResponseForRequest(resp *NormalizedResponse, req *NormalizedRequest) (*NormalizedResponse, error) {
 	req.RLock()
 	defer req.RUnlock()
@@ -288,12 +287,14 @@ func CopyResponseForRequest(resp *NormalizedResponse, req *NormalizedRequest) (*
 	r.WithRequest(req)
 
 	if resp.jsonRpcResponse != nil {
+		// We need to use request ID because response ID can be different for multiplexed requests
+		// where we only sent 1 actual request to the upstream.
 		jrr, err := resp.jsonRpcResponse.Clone()
 		if err != nil {
 			return nil, err
 		}
+		jrr.SetID(req.jsonRpcRequest.ID)
 		r.WithJsonRpcResponse(jrr)
-		r.jsonRpcResponse.SetID(req.jsonRpcRequest.ID)
 	}
 
 	return r, nil
