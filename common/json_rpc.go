@@ -466,9 +466,6 @@ func TranslateToJsonRpcException(err error) error {
 		)
 	}
 
-	fmt.Println("HasErrorCode(err, ErrCodeUpstreamMethodIgnored) =====")
-	fmt.Println(HasErrorCode(err, ErrCodeUpstreamMethodIgnored))
-
 	if HasErrorCode(err, ErrCodeUpstreamMethodIgnored) {
 		return NewErrJsonRpcExceptionInternal(
 			0,

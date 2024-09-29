@@ -29,7 +29,6 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/valyala/fasthttp"
-	// "github.com/valyala/fasthttp"
 )
 
 var TRUE = true

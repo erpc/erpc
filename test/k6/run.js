@@ -8,11 +8,11 @@ export const options = {
   scenarios: {    
     constant_request_rate: {
       executor: 'constant-arrival-rate',
-      rate: 5,
+      rate: 1000,
       timeUnit: '1s',
       duration: '30m',
-      preAllocatedVUs: 10,
-      maxVUs: 100,
+      preAllocatedVUs: 1000,
+      maxVUs: 1000,
     },
   },
   ext: {
@@ -25,21 +25,21 @@ export const options = {
   },
 };
 
-// const samplePayload = JSON.stringify({
-//   "jsonrpc": "2.0",
-//   "method": "eth_getBlockByNumber",
-//   "params": [
-//     "0x1346edf",
-//     false
-//   ]
-// });
 const samplePayload = JSON.stringify({
   "jsonrpc": "2.0",
-  "method": "debug_traceTransaction",
+  "method": "eth_getBlockByNumber",
   "params": [
-    "0xe6c2decd68012e0245599ddf93c232bf92884758393a502852cbf2f393e3d99c"
+    "0x1346edf",
+    false
   ]
 });
+// const samplePayload = JSON.stringify({
+//   "jsonrpc": "2.0",
+//   "method": "debug_traceTransaction",
+//   "params": [
+//     "0xe6c2decd68012e0245599ddf93c232bf92884758393a502852cbf2f393e3d99c"
+//   ]
+// });
 
 export default function () {
   const params = {

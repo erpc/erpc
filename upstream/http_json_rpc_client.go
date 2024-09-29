@@ -1,29 +1,20 @@
 package upstream
 
 import (
-	// "bufio"
-	// "bytes"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
-
-	// "net"
-
-	// "io"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 
-	// "unicode"
-
 	"github.com/bytedance/sonic/ast"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
-	// "github.com/valyala/fasthttp"
 )
 
 type HttpJsonRpcClient interface {
@@ -587,6 +578,7 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		} else if r.StatusCode == 429 ||
 			strings.Contains(err.Message, "has exceeded") ||
 			strings.Contains(err.Message, "Exceeded the quota") ||
+			strings.Contains(err.Message, "Too many requests") ||
 			strings.Contains(err.Message, "under too much load") {
 
 			return common.NewErrEndpointCapacityExceeded(
@@ -614,6 +606,8 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(err.Message, "unknown block") ||
 			strings.Contains(err.Message, "Unknown block") ||
 			strings.Contains(err.Message, "height must be less than or equal") ||
+			strings.Contains(err.Message, "invalid blockhash finalized") ||
+			strings.Contains(err.Message, "Expect block number from id") ||
 			strings.Contains(err.Message, "block not found") ||
 			// Usually happens on Avalanche when querying a pretty recent block:
 			strings.Contains(err.Message, "cannot query unfinalized") ||
@@ -655,7 +649,10 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if strings.Contains(err.Message, "reverted") || strings.Contains(err.Message, "VM execution error") {
+		} else if strings.Contains(err.Message, "reverted") ||
+			strings.Contains(err.Message, "VM execution error") ||
+			strings.Contains(err.Message, "transaction: revert") ||
+			strings.Contains(err.Message, "VM Exception") {
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -665,7 +662,9 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if strings.Contains(err.Message, "insufficient funds") || strings.Contains(err.Message, "out of gas") {
+		} else if strings.Contains(err.Message, "insufficient funds") ||
+			strings.Contains(err.Message, "insufficient balance") ||
+			strings.Contains(err.Message, "out of gas") {
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
