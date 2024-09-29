@@ -1,13 +1,11 @@
 package erpc
 
 import (
-	// "bytes"
 	"context"
 	"errors"
 	"fmt"
 	"net"
 
-	// "runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -28,12 +26,6 @@ type HttpServer struct {
 	erpc   *ERPC
 	logger *zerolog.Logger
 }
-
-// var bufPool = sync.Pool{
-// 	New: func() interface{} {
-// 		return new(bytes.Buffer)
-// 	},
-// }
 
 func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.ServerConfig, erpc *ERPC) *HttpServer {
 	reqMaxTimeout, err := time.ParseDuration(cfg.MaxTimeout)
@@ -88,27 +80,11 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 
 		encoder := common.SonicCfg.NewEncoder(fastCtx.Response.BodyWriter())
 
-		segments := strings.Split(util.Mem2Str(fastCtx.Path()), "/")
-		if len(segments) != 2 && len(segments) != 3 && len(segments) != 4 {
-			handleErrorResponse(s.logger, nil, common.NewErrInvalidUrlPath(util.Mem2Str(fastCtx.Path())), fastCtx, encoder)
-			return
-		}
-
-		projectId := segments[1]
-		architecture, chainId := "", ""
-		isAdmin := false
-
-		if len(segments) == 4 {
-			architecture = segments[2]
-			chainId = segments[3]
-		} else if len(segments) == 3 {
-			if segments[2] == "admin" {
-				isAdmin = true
-			} else {
-				handleErrorResponse(s.logger, nil, common.NewErrInvalidUrlPath(util.Mem2Str(fastCtx.Path())), fastCtx, encoder)
-				return
-			}
-		}
+        projectId, architecture, chainId, isAdmin, err := s.parseUrlPath(fastCtx.Path())
+        if err != nil {
+            handleErrorResponse(s.logger, nil, err, fastCtx, encoder)
+            return
+        }
 
 		lg := s.logger.With().Str("projectId", projectId).Str("architecture", architecture).Str("chainId", chainId).Logger()
 
@@ -305,10 +281,29 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 				return
 			}
 		}
-
-		// go runtime.GC()
-		// fastCtx.SetBody(buf.Bytes())
 	}
+}
+
+func (s *HttpServer) parseUrlPath(path []byte) (projectId, architecture, chainId string, isAdmin bool, err error) {
+    segments := strings.Split(util.Mem2Str(path), "/")
+    if len(segments) != 2 && len(segments) != 3 && len(segments) != 4 {
+        return "", "", "", false, common.NewErrInvalidUrlPath(util.Mem2Str(path))
+    }
+
+    projectId = segments[1]
+
+    if len(segments) == 4 {
+        architecture = segments[2]
+        chainId = segments[3]
+    } else if len(segments) == 3 {
+        if segments[2] == "admin" {
+            isAdmin = true
+        } else {
+            return "", "", "", false, common.NewErrInvalidUrlPath(util.Mem2Str(path))
+        }
+    }
+
+    return projectId, architecture, chainId, isAdmin, nil
 }
 
 func (s *HttpServer) handleCORS(ctx *fasthttp.RequestCtx, corsConfig *common.CORSConfig) bool {
@@ -491,7 +486,6 @@ func handleErrorResponse(logger *zerolog.Logger, nq *common.NormalizedRequest, e
 		ctx.SetBodyString(fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, err.Error()))
 	} else {
 		ctx.Response.Header.Set("Content-Type", "application/json")
-		// ctx.SetBody(buf.Bytes())
 	}
 }
 

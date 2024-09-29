@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/erpc/erpc/common"
-	// "github.com/valyala/fasthttp"
 )
 
 type AlchemyVendor struct {
