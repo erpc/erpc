@@ -381,6 +381,8 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 }
 
 func (u *Upstream) Executor() failsafe.Executor[*common.NormalizedResponse] {
+	// TODO extend this to per-network and/or per-method because of either upstream performance diff
+	// or if user wants diff policies (retry/cb/integrity) per network/method.
 	return u.failsafeExecutor
 }
 
@@ -443,6 +445,7 @@ func (u *Upstream) IgnoreMethod(method string) {
 	}
 
 	u.methodCheckResultsMu.Lock()
+	// TODO make this per-network vs global because some upstreams support multiple networks (e.g. alchemy://)
 	u.config.IgnoreMethods = append(u.config.IgnoreMethods, method)
 	if u.methodCheckResults == nil {
 		u.methodCheckResults = map[string]bool{}

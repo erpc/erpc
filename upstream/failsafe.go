@@ -147,6 +147,7 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, component string, cfg *c
 			}
 		}
 		lg.Msg("failure caught that will be considered for circuit breaker")
+		// TODO emit a custom prometheus metric to track CB root causes?
 	})
 
 	builder.HandleIf(func(result *common.NormalizedResponse, err error) bool {
@@ -387,19 +388,21 @@ func TranslateFailsafeError(upstreamId, method string, execErr error) error {
 	}
 
 	if err != nil {
-		if method != "" {
-			if ser, ok := execErr.(common.StandardError); ok {
-				be := ser.Base()
-				if be != nil {
-					if upstreamId != "" {
-						be.Details = map[string]interface{}{
-							"upstreamId": upstreamId,
-							"method":     method,
-						}
-					} else {
-						be.Details = map[string]interface{}{
-							"method": method,
-						}
+		if ser, ok := execErr.(common.StandardError); ok {
+			be := ser.Base()
+			if be != nil {
+				if upstreamId != "" && method != "" {
+					be.Details = map[string]interface{}{
+						"upstreamId": upstreamId,
+						"method":     method,
+					}
+				} else if method != "" {
+					be.Details = map[string]interface{}{
+						"method": method,
+					}
+				} else if upstreamId != "" {
+					be.Details = map[string]interface{}{
+						"upstreamId": upstreamId,
 					}
 				}
 			}

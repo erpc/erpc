@@ -431,11 +431,11 @@ func (s *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 				BackoffFactor:   1.5,
 			},
 			CircuitBreaker: &CircuitBreakerPolicyConfig{
-				FailureThresholdCount:    80,
-				FailureThresholdCapacity: 100,
+				FailureThresholdCount:    800,
+				FailureThresholdCapacity: 1000,
 				HalfOpenAfter:            "5m",
-				SuccessThresholdCount:    5,
-				SuccessThresholdCapacity: 5,
+				SuccessThresholdCount:    3,
+				SuccessThresholdCapacity: 3,
 			},
 		},
 		RateLimitAutoTune: &RateLimitAutoTuneConfig{
