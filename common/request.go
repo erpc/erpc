@@ -12,6 +12,8 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+const RequestContextKey ContextKey = "request"
+
 type RequestDirectives struct {
 	// Instruct the proxy to retry if response from the upstream appears to be empty
 	// indicating a missing data or non-synced data (empty array for logs, null for block, null for tx receipt, etc).

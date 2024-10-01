@@ -234,8 +234,18 @@ func (r *JsonRpcResponse) ensureCachedNode() {
 	}
 }
 
+// MarshalJSON must not be used for majority of use-cases,
+// as it requires marshalling the whole response into a buffer in memory.
+// GetReader is a lighter approach to be used when needed.
+// Unfortunately, when requests are batched, MarshalJSON is called for each response,
+// causing unnecessary memory allocations.
+// To avoid this, send single requests as batching feature is generally an anti-pattern.
 func (r *JsonRpcResponse) MarshalJSON() ([]byte, error) {
-	return nil, fmt.Errorf("json-rpc response must be marshalled using WriteTo()")
+	rdr, err := r.GetReader()
+	if err != nil {
+		return nil, err
+	}
+	return util.ReadAll(rdr, 16*1024, 0)
 }
 
 // GetReader is a custom implementation of marshalling json-rpc response,
