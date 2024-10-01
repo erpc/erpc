@@ -66,7 +66,7 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope Scope, component strin
 	}
 
 	if fsCfg.Hedge != nil {
-		p, err := createHedgePolicy(component, fsCfg.Hedge)
+		p, err := createHedgePolicy(logger, component, fsCfg.Hedge)
 		if err != nil {
 			return nil, err
 		}
@@ -187,7 +187,7 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, component string, cfg *c
 	return builder.Build(), nil
 }
 
-func createHedgePolicy(component string, cfg *common.HedgePolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+func createHedgePolicy(logger *zerolog.Logger, component string, cfg *common.HedgePolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
 	delay, err := time.ParseDuration(cfg.Delay)
 	if err != nil {
 		return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse hedge.delay: %v", err), map[string]interface{}{
@@ -200,6 +200,38 @@ func createHedgePolicy(component string, cfg *common.HedgePolicyConfig) (failsaf
 	if cfg.MaxCount > 0 {
 		builder = builder.WithMaxHedges(cfg.MaxCount)
 	}
+
+	builder.OnHedge(func(event failsafe.ExecutionEvent[*common.NormalizedResponse]) bool {
+		req := event.Context().Value(common.RequestContextKey).(*common.NormalizedRequest)
+		if req != nil {
+			method, _ := req.Method()
+			if method != "" && common.IsEvmWriteMethod(method) {
+				logger.Debug().Msgf("ignoring hedge for write request: %s", method)
+				return false
+			}
+		}
+
+		// Continue with the next hedge
+		return true
+	})
+
+	// builder.CancelIf(func(result *common.NormalizedResponse, err error) bool {
+	// 	if err != nil {
+	// 		if common.IsClientError(err) {
+	// 			return true
+	// 		}
+	// 	}
+
+	// 	if result != nil && result.Request() != nil {
+	// 		rq := result.Request()
+	// 		method, _ := rq.Method()
+	// 		if method != "" && common.IsEvmWriteMethod(method) {
+	// 			return true
+	// 		}
+	// 	}
+
+	// 	return false
+	// })
 
 	return builder.Build(), nil
 }
@@ -252,7 +284,7 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 	builder.HandleIf(func(result *common.NormalizedResponse, err error) bool {
 		// 400 / 404 / 405 / 413 -> No Retry
 		// RPC-RPC client-side error (invalid params) -> No Retry
-		if common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
+		if common.IsClientError(err) {
 			return false
 		}
 
@@ -334,6 +366,14 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 						}
 					}
 				}
+			}
+		}
+
+		// Must not retry any 'write' methods
+		if result != nil && result.Request() != nil {
+			method, _ := result.Request().Method()
+			if method != "" && common.IsEvmWriteMethod(method) {
+				return false
 			}
 		}
 

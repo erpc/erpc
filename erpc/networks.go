@@ -204,9 +204,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	var execution failsafe.Execution[*common.NormalizedResponse]
 	var errorsByUpstream = map[string]error{}
 
+	ectx := context.WithValue(ctx, common.RequestContextKey, req)
+
 	i := 0
 	resp, execErr := n.failsafeExecutor.
-		WithContext(ctx).
+		WithContext(ectx).
 		GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
 			req.Lock()
 			execution = exec
@@ -245,10 +247,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					err = e
 				}
 
-				isClientErr := err != nil && common.HasErrorCode(err, common.ErrCodeEndpointClientSideException)
+				isClientErr := common.IsClientError(err)
 				isHedged := exec.Hedges() > 0
 
-				if isHedged && err != nil && errors.Is(err, context.Canceled) {
+				if isHedged && (err != nil && errors.Is(err, context.Canceled)) {
 					ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
 					return nil, common.NewErrUpstreamHedgeCancelled(u.Config().Id)
 				}

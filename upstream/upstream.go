@@ -143,7 +143,7 @@ func (u *Upstream) prepareRequest(nr *common.NormalizedRequest) error {
 				return common.NewErrJsonRpcExceptionInternal(
 					0,
 					common.JsonRpcErrorParseException,
-					"failed to unmarshal jsonrpc request",
+					"failed to unmarshal json-rpc request",
 					err,
 					nil,
 				)

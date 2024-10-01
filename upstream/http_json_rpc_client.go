@@ -218,7 +218,8 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 			)
 			continue
 		}
-		req.request.RLock()
+		req.request.Lock()
+		jrReq.Lock()
 		batchReq = append(batchReq, common.JsonRpcRequest{
 			JSONRPC: jrReq.JSONRPC,
 			Method:  jrReq.Method,
@@ -229,7 +230,11 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 
 	requestBody, err := common.SonicCfg.Marshal(batchReq)
 	for _, req := range requests {
-		req.request.RUnlock()
+		jrReq, _ := req.request.JsonRpcRequest()
+		if jrReq != nil {
+			jrReq.Unlock()
+		}
+		req.request.Unlock()
 	}
 	if err != nil {
 		for _, req := range requests {

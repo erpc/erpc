@@ -761,7 +761,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			reasons = append(reasons, fmt.Sprintf("%d hedges cancelled", cancelled))
 		}
 		if client > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d user errors", cancelled))
+			reasons = append(reasons, fmt.Sprintf("%d user errors", client))
 		}
 		if other > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d other errors", other))
@@ -974,7 +974,7 @@ var NewErrUpstreamHedgeCancelled = func(upstreamId string) error {
 	return &ErrUpstreamHedgeCancelled{
 		BaseError{
 			Code:    ErrCodeUpstreamHedgeCancelled,
-			Message: "hedged request cancelled in favor another response",
+			Message: "hedged request cancelled in favor of another response",
 			Details: map[string]interface{}{
 				"upstreamId": upstreamId,
 			},
@@ -1004,7 +1004,7 @@ type ErrJsonRpcRequestUnmarshal struct {
 	BaseError
 }
 
-const ErrCodeJsonRpcRequestUnmarshal = "ErrJsonRpcRequestUnmarshal"
+const ErrCodeJsonRpcRequestUnmarshal ErrorCode = "ErrJsonRpcRequestUnmarshal"
 
 var NewErrJsonRpcRequestUnmarshal = func(cause error) error {
 	return &ErrJsonRpcRequestUnmarshal{
@@ -1641,4 +1641,9 @@ func IsCapacityIssue(err error) bool {
 		HasErrorCode(err, ErrCodeUpstreamRateLimitRuleExceeded) ||
 		HasErrorCode(err, ErrCodeAuthRateLimitRuleExceeded) ||
 		HasErrorCode(err, ErrCodeEndpointCapacityExceeded)
+}
+
+func IsClientError(err error) bool {
+	return err != nil && (HasErrorCode(err, ErrCodeEndpointClientSideException) ||
+		HasErrorCode(err, ErrCodeJsonRpcRequestUnmarshal))
 }
