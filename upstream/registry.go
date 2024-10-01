@@ -358,12 +358,13 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 	u.sortUpstreams(networkId, method, upsList)
 	u.sortedUpstreams[networkId][method] = upsList
 
-	newSortStr := ""
-	for _, ups := range upsList {
-		newSortStr += fmt.Sprintf("%s ", ups.Config().Id)
+	if u.logger.GetLevel() >= zerolog.TraceLevel {
+		newSortStr := ""
+		for _, ups := range upsList {
+			newSortStr += fmt.Sprintf("%s ", ups.Config().Id)
+		}
+		u.logger.Trace().Str("projectId", u.prjId).Str("networkId", networkId).Str("method", method).Str("newSort", newSortStr).Msgf("sorted upstreams")
 	}
-
-	u.logger.Trace().Str("projectId", u.prjId).Str("networkId", networkId).Str("method", method).Str("newSort", newSortStr).Msgf("sorted upstreams")
 }
 
 func (u *UpstreamsRegistry) calculateScore(

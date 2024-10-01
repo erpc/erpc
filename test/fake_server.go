@@ -2,6 +2,7 @@
 package test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -159,7 +160,15 @@ func (fs *FakeServer) handleSingleRequest(w http.ResponseWriter, req JSONRPCRequ
 	if response != nil {
 		w.Header().Set("Content-Type", "application/json")
 		response.ID = req.ID
-		json.NewEncoder(w).Encode(response)
+
+		buf := &bytes.Buffer{}
+		if err := json.NewEncoder(buf).Encode(response); err != nil {
+			fs.sendErrorResponse(w, req.ID, -32000, "Internal error")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(buf.Bytes())))
+		w.Write(buf.Bytes())
 	}
 }
 

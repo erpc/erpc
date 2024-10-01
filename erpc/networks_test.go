@@ -1325,7 +1325,7 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Reply(200).
-			JSON([]byte(`{"result":[{"logIndex":444}]}`))
+			JSON([]byte(`{"result":[{"logIndex":444,"fromHost":"rpc2"}]}`))
 
 		// Set up a context and a cancellation function
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1458,19 +1458,21 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Convert the raw response to a map to access custom fields like fromHost
-		var responseMap map[string]interface{}
-		err = sonic.UnmarshalString(resp.String(), &responseMap)
+		jrr, err := resp.JsonRpcResponse()
 		if err != nil {
-			t.Fatalf("Failed to unmarshal response body: %v", err)
+			t.Fatalf("Failed to get JSON-RPC response: %v", err)
 		}
 
-		result, ok := responseMap["result"].([]interface{})
-		if !ok {
-			t.Fatalf("Expected result to be []interface{}, got %T", responseMap["result"])
+		if jrr.Result == nil {
+			t.Fatalf("Expected non-nil result")
 		}
 
-		if len(result) == 0 {
-			t.Fatalf("Expected non-empty result array")
+		fromHost, err := jrr.PeekStringByPath(0, "fromHost")
+		if err != nil {
+			t.Fatalf("Failed to get fromHost from result: %v", err)
+		}
+		if fromHost != "rpc2" {
+			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
 		}
 	})
 

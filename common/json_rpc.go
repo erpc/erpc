@@ -1,6 +1,7 @@
 package common
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
 	"io"
@@ -92,8 +93,8 @@ func (r *JsonRpcResponse) SetIDBytes(idBytes []byte) {
 	r.idBytes = idBytes
 }
 
-func (r *JsonRpcResponse) ParseFromStream(reader io.Reader) error {
-	data, err := util.ReadAll(reader, 64*1024) // 64KB
+func (r *JsonRpcResponse) ParseFromStream(reader io.Reader, expectedSize int) error {
+	data, err := util.ReadAll(reader, 16*1024, expectedSize) // 16KB
 	if err != nil {
 		return err
 	}
@@ -237,93 +238,52 @@ func (r *JsonRpcResponse) MarshalJSON() ([]byte, error) {
 	return nil, fmt.Errorf("json-rpc response must be marshalled using WriteTo()")
 }
 
-// WriteTo is a custom implementation of marshalling json-rpc response to a writer,
+// GetReader is a custom implementation of marshalling json-rpc response,
 // this approach uses minimum memory allocations and is faster than a generic JSON marshaller.
-func (r *JsonRpcResponse) WriteTo(w io.Writer) (int64, error) {
-	var total int64
-
-	if (r.Error == nil && len(r.errBytes) == 0) && (r.Result == nil || len(r.Result) == 0) {
-		return 0, fmt.Errorf("json-rpc response must have an 'error' or a 'result' set")
-	}
-	if len(r.idBytes) == 0 {
-		return 0, fmt.Errorf("json-rpc response must have an ID set")
-	}
-
-	n, err := w.Write([]byte{'{'})
-	total += int64(n)
-	if err != nil {
-		return total, err
-	}
-
-	n, err = w.Write([]byte(`"jsonrpc":"2.0"`))
-	total += int64(n)
-	if err != nil {
-		return total, err
-	}
-
-	n, err = w.Write([]byte(`,"id":`))
-	total += int64(n)
-	if err != nil {
-		return total, err
-	}
-
-	n, err = w.Write(r.idBytes)
-	total += int64(n)
-	if err != nil {
-		return total, err
-	}
+func (r *JsonRpcResponse) GetReader() (io.Reader, error) {
+	var err error
+	totalReaders := 3
 
 	if r.Error != nil || len(r.errBytes) > 0 {
-		n, err = w.Write([]byte(`,"error":`))
-		total += int64(n)
-		if err != nil {
-			return total, err
-		}
-
-		if len(r.errBytes) > 0 {
-			n, err = w.Write(r.errBytes)
-			total += int64(n)
-			if err != nil {
-				return total, err
-			}
-		} else if r.Error != nil {
-			r.errBytes, err = SonicCfg.Marshal(r.Error)
-			if err != nil {
-				return 0, err
-			}
-			n, err = w.Write(r.errBytes)
-			total += int64(n)
-			if err != nil {
-				return total, err
-			}
-		} else {
-			n, err = w.Write([]byte(`null`))
-			total += int64(n)
-			if err != nil {
-				return total, err
-			}
-		}
-	} else {
-		n, err = w.Write([]byte(`,"result":`))
-		total += int64(n)
-		if err != nil {
-			return total, err
-		}
-
-		n, err = w.Write(r.Result)
-		total += int64(n)
-		if err != nil {
-			return total, err
-		}
+		totalReaders += 2
+	}
+	if r.Result != nil || len(r.Result) > 0 {
+		totalReaders += 2
 	}
 
-	n, err = w.Write([]byte{'}'})
-	total += int64(n)
-	if err != nil {
-		return total, err
+	readers := make([]io.Reader, totalReaders)
+	idx := 0
+	readers[idx] = bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":`))
+	idx++
+	readers[idx] = bytes.NewReader(r.idBytes)
+	idx++
+
+	if len(r.errBytes) > 0 {
+		readers[idx] = bytes.NewReader([]byte(`,"error":`))
+		idx++
+		readers[idx] = bytes.NewReader(r.errBytes)
+		idx++
+	} else if r.Error != nil {
+		r.errBytes, err = SonicCfg.Marshal(r.Error)
+		if err != nil {
+			return nil, err
+		}
+		readers[idx] = bytes.NewReader([]byte(`,"error":`))
+		idx++
+		readers[idx] = bytes.NewReader(r.errBytes)
+		idx++
 	}
 
-	return total, nil
+	if len(r.Result) > 0 {
+		readers[idx] = bytes.NewReader([]byte(`,"result":`))
+		idx++
+		readers[idx] = bytes.NewReader(r.Result)
+		idx++
+	}
+
+	readers[idx] = bytes.NewReader([]byte{'}'})
+
+	return io.MultiReader(readers...), nil
 }
 
 func (r *JsonRpcResponse) Clone() (*JsonRpcResponse, error) {
@@ -344,6 +304,7 @@ func (r *JsonRpcResponse) Clone() (*JsonRpcResponse, error) {
 	}, nil
 }
 
+//
 //
 // JSON-RPC Request
 //

@@ -2,20 +2,38 @@
 
 Here are some recommendations for running eRPC in production.
 
+## Memory usage
+
+Biggest memory usage contributor in eRPC is size of responses of your requests. For example, for common requests such as `eth_getBlockByNumber` or `eth_getTransactionReceipt` the size (&lt;1MB) will be relatively smaller than `debug_traceTransaction` (which could potentially be up to 50MB). When using eRPC in Kubernetes for example your might see occesional `OOMKilled` errors which is most often because of high RPS of large request/responses.
+
+In majority of use-cases eRPC uses around 256MB of memory (and 1vCPU). To find the ideal memory limit based on your use-case start with a high limit first (e.g. 16GB) and route your production traffic (either shadow or real) to see what is the usage based on your request patterns.
+
+For more control you can configure Go's garbage collection with the following env variables (e.g. when facing OOM Killed errors on Kubernetes):
+
+```bash
+# This flag controls when GC kicks in, for example when memory is increased by 30% try to run GC:
+export GOGC=30
+
+# This flag instructs Go to do a GC when memory goes over the 2GiB limit.
+# IMPORTANT: if this value is too low, it might cause high GC frequency,
+# which in turn might impact the performance without giving much memory benefits.
+export GOMEMLIMIT=2GiB
+```
+
 ## Failsafe policies
 
 Make sure to configure [retry policy](/config/failsafe#retry-policy) on both network-level and upstream-level.
 
-- Network-level retry configuration is useful to try other upstreams if one has an issue. Even when only 1 upstream network-level retry is useful. Recommendation is to configure `maxCount` to be equal to the number of upstreams.
+- Network-level retry configuration is useful to try other upstreams if one has an issue. Even when you only have 1 upstream, network-level retry is still useful. Recommendation is to configure `maxCount` to be equal to the number of upstreams.
 - Upstream-level retry configuration covers intermittent issues with a specific upstream. It is recommended to set at least 2 and at most 5 as `maxCount`.
 
 [Timeout policy](/config/failsafe#timeout-policy) depends on the expected response time for your use-case, for example when using "trace" methods on EVM chains, providers might take up to 10 seconds to respond. Therefore a low timeout might ultimately always fail. If you are not using heavy methods such as trace or large getLogs, you can use `3s` as a default timeout.
 
-[Hedge policy](/config/failsafe#hedge-policy) is **highly-recommended** if you prefer "fast response as soon as possible". For example setting `500ms` as "delay" will make sure if upstream A did not respond under 500 milliseconds, simultaneously another request to upstream B will be fired, and eRPC will respond back as soon as any of them comes back with result faster. Note that since more requests are sent it might incur higher costs to achieve the "fast response" goal.
+[Hedge policy](/config/failsafe#hedge-policy) is **highly-recommended** if you prefer "fast response as soon as possible". For example setting `500ms` as "delay" will make sure if upstream A did not respond under 500 milliseconds, simultaneously another request to upstream B will be fired, and eRPC will respond back as soon as any of them comes back with result faster. Note: since more requests are sent, it might incur higher costs to achieve the "fast response" goal.
 
 ## Caching database
 
-Storing cached RPC responses requires high storage for read-heavy use-cases such as indexing 100m blocks on Arbitrum. eRPC is designed to be robust towards cache database issues, so even if database is compeltely down it will not impact the RPC availability.
+Storing cached RPC responses requires high storage for read-heavy use-cases such as indexing 100m blocks on Arbitrum. eRPC is designed to be robust towards cache database issues, so even if database is completely down it will not impact the RPC availability.
 
 As described in [Database](/config/database) section depending on your requirements choose the right type. You can start with Redis which is easiest to setup, and if amount of cached data is larger than available memory you can switch to PostgreSQL.
 
