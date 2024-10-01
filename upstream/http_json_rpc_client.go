@@ -280,7 +280,7 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}]*batchRequest, resp *http.Response) {
 	defer resp.Body.Close()
 
-	bodyBytes, err := util.ReadAll(resp.Body, 128*1024) // 128KB
+	bodyBytes, err := util.ReadAll(resp.Body, 128*1024, int(resp.ContentLength)) // 128KB
 	if err != nil {
 		for _, req := range requests {
 			req.err <- err
@@ -308,7 +308,9 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 			if err != nil {
 				req.err <- err
 			} else {
-				nr := common.NewNormalizedResponse().WithRequest(req.request).WithJsonRpcResponse(jrr)
+				nr := common.NewNormalizedResponse().
+					WithRequest(req.request).
+					WithJsonRpcResponse(jrr)
 				err = c.normalizeJsonRpcError(resp, nr)
 				req.err <- err
 			}
@@ -464,7 +466,10 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		return nil, err
 	}
 
-	nr := common.NewNormalizedResponse().WithRequest(req).WithBody(resp.Body)
+	nr := common.NewNormalizedResponse().
+		WithRequest(req).
+		WithBody(resp.Body).
+		WithExpectedSize(int(resp.ContentLength))
 
 	return nr, c.normalizeJsonRpcError(resp, nr)
 }

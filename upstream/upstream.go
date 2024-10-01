@@ -297,7 +297,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 					req.SetLastValidResponse(resp)
 				}
 				if lg.GetLevel() == zerolog.TraceLevel {
-					lg.Debug().Err(errCall).Str("response", resp.String()).Msgf("upstream call result received")
+					lg.Debug().Err(errCall).Interface("response", resp).Msgf("upstream call result received")
 				} else {
 					lg.Debug().Err(errCall).Msgf("upstream call result received")
 				}

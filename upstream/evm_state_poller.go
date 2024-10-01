@@ -29,7 +29,7 @@ type EvmStatePoller struct {
 	// - When self-hosted nodes have issues flipping back and forth between syncing state.
 	// - When a third-party provider is using a degraded network of upstream nodes that are in different states.
 	//
-	// To save memory, 0 means we haven't checked, 1 means we have checked but it's still syncing OR
+	// To save memory, 0 means we haven't checked, 1+ means we have checked but it's still syncing OR
 	// we haven't received enough "synced" responses to assume it's fully synced.
 	synced int8
 

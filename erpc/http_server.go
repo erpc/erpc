@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -80,11 +81,11 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 
 		encoder := common.SonicCfg.NewEncoder(fastCtx.Response.BodyWriter())
 
-        projectId, architecture, chainId, isAdmin, err := s.parseUrlPath(fastCtx.Path())
-        if err != nil {
-            handleErrorResponse(s.logger, nil, err, fastCtx, encoder)
-            return
-        }
+		projectId, architecture, chainId, isAdmin, err := s.parseUrlPath(fastCtx.Path())
+		if err != nil {
+			handleErrorResponse(s.logger, nil, err, fastCtx, encoder)
+			return
+		}
 
 		lg := s.logger.With().Str("projectId", projectId).Str("architecture", architecture).Str("chainId", chainId).Logger()
 
@@ -108,10 +109,10 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 
 		lg.Debug().Msgf("received request with body: %s", body)
 
-		var requests [][]byte
+		var requests []json.RawMessage
 		isBatch := len(body) > 0 && body[0] == '['
 		if !isBatch {
-			requests = [][]byte{body}
+			requests = []json.RawMessage{body}
 		} else {
 			err = common.SonicCfg.Unmarshal(body, &requests)
 			if err != nil {
@@ -130,7 +131,7 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 
 		for i, reqBody := range requests {
 			wg.Add(1)
-			go func(index int, rawReq []byte, headersCopy *fasthttp.RequestHeader, queryArgsCopy *fasthttp.Args) {
+			go func(index int, rawReq json.RawMessage, headersCopy *fasthttp.RequestHeader, queryArgsCopy *fasthttp.Args) {
 				defer func() {
 					defer func() { recover() }()
 					if r := recover(); r != nil {
@@ -232,9 +233,6 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 				resp, err := project.Forward(requestCtx, networkId, nq)
 				if err != nil {
 					responses[index] = processErrorBody(&rlg, nq, err)
-					if resp != nil {
-						resp.Release()
-					}
 					return
 				}
 
@@ -265,12 +263,13 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 			setResponseHeaders(res, fastCtx)
 			setResponseStatusCode(res, fastCtx)
 			if r, ok := res.(*common.NormalizedResponse); ok {
-				_, err := r.WriteTo(fastCtx.Response.BodyWriter())
+				rdr, err := r.GetReader()
 				if err != nil {
 					fastCtx.SetStatusCode(fasthttp.StatusInternalServerError)
 					fastCtx.SetBodyString(fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, err.Error()))
 					return
 				}
+				fastCtx.Response.SetBodyStream(rdr, -1)
 				r.Release()
 			} else {
 				err = encoder.Encode(res)
@@ -285,25 +284,25 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 }
 
 func (s *HttpServer) parseUrlPath(path []byte) (projectId, architecture, chainId string, isAdmin bool, err error) {
-    segments := strings.Split(util.Mem2Str(path), "/")
-    if len(segments) != 2 && len(segments) != 3 && len(segments) != 4 {
-        return "", "", "", false, common.NewErrInvalidUrlPath(util.Mem2Str(path))
-    }
+	segments := strings.Split(util.Mem2Str(path), "/")
+	if len(segments) != 2 && len(segments) != 3 && len(segments) != 4 {
+		return "", "", "", false, common.NewErrInvalidUrlPath(util.Mem2Str(path))
+	}
 
-    projectId = segments[1]
+	projectId = segments[1]
 
-    if len(segments) == 4 {
-        architecture = segments[2]
-        chainId = segments[3]
-    } else if len(segments) == 3 {
-        if segments[2] == "admin" {
-            isAdmin = true
-        } else {
-            return "", "", "", false, common.NewErrInvalidUrlPath(util.Mem2Str(path))
-        }
-    }
+	if len(segments) == 4 {
+		architecture = segments[2]
+		chainId = segments[3]
+	} else if len(segments) == 3 {
+		if segments[2] == "admin" {
+			isAdmin = true
+		} else {
+			return "", "", "", false, common.NewErrInvalidUrlPath(util.Mem2Str(path))
+		}
+	}
 
-    return projectId, architecture, chainId, isAdmin, nil
+	return projectId, architecture, chainId, isAdmin, nil
 }
 
 func (s *HttpServer) handleCORS(ctx *fasthttp.RequestCtx, corsConfig *common.CORSConfig) bool {

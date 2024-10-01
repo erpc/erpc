@@ -277,7 +277,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 
 		t.Run("ConcurrentEthGetBlockNumber", func(t *testing.T) {
 			defer gock.Off()
-			const concurrentRequests = 10
+			const concurrentRequests = 100
 
 			gock.New("http://rpc1.localhost").
 				Post("/").

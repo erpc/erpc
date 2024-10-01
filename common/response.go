@@ -1,20 +1,21 @@
 package common
 
 import (
-	"bytes"
+	// "bytes"
 	"io"
 	"sync"
 
-	"github.com/erpc/erpc/util"
+	// "github.com/erpc/erpc/util"
 	"github.com/rs/zerolog/log"
 )
 
 type NormalizedResponse struct {
 	sync.RWMutex
 
-	request *NormalizedRequest
-	body    io.ReadCloser
-	err     error
+	request      *NormalizedRequest
+	body         io.ReadCloser
+	expectedSize int
+	err          error
 
 	fromCache bool
 	attempts  int
@@ -117,7 +118,7 @@ func (r *NormalizedResponse) JsonRpcResponse() (*JsonRpcResponse, error) {
 	jrr := &JsonRpcResponse{}
 
 	if r.body != nil {
-		err := jrr.ParseFromStream(r.body)
+		err := jrr.ParseFromStream(r.body, r.expectedSize)
 		if err != nil {
 			return nil, err
 		}
@@ -129,6 +130,11 @@ func (r *NormalizedResponse) JsonRpcResponse() (*JsonRpcResponse, error) {
 
 func (r *NormalizedResponse) WithBody(body io.ReadCloser) *NormalizedResponse {
 	r.body = body
+	return r
+}
+
+func (r *NormalizedResponse) WithExpectedSize(expectedSize int) *NormalizedResponse {
+	r.expectedSize = expectedSize
 	return r
 }
 
@@ -224,25 +230,6 @@ func (r *NormalizedResponse) EvmBlockNumber() (int64, error) {
 	return bn, nil
 }
 
-func (r *NormalizedResponse) String() string {
-	if r == nil {
-		return "<nil>"
-	}
-	if r.err != nil {
-		return r.err.Error()
-	}
-	if r.jsonRpcResponse != nil {
-		txt := &bytes.Buffer{}
-		_, err := r.jsonRpcResponse.WriteTo(txt)
-		if err != nil {
-			log.Error().Err(err).Interface("response", r).Msg("failed to write response as string")
-			return "<nil>"
-		}
-		return util.Mem2Str(txt.Bytes())
-	}
-	return "<nil>"
-}
-
 func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
 	if r.jsonRpcResponse != nil {
 		return SonicCfg.Marshal(r.jsonRpcResponse)
@@ -251,12 +238,12 @@ func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
 	return nil, nil
 }
 
-func (r *NormalizedResponse) WriteTo(w io.Writer) (int64, error) {
+func (r *NormalizedResponse) GetReader() (io.Reader, error) {
 	if r.jsonRpcResponse != nil {
-		return r.jsonRpcResponse.WriteTo(w)
+		return r.jsonRpcResponse.GetReader()
 	}
 
-	return 0, nil
+	return nil, nil
 }
 
 func (r *NormalizedResponse) Release() {
