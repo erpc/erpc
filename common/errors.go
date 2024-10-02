@@ -1007,11 +1007,26 @@ type ErrJsonRpcRequestUnmarshal struct {
 const ErrCodeJsonRpcRequestUnmarshal ErrorCode = "ErrJsonRpcRequestUnmarshal"
 
 var NewErrJsonRpcRequestUnmarshal = func(cause error) error {
+	if _, ok := cause.(*BaseError); ok {
+		return &ErrJsonRpcRequestUnmarshal{
+			BaseError{
+				Code:    ErrCodeJsonRpcRequestUnmarshal,
+				Message: "failed to unmarshal json-rpc request",
+				Cause:   cause,
+			},
+		}
+	} else if cause != nil {
+		return &ErrJsonRpcRequestUnmarshal{
+			BaseError{
+				Code:    ErrCodeJsonRpcRequestUnmarshal,
+				Message: cause.Error(),
+			},
+		}
+	}
 	return &ErrJsonRpcRequestUnmarshal{
 		BaseError{
 			Code:    ErrCodeJsonRpcRequestUnmarshal,
 			Message: "failed to unmarshal json-rpc request",
-			Cause:   cause,
 		},
 	}
 }

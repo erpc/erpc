@@ -52,6 +52,7 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 		),
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
+		Name:         fmt.Sprintf("erpc (%s/%s)", common.ErpcVersion, common.ErpcCommitSha),
 	}
 
 	go func() {
@@ -116,7 +117,13 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 		} else {
 			err = common.SonicCfg.Unmarshal(body, &requests)
 			if err != nil {
-				handleErrorResponse(&lg, nil, err, fastCtx, encoder)
+				handleErrorResponse(
+					&lg,
+					nil,
+					common.NewErrJsonRpcRequestUnmarshal(err),
+					fastCtx,
+					encoder,
+				)
 				return
 			}
 		}
