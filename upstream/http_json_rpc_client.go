@@ -230,11 +230,11 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 
 	requestBody, err := common.SonicCfg.Marshal(batchReq)
 	for _, req := range requests {
+		req.request.Unlock()
 		jrReq, _ := req.request.JsonRpcRequest()
 		if jrReq != nil {
 			jrReq.Unlock()
 		}
-		req.request.Unlock()
 	}
 	if err != nil {
 		for _, req := range requests {
@@ -262,7 +262,7 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 		return
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("User-Agent", fmt.Sprintf("erpc (Project/%s; Budget/%s)", c.upstream.ProjectId, c.upstream.config.RateLimitBudget))
+	httpReq.Header.Set("User-Agent", fmt.Sprintf("erpc (%s/%s; Project/%s; Budget/%s)", common.ErpcVersion, common.ErpcCommitSha, c.upstream.ProjectId, c.upstream.config.RateLimitBudget))
 
 	// Make the HTTP request
 	resp, err := c.httpClient.Do(httpReq)

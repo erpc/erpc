@@ -17,10 +17,10 @@ RUN go mod download
 COPY . .
 
 # Build the application without pprof
-RUN CGO_ENABLED=0 GOOS=linux LDFLAGS="-w -s -X main.version=${VERSION} -X main.commitSHA=${COMMIT_SHA}" go build -a -installsuffix cgo -o erpc-server ./cmd/erpc/main.go
+RUN CGO_ENABLED=0 GOOS=linux LDFLAGS="-w -s -X common.ErpcVersion=${VERSION} -X common.ErpcCommitSha=${COMMIT_SHA}" go build -a -installsuffix cgo -o erpc-server ./cmd/erpc/main.go
 
 # Build the application with pprof
-RUN CGO_ENABLED=0 GOOS=linux LDFLAGS="-w -s -X main.version=${VERSION} -X main.commitSHA=${COMMIT_SHA}" go build -a -installsuffix cgo -tags pprof -o erpc-server-pprof ./cmd/erpc/*.go
+RUN CGO_ENABLED=0 GOOS=linux LDFLAGS="-w -s -X common.ErpcVersion=${VERSION} -X common.ErpcCommitSha=${COMMIT_SHA}" go build -a -installsuffix cgo -tags pprof -o erpc-server-pprof ./cmd/erpc/*.go
 
 # Final stage
 FROM alpine:3.18

@@ -6,21 +6,17 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/erpc"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/afero"
 )
 
-var (
-	version   = "dev"
-	commitSHA = "none"
-)
-
 func main() {
 	logger := log.With().Logger()
 
-	logger.Info().Msgf("starting eRPC version: %s, commit: %s", version, commitSHA)
+	logger.Info().Msgf("starting eRPC version: %s, commit: %s", common.ErpcVersion, common.ErpcCommitSha)
 
 	err := erpc.Init(
 		context.Background(),

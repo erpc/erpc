@@ -10,8 +10,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var TRUE = true
-var FALSE = false
+var (
+	ErpcVersion   = "dev"
+	ErpcCommitSha = "none"
+	TRUE          = true
+	FALSE         = false
+)
 
 // Config represents the configuration of the application.
 type Config struct {
