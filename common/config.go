@@ -371,6 +371,10 @@ func (c *RateLimitRuleConfig) MarshalZerologObject(e *zerolog.Event) {
 }
 
 func (c *NetworkConfig) NetworkId() string {
+	if c.Architecture == "" || c.Evm == nil {
+		return ""
+	}
+
 	switch c.Architecture {
 	case "evm":
 		return util.EvmNetworkId(c.Evm.ChainId)
@@ -464,5 +468,24 @@ func (s *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 	}
 
 	*s = UpstreamConfig(raw)
+	return nil
+}
+
+func (c *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type rawNetworkConfig NetworkConfig
+	raw := rawNetworkConfig{}
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+
+	if raw.Architecture == "" {
+		return NewErrInvalidConfig("network.*.architecture is required")
+	}
+
+	if raw.Architecture == "evm" && raw.Evm == nil {
+		return NewErrInvalidConfig("network.*.evm is required for evm networks")
+	}
+
+	*c = NetworkConfig(raw)
 	return nil
 }
