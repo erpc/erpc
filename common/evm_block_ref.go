@@ -165,9 +165,6 @@ func ExtractEvmBlockReferenceFromResponse(rpcReq *JsonRpcRequest, rpcResp *JsonR
 	case "eth_getTransactionReceipt",
 		"eth_getTransactionByHash":
 		if len(rpcResp.Result) > 0 {
-			rpcResp.RLock()
-			defer rpcResp.RUnlock()
-
 			blockRef, _ := rpcResp.PeekStringByPath("blockHash")
 			blockNumberStr, _ := rpcResp.PeekStringByPath("blockNumber")
 
@@ -188,9 +185,6 @@ func ExtractEvmBlockReferenceFromResponse(rpcReq *JsonRpcRequest, rpcResp *JsonR
 		}
 	case "eth_getBlockByNumber":
 		if len(rpcResp.Result) > 0 {
-			rpcResp.RLock()
-			defer rpcResp.RUnlock()
-
 			blockRef, _ := rpcResp.PeekStringByPath("hash")
 			blockNumberStr, _ := rpcResp.PeekStringByPath("number")
 

@@ -42,11 +42,23 @@ func NormalizeEvmHttpJsonRpc(nrq *NormalizedRequest, r *JsonRpcRequest) error {
 		"eth_call",
 		"eth_estimateGas":
 		if len(r.Params) > 1 {
-			b, err := NormalizeHex(r.Params[1])
-			if err != nil {
-				return err
+			if strValue, ok := r.Params[1].(string); ok {
+				if strings.HasPrefix(strValue, "0x") {
+					b, err := NormalizeHex(strValue)
+					if err != nil {
+						return err
+					}
+					r.Params[1] = b
+				}
+			} else if mapValue, ok := r.Params[1].(map[string]interface{}); ok {
+				if blockNumber, ok := mapValue["blockNumber"]; ok {
+					b, err := NormalizeHex(blockNumber)
+					if err != nil {
+						return err
+					}
+					mapValue["blockNumber"] = b
+				}
 			}
-			r.Params[1] = b
 		}
 	case "eth_getStorageAt":
 		if len(r.Params) > 2 {

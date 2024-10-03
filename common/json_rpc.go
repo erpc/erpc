@@ -16,10 +16,6 @@ import (
 )
 
 type JsonRpcResponse struct {
-	// During simultaneous operations such as hedges, setting cache, etc there might be more than 1 goroutine
-	// reading/writing to the same response object. To prevent race conditions we'll use a sync.RWMutex.
-	sync.RWMutex
-
 	// ID is mainly set based on incoming request.
 	// During parsing of response from upstream we'll still parse it
 	// so that batch requests are correctly identified.
@@ -27,6 +23,7 @@ type JsonRpcResponse struct {
 	// and idBytes is a lazy-loaded byte representation of the ID used when writing responses.
 	id      interface{}
 	idBytes []byte
+	idMu    sync.RWMutex
 
 	// Error is the parsed error from the response bytes, and potentially normalized based on vendor-specific drivers.
 	// errBytes is a lazy-loaded byte representation of the Error used when writing responses.
@@ -35,11 +32,13 @@ type JsonRpcResponse struct {
 	// lazy-load the errBytes for writing responses by marshalling the Error field.
 	Error    *ErrJsonRpcExceptionExternal
 	errBytes []byte
+	errMu    sync.RWMutex
 
 	// Result is the raw bytes of the result from the response, and is used when writing responses.
 	// Ideally we don't need to parse these bytes. In cases where we need a specific field (e.g. blockNumber)
 	// we use Sonic library to traverse directly to target such field (vs marshalling the whole result in memory).
 	Result     []byte
+	resultMu   sync.RWMutex
 	cachedNode *ast.Node
 }
 
@@ -72,16 +71,29 @@ func NewJsonRpcResponseFromBytes(id []byte, resultRaw []byte, errBytes []byte) (
 }
 
 func (r *JsonRpcResponse) ID() interface{} {
-	if r.id == nil && len(r.idBytes) > 0 {
-		err := SonicCfg.Unmarshal(r.idBytes, &r.id)
-		if err != nil {
-			log.Error().Err(err).Interface("response", r).Bytes("idBytes", r.idBytes).Msg("failed to unmarshal id")
-		}
+	r.idMu.RLock()
+
+	if r.id != nil {
+		r.idMu.RUnlock()
+		return r.id
 	}
+	r.idMu.RUnlock()
+
+	r.idMu.Lock()
+	defer r.idMu.Unlock()
+
+	err := SonicCfg.Unmarshal(r.idBytes, &r.id)
+	if err != nil {
+		log.Error().Err(err).Interface("response", r).Bytes("idBytes", r.idBytes).Msg("failed to unmarshal id")
+	}
+
 	return r.id
 }
 
 func (r *JsonRpcResponse) SetID(id interface{}) {
+	r.idMu.Lock()
+	defer r.idMu.Unlock()
+
 	r.id = id
 	if idBytes, err := SonicCfg.Marshal(id); err == nil {
 		r.idBytes = idBytes
@@ -107,13 +119,18 @@ func (r *JsonRpcResponse) ParseFromStream(reader io.Reader, expectedSize int) er
 	// Extract the "id" field
 	if idNode, err := searcher.GetByPath("id"); err == nil {
 		if rawID, err := idNode.Raw(); err == nil {
+			r.idMu.Lock()
+			defer r.idMu.Unlock()
 			r.idBytes = util.Str2Mem(rawID)
 		}
 	}
 
 	if resultNode, err := searcher.GetByPath("result"); err == nil {
 		if rawResult, err := resultNode.Raw(); err == nil {
+			r.resultMu.Lock()
+			defer r.resultMu.Unlock()
 			r.Result = util.Str2Mem(rawResult)
+			r.cachedNode = &resultNode
 		} else {
 			return err
 		}
@@ -133,8 +150,8 @@ func (r *JsonRpcResponse) ParseFromStream(reader io.Reader, expectedSize int) er
 }
 
 func (r *JsonRpcResponse) ParseError(raw string) error {
-	r.Lock()
-	defer r.Unlock()
+	r.errMu.Lock()
+	defer r.errMu.Unlock()
 
 	r.errBytes = nil
 
@@ -221,8 +238,10 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 		return
 	}
 
-	r.Lock()
-	defer r.Unlock()
+	r.resultMu.RLock()
+	defer r.resultMu.RUnlock()
+	r.errMu.RLock()
+	defer r.errMu.RUnlock()
 
 	e.Interface("id", r.ID()).
 		Int("resultSize", len(r.Result)).
@@ -230,6 +249,9 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 }
 
 func (r *JsonRpcResponse) ensureCachedNode() error {
+	r.resultMu.RLock()
+	defer r.resultMu.RUnlock()
+
 	if r.cachedNode == nil {
 		srchr := ast.NewSearcher(util.Mem2Str(r.Result))
 		srchr.ValidateJSON = false
@@ -262,6 +284,15 @@ func (r *JsonRpcResponse) MarshalJSON() ([]byte, error) {
 // GetReader is a custom implementation of marshalling json-rpc response,
 // this approach uses minimum memory allocations and is faster than a generic JSON marshaller.
 func (r *JsonRpcResponse) GetReader() (io.Reader, error) {
+	r.idMu.RLock()
+	defer r.idMu.RUnlock()
+
+	r.errMu.RLock()
+	defer r.errMu.RUnlock()
+
+	r.resultMu.RLock()
+	defer r.resultMu.RUnlock()
+
 	var err error
 	totalReaders := 3
 
@@ -312,9 +343,6 @@ func (r *JsonRpcResponse) Clone() (*JsonRpcResponse, error) {
 		return nil, nil
 	}
 
-	r.RLock()
-	defer r.RUnlock()
-
 	return &JsonRpcResponse{
 		id:         r.id,
 		idBytes:    r.idBytes,
@@ -343,6 +371,10 @@ func (r *JsonRpcRequest) MarshalZerologObject(e *zerolog.Event) {
 	if r == nil {
 		return
 	}
+
+	r.RLock()
+	defer r.RUnlock()
+
 	e.Str("method", r.Method).
 		Interface("params", r.Params).
 		Interface("id", r.ID)

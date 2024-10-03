@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"sync/atomic"
 
 	// "fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
@@ -5206,6 +5208,148 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 	})
 
+	for i := 0; i < 10; i++ {
+		t.Run("ResponseReleasedBeforeCacheSet", func(t *testing.T) {
+			resetGock()
+			defer resetGock()
+
+			network := setupTestNetwork(t)
+			gock.New("http://rpc1.localhost").
+				Post("/").
+				MatchType("json").
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"method":  "eth_getTransactionReceipt",
+					"params":  []interface{}{"0x1111"},
+					"id":      11111,
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      11111,
+					"result": map[string]interface{}{
+						"blockNumber": "0x1111",
+					},
+				})
+			gock.New("http://rpc1.localhost").
+				Post("/").
+				MatchType("json").
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"method":  "eth_getBalance",
+					"params":  []interface{}{"0x2222", "0x2222"},
+					"id":      22222,
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      22222,
+					"result":  "0x22222222222222",
+				})
+
+			// Create a slow cache to increase the chance of a race condition
+			conn, errc := data.NewMockMemoryConnector(context.Background(), &log.Logger, &common.MemoryConnectorConfig{
+				MaxItems: 1000,
+			}, 100*time.Millisecond)
+			if errc != nil {
+				t.Fatalf("Failed to create mock memory connector: %v", errc)
+			}
+			slowCache := (&EvmJsonRpcCache{
+				conn:   conn,
+				logger: &log.Logger,
+			}).WithNetwork(network)
+			network.cacheDal = slowCache
+
+			// Make the request
+			req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0x1111"],"id":11111}`))
+			req2 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x2222", "0x2222"],"id":22222}`))
+
+			// Use a WaitGroup to ensure both goroutines complete
+			var wg sync.WaitGroup
+			wg.Add(2)
+
+			var jrr1Atomic atomic.Value
+			var jrr2Atomic atomic.Value
+
+			// Goroutine 1: Make the request and immediately release the response
+			go func() {
+				defer wg.Done()
+
+				resp1, err := network.Forward(context.Background(), req1)
+				if err != nil {
+					t.Errorf("Unexpected error: %v", err)
+					return
+				}
+				jrr1Value, _ := resp1.JsonRpcResponse()
+				jrr1Atomic.Store(jrr1Value)
+				// Simulate immediate release of the response
+				resp1.Release()
+
+				resp2, err := network.Forward(context.Background(), req2)
+				if err != nil {
+					t.Errorf("Unexpected error: %v", err)
+					return
+				}
+				jrr2Value, _ := resp2.JsonRpcResponse()
+				jrr2Atomic.Store(jrr2Value)
+				resp2.Release()
+			}()
+
+			// Goroutine 2: Access the response concurrently
+			go func() {
+				defer wg.Done()
+				time.Sleep(2000 * time.Millisecond)
+				var res1 string
+				var res2 string
+				jrr1 := jrr1Atomic.Load().(*common.JsonRpcResponse)
+				jrr2 := jrr2Atomic.Load().(*common.JsonRpcResponse)
+				if jrr1 != nil {
+					if j, e := jrr1.MarshalJSON(); e != nil {
+						t.Errorf("Failed to marshal json-rpc response: %v", e)
+					} else {
+						var obj map[string]interface{}
+						common.SonicCfg.Unmarshal(j, &obj)
+						res1, _ = common.SonicCfg.MarshalToString(obj["result"])
+					}
+					_ = jrr1.ID()
+				}
+				if jrr2 != nil {
+					if j, e := jrr2.MarshalJSON(); e != nil {
+						t.Errorf("Failed to marshal json-rpc response: %v", e)
+					} else {
+						var obj map[string]interface{}
+						common.SonicCfg.Unmarshal(j, &obj)
+						res2, _ = common.SonicCfg.MarshalToString(obj["result"])
+					}
+					_ = jrr2.ID()
+				}
+				assert.NotEmpty(t, res1)
+				assert.NotEmpty(t, res2)
+				assert.NotEqual(t, res1, res2)
+				cache1, e1 := slowCache.Get(context.Background(), req1)
+				cache2, e2 := slowCache.Get(context.Background(), req2)
+				assert.NoError(t, e1)
+				assert.NoError(t, e2)
+				cjrr1, _ := cache1.JsonRpcResponse()
+				cjrr2, _ := cache2.JsonRpcResponse()
+				assert.NotNil(t, cjrr1)
+				assert.NotNil(t, cjrr2)
+				if cjrr1 != nil {
+					// cjrr1.RLock()
+					assert.Equal(t, res1, string(cjrr1.Result))
+					// cjrr1.RUnlock()
+				}
+				if cjrr2 != nil {
+					// cjrr2.Lock()
+					assert.Equal(t, res2, string(cjrr2.Result))
+					// cjrr2.Unlock()
+				}
+			}()
+
+			// Wait for both goroutines to complete
+			wg.Wait()
+		})
+	}
 }
 
 func TestNetwork_InFlightRequests(t *testing.T) {
@@ -5522,9 +5666,18 @@ func setupTestNetwork(t *testing.T) *Network {
 	err = upstreamsRegistry.Bootstrap(context.Background())
 	assert.NoError(t, err)
 	time.Sleep(100 * time.Millisecond)
+
 	err = upstreamsRegistry.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
 	assert.NoError(t, err)
 	time.Sleep(100 * time.Millisecond)
+
+	err = network.Bootstrap(context.Background())
+	assert.NoError(t, err)
+	time.Sleep(100 * time.Millisecond)
+
+	h, _ := common.HexToInt64("0x1273c18")
+	network.evmStatePollers["test"].SuggestFinalizedBlock(h)
+	network.evmStatePollers["test"].SuggestLatestBlock(h)
 
 	return network
 }

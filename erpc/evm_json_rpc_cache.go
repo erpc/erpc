@@ -55,6 +55,9 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		return nil, err
 	}
 
+	rpcReq.RLock()
+	defer rpcReq.RUnlock()
+
 	blockRef, blockNumber, err := common.ExtractEvmBlockReferenceFromRequest(rpcReq)
 	if err != nil {
 		return nil, err
@@ -112,7 +115,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 
 	lg := c.logger.With().Str("networkId", req.NetworkId()).Str("method", rpcReq.Method).Logger()
 
-	shouldCache, err := shouldCache(lg, req, resp, rpcReq, rpcResp)
+	shouldCache, err := shouldCacheResponse(lg, req, resp, rpcReq, rpcResp)
 	if !shouldCache || err != nil {
 		return err
 	}
@@ -134,12 +137,14 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 	if blockNumber > 0 {
 		s, e := c.shouldCacheForBlock(blockNumber)
 		if !s || e != nil {
-			lg.Debug().
-				Err(e).
-				Str("blockRef", blockRef).
-				Int64("blockNumber", blockNumber).
-				// Interface("result", rpcResp.Result).
-				Msg("will not cache the response because block is not finalized")
+			if lg.GetLevel() <= zerolog.DebugLevel {
+				lg.Debug().
+					Err(e).
+					Str("blockRef", blockRef).
+					Int64("blockNumber", blockNumber).
+					Str("result", util.Mem2Str(rpcResp.Result)).
+					Msg("will not cache the response because block is not finalized")
+			}
 			return e
 		}
 	}
@@ -149,20 +154,22 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		return err
 	}
 
-	lg.Debug().
-		Str("blockRef", blockRef).
-		Str("primaryKey", pk).
-		Str("rangeKey", rk).
-		Int64("blockNumber", blockNumber).
-		// Interface("result", rpcResp.Result).
-		Msg("caching the response")
+	if lg.GetLevel() <= zerolog.DebugLevel {
+		lg.Debug().
+			Str("blockRef", blockRef).
+			Str("primaryKey", pk).
+			Str("rangeKey", rk).
+			Int64("blockNumber", blockNumber).
+			Str("result", util.Mem2Str(rpcResp.Result)).
+			Msg("caching the response")
+	}
 
 	ctx, cancel := context.WithTimeoutCause(ctx, 5*time.Second, errors.New("evm json-rpc cache driver timeout during set"))
 	defer cancel()
 	return c.conn.Set(ctx, pk, rk, util.Mem2Str(rpcResp.Result))
 }
 
-func shouldCache(
+func shouldCacheResponse(
 	lg zerolog.Logger,
 	req *common.NormalizedRequest,
 	resp *common.NormalizedResponse,
@@ -235,8 +242,7 @@ func (c *EvmJsonRpcCache) DeleteByGroupKey(ctx context.Context, groupKeys ...str
 }
 
 func (c *EvmJsonRpcCache) shouldCacheForBlock(blockNumber int64) (bool, error) {
-	b, e := c.network.EvmIsBlockFinalized(blockNumber)
-	return b, e
+	return c.network.EvmIsBlockFinalized(blockNumber)
 }
 
 func generateKeysForJsonRpcRequest(req *common.NormalizedRequest, blockRef string) (string, string, error) {

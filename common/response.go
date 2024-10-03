@@ -1,11 +1,9 @@
 package common
 
 import (
-	// "bytes"
 	"io"
 	"sync"
 
-	// "github.com/erpc/erpc/util"
 	"github.com/rs/zerolog/log"
 )
 
@@ -115,6 +113,9 @@ func (r *NormalizedResponse) JsonRpcResponse() (*JsonRpcResponse, error) {
 		return r.jsonRpcResponse, nil
 	}
 
+	r.Lock()
+	defer r.Unlock()
+
 	jrr := &JsonRpcResponse{}
 
 	if r.body != nil {
@@ -165,6 +166,10 @@ func (r *NormalizedResponse) Error() error {
 
 func (r *NormalizedResponse) IsResultEmptyish() bool {
 	jrr, err := r.JsonRpcResponse()
+	
+	jrr.resultMu.RLock()
+	defer jrr.resultMu.RUnlock()
+
 	if err == nil {
 		if jrr == nil {
 			return true
@@ -190,7 +195,17 @@ func (r *NormalizedResponse) IsObjectNull() bool {
 	}
 
 	jrr, _ := r.JsonRpcResponse()
-	if jrr == nil || (len(jrr.Result) == 0 && jrr.Error == nil && jrr.ID() == nil) {
+	if jrr == nil {
+		return true
+	}
+
+	jrr.resultMu.RLock()
+	defer jrr.resultMu.RUnlock()
+
+	jrr.errMu.RLock()
+	defer jrr.errMu.RUnlock()
+
+	if len(jrr.Result) == 0 && jrr.Error == nil && jrr.ID() == nil {
 		return true
 	}
 
@@ -231,6 +246,9 @@ func (r *NormalizedResponse) EvmBlockNumber() (int64, error) {
 }
 
 func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
+	r.RLock()
+	defer r.RUnlock()
+
 	if r.jsonRpcResponse != nil {
 		return SonicCfg.Marshal(r.jsonRpcResponse)
 	}
@@ -239,6 +257,9 @@ func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
 }
 
 func (r *NormalizedResponse) GetReader() (io.Reader, error) {
+	r.RLock()
+	defer r.RUnlock()
+
 	if r.jsonRpcResponse != nil {
 		return r.jsonRpcResponse.GetReader()
 	}
@@ -257,6 +278,10 @@ func (r *NormalizedResponse) Release() {
 			log.Error().Err(err).Interface("response", r).Msg("failed to close response body")
 		}
 		r.body = nil
+	}
+
+	if r.jsonRpcResponse != nil {
+		r.jsonRpcResponse = nil
 	}
 }
 
