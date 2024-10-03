@@ -49,6 +49,7 @@ func init() {
 		CopyString:              false,
 		NoQuoteTextMarshaler:    true,
 		NoValidateJSONMarshaler: true,
+		NoValidateJSONSkip:      true,
 		EscapeHTML:              false,
 		SortMapKeys:             false,
 		CompactMarshaler:        true,
