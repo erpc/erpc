@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/bytedance/sonic"
 	"github.com/bytedance/sonic/ast"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
@@ -201,7 +200,10 @@ func (r *JsonRpcResponse) ParseError(raw string) error {
 }
 
 func (r *JsonRpcResponse) PeekStringByPath(path ...interface{}) (string, error) {
-	r.ensureCachedNode()
+	err := r.ensureCachedNode()
+	if err != nil {
+		return "", err
+	}
 
 	n := r.cachedNode.GetByPath(path...)
 	if n == nil {
@@ -227,11 +229,20 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 		Interface("error", r.Error)
 }
 
-func (r *JsonRpcResponse) ensureCachedNode() {
+func (r *JsonRpcResponse) ensureCachedNode() error {
 	if r.cachedNode == nil {
-		n, _ := sonic.GetFromString(util.Mem2Str(r.Result))
+		srchr := ast.NewSearcher(util.Mem2Str(r.Result))
+		srchr.ValidateJSON = false
+		srchr.ConcurrentRead = false
+		srchr.CopyReturn = false
+		n, err := srchr.GetByPath()
+		if err != nil {
+			return err
+		}
 		r.cachedNode = &n
 	}
+
+	return nil
 }
 
 // MarshalJSON must not be used for majority of use-cases,

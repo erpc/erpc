@@ -970,7 +970,7 @@ type ErrUpstreamHedgeCancelled struct{ BaseError }
 
 const ErrCodeUpstreamHedgeCancelled ErrorCode = "ErrUpstreamHedgeCancelled"
 
-var NewErrUpstreamHedgeCancelled = func(upstreamId string) error {
+var NewErrUpstreamHedgeCancelled = func(upstreamId string, cause error) error {
 	return &ErrUpstreamHedgeCancelled{
 		BaseError{
 			Code:    ErrCodeUpstreamHedgeCancelled,
@@ -978,6 +978,7 @@ var NewErrUpstreamHedgeCancelled = func(upstreamId string) error {
 			Details: map[string]interface{}{
 				"upstreamId": upstreamId,
 			},
+			Cause: cause,
 		},
 	}
 }

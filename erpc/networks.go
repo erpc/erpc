@@ -252,7 +252,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 				if isHedged && (err != nil && errors.Is(err, context.Canceled)) {
 					ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
-					return nil, common.NewErrUpstreamHedgeCancelled(u.Config().Id)
+					return nil, common.NewErrUpstreamHedgeCancelled(u.Config().Id, context.Cause(exec.Context()))
 				}
 				if isHedged {
 					ulg.Debug().Msgf("forwarded hedged request to upstream")

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path"
 
 	"runtime/debug"
 	"strings"
@@ -81,6 +82,7 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 		}()
 
 		encoder := common.SonicCfg.NewEncoder(fastCtx.Response.BodyWriter())
+		encoder.SetEscapeHTML(false)
 
 		projectId, architecture, chainId, isAdmin, err := s.parseUrlPath(fastCtx.Path())
 		if err != nil {
@@ -290,10 +292,12 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 	}
 }
 
-func (s *HttpServer) parseUrlPath(path []byte) (projectId, architecture, chainId string, isAdmin bool, err error) {
-	segments := strings.Split(util.Mem2Str(path), "/")
+func (s *HttpServer) parseUrlPath(p []byte) (projectId, architecture, chainId string, isAdmin bool, err error) {
+	ps := path.Clean(util.Mem2Str(p))
+	segments := strings.Split(ps, "/")
+
 	if len(segments) != 2 && len(segments) != 3 && len(segments) != 4 {
-		return "", "", "", false, common.NewErrInvalidUrlPath(util.Mem2Str(path))
+		return "", "", "", false, common.NewErrInvalidUrlPath(ps)
 	}
 
 	projectId = segments[1]
@@ -305,7 +309,7 @@ func (s *HttpServer) parseUrlPath(path []byte) (projectId, architecture, chainId
 		if segments[2] == "admin" {
 			isAdmin = true
 		} else {
-			return "", "", "", false, common.NewErrInvalidUrlPath(util.Mem2Str(path))
+			return "", "", "", false, common.NewErrInvalidUrlPath(ps)
 		}
 	}
 
