@@ -72,23 +72,6 @@ func (m *MemoryConnector) getWithWildcard(_ context.Context, _, partitionKey, ra
 	return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s", partitionKey, rangeKey), MemoryDriverName)
 }
 
-func (m *MemoryConnector) Query(ctx context.Context, index, partitionKey, rangeKey string) ([]*DataRow, error) {
-	prefix := strings.TrimSuffix(partitionKey, "*")
-	var results []*DataRow
-
-	for _, key := range m.cache.Keys() {
-		parts := strings.Split(key, ":")
-		if len(parts) == 2 && strings.HasPrefix(parts[0], prefix) {
-			if rangeKey == "" || (strings.HasSuffix(rangeKey, "*") && strings.HasPrefix(parts[1], strings.TrimSuffix(rangeKey, "*"))) || parts[1] == rangeKey {
-				value, _ := m.cache.Get(key)
-				results = append(results, &DataRow{Value: value})
-			}
-		}
-	}
-
-	return results, nil
-}
-
 func (m *MemoryConnector) Delete(ctx context.Context, index, partitionKey, rangeKey string) error {
 	if strings.HasSuffix(partitionKey, "*") || strings.HasSuffix(rangeKey, "*") {
 		return m.deleteWithWildcard(ctx, index, partitionKey, rangeKey)

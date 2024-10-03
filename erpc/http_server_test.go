@@ -35,7 +35,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 
 	cfg := &common.Config{
 		Server: &common.ServerConfig{
-			MaxTimeout: "200ms", // Set a very short timeout for testing
+			MaxTimeout: "500ms", // Set a very short timeout for testing
 		},
 		Projects: []*common.ProjectConfig{
 			{
@@ -151,7 +151,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			Post("/").
 			Times(10).
 			Reply(200).
-			Delay(300 * time.Millisecond). // Delay longer than the server timeout
+			Delay(700 * time.Millisecond). // Delay longer than the server timeout
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -173,7 +173,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			if i%2 == 0 {
 				delay = 1 * time.Millisecond // shorter than the server timeout
 			} else {
-				delay = 200 * time.Millisecond // longer than the server timeout
+				delay = 700 * time.Millisecond // longer than the server timeout
 			}
 			gock.New("http://rpc1.localhost").
 				Post("/").
@@ -268,6 +268,23 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		// Case 2: Upstream does not support batch requests
 		func(cfg *common.Config) {
 			cfg.Projects[0].Upstreams[0].JsonRpc.SupportsBatch = &common.FALSE
+		},
+
+		// Case 3: Caching is enabled
+		func(cfg *common.Config) {
+			cfg.Database = &common.DatabaseConfig{
+				EvmJsonRpcCache: &common.ConnectorConfig{
+					Driver: "memory",
+					Memory: &common.MemoryConnectorConfig{
+						MaxItems: 100,
+					},
+				},
+			}
+		},
+
+		// Case 4: Caching is disabled
+		func(cfg *common.Config) {
+			cfg.Database.EvmJsonRpcCache = nil
 		},
 	}
 

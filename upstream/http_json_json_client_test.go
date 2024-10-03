@@ -173,17 +173,17 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 
 		client, err := NewGenericHttpJsonRpcClient(&logger, &Upstream{
 			config: &common.UpstreamConfig{
-				Endpoint: "http://rpc1.localhost:8545",
+				Endpoint: "http://rpc1.localhost",
 				JsonRpc: &common.JsonRpcUpstreamConfig{
 					SupportsBatch: &common.TRUE,
 					BatchMaxSize:  5,
 					BatchMaxWait:  "500ms",
 				},
 			},
-		}, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"})
+		}, &url.URL{Scheme: "http", Host: "rpc1.localhost"})
 		assert.NoError(t, err)
 
-		gock.New("http://rpc1.localhost:8545").
+		gock.New("http://rpc1.localhost").
 			Post("/").
 			Times(5).
 			Reply(200).
@@ -197,13 +197,14 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 				req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
 				resp1, err1 := client.SendRequest(context.Background(), req1)
 				assert.NoError(t, err1)
-				resp1.Lock()
+				if resp1 == nil {
+					panic(fmt.Sprintf("SeparateBatchRequestsWithSameIDs: resp1 is nil err1: %v", err1))
+				}
 				wr := bytes.NewBuffer([]byte{})
 				rdr, werr := resp1.GetReader()
 				assert.NoError(t, werr)
 				wr.ReadFrom(rdr)
 				txt := wr.String()
-				resp1.Unlock()
 				assert.Equal(t, `{"jsonrpc":"2.0","id":1,"result":"0x1"}`, txt)
 			}()
 			wg.Add(1)
@@ -212,13 +213,11 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 				req6 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":6,"method":"eth_blockNumber","params":[]}`))
 				resp6, err6 := client.SendRequest(context.Background(), req6)
 				assert.NoError(t, err6)
-				resp6.Lock()
 				wr := bytes.NewBuffer([]byte{})
 				rdr, werr := resp6.GetReader()
 				wr.ReadFrom(rdr)
 				assert.NoError(t, werr)
 				txt := wr.String()
-				resp6.Unlock()
 				assert.Equal(t, `{"jsonrpc":"2.0","id":6,"result":"0x6"}`, txt)
 			}()
 			time.Sleep(10 * time.Millisecond)

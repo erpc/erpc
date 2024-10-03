@@ -339,7 +339,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 
 		if n.cacheDal != nil {
+			resp.RLock()
 			go (func(resp *common.NormalizedResponse) {
+				defer resp.RUnlock()
 				c, cancel := context.WithTimeoutCause(context.Background(), 10*time.Second, errors.New("cache driver timeout during set"))
 				defer cancel()
 				err := n.cacheDal.Set(c, req, resp)
@@ -360,6 +362,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 }
 
 func (n *Network) EvmIsBlockFinalized(blockNumber int64) (bool, error) {
+	if n == nil || n.evmStatePollers == nil || len(n.evmStatePollers) == 0 {
+		return false, nil
+	}
+
 	for _, poller := range n.evmStatePollers {
 		if fin, err := poller.IsBlockFinalized(blockNumber); err != nil {
 			if common.HasErrorCode(err, common.ErrCodeFinalizedBlockUnavailable) {
@@ -408,11 +414,13 @@ func (n *Network) enrichStatePoller(method string, req *common.NormalizedRequest
 					if err == nil {
 						blockNumber, err := common.HexToInt64(bnh)
 						if err == nil {
-							poller := n.evmStatePollers[resp.Upstream().Config().Id]
-							if blkTag == "finalized" {
-								poller.SuggestFinalizedBlock(blockNumber)
-							} else if blkTag == "latest" {
-								poller.SuggestLatestBlock(blockNumber)
+							poller, ok := n.evmStatePollers[resp.Upstream().Config().Id]
+							if ok {
+								if blkTag == "finalized" {
+									poller.SuggestFinalizedBlock(blockNumber)
+								} else if blkTag == "latest" {
+									poller.SuggestLatestBlock(blockNumber)
+								}
 							}
 						}
 					}

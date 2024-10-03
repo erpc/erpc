@@ -30,12 +30,29 @@ The eRPC template includes pre-configured environment variables to simplify the 
   - `BLASTAPI_API_KEY`: *API key from balastapi.io*
   - `DRPC_API_KEY`: *API key from drpc.org*
 
+### Usage in your services
+
+To reduce cost and overhead use private network (`.railway.internal`) to connect to eRPC, from your backend services (such as indexers or mev bots):
+
+```js
+const result = await fetch("https://my-erpc.railway.internal/main/evm/1", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    method: "eth_getBlockByNumber",
+    params: ["0x1203319"],
+  }),
+});
+```
+
 ### Send your first request
 
 Within your `erpc` service, find the proxy URL under `Settings > Networking > Public Networking`.
 
 ```bash
-curl --location 'https://erpc-production-6dd3.up.railway.app/main/evm/1' \
+curl --location 'https://erpc-xxxxxxx.up.railway.app/main/evm/1' \
 --header 'Content-Type: application/json' \
 --data '{
     "method": "eth_getBlockByNumber",
