@@ -148,16 +148,7 @@ func (u *Upstream) prepareRequest(nr *common.NormalizedRequest) error {
 					nil,
 				)
 			}
-			err = common.NormalizeEvmHttpJsonRpc(nr, jsonRpcReq)
-			if err != nil {
-				return common.NewErrJsonRpcExceptionInternal(
-					0,
-					common.JsonRpcErrorServerSideException,
-					"failed to normalize jsonrpc request",
-					err,
-					nil,
-				)
-			}
+			common.NormalizeEvmHttpJsonRpc(nr, jsonRpcReq)
 		} else {
 			return common.NewErrJsonRpcExceptionInternal(
 				0,
