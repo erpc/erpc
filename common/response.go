@@ -166,7 +166,7 @@ func (r *NormalizedResponse) Error() error {
 
 func (r *NormalizedResponse) IsResultEmptyish() bool {
 	jrr, err := r.JsonRpcResponse()
-	
+
 	jrr.resultMu.RLock()
 	defer jrr.resultMu.RUnlock()
 

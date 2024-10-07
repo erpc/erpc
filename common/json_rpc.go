@@ -101,6 +101,9 @@ func (r *JsonRpcResponse) SetID(id interface{}) {
 }
 
 func (r *JsonRpcResponse) SetIDBytes(idBytes []byte) {
+	r.idMu.Lock()
+	defer r.idMu.Unlock()
+
 	r.idBytes = idBytes
 }
 
