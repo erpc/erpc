@@ -622,6 +622,7 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(err.Message, "invalid blockhash finalized") ||
 			strings.Contains(err.Message, "Expect block number from id") ||
 			strings.Contains(err.Message, "block not found") ||
+			strings.Contains(err.Message, "block height passed is invalid") ||
 			// Usually happens on Avalanche when querying a pretty recent block:
 			strings.Contains(err.Message, "cannot query unfinalized") ||
 			strings.Contains(err.Message, "height is not available") ||
