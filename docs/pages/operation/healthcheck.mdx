@@ -1,0 +1,15 @@
+import { Callout } from "nextra/components";
+
+# Healthcheck
+
+eRPC has a built-in `/healthcheck` endpoint that can be used to check the health of the service within Kubernetes, Railway, etc.
+
+```bash
+curl http://localhost:4000/healthcheck -v
+# < HTTP/1.1 200 OK
+# OK
+```
+
+<Callout type="info">
+Currently this endpoint checks active projects and their upstreams (i.e. those which received at least 1 request) for total error rate, and it will return a non-200 response if all endpoints have a +99% error rate.
+</Callout>

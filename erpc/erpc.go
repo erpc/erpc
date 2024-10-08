@@ -56,3 +56,7 @@ func (e *ERPC) GetNetwork(projectId string, networkId string) (*Network, error) 
 func (e *ERPC) GetProject(projectId string) (*PreparedProject, error) {
 	return e.projectsRegistry.GetProject(projectId)
 }
+
+func (e *ERPC) GetProjects() []*PreparedProject {
+	return e.projectsRegistry.GetAll()
+}

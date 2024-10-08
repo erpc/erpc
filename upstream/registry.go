@@ -460,3 +460,7 @@ func (u *UpstreamsRegistry) GetUpstreamsHealth() (*UpstreamsHealth, error) {
 		UpstreamScores:  upstreamScores,
 	}, nil
 }
+
+func (u *UpstreamsRegistry) GetMetricsTracker() *health.Tracker {
+	return u.metricsTracker
+}

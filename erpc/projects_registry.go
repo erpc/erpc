@@ -133,6 +133,14 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 	return pp, nil
 }
 
+func (r *ProjectsRegistry) GetAll() []*PreparedProject {
+	projects := make([]*PreparedProject, 0, len(r.preparedProjects))
+	for _, project := range r.preparedProjects {
+		projects = append(projects, project)
+	}
+	return projects
+}
+
 func (r *ProjectsRegistry) loadProject(projectId string) (*PreparedProject, error) {
 	for _, prjCfg := range r.staticProjects {
 		if prjCfg.Id == projectId {
