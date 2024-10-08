@@ -118,7 +118,7 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 				return "", 0, nil
 
 			case map[string]interface{}:
-				// Handle the third parameter as an object
+				// Handle the 2nd parameter as an object
 				if blockNumber, exists := secondParam["blockNumber"]; exists {
 					if bns, ok := blockNumber.(string); ok && strings.HasPrefix(bns, "0x") {
 						bni, err := HexToInt64(bns)
@@ -141,7 +141,7 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 				return "", 0, nil
 
 			default:
-				// If the second parameter is neither string nor map
+				// If the 2nd parameter is neither string nor map
 				return "", 0, nil
 			}
 		} else {
@@ -193,7 +193,7 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 				return "", 0, nil
 
 			case map[string]interface{}:
-				// Handle the third parameter as an object
+				// Handle the 3rd parameter as an object
 				if blockNumber, exists := thirdParam["blockNumber"]; exists {
 					if bns, ok := blockNumber.(string); ok && strings.HasPrefix(bns, "0x") {
 						bni, err := HexToInt64(bns)
@@ -216,7 +216,7 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 				return "", 0, nil
 
 			default:
-				// If the third parameter is neither string nor map
+				// If the 3rd parameter is neither string nor map
 				return "", 0, nil
 			}
 		} else {
