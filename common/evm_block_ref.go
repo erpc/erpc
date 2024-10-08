@@ -112,7 +112,7 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 					}
 					return strconv.FormatInt(bni, 10), bni, nil
 				}
-				return "", 0, fmt.Errorf("unsupported second parameter type for ExtractEvmBlockReferenceFromRequest: %+v", r.Params)
+				return "", 0, fmt.Errorf("unsupported 2nd parameter for method %s: %+v", r.Method, r.Params)
 
 			case map[string]interface{}:
 				// Handle the third parameter as an object
@@ -124,14 +124,14 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 						}
 						return strconv.FormatInt(bni, 10), bni, nil
 					}
-					return "", 0, fmt.Errorf("unsupported second parameter type for ExtractEvmBlockReferenceFromRequest: %+v", r.Params)
+					return "", 0, fmt.Errorf("unsupported 2nd parameter for method %s: %+v", r.Method, r.Params)
 				}
 
 				if blockHash, exists := secondParam["blockHash"]; exists {
 					if bh, ok := blockHash.(string); ok && strings.HasPrefix(bh, "0x") && len(bh) == 66 { // 32 bytes * 2 + "0x"
 						return bh, 0, nil
 					}
-					return "", 0, fmt.Errorf("invalid blockHash format for method %s: %+v", r.Method, r.Params)
+					return "", 0, fmt.Errorf("unsupported 2nd parameter for method %s: %+v", r.Method, r.Params)
 				}
 
 				// If neither blockNumber nor blockHash is provided
@@ -139,10 +139,10 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 
 			default:
 				// If the second parameter is neither string nor map
-				return "", 0, fmt.Errorf("unsupported second parameter type for ExtractEvmBlockReferenceFromRequest: %+v", r.Params)
+				return "", 0, fmt.Errorf("unsupported 2nd parameter for method %s: %+v", r.Method, r.Params)
 			}
 		} else {
-			return "", 0, fmt.Errorf("unexpected missing 3rd parameter for method %s: %+v", r.Method, r.Params)
+			return "", 0, fmt.Errorf("unexpected missing 2nd parameter for method %s: %+v", r.Method, r.Params)
 		}
 
 	case "eth_chainId",
