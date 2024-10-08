@@ -1436,5 +1436,18 @@
         "status": "0x1"
       }
     }
+  },
+  {
+    "request": {
+      "jsonrpc": "2.0",
+      "method": "debug_traceTransaction",
+      "params": [
+        "0xe6c2decd68012e0245599ddf93c232bf92884758393a502852cbf2f393e3d99c"
+      ]
+    },
+    "response": {
+      "jsonrpc": "2.0",
+      "result": "bigfake:50000000"
+    }
   }
 ]

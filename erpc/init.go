@@ -68,9 +68,8 @@ func Init(
 	// 3) Expose Transports
 	//
 	logger.Info().Msg("initializing transports")
-	var httpServer *HttpServer
 	if cfg.Server != nil {
-		httpServer = NewHttpServer(ctx, &logger, cfg.Server, erpcInstance)
+		httpServer := NewHttpServer(ctx, &logger, cfg.Server, erpcInstance)
 		go func() {
 			if err := httpServer.Start(&logger); err != nil {
 				if err != http.ErrServerClosed {

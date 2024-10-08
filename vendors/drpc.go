@@ -65,18 +65,19 @@ func (v *DrpcVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interf
 				),
 			)
 		} else if code == 32601 && strings.Contains(msg, "does not exist/is not available") {
-			// Intentionally consider missing methods as server-side exceptions
+			// Intentionally consider missing methods as client-side exceptions
 			// because dRPC might give a false error when their underlying nodes
-			// have issues e.g. you might falsly get "eth_blockNumber not supported" errors.
-			return common.NewErrEndpointServerSideException(
+			// have issues e.g. you might falsely get "eth_blockNumber not supported" errors.
+			// The reason we don't consider this as server-side exceptions is because
+			// we don't want to trigger the circuit breaker in such cases.
+			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					code,
-					common.JsonRpcErrorServerSideException,
+					common.JsonRpcErrorUnsupportedException,
 					msg,
 					nil,
 					details,
 				),
-				details,
 			)
 		}
 	}

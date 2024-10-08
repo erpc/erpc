@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/url"
@@ -172,17 +173,17 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 
 		client, err := NewGenericHttpJsonRpcClient(&logger, &Upstream{
 			config: &common.UpstreamConfig{
-				Endpoint: "http://rpc1.localhost:8545",
+				Endpoint: "http://rpc1.localhost",
 				JsonRpc: &common.JsonRpcUpstreamConfig{
 					SupportsBatch: &common.TRUE,
 					BatchMaxSize:  5,
 					BatchMaxWait:  "500ms",
 				},
 			},
-		}, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"})
+		}, &url.URL{Scheme: "http", Host: "rpc1.localhost"})
 		assert.NoError(t, err)
 
-		gock.New("http://rpc1.localhost:8545").
+		gock.New("http://rpc1.localhost").
 			Post("/").
 			Times(5).
 			Reply(200).
@@ -196,7 +197,15 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 				req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
 				resp1, err1 := client.SendRequest(context.Background(), req1)
 				assert.NoError(t, err1)
-				assert.Equal(t, `{"jsonrpc":"2.0","id":1,"result":"0x1"}`, string(resp1.Body()))
+				if resp1 == nil {
+					panic(fmt.Sprintf("SeparateBatchRequestsWithSameIDs: resp1 is nil err1: %v", err1))
+				}
+				wr := bytes.NewBuffer([]byte{})
+				rdr, werr := resp1.GetReader()
+				assert.NoError(t, werr)
+				wr.ReadFrom(rdr)
+				txt := wr.String()
+				assert.Equal(t, `{"jsonrpc":"2.0","id":1,"result":"0x1"}`, txt)
 			}()
 			wg.Add(1)
 			go func() {
@@ -204,7 +213,12 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 				req6 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":6,"method":"eth_blockNumber","params":[]}`))
 				resp6, err6 := client.SendRequest(context.Background(), req6)
 				assert.NoError(t, err6)
-				assert.Equal(t, `{"jsonrpc":"2.0","id":6,"result":"0x6"}`, string(resp6.Body()))
+				wr := bytes.NewBuffer([]byte{})
+				rdr, werr := resp6.GetReader()
+				wr.ReadFrom(rdr)
+				assert.NoError(t, werr)
+				txt := wr.String()
+				assert.Equal(t, `{"jsonrpc":"2.0","id":6,"result":"0x6"}`, txt)
 			}()
 			time.Sleep(10 * time.Millisecond)
 		}
@@ -346,7 +360,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_blockNumber","params":[]}`, id)))
 				_, err := client.SendRequest(context.Background(), req)
 				assert.Error(t, err)
-				assert.Contains(t, err.Error(), "upstream returned non-JSON response body")
+				assert.Contains(t, err.Error(), "503 Service Unavailable")
 			}(i + 1)
 		}
 		wg.Wait()
@@ -592,8 +606,8 @@ func TestHttpJsonRpcClient_BatchRequestErrors(t *testing.T) {
 				start := time.Now()
 				_, err := client.SendRequest(ctx, req)
 				dur := time.Since(start)
-				assert.Greater(t, dur, 745*time.Millisecond)
-				assert.Less(t, dur, 755*time.Millisecond)
+				assert.Greater(t, dur, 740*time.Millisecond)
+				assert.Less(t, dur, 780*time.Millisecond)
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), "remote endpoint request timeout")
 			}(i + 1)

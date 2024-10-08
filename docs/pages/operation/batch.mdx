@@ -4,6 +4,15 @@ import { Callout } from "nextra/components";
 
 eRPC automatically batches requests towards upstreams which support it. Additionally you can send batched requests (an array of multiple requests) to eRPC itself.
 
+<Callout emoji="👋">
+  Most often json-rpc batching for EVM is [anti-pattern](https://www.quicknode.com/guides/quicknode-products/apis/guide-to-efficient-rpc-requests#avoid-batching-multiple-rpc-requests), as it increases resource consumption without significant benefits:
+  - All requests will be as slow as the slowest request inside the batch.
+  - JSON handling will be more expensive causing memory spikes and OOM errors.
+  - Handling partial failures will be burdensome for the client (status code is always 200 OK).
+  - Many 3rd-party providers (Alchemy, Infura, etc) charge based on number of method calls, not actual requests.
+  - When running eRPC in private network locally close to your services, overhead of many single requests is negligible.
+</Callout>
+
 ### How it works?
 
 * When an upstream is configured to support batching, eRPC will accumulate as many requests as possible for that upstream, even if you send many single requests.

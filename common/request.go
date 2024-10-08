@@ -7,9 +7,12 @@ import (
 	"sync"
 
 	"github.com/bytedance/sonic"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/valyala/fasthttp"
 )
+
+const RequestContextKey ContextKey = "request"
 
 type RequestDirectives struct {
 	// Instruct the proxy to retry if response from the upstream appears to be empty
@@ -146,7 +149,7 @@ func (r *NormalizedRequest) Id() string {
 		idnode, err := sonic.Get(r.body, "id")
 		if err == nil {
 			ids, err := idnode.String()
-			if err == nil {
+			if err != nil {
 				idf, err := idnode.Float64()
 				if err != nil {
 					idn, err := idnode.Int64()
@@ -185,25 +188,25 @@ func (r *NormalizedRequest) ApplyDirectivesFromHttp(
 	queryArgs *fasthttp.Args,
 ) {
 	drc := &RequestDirectives{
-		RetryEmpty:    string(headers.Peek("X-ERPC-Retry-Empty")) != "false",
-		RetryPending:  string(headers.Peek("X-ERPC-Retry-Pending")) != "false",
-		SkipCacheRead: string(headers.Peek("X-ERPC-Skip-Cache-Read")) == "true",
-		UseUpstream:   string(headers.Peek("X-ERPC-Use-Upstream")),
+		RetryEmpty:    util.Mem2Str(headers.Peek("X-ERPC-Retry-Empty")) != "false",
+		RetryPending:  util.Mem2Str(headers.Peek("X-ERPC-Retry-Pending")) != "false",
+		SkipCacheRead: util.Mem2Str(headers.Peek("X-ERPC-Skip-Cache-Read")) == "true",
+		UseUpstream:   util.Mem2Str(headers.Peek("X-ERPC-Use-Upstream")),
 	}
 
-	if useUpstream := string(queryArgs.Peek("use-upstream")); useUpstream != "" {
+	if useUpstream := util.Mem2Str(queryArgs.Peek("use-upstream")); useUpstream != "" {
 		drc.UseUpstream = useUpstream
 	}
 
-	if retryEmpty := string(queryArgs.Peek("retry-empty")); retryEmpty != "" {
+	if retryEmpty := util.Mem2Str(queryArgs.Peek("retry-empty")); retryEmpty != "" {
 		drc.RetryEmpty = retryEmpty != "false"
 	}
 
-	if retryPending := string(queryArgs.Peek("retry-pending")); retryPending != "" {
+	if retryPending := util.Mem2Str(queryArgs.Peek("retry-pending")); retryPending != "" {
 		drc.RetryPending = retryPending != "false"
 	}
 
-	if skipCacheRead := string(queryArgs.Peek("skip-cache-read")); skipCacheRead != "" {
+	if skipCacheRead := util.Mem2Str(queryArgs.Peek("skip-cache-read")); skipCacheRead != "" {
 		drc.SkipCacheRead = skipCacheRead != "false"
 	}
 
@@ -249,7 +252,7 @@ func (r *NormalizedRequest) JsonRpcRequest() (*JsonRpcRequest, error) {
 	}
 
 	rpcReq := new(JsonRpcRequest)
-	if err := sonic.Unmarshal(r.body, rpcReq); err != nil {
+	if err := SonicCfg.Unmarshal(r.body, rpcReq); err != nil {
 		return nil, NewErrJsonRpcRequestUnmarshal(err)
 	}
 
@@ -263,7 +266,7 @@ func (r *NormalizedRequest) JsonRpcRequest() (*JsonRpcRequest, error) {
 	}
 
 	if rpcReq.ID == nil {
-		rpcReq.ID = rand.Intn(math.MaxInt32) // #nosec G404
+		rpcReq.ID = float64(rand.Intn(math.MaxInt32)) // #nosec G404
 	}
 
 	r.jsonRpcRequest = rpcReq
@@ -284,8 +287,7 @@ func (r *NormalizedRequest) Method() (string, error) {
 	if len(r.body) > 0 {
 		method, err := sonic.Get(r.body, "method")
 		if err != nil {
-			r.method = "n/a"
-			return r.method, err
+			return "", NewErrJsonRpcRequestUnmarshal(err)
 		}
 		m, err := method.String()
 		r.method = m
@@ -304,7 +306,7 @@ func (r *NormalizedRequest) MarshalZerologObject(e *zerolog.Event) {
 		if r.jsonRpcRequest != nil {
 			e.Object("jsonRpc", r.jsonRpcRequest)
 		} else if r.body != nil {
-			e.Str("body", string(r.body))
+			e.Str("body", util.Mem2Str(r.body))
 		}
 	}
 }
@@ -344,11 +346,13 @@ func (r *NormalizedRequest) MarshalJSON() ([]byte, error) {
 	}
 
 	if r.jsonRpcRequest != nil {
-		return sonic.Marshal(r.jsonRpcRequest)
+		return SonicCfg.Marshal(map[string]interface{}{
+			"method": r.jsonRpcRequest.Method,
+		})
 	}
 
 	if m, _ := r.Method(); m != "" {
-		return sonic.Marshal(map[string]interface{}{
+		return SonicCfg.Marshal(map[string]interface{}{
 			"method": m,
 		})
 	}
