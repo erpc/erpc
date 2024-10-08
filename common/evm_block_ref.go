@@ -128,7 +128,7 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 				}
 
 				if blockHash, exists := secondParam["blockHash"]; exists {
-					if bh, ok := blockHash.(string); ok && strings.HasPrefix(bh, "0x") && len(bh) == 66 { // 32 bytes * 2 + "0x"
+					if bh, ok := blockHash.(string); ok && strings.HasPrefix(bh, "0x") {
 						return bh, 0, nil
 					}
 					return "", 0, fmt.Errorf("unsupported 2nd parameter for method %s: %+v", r.Method, r.Params)
@@ -200,7 +200,7 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 				}
 
 				if blockHash, exists := thirdParam["blockHash"]; exists {
-					if bh, ok := blockHash.(string); ok && strings.HasPrefix(bh, "0x") && len(bh) == 66 { // 32 bytes * 2 + "0x"
+					if bh, ok := blockHash.(string); ok && strings.HasPrefix(bh, "0x") {
 						return bh, 0, nil
 					}
 					return "", 0, fmt.Errorf("unsupported 3rd parameter for method %s: %+v", r.Method, r.Params)
