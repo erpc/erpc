@@ -29,7 +29,7 @@ type EvmStatePoller struct {
 	// - When self-hosted nodes have issues flipping back and forth between syncing state.
 	// - When a third-party provider is using a degraded network of upstream nodes that are in different states.
 	//
-	// To save memory, 0 means we haven't checked, 1 means we have checked but it's still syncing OR
+	// To save memory, 0 means we haven't checked, 1+ means we have checked but it's still syncing OR
 	// we haven't received enough "synced" responses to assume it's fully synced.
 	synced int8
 
@@ -315,28 +315,11 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 		return 0, jrr.Error
 	}
 
-	// If result is nil or has an invalid structure, return an error
-	result, err := jrr.ParsedResult()
+	numberStr, err := jrr.PeekStringByPath("number")
 	if err != nil {
-		return 0, err
-	}
-	resultMap, ok := result.(map[string]interface{})
-	if !ok || resultMap == nil || resultMap["number"] == nil {
 		return 0, &common.BaseError{
 			Code:    "ErrEvmStatePoller",
-			Message: "block not found",
-			Details: map[string]interface{}{
-				"blockTag": blockTag,
-				"result":   jrr.Result,
-			},
-		}
-	}
-
-	numberStr, ok := resultMap["number"].(string)
-	if !ok {
-		return 0, &common.BaseError{
-			Code:    "ErrEvmStatePoller",
-			Message: "block number is not a string",
+			Message: "cannot get block number from block data",
 			Details: map[string]interface{}{
 				"blockTag": blockTag,
 				"result":   jrr.Result,
@@ -370,20 +353,17 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 		return false, jrr.Error
 	}
 
-	res, err := jrr.ParsedResult()
+	var syncing bool
+	err = common.SonicCfg.Unmarshal(jrr.Result, &syncing)
 	if err != nil {
-		return false, err
+		return false, &common.BaseError{
+			Code:    "ErrEvmStatePoller",
+			Message: "cannot get syncing state result type (must be boolean)",
+			Details: map[string]interface{}{
+				"result": util.Mem2Str(jrr.Result),
+			},
+		}
 	}
 
-	if syncing, ok := res.(bool); ok {
-		return syncing, nil
-	}
-
-	return false, &common.BaseError{
-		Code:    "ErrEvmStatePoller",
-		Message: "invalid syncing state result type (must be boolean)",
-		Details: map[string]interface{}{
-			"result": res,
-		},
-	}
+	return syncing, nil
 }

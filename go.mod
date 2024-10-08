@@ -5,7 +5,7 @@ go 1.22.3
 require (
 	github.com/IGLOU-EU/go-wildcard/v2 v2.0.2
 	github.com/aws/aws-sdk-go v1.55.4
-	github.com/bytedance/sonic v1.12.2
+	github.com/bytedance/sonic v1.12.3
 	github.com/ethereum/go-ethereum v1.14.7
 	github.com/failsafe-go/failsafe-go v0.6.8
 	github.com/golang-jwt/jwt/v4 v4.5.0
@@ -22,10 +22,12 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
+replace github.com/failsafe-go/failsafe-go v0.6.8 => github.com/aramalipoor/failsafe-go v0.0.0-20241002125322-de01986d3951
+
 require (
 	github.com/andybalholm/brotli v1.1.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/bits-and-blooms/bitset v1.13.0 // indirect
+	github.com/bits-and-blooms/bitset v1.14.2 // indirect
 	github.com/btcsuite/btcd/btcec/v2 v2.3.2 // indirect
 	github.com/bytedance/sonic/loader v0.2.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

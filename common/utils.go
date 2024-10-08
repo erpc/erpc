@@ -10,6 +10,8 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 )
 
+type ContextKey string
+
 // HexToUint64 converts a hexadecimal string to its decimal representation as a string.
 func HexToUint64(hexValue string) (uint64, error) {
 	// Create a new big.Int
@@ -34,8 +36,6 @@ func HexToInt64(hexValue string) (int64, error) {
 	hexValue = strings.TrimPrefix(hexValue, "0x")
 	return strconv.ParseInt(hexValue, 16, 64)
 }
-
-type ContextKey string
 
 func NormalizeHex(value interface{}) (string, error) {
 	if bn, ok := value.(string); ok {

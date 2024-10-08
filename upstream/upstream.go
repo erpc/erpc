@@ -143,21 +143,12 @@ func (u *Upstream) prepareRequest(nr *common.NormalizedRequest) error {
 				return common.NewErrJsonRpcExceptionInternal(
 					0,
 					common.JsonRpcErrorParseException,
-					"failed to unmarshal jsonrpc request",
+					"failed to unmarshal json-rpc request",
 					err,
 					nil,
 				)
 			}
-			err = common.NormalizeEvmHttpJsonRpc(nr, jsonRpcReq)
-			if err != nil {
-				return common.NewErrJsonRpcExceptionInternal(
-					0,
-					common.JsonRpcErrorServerSideException,
-					"failed to normalize jsonrpc request",
-					err,
-					nil,
-				)
-			}
+			common.NormalizeEvmHttpJsonRpc(nr, jsonRpcReq)
 		} else {
 			return common.NewErrJsonRpcExceptionInternal(
 				0,
@@ -296,7 +287,11 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 				if jrr != nil && jrr.Error == nil {
 					req.SetLastValidResponse(resp)
 				}
-				lg.Debug().Err(errCall).Str("response", resp.String()).Msgf("upstream call result received")
+				if lg.GetLevel() == zerolog.TraceLevel {
+					lg.Debug().Err(errCall).Interface("response", resp).Msgf("upstream call result received")
+				} else {
+					lg.Debug().Err(errCall).Msgf("upstream call result received")
+				}
 			} else {
 				lg.Debug().Err(errCall).Msgf("upstream call result received")
 			}
@@ -377,15 +372,19 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 }
 
 func (u *Upstream) Executor() failsafe.Executor[*common.NormalizedResponse] {
+	// TODO extend this to per-network and/or per-method because of either upstream performance diff
+	// or if user wants diff policies (retry/cb/integrity) per network/method.
 	return u.failsafeExecutor
 }
 
 func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 	pr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_chainId","params":[]}`))
+
 	resp, err := u.Forward(ctx, pr)
 	if err != nil {
 		return "", err
 	}
+
 	jrr, err := resp.JsonRpcResponse()
 	if err != nil {
 		return "", err
@@ -393,16 +392,15 @@ func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 	if jrr.Error != nil {
 		return "", jrr.Error
 	}
-
-	res, err := jrr.ParsedResult()
+	var chainId string
+	err = common.SonicCfg.Unmarshal(jrr.Result, &chainId)
 	if err != nil {
 		return "", err
 	}
-	hex, err := common.NormalizeHex(res)
+	hex, err := common.NormalizeHex(chainId)
 	if err != nil {
 		return "", err
 	}
-
 	dec, err := common.HexToUint64(hex)
 	if err != nil {
 		return "", err
@@ -438,6 +436,7 @@ func (u *Upstream) IgnoreMethod(method string) {
 	}
 
 	u.methodCheckResultsMu.Lock()
+	// TODO make this per-network vs global because some upstreams support multiple networks (e.g. alchemy://)
 	u.config.IgnoreMethods = append(u.config.IgnoreMethods, method)
 	if u.methodCheckResults == nil {
 		u.methodCheckResults = map[string]bool{}

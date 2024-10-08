@@ -5,10 +5,16 @@ import { Rate } from 'k6/metrics';
 const errorRate = new Rate('errors');
 
 export const options = {
-  stages: [
-    { duration: '20s', target: 10000 },
-    { duration: '5m', target: 10000 },
-  ],
+  scenarios: {    
+    constant_request_rate: {
+      executor: 'constant-arrival-rate',
+      rate: 500,
+      timeUnit: '1s',
+      duration: '30m',
+      preAllocatedVUs: 1000,
+      maxVUs: 1000,
+    },
+  },
   ext: {
     loadimpact: {
       distribution: {
@@ -27,6 +33,13 @@ const samplePayload = JSON.stringify({
     false
   ]
 });
+// const samplePayload = JSON.stringify({
+//   "jsonrpc": "2.0",
+//   "method": "debug_traceTransaction",
+//   "params": [
+//     "0xe6c2decd68012e0245599ddf93c232bf92884758393a502852cbf2f393e3d99c"
+//   ]
+// });
 
 export default function () {
   const params = {
@@ -39,8 +52,13 @@ export default function () {
   check(res, {
     'status is 200': (r) => r.status === 200,
     'response has no error': (r) => {
-      const body = JSON.parse(r.body);
-      return body && (body.error === undefined || body.error === null);
+      try {
+        const body = JSON.parse(r.body);
+        return body && (body.error === undefined || body.error === null);
+      } catch (e) {
+        console.log(`Unmarshal error: ${e} for body: ${r.body}`);
+        return false;
+      }
     },
   });
 

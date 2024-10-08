@@ -204,9 +204,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	var execution failsafe.Execution[*common.NormalizedResponse]
 	var errorsByUpstream = map[string]error{}
 
+	ectx := context.WithValue(ctx, common.RequestContextKey, req)
+
 	i := 0
 	resp, execErr := n.failsafeExecutor.
-		WithContext(ctx).
+		WithContext(ectx).
 		GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
 			req.Lock()
 			execution = exec
@@ -239,15 +241,18 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 				ulg := lg.With().Str("upstreamId", u.Config().Id).Logger()
 
-				rp, er := tryForward(u, exec.Context(), &ulg)
-				resp, err := n.normalizeResponse(req, rp, er)
+				resp, err := tryForward(u, exec.Context(), &ulg)
+				if e := n.normalizeResponse(req, resp); e != nil {
+					ulg.Error().Err(e).Msgf("failed to normalize response")
+					err = e
+				}
 
-				isClientErr := err != nil && common.HasErrorCode(err, common.ErrCodeEndpointClientSideException)
+				isClientErr := common.IsClientError(err)
 				isHedged := exec.Hedges() > 0
 
-				if isHedged && err != nil && errors.Is(err, context.Canceled) {
+				if isHedged && (err != nil && errors.Is(err, context.Canceled)) {
 					ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
-					return nil, common.NewErrUpstreamHedgeCancelled(u.Config().Id)
+					return nil, common.NewErrUpstreamHedgeCancelled(u.Config().Id, context.Cause(exec.Context()))
 				}
 				if isHedged {
 					ulg.Debug().Msgf("forwarded hedged request to upstream")
@@ -334,7 +339,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 
 		if n.cacheDal != nil {
+			resp.RLock()
 			go (func(resp *common.NormalizedResponse) {
+				defer resp.RUnlock()
 				c, cancel := context.WithTimeoutCause(context.Background(), 10*time.Second, errors.New("cache driver timeout during set"))
 				defer cancel()
 				err := n.cacheDal.Set(c, req, resp)
@@ -355,6 +362,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 }
 
 func (n *Network) EvmIsBlockFinalized(blockNumber int64) (bool, error) {
+	if n == nil || n.evmStatePollers == nil || len(n.evmStatePollers) == 0 {
+		return false, nil
+	}
+
 	for _, poller := range n.evmStatePollers {
 		if fin, err := poller.IsBlockFinalized(blockNumber); err != nil {
 			if common.HasErrorCode(err, common.ErrCodeFinalizedBlockUnavailable) {
@@ -399,22 +410,16 @@ func (n *Network) enrichStatePoller(method string, req *common.NormalizedRequest
 			if blkTag, ok := jrq.Params[0].(string); ok {
 				if blkTag == "finalized" || blkTag == "latest" {
 					jrs, _ := resp.JsonRpcResponse()
-					if jrs != nil {
-						res, err := jrs.ParsedResult()
+					bnh, err := jrs.PeekStringByPath("number")
+					if err == nil {
+						blockNumber, err := common.HexToInt64(bnh)
 						if err == nil {
-							blk, ok := res.(map[string]interface{})
+							poller, ok := n.evmStatePollers[resp.Upstream().Config().Id]
 							if ok {
-								bnh, ok := blk["number"].(string)
-								if ok {
-									blockNumber, err := common.HexToInt64(bnh)
-									if err == nil {
-										poller := n.evmStatePollers[resp.Upstream().Config().Id]
-										if blkTag == "finalized" {
-											poller.SuggestFinalizedBlock(blockNumber)
-										} else if blkTag == "latest" {
-											poller.SuggestLatestBlock(blockNumber)
-										}
-									}
+								if blkTag == "finalized" {
+									poller.SuggestFinalizedBlock(blockNumber)
+								} else if blkTag == "latest" {
+									poller.SuggestLatestBlock(blockNumber)
 								}
 							}
 						}
@@ -425,47 +430,23 @@ func (n *Network) enrichStatePoller(method string, req *common.NormalizedRequest
 	}
 }
 
-func (n *Network) normalizeResponse(req *common.NormalizedRequest, resp *common.NormalizedResponse, err error) (*common.NormalizedResponse, error) {
+func (n *Network) normalizeResponse(req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
 	switch n.Architecture() {
 	case common.ArchitectureEvm:
 		if resp != nil {
 			// This ensures that even if upstream gives us wrong/missing ID we'll
 			// use correct one from original incoming request.
-			jrr, _ := resp.JsonRpcResponse()
-			if jrr != nil {
-				jrq, _ := req.JsonRpcRequest()
-				if jrq != nil {
-					jrr.ID = jrq.ID
+			if jrr, err := resp.JsonRpcResponse(); err == nil {
+				jrq, err := req.JsonRpcRequest()
+				jrr.SetID(jrq.ID)
+				if err != nil {
+					return err
 				}
 			}
 		}
-
-		if err == nil {
-			return resp, nil
-		}
-
-		if common.HasErrorCode(err, common.ErrCodeJsonRpcExceptionInternal) {
-			return resp, err
-		} else if common.HasErrorCode(err, common.ErrCodeJsonRpcRequestUnmarshal) {
-			return resp, common.NewErrJsonRpcExceptionInternal(
-				0,
-				common.JsonRpcErrorParseException,
-				"failed to parse json-rpc request",
-				err,
-				nil,
-			)
-		}
-
-		return resp, common.NewErrJsonRpcExceptionInternal(
-			0,
-			common.JsonRpcErrorServerSideException,
-			fmt.Sprintf("failed request on evm network %s", n.NetworkId),
-			err,
-			nil,
-		)
-	default:
-		return resp, err
 	}
+
+	return nil
 }
 
 func (n *Network) acquireRateLimitPermit(req *common.NormalizedRequest) error {

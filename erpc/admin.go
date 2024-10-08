@@ -29,8 +29,12 @@ func (p *PreparedProject) HandleAdminRequest(ctx context.Context, nq *common.Nor
 			// TODO should we just return 'relevant' budgets to avoid irrelevant data?
 			RateLimitBudgets: p.rateLimitersRegistry.GetBudgets(),
 		}
+		idBytes, err := common.SonicCfg.Marshal(jrr.ID)
+		if err != nil {
+			return nil, err
+		}
 		jrrs, err := common.NewJsonRpcResponse(
-			jrr.ID,
+			idBytes,
 			result,
 			nil,
 		)
@@ -47,8 +51,12 @@ func (p *PreparedProject) HandleAdminRequest(ctx context.Context, nq *common.Nor
 		if err != nil {
 			return nil, err
 		}
+		idBytes, err := common.SonicCfg.Marshal(jrr.ID)
+		if err != nil {
+			return nil, err
+		}
 		jrrs, err := common.NewJsonRpcResponse(
-			jrr.ID,
+			idBytes,
 			health,
 			nil,
 		)

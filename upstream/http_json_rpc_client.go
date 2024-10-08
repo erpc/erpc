@@ -3,17 +3,15 @@ package upstream
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/bytedance/sonic"
+	"github.com/bytedance/sonic/ast"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
@@ -220,7 +218,8 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 			)
 			continue
 		}
-		req.request.RLock()
+		req.request.Lock()
+		jrReq.Lock()
 		batchReq = append(batchReq, common.JsonRpcRequest{
 			JSONRPC: jrReq.JSONRPC,
 			Method:  jrReq.Method,
@@ -229,9 +228,13 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 		})
 	}
 
-	requestBody, err := sonic.Marshal(batchReq)
+	requestBody, err := common.SonicCfg.Marshal(batchReq)
 	for _, req := range requests {
-		req.request.RUnlock()
+		req.request.Unlock()
+		jrReq, _ := req.request.JsonRpcRequest()
+		if jrReq != nil {
+			jrReq.Unlock()
+		}
 	}
 	if err != nil {
 		for _, req := range requests {
@@ -242,62 +245,47 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 
 	c.logger.Debug().Msgf("sending batch json rpc POST request to %s: %s", c.Url.Host, requestBody)
 
-	httpReq, errReq := http.NewRequestWithContext(batchCtx, "POST", c.Url.String(), bytes.NewBuffer(requestBody))
+	reqStartTime := time.Now()
+	httpReq, err := http.NewRequestWithContext(batchCtx, "POST", c.Url.String(), bytes.NewReader(requestBody))
+	if err != nil {
+		for _, req := range requests {
+			req.err <- &common.BaseError{
+				Code:    "ErrHttp",
+				Message: fmt.Sprintf("%v", err),
+				Details: map[string]interface{}{
+					"url":        c.Url.String(),
+					"upstreamId": c.upstream.Config().Id,
+					"request":    requestBody,
+				},
+			}
+		}
+		return
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("User-Agent", fmt.Sprintf("erpc (Project/%s; Budget/%s)", c.upstream.ProjectId, c.upstream.config.RateLimitBudget))
-	if errReq != nil {
-		for _, req := range requests {
-			req.err <- errReq
-		}
-		return
-	}
+	httpReq.Header.Set("User-Agent", fmt.Sprintf("erpc (%s/%s; Project/%s; Budget/%s)", common.ErpcVersion, common.ErpcCommitSha, c.upstream.ProjectId, c.upstream.config.RateLimitBudget))
 
-	batchRespChan := make(chan *http.Response, 1)
-	batchErrChan := make(chan error, 1)
-
-	startedAt := time.Now()
-	go func() {
-		resp, err := c.httpClient.Do(httpReq)
-		if err != nil {
-			if resp != nil {
-				er := resp.Body.Close()
-				if er != nil {
-					c.logger.Error().Err(er).Msgf("failed to close response body")
-				}
+	// Make the HTTP request
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			for _, req := range requests {
+				req.err <- common.NewErrEndpointRequestTimeout(time.Since(reqStartTime))
 			}
-			batchErrChan <- err
 		} else {
-			batchRespChan <- resp
-		}
-	}()
-
-	select {
-	case <-batchCtx.Done():
-		for _, req := range requests {
-			err := batchCtx.Err()
-			if errors.Is(err, context.DeadlineExceeded) {
-				err = common.NewErrEndpointRequestTimeout(time.Since(startedAt))
+			for _, req := range requests {
+				req.err <- err
 			}
-			req.err <- err
 		}
-		return
-	case err := <-batchErrChan:
-		for _, req := range requests {
-			req.err <- common.NewErrEndpointServerSideException(
-				fmt.Errorf(strings.ReplaceAll(err.Error(), c.Url.String(), "")),
-				nil,
-			)
-		}
-		return
-	case resp := <-batchRespChan:
-		c.processBatchResponse(requests, resp)
 		return
 	}
+
+	c.processBatchResponse(requests, resp)
 }
 
 func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}]*batchRequest, resp *http.Response) {
 	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
+
+	bodyBytes, err := util.ReadAll(resp.Body, 128*1024, int(resp.ContentLength)) // 128KB
 	if err != nil {
 		for _, req := range requests {
 			req.err <- err
@@ -305,77 +293,132 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 		return
 	}
 
-	if c.logger.GetLevel() == zerolog.DebugLevel {
-		c.logger.Debug().Str("body", string(respBody)).Msgf("received batch response")
-	}
+	searcher := ast.NewSearcher(util.Mem2Str(bodyBytes))
+	searcher.CopyReturn = false
+	searcher.ConcurrentRead = false
+	searcher.ValidateJSON = false
 
-	// Usually when upstream is dead and returns a non-JSON response body
-	if respBody[0] == '<' {
-		for _, req := range requests {
-			req.err <- common.NewErrEndpointServerSideException(
-				fmt.Errorf("upstream returned non-JSON response body"),
-				map[string]interface{}{
-					"statusCode": resp.StatusCode,
-					"headers":    resp.Header,
-					"body":       string(respBody),
-				},
-			)
-		}
-		return
-	}
-
-	var batchResp []json.RawMessage
-	err = sonic.Unmarshal(respBody, &batchResp)
+	rootNode, err := searcher.GetByPath()
 	if err != nil {
-		// Try parsing as single json-rpc object,
-		// some providers return a single object on some errors even when request is batch.
-		// this is a workaround to handle those cases.
-		nr := common.NewNormalizedResponse().WithBody(respBody)
-		for _, br := range requests {
-			inr, err := common.CopyResponseForRequest(nr, br.request)
-			if err != nil {
-				br.err <- err
-				continue
+		jrResp := &common.JsonRpcResponse{}
+		err = jrResp.ParseError(util.Mem2Str(bodyBytes))
+		if err != nil {
+			for _, req := range requests {
+				req.err <- err
 			}
-			err = c.normalizeJsonRpcError(resp, inr)
+			return
+		}
+		for _, req := range requests {
+			jrr, err := jrResp.Clone()
 			if err != nil {
-				br.err <- err
+				req.err <- err
 			} else {
-				br.response <- nr
+				nr := common.NewNormalizedResponse().
+					WithRequest(req.request).
+					WithJsonRpcResponse(jrr)
+				err = c.normalizeJsonRpcError(resp, nr)
+				req.err <- err
 			}
 		}
 		return
 	}
 
-	for _, rawResp := range batchResp {
-		var jrResp common.JsonRpcResponse
-		err := sonic.Unmarshal(rawResp, &jrResp)
+	if rootNode.TypeSafe() == ast.V_ARRAY {
+		arrNodes, err := rootNode.ArrayUseNode()
 		if err != nil {
-			continue
+			for _, req := range requests {
+				req.err <- err
+			}
+			return
 		}
-
-		if req, ok := requests[jrResp.ID]; ok {
-			nr := common.NewNormalizedResponse().WithRequest(req.request).WithBody(rawResp)
+		for _, elemNode := range arrNodes {
+			var id interface{}
+			jrResp, err := getJsonRpcResponseFromNode(elemNode)
+			if jrResp != nil {
+				id = jrResp.ID()
+			}
+			if id == nil {
+				c.logger.Warn().Msgf("unexpected response received without ID: %s", util.Mem2Str(bodyBytes))
+			} else if req, ok := requests[id]; ok {
+				nr := common.NewNormalizedResponse().WithRequest(req.request).WithJsonRpcResponse(jrResp)
+				if err != nil {
+					req.err <- err
+				} else {
+					err := c.normalizeJsonRpcError(resp, nr)
+					if err != nil {
+						req.err <- err
+					} else {
+						req.response <- nr
+					}
+				}
+				delete(requests, id)
+			} else {
+				c.logger.Warn().Msgf("unexpected response received with ID: %s", id)
+			}
+		}
+		// Handle any remaining requests that didn't receive a response
+		for _, req := range requests {
+			req.err <- fmt.Errorf("no response received for request ID: %s", req.request.Id())
+		}
+	} else if rootNode.TypeSafe() == ast.V_OBJECT {
+		// Single object response
+		jrResp, err := getJsonRpcResponseFromNode(rootNode)
+		if err != nil {
+			for _, req := range requests {
+				req.err <- err
+			}
+			return
+		}
+		for _, req := range requests {
+			nr := common.NewNormalizedResponse().WithRequest(req.request).WithJsonRpcResponse(jrResp)
 			err := c.normalizeJsonRpcError(resp, nr)
 			if err != nil {
 				req.err <- err
 			} else {
 				req.response <- nr
 			}
-			delete(requests, jrResp.ID)
 		}
+	} else {
+		// Unexpected response type
+		for _, req := range requests {
+			req.err <- common.NewErrUpstreamMalformedResponse(fmt.Errorf("unexpected response type (not array nor object): %s", util.Mem2Str(bodyBytes)), c.upstream.Config().Id)
+		}
+	}
+}
+
+func getJsonRpcResponseFromNode(rootNode ast.Node) (*common.JsonRpcResponse, error) {
+	idNode := rootNode.GetByPath("id")
+	rawID, _ := idNode.Raw()
+	resultNode := rootNode.GetByPath("result")
+	rawResult, rawResultErr := resultNode.Raw()
+	errorNode := rootNode.GetByPath("error")
+	rawError, rawErrorErr := errorNode.Raw()
+
+	if rawResultErr != nil && rawErrorErr != nil {
+		var jrResp *common.JsonRpcResponse
+
+		if rawID != "" {
+			jrResp.SetIDBytes(util.Str2Mem(rawID))
+		}
+
+		cause := fmt.Sprintf("cannot parse json rpc response from upstream, for result: %s, for error: %s", rawResult, rawError)
+		jrResp = &common.JsonRpcResponse{
+			Result: util.Str2Mem(rawResult),
+			Error: common.NewErrJsonRpcExceptionExternal(
+				int(common.JsonRpcErrorParseException),
+				cause,
+				"",
+			),
+		}
+
+		return jrResp, nil
 	}
 
-	// Handle any remaining requests that didn't receive a response which is very unexpected
-	// it means the upstream response did not include any item with request.ID for one or more the requests
-	for _, req := range requests {
-		jrReq, err := req.request.JsonRpcRequest()
-		if err != nil {
-			req.err <- fmt.Errorf("unexpected no response received for request: %w", err)
-		} else {
-			req.err <- fmt.Errorf("unexpected no response received for request %s", jrReq.ID)
-		}
-	}
+	return common.NewJsonRpcResponseFromBytes(
+		util.Str2Mem(rawID),
+		util.Str2Mem(rawResult),
+		util.Str2Mem(rawError),
+	)
 }
 
 func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
@@ -386,12 +429,15 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 			c.upstream.Config().Id,
 			req.NetworkId(),
 			jrReq.Method,
-			0, 0, 0, 0,
+			0,
+			0,
+			0,
+			0,
 		)
 	}
 
 	req.RLock()
-	requestBody, err := sonic.Marshal(common.JsonRpcRequest{
+	requestBody, err := common.SonicCfg.Marshal(common.JsonRpcRequest{
 		JSONRPC: jrReq.JSONRPC,
 		Method:  jrReq.Method,
 		Params:  jrReq.Params,
@@ -427,13 +473,11 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		}
 		return nil, err
 	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
 
-	nr := common.NewNormalizedResponse().WithRequest(req).WithBody(respBody)
+	nr := common.NewNormalizedResponse().
+		WithRequest(req).
+		WithBody(resp.Body).
+		WithExpectedSize(int(resp.ContentLength))
 
 	return nr, c.normalizeJsonRpcError(resp, nr)
 }
@@ -451,7 +495,6 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 				"upstreamId": c.upstream.Config().Id,
 				"statusCode": r.StatusCode,
 				"headers":    r.Header,
-				"body":       string(nr.Body()),
 			},
 		)
 		return e
@@ -474,7 +517,6 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 			"upstreamId": c.upstream.Config().Id,
 			"statusCode": r.StatusCode,
 			"headers":    r.Header,
-			"body":       string(nr.Body()),
 		},
 	)
 
@@ -487,7 +529,7 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 
 		var details map[string]interface{} = make(map[string]interface{})
 		details["statusCode"] = r.StatusCode
-		details["headers"] = util.ExtractUsefulHeaders(r.Header)
+		details["headers"] = util.ExtractUsefulHeaders(r)
 
 		if ver := getVendorSpecificErrorIfAny(r, nr, jr, details); ver != nil {
 			return ver
@@ -549,6 +591,7 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		} else if r.StatusCode == 429 ||
 			strings.Contains(err.Message, "has exceeded") ||
 			strings.Contains(err.Message, "Exceeded the quota") ||
+			strings.Contains(err.Message, "Too many requests") ||
 			strings.Contains(err.Message, "under too much load") {
 
 			return common.NewErrEndpointCapacityExceeded(
@@ -576,7 +619,10 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(err.Message, "unknown block") ||
 			strings.Contains(err.Message, "Unknown block") ||
 			strings.Contains(err.Message, "height must be less than or equal") ||
-			strings.Contains(err.Message, "finalized block not found") ||
+			strings.Contains(err.Message, "invalid blockhash finalized") ||
+			strings.Contains(err.Message, "Expect block number from id") ||
+			strings.Contains(err.Message, "block not found") ||
+			strings.Contains(err.Message, "block height passed is invalid") ||
 			// Usually happens on Avalanche when querying a pretty recent block:
 			strings.Contains(err.Message, "cannot query unfinalized") ||
 			strings.Contains(err.Message, "height is not available") ||
@@ -617,7 +663,10 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if strings.Contains(err.Message, "reverted") || strings.Contains(err.Message, "VM execution error") {
+		} else if strings.Contains(err.Message, "reverted") ||
+			strings.Contains(err.Message, "VM execution error") ||
+			strings.Contains(err.Message, "transaction: revert") ||
+			strings.Contains(err.Message, "VM Exception") {
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -627,7 +676,9 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if strings.Contains(err.Message, "insufficient funds") || strings.Contains(err.Message, "out of gas") {
+		} else if strings.Contains(err.Message, "insufficient funds") ||
+			strings.Contains(err.Message, "insufficient balance") ||
+			strings.Contains(err.Message, "out of gas") {
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -637,7 +688,9 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if strings.Contains(err.Message, "not found") || strings.Contains(err.Message, "does not exist/is not available") {
+		} else if strings.Contains(err.Message, "not found") ||
+			strings.Contains(err.Message, "does not exist") ||
+			strings.Contains(err.Message, "is not available") {
 			if strings.Contains(err.Message, "Method") || strings.Contains(err.Message, "method") {
 				return common.NewErrEndpointUnsupported(
 					common.NewErrJsonRpcExceptionInternal(
@@ -648,7 +701,10 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 						details,
 					),
 				)
-			} else if strings.Contains(err.Message, "header") {
+			} else if strings.Contains(err.Message, "header") ||
+				strings.Contains(err.Message, "block") ||
+				strings.Contains(err.Message, "Header") ||
+				strings.Contains(err.Message, "Block") {
 				return common.NewErrEndpointMissingData(
 					common.NewErrJsonRpcExceptionInternal(
 						int(code),
@@ -710,26 +766,21 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 	}
 
 	// There's a special case for certain clients that return a normal response for reverts:
-	if jr != nil && jr.Result != nil {
-		res, err := jr.ParsedResult()
-		if err != nil {
-			return err
-		}
-		if dt, ok := res.(string); ok {
-			// keccak256("Error(string)")
-			if strings.HasPrefix(dt, "0x08c379a0") {
-				return common.NewErrEndpointClientSideException(
-					common.NewErrJsonRpcExceptionInternal(
-						0,
-						common.JsonRpcErrorEvmReverted,
-						"transaction reverted",
-						nil,
-						map[string]interface{}{
-							"data": dt,
-						},
-					),
-				)
-			}
+	if jr != nil {
+		dt := util.Mem2Str(jr.Result)
+		// keccak256("Error(string)")
+		if strings.HasPrefix(dt, "0x08c379a0") {
+			return common.NewErrEndpointClientSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					0,
+					common.JsonRpcErrorEvmReverted,
+					"transaction reverted",
+					nil,
+					map[string]interface{}{
+						"data": dt,
+					},
+				),
+			)
 		}
 	}
 

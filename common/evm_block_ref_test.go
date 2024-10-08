@@ -1,7 +1,6 @@
 package common
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -274,7 +273,7 @@ func TestExtractBlockReference(t *testing.T) {
 				Method: "eth_getTransactionReceipt",
 			},
 			response: &JsonRpcResponse{
-				Result: json.RawMessage(`{"blockNumber":"0x1b4","blockHash":"0xaaaaaabbbbccccc"}`),
+				Result: []byte(`{"blockNumber":"0x1b4","blockHash":"0xaaaaaabbbbccccc"}`),
 			},
 			expectedRef: "*",
 			expectedNum: 436,

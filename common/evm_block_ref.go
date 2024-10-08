@@ -164,56 +164,45 @@ func ExtractEvmBlockReferenceFromResponse(rpcReq *JsonRpcRequest, rpcResp *JsonR
 	switch rpcReq.Method {
 	case "eth_getTransactionReceipt",
 		"eth_getTransactionByHash":
-		if rpcResp.Result != nil {
-			result, err := rpcResp.ParsedResult()
-			if err != nil {
-				return "", 0, err
-			}
-			rpcResp.RLock()
-			defer rpcResp.RUnlock()
-			if tx, ok := result.(map[string]interface{}); ok {
-				var blockRef string
-				var blockNumber int64
-				blockRef, _ = tx["blockHash"].(string)
-				if bns, ok := tx["blockNumber"].(string); ok && bns != "" {
-					bn, err := HexToInt64(bns)
-					if err != nil {
-						return "", 0, err
-					}
-					blockNumber = bn
+		if len(rpcResp.Result) > 0 {
+			blockRef, _ := rpcResp.PeekStringByPath("blockHash")
+			blockNumberStr, _ := rpcResp.PeekStringByPath("blockNumber")
+
+			var blockNumber int64
+			if blockNumberStr != "" {
+				bn, err := HexToInt64(blockNumberStr)
+				if err != nil {
+					return "", 0, err
 				}
-				if blockRef == "" && blockNumber > 0 {
-					blockRef = strconv.FormatInt(blockNumber, 10)
-				}
-				return blockRef, blockNumber, nil
+				blockNumber = bn
 			}
+
+			if blockRef == "" && blockNumber > 0 {
+				blockRef = strconv.FormatInt(blockNumber, 10)
+			}
+
+			return blockRef, blockNumber, nil
 		}
 	case "eth_getBlockByNumber":
-		if rpcResp.Result != nil {
-			result, err := rpcResp.ParsedResult()
-			if err != nil {
-				return "", 0, err
-			}
-			rpcResp.RLock()
-			defer rpcResp.RUnlock()
-			if blk, ok := result.(map[string]interface{}); ok {
-				var blockRef string
-				var blockNumber int64
-				blockRef, _ = blk["hash"].(string)
-				if bns, ok := blk["number"].(string); ok && bns != "" {
-					bn, err := HexToInt64(bns)
-					if err != nil {
-						return "", 0, err
-					}
-					blockNumber = bn
-				}
-				if blockRef == "" && blockNumber > 0 {
-					blockRef = strconv.FormatInt(blockNumber, 10)
-				}
-				return blockRef, blockNumber, nil
-			}
-		}
+		if len(rpcResp.Result) > 0 {
+			blockRef, _ := rpcResp.PeekStringByPath("hash")
+			blockNumberStr, _ := rpcResp.PeekStringByPath("number")
 
+			var blockNumber int64
+			if blockNumberStr != "" {
+				bn, err := HexToInt64(blockNumberStr)
+				if err != nil {
+					return "", 0, err
+				}
+				blockNumber = bn
+			}
+
+			if blockRef == "" && blockNumber > 0 {
+				blockRef = strconv.FormatInt(blockNumber, 10)
+			}
+
+			return blockRef, blockNumber, nil
+		}
 	default:
 		return "", 0, nil
 	}

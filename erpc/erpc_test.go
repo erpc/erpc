@@ -2,7 +2,6 @@ package erpc
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math/rand"
 	"os"
@@ -84,10 +83,10 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 				// 30% chance of failure
 				if rand.Intn(100) < 30 {
 					r.Status(500)
-					r.JSON(json.RawMessage(`{"error":{"code":-32000,"message":"internal server error"}}`))
+					r.JSON([]byte(`{"error":{"code":-32000,"message":"internal server error"}}`))
 				} else {
 					r.Status(200)
-					r.JSON(json.RawMessage(`{"result":{"hash":"0x123456789","fromHost":"rpc1"}}`))
+					r.JSON([]byte(`{"result":{"hash":"0x123456789","fromHost":"rpc1"}}`))
 				}
 			})
 	}
@@ -96,7 +95,7 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 		Persist().
 		Post("").
 		Reply(200).
-		JSON(json.RawMessage(`{"result":{"hash":"0x123456789","fromHost":"rpc2"}}`))
+		JSON([]byte(`{"result":{"hash":"0x123456789","fromHost":"rpc2"}}`))
 
 	lg := log.With().Logger()
 	ctx1, cancel1 := context.WithCancel(context.Background())

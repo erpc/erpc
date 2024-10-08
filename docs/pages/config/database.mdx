@@ -79,7 +79,7 @@ database:
 
 ### Redis
 
-Redis is useful when you need to store cached data temporarily with eviction policy (e.g. certain amount of memory).
+Redis is useful when you need to store cached data temporarily with **eviction policy** (e.g. certain amount of memory).
 
 ```yaml filename="erpc.yaml"
 # ...
@@ -91,6 +91,12 @@ database:
       password: YOUR_REDIS_PASSWORD_HERE
       db: XXX
 # ...
+```
+
+Example of Redis config with eviction policy:
+```conf
+maxmemory 2000mb
+maxmemory-policy allkeys-lru
 ```
 
 ### PostgreSQL
