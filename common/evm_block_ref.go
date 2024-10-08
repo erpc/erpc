@@ -112,7 +112,7 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 					}
 					return strconv.FormatInt(bni, 10), bni, nil
 				}
-				return "", 0, fmt.Errorf("unsupported 2nd parameter for method %s: %+v", r.Method, r.Params)
+				return "", 0, nil
 
 			case map[string]interface{}:
 				// Handle the third parameter as an object
@@ -124,22 +124,22 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 						}
 						return strconv.FormatInt(bni, 10), bni, nil
 					}
-					return "", 0, fmt.Errorf("unsupported 2nd parameter for method %s: %+v", r.Method, r.Params)
+					return "", 0, nil
 				}
 
 				if blockHash, exists := secondParam["blockHash"]; exists {
 					if bh, ok := blockHash.(string); ok && strings.HasPrefix(bh, "0x") {
 						return bh, 0, nil
 					}
-					return "", 0, fmt.Errorf("unsupported 2nd parameter for method %s: %+v", r.Method, r.Params)
+					return "", 0, nil
 				}
 
 				// If neither blockNumber nor blockHash is provided
-				return "", 0, fmt.Errorf("missing blockNumber or blockHash in 2nd parameter (as an object) for method %s: %+v", r.Method, r.Params)
+				return "", 0, nil
 
 			default:
 				// If the second parameter is neither string nor map
-				return "", 0, fmt.Errorf("unsupported 2nd parameter for method %s: %+v", r.Method, r.Params)
+				return "", 0, nil
 			}
 		} else {
 			return "", 0, fmt.Errorf("unexpected missing 2nd parameter for method %s: %+v", r.Method, r.Params)
@@ -184,7 +184,7 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 					}
 					return strconv.FormatInt(bni, 10), bni, nil
 				}
-				return "", 0, fmt.Errorf("unsupported 3rd parameter for method %s: %+v", r.Method, r.Params)
+				return "", 0, nil
 
 			case map[string]interface{}:
 				// Handle the third parameter as an object
@@ -196,22 +196,22 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 						}
 						return strconv.FormatInt(bni, 10), bni, nil
 					}
-					return "", 0, fmt.Errorf("unsupported 3rd parameter for method %s: %+v", r.Method, r.Params)
+					return "", 0, nil
 				}
 
 				if blockHash, exists := thirdParam["blockHash"]; exists {
 					if bh, ok := blockHash.(string); ok && strings.HasPrefix(bh, "0x") {
 						return bh, 0, nil
 					}
-					return "", 0, fmt.Errorf("unsupported 3rd parameter for method %s: %+v", r.Method, r.Params)
+					return "", 0, nil
 				}
 
 				// If neither blockNumber nor blockHash is provided
-				return "", 0, fmt.Errorf("missing blockNumber or blockHash in 3rd parameter (as an object) for method %s: %+v", r.Method, r.Params)
+				return "", 0, nil
 
 			default:
 				// If the third parameter is neither string nor map
-				return "", 0, fmt.Errorf("unsupported 3rd parameter type for ExtractEvmBlockReferenceFromRequest: %+v", r.Params)
+				return "", 0, nil
 			}
 		} else {
 			return "", 0, fmt.Errorf("unexpected missing 3rd parameter for method %s: %+v", r.Method, r.Params)
