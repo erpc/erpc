@@ -79,11 +79,7 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 
 		return "", 0, nil
 
-	case "eth_getBalance",
-		"eth_getCode",
-		"eth_getTransactionCount",
-		"eth_call",
-		"eth_feeHistory",
+	case "eth_feeHistory",
 		"eth_getAccount":
 		if len(r.Params) > 1 {
 			if bns, ok := r.Params[1].(string); ok {
@@ -99,6 +95,54 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 			}
 		} else {
 			return "", 0, fmt.Errorf("unexpected missing 2nd parameter for method %s: %+v", r.Method, r.Params)
+		}
+
+	case "eth_getBalance",
+		"eth_getTransactionCount",
+		"eth_getCode",
+		"eth_call":
+		if len(r.Params) > 1 {
+			switch secondParam := r.Params[1].(type) {
+			case string:
+				// Handle the second parameter as a HEX String
+				if strings.HasPrefix(secondParam, "0x") {
+					bni, err := HexToInt64(secondParam)
+					if err != nil {
+						return secondParam, 0, err
+					}
+					return strconv.FormatInt(bni, 10), bni, nil
+				}
+				return "", 0, fmt.Errorf("unsupported second parameter type for ExtractEvmBlockReferenceFromRequest: %+v", r.Params)
+
+			case map[string]interface{}:
+				// Handle the third parameter as an object
+				if blockNumber, exists := secondParam["blockNumber"]; exists {
+					if bns, ok := blockNumber.(string); ok && strings.HasPrefix(bns, "0x") {
+						bni, err := HexToInt64(bns)
+						if err != nil {
+							return bns, 0, err
+						}
+						return strconv.FormatInt(bni, 10), bni, nil
+					}
+					return "", 0, fmt.Errorf("unsupported second parameter type for ExtractEvmBlockReferenceFromRequest: %+v", r.Params)
+				}
+
+				if blockHash, exists := secondParam["blockHash"]; exists {
+					if bh, ok := blockHash.(string); ok && strings.HasPrefix(bh, "0x") && len(bh) == 66 { // 32 bytes * 2 + "0x"
+						return bh, 0, nil
+					}
+					return "", 0, fmt.Errorf("invalid blockHash format for method %s: %+v", r.Method, r.Params)
+				}
+
+				// If neither blockNumber nor blockHash is provided
+				return "", 0, fmt.Errorf("missing blockNumber or blockHash in second parameter object for ExtractEvmBlockReferenceFromRequest: %+v", r.Params)
+
+			default:
+				// If the second parameter is neither string nor map
+				return "", 0, fmt.Errorf("unsupported second parameter type for ExtractEvmBlockReferenceFromRequest: %+v", r.Params)
+			}
+		} else {
+			return "", 0, fmt.Errorf("unexpected missing 3rd parameter for method %s: %+v", r.Method, r.Params)
 		}
 
 	case "eth_chainId",
@@ -130,16 +174,44 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 	case "eth_getProof",
 		"eth_getStorageAt":
 		if len(r.Params) > 2 {
-			if bns, ok := r.Params[2].(string); ok {
-				if strings.HasPrefix(bns, "0x") {
-					bni, err := HexToInt64(bns)
+			switch thirdParam := r.Params[2].(type) {
+			case string:
+				// Handle the third parameter as a HEX String
+				if strings.HasPrefix(thirdParam, "0x") {
+					bni, err := HexToInt64(thirdParam)
 					if err != nil {
-						return bns, 0, err
+						return thirdParam, 0, err
 					}
 					return strconv.FormatInt(bni, 10), bni, nil
-				} else {
-					return "", 0, nil
 				}
+				return "", 0, fmt.Errorf("unsupported third parameter type for ExtractEvmBlockReferenceFromRequest: %+v", r.Params)
+
+			case map[string]interface{}:
+				// Handle the third parameter as an object
+				if blockNumber, exists := thirdParam["blockNumber"]; exists {
+					if bns, ok := blockNumber.(string); ok && strings.HasPrefix(bns, "0x") {
+						bni, err := HexToInt64(bns)
+						if err != nil {
+							return bns, 0, err
+						}
+						return strconv.FormatInt(bni, 10), bni, nil
+					}
+					return "", 0, fmt.Errorf("unsupported third parameter type for ExtractEvmBlockReferenceFromRequest: %+v", r.Params)
+				}
+
+				if blockHash, exists := thirdParam["blockHash"]; exists {
+					if bh, ok := blockHash.(string); ok && strings.HasPrefix(bh, "0x") && len(bh) == 66 { // 32 bytes * 2 + "0x"
+						return bh, 0, nil
+					}
+					return "", 0, fmt.Errorf("invalid blockHash format for method %s: %+v", r.Method, r.Params)
+				}
+
+				// If neither blockNumber nor blockHash is provided
+				return "", 0, fmt.Errorf("missing blockNumber or blockHash in third parameter object for ExtractEvmBlockReferenceFromRequest: %+v", r.Params)
+
+			default:
+				// If the third parameter is neither string nor map
+				return "", 0, fmt.Errorf("unsupported third parameter type for ExtractEvmBlockReferenceFromRequest: %+v", r.Params)
 			}
 		} else {
 			return "", 0, fmt.Errorf("unexpected missing 3rd parameter for method %s: %+v", r.Method, r.Params)
