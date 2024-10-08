@@ -104,13 +104,16 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 		if len(r.Params) > 1 {
 			switch secondParam := r.Params[1].(type) {
 			case string:
-				// Handle the second parameter as a HEX String
-				if strings.HasPrefix(secondParam, "0x") {
+				// Handle the 2nd parameter as a blockNumber HEX String
+				if len(secondParam) < 66 && strings.HasPrefix(secondParam, "0x") {
 					bni, err := HexToInt64(secondParam)
 					if err != nil {
 						return secondParam, 0, err
 					}
 					return strconv.FormatInt(bni, 10), bni, nil
+					// Handle the 2nd parameter as a blockHash HEX String
+				} else if len(secondParam) == 66 && strings.HasPrefix(secondParam, "0x") { // 32 bytes * 2 + "0x"
+					return secondParam, 0, nil
 				}
 				return "", 0, nil
 
@@ -176,13 +179,16 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 		if len(r.Params) > 2 {
 			switch thirdParam := r.Params[2].(type) {
 			case string:
-				// Handle the third parameter as a HEX String
+				// Handle the 3rd parameter as a HEX String
 				if strings.HasPrefix(thirdParam, "0x") {
 					bni, err := HexToInt64(thirdParam)
 					if err != nil {
 						return thirdParam, 0, err
 					}
 					return strconv.FormatInt(bni, 10), bni, nil
+					// Handle the 3rd parameter as a blockHash HEX String
+				} else if len(thirdParam) == 66 && strings.HasPrefix(thirdParam, "0x") { // 32 bytes * 2 + "0x"
+					return thirdParam, 0, nil
 				}
 				return "", 0, nil
 
