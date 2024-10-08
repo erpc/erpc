@@ -215,24 +215,6 @@ func createHedgePolicy(logger *zerolog.Logger, component string, cfg *common.Hed
 		return true
 	})
 
-	// builder.CancelIf(func(result *common.NormalizedResponse, err error) bool {
-	// 	if err != nil {
-	// 		if common.IsClientError(err) {
-	// 			return true
-	// 		}
-	// 	}
-
-	// 	if result != nil && result.Request() != nil {
-	// 		rq := result.Request()
-	// 		method, _ := rq.Method()
-	// 		if method != "" && common.IsEvmWriteMethod(method) {
-	// 			return true
-	// 		}
-	// 	}
-
-	// 	return false
-	// })
-
 	return builder.Build(), nil
 }
 
