@@ -8,6 +8,9 @@ module.exports = {
 	"directives": {
 		title: "Directives",
 	},
+	"healthcheck": {
+		title: "Healthcheck",
+	},
 	"production": {
 		title: "Production",
 	},
