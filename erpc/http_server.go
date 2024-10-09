@@ -84,9 +84,14 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 		encoder := common.SonicCfg.NewEncoder(fastCtx.Response.BodyWriter())
 		encoder.SetEscapeHTML(false)
 
-		projectId, architecture, chainId, isAdmin, err := s.parseUrlPath(fastCtx.Path())
+		projectId, architecture, chainId, isAdmin, isHealthCheck, err := s.parseUrlPath(fastCtx)
 		if err != nil {
 			handleErrorResponse(s.logger, nil, err, fastCtx, encoder)
+			return
+		}
+
+		if isHealthCheck {
+			s.handleHealthCheck(fastCtx, encoder)
 			return
 		}
 
@@ -292,28 +297,34 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 	}
 }
 
-func (s *HttpServer) parseUrlPath(p []byte) (projectId, architecture, chainId string, isAdmin bool, err error) {
-	ps := path.Clean(util.Mem2Str(p))
+func (s *HttpServer) parseUrlPath(fctx *fasthttp.RequestCtx) (
+	projectId, architecture, chainId string,
+	isAdmin bool,
+	isHealthCheck bool,
+	err error,
+) {
+	isPost := fctx.IsPost()
+	ps := path.Clean(util.Mem2Str(fctx.Path()))
 	segments := strings.Split(ps, "/")
 
 	if len(segments) != 2 && len(segments) != 3 && len(segments) != 4 {
-		return "", "", "", false, common.NewErrInvalidUrlPath(ps)
+		return "", "", "", false, false, common.NewErrInvalidUrlPath(ps)
 	}
 
-	projectId = segments[1]
-
-	if len(segments) == 4 {
+	if isPost && len(segments) == 4 {
+		projectId = segments[1]
 		architecture = segments[2]
 		chainId = segments[3]
-	} else if len(segments) == 3 {
-		if segments[2] == "admin" {
-			isAdmin = true
-		} else {
-			return "", "", "", false, common.NewErrInvalidUrlPath(ps)
-		}
+	} else if isPost && len(segments) == 3 && segments[2] == "admin" {
+		projectId = segments[1]
+		isAdmin = true
+	} else if len(segments) == 2 && segments[1] == "healthcheck" {
+		isHealthCheck = true
+	} else {
+		return "", "", "", false, false, common.NewErrInvalidUrlPath(ps)
 	}
 
-	return projectId, architecture, chainId, isAdmin, nil
+	return projectId, architecture, chainId, isAdmin, isHealthCheck, nil
 }
 
 func (s *HttpServer) handleCORS(ctx *fasthttp.RequestCtx, corsConfig *common.CORSConfig) bool {
