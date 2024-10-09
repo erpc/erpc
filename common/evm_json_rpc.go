@@ -60,9 +60,20 @@ func NormalizeEvmHttpJsonRpc(nrq *NormalizedRequest, jrq *JsonRpcRequest) {
 		}
 	case "eth_getStorageAt":
 		if len(jrq.Params) > 2 {
-			b, err := NormalizeHex(jrq.Params[2])
-			if err == nil {
-				jrq.Params[2] = b
+			if strValue, ok := jrq.Params[2].(string); ok {
+				if strings.HasPrefix(strValue, "0x") {
+					b, err := NormalizeHex(strValue)
+					if err == nil {
+						jrq.Params[2] = b
+					}
+				}
+			} else if mapValue, ok := jrq.Params[2].(map[string]interface{}); ok {
+				if blockNumber, ok := mapValue["blockNumber"]; ok {
+					b, err := NormalizeHex(blockNumber)
+					if err == nil {
+						mapValue["blockNumber"] = b
+					}
+				}
 			}
 		}
 	case "eth_getLogs":
