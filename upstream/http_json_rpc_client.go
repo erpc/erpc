@@ -579,7 +579,7 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(err.Message, "query exceeds limit") ||
 			strings.Contains(err.Message, "exceeds the range") ||
 			strings.Contains(err.Message, "range limit exceeded") {
-			return common.NewErrEndpointEvmLargeRange(
+			return common.NewErrEndpointRequestTooLarge(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorCapacityExceeded,
@@ -587,6 +587,18 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					nil,
 					details,
 				),
+				common.EvmBlockRangeTooLarge,
+			)
+		} else if strings.Contains(err.Message, "specify less number of address") {
+			return common.NewErrEndpointRequestTooLarge(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorCapacityExceeded,
+					err.Message,
+					nil,
+					details,
+				),
+				common.EvmAddressesTooLarge,
 			)
 		} else if r.StatusCode == 429 ||
 			strings.Contains(err.Message, "has exceeded") ||

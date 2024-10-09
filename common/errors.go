@@ -1432,21 +1432,29 @@ var NewErrEndpointMissingData = func(cause error) error {
 	}
 }
 
-type ErrEndpointEvmLargeRange struct{ BaseError }
+type ErrEndpointRequestTooLarge struct{ BaseError }
 
-const ErrCodeEndpointEvmLargeRange = "ErrEndpointEvmLargeRange"
+const ErrCodeEndpointRequestTooLarge = "ErrEndpointRequestTooLarge"
 
-var NewErrEndpointEvmLargeRange = func(cause error) error {
-	return &ErrEndpointEvmLargeRange{
+type TooLargeComplaint string
+
+const EvmBlockRangeTooLarge TooLargeComplaint = "evm_block_range"
+const EvmAddressesTooLarge TooLargeComplaint = "evm_addresses"
+
+var NewErrEndpointRequestTooLarge = func(cause error, complaint TooLargeComplaint) error {
+	return &ErrEndpointRequestTooLarge{
 		BaseError{
-			Code:    ErrCodeEndpointEvmLargeRange,
-			Message: "evm remote endpoint complained about large logs range",
+			Code:    ErrCodeEndpointRequestTooLarge,
+			Message: "remote endpoint complained about large request (e.g. block range, number of addresses, etc)",
 			Cause:   cause,
+			Details: map[string]interface{}{
+				"complaint": complaint,
+			},
 		},
 	}
 }
 
-func (e *ErrEndpointEvmLargeRange) ErrorStatusCode() int {
+func (e *ErrEndpointRequestTooLarge) ErrorStatusCode() int {
 	return http.StatusRequestEntityTooLarge
 }
 
