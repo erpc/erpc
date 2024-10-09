@@ -51,8 +51,9 @@ func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr i
 		}
 
 		if code == -32602 && strings.Contains(msg, "eth_getLogs") && strings.Contains(msg, "limited") {
-			return common.NewErrEndpointEvmLargeRange(
+			return common.NewErrEndpointRequestTooLarge(
 				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorEvmLogsLargeRange, msg, nil, details),
+				common.EvmBlockRangeTooLarge,
 			)
 		} else if code == -32000 {
 			if strings.Contains(msg, "header not found") || strings.Contains(msg, "could not find block") {
