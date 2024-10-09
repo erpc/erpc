@@ -180,6 +180,44 @@ func TestExtractBlockReference(t *testing.T) {
 			expectedErr: false,
 		},
 		{
+			name: "eth_call with blockHash object",
+			request: &JsonRpcRequest{
+				Method: "eth_call",
+				Params: []interface{}{
+					map[string]interface{}{
+						"from": nil,
+						"to":   "0x6b175474e89094c44da98b954eedeac495271d0f",
+						"data": "0x70a082310000000000000000000000006E0d01A76C3Cf4288372a29124A26D4353EE51BE",
+					},
+					map[string]interface{}{
+						"blockHash": "0x3f07a9c83155594c000642e7d60e8a8a00038d03e9849171a05ed0e2d47acbb3",
+					},
+				},
+			},
+			expectedRef: "0x3f07a9c83155594c000642e7d60e8a8a00038d03e9849171a05ed0e2d47acbb3",
+			expectedNum: 0,
+			expectedErr: false,
+		},
+		{
+			name: "eth_call with blockNumber object",
+			request: &JsonRpcRequest{
+				Method: "eth_call",
+				Params: []interface{}{
+					map[string]interface{}{
+						"from": nil,
+						"to":   "0x6b175474e89094c44da98b954eedeac495271d0f",
+						"data": "0x70a082310000000000000000000000006E0d01A76C3Cf4288372a29124A26D4353EE51BE",
+					},
+					map[string]interface{}{
+						"blockNumber": "0x1b4",
+					},
+				},
+			},
+			expectedRef: "436",
+			expectedNum: 436,
+			expectedErr: false,
+		},
+		{
 			name: "eth_feeHistory",
 			request: &JsonRpcRequest{
 				Method: "eth_feeHistory",
@@ -247,6 +285,38 @@ func TestExtractBlockReference(t *testing.T) {
 					"0x7F0d15C7FAae65896648C8273B6d7E43f58Fa842",
 					[]interface{}{"0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"},
 					"0x1b4",
+				},
+			},
+			expectedRef: "436",
+			expectedNum: 436,
+			expectedErr: false,
+		},
+		{
+			name: "eth_getProof with blockHash object",
+			request: &JsonRpcRequest{
+				Method: "eth_getProof",
+				Params: []interface{}{
+					"0x7F0d15C7FAae65896648C8273B6d7E43f58Fa842",
+					[]interface{}{"0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"},
+					map[string]interface{}{
+						"blockHash": "0x3f07a9c83155594c000642e7d60e8a8a00038d03e9849171a05ed0e2d47acbb3",
+					},
+				},
+			},
+			expectedRef: "0x3f07a9c83155594c000642e7d60e8a8a00038d03e9849171a05ed0e2d47acbb3",
+			expectedNum: 0,
+			expectedErr: false,
+		},
+		{
+			name: "eth_getProof with blockNumber object",
+			request: &JsonRpcRequest{
+				Method: "eth_getProof",
+				Params: []interface{}{
+					"0x7F0d15C7FAae65896648C8273B6d7E43f58Fa842",
+					[]interface{}{"0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"},
+					map[string]interface{}{
+						"blockNumber": "0x1b4",
+					},
 				},
 			},
 			expectedRef: "436",
