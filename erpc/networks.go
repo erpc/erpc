@@ -88,7 +88,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		var exists bool
 		if inf, exists = n.inFlightRequests[mlxHash]; exists {
 			n.inFlightMutex.Unlock()
-			lg.Debug().Msgf("found similar in-flight request, waiting for result")
+			lg.Debug().Str("mlx", mlxHash).Msgf("found similar in-flight request, waiting for result")
 			health.MetricNetworkMultiplexedRequests.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 
 			inf.mu.RLock()

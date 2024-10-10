@@ -3,6 +3,7 @@ package common
 import (
 	"io"
 	"sync"
+	"sync/atomic"
 
 	"github.com/rs/zerolog/log"
 )
@@ -21,8 +22,8 @@ type NormalizedResponse struct {
 	hedges    int
 	upstream  Upstream
 
-	jsonRpcResponse *JsonRpcResponse
-	evmBlockNumber  int64
+	jsonRpcResponse atomic.Pointer[JsonRpcResponse]
+	evmBlockNumber  atomic.Int64
 }
 
 type ResponseMetadata interface {
@@ -109,12 +110,9 @@ func (r *NormalizedResponse) JsonRpcResponse() (*JsonRpcResponse, error) {
 		return nil, nil
 	}
 
-	if r.jsonRpcResponse != nil {
-		return r.jsonRpcResponse, nil
+	if jrr := r.jsonRpcResponse.Load(); jrr != nil {
+		return jrr, nil
 	}
-
-	r.Lock()
-	defer r.Unlock()
 
 	jrr := &JsonRpcResponse{}
 
@@ -125,7 +123,7 @@ func (r *NormalizedResponse) JsonRpcResponse() (*JsonRpcResponse, error) {
 		}
 	}
 
-	r.jsonRpcResponse = jrr
+	r.jsonRpcResponse.Store(jrr)
 	return jrr, nil
 }
 
@@ -145,7 +143,7 @@ func (r *NormalizedResponse) WithError(err error) *NormalizedResponse {
 }
 
 func (r *NormalizedResponse) WithJsonRpcResponse(jrr *JsonRpcResponse) *NormalizedResponse {
-	r.jsonRpcResponse = jrr
+	r.jsonRpcResponse.Store(jrr)
 	return r
 }
 
@@ -217,12 +215,9 @@ func (r *NormalizedResponse) EvmBlockNumber() (int64, error) {
 		return 0, nil
 	}
 
-	r.RLock()
-	if r.evmBlockNumber != 0 {
-		defer r.RUnlock()
-		return r.evmBlockNumber, nil
+	if n := r.evmBlockNumber.Load(); n != 0 {
+		return n, nil
 	}
-	r.RUnlock()
 
 	if r.request == nil {
 		return 0, nil
@@ -233,14 +228,17 @@ func (r *NormalizedResponse) EvmBlockNumber() (int64, error) {
 		return 0, err
 	}
 
-	_, bn, err := ExtractEvmBlockReferenceFromResponse(rq, r.jsonRpcResponse)
+	jrr := r.jsonRpcResponse.Load()
+	if jrr == nil {
+		return 0, nil
+	}
+
+	_, bn, err := ExtractEvmBlockReferenceFromResponse(rq, jrr)
 	if err != nil {
 		return 0, err
 	}
 
-	r.Lock()
-	r.evmBlockNumber = bn
-	r.Unlock()
+	r.evmBlockNumber.Store(bn)
 
 	return bn, nil
 }
@@ -249,8 +247,8 @@ func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
 	r.RLock()
 	defer r.RUnlock()
 
-	if r.jsonRpcResponse != nil {
-		return SonicCfg.Marshal(r.jsonRpcResponse)
+	if jrr := r.jsonRpcResponse.Load(); jrr != nil {
+		return SonicCfg.Marshal(jrr)
 	}
 
 	return nil, nil
@@ -260,8 +258,8 @@ func (r *NormalizedResponse) GetReader() (io.Reader, error) {
 	r.RLock()
 	defer r.RUnlock()
 
-	if r.jsonRpcResponse != nil {
-		return r.jsonRpcResponse.GetReader()
+	if jrr := r.jsonRpcResponse.Load(); jrr != nil {
+		return jrr.GetReader()
 	}
 
 	return nil, nil
@@ -280,9 +278,7 @@ func (r *NormalizedResponse) Release() {
 		r.body = nil
 	}
 
-	if r.jsonRpcResponse != nil {
-		r.jsonRpcResponse = nil
-	}
+	r.jsonRpcResponse.Store(nil)
 }
 
 // CopyResponseForRequest creates a copy of the response for another request
@@ -298,10 +294,10 @@ func CopyResponseForRequest(resp *NormalizedResponse, req *NormalizedRequest) (*
 	r := NewNormalizedResponse()
 	r.WithRequest(req)
 
-	if resp.jsonRpcResponse != nil {
+	if ejrr := resp.jsonRpcResponse.Load(); ejrr != nil {
 		// We need to use request ID because response ID can be different for multiplexed requests
 		// where we only sent 1 actual request to the upstream.
-		jrr, err := resp.jsonRpcResponse.Clone()
+		jrr, err := ejrr.Clone()
 		if err != nil {
 			return nil, err
 		}
