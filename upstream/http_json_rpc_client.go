@@ -580,6 +580,22 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
+		} else if r.StatusCode == 429 ||
+			strings.Contains(err.Message, "requests limited to") ||
+			strings.Contains(err.Message, "has exceeded") ||
+			strings.Contains(err.Message, "Exceeded the quota") ||
+			strings.Contains(err.Message, "Too many requests") ||
+			strings.Contains(err.Message, "Too Many Requests") ||
+			strings.Contains(err.Message, "under too much load") {
+			return common.NewErrEndpointCapacityExceeded(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorCapacityExceeded,
+					err.Message,
+					nil,
+					details,
+				),
+			)
 		} else if strings.Contains(err.Message, "block range") ||
 			strings.Contains(err.Message, "exceeds the range") ||
 			strings.Contains(err.Message, "Max range") ||
@@ -611,22 +627,6 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 				common.EvmAddressesTooLarge,
-			)
-		} else if r.StatusCode == 429 ||
-			strings.Contains(err.Message, "has exceeded") ||
-			strings.Contains(err.Message, "Exceeded the quota") ||
-			strings.Contains(err.Message, "Too many requests") ||
-			strings.Contains(err.Message, "Too Many Requests") ||
-			strings.Contains(err.Message, "under too much load") {
-
-			return common.NewErrEndpointCapacityExceeded(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorCapacityExceeded,
-					err.Message,
-					nil,
-					details,
-				),
 			)
 		} else if strings.Contains(err.Message, "reached the free tier") ||
 			strings.Contains(err.Message, "Monthly capacity limit") {
@@ -678,7 +678,7 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if code == -32602 {
+		} else if code == -32602 || strings.Contains(err.Message, "param is required") {
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -754,6 +754,7 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		} else if strings.Contains(err.Message, "Unsupported method") ||
 			strings.Contains(err.Message, "not supported") ||
 			strings.Contains(err.Message, "method is not whitelisted") ||
+			strings.Contains(err.Message, "method is disabled") ||
 			strings.Contains(err.Message, "module is disabled") {
 			return common.NewErrEndpointUnsupported(
 				common.NewErrJsonRpcExceptionInternal(
