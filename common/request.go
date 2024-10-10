@@ -5,6 +5,7 @@ import (
 	"math"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/util"
@@ -41,18 +42,16 @@ type RequestDirectives struct {
 type NormalizedRequest struct {
 	sync.RWMutex
 
-	Attempt int
-
 	network Network
 	body    []byte
 
-	uid            string
+	uid            atomic.Value
 	method         string
 	directives     *RequestDirectives
 	jsonRpcRequest *JsonRpcRequest
 
-	lastValidResponse *NormalizedResponse
-	lastUpstream      Upstream
+	lastValidResponse atomic.Pointer[NormalizedResponse]
+	lastUpstream      atomic.Value
 }
 
 type UniqueRequestKey struct {
@@ -73,9 +72,7 @@ func (r *NormalizedRequest) SetLastUpstream(upstream Upstream) *NormalizedReques
 	if r == nil {
 		return r
 	}
-	r.Lock()
-	defer r.Unlock()
-	r.lastUpstream = upstream
+	r.lastUpstream.Store(upstream)
 	return r
 }
 
@@ -83,27 +80,24 @@ func (r *NormalizedRequest) LastUpstream() Upstream {
 	if r == nil {
 		return nil
 	}
-	r.Lock()
-	defer r.Unlock()
-	return r.lastUpstream
+	if lu := r.lastUpstream.Load(); lu != nil {
+		return lu.(Upstream)
+	}
+	return nil
 }
 
 func (r *NormalizedRequest) SetLastValidResponse(response *NormalizedResponse) {
 	if r == nil {
 		return
 	}
-	r.Lock()
-	defer r.Unlock()
-	r.lastValidResponse = response
+	r.lastValidResponse.Store(response)
 }
 
 func (r *NormalizedRequest) LastValidResponse() *NormalizedResponse {
 	if r == nil {
 		return nil
 	}
-	r.RLock()
-	defer r.RUnlock()
-	return r.lastValidResponse
+	return r.lastValidResponse.Load()
 }
 
 func (r *NormalizedRequest) Network() Network {
@@ -118,31 +112,23 @@ func (r *NormalizedRequest) Id() string {
 		return ""
 	}
 
-	if r.uid != "" {
-		return r.uid
+	if uid := r.uid.Load(); uid != nil && uid != "" {
+		return uid.(string)
 	}
 
-	r.RLock()
 	if r.jsonRpcRequest != nil {
-		defer r.RUnlock()
 		if id, ok := r.jsonRpcRequest.ID.(string); ok {
-			r.uid = id
+			r.uid.Store(id)
 			return id
 		} else if id, ok := r.jsonRpcRequest.ID.(float64); ok {
-			r.uid = fmt.Sprintf("%d", int64(id))
-			return r.uid
+			uid := fmt.Sprintf("%d", int64(id))
+			r.uid.Store(uid)
+			return uid
 		} else {
-			r.uid = fmt.Sprintf("%v", r.jsonRpcRequest.ID)
-			return r.uid
+			uid := fmt.Sprintf("%v", r.jsonRpcRequest.ID)
+			r.uid.Store(uid)
+			return uid
 		}
-	}
-	r.RUnlock()
-
-	r.Lock()
-	defer r.Unlock()
-
-	if r.uid != "" {
-		return r.uid
 	}
 
 	if len(r.body) > 0 {
@@ -154,17 +140,19 @@ func (r *NormalizedRequest) Id() string {
 				if err != nil {
 					idn, err := idnode.Int64()
 					if err != nil {
-						r.uid = fmt.Sprintf("%d", idn)
-						return r.uid
+						uid := fmt.Sprintf("%d", idn)
+						r.uid.Store(uid)
+						return uid
 					}
 				} else {
-					r.uid = fmt.Sprintf("%d", int64(idf))
-					return r.uid
+					uid := fmt.Sprintf("%d", int64(idf))
+					r.uid.Store(uid)
+					return uid
 				}
 			} else {
-				r.uid = ids
+				r.uid.Store(ids)
 			}
-			return r.uid
+			return r.uid.Load().(string)
 		}
 	}
 
@@ -328,11 +316,12 @@ func (r *NormalizedRequest) EvmBlockNumber() (int64, error) {
 		return bn, nil
 	}
 
-	if r.lastValidResponse == nil {
+	lvr := r.lastValidResponse.Load()
+	if lvr == nil {
 		return 0, nil
 	}
 
-	bn, err = r.lastValidResponse.EvmBlockNumber()
+	bn, err = lvr.EvmBlockNumber()
 	if err != nil {
 		return 0, err
 	}
