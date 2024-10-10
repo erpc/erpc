@@ -11,6 +11,7 @@ type Multiplexer struct {
 	err  error
 	done chan struct{}
 	mu   *sync.RWMutex
+	once sync.Once
 }
 
 func NewMultiplexer() *Multiplexer {
@@ -21,9 +22,11 @@ func NewMultiplexer() *Multiplexer {
 }
 
 func (inf *Multiplexer) Close(resp *common.NormalizedResponse, err error) {
-	inf.mu.Lock()
-	defer inf.mu.Unlock()
-	inf.resp = resp
-	inf.err = err
-	close(inf.done)
+	inf.once.Do(func() {
+		inf.mu.Lock()
+		defer inf.mu.Unlock()
+		inf.resp = resp
+		inf.err = err
+		close(inf.done)
+	})
 }
