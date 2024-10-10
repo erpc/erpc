@@ -448,14 +448,14 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		)
 	}
 
-	req.RLock()
+	jrReq.RLock()
 	requestBody, err := common.SonicCfg.Marshal(common.JsonRpcRequest{
 		JSONRPC: jrReq.JSONRPC,
 		Method:  jrReq.Method,
 		Params:  jrReq.Params,
 		ID:      jrReq.ID,
 	})
-	req.RUnlock()
+	jrReq.RUnlock()
 
 	if err != nil {
 		return nil, err
