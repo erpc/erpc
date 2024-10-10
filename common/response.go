@@ -9,6 +9,7 @@ import (
 
 type NormalizedResponse struct {
 	sync.RWMutex
+	dataMu sync.RWMutex
 
 	request      *NormalizedRequest
 	body         io.ReadCloser
@@ -113,8 +114,8 @@ func (r *NormalizedResponse) JsonRpcResponse() (*JsonRpcResponse, error) {
 		return r.jsonRpcResponse, nil
 	}
 
-	r.Lock()
-	defer r.Unlock()
+	r.dataMu.Lock()
+	defer r.dataMu.Unlock()
 
 	jrr := &JsonRpcResponse{}
 
@@ -217,12 +218,12 @@ func (r *NormalizedResponse) EvmBlockNumber() (int64, error) {
 		return 0, nil
 	}
 
-	r.RLock()
+	r.dataMu.RLock()
 	if r.evmBlockNumber != 0 {
-		defer r.RUnlock()
+		defer r.dataMu.RUnlock()
 		return r.evmBlockNumber, nil
 	}
-	r.RUnlock()
+	r.dataMu.RUnlock()
 
 	if r.request == nil {
 		return 0, nil
@@ -238,16 +239,16 @@ func (r *NormalizedResponse) EvmBlockNumber() (int64, error) {
 		return 0, err
 	}
 
-	r.Lock()
+	r.dataMu.Lock()
 	r.evmBlockNumber = bn
-	r.Unlock()
+	r.dataMu.Unlock()
 
 	return bn, nil
 }
 
 func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
-	r.RLock()
-	defer r.RUnlock()
+	r.dataMu.RLock()
+	defer r.dataMu.RUnlock()
 
 	if r.jsonRpcResponse != nil {
 		return SonicCfg.Marshal(r.jsonRpcResponse)
@@ -257,8 +258,8 @@ func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
 }
 
 func (r *NormalizedResponse) GetReader() (io.Reader, error) {
-	r.RLock()
-	defer r.RUnlock()
+	r.dataMu.RLock()
+	defer r.dataMu.RUnlock()
 
 	if r.jsonRpcResponse != nil {
 		return r.jsonRpcResponse.GetReader()
@@ -268,8 +269,8 @@ func (r *NormalizedResponse) GetReader() (io.Reader, error) {
 }
 
 func (r *NormalizedResponse) Release() {
-	r.Lock()
-	defer r.Unlock()
+	r.dataMu.Lock()
+	defer r.dataMu.Unlock()
 
 	// If body is not closed yet, close it
 	if r.body != nil {

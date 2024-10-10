@@ -153,9 +153,35 @@ type UpstreamConfig struct {
 	Failsafe                     *FailsafeConfig          `yaml:"failsafe" json:"failsafe"`
 	RateLimitBudget              string                   `yaml:"rateLimitBudget" json:"rateLimitBudget"`
 	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune" json:"rateLimitAutoTune"`
+	SelectionRules               []*SelectionRuleConfig   `yaml:"selectionRules" json:"selectionRules"`
 }
 
-// redact Endpoint
+type SelectionRuleConfig struct {
+	ExcludeByDefault          *DefaultRuleConfig            `yaml:"excludeByDefault" json:"excludeByDefault"`
+	ExcludeWhenMetrics        *WhenMetricsRuleConfig        `yaml:"excludeWhenMetrics" json:"excludeWhenMetrics"`
+	IncludeWhenMetrics        *WhenMetricsRuleConfig        `yaml:"includeWhenMetrics" json:"includeWhenMetrics"`
+	IncludeWhenOtherUpstreams *WhenOtherUpstreamsRuleConfig `yaml:"includeWhenOtherUpstreams" json:"includeWhenOtherUpstreams"`
+	ExcludeWhenOtherUpstreams *WhenOtherUpstreamsRuleConfig `yaml:"excludeWhenOtherUpstreams" json:"excludeWhenOtherUpstreams"`
+}
+
+type DefaultRuleConfig struct {
+	ForMethods []string `yaml:"forMethods" json:"forMethods"`
+}
+
+type WhenMetricsRuleConfig struct {
+	DefaultRuleConfig
+	ErrorRateHigherThan   *float64 `yaml:"errorRateHigherThan" json:"errorRateHigherThan"`
+	ErrorRateLowerThan    *float64 `yaml:"errorRateLowerThan" json:"errorRateLowerThan"`
+	EvmBlockLagHigherThan *int     `yaml:"evmBlockLagHigherThan" json:"evmBlockLagHigherThan"`
+	EvmBlockLagLowerThan  *int     `yaml:"evmBlockLagLowerThan" json:"evmBlockLagLowerThan"`
+}
+
+type WhenOtherUpstreamsRuleConfig struct {
+	DefaultRuleConfig
+	ActivesAreLessThan *int `yaml:"activesAreLessThan" json:"activesAreLessThan"`
+	ActivesAreMoreThan *int `yaml:"activesAreMoreThan" json:"activesAreMoreThan"`
+}
+
 func (u *UpstreamConfig) MarshalJSON() ([]byte, error) {
 	type Alias UpstreamConfig
 	return sonic.Marshal(&struct {
