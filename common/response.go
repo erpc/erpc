@@ -21,8 +21,10 @@ type NormalizedResponse struct {
 	hedges    int
 	upstream  Upstream
 
-	jsonRpcResponse *JsonRpcResponse
-	evmBlockNumber  int64
+	jsonRpcResponse   *JsonRpcResponse
+	jsonRpcResponseMu sync.RWMutex
+	evmBlockNumber    int64
+	evmBlockNumberMu  sync.Mutex
 }
 
 type ResponseMetadata interface {
@@ -109,12 +111,15 @@ func (r *NormalizedResponse) JsonRpcResponse() (*JsonRpcResponse, error) {
 		return nil, nil
 	}
 
+	r.jsonRpcResponseMu.RLock()
 	if r.jsonRpcResponse != nil {
+		r.jsonRpcResponseMu.RUnlock()
 		return r.jsonRpcResponse, nil
 	}
+	r.jsonRpcResponseMu.RUnlock()
 
-	r.Lock()
-	defer r.Unlock()
+	r.jsonRpcResponseMu.Lock()
+	defer r.jsonRpcResponseMu.Unlock()
 
 	jrr := &JsonRpcResponse{}
 
@@ -145,6 +150,9 @@ func (r *NormalizedResponse) WithError(err error) *NormalizedResponse {
 }
 
 func (r *NormalizedResponse) WithJsonRpcResponse(jrr *JsonRpcResponse) *NormalizedResponse {
+	r.jsonRpcResponseMu.Lock()
+	defer r.jsonRpcResponseMu.Unlock()
+
 	r.jsonRpcResponse = jrr
 	return r
 }
@@ -217,12 +225,12 @@ func (r *NormalizedResponse) EvmBlockNumber() (int64, error) {
 		return 0, nil
 	}
 
-	r.RLock()
+	r.evmBlockNumberMu.Lock()
 	if r.evmBlockNumber != 0 {
-		defer r.RUnlock()
+		r.evmBlockNumberMu.Unlock()
 		return r.evmBlockNumber, nil
 	}
-	r.RUnlock()
+	r.evmBlockNumberMu.Unlock()
 
 	if r.request == nil {
 		return 0, nil
@@ -238,9 +246,9 @@ func (r *NormalizedResponse) EvmBlockNumber() (int64, error) {
 		return 0, err
 	}
 
-	r.Lock()
+	r.evmBlockNumberMu.Lock()
 	r.evmBlockNumber = bn
-	r.Unlock()
+	r.evmBlockNumberMu.Unlock()
 
 	return bn, nil
 }
@@ -281,6 +289,9 @@ func (r *NormalizedResponse) Release() {
 	}
 
 	if r.jsonRpcResponse != nil {
+		r.jsonRpcResponseMu.Lock()
+		defer r.jsonRpcResponseMu.Unlock()
+
 		r.jsonRpcResponse = nil
 	}
 }
@@ -299,6 +310,9 @@ func CopyResponseForRequest(resp *NormalizedResponse, req *NormalizedRequest) (*
 	r.WithRequest(req)
 
 	if resp.jsonRpcResponse != nil {
+		resp.jsonRpcResponseMu.RLock()
+		defer resp.jsonRpcResponseMu.RUnlock()
+
 		// We need to use request ID because response ID can be different for multiplexed requests
 		// where we only sent 1 actual request to the upstream.
 		jrr, err := resp.jsonRpcResponse.Clone()
