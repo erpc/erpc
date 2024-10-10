@@ -25,6 +25,11 @@
 ✅ [Authentication](https://docs.erpc.cloud/config/auth) modules such as basic auth, secret-based, JWT and SIWE.<br/>
 ✅ [Smart batching](https://docs.erpc.cloud/operation/batch) to aggregates multiple RPC or contract calls into one.<br/>
 
+# Case Studies
+
+[🚀 Moonwell: How eRPC slashed RPC calls by 67%](https://erpc.cloud/case-studies/moonwell)<br/>
+[🚀 Chronicle: How eRPC reduced RPC cost by 45%](https://erpc.cloud/case-studies/chronicle)
+
 # Usage & Docs
 
 - Visit [docs.erpc.cloud](https://docs.erpc.cloud) for documentation and guides.
