@@ -1474,6 +1474,7 @@ const (
 	JsonRpcErrorUnknown JsonRpcErrorNumber = -99999
 
 	// Standard JSON-RPC codes
+	JsonRpcErrorCallException        JsonRpcErrorNumber = -32000
 	JsonRpcErrorClientSideException  JsonRpcErrorNumber = -32600
 	JsonRpcErrorUnsupportedException JsonRpcErrorNumber = -32601
 	JsonRpcErrorInvalidArgument      JsonRpcErrorNumber = -32602
@@ -1489,7 +1490,6 @@ const (
 	JsonRpcErrorMissingData       JsonRpcErrorNumber = -32014
 	JsonRpcErrorNodeTimeout       JsonRpcErrorNumber = -32015
 	JsonRpcErrorUnauthorized      JsonRpcErrorNumber = -32016
-	JsonRpcErrorCallException     JsonRpcErrorNumber = -32017
 )
 
 // This struct represents an json-rpc error with erpc structure (i.e. code is string)
