@@ -169,16 +169,27 @@ func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchReques
 			c.batchDeadline = &ctxd
 		}
 	}
-	c.logger.Debug().Msgf("queuing request %s for batch (current batch: %d)", id, len(c.batchRequests))
+	c.logger.Debug().Msgf("queuing request %+v for batch (current batch size: %d)", id, len(c.batchRequests))
+
+	if c.logger.GetLevel() == zerolog.TraceLevel {
+		for _, req := range c.batchRequests {
+			jrr, _ := req.request.JsonRpcRequest()
+			rqs, _ := common.SonicCfg.Marshal(jrr)
+			c.logger.Trace().Interface("id", req.request.Id()).Str("method", jrr.Method).Msgf("pending batch request: %s", string(rqs))
+		}
+	}
 
 	if len(c.batchRequests) == 1 {
+		c.logger.Trace().Interface("id", id).Msgf("starting batch timer")
 		c.batchTimer = time.AfterFunc(c.batchMaxWait, c.processBatch)
 		c.batchMu.Unlock()
 	} else if len(c.batchRequests) >= c.batchMaxSize {
+		c.logger.Trace().Interface("id", id).Msgf("stopping batch timer to process total of %d requests", len(c.batchRequests))
 		c.batchTimer.Stop()
 		c.batchMu.Unlock()
 		c.processBatch()
 	} else {
+		c.logger.Trace().Interface("id", id).Msgf("continue waiting for batch")
 		c.batchMu.Unlock()
 	}
 }
@@ -188,6 +199,7 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 	var cancelCtx context.CancelFunc
 
 	c.batchMu.Lock()
+	c.logger.Debug().Msgf("processing batch with %d requests", len(c.batchRequests))
 	requests := c.batchRequests
 	if c.batchDeadline != nil {
 		batchCtx, cancelCtx = context.WithDeadline(context.Background(), *c.batchDeadline)
@@ -203,11 +215,11 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 	if ln == 0 {
 		return
 	}
-	c.logger.Debug().Msgf("processing batch with %d requests", ln)
 
 	batchReq := make([]common.JsonRpcRequest, 0, ln)
 	for _, req := range requests {
 		jrReq, err := req.request.JsonRpcRequest()
+		c.logger.Trace().Interface("id", req.request.Id()).Str("method", jrReq.Method).Msgf("preparing batch request")
 		if err != nil {
 			req.err <- common.NewErrUpstreamRequest(
 				err,
@@ -218,8 +230,8 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 			)
 			continue
 		}
-		req.request.Lock()
-		jrReq.Lock()
+		req.request.RLock()
+		jrReq.RLock()
 		batchReq = append(batchReq, common.JsonRpcRequest{
 			JSONRPC: jrReq.JSONRPC,
 			Method:  jrReq.Method,
@@ -230,10 +242,10 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 
 	requestBody, err := common.SonicCfg.Marshal(batchReq)
 	for _, req := range requests {
-		req.request.Unlock()
+		req.request.RUnlock()
 		jrReq, _ := req.request.JsonRpcRequest()
 		if jrReq != nil {
-			jrReq.Unlock()
+			jrReq.RUnlock()
 		}
 	}
 	if err != nil {
@@ -436,14 +448,14 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		)
 	}
 
-	req.RLock()
+	jrReq.RLock()
 	requestBody, err := common.SonicCfg.Marshal(common.JsonRpcRequest{
 		JSONRPC: jrReq.JSONRPC,
 		Method:  jrReq.Method,
 		Params:  jrReq.Params,
 		ID:      jrReq.ID,
 	})
-	req.RUnlock()
+	jrReq.RUnlock()
 
 	if err != nil {
 		return nil, err
@@ -568,6 +580,22 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
+		} else if r.StatusCode == 429 ||
+			strings.Contains(err.Message, "requests limited to") ||
+			strings.Contains(err.Message, "has exceeded") ||
+			strings.Contains(err.Message, "Exceeded the quota") ||
+			strings.Contains(err.Message, "Too many requests") ||
+			strings.Contains(err.Message, "Too Many Requests") ||
+			strings.Contains(err.Message, "under too much load") {
+			return common.NewErrEndpointCapacityExceeded(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorCapacityExceeded,
+					err.Message,
+					nil,
+					details,
+				),
+			)
 		} else if strings.Contains(err.Message, "block range") ||
 			strings.Contains(err.Message, "exceeds the range") ||
 			strings.Contains(err.Message, "Max range") ||
@@ -599,21 +627,6 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 				common.EvmAddressesTooLarge,
-			)
-		} else if r.StatusCode == 429 ||
-			strings.Contains(err.Message, "has exceeded") ||
-			strings.Contains(err.Message, "Exceeded the quota") ||
-			strings.Contains(err.Message, "Too many requests") ||
-			strings.Contains(err.Message, "under too much load") {
-
-			return common.NewErrEndpointCapacityExceeded(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorCapacityExceeded,
-					err.Message,
-					nil,
-					details,
-				),
 			)
 		} else if strings.Contains(err.Message, "reached the free tier") ||
 			strings.Contains(err.Message, "Monthly capacity limit") {
@@ -665,7 +678,7 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if code == -32602 {
+		} else if code == -32602 || strings.Contains(err.Message, "param is required") {
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -741,6 +754,7 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		} else if strings.Contains(err.Message, "Unsupported method") ||
 			strings.Contains(err.Message, "not supported") ||
 			strings.Contains(err.Message, "method is not whitelisted") ||
+			strings.Contains(err.Message, "method is disabled") ||
 			strings.Contains(err.Message, "module is disabled") {
 			return common.NewErrEndpointUnsupported(
 				common.NewErrJsonRpcExceptionInternal(
