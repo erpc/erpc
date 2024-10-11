@@ -60,3 +60,47 @@ rateLimiters:
           maxCount: 300
           period: 1s
 ```
+
+## Auto-tuner
+
+The auto-tuner feature allows dynamic adjustment of rate limits based on the upstream's performance. It's particularly useful in the following scenarios:
+
+1. When you're unsure about the actual RPS limit imposed by the provider.
+2. When you need to update the limits dynamically based on the provider's current capacity.
+
+The auto-tuner is enabled by default when an upstream has any rate limit budget defined. Here's an example configuration with explanations:
+
+```yaml
+upstreams:
+  - id: example-upstream
+    type: evm
+    endpoint: https://example-endpoint.com
+    rateLimitBudget: example-budget
+    rateLimitAutoTune:
+      enabled: true                # Enable auto-tuning (default: true)
+      adjustmentPeriod: "1m"       # How often to adjust the rate limit (default: "1m")
+      errorRateThreshold: 0.1      # Maximum acceptable error rate (default: 0.1)
+      increaseFactor: 1.05         # Factor to increase the limit by (default: 1.05)
+      decreaseFactor: 0.9          # Factor to decrease the limit by (default: 0.9)
+      minBudget: 1                 # Minimum rate limit (default: 0)
+      maxBudget: 10000             # Maximum rate limit (default: 10000)
+```
+
+It's recommended to set `minBudget` to at least 1. This ensures that some requests are always routed to the upstream, allowing the auto-tuner to re-adjust if the provider can handle more requests.
+
+The auto-tuner works by monitoring the "rate limited" (e.g. 429 status code) error rate of requests to the upstream. If the 'rate-limited' error rate is below the `errorRateThreshold`, it gradually increases the rate limit by the `increaseFactor`. If the 'rate-limited' error rate exceeds the threshold, it quickly decreases the rate limit by the `decreaseFactor`.
+
+By default, the auto-tuner is enabled with the following configuration:
+
+```yaml
+rateLimitAutoTune:
+  enabled: true
+  adjustmentPeriod: "1m"
+  errorRateThreshold: 0.1
+  increaseFactor: 1.05
+  decreaseFactor: 0.9
+  minBudget: 0
+  maxBudget: 10000
+```
+
+You can override these defaults by specifying the desired values in your configuration.
