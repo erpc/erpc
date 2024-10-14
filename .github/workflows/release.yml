@@ -10,6 +10,9 @@ on:
         description: 'Commit SHA (default: last commit of the current branch)'
         required: false
         default: ''
+  push:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -20,17 +23,20 @@ jobs:
     runs-on: large
     steps:
       - name: Checkout
+        if: github.event.inputs.version_tag != ''
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ github.event.inputs.commit_sha || github.ref }}
 
       - name: Configure Git
+        if: github.event.inputs.version_tag != ''
         run: |
           git config user.name github-actions
           git config user.email github-actions@github.com
 
       - name: Tag commit and push
+        if: github.event.inputs.version_tag != ''
         run: |
           git tag ${{ github.event.inputs.version_tag }} -f
           git push origin ${{ github.event.inputs.version_tag }} -f
@@ -40,17 +46,20 @@ jobs:
     needs: tag
     steps:
       - name: Checkout
+        if: github.event.inputs.version_tag != ''
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ github.event.inputs.commit_sha || github.ref }}
 
       - name: Set up Go
+        if: github.event.inputs.version_tag != ''
         uses: actions/setup-go@v5
         with:
           go-version: '1.22.x'
 
       - name: Run GoReleaser
+        if: github.event.inputs.version_tag != ''
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
@@ -66,7 +75,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.inputs.version_tag }}
+          ref: ${{ github.event.inputs.version_tag || 'main' }}
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -87,7 +96,26 @@ jobs:
           REPO="${{ github.repository }}"
           echo "repo=${REPO@L}" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push Docker image
+      - name: Generate short SHA
+        id: short_sha
+        run: echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker image from main
+        if: github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=main
+            COMMIT_SHA=${{ steps.short_sha.outputs.SHORT_SHA }}
+          tags: |
+            ghcr.io/${{ steps.tag_param.outputs.repo }}:${{ steps.short_sha.outputs.SHORT_SHA }}
+            ghcr.io/${{ steps.tag_param.outputs.repo }}:main
+
+      - name: Build and push Docker image with tags
+        if: startsWith(github.ref, 'refs/tags')
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -95,7 +123,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           build-args: |
             VERSION=${{ github.event.inputs.version_tag }}
-            COMMIT_SHA=${{ github.sha }}
+            COMMIT_SHA=${{ steps.short_sha.outputs.SHORT_SHA }}
           tags: |
-            ghcr.io/${{ steps.tag_param.outputs.repo }}:latest
             ghcr.io/${{ steps.tag_param.outputs.repo }}:${{ github.event.inputs.version_tag }}
+            ghcr.io/${{ steps.tag_param.outputs.repo }}:${{ steps.short_sha.outputs.SHORT_SHA }}
+            ghcr.io/${{ steps.tag_param.outputs.repo }}:latest
