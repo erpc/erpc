@@ -33,8 +33,11 @@ func HexToUint64(hexValue string) (uint64, error) {
 }
 
 func HexToInt64(hexValue string) (int64, error) {
-	hexValue = strings.TrimPrefix(hexValue, "0x")
-	return strconv.ParseInt(hexValue, 16, 64)
+	normalizedHex, err := NormalizeHex(hexValue)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseInt(normalizedHex, 0, 64)
 }
 
 func NormalizeHex(value interface{}) (string, error) {
@@ -49,8 +52,7 @@ func NormalizeHex(value interface{}) (string, error) {
 			return fmt.Sprintf("0x%x", value), nil // Convert back to hex without leading 0s
 		}
 
-		// If blockNumber is base 10 digits, convert to hex without 0 padding
-		value, err := strconv.ParseUint(bn, 10, 64)
+		value, err := strconv.ParseUint(bn, 0, 64)
 		if err == nil && value > 0 {
 			return fmt.Sprintf("0x%x", value), nil
 		}

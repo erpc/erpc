@@ -301,7 +301,10 @@ func CopyResponseForRequest(resp *NormalizedResponse, req *NormalizedRequest) (*
 		if err != nil {
 			return nil, err
 		}
-		jrr.SetID(req.jsonRpcRequest.ID)
+		err = jrr.SetID(req.jsonRpcRequest.ID)
+		if err != nil {
+			return nil, err
+		}
 		r.WithJsonRpcResponse(jrr)
 	}
 

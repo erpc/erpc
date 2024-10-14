@@ -415,7 +415,10 @@ func getJsonRpcResponseFromNode(rootNode ast.Node) (*common.JsonRpcResponse, err
 		var jrResp *common.JsonRpcResponse
 
 		if rawID != "" {
-			jrResp.SetIDBytes(util.Str2Mem(rawID))
+			err := jrResp.SetIDBytes(util.Str2Mem(rawID))
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		cause := fmt.Sprintf("cannot parse json rpc response from upstream, for result: %s, for error: %s", rawResult, rawError)
