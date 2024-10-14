@@ -2,7 +2,6 @@ package common
 
 import (
 	"fmt"
-	"math/rand"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -134,7 +133,7 @@ func (r *NormalizedRequest) Id() int64 {
 					return uid
 				}
 			} else {
-				uid, err := strconv.ParseInt(ids, 10, 64)
+				uid, err := strconv.ParseInt(ids, 0, 64)
 				if err != nil {
 					uid = 0
 				}
@@ -242,7 +241,7 @@ func (r *NormalizedRequest) JsonRpcRequest() (*JsonRpcRequest, error) {
 	}
 
 	if rpcReq.ID == 0 {
-		rpcReq.ID = rand.Int63() // #nosec G404
+		rpcReq.ID = util.RandomID()
 		r.uid.Store(rpcReq.ID)
 	}
 

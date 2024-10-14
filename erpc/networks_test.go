@@ -12,7 +12,7 @@ import (
 	// "fmt"
 	"io"
 	"net/http"
-	"os"
+	// "os"
 	"strings"
 
 	// "sync"
@@ -34,10 +34,6 @@ import (
 )
 
 var TRUE = true
-
-func init() {
-	log.Logger = log.Level(zerolog.ErrorLevel).Output(zerolog.ConsoleWriter{Out: os.Stderr})
-}
 
 func TestNetwork_Forward(t *testing.T) {
 
@@ -5578,12 +5574,12 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 			Delay(1 * time.Second).
 			BodyString(`{"jsonrpc":"2.0","id":4,"result":"0x1"}`)
 
-		totalRequests := 100
+		totalRequests := int64(100)
 
 		// Prepare requests with different IDs
 		requestTemplate := `{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x742d35Cc6634C0532925a3b844Bc454e4438f44e", "latest"],"id":%d}`
 		requests := make([]*common.NormalizedRequest, totalRequests)
-		for i := 0; i < totalRequests; i++ {
+		for i := int64(0); i < totalRequests; i++ {
 			reqBytes := []byte(fmt.Sprintf(requestTemplate, i+1))
 			requests[i] = common.NewNormalizedRequest(reqBytes)
 		}
@@ -5593,9 +5589,9 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		responses := make([]*common.NormalizedResponse, totalRequests)
 		errors := make([]error, totalRequests)
 
-		for i := 0; i < totalRequests; i++ {
+		for i := int64(0); i < totalRequests; i++ {
 			wg.Add(1)
-			go func(index int) {
+			go func(index int64) {
 				defer wg.Done()
 				responses[index], errors[index] = network.Forward(context.Background(), requests[index])
 			}(i)
@@ -5603,14 +5599,14 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		wg.Wait()
 
 		// Verify results
-		for i := 0; i < totalRequests; i++ {
+		for i := int64(0); i < totalRequests; i++ {
 			assert.NoError(t, errors[i], "Request %d should not return an error", i+1)
 			assert.NotNil(t, responses[i], "Request %d should return a response", i+1)
 
 			if responses[i] != nil {
 				jrr, err := responses[i].JsonRpcResponse()
 				assert.NoError(t, err, "Response %d should be a valid JSON-RPC response", i+1)
-				assert.Equal(t, float64(i+1), jrr.ID(), "Response ID should match the request ID for request %d", i+1)
+				assert.Equal(t, i+1, jrr.ID(), "Response ID should match the request ID for request %d", i+1)
 			}
 		}
 

@@ -94,7 +94,10 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	jrr := &common.JsonRpcResponse{
 		Result: util.Str2Mem(resultString),
 	}
-	jrr.SetID(rpcReq.ID)
+	err = jrr.SetID(rpcReq.ID)
+	if err != nil {
+		return nil, err
+	}
 
 	return common.NewNormalizedResponse().
 		WithRequest(req).

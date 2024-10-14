@@ -519,13 +519,13 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				Map(func(res *http.Response) *http.Response {
 					var respTxt string
 					if *cfg.Projects[0].Upstreams[0].JsonRpc.SupportsBatch {
-						respTxt = `[{"jsonrpc":"2.0","id":666666,"result":"0x123456"}]`
+						respTxt = `[{"jsonrpc":"2.0","id":THIS_WILL_BE_REPLACED,"result":"0x123456"}]`
 					} else {
-						respTxt = `{"jsonrpc":"2.0","id":666666,"result":"0x123456"}`
+						respTxt = `{"jsonrpc":"2.0","id":THIS_WILL_BE_REPLACED,"result":"0x123456"}`
 					}
 					idp, err := sonic.Marshal(id)
 					require.NoError(t, err)
-					res.Body = io.NopCloser(strings.NewReader(strings.Replace(respTxt, "666666", string(idp), 1)))
+					res.Body = io.NopCloser(strings.NewReader(strings.Replace(respTxt, "THIS_WILL_BE_REPLACED", string(idp), 1)))
 					return res
 				})
 

@@ -2,7 +2,6 @@ package upstream
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -522,7 +521,6 @@ func simulateFailedRequests(tracker *health.Tracker, network, upstream, method s
 func checkUpstreamScoreOrder(t *testing.T, registry *UpstreamsRegistry, networkID, method string, expectedOrder []string) {
 	registry.RefreshUpstreamNetworkMethodScores()
 	scores := registry.upstreamScores
-	fmt.Printf("Checking recorded scores: %v for order: %s\n", scores, expectedOrder)
 
 	for i, ups := range expectedOrder {
 		if i+1 < len(expectedOrder) {
@@ -538,7 +536,6 @@ func checkUpstreamScoreOrder(t *testing.T, registry *UpstreamsRegistry, networkI
 	}
 
 	sortedUpstreams, err := registry.GetSortedUpstreams(networkID, method)
-	fmt.Printf("Checking upstream order: %v\n", sortedUpstreams)
 
 	assert.NoError(t, err)
 	registry.RLockUpstreams()
