@@ -369,8 +369,13 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 			}
 		}
 		// Handle any remaining requests that didn't receive a response
+		anyMissingId := false
 		for _, req := range requests {
 			req.err <- fmt.Errorf("no response received for request ID: %d", req.request.Id())
+			anyMissingId = true
+		}
+		if anyMissingId {
+			c.logger.Error().Str("response", util.Mem2Str(bodyBytes)).Msgf("some requests did not receive a response (matching ID)")
 		}
 	} else if rootNode.TypeSafe() == ast.V_OBJECT {
 		// Single object response
