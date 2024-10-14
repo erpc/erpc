@@ -2,8 +2,8 @@ package common
 
 import (
 	"fmt"
-	"math"
 	"math/rand"
+	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -107,28 +107,13 @@ func (r *NormalizedRequest) Network() Network {
 	return r.network
 }
 
-func (r *NormalizedRequest) Id() string {
+func (r *NormalizedRequest) Id() int64 {
 	if r == nil {
-		return ""
-	}
-
-	if uid := r.uid.Load(); uid != nil && uid != "" {
-		return uid.(string)
+		return 0
 	}
 
 	if r.jsonRpcRequest != nil {
-		if id, ok := r.jsonRpcRequest.ID.(string); ok {
-			r.uid.Store(id)
-			return id
-		} else if id, ok := r.jsonRpcRequest.ID.(float64); ok {
-			uid := fmt.Sprintf("%d", int64(id))
-			r.uid.Store(uid)
-			return uid
-		} else {
-			uid := fmt.Sprintf("%v", r.jsonRpcRequest.ID)
-			r.uid.Store(uid)
-			return uid
-		}
+		return r.jsonRpcRequest.ID
 	}
 
 	if len(r.body) > 0 {
@@ -140,23 +125,26 @@ func (r *NormalizedRequest) Id() string {
 				if err != nil {
 					idn, err := idnode.Int64()
 					if err != nil {
-						uid := fmt.Sprintf("%d", idn)
-						r.uid.Store(uid)
-						return uid
+						r.uid.Store(idn)
+						return idn
 					}
 				} else {
-					uid := fmt.Sprintf("%d", int64(idf))
+					uid := int64(idf)
 					r.uid.Store(uid)
 					return uid
 				}
 			} else {
-				r.uid.Store(ids)
+				uid, err := strconv.ParseInt(ids, 10, 64)
+				if err != nil {
+					uid = 0
+				}
+				r.uid.Store(uid)
+				return uid
 			}
-			return r.uid.Load().(string)
 		}
 	}
 
-	return ""
+	return 0
 }
 
 func (r *NormalizedRequest) NetworkId() string {
@@ -253,8 +241,9 @@ func (r *NormalizedRequest) JsonRpcRequest() (*JsonRpcRequest, error) {
 		rpcReq.JSONRPC = "2.0"
 	}
 
-	if rpcReq.ID == nil {
-		rpcReq.ID = float64(rand.Intn(math.MaxInt32)) // #nosec G404
+	if rpcReq.ID == 0 {
+		rpcReq.ID = rand.Int63() // #nosec G404
+		r.uid.Store(rpcReq.ID)
 	}
 
 	r.jsonRpcRequest = rpcReq
