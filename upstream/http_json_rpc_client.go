@@ -370,7 +370,7 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 		}
 		// Handle any remaining requests that didn't receive a response
 		for _, req := range requests {
-			req.err <- fmt.Errorf("no response received for request ID: %s", req.request.Id())
+			req.err <- fmt.Errorf("no response received for request ID: %d", req.request.Id())
 		}
 	} else if rootNode.TypeSafe() == ast.V_OBJECT {
 		// Single object response

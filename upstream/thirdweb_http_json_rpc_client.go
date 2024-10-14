@@ -71,7 +71,12 @@ func (c *ThirdwebHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, err
 		return false, err
 	}
 
-	cidh, err := common.NormalizeHex(jrr.Result)
+	cids, err := jrr.PeekStringByPath()
+	if err != nil {
+		return false, err
+	}
+
+	cidh, err := common.NormalizeHex(cids)
 	if err != nil {
 		return false, err
 	}
