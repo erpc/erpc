@@ -78,7 +78,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	req.SetNetwork(n)
 
 	method, _ := req.Method()
-	lg := n.Logger.With().Str("method", method).Str("id", req.Id()).Str("ptr", fmt.Sprintf("%p", req)).Logger()
+	lg := n.Logger.With().Str("method", method).Int64("id", req.Id()).Str("ptr", fmt.Sprintf("%p", req)).Logger()
 
 	// 1) In-flight multiplexing
 	var inf *Multiplexer

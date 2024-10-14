@@ -203,7 +203,7 @@ func (r *NormalizedResponse) IsObjectNull() bool {
 	jrr.errMu.RLock()
 	defer jrr.errMu.RUnlock()
 
-	if len(jrr.Result) == 0 && jrr.Error == nil && jrr.ID() == nil {
+	if len(jrr.Result) == 0 && jrr.Error == nil && jrr.ID() == 0 {
 		return true
 	}
 

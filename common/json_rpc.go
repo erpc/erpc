@@ -3,9 +3,12 @@ package common
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -21,7 +24,7 @@ type JsonRpcResponse struct {
 	// so that batch requests are correctly identified.
 	// The "id" field is already parsed-value used within erpc,
 	// and idBytes is a lazy-loaded byte representation of the ID used when writing responses.
-	id      interface{}
+	id      int64
 	idBytes []byte
 	idMu    sync.RWMutex
 
@@ -42,7 +45,7 @@ type JsonRpcResponse struct {
 	cachedNode *ast.Node
 }
 
-func NewJsonRpcResponse(id interface{}, result interface{}, rpcError *ErrJsonRpcExceptionExternal) (*JsonRpcResponse, error) {
+func NewJsonRpcResponse(id int64, result interface{}, rpcError *ErrJsonRpcExceptionExternal) (*JsonRpcResponse, error) {
 	resultRaw, err := SonicCfg.Marshal(result)
 	if err != nil {
 		return nil, err
@@ -67,13 +70,72 @@ func NewJsonRpcResponseFromBytes(id []byte, resultRaw []byte, errBytes []byte) (
 		}
 	}
 
+	err := jr.parseID()
+	if err != nil {
+		return nil, err
+	}
+
 	return jr, nil
 }
 
-func (r *JsonRpcResponse) ID() interface{} {
+func (r *JsonRpcResponse) parseID() error {
+	r.idMu.Lock()
+	defer r.idMu.Unlock()
+
+	var rawID interface{}
+	err := SonicCfg.Unmarshal(r.idBytes, &rawID)
+	if err != nil {
+		return err
+	}
+
+	switch v := rawID.(type) {
+	case float64:
+		r.id = int64(v)
+	case string:
+		if v == "" {
+			return fmt.Errorf("missing ID from upstream response: %+v", rawID)
+		} else {
+			parsedID, err := strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				// Try parsing as float if integer parsing fails
+				parsedFloat, err := strconv.ParseFloat(v, 64)
+				if err != nil {
+					return err
+				}
+				r.id = int64(parsedFloat)
+			} else {
+				r.id = parsedID
+			}
+		}
+	case nil:
+		return fmt.Errorf("missing ID from upstream response: %+v", rawID)
+	default:
+		return fmt.Errorf("unsupported ID type: %T", v)
+	}
+
+	// Update idBytes with the parsed int64 value
+	r.idBytes, err = SonicCfg.Marshal(r.id)
+	return err
+}
+
+func (r *JsonRpcResponse) SetID(id int64) error {
+	r.idMu.Lock()
+	defer r.idMu.Unlock()
+
+	r.id = id
+	var err error
+	r.idBytes, err = SonicCfg.Marshal(id)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (r *JsonRpcResponse) ID() int64 {
 	r.idMu.RLock()
 
-	if r.id != nil {
+	if r.id != 0 {
 		r.idMu.RUnlock()
 		return r.id
 	}
@@ -90,22 +152,30 @@ func (r *JsonRpcResponse) ID() interface{} {
 	return r.id
 }
 
-func (r *JsonRpcResponse) SetID(id interface{}) {
-	r.idMu.Lock()
-	defer r.idMu.Unlock()
-
-	r.id = id
-	if idBytes, err := SonicCfg.Marshal(id); err == nil {
-		r.idBytes = idBytes
-	}
-}
-
-func (r *JsonRpcResponse) SetIDBytes(idBytes []byte) {
+func (r *JsonRpcResponse) SetIDBytes(idBytes []byte) error {
 	r.idMu.Lock()
 	defer r.idMu.Unlock()
 
 	r.idBytes = idBytes
+	return r.parseID()
 }
+
+// func (r *JsonRpcResponse) SetID(id interface{}) {
+// 	r.idMu.Lock()
+// 	defer r.idMu.Unlock()
+
+// 	r.id = id
+// 	if idBytes, err := SonicCfg.Marshal(id); err == nil {
+// 		r.idBytes = idBytes
+// 	}
+// }
+
+// func (r *JsonRpcResponse) SetIDBytes(idBytes []byte) {
+// 	r.idMu.Lock()
+// 	defer r.idMu.Unlock()
+
+// 	r.idBytes = idBytes
+// }
 
 func (r *JsonRpcResponse) ParseFromStream(reader io.Reader, expectedSize int) error {
 	data, err := util.ReadAll(reader, 16*1024, expectedSize) // 16KB
@@ -246,7 +316,7 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 	r.errMu.RLock()
 	defer r.errMu.RUnlock()
 
-	e.Interface("id", r.ID()).
+	e.Int64("id", r.ID()).
 		Int("resultSize", len(r.Result)).
 		Interface("error", r.Error)
 }
@@ -365,9 +435,53 @@ type JsonRpcRequest struct {
 	sync.RWMutex
 
 	JSONRPC string        `json:"jsonrpc,omitempty"`
-	ID      interface{}   `json:"id,omitempty"`
+	ID      int64         `json:"id,omitempty"`
 	Method  string        `json:"method"`
 	Params  []interface{} `json:"params"`
+}
+
+func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
+	type Alias JsonRpcRequest
+	aux := &struct {
+		*Alias
+		ID json.RawMessage `json:"id,omitempty"`
+	}{
+		Alias: (*Alias)(r),
+	}
+
+	if err := SonicCfg.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	if aux.ID == nil {
+		r.ID = rand.Int63()
+	} else {
+		var id interface{}
+		if err := SonicCfg.Unmarshal(aux.ID, &id); err != nil {
+			return err
+		}
+
+		switch v := id.(type) {
+		case float64:
+			r.ID = int64(v)
+		case string:
+			if v == "" {
+				r.ID = rand.Int63()
+			} else {
+				var parsedID float64
+				if err := SonicCfg.Unmarshal([]byte(v), &parsedID); err != nil {
+					return err
+				}
+				r.ID = int64(parsedID)
+			}
+		case nil:
+			r.ID = rand.Int63()
+		default:
+			r.ID = rand.Int63()
+		}
+	}
+
+	return nil
 }
 
 func (r *JsonRpcRequest) MarshalZerologObject(e *zerolog.Event) {
