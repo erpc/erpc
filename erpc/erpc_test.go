@@ -2,9 +2,7 @@ package erpc
 
 import (
 	"context"
-	"fmt"
 	"math/rand"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -17,7 +15,7 @@ import (
 )
 
 func init() {
-	log.Logger = log.Level(zerolog.ErrorLevel).Output(zerolog.ConsoleWriter{Out: os.Stderr})
+	zerolog.SetGlobalLevel(zerolog.Disabled)
 }
 
 var erpcMu sync.Mutex
@@ -133,7 +131,6 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 	cancel2()
 
 	sortedUpstreams, err := nw.upstreamsRegistry.GetSortedUpstreams("evm:123", "eth_getTransactionReceipt")
-	fmt.Printf("Checking upstream order: %v\n", sortedUpstreams)
 
 	expectedOrder := []string{"rpc2", "rpc1"}
 	assert.NoError(t, err)

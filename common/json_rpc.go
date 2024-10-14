@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/rand"
 	"sort"
 	"strconv"
 	"strings"
@@ -70,9 +69,11 @@ func NewJsonRpcResponseFromBytes(id []byte, resultRaw []byte, errBytes []byte) (
 		}
 	}
 
-	err := jr.parseID()
-	if err != nil {
-		return nil, err
+	if len(id) > 0 {
+		err := jr.parseID()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return jr, nil
@@ -93,9 +94,9 @@ func (r *JsonRpcResponse) parseID() error {
 		r.id = int64(v)
 	case string:
 		if v == "" {
-			return fmt.Errorf("missing ID from upstream response: %+v", rawID)
+			return nil
 		} else {
-			parsedID, err := strconv.ParseInt(v, 10, 64)
+			parsedID, err := strconv.ParseInt(v, 0, 64)
 			if err != nil {
 				// Try parsing as float if integer parsing fails
 				parsedFloat, err := strconv.ParseFloat(v, 64)
@@ -108,7 +109,7 @@ func (r *JsonRpcResponse) parseID() error {
 			}
 		}
 	case nil:
-		return fmt.Errorf("missing ID from upstream response: %+v", rawID)
+		return nil
 	default:
 		return fmt.Errorf("unsupported ID type: %T", v)
 	}
@@ -159,23 +160,6 @@ func (r *JsonRpcResponse) SetIDBytes(idBytes []byte) error {
 	r.idBytes = idBytes
 	return r.parseID()
 }
-
-// func (r *JsonRpcResponse) SetID(id interface{}) {
-// 	r.idMu.Lock()
-// 	defer r.idMu.Unlock()
-
-// 	r.id = id
-// 	if idBytes, err := SonicCfg.Marshal(id); err == nil {
-// 		r.idBytes = idBytes
-// 	}
-// }
-
-// func (r *JsonRpcResponse) SetIDBytes(idBytes []byte) {
-// 	r.idMu.Lock()
-// 	defer r.idMu.Unlock()
-
-// 	r.idBytes = idBytes
-// }
 
 func (r *JsonRpcResponse) ParseFromStream(reader io.Reader, expectedSize int) error {
 	data, err := util.ReadAll(reader, 16*1024, expectedSize) // 16KB
@@ -454,7 +438,7 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 	}
 
 	if aux.ID == nil {
-		r.ID = rand.Int63()
+		r.ID = util.RandomID()
 	} else {
 		var id interface{}
 		if err := SonicCfg.Unmarshal(aux.ID, &id); err != nil {
@@ -466,7 +450,7 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 			r.ID = int64(v)
 		case string:
 			if v == "" {
-				r.ID = rand.Int63()
+				r.ID = util.RandomID()
 			} else {
 				var parsedID float64
 				if err := SonicCfg.Unmarshal([]byte(v), &parsedID); err != nil {
@@ -475,9 +459,9 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 				r.ID = int64(parsedID)
 			}
 		case nil:
-			r.ID = rand.Int63()
+			r.ID = util.RandomID()
 		default:
-			r.ID = rand.Int63()
+			r.ID = util.RandomID()
 		}
 	}
 

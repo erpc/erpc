@@ -438,7 +438,10 @@ func (n *Network) normalizeResponse(req *common.NormalizedRequest, resp *common.
 			// use correct one from original incoming request.
 			if jrr, err := resp.JsonRpcResponse(); err == nil {
 				jrq, err := req.JsonRpcRequest()
-				jrr.SetID(jrq.ID)
+				if err != nil {
+					return err
+				}
+				err = jrr.SetID(jrq.ID)
 				if err != nil {
 					return err
 				}

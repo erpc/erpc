@@ -1020,7 +1020,7 @@ var NewErrJsonRpcRequestUnmarshal = func(cause error) error {
 		return &ErrJsonRpcRequestUnmarshal{
 			BaseError{
 				Code:    ErrCodeJsonRpcRequestUnmarshal,
-				Message: cause.Error(),
+				Message: fmt.Sprintf("%s", cause),
 			},
 		}
 	}
