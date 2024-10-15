@@ -54,7 +54,7 @@ func (v *DrpcVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interf
 			details["data"] = err.Data
 		}
 
-		if code == 4 && strings.Contains(msg, "token is invalid") {
+		if strings.Contains(msg, "token is invalid") {
 			return common.NewErrEndpointUnauthorized(
 				common.NewErrJsonRpcExceptionInternal(
 					code,
@@ -64,7 +64,7 @@ func (v *DrpcVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interf
 					details,
 				),
 			)
-		} else if code == 32601 && strings.Contains(msg, "does not exist/is not available") {
+		} else if strings.Contains(msg, "does not exist/is not available") {
 			// Intentionally consider missing methods as client-side exceptions
 			// because dRPC might give a false error when their underlying nodes
 			// have issues e.g. you might falsely get "eth_blockNumber not supported" errors.

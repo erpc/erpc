@@ -11,6 +11,11 @@
             "mode": "auto",
             "program": "${workspaceFolder}/cmd/erpc",
             "args": ["${workspaceFolder}/erpc.yaml"],
+            "env": {
+                "CC": "/usr/bin/cc",
+                "CXX": "/usr/bin/c++",
+                "CGO_ENABLED": "1"
+            }
         }
     ]
 }

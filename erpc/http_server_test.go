@@ -539,75 +539,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 	}
 }
 
-func createServerTestFixtures(cfg *common.Config, t *testing.T) (
-	func(body string, headers map[string]string, queryParams map[string]string) (int, string),
-	string,
-) {
-	gock.EnableNetworking()
-	gock.NetworkingFilter(func(req *http.Request) bool {
-		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
-		return shouldMakeRealCall
-	})
-	defer gock.Off()
-
-	logger := zerolog.New(zerolog.NewConsoleWriter())
-	ctx := context.Background()
-	// ctx, cancel := context.WithCancel(context.Background())
-	// defer cancel()
-
-	erpcInstance, err := NewERPC(ctx, &logger, nil, cfg)
-	require.NoError(t, err)
-
-	httpServer := NewHttpServer(ctx, &logger, cfg.Server, erpcInstance)
-
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	port := listener.Addr().(*net.TCPAddr).Port
-
-	go func() {
-		err := httpServer.server.Serve(listener)
-		if err != nil && err != http.ErrServerClosed {
-			t.Errorf("Server error: %v", err)
-		}
-	}()
-	// defer httpServer.server.Shutdown()
-
-	time.Sleep(1000 * time.Millisecond)
-
-	baseURL := fmt.Sprintf("http://localhost:%d", port)
-
-	sendRequest := func(body string, headers map[string]string, queryParams map[string]string) (int, string) {
-		req, err := http.NewRequest("POST", baseURL+"/test_project/evm/1", strings.NewReader(body))
-		require.NoError(t, err)
-		req.Header.Set("Content-Type", "application/json")
-		for k, v := range headers {
-			req.Header.Set(k, v)
-		}
-		q := req.URL.Query()
-		for k, v := range queryParams {
-			q.Add(k, v)
-		}
-		req.URL.RawQuery = q.Encode()
-
-		client := &http.Client{
-			Timeout: 10 * time.Second,
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			return 0, err.Error()
-		}
-		defer resp.Body.Close()
-
-		respBody, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return resp.StatusCode, err.Error()
-		}
-		return resp.StatusCode, string(respBody)
-	}
-
-	return sendRequest, baseURL
-}
-
 func TestHttpServer_MultipleUpstreams(t *testing.T) {
 	cfg := &common.Config{
 		Server: &common.ServerConfig{
@@ -716,4 +647,125 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 
 		assert.True(t, gock.IsDone(), "All mocks should have been called")
 	})
+}
+
+func TestHttpServer_IntegrationTests(t *testing.T) {
+	cfg := &common.Config{
+		Server: &common.ServerConfig{
+			MaxTimeout: "5s",
+		},
+		Projects: []*common.ProjectConfig{
+			{
+				Id: "test_project",
+				Networks: []*common.NetworkConfig{
+					{
+						Architecture: common.ArchitectureEvm,
+						Evm: &common.EvmNetworkConfig{
+							ChainId: 1,
+						},
+					},
+				},
+				Upstreams: []*common.UpstreamConfig{
+					{
+						Id:       "drpc1",
+						Type:     common.UpstreamTypeEvm,
+						Endpoint: "https://lb.drpc.org/ogrpc?network=ethereum",
+						Evm: &common.EvmUpstreamConfig{
+							ChainId: 1,
+						},
+					},
+				},
+			},
+		},
+		RateLimiters: &common.RateLimiterConfig{},
+	}
+
+	sendRequest, _ := createServerTestFixtures(cfg, t)
+
+	t.Run("DrpcUnsupportedMethod", func(t *testing.T) {
+		gock.New("https://lb.drpc.org").
+			Post("/").
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      111,
+				"error": map[string]interface{}{
+					"code":    -32601,
+					"message": "the method trace_transaction does not exist/is not available",
+				},
+			})
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"trace_transaction","params":[],"id":111}`, nil, nil)
+		assert.Equal(t, http.StatusBadRequest, statusCode)
+		assert.NotContains(t, body, "Unsupported")
+		assert.Contains(t, body, "ClientSide")
+	})
+}
+
+func createServerTestFixtures(cfg *common.Config, t *testing.T) (
+	func(body string, headers map[string]string, queryParams map[string]string) (int, string),
+	string,
+) {
+	gock.EnableNetworking()
+	gock.NetworkingFilter(func(req *http.Request) bool {
+		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
+		return shouldMakeRealCall
+	})
+	defer gock.Off()
+
+	logger := zerolog.New(zerolog.NewConsoleWriter())
+	ctx := context.Background()
+	// ctx, cancel := context.WithCancel(context.Background())
+	// defer cancel()
+
+	erpcInstance, err := NewERPC(ctx, &logger, nil, cfg)
+	require.NoError(t, err)
+
+	httpServer := NewHttpServer(ctx, &logger, cfg.Server, erpcInstance)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	go func() {
+		err := httpServer.server.Serve(listener)
+		if err != nil && err != http.ErrServerClosed {
+			t.Errorf("Server error: %v", err)
+		}
+	}()
+	// defer httpServer.server.Shutdown()
+
+	time.Sleep(1000 * time.Millisecond)
+
+	baseURL := fmt.Sprintf("http://localhost:%d", port)
+
+	sendRequest := func(body string, headers map[string]string, queryParams map[string]string) (int, string) {
+		req, err := http.NewRequest("POST", baseURL+"/test_project/evm/1", strings.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		q := req.URL.Query()
+		for k, v := range queryParams {
+			q.Add(k, v)
+		}
+		req.URL.RawQuery = q.Encode()
+
+		client := &http.Client{
+			Timeout: 10 * time.Second,
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return 0, err.Error()
+		}
+		defer resp.Body.Close()
+
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return resp.StatusCode, err.Error()
+		}
+		return resp.StatusCode, string(respBody)
+	}
+
+	return sendRequest, baseURL
 }
