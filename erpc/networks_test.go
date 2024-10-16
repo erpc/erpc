@@ -12,6 +12,7 @@ import (
 	// "fmt"
 	"io"
 	"net/http"
+
 	// "os"
 	"strings"
 
@@ -5609,6 +5610,113 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 				assert.Equal(t, i+1, jrr.ID(), "Response ID should match the request ID for request %d", i+1)
 			}
 		}
+
+		if left := anyTestMocksLeft(); left > 0 {
+			t.Errorf("Expected all test mocks to be consumed, got %v left", left)
+			for _, pending := range gock.Pending() {
+				t.Errorf("Pending mock: %v", pending)
+			}
+		}
+	})
+
+	t.Run("ContextCancellationDuringRequest", func(t *testing.T) {
+		resetGock()
+		defer resetGock()
+
+		network := setupTestNetwork(t)
+		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(safeReadBody(request), "eth_getLogs")
+			}).
+			Reply(200).
+			Delay(2 * time.Second). // Delay to ensure context cancellation occurs before response
+			BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		var wg sync.WaitGroup
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			time.Sleep(500 * time.Millisecond) // Wait a bit before cancelling
+			cancel()
+		}()
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+
+		wg.Wait() // Ensure cancellation has occurred
+
+		assert.Error(t, err)
+		assert.Nil(t, resp)
+		assert.True(t, strings.Contains(err.Error(), "context canceled"))
+
+		// Verify cleanup
+		inFlightCount := 0
+		network.inFlightRequests.Range(func(key, value interface{}) bool {
+			inFlightCount++
+			return true
+		})
+		assert.Equal(t, 0, inFlightCount, "in-flight requests map should be empty after context cancellation")
+
+		if left := anyTestMocksLeft(); left > 0 {
+			t.Errorf("Expected all test mocks to be consumed, got %v left", left)
+			for _, pending := range gock.Pending() {
+				t.Errorf("Pending mock: %v", pending)
+			}
+		}
+	})
+
+	t.Run("LongRunningRequest", func(t *testing.T) {
+		resetGock()
+		defer resetGock()
+
+		network := setupTestNetwork(t)
+		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(safeReadBody(request), "eth_getLogs")
+			}).
+			Reply(200).
+			Delay(5 * time.Second). // Simulate a long-running request
+			BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1"}`)
+
+		var wg sync.WaitGroup
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+			req := common.NewNormalizedRequest(requestBytes)
+			resp, err := network.Forward(context.Background(), req)
+			assert.NoError(t, err)
+			assert.NotNil(t, resp)
+		}()
+
+		// Check in-flight requests during processing
+		time.Sleep(1 * time.Second)
+		inFlightCount := 0
+
+		network.inFlightRequests.Range(func(key, value interface{}) bool {
+			inFlightCount++
+			return true
+		})
+		assert.Equal(t, 1, inFlightCount, "should have one in-flight request during processing")
+
+		wg.Wait() // Wait for the request to complete
+
+		// Verify cleanup after completion
+		inFlightCount = 0
+		network.inFlightRequests.Range(func(key, value interface{}) bool {
+			inFlightCount++
+			return true
+		})
+		assert.Equal(t, 0, inFlightCount, "in-flight requests map should be empty after request completion")
 
 		if left := anyTestMocksLeft(); left > 0 {
 			t.Errorf("Expected all test mocks to be consumed, got %v left", left)
