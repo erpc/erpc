@@ -50,6 +50,8 @@ var alchemyNetworkSubdomains = map[int64]string{
 	84532:     "base-sepolia",
 	97:        "bnb-testnet",
 	999999999: "zora-sepolia",
+	534351:    "scroll-sepolia",
+	534352:    "scroll-mainnet",
 }
 
 type AlchemyHttpJsonRpcClient struct {
