@@ -174,7 +174,9 @@ func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchReques
 	if c.logger.GetLevel() == zerolog.TraceLevel {
 		for _, req := range c.batchRequests {
 			jrr, _ := req.request.JsonRpcRequest()
+			jrr.Lock()
 			rqs, _ := common.SonicCfg.Marshal(jrr)
+			jrr.Unlock()
 			c.logger.Trace().Interface("id", req.request.Id()).Str("method", jrr.Method).Msgf("pending batch request: %s", string(rqs))
 		}
 	}
@@ -568,17 +570,7 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		// Infer from known status codes
-		if r.StatusCode == 401 || r.StatusCode == 403 {
-			return common.NewErrEndpointUnauthorized(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorUnauthorized,
-					err.Message,
-					nil,
-					details,
-				),
-			)
-		} else if r.StatusCode == 415 || code == common.JsonRpcErrorUnsupportedException {
+		if r.StatusCode == 415 || code == common.JsonRpcErrorUnsupportedException {
 			return common.NewErrEndpointUnsupported(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -763,7 +755,8 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(err.Message, "not supported") ||
 			strings.Contains(err.Message, "method is not whitelisted") ||
 			strings.Contains(err.Message, "method is disabled") ||
-			strings.Contains(err.Message, "module is disabled") {
+			strings.Contains(err.Message, "module is disabled") ||
+			strings.Contains(err.Message, "is not included in your current plan") {
 			return common.NewErrEndpointUnsupported(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -780,6 +773,16 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorInvalidArgument,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+		} else if r.StatusCode == 401 || r.StatusCode == 403 {
+			return common.NewErrEndpointUnauthorized(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorUnauthorized,
 					err.Message,
 					nil,
 					details,

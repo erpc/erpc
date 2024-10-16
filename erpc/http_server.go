@@ -467,7 +467,7 @@ func processErrorBody(logger *zerolog.Logger, nq *common.NormalizedRequest, err 
 		errObj := map[string]interface{}{
 			"code":    jre.NormalizedCode(),
 			"message": jre.Message,
-			"cause":   err,
+			// "cause":   err,
 		}
 		if jre.Details["data"] != nil {
 			errObj["data"] = jre.Details["data"]
