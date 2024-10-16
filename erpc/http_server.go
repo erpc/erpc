@@ -464,15 +464,18 @@ func processErrorBody(logger *zerolog.Logger, nq *common.NormalizedRequest, err 
 	}
 	jre := &common.ErrJsonRpcExceptionInternal{}
 	if errors.As(err, &jre) {
+		errObj := map[string]interface{}{
+			"code":    jre.NormalizedCode(),
+			"message": jre.Message,
+			"cause":   err,
+		}
+		if jre.Details["data"] != nil {
+			errObj["data"] = jre.Details["data"]
+		}
 		return map[string]interface{}{
 			"jsonrpc": jsonrpcVersion,
 			"id":      reqId,
-			"error": map[string]interface{}{
-				"code":    jre.NormalizedCode(),
-				"message": jre.Message,
-				"data":    jre.Details["data"],
-				"cause":   err,
-			},
+			"error":   errObj,
 		}
 	}
 
