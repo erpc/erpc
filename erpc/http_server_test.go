@@ -578,7 +578,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				BodyString(`{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"Invalid params","data":{"range":"the range 55074203 - 55124202 exceeds the range allowed for your plan (49999 > 2000)."}}}`)
 
 			_, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[],"id":1}`, nil, nil)
- 			assert.Contains(t, body, "the range 55074203 - 55124202")
+			assert.Contains(t, body, "the range 55074203 - 55124202")
 		})
 	}
 }
