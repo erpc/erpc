@@ -536,6 +536,40 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 
 			assert.True(t, gock.IsDone(), "All mocks should have been called")
 		})
+
+		t.Run("AutoAddIDandJSONRPCFieldstoRequest", func(t *testing.T) {
+			gock.New("http://rpc1.localhost").
+				Post("/").
+				Times(1).
+				SetMatcher(gock.NewEmptyMatcher()).
+				AddMatcher(func(req *http.Request, ereq *gock.Request) (bool, error) {
+					if !strings.Contains(req.URL.Host, "rpc1") {
+						return false, nil
+					}
+					bodyBytes, err := io.ReadAll(req.Body)
+					if err != nil {
+						return false, err
+					}
+					bodyStr := string(bodyBytes)
+					if !strings.Contains(bodyStr, "\"id\"") {
+						t.Fatalf("No id found in request")
+					}
+					if !strings.Contains(bodyStr, "\"jsonrpc\"") {
+						t.Fatalf("No jsonrpc found in request")
+					}
+					if !strings.Contains(bodyStr, "\"method\"") {
+						t.Fatalf("No method found in request")
+					}
+					if !strings.Contains(bodyStr, "\"params\"") {
+						t.Fatalf("No params found in request")
+					}
+					return true, nil
+				}).
+				Reply(200).
+				BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x123456"}`)
+
+			sendRequest(`{"method":"eth_traceDebug","params":[]}`, nil, nil)
+		})
 	}
 }
 

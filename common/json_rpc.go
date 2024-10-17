@@ -432,6 +432,7 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 	}{
 		Alias: (*Alias)(r),
 	}
+	aux.JSONRPC = "2.0"
 
 	if err := SonicCfg.Unmarshal(data, &aux); err != nil {
 		return err
