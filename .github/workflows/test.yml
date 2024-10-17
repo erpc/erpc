@@ -20,9 +20,3 @@ jobs:
         uses: securego/gosec@master
         with:
           args: -exclude-dir=test -tests=false ./...
-      - name: Generate coverage report
-        run: make coverage
-      - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v4.0.1
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}

@@ -1569,7 +1569,7 @@ type ErrJsonRpcExceptionExternal struct {
 	Message string `json:"message,omitempty"`
 
 	// Some errors such as execution reverted carry "data" field which has additional information
-	Data string `json:"data,omitempty"`
+	Data interface{} `json:"data,omitempty"`
 }
 
 func NewErrJsonRpcExceptionExternal(code int, message string, data string) *ErrJsonRpcExceptionExternal {
