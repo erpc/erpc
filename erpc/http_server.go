@@ -382,18 +382,16 @@ func setResponseHeaders(res interface{}, fastCtx *fasthttp.RequestCtx) {
 	var ok bool
 	rm, ok = res.(common.ResponseMetadata)
 	if !ok {
-		var jrsp, errObj map[string]interface{}
+		var jrsp map[string]interface{}
 		if jrsp, ok = res.(map[string]interface{}); ok {
-			if errObj, ok = jrsp["error"].(map[string]interface{}); ok {
-				if err, ok := errObj["cause"].(error); ok {
-					uer := &common.ErrUpstreamsExhausted{}
+			if err, ok := jrsp["cause"].(error); ok {
+				uer := &common.ErrUpstreamsExhausted{}
+				if ok = errors.As(err, &uer); ok {
+					rm = uer
+				} else {
+					uer := &common.ErrUpstreamRequest{}
 					if ok = errors.As(err, &uer); ok {
 						rm = uer
-					} else {
-						uer := &common.ErrUpstreamRequest{}
-						if ok = errors.As(err, &uer); ok {
-							rm = uer
-						}
 					}
 				}
 			}
@@ -418,12 +416,8 @@ func setResponseStatusCode(respOrErr interface{}, fastCtx *fasthttp.RequestCtx) 
 	if err, ok := respOrErr.(error); ok {
 		fastCtx.SetStatusCode(decideErrorStatusCode(err))
 	} else if resp, ok := respOrErr.(map[string]interface{}); ok {
-		if errObj, ok := resp["error"].(map[string]interface{}); ok {
-			if cause, ok := errObj["cause"].(error); ok {
-				fastCtx.SetStatusCode(decideErrorStatusCode(cause))
-			} else {
-				fastCtx.SetStatusCode(fasthttp.StatusOK)
-			}
+		if cause, ok := resp["cause"].(error); ok {
+			fastCtx.SetStatusCode(decideErrorStatusCode(cause))
 		} else {
 			fastCtx.SetStatusCode(fasthttp.StatusOK)
 		}
@@ -467,7 +461,6 @@ func processErrorBody(logger *zerolog.Logger, nq *common.NormalizedRequest, err 
 		errObj := map[string]interface{}{
 			"code":    jre.NormalizedCode(),
 			"message": jre.Message,
-			// "cause":   err,
 		}
 		if jre.Details["data"] != nil {
 			errObj["data"] = jre.Details["data"]
@@ -476,6 +469,7 @@ func processErrorBody(logger *zerolog.Logger, nq *common.NormalizedRequest, err 
 			"jsonrpc": jsonrpcVersion,
 			"id":      reqId,
 			"error":   errObj,
+			"cause":   err,
 		}
 	}
 
