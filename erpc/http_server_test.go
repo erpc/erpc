@@ -142,7 +142,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			if result.statusCode != http.StatusGatewayTimeout {
 				t.Errorf("unexpected status code: %d", result.statusCode)
 			}
-			assert.Contains(t, result.body, "Timeout")
+			assert.Contains(t, result.body, "ErrEndpointRequestTimeout")
 		}
 	})
 
@@ -349,7 +349,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			assert.Contains(t, errorResponse, "error")
 			errorObj := errorResponse["error"].(map[string]interface{})
 			errStr, _ := sonic.Marshal(errorObj)
-			assert.Contains(t, string(errStr), "ErrJsonRpcRequestUnmarshal")
+			assert.Contains(t, string(errStr), "failed to parse")
 		})
 
 		t.Run("UnsupportedMethod", func(t *testing.T) {
@@ -457,7 +457,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			assert.Contains(t, errorResponse, "error")
 			errorObj := errorResponse["error"].(map[string]interface{})
 			errStr, _ := sonic.Marshal(errorObj)
-			assert.Contains(t, string(errStr), "ErrEndpointRequestTimeout")
+			assert.Contains(t, string(errStr), "timeout")
 
 			assert.True(t, gock.IsDone(), "All mocks should have been called")
 		})

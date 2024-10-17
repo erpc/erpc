@@ -493,7 +493,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, common.NewErrEndpointRequestTimeout(time.Since(reqStartTime))
 		}
-		return nil, err
+		return nil, common.NewErrEndpointTransportFailure(err)
 	}
 
 	nr := common.NewNormalizedResponse().
