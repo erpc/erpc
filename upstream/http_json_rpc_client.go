@@ -559,14 +559,21 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 
 		code := common.JsonRpcErrorNumber(err.Code)
 
-		if err.Data != "" {
-			// Some providers such as Alchemy prefix the data with this string
-			// we omit this prefix for standardization.
-			if strings.HasPrefix(err.Data, "Reverted ") {
-				details["data"] = err.Data[9:]
-			} else {
-				details["data"] = err.Data
+		switch err.Data.(type) {
+		case string:
+			s := err.Data.(string)
+			if s != "" {
+				// Some providers such as Alchemy prefix the data with this string
+				// we omit this prefix for standardization.
+				if strings.HasPrefix(s, "Reverted ") {
+					details["data"] = s[9:]
+				} else {
+					details["data"] = s
+				}
 			}
+		default:
+			// skip setting data field
+			details["data"] = err.Data
 		}
 
 		// Infer from known status codes
