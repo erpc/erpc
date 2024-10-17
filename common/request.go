@@ -236,15 +236,6 @@ func (r *NormalizedRequest) JsonRpcRequest() (*JsonRpcRequest, error) {
 		return nil, NewErrJsonRpcRequestUnresolvableMethod(rpcReq)
 	}
 
-	if rpcReq.JSONRPC == "" {
-		rpcReq.JSONRPC = "2.0"
-	}
-
-	if rpcReq.ID == 0 {
-		rpcReq.ID = util.RandomID()
-		r.uid.Store(rpcReq.ID)
-	}
-
 	r.jsonRpcRequest = rpcReq
 
 	return rpcReq, nil
