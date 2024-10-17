@@ -287,7 +287,7 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 			}
 		} else {
 			for _, req := range requests {
-				req.err <- err
+				req.err <- common.NewErrEndpointTransportFailure(err)
 			}
 		}
 		return
