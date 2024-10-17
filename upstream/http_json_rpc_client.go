@@ -174,7 +174,9 @@ func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchReques
 	if c.logger.GetLevel() == zerolog.TraceLevel {
 		for _, req := range c.batchRequests {
 			jrr, _ := req.request.JsonRpcRequest()
+			jrr.Lock()
 			rqs, _ := common.SonicCfg.Marshal(jrr)
+			jrr.Unlock()
 			c.logger.Trace().Interface("id", req.request.Id()).Str("method", jrr.Method).Msgf("pending batch request: %s", string(rqs))
 		}
 	}
@@ -285,7 +287,7 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 			}
 		} else {
 			for _, req := range requests {
-				req.err <- err
+				req.err <- common.NewErrEndpointTransportFailure(err)
 			}
 		}
 		return
@@ -491,7 +493,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, common.NewErrEndpointRequestTimeout(time.Since(reqStartTime))
 		}
-		return nil, err
+		return nil, common.NewErrEndpointTransportFailure(err)
 	}
 
 	nr := common.NewNormalizedResponse().
@@ -557,28 +559,25 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 
 		code := common.JsonRpcErrorNumber(err.Code)
 
-		if err.Data != "" {
-			// Some providers such as Alchemy prefix the data with this string
-			// we omit this prefix for standardization.
-			if strings.HasPrefix(err.Data, "Reverted ") {
-				details["data"] = err.Data[9:]
-			} else {
-				details["data"] = err.Data
+		switch err.Data.(type) {
+		case string:
+			s := err.Data.(string)
+			if s != "" {
+				// Some providers such as Alchemy prefix the data with this string
+				// we omit this prefix for standardization.
+				if strings.HasPrefix(s, "Reverted ") {
+					details["data"] = s[9:]
+				} else {
+					details["data"] = s
+				}
 			}
+		default:
+			// passthrough error data as is
+			details["data"] = err.Data
 		}
 
 		// Infer from known status codes
-		if r.StatusCode == 401 || r.StatusCode == 403 {
-			return common.NewErrEndpointUnauthorized(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorUnauthorized,
-					err.Message,
-					nil,
-					details,
-				),
-			)
-		} else if r.StatusCode == 415 || code == common.JsonRpcErrorUnsupportedException {
+		if r.StatusCode == 415 || code == common.JsonRpcErrorUnsupportedException {
 			return common.NewErrEndpointUnsupported(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -666,7 +665,8 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			(strings.Contains(err.Message, "blocks specified") && strings.Contains(err.Message, "cannot be found")) ||
 			strings.Contains(err.Message, "transaction not found") ||
 			strings.Contains(err.Message, "cannot find transaction") ||
-			strings.Contains(err.Message, "after last accepted block") {
+			strings.Contains(err.Message, "after last accepted block") ||
+			strings.Contains(err.Message, "No state available") {
 			return common.NewErrEndpointMissingData(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -686,7 +686,30 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if code == -32602 || strings.Contains(err.Message, "param is required") {
+		} else if code == -32602 ||
+			strings.Contains(err.Message, "param is required") ||
+			strings.Contains(err.Message, "Invalid Request") ||
+			strings.Contains(err.Message, "validation errors") ||
+			strings.Contains(err.Message, "invalid argument") {
+			if dt, ok := err.Data.(map[string]interface{}); ok {
+				if msg, ok := dt["message"]; ok {
+					if strings.Contains(msg.(string), "validation errors in batch") {
+						// Intentionally return a server-side error for failed requests in a batch
+						// so they are retried in a different batch.
+						// TODO Should we split a batch instead on json-rpc client level?
+						return common.NewErrEndpointServerSideException(
+							common.NewErrJsonRpcExceptionInternal(
+								int(code),
+								common.JsonRpcErrorServerSideException,
+								err.Message,
+								nil,
+								details,
+							),
+							nil,
+						)
+					}
+				}
+			}
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -724,8 +747,12 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			)
 		} else if strings.Contains(err.Message, "not found") ||
 			strings.Contains(err.Message, "does not exist") ||
-			strings.Contains(err.Message, "is not available") {
-			if strings.Contains(err.Message, "Method") || strings.Contains(err.Message, "method") {
+			strings.Contains(err.Message, "is not available") ||
+			strings.Contains(err.Message, "is disabled") {
+			if strings.Contains(err.Message, "Method") ||
+				strings.Contains(err.Message, "method") ||
+				strings.Contains(err.Message, "Module") ||
+				strings.Contains(err.Message, "module") {
 				return common.NewErrEndpointUnsupported(
 					common.NewErrJsonRpcExceptionInternal(
 						int(code),
@@ -762,8 +789,7 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		} else if strings.Contains(err.Message, "Unsupported method") ||
 			strings.Contains(err.Message, "not supported") ||
 			strings.Contains(err.Message, "method is not whitelisted") ||
-			strings.Contains(err.Message, "method is disabled") ||
-			strings.Contains(err.Message, "module is disabled") {
+			strings.Contains(err.Message, "is not included in your current plan") {
 			return common.NewErrEndpointUnsupported(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -773,13 +799,21 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if strings.Contains(err.Message, "Invalid Request") ||
-			strings.Contains(err.Message, "validation errors") ||
-			strings.Contains(err.Message, "invalid argument") {
+		} else if code == -32600 {
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorInvalidArgument,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+		} else if r.StatusCode == 401 || r.StatusCode == 403 || strings.Contains(err.Message, "not allowed to access") {
+			return common.NewErrEndpointUnauthorized(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorUnauthorized,
 					err.Message,
 					nil,
 					details,

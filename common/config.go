@@ -471,9 +471,28 @@ func (s *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 	return nil
 }
 
+var NetworkDefaultFailsafeConfig = &FailsafeConfig{
+	Hedge: &HedgePolicyConfig{
+		Delay:    "200ms",
+		MaxCount: 3,
+	},
+	Retry: &RetryPolicyConfig{
+		MaxAttempts:     3,
+		Delay:           "1s",
+		Jitter:          "500ms",
+		BackoffMaxDelay: "10s",
+		BackoffFactor:   2,
+	},
+	Timeout: &TimeoutPolicyConfig{
+		Duration: "30s",
+	},
+}
+
 func (c *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type rawNetworkConfig NetworkConfig
-	raw := rawNetworkConfig{}
+	raw := rawNetworkConfig{
+		Failsafe: NetworkDefaultFailsafeConfig,
+	}
 	if err := unmarshal(&raw); err != nil {
 		return err
 	}

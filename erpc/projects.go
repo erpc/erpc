@@ -3,11 +3,9 @@ package erpc
 import (
 	"context"
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
 	"sync"
-	// "time"
 
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
@@ -127,27 +125,8 @@ func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) 
 	}
 
 	if nwCfg == nil {
-		allUps, err := p.upstreamsRegistry.GetSortedUpstreams(networkId, "*")
-		if err != nil {
-			return nil, err
-		}
 		nwCfg = &common.NetworkConfig{
-			Failsafe: &common.FailsafeConfig{
-				Hedge: &common.HedgePolicyConfig{
-					Delay:    "200ms",
-					MaxCount: 3,
-				},
-				Retry: &common.RetryPolicyConfig{
-					MaxAttempts:     int(math.Min(float64(len(allUps)), 3)),
-					Delay:           "1s",
-					Jitter:          "500ms",
-					BackoffMaxDelay: "10s",
-					BackoffFactor:   2,
-				},
-				Timeout: &common.TimeoutPolicyConfig{
-					Duration: "30s",
-				},
-			},
+			Failsafe: common.NetworkDefaultFailsafeConfig,
 		}
 
 		s := strings.Split(networkId, ":")

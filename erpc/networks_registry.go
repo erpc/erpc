@@ -67,8 +67,7 @@ func NewNetwork(
 		metricsTracker:       metricsTracker,
 		rateLimitersRegistry: rateLimitersRegistry,
 
-		inFlightMutex:    &sync.Mutex{},
-		inFlightRequests: make(map[string]*Multiplexer),
+		inFlightRequests: &sync.Map{},
 		failsafePolicies: policies,
 		failsafeExecutor: failsafe.NewExecutor(policies...),
 	}

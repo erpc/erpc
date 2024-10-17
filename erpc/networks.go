@@ -22,8 +22,8 @@ type Network struct {
 	ProjectId string
 	Logger    *zerolog.Logger
 
-	inFlightMutex    *sync.Mutex
-	inFlightRequests map[string]*Multiplexer
+	inFlightRequests *sync.Map
+	evmStatePollers  map[string]*upstream.EvmStatePoller
 
 	failsafePolicies     []failsafe.Policy[*common.NormalizedResponse]
 	failsafeExecutor     failsafe.Executor[*common.NormalizedResponse]
@@ -31,8 +31,6 @@ type Network struct {
 	cacheDal             data.CacheDAL
 	metricsTracker       *health.Tracker
 	upstreamsRegistry    *upstream.UpstreamsRegistry
-
-	evmStatePollers map[string]*upstream.EvmStatePoller
 }
 
 func (n *Network) Bootstrap(ctx context.Context) error {
@@ -84,10 +82,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	var inf *Multiplexer
 	mlxHash, err := req.CacheHash()
 	if err == nil && mlxHash != "" {
-		n.inFlightMutex.Lock()
-		var exists bool
-		if inf, exists = n.inFlightRequests[mlxHash]; exists {
-			n.inFlightMutex.Unlock()
+		if vinf, exists := n.inFlightRequests.Load(mlxHash); exists {
+			inf = vinf.(*Multiplexer)
 			lg.Debug().Str("mlx", mlxHash).Msgf("found similar in-flight request, waiting for result")
 			health.MetricNetworkMultiplexedRequests.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 
@@ -119,13 +115,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			}
 		}
 		inf = NewMultiplexer()
-		n.inFlightRequests[mlxHash] = inf
-		n.inFlightMutex.Unlock()
 		defer func() {
-			n.inFlightMutex.Lock()
-			defer n.inFlightMutex.Unlock()
-			delete(n.inFlightRequests, mlxHash)
+			if r := recover(); r != nil {
+				lg.Error().Msgf("panic in multiplexer cleanup: %v", r)
+			}
+			n.inFlightRequests.Delete(mlxHash)
 		}()
+		n.inFlightRequests.Store(mlxHash, inf)
 	}
 
 	// 2) Get from cache if exists
@@ -220,6 +216,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			// Upstream-level retry is handled by the upstream itself (and its own failsafe policies).
 			ln := len(upsList)
 			for count := 0; count < ln; count++ {
+				if err := exec.Context().Err(); err != nil {
+					return nil, err
+				}
 				// We need to use write-lock here because "i" is being updated.
 				req.Lock()
 				u := upsList[i]
