@@ -699,6 +699,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		billing := 0
 		other := 0
 		client := 0
+		transport := 0
 		cancelled := 0
 
 		for _, e := range joinedErr.Unwrap() {
@@ -729,6 +730,9 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 				continue
 			} else if HasErrorCode(e, ErrCodeEndpointClientSideException) || HasErrorCode(e, ErrCodeJsonRpcRequestUnmarshal) {
 				client++
+				continue
+			} else if HasErrorCode(e, ErrCodeEndpointTransportFailure) {
+				transport++
 				continue
 			} else if !HasErrorCode(e, ErrCodeUpstreamMethodIgnored) {
 				other++
@@ -1341,6 +1345,20 @@ func (e *ErrEndpointClientSideException) ErrorStatusCode() int {
 	}
 
 	return http.StatusBadRequest
+}
+
+type ErrEndpointTransportFailure struct{ BaseError }
+
+const ErrCodeEndpointTransportFailure = "ErrEndpointTransportFailure"
+
+var NewErrEndpointTransportFailure = func(cause error) error {
+	return &ErrEndpointTransportFailure{
+		BaseError{
+			Code:    ErrCodeEndpointTransportFailure,
+			Message: "failure when sending request to remote endpoint",
+			Cause:   cause,
+		},
+	}
 }
 
 type ErrEndpointServerSideException struct{ BaseError }
