@@ -331,7 +331,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Times(3).
 			Post("").
 			Reply(503).
-			JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32600,"message":"some random provider issue"}}`))
+			JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32603,"message":"some random provider issue"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -410,8 +410,8 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
-		if len(gock.Pending()) > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
+		if left := anyTestMocksLeft(); left > 0 {
+			t.Errorf("Expected all mocks to be consumed, got %v left", left)
 			for _, pending := range gock.Pending() {
 				t.Errorf("Pending mock: %v", pending)
 			}
@@ -5210,7 +5210,7 @@ func TestNetwork_Forward(t *testing.T) {
 			resetGock()
 			defer resetGock()
 
-			network := setupTestNetwork(t)
+			network := setupTestNetwork(t, nil)
 			gock.New("http://rpc1.localhost").
 				Post("/").
 				MatchType("json").
@@ -5347,6 +5347,108 @@ func TestNetwork_Forward(t *testing.T) {
 			wg.Wait()
 		})
 	}
+
+	t.Run("BatchRequestValidationAndRetry", func(t *testing.T) {
+		defer gock.Off()
+		defer gock.Clean()
+		defer gock.CleanUnmatchedRequest()
+
+		setupMocksForEvmStatePoller()
+
+		// Set up the test environment
+		network := setupTestNetwork(t, &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "test",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+			JsonRpc: &common.JsonRpcUpstreamConfig{
+				SupportsBatch: &common.TRUE,
+			},
+			Failsafe: &common.FailsafeConfig{
+				Retry: &common.RetryPolicyConfig{
+					MaxAttempts: 2,
+				},
+			},
+		})
+
+		// Mock the response for the batch request
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Reply(200).
+			BodyString(`[
+				{
+					"jsonrpc": "2.0",
+					"id": 32,
+					"error": {
+						"code": -32602,
+						"message": "Invalid params",
+						"data": {
+							"range": "the range 56224203 - 56274202 exceeds the range allowed for your plan (49999 > 2000)."
+						}
+					}
+				},
+				{
+					"jsonrpc": "2.0",
+					"id": 43,
+					"error": {
+						"code": -32600,
+						"message": "Invalid Request",
+						"data": {
+							"message": "Cancelled due to validation errors in batch request"
+						}
+					}
+				}
+			]`)
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Reply(200).
+			BodyString(`[
+				{
+					"jsonrpc": "2.0",
+					"id": 43,
+					"result": "0x22222222222222"
+				}
+			]`)
+
+		// Create normalized requests
+		req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":32,"method":"eth_getLogs","params":[{"fromBlock":"0x35A35CB","toBlock":"0x35AF7CA"}]}`))
+		req2 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":43,"method":"eth_getBalance","params":["0x742d35Cc6634C0532925a3b844Bc454e4438f44e", "latest"]}`))
+
+		// Process requests
+		var resp1, resp2 *common.NormalizedResponse
+		var err1, err2 error
+
+		wg := sync.WaitGroup{}
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			resp1, err1 = network.Forward(context.Background(), req1)
+		}()
+		go func() {
+			defer wg.Done()
+			resp2, err2 = network.Forward(context.Background(), req2)
+		}()
+		wg.Wait()
+
+		// Assertions for the first request (server-side error, should be retried)
+		assert.Error(t, err1, "Expected an error for the first request")
+		assert.Nil(t, resp1, "Expected nil response for the first request")
+		assert.False(t, common.IsRetryableTowardsUpstream(err1), "Expected a retryable error for the first request")
+		assert.True(t, common.HasErrorCode(err1, common.ErrCodeEndpointClientSideException), "Expected a client-side exception error for the second request")
+
+		// Assertions for the second request (client-side error, should not be retried)
+		assert.Nil(t, err2, "Expected no error for the second request")
+		assert.NotNil(t, resp2, "Expected non-nil response for the second request")
+
+		if left := anyTestMocksLeft(); left > 0 {
+			t.Errorf("Expected all test mocks to be consumed, got %v left", left)
+			for _, pending := range gock.Pending() {
+				t.Errorf("Pending mock: %v", pending)
+			}
+		}
+	})
 }
 
 func TestNetwork_InFlightRequests(t *testing.T) {
@@ -5354,7 +5456,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		resetGock()
 		defer resetGock()
 
-		network := setupTestNetwork(t)
+		network := setupTestNetwork(t, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 
 		gock.New("http://rpc1.localhost").
@@ -5392,7 +5494,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		resetGock()
 		defer resetGock()
 
-		network := setupTestNetwork(t)
+		network := setupTestNetwork(t, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 
 		gock.New("http://rpc1.localhost").
@@ -5430,7 +5532,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		resetGock()
 		defer resetGock()
 
-		network := setupTestNetwork(t)
+		network := setupTestNetwork(t, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 
 		gock.New("http://rpc1.localhost").
@@ -5467,7 +5569,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		resetGock()
 		defer resetGock()
 
-		network := setupTestNetwork(t)
+		network := setupTestNetwork(t, nil)
 		successRequestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 		failureRequestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"]}`)
 
@@ -5524,7 +5626,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		resetGock()
 		defer resetGock()
 
-		network := setupTestNetwork(t)
+		network := setupTestNetwork(t, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 
 		gock.New("http://rpc1.localhost").
@@ -5561,7 +5663,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		resetGock()
 		defer resetGock()
 
-		network := setupTestNetwork(t)
+		network := setupTestNetwork(t, nil)
 
 		// Mock the response from the upstream
 		gock.New("http://rpc1.localhost").
@@ -5619,7 +5721,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		resetGock()
 		defer resetGock()
 
-		network := setupTestNetwork(t)
+		network := setupTestNetwork(t, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 
 		gock.New("http://rpc1.localhost").
@@ -5671,7 +5773,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		resetGock()
 		defer resetGock()
 
-		network := setupTestNetwork(t)
+		network := setupTestNetwork(t, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 
 		gock.New("http://rpc1.localhost").
@@ -5723,7 +5825,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 	})
 }
 
-func setupTestNetwork(t *testing.T) *Network {
+func setupTestNetwork(t *testing.T, upstreamConfig *common.UpstreamConfig) *Network {
 	t.Helper()
 
 	setupMocksForEvmStatePoller()
@@ -5731,13 +5833,15 @@ func setupTestNetwork(t *testing.T) *Network {
 	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
 	metricsTracker := health.NewTracker("test", time.Minute)
 
-	upstreamConfig := &common.UpstreamConfig{
-		Type:     common.UpstreamTypeEvm,
-		Id:       "test",
-		Endpoint: "http://rpc1.localhost",
-		Evm: &common.EvmUpstreamConfig{
-			ChainId: 123,
-		},
+	if upstreamConfig == nil {
+		upstreamConfig = &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "test",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
 	}
 	upstreamsRegistry := upstream.NewUpstreamsRegistry(
 		&log.Logger,
