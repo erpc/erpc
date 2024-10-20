@@ -1,0 +1,24 @@
+name: prune
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * *"
+  push:
+    branches:
+      - main
+
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+    name: Prune images
+    steps:
+      - uses: snok/container-retention-policy@v3.0.0
+        with:
+          account: erpc
+          token: ${{ secrets.GITHUB_TOKEN }}
+          image-names: "erpc"
+          image-tags: "!latest !main !*.*.*"
+          tag-selection: both
+          cut-off: 0ms
+          dry-run: false
