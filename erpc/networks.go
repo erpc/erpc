@@ -301,11 +301,21 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		// If error is due to empty response be generous and accept it,
 		// because this means after many retries still no data is available.
 		if common.HasErrorCode(err, common.ErrCodeFailsafeRetryExceeded) {
+			// TODO is there a cleaner way to use last result when retry is exhausted?
 			lvr := req.LastValidResponse()
-			if !lvr.IsObjectNull() && lvr.IsResultEmptyish() {
-				// We don't need to worry about replying wrongly empty responses for unfinalized data
-				// because cache layer already is not caching unfinalized data.
-				resp = lvr
+			if !lvr.IsObjectNull() {
+				if lvr.IsResultEmptyish() {
+					// We don't need to worry about replying wrongly empty responses for unfinalized data
+					// because cache layer already is not caching unfinalized data.
+					resp = lvr
+				} else if n.Architecture() == common.ArchitectureEvm {
+					evmBlkNum, err := lvr.EvmBlockNumber()
+					if err == nil && evmBlkNum == 0 {
+						// For pending txs we can accept the response if even after retries it is still pending.
+						// This is avoids failing with "retry" error, when we actually do have a response but blockNumber is null since tx is pending.
+						resp = lvr
+					}
+				}
 			} else {
 				if len(errorsByUpstream) > 0 {
 					err = common.NewErrUpstreamsExhausted(

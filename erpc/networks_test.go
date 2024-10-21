@@ -1861,7 +1861,7 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(b, "latest")
 			}).
 			Reply(200).
-			JSON([]byte(`{"result": {"number":"0xA98AC7"}}`))
+			JSON([]byte(`{"result":{"number":"0xA98AC7"}}`))
 
 		// Mock the response for the finalized block number request
 		gock.New("http://rpc1.localhost").
@@ -1882,7 +1882,7 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(b, "latest")
 			}).
 			Reply(200).
-			JSON([]byte(`{"result": {"number":"0x32DCD5"}}`))
+			JSON([]byte(`{"result":{"number":"0x32DCD5"}}`))
 
 		// Mock the response for the finalized block number request
 		gock.New("http://rpc2.localhost").
@@ -2057,6 +2057,225 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		if blockNumber != "0x54C563" {
 			t.Errorf("Expected blockNumber to be %q, got %q", "0x54C563", blockNumber)
+		}
+
+		fromHost, err := jrr.PeekStringByPath("fromHost")
+		if err != nil {
+			t.Fatalf("Failed to get fromHost from result: %v", err)
+		}
+		if fromHost != "rpc2" {
+			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
+		}
+	})
+
+	t.Run("ReturnPendingDataEvenAfterRetryingExhaustedWhenDirectiveIsSet", func(t *testing.T) {
+		defer gock.Off()
+
+		// Mock the response for the latest block number request
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				b := safeReadBody(request)
+				return strings.Contains(b, "latest")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0xA98AC7"}}`))
+
+		// Mock the response for the finalized block number request
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				b := safeReadBody(request)
+				return strings.Contains(b, "finalized")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x21E88E"}}`))
+
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				b := safeReadBody(request)
+				return strings.Contains(b, "latest")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x32DCD5"}}`))
+
+		// Mock the response for the finalized block number request
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				b := safeReadBody(request)
+				return strings.Contains(b, "finalized")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x2A62B1C"}}`))
+
+		// Mock a pending transaction response from the first upstream
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				b := safeReadBody(request)
+				return strings.Contains(b, "eth_getTransactionByHash")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"blockNumber":null,"hash":"0xabcdef","fromHost":"rpc1"}}`))
+
+		// Mock a non-pending transaction response from the second upstream
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				b := safeReadBody(request)
+				return strings.Contains(b, "eth_getTransactionByHash")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"blockNumber":null,"hash":"0xabcdef","fromHost":"rpc2"}}`))
+
+		// Set up a context and a cancellation function
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Initialize various components for the test environment
+		clr := upstream.NewClientRegistry(&log.Logger)
+		fsCfg := &common.FailsafeConfig{
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 3, // Allow up to 3 retry attempts
+			},
+		}
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+			Budgets: []*common.RateLimitBudgetConfig{},
+		}, &log.Logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		vndr := vendors.NewVendorsRegistry()
+		mt := health.NewTracker("prjA", 2*time.Second)
+
+		// Set up upstream configurations
+		up1 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc1",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
+		up2 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc2",
+			Endpoint: "http://rpc2.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
+
+		// Initialize the upstreams registry
+		upr := upstream.NewUpstreamsRegistry(
+			&log.Logger,
+			"prjA",
+			[]*common.UpstreamConfig{up1, up2},
+			rlr,
+			vndr,
+			mt,
+			0,
+		)
+		err = upr.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Create and register clients for both upstreams
+		pup1, err := upr.NewUpstream(
+			"prjA",
+			up1,
+			&log.Logger,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl1, err := clr.GetOrCreateClient(pup1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1.Client = cl1
+
+		pup2, err := upr.NewUpstream(
+			"prjA",
+			up2,
+			&log.Logger,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl2, err := clr.GetOrCreateClient(pup2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup2.Client = cl2
+
+		// Set up the network configuration
+		ntw, err := NewNetwork(
+			&log.Logger,
+			"prjA",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId:              123,
+					BlockTrackerInterval: "10h",
+				},
+				Failsafe: fsCfg,
+			},
+			rlr,
+			upr,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Bootstrap the network and make the simulated request
+		ntw.Bootstrap(ctx)
+		time.Sleep(1000 * time.Millisecond)
+
+		// Create a fake request and forward it through the network
+		fakeReq := common.NewNormalizedRequest([]byte(`{
+				"jsonrpc": "2.0",
+				"method": "eth_getTransactionByHash",
+				"params": ["0xabcdef"],
+				"id": 1
+			}`))
+		fakeReq.ApplyDirectivesFromHttp(&fasthttp.RequestHeader{}, &fasthttp.Args{})
+		resp, err := ntw.Forward(ctx, fakeReq)
+
+		if err != nil {
+			t.Fatalf("Expected nil error, got %v", err)
+		}
+
+		// Parse and validate the JSON-RPC response
+		jrr, err := resp.JsonRpcResponse()
+		if err != nil {
+			t.Fatalf("Failed to get JSON-RPC response: %v", err)
+		}
+
+		if jrr.Result == nil {
+			t.Fatalf("Expected non-nil result")
+		}
+
+		hash, err := jrr.PeekStringByPath("hash")
+		if err != nil {
+			t.Fatalf("Failed to get hash from result: %v", err)
+		}
+		if hash != "0xabcdef" {
+			t.Errorf("Expected hash to be %q, got %q", "0xabcdef", hash)
 		}
 
 		fromHost, err := jrr.PeekStringByPath("fromHost")
