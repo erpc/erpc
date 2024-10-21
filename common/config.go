@@ -19,13 +19,14 @@ var (
 
 // Config represents the configuration of the application.
 type Config struct {
-	LogLevel     string             `yaml:"logLevel" json:"logLevel"`
-	Server       *ServerConfig      `yaml:"server" json:"server"`
-	Database     *DatabaseConfig    `yaml:"database" json:"database"`
-	Projects     []*ProjectConfig   `yaml:"projects" json:"projects"`
-	RateLimiters *RateLimiterConfig `yaml:"rateLimiters" json:"rateLimiters"`
-	Metrics      *MetricsConfig     `yaml:"metrics" json:"metrics"`
-	Admin        *AdminConfig       `yaml:"admin" json:"admin"`
+	LogLevel     string               `yaml:"logLevel" json:"logLevel"`
+	Server       *ServerConfig        `yaml:"server" json:"server"`
+	Database     *DatabaseConfig      `yaml:"database" json:"database"`
+	Projects     []*ProjectConfig     `yaml:"projects" json:"projects"`
+	RateLimiters *RateLimiterConfig   `yaml:"rateLimiters" json:"rateLimiters"`
+	Metrics      *MetricsConfig       `yaml:"metrics" json:"metrics"`
+	Admin        *AdminConfig         `yaml:"admin" json:"admin"`
+	Interceptors []*InterceptorConfig `yaml:"interceptors" json:"interceptors"`
 }
 
 type ServerConfig struct {
@@ -322,6 +323,65 @@ type MetricsConfig struct {
 	ListenV6 bool   `yaml:"listenV6" json:"listenV6"`
 	HostV6   string `yaml:"hostV6" json:"hostV6"`
 	Port     int    `yaml:"port" json:"port"`
+}
+
+type InterceptorType string
+
+const (
+	InterceptorTypeIncomingRequest  InterceptorType = "incomingRequest"
+	InterceptorTypeOutgoingResponse InterceptorType = "outgoingResponse"
+)
+
+type InterceptorConfig struct {
+	Id          string            `yaml:"id" json:"id"`
+	Enabled     bool              `yaml:"enabled" json:"enabled"`
+	Type        InterceptorType   `yaml:"type" json:"type"`
+	Destination DestinationConfig `yaml:"destination" json:"destination"`
+	Evaluation  EvaluationConfig  `yaml:"evaluation" json:"evaluation"`
+}
+
+type DestinationDriver string
+
+const (
+	DestinationDriverFile DestinationDriver = "file"
+)
+
+type DestinationConfig struct {
+	Driver DestinationDriver      `yaml:"driver" json:"driver"`
+	File   *FileDestinationConfig `yaml:"file" json:"file"`
+}
+
+type EvaluationConfig struct {
+	FieldMatch   *FieldMatchConfig   `yaml:"fieldMatch" json:"fieldMatch"`
+	Typescript   *TypescriptConfig   `yaml:"typescript" json:"typescript"`
+	EvmAbiParser *EvmAbiParserConfig `yaml:"evmAbiParser" json:"evmAbiParser"`
+}
+
+type FileDestinationConfig struct {
+	Path string `yaml:"path" json:"path"`
+}
+
+type FieldMatchConfig struct {
+	Networks              []string `yaml:"networks" json:"networks"`
+	Upstreams             []string `yaml:"upstreams" json:"upstreams"`
+	Methods               []string `yaml:"methods" json:"methods"`
+	RequestStringIncludes []string `yaml:"requestRawIncludes" json:"requestRawIncludes"`
+	ResultStringIncludes  []string `yaml:"resultRawIncludes" json:"resultRawIncludes"`
+	ErrorCodes            []string `yaml:"errorCodes" json:"errorCodes"`
+	StatusCodes           []int    `yaml:"statusCodes" json:"statusCodes"`
+}
+
+type TypescriptConfig struct {
+	AllowOverriding bool   `yaml:"allowOverriding" json:"allowOverriding"`
+	ScriptPath      string `yaml:"scriptPath" json:"scriptPath"`
+	ScriptContent   string `yaml:"scriptContent" json:"scriptContent"`
+	Handler         string `yaml:"handler" json:"handler"`
+}
+
+type EvmAbiParserConfig struct {
+	Import                        []string `yaml:"import" json:"import"`
+	EnableForEventsTopicsAndData  bool     `yaml:"enableForLogTopicsAndData" json:"enableForLogTopicsAndData"`
+	EnableForTransactionsCallData bool     `yaml:"enableForTransactionsCallData" json:"enableForTransactionsCallData"`
 }
 
 var cfgInstance *Config
