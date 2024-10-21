@@ -383,8 +383,10 @@ func setResponseHeaders(res interface{}, fastCtx *fasthttp.RequestCtx) {
 	rm, ok = res.(common.ResponseMetadata)
 	if !ok {
 		var jrsp map[string]interface{}
+		var hjrsp *HttpJsonRpcErrorResponse
 		if jrsp, ok = res.(map[string]interface{}); ok {
-			if err, ok := jrsp["cause"].(error); ok {
+			var err error
+			if err, ok = jrsp["cause"].(error); ok {
 				uer := &common.ErrUpstreamsExhausted{}
 				if ok = errors.As(err, &uer); ok {
 					rm = uer
@@ -393,6 +395,13 @@ func setResponseHeaders(res interface{}, fastCtx *fasthttp.RequestCtx) {
 					if ok = errors.As(err, &uer); ok {
 						rm = uer
 					}
+				}
+			}
+		} else if hjrsp, ok = res.(*HttpJsonRpcErrorResponse); ok {
+			if err := hjrsp.Cause; err != nil {
+				uer := &common.ErrUpstreamRequest{}
+				if ok = errors.As(err, &uer); ok {
+					rm = uer
 				}
 			}
 		}
@@ -421,9 +430,18 @@ func setResponseStatusCode(respOrErr interface{}, fastCtx *fasthttp.RequestCtx) 
 		} else {
 			fastCtx.SetStatusCode(fasthttp.StatusOK)
 		}
+	} else if hjrsp, ok := respOrErr.(*HttpJsonRpcErrorResponse); ok {
+		fastCtx.SetStatusCode(decideErrorStatusCode(hjrsp.Cause))
 	} else {
 		fastCtx.SetStatusCode(fasthttp.StatusOK)
 	}
+}
+
+type HttpJsonRpcErrorResponse struct {
+	Jsonrpc string      `json:"jsonrpc"`
+	Id      interface{} `json:"id"`
+	Error   interface{} `json:"error"`
+	Cause   error       `json:"-"`
 }
 
 func processErrorBody(logger *zerolog.Logger, nq *common.NormalizedRequest, err error) interface{} {
@@ -465,11 +483,11 @@ func processErrorBody(logger *zerolog.Logger, nq *common.NormalizedRequest, err 
 		if jre.Details["data"] != nil {
 			errObj["data"] = jre.Details["data"]
 		}
-		return map[string]interface{}{
-			"jsonrpc": jsonrpcVersion,
-			"id":      reqId,
-			"error":   errObj,
-			"cause":   err,
+		return &HttpJsonRpcErrorResponse{
+			Jsonrpc: jsonrpcVersion,
+			Id:      reqId,
+			Error:   errObj,
+			Cause:   err,
 		}
 	}
 

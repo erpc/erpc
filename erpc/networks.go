@@ -106,6 +106,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 				return resp, inf.err
 			case <-ctx.Done():
+				n.inFlightRequests.Delete(mlxHash)
+
 				err := ctx.Err()
 				if errors.Is(err, context.DeadlineExceeded) {
 					return nil, common.NewErrNetworkRequestTimeout(time.Since(startTime))
