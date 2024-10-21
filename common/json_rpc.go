@@ -466,6 +466,10 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 		}
 	}
 
+	if r.ID == 0 {
+		r.ID = util.RandomID()
+	}
+
 	return nil
 }
 
