@@ -1641,6 +1641,10 @@ var NewErrRecordNotFound = func(key string, driver string) error {
 }
 
 func HasErrorCode(err error, codes ...ErrorCode) bool {
+	if err == nil {
+		return false
+	}
+
 	if be, ok := err.(StandardError); ok {
 		return be.HasCode(codes...)
 	}
