@@ -23,7 +23,7 @@ jobs:
       - name: Fetch multi-platform package version SHAs
         id: multi-arch-digests
         run: |
-          erpc=$(docker manifest inspect ghcr.io/erpc | jq -r '.manifests.[] | .digest' | paste -s -d ' ' -)
+          erpc=$(docker manifest inspect ghcr.io/erpc/erpc | jq -r '.manifests.[] | .digest' | paste -s -d ' ' -)
           echo "multi-arch-digests=$erpc" >> $GITHUB_OUTPUT
 
       - uses: snok/container-retention-policy@v3.0.0
