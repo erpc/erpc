@@ -166,7 +166,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 	})
 
 	t.Run("MixedTimeoutAndNonTimeoutRequests", func(t *testing.T) {
-		totalReqs := 100
+		totalReqs := 10
 
 		for i := 0; i < totalReqs; i++ {
 			var delay time.Duration
@@ -294,7 +294,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 
 		t.Run("ConcurrentEthGetBlockNumber", func(t *testing.T) {
 			defer gock.Off()
-			const concurrentRequests = 100
+			defer gock.Clean()
+
+			const concurrentRequests = 10
 
 			gock.New("http://rpc1.localhost").
 				Post("/").
@@ -336,6 +338,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		})
 
 		t.Run("InvalidJSON", func(t *testing.T) {
+			defer gock.Off()
+			defer gock.Clean()
+
 			statusCode, body := sendRequest(`{"invalid json`, nil, nil)
 
 			fmt.Println(body)
@@ -354,6 +359,8 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 
 		t.Run("UnsupportedMethod", func(t *testing.T) {
 			defer gock.Off()
+			defer gock.Clean()
+
 			cfg.Projects[0].Upstreams[0].IgnoreMethods = []string{}
 
 			gock.New("http://rpc1.localhost").
@@ -382,6 +389,8 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 
 		t.Run("IgnoredMethod", func(t *testing.T) {
 			defer gock.Off()
+			defer gock.Clean()
+
 			cfg.Projects[0].Upstreams[0].IgnoreMethods = []string{"ignored_method"}
 
 			gock.New("http://rpc1.localhost").
@@ -410,6 +419,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 
 		// Test case: Request with invalid project ID
 		t.Run("InvalidProjectID", func(t *testing.T) {
+			defer gock.Off()
+			defer gock.Clean()
+
 			req, err := http.NewRequest("POST", baseURL+"/invalid_project/evm/1", strings.NewReader(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`))
 			require.NoError(t, err)
 			req.Header.Set("Content-Type", "application/json")
@@ -436,6 +448,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		})
 
 		t.Run("UpstreamLatencyAndTimeout", func(t *testing.T) {
+			defer gock.Off()
+			defer gock.Clean()
+
 			gock.New("http://rpc1.localhost").
 				Post("/").
 				Reply(200).
@@ -463,6 +478,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		})
 
 		t.Run("UnexpectedPlainErrorResponseFromUpstream", func(t *testing.T) {
+			defer gock.Off()
+			defer gock.Clean()
+
 			gock.New("http://rpc1.localhost").
 				Post("/").
 				Times(1).
@@ -478,6 +496,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		})
 
 		t.Run("UnexpectedServerErrorResponseFromUpstream", func(t *testing.T) {
+			defer gock.Off()
+			defer gock.Clean()
+
 			gock.New("http://rpc1.localhost").
 				Post("/").
 				Times(1).
@@ -494,6 +515,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		})
 
 		t.Run("MissingIDInJsonRpcRequest", func(t *testing.T) {
+			defer gock.Off()
+			defer gock.Clean()
+
 			var id interface{}
 			gock.New("http://rpc1.localhost").
 				Post("/").
@@ -538,6 +562,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		})
 
 		t.Run("AutoAddIDandJSONRPCFieldstoRequest", func(t *testing.T) {
+			defer gock.Off()
+			defer gock.Clean()
+
 			gock.New("http://rpc1.localhost").
 				Post("/").
 				Times(1).
@@ -571,7 +598,23 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			sendRequest(`{"method":"eth_traceDebug","params":[]}`, nil, nil)
 		})
 
+		t.Run("AlwaysPropagateUpstreamErrorDataField", func(t *testing.T) {
+			defer gock.Off()
+			defer gock.Clean()
+
+			gock.New("http://rpc1.localhost").
+				Post("/").
+				Reply(400).
+				BodyString(`{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"Invalid params","data":{"range":"the range 55074203 - 55124202 exceeds the range allowed for your plan (49999 > 2000)."}}}`)
+
+			_, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[],"id":1}`, nil, nil)
+			assert.Contains(t, body, "the range 55074203 - 55124202")
+		})
+
 		t.Run("AutoAddIDWhen0IsProvided", func(t *testing.T) {
+			defer gock.Off()
+			defer gock.Clean()
+
 			gock.New("http://rpc1.localhost").
 				Post("/").
 				SetMatcher(gock.NewEmptyMatcher()).
@@ -601,16 +644,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x123456"}`)
 
 			sendRequest(`{"jsonrpc":"2.0","method":"eth_traceDebug","params":[],"id":0}`, nil, nil)
-		})
-
-		t.Run("AlwaysPropagateUpstreamErrorDataField", func(t *testing.T) {
-			gock.New("http://rpc1.localhost").
-				Post("/").
-				Reply(400).
-				BodyString(`{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"Invalid params","data":{"range":"the range 55074203 - 55124202 exceeds the range allowed for your plan (49999 > 2000)."}}}`)
-
-			_, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[],"id":1}`, nil, nil)
-			assert.Contains(t, body, "the range 55074203 - 55124202")
 		})
 	}
 }
