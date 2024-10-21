@@ -571,6 +571,38 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			sendRequest(`{"method":"eth_traceDebug","params":[]}`, nil, nil)
 		})
 
+		t.Run("AutoAddIDWhen0IsProvided", func(t *testing.T) {
+			gock.New("http://rpc1.localhost").
+				Post("/").
+				SetMatcher(gock.NewEmptyMatcher()).
+				AddMatcher(func(req *http.Request, ereq *gock.Request) (bool, error) {
+					if !strings.Contains(req.URL.Host, "rpc1") {
+						return false, nil
+					}
+					bodyBytes, err := io.ReadAll(req.Body)
+					if err != nil {
+						return false, err
+					}
+					fmt.Println(string(bodyBytes))
+					bodyStr := string(bodyBytes)
+					if !strings.Contains(bodyStr, "\"id\"") {
+						t.Fatalf("No id found in request")
+					}
+					idNode, err := sonic.Get(bodyBytes, 0, "id")
+					require.NoError(t, err)
+					id, err := idNode.Int64()
+					require.NoError(t, err)
+					if id == 0 {
+						t.Fatalf("Expected id to be 0, got %d from body: %s", id, bodyStr)
+					}
+					return true, nil
+				}).
+				Reply(200).
+				BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x123456"}`)
+
+			sendRequest(`{"jsonrpc":"2.0","method":"eth_traceDebug","params":[],"id":0}`, nil, nil)
+		})
+
 		t.Run("AlwaysPropagateUpstreamErrorDataField", func(t *testing.T) {
 			gock.New("http://rpc1.localhost").
 				Post("/").
