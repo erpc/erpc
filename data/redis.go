@@ -65,6 +65,7 @@ func (r *RedisConnector) connect(ctx context.Context, cfg *common.RedisConnector
 		Addr:     cfg.Addr,
 		Password: cfg.Password,
 		DB:       cfg.DB,
+		PoolSize: cfg.ConnPoolSize,
 	}
 
 	if cfg.TLS != nil && cfg.TLS.Enabled {

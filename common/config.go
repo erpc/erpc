@@ -66,17 +66,19 @@ type TLSConfig struct {
 }
 
 type RedisConnectorConfig struct {
-	Addr     string     `yaml:"addr" json:"addr"`
-	Password string     `yaml:"password" json:"password"`
-	DB       int        `yaml:"db" json:"db"`
-	TLS      *TLSConfig `yaml:"tls" json:"tls"`
+	Addr         string     `yaml:"addr" json:"addr"`
+	Password     string     `yaml:"password" json:"password"`
+	DB           int        `yaml:"db" json:"db"`
+	TLS          *TLSConfig `yaml:"tls" json:"tls"`
+	ConnPoolSize int        `yaml:"connPoolSize" json:"connPoolSize"`
 }
 
 func (r *RedisConnectorConfig) MarshalJSON() ([]byte, error) {
 	return sonic.Marshal(map[string]interface{}{
-		"addr":     r.Addr,
-		"password": "REDACTED",
-		"db":       r.DB,
+		"addr":         r.Addr,
+		"password":     "REDACTED",
+		"db":           r.DB,
+		"connPoolSize": r.ConnPoolSize,
 	})
 }
 
