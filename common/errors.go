@@ -275,6 +275,10 @@ var NewErrInvalidUrlPath = func(path string) error {
 	}
 }
 
+func (e *ErrInvalidUrlPath) ErrorStatusCode() int {
+	return http.StatusBadRequest
+}
+
 type ErrInvalidConfig struct{ BaseError }
 
 var NewErrInvalidConfig = func(message string) error {

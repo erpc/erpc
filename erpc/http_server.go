@@ -304,6 +304,7 @@ func (s *HttpServer) parseUrlPath(fctx *fasthttp.RequestCtx) (
 	err error,
 ) {
 	isPost := fctx.IsPost()
+	isOptions := fctx.IsOptions()
 	ps := path.Clean(util.Mem2Str(fctx.Path()))
 	segments := strings.Split(ps, "/")
 
@@ -311,11 +312,11 @@ func (s *HttpServer) parseUrlPath(fctx *fasthttp.RequestCtx) (
 		return "", "", "", false, false, common.NewErrInvalidUrlPath(ps)
 	}
 
-	if isPost && len(segments) == 4 {
+	if (isPost || isOptions) && len(segments) == 4 {
 		projectId = segments[1]
 		architecture = segments[2]
 		chainId = segments[3]
-	} else if isPost && len(segments) == 3 && segments[2] == "admin" {
+	} else if (isPost || isOptions) && len(segments) == 3 && segments[2] == "admin" {
 		projectId = segments[1]
 		isAdmin = true
 	} else if len(segments) == 2 && segments[1] == "healthcheck" {
