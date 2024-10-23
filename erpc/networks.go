@@ -76,7 +76,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	req.SetNetwork(n)
 
 	method, _ := req.Method()
-	lg := n.Logger.With().Str("method", method).Int64("id", req.Id()).Str("ptr", fmt.Sprintf("%p", req)).Logger()
+	lg := n.Logger.With().Str("method", method).Interface("id", req.ID()).Str("ptr", fmt.Sprintf("%p", req)).Logger()
 
 	// 1) In-flight multiplexing
 	var inf *Multiplexer
@@ -408,6 +408,9 @@ func (n *Network) shouldHandleMethod(method string, upsList []*upstream.Upstream
 		if len(upsList) > 1 {
 			return common.NewErrNotImplemented("eth_newFilter, eth_newBlockFilter and eth_newPendingTransactionFilter are not supported yet when there are more than 1 upstream defined")
 		}
+	}
+	if method == "eth_accounts" || method == "eth_sign" {
+		return common.NewErrNotImplemented("eth_accounts and eth_sign are not supported")
 	}
 
 	return nil

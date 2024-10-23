@@ -723,7 +723,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			} else if HasErrorCode(e, ErrCodeFailsafeCircuitBreakerOpen) {
 				cbOpen++
 				continue
-			} else if errors.Is(e, context.DeadlineExceeded) || HasErrorCode(e, ErrCodeEndpointRequestTimeout) {
+			} else if errors.Is(e, context.DeadlineExceeded) || HasErrorCode(e, ErrCodeEndpointRequestTimeout, ErrCodeFailsafeTimeoutExceeded) {
 				timeout++
 				continue
 			} else if HasErrorCode(e, ErrCodeEndpointServerSideException) {
@@ -859,6 +859,8 @@ var NewErrNoUpstreamsDefined = func(project string) error {
 	}
 }
 
+func (e *ErrNoUpstreamsDefined) ErrorStatusCode() int { return http.StatusNotFound }
+
 type ErrNoUpstreamsFound struct{ BaseError }
 
 var NewErrNoUpstreamsFound = func(project string, network string) error {
@@ -874,7 +876,7 @@ var NewErrNoUpstreamsFound = func(project string, network string) error {
 	}
 }
 
-func (e *ErrNoUpstreamsDefined) ErrorStatusCode() int { return 404 }
+func (e *ErrNoUpstreamsFound) ErrorStatusCode() int { return http.StatusNotFound }
 
 type ErrUpstreamNetworkNotDetected struct{ BaseError }
 
@@ -1092,10 +1094,12 @@ var NewErrFailsafeConfiguration = func(cause error, details map[string]interface
 
 type ErrFailsafeTimeoutExceeded struct{ BaseError }
 
+const ErrCodeFailsafeTimeoutExceeded ErrorCode = "ErrFailsafeTimeoutExceeded"
+
 var NewErrFailsafeTimeoutExceeded = func(cause error) error {
 	return &ErrFailsafeTimeoutExceeded{
 		BaseError{
-			Code:    "ErrFailsafeTimeoutExceeded",
+			Code:    ErrCodeFailsafeTimeoutExceeded,
 			Message: "failsafe timeout policy exceeded",
 			Cause:   cause,
 		},

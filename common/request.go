@@ -2,7 +2,6 @@ package common
 
 import (
 	"fmt"
-	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -44,7 +43,6 @@ type NormalizedRequest struct {
 	network Network
 	body    []byte
 
-	uid            atomic.Value
 	method         string
 	directives     *RequestDirectives
 	jsonRpcRequest *JsonRpcRequest
@@ -106,44 +104,16 @@ func (r *NormalizedRequest) Network() Network {
 	return r.network
 }
 
-func (r *NormalizedRequest) Id() int64 {
+func (r *NormalizedRequest) ID() interface{} {
 	if r == nil {
-		return 0
+		return nil
 	}
 
-	if r.jsonRpcRequest != nil {
-		return r.jsonRpcRequest.ID
+	if jrr, _ := r.JsonRpcRequest(); jrr != nil {
+		return jrr.ID
 	}
 
-	if len(r.body) > 0 {
-		idnode, err := sonic.Get(r.body, "id")
-		if err == nil {
-			ids, err := idnode.String()
-			if err != nil {
-				idf, err := idnode.Float64()
-				if err != nil {
-					idn, err := idnode.Int64()
-					if err != nil {
-						r.uid.Store(idn)
-						return idn
-					}
-				} else {
-					uid := int64(idf)
-					r.uid.Store(uid)
-					return uid
-				}
-			} else {
-				uid, err := strconv.ParseInt(ids, 0, 64)
-				if err != nil {
-					uid = 0
-				}
-				r.uid.Store(uid)
-				return uid
-			}
-		}
-	}
-
-	return 0
+	return nil
 }
 
 func (r *NormalizedRequest) NetworkId() string {
