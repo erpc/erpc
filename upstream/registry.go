@@ -2,7 +2,6 @@ package upstream
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"math/rand"
 	"sort"
@@ -246,7 +245,6 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 	}
 
 	ln := len(u.sortedUpstreams)
-	u.logger.Trace().Str("projectId", u.prjId).Int("networks", ln).Msgf("refreshing upstreams scores")
 
 	allNetworks := make([]string, 0, ln)
 	for networkId := range u.sortedUpstreams {
@@ -308,13 +306,6 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 	for _, ups := range upsList {
 		metrics := u.metricsTracker.GetUpstreamMethodMetrics(ups.Config().Id, networkId, method)
 		metrics.Mutex.RLock()
-		u.logger.Trace().
-			Str("projectId", u.prjId).
-			Str("networkId", networkId).
-			Str("method", method).
-			Str("upstreamId", ups.Config().Id).
-			Interface("metrics", metrics).
-			Msg("queried upstream metrics")
 		p90Latencies = append(p90Latencies, metrics.LatencySecs.P90())
 		blockHeadLags = append(blockHeadLags, metrics.BlockHeadLag)
 		finalizationLags = append(finalizationLags, metrics.FinalizationLag)
@@ -347,24 +338,10 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 			normFinalizationLags[i],
 		)
 		u.upstreamScores[ups.Config().Id][networkId][method] = score
-		u.logger.Trace().Str("projectId", u.prjId).
-			Str("upstreamId", ups.Config().Id).
-			Str("networkId", networkId).
-			Str("method", method).
-			Float64("score", score).
-			Msgf("refreshed score")
 	}
 
 	u.sortUpstreams(networkId, method, upsList)
 	u.sortedUpstreams[networkId][method] = upsList
-
-	if u.logger.GetLevel() >= zerolog.TraceLevel {
-		newSortStr := ""
-		for _, ups := range upsList {
-			newSortStr += fmt.Sprintf("%s ", ups.Config().Id)
-		}
-		u.logger.Trace().Str("projectId", u.prjId).Str("networkId", networkId).Str("method", method).Str("newSort", newSortStr).Msgf("sorted upstreams")
-	}
 }
 
 func (u *UpstreamsRegistry) calculateScore(
