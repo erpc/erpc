@@ -680,7 +680,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 					Post("/").
 					SetMatcher(gock.NewEmptyMatcher()).
 					AddMatcher(func(req *http.Request, ereq *gock.Request) (bool, error) {
-						fmt.Println("checking req.URL.Host", req.URL.Host)
 						if !strings.Contains(req.URL.Host, "rpc1") {
 							return false, nil
 						}
@@ -688,7 +687,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 						if err != nil {
 							return false, err
 						}
-						fmt.Println("checking bodyBytes ", string(bodyBytes))
 						bodyStr := string(bodyBytes)
 						if !strings.Contains(bodyStr, "\"id\"") {
 							t.Fatalf("No id found in request")
