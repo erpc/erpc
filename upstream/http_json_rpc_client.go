@@ -177,7 +177,7 @@ func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchReques
 			jrr.Lock()
 			rqs, _ := common.SonicCfg.Marshal(jrr)
 			jrr.Unlock()
-			c.logger.Trace().Interface("id", req.request.Id()).Str("method", jrr.Method).Msgf("pending batch request: %s", string(rqs))
+			c.logger.Trace().Interface("id", req.request.ID()).Str("method", jrr.Method).Msgf("pending batch request: %s", string(rqs))
 		}
 	}
 
@@ -221,7 +221,7 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 	batchReq := make([]common.JsonRpcRequest, 0, ln)
 	for _, req := range requests {
 		jrReq, err := req.request.JsonRpcRequest()
-		c.logger.Trace().Interface("id", req.request.Id()).Str("method", jrReq.Method).Msgf("preparing batch request")
+		c.logger.Trace().Interface("id", req.request.ID()).Str("method", jrReq.Method).Msgf("preparing batch request")
 		if err != nil {
 			req.err <- common.NewErrUpstreamRequest(
 				err,
@@ -373,7 +373,7 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 		// Handle any remaining requests that didn't receive a response
 		anyMissingId := false
 		for _, req := range requests {
-			req.err <- fmt.Errorf("no response received for request ID: %d", req.request.Id())
+			req.err <- fmt.Errorf("no response received for request ID: %d", req.request.ID())
 			anyMissingId = true
 		}
 		if anyMissingId {
