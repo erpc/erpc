@@ -47,7 +47,6 @@ func (s *HttpServer) handleHealthCheck(ctx *fasthttp.RequestCtx, encoder sonic.E
 		}
 	}
 
-	logger.Info().Msg("Healthcheck passed")
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetBodyString("OK")
 }
