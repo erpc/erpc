@@ -39,6 +39,35 @@ type ServerConfig struct {
 
 type AdminConfig struct {
 	Auth *AuthConfig `yaml:"auth" json:"auth"`
+	CORS *CORSConfig `yaml:"cors" json:"cors"`
+}
+
+func (a *AdminConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type rawAdminConfig AdminConfig
+	raw := rawAdminConfig{
+		// In context of eRPC admin endpoint, enforcing CORS is not really necessary
+		// because we do not use cookies or other credentials that are exploitable in a
+		// cross-origin attack context.
+		// Thereforce a default value of "*" for allowed origins is acceptable as the attacker will not
+		// have access to admin-token when attempting from a different origin than the trusted one.
+		CORS: &CORSConfig{
+			AllowedOrigins: []string{"*"},
+			AllowedMethods: []string{"GET", "POST", "OPTIONS"},
+			AllowedHeaders: []string{
+				"content-type",
+				"authorization",
+				"x-erpc-secret-token",
+			},
+			AllowCredentials: false,
+			MaxAge:           3600,
+		},
+	}
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+
+	*a = AdminConfig(raw)
+	return nil
 }
 
 type DatabaseConfig struct {

@@ -12,3 +12,4 @@ erpc.yaml
 .generated-go-semantic-release-changelog.md
 .semrel/
 __debug*
+node_modules

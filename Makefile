@@ -52,11 +52,11 @@ coverage:
 
 .PHONY: up
 up:
-	@docker-compose up -d --force-recreate --remove-orphans
+	@docker compose up -d --force-recreate --remove-orphans
 
 .PHONY: down
 down:
-	@docker-compose down
+	@docker compose down
 
 .PHONY: fmt
 fmt:
