@@ -308,7 +308,7 @@ func (s *HttpServer) parseUrlPath(fctx *fasthttp.RequestCtx) (
 	ps := path.Clean(util.Mem2Str(fctx.Path()))
 	segments := strings.Split(ps, "/")
 
-	if len(segments) != 2 && len(segments) != 3 && len(segments) != 4 {
+	if len(segments) > 4 {
 		return "", "", "", false, false, common.NewErrInvalidUrlPath(ps)
 	}
 
@@ -319,7 +319,7 @@ func (s *HttpServer) parseUrlPath(fctx *fasthttp.RequestCtx) (
 	} else if (isPost || isOptions) && len(segments) == 3 && segments[2] == "admin" {
 		projectId = segments[1]
 		isAdmin = true
-	} else if len(segments) == 2 && segments[1] == "healthcheck" {
+	} else if (len(segments) == 2 && (segments[1] == "healthcheck" || segments[1] == "")) {
 		isHealthCheck = true
 	} else {
 		return "", "", "", false, false, common.NewErrInvalidUrlPath(ps)
@@ -450,7 +450,7 @@ func processErrorBody(logger *zerolog.Logger, nq *common.NormalizedRequest, err 
 		if nq != nil {
 			nq.RLock()
 		}
-		if common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
+		if common.HasErrorCode(err, common.ErrCodeEndpointClientSideException, common.ErrCodeInvalidUrlPath) {
 			logger.Debug().Err(err).Object("request", nq).Msgf("forward request errored with client-side exception")
 		} else {
 			if e, ok := err.(common.StandardError); ok {
