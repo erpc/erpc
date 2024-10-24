@@ -16,11 +16,17 @@ RUN go mod download
 # Copy the source code
 COPY . .
 
-# Build the application without pprof
-RUN CGO_ENABLED=0 GOOS=linux LDFLAGS="-w -s -X common.ErpcVersion=${VERSION} -X common.ErpcCommitSha=${COMMIT_SHA}" go build -a -installsuffix cgo -o erpc-server ./cmd/erpc/main.go
+# Set environment variables
+ENV CGO_ENABLED=0 \
+    GOOS=linux \
+    LDFLAGS="-w -s -X common.ErpcVersion=${VERSION} -X common.ErpcCommitSha=${COMMIT_SHA}"
 
-# Build the application with pprof
-RUN CGO_ENABLED=0 GOOS=linux LDFLAGS="-w -s -X common.ErpcVersion=${VERSION} -X common.ErpcCommitSha=${COMMIT_SHA}" go build -a -installsuffix cgo -tags pprof -o erpc-server-pprof ./cmd/erpc/*.go
+# Build both binaries in parallel
+RUN sh -c ' \
+    go build -a -installsuffix cgo -ldflags "$LDFLAGS" -o erpc-server ./cmd/erpc/main.go & \
+    go build -a -installsuffix cgo -tags pprof -ldflags "$LDFLAGS" -o erpc-server-pprof ./cmd/erpc/*.go & \
+    wait \
+'
 
 # Final stage
 FROM alpine:3.18
@@ -32,8 +38,7 @@ WORKDIR /root/
 COPY --from=builder /app/erpc-server .
 COPY --from=builder /app/erpc-server-pprof .
 
-# 8080 -> erpc
-# 6060 -> pprof (optional)
+# Expose ports
 EXPOSE 8080 6060
 
 # Use an environment variable to determine which binary to run
