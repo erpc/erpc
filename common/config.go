@@ -42,6 +42,29 @@ type AdminConfig struct {
 	CORS *CORSConfig `yaml:"cors" json:"cors"`
 }
 
+func (a *AdminConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type rawAdminConfig AdminConfig
+	raw := rawAdminConfig{
+		CORS: &CORSConfig{
+			AllowedOrigins: []string{"*"},
+			AllowedMethods: []string{"GET", "POST", "OPTIONS"},
+			AllowedHeaders: []string{
+				"content-type",
+				"authorization",
+				"x-erpc-secret-token",
+			},
+			AllowCredentials: false,
+			MaxAge:           3600,
+		},
+	}
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+
+	*a = AdminConfig(raw)
+	return nil
+}
+
 type DatabaseConfig struct {
 	EvmJsonRpcCache *ConnectorConfig `yaml:"evmJsonRpcCache" json:"evmJsonRpcCache"`
 }
