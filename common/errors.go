@@ -263,10 +263,12 @@ var NewErrInvalidRequest = func(cause error) error {
 
 type ErrInvalidUrlPath struct{ BaseError }
 
+const ErrCodeInvalidUrlPath ErrorCode = "ErrInvalidUrlPath"
+
 var NewErrInvalidUrlPath = func(path string) error {
 	return &ErrInvalidUrlPath{
 		BaseError{
-			Code:    "ErrInvalidUrlPath",
+			Code:    ErrCodeInvalidUrlPath,
 			Message: "path URL must be 3 segments like /<projectId>/<architecture>/<networkId> e.g. /main/evm/42161",
 			Details: map[string]interface{}{
 				"providedPath": path,
