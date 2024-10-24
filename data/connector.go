@@ -15,6 +15,8 @@ const (
 type Connector interface {
 	Get(ctx context.Context, index, partitionKey, rangeKey string) (string, error)
 	Set(ctx context.Context, partitionKey, rangeKey, value string) error
+	SetTTL(method string, ttlStr string) error
+	HasTTL(method string) bool
 	Delete(ctx context.Context, index, partitionKey, rangeKey string) error
 }
 

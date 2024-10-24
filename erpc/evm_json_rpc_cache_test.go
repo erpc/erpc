@@ -81,6 +81,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":{"hash":"0xabc","blockNumber":"0x2"}}`))
 
 		mockConnector.On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		mockConnector.On("HasTTL", mock.AnythingOfType("string")).Return(false)
 
 		err := cache.Set(context.Background(), req, resp)
 
@@ -96,6 +97,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":{"hash":"0xabc","number":"0x2"}}`))
 
 		mockConnector.On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		mockConnector.On("HasTTL", mock.AnythingOfType("string")).Return(false)
 
 		err := cache.Set(context.Background(), req, resp)
 
@@ -148,6 +150,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(tc.result))
 
 				mockConnector.On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
+				mockConnector.On("HasTTL", mock.AnythingOfType("string")).Return(false)
 
 				err := cache.Set(context.Background(), req, resp)
 
@@ -167,6 +170,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":{"number":"0x1","hash":"0xabc"}}`))
 
 		mockConnector.On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		mockConnector.On("HasTTL", mock.AnythingOfType("string")).Return(false)
 
 		err := cache.Set(context.Background(), req, resp)
 
@@ -180,6 +184,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x399",false],"id":1}`))
 		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":{"number":"0x399","hash":"0xdef"}}`))
 
+		mockConnector.On("HasTTL", mock.AnythingOfType("string")).Return(false)
 		err := cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
@@ -193,6 +198,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetNetwork(mockNetwork)
 		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
 
+		mockConnector.On("HasTTL", mock.AnythingOfType("string")).Return(false)
 		err := cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
@@ -206,6 +212,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetNetwork(mockNetwork)
 		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
 
+		mockConnector.On("HasTTL", mock.AnythingOfType("string")).Return(false)
 		err := cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
@@ -219,6 +226,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetNetwork(mockNetwork)
 		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
 
+		mockConnector.On("HasTTL", mock.AnythingOfType("string")).Return(false)
 		err := cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
@@ -232,6 +240,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetNetwork(mockNetwork)
 		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
 
+		mockConnector.On("HasTTL", mock.AnythingOfType("string")).Return(false)
 		err := cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
@@ -246,6 +255,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
 
 		mockConnector.On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		mockConnector.On("HasTTL", mock.AnythingOfType("string")).Return(false)
 
 		err := cache.Set(context.Background(), req, resp)
 
@@ -263,6 +273,7 @@ func TestEvmJsonRpcCache_Get(t *testing.T) {
 
 		cachedResponse := `{"number":"0x1","hash":"0xabc"}`
 		mockConnector.On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything).Return(cachedResponse, nil)
+		mockConnector.On("HasTTL", mock.AnythingOfType("string")).Return(false)
 
 		resp, err := cache.Get(context.Background(), req)
 
@@ -279,6 +290,7 @@ func TestEvmJsonRpcCache_Get(t *testing.T) {
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x32345",false],"id":1}`))
 		req.SetNetwork(mockNetwork)
+		mockConnector.On("HasTTL", mock.AnythingOfType("string")).Return(false)
 		resp, err := cache.Get(context.Background(), req)
 
 		assert.NoError(t, err)
