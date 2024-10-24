@@ -39,6 +39,7 @@ type ServerConfig struct {
 
 type AdminConfig struct {
 	Auth *AuthConfig `yaml:"auth" json:"auth"`
+	CORS *CORSConfig `yaml:"cors" json:"cors"`
 }
 
 type DatabaseConfig struct {

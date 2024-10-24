@@ -103,12 +103,15 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 			return
 		}
 
-		if project.Config.CORS != nil {
-			if !s.handleCORS(fastCtx, project.Config.CORS) {
-				return
+		if isAdmin {
+			if project.Config.Admin != nil && project.Config.Admin.CORS != nil {
+				if !s.handleCORS(fastCtx, project.Config.Admin.CORS) || fastCtx.IsOptions() {
+					return
+				}
 			}
-
-			if fastCtx.IsOptions() {
+		} else if project.Config.CORS != nil {
+			if !s.handleCORS(fastCtx, project.Config.CORS) || fastCtx.IsOptions() {
+				// If CORS is blocked OR request is just OPTIONS, we don't need to proceed further
 				return
 			}
 		}
@@ -319,7 +322,7 @@ func (s *HttpServer) parseUrlPath(fctx *fasthttp.RequestCtx) (
 	} else if (isPost || isOptions) && len(segments) == 3 && segments[2] == "admin" {
 		projectId = segments[1]
 		isAdmin = true
-	} else if (len(segments) == 2 && (segments[1] == "healthcheck" || segments[1] == "")) {
+	} else if len(segments) == 2 && (segments[1] == "healthcheck" || segments[1] == "") {
 		isHealthCheck = true
 	} else {
 		return "", "", "", false, false, common.NewErrInvalidUrlPath(ps)
@@ -331,6 +334,12 @@ func (s *HttpServer) parseUrlPath(fctx *fasthttp.RequestCtx) (
 func (s *HttpServer) handleCORS(ctx *fasthttp.RequestCtx, corsConfig *common.CORSConfig) bool {
 	origin := util.Mem2Str(ctx.Request.Header.Peek("Origin"))
 	if origin == "" {
+		// When no Origin is provided, we allow the request as there's no point in enforcing CORS.
+		// For example if client is a custom code (not mainstream browser) there's no point in enforcing CORS.
+		// Besides, eRPC is not relying on cookies so CORS is not a big concern (i.e. session hijacking is irrelevant).
+		// Bad actors can just build a custom proxy and spoof headers to bypass it.
+		// Therefore in the context of eRPC, even using "*" (allowed origins) is not a big concern, in this context
+		// CORS is just useful to prevent normies from putting your eRPC URL in their frontend code for example.
 		return true
 	}
 
