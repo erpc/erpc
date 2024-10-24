@@ -1,20 +1,28 @@
+# syntax = docker/dockerfile:1.4
+
 # Build stage
 FROM golang:1.22-alpine AS builder
 
-ARG VERSION
-ARG COMMIT_SHA
+# Enable build cache
+ENV GOCACHE=/go-cache
+ENV GOMODCACHE=/go-mod-cache
 
 # Set the working directory
-WORKDIR /app
+WORKDIR /root
 
-# Copy go mod and sum files
+# Copy go mod and sum files first for better layer caching
 COPY go.mod go.sum ./
 
-# Download all dependencies
-RUN go mod download
+# Download dependencies in a separate layer
+RUN --mount=type=cache,target=/go-mod-cache \
+    go mod download
 
 # Copy the source code
 COPY . .
+
+# Set build arguments
+ARG VERSION
+ARG COMMIT_SHA
 
 # Set environment variables
 ENV CGO_ENABLED=0 \
@@ -22,27 +30,25 @@ ENV CGO_ENABLED=0 \
     LDFLAGS="-w -s -X common.ErpcVersion=${VERSION} -X common.ErpcCommitSha=${COMMIT_SHA}"
 
 # Build both binaries in parallel
-RUN sh -c ' \
-    go build -a -installsuffix cgo -ldflags "$LDFLAGS" -o erpc-server ./cmd/erpc/main.go & \
-    go build -a -installsuffix cgo -tags pprof -ldflags "$LDFLAGS" -o erpc-server-pprof ./cmd/erpc/*.go & \
-    wait \
-'
+RUN --mount=type=cache,target=/go-cache \
+    --mount=type=cache,target=/go-mod-cache \
+    sh -c ' \
+        go build -ldflags="$LDFLAGS" -a -installsuffix cgo -o erpc-server ./cmd/erpc/main.go & \
+        go build -ldflags="$LDFLAGS" -a -installsuffix cgo -tags pprof -o erpc-server-pprof ./cmd/erpc/*.go & \
+        wait \
+    '
 
-# Final stage
-FROM alpine:3.18
+# Final stage - using distroless for smaller image
+FROM gcr.io/distroless/static-debian11 AS final
 
-# Set the working directory
-WORKDIR /root/
+WORKDIR /root
 
-# Copy the binaries from the builder stage
-COPY --from=builder /app/erpc-server .
-COPY --from=builder /app/erpc-server-pprof .
+# Copy binaries from the builder
+COPY --from=builder /root/erpc-server .
+COPY --from=builder /root/erpc-server-pprof .
 
 # Expose ports
 EXPOSE 8080 6060
 
-# Use an environment variable to determine which binary to run
-ENV PPROF=false
-
-# Run the appropriate binary based on the environment variable
-CMD if [ "$PPROF" = "true" ]; then ./erpc-server-pprof; else ./erpc-server; fi
+# Run the appropriate binary
+CMD ["/root/erpc-server"]
