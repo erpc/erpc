@@ -20,7 +20,7 @@ func (s *HttpServer) handleHealthCheck(ctx *fasthttp.RequestCtx, encoder sonic.E
 	projects := s.erpc.GetProjects()
 
 	for _, project := range projects {
-		h, err := project.gatherHealthInfo()
+		h, err := project.GatherHealthInfo()
 		if err != nil {
 			handleErrorResponse(&logger, nil, err, ctx, encoder)
 			return

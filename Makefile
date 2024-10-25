@@ -42,7 +42,7 @@ build:
 test:
 	@go clean -testcache
 	@go test ./cmd/... -count 1 -parallel 1
-	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}') -covermode=atomic -race -count 1 -parallel 1 -timeout 12m
+	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}') -covermode=atomic -race -count 3 -parallel 1
 
 .PHONY: coverage
 coverage:
@@ -52,11 +52,11 @@ coverage:
 
 .PHONY: up
 up:
-	@docker-compose up -d --force-recreate --remove-orphans
+	@docker compose up -d --force-recreate --remove-orphans
 
 .PHONY: down
 down:
-	@docker-compose down
+	@docker compose down
 
 .PHONY: fmt
 fmt:
