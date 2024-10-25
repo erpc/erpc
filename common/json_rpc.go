@@ -48,10 +48,15 @@ func NewJsonRpcResponse(id interface{}, result interface{}, rpcError *ErrJsonRpc
 	if err != nil {
 		return nil, err
 	}
+	idBytes, err := SonicCfg.Marshal(id)
+	if err != nil {
+		return nil, err
+	}
 	return &JsonRpcResponse{
-		id:     id,
-		Result: resultRaw,
-		Error:  rpcError,
+		id:      id,
+		idBytes: idBytes,
+		Result:  resultRaw,
+		Error:   rpcError,
 	}, nil
 }
 

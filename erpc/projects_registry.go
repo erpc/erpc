@@ -54,6 +54,9 @@ func NewProjectsRegistry(
 }
 
 func (r *ProjectsRegistry) GetProject(projectId string) (project *PreparedProject, err error) {
+	if projectId == "" {
+		return nil, nil
+	}
 	project, exists := r.preparedProjects[projectId]
 	if !exists {
 		project, err = r.loadProject(projectId)
@@ -104,13 +107,6 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 			return nil, err
 		}
 	}
-	var adminAuthRegistry *auth.AuthRegistry
-	if prjCfg.Admin != nil && prjCfg.Admin.Auth != nil {
-		adminAuthRegistry, err = auth.NewAuthRegistry(&lg, prjCfg.Id, prjCfg.Admin.Auth, r.rateLimitersRegistry)
-		if err != nil {
-			return nil, err
-		}
-	}
 
 	pp := &PreparedProject{
 		Config: prjCfg,
@@ -118,7 +114,6 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 
 		appCtx:               r.appCtx,
 		consumerAuthRegistry: consumerAuthRegistry,
-		adminAuthRegistry:    adminAuthRegistry,
 		networksRegistry:     networksRegistry,
 		upstreamsRegistry:    upstreamsRegistry,
 		rateLimitersRegistry: r.rateLimitersRegistry,

@@ -24,7 +24,6 @@ type PreparedProject struct {
 	networksMu           sync.RWMutex
 	networksRegistry     *NetworksRegistry
 	consumerAuthRegistry *auth.AuthRegistry
-	adminAuthRegistry    *auth.AuthRegistry
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	upstreamsRegistry    *upstream.UpstreamsRegistry
 	evmJsonRpcCache      *EvmJsonRpcCache
@@ -46,6 +45,10 @@ func (p *PreparedProject) GetNetwork(networkId string) (network *Network, err er
 	return
 }
 
+func (p *PreparedProject) GatherHealthInfo() (*upstream.UpstreamsHealth, error) {
+	return p.upstreamsRegistry.GetUpstreamsHealth()
+}
+
 func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, nq *common.NormalizedRequest, ap *auth.AuthPayload) error {
 	if p.consumerAuthRegistry != nil {
 		err := p.consumerAuthRegistry.Authenticate(ctx, nq, ap)
@@ -54,16 +57,6 @@ func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, nq *common.N
 		}
 	}
 
-	return nil
-}
-
-func (p *PreparedProject) AuthenticateAdmin(ctx context.Context, nq *common.NormalizedRequest, ap *auth.AuthPayload) error {
-	if p.adminAuthRegistry != nil {
-		err := p.adminAuthRegistry.Authenticate(ctx, nq, ap)
-		if err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
@@ -145,6 +138,10 @@ func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) 
 				ChainId: int64(c),
 			}
 		}
+		if p.Config.Networks == nil || len(p.Config.Networks) == 0 {
+			p.Config.Networks = []*common.NetworkConfig{}
+		}
+		p.Config.Networks = append(p.Config.Networks, nwCfg)
 	}
 
 	// 3) Register and prepare the network in registry
