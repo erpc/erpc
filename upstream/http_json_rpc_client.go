@@ -648,6 +648,7 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			)
 		} else if strings.Contains(err.Message, "missing trie node") ||
 			strings.Contains(err.Message, "header not found") ||
+			strings.Contains(err.Message, "could not find block") ||
 			strings.Contains(err.Message, "unknown block") ||
 			strings.Contains(err.Message, "Unknown block") ||
 			strings.Contains(err.Message, "height must be less than or equal") ||
@@ -719,6 +720,17 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					nil,
 					details,
 				),
+			)
+		} else if strings.Contains(err.Message, "execution timeout") {
+			return common.NewErrEndpointServerSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorNodeTimeout,
+					err.Message,
+					nil,
+					details,
+				),
+				nil,
 			)
 		} else if strings.Contains(err.Message, "reverted") ||
 			strings.Contains(err.Message, "VM execution error") ||
