@@ -67,7 +67,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 	erpcInstance, err := NewERPC(ctx, &logger, nil, cfg)
 	require.NoError(t, err)
 
-	httpServer := NewHttpServer(ctx, &logger, cfg.Server, erpcInstance)
+	httpServer := NewHttpServer(ctx, &logger, cfg.Server, cfg.Admin, erpcInstance)
 
 	// Start the server on a random port
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -927,7 +927,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 	erpcInstance, err := NewERPC(ctx, &logger, nil, cfg)
 	require.NoError(t, err)
 
-	httpServer := NewHttpServer(ctx, &logger, cfg.Server, erpcInstance)
+	httpServer := NewHttpServer(ctx, &logger, cfg.Server, cfg.Admin, erpcInstance)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)

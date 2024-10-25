@@ -24,12 +24,13 @@ import (
 
 type HttpServer struct {
 	config *common.ServerConfig
+	admin  *common.AdminConfig
 	server *fasthttp.Server
 	erpc   *ERPC
 	logger *zerolog.Logger
 }
 
-func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.ServerConfig, erpc *ERPC) *HttpServer {
+func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.ServerConfig, admin *common.AdminConfig, erpc *ERPC) *HttpServer {
 	reqMaxTimeout, err := time.ParseDuration(cfg.MaxTimeout)
 	if err != nil {
 		if cfg.MaxTimeout != "" {
@@ -40,6 +41,7 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 
 	srv := &HttpServer{
 		config: cfg,
+		admin:  admin,
 		erpc:   erpc,
 		logger: logger,
 	}
@@ -95,7 +97,20 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 			return
 		}
 
-		lg := s.logger.With().Str("projectId", projectId).Str("architecture", architecture).Str("chainId", chainId).Logger()
+		if isAdmin {
+			if s.admin != nil && s.admin.CORS != nil {
+				if !s.handleCORS(fastCtx, s.admin.CORS) || fastCtx.IsOptions() {
+					return
+				}
+			}
+		}
+
+		var lg zerolog.Logger
+		if isAdmin {
+			lg = s.logger.With().Str("component", "admin").Logger()
+		} else {
+			lg = s.logger.With().Str("component", "proxy").Str("projectId", projectId).Str("architecture", architecture).Str("chainId", chainId).Logger()
+		}
 
 		project, err := s.erpc.GetProject(projectId)
 		if err != nil {
@@ -103,13 +118,7 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 			return
 		}
 
-		if isAdmin {
-			if project.Config.Admin != nil && project.Config.Admin.CORS != nil {
-				if !s.handleCORS(fastCtx, project.Config.Admin.CORS) || fastCtx.IsOptions() {
-					return
-				}
-			}
-		} else if project.Config.CORS != nil {
+		if project != nil && project.Config.CORS != nil {
 			if !s.handleCORS(fastCtx, project.Config.CORS) || fastCtx.IsOptions() {
 				// If CORS is blocked OR request is just OPTIONS, we don't need to proceed further
 				return
@@ -152,7 +161,7 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 				defer func() {
 					defer func() { recover() }()
 					if r := recover(); r != nil {
-						msg := fmt.Sprintf("unexpected server panic on per-request handler: %v -> %s", r, util.Mem2Str(debug.Stack()))
+						msg := fmt.Sprintf("unexpected server panic on per-request handler: %v", r)
 						lg.Error().Msgf(msg)
 						fastCtx.SetStatusCode(fasthttp.StatusInternalServerError)
 						fastCtx.Response.Header.Set("Content-Type", "application/json")
@@ -171,14 +180,21 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 				m, _ := nq.Method()
 				rlg := lg.With().Str("method", m).Logger()
 
-				ap, err := auth.NewPayloadFromHttp(project.Config.Id, nq, headersCopy, queryArgsCopy)
+				var ap *auth.AuthPayload
+				var err error
+
+				if project != nil {
+					ap, err = auth.NewPayloadFromHttp(project.Config.Id, nq, headersCopy, queryArgsCopy)
+				} else if isAdmin {
+					ap, err = auth.NewPayloadFromHttp("admin", nq, headersCopy, queryArgsCopy)
+				}
 				if err != nil {
 					responses[index] = processErrorBody(&rlg, nq, err)
 					return
 				}
 
 				if isAdmin {
-					if err := project.AuthenticateAdmin(requestCtx, nq, ap); err != nil {
+					if err := s.erpc.AdminAuthenticate(requestCtx, nq, ap); err != nil {
 						responses[index] = processErrorBody(&rlg, nq, err)
 						return
 					}
@@ -190,8 +206,8 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 				}
 
 				if isAdmin {
-					if project.Config.Admin != nil {
-						resp, err := project.HandleAdminRequest(requestCtx, nq)
+					if s.admin != nil {
+						resp, err := s.erpc.AdminHandleRequest(requestCtx, nq)
 						if err != nil {
 							responses[index] = processErrorBody(&rlg, nq, err)
 							return
@@ -319,8 +335,7 @@ func (s *HttpServer) parseUrlPath(fctx *fasthttp.RequestCtx) (
 		projectId = segments[1]
 		architecture = segments[2]
 		chainId = segments[3]
-	} else if (isPost || isOptions) && len(segments) == 3 && segments[2] == "admin" {
-		projectId = segments[1]
+	} else if (isPost || isOptions) && len(segments) == 2 && segments[1] == "admin" {
 		isAdmin = true
 	} else if len(segments) == 2 && (segments[1] == "healthcheck" || segments[1] == "") {
 		isHealthCheck = true

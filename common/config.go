@@ -21,11 +21,11 @@ var (
 type Config struct {
 	LogLevel     string             `yaml:"logLevel" json:"logLevel"`
 	Server       *ServerConfig      `yaml:"server" json:"server"`
+	Admin        *AdminConfig       `yaml:"admin" json:"admin"`
 	Database     *DatabaseConfig    `yaml:"database" json:"database"`
 	Projects     []*ProjectConfig   `yaml:"projects" json:"projects"`
 	RateLimiters *RateLimiterConfig `yaml:"rateLimiters" json:"rateLimiters"`
 	Metrics      *MetricsConfig     `yaml:"metrics" json:"metrics"`
-	Admin        *AdminConfig       `yaml:"admin" json:"admin"`
 }
 
 type ServerConfig struct {
@@ -45,11 +45,11 @@ type AdminConfig struct {
 func (a *AdminConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type rawAdminConfig AdminConfig
 	raw := rawAdminConfig{
-		// In context of eRPC admin endpoint, enforcing CORS is not really necessary
+		// In context of eRPC admin endpoint, enforcing CORS origin is not really necessary
 		// because we do not use cookies or other credentials that are exploitable in a
-		// cross-origin attack context.
-		// Thereforce a default value of "*" for allowed origins is acceptable as the attacker will not
-		// have access to admin-token when attempting from a different origin than the trusted one.
+		// cross-origin attack context. Therefore a default value of "*" for allowed origins
+		// is acceptable as the attacker will not have access to admin-token when attempting
+		// from a different origin than the trusted one.
 		CORS: &CORSConfig{
 			AllowedOrigins: []string{"*"},
 			AllowedMethods: []string{"GET", "POST", "OPTIONS"},
@@ -151,7 +151,6 @@ func (a *AwsAuthConfig) MarshalJSON() ([]byte, error) {
 
 type ProjectConfig struct {
 	Id              string             `yaml:"id" json:"id"`
-	Admin           *AdminConfig       `yaml:"admin" json:"admin"`
 	Auth            *AuthConfig        `yaml:"auth" json:"auth"`
 	CORS            *CORSConfig        `yaml:"cors" json:"cors"`
 	Upstreams       []*UpstreamConfig  `yaml:"upstreams" json:"upstreams"`
