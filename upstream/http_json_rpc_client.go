@@ -3,6 +3,7 @@ package upstream
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -522,19 +523,19 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 		return e
 	}
 
-	if jr.Error == nil {
-		return nil
-	}
-
 	if e := extractJsonRpcError(r, nr, jr); e != nil {
 		return e
+	}
+
+	if jr.Error == nil {
+		return nil
 	}
 
 	e := common.NewErrJsonRpcExceptionInternal(
 		0,
 		common.JsonRpcErrorServerSideException,
-		"unknown json-rpc response",
-		nil,
+		"unknown json-rpc error",
+		jr.Error,
 		map[string]interface{}{
 			"upstreamId": c.upstream.Config().Id,
 			"statusCode": r.StatusCode,
@@ -848,10 +849,10 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 	}
 
 	// There's a special case for certain clients that return a normal response for reverts:
-	if jr != nil {
+	if jr != nil && jr.Result != nil && len(jr.Result) > 0 {
 		dt := util.Mem2Str(jr.Result)
 		// keccak256("Error(string)")
-		if strings.HasPrefix(dt, "0x08c379a0") {
+		if len(dt) > 11 && dt[1:11] == "0x08c379a0" {
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					0,
@@ -859,10 +860,37 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					"transaction reverted",
 					nil,
 					map[string]interface{}{
-						"data": dt,
+						"data": json.RawMessage(jr.Result),
 					},
 				),
 			)
+		} else {
+			// Trace and debug requests might fail due to operation timeout.
+			// The response structure is not a standard json-rpc error response,
+			// so we need to check the response body for a timeout message.
+			// We avoid using JSON parsing to keep it fast on large (50MB) trace data.
+			if rq := nr.Request(); rq != nil {
+				m, _ := rq.Method()
+				if strings.HasPrefix(m, "trace_") ||
+					strings.HasPrefix(m, "debug_") ||
+					strings.HasPrefix(m, "eth_trace") {
+					if strings.Contains(dt, "execution timeout") {
+						// Returning a server-side exception so that retry/failover mechanisms retry same and/or other upstreams.
+						return common.NewErrEndpointServerSideException(
+							common.NewErrJsonRpcExceptionInternal(
+								0,
+								common.JsonRpcErrorNodeTimeout,
+								"execution timeout",
+								nil,
+								map[string]interface{}{
+									"data": json.RawMessage(jr.Result),
+								},
+							),
+							nil,
+						)
+					}
+				}
+			}
 		}
 	}
 
