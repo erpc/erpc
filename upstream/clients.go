@@ -19,6 +19,7 @@ const (
 	ClientTypeEnvioHttpJsonRpc     ClientType = "EnvioHttpJsonRpc"
 	ClientTypePimlicoHttpJsonRpc   ClientType = "PimlicoHttpJsonRpc"
 	ClientTypeEtherspotHttpJsonRpc ClientType = "EtherspotHttpJsonRpc"
+	ClientTypeInfuraHttpJsonRpc    ClientType = "InfuraHttpJsonRpc"
 	ClientTypeThirdwebHttpJsonRpc  ClientType = "ThirdwebHttpJsonRpc"
 )
 
@@ -118,6 +119,12 @@ func (manager *ClientRegistry) CreateClient(ups *Upstream) (ClientInterface, err
 				newClient, err = NewEtherspotHttpJsonRpcClient(ups, parsedUrl)
 				if err != nil {
 					clientErr = fmt.Errorf("failed to create Etherspot client for upstream: %v", cfg.Id)
+				}
+
+			case common.UpstreamTypeEvmInfura:
+				newClient, err = NewInfuraHttpJsonRpcClient(ups, parsedUrl)
+				if err != nil {
+					clientErr = fmt.Errorf("failed to create Infura client for upstream: %v", cfg.Id)
 				}
 
 			default:
