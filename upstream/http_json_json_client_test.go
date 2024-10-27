@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestHttpJsonRpcClient_NoResponseErrors(t *testing.T) {
+func TestHttpJsonRpcClient_SingleRequests(t *testing.T) {
 	logger := zerolog.New(zerolog.NewConsoleWriter())
 
 	t.Run("TimeoutError", func(t *testing.T) {
@@ -90,6 +90,69 @@ func TestHttpJsonRpcClient_NoResponseErrors(t *testing.T) {
 		assert.Error(t, err)
 	})
 
+	t.Run("TraceExecutionTimeout", func(t *testing.T) {
+		defer gock.Off()
+
+		client, err := NewGenericHttpJsonRpcClient(&logger, &Upstream{
+			config: &common.UpstreamConfig{
+				Endpoint: "http://rpc1.localhost:8545",
+			},
+		}, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"})
+		assert.NoError(t, err)
+
+		gock.New("http://rpc1.localhost:8545").
+			Post("/").
+			Reply(200).
+			BodyString(`{"jsonrpc":"2.0","id":1,"result":[{"error":"execution timeout"}]}`)
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"debug_traceBlockByNumber","params":["0x226AECC",{"tracer":"callTracer","timeout":"1ms"}],"id":1}`))
+		_, err = client.SendRequest(context.Background(), req)
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "-32015")
+		assert.Contains(t, err.Error(), "execution timeout")
+	})
+}
+
+func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
+	logger := zerolog.New(zerolog.NewConsoleWriter())
+
+	t.Run("SimpleBatchRequest", func(t *testing.T) {
+		defer gock.Off()
+
+		client, err := NewGenericHttpJsonRpcClient(&logger, &Upstream{
+			config: &common.UpstreamConfig{
+				Endpoint: "http://rpc1.localhost:8545",
+				JsonRpc: &common.JsonRpcUpstreamConfig{
+					SupportsBatch: &[]bool{true}[0],
+					BatchMaxSize:  5,
+					BatchMaxWait:  "50ms",
+				},
+			},
+		}, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"})
+		assert.NoError(t, err)
+
+		gock.New("http://rpc1.localhost:8545").
+			Post("/").
+			Reply(200).
+			BodyString(`[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"result":"0x2"},{"jsonrpc":"2.0","id":3,"result":"0x3"}]`)
+
+		var wg sync.WaitGroup
+		for i := 0; i < 3; i++ {
+			wg.Add(1)
+			go func(id int) {
+				defer wg.Done()
+				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_blockNumber","params":[]}`, id)))
+				_, err := client.SendRequest(context.Background(), req)
+				if err != nil {
+					assert.NotContains(t, err.Error(), "no response received for request")
+				}
+				assert.NoError(t, err)
+			}(i + 1)
+		}
+		wg.Wait()
+	})
+
 	t.Run("ConcurrentRequestsRaceCondition", func(t *testing.T) {
 		defer gock.Off()
 
@@ -127,46 +190,6 @@ func TestHttpJsonRpcClient_NoResponseErrors(t *testing.T) {
 		}
 		wg.Wait()
 	})
-
-	t.Run("RequestMultiplexingIssue", func(t *testing.T) {
-		defer gock.Off()
-
-		client, err := NewGenericHttpJsonRpcClient(&logger, &Upstream{
-			config: &common.UpstreamConfig{
-				Endpoint: "http://rpc1.localhost:8545",
-				JsonRpc: &common.JsonRpcUpstreamConfig{
-					SupportsBatch: &[]bool{true}[0],
-					BatchMaxSize:  5,
-					BatchMaxWait:  "50ms",
-				},
-			},
-		}, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"})
-		assert.NoError(t, err)
-
-		gock.New("http://rpc1.localhost:8545").
-			Post("/").
-			Reply(200).
-			BodyString(`[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"result":"0x2"},{"jsonrpc":"2.0","id":3,"result":"0x3"}]`)
-
-		var wg sync.WaitGroup
-		for i := 0; i < 3; i++ {
-			wg.Add(1)
-			go func(id int) {
-				defer wg.Done()
-				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_blockNumber","params":[]}`, id)))
-				_, err := client.SendRequest(context.Background(), req)
-				if err != nil {
-					assert.NotContains(t, err.Error(), "no response received for request")
-				}
-				assert.NoError(t, err)
-			}(i + 1)
-		}
-		wg.Wait()
-	})
-}
-
-func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
-	logger := zerolog.New(zerolog.NewConsoleWriter())
 
 	t.Run("SeparateBatchRequestsWithSameIDs", func(t *testing.T) {
 		defer gock.Off()
@@ -525,10 +548,6 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		}
 		wg.Wait()
 	})
-}
-
-func TestHttpJsonRpcClient_BatchRequestErrors(t *testing.T) {
-	logger := zerolog.New(zerolog.NewConsoleWriter())
 
 	t.Run("PartialBatchResponse", func(t *testing.T) {
 		defer gock.Off()
