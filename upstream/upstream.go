@@ -119,6 +119,7 @@ func (u *Upstream) prepareRequest(nr *common.NormalizedRequest) error {
 		common.UpstreamTypeEvmThirdweb,
 		common.UpstreamTypeEvmEnvio,
 		common.UpstreamTypeEvmEtherspot,
+		common.UpstreamTypeEvmInfura,
 		common.UpstreamTypeEvmPimlico:
 		if u.Client == nil {
 			return common.NewErrJsonRpcExceptionInternal(
@@ -137,7 +138,8 @@ func (u *Upstream) prepareRequest(nr *common.NormalizedRequest) error {
 			u.Client.GetType() == ClientTypeThirdwebHttpJsonRpc ||
 			u.Client.GetType() == ClientTypeEnvioHttpJsonRpc ||
 			u.Client.GetType() == ClientTypePimlicoHttpJsonRpc ||
-			u.Client.GetType() == ClientTypeEtherspotHttpJsonRpc {
+			u.Client.GetType() == ClientTypeEtherspotHttpJsonRpc ||
+			u.Client.GetType() == ClientTypeInfuraHttpJsonRpc {
 			jsonRpcReq, err := nr.JsonRpcRequest()
 			if err != nil {
 				return common.NewErrJsonRpcExceptionInternal(
@@ -255,6 +257,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 		ClientTypeThirdwebHttpJsonRpc,
 		ClientTypeEnvioHttpJsonRpc,
 		ClientTypeEtherspotHttpJsonRpc,
+		ClientTypeInfuraHttpJsonRpc,
 		ClientTypePimlicoHttpJsonRpc:
 		jsonRpcClient, okClient := u.Client.(HttpJsonRpcClient)
 		if !okClient {
@@ -570,6 +573,10 @@ func (u *Upstream) guessUpstreamType() error {
 	}
 	if strings.HasPrefix(cfg.Endpoint, "etherspot://") || strings.HasPrefix(cfg.Endpoint, "evm+etherspot://") {
 		cfg.Type = common.UpstreamTypeEvmEtherspot
+		return nil
+	}
+	if strings.HasPrefix(cfg.Endpoint, "infura://") || strings.HasPrefix(cfg.Endpoint, "evm+infura://") {
+		cfg.Type = common.UpstreamTypeEvmInfura
 		return nil
 	}
 
