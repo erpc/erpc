@@ -186,11 +186,11 @@ type UpstreamConfig struct {
 }
 
 type RoutingConfig struct {
-	ScoreMultipliers       []*ScoreMultiplierConfig `yaml:"scoreMultipliers" json:"scoreMultipliers"`
+	ScoreMultipliers []*ScoreMultiplierConfig `yaml:"scoreMultipliers" json:"scoreMultipliers"`
 }
 
 type ScoreMultiplierConfig struct {
-	NetworkId       string  `yaml:"networkId" json:"networkId"`
+	Network         string  `yaml:"network" json:"network"`
 	Method          string  `yaml:"method" json:"method"`
 	Overall         float64 `yaml:"overall" json:"overall"`
 	ErrorRate       float64 `yaml:"errorRate" json:"errorRate"`
@@ -202,8 +202,8 @@ type ScoreMultiplierConfig struct {
 }
 
 var DefaultScoreMultiplier = &ScoreMultiplierConfig{
-	NetworkId: "*",
-	Method:    "*",
+	Network: "*",
+	Method:  "*",
 
 	ErrorRate:       8.0,
 	P90Latency:      4.0,
@@ -218,8 +218,8 @@ var DefaultScoreMultiplier = &ScoreMultiplierConfig{
 func (p *ScoreMultiplierConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type rawScoreMultiplierConfig ScoreMultiplierConfig
 	raw := rawScoreMultiplierConfig{
-		NetworkId: DefaultScoreMultiplier.NetworkId,
-		Method:    DefaultScoreMultiplier.Method,
+		Network: DefaultScoreMultiplier.Network,
+		Method:  DefaultScoreMultiplier.Method,
 
 		ErrorRate:       DefaultScoreMultiplier.ErrorRate,
 		P90Latency:      DefaultScoreMultiplier.P90Latency,

@@ -490,7 +490,7 @@ func TestPriorityMultiplierScenarios(t *testing.T) {
 				{
 					id: "premium-provider",
 					priorityMultiplier: &common.ScoreMultiplierConfig{
-						NetworkId: "evm:1",
+						Network:   "evm:1",
 						Method:    "eth_call",
 						Overall:   2.0, // Double the weight for this specific method
 						ErrorRate: 8.0, // Heavily penalize errors
@@ -507,7 +507,7 @@ func TestPriorityMultiplierScenarios(t *testing.T) {
 				{
 					id: "standard-provider",
 					priorityMultiplier: &common.ScoreMultiplierConfig{
-						NetworkId: "evm:1",
+						Network:   "evm:1",
 						Method:    "eth_call",
 						Overall:   1.0,
 						ErrorRate: 2.0,
@@ -536,7 +536,7 @@ func TestPriorityMultiplierScenarios(t *testing.T) {
 				{
 					id: "archive-node",
 					priorityMultiplier: &common.ScoreMultiplierConfig{
-						NetworkId:  "evm:1",
+						Network:    "evm:1",
 						Method:     "eth_getLogs",
 						Overall:    3.0, // Heavily prefer for historical queries
 						P90Latency: 2.0, // Latency less important for historical data
@@ -553,7 +553,7 @@ func TestPriorityMultiplierScenarios(t *testing.T) {
 				{
 					id: "full-node",
 					priorityMultiplier: &common.ScoreMultiplierConfig{
-						NetworkId:  "evm:1",
+						Network:    "evm:1",
 						Method:     "eth_getLogs",
 						Overall:    1.0,
 						P90Latency: 2.0,
@@ -582,7 +582,7 @@ func TestPriorityMultiplierScenarios(t *testing.T) {
 				{
 					id: "fast-node",
 					priorityMultiplier: &common.ScoreMultiplierConfig{
-						NetworkId:  "evm:1",
+						Network:    "evm:1",
 						Method:     "eth_getBalance",
 						Overall:    1.0,
 						P90Latency: 8.0, // Heavily weight latency
@@ -599,7 +599,7 @@ func TestPriorityMultiplierScenarios(t *testing.T) {
 				{
 					id: "slow-node",
 					priorityMultiplier: &common.ScoreMultiplierConfig{
-						NetworkId:  "evm:1",
+						Network:    "evm:1",
 						Method:     "eth_getBalance",
 						Overall:    1.0,
 						P90Latency: 8.0, // Same latency weight
@@ -628,7 +628,7 @@ func TestPriorityMultiplierScenarios(t *testing.T) {
 				{
 					id: "realtime-node",
 					priorityMultiplier: &common.ScoreMultiplierConfig{
-						NetworkId:    "evm:1",
+						Network:      "evm:1",
 						Method:       "eth_getBlockByNumber",
 						Overall:      1.0,
 						BlockHeadLag: 5.0, // Heavily weight block lag
@@ -646,7 +646,7 @@ func TestPriorityMultiplierScenarios(t *testing.T) {
 				{
 					id: "delayed-node",
 					priorityMultiplier: &common.ScoreMultiplierConfig{
-						NetworkId:    "evm:1",
+						Network:      "evm:1",
 						Method:       "eth_getBlockByNumber",
 						Overall:      1.0,
 						BlockHeadLag: 5.0, // Same block lag weight
