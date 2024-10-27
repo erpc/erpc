@@ -330,6 +330,9 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 	normFinalizationLags := normalizeValues(finalizationLags)
 	for i, ups := range upsList {
 		score := u.calculateScore(
+			ups,
+			networkId,
+			method,
 			normTotalRequests[i],
 			normP90Latencies[i],
 			normErrorRates[i],
@@ -345,6 +348,9 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 }
 
 func (u *UpstreamsRegistry) calculateScore(
+	ups *Upstream,
+	networkId,
+	method string,
 	normTotalRequests,
 	normP90Latency,
 	normErrorRate,
@@ -352,27 +358,41 @@ func (u *UpstreamsRegistry) calculateScore(
 	normBlockHeadLag,
 	normFinalizationLag float64,
 ) float64 {
+	mul := ups.getScoreMultipliers(networkId, method)
+
 	score := 0.0
 
 	// Higher score for lower total requests (to balance the load)
-	score += expCurve(1 - normTotalRequests)
+	if mul.TotalRequests > 0 {
+		score += expCurve(1-normTotalRequests) * mul.TotalRequests
+	}
 
 	// Higher score for lower p90 latency
-	score += expCurve(1-normP90Latency) * 4
+	if mul.P90Latency > 0 {
+		score += expCurve(1-normP90Latency) * mul.P90Latency
+	}
 
 	// Higher score for lower error rate
-	score += expCurve(1-normErrorRate) * 8
+	if mul.ErrorRate > 0 {
+		score += expCurve(1-normErrorRate) * mul.ErrorRate
+	}
 
 	// Higher score for lower throttled rate
-	score += expCurve(1-normThrottledRate) * 3
+	if mul.ThrottledRate > 0 {
+		score += expCurve(1-normThrottledRate) * mul.ThrottledRate
+	}
 
 	// Higher score for lower block head lag
-	score += expCurve(1-normBlockHeadLag) * 2
+	if mul.BlockHeadLag > 0 {
+		score += expCurve(1-normBlockHeadLag) * mul.BlockHeadLag
+	}
 
 	// Higher score for lower finalization lag
-	score += expCurve(1 - normFinalizationLag)
+	if mul.FinalizationLag > 0 {
+		score += expCurve(1-normFinalizationLag) * mul.FinalizationLag
+	}
 
-	return score
+	return score * mul.Overall
 }
 
 func expCurve(x float64) float64 {

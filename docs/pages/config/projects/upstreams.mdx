@@ -18,29 +18,6 @@ An upstream is defined to handle 1 or more networks (a.k.a. chains). There are c
   eRPC supports **any EVM-compatible** JSON-RPC endpoint when using `evm` type. Specialized types like "evm+alchemy" are built for well-known providers to make it easier to import "all supported evm chains" with just an API-KEY.
 </Callout>
 
-## Selection mechanism
-
-eRPC records various metrics about each upstream, and uses them to decide which upstream to use when a request is made. These metrics include:
-- **Total request failures** gives higher priority to upstreams with lower failure rate.
-- **Total rate limited requests** gives higher priority to upstreams with lower rate limited requests.
-- **P90 latency of requests** gives higher priority to upstreams with lower latency.
-- **Total requests served** gives higher priority to upstreams with least served requests so they have a chance to prove themselves.
-
-These metrics amount to a certain **Score** per upstream (alchemy, infura, etc) and per method (eth_blockNumber, eth_getLogs, etc), within a defined `windowSize` (default 30 minutes), which can be configured as:
-```yaml filename="erpc.yaml"
-projects:
-  # ...
-  - id: main
-    # ...
-    healthCheck:
-      scoreMetricsWindowSize: 1h
-      # ...
-```
-
-<Callout type='info'>
-  Scoring mechanism only affects the order which upstreams are tried. To completely disable a bad upstream, you should use [Circuit Breaker](https://docs.erpc.cloud/config/failsafe#circuitbreaker-policy) failsafe policy on upstream-level.
-</Callout>
-
 ## Config
 
 ```yaml filename="erpc.yaml"
@@ -115,6 +92,31 @@ projects:
             backoffFactor: 0.3
             jitter: 500ms
 ```
+
+## Priority & selection mechanism
+
+eRPC records various metrics about each upstream, and uses them to decide which upstream to use when a request is made. These metrics include:
+- **Total request failures** gives higher priority to upstreams with lower failure rate.
+- **Total rate limited requests** gives higher priority to upstreams with lower rate limited requests.
+- **P90 latency of requests** gives higher priority to upstreams with lower latency.
+- **Total requests served** gives higher priority to upstreams with least served requests so they have a chance to prove themselves.
+- **Block head lag** gives higher priority to upstreams with lower block head lag (compared to best upstream).
+- **Finalization lag** gives higher priority to upstreams with lower finalization lag (compared to best upstream).
+
+These metrics amount to a certain **Score** per upstream (alchemy, infura, etc) and per method (eth_blockNumber, eth_getLogs, etc), within a defined `windowSize` (default 30 minutes), which can be configured as:
+```yaml filename="erpc.yaml"
+projects:
+  # ...
+  - id: main
+    # ...
+    healthCheck:
+      scoreMetricsWindowSize: 1h
+      # ...
+```
+
+<Callout type='info'>
+  Scoring mechanism only affects the order which upstreams are tried. To completely disable a bad upstream, you should use [Circuit Breaker](https://docs.erpc.cloud/config/failsafe#circuitbreaker-policy) failsafe policy on upstream-level.
+</Callout>
 
 ## Upstream Types
 

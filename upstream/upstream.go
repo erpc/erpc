@@ -649,6 +649,18 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 	return nil, false
 }
 
+func (u *Upstream) getScoreMultipliers(networkId, method string) *common.ScoreMultiplierConfig {
+	if u.config.Routing != nil {
+		for _, mul := range u.config.Routing.ScoreMultipliers {
+			if common.WildcardMatch(mul.NetworkId, networkId) && common.WildcardMatch(mul.Method, method) {
+				return mul
+			}
+		}
+	}
+
+	return common.DefaultScoreMultiplier
+}
+
 func (u *Upstream) MarshalJSON() ([]byte, error) {
 	type upstreamPublic struct {
 		Id             string                            `json:"id"`
