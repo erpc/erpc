@@ -87,5 +87,8 @@ func (v *InfuraVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr inte
 }
 
 func (v *InfuraVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
+	if strings.HasPrefix(ups.Endpoint, "infura://") || strings.HasPrefix(ups.Endpoint, "evm+infura://") {
+		return true
+	}
 	return strings.Contains(ups.Endpoint, ".infura.io")
 }

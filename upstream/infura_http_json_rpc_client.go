@@ -12,38 +12,37 @@ import (
 )
 
 var infuraNetworkNames = map[int64]string{
-	42161: "arbitrum-mainnet",
-	421614: "arbitrum-sepolia",
-	43114: "avalanche-mainnet",
-	43113: "avalanche-fuji",
-    8453: "base-mainnet",
-	84532: "base-sepolia",
-	56: "bsc-mainnet",
-	97: "bsc-testnet",
-	81457: "blast-mainnet",
-	168587773: "blast-sepolia",
-	42220: "celo-mainnet",
-	44787: "celo-alfajores",
-	1: "mainnet",
-	17000: "holesky",
-	11155111: "sepolia",
-	59144: "linea-mainnet",
-	59141: "linea-sepolia",
-	5000: "mantle-mainnet",
-	5003: "mantle-sepolia",
-	204: "opbnb-mainnet",
-	5611: "opbnb-testnet",
-	10: "optimism-mainnet",
-	11155420: "optimism-sepolia",
+	42161:       "arbitrum-mainnet",
+	421614:      "arbitrum-sepolia",
+	43114:       "avalanche-mainnet",
+	43113:       "avalanche-fuji",
+	8453:        "base-mainnet",
+	84532:       "base-sepolia",
+	56:          "bsc-mainnet",
+	97:          "bsc-testnet",
+	81457:       "blast-mainnet",
+	168587773:   "blast-sepolia",
+	42220:       "celo-mainnet",
+	44787:       "celo-alfajores",
+	1:           "mainnet",
+	17000:       "holesky",
+	11155111:    "sepolia",
+	59144:       "linea-mainnet",
+	59141:       "linea-sepolia",
+	5000:        "mantle-mainnet",
+	5003:        "mantle-sepolia",
+	204:         "opbnb-mainnet",
+	5611:        "opbnb-testnet",
+	10:          "optimism-mainnet",
+	11155420:    "optimism-sepolia",
 	11297108109: "palm-mainnet",
 	11297108099: "palm-testnet",
-	137: "polygon-mainnet",
-	80002: "polygon-amoy",
-	534352: "scroll-mainnet",
-	534351: "scroll-sepolia",
-	324: "zksync-mainnet",
-	300: "zksync-sepolia",
-
+	137:         "polygon-mainnet",
+	80002:       "polygon-amoy",
+	534352:      "scroll-mainnet",
+	534351:      "scroll-sepolia",
+	324:         "zksync-mainnet",
+	300:         "zksync-sepolia",
 }
 
 type InfuraHttpJsonRpcClient struct {
@@ -118,7 +117,7 @@ func (c *InfuraHttpJsonRpcClient) getOrCreateClient(network common.Network) (Htt
 	netName, ok := infuraNetworkNames[chainID]
 	if !ok {
 		return nil, fmt.Errorf("unsupported network chain ID for Infura: %d", chainID)
-	} infuraURL
+	}
 	infuraURL := fmt.Sprintf("https://%s.infura.io/v3/%s", netName, c.apiKey)
 	if netName == "ava-mainnet" || netName == "ava-testnet" {
 		// Avalanche endpoints need an extra path `/ext/bc/C/rpc`
