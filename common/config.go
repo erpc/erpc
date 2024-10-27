@@ -1,6 +1,7 @@
 package common
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/bytedance/sonic"
@@ -181,6 +182,76 @@ type UpstreamConfig struct {
 	Failsafe                     *FailsafeConfig          `yaml:"failsafe" json:"failsafe"`
 	RateLimitBudget              string                   `yaml:"rateLimitBudget" json:"rateLimitBudget"`
 	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune" json:"rateLimitAutoTune"`
+	Routing                      *RoutingConfig           `yaml:"routing" json:"routing"`
+}
+
+type RoutingConfig struct {
+	ScoreMultipliers       []*ScoreMultiplierConfig `yaml:"scoreMultipliers" json:"scoreMultipliers"`
+}
+
+type ScoreMultiplierConfig struct {
+	NetworkId       string  `yaml:"networkId" json:"networkId"`
+	Method          string  `yaml:"method" json:"method"`
+	Overall         float64 `yaml:"overall" json:"overall"`
+	ErrorRate       float64 `yaml:"errorRate" json:"errorRate"`
+	P90Latency      float64 `yaml:"p90latency" json:"p90latency"`
+	TotalRequests   float64 `yaml:"totalRequests" json:"totalRequests"`
+	ThrottledRate   float64 `yaml:"throttledRate" json:"throttledRate"`
+	BlockHeadLag    float64 `yaml:"blockHeadLag" json:"blockHeadLag"`
+	FinalizationLag float64 `yaml:"finalizationLag" json:"finalizationLag"`
+}
+
+var DefaultScoreMultiplier = &ScoreMultiplierConfig{
+	NetworkId: "*",
+	Method:    "*",
+
+	ErrorRate:       8.0,
+	P90Latency:      4.0,
+	TotalRequests:   1.0,
+	ThrottledRate:   3.0,
+	BlockHeadLag:    2.0,
+	FinalizationLag: 1.0,
+
+	Overall: 1.0,
+}
+
+func (p *ScoreMultiplierConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type rawScoreMultiplierConfig ScoreMultiplierConfig
+	raw := rawScoreMultiplierConfig{
+		NetworkId: DefaultScoreMultiplier.NetworkId,
+		Method:    DefaultScoreMultiplier.Method,
+
+		ErrorRate:       DefaultScoreMultiplier.ErrorRate,
+		P90Latency:      DefaultScoreMultiplier.P90Latency,
+		TotalRequests:   DefaultScoreMultiplier.TotalRequests,
+		ThrottledRate:   DefaultScoreMultiplier.ThrottledRate,
+		BlockHeadLag:    DefaultScoreMultiplier.BlockHeadLag,
+		FinalizationLag: DefaultScoreMultiplier.FinalizationLag,
+
+		Overall: DefaultScoreMultiplier.Overall,
+	}
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+
+	if raw.Overall <= 0 {
+		return fmt.Errorf("priorityMultipliers.*.overall multiplier must be greater than 0")
+	} else if raw.ErrorRate < 0 {
+		return fmt.Errorf("priorityMultipliers.*.errorRate multiplier must be greater than or equal to 0")
+	} else if raw.P90Latency < 0 {
+		return fmt.Errorf("priorityMultipliers.*.p90latency multiplier must be greater than or equal to 0")
+	} else if raw.TotalRequests < 0 {
+		return fmt.Errorf("priorityMultipliers.*.totalRequests multiplier must be greater than or equal to 0")
+	} else if raw.ThrottledRate < 0 {
+		return fmt.Errorf("priorityMultipliers.*.throttledRate multiplier must be greater than or equal to 0")
+	} else if raw.BlockHeadLag < 0 {
+		return fmt.Errorf("priorityMultipliers.*.blockHeadLag multiplier must be greater than or equal to 0")
+	} else if raw.FinalizationLag < 0 {
+		return fmt.Errorf("priorityMultipliers.*.finalizationLag multiplier must be greater than or equal to 0")
+	}
+
+	*p = ScoreMultiplierConfig(raw)
+	return nil
 }
 
 // redact Endpoint
