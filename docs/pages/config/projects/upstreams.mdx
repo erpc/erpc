@@ -12,6 +12,7 @@ An upstream is defined to handle 1 or more networks (a.k.a. chains). There are c
 - [`envio`](#envio-json-rpc) A special upstream type for Envio.dev HyperRPC endpoint and automatically adds all chains by HyperRPC.
 - [`pimlico`](#pimlico-json-rpc) A special upstream type for Pimlico.io account-abstraction (ERC-4337) support.
 - [`etherspot`](#etherspot-json-rpc) A special upstream type for Etherspot.io account-abstraction (ERC-4337) support.
+- [`infura`](#infura-json-rpc) A special upstream type that accepts Infura.io API-KEY and automatically adds all their EVM chains.
 
 <Callout type='info'>
   eRPC supports **any EVM-compatible** JSON-RPC endpoint when using `evm` type. Specialized types like "evm+alchemy" are built for well-known providers to make it easier to import "all supported evm chains" with just an API-KEY.
@@ -178,6 +179,21 @@ projects:
     upstreams:
       - id: my-blastapi
         endpoint: blastapi://YOUR_BLASTAPI_API_KEY
+        # ...
+```
+
+### `infura` JSON-RPC
+
+This upstream type is built specially for [Infura](https://www.infura.io/) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
+
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - id: my-infura
+        endpoint: infura://YOUR_INFURA_API_KEY
         # ...
 ```
 

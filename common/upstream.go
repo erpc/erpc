@@ -13,6 +13,7 @@ const (
 	UpstreamTypeEvmPimlico   UpstreamType = "evm+pimlico"
 	UpstreamTypeEvmThirdweb  UpstreamType = "evm+thirdweb"
 	UpstreamTypeEvmEtherspot UpstreamType = "evm+etherspot"
+	UpstreamTypeEvmInfura    UpstreamType = "evm+infura"
 )
 
 type Upstream interface {
