@@ -337,27 +337,99 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 
 				const concurrentRequests = 10
 
-				gock.New("http://rpc1.localhost").
-					Post("/").
-					Times(concurrentRequests).
-					Reply(200).
-					JSON(map[string]interface{}{
-						"jsonrpc": "2.0",
-						"id":      1,
-						"result":  "0x444444",
-					})
-
 				var wg sync.WaitGroup
 				results := make([]struct {
 					statusCode int
 					body       string
 				}, concurrentRequests)
 
+				if *cfg.Projects[0].Upstreams[0].JsonRpc.SupportsBatch {
+					gock.New("http://rpc1.localhost").
+						Post("/").
+						Reply(200).
+						JSON([]interface{}{
+							map[string]interface{}{
+								"jsonrpc": "2.0",
+								"id":      0,
+								"result":  "0x444444",
+							},
+							map[string]interface{}{
+								"jsonrpc": "2.0",
+								"id":      1,
+								"result":  "0x444444",
+							},
+							map[string]interface{}{
+								"jsonrpc": "2.0",
+								"id":      2,
+								"result":  "0x444444",
+							},
+							map[string]interface{}{
+								"jsonrpc": "2.0",
+								"id":      3,
+								"result":  "0x444444",
+							},
+							map[string]interface{}{
+								"jsonrpc": "2.0",
+								"id":      4,
+								"result":  "0x444444",
+							},
+							map[string]interface{}{
+								"jsonrpc": "2.0",
+								"id":      5,
+								"result":  "0x444444",
+							},
+							map[string]interface{}{
+								"jsonrpc": "2.0",
+								"id":      6,
+								"result":  "0x444444",
+							},
+							map[string]interface{}{
+								"jsonrpc": "2.0",
+								"id":      7,
+								"result":  "0x444444",
+							},
+							map[string]interface{}{
+								"jsonrpc": "2.0",
+								"id":      8,
+								"result":  "0x444444",
+							},
+							map[string]interface{}{
+								"jsonrpc": "2.0",
+								"id":      9,
+								"result":  "0x444444",
+							},
+						})
+				}
+
 				for i := 0; i < concurrentRequests; i++ {
+					if !*cfg.Projects[0].Upstreams[0].JsonRpc.SupportsBatch {
+						gock.New("http://rpc1.localhost").
+							Post("/").
+							SetMatcher(gock.NewEmptyMatcher()).
+							AddMatcher(func(req *http.Request, ereq *gock.Request) (bool, error) {
+								if !strings.Contains(req.URL.Host, "rpc1") {
+									return false, nil
+								}
+								bodyBytes, err := io.ReadAll(req.Body)
+								if err != nil {
+									return false, err
+								}
+								idNode, _ := sonic.Get(bodyBytes, "id")
+								id, _ := idNode.Interface()
+								return id.(int) == i, nil
+							}).
+							Reply(200).
+							Map(func(res *http.Response) *http.Response {
+								sg := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":"0x444444"}`, i)
+								res.Body = io.NopCloser(strings.NewReader(sg))
+								return res
+							})
+					}
+
 					wg.Add(1)
 					go func(index int) {
 						defer wg.Done()
-						body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[%d],"id":1}`, index)
+						body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[%d],"id":%d}`, index, index)
 						results[index].statusCode, results[index].body = sendRequest(body, nil, nil)
 					}(i)
 				}

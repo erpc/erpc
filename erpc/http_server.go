@@ -109,7 +109,7 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 		if isAdmin {
 			lg = s.logger.With().Str("component", "admin").Logger()
 		} else {
-			lg = s.logger.With().Str("component", "proxy").Str("projectId", projectId).Str("architecture", architecture).Str("chainId", chainId).Logger()
+			lg = s.logger.With().Str("component", "proxy").Str("projectId", projectId).Str("networkId", fmt.Sprintf("%s:%s", architecture, chainId)).Logger()
 		}
 
 		project, err := s.erpc.GetProject(projectId)

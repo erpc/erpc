@@ -81,7 +81,15 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	defer timer.ObserveDuration()
 
 	health.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.NetworkId, method).Inc()
-	lg := p.Logger.With().Str("method", method).Interface("id", nq.ID()).Str("ptr", fmt.Sprintf("%p", nq)).Logger()
+	lg := p.Logger.With().
+		Str("component", "proxy").
+		Str("projectId", p.Config.Id).
+		Str("networkId", network.NetworkId).
+		Str("method", method).
+		Interface("id", nq.ID()).
+		Str("ptr", fmt.Sprintf("%p", nq)).
+		Logger()
+
 	lg.Debug().Msgf("forwarding request to network")
 	resp, err := network.Forward(ctx, nq)
 
