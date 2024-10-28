@@ -449,18 +449,6 @@ func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 			if r.ID.(string) == "" {
 				r.ID = util.RandomID()
 			}
-		case int:
-			if r.ID.(int) == 0 {
-				r.ID = util.RandomID()
-			}
-		case int64:
-			if r.ID.(int64) == 0 {
-				r.ID = util.RandomID()
-			}
-		case float64:
-			if r.ID.(float64) == 0 {
-				r.ID = util.RandomID()
-			}
 		}
 	}
 
