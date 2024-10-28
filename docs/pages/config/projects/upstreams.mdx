@@ -92,6 +92,7 @@ projects:
             backoffFactor: 0.3
             jitter: 500ms
 ```
+
 ## Priority & selection mechanism
 
 eRPC evaluates each upstream's performance using key metrics to decide the most suitable upstream for each request. These metrics include:
@@ -119,7 +120,7 @@ projects:
   The scoring mechanism only affects the order in which upstreams are tried. To fully disable an unreliable upstream, use the [Circuit Breaker](https://docs.erpc.cloud/config/failsafe#circuitbreaker-policy) failsafe policy at the upstream level.
 </Callout>
 
-### Customizing Scores & Priorities
+### Customizing scores & priorities
 
 Upstreams are ranked by score, controlling selection order. You can adjust this ranking by setting multipliers at different levels: overall, per network or method, or for specific metrics (e.g., error rate, block lag).
 
