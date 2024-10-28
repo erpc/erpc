@@ -170,16 +170,20 @@ func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchReques
 			c.batchDeadline = &ctxd
 		}
 	}
-	c.logger.Debug().Msgf("queuing request %+v for batch (current batch size: %d)", id, len(c.batchRequests))
 
 	if c.logger.GetLevel() == zerolog.TraceLevel {
+		ids := make([]interface{}, 0, len(c.batchRequests))
 		for _, req := range c.batchRequests {
+			ids = append(ids, req.request.ID())
 			jrr, _ := req.request.JsonRpcRequest()
 			jrr.Lock()
 			rqs, _ := common.SonicCfg.Marshal(jrr)
 			jrr.Unlock()
 			c.logger.Trace().Interface("id", req.request.ID()).Str("method", jrr.Method).Msgf("pending batch request: %s", string(rqs))
 		}
+		c.logger.Trace().Interface("ids", ids).Msgf("pending batch requests")
+	} else {
+		c.logger.Debug().Msgf("queuing request %+v for batch (current batch size: %d)", id, len(c.batchRequests))
 	}
 
 	if len(c.batchRequests) == 1 {
@@ -202,7 +206,15 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 	var cancelCtx context.CancelFunc
 
 	c.batchMu.Lock()
-	c.logger.Debug().Msgf("processing batch with %d requests", len(c.batchRequests))
+	if c.logger.GetLevel() == zerolog.TraceLevel {
+		ids := make([]interface{}, 0, len(c.batchRequests))
+		for id := range c.batchRequests {
+			ids = append(ids, id)
+		}
+		c.logger.Debug().Interface("ids", ids).Msgf("processing batch with %d requests", len(c.batchRequests))
+	} else {
+		c.logger.Debug().Msgf("processing batch with %d requests", len(c.batchRequests))
+	}
 	requests := c.batchRequests
 	if c.batchDeadline != nil {
 		batchCtx, cancelCtx = context.WithDeadline(context.Background(), *c.batchDeadline)
@@ -308,15 +320,18 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 		return
 	}
 
-	searcher := ast.NewSearcher(util.Mem2Str(bodyBytes))
+	bodyStr := util.Mem2Str(bodyBytes)
+	searcher := ast.NewSearcher(bodyStr)
 	searcher.CopyReturn = false
 	searcher.ConcurrentRead = false
 	searcher.ValidateJSON = false
 
+	c.logger.Trace().Str("response", bodyStr).Msgf("processing batch response from upstream")
+
 	rootNode, err := searcher.GetByPath()
 	if err != nil {
 		jrResp := &common.JsonRpcResponse{}
-		err = jrResp.ParseError(util.Mem2Str(bodyBytes))
+		err = jrResp.ParseError(bodyStr)
 		if err != nil {
 			for _, req := range requests {
 				req.err <- err
@@ -353,7 +368,7 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 				id = jrResp.ID()
 			}
 			if id == nil {
-				c.logger.Warn().Msgf("unexpected response received without ID: %s", util.Mem2Str(bodyBytes))
+				c.logger.Warn().Msgf("unexpected response received without ID: %s", bodyStr)
 			} else if req, ok := requests[id]; ok {
 				nr := common.NewNormalizedResponse().WithRequest(req.request).WithJsonRpcResponse(jrResp)
 				if err != nil {
@@ -401,7 +416,7 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 	} else {
 		// Unexpected response type
 		for _, req := range requests {
-			req.err <- common.NewErrUpstreamMalformedResponse(fmt.Errorf("unexpected response type (not array nor object): %s", util.Mem2Str(bodyBytes)), c.upstream.Config().Id)
+			req.err <- common.NewErrUpstreamMalformedResponse(fmt.Errorf("unexpected response type (not array nor object): %s", bodyStr), c.upstream.Config().Id)
 		}
 	}
 }
