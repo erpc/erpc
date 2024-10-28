@@ -42,7 +42,7 @@ build:
 test:
 	@go clean -testcache
 	@go test ./cmd/... -count 1 -parallel 1
-	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}') -covermode=atomic -race -count 3 -parallel 1
+	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}') -covermode=atomic -race -count 3 -parallel 3 -timeout 15m
 
 .PHONY: coverage
 coverage:

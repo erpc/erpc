@@ -2,6 +2,8 @@ package common
 
 import (
 	"fmt"
+	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -9,7 +11,6 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
-	"github.com/valyala/fasthttp"
 )
 
 const RequestContextKey ContextKey = "request"
@@ -124,30 +125,27 @@ func (r *NormalizedRequest) SetNetwork(network Network) {
 	r.network = network
 }
 
-func (r *NormalizedRequest) ApplyDirectivesFromHttp(
-	headers *fasthttp.RequestHeader,
-	queryArgs *fasthttp.Args,
-) {
+func (r *NormalizedRequest) ApplyDirectivesFromHttp(headers http.Header, queryArgs url.Values) {
 	drc := &RequestDirectives{
-		RetryEmpty:    string(headers.Peek("X-ERPC-Retry-Empty")) != "false",
-		RetryPending:  string(headers.Peek("X-ERPC-Retry-Pending")) != "false",
-		SkipCacheRead: string(headers.Peek("X-ERPC-Skip-Cache-Read")) == "true",
-		UseUpstream:   string(headers.Peek("X-ERPC-Use-Upstream")),
+		RetryEmpty:    headers.Get("X-ERPC-Retry-Empty") != "false",
+		RetryPending:  headers.Get("X-ERPC-Retry-Pending") != "false",
+		SkipCacheRead: headers.Get("X-ERPC-Skip-Cache-Read") == "true",
+		UseUpstream:   headers.Get("X-ERPC-Use-Upstream"),
 	}
 
-	if useUpstream := string(queryArgs.Peek("use-upstream")); useUpstream != "" {
+	if useUpstream := queryArgs.Get("use-upstream"); useUpstream != "" {
 		drc.UseUpstream = strings.TrimSpace(useUpstream)
 	}
 
-	if retryEmpty := string(queryArgs.Peek("retry-empty")); retryEmpty != "" {
+	if retryEmpty := queryArgs.Get("retry-empty"); retryEmpty != "" {
 		drc.RetryEmpty = strings.ToLower(strings.TrimSpace(retryEmpty)) != "false"
 	}
 
-	if retryPending := string(queryArgs.Peek("retry-pending")); retryPending != "" {
+	if retryPending := queryArgs.Get("retry-pending"); retryPending != "" {
 		drc.RetryPending = strings.ToLower(strings.TrimSpace(retryPending)) != "false"
 	}
 
-	if skipCacheRead := string(queryArgs.Peek("skip-cache-read")); skipCacheRead != "" {
+	if skipCacheRead := queryArgs.Get("skip-cache-read"); skipCacheRead != "" {
 		drc.SkipCacheRead = strings.ToLower(strings.TrimSpace(skipCacheRead)) != "false"
 	}
 

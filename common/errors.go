@@ -1568,7 +1568,11 @@ func (e *ErrJsonRpcExceptionInternal) NormalizedCode() JsonRpcErrorNumber {
 
 func (e *ErrJsonRpcExceptionInternal) OriginalCode() int {
 	if code, ok := e.Details["originalCode"]; ok {
-		return code.(int)
+		if ic, ok := code.(int); ok {
+			return ic
+		} else if fc, ok := code.(float64); ok {
+			return int(fc)
+		}
 	}
 	return 0
 }

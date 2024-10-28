@@ -5,18 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime"
-	"sync"
-	"sync/atomic"
-
-	// "fmt"
 	"io"
 	"net/http"
-
-	// "os"
+	"net/url"
+	"runtime"
 	"strings"
-
-	// "sync"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,7 +26,6 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
-	"github.com/valyala/fasthttp"
 )
 
 var TRUE = true
@@ -2034,7 +2028,7 @@ func TestNetwork_Forward(t *testing.T) {
 				"params": ["0xabcdef"],
 				"id": 1
 			}`))
-		fakeReq.ApplyDirectivesFromHttp(&fasthttp.RequestHeader{}, &fasthttp.Args{})
+		fakeReq.ApplyDirectivesFromHttp(http.Header{}, url.Values{})
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -2253,7 +2247,10 @@ func TestNetwork_Forward(t *testing.T) {
 				"params": ["0xabcdef"],
 				"id": 1
 			}`))
-		fakeReq.ApplyDirectivesFromHttp(&fasthttp.RequestHeader{}, &fasthttp.Args{})
+
+		headers := http.Header{}
+		queryArgs := url.Values{}
+		fakeReq.ApplyDirectivesFromHttp(headers, queryArgs)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -2462,9 +2459,11 @@ func TestNetwork_Forward(t *testing.T) {
 				"params": ["0xabcdef"],
 				"id": 1
 			}`))
-		hdr := &fasthttp.RequestHeader{}
-		hdr.Set("x-erpc-retry-pending", "false")
-		fakeReq.ApplyDirectivesFromHttp(hdr, &fasthttp.Args{})
+
+		headers := http.Header{}
+		headers.Set("x-erpc-retry-pending", "false")
+		queryArgs := url.Values{}
+		fakeReq.ApplyDirectivesFromHttp(headers, queryArgs)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -2590,9 +2589,9 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Second request with no-cache directive
 		fakeReq2 := common.NewNormalizedRequest(requestBytes)
-		hdr := &fasthttp.RequestHeader{}
-		hdr.Set("x-erpc-skip-cache-read", "true")
-		fakeReq2.ApplyDirectivesFromHttp(hdr, &fasthttp.Args{})
+		headers := http.Header{}
+		headers.Set("x-erpc-skip-cache-read", "true")
+		fakeReq2.ApplyDirectivesFromHttp(headers, url.Values{})
 		resp2, err := ntw.Forward(ctx, fakeReq2)
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
