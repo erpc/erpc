@@ -5,5 +5,5 @@ import (
 )
 
 func init() {
-	zerolog.SetGlobalLevel(zerolog.TraceLevel)
+	zerolog.SetGlobalLevel(zerolog.Disabled)
 }
