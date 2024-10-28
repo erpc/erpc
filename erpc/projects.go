@@ -97,7 +97,12 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		if err != nil {
 			lg.Info().Err(err).Msgf("finished forwarding request for network with some client-side exception")
 		} else {
-			lg.Info().Msgf("successfully forwarded request for network")
+			if lg.GetLevel() == zerolog.TraceLevel {
+				respJson, err := resp.MarshalJSON()
+				lg.Info().Err(err).Str("response", string(respJson)).Msgf("successfully forwarded request for network")
+			} else {
+				lg.Info().Msgf("successfully forwarded request for network")
+			}
 		}
 		health.MetricNetworkSuccessfulRequests.WithLabelValues(p.Config.Id, network.NetworkId, method).Inc()
 		return resp, err

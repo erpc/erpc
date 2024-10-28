@@ -180,6 +180,8 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 				m, _ := nq.Method()
 				rlg := lg.With().Str("method", m).Logger()
 
+				rlg.Trace().Interface("directives", nq.Directives()).Msgf("applied request directives")
+
 				var ap *auth.AuthPayload
 				var err error
 

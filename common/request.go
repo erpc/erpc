@@ -2,6 +2,7 @@ package common
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -18,23 +19,23 @@ type RequestDirectives struct {
 	// indicating a missing data or non-synced data (empty array for logs, null for block, null for tx receipt, etc).
 	// This value is "true" by default which means more requests for such cases will be sent.
 	// You can override this directive via Headers if you expect results to be empty and fine with eventual consistency (i.e. receiving empty results intermittently).
-	RetryEmpty bool
+	RetryEmpty bool `json:"retryEmpty"`
 
 	// Instruct the proxy to retry if response from the upstream appears to be a pending tx,
 	// for example when blockNumber/blockHash are still null.
 	// This value is "true" by default, to give a chance to receive the full TX.
 	// If you intentionally require to get pending TX data immediately without waiting,
 	// you can set this value to "false" via Headers.
-	RetryPending bool
+	RetryPending bool `json:"retryPending"`
 
 	// Instruct the proxy to skip cache reads for example to force freshness,
 	// or override some cache corruption.
-	SkipCacheRead bool
+	SkipCacheRead bool `json:"skipCacheRead"`
 
 	// Instruct the proxy to forward the request to a specific upstream(s) only.
 	// Value can use "*" star char as a wildcard to target multiple upstreams.
 	// For example "alchemy" or "my-own-*", etc.
-	UseUpstream string
+	UseUpstream string `json:"useUpstream"`
 }
 
 type NormalizedRequest struct {
@@ -49,11 +50,6 @@ type NormalizedRequest struct {
 
 	lastValidResponse atomic.Pointer[NormalizedResponse]
 	lastUpstream      atomic.Value
-}
-
-type UniqueRequestKey struct {
-	Method string
-	Params string
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {
@@ -133,26 +129,26 @@ func (r *NormalizedRequest) ApplyDirectivesFromHttp(
 	queryArgs *fasthttp.Args,
 ) {
 	drc := &RequestDirectives{
-		RetryEmpty:    util.Mem2Str(headers.Peek("X-ERPC-Retry-Empty")) != "false",
-		RetryPending:  util.Mem2Str(headers.Peek("X-ERPC-Retry-Pending")) != "false",
-		SkipCacheRead: util.Mem2Str(headers.Peek("X-ERPC-Skip-Cache-Read")) == "true",
-		UseUpstream:   util.Mem2Str(headers.Peek("X-ERPC-Use-Upstream")),
+		RetryEmpty:    string(headers.Peek("X-ERPC-Retry-Empty")) != "false",
+		RetryPending:  string(headers.Peek("X-ERPC-Retry-Pending")) != "false",
+		SkipCacheRead: string(headers.Peek("X-ERPC-Skip-Cache-Read")) == "true",
+		UseUpstream:   string(headers.Peek("X-ERPC-Use-Upstream")),
 	}
 
-	if useUpstream := util.Mem2Str(queryArgs.Peek("use-upstream")); useUpstream != "" {
-		drc.UseUpstream = useUpstream
+	if useUpstream := string(queryArgs.Peek("use-upstream")); useUpstream != "" {
+		drc.UseUpstream = strings.TrimSpace(useUpstream)
 	}
 
-	if retryEmpty := util.Mem2Str(queryArgs.Peek("retry-empty")); retryEmpty != "" {
-		drc.RetryEmpty = retryEmpty != "false"
+	if retryEmpty := string(queryArgs.Peek("retry-empty")); retryEmpty != "" {
+		drc.RetryEmpty = strings.ToLower(strings.TrimSpace(retryEmpty)) != "false"
 	}
 
-	if retryPending := util.Mem2Str(queryArgs.Peek("retry-pending")); retryPending != "" {
-		drc.RetryPending = retryPending != "false"
+	if retryPending := string(queryArgs.Peek("retry-pending")); retryPending != "" {
+		drc.RetryPending = strings.ToLower(strings.TrimSpace(retryPending)) != "false"
 	}
 
-	if skipCacheRead := util.Mem2Str(queryArgs.Peek("skip-cache-read")); skipCacheRead != "" {
-		drc.SkipCacheRead = skipCacheRead != "false"
+	if skipCacheRead := string(queryArgs.Peek("skip-cache-read")); skipCacheRead != "" {
+		drc.SkipCacheRead = strings.ToLower(strings.TrimSpace(skipCacheRead)) != "false"
 	}
 
 	r.directives = drc
