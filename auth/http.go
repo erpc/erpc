@@ -3,85 +3,87 @@ package auth
 import (
 	"encoding/base64"
 	"errors"
+	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/util"
-	"github.com/valyala/fasthttp"
 )
 
-func NewPayloadFromHttp(projectId string, nq *common.NormalizedRequest, headers *fasthttp.RequestHeader, args *fasthttp.Args) (*AuthPayload, error) {
+func NewPayloadFromHttp(projectId string, nq *common.NormalizedRequest, headers http.Header, args url.Values) (*AuthPayload, error) {
 	method, _ := nq.Method()
 	ap := &AuthPayload{
 		ProjectId: projectId,
 		Method:    method,
 	}
 
-	if args.Has("token") {
+	if token := args.Get("token"); token != "" {
 		ap.Type = common.AuthTypeSecret
 		ap.Secret = &SecretPayload{
-			Value: util.Mem2Str(args.Peek("token")),
+			Value: token,
 		}
-	} else if tkn := headers.Peek("X-ERPC-Secret-Token"); tkn != nil {
+	} else if tkn := headers.Get("X-ERPC-Secret-Token"); tkn != "" {
 		ap.Type = common.AuthTypeSecret
 		ap.Secret = &SecretPayload{
-			Value: util.Mem2Str(tkn),
+			Value: tkn,
 		}
-	} else if ath := headers.Peek("Authorization"); ath != nil {
-		ath := strings.TrimSpace(util.Mem2Str(ath))
-		label := strings.ToLower(ath[0:6])
+	} else if ath := headers.Get("Authorization"); ath != "" {
+		ath = strings.TrimSpace(ath)
+		parts := strings.SplitN(ath, " ", 2)
+		if len(parts) == 2 {
+			authType := strings.ToLower(parts[0])
+			authValue := parts[1]
 
-		if strings.EqualFold(label, "basic") {
-			basicAuthB64 := strings.TrimSpace(ath[6:])
-			basicAuth, err := base64.StdEncoding.DecodeString(basicAuthB64)
-			if err != nil {
-				return nil, err
-			}
-			parts := strings.Split(util.Mem2Str(basicAuth), ":")
-			if len(parts) != 2 {
-				return nil, errors.New("invalid basic auth must be base64 of username:password")
-			}
-			ap.Type = common.AuthTypeSecret
-			ap.Secret = &SecretPayload{
-				// Password will be considered the secret value provided
-				// and username will be ignored.
-				Value: parts[1],
-			}
-		} else if strings.EqualFold(label, "bearer") {
-			ap.Type = common.AuthTypeJwt
-			ap.Jwt = &JwtPayload{
-				Token: ath[7:],
+			if authType == "basic" {
+				basicAuth, err := base64.StdEncoding.DecodeString(authValue)
+				if err != nil {
+					return nil, err
+				}
+				creds := strings.SplitN(string(basicAuth), ":", 2)
+				if len(creds) != 2 {
+					return nil, errors.New("invalid basic auth: must be base64 of username:password")
+				}
+				ap.Type = common.AuthTypeSecret
+				ap.Secret = &SecretPayload{
+					// Password is considered the secret value; username is ignored.
+					Value: creds[1],
+				}
+			} else if authType == "bearer" {
+				ap.Type = common.AuthTypeJwt
+				ap.Jwt = &JwtPayload{
+					Token: authValue,
+				}
 			}
 		}
-	} else if args.Has("jwt") {
+	} else if jwt := args.Get("jwt"); jwt != "" {
 		ap.Type = common.AuthTypeJwt
 		ap.Jwt = &JwtPayload{
-			Token: util.Mem2Str(args.Peek("jwt")),
+			Token: jwt,
 		}
-	} else if args.Has("signature") && args.Has("message") {
+	} else if signature := args.Get("signature"); signature != "" && args.Get("message") != "" {
 		ap.Type = common.AuthTypeSiwe
 		ap.Siwe = &SiwePayload{
-			Signature: util.Mem2Str(args.Peek("signature")),
-			Message:   normalizeSiweMessage(util.Mem2Str(args.Peek("message"))),
+			Signature: signature,
+			Message:   normalizeSiweMessage(args.Get("message")),
 		}
-	} else if msg := headers.Peek("X-Siwe-Message"); msg != nil {
-		if sig := headers.Peek("X-Siwe-Signature"); sig != nil {
+	} else if msg := headers.Get("X-Siwe-Message"); msg != "" {
+		if sig := headers.Get("X-Siwe-Signature"); sig != "" {
 			ap.Type = common.AuthTypeSiwe
 			ap.Siwe = &SiwePayload{
-				Signature: util.Mem2Str(sig),
-				Message:   normalizeSiweMessage(util.Mem2Str(msg)),
+				Signature: sig,
+				Message:   normalizeSiweMessage(msg),
 			}
 		}
 	}
 
 	// Add IP-based authentication
 	if ap.Type == "" {
+		xff := headers.Get("X-Forwarded-For")
 		ap.Type = common.AuthTypeNetwork
 		ap.Network = &NetworkPayload{
-			Address:        util.Mem2Str(headers.Peek("X-Forwarded-For")),
-			ForwardProxies: strings.Split(util.Mem2Str(headers.Peek("X-Forwarded-For")), ","),
+			Address:        xff,
+			ForwardProxies: strings.Split(xff, ","),
 		}
-
 	}
 
 	return ap, nil
@@ -92,5 +94,5 @@ func normalizeSiweMessage(msg string) string {
 	if err != nil {
 		return msg
 	}
-	return util.Mem2Str(decoded)
+	return string(decoded)
 }

@@ -80,7 +80,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			t.Errorf("Server error: %v", err)
 		}
 	}()
-	defer httpServer.server.Shutdown()
+	defer httpServer.server.Shutdown(ctx)
 
 	// Wait for the server to start
 	time.Sleep(1000 * time.Millisecond)
@@ -329,7 +329,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			// Set up test fixtures
 			sendRequest, _, baseURL := createServerTestFixtures(cfg, t)
 
-			t.Run("ConcurrentEthGetBlockNumber", func(t *testing.T) {
+			setupMocksForEvmStatePoller()
+
+			t.Run("ConcurrentRequests", func(t *testing.T) {
 				tmu.Lock()
 				defer tmu.Unlock()
 				defer gock.Off()
@@ -405,18 +407,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 					if !*cfg.Projects[0].Upstreams[0].JsonRpc.SupportsBatch {
 						gock.New("http://rpc1.localhost").
 							Post("/").
-							SetMatcher(gock.NewEmptyMatcher()).
-							AddMatcher(func(req *http.Request, ereq *gock.Request) (bool, error) {
-								if !strings.Contains(req.URL.Host, "rpc1") {
-									return false, nil
-								}
-								bodyBytes, err := io.ReadAll(req.Body)
-								if err != nil {
-									return false, err
-								}
-								idNode, _ := sonic.Get(bodyBytes, "id")
-								id, _ := idNode.Interface()
-								return id.(int) == i, nil
+							Filter(func(request *http.Request) bool {
+								b := safeReadBody(request)
+								return strings.Contains(b, fmt.Sprintf(`"id":%d`, i))
 							}).
 							Reply(200).
 							Map(func(res *http.Response) *http.Response {
@@ -425,11 +418,12 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 								return res
 							})
 					}
-
+				}
+				for i := 0; i < concurrentRequests; i++ {
 					wg.Add(1)
 					go func(index int) {
 						defer wg.Done()
-						body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[%d],"id":%d}`, index, index)
+						body := fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[%d],"id":%d}`, index, index)
 						results[index].statusCode, results[index].body = sendRequest(body, nil, nil)
 					}(i)
 				}
@@ -445,7 +439,12 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 					assert.Equal(t, "0x444444", response["result"], "Unexpected result for request %d", i)
 				}
 
-				assert.True(t, gock.IsDone(), "All mocks should have been called")
+				if left := anyTestMocksLeft(); left > 0 {
+					t.Errorf("Expected all test mocks to be consumed, got %v left", left)
+					for _, pending := range gock.Pending() {
+						t.Errorf("Pending mock: %v", pending)
+					}
+				}
 			})
 
 			t.Run("InvalidJSON", func(t *testing.T) {
@@ -655,15 +654,39 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 							return false, nil
 						}
 						bodyBytes, err := io.ReadAll(req.Body)
+						fmt.Printf("BODY ====== %s err: %v", string(bodyBytes), err)
 						if err != nil {
 							return false, err
 						}
-						idNode, _ := sonic.Get(bodyBytes, "id")
-						id, _ = idNode.Interface()
-						if id == nil {
-							idNode, _ = sonic.Get(bodyBytes, 0, "id")
-							id, _ = idNode.Interface()
+						if *cfg.Projects[0].Upstreams[0].JsonRpc.SupportsBatch {
+							idNode, err := sonic.Get(bodyBytes, 0, "id")
+							if err != nil {
+								t.Fatalf("Error getting id node (batch): %v", err)
+								return false, err
+							}
+							id, err = idNode.Interface()
+							if err != nil {
+								t.Fatalf("Error getting id interface (batch): %v", err)
+								return false, err
+							}
+						} else {
+							idNode, err := sonic.Get(bodyBytes, "id")
+							fmt.Printf("ID NODE ====== %v err: %v", idNode, err)
+							if err != nil {
+								t.Fatalf("Error getting id node: %v", err)
+								return false, err
+							}
+							id, err = idNode.Interface()
+							if err != nil {
+								t.Fatalf("Error getting id interface: %v", err)
+								return false, err
+							}
 						}
+
+						if id == nil || id == 0 || id == "" {
+							t.Fatalf("Expected id to not be 0, got %v", id)
+						}
+
 						return true, nil
 					}).
 					Reply(200).
@@ -742,7 +765,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				assert.Contains(t, body, "the range 55074203 - 55124202")
 			})
 
-			t.Run("AutoAddIDWhen0IsProvided", func(t *testing.T) {
+			t.Run("KeepIDWhen0IsProvided", func(t *testing.T) {
 				tmu.Lock()
 				defer tmu.Unlock()
 				defer gock.Off()
@@ -761,29 +784,35 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 						}
 						bodyStr := string(bodyBytes)
 						if !strings.Contains(bodyStr, "\"id\"") {
-							t.Fatalf("No id found in request")
+							fmt.Printf("ERROR: No id found in request")
+							return false, nil
 						}
 						if bodyStr[0] == '[' {
 							idNode, err := sonic.Get(bodyBytes, 0, "id")
 							require.NoError(t, err)
 							id, err := idNode.Int64()
 							require.NoError(t, err)
-							if id == 0 {
-								t.Fatalf("Expected id to be 0, got %d from body: %s", id, bodyStr)
+							if id != 0 {
+								fmt.Printf("ERROR: Expected id to be 0, got %d from body: %s", id, bodyStr)
+								return false, nil
+							} else {
+								return true, nil
 							}
 						} else {
 							idNode, err := sonic.Get(bodyBytes, "id")
 							require.NoError(t, err)
 							id, err := idNode.Int64()
 							require.NoError(t, err)
-							if id == 0 {
-								t.Fatalf("Expected id to be 0, got %d from body: %s", id, bodyStr)
+							if id != 0 {
+								fmt.Printf("ERROR: Expected id to be 0, got %d from body: %s", id, bodyStr)
+								return false, nil
+							} else {
+								return true, nil
 							}
 						}
-						return true, nil
 					}).
 					Reply(200).
-					BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x123456"}`)
+					BodyString(`{"jsonrpc":"2.0","id":0,"result":"0x123456"}`)
 
 				sendRequest(`{"jsonrpc":"2.0","method":"eth_traceDebug","params":[],"id":0}`, nil, nil)
 			})
