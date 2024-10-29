@@ -5519,23 +5519,11 @@ func TestNetwork_Forward(t *testing.T) {
 				jrr1 := jrr1Atomic.Load().(*common.JsonRpcResponse)
 				jrr2 := jrr2Atomic.Load().(*common.JsonRpcResponse)
 				if jrr1 != nil {
-					if j, e := jrr1.MarshalJSON(); e != nil {
-						t.Errorf("Failed to marshal json-rpc response: %v", e)
-					} else {
-						var obj map[string]interface{}
-						common.SonicCfg.Unmarshal(j, &obj)
-						res1, _ = common.SonicCfg.MarshalToString(obj["result"])
-					}
+					res1 = string(jrr1.Result)
 					_ = jrr1.ID()
 				}
 				if jrr2 != nil {
-					if j, e := jrr2.MarshalJSON(); e != nil {
-						t.Errorf("Failed to marshal json-rpc response: %v", e)
-					} else {
-						var obj map[string]interface{}
-						common.SonicCfg.Unmarshal(j, &obj)
-						res2, _ = common.SonicCfg.MarshalToString(obj["result"])
-					}
+					res2 = string(jrr2.Result)
 					_ = jrr2.ID()
 				}
 				assert.NotEmpty(t, res1)
@@ -5550,14 +5538,10 @@ func TestNetwork_Forward(t *testing.T) {
 				assert.NotNil(t, cjrr1)
 				assert.NotNil(t, cjrr2)
 				if cjrr1 != nil {
-					// cjrr1.RLock()
 					assert.Equal(t, res1, string(cjrr1.Result))
-					// cjrr1.RUnlock()
 				}
 				if cjrr2 != nil {
-					// cjrr2.Lock()
 					assert.Equal(t, res2, string(cjrr2.Result))
-					// cjrr2.Unlock()
 				}
 			}()
 

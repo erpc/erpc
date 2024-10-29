@@ -691,7 +691,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 					}).
 					Reply(200).
 					Map(func(res *http.Response) *http.Response {
-						fmt.Printf("STORED ID ====== %v", id)
 						var respTxt string
 						if *cfg.Projects[0].Upstreams[0].JsonRpc.SupportsBatch {
 							respTxt = `[{"jsonrpc":"2.0","id":THIS_WILL_BE_REPLACED,"result":"0x123456"}]`
