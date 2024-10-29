@@ -254,15 +254,11 @@ func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
 	return nil, nil
 }
 
-func (r *NormalizedResponse) GetReader() (io.Reader, error) {
-	r.RLock()
-	defer r.RUnlock()
-
+func (r *NormalizedResponse) WriteTo(w io.Writer) (n int64, err error) {
 	if jrr := r.jsonRpcResponse.Load(); jrr != nil {
-		return jrr.GetReader()
+		return jrr.WriteTo(w)
 	}
-
-	return nil, nil
+	return 0, nil
 }
 
 func (r *NormalizedResponse) Release() {
