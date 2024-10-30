@@ -68,18 +68,18 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 }
 
 func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Handler {
-	handleRequest := func(r *http.Request, w http.ResponseWriter) {
+	handleRequest := func(r *http.Request, w http.ResponseWriter, writeFinalError func(statusCode int, body string)) {
 		encoder := common.SonicCfg.NewEncoder(w)
 		encoder.SetEscapeHTML(false)
 
 		projectId, architecture, chainId, isAdmin, isHealthCheck, err := s.parseUrlPath(r)
 		if err != nil {
-			handleErrorResponse(s.logger, nil, err, w, encoder)
+			handleErrorResponse(s.logger, nil, err, w, encoder, writeFinalError)
 			return
 		}
 
 		if isHealthCheck {
-			s.handleHealthCheck(w, encoder)
+			s.handleHealthCheck(w, encoder, writeFinalError)
 			return
 		}
 
@@ -100,7 +100,7 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Hand
 
 		project, err := s.erpc.GetProject(projectId)
 		if err != nil {
-			handleErrorResponse(&lg, nil, err, w, encoder)
+			handleErrorResponse(&lg, nil, err, w, encoder, writeFinalError)
 			return
 		}
 
@@ -112,7 +112,7 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Hand
 
 		body, err := util.ReadAll(r.Body, 1024*1024, 10)
 		if err != nil {
-			handleErrorResponse(&lg, nil, err, w, encoder)
+			handleErrorResponse(&lg, nil, err, w, encoder, writeFinalError)
 			return
 		}
 
@@ -131,6 +131,7 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Hand
 					common.NewErrJsonRpcRequestUnmarshal(err),
 					w,
 					encoder,
+					writeFinalError,
 				)
 				return
 			}
@@ -263,9 +264,10 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Hand
 		requestCtx := r.Context()
 
 		if err := requestCtx.Err(); err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, `{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, err.Error())
+			s.logger.Trace().Err(err).Msg("request premature context error")
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				writeFinalError(http.StatusInternalServerError, fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, err.Error()))
+			}
 			return
 		}
 
@@ -285,9 +287,7 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Hand
 
 			if err != nil && !errors.Is(err, http.ErrHandlerTimeout) {
 				s.logger.Error().Err(err).Msg("failed to write batch response")
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusInternalServerError)
-				fmt.Fprintf(w, `{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, err.Error())
+				writeFinalError(http.StatusInternalServerError, fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, err.Error()))
 				return
 			}
 		} else {
@@ -305,39 +305,49 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Hand
 				err = common.SonicCfg.NewEncoder(w).Encode(res)
 			}
 
-			if err != nil && !errors.Is(err, http.ErrHandlerTimeout) {
-				s.logger.Error().Err(err).Msg("failed to write response")
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusInternalServerError)
-				fmt.Fprintf(w, `{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, err.Error())
+			if err != nil {
+				writeFinalError(http.StatusInternalServerError, fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, err.Error()))
 				return
 			}
 		}
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		finalErrorOnce := &sync.Once{}
+		writeFinalError := func(statusCode int, body string) {
+			finalErrorOnce.Do(func() {
+				defer func() {
+					if rec := recover(); rec != nil {
+						s.logger.Error().Msgf("unexpected server panic on final error writer: %v -> %s", rec, debug.Stack())
+					}
+				}()
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(statusCode)
+				fmt.Fprint(w, body)
+			})
+		}
+
 		defer func() {
 			if rec := recover(); rec != nil {
 				msg := fmt.Sprintf("unexpected server panic on top-level handler: %v -> %s", rec, debug.Stack())
 				s.logger.Error().Msgf(msg)
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusInternalServerError)
-				fmt.Fprintf(w, `{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, msg)
+				writeFinalError(
+					http.StatusInternalServerError,
+					fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"unexpected server panic on top-level handler: %s"}}`, rec),
+				)
 			}
 		}()
 
 		done := make(chan bool)
 		go func() {
-			handleRequest(r, w)
+			handleRequest(r, w, writeFinalError)
 			done <- true
 		}()
 		select {
 		case <-done:
 			return
 		case <-time.After(reqMaxTimeout):
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusGatewayTimeout)
-			fmt.Fprintf(w, `{"jsonrpc":"2.0","error":{"code":-32603,"message":"request handler timeout"}}`)
+			writeFinalError(http.StatusGatewayTimeout, `{"jsonrpc":"2.0","error":{"code":-32603,"message":"request handler timeout"}}`)
 		}
 	})
 }
@@ -552,17 +562,20 @@ func decideErrorStatusCode(err error) int {
 	return http.StatusInternalServerError
 }
 
-func handleErrorResponse(logger *zerolog.Logger, nq *common.NormalizedRequest, err error, w http.ResponseWriter, encoder sonic.Encoder) {
+func handleErrorResponse(
+	logger *zerolog.Logger,
+	nq *common.NormalizedRequest,
+	err error,
+	w http.ResponseWriter,
+	encoder sonic.Encoder,
+	writeFinalError func(statusCode int, body string),
+) {
 	resp := processErrorBody(logger, nq, err)
 	setResponseStatusCode(err, w)
 	err = encoder.Encode(resp)
 	if err != nil {
 		logger.Error().Err(err).Msgf("failed to encode error response")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, `{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, err.Error())
-	} else {
-		w.Header().Set("Content-Type", "application/json")
+		writeFinalError(http.StatusInternalServerError, fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, err.Error()))
 	}
 }
 

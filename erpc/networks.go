@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -76,52 +77,19 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	method, _ := req.Method()
 	lg := n.Logger.With().Str("method", method).Interface("id", req.ID()).Str("ptr", fmt.Sprintf("%p", req)).Logger()
 
-	// 1) In-flight multiplexing
-	var inf *Multiplexer
-	mlxHash, err := req.CacheHash()
-	if err == nil && mlxHash != "" {
-		if vinf, exists := n.inFlightRequests.Load(mlxHash); exists {
-			inf = vinf.(*Multiplexer)
-			lg.Debug().Str("mlx", mlxHash).Msgf("found similar in-flight request, waiting for result")
-			health.MetricNetworkMultiplexedRequests.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
-
-			inf.mu.RLock()
-			if inf.resp != nil || inf.err != nil {
-				inf.mu.RUnlock()
-				resp, err := common.CopyResponseForRequest(inf.resp, req)
-				if err != nil {
-					return nil, err
-				}
-				return resp, inf.err
-			}
-			inf.mu.RUnlock()
-
-			select {
-			case <-inf.done:
-				resp, err := common.CopyResponseForRequest(inf.resp, req)
-				if err != nil {
-					return nil, err
-				}
-				return resp, inf.err
-			case <-ctx.Done():
-				n.inFlightRequests.Delete(mlxHash)
-
-				err := ctx.Err()
-				if errors.Is(err, context.DeadlineExceeded) {
-					return nil, common.NewErrNetworkRequestTimeout(time.Since(startTime))
-				}
-
-				return nil, err
-			}
-		}
-		inf = NewMultiplexer()
+	mlx, resp, err := n.handleMultiplexing(ctx, req, startTime)
+	if err != nil || resp != nil {
+		// When the original request is already fulfilled by multiplexer
+		return resp, err
+	}
+	if mlx != nil {
+		// If we decided to multiplex, we need to make sure to clean up the multiplexer
 		defer func() {
 			if r := recover(); r != nil {
-				lg.Error().Msgf("panic in multiplexer cleanup: %v", r)
+				lg.Error().Msgf("panic in multiplexer cleanup: %v stack: %s", r, string(debug.Stack()))
 			}
-			n.inFlightRequests.Delete(mlxHash)
+			n.cleanupMultiplexer(mlx)
 		}()
-		n.inFlightRequests.Store(mlxHash, inf)
 	}
 
 	// 2) Get from cache if exists
@@ -136,8 +104,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		} else if resp != nil && !resp.IsObjectNull() && !resp.IsResultEmptyish() {
 			lg.Info().Msgf("response served from cache")
 			health.MetricNetworkCacheHits.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
-			if inf != nil {
-				inf.Close(resp, err)
+			if mlx != nil {
+				mlx.Close(resp, err)
 			}
 			return resp, err
 		}
@@ -145,24 +113,24 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	upsList, err := n.upstreamsRegistry.GetSortedUpstreams(n.NetworkId, method)
 	if err != nil {
-		if inf != nil {
-			inf.Close(nil, err)
+		if mlx != nil {
+			mlx.Close(nil, err)
 		}
 		return nil, err
 	}
 
 	// 3) Check if we should handle this method on this network
 	if err := n.shouldHandleMethod(method, upsList); err != nil {
-		if inf != nil {
-			inf.Close(nil, err)
+		if mlx != nil {
+			mlx.Close(nil, err)
 		}
 		return nil, err
 	}
 
 	// 3) Apply rate limits
 	if err := n.acquireRateLimitPermit(req); err != nil {
-		if inf != nil {
-			inf.Close(nil, err)
+		if mlx != nil {
+			mlx.Close(nil, err)
 		}
 		return nil, err
 	}
@@ -253,11 +221,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
 					return nil, common.NewErrUpstreamHedgeCancelled(u.Config().Id, context.Cause(exec.Context()))
 				}
-				// if isHedged {
-				// 	ulg.Debug().Msgf("forwarded hedged request to upstream")
-				// } else {
-				// 	ulg.Debug().Msgf("forwarded request to upstream")
-				// }
 
 				if err != nil {
 					req.Lock()
@@ -327,14 +290,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						execution.Hedges(),
 					)
 				}
-				if inf != nil {
-					inf.Close(nil, err)
+				if mlx != nil {
+					mlx.Close(nil, err)
 				}
 				return nil, err
 			}
 		} else {
-			if inf != nil {
-				inf.Close(nil, err)
+			if mlx != nil {
+				mlx.Close(nil, err)
 			}
 			return nil, err
 		}
@@ -364,8 +327,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	if execErr == nil && resp != nil && !resp.IsObjectNull() {
 		n.enrichStatePoller(method, req, resp)
 	}
-	if inf != nil {
-		inf.Close(resp, nil)
+	if mlx != nil {
+		mlx.Close(resp, nil)
 	}
 	return resp, nil
 }
@@ -397,6 +360,69 @@ func (n *Network) EvmChainId() (int64, error) {
 		return 0, common.NewErrUnknownNetworkID(n.Architecture())
 	}
 	return n.cfg.Evm.ChainId, nil
+}
+
+func (n *Network) handleMultiplexing(ctx context.Context, req *common.NormalizedRequest, startTime time.Time) (*Multiplexer, *common.NormalizedResponse, error) {
+	mlxHash, err := req.CacheHash()
+	if err != nil || mlxHash == "" {
+		n.Logger.Debug().Str("hash", mlxHash).Err(err).Object("request", req).Msgf("could not get multiplexing hash for request")
+		return nil, nil, nil
+	}
+
+	// Check for existing multiplexer
+	if vinf, exists := n.inFlightRequests.Load(mlxHash); exists {
+		inf := vinf.(*Multiplexer)
+		method, _ := req.Method()
+		health.MetricNetworkMultiplexedRequests.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
+
+		resp, err := n.waitForMultiplexResult(ctx, inf, req, startTime)
+		if err != nil {
+			return nil, nil, err
+		}
+		if resp != nil {
+			return nil, resp, nil
+		}
+	}
+
+	mlx := NewMultiplexer(mlxHash)
+	n.inFlightRequests.Store(mlxHash, mlx)
+
+	return mlx, nil, nil
+}
+
+func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, req *common.NormalizedRequest, startTime time.Time) (*common.NormalizedResponse, error) {
+	// Check if result is already available
+	mlx.mu.RLock()
+	if mlx.resp != nil || mlx.err != nil {
+		mlx.mu.RUnlock()
+		resp, err := common.CopyResponseForRequest(mlx.resp, req)
+		if err != nil {
+			return nil, err
+		}
+		return resp, mlx.err
+	}
+	mlx.mu.RUnlock()
+
+	// Wait for result
+	select {
+	case <-mlx.done:
+		resp, err := common.CopyResponseForRequest(mlx.resp, req)
+		if err != nil {
+			return nil, err
+		}
+		return resp, mlx.err
+	case <-ctx.Done():
+		n.cleanupMultiplexer(mlx)
+		err := ctx.Err()
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, common.NewErrNetworkRequestTimeout(time.Since(startTime))
+		}
+		return nil, err
+	}
+}
+
+func (n *Network) cleanupMultiplexer(mlx *Multiplexer) {
+	n.inFlightRequests.Delete(mlx.hash)
 }
 
 func (n *Network) shouldHandleMethod(method string, upsList []*upstream.Upstream) error {

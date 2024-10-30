@@ -1,7 +1,6 @@
 package upstream
 
 import (
-	// "context"
 	"errors"
 	"fmt"
 	"time"
@@ -404,7 +403,6 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 		}
 		err = common.NewErrFailsafeRetryExceeded(scope, translatedCause, startTime)
 	} else if errors.Is(execErr, timeout.ErrExceeded) {
-		// || errors.Is(execErr, context.DeadlineExceeded)
 		err = common.NewErrFailsafeTimeoutExceeded(scope, execErr, startTime)
 	} else if errors.Is(execErr, circuitbreaker.ErrOpen) {
 		err = common.NewErrFailsafeCircuitBreakerOpen(scope, execErr, startTime)

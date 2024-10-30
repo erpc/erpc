@@ -34,6 +34,7 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 			HttpHostV4: "0.0.0.0",
 			HttpHostV6: "[::]",
 			HttpPort:   port,
+			MaxTimeout: "5s",
 		},
 		Projects: []*common.ProjectConfig{
 			{
@@ -60,6 +61,9 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 						Evm: &common.EvmUpstreamConfig{
 							ChainId: 123,
 						},
+						JsonRpc: &common.JsonRpcUpstreamConfig{
+							SupportsBatch: &common.FALSE,
+						},
 					},
 					{
 						Id:       "rpc2",
@@ -67,6 +71,9 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 						Endpoint: "http://rpc2.localhost",
 						Evm: &common.EvmUpstreamConfig{
 							ChainId: 123,
+						},
+						JsonRpc: &common.JsonRpcUpstreamConfig{
+							SupportsBatch: &common.FALSE,
 						},
 					},
 				},
