@@ -44,12 +44,12 @@ func NewNetwork(
 	upstreamsRegistry *upstream.UpstreamsRegistry,
 	metricsTracker *health.Tracker,
 ) (*Network, error) {
-	lg := logger.With().Str("networkId", nwCfg.NetworkId()).Logger()
+	lg := logger.With().Str("component", "proxy").Str("networkId", nwCfg.NetworkId()).Logger()
 
 	var policies []failsafe.Policy[*common.NormalizedResponse]
 	if nwCfg.Failsafe != nil {
-		key := fmt.Sprintf("%s-%s", prjId, nwCfg.NetworkId())
-		pls, err := upstream.CreateFailSafePolicies(&lg, upstream.ScopeNetwork, key, nwCfg.Failsafe)
+		key := fmt.Sprintf("%s/%s", prjId, nwCfg.NetworkId())
+		pls, err := upstream.CreateFailSafePolicies(&lg, common.ScopeNetwork, key, nwCfg.Failsafe)
 		if err != nil {
 			return nil, err
 		}

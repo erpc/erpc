@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 
 	"github.com/bytedance/sonic"
-	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
 
@@ -237,7 +236,7 @@ func (r *NormalizedRequest) MarshalZerologObject(e *zerolog.Event) {
 		if r.jsonRpcRequest != nil {
 			e.Object("jsonRpc", r.jsonRpcRequest)
 		} else if r.body != nil {
-			e.Str("body", util.Mem2Str(r.body))
+			e.RawJSON("body", r.body)
 		}
 	}
 }

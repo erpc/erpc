@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"net"
 	"net/http"
@@ -239,6 +240,1007 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		fmt.Printf("Timeouts: %d, Successes: %d\n", timeouts, successes)
 		assert.True(t, timeouts > 0, "Expected some timeouts")
 		assert.True(t, successes > 0, "Expected some successes")
+	})
+}
+
+func TestHttpServer_DynamicTimeoutScenarios(t *testing.T) {
+	type timeoutCategory string
+
+	const (
+		categoryHigh   timeoutCategory = "high"
+		categoryMedium timeoutCategory = "medium"
+		categoryLow    timeoutCategory = "low"
+		categoryNone   timeoutCategory = "none"
+	)
+
+	type timeoutConfig struct {
+		value    string
+		present  bool
+		category timeoutCategory
+	}
+
+	type testCase struct {
+		name            string
+		serverTimeout   timeoutConfig
+		networkTimeout  timeoutConfig
+		upstreamTimeout timeoutConfig
+		batchingEnabled bool
+		expectedStatus  int
+		expectedError   string
+	}
+
+	// Define our timeout values and their categories
+	timeoutValues := map[timeoutCategory]string{
+		categoryHigh:   "100ms",
+		categoryMedium: "20ms",
+		categoryLow:    "5ms",
+	}
+
+	// Helper to generate all possible timeout category combinations
+	generateTimeoutCombinations := func() [][]timeoutCategory {
+		categories := []timeoutCategory{categoryHigh, categoryMedium, categoryLow, categoryNone}
+		var combinations [][]timeoutCategory
+
+		// Generate all combinations where each position can be any category
+		for _, s := range categories {
+			for _, n := range categories {
+				for _, u := range categories {
+					combinations = append(combinations, []timeoutCategory{s, n, u})
+				}
+			}
+		}
+		return combinations
+	}
+
+	// Helper to create timeoutConfig from category
+	createTimeoutConfig := func(category timeoutCategory) timeoutConfig {
+		if category == categoryNone {
+			return timeoutConfig{
+				present:  false,
+				category: categoryNone,
+			}
+		}
+		return timeoutConfig{
+			value:    timeoutValues[category],
+			present:  true,
+			category: category,
+		}
+	}
+
+	// Helper to determine which timeout will trigger first
+	determineExpectedError := func(server, network, upstream timeoutConfig) string {
+		if !server.present && !network.present && !upstream.present {
+			return "<no timeout configured>"
+		}
+
+		lowestDuration := time.Duration(math.MaxInt64)
+		lowestSource := ""
+
+		if server.present {
+			duration, _ := time.ParseDuration(server.value)
+			if duration < lowestDuration {
+				lowestDuration = duration
+				lowestSource = "server"
+			}
+		}
+		if network.present {
+			duration, _ := time.ParseDuration(network.value)
+			if duration < lowestDuration {
+				lowestDuration = duration
+				lowestSource = "network"
+			}
+		}
+		if upstream.present {
+			duration, _ := time.ParseDuration(upstream.value)
+			if duration < lowestDuration {
+				lowestSource = "upstream"
+			}
+		}
+
+		if (network.present && upstream.present && network.value == upstream.value) ||
+			(server.present && network.present && server.value == network.value) ||
+			(server.present && upstream.present && server.value == upstream.value) {
+			return "timeout"
+		}
+
+		switch lowestSource {
+		case "network":
+			return "timeout policy exceeded on network-level"
+		case "server", "upstream":
+			return "1 timeout"
+		default:
+			return "timeout"
+		}
+	}
+
+	// Helper to generate test name
+	generateTestName := func(server, network, upstream timeoutConfig, batching bool) string {
+		parts := []string{
+			fmt.Sprintf("server_%s", server.category),
+			fmt.Sprintf("network_%s", network.category),
+			fmt.Sprintf("upstream_%s", upstream.category),
+		}
+		if batching {
+			parts = append(parts, "batching")
+		} else {
+			parts = append(parts, "no_batching")
+		}
+		return strings.Join(parts, "__")
+	}
+
+	// Generate all test cases
+	generateTestCases := func() []testCase {
+		var cases []testCase
+		combinations := generateTimeoutCombinations()
+		batchingOptions := []bool{true, false}
+
+		for _, combo := range combinations {
+			for _, batching := range batchingOptions {
+				serverTimeout := createTimeoutConfig(combo[0])
+				networkTimeout := createTimeoutConfig(combo[1])
+				upstreamTimeout := createTimeoutConfig(combo[2])
+
+				// Skip invalid combinations where all timeouts are absent
+				if !serverTimeout.present && !networkTimeout.present && !upstreamTimeout.present {
+					continue
+				}
+
+				tc := testCase{
+					name:            generateTestName(serverTimeout, networkTimeout, upstreamTimeout, batching),
+					serverTimeout:   serverTimeout,
+					networkTimeout:  networkTimeout,
+					upstreamTimeout: upstreamTimeout,
+					batchingEnabled: batching,
+					expectedStatus:  http.StatusGatewayTimeout,
+					expectedError:   determineExpectedError(serverTimeout, networkTimeout, upstreamTimeout),
+				}
+				cases = append(cases, tc)
+			}
+		}
+		return cases
+	}
+
+	// Create config based on timeouts
+	createConfig := func(server, network, upstream timeoutConfig, batchingEnabled bool) *common.Config {
+		cfg := &common.Config{
+			Server: &common.ServerConfig{},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.TRUE,
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+
+		if server.present {
+			cfg.Server.MaxTimeout = server.value
+		}
+
+		if network.present {
+			cfg.Projects[0].Networks[0].Failsafe = &common.FailsafeConfig{
+				Timeout: &common.TimeoutPolicyConfig{
+					Duration: network.value,
+				},
+			}
+		}
+
+		if upstream.present {
+			cfg.Projects[0].Upstreams[0].Failsafe = &common.FailsafeConfig{
+				Timeout: &common.TimeoutPolicyConfig{
+					Duration: upstream.value,
+				},
+			}
+		}
+
+		if !batchingEnabled {
+			cfg.Projects[0].Upstreams[0].JsonRpc.SupportsBatch = &common.FALSE
+		}
+
+		return cfg
+	}
+
+	// Run all test cases
+	testCases := generateTestCases()
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// tmu.Lock()
+			// defer tmu.Unlock()
+			defer gock.Off()
+			defer gock.Clean()
+
+			cfg := createConfig(tc.serverTimeout, tc.networkTimeout, tc.upstreamTimeout, tc.batchingEnabled)
+			sendRequest, _, _ := createServerTestFixtures(cfg, t)
+
+			setupMocksForEvmStatePoller()
+
+			// Set up mock with artificial delay longer than any timeout
+			gock.New("http://rpc1.localhost").
+				Post("/").
+				Persist().
+				Filter(func(request *http.Request) bool {
+					body := safeReadBody(request)
+					return strings.Contains(string(body), "eth_getBalance")
+				}).
+				Reply(200).
+				Delay(5 * time.Second).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x222222",
+				})
+
+			statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+
+			assert.Equal(t, tc.expectedStatus, statusCode)
+			assert.Contains(t, body, tc.expectedError)
+		})
+	}
+}
+
+func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
+	t.Run("ServerHandlerTimeout", func(t *testing.T) {
+		tmu.Lock()
+		defer tmu.Unlock()
+		defer gock.Off()
+		defer gock.Clean()
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: "10ms",
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "2s",
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "1s",
+								},
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+		// Set up test fixtures
+		sendRequest, _, _ := createServerTestFixtures(cfg, t)
+
+		setupMocksForEvmStatePoller()
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := safeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(30 * time.Second).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x222222",
+			})
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+
+		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
+		assert.Contains(t, body, "1 timeout")
+	})
+
+	t.Run("NetworkTimeoutBatchingEnabled", func(t *testing.T) {
+		tmu.Lock()
+		defer tmu.Unlock()
+		defer gock.Off()
+		defer gock.Clean()
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: "10s",
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "100ms",
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "5s",
+								},
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.TRUE,
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+		// Set up test fixtures
+		sendRequest, _, _ := createServerTestFixtures(cfg, t)
+
+		setupMocksForEvmStatePoller()
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := safeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(30 * time.Second).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x222222",
+			})
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+
+		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
+		assert.Contains(t, body, "timeout policy exceeded on network-level")
+	})
+
+	t.Run("NetworkTimeoutBatchingDisabled", func(t *testing.T) {
+		tmu.Lock()
+		defer tmu.Unlock()
+		defer gock.Off()
+		defer gock.Clean()
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: "10s",
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "100ms",
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "5s",
+								},
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+		// Set up test fixtures
+		sendRequest, _, _ := createServerTestFixtures(cfg, t)
+
+		setupMocksForEvmStatePoller()
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := safeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(300 * time.Second).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x222222",
+			})
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+
+		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
+		assert.Contains(t, body, "timeout policy exceeded on network-level")
+	})
+
+	t.Run("UpstreamRequestTimeoutBatchingEnabled", func(t *testing.T) {
+		tmu.Lock()
+		defer tmu.Unlock()
+		defer gock.Off()
+		defer gock.Clean()
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: "10s",
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "5s",
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "100ms",
+								},
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.TRUE,
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+		// Set up test fixtures
+		sendRequest, _, _ := createServerTestFixtures(cfg, t)
+
+		setupMocksForEvmStatePoller()
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := safeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(30 * time.Second).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x222222",
+			})
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+
+		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
+		assert.Contains(t, body, "1 timeout")
+	})
+
+	t.Run("UpstreamRequestTimeoutBatchingDisabled", func(t *testing.T) {
+		tmu.Lock()
+		defer tmu.Unlock()
+		defer gock.Off()
+		defer gock.Clean()
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: "10s",
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "5s",
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "100ms",
+								},
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+		// Set up test fixtures
+		sendRequest, _, _ := createServerTestFixtures(cfg, t)
+
+		setupMocksForEvmStatePoller()
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := safeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(300 * time.Second).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x222222",
+			})
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+
+		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
+		assert.Contains(t, body, "1 timeout")
+	})
+
+	t.Run("SameTimeoutLowForServerAndNetwork", func(t *testing.T) {
+		tmu.Lock()
+		defer tmu.Unlock()
+		defer gock.Off()
+		defer gock.Clean()
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: "1ms",
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "1ms",
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "5s",
+								},
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.TRUE,
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+		// Set up test fixtures
+		sendRequest, _, _ := createServerTestFixtures(cfg, t)
+
+		setupMocksForEvmStatePoller()
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := safeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(30 * time.Second).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x222222",
+			})
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+
+		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
+		assert.Contains(t, body, "1 timeout")
+	})
+
+	t.Run("UpstreamRequestTimeoutBatchingDisabled", func(t *testing.T) {
+		tmu.Lock()
+		defer tmu.Unlock()
+		defer gock.Off()
+		defer gock.Clean()
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: "10s",
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "5s",
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "100ms",
+								},
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+		// Set up test fixtures
+		sendRequest, _, _ := createServerTestFixtures(cfg, t)
+
+		setupMocksForEvmStatePoller()
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := safeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(300 * time.Second).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x222222",
+			})
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+
+		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
+		assert.Contains(t, body, "1 timeout")
+	})
+
+	t.Run("ServerTimeoutNoUpstreamNoNetworkTimeout", func(t *testing.T) {
+		tmu.Lock()
+		defer tmu.Unlock()
+		defer gock.Off()
+		defer gock.Clean()
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: "100ms",
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.TRUE,
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+
+		// Set up test fixtures
+		sendRequest, _, _ := createServerTestFixtures(cfg, t)
+
+		setupMocksForEvmStatePoller()
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := safeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(200 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x222222",
+			})
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+
+		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
+		assert.Contains(t, body, "request handler timeout")
+	})
+}
+
+func TestHttpServer_HedgedRequests(t *testing.T) {
+	t.Run("SimpleHedgePolicyWithoutOtherPoliciesBatchingDisabled", func(t *testing.T) {
+		tmu.Lock()
+		defer tmu.Unlock()
+		defer gock.Off()
+		defer gock.Clean()
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: "10s",
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Hedge: &common.HedgePolicyConfig{
+									MaxCount: 1,
+									Delay:    "10ms",
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+		// Set up test fixtures
+		sendRequest, _, _ := createServerTestFixtures(cfg, t)
+
+		setupMocksForEvmStatePoller()
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				body := safeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(100 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x111111",
+			})
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				body := safeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(20 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x222222",
+			})
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+
+		assert.Equal(t, http.StatusOK, statusCode)
+		assert.Contains(t, body, "0x222222")
+	})
+
+	t.Run("SimpleHedgePolicyWithoutOtherPoliciesBatchingEnabled", func(t *testing.T) {
+		tmu.Lock()
+		defer tmu.Unlock()
+		defer gock.Off()
+		defer gock.Clean()
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: "10s",
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Hedge: &common.HedgePolicyConfig{
+									MaxCount: 1,
+									Delay:    "10ms",
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.TRUE,
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+		// Set up test fixtures
+		sendRequest, _, _ := createServerTestFixtures(cfg, t)
+
+		setupMocksForEvmStatePoller()
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				body := string(safeReadBody(request))
+				return strings.Contains(body, "eth_getBalance") && strings.Contains(body, "111")
+			}).
+			Reply(200).
+			Delay(20000 * time.Millisecond).
+			JSON([]interface{}{
+				map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      111,
+					"result":  "0x111_SLOW",
+				}})
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				body := safeReadBody(request)
+				return strings.Contains(body, "eth_getBalance") && strings.Contains(body, "111")
+			}).
+			Reply(200).
+			Delay(20 * time.Millisecond).
+			JSON([]interface{}{map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      111,
+				"result":  "0x111_FAST",
+			}})
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":111}`, nil, nil)
+
+		assert.Equal(t, http.StatusOK, statusCode)
+		assert.Contains(t, body, "0x111_FAST")
 	})
 }
 
@@ -1059,7 +2061,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 		req.URL.RawQuery = q.Encode()
 
 		client := &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: 60 * time.Second,
 		}
 		resp, err := client.Do(req)
 		if err != nil {

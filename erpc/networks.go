@@ -71,8 +71,6 @@ func (n *Network) Architecture() common.NetworkArchitecture {
 
 func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	startTime := time.Now()
-
-	n.Logger.Trace().Object("req", req).Msgf("forwarding request for network")
 	req.SetNetwork(n)
 
 	method, _ := req.Method()
@@ -255,11 +253,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
 					return nil, common.NewErrUpstreamHedgeCancelled(u.Config().Id, context.Cause(exec.Context()))
 				}
-				if isHedged {
-					ulg.Debug().Msgf("forwarded hedged request to upstream")
-				} else {
-					ulg.Debug().Msgf("forwarded request to upstream")
-				}
+				// if isHedged {
+				// 	ulg.Debug().Msgf("forwarded hedged request to upstream")
+				// } else {
+				// 	ulg.Debug().Msgf("forwarded request to upstream")
+				// }
 
 				if err != nil {
 					req.Lock()
@@ -297,7 +295,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		})
 
 	if execErr != nil {
-		err := upstream.TranslateFailsafeError("", method, execErr)
+		err := upstream.TranslateFailsafeError(common.ScopeNetwork, "", method, execErr, &startTime)
 		// If error is due to empty response be generous and accept it,
 		// because this means after many retries still no data is available.
 		if common.HasErrorCode(err, common.ErrCodeFailsafeRetryExceeded) {

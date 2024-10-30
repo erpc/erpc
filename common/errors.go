@@ -1098,12 +1098,27 @@ type ErrFailsafeTimeoutExceeded struct{ BaseError }
 
 const ErrCodeFailsafeTimeoutExceeded ErrorCode = "ErrFailsafeTimeoutExceeded"
 
-var NewErrFailsafeTimeoutExceeded = func(cause error) error {
+var NewErrFailsafeTimeoutExceeded = func(scope Scope, cause error, startTime *time.Time) error {
+	var dt map[string]interface{}
+	var duration time.Duration
+	if startTime != nil {
+		duration = time.Since(*startTime)
+		dt = map[string]interface{}{
+			"durationMs": duration.Milliseconds(),
+		}
+	}
+	var msg string
+	if duration > 0 {
+		msg = fmt.Sprintf("failsafe timeout policy exceeded on %s-level after %s", scope, duration)
+	} else {
+		msg = fmt.Sprintf("failsafe timeout policy exceeded on %s-level", scope)
+	}
 	return &ErrFailsafeTimeoutExceeded{
 		BaseError{
 			Code:    ErrCodeFailsafeTimeoutExceeded,
-			Message: "failsafe timeout policy exceeded",
+			Message: msg,
 			Cause:   cause,
+			Details: dt,
 		},
 	}
 }
@@ -1112,16 +1127,42 @@ func (e *ErrFailsafeTimeoutExceeded) ErrorStatusCode() int {
 	return http.StatusGatewayTimeout
 }
 
+func (e *ErrFailsafeTimeoutExceeded) DeepestMessage() string {
+	if e.Cause != nil {
+		if se, ok := e.Cause.(StandardError); ok {
+			return fmt.Sprintf("%s: %s", e.Message, se.DeepestMessage())
+		} else {
+			return fmt.Sprintf("%s: %s", e.Message, e.Cause.Error())
+		}
+	}
+	return e.Message
+}
+
 type ErrFailsafeRetryExceeded struct{ BaseError }
 
 const ErrCodeFailsafeRetryExceeded ErrorCode = "ErrFailsafeRetryExceeded"
 
-var NewErrFailsafeRetryExceeded = func(cause error) error {
+var NewErrFailsafeRetryExceeded = func(scope Scope, cause error, startTime *time.Time) error {
+	var dt map[string]interface{}
+	var duration time.Duration
+	if startTime != nil {
+		duration = time.Since(*startTime)
+		dt = map[string]interface{}{
+			"durationMs": duration.Milliseconds(),
+		}
+	}
+	var msg string
+	if duration > 0 {
+		msg = fmt.Sprintf("failsafe retry policy exceeded on %s-level after %s", scope, duration)
+	} else {
+		msg = fmt.Sprintf("failsafe retry policy exceeded on %s-level", scope)
+	}
 	return &ErrFailsafeRetryExceeded{
 		BaseError{
 			Code:    ErrCodeFailsafeRetryExceeded,
-			Message: "failsafe retry policy exceeded",
+			Message: msg,
 			Cause:   cause,
+			Details: dt,
 		},
 	}
 }
@@ -1130,31 +1171,55 @@ func (e *ErrFailsafeRetryExceeded) ErrorStatusCode() int {
 	return 503
 }
 
+func (e *ErrFailsafeRetryExceeded) DeepestMessage() string {
+	if e.Cause != nil {
+		if se, ok := e.Cause.(StandardError); ok {
+			return fmt.Sprintf("%s: %s", e.Message, se.DeepestMessage())
+		} else {
+			return fmt.Sprintf("%s: %s", e.Message, e.Cause)
+		}
+	}
+	return e.Message
+}
+
 type ErrFailsafeCircuitBreakerOpen struct{ BaseError }
 
 const ErrCodeFailsafeCircuitBreakerOpen ErrorCode = "ErrFailsafeCircuitBreakerOpen"
 
-var NewErrFailsafeCircuitBreakerOpen = func(cause error) error {
+var NewErrFailsafeCircuitBreakerOpen = func(scope Scope, cause error, startTime *time.Time) error {
+	var dt map[string]interface{}
+	var duration time.Duration
+	if startTime != nil {
+		duration = time.Since(*startTime)
+		dt = map[string]interface{}{
+			"durationMs": duration.Milliseconds(),
+		}
+	}
+	var msg string
+	if duration > 0 {
+		msg = fmt.Sprintf("failsafe circuit breaker open on %s-level after %s", scope, duration)
+	} else {
+		msg = fmt.Sprintf("failsafe circuit breaker open on %s-level", scope)
+	}
 	return &ErrFailsafeCircuitBreakerOpen{
 		BaseError{
 			Code:    ErrCodeFailsafeCircuitBreakerOpen,
-			Message: "circuit breaker is open due to high error rate",
+			Message: msg,
 			Cause:   cause,
+			Details: dt,
 		},
 	}
 }
 
-type ErrFailsafeUnexpected struct{ BaseError }
-
-var NewErrFailsafeUnexpected = func(cause error, details map[string]interface{}) error {
-	return &ErrFailsafeUnexpected{
-		BaseError{
-			Code:    "ErrFailsafeUnexpected",
-			Message: "unexpected failsafe error type encountered",
-			Cause:   cause,
-			Details: details,
-		},
+func (e *ErrFailsafeCircuitBreakerOpen) DeepestMessage() string {
+	if e.Cause != nil {
+		if se, ok := e.Cause.(StandardError); ok {
+			return fmt.Sprintf("%s: %s", e.Message, se.DeepestMessage())
+		} else {
+			return fmt.Sprintf("%s: %s", e.Message, e.Cause)
+		}
 	}
+	return e.Message
 }
 
 //

@@ -47,9 +47,9 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 
 	srv.server = &http.Server{
 		Handler: http.TimeoutHandler(
-			srv.createRequestHandler(ctx, reqMaxTimeout),
+			srv.createRequestHandler(reqMaxTimeout),
 			reqMaxTimeout+1*time.Second,
-			`{"jsonrpc":"2.0","error":{"code":-32603,"message":"request timeout before any upstream responded"}}`,
+			`{"jsonrpc":"2.0","error":{"code":-32603,"message":"unexpected request timeout"}}`,
 		),
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
@@ -67,18 +67,8 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 	return srv
 }
 
-func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout time.Duration) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if rec := recover(); rec != nil {
-				msg := fmt.Sprintf("unexpected server panic on top-level handler: %v -> %s", rec, debug.Stack())
-				s.logger.Error().Msgf(msg)
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusInternalServerError)
-				fmt.Fprintf(w, `{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, msg)
-			}
-		}()
-
+func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Handler {
+	handleRequest := func(r *http.Request, w http.ResponseWriter) {
 		encoder := common.SonicCfg.NewEncoder(w)
 		encoder.SetEscapeHTML(false)
 
@@ -126,7 +116,7 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 			return
 		}
 
-		lg.Debug().Msgf("received request with body: %s", body)
+		lg.Debug().RawJSON("body", body).Msgf("received http request")
 
 		var requests []json.RawMessage
 		isBatch := len(body) > 0 && body[0] == '['
@@ -166,8 +156,7 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 
 				defer wg.Done()
 
-				requestCtx, cancel := context.WithTimeout(mainCtx, reqMaxTimeout)
-				defer cancel()
+				requestCtx := r.Context()
 
 				nq := common.NewNormalizedRequest(rawReq)
 				nq.ApplyDirectivesFromHttp(headers, queryArgs)
@@ -271,6 +260,14 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 		}
 
 		wg.Wait()
+		requestCtx := r.Context()
+
+		if err := requestCtx.Err(); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, err.Error())
+			return
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 
@@ -286,7 +283,7 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 				}
 			}
 
-			if err != nil {
+			if err != nil && !errors.Is(err, http.ErrHandlerTimeout) {
 				s.logger.Error().Err(err).Msg("failed to write batch response")
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusInternalServerError)
@@ -308,13 +305,39 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 				err = common.SonicCfg.NewEncoder(w).Encode(res)
 			}
 
-			if err != nil {
+			if err != nil && !errors.Is(err, http.ErrHandlerTimeout) {
 				s.logger.Error().Err(err).Msg("failed to write response")
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusInternalServerError)
 				fmt.Fprintf(w, `{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, err.Error())
 				return
 			}
+		}
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				msg := fmt.Sprintf("unexpected server panic on top-level handler: %v -> %s", rec, debug.Stack())
+				s.logger.Error().Msgf(msg)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprintf(w, `{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, msg)
+			}
+		}()
+
+		done := make(chan bool)
+		go func() {
+			handleRequest(r, w)
+			done <- true
+		}()
+		select {
+		case <-done:
+			return
+		case <-time.After(reqMaxTimeout):
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusGatewayTimeout)
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","error":{"code":-32603,"message":"request handler timeout"}}`)
 		}
 	})
 }

@@ -383,15 +383,7 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 				}
 				delete(requests, id)
 			} else {
-				if c.logger.GetLevel() == zerolog.TraceLevel {
-					ids := make([]interface{}, 0, len(requests))
-					for id := range requests {
-						ids = append(ids, id)
-					}
-					c.logger.Warn().Msgf("unexpected response received with ID: %s must be one of: %v", id, ids)
-				} else {
-					c.logger.Warn().Msgf("unexpected response received with ID: %s", id)
-				}
+				c.logger.Warn().Msgf("unexpected response received with ID: %s", id)
 			}
 		}
 		// Handle any remaining requests that didn't receive a response
