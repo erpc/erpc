@@ -90,7 +90,11 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		Str("ptr", fmt.Sprintf("%p", nq)).
 		Logger()
 
-	lg.Debug().Msgf("forwarding request to network")
+	if lg.GetLevel() == zerolog.TraceLevel {
+		lg.Debug().Object("request", nq).Msgf("forwarding request to network")
+	} else {
+		lg.Debug().Msgf("forwarding request to network")
+	}
 	resp, err := network.Forward(ctx, nq)
 
 	if err == nil || common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
@@ -98,8 +102,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			lg.Info().Err(err).Msgf("finished forwarding request for network with some client-side exception")
 		} else {
 			if lg.GetLevel() == zerolog.TraceLevel {
-				respJson, err := resp.MarshalJSON()
-				lg.Info().Err(err).Str("response", string(respJson)).Msgf("successfully forwarded request for network")
+				lg.Info().Err(err).Object("response", resp).Msgf("successfully forwarded request for network")
 			} else {
 				lg.Info().Msgf("successfully forwarded request for network")
 			}
@@ -107,7 +110,6 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		health.MetricNetworkSuccessfulRequests.WithLabelValues(p.Config.Id, network.NetworkId, method).Inc()
 		return resp, err
 	} else {
-		lg.Warn().Err(err).Msgf("failed to forward request for network")
 		health.MetricNetworkFailedRequests.WithLabelValues(network.ProjectId, network.NetworkId, method, common.ErrorSummary(err)).Inc()
 	}
 

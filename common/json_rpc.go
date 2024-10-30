@@ -136,7 +136,7 @@ func (r *JsonRpcResponse) ID() interface{} {
 
 	err := SonicCfg.Unmarshal(r.idBytes, &r.id)
 	if err != nil {
-		log.Error().Err(err).Interface("response", r).Bytes("idBytes", r.idBytes).Msg("failed to unmarshal id")
+		log.Error().Err(err).Object("response", r).Bytes("idBytes", r.idBytes).Msg("failed to unmarshal id")
 	}
 
 	return r.id
@@ -313,8 +313,7 @@ func (r *JsonRpcResponse) ensureCachedNode() error {
 	return nil
 }
 
-// MarshalJSON must not be used for majority of use-cases,
-// as it requires marshalling the whole response into a buffer in memory.
+// MarshalJSON must not be used as it requires marshalling the whole response into a buffer in memory.
 func (r *JsonRpcResponse) MarshalJSON() ([]byte, error) {
 	return nil, fmt.Errorf("MarshalJSON must not be used on JsonRpcResponse")
 }
