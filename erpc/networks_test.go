@@ -5513,7 +5513,7 @@ func TestNetwork_Forward(t *testing.T) {
 			// Goroutine 2: Access the response concurrently
 			go func() {
 				defer wg.Done()
-				time.Sleep(2000 * time.Millisecond)
+				time.Sleep(500 * time.Millisecond)
 				var res1 string
 				var res2 string
 				jrr1 := jrr1Atomic.Load().(*common.JsonRpcResponse)

@@ -279,6 +279,10 @@ func (r *NormalizedResponse) Release() {
 }
 
 func (r *NormalizedResponse) MarshalZerologObject(e *zerolog.Event) {
+	if r == nil {
+		return
+	}
+
 	jrr := r.jsonRpcResponse.Load()
 	if jrr != nil {
 		if jrr.errBytes != nil && len(jrr.errBytes) > 0 {

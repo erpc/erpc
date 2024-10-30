@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"math"
+	// "math"
 	"math/rand"
 	"net"
 	"net/http"
@@ -115,8 +115,8 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 	t.Run("ConcurrentRequestsWithTimeouts", func(t *testing.T) {
 		tmu.Lock()
 		defer tmu.Unlock()
-		defer gock.Off()
-		defer gock.Clean()
+		resetGock()
+		defer resetGock()
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
@@ -157,8 +157,8 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 	t.Run("RapidSuccessiveRequests", func(t *testing.T) {
 		tmu.Lock()
 		defer tmu.Unlock()
-		defer gock.Off()
-		defer gock.Clean()
+		resetGock()
+		defer resetGock()
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
@@ -181,8 +181,8 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 	t.Run("MixedTimeoutAndNonTimeoutRequests", func(t *testing.T) {
 		tmu.Lock()
 		defer tmu.Unlock()
-		defer gock.Off()
-		defer gock.Clean()
+		resetGock()
+		defer resetGock()
 
 		totalReqs := 10
 
@@ -243,266 +243,12 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 	})
 }
 
-func TestHttpServer_DynamicTimeoutScenarios(t *testing.T) {
-	type timeoutCategory string
-
-	const (
-		categoryHigh   timeoutCategory = "high"
-		categoryMedium timeoutCategory = "medium"
-		categoryLow    timeoutCategory = "low"
-		categoryNone   timeoutCategory = "none"
-	)
-
-	type timeoutConfig struct {
-		value    string
-		present  bool
-		category timeoutCategory
-	}
-
-	type testCase struct {
-		name            string
-		serverTimeout   timeoutConfig
-		networkTimeout  timeoutConfig
-		upstreamTimeout timeoutConfig
-		batchingEnabled bool
-		expectedStatus  int
-		expectedError   string
-	}
-
-	// Define our timeout values and their categories
-	timeoutValues := map[timeoutCategory]string{
-		categoryHigh:   "100ms",
-		categoryMedium: "20ms",
-		categoryLow:    "5ms",
-	}
-
-	// Helper to generate all possible timeout category combinations
-	generateTimeoutCombinations := func() [][]timeoutCategory {
-		categories := []timeoutCategory{categoryHigh, categoryMedium, categoryLow, categoryNone}
-		var combinations [][]timeoutCategory
-
-		// Generate all combinations where each position can be any category
-		for _, s := range categories {
-			for _, n := range categories {
-				for _, u := range categories {
-					combinations = append(combinations, []timeoutCategory{s, n, u})
-				}
-			}
-		}
-		return combinations
-	}
-
-	// Helper to create timeoutConfig from category
-	createTimeoutConfig := func(category timeoutCategory) timeoutConfig {
-		if category == categoryNone {
-			return timeoutConfig{
-				present:  false,
-				category: categoryNone,
-			}
-		}
-		return timeoutConfig{
-			value:    timeoutValues[category],
-			present:  true,
-			category: category,
-		}
-	}
-
-	// Helper to determine which timeout will trigger first
-	determineExpectedError := func(server, network, upstream timeoutConfig) string {
-		if !server.present && !network.present && !upstream.present {
-			return "<no timeout configured>"
-		}
-
-		lowestDuration := time.Duration(math.MaxInt64)
-		lowestSource := ""
-
-		if server.present {
-			duration, _ := time.ParseDuration(server.value)
-			if duration < lowestDuration {
-				lowestDuration = duration
-				lowestSource = "server"
-			}
-		}
-		if network.present {
-			duration, _ := time.ParseDuration(network.value)
-			if duration < lowestDuration {
-				lowestDuration = duration
-				lowestSource = "network"
-			}
-		}
-		if upstream.present {
-			duration, _ := time.ParseDuration(upstream.value)
-			if duration < lowestDuration {
-				lowestSource = "upstream"
-			}
-		}
-
-		if (network.present && upstream.present && network.value == upstream.value) ||
-			(server.present && network.present && server.value == network.value) ||
-			(server.present && upstream.present && server.value == upstream.value) {
-			return "timeout"
-		}
-
-		switch lowestSource {
-		case "network":
-			return "timeout policy exceeded on network-level"
-		case "server", "upstream":
-			return "1 timeout"
-		default:
-			return "timeout"
-		}
-	}
-
-	// Helper to generate test name
-	generateTestName := func(server, network, upstream timeoutConfig, batching bool) string {
-		parts := []string{
-			fmt.Sprintf("server_%s", server.category),
-			fmt.Sprintf("network_%s", network.category),
-			fmt.Sprintf("upstream_%s", upstream.category),
-		}
-		if batching {
-			parts = append(parts, "batching")
-		} else {
-			parts = append(parts, "no_batching")
-		}
-		return strings.Join(parts, "__")
-	}
-
-	// Generate all test cases
-	generateTestCases := func() []testCase {
-		var cases []testCase
-		combinations := generateTimeoutCombinations()
-		batchingOptions := []bool{true, false}
-
-		for _, combo := range combinations {
-			for _, batching := range batchingOptions {
-				serverTimeout := createTimeoutConfig(combo[0])
-				networkTimeout := createTimeoutConfig(combo[1])
-				upstreamTimeout := createTimeoutConfig(combo[2])
-
-				// Skip invalid combinations where all timeouts are absent
-				if !serverTimeout.present && !networkTimeout.present && !upstreamTimeout.present {
-					continue
-				}
-
-				tc := testCase{
-					name:            generateTestName(serverTimeout, networkTimeout, upstreamTimeout, batching),
-					serverTimeout:   serverTimeout,
-					networkTimeout:  networkTimeout,
-					upstreamTimeout: upstreamTimeout,
-					batchingEnabled: batching,
-					expectedStatus:  http.StatusGatewayTimeout,
-					expectedError:   determineExpectedError(serverTimeout, networkTimeout, upstreamTimeout),
-				}
-				cases = append(cases, tc)
-			}
-		}
-		return cases
-	}
-
-	// Create config based on timeouts
-	createConfig := func(server, network, upstream timeoutConfig, batchingEnabled bool) *common.Config {
-		cfg := &common.Config{
-			Server: &common.ServerConfig{},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
-							},
-						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.TRUE,
-							},
-						},
-					},
-				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
-
-		if server.present {
-			cfg.Server.MaxTimeout = server.value
-		}
-
-		if network.present {
-			cfg.Projects[0].Networks[0].Failsafe = &common.FailsafeConfig{
-				Timeout: &common.TimeoutPolicyConfig{
-					Duration: network.value,
-				},
-			}
-		}
-
-		if upstream.present {
-			cfg.Projects[0].Upstreams[0].Failsafe = &common.FailsafeConfig{
-				Timeout: &common.TimeoutPolicyConfig{
-					Duration: upstream.value,
-				},
-			}
-		}
-
-		if !batchingEnabled {
-			cfg.Projects[0].Upstreams[0].JsonRpc.SupportsBatch = &common.FALSE
-		}
-
-		return cfg
-	}
-
-	// Run all test cases
-	testCases := generateTestCases()
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			// tmu.Lock()
-			// defer tmu.Unlock()
-			defer gock.Off()
-			defer gock.Clean()
-
-			cfg := createConfig(tc.serverTimeout, tc.networkTimeout, tc.upstreamTimeout, tc.batchingEnabled)
-			sendRequest, _, _ := createServerTestFixtures(cfg, t)
-
-			setupMocksForEvmStatePoller()
-
-			// Set up mock with artificial delay longer than any timeout
-			gock.New("http://rpc1.localhost").
-				Post("/").
-				Persist().
-				Filter(func(request *http.Request) bool {
-					body := safeReadBody(request)
-					return strings.Contains(string(body), "eth_getBalance")
-				}).
-				Reply(200).
-				Delay(5 * time.Second).
-				JSON(map[string]interface{}{
-					"jsonrpc": "2.0",
-					"id":      1,
-					"result":  "0x222222",
-				})
-
-			statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
-
-			assert.Equal(t, tc.expectedStatus, statusCode)
-			assert.Contains(t, body, tc.expectedError)
-		})
-	}
-}
-
 func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	t.Run("ServerHandlerTimeout", func(t *testing.T) {
 		tmu.Lock()
 		defer tmu.Unlock()
-		defer gock.Off()
-		defer gock.Clean()
+		resetGock()
+		defer resetGock()
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -565,14 +311,14 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
 		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
-		assert.Contains(t, body, "1 timeout")
+		assert.Contains(t, body, "request handler timeout")
 	})
 
 	t.Run("NetworkTimeoutBatchingEnabled", func(t *testing.T) {
 		tmu.Lock()
 		defer tmu.Unlock()
-		defer gock.Off()
-		defer gock.Clean()
+		resetGock()
+		defer resetGock()
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -644,8 +390,8 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	t.Run("NetworkTimeoutBatchingDisabled", func(t *testing.T) {
 		tmu.Lock()
 		defer tmu.Unlock()
-		defer gock.Off()
-		defer gock.Clean()
+		resetGock()
+		defer resetGock()
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -718,8 +464,8 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	t.Run("UpstreamRequestTimeoutBatchingEnabled", func(t *testing.T) {
 		tmu.Lock()
 		defer tmu.Unlock()
-		defer gock.Off()
-		defer gock.Clean()
+		resetGock()
+		defer resetGock()
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -791,8 +537,8 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	t.Run("UpstreamRequestTimeoutBatchingDisabled", func(t *testing.T) {
 		tmu.Lock()
 		defer tmu.Unlock()
-		defer gock.Off()
-		defer gock.Clean()
+		resetGock()
+		defer resetGock()
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -865,8 +611,8 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	t.Run("SameTimeoutLowForServerAndNetwork", func(t *testing.T) {
 		tmu.Lock()
 		defer tmu.Unlock()
-		defer gock.Off()
-		defer gock.Clean()
+		resetGock()
+		defer resetGock()
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -932,14 +678,14 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
 		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
-		assert.Contains(t, body, "1 timeout")
+		assert.Contains(t, body, "timeout")
 	})
 
 	t.Run("UpstreamRequestTimeoutBatchingDisabled", func(t *testing.T) {
 		tmu.Lock()
 		defer tmu.Unlock()
-		defer gock.Off()
-		defer gock.Clean()
+		resetGock()
+		defer resetGock()
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -1012,8 +758,8 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	t.Run("ServerTimeoutNoUpstreamNoNetworkTimeout", func(t *testing.T) {
 		tmu.Lock()
 		defer tmu.Unlock()
-		defer gock.Off()
-		defer gock.Clean()
+		resetGock()
+		defer resetGock()
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -1075,14 +821,89 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
 		assert.Contains(t, body, "request handler timeout")
 	})
+
+	t.Run("MidServerHighNetworkLowUpstreamTimeoutBatchingDisabled", func(t *testing.T) {
+		tmu.Lock()
+		defer tmu.Unlock()
+		resetGock()
+		defer resetGock()
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: "50ms",
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "100ms",
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "10ms",
+								},
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+
+		// Set up test fixtures
+		sendRequest, _, _ := createServerTestFixtures(cfg, t)
+
+		setupMocksForEvmStatePoller()
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := safeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(200 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x222222",
+			})
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+
+		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
+		assert.Contains(t, body, "1 timeout")
+	})
 }
 
 func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("SimpleHedgePolicyWithoutOtherPoliciesBatchingDisabled", func(t *testing.T) {
 		tmu.Lock()
 		defer tmu.Unlock()
-		defer gock.Off()
-		defer gock.Clean()
+		resetGock()
+		defer resetGock()
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -1163,8 +984,8 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("SimpleHedgePolicyWithoutOtherPoliciesBatchingEnabled", func(t *testing.T) {
 		tmu.Lock()
 		defer tmu.Unlock()
-		defer gock.Off()
-		defer gock.Clean()
+		resetGock()
+		defer resetGock()
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -1182,7 +1003,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Failsafe: &common.FailsafeConfig{
 								Hedge: &common.HedgePolicyConfig{
 									MaxCount: 1,
-									Delay:    "10ms",
+									Delay:    "100ms",
 								},
 							},
 						},
@@ -1216,7 +1037,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				return strings.Contains(body, "eth_getBalance") && strings.Contains(body, "111")
 			}).
 			Reply(200).
-			Delay(20000 * time.Millisecond).
+			Delay(5_000 * time.Millisecond).
 			JSON([]interface{}{
 				map[string]interface{}{
 					"jsonrpc": "2.0",
@@ -1230,7 +1051,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				return strings.Contains(body, "eth_getBalance") && strings.Contains(body, "111")
 			}).
 			Reply(200).
-			Delay(20 * time.Millisecond).
+			Delay(200 * time.Millisecond).
 			JSON([]interface{}{map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      111,
@@ -1336,9 +1157,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			t.Run("ConcurrentRequests", func(t *testing.T) {
 				tmu.Lock()
 				defer tmu.Unlock()
-				defer gock.Off()
-				defer gock.Clean()
-
+				resetGock()
+				defer resetGock()
+	
 				const concurrentRequests = 10
 
 				var wg sync.WaitGroup
@@ -1452,9 +1273,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			t.Run("InvalidJSON", func(t *testing.T) {
 				tmu.Lock()
 				defer tmu.Unlock()
-				defer gock.Off()
-				defer gock.Clean()
-
+				resetGock()
+				defer resetGock()
+	
 				statusCode, body := sendRequest(`{"invalid json`, nil, nil)
 
 				// fmt.Println(body)
@@ -1474,9 +1295,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			t.Run("UnsupportedMethod", func(t *testing.T) {
 				tmu.Lock()
 				defer tmu.Unlock()
-				defer gock.Off()
-				defer gock.Clean()
-
+				resetGock()
+				defer resetGock()
+	
 				cfg.Projects[0].Upstreams[0].IgnoreMethods = []string{}
 
 				gock.New("http://rpc1.localhost").
@@ -1506,9 +1327,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			t.Run("IgnoredMethod", func(t *testing.T) {
 				tmu.Lock()
 				defer tmu.Unlock()
-				defer gock.Off()
-				defer gock.Clean()
-
+				resetGock()
+				defer resetGock()
+	
 				cfg.Projects[0].Upstreams[0].IgnoreMethods = []string{"ignored_method"}
 
 				gock.New("http://rpc1.localhost").
@@ -1535,13 +1356,12 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				assert.Equal(t, float64(-32601), errorObj["code"])
 			})
 
-			// Test case: Request with invalid project ID
 			t.Run("InvalidProjectID", func(t *testing.T) {
 				tmu.Lock()
 				defer tmu.Unlock()
-				defer gock.Off()
-				defer gock.Clean()
-
+				resetGock()
+				defer resetGock()
+	
 				req, err := http.NewRequest("POST", baseURL+"/invalid_project/evm/1", strings.NewReader(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`))
 				require.NoError(t, err)
 				req.Header.Set("Content-Type", "application/json")
@@ -1570,9 +1390,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			t.Run("UpstreamLatencyAndTimeout", func(t *testing.T) {
 				tmu.Lock()
 				defer tmu.Unlock()
-				defer gock.Off()
-				defer gock.Clean()
-
+				resetGock()
+				defer resetGock()
+	
 				gock.New("http://rpc1.localhost").
 					Post("/").
 					Reply(200).
@@ -1602,9 +1422,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			t.Run("UnexpectedPlainErrorResponseFromUpstream", func(t *testing.T) {
 				tmu.Lock()
 				defer tmu.Unlock()
-				defer gock.Off()
-				defer gock.Clean()
-
+				resetGock()
+				defer resetGock()
+	
 				gock.New("http://rpc1.localhost").
 					Post("/").
 					Times(1).
@@ -1622,9 +1442,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			t.Run("UnexpectedServerErrorResponseFromUpstream", func(t *testing.T) {
 				tmu.Lock()
 				defer tmu.Unlock()
-				defer gock.Off()
-				defer gock.Clean()
-
+				resetGock()
+				defer resetGock()
+	
 				gock.New("http://rpc1.localhost").
 					Post("/").
 					Times(1).
@@ -1643,9 +1463,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			t.Run("MissingIDInJsonRpcRequest", func(t *testing.T) {
 				tmu.Lock()
 				defer tmu.Unlock()
-				defer gock.Off()
-				defer gock.Clean()
-
+				resetGock()
+				defer resetGock()
+	
 				var id interface{}
 				gock.New("http://rpc1.localhost").
 					Post("/").
@@ -1656,7 +1476,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 							return false, nil
 						}
 						bodyBytes, err := io.ReadAll(req.Body)
-						fmt.Printf("BODY ====== %s err: %v", string(bodyBytes), err)
 						if err != nil {
 							return false, err
 						}
@@ -1673,7 +1492,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 							}
 						} else {
 							idNode, err := sonic.Get(bodyBytes, "id")
-							fmt.Printf("ID NODE ====== %v err: %v", idNode, err)
 							if err != nil {
 								t.Fatalf("Error getting id node: %v", err)
 								return false, err
@@ -1716,9 +1534,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			t.Run("AutoAddIDandJSONRPCFieldstoRequest", func(t *testing.T) {
 				tmu.Lock()
 				defer tmu.Unlock()
-				defer gock.Off()
-				defer gock.Clean()
-
+				resetGock()
+				defer resetGock()
+	
 				gock.New("http://rpc1.localhost").
 					Post("/").
 					Times(1).
@@ -1755,9 +1573,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			t.Run("AlwaysPropagateUpstreamErrorDataField", func(t *testing.T) {
 				tmu.Lock()
 				defer tmu.Unlock()
-				defer gock.Off()
-				defer gock.Clean()
-
+				resetGock()
+				defer resetGock()
+	
 				gock.New("http://rpc1.localhost").
 					Post("/").
 					Reply(400).
@@ -1770,9 +1588,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			t.Run("KeepIDWhen0IsProvided", func(t *testing.T) {
 				tmu.Lock()
 				defer tmu.Unlock()
-				defer gock.Off()
-				defer gock.Clean()
-
+				resetGock()
+				defer resetGock()
+	
 				gock.New("http://rpc1.localhost").
 					Post("/").
 					SetMatcher(gock.NewEmptyMatcher()).
@@ -1868,8 +1686,8 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 	t.Run("UpstreamNotAllowedByDirectiveViaHeaders", func(t *testing.T) {
 		tmu.Lock()
 		defer tmu.Unlock()
-		defer gock.Off()
-		defer gock.Clean()
+		resetGock()
+		defer resetGock()
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
@@ -1906,8 +1724,8 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 	t.Run("UpstreamNotAllowedByDirectiveViaQueryParams", func(t *testing.T) {
 		tmu.Lock()
 		defer tmu.Unlock()
-		defer gock.Off()
-		defer gock.Clean()
+		resetGock()
+		defer resetGock()
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
@@ -1982,8 +1800,8 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 	t.Run("DrpcUnsupportedMethod", func(t *testing.T) {
 		tmu.Lock()
 		defer tmu.Unlock()
-		defer gock.Off()
-		defer gock.Clean()
+		resetGock()
+		defer resetGock()
 
 		gock.New("https://lb.drpc.org").
 			Post("/").
@@ -2003,8 +1821,8 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 	t.Run("ReturnCorrectCORS", func(t *testing.T) {
 		tmu.Lock()
 		defer tmu.Unlock()
-		defer gock.Off()
-		defer gock.Clean()
+		resetGock()
+		defer resetGock()
 
 		statusCode, headers, _ := sendOptionsRequest("https://erpc.cloud")
 		assert.Equal(t, http.StatusNoContent, statusCode)

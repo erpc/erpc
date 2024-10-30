@@ -7,6 +7,7 @@ import (
 )
 
 type Multiplexer struct {
+	hash string
 	resp *common.NormalizedResponse
 	err  error
 	done chan struct{}
@@ -14,8 +15,9 @@ type Multiplexer struct {
 	once sync.Once
 }
 
-func NewMultiplexer() *Multiplexer {
+func NewMultiplexer(hash string) *Multiplexer {
 	return &Multiplexer{
+		hash: hash,
 		done: make(chan struct{}),
 		mu:   &sync.RWMutex{},
 	}
