@@ -134,9 +134,13 @@ func (r *JsonRpcResponse) ID() interface{} {
 	r.idMu.Lock()
 	defer r.idMu.Unlock()
 
+	if r.idBytes == nil || len(r.idBytes) == 0 {
+		return nil
+	}
+
 	err := SonicCfg.Unmarshal(r.idBytes, &r.id)
 	if err != nil {
-		log.Error().Err(err).Object("response", r).Bytes("idBytes", r.idBytes).Msg("failed to unmarshal id")
+		log.Error().Err(err).Bytes("idBytes", r.idBytes).Msg("failed to unmarshal JsonRpcResponse.ID")
 	}
 
 	return r.id
