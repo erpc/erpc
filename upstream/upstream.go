@@ -49,7 +49,7 @@ func NewUpstream(
 ) (*Upstream, error) {
 	lg := logger.With().Str("upstreamId", cfg.Id).Logger()
 
-	policies, err := CreateFailSafePolicies(&lg, ScopeUpstream, cfg.Id, cfg.Failsafe)
+	policies, err := CreateFailSafePolicies(&lg, common.ScopeUpstream, cfg.Id, cfg.Failsafe)
 	if err != nil {
 		return nil, err
 	}
@@ -291,12 +291,16 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 					req.SetLastValidResponse(resp)
 				}
 				if lg.GetLevel() == zerolog.TraceLevel {
-					lg.Debug().Err(errCall).Interface("response", resp).Msgf("upstream call result received")
+					lg.Debug().Err(errCall).Object("response", resp).Msgf("upstream result received (traced)")
 				} else {
-					lg.Debug().Err(errCall).Msgf("upstream call result received")
+					lg.Debug().Err(errCall).Msgf("upstream result received (non-nil response)")
 				}
 			} else {
-				lg.Debug().Err(errCall).Msgf("upstream call result received")
+				if errCall != nil {
+					lg.Debug().Err(errCall).Msgf("upstream result received (errored)")
+				} else {
+					lg.Debug().Msgf("upstream result received (nil response)")
+				}
 			}
 			if errCall != nil {
 				if !errors.Is(errCall, context.Canceled) {
@@ -355,11 +359,14 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 			resp, execErr := executor.
 				WithContext(ctx).
 				GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
-					return tryForward(ctx, exec)
+					if err := exec.Context().Err(); err != nil {
+						return nil, err
+					}
+					return tryForward(exec.Context(), exec)
 				})
 
 			if execErr != nil {
-				return nil, TranslateFailsafeError(u.config.Id, method, execErr)
+				return nil, TranslateFailsafeError(common.ScopeUpstream, u.config.Id, method, execErr, &startTime)
 			}
 
 			return resp, nil

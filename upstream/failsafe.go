@@ -1,7 +1,7 @@
 package upstream
 
 import (
-	"context"
+	// "context"
 	"errors"
 	"fmt"
 	"time"
@@ -15,19 +15,7 @@ import (
 	"github.com/rs/zerolog"
 )
 
-type Scope string
-
-const (
-	// Policies must be created with a "network" in mind,
-	// assuming there will be many upstreams e.g. Retry might endup using a different upstream
-	ScopeNetwork Scope = "network"
-
-	// Policies must be created with one only "upstream" in mind
-	// e.g. Retry with be towards the same upstream
-	ScopeUpstream Scope = "upstream"
-)
-
-func CreateFailSafePolicies(logger *zerolog.Logger, scope Scope, component string, fsCfg *common.FailsafeConfig) ([]failsafe.Policy[*common.NormalizedResponse], error) {
+func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity string, fsCfg *common.FailsafeConfig) ([]failsafe.Policy[*common.NormalizedResponse], error) {
 	// The order of policies below are important as per docs of failsafe-go
 	var policies = []failsafe.Policy[*common.NormalizedResponse]{}
 
@@ -35,10 +23,12 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope Scope, component strin
 		return policies, nil
 	}
 
+	lg := logger.With().Str("scope", string(scope)).Str("entity", entity).Logger()
+
 	// For network-level we want the timeout to apply to the overall lifecycle
-	if fsCfg.Timeout != nil && scope == ScopeNetwork {
+	if fsCfg.Timeout != nil && scope == common.ScopeNetwork {
 		var err error
-		timeoutPolicy, err := createTimeoutPolicy(component, fsCfg.Timeout)
+		timeoutPolicy, err := createTimeoutPolicy(&lg, entity, fsCfg.Timeout)
 		if err != nil {
 			return nil, err
 		}
@@ -47,7 +37,7 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope Scope, component strin
 	}
 
 	if fsCfg.Retry != nil {
-		p, err := createRetryPolicy(scope, component, fsCfg.Retry)
+		p, err := createRetryPolicy(scope, entity, fsCfg.Retry)
 		if err != nil {
 			return nil, err
 		}
@@ -55,9 +45,9 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope Scope, component strin
 	}
 
 	// CircuitBreaker does not make sense for network-level requests
-	if scope == ScopeUpstream {
+	if scope == common.ScopeUpstream {
 		if fsCfg.CircuitBreaker != nil {
-			p, err := createCircuitBreakerPolicy(logger, component, fsCfg.CircuitBreaker)
+			p, err := createCircuitBreakerPolicy(&lg, entity, fsCfg.CircuitBreaker)
 			if err != nil {
 				return nil, err
 			}
@@ -66,7 +56,7 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope Scope, component strin
 	}
 
 	if fsCfg.Hedge != nil {
-		p, err := createHedgePolicy(logger, component, fsCfg.Hedge)
+		p, err := createHedgePolicy(&lg, entity, fsCfg.Hedge)
 		if err != nil {
 			return nil, err
 		}
@@ -74,9 +64,9 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope Scope, component strin
 	}
 
 	// For upstream-level we want the timeout to apply to each individual request towards upstream
-	if fsCfg.Timeout != nil && scope == ScopeUpstream {
+	if fsCfg.Timeout != nil && scope == common.ScopeUpstream {
 		var err error
-		timeoutPolicy, err := createTimeoutPolicy(component, fsCfg.Timeout)
+		timeoutPolicy, err := createTimeoutPolicy(&lg, entity, fsCfg.Timeout)
 		if err != nil {
 			return nil, err
 		}
@@ -87,7 +77,7 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope Scope, component strin
 	return policies, nil
 }
 
-func createCircuitBreakerPolicy(logger *zerolog.Logger, component string, cfg *common.CircuitBreakerPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+func createCircuitBreakerPolicy(logger *zerolog.Logger, entity string, cfg *common.CircuitBreakerPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
 	builder := circuitbreaker.Builder[*common.NormalizedResponse]()
 
 	if cfg.FailureThresholdCount > 0 {
@@ -110,8 +100,8 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, component string, cfg *c
 		dur, err := time.ParseDuration(cfg.HalfOpenAfter)
 		if err != nil {
 			return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse circuitBreaker.halfOpenAfter: %v", err), map[string]interface{}{
-				"component": component,
-				"policy":    cfg,
+				"entity": entity,
+				"policy": cfg,
 			})
 		}
 
@@ -131,7 +121,7 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, component string, cfg *c
 	builder.OnFailure(func(event failsafe.ExecutionEvent[*common.NormalizedResponse]) {
 		err := event.LastError()
 		res := event.LastResult()
-		lg := logger.Warn().Err(err).Interface("response", res)
+		lg := logger.Warn().Err(err).Object("response", res)
 		if res != nil && !res.IsObjectNull() {
 			rq := res.Request()
 			if rq != nil {
@@ -187,12 +177,12 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, component string, cfg *c
 	return builder.Build(), nil
 }
 
-func createHedgePolicy(logger *zerolog.Logger, component string, cfg *common.HedgePolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+func createHedgePolicy(logger *zerolog.Logger, entity string, cfg *common.HedgePolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
 	delay, err := time.ParseDuration(cfg.Delay)
 	if err != nil {
 		return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse hedge.delay: %v", err), map[string]interface{}{
-			"component": component,
-			"policy":    cfg,
+			"entity": entity,
+			"policy": cfg,
 		})
 	}
 	builder := hedgepolicy.BuilderWithDelay[*common.NormalizedResponse](delay)
@@ -208,7 +198,7 @@ func createHedgePolicy(logger *zerolog.Logger, component string, cfg *common.Hed
 			if ok && req != nil {
 				method, _ := req.Method()
 				if method != "" && common.IsEvmWriteMethod(method) {
-					logger.Debug().Msgf("ignoring hedge for write request: %s", method)
+					logger.Debug().Str("method", method).Interface("id", req.ID()).Msgf("ignoring hedge for write request")
 					return false
 				}
 			}
@@ -221,7 +211,7 @@ func createHedgePolicy(logger *zerolog.Logger, component string, cfg *common.Hed
 	return builder.Build(), nil
 }
 
-func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
 	builder := retrypolicy.Builder[*common.NormalizedResponse]()
 
 	if cfg.MaxAttempts > 0 {
@@ -231,8 +221,8 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 		delayDuration, err := time.ParseDuration(cfg.Delay)
 		if err != nil {
 			return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse retry.delay: %v", err), map[string]interface{}{
-				"component": component,
-				"policy":    cfg,
+				"entity": entity,
+				"policy": cfg,
 			})
 		}
 
@@ -240,8 +230,8 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 			backoffMaxDuration, err := time.ParseDuration(cfg.BackoffMaxDelay)
 			if err != nil {
 				return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse retry.backoffMaxDelay: %v", err), map[string]interface{}{
-					"component": component,
-					"policy":    cfg,
+					"entity": entity,
+					"policy": cfg,
 				})
 			}
 
@@ -258,8 +248,8 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 		jitterDuration, err := time.ParseDuration(cfg.Jitter)
 		if err != nil {
 			return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse retry.jitter: %v", err), map[string]interface{}{
-				"component": component,
-				"policy":    cfg,
+				"entity": entity,
+				"policy": cfg,
 			})
 		}
 
@@ -274,19 +264,19 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 		}
 
 		// Any error that cannot be retried against an upstream
-		if scope == ScopeUpstream {
+		if scope == common.ScopeUpstream {
 			if !common.IsRetryableTowardsUpstream(err) || common.IsCapacityIssue(err) {
 				return false
 			}
 		}
 
 		// When error is "missing data" retry on network-level
-		if scope == ScopeNetwork && common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+		if scope == common.ScopeNetwork && common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
 			return true
 		}
 
 		// On network-level if all upstreams returned non-retryable errors then do not retry
-		if scope == ScopeNetwork && common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
+		if scope == common.ScopeNetwork && common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
 			exher, ok := err.(*common.ErrUpstreamsExhausted)
 			if ok {
 				errs := exher.Errors()
@@ -303,7 +293,7 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 			}
 		}
 
-		if scope == ScopeNetwork && result != nil && !result.IsObjectNull() {
+		if scope == common.ScopeNetwork && result != nil && !result.IsObjectNull() {
 			req := result.Request()
 			rds := req.Directives()
 
@@ -369,31 +359,39 @@ func createRetryPolicy(scope Scope, component string, cfg *common.RetryPolicyCon
 	return builder.Build(), nil
 }
 
-func createTimeoutPolicy(component string, cfg *common.TimeoutPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+func createTimeoutPolicy(logger *zerolog.Logger, entity string, cfg *common.TimeoutPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
 	if cfg.Duration == "" {
 		return nil, common.NewErrFailsafeConfiguration(errors.New("missing timeout"), map[string]interface{}{
-			"component": component,
-			"policy":    cfg,
+			"entity": entity,
+			"policy": cfg,
 		})
 	}
 
 	timeoutDuration, err := time.ParseDuration(cfg.Duration)
 	builder := timeout.Builder[*common.NormalizedResponse](timeoutDuration)
 
+	if logger.GetLevel() == zerolog.TraceLevel {
+		builder.OnTimeoutExceeded(func(event failsafe.ExecutionDoneEvent[*common.NormalizedResponse]) {
+			logger.Trace().Msgf("failsafe timeout policy: %v (start time: %v, elapsed: %v, attempts: %d, retries: %d, hedges: %d)", event.Error, event.StartTime().Format(time.RFC3339), event.ElapsedTime().String(), event.Attempts(), event.Retries(), event.Hedges())
+		})
+	}
+
 	if err != nil {
 		return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse timeout: %v", err), map[string]interface{}{
-			"component": component,
-			"policy":    cfg,
+			"entity": entity,
+			"policy": cfg,
 		})
 	}
 
 	return builder.Build(), nil
 }
 
-func TranslateFailsafeError(upstreamId, method string, execErr error) error {
+func TranslateFailsafeError(scope common.Scope, upstreamId string, method string, execErr error, startTime *time.Time) error {
 	var err error
 	var retryExceededErr retrypolicy.ExceededError
-	if errors.As(execErr, &retryExceededErr) {
+	if common.HasErrorCode(execErr, common.ErrCodeUpstreamsExhausted) {
+		err = execErr
+	} else if errors.As(execErr, &retryExceededErr) {
 		ler := retryExceededErr.LastError
 		if common.IsNull(ler) {
 			if lexr, ok := execErr.(common.StandardError); ok {
@@ -402,14 +400,14 @@ func TranslateFailsafeError(upstreamId, method string, execErr error) error {
 		}
 		var translatedCause error
 		if ler != nil {
-			translatedCause = TranslateFailsafeError("", "", ler)
+			translatedCause = TranslateFailsafeError(scope, "", "", ler, startTime)
 		}
-		err = common.NewErrFailsafeRetryExceeded(translatedCause)
-	} else if errors.Is(execErr, timeout.ErrExceeded) ||
-		errors.Is(execErr, context.DeadlineExceeded) {
-		err = common.NewErrFailsafeTimeoutExceeded(execErr)
+		err = common.NewErrFailsafeRetryExceeded(scope, translatedCause, startTime)
+	} else if errors.Is(execErr, timeout.ErrExceeded) {
+		// || errors.Is(execErr, context.DeadlineExceeded)
+		err = common.NewErrFailsafeTimeoutExceeded(scope, execErr, startTime)
 	} else if errors.Is(execErr, circuitbreaker.ErrOpen) {
-		err = common.NewErrFailsafeCircuitBreakerOpen(execErr)
+		err = common.NewErrFailsafeCircuitBreakerOpen(scope, execErr, startTime)
 	}
 
 	if err != nil {
