@@ -23,6 +23,7 @@ type Upstream struct {
 	Client    ClientInterface
 	Logger    zerolog.Logger
 
+	appCtx context.Context
 	config *common.UpstreamConfig
 	vendor common.Vendor
 
@@ -39,6 +40,7 @@ type Upstream struct {
 }
 
 func NewUpstream(
+	appCtx context.Context,
 	projectId string,
 	cfg *common.UpstreamConfig,
 	cr *ClientRegistry,
@@ -60,6 +62,7 @@ func NewUpstream(
 		ProjectId: projectId,
 		Logger:    lg,
 
+		appCtx:               appCtx,
 		config:               cfg,
 		vendor:               vn,
 		metricsTracker:       mt,
@@ -83,7 +86,7 @@ func NewUpstream(
 	if err != nil {
 		return nil, err
 	}
-	if client, err := cr.GetOrCreateClient(pup); err != nil {
+	if client, err := cr.GetOrCreateClient(appCtx, pup); err != nil {
 		return nil, err
 	} else {
 		pup.Client = client
@@ -604,7 +607,7 @@ func (u *Upstream) detectFeatures() error {
 			cfg.Evm = &common.EvmUpstreamConfig{}
 		}
 		if cfg.Evm.ChainId == 0 {
-			nid, err := u.EvmGetChainId(context.Background())
+			nid, err := u.EvmGetChainId(u.appCtx)
 			if err != nil {
 				return common.NewErrUpstreamClientInitialization(
 					fmt.Errorf("failed to get chain id: %w", err),

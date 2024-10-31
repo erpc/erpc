@@ -46,13 +46,14 @@ var infuraNetworkNames = map[int64]string{
 }
 
 type InfuraHttpJsonRpcClient struct {
+	appCtx   context.Context
 	upstream *Upstream
 	apiKey   string
 	clients  map[string]HttpJsonRpcClient
 	mu       sync.RWMutex
 }
 
-func NewInfuraHttpJsonRpcClient(pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
+func NewInfuraHttpJsonRpcClient(ctx context.Context, pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
 	if !strings.HasSuffix(parsedUrl.Scheme, "infura") {
 		return nil, fmt.Errorf("invalid Infura URL scheme: %s", parsedUrl.Scheme)
 	}
@@ -63,6 +64,7 @@ func NewInfuraHttpJsonRpcClient(pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcCl
 	}
 
 	return &InfuraHttpJsonRpcClient{
+		appCtx:   ctx,
 		upstream: pu,
 		apiKey:   apiKey,
 		clients:  make(map[string]HttpJsonRpcClient),
@@ -87,7 +89,7 @@ func (c *InfuraHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, error
 	return ok, nil
 }
 
-func (c *InfuraHttpJsonRpcClient) getOrCreateClient(network common.Network) (HttpJsonRpcClient, error) {
+func (c *InfuraHttpJsonRpcClient) getOrCreateClient(appCtx context.Context, network common.Network) (HttpJsonRpcClient, error) {
 	networkID := network.Id()
 	c.mu.RLock()
 	client, exists := c.clients[networkID]
@@ -128,7 +130,7 @@ func (c *InfuraHttpJsonRpcClient) getOrCreateClient(network common.Network) (Htt
 		return nil, err
 	}
 
-	client, err = NewGenericHttpJsonRpcClient(&c.upstream.Logger, c.upstream, parsedURL)
+	client, err = NewGenericHttpJsonRpcClient(appCtx, &c.upstream.Logger, c.upstream, parsedURL)
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +145,7 @@ func (c *InfuraHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.N
 		return nil, fmt.Errorf("network information is missing in the request")
 	}
 
-	client, err := c.getOrCreateClient(network)
+	client, err := c.getOrCreateClient(c.appCtx, network)
 	if err != nil {
 		return nil, err
 	}

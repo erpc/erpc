@@ -27,6 +27,7 @@ type HttpJsonRpcClient interface {
 type GenericHttpJsonRpcClient struct {
 	Url *url.URL
 
+	appCtx     context.Context
 	logger     *zerolog.Logger
 	upstream   *Upstream
 	httpClient *http.Client
@@ -48,9 +49,11 @@ type batchRequest struct {
 	err      chan error
 }
 
-func NewGenericHttpJsonRpcClient(logger *zerolog.Logger, pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
+func NewGenericHttpJsonRpcClient(appCtx context.Context, logger *zerolog.Logger, pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
 	client := &GenericHttpJsonRpcClient{
-		Url:      parsedUrl,
+		Url: parsedUrl,
+
+		appCtx:   appCtx,
 		logger:   logger,
 		upstream: pu,
 	}
@@ -91,6 +94,11 @@ func NewGenericHttpJsonRpcClient(logger *zerolog.Logger, pu *Upstream, parsedUrl
 			},
 		}
 	}
+
+	go func() {
+		<-appCtx.Done()
+		client.shutdown()
+	}()
 
 	return client, nil
 }
@@ -150,6 +158,15 @@ func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.
 	}
 }
 
+func (c *GenericHttpJsonRpcClient) shutdown() {
+	c.batchMu.Lock()
+	defer c.batchMu.Unlock()
+	if c.batchTimer != nil {
+		c.batchTimer.Stop()
+	}
+	c.processBatch()
+}
+
 func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchRequest) {
 	c.batchMu.Lock()
 
@@ -202,6 +219,30 @@ func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchReques
 }
 
 func (c *GenericHttpJsonRpcClient) processBatch() {
+	if c.appCtx != nil {
+		err := c.appCtx.Err()
+		if err != nil {
+			var msg string
+			if err == context.Canceled {
+				msg = "shutting down http client batch processing (ignoring batch requests if any)"
+				err = nil
+			} else {
+				msg = "context error on batch processing (ignoring batch requests if any)"
+			}
+			if c.logger.GetLevel() == zerolog.TraceLevel {
+				c.batchMu.Lock()
+				defer c.batchMu.Unlock()
+				ids := make([]interface{}, 0, len(c.batchRequests))
+				for _, req := range c.batchRequests {
+					ids = append(ids, req.request.ID())
+				}
+				c.logger.Trace().Err(err).Interface("remainingIds", ids).Msg(msg)
+			} else {
+				c.logger.Debug().Err(err).Msg(msg)
+			}
+			return
+		}
+	}
 	var batchCtx context.Context
 	var cancelCtx context.CancelFunc
 
@@ -217,10 +258,10 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 	}
 	requests := c.batchRequests
 	if c.batchDeadline != nil {
-		batchCtx, cancelCtx = context.WithDeadline(context.Background(), *c.batchDeadline)
+		batchCtx, cancelCtx = context.WithDeadline(c.appCtx, *c.batchDeadline)
 		defer cancelCtx()
 	} else {
-		batchCtx = context.Background()
+		batchCtx = c.appCtx
 	}
 	c.batchRequests = make(map[interface{}]*batchRequest)
 	c.batchDeadline = nil

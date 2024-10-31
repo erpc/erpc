@@ -17,7 +17,8 @@ import (
 )
 
 type Network struct {
-	cfg *common.NetworkConfig
+	appCtx context.Context
+	cfg    *common.NetworkConfig
 
 	NetworkId string
 	ProjectId string
@@ -35,6 +36,7 @@ type Network struct {
 }
 
 func (n *Network) Bootstrap(ctx context.Context) error {
+	n.appCtx = ctx
 	if n.Architecture() == common.ArchitectureEvm {
 		upsList, err := n.upstreamsRegistry.GetSortedUpstreams(n.NetworkId, "*")
 		if err != nil {
@@ -314,7 +316,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			resp.RLock()
 			go (func(resp *common.NormalizedResponse) {
 				defer resp.RUnlock()
-				c, cancel := context.WithTimeoutCause(context.Background(), 10*time.Second, errors.New("cache driver timeout during set"))
+				c, cancel := context.WithTimeoutCause(n.appCtx, 10*time.Second, errors.New("cache driver timeout during set"))
 				defer cancel()
 				err := n.cacheDal.Set(c, req, resp)
 				if err != nil {
