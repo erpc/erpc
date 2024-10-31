@@ -24,7 +24,7 @@ type ProjectsRegistry struct {
 }
 
 func NewProjectsRegistry(
-	ctx context.Context,
+	appCtx context.Context,
 	logger *zerolog.Logger,
 	staticProjects []*common.ProjectConfig,
 	evmJsonRpcCache *EvmJsonRpcCache,
@@ -32,8 +32,8 @@ func NewProjectsRegistry(
 	vendorsRegistry *vendors.VendorsRegistry,
 ) (*ProjectsRegistry, error) {
 	reg := &ProjectsRegistry{
+		appCtx:               appCtx,
 		logger:               logger,
-		appCtx:               ctx,
 		staticProjects:       staticProjects,
 		preparedProjects:     make(map[string]*PreparedProject),
 		rateLimitersRegistry: rateLimitersRegistry,
@@ -79,6 +79,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 	}
 	metricsTracker := health.NewTracker(prjCfg.Id, wsDuration)
 	upstreamsRegistry := upstream.NewUpstreamsRegistry(
+		r.appCtx,
 		&lg,
 		prjCfg.Id,
 		prjCfg.Upstreams,

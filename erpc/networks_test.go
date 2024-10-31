@@ -60,6 +60,9 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -70,6 +73,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upsReg := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -105,9 +109,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
 		var lastErr error
 		var lastResp *common.NormalizedResponse
 
@@ -151,6 +152,9 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -161,6 +165,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upsReg := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -196,8 +201,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
 
 		var lastErr error
 
@@ -251,6 +254,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Failsafe: fsCfg,
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -276,7 +280,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup)
+		cl, err := clr.GetOrCreateClient(ctx, pup)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -355,6 +359,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Failsafe: fsCfg,
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -380,7 +385,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup)
+		cl, err := clr.GetOrCreateClient(ctx, pup)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -485,6 +490,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Failsafe: upsFsCfg,
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -511,7 +517,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup1)
+		cl, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -526,7 +532,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -629,6 +635,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Failsafe: upsFsCfg,
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -655,7 +662,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup1)
+		cl, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -670,7 +677,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -799,6 +806,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Initialize the upstreams registry
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -824,7 +832,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -839,7 +847,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -986,6 +994,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Initialize the upstreams registry
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -1011,7 +1020,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1026,7 +1035,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1164,6 +1173,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		// Initialize the upstreams registry
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1},
@@ -1189,7 +1199,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1362,6 +1372,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Initialize the upstreams registry
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -1387,7 +1398,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1402,7 +1413,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1559,6 +1570,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Initialize the upstreams registry
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -1584,7 +1596,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1599,7 +1611,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1746,6 +1758,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Initialize the upstreams registry
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -1771,7 +1784,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1786,7 +1799,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1949,6 +1962,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Initialize the upstreams registry
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -1976,7 +1990,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1991,7 +2005,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2019,7 +2033,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Bootstrap the network and make the simulated request
 		ntw.Bootstrap(ctx)
-		time.Sleep(1000 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest([]byte(`{
@@ -2168,6 +2182,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Initialize the upstreams registry
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -2195,7 +2210,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2210,7 +2225,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2238,7 +2253,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Bootstrap the network and make the simulated request
 		ntw.Bootstrap(ctx)
-		time.Sleep(1000 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest([]byte(`{
@@ -2380,6 +2395,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Initialize the upstreams registry
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -2407,7 +2423,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2422,7 +2438,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2450,7 +2466,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Bootstrap the network and make the simulated request
 		ntw.Bootstrap(ctx)
-		time.Sleep(1000 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest([]byte(`{
@@ -2533,6 +2549,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1},
@@ -2556,7 +2573,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2647,6 +2664,7 @@ func TestNetwork_Forward(t *testing.T) {
 			AutoIgnoreUnsupportedMethods: &TRUE,
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -2672,7 +2690,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup)
+		cl, err := clr.GetOrCreateClient(ctx, pup)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2756,6 +2774,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Failsafe: fsCfg,
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -2781,7 +2800,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup)
+		cl, err := clr.GetOrCreateClient(ctx, pup)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2867,6 +2886,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Failsafe: fsCfg,
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -2892,7 +2912,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup)
+		cl, err := clr.GetOrCreateClient(ctx, pup)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2961,8 +2981,12 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
 		mt := health.NewTracker("prjA", 2*time.Second)
 		upsReg := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -2980,9 +3004,6 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 		)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
 
 		err = upsReg.Bootstrap(ctx)
 		if err != nil {
@@ -3065,6 +3086,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -3090,7 +3112,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup)
+		cl, err := clr.GetOrCreateClient(ctx, pup)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3174,6 +3196,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -3199,7 +3222,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup)
+		cl, err := clr.GetOrCreateClient(ctx, pup)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3288,6 +3311,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -3313,7 +3337,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup)
+		cl, err := clr.GetOrCreateClient(ctx, pup)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3397,6 +3421,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -3422,7 +3447,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup)
+		cl, err := clr.GetOrCreateClient(ctx, pup)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3519,6 +3544,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -3542,7 +3568,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3557,7 +3583,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3660,6 +3686,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -3683,7 +3710,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3698,7 +3725,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3802,6 +3829,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -3825,7 +3853,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3840,7 +3868,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3943,6 +3971,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"test_cb",
 			[]*common.UpstreamConfig{up1},
@@ -3966,7 +3995,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup1)
+		cl, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4062,6 +4091,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"test_cb",
 			[]*common.UpstreamConfig{up1},
@@ -4086,7 +4116,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4188,6 +4218,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"test_cb",
 			[]*common.UpstreamConfig{up1},
@@ -4212,7 +4243,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup1)
+		cl, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4313,6 +4344,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1},
@@ -4336,7 +4368,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4435,6 +4467,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -4458,7 +4491,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4473,7 +4506,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4561,6 +4594,7 @@ func TestNetwork_Forward(t *testing.T) {
 			IgnoreMethods: []string{"ignored_method"},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1},
@@ -4584,7 +4618,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4671,6 +4705,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -4694,7 +4729,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4709,7 +4744,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4814,6 +4849,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -4915,6 +4951,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1},
@@ -5012,6 +5049,7 @@ func TestNetwork_Forward(t *testing.T) {
 			VendorName: "llama",
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1},
@@ -5109,6 +5147,7 @@ func TestNetwork_Forward(t *testing.T) {
 			VendorName: "llama",
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1},
@@ -5195,6 +5234,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		upstreamsRegistry := upstream.NewUpstreamsRegistry(
+			ctx,
 			&logger,
 			projectID,
 			upstreamConfigs,
@@ -5359,6 +5399,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{upEnvio, upRpc1}, // Both upstreams
@@ -6046,6 +6087,7 @@ func setupTestNetwork(t *testing.T, upstreamConfig *common.UpstreamConfig) *Netw
 		}
 	}
 	upstreamsRegistry := upstream.NewUpstreamsRegistry(
+		context.Background(),
 		&log.Logger,
 		"test",
 		[]*common.UpstreamConfig{upstreamConfig},
@@ -6116,8 +6158,10 @@ func anyTestMocksLeft() int {
 }
 
 func resetGock() {
-	gock.Off()
+	gock.OffAll()
 	gock.Clean()
+	gock.CleanUnmatchedRequest()
+	gock.Disable()
 }
 
 func safeReadBody(request *http.Request) string {
