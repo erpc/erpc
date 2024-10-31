@@ -32,7 +32,7 @@ func createCacheTestFixtures(finBlockNumber int64, latestBlockNumber int64, sync
 	}
 	vnr := vendors.NewVendorsRegistry()
 	clr := upstream.NewClientRegistry(&logger)
-	mockUpstream, err := upstream.NewUpstream("test", &common.UpstreamConfig{
+	mockUpstream, err := upstream.NewUpstream(context.Background(), "test", &common.UpstreamConfig{
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId: 123,

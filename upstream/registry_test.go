@@ -712,6 +712,7 @@ func TestPriorityMultiplierScenarios(t *testing.T) {
 		})
 	}
 }
+
 func createTestRegistry(projectID string, logger *zerolog.Logger, windowSize time.Duration) (*UpstreamsRegistry, *health.Tracker) {
 	metricsTracker := health.NewTracker(projectID, windowSize)
 	metricsTracker.Bootstrap(context.Background())
@@ -723,6 +724,7 @@ func createTestRegistry(projectID string, logger *zerolog.Logger, windowSize tim
 	}
 
 	registry := NewUpstreamsRegistry(
+		context.Background(),
 		logger,
 		projectID,
 		upstreamConfigs,

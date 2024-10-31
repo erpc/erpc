@@ -85,13 +85,14 @@ var pimlicoSupportedChains = map[int64]struct{}{
 }
 
 type PimlicoHttpJsonRpcClient struct {
+	appCtx   context.Context
 	upstream *Upstream
 	apiKey   string
 	clients  map[int64]HttpJsonRpcClient
 	mu       sync.RWMutex
 }
 
-func NewPimlicoHttpJsonRpcClient(pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
+func NewPimlicoHttpJsonRpcClient(appCtx context.Context, pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
 	if !strings.HasSuffix(parsedUrl.Scheme, "pimlico") {
 		return nil, fmt.Errorf("invalid Pimlico URL scheme: %s", parsedUrl.Scheme)
 	}
@@ -102,6 +103,7 @@ func NewPimlicoHttpJsonRpcClient(pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcC
 	}
 
 	return &PimlicoHttpJsonRpcClient{
+		appCtx:   appCtx,
 		upstream: pu,
 		apiKey:   apiKey,
 		clients:  make(map[int64]HttpJsonRpcClient),
@@ -131,7 +133,7 @@ func (c *PimlicoHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, erro
 	if err != nil {
 		return false, err
 	}
-	ctx, cancel := context.WithTimeoutCause(context.Background(), 10*time.Second, errors.New("pimlico client timeout during eth_chainId"))
+	ctx, cancel := context.WithTimeoutCause(c.appCtx, 10*time.Second, errors.New("pimlico client timeout during eth_chainId"))
 	defer cancel()
 	rid := rand.Intn(100_000_000) // #nosec G404
 	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, rid)))
@@ -204,7 +206,7 @@ func (c *PimlicoHttpJsonRpcClient) createClient(chainID int64) (HttpJsonRpcClien
 		return nil, err
 	}
 
-	client, err = NewGenericHttpJsonRpcClient(&c.upstream.Logger, c.upstream, parsedURL)
+	client, err = NewGenericHttpJsonRpcClient(c.appCtx, &c.upstream.Logger, c.upstream, parsedURL)
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +215,7 @@ func (c *PimlicoHttpJsonRpcClient) createClient(chainID int64) (HttpJsonRpcClien
 	return client, nil
 }
 
-func (c *PimlicoHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+func (c *PimlicoHttpJsonRpcClient) SendRequest(reqCtx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	network := req.Network()
 	if network == nil {
 		return nil, fmt.Errorf("network information is missing in the request")
@@ -224,5 +226,5 @@ func (c *PimlicoHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.
 		return nil, err
 	}
 
-	return client.SendRequest(ctx, req)
+	return client.SendRequest(reqCtx, req)
 }

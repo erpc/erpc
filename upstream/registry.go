@@ -15,6 +15,7 @@ import (
 )
 
 type UpstreamsRegistry struct {
+	appCtx               context.Context
 	prjId                string
 	scoreRefreshInterval time.Duration
 	logger               *zerolog.Logger
@@ -39,6 +40,7 @@ type UpstreamsHealth struct {
 }
 
 func NewUpstreamsRegistry(
+	appCtx context.Context,
 	logger *zerolog.Logger,
 	prjId string,
 	upsCfg []*common.UpstreamConfig,
@@ -48,6 +50,7 @@ func NewUpstreamsRegistry(
 	scoreRefreshInterval time.Duration,
 ) *UpstreamsRegistry {
 	return &UpstreamsRegistry{
+		appCtx:               appCtx,
 		prjId:                prjId,
 		scoreRefreshInterval: scoreRefreshInterval,
 		logger:               logger,
@@ -76,7 +79,16 @@ func (u *UpstreamsRegistry) NewUpstream(
 	logger *zerolog.Logger,
 	mt *health.Tracker,
 ) (*Upstream, error) {
-	return NewUpstream(projectId, cfg, u.clientRegistry, u.rateLimitersRegistry, u.vendorsRegistry, logger, mt)
+	return NewUpstream(
+		u.appCtx,
+		projectId,
+		cfg,
+		u.clientRegistry,
+		u.rateLimitersRegistry,
+		u.vendorsRegistry,
+		logger,
+		mt,
+	)
 }
 
 func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(networkId string) error {

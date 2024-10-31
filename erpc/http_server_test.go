@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+
 	// "math"
 	"math/rand"
 	"net"
@@ -84,7 +85,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 	defer httpServer.server.Shutdown(ctx)
 
 	// Wait for the server to start
-	time.Sleep(1000 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
 
@@ -265,7 +266,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: &common.FailsafeConfig{
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "2s",
+									Duration: "200ms",
 								},
 							},
 						},
@@ -279,7 +280,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: &common.FailsafeConfig{
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "1s",
+									Duration: "100ms",
 								},
 							},
 						},
@@ -289,7 +290,8 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 			RateLimiters: &common.RateLimiterConfig{},
 		}
 		// Set up test fixtures
-		sendRequest, _, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		defer shutdown()
 
 		setupMocksForEvmStatePoller()
 
@@ -301,7 +303,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(200).
-			Delay(30 * time.Second).
+			Delay(1 * time.Second).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -322,7 +324,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: "10s",
+				MaxTimeout: "300ms",
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -335,7 +337,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: &common.FailsafeConfig{
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "100ms",
+									Duration: "30ms",
 								},
 							},
 						},
@@ -349,11 +351,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: &common.FailsafeConfig{
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "5s",
+									Duration: "200ms",
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.TRUE,
+								BatchMaxWait:  "5ms",
 							},
 						},
 					},
@@ -362,7 +365,8 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 			RateLimiters: &common.RateLimiterConfig{},
 		}
 		// Set up test fixtures
-		sendRequest, _, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		defer shutdown()
 
 		setupMocksForEvmStatePoller()
 
@@ -374,7 +378,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(200).
-			Delay(30 * time.Second).
+			Delay(1 * time.Second).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -436,7 +440,8 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 			RateLimiters: &common.RateLimiterConfig{},
 		}
 		// Set up test fixtures
-		sendRequest, _, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		defer shutdown()
 
 		setupMocksForEvmStatePoller()
 
@@ -501,6 +506,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.TRUE,
+								BatchMaxWait:  "5ms",
 							},
 						},
 					},
@@ -509,7 +515,8 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 			RateLimiters: &common.RateLimiterConfig{},
 		}
 		// Set up test fixtures
-		sendRequest, _, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		defer shutdown()
 
 		setupMocksForEvmStatePoller()
 
@@ -583,7 +590,8 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 			RateLimiters: &common.RateLimiterConfig{},
 		}
 		// Set up test fixtures
-		sendRequest, _, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		defer shutdown()
 
 		setupMocksForEvmStatePoller()
 
@@ -648,6 +656,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.TRUE,
+								BatchMaxWait:  "5ms",
 							},
 						},
 					},
@@ -656,7 +665,8 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 			RateLimiters: &common.RateLimiterConfig{},
 		}
 		// Set up test fixtures
-		sendRequest, _, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		defer shutdown()
 
 		setupMocksForEvmStatePoller()
 
@@ -730,7 +740,8 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 			RateLimiters: &common.RateLimiterConfig{},
 		}
 		// Set up test fixtures
-		sendRequest, _, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		defer shutdown()
 
 		setupMocksForEvmStatePoller()
 
@@ -788,6 +799,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Failsafe: &common.FailsafeConfig{},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.TRUE,
+								BatchMaxWait:  "5ms",
 							},
 						},
 					},
@@ -797,7 +809,8 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		}
 
 		// Set up test fixtures
-		sendRequest, _, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		defer shutdown()
 
 		setupMocksForEvmStatePoller()
 
@@ -872,7 +885,8 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		}
 
 		// Set up test fixtures
-		sendRequest, _, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		defer shutdown()
 
 		setupMocksForEvmStatePoller()
 
@@ -944,7 +958,8 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			RateLimiters: &common.RateLimiterConfig{},
 		}
 		// Set up test fixtures
-		sendRequest, _, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		defer shutdown()
 
 		setupMocksForEvmStatePoller()
 
@@ -1018,6 +1033,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.TRUE,
+								BatchMaxWait:  "5ms",
 							},
 						},
 					},
@@ -1026,7 +1042,8 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			RateLimiters: &common.RateLimiterConfig{},
 		}
 		// Set up test fixtures
-		sendRequest, _, _ := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		defer shutdown()
 
 		setupMocksForEvmStatePoller()
 
@@ -1150,7 +1167,8 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			}
 
 			// Set up test fixtures
-			sendRequest, _, baseURL := createServerTestFixtures(cfg, t)
+			sendRequest, _, baseURL, shutdown := createServerTestFixtures(cfg, t)
+			defer shutdown()
 
 			setupMocksForEvmStatePoller()
 
@@ -1159,7 +1177,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				defer tmu.Unlock()
 				resetGock()
 				defer resetGock()
-	
+
 				const concurrentRequests = 10
 
 				var wg sync.WaitGroup
@@ -1275,7 +1293,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				defer tmu.Unlock()
 				resetGock()
 				defer resetGock()
-	
+
 				statusCode, body := sendRequest(`{"invalid json`, nil, nil)
 
 				// fmt.Println(body)
@@ -1297,7 +1315,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				defer tmu.Unlock()
 				resetGock()
 				defer resetGock()
-	
+
 				cfg.Projects[0].Upstreams[0].IgnoreMethods = []string{}
 
 				gock.New("http://rpc1.localhost").
@@ -1329,7 +1347,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				defer tmu.Unlock()
 				resetGock()
 				defer resetGock()
-	
+
 				cfg.Projects[0].Upstreams[0].IgnoreMethods = []string{"ignored_method"}
 
 				gock.New("http://rpc1.localhost").
@@ -1361,7 +1379,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				defer tmu.Unlock()
 				resetGock()
 				defer resetGock()
-	
+
 				req, err := http.NewRequest("POST", baseURL+"/invalid_project/evm/1", strings.NewReader(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`))
 				require.NoError(t, err)
 				req.Header.Set("Content-Type", "application/json")
@@ -1392,7 +1410,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				defer tmu.Unlock()
 				resetGock()
 				defer resetGock()
-	
+
 				gock.New("http://rpc1.localhost").
 					Post("/").
 					Reply(200).
@@ -1424,7 +1442,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				defer tmu.Unlock()
 				resetGock()
 				defer resetGock()
-	
+
 				gock.New("http://rpc1.localhost").
 					Post("/").
 					Times(1).
@@ -1444,7 +1462,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				defer tmu.Unlock()
 				resetGock()
 				defer resetGock()
-	
+
 				gock.New("http://rpc1.localhost").
 					Post("/").
 					Times(1).
@@ -1465,7 +1483,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				defer tmu.Unlock()
 				resetGock()
 				defer resetGock()
-	
+
 				var id interface{}
 				gock.New("http://rpc1.localhost").
 					Post("/").
@@ -1536,7 +1554,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				defer tmu.Unlock()
 				resetGock()
 				defer resetGock()
-	
+
 				gock.New("http://rpc1.localhost").
 					Post("/").
 					Times(1).
@@ -1575,7 +1593,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				defer tmu.Unlock()
 				resetGock()
 				defer resetGock()
-	
+
 				gock.New("http://rpc1.localhost").
 					Post("/").
 					Reply(400).
@@ -1590,7 +1608,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				defer tmu.Unlock()
 				resetGock()
 				defer resetGock()
-	
+
 				gock.New("http://rpc1.localhost").
 					Post("/").
 					SetMatcher(gock.NewEmptyMatcher()).
@@ -1681,7 +1699,8 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 		RateLimiters: &common.RateLimiterConfig{},
 	}
 
-	sendRequest, _, _ := createServerTestFixtures(cfg, t)
+	sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+	defer shutdown()
 
 	t.Run("UpstreamNotAllowedByDirectiveViaHeaders", func(t *testing.T) {
 		tmu.Lock()
@@ -1795,7 +1814,8 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 		RateLimiters: &common.RateLimiterConfig{},
 	}
 
-	sendRequest, sendOptionsRequest, _ := createServerTestFixtures(cfg, t)
+	sendRequest, sendOptionsRequest, _, shutdown := createServerTestFixtures(cfg, t)
+	defer shutdown()
 
 	t.Run("DrpcUnsupportedMethod", func(t *testing.T) {
 		tmu.Lock()
@@ -1835,7 +1855,9 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 	func(body string, headers map[string]string, queryParams map[string]string) (int, string),
 	func(host string) (int, map[string]string, string),
 	string,
+	func(),
 ) {
+	resetGock()
 	gock.EnableNetworking()
 	gock.NetworkingFilter(func(req *http.Request) bool {
 		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
@@ -1843,7 +1865,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 	})
 
 	logger := zerolog.New(zerolog.NewConsoleWriter())
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
 
 	erpcInstance, err := NewERPC(ctx, &logger, nil, cfg)
 	require.NoError(t, err)
@@ -1861,7 +1883,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 		}
 	}()
 
-	time.Sleep(1000 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
 
@@ -1923,5 +1945,10 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 		return resp.StatusCode, headers, string(respBody)
 	}
 
-	return sendRequest, sendOptionsRequest, baseURL
+	return sendRequest, sendOptionsRequest, baseURL, func() {
+		cancel()
+		httpServer.server.Shutdown(context.Background())
+		listener.Close()
+		resetGock()
+	}
 }
