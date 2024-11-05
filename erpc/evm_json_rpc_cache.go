@@ -191,13 +191,13 @@ func shouldCacheResponse(
 			if upsCfg.Evm != nil {
 				if upsCfg.Evm.Syncing != nil && !*upsCfg.Evm.Syncing {
 					blkNum, err := req.EvmBlockNumber()
-					if err != nil && blkNum > 0 {
+					if err == nil && blkNum > 0 {
 						ntw := req.Network()
 						if ntw != nil {
 							// We explicitly check for finality on the same upstream that provided the response
 							// to make sure on that specific node the block is actually finalized (vs any other node).
 							stp := ntw.EvmStatePollerOf(ups.Config().Id)
-							if fin, err := stp.IsBlockFinalized(blkNum); err != nil && fin {
+							if fin, err := stp.IsBlockFinalized(blkNum); err == nil && fin {
 								return fin, nil
 							}
 						}
