@@ -194,7 +194,10 @@ func shouldCacheResponse(
 					if err != nil && blkNum > 0 {
 						ntw := req.Network()
 						if ntw != nil {
-							if fin, err := ntw.EvmIsBlockFinalized(blkNum); err != nil && fin {
+							// We explicitly check for finality on the same upstream that provided the response
+							// to make sure on that specific node the block is actually finalized (vs any other node).
+							stp := ntw.EvmStatePollerOf(ups.Config().Id)
+							if fin, err := stp.IsBlockFinalized(blkNum); err != nil && fin {
 								return fin, nil
 							}
 						}
@@ -245,6 +248,7 @@ func (c *EvmJsonRpcCache) DeleteByGroupKey(ctx context.Context, groupKeys ...str
 }
 
 func (c *EvmJsonRpcCache) shouldCacheForBlock(blockNumber int64) (bool, error) {
+	// This check returns true if the block is considered finalized by any upstream
 	return c.network.EvmIsBlockFinalized(blockNumber)
 }
 
