@@ -335,6 +335,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	return resp, nil
 }
 
+func (n *Network) EvmStatePollerOf(upstreamId string) common.EvmStatePoller {
+	return n.evmStatePollers[upstreamId]
+}
+
 func (n *Network) EvmIsBlockFinalized(blockNumber int64) (bool, error) {
 	if n == nil || n.evmStatePollers == nil || len(n.evmStatePollers) == 0 {
 		return false, nil

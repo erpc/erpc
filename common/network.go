@@ -11,5 +11,5 @@ type Network interface {
 	Architecture() NetworkArchitecture
 	Config() *NetworkConfig
 	EvmChainId() (int64, error)
-	EvmIsBlockFinalized(blockNumber int64) (bool, error)
+	EvmStatePollerOf(upstreamId string) EvmStatePoller
 }
