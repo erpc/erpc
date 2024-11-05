@@ -311,8 +311,7 @@ func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolic
 					if err == nil && rds.RetryEmpty && isEmpty && (ucfg.Evm.Syncing != nil && !*ucfg.Evm.Syncing) {
 						bn, ebn := req.EvmBlockNumber()
 						if ebn == nil && bn > 0 {
-							// TODO Should only use "ups"'s state_poller vs all upstreams?
-							fin, efin := req.Network().EvmIsBlockFinalized(bn)
+							fin, efin := req.Network().EvmStatePollerOf(ups.Config().Id).IsBlockFinalized(bn)
 							if efin == nil && fin {
 								return false
 							}

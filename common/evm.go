@@ -19,3 +19,11 @@ func IsEvmWriteMethod(method string) bool {
 		method == "eth_newBlockFilter" ||
 		method == "eth_newPendingTransactionFilter"
 }
+
+type EvmStatePoller interface {
+	LatestBlock() int64
+	FinalizedBlock() int64
+	IsBlockFinalized(blockNumber int64) (bool, error)
+	SuggestFinalizedBlock(blockNumber int64)
+	SuggestLatestBlock(blockNumber int64)
+}
