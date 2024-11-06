@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"time"
 
 	"strings"
 
@@ -371,11 +372,116 @@ type EvmNetworkConfig struct {
 }
 
 type SelectionPolicyConfig struct {
-	EvalInterval  string        `yaml:"evalInterval" json:"evalInterval"`
+	EvalInterval  time.Duration `yaml:"evalInterval" json:"evalInterval"`
 	EvalFunction  goja.Callable `yaml:"evalFunction" json:"evalFunction"`
 	EvalPerMethod bool          `yaml:"evalPerMethod" json:"evalPerMethod"`
-	SampleAfter   string        `yaml:"sampleAfter" json:"sampleAfter"`
+	SampleAfter   time.Duration `yaml:"sampleAfter" json:"sampleAfter"`
 	SampleCount   int           `yaml:"sampleCount" json:"sampleCount"`
+}
+
+func (c *SelectionPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	// Use raw config to parse strings before converting
+	type rawSelectionPolicyConfig struct {
+		EvalInterval  string `yaml:"evalInterval"`
+		EvalPerMethod bool   `yaml:"evalPerMethod"`
+		EvalFunction  string `yaml:"evalFunction"`
+		SampleAfter   string `yaml:"sampleAfter"`
+		SampleCount   int    `yaml:"sampleCount"`
+	}
+	raw := rawSelectionPolicyConfig{
+		EvalInterval:  "1m",
+		SampleAfter:   "5m",
+		EvalPerMethod: false,
+		SampleCount:   10,
+	}
+
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+
+	sampleAfter, err := time.ParseDuration(raw.SampleAfter)
+	if err != nil {
+		return fmt.Errorf("failed to parse sampleAfter: %v", err)
+	}
+
+	evalInterval, err := time.ParseDuration(raw.EvalInterval)
+	if err != nil {
+		return fmt.Errorf("failed to parse evalInterval: %v", err)
+	}
+
+	evalFunction, err := stringToGojaCallable(raw.EvalFunction)
+	if err != nil {
+		return fmt.Errorf("failed to parse evalFunction: %v", err)
+	}
+
+	c.EvalInterval = evalInterval
+	c.EvalFunction = evalFunction
+	c.EvalPerMethod = raw.EvalPerMethod
+	c.SampleAfter = sampleAfter
+	c.SampleCount = raw.SampleCount
+
+	return nil
+}
+
+func (c *SelectionPolicyConfig) MarshalJSON() ([]byte, error) {
+	return sonic.Marshal(map[string]interface{}{
+		"evalInterval":  c.EvalInterval,
+		"evalPerMethod": c.EvalPerMethod,
+		"sampleAfter":   c.SampleAfter,
+		"sampleCount":   c.SampleCount,
+	})
+}
+
+func stringToGojaCallable(funcStr string) (goja.Callable, error) {
+	if funcStr == "" {
+		return nil, nil
+	}
+
+	vm := goja.New()
+
+	req := new(require.Registry)
+	req.Enable(vm)
+
+	// Enable Node.js modules support
+	process.Enable(vm)
+	console.Enable(vm)
+	url.Enable(vm)
+	buffer.Enable(vm)
+
+	// Attempt as a plain JavaScript code
+	wrappedFunc := fmt.Sprintf("(%s)", funcStr)
+	program, errJs := goja.Compile("", wrappedFunc, false)
+	if errJs != nil {
+		// Handle TypeScript code
+		result, err := typescript.Evaluate(
+			strings.NewReader(funcStr),
+			typescript.WithTranspile(),
+			typescript.WithEvaluationRuntime(vm),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to evaluate TypeScript: '%v' nor JavaScript: %v", err, errJs)
+		}
+
+		// Get the function from the evaluated result
+		if obj, ok := result.(*goja.Object); ok {
+			if fn, ok := goja.AssertFunction(obj); ok {
+				return fn, nil
+			}
+		}
+		return nil, fmt.Errorf("TypeScript code must export a function")
+	}
+
+	result, err := vm.RunProgram(program)
+	if err != nil {
+		return nil, fmt.Errorf("failed to evaluate function: %v", err)
+	}
+
+	evalFunction, ok := goja.AssertFunction(result)
+	if !ok {
+		return nil, fmt.Errorf("code must evaluate to a function")
+	}
+
+	return evalFunction, nil
 }
 
 type AuthType string
@@ -779,6 +885,32 @@ func (c *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 
 	if raw.Architecture == "evm" && raw.Evm == nil {
 		return NewErrInvalidConfig("network.*.evm is required for evm networks")
+	}
+
+	if raw.SelectionPolicy == nil {
+		evalFunction, err := stringToGojaCallable(`
+			(upstreams, method) => {
+				const defaults = upstreams.filter(u => u.group !== 'fallback')
+				const fallbacks = upstreams.filter(u => u.group === 'fallback')
+				const maxErrorRate = parseFloat(process.env.ROUTING_POLICY_ERROR_RATE || '0.7')
+				const maxBlockLag = parseFloat(process.env.ROUTING_POLICY_BLOCK_LAG || '10')
+				const healthyOnes = defaults.filter(u => u.errorRate < maxErrorRate || u.blockLag < maxBlockLag)
+				if (healthyOnes.length > 0) {
+				  return healthyOnes
+				}
+				return fallbacks
+			}
+		`)
+		if err != nil {
+			return err
+		}
+		raw.SelectionPolicy = &SelectionPolicyConfig{
+			EvalInterval:  1 * time.Minute,
+			EvalFunction:  evalFunction,
+			EvalPerMethod: false,
+			SampleAfter:   5 * time.Minute,
+			SampleCount:   10,
+		}
 	}
 
 	*c = NetworkConfig(raw)

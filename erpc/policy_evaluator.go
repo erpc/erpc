@@ -40,11 +40,7 @@ type upstreamState struct {
 	lastEvalTime  time.Time
 }
 
-type metricData struct {
-	ID      string                 `json:"id"`
-	Group   string                 `json:"group"`
-	Metrics map[string]interface{} `json:"metrics"`
-}
+type metricData map[string]interface{}
 
 func NewPolicyEvaluator(
 	networkId string,
@@ -72,13 +68,7 @@ func NewPolicyEvaluator(
 
 func (p *PolicyEvaluator) Start(ctx context.Context) error {
 	go func() {
-		evalInterval, err := time.ParseDuration(p.config.EvalInterval)
-		if err != nil {
-			p.logger.Error().Err(err).Msgf("invalid evalInterval: %s", p.config.EvalInterval)
-			return
-		}
-
-		ticker := time.NewTicker(evalInterval)
+		ticker := time.NewTicker(p.config.EvalInterval)
 		defer ticker.Stop()
 
 		for {
@@ -92,6 +82,11 @@ func (p *PolicyEvaluator) Start(ctx context.Context) error {
 			}
 		}
 	}()
+
+	err := p.evaluateUpstreams()
+	if err != nil {
+		p.logger.Error().Err(err).Msg("failed to evaluate upstreams")
+	}
 
 	return nil
 }
@@ -140,22 +135,26 @@ func (p *PolicyEvaluator) evaluateUpstreams() error {
 func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upstream) error {
 	metricsData := make([]metricData, len(upsList))
 	for i, ups := range upsList {
-		metrics := p.metricsTracker.GetUpstreamMethodMetrics(ups.Config().Id, p.networkId, method)
+		upsId := ups.Config().Id
+		metrics := p.metricsTracker.GetUpstreamMethodMetrics(upsId, p.networkId, method)
 
 		metrics.Mutex.RLock()
 		metricsData[i] = metricData{
-			ID:    ups.Config().Id,
-			Group: ups.Config().Group,
-			Metrics: map[string]interface{}{
-				"errorRate":       metrics.ErrorRate(),
-				"throttledRate":   metrics.ThrottledRate(),
-				"p90Latency":      metrics.LatencySecs.P90(),
-				"blockHeadLag":    metrics.BlockHeadLag,
-				"finalizationLag": metrics.FinalizationLag,
-				"requestsTotal":   metrics.RequestsTotal,
-			},
+			"id":              upsId,
+			"group":           ups.Config().Group,
+			"errorRate":       metrics.ErrorRate(),
+			"errorsTotal":     metrics.ErrorsTotal,
+			"requestsTotal":   metrics.RequestsTotal,
+			"throttledRate":   metrics.ThrottledRate(),
+			"p90LatencySecs":  metrics.LatencySecs.P90(),
+			"blockHeadLag":    metrics.BlockHeadLag,
+			"finalizationLag": metrics.FinalizationLag,
 		}
 		metrics.Mutex.RUnlock()
+	}
+
+	if p.logger.GetLevel() == zerolog.TraceLevel {
+		p.logger.Debug().Str("method", method).Interface("upstreams", metricsData).Msg("evaluating selection policy function")
 	}
 
 	// Call the evaluation function
@@ -169,9 +168,12 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 	arr, ok := result.Export().([]interface{})
 	if ok {
 		for _, v := range arr {
-			ups, ok := v.(map[string]interface{})
+			ups, ok := v.(metricData)
 			if !ok {
-				return fmt.Errorf("unexpected return value from evalFunction, expected objects inside the returned array: %v", result)
+				ups, ok = v.(map[string]interface{})
+				if !ok {
+					return fmt.Errorf("unexpected return value from evalFunction, expected objects inside the returned array: %v", result)
+				}
 			}
 			if upstreamId, ok := ups["id"].(string); ok {
 				selectedUpstreams[upstreamId] = true
@@ -183,9 +185,8 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 		return fmt.Errorf("unexpected return value from evalFunction, expected an array: %v", result)
 	}
 
-	sampleDuration, err := time.ParseDuration(p.config.SampleAfter)
-	if err != nil {
-		return fmt.Errorf("invalid sampleAfter duration: %w", err)
+	if p.logger.GetLevel() == zerolog.TraceLevel {
+		p.logger.Debug().Str("method", method).Interface("selectedUpstreams", selectedUpstreams).Msg("finished evaluating selection policy")
 	}
 
 	// Update states based on evaluation
@@ -197,7 +198,8 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 		state, exists := stateMap[id]
 		if !exists {
 			state = &upstreamState{
-				mu: &sync.RWMutex{},
+				mu:       &sync.RWMutex{},
+				isActive: true,
 			}
 			stateMap[id] = state
 		}
@@ -210,7 +212,7 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 			if state.isActive {
 				// Newly deactivated
 				state.isActive = false
-				state.sampleAfter = now.Add(sampleDuration)
+				state.sampleAfter = now.Add(p.config.SampleAfter)
 				state.sampleCounter = p.config.SampleCount
 			}
 		}
@@ -218,10 +220,10 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 		state.lastEvalTime = now
 
 		// Update tracker state
-		if !state.isActive && state.sampleCounter <= 0 {
-			p.metricsTracker.Cordon(ups.Config().Id, p.networkId, method, "selection policy evaluation")
+		if !state.isActive {
+			p.metricsTracker.Cordon(id, p.networkId, method, "selection policy evaluation")
 		} else {
-			p.metricsTracker.Uncordon(ups.Config().Id, p.networkId, method)
+			p.metricsTracker.Uncordon(id, p.networkId, method)
 		}
 	}
 
@@ -297,6 +299,10 @@ func (p *PolicyEvaluator) checkPermitForMethod(upstreamId string, method string)
 		// Double-check conditions after acquiring write lock
 		if !state.sampleAfter.IsZero() && now.After(state.sampleAfter) && state.sampleCounter > 0 {
 			state.sampleCounter--
+			if state.sampleCounter < 1 {
+				state.sampleCounter = p.config.SampleCount
+				state.sampleAfter = now.Add(p.config.SampleAfter)
+			}
 			state.mu.Unlock()
 			return true
 		}
