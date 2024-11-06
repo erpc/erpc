@@ -33,8 +33,9 @@ type PolicyEvaluator struct {
 }
 
 type upstreamState struct {
+	mu            *sync.RWMutex
 	isActive      bool
-	sampleUntil   time.Time
+	sampleAfter   time.Time
 	sampleCounter int
 	lastEvalTime  time.Time
 }
@@ -123,13 +124,13 @@ func (p *PolicyEvaluator) evaluateUpstreams() error {
 		// Evaluate each method separately
 		for method := range allMetrics {
 			if err := p.evaluateMethod(method, upsList); err != nil {
-				p.logger.Error().Err(err).Str("method", method).Msg("failed to evaluate method")
+				p.logger.Error().Err(err).Str("method", method).Msg("failed to evaluate user-defined selectionPolicy for method")
 			}
 		}
 	} else {
 		// Handle network-level evaluation
 		if err := p.evaluateMethod("*", upsList); err != nil {
-			p.logger.Error().Err(err).Msg("failed to evaluate network-level policy")
+			p.logger.Error().Err(err).Msg("failed to evaluate user-defined selectionPolicy for network")
 		}
 	}
 
@@ -146,11 +147,11 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 			ID:    ups.Config().Id,
 			Group: ups.Config().Group,
 			Metrics: map[string]interface{}{
-				"errorRate":       metrics.ErrorsTotal / metrics.RequestsTotal,
+				"errorRate":       metrics.ErrorRate(),
+				"throttledRate":   metrics.ThrottledRate(),
 				"p90Latency":      metrics.LatencySecs.P90(),
 				"blockHeadLag":    metrics.BlockHeadLag,
 				"finalizationLag": metrics.FinalizationLag,
-				"throttledRate":   (metrics.RemoteRateLimitedTotal + metrics.SelfRateLimitedTotal) / metrics.RequestsTotal,
 				"requestsTotal":   metrics.RequestsTotal,
 			},
 		}
@@ -165,10 +166,21 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 
 	// Process results and update states
 	selectedUpstreams := make(map[string]bool)
-	arr := result.Export().([]interface{})
-	for _, v := range arr {
-		upstreamId := v.(map[string]interface{})["id"].(string)
-		selectedUpstreams[upstreamId] = true
+	arr, ok := result.Export().([]interface{})
+	if ok {
+		for _, v := range arr {
+			ups, ok := v.(map[string]interface{})
+			if !ok {
+				return fmt.Errorf("unexpected return value from evalFunction, expected objects inside the returned array: %v", result)
+			}
+			if upstreamId, ok := ups["id"].(string); ok {
+				selectedUpstreams[upstreamId] = true
+			} else {
+				return fmt.Errorf("unexpected return value from evalFunction, expected a string 'id' in each object of returned array: %v", result)
+			}
+		}
+	} else {
+		return fmt.Errorf("unexpected return value from evalFunction, expected an array: %v", result)
 	}
 
 	sampleDuration, err := time.ParseDuration(p.config.SampleAfter)
@@ -184,19 +196,21 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 		id := ups.Config().Id
 		state, exists := stateMap[id]
 		if !exists {
-			state = &upstreamState{}
+			state = &upstreamState{
+				mu: &sync.RWMutex{},
+			}
 			stateMap[id] = state
 		}
 
 		if selectedUpstreams[id] {
 			state.isActive = true
 			state.sampleCounter = 0
-			state.sampleUntil = time.Time{}
+			state.sampleAfter = time.Time{}
 		} else {
 			if state.isActive {
 				// Newly deactivated
 				state.isActive = false
-				state.sampleUntil = now.Add(sampleDuration)
+				state.sampleAfter = now.Add(sampleDuration)
 				state.sampleCounter = p.config.SampleCount
 			}
 		}
@@ -222,4 +236,73 @@ func (p *PolicyEvaluator) getStateMap(method string) map[string]*upstreamState {
 		return p.methodStates[method]
 	}
 	return p.globalState
+}
+
+func (p *PolicyEvaluator) AcquirePermit(logger *zerolog.Logger, ups *upstream.Upstream, method string) error {
+	// First check method-specific state if enabled
+	if p.config.EvalPerMethod {
+		if permit := p.checkPermitForMethod(ups.Config().Id, method); permit {
+			return nil
+		}
+		// If method-specific check failed, fall back to checking global (*) method state
+		if permit := p.checkPermitForMethod(ups.Config().Id, "*"); permit {
+			return nil
+		}
+	} else {
+		// Only check global state
+		if permit := p.checkPermitForMethod(ups.Config().Id, "*"); permit {
+			return nil
+		}
+	}
+
+	logger.Debug().
+		Str("upstreamId", ups.Config().Id).
+		Str("method", method).
+		Msg("upstream excluded by selection policy")
+
+	return common.NewErrUpstreamExcludedByPolicy(ups.Config().Id)
+}
+
+func (p *PolicyEvaluator) checkPermitForMethod(upstreamId string, method string) bool {
+	p.upstreamsMu.RLock()
+	var state *upstreamState
+
+	if p.config.EvalPerMethod {
+		if methodStates, exists := p.methodStates[method]; exists {
+			state = methodStates[upstreamId]
+		}
+	} else {
+		state = p.globalState[upstreamId]
+	}
+	p.upstreamsMu.RUnlock()
+
+	if state == nil {
+		// If we haven't evaluated this upstream yet, consider it active
+		return true
+	}
+
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+
+	if state.isActive {
+		return true
+	}
+
+	// Check if we should allow sampling
+	now := time.Now()
+	if !state.sampleAfter.IsZero() && now.After(state.sampleAfter) && state.sampleCounter > 0 {
+		// Switch to write lock to update counter
+		state.mu.RUnlock()
+		state.mu.Lock()
+		// Double-check conditions after acquiring write lock
+		if !state.sampleAfter.IsZero() && now.After(state.sampleAfter) && state.sampleCounter > 0 {
+			state.sampleCounter--
+			state.mu.Unlock()
+			return true
+		}
+		state.mu.Unlock()
+		state.mu.RLock()
+	}
+
+	return false
 }

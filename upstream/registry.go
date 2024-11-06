@@ -284,7 +284,7 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 		for method := range u.sortedUpstreams[networkId] {
 			// Create a copy of all the the upstreams so we can re-add
 			// previously cordoned upstreams that might have become healthy and uncordoned.
-			upsList := u.networkUpstreams[networkId]
+			upsList := append([]*Upstream{}, u.networkUpstreams[networkId]...)
 			u.updateScoresAndSort(networkId, method, upsList)
 		}
 	}
@@ -341,16 +341,9 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 		p90Latencies = append(p90Latencies, metrics.LatencySecs.P90())
 		blockHeadLags = append(blockHeadLags, metrics.BlockHeadLag)
 		finalizationLags = append(finalizationLags, metrics.FinalizationLag)
-		rateLimitedTotal := metrics.RemoteRateLimitedTotal + metrics.SelfRateLimitedTotal
-		if metrics.RequestsTotal > 0 {
-			errorRates = append(errorRates, metrics.ErrorsTotal/metrics.RequestsTotal)
-			throttledRates = append(throttledRates, rateLimitedTotal/metrics.RequestsTotal)
-			totalRequests = append(totalRequests, metrics.RequestsTotal)
-		} else {
-			errorRates = append(errorRates, 0)
-			throttledRates = append(throttledRates, 0)
-			totalRequests = append(totalRequests, 0)
-		}
+		errorRates = append(errorRates, metrics.ErrorRate())
+		throttledRates = append(throttledRates, metrics.ThrottledRate())
+		totalRequests = append(totalRequests, metrics.RequestsTotal)
 		metrics.Mutex.RUnlock()
 	}
 
