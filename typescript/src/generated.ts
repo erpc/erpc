@@ -92,7 +92,8 @@ export interface CORSConfig {
 }
 export interface UpstreamConfig {
   id: string;
-  type: UpstreamType; // evm, evm+alchemy, solana
+  type: UpstreamType;
+  group: string;
   vendorName: string;
   endpoint: string;
   evm?: EvmUpstreamConfig;
@@ -103,7 +104,21 @@ export interface UpstreamConfig {
   failsafe?: FailsafeConfig;
   rateLimitBudget: string;
   rateLimitAutoTune?: RateLimitAutoTuneConfig;
-  routingPolicy: any /* goja.Value */;
+  routing?: RoutingConfig;
+}
+export interface RoutingConfig {
+  scoreMultipliers: (ScoreMultiplierConfig | undefined)[];
+}
+export interface ScoreMultiplierConfig {
+  network: string;
+  method: string;
+  overall: number /* float64 */;
+  errorRate: number /* float64 */;
+  p90latency: number /* float64 */;
+  totalRequests: number /* float64 */;
+  throttledRate: number /* float64 */;
+  blockHeadLag: number /* float64 */;
+  finalizationLag: number /* float64 */;
 }
 export type Alias = UpstreamConfig;
 export interface RateLimitAutoTuneConfig {
@@ -180,11 +195,19 @@ export interface NetworkConfig {
   rateLimitBudget: string;
   failsafe?: FailsafeConfig;
   evm?: EvmNetworkConfig;
+  selectionPolicy?: SelectionPolicyConfig;
 }
 export interface EvmNetworkConfig {
   chainId: number /* int64 */;
   finalityDepth: number /* int64 */;
   blockTrackerInterval: string;
+}
+export interface SelectionPolicyConfig {
+  evalInterval: string;
+  evalFunction: any /* goja.Callable */;
+  evalPerMethod: boolean;
+  sampleAfter: string;
+  sampleCount: number /* int */;
 }
 export type AuthType = string;
 export const AuthTypeSecret: AuthType = "secret";
@@ -240,6 +263,7 @@ export const EvmNodeTypeFull: EvmNodeType = "full";
 export const EvmNodeTypeArchive: EvmNodeType = "archive";
 export const EvmNodeTypeSequencer: EvmNodeType = "sequencer";
 export const EvmNodeTypeExecution: EvmNodeType = "execution";
+export type EvmStatePoller = any;
 
 //////////
 // source: network.go
@@ -251,6 +275,17 @@ export type Network = any;
 //////////
 // source: upstream.go
 
+export type Scope = string;
+/**
+ * Policies must be created with a "network" in mind,
+ * assuming there will be many upstreams e.g. Retry might endup using a different upstream
+ */
+export const ScopeNetwork: Scope = "network";
+/**
+ * Policies must be created with one only "upstream" in mind
+ * e.g. Retry with be towards the same upstream
+ */
+export const ScopeUpstream: Scope = "upstream";
 export type UpstreamType = string;
 export const UpstreamTypeEvm: UpstreamType = "evm";
 export const UpstreamTypeEvmAlchemy: UpstreamType = "evm+alchemy";
@@ -260,4 +295,5 @@ export const UpstreamTypeEvmEnvio: UpstreamType = "evm+envio";
 export const UpstreamTypeEvmPimlico: UpstreamType = "evm+pimlico";
 export const UpstreamTypeEvmThirdweb: UpstreamType = "evm+thirdweb";
 export const UpstreamTypeEvmEtherspot: UpstreamType = "evm+etherspot";
+export const UpstreamTypeEvmInfura: UpstreamType = "evm+infura";
 export type Upstream = any;

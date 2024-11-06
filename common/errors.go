@@ -1354,6 +1354,20 @@ func (e *ErrUpstreamRateLimitRuleExceeded) ErrorStatusCode() int {
 	return http.StatusTooManyRequests
 }
 
+type ErrUpstreamExcludedByPolicy struct{ BaseError }
+
+var NewErrUpstreamExcludedByPolicy = func(upstreamId string) error {
+	return &ErrUpstreamExcludedByPolicy{
+		BaseError{
+			Code:    "ErrUpstreamExcludedByPolicy",
+			Message: "upstream excluded by selection policy evaluation",
+			Details: map[string]interface{}{
+				"upstreamId": upstreamId,
+			},
+		},
+	}
+}
+
 //
 // Endpoint (3rd party providers, RPC nodes)
 // Main purpose of these error types is internal eRPC error handling (retries, etc)

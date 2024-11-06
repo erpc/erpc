@@ -10,20 +10,6 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-type TrackedMetrics struct {
-	Mutex                  sync.RWMutex     `json:"-"`
-	LatencySecs            *QuantileTracker `json:"latencySecs"`
-	ErrorsTotal            float64          `json:"errorsTotal"`
-	SelfRateLimitedTotal   float64          `json:"selfRateLimitedTotal"`
-	RemoteRateLimitedTotal float64          `json:"remoteRateLimitedTotal"`
-	RequestsTotal          float64          `json:"requestsTotal"`
-	BlockHeadLag           float64          `json:"blockHeadLag"`
-	FinalizationLag        float64          `json:"finalizationLag"`
-	Cordoned               bool             `json:"cordoned"`
-	CordonedReason         string           `json:"cordonedReason"`
-	LastCollect            time.Time        `json:"lastCollect"`
-}
-
 type NetworkMetadata struct {
 	evmLatestBlockNumber    int64
 	evmFinalizedBlockNumber int64
@@ -40,6 +26,34 @@ type Timer struct {
 func (t *Timer) ObserveDuration() {
 	duration := time.Since(t.start)
 	t.tracker.RecordUpstreamDuration(t.ups, t.network, t.method, duration)
+}
+
+type TrackedMetrics struct {
+	Mutex                  sync.RWMutex     `json:"-"`
+	LatencySecs            *QuantileTracker `json:"latencySecs"`
+	ErrorsTotal            float64          `json:"errorsTotal"`
+	SelfRateLimitedTotal   float64          `json:"selfRateLimitedTotal"`
+	RemoteRateLimitedTotal float64          `json:"remoteRateLimitedTotal"`
+	RequestsTotal          float64          `json:"requestsTotal"`
+	BlockHeadLag           float64          `json:"blockHeadLag"`
+	FinalizationLag        float64          `json:"finalizationLag"`
+	Cordoned               bool             `json:"cordoned"`
+	CordonedReason         string           `json:"cordonedReason"`
+	LastCollect            time.Time        `json:"lastCollect"`
+}
+
+func (m *TrackedMetrics) ErrorRate() float64 {
+	if m.RequestsTotal == 0 {
+		return 0
+	}
+	return m.ErrorsTotal / m.RequestsTotal
+}
+
+func (m *TrackedMetrics) ThrottledRate() float64 {
+	if m.RequestsTotal == 0 {
+		return 0
+	}
+	return (m.RemoteRateLimitedTotal + m.SelfRateLimitedTotal) / m.RequestsTotal
 }
 
 type Tracker struct {

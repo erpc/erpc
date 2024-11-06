@@ -17,22 +17,21 @@ import (
 )
 
 type Network struct {
-	appCtx context.Context
-	cfg    *common.NetworkConfig
-
 	NetworkId string
 	ProjectId string
 	Logger    *zerolog.Logger
 
-	inFlightRequests *sync.Map
-	evmStatePollers  map[string]*upstream.EvmStatePoller
-
-	failsafePolicies     []failsafe.Policy[*common.NormalizedResponse]
-	failsafeExecutor     failsafe.Executor[*common.NormalizedResponse]
-	rateLimitersRegistry *upstream.RateLimitersRegistry
-	cacheDal             data.CacheDAL
-	metricsTracker       *health.Tracker
-	upstreamsRegistry    *upstream.UpstreamsRegistry
+	appCtx                   context.Context
+	cfg                      *common.NetworkConfig
+	inFlightRequests         *sync.Map
+	evmStatePollers          map[string]*upstream.EvmStatePoller
+	failsafePolicies         []failsafe.Policy[*common.NormalizedResponse]
+	failsafeExecutor         failsafe.Executor[*common.NormalizedResponse]
+	rateLimitersRegistry     *upstream.RateLimitersRegistry
+	cacheDal                 data.CacheDAL
+	metricsTracker           *health.Tracker
+	upstreamsRegistry        *upstream.UpstreamsRegistry
+	selectionPolicyEvaluator *PolicyEvaluator
 }
 
 func (n *Network) Bootstrap(ctx context.Context) error {
@@ -65,6 +64,8 @@ func (n *Network) Bootstrap(ctx context.Context) error {
 		if err := evaluator.Start(ctx); err != nil {
 			return fmt.Errorf("failed to start selection policy evaluator: %w", err)
 		}
+
+		n.selectionPolicyEvaluator = evaluator
 	}
 
 	return nil
@@ -156,6 +157,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		lg *zerolog.Logger,
 	) (resp *common.NormalizedResponse, err error) {
 		lg.Debug().Msgf("trying to forward request to upstream")
+
+		if err := n.acquireSelectionPolicyPermit(lg, u, req); err != nil {
+			return nil, err
+		}
 
 		resp, err = u.Forward(ctx, req)
 
@@ -378,6 +383,26 @@ func (n *Network) EvmChainId() (int64, error) {
 		return 0, common.NewErrUnknownNetworkID(n.Architecture())
 	}
 	return n.cfg.Evm.ChainId, nil
+}
+
+func (n *Network) acquireSelectionPolicyPermit(lg *zerolog.Logger, ups *upstream.Upstream, req *common.NormalizedRequest) error {
+	if n.cfg.SelectionPolicy == nil {
+		return nil
+	}
+
+	method, err := req.Method()
+	if err != nil {
+		return err
+	}
+
+	if dr := req.Directives(); dr != nil {
+		// If directive is instructed to use specific upstream(s), bypass selection policy evaluation
+		if dr.UseUpstream != "" {
+			return nil
+		}
+	}
+
+	return n.selectionPolicyEvaluator.AcquirePermit(lg, ups, method)
 }
 
 func (n *Network) handleMultiplexing(ctx context.Context, req *common.NormalizedRequest, startTime time.Time) (*Multiplexer, *common.NormalizedResponse, error) {
