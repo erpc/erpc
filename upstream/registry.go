@@ -27,6 +27,8 @@ type UpstreamsRegistry struct {
 
 	allUpstreams []*Upstream
 	upstreamsMu  *sync.RWMutex
+	// map of network => upstreams
+	networkUpstreams map[string][]*Upstream
 	// map of network -> method (or *) => upstreams
 	sortedUpstreams map[string]map[string][]*Upstream
 	// map of upstream -> network (or *) -> method (or *) => score
@@ -59,6 +61,7 @@ func NewUpstreamsRegistry(
 		vendorsRegistry:      vr,
 		metricsTracker:       mt,
 		upsCfg:               upsCfg,
+		networkUpstreams:     make(map[string][]*Upstream),
 		sortedUpstreams:      make(map[string]map[string][]*Upstream),
 		upstreamScores:       make(map[string]map[string]map[string]float64),
 		upstreamsMu:          &sync.RWMutex{},
@@ -110,6 +113,8 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(networkId string) error {
 		return common.NewErrNoUpstreamsFound(u.prjId, networkId)
 	}
 
+	u.networkUpstreams[networkId] = upstreams
+
 	if _, ok := u.sortedUpstreams[networkId]; !ok {
 		u.sortedUpstreams[networkId] = make(map[string][]*Upstream)
 	}
@@ -149,6 +154,10 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(networkId string) error {
 	}
 
 	return nil
+}
+
+func (u *UpstreamsRegistry) GetNetworkUpstreams(networkId string) []*Upstream {
+	return u.networkUpstreams[networkId]
 }
 
 func (u *UpstreamsRegistry) GetSortedUpstreams(networkId, method string) ([]*Upstream, error) {
@@ -208,28 +217,34 @@ func (u *UpstreamsRegistry) RUnlockUpstreams() {
 	u.upstreamsMu.RUnlock()
 }
 
-func (u *UpstreamsRegistry) sortUpstreams(networkId, method string, upstreams []*Upstream) {
+func (u *UpstreamsRegistry) sortAndFilterUpstreams(networkId, method string, upstreams []*Upstream) []*Upstream {
+	activeUpstreams := make([]*Upstream, 0)
+	for _, ups := range upstreams {
+		metrics := u.metricsTracker.GetUpstreamMethodMetrics(ups.Config().Id, networkId, method)
+		if !metrics.Cordoned {
+			activeUpstreams = append(activeUpstreams, ups)
+		}
+	}
 	// Calculate total score
 	totalScore := 0.0
-	for _, ups := range upstreams {
+	for _, ups := range activeUpstreams {
 		score := u.upstreamScores[ups.Config().Id][networkId][method]
-		if score < 0 {
-			score = 0
+		if score > 0 {
+			totalScore += score
 		}
-		totalScore += score
 	}
 
-	// If all scores are 0 or negative, fall back to random shuffle
+	// If all scores are 0, fall back to random shuffle
 	if totalScore == 0 {
-		rand.Shuffle(len(upstreams), func(i, j int) {
-			upstreams[i], upstreams[j] = upstreams[j], upstreams[i]
+		rand.Shuffle(len(activeUpstreams), func(i, j int) {
+			activeUpstreams[i], activeUpstreams[j] = activeUpstreams[j], activeUpstreams[i]
 		})
-		return
+		return activeUpstreams
 	}
 
-	sort.Slice(upstreams, func(i, j int) bool {
-		scoreI := u.upstreamScores[upstreams[i].Config().Id][networkId][method]
-		scoreJ := u.upstreamScores[upstreams[j].Config().Id][networkId][method]
+	sort.Slice(activeUpstreams, func(i, j int) bool {
+		scoreI := u.upstreamScores[activeUpstreams[i].Config().Id][networkId][method]
+		scoreJ := u.upstreamScores[activeUpstreams[j].Config().Id][networkId][method]
 
 		if scoreI < 0 {
 			scoreI = 0
@@ -242,9 +257,11 @@ func (u *UpstreamsRegistry) sortUpstreams(networkId, method string, upstreams []
 			return scoreI > scoreJ
 		}
 
-		// If random values are equal, sort by upstream ID for consistency
-		return upstreams[i].Config().Id < upstreams[j].Config().Id
+		// If values are equal, sort by upstream ID for consistency
+		return activeUpstreams[i].Config().Id < activeUpstreams[j].Config().Id
 	})
+
+	return activeUpstreams
 }
 
 func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
@@ -264,7 +281,10 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 	}
 
 	for _, networkId := range allNetworks {
-		for method, upsList := range u.sortedUpstreams[networkId] {
+		for method := range u.sortedUpstreams[networkId] {
+			// Create a copy of all the the upstreams so we can re-add
+			// previously cordoned upstreams that might have become healthy and uncordoned.
+			upsList := u.networkUpstreams[networkId]
 			u.updateScoresAndSort(networkId, method, upsList)
 		}
 	}
@@ -355,7 +375,7 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 		u.upstreamScores[ups.Config().Id][networkId][method] = score
 	}
 
-	u.sortUpstreams(networkId, method, upsList)
+	upsList = u.sortAndFilterUpstreams(networkId, method, upsList)
 	u.sortedUpstreams[networkId][method] = upsList
 }
 

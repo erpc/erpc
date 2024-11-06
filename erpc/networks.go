@@ -38,9 +38,9 @@ type Network struct {
 func (n *Network) Bootstrap(ctx context.Context) error {
 	n.appCtx = ctx
 	if n.Architecture() == common.ArchitectureEvm {
-		upsList, err := n.upstreamsRegistry.GetSortedUpstreams(n.NetworkId, "*")
-		if err != nil {
-			return err
+		upsList := n.upstreamsRegistry.GetNetworkUpstreams(n.NetworkId)
+		if len(upsList) == 0 {
+			return fmt.Errorf("no upstreams found for network: %s", n.NetworkId)
 		}
 		n.evmStatePollers = make(map[string]*upstream.EvmStatePoller, len(upsList))
 		for _, u := range upsList {
@@ -53,6 +53,18 @@ func (n *Network) Bootstrap(ctx context.Context) error {
 		}
 	} else {
 		return fmt.Errorf("network architecture not supported: %s", n.Architecture())
+	}
+
+	// Initialize policy evaluator if configured
+	if n.cfg.SelectionPolicy != nil {
+		evaluator, err := NewPolicyEvaluator(n.NetworkId, n.Logger, n.cfg.SelectionPolicy, n.upstreamsRegistry, n.metricsTracker)
+		if err != nil {
+			return fmt.Errorf("failed to create selection policy evaluator: %w", err)
+		}
+
+		if err := evaluator.Start(ctx); err != nil {
+			return fmt.Errorf("failed to start selection policy evaluator: %w", err)
+		}
 	}
 
 	return nil

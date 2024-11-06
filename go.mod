@@ -6,7 +6,10 @@ require (
 	github.com/IGLOU-EU/go-wildcard/v2 v2.0.2
 	github.com/aws/aws-sdk-go v1.55.5
 	github.com/bytedance/sonic v1.12.3
-	github.com/ethereum/go-ethereum v1.14.11
+	github.com/clarkmcc/go-typescript v0.7.0
+	github.com/dop251/goja v0.0.0-20241009100908-5f46f2705ca3
+	github.com/dop251/goja_nodejs v0.0.0-20240728170619-29b559befffc
+	github.com/ethereum/go-ethereum v1.14.7
 	github.com/failsafe-go/failsafe-go v0.6.8
 	github.com/golang-jwt/jwt/v4 v4.5.1
 	github.com/h2non/gock v1.2.0
@@ -35,6 +38,10 @@ require (
 	github.com/dchest/uniuri v1.2.0 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.3.0 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
+	github.com/dlclark/regexp2 v1.11.4 // indirect
+	github.com/dop251/base64dec v0.0.0-20231022112746-c6c9f9a96217 // indirect
+	github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect
+	github.com/google/pprof v0.0.0-20240727154555-813a5fbdbec8 // indirect
 	github.com/h2non/parth v0.0.0-20190131123155-b4df798d6542 // indirect
 	github.com/holiman/uint256 v1.3.1 // indirect
 	github.com/jackc/chunkreader/v2 v2.0.1 // indirect
@@ -56,11 +63,11 @@ require (
 	github.com/relvacode/iso8601 v1.5.0 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
-	golang.org/x/arch v0.11.0 // indirect
-	golang.org/x/crypto v0.28.0 // indirect
-	golang.org/x/net v0.30.0 // indirect
-	golang.org/x/text v0.19.0 // indirect
-	google.golang.org/protobuf v1.35.1 // indirect
+	golang.org/x/arch v0.0.0-20210923205945-b76863e36670 // indirect
+	golang.org/x/crypto v0.27.0 // indirect
+	golang.org/x/net v0.29.0 // indirect
+	golang.org/x/text v0.18.0 // indirect
+	google.golang.org/protobuf v1.34.2 // indirect
 )
 
 require (

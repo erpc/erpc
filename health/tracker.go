@@ -5,6 +5,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/erpc/erpc/common"
+	"github.com/rs/zerolog/log"
 )
 
 type TrackedMetrics struct {
@@ -16,6 +19,8 @@ type TrackedMetrics struct {
 	RequestsTotal          float64          `json:"requestsTotal"`
 	BlockHeadLag           float64          `json:"blockHeadLag"`
 	FinalizationLag        float64          `json:"finalizationLag"`
+	Cordoned               bool             `json:"cordoned"`
+	CordonedReason         string           `json:"cordonedReason"`
 	LastCollect            time.Time        `json:"lastCollect"`
 }
 
@@ -41,9 +46,9 @@ type Tracker struct {
 	projectId string
 	mu        sync.RWMutex
 
-	// ups:network:method -> metrics
+	// ups#network#method -> metrics
 	metrics map[string]*TrackedMetrics
-	// ups:network -> metadata
+	// ups#network -> metadata
 	metadata map[string]*NetworkMetadata
 
 	windowSize time.Duration
@@ -100,7 +105,7 @@ func (t *Tracker) getKeys(ups, network, method string) []string {
 }
 
 func (t *Tracker) getKey(ups, network, method string) string {
-	return ups + "#" + network + "#" + method
+	return ups + common.KeySeparator + network + common.KeySeparator + method
 }
 
 func (t *Tracker) ensureMetricsInitialized(ups, network, method string) {
@@ -117,6 +122,30 @@ func (t *Tracker) ensureMetricsInitialized(ups, network, method string) {
 			}
 		}
 	}
+}
+
+func (t *Tracker) Cordon(ups, network, method, reason string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	key := t.getKey(ups, network, method)
+	log.Debug().Str("upstream", ups).Str("network", network).Str("method", method).Str("reason", reason).Msg("cordoning upstream to disable routing")
+
+	t.metrics[key].Mutex.Lock()
+	t.metrics[key].Cordoned = true
+	t.metrics[key].CordonedReason = reason
+	t.metrics[key].Mutex.Unlock()
+}
+
+func (t *Tracker) Uncordon(ups, network, method string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	key := t.getKey(ups, network, method)
+
+	t.metrics[key].Mutex.Lock()
+	t.metrics[key].Cordoned = false
+	t.metrics[key].Mutex.Unlock()
 }
 
 func (t *Tracker) RecordUpstreamRequest(ups, network, method string) {
@@ -254,7 +283,7 @@ func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
 		// Loop over all metrics and update items for all upstreams of this network (all their methods),
 		// because the common reference value (highest latest block) has changed.
 		for key, mt := range t.metrics {
-			parts := strings.Split(key, "#")
+			parts := strings.SplitN(key, common.KeySeparator, 3)
 			if parts[0] != "*" {
 				if parts[1] == network {
 					if parts[0] == ups {
@@ -276,7 +305,7 @@ func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
 		}
 	} else {
 		// Only update items for this upstream and this network (all their methods)
-		prefix := ups + "#" + network + "#"
+		prefix := ups + common.KeySeparator + network + common.KeySeparator
 		for key, mt := range t.metrics {
 			if strings.HasPrefix(key, prefix) {
 				mt.Mutex.Lock()
@@ -330,7 +359,7 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 		// Loop over all metrics and update items for all upstreams of this network (all their methods),
 		// because the common reference value (highest latest block) has changed.
 		for key, mt := range t.metrics {
-			parts := strings.Split(key, "#")
+			parts := strings.SplitN(key, common.KeySeparator, 3)
 			if parts[0] != "*" {
 				if parts[1] == network {
 					if parts[0] == ups {
@@ -352,7 +381,7 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 		}
 	} else {
 		// Only update items for this upstream and this network (all their methods)
-		prefix := ups + "#" + network + "#"
+		prefix := ups + common.KeySeparator + network + common.KeySeparator
 		for key, mt := range t.metrics {
 			if strings.HasPrefix(key, prefix) {
 				mt.Mutex.Lock()
@@ -372,7 +401,7 @@ func (t *Tracker) GetUpstreamMetrics(upsId string) map[string]*TrackedMetrics {
 
 	for key, value := range t.metrics {
 		if strings.HasPrefix(key, upsId) {
-			result[strings.TrimPrefix(key, upsId+"#")] = value
+			result[strings.TrimPrefix(key, upsId+common.KeySeparator)] = value
 		}
 	}
 

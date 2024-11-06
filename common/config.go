@@ -3,8 +3,18 @@ package common
 import (
 	"fmt"
 	"os"
+	"reflect"
+
+	"strings"
 
 	"github.com/bytedance/sonic"
+	"github.com/clarkmcc/go-typescript"
+	"github.com/dop251/goja"
+	"github.com/dop251/goja_nodejs/buffer"
+	"github.com/dop251/goja_nodejs/console"
+	"github.com/dop251/goja_nodejs/process"
+	"github.com/dop251/goja_nodejs/require"
+	"github.com/dop251/goja_nodejs/url"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/spf13/afero"
@@ -171,7 +181,8 @@ type CORSConfig struct {
 
 type UpstreamConfig struct {
 	Id                           string                   `yaml:"id" json:"id"`
-	Type                         UpstreamType             `yaml:"type" json:"type"` // evm, evm+alchemy, solana
+	Type                         UpstreamType             `yaml:"type" json:"type"`
+	Group                        string                   `yaml:"group" json:"group"`
 	VendorName                   string                   `yaml:"vendorName" json:"vendorName"`
 	Endpoint                     string                   `yaml:"endpoint" json:"endpoint"`
 	Evm                          *EvmUpstreamConfig       `yaml:"evm" json:"evm"`
@@ -254,7 +265,6 @@ func (p *ScoreMultiplierConfig) UnmarshalYAML(unmarshal func(interface{}) error)
 	return nil
 }
 
-// redact Endpoint
 func (u *UpstreamConfig) MarshalJSON() ([]byte, error) {
 	type Alias UpstreamConfig
 	return sonic.Marshal(&struct {
@@ -347,16 +357,25 @@ type HealthCheckConfig struct {
 }
 
 type NetworkConfig struct {
-	Architecture    NetworkArchitecture `yaml:"architecture" json:"architecture"`
-	RateLimitBudget string              `yaml:"rateLimitBudget" json:"rateLimitBudget"`
-	Failsafe        *FailsafeConfig     `yaml:"failsafe" json:"failsafe"`
-	Evm             *EvmNetworkConfig   `yaml:"evm" json:"evm"`
+	Architecture    NetworkArchitecture    `yaml:"architecture" json:"architecture"`
+	RateLimitBudget string                 `yaml:"rateLimitBudget" json:"rateLimitBudget"`
+	Failsafe        *FailsafeConfig        `yaml:"failsafe" json:"failsafe"`
+	Evm             *EvmNetworkConfig      `yaml:"evm" json:"evm"`
+	SelectionPolicy *SelectionPolicyConfig `yaml:"selectionPolicy" json:"selectionPolicy"`
 }
 
 type EvmNetworkConfig struct {
 	ChainId              int64  `yaml:"chainId" json:"chainId"`
 	FinalityDepth        int64  `yaml:"finalityDepth" json:"finalityDepth"`
 	BlockTrackerInterval string `yaml:"blockTrackerInterval" json:"blockTrackerInterval"`
+}
+
+type SelectionPolicyConfig struct {
+	EvalInterval  string        `yaml:"evalInterval" json:"evalInterval"`
+	EvalFunction  goja.Callable `yaml:"evalFunction" json:"evalFunction"`
+	EvalPerMethod bool          `yaml:"evalPerMethod" json:"evalPerMethod"`
+	SampleAfter   string        `yaml:"sampleAfter" json:"sampleAfter"`
+	SampleCount   int           `yaml:"sampleCount" json:"sampleCount"`
 }
 
 type AuthType string
@@ -426,25 +445,183 @@ type MetricsConfig struct {
 var cfgInstance *Config
 
 // LoadConfig loads the configuration from the specified file.
+// It supports both YAML and TypeScript (.ts) files.
 func LoadConfig(fs afero.Fs, filename string) (*Config, error) {
 	data, err := afero.ReadFile(fs, filename)
-
 	if err != nil {
 		return nil, err
 	}
 
-	// Expand environment variables
-	expandedData := []byte(os.ExpandEnv(string(data)))
-
 	var cfg Config
-	err = yaml.Unmarshal(expandedData, &cfg)
-	if err != nil {
-		return nil, err
+
+	if strings.HasSuffix(filename, ".ts") {
+		cfgPtr, err := loadConfigFromTypescript(data)
+		if err != nil {
+			return nil, err
+		}
+		cfg = *cfgPtr
+	} else {
+		expandedData := []byte(os.ExpandEnv(string(data)))
+		err = yaml.Unmarshal(expandedData, &cfg)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	cfgInstance = &cfg
 
 	return &cfg, nil
+}
+
+func loadConfigFromTypescript(data []byte) (*Config, error) {
+	vm := goja.New()
+
+	process.Enable(vm)
+	console.Enable(vm)
+	url.Enable(vm)
+	buffer.Enable(vm)
+
+	req := new(require.Registry)
+	req.Enable(vm)
+
+	result, err := typescript.Evaluate(
+		strings.NewReader(string(data)),
+		typescript.WithTranspile(),
+		typescript.WithEvaluationRuntime(vm),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get the config object default-exported from the TS code
+	v := result.(*goja.Object)
+	if v == nil {
+		return nil, fmt.Errorf("config object must be default exported from TypeScript code AND must be the last statement in the file")
+	}
+
+	var cfg Config
+	err = mapTsToGo(v, &cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	return &cfg, nil
+}
+
+func mapTsToGo(v goja.Value, dest interface{}) error {
+	destVal := reflect.ValueOf(dest)
+	if destVal.Kind() != reflect.Ptr || destVal.IsNil() {
+		return fmt.Errorf("dest must be a non-nil pointer")
+	}
+
+	destElem := destVal.Elem()
+	destType := destElem.Type()
+
+	if destElem.Kind() != reflect.Struct {
+		return fmt.Errorf("dest must point to a struct")
+	}
+
+	if v == nil || v == goja.Undefined() || v == goja.Null() {
+		return nil
+	}
+
+	obj := v.(*goja.Object)
+	if obj == nil {
+		return fmt.Errorf("value is not an object")
+	}
+
+	for i := 0; i < destType.NumField(); i++ {
+		field := destType.Field(i)
+		fieldName := field.Name
+
+		jsonTag := field.Tag.Get("json")
+		if jsonTag != "" {
+			fieldName = strings.Split(jsonTag, ",")[0]
+		}
+
+		jsValue := obj.Get(fieldName)
+		if jsValue == nil || jsValue == goja.Undefined() {
+			continue
+		}
+
+		fieldValue := destElem.Field(i)
+		if !fieldValue.CanSet() {
+			continue
+		}
+
+		err := setJsValueToGoField(jsValue, fieldValue)
+		if err != nil {
+			return fmt.Errorf("failed to set field %s: %v", fieldName, err)
+		}
+	}
+
+	return nil
+}
+
+func setJsValueToGoField(jsValue goja.Value, fieldValue reflect.Value) error {
+	if !fieldValue.CanSet() {
+		return nil
+	}
+
+	switch fieldValue.Kind() {
+	case reflect.Bool:
+		fieldValue.SetBool(jsValue.ToBoolean())
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		intVal := jsValue.ToInteger()
+		fieldValue.SetInt(intVal)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		intVal := jsValue.ToInteger()
+		fieldValue.SetUint(uint64(intVal))
+	case reflect.Float32, reflect.Float64:
+		floatVal := jsValue.ToFloat()
+		fieldValue.SetFloat(floatVal)
+	case reflect.String:
+		strVal := jsValue.String()
+		fieldValue.SetString(strVal)
+	case reflect.Struct:
+		// If the field is of type goja.Value
+		if fieldValue.Type() == reflect.TypeOf(goja.Value(nil)) {
+			fieldValue.Set(reflect.ValueOf(jsValue))
+		} else {
+			return mapTsToGo(jsValue, fieldValue.Addr().Interface())
+		}
+	case reflect.Ptr:
+		if jsValue == goja.Undefined() || jsValue == goja.Null() {
+			return nil
+		}
+		ptrValue := reflect.New(fieldValue.Type().Elem())
+		err := setJsValueToGoField(jsValue, ptrValue.Elem())
+		if err != nil {
+			return err
+		}
+		fieldValue.Set(ptrValue)
+	case reflect.Slice:
+		if jsValue == goja.Undefined() || jsValue == goja.Null() {
+			return nil
+		}
+		if jsValue.ExportType().Kind() != reflect.Slice {
+			return fmt.Errorf("expected array but got %v", jsValue)
+		}
+		jsArray := jsValue.(*goja.Object)
+		length := jsArray.Get("length").ToInteger()
+		slice := reflect.MakeSlice(fieldValue.Type(), int(length), int(length))
+		for i := 0; i < int(length); i++ {
+			elemValue := jsArray.Get(fmt.Sprintf("%d", i))
+			if elemValue == goja.Undefined() {
+				return fmt.Errorf("expected array element %d to be a goja.Value", i)
+			}
+			err := setJsValueToGoField(elemValue, slice.Index(i))
+			if err != nil {
+				return err
+			}
+		}
+		fieldValue.Set(slice)
+	case reflect.Interface:
+		fieldValue.Set(reflect.ValueOf(jsValue.Export()))
+	default:
+		return fmt.Errorf("unsupported kind: %v", fieldValue.Kind())
+	}
+	return nil
 }
 
 func GetConfig() *Config {

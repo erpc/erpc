@@ -10,12 +10,14 @@
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}/cmd/erpc",
-            "args": ["${workspaceFolder}/erpc.yaml"],
+            "args": [],
             "env": {
                 "CC": "/usr/bin/cc",
                 "CXX": "/usr/bin/c++",
-                "CGO_ENABLED": "1"
-            }
+                "CGO_ENABLED": "1",
+                "ERPC_ADMIN_SECRET": "my-admin-secret"
+            },            
+            "cwd": "${workspaceFolder}"
         }
     ]
 }
