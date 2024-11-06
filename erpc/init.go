@@ -2,11 +2,9 @@ package erpc
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -26,13 +24,25 @@ func Init(
 	// 1) Load configuration
 	//
 	logger.Info().Msg("loading eRPC configuration")
-	configPath := "./erpc.yaml"
+	configPath := ""
+	possibleConfigs := []string{"./erpc.ts", "./erpc.yaml", "./erpc.yml"}
+
 	if len(args) > 1 {
 		configPath = args[1]
+	} else {
+		// Check for erpc.ts or erpc.yaml
+		for _, path := range possibleConfigs {
+			if _, err := fs.Stat(path); err == nil {
+				configPath = path
+				break
+			}
+		}
 	}
-	if _, err := fs.Stat(configPath); errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("config file '%s' does not exist", configPath)
+
+	if configPath == "" {
+		return fmt.Errorf("no valid configuration file found in %v", possibleConfigs)
 	}
+
 	logger.Info().Msgf("resolved configuration file to: %s", configPath)
 	cfg, err := common.LoadConfig(fs, configPath)
 

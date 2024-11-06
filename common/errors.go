@@ -1746,6 +1746,8 @@ func IsRetryableTowardsUpstream(err error) bool {
 
 		// Unsupported features and methods -> No Retry
 		!HasErrorCode(err, ErrCodeUpstreamRequestSkipped) &&
+		!HasErrorCode(err, ErrCodeUpstreamMethodIgnored) &&
+		!HasErrorCode(err, ErrCodeUpstreamMethodIgnored) &&
 
 		// Do not try when 3rd-party providers run out of monthly capacity or billing issues
 		!HasErrorCode(err, ErrCodeEndpointBillingIssue) &&
