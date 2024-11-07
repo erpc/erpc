@@ -171,7 +171,7 @@ func (u *UpstreamsRegistry) GetSortedUpstreams(networkId, method string) ([]*Ups
 
 		upsList = u.sortedUpstreams[networkId]["*"]
 		if upsList == nil {
-			upsList = u.sortedUpstreams["*"]["*"]
+			upsList = u.GetNetworkUpstreams(networkId)
 			if upsList == nil {
 				return nil, common.NewErrNoUpstreamsFound(u.prjId, networkId)
 			}
@@ -185,6 +185,18 @@ func (u *UpstreamsRegistry) GetSortedUpstreams(networkId, method string) ([]*Ups
 			u.sortedUpstreams[networkId] = make(map[string][]*Upstream)
 		}
 		u.sortedUpstreams[networkId][method] = methodUpsList
+
+		if u.sortedUpstreams[networkId]["*"] == nil {
+			cpUps := make([]*Upstream, len(methodUpsList))
+			copy(cpUps, methodUpsList)
+			u.sortedUpstreams[networkId]["*"] = cpUps
+		}
+
+		if u.sortedUpstreams["*"][method] == nil {
+			cpUps := make([]*Upstream, len(methodUpsList))
+			copy(cpUps, methodUpsList)
+			u.sortedUpstreams["*"][method] = cpUps
+		}
 
 		// Initialize scores for this method on this network and "any" network
 		for _, ups := range methodUpsList {
@@ -284,7 +296,13 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 		for method := range u.sortedUpstreams[networkId] {
 			// Create a copy of all the the upstreams so we can re-add
 			// previously cordoned upstreams that might have become healthy and uncordoned.
-			upsList := append([]*Upstream{}, u.networkUpstreams[networkId]...)
+			var upsList []*Upstream
+			if networkId == "*" {
+				// This branch means we want to sort and score all upstreams for all their networks
+				upsList = append([]*Upstream{}, u.allUpstreams...)
+			} else {
+				upsList = append([]*Upstream{}, u.networkUpstreams[networkId]...)
+			}
 			u.updateScoresAndSort(networkId, method, upsList)
 		}
 	}
@@ -368,8 +386,8 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 		u.upstreamScores[ups.Config().Id][networkId][method] = score
 	}
 
-	upsList = u.sortAndFilterUpstreams(networkId, method, upsList)
-	u.sortedUpstreams[networkId][method] = upsList
+	upsList1 := u.sortAndFilterUpstreams(networkId, method, upsList)
+	u.sortedUpstreams[networkId][method] = upsList1
 }
 
 func (u *UpstreamsRegistry) calculateScore(

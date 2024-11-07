@@ -1754,37 +1754,46 @@ func HasErrorCode(err error, codes ...ErrorCode) bool {
 }
 
 func IsRetryableTowardsUpstream(err error) bool {
-	return (
-	// Circuit breaker is open -> No Retry
-	!HasErrorCode(err, ErrCodeFailsafeCircuitBreakerOpen) &&
+	return !HasErrorCode(
+		err,
+
+		// Circuit breaker is open -> No Retry
+		ErrCodeFailsafeCircuitBreakerOpen,
 
 		// Unsupported features and methods -> No Retry
-		!HasErrorCode(err, ErrCodeUpstreamRequestSkipped) &&
-		!HasErrorCode(err, ErrCodeUpstreamMethodIgnored) &&
-		!HasErrorCode(err, ErrCodeUpstreamMethodIgnored) &&
+		ErrCodeUpstreamRequestSkipped,
+		ErrCodeUpstreamMethodIgnored,
+		ErrCodeEndpointUnsupported,
 
 		// Do not try when 3rd-party providers run out of monthly capacity or billing issues
-		!HasErrorCode(err, ErrCodeEndpointBillingIssue) &&
+		ErrCodeEndpointBillingIssue,
 
 		// 400 / 404 / 405 / 413 -> No Retry
 		// RPC-RPC client-side error (invalid params) -> No Retry
-		!HasErrorCode(err, ErrCodeEndpointClientSideException) &&
-		!HasErrorCode(err, ErrCodeJsonRpcRequestUnmarshal) &&
+		ErrCodeEndpointClientSideException,
+		ErrCodeJsonRpcRequestUnmarshal,
 
 		// Upstream-level + 401 / 403 -> No Retry
 		// RPC-RPC vendor billing/capacity/auth -> No Retry
-		!HasErrorCode(err, ErrCodeEndpointUnauthorized))
+		ErrCodeEndpointUnauthorized,
+	)
 }
 
 func IsCapacityIssue(err error) bool {
-	return HasErrorCode(err, ErrCodeProjectRateLimitRuleExceeded) ||
-		HasErrorCode(err, ErrCodeNetworkRateLimitRuleExceeded) ||
-		HasErrorCode(err, ErrCodeUpstreamRateLimitRuleExceeded) ||
-		HasErrorCode(err, ErrCodeAuthRateLimitRuleExceeded) ||
-		HasErrorCode(err, ErrCodeEndpointCapacityExceeded)
+	return HasErrorCode(
+		err,
+		ErrCodeProjectRateLimitRuleExceeded,
+		ErrCodeNetworkRateLimitRuleExceeded,
+		ErrCodeUpstreamRateLimitRuleExceeded,
+		ErrCodeAuthRateLimitRuleExceeded,
+		ErrCodeEndpointCapacityExceeded,
+	)
 }
 
 func IsClientError(err error) bool {
-	return err != nil && (HasErrorCode(err, ErrCodeEndpointClientSideException) ||
-		HasErrorCode(err, ErrCodeJsonRpcRequestUnmarshal))
+	return err != nil && (HasErrorCode(
+		err,
+		ErrCodeEndpointClientSideException,
+		ErrCodeJsonRpcRequestUnmarshal,
+	))
 }

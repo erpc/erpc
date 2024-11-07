@@ -18,6 +18,7 @@ import (
 	"github.com/dop251/goja_nodejs/url"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v3"
 )
@@ -853,27 +854,62 @@ func (s *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error 
 	return nil
 }
 
-var NetworkDefaultFailsafeConfig = &FailsafeConfig{
-	Hedge: &HedgePolicyConfig{
-		Delay:    "200ms",
-		MaxCount: 3,
-	},
-	Retry: &RetryPolicyConfig{
-		MaxAttempts:     3,
-		Delay:           "1s",
-		Jitter:          "500ms",
-		BackoffMaxDelay: "10s",
-		BackoffFactor:   2,
-	},
-	Timeout: &TimeoutPolicyConfig{
-		Duration: "30s",
-	},
+func NewDefaultNetworkConfig() *NetworkConfig {
+	evalFunction, err := stringToGojaCallable(`
+		(upstreams, method) => {
+			const defaults = upstreams.filter(u => u.group !== 'fallback')
+			const fallbacks = upstreams.filter(u => u.group === 'fallback')
+			const maxErrorRate = parseFloat(process.env.ROUTING_POLICY_ERROR_RATE || '0.7')
+			const maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_BLOCK_LAG || '10')
+			const healthyOnes = defaults.filter(u => u.errorRate < maxErrorRate || u.blockHeadLag < maxBlockHeadLag)
+			if (healthyOnes.length > 0) {
+			return healthyOnes
+			}
+			return fallbacks
+		}
+	`)
+	if err != nil {
+		log.Error().Err(err).Msg("failed to create eval function for NewDefaultNetworkConfig selection policy")
+		return nil
+	}
+	selectionPolicy := &SelectionPolicyConfig{
+		EvalInterval:  1 * time.Minute,
+		EvalFunction:  evalFunction,
+		EvalPerMethod: false,
+		SampleAfter:   5 * time.Minute,
+		SampleCount:   10,
+	}
+	return &NetworkConfig{
+		Failsafe: &FailsafeConfig{
+			Hedge: &HedgePolicyConfig{
+				Delay:    "200ms",
+				MaxCount: 3,
+			},
+			Retry: &RetryPolicyConfig{
+				MaxAttempts:     3,
+				Delay:           "1s",
+				Jitter:          "500ms",
+				BackoffMaxDelay: "10s",
+				BackoffFactor:   2,
+			},
+			Timeout: &TimeoutPolicyConfig{
+				Duration: "30s",
+			},
+		},
+		SelectionPolicy: selectionPolicy,
+	}
 }
 
 func (c *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type rawNetworkConfig NetworkConfig
+
+	defCfg := NewDefaultNetworkConfig()
 	raw := rawNetworkConfig{
-		Failsafe: NetworkDefaultFailsafeConfig,
+		Architecture:    defCfg.Architecture,
+		Evm:             defCfg.Evm,
+		Failsafe:        defCfg.Failsafe,
+		SelectionPolicy: defCfg.SelectionPolicy,
+		RateLimitBudget: defCfg.RateLimitBudget,
 	}
 	if err := unmarshal(&raw); err != nil {
 		return err
@@ -885,32 +921,6 @@ func (c *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 
 	if raw.Architecture == "evm" && raw.Evm == nil {
 		return NewErrInvalidConfig("network.*.evm is required for evm networks")
-	}
-
-	if raw.SelectionPolicy == nil {
-		evalFunction, err := stringToGojaCallable(`
-			(upstreams, method) => {
-				const defaults = upstreams.filter(u => u.group !== 'fallback')
-				const fallbacks = upstreams.filter(u => u.group === 'fallback')
-				const maxErrorRate = parseFloat(process.env.ROUTING_POLICY_ERROR_RATE || '0.7')
-				const maxBlockLag = parseFloat(process.env.ROUTING_POLICY_BLOCK_LAG || '10')
-				const healthyOnes = defaults.filter(u => u.errorRate < maxErrorRate || u.blockLag < maxBlockLag)
-				if (healthyOnes.length > 0) {
-				  return healthyOnes
-				}
-				return fallbacks
-			}
-		`)
-		if err != nil {
-			return err
-		}
-		raw.SelectionPolicy = &SelectionPolicyConfig{
-			EvalInterval:  1 * time.Minute,
-			EvalFunction:  evalFunction,
-			EvalPerMethod: false,
-			SampleAfter:   5 * time.Minute,
-			SampleCount:   10,
-		}
 	}
 
 	*c = NetworkConfig(raw)

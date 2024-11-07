@@ -52,7 +52,7 @@ func NewPolicyEvaluator(
 	runtime := goja.New()
 
 	// Set up environment variables
-	runtime.Set("process.env", os.Environ())
+	runtime.Set("env", os.Environ())
 
 	return &PolicyEvaluator{
 		networkId:         networkId,
@@ -284,9 +284,8 @@ func (p *PolicyEvaluator) checkPermitForMethod(upstreamId string, method string)
 	}
 
 	state.mu.RLock()
-	defer state.mu.RUnlock()
-
 	if state.isActive {
+		state.mu.RUnlock()
 		return true
 	}
 
@@ -307,7 +306,8 @@ func (p *PolicyEvaluator) checkPermitForMethod(upstreamId string, method string)
 			return true
 		}
 		state.mu.Unlock()
-		state.mu.RLock()
+	} else {
+		state.mu.RUnlock()
 	}
 
 	return false

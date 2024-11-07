@@ -60,9 +60,9 @@ type Tracker struct {
 	projectId string
 	mu        sync.RWMutex
 
-	// ups#network#method -> metrics
+	// ups|network|method -> metrics
 	metrics map[string]*TrackedMetrics
-	// ups#network -> metadata
+	// ups|network -> metadata
 	metadata map[string]*NetworkMetadata
 
 	windowSize time.Duration
