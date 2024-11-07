@@ -96,17 +96,15 @@ func (e *EvmStatePoller) initialize(ctx context.Context) error {
 				e.logger.Debug().Msg("shutting down evm state poller due to context cancellation")
 				return
 			case <-ticker.C:
-				e.poll(ctx)
+				e.Poll(ctx)
 			}
 		}
 	})()
 
-	go e.poll(ctx)
-
 	return nil
 }
 
-func (e *EvmStatePoller) poll(ctx context.Context) {
+func (e *EvmStatePoller) Poll(ctx context.Context) {
 	var wg sync.WaitGroup
 	// Fetch latest block
 	wg.Add(1)
@@ -123,7 +121,7 @@ func (e *EvmStatePoller) poll(ctx context.Context) {
 		}
 	}()
 
-	// Fetch finalized block (if supports)
+	// Fetch finalized block (if upstream supports)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

@@ -196,9 +196,9 @@ func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchReques
 			jrr.Lock()
 			rqs, _ := common.SonicCfg.Marshal(jrr)
 			jrr.Unlock()
-			c.logger.Trace().Interface("id", req.request.ID()).Str("method", jrr.Method).Msgf("pending batch request: %s", string(rqs))
+			c.logger.Trace().Interface("id", req.request.ID()).Str("method", jrr.Method).Msgf("request in batch: %s", string(rqs))
 		}
-		c.logger.Trace().Interface("ids", ids).Msgf("pending batch requests")
+		c.logger.Trace().Interface("ids", ids).Msgf("current batch requests")
 	} else {
 		c.logger.Debug().Msgf("queuing request %+v for batch (current batch size: %d)", id, len(c.batchRequests))
 	}

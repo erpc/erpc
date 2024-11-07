@@ -158,9 +158,7 @@ func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) 
 	}
 
 	if nwCfg == nil {
-		nwCfg = &common.NetworkConfig{
-			Failsafe: common.NetworkDefaultFailsafeConfig,
-		}
+		nwCfg = common.NewDefaultNetworkConfig()
 
 		s := strings.Split(networkId, ":")
 		if len(s) != 2 {
