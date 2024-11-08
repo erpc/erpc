@@ -9,9 +9,14 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/erpc"
 	"github.com/erpc/erpc/util"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/afero"
 )
+
+func init() {
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnixMs
+}
 
 func main() {
 	logger := log.With().Logger()

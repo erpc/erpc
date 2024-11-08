@@ -9,14 +9,9 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/h2non/gock"
-	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 )
-
-func init() {
-	zerolog.SetGlobalLevel(zerolog.Disabled)
-}
 
 var erpcMu sync.Mutex
 

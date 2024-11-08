@@ -294,15 +294,19 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 					req.SetLastValidResponse(resp)
 				}
 				if lg.GetLevel() == zerolog.TraceLevel {
-					lg.Debug().Err(errCall).Object("response", resp).Msgf("upstream result received (traced)")
+					lg.Debug().Err(errCall).Object("response", resp).Msgf("upstream request ended with response")
 				} else {
-					lg.Debug().Err(errCall).Msgf("upstream result received (non-nil response)")
+					lg.Debug().Err(errCall).Msgf("upstream request ended with non-nil response")
 				}
 			} else {
 				if errCall != nil {
-					lg.Debug().Err(errCall).Msgf("upstream result received (errored)")
+					if lg.GetLevel() == zerolog.TraceLevel && errors.Is(errCall, context.Canceled) {
+						lg.Trace().Err(errCall).Msgf("upstream request ended due to context cancellation")
+					} else {
+						lg.Error().Err(errCall).Msgf("upstream request ended with error")
+					}
 				} else {
-					lg.Debug().Msgf("upstream result received (nil response)")
+					lg.Warn().Msgf("upstream request ended with nil response and nil error")
 				}
 			}
 			if errCall != nil {
@@ -362,11 +366,25 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 			resp, execErr := executor.
 				WithContext(ctx).
 				GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
-					if err := exec.Context().Err(); err != nil {
-						return nil, err
+					if ctxErr := exec.Context().Err(); ctxErr != nil {
+						cause := context.Cause(exec.Context())
+						if cause != nil {
+							return nil, cause
+						} else {
+							return nil, ctxErr
+						}
 					}
 					return tryForward(exec.Context(), exec)
 				})
+
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				cause := context.Cause(ctx)
+				if cause != nil {
+					execErr = cause
+				} else {
+					execErr = ctxErr
+				}
+			}
 
 			if execErr != nil {
 				return nil, TranslateFailsafeError(common.ScopeUpstream, u.config.Id, method, execErr, &startTime)

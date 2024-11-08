@@ -501,6 +501,7 @@ func getJsonRpcResponseFromNode(rootNode ast.Node) (*common.JsonRpcResponse, err
 }
 
 func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	// TODO check if context is cancellable and then get the "cause" that is already set
 	jrReq, err := req.JsonRpcRequest()
 	if err != nil {
 		return nil, common.NewErrUpstreamRequest(
@@ -528,7 +529,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		return nil, err
 	}
 
-	c.logger.Debug().Msgf("sending json rpc POST request to %s: %s", c.Url.Host, requestBody)
+	c.logger.Debug().RawJSON("request", requestBody).Msgf("sending json rpc POST request to %s", c.Url.Host)
 
 	reqStartTime := time.Now()
 	httpReq, errReq := http.NewRequestWithContext(ctx, "POST", c.Url.String(), bytes.NewBuffer(requestBody))
@@ -547,7 +548,14 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
+		cause := context.Cause(ctx)
+		if cause == nil {
+			cause = ctx.Err()
+		}
+		if cause != nil {
+			err = cause
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return nil, common.NewErrEndpointRequestTimeout(time.Since(reqStartTime))
 		}
 		return nil, common.NewErrEndpointTransportFailure(err)
@@ -563,6 +571,8 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 
 func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *common.NormalizedResponse) error {
 	jr, err := nr.JsonRpcResponse()
+
+	c.logger.Trace().Interface("response", jr).Msgf("processing json rpc response from upstream")
 
 	if err != nil {
 		e := common.NewErrJsonRpcExceptionInternal(

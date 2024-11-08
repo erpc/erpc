@@ -5,15 +5,16 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/bytedance/sonic"
 )
 
-func (s *HttpServer) handleHealthCheck(w http.ResponseWriter, encoder sonic.Encoder, writeFinalError func(statusCode int, body string)) {
+func (s *HttpServer) handleHealthCheck(w http.ResponseWriter, startedAt *time.Time, encoder sonic.Encoder, writeFatalError func(statusCode int, body error)) {
 	logger := s.logger.With().Str("handler", "healthcheck").Logger()
 
 	if s.erpc == nil {
-		handleErrorResponse(&logger, nil, errors.New("eRPC is not initialized"), w, encoder, writeFinalError)
+		handleErrorResponse(&logger, startedAt, nil, errors.New("eRPC is not initialized"), w, encoder, writeFatalError)
 		return
 	}
 
@@ -22,7 +23,7 @@ func (s *HttpServer) handleHealthCheck(w http.ResponseWriter, encoder sonic.Enco
 	for _, project := range projects {
 		h, err := project.GatherHealthInfo()
 		if err != nil {
-			handleErrorResponse(&logger, nil, err, w, encoder, writeFinalError)
+			handleErrorResponse(&logger, startedAt, nil, err, w, encoder, writeFatalError)
 			return
 		}
 
@@ -43,11 +44,12 @@ func (s *HttpServer) handleHealthCheck(w http.ResponseWriter, encoder sonic.Enco
 				if allErrorRates[0] > 0.99 {
 					handleErrorResponse(
 						&logger,
+						startedAt,
 						nil,
 						fmt.Errorf("all upstreams are down: %+v", allErrorRates),
 						w,
 						encoder,
-						writeFinalError,
+						writeFatalError,
 					)
 					return
 				}

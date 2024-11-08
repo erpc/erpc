@@ -15,9 +15,15 @@
                 "CC": "/usr/bin/cc",
                 "CXX": "/usr/bin/c++",
                 "CGO_ENABLED": "1",
-                "ERPC_ADMIN_SECRET": "my-admin-secret"
-            },            
-            "cwd": "${workspaceFolder}"
+                "LOG_LEVEL": "trace"
+            },
+            "cwd": "${workspaceFolder}",
+            "showLog": true,
+            "dlvFlags": [
+                "--log",
+                "--log-output",
+                "debugger,debuglineerr,gdbwire,lldbout,rpc"
+            ]
         }
     ]
 }
