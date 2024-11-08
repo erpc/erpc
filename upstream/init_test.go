@@ -5,5 +5,5 @@ import (
 )
 
 func init() {
-	util.ConfigureLoggerViaEnv()
+	util.ConfigureTestLogger()
 }

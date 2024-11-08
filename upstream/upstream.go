@@ -377,12 +377,14 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 					return tryForward(exec.Context(), exec)
 				})
 
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				cause := context.Cause(ctx)
-				if cause != nil {
-					execErr = cause
-				} else {
-					execErr = ctxErr
+			if _, ok := execErr.(common.StandardError); !ok {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					cause := context.Cause(ctx)
+					if cause != nil {
+						execErr = cause
+					} else {
+						execErr = ctxErr
+					}
 				}
 			}
 

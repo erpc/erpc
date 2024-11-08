@@ -12,12 +12,12 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
 	"github.com/h2non/gock"
-	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestHttpJsonRpcClient_SingleRequests(t *testing.T) {
-	logger := zerolog.New(zerolog.NewConsoleWriter())
+	logger := log.Logger
 
 	t.Run("TimeoutError", func(t *testing.T) {
 		defer gock.Off()
@@ -124,7 +124,7 @@ func TestHttpJsonRpcClient_SingleRequests(t *testing.T) {
 }
 
 func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
-	logger := zerolog.New(zerolog.NewConsoleWriter())
+	logger := log.Logger
 
 	t.Run("SimpleBatchRequest", func(t *testing.T) {
 		defer gock.Off()

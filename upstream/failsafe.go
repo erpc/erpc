@@ -307,25 +307,25 @@ func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolic
 			// try fetching the data as the current upstream is less likely to have the data ready on the next retry attempt.
 			if rds.RetryEmpty {
 				isEmpty := result.IsResultEmptyish()
-				// no Retry-Empty directive + "empty" response -> No Retry
-				if !rds.RetryEmpty && isEmpty {
-					return false
-				}
-				ups := result.Upstream()
-				ucfg := ups.Config()
-				if ucfg.Evm != nil {
-					// has Retry-Empty directive + "empty" response + node is synced + block is finalized -> No Retry
-					if err == nil && rds.RetryEmpty && isEmpty && (ucfg.Evm.Syncing != nil && !*ucfg.Evm.Syncing) {
-						bn, ebn := req.EvmBlockNumber()
-						if ebn == nil && bn > 0 {
-							fin, efin := req.Network().EvmStatePollerOf(ups.Config().Id).IsBlockFinalized(bn)
-							if efin == nil && fin {
-								return false
+				if isEmpty {
+					// no Retry-Empty directive + "empty" response -> No Retry
+					if !rds.RetryEmpty {
+						return false
+					}
+					ups := result.Upstream()
+					ucfg := ups.Config()
+					if ucfg.Evm != nil {
+						// has Retry-Empty directive + "empty" response + node is synced + block is finalized -> No Retry
+						if err == nil && rds.RetryEmpty && isEmpty && (ucfg.Evm.Syncing != nil && !*ucfg.Evm.Syncing) {
+							bn, ebn := req.EvmBlockNumber()
+							if ebn == nil && bn > 0 {
+								fin, efin := req.Network().EvmStatePollerOf(ups.Config().Id).IsBlockFinalized(bn)
+								if efin == nil && fin {
+									return false
+								}
 							}
 						}
 					}
-				}
-				if isEmpty {
 					return true
 				}
 			}

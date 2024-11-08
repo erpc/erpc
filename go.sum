@@ -58,8 +58,8 @@ github.com/dop251/goja v0.0.0-20241009100908-5f46f2705ca3 h1:MXsAuToxwsTn5BEEYm2
 github.com/dop251/goja v0.0.0-20241009100908-5f46f2705ca3/go.mod h1:MxLav0peU43GgvwVgNbLAj1s/bSGboKkhuULvq/7hx4=
 github.com/dop251/goja_nodejs v0.0.0-20240728170619-29b559befffc h1:MKYt39yZJi0Z9xEeRmDX2L4ocE0ETKcHKw6MVL3R+co=
 github.com/dop251/goja_nodejs v0.0.0-20240728170619-29b559befffc/go.mod h1:VULptt4Q/fNzQUJlqY/GP3qHyU7ZH46mFkBZe0ZTokU=
-github.com/ethereum/go-ethereum v1.14.7 h1:EHpv3dE8evQmpVEQ/Ne2ahB06n2mQptdwqaMNhAT29g=
-github.com/ethereum/go-ethereum v1.14.7/go.mod h1:Mq0biU2jbdmKSZoqOj29017ygFrMnB5/Rifwp980W4o=
+github.com/ethereum/go-ethereum v1.14.11 h1:8nFDCUUE67rPc6AKxFj7JKaOa2W/W1Rse3oS6LvvxEY=
+github.com/ethereum/go-ethereum v1.14.11/go.mod h1:+l/fr42Mma+xBnhefL/+z11/hcmJ2egl+ScIVPjhc7E=
 github.com/go-kit/log v0.1.0/go.mod h1:zbhenjAZHb184qTLMA9ZjW7ThYL0H2mk7Q6pNt4vbaY=
 github.com/go-logfmt/logfmt v0.5.0/go.mod h1:wCYkCAKZfumFQihp8CzCvQ3paCTfi41vtzG1KdI/P7A=
 github.com/go-sourcemap/sourcemap v2.1.4+incompatible h1:a+iTbH5auLKxaNwQFg0B+TCYl6lbukKPc7b5x0n1s6Q=
