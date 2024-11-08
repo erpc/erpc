@@ -1080,6 +1080,349 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "0x111_FAST")
 	})
+
+	t.Run("HedgeReturnsResponseFromSecondUpstreamWhenFirstUpstreamTimesOut", func(t *testing.T) {
+		tmu.Lock()
+		defer tmu.Unlock()
+		resetGock()
+		defer resetGock()
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: "1500ms",
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Hedge: &common.HedgePolicyConfig{
+									MaxCount: 1,
+									Delay:    "100ms",
+								},
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "2000ms",
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "10ms",
+								},
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
+						{
+							Id:       "rpc2",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc2.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "1000ms",
+								},
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+
+		// Set up test fixtures
+		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		setupMocksForEvmStatePoller()
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				body := safeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(2000 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x111111",
+			})
+
+		gock.New("http://rpc2.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				body := safeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(500 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x222222",
+			})
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+
+		assert.Equal(t, http.StatusOK, statusCode)
+		assert.Contains(t, body, "0x222222")
+	})
+
+	t.Run("HedgeReturnsResponseFromSecondUpstreamWhenFirstUpstreamReturnsSlowBillingIssues", func(t *testing.T) {
+		tmu.Lock()
+		defer tmu.Unlock()
+		resetGock()
+		defer resetGock()
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: "1000ms",
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Retry: nil,
+								Hedge: &common.HedgePolicyConfig{
+									MaxCount: 1,
+									Delay:    "100ms",
+								},
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "1000ms",
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Retry: nil,
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "1000ms",
+								},
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
+						{
+							Id:       "rpc2",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc2.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Retry: nil,
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "1000ms",
+								},
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+
+		// Set up test fixtures
+		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		setupMocksForEvmStatePoller()
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := safeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
+			Reply(402).
+			Delay(500 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"error": map[string]interface{}{
+					"code":    -32005,
+					"message": "Monthly capacity limit exceeded. Visit https://dashboard.alchemyapi.io/settings/billing to upgrade your scaling policy for continued service.",
+				},
+			})
+
+		gock.New("http://rpc2.localhost").
+			Post("/").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := safeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(50 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x222222",
+			})
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+
+		assert.Equal(t, http.StatusOK, statusCode)
+		assert.Contains(t, body, "0x222222")
+	})
+
+	t.Run("ServerTimesOutBeforeHedgeReturnsResponseFromSecondUpstreamWhenFirstUpstreamHasTimeout", func(t *testing.T) {
+		tmu.Lock()
+		defer tmu.Unlock()
+		resetGock()
+		defer resetGock()
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: "30ms",
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Retry: nil,
+								Hedge: &common.HedgePolicyConfig{
+									MaxCount: 1,
+									Delay:    "10ms",
+								},
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "300ms",
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "150ms",
+								},
+								Retry: nil,
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
+						{
+							Id:       "rpc2",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc2.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Timeout: &common.TimeoutPolicyConfig{
+									Duration: "200ms",
+								},
+								Retry: nil,
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+
+		// Set up test fixtures
+		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		setupMocksForEvmStatePoller()
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := safeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
+			Reply(402).
+			Delay(5000 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"error": map[string]interface{}{
+					"code":    -32005,
+					"message": "Monthly capacity limit exceeded. Visit https://dashboard.alchemyapi.io/settings/billing to upgrade your scaling policy for continued service.",
+				},
+			})
+
+		gock.New("http://rpc2.localhost").
+			Post("/").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := safeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(150 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x222222",
+			})
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
+
+		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
+		assert.Contains(t, body, ErrHandlerTimeout.Error())
+	})
 }
 
 func TestHttpServer_SingleUpstream(t *testing.T) {

@@ -214,23 +214,32 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			execution = exec
 			req.Unlock()
 
+			var err error
+
 			// We should try all upstreams at least once, but using "i" we make sure
 			// across different executions of the failsafe we pick up next upstream vs retrying the same upstream.
 			// This mimicks a round-robin behavior, for example when doing hedge or retries.
 			// Upstream-level retry is handled by the upstream itself (and its own failsafe policies).
 			ln := len(upsList)
 			for count := 0; count < ln; count++ {
-				if err := exec.Context().Err(); err != nil {
-					return nil, err
+				if ctxErr := exec.Context().Err(); ctxErr != nil {
+					cause := context.Cause(exec.Context())
+					if cause != nil {
+						return nil, cause
+					} else {
+						return nil, ctxErr
+					}
 				}
 				// We need to use write-lock here because "i" is being updated.
 				req.Lock()
 				u := upsList[i]
+				upsId := u.Config().Id
+				ulg := lg.With().Str("upstreamId", u.Config().Id).Logger()
+				ulg.Trace().Int("index", i).Int("upstreams", ln).Msgf("attempt to forward request to next upstream")
 				i++
 				if i >= ln {
 					i = 0
 				}
-				upsId := u.Config().Id
 				if prevErr, exists := errorsByUpstream[upsId]; exists {
 					if !common.IsRetryableTowardsUpstream(prevErr) || common.IsCapacityIssue(prevErr) {
 						// Do not even try this upstream if we already know
@@ -242,10 +251,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 				req.Unlock()
 
-				ulg := lg.With().Str("upstreamId", u.Config().Id).Logger()
-
-				resp, err := tryForward(u, exec.Context(), &ulg)
-				if e := n.normalizeResponse(req, resp); e != nil {
+				var r *common.NormalizedResponse
+				r, err = tryForward(u, exec.Context(), &ulg)
+				if e := n.normalizeResponse(req, r); e != nil {
 					ulg.Error().Err(e).Msgf("failed to normalize response")
 					err = e
 				}
@@ -272,10 +280,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 
 				if err == nil || isClientErr {
-					if resp != nil {
-						resp.SetUpstream(u)
+					if r != nil {
+						r.SetUpstream(u)
 					}
-					return resp, err
+					return r, err
 				} else if err != nil {
 					continue
 				}
@@ -292,6 +300,15 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				exec.Hedges(),
 			)
 		})
+
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		cause := context.Cause(ctx)
+		if cause != nil {
+			execErr = cause
+		} else {
+			execErr = ctxErr
+		}
+	}
 
 	if execErr != nil {
 		err := upstream.TranslateFailsafeError(common.ScopeNetwork, "", method, execErr, &startTime)

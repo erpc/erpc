@@ -28,8 +28,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-var TRUE = true
-
 func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardCorrectlyRateLimitedOnNetworkLevel", func(t *testing.T) {
@@ -2661,7 +2659,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
-			AutoIgnoreUnsupportedMethods: &TRUE,
+			AutoIgnoreUnsupportedMethods: &common.TRUE,
 		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
@@ -6142,6 +6140,14 @@ func setupMocksForEvmStatePoller() {
 		}).
 		Reply(200).
 		JSON([]byte(`{"result": {"number":"0x1273c18"}}`))
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Persist().
+		Filter(func(request *http.Request) bool {
+			return strings.Contains(safeReadBody(request), "eth_syncing")
+		}).
+		Reply(200).
+		JSON([]byte(`{"result":false}`))
 	gock.New("http://rpc2.localhost").
 		Post("").
 		Persist().
@@ -6150,11 +6156,19 @@ func setupMocksForEvmStatePoller() {
 		}).
 		Reply(200).
 		JSON([]byte(`{"result": {"number":"0x1273c18"}}`))
+	gock.New("http://rpc2.localhost").
+		Post("").
+		Persist().
+		Filter(func(request *http.Request) bool {
+			return strings.Contains(safeReadBody(request), "eth_syncing")
+		}).
+		Reply(200).
+		JSON([]byte(`{"result":false}`))
 }
 
 func anyTestMocksLeft() int {
-	// We have 2 persisted mocks for evm block tracker
-	return len(gock.Pending()) - 2
+	// We have 4 persisted mocks for evm block tracker
+	return len(gock.Pending()) - 4
 }
 
 func resetGock() {

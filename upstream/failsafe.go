@@ -193,17 +193,22 @@ func createHedgePolicy(logger *zerolog.Logger, entity string, cfg *common.HedgeP
 	}
 
 	builder.OnHedge(func(event failsafe.ExecutionEvent[*common.NormalizedResponse]) bool {
+		var req *common.NormalizedRequest
+		var method string
 		r := event.Context().Value(common.RequestContextKey)
 		if r != nil {
-			req, ok := r.(*common.NormalizedRequest)
+			var ok bool
+			req, ok = r.(*common.NormalizedRequest)
 			if ok && req != nil {
-				method, _ := req.Method()
+				method, _ = req.Method()
 				if method != "" && common.IsEvmWriteMethod(method) {
 					logger.Debug().Str("method", method).Interface("id", req.ID()).Msgf("ignoring hedge for write request")
 					return false
 				}
 			}
 		}
+
+		logger.Trace().Str("method", method).Interface("id", req.ID()).Msgf("attempting to hedge request")
 
 		// Continue with the next hedge
 		return true
