@@ -11,7 +11,7 @@ import (
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/erpc/erpc/vendors"
-	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -24,7 +24,7 @@ type upsTestCfg struct {
 }
 
 func createCacheTestFixtures(upstreamConfigs []upsTestCfg) (*data.MockConnector, *Network, []*upstream.Upstream, *EvmJsonRpcCache) {
-	logger := zerolog.New(zerolog.NewConsoleWriter())
+	logger := log.Logger
 
 	mockConnector := &data.MockConnector{}
 	mockNetwork := &Network{

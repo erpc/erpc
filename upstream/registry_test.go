@@ -16,7 +16,7 @@ import (
 )
 
 func TestUpstreamsRegistry(t *testing.T) {
-	logger := zerolog.New(zerolog.NewConsoleWriter())
+	logger := log.Logger
 	projectID := "test-project"
 	networkID := "evm:123"
 	method := "eth_call"

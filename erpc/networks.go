@@ -294,6 +294,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				errorsByUpstream,
 				n.ProjectId,
 				n.NetworkId,
+				method,
 				time.Since(startTime),
 				exec.Attempts(),
 				exec.Retries(),
@@ -301,12 +302,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			)
 		})
 
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		cause := context.Cause(ctx)
-		if cause != nil {
-			execErr = cause
-		} else {
-			execErr = ctxErr
+	if _, ok := execErr.(common.StandardError); !ok {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			cause := context.Cause(ctx)
+			if cause != nil {
+				execErr = cause
+			} else {
+				execErr = ctxErr
+			}
 		}
 	}
 
@@ -337,6 +340,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						errorsByUpstream,
 						n.ProjectId,
 						n.NetworkId,
+						method,
 						time.Since(startTime),
 						execution.Attempts(),
 						execution.Retries(),

@@ -9,7 +9,7 @@ require (
 	github.com/clarkmcc/go-typescript v0.7.0
 	github.com/dop251/goja v0.0.0-20241009100908-5f46f2705ca3
 	github.com/dop251/goja_nodejs v0.0.0-20240728170619-29b559befffc
-	github.com/ethereum/go-ethereum v1.14.7
+	github.com/ethereum/go-ethereum v1.14.11
 	github.com/failsafe-go/failsafe-go v0.6.8
 	github.com/golang-jwt/jwt/v4 v4.5.1
 	github.com/h2non/gock v1.2.0

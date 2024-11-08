@@ -622,7 +622,7 @@ const ErrCodeUpstreamsExhausted ErrorCode = "ErrUpstreamsExhausted"
 var NewErrUpstreamsExhausted = func(
 	req *NormalizedRequest,
 	ersObj map[string]error,
-	prjId, netId string,
+	prjId, netId, method string,
 	duration time.Duration,
 	attempts, retries, hedges int,
 ) error {
@@ -642,6 +642,7 @@ var NewErrUpstreamsExhausted = func(
 				"durationMs": duration.Milliseconds(),
 				"projectId":  prjId,
 				"networkId":  netId,
+				"method":     method,
 				"attempts":   attempts,
 				"retries":    retries,
 				"hedges":     hedges,
@@ -707,6 +708,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		client := 0
 		transport := 0
 		cancelled := 0
+		unsynced := 0
 
 		for _, e := range joinedErr.Unwrap() {
 			if HasErrorCode(e, ErrCodeEndpointUnsupported) {
@@ -740,6 +742,9 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			} else if HasErrorCode(e, ErrCodeEndpointTransportFailure) {
 				transport++
 				continue
+			} else if HasErrorCode(e, ErrCodeUpstreamSyncing) {
+				unsynced++
+				continue
 			} else if !HasErrorCode(e, ErrCodeUpstreamMethodIgnored) {
 				other++
 			}
@@ -772,6 +777,9 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		}
 		if client > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d user errors", client))
+		}
+		if unsynced > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d syncing nodes", unsynced))
 		}
 		if other > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d other errors", other))

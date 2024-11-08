@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 
-	// "math"
 	"math/rand"
 	"net"
 	"net/http"
@@ -17,7 +16,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
 	"github.com/h2non/gock"
-	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -33,7 +32,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 	defer gock.Off()
 
 	// Setup
-	logger := zerolog.New(zerolog.NewConsoleWriter())
+	logger := log.Logger
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -313,7 +312,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
 		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
-		assert.Contains(t, body, "request handler timeout")
+		assert.Contains(t, body, "http request handling timeout")
 	})
 
 	t.Run("NetworkTimeoutBatchingEnabled", func(t *testing.T) {
@@ -832,7 +831,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
 		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
-		assert.Contains(t, body, "request handler timeout")
+		assert.Contains(t, body, "http request handling timeout")
 	})
 
 	t.Run("MidServerHighNetworkLowUpstreamTimeoutBatchingDisabled", func(t *testing.T) {
@@ -1177,7 +1176,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(200).
-			Delay(500 * time.Millisecond).
+			Delay(50 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -1520,6 +1519,8 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				defer tmu.Unlock()
 				resetGock()
 				defer resetGock()
+
+				setupMocksForEvmStatePoller()
 
 				const concurrentRequests = 10
 
@@ -2051,6 +2052,8 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 		resetGock()
 		defer resetGock()
 
+		setupMocksForEvmStatePoller()
+
 		gock.New("http://rpc1.localhost").
 			Post("/").
 			Reply(200).
@@ -2080,7 +2083,9 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 		assert.Equal(t, http.StatusOK, statusCode1)
 		assert.Contains(t, body1, "0x1111111")
 
-		assert.True(t, gock.IsDone(), "All mocks should have been called")
+		if left := anyTestMocksLeft(); left > 0 {
+			t.Fatalf("Not all mocks were called: %d left", left)
+		}
 	})
 
 	t.Run("UpstreamNotAllowedByDirectiveViaQueryParams", func(t *testing.T) {
@@ -2166,8 +2171,14 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 		resetGock()
 		defer resetGock()
 
+		setupMocksForEvmStatePoller()
+
 		gock.New("https://lb.drpc.org").
 			Post("/").
+			Filter(func(request *http.Request) bool {
+				body := safeReadBody(request)
+				return strings.Contains(string(body), "trace_transaction")
+			}).
 			Reply(200).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
@@ -2207,7 +2218,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 		return shouldMakeRealCall
 	})
 
-	logger := zerolog.New(zerolog.NewConsoleWriter())
+	logger := log.Logger
 	ctx, cancel := context.WithCancel(context.Background())
 
 	erpcInstance, err := NewERPC(ctx, &logger, nil, cfg)
