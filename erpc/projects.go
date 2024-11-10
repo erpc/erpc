@@ -116,9 +116,9 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		Logger()
 
 	if lg.GetLevel() == zerolog.TraceLevel {
-		lg.Debug().Object("request", nq).Msgf("forwarding request to network")
+		lg.Debug().Object("request", nq).Msgf("forwarding request for network")
 	} else {
-		lg.Debug().Msgf("forwarding request to network")
+		lg.Debug().Msgf("forwarding request for network")
 	}
 	resp, err := network.Forward(ctx, nq)
 

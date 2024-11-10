@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
@@ -46,14 +47,22 @@ func NewNetwork(
 ) (*Network, error) {
 	lg := logger.With().Str("component", "proxy").Str("networkId", nwCfg.NetworkId()).Logger()
 
-	var policies []failsafe.Policy[*common.NormalizedResponse]
-	if nwCfg.Failsafe != nil {
-		key := fmt.Sprintf("%s/%s", prjId, nwCfg.NetworkId())
-		pls, err := upstream.CreateFailSafePolicies(&lg, common.ScopeNetwork, key, nwCfg.Failsafe)
+	var policyArray []failsafe.Policy[*common.NormalizedResponse]
+	key := fmt.Sprintf("%s/%s", prjId, nwCfg.NetworkId())
+	pls, err := upstream.CreateFailSafePolicies(&lg, common.ScopeNetwork, key, nwCfg.Failsafe)
+	if err != nil {
+		return nil, err
+	}
+	for _, policy := range pls {
+		policyArray = append(policyArray, policy)
+	}
+	var timeoutDuration *time.Duration
+	if nwCfg.Failsafe != nil && nwCfg.Failsafe.Timeout != nil {
+		d, err := time.ParseDuration(nwCfg.Failsafe.Timeout.Duration)
+		timeoutDuration = &d
 		if err != nil {
 			return nil, err
 		}
-		policies = pls
 	}
 
 	network := &Network{
@@ -68,8 +77,8 @@ func NewNetwork(
 		rateLimitersRegistry: rateLimitersRegistry,
 
 		inFlightRequests: &sync.Map{},
-		failsafePolicies: policies,
-		failsafeExecutor: failsafe.NewExecutor(policies...),
+		timeoutDuration:  timeoutDuration,
+		failsafeExecutor: failsafe.NewExecutor(policyArray...),
 	}
 
 	if nwCfg.Architecture == "" {

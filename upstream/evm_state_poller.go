@@ -3,7 +3,6 @@ package upstream
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"sync"
 	"time"
 
@@ -293,9 +292,8 @@ func (e *EvmStatePoller) fetchFinalizedBlockNumber(ctx context.Context) (int64, 
 }
 
 func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64, error) {
-	randId := rand.Intn(100_000_000) // #nosec G404
 	pr := common.NewNormalizedRequest([]byte(
-		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, randId, blockTag),
+		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), blockTag),
 	))
 	pr.SetNetwork(e.network)
 
@@ -329,7 +327,7 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 }
 
 func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
-	pr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_syncing","params":[]}`))
+	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_syncing","params":[]}`, util.RandomID())))
 	pr.SetNetwork(e.network)
 
 	resp, err := e.upstream.Forward(ctx, pr)

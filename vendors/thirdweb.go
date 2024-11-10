@@ -24,11 +24,6 @@ func (v *ThirdwebVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
 
-	if upstream.JsonRpc.SupportsBatch == nil {
-		upstream.JsonRpc.SupportsBatch = &TRUE
-		upstream.JsonRpc.BatchMaxWait = "100ms"
-		upstream.JsonRpc.BatchMaxSize = 100
-	}
 	if upstream.AutoIgnoreUnsupportedMethods == nil {
 		upstream.AutoIgnoreUnsupportedMethods = &TRUE
 	}

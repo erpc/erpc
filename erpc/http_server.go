@@ -116,7 +116,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			return
 		}
 
-		lg.Debug().RawJSON("body", body).Msgf("received http request")
+		lg.Info().RawJSON("body", body).Msgf("received http request")
 
 		var requests []json.RawMessage
 		isBatch := len(body) > 0 && body[0] == '['
@@ -506,9 +506,9 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 			logger.Debug().Err(err).Object("request", nq).Msgf("forward request errored with client-side exception")
 		} else {
 			if e, ok := err.(common.StandardError); ok {
-				logger.Error().Err(err).Object("request", nq).Dur("durationMs", time.Since(*startedAt)).Msgf("failed to forward request: %s", e.DeepestMessage())
+				logger.Warn().Err(err).Object("request", nq).Dur("durationMs", time.Since(*startedAt)).Msgf("failed to forward request: %s", e.DeepestMessage())
 			} else {
-				logger.Error().Err(err).Object("request", nq).Dur("durationMs", time.Since(*startedAt)).Msgf("failed to forward request: %s", err.Error())
+				logger.Warn().Err(err).Object("request", nq).Dur("durationMs", time.Since(*startedAt)).Msgf("failed to forward request: %s", err.Error())
 			}
 		}
 		if nq != nil {

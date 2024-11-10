@@ -323,7 +323,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: "300ms",
+				MaxTimeout: "50000ms",
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -335,6 +335,8 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 								ChainId: 1,
 							},
 							Failsafe: &common.FailsafeConfig{
+								Retry: nil,
+								Hedge: nil,
 								Timeout: &common.TimeoutPolicyConfig{
 									Duration: "30ms",
 								},
@@ -349,13 +351,16 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 								ChainId: 1,
 							},
 							Failsafe: &common.FailsafeConfig{
+								Retry: nil,
+								Hedge: nil,
 								Timeout: &common.TimeoutPolicyConfig{
 									Duration: "200ms",
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.TRUE,
-								BatchMaxWait:  "5ms",
+								BatchMaxWait:  "1ms",
+								BatchMaxSize:  1,
 							},
 						},
 					},
@@ -377,7 +382,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(200).
-			Delay(1 * time.Second).
+			Delay(100 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -473,7 +478,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: "10s",
+				MaxTimeout: "2s",
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -486,7 +491,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: &common.FailsafeConfig{
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "5s",
+									Duration: "1s",
 								},
 							},
 						},
@@ -842,7 +847,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: "50ms",
+				MaxTimeout: "100ms",
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -917,6 +922,8 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		defer tmu.Unlock()
 		resetGock()
 		defer resetGock()
+
+		setupMocksForEvmStatePoller()
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -1001,6 +1008,8 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		resetGock()
 		defer resetGock()
 
+		setupMocksForEvmStatePoller()
+
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: "10s",
@@ -1015,6 +1024,8 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								ChainId: 1,
 							},
 							Failsafe: &common.FailsafeConfig{
+								Timeout: nil,
+								Retry:   nil,
 								Hedge: &common.HedgePolicyConfig{
 									MaxCount: 1,
 									Delay:    "100ms",
@@ -1029,6 +1040,11 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Timeout: nil,
+								Retry:   nil,
+								Hedge:   nil,
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.TRUE,
@@ -1053,7 +1069,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				return strings.Contains(body, "eth_getBalance") && strings.Contains(body, "111")
 			}).
 			Reply(200).
-			Delay(5_000 * time.Millisecond).
+			Delay(1000 * time.Millisecond).
 			JSON([]interface{}{
 				map[string]interface{}{
 					"jsonrpc": "2.0",
@@ -1067,7 +1083,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				return strings.Contains(body, "eth_getBalance") && strings.Contains(body, "111")
 			}).
 			Reply(200).
-			Delay(200 * time.Millisecond).
+			Delay(50 * time.Millisecond).
 			JSON([]interface{}{map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      111,
@@ -1086,6 +1102,8 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		resetGock()
 		defer resetGock()
 
+		setupMocksForEvmStatePoller()
+
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: "1500ms",
@@ -1100,6 +1118,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								ChainId: 1,
 							},
 							Failsafe: &common.FailsafeConfig{
+								Retry: nil,
 								Hedge: &common.HedgePolicyConfig{
 									MaxCount: 1,
 									Delay:    "100ms",
@@ -1119,6 +1138,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								ChainId: 1,
 							},
 							Failsafe: &common.FailsafeConfig{
+								Retry: nil,
 								Timeout: &common.TimeoutPolicyConfig{
 									Duration: "10ms",
 								},
@@ -1135,6 +1155,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								ChainId: 1,
 							},
 							Failsafe: &common.FailsafeConfig{
+								Retry: nil,
 								Timeout: &common.TimeoutPolicyConfig{
 									Duration: "1000ms",
 								},
@@ -1194,6 +1215,8 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		defer tmu.Unlock()
 		resetGock()
 		defer resetGock()
+
+		setupMocksForEvmStatePoller()
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -1311,6 +1334,8 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		defer tmu.Unlock()
 		resetGock()
 		defer resetGock()
+
+		setupMocksForEvmStatePoller()
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -2003,54 +2028,70 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 }
 
 func TestHttpServer_MultipleUpstreams(t *testing.T) {
-	cfg := &common.Config{
-		Server: &common.ServerConfig{
-			MaxTimeout: "5s",
-		},
-		Projects: []*common.ProjectConfig{
-			{
-				Id: "test_project",
-				Networks: []*common.NetworkConfig{
-					{
-						Architecture: common.ArchitectureEvm,
-						Evm: &common.EvmNetworkConfig{
-							ChainId: 1,
-						},
-					},
-				},
-				Upstreams: []*common.UpstreamConfig{
-					{
-						Id:       "rpc1",
-						Type:     common.UpstreamTypeEvm,
-						Endpoint: "http://rpc1.localhost",
-						Evm: &common.EvmUpstreamConfig{
-							ChainId: 1,
-						},
-						VendorName: "llama",
-					},
-					{
-						Id:       "rpc2",
-						Type:     common.UpstreamTypeEvm,
-						Endpoint: "http://rpc2.localhost",
-						Evm: &common.EvmUpstreamConfig{
-							ChainId: 1,
-						},
-						VendorName: "",
-					},
-				},
-			},
-		},
-		RateLimiters: &common.RateLimiterConfig{},
-	}
-
-	sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
-	defer shutdown()
-
 	t.Run("UpstreamNotAllowedByDirectiveViaHeaders", func(t *testing.T) {
 		tmu.Lock()
 		defer tmu.Unlock()
 		resetGock()
 		defer resetGock()
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: "10s",
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Retry:          nil,
+								CircuitBreaker: nil,
+								Hedge:          nil,
+								Timeout:        nil,
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Retry:          nil,
+								CircuitBreaker: nil,
+								Hedge:          nil,
+								Timeout:        nil,
+							},
+						},
+						{
+							Id:       "rpc2",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc2.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Retry:          nil,
+								CircuitBreaker: nil,
+								Hedge:          nil,
+								Timeout:        nil,
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+
+		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		defer shutdown()
 
 		setupMocksForEvmStatePoller()
 
@@ -2094,6 +2135,67 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 		resetGock()
 		defer resetGock()
 
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: "10s",
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Retry:          nil,
+								CircuitBreaker: nil,
+								Hedge:          nil,
+								Timeout:        nil,
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Retry:          nil,
+								CircuitBreaker: nil,
+								Hedge:          nil,
+								Timeout:        nil,
+							},
+						},
+						{
+							Id:       "rpc2",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc2.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Retry:          nil,
+								CircuitBreaker: nil,
+								Hedge:          nil,
+								Timeout:        nil,
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+
+		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		setupMocksForEvmStatePoller()
+
 		gock.New("http://rpc1.localhost").
 			Post("/").
 			Reply(200).
@@ -2123,7 +2225,9 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 		assert.Equal(t, http.StatusOK, statusCode1)
 		assert.Contains(t, body1, "0x1111111")
 
-		assert.True(t, gock.IsDone(), "All mocks should have been called")
+		if left := anyTestMocksLeft(); left > 0 {
+			t.Fatalf("Not all mocks were called: %d left", left)
+		}
 	})
 }
 

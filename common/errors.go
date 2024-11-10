@@ -1107,13 +1107,9 @@ type ErrFailsafeTimeoutExceeded struct{ BaseError }
 const ErrCodeFailsafeTimeoutExceeded ErrorCode = "ErrFailsafeTimeoutExceeded"
 
 var NewErrFailsafeTimeoutExceeded = func(scope Scope, cause error, startTime *time.Time) error {
-	var dt map[string]interface{}
 	var duration time.Duration
 	if startTime != nil {
 		duration = time.Since(*startTime)
-		dt = map[string]interface{}{
-			"durationMs": duration.Milliseconds(),
-		}
 	}
 	var msg string
 	if duration > 0 {
@@ -1126,7 +1122,6 @@ var NewErrFailsafeTimeoutExceeded = func(scope Scope, cause error, startTime *ti
 			Code:    ErrCodeFailsafeTimeoutExceeded,
 			Message: msg,
 			Cause:   cause,
-			Details: dt,
 		},
 	}
 }
