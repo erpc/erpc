@@ -403,7 +403,10 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 				}
 				if u.timeoutDuration != nil {
 					var cancelFn context.CancelFunc
-					ectx, cancelFn = context.WithTimeoutCause(ectx, *u.timeoutDuration, fmt.Errorf("upstream-level request timeout after %dms", u.timeoutDuration.Milliseconds()))
+					ectx, cancelFn = context.WithTimeoutCause(
+						ectx, *u.timeoutDuration,
+						common.NewErrEndpointRequestTimeout(*u.timeoutDuration),
+					)
 					defer cancelFn()
 				}
 

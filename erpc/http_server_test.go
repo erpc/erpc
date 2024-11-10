@@ -70,6 +70,8 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 
 	httpServer := NewHttpServer(ctx, &logger, cfg.Server, cfg.Admin, erpcInstance)
 
+	setupMocksForEvmStatePoller()
+
 	// Start the server on a random port
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -90,7 +92,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 
 	sendRequest := func() (int, string) {
 		body := strings.NewReader(
-			fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["%d", false],"id":1}`, rand.Intn(100000000)),
+			fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["%d", false],"id":1}`, rand.Intn(100000000)),
 		)
 		req, err := http.NewRequest("POST", baseURL+"/test_project/evm/1", body)
 		require.NoError(t, err)
@@ -164,18 +166,24 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			Post("/").
 			Times(10).
 			Reply(200).
-			Delay(700 * time.Millisecond). // Delay longer than the server timeout
+			Delay(1000 * time.Millisecond). // Delay longer than the server timeout
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
 				"result":  "0x333333",
 			})
 
+		wg := sync.WaitGroup{}
 		for i := 0; i < 10; i++ {
-			statusCode, body := sendRequest()
-			assert.Equal(t, http.StatusGatewayTimeout, statusCode)
-			assert.Contains(t, body, "timeout")
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				statusCode, body := sendRequest()
+				assert.Equal(t, http.StatusGatewayTimeout, statusCode)
+				assert.Contains(t, body, "http request handling timeout")
+			}()
 		}
+		wg.Wait()
 	})
 
 	t.Run("MixedTimeoutAndNonTimeoutRequests", func(t *testing.T) {
@@ -184,7 +192,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		resetGock()
 		defer resetGock()
 
-		totalReqs := 10
+		totalReqs := 100
 
 		for i := 0; i < totalReqs; i++ {
 			var delay time.Duration
@@ -569,6 +577,8 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 								ChainId: 1,
 							},
 							Failsafe: &common.FailsafeConfig{
+								Retry: nil,
+								Hedge: nil,
 								Timeout: &common.TimeoutPolicyConfig{
 									Duration: "5s",
 								},
@@ -584,6 +594,8 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 								ChainId: 1,
 							},
 							Failsafe: &common.FailsafeConfig{
+								Retry: nil,
+								Hedge: nil,
 								Timeout: &common.TimeoutPolicyConfig{
 									Duration: "100ms",
 								},

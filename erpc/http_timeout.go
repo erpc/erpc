@@ -65,7 +65,10 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			tw.code = http.StatusOK
 		}
 		w.WriteHeader(tw.code)
-		w.Write(tw.wbuf.Bytes())
+		_, err := w.Write(tw.wbuf.Bytes())
+		if err != nil {
+			log.Error().Err(err).Msg("failed to write response")
+		}
 	case <-ctx.Done():
 		tw.mu.Lock()
 		defer tw.mu.Unlock()
@@ -77,7 +80,10 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case context.DeadlineExceeded, ErrHandlerTimeout:
 			w.WriteHeader(http.StatusGatewayTimeout)
 			// TODO When other architectures are implemented we should return appropriate structure (currently only evm json-rpc)
-			io.WriteString(w, `{"jsonrpc":"2.0","error":{"code":-32603,"message":"http request handling timeout"}}`)
+			_, err := io.WriteString(w, `{"jsonrpc":"2.0","error":{"code":-32603,"message":"http request handling timeout"}}`)
+			if err != nil {
+				log.Error().Err(err).Msg("failed to write error response")
+			}
 			tw.err = ErrHandlerTimeout
 		default:
 			w.WriteHeader(http.StatusServiceUnavailable)

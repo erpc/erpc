@@ -202,7 +202,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	// 5) Actual forwarding logic
 	var execution failsafe.Execution[*common.NormalizedResponse]
-	var errorsByUpstream = map[string]error{}
+	errorsByUpstream := &sync.Map{}
 
 	ectx := context.WithValue(ctx, common.RequestContextKey, req)
 
@@ -225,7 +225,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			}
 			if n.timeoutDuration != nil {
 				var cancelFn context.CancelFunc
-				ictx, cancelFn = context.WithTimeoutCause(ectx, *n.timeoutDuration, fmt.Errorf("network-level request timeout after %dms", n.timeoutDuration.Milliseconds()))
+				ictx, cancelFn = context.WithTimeoutCause(
+					ectx,
+					*n.timeoutDuration,
+					common.NewErrNetworkRequestTimeout(*n.timeoutDuration),
+				)
+
 				defer cancelFn()
 			}
 
@@ -255,8 +260,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				if i >= ln {
 					i = 0
 				}
-				if prevErr, exists := errorsByUpstream[upsId]; exists {
-					if !common.IsRetryableTowardsUpstream(prevErr) || common.IsCapacityIssue(prevErr) {
+				if prevErr, exists := errorsByUpstream.Load(upsId); exists {
+					pe := prevErr.(error)
+					if !common.IsRetryableTowardsUpstream(pe) || common.IsCapacityIssue(pe) {
 						// Do not even try this upstream if we already know
 						// the previous error was not retryable. e.g. Billing issues
 						// Or there was a rate-limit error.
@@ -282,9 +288,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 
 				if err != nil {
-					req.Lock()
-					errorsByUpstream[upsId] = err
-					req.Unlock()
+					errorsByUpstream.Store(upsId, err)
 				}
 
 				if err == nil || isClientErr {
@@ -342,19 +346,17 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					}
 				}
 			} else {
-				if len(errorsByUpstream) > 0 {
-					err = common.NewErrUpstreamsExhausted(
-						req,
-						errorsByUpstream,
-						n.ProjectId,
-						n.NetworkId,
-						method,
-						time.Since(startTime),
-						execution.Attempts(),
-						execution.Retries(),
-						execution.Hedges(),
-					)
-				}
+				err = common.NewErrUpstreamsExhausted(
+					req,
+					errorsByUpstream,
+					n.ProjectId,
+					n.NetworkId,
+					method,
+					time.Since(startTime),
+					execution.Attempts(),
+					execution.Retries(),
+					execution.Hedges(),
+				)
 				if mlx != nil {
 					mlx.Close(nil, err)
 				}

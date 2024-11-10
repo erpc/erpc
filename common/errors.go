@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -621,18 +622,17 @@ const ErrCodeUpstreamsExhausted ErrorCode = "ErrUpstreamsExhausted"
 
 var NewErrUpstreamsExhausted = func(
 	req *NormalizedRequest,
-	ersObj map[string]error,
+	// ersObj map[string]error,
+	ersObj *sync.Map,
 	prjId, netId, method string,
 	duration time.Duration,
 	attempts, retries, hedges int,
 ) error {
-	// TODO create a new error type that holds a map to avoid creating a new array
 	ers := []error{}
-	req.RLock()
-	for _, err := range ersObj {
-		ers = append(ers, err)
-	}
-	req.RUnlock()
+	ersObj.Range(func(key, value any) bool {
+		ers = append(ers, value.(error))
+		return true
+	})
 	e := &ErrUpstreamsExhausted{
 		BaseError{
 			Code:    ErrCodeUpstreamsExhausted,
@@ -727,7 +727,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			} else if HasErrorCode(e, ErrCodeFailsafeCircuitBreakerOpen) {
 				cbOpen++
 				continue
-			} else if errors.Is(e, context.DeadlineExceeded) || HasErrorCode(e, ErrCodeEndpointRequestTimeout, ErrCodeFailsafeTimeoutExceeded) {
+			} else if errors.Is(e, context.DeadlineExceeded) || HasErrorCode(e, ErrCodeEndpointRequestTimeout, ErrCodeNetworkRequestTimeout, ErrCodeFailsafeTimeoutExceeded) {
 				timeout++
 				continue
 			} else if HasErrorCode(e, ErrCodeEndpointServerSideException) {
@@ -1323,10 +1323,7 @@ var NewErrNetworkRequestTimeout = func(duration time.Duration) error {
 	return &ErrNetworkRequestTimeout{
 		BaseError{
 			Code:    ErrCodeNetworkRequestTimeout,
-			Message: "network-level request towards one or more upstreams timed out",
-			Details: map[string]interface{}{
-				"durationMs": duration.Milliseconds(),
-			},
+			Message: fmt.Sprintf("network-level request towards one or more upstreams timed out after %dms", duration.Milliseconds()),
 		},
 	}
 }
