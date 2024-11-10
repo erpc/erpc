@@ -52,7 +52,10 @@ func NewPolicyEvaluator(
 	runtime := goja.New()
 
 	// Set up environment variables
-	runtime.Set("env", os.Environ())
+	err := runtime.Set("env", os.Environ())
+	if err != nil {
+		return nil, err
+	}
 
 	return &PolicyEvaluator{
 		networkId:         networkId,

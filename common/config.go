@@ -674,7 +674,7 @@ func setJsValueToGoField(jsValue goja.Value, fieldValue reflect.Value) error {
 		fieldValue.SetInt(intVal)
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		intVal := jsValue.ToInteger()
-		fieldValue.SetUint(uint64(intVal))
+		fieldValue.SetInt(intVal)
 	case reflect.Float32, reflect.Float64:
 		floatVal := jsValue.ToFloat()
 		fieldValue.SetFloat(floatVal)
