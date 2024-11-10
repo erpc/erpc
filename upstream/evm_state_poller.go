@@ -173,15 +173,15 @@ func (e *EvmStatePoller) Poll(ctx context.Context) {
 		}
 
 		// By default we don't know if the node is syncing or not.
-		upsCfg.Evm.Syncing = nil
+		e.upstream.SetEvmSyncingState(common.EvmSyncingStateUnknown)
 
 		// if we have received enough consecutive "synced" responses, we can assume it's fully synced.
 		if e.synced >= FullySyncedThreshold {
-			upsCfg.Evm.Syncing = &common.FALSE
+			e.upstream.SetEvmSyncingState(common.EvmSyncingStateNotSyncing)
 			e.logger.Info().Bool("syncingResult", syncing).Msg("node is marked as fully synced")
 		} else if e.synced >= 0 && syncing {
+			e.upstream.SetEvmSyncingState(common.EvmSyncingStateSyncing)
 			// If we have received at least one response (syncing or not-syncing) we explicitly assume it's syncing.
-			upsCfg.Evm.Syncing = &common.TRUE
 			e.logger.Debug().Bool("syncingResult", syncing).Msgf("node is marked as still syncing %d out of %d confirmations done so far", e.synced, FullySyncedThreshold)
 		}
 	}()

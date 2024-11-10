@@ -272,8 +272,8 @@ func (r *JsonRpcResponse) PeekStringByPath(path ...interface{}) (string, error) 
 		return "", err
 	}
 
-	r.resultMu.RLock()
-	defer r.resultMu.RUnlock()
+	r.resultMu.Lock()
+	defer r.resultMu.Unlock()
 	n := r.cachedNode.GetByPath(path...)
 	if n == nil {
 		return "", fmt.Errorf("could not get '%s' from json-rpc response", path)

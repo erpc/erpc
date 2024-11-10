@@ -189,7 +189,7 @@ func shouldCacheResponse(
 		if ups != nil {
 			upsCfg := ups.Config()
 			if upsCfg.Evm != nil {
-				if upsCfg.Evm.Syncing != nil && !*upsCfg.Evm.Syncing {
+				if ups.EvmSyncingState() == common.EvmSyncingStateNotSyncing {
 					blkNum, err := req.EvmBlockNumber()
 					if err == nil && blkNum > 0 {
 						ntw := req.Network()

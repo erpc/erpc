@@ -590,7 +590,7 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 	jr, err := nr.JsonRpcResponse()
 
 	if c.logger.GetLevel() == zerolog.TraceLevel {
-		c.logger.Trace().Str("result", string(jr.Result)).Interface("error", jr.Error).Msgf("processing json rpc response from upstream")
+		c.logger.Trace().Object("request", nr.Request()).Str("result", string(jr.Result)).Interface("error", jr.Error).Msgf("processing json rpc response from upstream")
 	}
 
 	if err != nil {

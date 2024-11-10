@@ -37,6 +37,11 @@ type Upstream struct {
 	methodCheckResultsMu  sync.RWMutex
 	supportedNetworkIds   map[string]bool
 	supportedNetworkIdsMu sync.RWMutex
+
+	// By default "Syncing" is marked as unknown (nil) and that means we will be retrying empty responses
+	// from such upstream, unless we explicitly know that the upstream is fully synced (false).
+	evmSyncingState common.EvmSyncingState
+	evmSyncingMu    sync.RWMutex
 }
 
 func NewUpstream(
@@ -467,6 +472,18 @@ func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 	return strconv.FormatUint(dec, 10), nil
 }
 
+func (u *Upstream) EvmSyncingState() common.EvmSyncingState {
+	u.evmSyncingMu.RLock()
+	defer u.evmSyncingMu.RUnlock()
+	return u.evmSyncingState
+}
+
+func (u *Upstream) SetEvmSyncingState(state common.EvmSyncingState) {
+	u.evmSyncingMu.Lock()
+	u.evmSyncingState = state
+	u.evmSyncingMu.Unlock()
+}
+
 func (u *Upstream) SupportsNetwork(networkId string) (bool, error) {
 	u.supportedNetworkIdsMu.RLock()
 	supports, exists := u.supportedNetworkIds[networkId]
@@ -682,7 +699,7 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 	method, _ := req.Method()
 
 	if u.config.Evm != nil {
-		if u.config.Evm.Syncing != nil && *u.config.Evm.Syncing {
+		if u.EvmSyncingState() == common.EvmSyncingStateSyncing {
 			return common.NewErrUpstreamSyncing(u.config.Id), true
 		}
 	}
