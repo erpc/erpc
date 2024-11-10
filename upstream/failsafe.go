@@ -14,9 +14,9 @@ import (
 	"github.com/rs/zerolog"
 )
 
-func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity string, fsCfg *common.FailsafeConfig) ([]failsafe.Policy[*common.NormalizedResponse], error) {
+func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity string, fsCfg *common.FailsafeConfig) (map[string]failsafe.Policy[*common.NormalizedResponse], error) {
 	// The order of policies below are important as per docs of failsafe-go
-	var policies = []failsafe.Policy[*common.NormalizedResponse]{}
+	var policies = map[string]failsafe.Policy[*common.NormalizedResponse]{}
 
 	if fsCfg == nil {
 		return policies, nil
@@ -27,12 +27,12 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity s
 	// For network-level we want the timeout to apply to the overall lifecycle
 	if fsCfg.Timeout != nil && scope == common.ScopeNetwork {
 		var err error
-		timeoutPolicy, err := createTimeoutPolicy(&lg, entity, fsCfg.Timeout)
+		p, err := createTimeoutPolicy(&lg, entity, fsCfg.Timeout)
 		if err != nil {
 			return nil, err
 		}
 
-		policies = append(policies, timeoutPolicy)
+		policies["timeout"] = p
 	}
 
 	if fsCfg.Retry != nil {
@@ -40,7 +40,7 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity s
 		if err != nil {
 			return nil, err
 		}
-		policies = append(policies, p)
+		policies["retry"] = p
 	}
 
 	// CircuitBreaker does not make sense for network-level requests
@@ -50,7 +50,7 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity s
 			if err != nil {
 				return nil, err
 			}
-			policies = append(policies, p)
+			policies["cb"] = p
 		}
 	}
 
@@ -59,18 +59,18 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity s
 		if err != nil {
 			return nil, err
 		}
-		policies = append(policies, p)
+		policies["hedge"] = p
 	}
 
 	// For upstream-level we want the timeout to apply to each individual request towards upstream
 	if fsCfg.Timeout != nil && scope == common.ScopeUpstream {
 		var err error
-		timeoutPolicy, err := createTimeoutPolicy(&lg, entity, fsCfg.Timeout)
+		p, err := createTimeoutPolicy(&lg, entity, fsCfg.Timeout)
 		if err != nil {
 			return nil, err
 		}
 
-		policies = append(policies, timeoutPolicy)
+		policies["timeout"] = p
 	}
 
 	return policies, nil

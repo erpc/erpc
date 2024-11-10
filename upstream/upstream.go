@@ -28,7 +28,7 @@ type Upstream struct {
 	vendor common.Vendor
 
 	metricsTracker       *health.Tracker
-	failsafePolicies     []failsafe.Policy[*common.NormalizedResponse]
+	timeoutDuration      *time.Duration
 	failsafeExecutor     failsafe.Executor[*common.NormalizedResponse]
 	rateLimitersRegistry *RateLimitersRegistry
 	rateLimiterAutoTuner *RateLimitAutoTuner
@@ -51,9 +51,22 @@ func NewUpstream(
 ) (*Upstream, error) {
 	lg := logger.With().Str("upstreamId", cfg.Id).Logger()
 
-	policies, err := CreateFailSafePolicies(&lg, common.ScopeUpstream, cfg.Id, cfg.Failsafe)
+	policiesMap, err := CreateFailSafePolicies(&lg, common.ScopeUpstream, cfg.Id, cfg.Failsafe)
 	if err != nil {
 		return nil, err
+	}
+	policiesArray := []failsafe.Policy[*common.NormalizedResponse]{}
+	for _, policy := range policiesMap {
+		policiesArray = append(policiesArray, policy)
+	}
+
+	var timeoutDuration *time.Duration
+	if cfg.Failsafe != nil && cfg.Failsafe.Timeout != nil {
+		d, err := time.ParseDuration(cfg.Failsafe.Timeout.Duration)
+		timeoutDuration = &d
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	vn := vr.LookupByUpstream(cfg)
@@ -66,8 +79,8 @@ func NewUpstream(
 		config:               cfg,
 		vendor:               vn,
 		metricsTracker:       mt,
-		failsafePolicies:     policies,
-		failsafeExecutor:     failsafe.NewExecutor[*common.NormalizedResponse](policies...),
+		timeoutDuration:      timeoutDuration,
+		failsafeExecutor:     failsafe.NewExecutor[*common.NormalizedResponse](policiesArray...),
 		rateLimitersRegistry: rlr,
 		methodCheckResults:   map[string]bool{},
 		supportedNetworkIds:  map[string]bool{},
@@ -303,14 +316,23 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 					if lg.GetLevel() == zerolog.TraceLevel && errors.Is(errCall, context.Canceled) {
 						lg.Trace().Err(errCall).Msgf("upstream request ended due to context cancellation")
 					} else {
-						lg.Error().Err(errCall).Msgf("upstream request ended with error")
+						lg.Debug().Err(errCall).Msgf("upstream request ended with error")
 					}
 				} else {
 					lg.Warn().Msgf("upstream request ended with nil response and nil error")
 				}
 			}
 			if errCall != nil {
-				if !errors.Is(errCall, context.Canceled) {
+				if errors.Is(errCall, context.Canceled) || errors.Is(errCall, context.DeadlineExceeded) {
+					if ctxErr := ctx.Err(); ctxErr != nil {
+						cause := context.Cause(ctx)
+						if cause != nil {
+							errCall = cause
+						} else {
+							errCall = ctxErr
+						}
+					}
+				} else {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
 						u.recordRemoteRateLimit(netId, method)
 					} else if common.HasErrorCode(errCall, common.ErrCodeUpstreamRequestSkipped) {
@@ -361,41 +383,44 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 			return resp, nil
 		}
 
-		if u.failsafePolicies != nil && len(u.failsafePolicies) > 0 {
-			executor := u.failsafeExecutor
-			resp, execErr := executor.
-				WithContext(ctx).
-				GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
-					if ctxErr := exec.Context().Err(); ctxErr != nil {
-						cause := context.Cause(exec.Context())
-						if cause != nil {
-							return nil, cause
-						} else {
-							return nil, ctxErr
-						}
-					}
-					return tryForward(exec.Context(), exec)
-				})
-
-			if _, ok := execErr.(common.StandardError); !ok {
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					cause := context.Cause(ctx)
+		executor := u.failsafeExecutor
+		resp, execErr := executor.
+			WithContext(ctx).
+			GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+				ectx := exec.Context()
+				if ctxErr := ectx.Err(); ctxErr != nil {
+					cause := context.Cause(ectx)
 					if cause != nil {
-						execErr = cause
+						return nil, cause
 					} else {
-						execErr = ctxErr
+						return nil, ctxErr
 					}
 				}
-			}
+				if u.timeoutDuration != nil {
+					var cancelFn context.CancelFunc
+					ectx, cancelFn = context.WithTimeoutCause(ectx, *u.timeoutDuration, fmt.Errorf("upstream-level request timeout after %dms", u.timeoutDuration.Milliseconds()))
+					defer cancelFn()
+				}
 
-			if execErr != nil {
-				return nil, TranslateFailsafeError(common.ScopeUpstream, u.config.Id, method, execErr, &startTime)
-			}
+				return tryForward(ectx, exec)
+			})
 
-			return resp, nil
-		} else {
-			return tryForward(ctx, nil)
+		if _, ok := execErr.(common.StandardError); !ok {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				cause := context.Cause(ctx)
+				if cause != nil {
+					execErr = cause
+				} else {
+					execErr = ctxErr
+				}
+			}
 		}
+
+		if execErr != nil {
+			return nil, TranslateFailsafeError(common.ScopeUpstream, u.config.Id, method, execErr, &startTime)
+		}
+
+		return resp, nil
 	default:
 		return nil, common.NewErrUpstreamClientInitialization(
 			fmt.Errorf("unsupported client type during forward: %s", clientType),

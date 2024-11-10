@@ -25,7 +25,7 @@ type Network struct {
 	cfg                      *common.NetworkConfig
 	inFlightRequests         *sync.Map
 	evmStatePollers          map[string]*upstream.EvmStatePoller
-	failsafePolicies         []failsafe.Policy[*common.NormalizedResponse]
+	timeoutDuration          *time.Duration
 	failsafeExecutor         failsafe.Executor[*common.NormalizedResponse]
 	rateLimitersRegistry     *upstream.RateLimitersRegistry
 	cacheDal                 data.CacheDAL
@@ -66,7 +66,7 @@ func (n *Network) Bootstrap(ctx context.Context) error {
 		}()
 		select {
 		case <-done:
-		case <-time.After(10 * time.Second):
+		case <-time.After(30 * time.Second):
 			n.Logger.Warn().Msg("evm state pollers did not complete within 10 seconds, some upstreams might be down")
 		}
 	} else {
@@ -194,7 +194,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		if err != nil {
 			lg.Debug().Err(err).Msgf("finished forwarding request to upstream with error")
 		} else {
-			lg.Info().Msgf("finished forwarding request to upstream with success")
+			lg.Debug().Msgf("finished forwarding request to upstream with success")
 		}
 
 		return resp, err
@@ -214,6 +214,21 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			execution = exec
 			req.Unlock()
 
+			ictx := exec.Context()
+			if ctxErr := ictx.Err(); ctxErr != nil {
+				cause := context.Cause(ictx)
+				if cause != nil {
+					return nil, cause
+				} else {
+					return nil, ctxErr
+				}
+			}
+			if n.timeoutDuration != nil {
+				var cancelFn context.CancelFunc
+				ictx, cancelFn = context.WithTimeoutCause(ectx, *n.timeoutDuration, fmt.Errorf("network-level request timeout after %dms", n.timeoutDuration.Milliseconds()))
+				defer cancelFn()
+			}
+
 			var err error
 
 			// We should try all upstreams at least once, but using "i" we make sure
@@ -222,8 +237,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			// Upstream-level retry is handled by the upstream itself (and its own failsafe policies).
 			ln := len(upsList)
 			for count := 0; count < ln; count++ {
-				if ctxErr := exec.Context().Err(); ctxErr != nil {
-					cause := context.Cause(exec.Context())
+				if ctxErr := ictx.Err(); ctxErr != nil {
+					cause := context.Cause(ictx)
 					if cause != nil {
 						return nil, cause
 					} else {
@@ -252,7 +267,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				req.Unlock()
 
 				var r *common.NormalizedResponse
-				r, err = tryForward(u, exec.Context(), &ulg)
+				r, err = tryForward(u, ictx, &ulg)
 				if e := n.normalizeResponse(req, r); e != nil {
 					ulg.Error().Err(e).Msgf("failed to normalize response")
 					err = e
@@ -268,13 +283,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 				if err != nil {
 					req.Lock()
-					if ser, ok := err.(common.StandardError); ok {
-						ber := ser.Base()
-						if ber.Details == nil {
-							ber.Details = map[string]interface{}{}
-						}
-						ber.Details["timestampMs"] = time.Now().UnixMilli()
-					}
 					errorsByUpstream[upsId] = err
 					req.Unlock()
 				}

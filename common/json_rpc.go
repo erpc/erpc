@@ -272,6 +272,8 @@ func (r *JsonRpcResponse) PeekStringByPath(path ...interface{}) (string, error) 
 		return "", err
 	}
 
+	r.resultMu.RLock()
+	defer r.resultMu.RUnlock()
 	n := r.cachedNode.GetByPath(path...)
 	if n == nil {
 		return "", fmt.Errorf("could not get '%s' from json-rpc response", path)
@@ -300,8 +302,6 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 
 func (r *JsonRpcResponse) ensureCachedNode() error {
 	r.resultMu.RLock()
-	defer r.resultMu.RUnlock()
-
 	if r.cachedNode == nil {
 		srchr := ast.NewSearcher(util.Mem2Str(r.Result))
 		srchr.ValidateJSON = false
@@ -309,11 +309,17 @@ func (r *JsonRpcResponse) ensureCachedNode() error {
 		srchr.CopyReturn = false
 		n, err := srchr.GetByPath()
 		if err != nil {
+			r.resultMu.RUnlock()
 			return err
 		}
+		r.resultMu.RUnlock()
+		r.resultMu.Lock()
 		r.cachedNode = &n
+		r.resultMu.Unlock()
+		return nil
 	}
 
+	r.resultMu.RUnlock()
 	return nil
 }
 
