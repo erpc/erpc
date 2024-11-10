@@ -822,7 +822,6 @@ func TestNetwork_Forward(t *testing.T) {
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
-				Syncing: &common.FALSE,
 			},
 		}
 		up2 := &common.UpstreamConfig{
@@ -831,7 +830,6 @@ func TestNetwork_Forward(t *testing.T) {
 			Endpoint: "http://rpc2.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
-				Syncing: &common.FALSE,
 			},
 		}
 
@@ -916,9 +914,8 @@ func TestNetwork_Forward(t *testing.T) {
 		poller.SuggestLatestBlock(9)
 		poller.SuggestFinalizedBlock(8)
 
-		// Mark both upstreams as fully synced
-		up1.Evm.Syncing = &common.FALSE
-		up2.Evm.Syncing = &common.FALSE
+		pup1.SetEvmSyncingState(common.EvmSyncingStateNotSyncing)
+		pup2.SetEvmSyncingState(common.EvmSyncingStateNotSyncing)
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
@@ -958,35 +955,23 @@ func TestNetwork_Forward(t *testing.T) {
 			"id": 1
 		}`)
 
-		// Mock the response for the latest block number request
-		gock.New("http://alchemy.com/rpc1").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "latest")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result": {"number":"0x9"}}`))
-
-		// Mock the response for the finalized block number request
-		gock.New("http://alchemy.com/rpc1").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "finalized")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result": {"number":"0x8"}}`))
+		setupMocksForEvmStatePoller()
 
 		// Mock an empty logs response from the first upstream
-		gock.New("http://alchemy.com/rpc1").
+		gock.New("http://rpc1.localhost").
 			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(safeReadBody(request), "eth_getLogs")
+			}).
 			Reply(200).
 			JSON([]byte(`{"result":[]}`))
 
 		// Mock a non-empty logs response from the second upstream
-		gock.New("http://alchemy.com/rpc2").
+		gock.New("http://rpc2.localhost").
 			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(safeReadBody(request), "eth_getLogs")
+			}).
 			Reply(200).
 			JSON([]byte(`{"result":[{"logIndex":444}]}`))
 
@@ -997,6 +982,8 @@ func TestNetwork_Forward(t *testing.T) {
 		// Initialize various components for the test environment
 		clr := upstream.NewClientRegistry(&log.Logger)
 		fsCfg := &common.FailsafeConfig{
+			Hedge:   nil,
+			Timeout: nil,
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
 			},
@@ -1014,16 +1001,15 @@ func TestNetwork_Forward(t *testing.T) {
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
-			Endpoint: "http://alchemy.com/rpc1",
+			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
-				Syncing: &common.TRUE,
 			},
 		}
 		up2 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc2",
-			Endpoint: "http://alchemy.com/rpc2",
+			Endpoint: "http://rpc2.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
@@ -1109,6 +1095,8 @@ func TestNetwork_Forward(t *testing.T) {
 		poller2 := ntw.evmStatePollers["rpc2"]
 		poller2.SuggestLatestBlock(9)
 		poller2.SuggestFinalizedBlock(8)
+
+		pup1.SetEvmSyncingState(common.EvmSyncingStateSyncing)
 
 		time.Sleep(100 * time.Millisecond)
 
@@ -1443,7 +1431,6 @@ func TestNetwork_Forward(t *testing.T) {
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
-				Syncing: nil, // means unknown state
 			},
 		}
 		up2 := &common.UpstreamConfig{
@@ -1452,7 +1439,6 @@ func TestNetwork_Forward(t *testing.T) {
 			Endpoint: "http://rpc2.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
-				Syncing: nil, // means unknown state
 			},
 		}
 
@@ -1537,8 +1523,8 @@ func TestNetwork_Forward(t *testing.T) {
 		poller2.SuggestLatestBlock(9)
 		poller2.SuggestFinalizedBlock(8)
 
-		up1.Evm.Syncing = nil
-		up2.Evm.Syncing = nil
+		pup1.SetEvmSyncingState(common.EvmSyncingStateUnknown)
+		pup2.SetEvmSyncingState(common.EvmSyncingStateUnknown)
 
 		time.Sleep(100 * time.Millisecond)
 

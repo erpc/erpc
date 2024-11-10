@@ -120,19 +120,17 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, entity string, cfg *comm
 	builder.OnFailure(func(event failsafe.ExecutionEvent[*common.NormalizedResponse]) {
 		err := event.LastError()
 		res := event.LastResult()
-		if logger.GetLevel() <= zerolog.DebugLevel {
-			lg := logger.Debug().Err(err).Object("response", res)
-			if res != nil && !res.IsObjectNull() {
-				rq := res.Request()
-				if rq != nil {
-					lg = lg.Object("request", rq)
-					up := rq.LastUpstream()
-					if up != nil {
-						lg = lg.Str("upstreamId", up.Config().Id)
-						cfg := up.Config()
-						if cfg.Evm != nil {
-							lg = lg.Interface("upstreamSyncingState", cfg.Evm.Syncing)
-						}
+		lg := logger.Warn().Err(err).Object("response", res)
+		if res != nil && !res.IsObjectNull() {
+			rq := res.Request()
+			if rq != nil {
+				lg = lg.Object("request", rq)
+				up := rq.LastUpstream()
+				if up != nil {
+					lg = lg.Str("upstreamId", up.Config().Id)
+					cfg := up.Config()
+					if cfg.Evm != nil {
+						lg = lg.Interface("upstreamSyncingState", up.EvmSyncingState())
 					}
 				}
 			}
@@ -161,12 +159,9 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, entity string, cfg *comm
 			up := result.Request().LastUpstream()
 
 			// if "syncing" and null/empty response -> open the circuit
-			cfg := up.Config()
-			if cfg.Evm != nil {
-				if cfg.Evm.Syncing != nil && *cfg.Evm.Syncing {
-					if result.IsResultEmptyish() {
-						return true
-					}
+			if up.EvmSyncingState() == common.EvmSyncingStateSyncing {
+				if result.IsResultEmptyish() {
+					return true
 				}
 			}
 		}
@@ -313,19 +308,21 @@ func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolic
 						return false
 					}
 					ups := result.Upstream()
-					ucfg := ups.Config()
-					if ucfg.Evm != nil {
-						// has Retry-Empty directive + "empty" response + node is synced + block is finalized -> No Retry
-						if err == nil && rds.RetryEmpty && isEmpty && (ucfg.Evm.Syncing != nil && !*ucfg.Evm.Syncing) {
-							bn, ebn := req.EvmBlockNumber()
-							if ebn == nil && bn > 0 {
-								fin, efin := req.Network().EvmStatePollerOf(ups.Config().Id).IsBlockFinalized(bn)
-								if efin == nil && fin {
-									return false
-								}
+					// ucfg := ups.Config()
+					// if ucfg.Evm != nil {
+
+					// has Retry-Empty directive + "empty" response + node is synced + block is finalized -> No Retry
+					if err == nil && rds.RetryEmpty && isEmpty && (ups.EvmSyncingState() == common.EvmSyncingStateNotSyncing) {
+						bn, ebn := req.EvmBlockNumber()
+						if ebn == nil && bn > 0 {
+							fin, efin := req.Network().EvmStatePollerOf(ups.Config().Id).IsBlockFinalized(bn)
+							if efin == nil && fin {
+								return false
 							}
 						}
 					}
+
+					// }
 					return true
 				}
 			}

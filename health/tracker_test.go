@@ -327,6 +327,10 @@ func (u *fakeUpstream) EvmGetChainId(context.Context) (string, error) {
 	return "123", nil
 }
 
+func (u *fakeUpstream) EvmSyncingState() common.EvmSyncingState {
+	return common.EvmSyncingStateUnknown
+}
+
 func (u *fakeUpstream) Vendor() common.Vendor {
 	return nil
 }

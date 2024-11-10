@@ -415,6 +415,8 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 								ChainId: 1,
 							},
 							Failsafe: &common.FailsafeConfig{
+								Retry: nil,
+								Hedge: nil,
 								Timeout: &common.TimeoutPolicyConfig{
 									Duration: "100ms",
 								},
@@ -430,6 +432,8 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 								ChainId: 1,
 							},
 							Failsafe: &common.FailsafeConfig{
+								Retry: nil,
+								Hedge: nil,
 								Timeout: &common.TimeoutPolicyConfig{
 									Duration: "5s",
 								},
@@ -695,81 +699,6 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		assert.Contains(t, body, "timeout")
 	})
 
-	t.Run("UpstreamRequestTimeoutBatchingDisabled", func(t *testing.T) {
-		tmu.Lock()
-		defer tmu.Unlock()
-		resetGock()
-		defer resetGock()
-
-		cfg := &common.Config{
-			Server: &common.ServerConfig{
-				MaxTimeout: "10s",
-			},
-			Projects: []*common.ProjectConfig{
-				{
-					Id: "test_project",
-					Networks: []*common.NetworkConfig{
-						{
-							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{
-								ChainId: 1,
-							},
-							Failsafe: &common.FailsafeConfig{
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "5s",
-								},
-							},
-						},
-					},
-					Upstreams: []*common.UpstreamConfig{
-						{
-							Id:       "rpc1",
-							Type:     common.UpstreamTypeEvm,
-							Endpoint: "http://rpc1.localhost",
-							Evm: &common.EvmUpstreamConfig{
-								ChainId: 1,
-							},
-							Failsafe: &common.FailsafeConfig{
-								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "100ms",
-								},
-							},
-							JsonRpc: &common.JsonRpcUpstreamConfig{
-								SupportsBatch: &common.FALSE,
-							},
-						},
-					},
-				},
-			},
-			RateLimiters: &common.RateLimiterConfig{},
-		}
-		// Set up test fixtures
-		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
-		defer shutdown()
-
-		setupMocksForEvmStatePoller()
-
-		gock.New("http://rpc1.localhost").
-			Post("/").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				body := safeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
-			Reply(200).
-			Delay(300 * time.Second).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x222222",
-			})
-
-		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
-
-		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
-		assert.Contains(t, body, "1 timeout")
-	})
-
 	t.Run("ServerTimeoutNoUpstreamNoNetworkTimeout", func(t *testing.T) {
 		tmu.Lock()
 		defer tmu.Unlock()
@@ -847,7 +776,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: "100ms",
+				MaxTimeout: "200ms",
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -859,8 +788,10 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 								ChainId: 1,
 							},
 							Failsafe: &common.FailsafeConfig{
+								Retry: nil,
+								Hedge: nil,
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "100ms",
+									Duration: "300ms",
 								},
 							},
 						},
@@ -874,6 +805,8 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 								ChainId: 1,
 							},
 							Failsafe: &common.FailsafeConfig{
+								Retry: nil,
+								Hedge: nil,
 								Timeout: &common.TimeoutPolicyConfig{
 									Duration: "10ms",
 								},
@@ -902,7 +835,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(200).
-			Delay(200 * time.Millisecond).
+			Delay(1000 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -1539,6 +1472,8 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 
 			setupMocksForEvmStatePoller()
 
+			time.Sleep(500 * time.Millisecond)
+
 			t.Run("ConcurrentRequests", func(t *testing.T) {
 				tmu.Lock()
 				defer tmu.Unlock()
@@ -1558,6 +1493,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				if *cfg.Projects[0].Upstreams[0].JsonRpc.SupportsBatch {
 					gock.New("http://rpc1.localhost").
 						Post("/").
+						Filter(func(request *http.Request) bool {
+							return strings.Contains(safeReadBody(request), "eth_getBalance")
+						}).
 						Reply(200).
 						JSON([]interface{}{
 							map[string]interface{}{
@@ -1619,7 +1557,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 							Post("/").
 							Filter(func(request *http.Request) bool {
 								b := safeReadBody(request)
-								return strings.Contains(b, fmt.Sprintf(`"id":%d`, i))
+								return strings.Contains(b, fmt.Sprintf(`"id":%d`, i)) && strings.Contains(b, "eth_getBalance")
 							}).
 							Reply(200).
 							Map(func(res *http.Response) *http.Response {

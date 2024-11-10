@@ -28,9 +28,18 @@ const (
 	UpstreamTypeEvmInfura    UpstreamType = "evm+infura"
 )
 
+type EvmSyncingState int
+
+const (
+	EvmSyncingStateUnknown EvmSyncingState = iota
+	EvmSyncingStateSyncing
+	EvmSyncingStateNotSyncing
+)
+
 type Upstream interface {
 	Config() *UpstreamConfig
 	Vendor() Vendor
 	SupportsNetwork(networkId string) (bool, error)
 	EvmGetChainId(ctx context.Context) (string, error)
+	EvmSyncingState() EvmSyncingState
 }
