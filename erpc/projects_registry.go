@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/erpc/erpc/auth"
@@ -112,6 +113,8 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		Logger: &lg,
 
 		appCtx:               r.appCtx,
+		projectMu:            &sync.RWMutex{},
+		networkInitializers:  &sync.Map{},
 		consumerAuthRegistry: consumerAuthRegistry,
 		networksRegistry:     networksRegistry,
 		upstreamsRegistry:    upstreamsRegistry,

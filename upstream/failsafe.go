@@ -120,22 +120,24 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, entity string, cfg *comm
 	builder.OnFailure(func(event failsafe.ExecutionEvent[*common.NormalizedResponse]) {
 		err := event.LastError()
 		res := event.LastResult()
-		lg := logger.Warn().Err(err).Object("response", res)
-		if res != nil && !res.IsObjectNull() {
-			rq := res.Request()
-			if rq != nil {
-				lg = lg.Object("request", rq)
-				up := rq.LastUpstream()
-				if up != nil {
-					lg = lg.Str("upstreamId", up.Config().Id)
-					cfg := up.Config()
-					if cfg.Evm != nil {
-						lg = lg.Interface("upstreamSyncingState", cfg.Evm.Syncing)
+		if logger.GetLevel() <= zerolog.DebugLevel {
+			lg := logger.Debug().Err(err).Object("response", res)
+			if res != nil && !res.IsObjectNull() {
+				rq := res.Request()
+				if rq != nil {
+					lg = lg.Object("request", rq)
+					up := rq.LastUpstream()
+					if up != nil {
+						lg = lg.Str("upstreamId", up.Config().Id)
+						cfg := up.Config()
+						if cfg.Evm != nil {
+							lg = lg.Interface("upstreamSyncingState", cfg.Evm.Syncing)
+						}
 					}
 				}
 			}
+			lg.Msg("failure caught that will be considered for circuit breaker")
 		}
-		lg.Msg("failure caught that will be considered for circuit breaker")
 		// TODO emit a custom prometheus metric to track CB root causes?
 	})
 

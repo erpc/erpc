@@ -21,7 +21,8 @@ type PreparedProject struct {
 	Logger   *zerolog.Logger
 
 	appCtx               context.Context
-	networksMu           sync.RWMutex
+	projectMu            *sync.RWMutex
+	networkInitializers  *sync.Map
 	networksRegistry     *NetworksRegistry
 	consumerAuthRegistry *auth.AuthRegistry
 	rateLimitersRegistry *upstream.RateLimitersRegistry
@@ -29,20 +30,44 @@ type PreparedProject struct {
 	evmJsonRpcCache      *EvmJsonRpcCache
 }
 
-func (p *PreparedProject) GetNetwork(networkId string) (network *Network, err error) {
-	p.networksMu.RLock()
+type initOnce struct {
+	once sync.Once
+	err  error
+}
+
+func (p *PreparedProject) GetNetwork(networkId string) (*Network, error) {
+	p.projectMu.RLock()
 	network, ok := p.Networks[networkId]
-	p.networksMu.RUnlock()
-	if !ok {
-		p.networksMu.Lock()
-		defer p.networksMu.Unlock()
-		network, err = p.initializeNetwork(networkId)
-		if err != nil {
-			return nil, err
-		}
-		p.Networks[networkId] = network
+	p.projectMu.RUnlock()
+	if ok {
+		return network, nil
 	}
-	return
+
+	value, _ := p.networkInitializers.LoadOrStore(networkId, &initOnce{})
+	initializer := value.(*initOnce)
+
+	initializer.once.Do(func() {
+		var err error
+		network, err := p.initializeNetwork(networkId)
+		if err != nil {
+			initializer.err = err
+			return
+		}
+
+		p.projectMu.Lock()
+		p.Networks[networkId] = network
+		p.projectMu.Unlock()
+	})
+
+	if initializer.err != nil {
+		return nil, initializer.err
+	}
+
+	p.projectMu.RLock()
+	network = p.Networks[networkId]
+	p.projectMu.RUnlock()
+
+	return network, nil
 }
 
 func (p *PreparedProject) GatherHealthInfo() (*upstream.UpstreamsHealth, error) {
@@ -153,10 +178,12 @@ func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) 
 				ChainId: int64(c),
 			}
 		}
+		p.projectMu.Lock()
 		if p.Config.Networks == nil || len(p.Config.Networks) == 0 {
 			p.Config.Networks = []*common.NetworkConfig{}
 		}
 		p.Config.Networks = append(p.Config.Networks, nwCfg)
+		p.projectMu.Unlock()
 	}
 
 	// 3) Register and prepare the network in registry
