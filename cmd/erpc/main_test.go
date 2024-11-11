@@ -195,7 +195,7 @@ projects:
 `)
 	args := []string{"erpc-test", cfg.Name()}
 
-	logger := log.With().Logger()
+	logger := log.Logger
 	err = erpc.Init(context.Background(), logger, fs, args)
 	if err != nil {
 		t.Fatal(err)
