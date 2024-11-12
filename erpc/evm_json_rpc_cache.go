@@ -24,10 +24,6 @@ const (
 
 func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common.ConnectorConfig) (*EvmJsonRpcCache, error) {
 	logger.Info().Msg("initializing evm json rpc cache...")
-	err := populateDefaults(cfg)
-	if err != nil {
-		return nil, err
-	}
 
 	c, err := data.NewConnector(ctx, logger, cfg)
 	if err != nil {
@@ -263,35 +259,4 @@ func generateKeysForJsonRpcRequest(req *common.NormalizedRequest, blockRef strin
 	} else {
 		return fmt.Sprintf("%s:nil", req.NetworkId()), cacheKey, nil
 	}
-}
-
-func populateDefaults(cfg *common.ConnectorConfig) error {
-	switch cfg.Driver {
-	case data.DynamoDBDriverName:
-		if cfg.DynamoDB.Table == "" {
-			cfg.DynamoDB.Table = "erpc_json_rpc_cache"
-		}
-		if cfg.DynamoDB.PartitionKeyName == "" {
-			cfg.DynamoDB.PartitionKeyName = "groupKey"
-		}
-		if cfg.DynamoDB.RangeKeyName == "" {
-			cfg.DynamoDB.RangeKeyName = "requestKey"
-		}
-		if cfg.DynamoDB.ReverseIndexName == "" {
-			cfg.DynamoDB.ReverseIndexName = "idx_groupKey_requestKey"
-		}
-	case data.RedisDriverName:
-		if cfg.Redis.Addr == "" {
-			cfg.Redis.Addr = "localhost:6379"
-		}
-	case data.PostgreSQLDriverName:
-		if cfg.PostgreSQL.ConnectionUri == "" {
-			cfg.PostgreSQL.ConnectionUri = "postgres://erpc:erpc@localhost:5432/erpc"
-		}
-		if cfg.PostgreSQL.Table == "" {
-			cfg.PostgreSQL.Table = "erpc_json_rpc_cache"
-		}
-	}
-
-	return nil
 }

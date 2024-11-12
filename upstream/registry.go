@@ -99,9 +99,11 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(networkId string) error {
 	defer u.upstreamsMu.Unlock()
 
 	var upstreams []*Upstream
+	var ids []string
 	for _, ups := range u.allUpstreams {
 		if s, e := ups.SupportsNetwork(networkId); e == nil && s {
 			upstreams = append(upstreams, ups)
+			ids = append(ids, ups.Config().Id)
 		} else if e != nil {
 			u.logger.Warn().Err(e).
 				Str("upstreamId", ups.Config().Id).
@@ -109,6 +111,9 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(networkId string) error {
 				Msgf("failed to check if upstream supports network")
 		}
 	}
+
+	u.logger.Debug().Str("networkId", networkId).Strs("upstreams", ids).Msgf("preparing upstreams for network")
+
 	if len(upstreams) == 0 {
 		return common.NewErrNoUpstreamsFound(u.prjId, networkId)
 	}
@@ -383,7 +388,13 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 			normBlockHeadLags[i],
 			normFinalizationLags[i],
 		)
-		u.upstreamScores[ups.Config().Id][networkId][method] = score
+		// Upstream might not have scores initialized yet (especially when networkId is *)
+		// TODO add a test case to send request to network A when network B is defined in config but no requests sent yet
+		if upsc, ok := u.upstreamScores[ups.Config().Id]; ok {
+			if _, ok := upsc[networkId]; ok {
+				upsc[networkId][method] = score
+			}
+		}
 	}
 
 	upsList1 := u.sortAndFilterUpstreams(networkId, method, upsList)

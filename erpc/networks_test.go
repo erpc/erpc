@@ -889,8 +889,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&common.NetworkConfig{
 				Architecture: common.ArchitectureEvm,
 				Evm: &common.EvmNetworkConfig{
-					ChainId:              123,
-					BlockTrackerInterval: "10h",
+					ChainId: 123,
 				},
 				Failsafe: &common.FailsafeConfig{
 					Retry: &common.RetryPolicyConfig{
@@ -1071,8 +1070,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&common.NetworkConfig{
 				Architecture: common.ArchitectureEvm,
 				Evm: &common.EvmNetworkConfig{
-					ChainId:              123,
-					BlockTrackerInterval: "10h",
+					ChainId: 123,
 				},
 				Failsafe: fsCfg,
 			},
@@ -1252,8 +1250,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&common.NetworkConfig{
 				Architecture: common.ArchitectureEvm,
 				Evm: &common.EvmNetworkConfig{
-					ChainId:              123,
-					BlockTrackerInterval: "10h",
+					ChainId: 123,
 				},
 				Failsafe: fsCfg,
 			},
@@ -1498,8 +1495,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&common.NetworkConfig{
 				Architecture: common.ArchitectureEvm,
 				Evm: &common.EvmNetworkConfig{
-					ChainId:              123,
-					BlockTrackerInterval: "10h",
+					ChainId: 123,
 				},
 				Failsafe: fsCfg,
 			},
@@ -1733,8 +1729,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&common.NetworkConfig{
 				Architecture: common.ArchitectureEvm,
 				Evm: &common.EvmNetworkConfig{
-					ChainId:              123,
-					BlockTrackerInterval: "10h",
+					ChainId: 123,
 				},
 				Failsafe: fsCfg,
 			},
@@ -1955,8 +1950,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&common.NetworkConfig{
 				Architecture: common.ArchitectureEvm,
 				Evm: &common.EvmNetworkConfig{
-					ChainId:              123,
-					BlockTrackerInterval: "10h",
+					ChainId: 123,
 				},
 				Failsafe: fsCfg,
 			},
@@ -2161,8 +2155,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&common.NetworkConfig{
 				Architecture: common.ArchitectureEvm,
 				Evm: &common.EvmNetworkConfig{
-					ChainId:              123,
-					BlockTrackerInterval: "10h",
+					ChainId: 123,
 				},
 				Failsafe: fsCfg,
 			},
@@ -2381,8 +2374,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&common.NetworkConfig{
 				Architecture: common.ArchitectureEvm,
 				Evm: &common.EvmNetworkConfig{
-					ChainId:              123,
-					BlockTrackerInterval: "10h",
+					ChainId: 123,
 				},
 				Failsafe: fsCfg,
 			},
@@ -2594,8 +2586,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&common.NetworkConfig{
 				Architecture: common.ArchitectureEvm,
 				Evm: &common.EvmNetworkConfig{
-					ChainId:              123,
-					BlockTrackerInterval: "10h",
+					ChainId: 123,
 				},
 				Failsafe: fsCfg,
 			},
@@ -4271,8 +4262,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&common.NetworkConfig{
 				Architecture: common.ArchitectureEvm,
 				Evm: &common.EvmNetworkConfig{
-					ChainId:              123,
-					BlockTrackerInterval: "10h",
+					ChainId: 123,
 				},
 				Failsafe: fsCfgNetwork,
 			},
@@ -5918,7 +5908,21 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		resetGock()
 		defer resetGock()
 
-		network := setupTestNetwork(t, nil)
+		network := setupTestNetwork(t, &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "test",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+			Failsafe: &common.FailsafeConfig{
+				Retry: nil,
+				Hedge: nil,
+				Timeout: &common.TimeoutPolicyConfig{
+					Duration: "50ms",
+				},
+			},
+		})
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 
 		gock.New("http://rpc1.localhost").
@@ -5937,13 +5941,13 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+				ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 				defer cancel()
 				req := common.NewNormalizedRequest(requestBytes)
 				resp, err := network.Forward(ctx, req)
 				assert.Error(t, err)
-				if !common.HasErrorCode(err, "ErrNetworkRequestTimeout") && !common.HasErrorCode(err, "ErrEndpointRequestTimeout") {
-					t.Errorf("Expected ErrEndpointRequestTimeout or ErrEndpointRequestTimeout, got %v", err)
+				if !common.HasErrorCode(err, "ErrFailsafeTimeoutExceeded") {
+					t.Errorf("Expected ErrFailsafeTimeoutExceeded, got %v", err)
 				}
 				assert.Nil(t, resp)
 			}()

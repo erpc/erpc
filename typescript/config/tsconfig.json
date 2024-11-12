@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "outDir": "lib",
+    "declaration": true,
+    "strict": false,
+    "skipLibCheck": true,
+    "isolatedModules": false,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": false,
+    "forceConsistentCasingInFileNames": false,
+    "moduleResolution": "Node",
+    "module": "CommonJS",
+    "target": "ES6"
+  },
+  "include": [
+    "src/*"
+  ]
+}

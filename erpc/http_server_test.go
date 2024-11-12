@@ -15,6 +15,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
@@ -38,7 +39,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 
 	cfg := &common.Config{
 		Server: &common.ServerConfig{
-			MaxTimeout: "500ms", // Set a very short timeout for testing
+			MaxTimeout: util.StringPtr("500ms"), // Set a very short timeout for testing
 		},
 		Projects: []*common.ProjectConfig{
 			{
@@ -260,7 +261,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: "10ms",
+				MaxTimeout: util.StringPtr("10ms"),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -331,7 +332,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: "50000ms",
+				MaxTimeout: util.StringPtr("50000ms"),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -411,7 +412,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: "10s",
+				MaxTimeout: util.StringPtr("10s"),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -490,7 +491,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: "2s",
+				MaxTimeout: util.StringPtr("2s"),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -565,7 +566,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: "10s",
+				MaxTimeout: util.StringPtr("10s"),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -644,7 +645,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: "1ms",
+				MaxTimeout: util.StringPtr("1ms"),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -719,7 +720,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: "100ms",
+				MaxTimeout: util.StringPtr("100ms"),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -788,7 +789,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: "200ms",
+				MaxTimeout: util.StringPtr("200ms"),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -872,7 +873,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: "10s",
+				MaxTimeout: util.StringPtr("10s"),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -957,7 +958,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: "10s",
+				MaxTimeout: util.StringPtr("10s"),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -1051,7 +1052,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: "1500ms",
+				MaxTimeout: util.StringPtr("1500ms"),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -1165,7 +1166,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: "1000ms",
+				MaxTimeout: util.StringPtr("1000ms"),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -1284,7 +1285,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: "30ms",
+				MaxTimeout: util.StringPtr("30ms"),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -1443,7 +1444,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &common.Config{
 				Server: &common.ServerConfig{
-					MaxTimeout: "5s",
+					MaxTimeout: util.StringPtr("5s"),
 				},
 				Projects: []*common.ProjectConfig{
 					{
@@ -1986,7 +1987,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: "10s",
+				MaxTimeout: util.StringPtr("10s"),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -2087,7 +2088,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: "10s",
+				MaxTimeout: util.StringPtr("10s"),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -2184,7 +2185,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 func TestHttpServer_IntegrationTests(t *testing.T) {
 	cfg := &common.Config{
 		Server: &common.ServerConfig{
-			MaxTimeout: "5s",
+			MaxTimeout: util.StringPtr("5s"),
 		},
 		Projects: []*common.ProjectConfig{
 			{

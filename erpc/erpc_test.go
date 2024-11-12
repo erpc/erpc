@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
@@ -26,10 +27,10 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 	port := rand.Intn(1000) + 2000
 	cfg := &common.Config{
 		Server: &common.ServerConfig{
-			HttpHostV4: "0.0.0.0",
-			HttpHostV6: "[::]",
-			HttpPort:   port,
-			MaxTimeout: "5s",
+			HttpHostV4: util.StringPtr("0.0.0.0"),
+			HttpHostV6: util.StringPtr("[::]"),
+			HttpPort:   util.IntPtr(port),
+			MaxTimeout: util.StringPtr("5s"),
 		},
 		Projects: []*common.ProjectConfig{
 			{

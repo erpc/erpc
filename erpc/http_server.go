@@ -30,9 +30,9 @@ type HttpServer struct {
 }
 
 func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.ServerConfig, admin *common.AdminConfig, erpc *ERPC) *HttpServer {
-	reqMaxTimeout, err := time.ParseDuration(cfg.MaxTimeout)
+	reqMaxTimeout, err := time.ParseDuration(*cfg.MaxTimeout)
 	if err != nil {
-		if cfg.MaxTimeout != "" {
+		if cfg.MaxTimeout != nil {
 			logger.Error().Err(err).Msgf("failed to parse max timeout duration using 30s default")
 		}
 		reqMaxTimeout = 30 * time.Second
@@ -423,7 +423,7 @@ func (s *HttpServer) handleCORS(w http.ResponseWriter, r *http.Request, corsConf
 	w.Header().Set("Access-Control-Allow-Headers", strings.Join(corsConfig.AllowedHeaders, ", "))
 	w.Header().Set("Access-Control-Expose-Headers", strings.Join(corsConfig.ExposedHeaders, ", "))
 
-	if corsConfig.AllowCredentials {
+	if corsConfig.AllowCredentials != nil && *corsConfig.AllowCredentials {
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 	}
 
@@ -582,22 +582,22 @@ func handleErrorResponse(
 }
 
 func (s *HttpServer) Start(logger *zerolog.Logger) error {
-	addrV4 := fmt.Sprintf("%s:%d", s.config.HttpHostV4, s.config.HttpPort)
-	addrV6 := fmt.Sprintf("%s:%d", s.config.HttpHostV6, s.config.HttpPort)
+	addrV4 := fmt.Sprintf("%s:%d", *s.config.HttpHostV4, *s.config.HttpPort)
+	addrV6 := fmt.Sprintf("%s:%d", *s.config.HttpHostV6, *s.config.HttpPort)
 
 	var err error
 	var ln net.Listener
 	var ln4 net.Listener
 	var ln6 net.Listener
 
-	if s.config.HttpHostV4 != "" && s.config.ListenV4 {
+	if s.config.HttpHostV4 != nil && s.config.ListenV4 != nil && *s.config.ListenV4 {
 		logger.Info().Msgf("starting http server on port: %d IPv4: %s", s.config.HttpPort, addrV4)
 		ln4, err = net.Listen("tcp4", addrV4)
 		if err != nil {
 			return fmt.Errorf("error listening on IPv4: %w", err)
 		}
 	}
-	if s.config.HttpHostV6 != "" && s.config.ListenV6 {
+	if s.config.HttpHostV6 != nil && s.config.ListenV6 != nil && *s.config.ListenV6 {
 		logger.Info().Msgf("starting http server on port: %d IPv6: %s", s.config.HttpPort, addrV6)
 		ln6, err = net.Listen("tcp6", addrV6)
 		if err != nil {

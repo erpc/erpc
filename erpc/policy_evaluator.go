@@ -3,13 +3,12 @@ package erpc
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/dop251/goja"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/common/script"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/upstream"
 	"github.com/rs/zerolog"
@@ -21,7 +20,7 @@ type PolicyEvaluator struct {
 	networkId         string
 	logger            *zerolog.Logger
 	config            *common.SelectionPolicyConfig
-	runtime           *goja.Runtime
+	runtime           *script.Runtime
 	upstreamsMu       sync.RWMutex
 	metricsTracker    *health.Tracker
 	upstreamsRegistry *upstream.UpstreamsRegistry
@@ -49,12 +48,9 @@ func NewPolicyEvaluator(
 	upstreamsRegistry *upstream.UpstreamsRegistry,
 	metricsTracker *health.Tracker,
 ) (*PolicyEvaluator, error) {
-	runtime := goja.New()
-
-	// Set up environment variables
-	err := runtime.Set("env", os.Environ())
+	runtime, err := script.NewRuntime()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create JavaScript runtime: %w", err)
 	}
 
 	return &PolicyEvaluator{
@@ -143,15 +139,17 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 
 		metrics.Mutex.RLock()
 		metricsData[i] = metricData{
-			"id":              upsId,
-			"group":           ups.Config().Group,
-			"errorRate":       metrics.ErrorRate(),
-			"errorsTotal":     metrics.ErrorsTotal,
-			"requestsTotal":   metrics.RequestsTotal,
-			"throttledRate":   metrics.ThrottledRate(),
-			"p90LatencySecs":  metrics.LatencySecs.P90(),
-			"blockHeadLag":    metrics.BlockHeadLag,
-			"finalizationLag": metrics.FinalizationLag,
+			"id":     upsId,
+			"config": ups.Config(),
+			"metrics": map[string]float64{
+				"errorRate":       metrics.ErrorRate(),
+				"errorsTotal":     metrics.ErrorsTotal,
+				"requestsTotal":   metrics.RequestsTotal,
+				"throttledRate":   metrics.ThrottledRate(),
+				"p90LatencySecs":  metrics.LatencySecs.P90(),
+				"blockHeadLag":    metrics.BlockHeadLag,
+				"finalizationLag": metrics.FinalizationLag,
+			},
 		}
 		metrics.Mutex.RUnlock()
 	}
@@ -168,28 +166,43 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 
 	// Process results and update states
 	selectedUpstreams := make(map[string]bool)
-	arr, ok := result.Export().([]interface{})
-	if ok {
-		for _, v := range arr {
-			ups, ok := v.(metricData)
-			if !ok {
-				ups, ok = v.(map[string]interface{})
-				if !ok {
-					return fmt.Errorf("unexpected return value from evalFunction, expected objects inside the returned array: %v", result)
-				}
-			}
-			if upstreamId, ok := ups["id"].(string); ok {
-				selectedUpstreams[upstreamId] = true
-			} else {
-				return fmt.Errorf("unexpected return value from evalFunction, expected a string 'id' in each object of returned array: %v", result)
-			}
-		}
-	} else {
-		return fmt.Errorf("unexpected return value from evalFunction, expected an array: %v", result)
+	exp := result.Export()
+
+	if p.logger.GetLevel() <= zerolog.TraceLevel {
+		p.logger.Trace().Str("method", method).Interface("result", exp).Msg("received evalFunction result for selection policy")
 	}
 
-	if p.logger.GetLevel() == zerolog.TraceLevel {
-		p.logger.Debug().Str("method", method).Interface("selectedUpstreams", selectedUpstreams).Msg("finished evaluating selection policy")
+	var arr []interface{}
+
+	if a, ok := exp.([]metricData); ok {
+		for _, v := range a {
+			arr = append(arr, v)
+		}
+	} else if !ok {
+		if a, ok := exp.([]interface{}); ok {
+			arr = a
+		} else {
+			return fmt.Errorf("unexpected return value from evalFunction, expected an array of upstreams: %v", result)
+		}
+	}
+
+	for _, v := range arr {
+		ups, ok := v.(metricData)
+		if !ok {
+			ups, ok = v.(map[string]interface{})
+			if !ok {
+				return fmt.Errorf("unexpected return value from evalFunction, expected objects inside the returned array: %v", result)
+			}
+		}
+		if upstreamId, ok := ups["id"].(string); ok {
+			selectedUpstreams[upstreamId] = true
+		} else {
+			return fmt.Errorf("unexpected return value from evalFunction, expected a string 'id' in each object of returned array: %v", result)
+		}
+	}
+
+	if p.logger.GetLevel() <= zerolog.TraceLevel {
+		p.logger.Trace().Str("method", method).Interface("selectedUpstreams", selectedUpstreams).Msg("finished evaluating selection policy")
 	}
 
 	// Update states based on evaluation

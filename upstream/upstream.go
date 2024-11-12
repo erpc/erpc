@@ -527,7 +527,7 @@ func (u *Upstream) IgnoreMethod(method string) {
 func (u *Upstream) initRateLimitAutoTuner() {
 	if u.config.RateLimitBudget != "" && u.config.RateLimitAutoTune != nil {
 		cfg := u.config.RateLimitAutoTune
-		if cfg.Enabled {
+		if cfg.Enabled != nil && *cfg.Enabled {
 			budget, err := u.rateLimitersRegistry.GetBudget(u.config.RateLimitBudget)
 			if err == nil {
 				dur, err := time.ParseDuration(cfg.AdjustmentPeriod)
