@@ -73,14 +73,10 @@ func (e *EvmStatePoller) initialize(ctx context.Context) error {
 	var intvl string
 	if cfg.Evm != nil && cfg.Evm.StatePollerInterval != "" {
 		intvl = cfg.Evm.StatePollerInterval
-	} else if !util.IsTest() {
-		intvl = "30s"
 	}
-
 	if intvl == "" {
 		return nil
 	}
-
 	interval, err := time.ParseDuration(intvl)
 	if err != nil {
 		return fmt.Errorf("invalid state poller interval: %v", err)
@@ -251,8 +247,8 @@ func (e *EvmStatePoller) IsBlockFinalized(blockNumber int64) (bool, error) {
 			fb = 0
 		}
 	} else {
-		if latestBlock > 1024 {
-			fb = latestBlock - 1024
+		if latestBlock > common.DefaultEvmFinalityDepth {
+			fb = latestBlock - common.DefaultEvmFinalityDepth
 		} else {
 			fb = 0
 		}

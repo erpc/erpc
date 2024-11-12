@@ -57,6 +57,15 @@ func Init(
 		logger = logger.Level(level)
 	}
 
+	if logger.GetLevel() <= zerolog.DebugLevel {
+		finalCfgJson, err := common.SonicCfg.Marshal(cfg)
+		if err != nil {
+			logger.Warn().Msgf("failed to marshal final configuration for tracing: %v", err)
+		} else {
+			logger.Debug().RawJSON("config", finalCfgJson).Msg("")
+		}
+	}
+
 	//
 	// 2) Initialize eRPC
 	//
@@ -91,10 +100,10 @@ func Init(
 		}()
 	}
 
-	if cfg.Metrics != nil && cfg.Metrics.Enabled {
-		addrV4 := fmt.Sprintf("%s:%d", cfg.Metrics.HostV4, cfg.Metrics.Port)
-		addrV6 := fmt.Sprintf("%s:%d", cfg.Metrics.HostV6, cfg.Metrics.Port)
-		logger.Info().Msgf("starting metrics server on port: %d addrV4: %s addrV6: %s", cfg.Metrics.Port, addrV4, addrV6)
+	if cfg.Metrics != nil && cfg.Metrics.Enabled != nil && *cfg.Metrics.Enabled {
+		addrV4 := fmt.Sprintf("%s:%d", *cfg.Metrics.HostV4, *cfg.Metrics.Port)
+		addrV6 := fmt.Sprintf("%s:%d", *cfg.Metrics.HostV6, *cfg.Metrics.Port)
+		logger.Info().Msgf("starting metrics server on port: %d addrV4: %s addrV6: %s", *cfg.Metrics.Port, addrV4, addrV6)
 		srv := &http.Server{
 			BaseContext: func(ln net.Listener) context.Context {
 				return appCtx

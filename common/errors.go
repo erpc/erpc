@@ -709,6 +709,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		transport := 0
 		cancelled := 0
 		unsynced := 0
+		excluded := 0
 
 		for _, e := range joinedErr.Unwrap() {
 			if HasErrorCode(e, ErrCodeEndpointUnsupported) {
@@ -745,6 +746,9 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			} else if HasErrorCode(e, ErrCodeUpstreamSyncing) {
 				unsynced++
 				continue
+			} else if HasErrorCode(e, ErrCodeUpstreamExcludedByPolicy) {
+				excluded++
+				continue
 			} else if !HasErrorCode(e, ErrCodeUpstreamMethodIgnored) {
 				other++
 			}
@@ -780,6 +784,9 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		}
 		if unsynced > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d syncing nodes", unsynced))
+		}
+		if excluded > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d excluded by policy", excluded))
 		}
 		if other > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d other errors", other))
@@ -1356,10 +1363,12 @@ func (e *ErrUpstreamRateLimitRuleExceeded) ErrorStatusCode() int {
 
 type ErrUpstreamExcludedByPolicy struct{ BaseError }
 
+const ErrCodeUpstreamExcludedByPolicy ErrorCode = "ErrUpstreamExcludedByPolicy"
+
 var NewErrUpstreamExcludedByPolicy = func(upstreamId string) error {
 	return &ErrUpstreamExcludedByPolicy{
 		BaseError{
-			Code:    "ErrUpstreamExcludedByPolicy",
+			Code:    ErrCodeUpstreamExcludedByPolicy,
 			Message: "upstream excluded by selection policy evaluation",
 			Details: map[string]interface{}{
 				"upstreamId": upstreamId,
@@ -1704,7 +1713,7 @@ type ErrInvalidConnectorDriver struct{ BaseError }
 
 const ErrCodeInvalidConnectorDriver = "ErrInvalidConnectorDriver"
 
-var NewErrInvalidConnectorDriver = func(driver string) error {
+var NewErrInvalidConnectorDriver = func(driver ConnectorDriverType) error {
 	return &ErrInvalidConnectorDriver{
 		BaseError{
 			Code:    ErrCodeInvalidConnectorDriver,

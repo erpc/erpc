@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["../src/index.ts"],
+  "sourcesContent": ["export type * from './types'\nexport type {\n    Config,\n    ServerConfig,\n    AdminConfig,\n    DatabaseConfig,\n    ConnectorConfig,\n} from './generated'\n\nimport type { Config } from './generated'\n\nexport const createConfig = (cfg: Config) => {\n    return cfg\n}\n"],
+  "mappings": ";;;;;;;;;;;;;;;;;;;AAAA;AAAA;AAAA;AAAA;AAAA;AAWO,IAAM,eAAe,CAAC,QAAgB;AACzC,SAAO;AACX;",
+  "names": []
+}
