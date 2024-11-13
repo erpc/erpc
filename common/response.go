@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -285,14 +286,19 @@ func (r *NormalizedResponse) MarshalZerologObject(e *zerolog.Event) {
 
 	jrr := r.jsonRpcResponse.Load()
 	if jrr != nil {
+		e.Interface("id", jrr.ID())
 		if jrr.errBytes != nil && len(jrr.errBytes) > 0 {
-			e.Interface("id", jrr.ID()).
-				RawJSON("error", jrr.errBytes).
-				RawJSON("result", jrr.Result)
+			e.RawJSON("error", jrr.errBytes)
+		}
+		if len(jrr.Result) < 100*1024 {
+			e.RawJSON("result", jrr.Result)
 		} else {
-			e.Interface("id", jrr.ID()).
-				Interface("error", jrr.Error).
-				RawJSON("result", jrr.Result)
+			head := 50 * 1024
+			tail := len(jrr.Result) - head
+			if tail < head {
+				head = tail
+			}
+			e.Str("resultHead", util.Mem2Str(jrr.Result[:head])).Str("resultTail", util.Mem2Str(jrr.Result[tail:]))
 		}
 	}
 }

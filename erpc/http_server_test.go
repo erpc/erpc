@@ -22,8 +22,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var tmu sync.Mutex
-
 func TestHttpServer_RaceTimeouts(t *testing.T) {
 	gock.EnableNetworking()
 	gock.NetworkingFilter(func(req *http.Request) bool {
@@ -116,8 +114,6 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 	}
 
 	t.Run("ConcurrentRequestsWithTimeouts", func(t *testing.T) {
-		tmu.Lock()
-		defer tmu.Unlock()
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -158,8 +154,6 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 	})
 
 	t.Run("RapidSuccessiveRequests", func(t *testing.T) {
-		tmu.Lock()
-		defer tmu.Unlock()
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -188,8 +182,6 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 	})
 
 	t.Run("MixedTimeoutAndNonTimeoutRequests", func(t *testing.T) {
-		tmu.Lock()
-		defer tmu.Unlock()
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -254,8 +246,6 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 
 func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	t.Run("ServerHandlerTimeout", func(t *testing.T) {
-		tmu.Lock()
-		defer tmu.Unlock()
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -325,8 +315,6 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	})
 
 	t.Run("NetworkTimeoutBatchingEnabled", func(t *testing.T) {
-		tmu.Lock()
-		defer tmu.Unlock()
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -405,8 +393,6 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	})
 
 	t.Run("NetworkTimeoutBatchingDisabled", func(t *testing.T) {
-		tmu.Lock()
-		defer tmu.Unlock()
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -484,8 +470,6 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	})
 
 	t.Run("UpstreamRequestTimeoutBatchingEnabled", func(t *testing.T) {
-		tmu.Lock()
-		defer tmu.Unlock()
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -559,8 +543,6 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	})
 
 	t.Run("UpstreamRequestTimeoutBatchingDisabled", func(t *testing.T) {
-		tmu.Lock()
-		defer tmu.Unlock()
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -638,8 +620,6 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	})
 
 	t.Run("SameTimeoutLowForServerAndNetwork", func(t *testing.T) {
-		tmu.Lock()
-		defer tmu.Unlock()
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -713,8 +693,6 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	})
 
 	t.Run("ServerTimeoutNoUpstreamNoNetworkTimeout", func(t *testing.T) {
-		tmu.Lock()
-		defer tmu.Unlock()
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -782,8 +760,6 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	})
 
 	t.Run("MidServerHighNetworkLowUpstreamTimeoutBatchingDisabled", func(t *testing.T) {
-		tmu.Lock()
-		defer tmu.Unlock()
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -864,12 +840,10 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("SimpleHedgePolicyWithoutOtherPoliciesBatchingDisabled", func(t *testing.T) {
-		tmu.Lock()
-		defer tmu.Unlock()
 		util.ResetGock()
 		defer util.ResetGock()
-
 		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -949,8 +923,6 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	})
 
 	t.Run("SimpleHedgePolicyWithoutOtherPoliciesBatchingEnabled", func(t *testing.T) {
-		tmu.Lock()
-		defer tmu.Unlock()
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -1043,8 +1015,6 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	})
 
 	t.Run("HedgeReturnsResponseFromSecondUpstreamWhenFirstUpstreamTimesOut", func(t *testing.T) {
-		tmu.Lock()
-		defer tmu.Unlock()
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -1157,8 +1127,6 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	})
 
 	t.Run("HedgeReturnsResponseFromSecondUpstreamWhenFirstUpstreamReturnsSlowBillingIssues", func(t *testing.T) {
-		tmu.Lock()
-		defer tmu.Unlock()
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -1276,8 +1244,6 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	})
 
 	t.Run("ServerTimesOutBeforeHedgeReturnsResponseFromSecondUpstreamWhenFirstUpstreamHasTimeout", func(t *testing.T) {
-		tmu.Lock()
-		defer tmu.Unlock()
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -1483,17 +1449,15 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			sendRequest, _, baseURL, shutdown := createServerTestFixtures(cfg, t)
 			defer shutdown()
 
-			util.SetupMocksForEvmStatePoller()
-
 			time.Sleep(500 * time.Millisecond)
 
 			t.Run("ConcurrentRequests", func(t *testing.T) {
-				tmu.Lock()
-				defer tmu.Unlock()
+				// tmu.Lock()
+				// defer tmu.Unlock()
 				util.ResetGock()
 				defer util.ResetGock()
-
 				util.SetupMocksForEvmStatePoller()
+				defer util.AssertNoPendingMocks(t, 0)
 
 				const concurrentRequests = 10
 
@@ -1599,24 +1563,17 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 					assert.NoError(t, err, "Should be able to decode response for request %d", i)
 					assert.Equal(t, "0x444444", response["result"], "Unexpected result for request %d", i)
 				}
-
-				if left := util.AnyTestMocksLeft(); left > 0 {
-					t.Errorf("Expected all test mocks to be consumed, got %v left", left)
-					for _, pending := range gock.Pending() {
-						t.Errorf("Pending mock: %v", pending)
-					}
-				}
 			})
 
 			t.Run("InvalidJSON", func(t *testing.T) {
-				tmu.Lock()
-				defer tmu.Unlock()
+				// tmu.Lock()
+				// defer tmu.Unlock()
 				util.ResetGock()
 				defer util.ResetGock()
+				util.SetupMocksForEvmStatePoller()
+				defer util.AssertNoPendingMocks(t, 0)
 
 				statusCode, body := sendRequest(`{"invalid json`, nil, nil)
-
-				// fmt.Println(body)
 
 				assert.Equal(t, http.StatusBadRequest, statusCode)
 
@@ -1631,10 +1588,12 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			})
 
 			t.Run("UnsupportedMethod", func(t *testing.T) {
-				tmu.Lock()
-				defer tmu.Unlock()
+				// tmu.Lock()
+				// defer tmu.Unlock()
 				util.ResetGock()
 				defer util.ResetGock()
+				util.SetupMocksForEvmStatePoller()
+				defer util.AssertNoPendingMocks(t, 0)
 
 				cfg.Projects[0].Upstreams[0].IgnoreMethods = []string{}
 
@@ -1663,10 +1622,12 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			})
 
 			t.Run("IgnoredMethod", func(t *testing.T) {
-				tmu.Lock()
-				defer tmu.Unlock()
+				// tmu.Lock()
+				// defer tmu.Unlock()
 				util.ResetGock()
 				defer util.ResetGock()
+				util.SetupMocksForEvmStatePoller()
+				defer util.AssertNoPendingMocks(t, 1)
 
 				cfg.Projects[0].Upstreams[0].IgnoreMethods = []string{"ignored_method"}
 
@@ -1695,10 +1656,12 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			})
 
 			t.Run("InvalidProjectID", func(t *testing.T) {
-				tmu.Lock()
-				defer tmu.Unlock()
+				// tmu.Lock()
+				// defer tmu.Unlock()
 				util.ResetGock()
 				defer util.ResetGock()
+				util.SetupMocksForEvmStatePoller()
+				defer util.AssertNoPendingMocks(t, 0)
 
 				req, err := http.NewRequest("POST", baseURL+"/invalid_project/evm/1", strings.NewReader(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`))
 				require.NoError(t, err)
@@ -1726,10 +1689,12 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			})
 
 			t.Run("UpstreamLatencyAndTimeout", func(t *testing.T) {
-				tmu.Lock()
-				defer tmu.Unlock()
+				// tmu.Lock()
+				// defer tmu.Unlock()
 				util.ResetGock()
 				defer util.ResetGock()
+				util.SetupMocksForEvmStatePoller()
+				defer util.AssertNoPendingMocks(t, 0)
 
 				gock.New("http://rpc1.localhost").
 					Post("/").
@@ -1753,15 +1718,15 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				errorObj := errorResponse["error"].(map[string]interface{})
 				errStr, _ := sonic.Marshal(errorObj)
 				assert.Contains(t, string(errStr), "timeout")
-
-				assert.True(t, gock.IsDone(), "All mocks should have been called")
 			})
 
 			t.Run("UnexpectedPlainErrorResponseFromUpstream", func(t *testing.T) {
-				tmu.Lock()
-				defer tmu.Unlock()
+				// tmu.Lock()
+				// defer tmu.Unlock()
 				util.ResetGock()
 				defer util.ResetGock()
+				util.SetupMocksForEvmStatePoller()
+				defer util.AssertNoPendingMocks(t, 0)
 
 				gock.New("http://rpc1.localhost").
 					Post("/").
@@ -1773,15 +1738,15 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 
 				assert.Equal(t, http.StatusTooManyRequests, statusCode)
 				assert.Contains(t, body, "error code: 1015")
-
-				assert.True(t, gock.IsDone(), "All mocks should have been called")
 			})
 
 			t.Run("UnexpectedServerErrorResponseFromUpstream", func(t *testing.T) {
-				tmu.Lock()
-				defer tmu.Unlock()
+				// tmu.Lock()
+				// defer tmu.Unlock()
 				util.ResetGock()
 				defer util.ResetGock()
+				util.SetupMocksForEvmStatePoller()
+				defer util.AssertNoPendingMocks(t, 0)
 
 				gock.New("http://rpc1.localhost").
 					Post("/").
@@ -1794,15 +1759,15 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				assert.Equal(t, http.StatusInternalServerError, statusCode)
 				assert.Contains(t, body, "-32603")
 				assert.Contains(t, body, "my funky error")
-
-				assert.True(t, gock.IsDone(), "All mocks should have been called")
 			})
 
 			t.Run("MissingIDInJsonRpcRequest", func(t *testing.T) {
-				tmu.Lock()
-				defer tmu.Unlock()
+				// tmu.Lock()
+				// defer tmu.Unlock()
 				util.ResetGock()
 				defer util.ResetGock()
+				util.SetupMocksForEvmStatePoller()
+				defer util.AssertNoPendingMocks(t, 0)
 
 				var id interface{}
 				gock.New("http://rpc1.localhost").
@@ -1865,15 +1830,15 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 
 				assert.Equal(t, http.StatusOK, statusCode)
 				assert.Contains(t, body, "0x123456")
-
-				assert.True(t, gock.IsDone(), "All mocks should have been called")
 			})
 
 			t.Run("AutoAddIDandJSONRPCFieldstoRequest", func(t *testing.T) {
-				tmu.Lock()
-				defer tmu.Unlock()
+				// tmu.Lock()
+				// defer tmu.Unlock()
 				util.ResetGock()
 				defer util.ResetGock()
+				util.SetupMocksForEvmStatePoller()
+				defer util.AssertNoPendingMocks(t, 0)
 
 				gock.New("http://rpc1.localhost").
 					Post("/").
@@ -1909,10 +1874,12 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			})
 
 			t.Run("AlwaysPropagateUpstreamErrorDataField", func(t *testing.T) {
-				tmu.Lock()
-				defer tmu.Unlock()
+				// tmu.Lock()
+				// defer tmu.Unlock()
 				util.ResetGock()
 				defer util.ResetGock()
+				util.SetupMocksForEvmStatePoller()
+				defer util.AssertNoPendingMocks(t, 0)
 
 				gock.New("http://rpc1.localhost").
 					Post("/").
@@ -1924,10 +1891,12 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			})
 
 			t.Run("KeepIDWhen0IsProvided", func(t *testing.T) {
-				tmu.Lock()
-				defer tmu.Unlock()
+				// tmu.Lock()
+				// defer tmu.Unlock()
 				util.ResetGock()
 				defer util.ResetGock()
+				util.SetupMocksForEvmStatePoller()
+				defer util.AssertNoPendingMocks(t, 0)
 
 				gock.New("http://rpc1.localhost").
 					Post("/").
@@ -1980,10 +1949,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 
 func TestHttpServer_MultipleUpstreams(t *testing.T) {
 	t.Run("UpstreamNotAllowedByDirectiveViaHeaders", func(t *testing.T) {
-		tmu.Lock()
-		defer tmu.Unlock()
-		util.ResetGock()
-		defer util.ResetGock()
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -2044,7 +2009,10 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
+		util.ResetGock()
+		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
@@ -2074,17 +2042,9 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, statusCode1)
 		assert.Contains(t, body1, "0x1111111")
-
-		if left := util.AnyTestMocksLeft(); left > 0 {
-			t.Fatalf("Not all mocks were called: %d left", left)
-		}
 	})
 
 	t.Run("UpstreamNotAllowedByDirectiveViaQueryParams", func(t *testing.T) {
-		tmu.Lock()
-		defer tmu.Unlock()
-		util.ResetGock()
-		defer util.ResetGock()
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
@@ -2145,7 +2105,10 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
+		util.ResetGock()
+		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
@@ -2175,10 +2138,6 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, statusCode1)
 		assert.Contains(t, body1, "0x1111111")
-
-		if left := util.AnyTestMocksLeft(); left > 0 {
-			t.Fatalf("Not all mocks were called: %d left", left)
-		}
 	})
 }
 
@@ -2221,12 +2180,10 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 	defer shutdown()
 
 	t.Run("DrpcUnsupportedMethod", func(t *testing.T) {
-		tmu.Lock()
-		defer tmu.Unlock()
 		util.ResetGock()
 		defer util.ResetGock()
-
 		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		gock.New("https://lb.drpc.org").
 			Post("/").
@@ -2248,12 +2205,11 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 	})
 
 	t.Run("ReturnCorrectCORS", func(t *testing.T) {
-		tmu.Lock()
-		defer tmu.Unlock()
 		util.ResetGock()
 		defer util.ResetGock()
 
 		statusCode, headers, _ := sendOptionsRequest("https://erpc.cloud")
+
 		assert.Equal(t, http.StatusNoContent, statusCode)
 		assert.Equal(t, "https://erpc.cloud", headers["Access-Control-Allow-Origin"])
 		assert.Equal(t, "POST", headers["Access-Control-Allow-Methods"])

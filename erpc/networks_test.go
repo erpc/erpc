@@ -32,10 +32,10 @@ func init() {
 func TestNetwork_Forward(t *testing.T) {
 
 	t.Run("ForwardCorrectlyRateLimitedOnNetworkLevel", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
 			&common.RateLimiterConfig{
@@ -125,9 +125,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardNotRateLimitedOnNetworkLevel", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
 			&common.RateLimiterConfig{
@@ -215,7 +216,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardUpstreamRetryIntermittentFailuresWithoutSuccessAndNoErrCode", func(t *testing.T) {
-		defer gock.Off()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
@@ -303,13 +307,6 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
-		if len(gock.Pending()) > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
-
 		if err == nil {
 			t.Errorf("Expected an error, got nil")
 		} else if !strings.Contains(common.ErrorSummary(err), "ErrUpstreamsExhausted") {
@@ -318,9 +315,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardRetryFailuresWithoutSuccessErrorWithCode", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
@@ -408,13 +406,6 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
-		if left := util.AnyTestMocksLeft(); left > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %v left", left)
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
-
 		if err == nil {
 			t.Errorf("Expected an error, got nil")
 		}
@@ -425,7 +416,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardSkipsNonRetryableFailuresFromUpstreams", func(t *testing.T) {
-		defer gock.Off()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
@@ -557,20 +551,14 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
-		if len(gock.Pending()) > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
-
 		if err != nil {
 			t.Errorf("Expected an nil, got error %v", err)
 		}
 	})
 
 	t.Run("ForwardNotSkipsRetryableFailuresFromUpstreams", func(t *testing.T) {
-		defer gock.Off()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
@@ -715,10 +703,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("NotRetryWhenBlockIsFinalizedNodeIsSynced", func(t *testing.T) {
-		// Clean up any gock mocks after the test runs
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 1)
 
 		// Prepare a JSON-RPC request payload as a byte array
 		var requestBytes = []byte(`{
@@ -732,69 +720,21 @@ func TestNetwork_Forward(t *testing.T) {
 			"id": 1
 		}`)
 
-		// Mock the response for the latest block number request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "latest")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x9"}}`))
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "latest")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x9"}}`))
-
-		// Mock the response for the finalized block number request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "finalized")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x8"}}`))
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "finalized")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x8"}}`))
-
-		// Mock the response for the syncing request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_syncing")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":false}`))
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_syncing")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":false}`))
-
 		// Mock an empty logs response from the first upstream
 		gock.New("http://rpc1.localhost").
 			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+			}).
 			Reply(200).
 			JSON([]byte(`{"result":[]}`))
 
 		// Mock a non-empty logs response from the second upstream
 		gock.New("http://rpc2.localhost").
 			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+			}).
 			Reply(200).
 			JSON([]byte(`{"result":[{"logIndex":444}]}`))
 
@@ -935,10 +875,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("RetryWhenNodeIsNotSynced", func(t *testing.T) {
-		// Clean up any gock mocks after the test runs
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		// Prepare a JSON-RPC request payload as a byte array
 		var requestBytes = []byte(`{
@@ -951,8 +891,6 @@ func TestNetwork_Forward(t *testing.T) {
 			}],
 			"id": 1
 		}`)
-
-		util.SetupMocksForEvmStatePoller()
 
 		// Mock an empty logs response from the first upstream
 		gock.New("http://rpc1.localhost").
@@ -1121,10 +1059,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardWithMinimumMemoryAllocation", func(t *testing.T) {
-		// Clean up any gock mocks after the test runs
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 1)
 
 		// Prepare a JSON-RPC request payload as a byte array
 		var requestBytes = []byte(`{
@@ -1136,42 +1074,6 @@ func TestNetwork_Forward(t *testing.T) {
 			"id": 1
 		}`)
 
-		// Mock the response for the latest block number request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "latest")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x9"}}`))
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "latest")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x9"}}`))
-
-		// Mock the response for the finalized block number request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "finalized")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result": {"number":"0x8"}}`))
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "finalized")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result": {"number":"0x8"}}`))
-
 		sampleSize := 100 * 1024 * 1024
 		allowedOverhead := 30 * 1024 * 1024
 		largeResult := strings.Repeat("x", sampleSize)
@@ -1179,6 +1081,9 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Persist().
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "debug_traceTransaction")
+			}).
 			Reply(200).
 			JSON([]byte(fmt.Sprintf(`{"result":"%s"}`, largeResult)))
 
@@ -1316,10 +1221,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("RetryWhenWeDoNotKnowNodeSyncState", func(t *testing.T) {
-		// Clean up any gock mocks after the test runs
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		// Prepare a JSON-RPC request payload as a byte array
 		var requestBytes = []byte(`{
@@ -1333,69 +1238,21 @@ func TestNetwork_Forward(t *testing.T) {
 				"id": 1
 			}`)
 
-		// Mock the response for the latest block number request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "latest")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x9"}}`))
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "latest")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x9"}}`))
-
-		// Mock the response for the finalized block number request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "finalized")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x8"}}`))
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "finalized")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x8"}}`))
-
-		// Mock the response for the syncing request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_syncing")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":false}`))
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_syncing")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":false}`))
-
 		// Mock an empty logs response from the first upstream
 		gock.New("http://rpc1.localhost").
 			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+			}).
 			Reply(200).
 			JSON([]byte(`{"result":[]}`))
 
 		// Mock a non-empty logs response from the second upstream
 		gock.New("http://rpc2.localhost").
 			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+			}).
 			Reply(200).
 			JSON([]byte(`{"result":[{"logIndex":444,"fromHost":"rpc2"}]}`))
 
@@ -1550,10 +1407,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("RetryWhenBlockIsNotFinalized", func(t *testing.T) {
-		// Clean up any gock mocks after the test runs
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		// Prepare a JSON-RPC request payload as a byte array
 		var requestBytes = []byte(`{
@@ -1567,69 +1424,21 @@ func TestNetwork_Forward(t *testing.T) {
 				"id": 1
 			}`)
 
-		// Mock the response for the latest block number request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "latest")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result": {"number":"0x1273c17"}}`))
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "latest")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result": {"number":"0x1273c17"}}`))
-
-		// Mock the response for the finalized block number request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "finalized")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result": {"number":"0x1273c17"}}`))
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "finalized")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result": {"number":"0x1273c17"}}`))
-
-		// Mock the response for the syncing request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_syncing")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":false}`))
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_syncing")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":false}`))
-
 		// Mock an empty logs response from the first upstream
 		gock.New("http://rpc1.localhost").
 			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+			}).
 			Reply(200).
 			JSON([]byte(`{"result":[]}`))
 
 		// Mock a non-empty logs response from the second upstream
 		gock.New("http://rpc2.localhost").
 			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+			}).
 			Reply(200).
 			JSON([]byte(`{"result":[{"logIndex":444, "fromHost":"rpc2"}]}`))
 
@@ -1771,10 +1580,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("RetryWhenBlockFinalizationIsNotAvailable", func(t *testing.T) {
-		// Clean up any gock mocks after the test runs
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		// Prepare a JSON-RPC request payload as a byte array
 		var requestBytes = []byte(`{
@@ -1788,69 +1597,21 @@ func TestNetwork_Forward(t *testing.T) {
 				"id": 1
 			}`)
 
-		// Mock the response for the latest block number request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "latest")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result": {"number":"0x0"}}`)) // latest block not available
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "latest")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result": {"number":"0x0"}}`)) // latest block not available
-
-		// Mock the response for the finalized block number request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "finalized")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result": {"number":"0x0"}}`)) //  finalzied block not available
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "finalized")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result": {"number":"0x0"}}`)) //  finalzied block not available
-
-		// Mock the response for the syncing request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_syncing")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":false}`))
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_syncing")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":false}`))
-
 		// Mock an empty logs response from the first upstream
 		gock.New("http://rpc1.localhost").
 			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+			}).
 			Reply(200).
 			JSON([]byte(`{"result":[]}`))
 
 		// Mock a non-empty logs response from the second upstream
 		gock.New("http://rpc2.localhost").
 			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+			}).
 			Reply(200).
 			JSON([]byte(`{"result":[{"logIndex":444, "fromHost":"rpc2"}]}`))
 
@@ -1992,50 +1753,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("RetryPendingTXsWhenDirectiveIsSet", func(t *testing.T) {
-		defer gock.Off()
-
-		// Mock the response for the latest block number request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				b := util.SafeReadBody(request)
-				return strings.Contains(b, "latest")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0xA98AC7"}}`))
-
-		// Mock the response for the finalized block number request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				b := util.SafeReadBody(request)
-				return strings.Contains(b, "finalized")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x21E88E"}}`))
-
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				b := util.SafeReadBody(request)
-				return strings.Contains(b, "latest")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x32DCD5"}}`))
-
-		// Mock the response for the finalized block number request
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				b := util.SafeReadBody(request)
-				return strings.Contains(b, "finalized")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x2A62B1C"}}`))
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		// Mock a pending transaction response from the first upstream
 		gock.New("http://rpc1.localhost").
@@ -2211,50 +1932,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ReturnPendingDataEvenAfterRetryingExhaustedWhenDirectiveIsSet", func(t *testing.T) {
-		defer gock.Off()
-
-		// Mock the response for the latest block number request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				b := util.SafeReadBody(request)
-				return strings.Contains(b, "latest")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0xA98AC7"}}`))
-
-		// Mock the response for the finalized block number request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				b := util.SafeReadBody(request)
-				return strings.Contains(b, "finalized")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x21E88E"}}`))
-
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				b := util.SafeReadBody(request)
-				return strings.Contains(b, "latest")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x32DCD5"}}`))
-
-		// Mock the response for the finalized block number request
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				b := util.SafeReadBody(request)
-				return strings.Contains(b, "finalized")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x2A62B1C"}}`))
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		// Mock a pending transaction response from the first upstream
 		gock.New("http://rpc1.localhost").
@@ -2433,50 +2114,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("NotRetryPendingTXsWhenDirectiveIsNotSet", func(t *testing.T) {
-		defer gock.Off()
-
-		// Mock the response for the latest block number request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				b := util.SafeReadBody(request)
-				return strings.Contains(b, "latest")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0xA98AC7"}}`))
-
-		// Mock the response for the finalized block number request
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				b := util.SafeReadBody(request)
-				return strings.Contains(b, "finalized")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x21E88E"}}`))
-
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				b := util.SafeReadBody(request)
-				return strings.Contains(b, "latest")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x32DCD5"}}`))
-
-		// Mock the response for the finalized block number request
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				b := util.SafeReadBody(request)
-				return strings.Contains(b, "finalized")
-			}).
-			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x2A62B1C"}}`))
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		// Mock a pending transaction response from the first upstream
 		gock.New("http://rpc1.localhost").
@@ -2646,9 +2287,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardMustNotReadFromCacheIfDirectiveIsSet", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
@@ -2750,20 +2392,13 @@ func TestNetwork_Forward(t *testing.T) {
 		if resp1 == nil || resp2 == nil {
 			t.Fatalf("Expected non-nil responses")
 		}
-
-		// Verify that all mocks were consumed
-		if left := len(gock.Pending()); left > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %v left", left)
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
 	})
 
 	t.Run("ForwardDynamicallyAddsIgnoredMethods", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
@@ -2850,13 +2485,6 @@ func TestNetwork_Forward(t *testing.T) {
 		// Second attempt will not have any more upstreams to try
 		_, err = ntw.Forward(ctx, fakeReq)
 
-		if len(gock.Pending()) > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
-
 		if err == nil {
 			t.Errorf("Expected an error, got nil")
 		}
@@ -2866,9 +2494,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardMustNotRetryRevertedEthCalls", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_call","params":[{"to":"0x362fa9d0bca5d19f743db50738345ce2b40ec99f","data":"0xa4baa10c"}]}`)
 
@@ -2958,13 +2587,6 @@ func TestNetwork_Forward(t *testing.T) {
 
 		_, err = ntw.Forward(ctx, fakeReq)
 
-		if len(gock.Pending()) > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
-
 		if err == nil {
 			t.Errorf("Expected an error, got nil")
 		}
@@ -2974,9 +2596,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardMustNotRetryBillingIssues", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
@@ -3068,13 +2691,6 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
-		if len(gock.Pending()) > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
-
 		if err == nil {
 			t.Errorf("Expected an error, got nil")
 		}
@@ -3087,9 +2703,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardNotRateLimitedOnNetworkLevel", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
 			&common.RateLimiterConfig{
@@ -3179,9 +2796,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardRetryFailuresWithoutSuccess", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
@@ -3269,13 +2887,6 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
-		if len(gock.Pending()) > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
-
 		if err == nil {
 			t.Errorf("Expected an error, got nil")
 		}
@@ -3285,20 +2896,27 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardRetryFailuresWithSuccess", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.localhost").
 			Times(3).
 			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_traceTransaction")
+			}).
 			Reply(503).
 			JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
 
 		gock.New("http://rpc1.localhost").
 			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_traceTransaction")
+			}).
 			Reply(200).
 			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
 
@@ -3379,13 +2997,6 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
-		if len(gock.Pending()) > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
-
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
@@ -3405,9 +3016,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardTimeoutPolicyFail", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
@@ -3495,13 +3107,6 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
-		if len(gock.Pending()) > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
-
 		if err == nil {
 			t.Errorf("Expected error, got nil")
 		}
@@ -3515,9 +3120,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardTimeoutPolicyPass", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
@@ -3605,13 +3211,6 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
-		if len(gock.Pending()) > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
-
 		if err != nil {
 			t.Errorf("Expected nil error, got %v", err)
 		}
@@ -3623,9 +3222,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardHedgePolicyTriggered", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
@@ -3742,13 +3342,6 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
-		if len(gock.Pending()) > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
-
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
@@ -3769,9 +3362,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardHedgePolicyNotTriggered", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
@@ -3884,15 +3478,6 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
-		if len(gock.Pending()) > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		} else {
-			t.Logf("All mocks consumed")
-		}
-
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
@@ -3912,9 +3497,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardHedgePolicySkipsWriteMethods", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_sendRawTransaction","params":["0x1273c18"]}`)
 
@@ -4027,15 +3613,6 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
-		if len(gock.Pending()) > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		} else {
-			t.Logf("All mocks consumed")
-		}
-
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
@@ -4055,9 +3632,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardCBOpensAfterConstantFailure", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
@@ -4164,21 +3742,13 @@ func TestNetwork_Forward(t *testing.T) {
 		if !errors.As(lastErr, &e) {
 			t.Errorf("Expected %v, got %v", "ErrFailsafeCircuitBreakerOpen", lastErr)
 		}
-
-		if len(gock.Pending()) > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		} else {
-			t.Logf("All mocks consumed")
-		}
 	})
 
 	t.Run("ForwardSkipsOpenedCB", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
@@ -4285,21 +3855,13 @@ func TestNetwork_Forward(t *testing.T) {
 		if !strings.Contains(lastErr.Error(), "ErrUpstreamsExhausted") {
 			t.Errorf("Expected error message to contain 'ErrUpstreamsExhausted', got %v", lastErr.Error())
 		}
-
-		if len(gock.Pending()) > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		} else {
-			t.Logf("All mocks consumed")
-		}
 	})
 
 	t.Run("ForwardCBClosesAfterUpstreamIsBackUp", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
@@ -4420,15 +3982,6 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected nil error, got %v", lastErr)
 		}
 
-		if len(gock.Pending()) > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		} else {
-			t.Logf("All mocks consumed")
-		}
-
 		jrr, err := resp.JsonRpcResponse()
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
@@ -4440,9 +3993,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardCorrectResultForUnknownEndpointError", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
@@ -4545,9 +4099,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardEndpointServerSideExceptionSuccess", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_traceTransaction","params":["0x1273c18",false]}`)
 
@@ -4664,13 +4219,6 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
-		if len(gock.Pending()) > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
-
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
@@ -4786,9 +4334,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardEthGetLogsEmptyArrayResponseSuccess", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		var requestBytes = []byte(`{"jsonrpc": "2.0","method": "eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
 
@@ -4902,13 +4451,6 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
-		if len(gock.Pending()) > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %d left", len(gock.Pending()))
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
-
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
@@ -4929,9 +4471,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardEthGetLogsBothEmptyArrayResponse", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		var requestBytes = []byte(`{"jsonrpc": "2.0","method": "eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
 
@@ -4939,11 +4482,17 @@ func TestNetwork_Forward(t *testing.T) {
 
 		gock.New("http://rpc1.localhost").
 			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+			}).
 			Reply(200).
 			JSON(emptyResponse)
 
 		gock.New("http://rpc2.localhost").
 			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+			}).
 			Reply(200).
 			JSON(emptyResponse)
 
@@ -5017,13 +4566,6 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
-		if len(gock.Pending()) > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %d left", len(gock.Pending()))
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
-
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
@@ -5043,9 +4585,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardQuicknodeEndpointRateLimitResponse", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":["0x1273c18"]}`)
 
@@ -5119,13 +4662,6 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
-		if len(gock.Pending()) > 1 {
-			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
-
 		if err == nil {
 			t.Errorf("Expected non-nil error, got nil")
 			return
@@ -5142,14 +4678,18 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardLlamaRPCEndpointRateLimitResponseSingle", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.localhost").
 			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+			}).
 			Reply(200).
 			BodyString(`error code: 1015`)
 
@@ -5217,13 +4757,6 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
-		if len(gock.Pending()) > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
-
 		if err == nil {
 			t.Errorf("Expected non-nil error, got nil")
 			return
@@ -5240,14 +4773,18 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardLlamaRPCEndpointRateLimitResponseBatch", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1273c18",false]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x1273c18",false]}`)
 
 		gock.New("http://rpc1.localhost").
 			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+			}).
 			Reply(200).
 			BodyString(`error code: 1015`)
 
@@ -5315,13 +4852,6 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
-		if len(gock.Pending()) > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %v left", len(gock.Pending()))
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
-
 		if err == nil {
 			t.Errorf("Expected non-nil error, got nil")
 			return
@@ -5338,9 +4868,10 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("DynamicMethodSpecificLatencyPreference", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 9)
 
 		projectID := "test-project"
 		networkID := "evm:123"
@@ -5473,19 +5004,26 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardEnvioUnsupportedNetwork", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
 
 		gock.New("https://rpc.hypersync.xyz").
 			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+			}).
 			Reply(500).
 			BodyString(`{"error": "Internal Server Error"}`)
 
 		gock.New("http://rpc1.localhost").
 			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+			}).
 			Reply(200).
 			JSON([]byte(`{"result":[{"logIndex":444}]}`))
 
@@ -5526,7 +5064,6 @@ func TestNetwork_Forward(t *testing.T) {
 			JsonRpc: &common.JsonRpcUpstreamConfig{
 				SupportsBatch: &common.TRUE,
 			},
-			VendorName: "llama",
 		}
 
 		upr := upstream.NewUpstreamsRegistry(
@@ -5571,13 +5108,6 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
 
-		if len(gock.Pending()) > 0 {
-			t.Errorf("Expected all mocks to be consumed, got %d left", len(gock.Pending()))
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
-
 		// Convert the raw response to a map to access custom fields like fromHost
 		jrr, err := resp.JsonRpcResponse()
 		if err != nil {
@@ -5599,6 +5129,8 @@ func TestNetwork_Forward(t *testing.T) {
 		t.Run("ResponseReleasedBeforeCacheSet", func(t *testing.T) {
 			util.ResetGock()
 			defer util.ResetGock()
+			util.SetupMocksForEvmStatePoller()
+			defer util.AssertNoPendingMocks(t, 0)
 
 			network := setupTestNetwork(t, nil)
 			gock.New("http://rpc1.localhost").
@@ -5723,11 +5255,10 @@ func TestNetwork_Forward(t *testing.T) {
 	}
 
 	t.Run("BatchRequestValidationAndRetry", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
-
+		util.ResetGock()
+		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		// Set up the test environment
 		network := setupTestNetwork(t, &common.UpstreamConfig{
@@ -5815,13 +5346,6 @@ func TestNetwork_Forward(t *testing.T) {
 		// Assertions for the second request (client-side error, should not be retried)
 		assert.Nil(t, err2, "Expected no error for the second request")
 		assert.NotNil(t, resp2, "Expected non-nil response for the second request")
-
-		if left := util.AnyTestMocksLeft(); left > 0 {
-			t.Errorf("Expected all test mocks to be consumed, got %v left", left)
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
 	})
 }
 
@@ -5829,6 +5353,8 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 	t.Run("MultipleSuccessfulConcurrentRequests", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 1)
 
 		network := setupTestNetwork(t, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
@@ -5855,18 +5381,13 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 			}()
 		}
 		wg.Wait()
-
-		if left := util.AnyTestMocksLeft(); left > 1 {
-			t.Errorf("Expected all test mocks to be consumed, got %v left", left)
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
 	})
 
 	t.Run("MultipleConcurrentRequestsWithFailure", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		network := setupTestNetwork(t, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
@@ -5893,18 +5414,13 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 			}()
 		}
 		wg.Wait()
-
-		if left := util.AnyTestMocksLeft(); left > 0 {
-			t.Errorf("Expected all test mocks to be consumed, got %v left", left)
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
 	})
 
 	t.Run("MultipleConcurrentRequestsWithContextTimeout", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 1)
 
 		network := setupTestNetwork(t, &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -5956,6 +5472,8 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 	t.Run("MixedSuccessAndFailureConcurrentRequests", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		network := setupTestNetwork(t, nil)
 		successRequestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
@@ -6001,18 +5519,13 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		}()
 
 		wg.Wait()
-
-		if left := util.AnyTestMocksLeft(); left > 0 {
-			t.Errorf("Expected all test mocks to be consumed, got %v left", left)
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
 	})
 
 	t.Run("SequentialInFlightRequests", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		network := setupTestNetwork(t, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
@@ -6038,18 +5551,13 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		resp2, err2 := network.Forward(context.Background(), req2)
 		assert.NoError(t, err2)
 		assert.NotNil(t, resp2)
-
-		if left := util.AnyTestMocksLeft(); left > 0 {
-			t.Errorf("Expected all test mocks to be consumed, got %v left", left)
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
 	})
 
 	t.Run("JsonRpcIDConsistencyOnConcurrentRequests", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 1)
 
 		network := setupTestNetwork(t, nil)
 
@@ -6096,18 +5604,13 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 				assert.Equal(t, i+1, jrr.ID(), "Response ID should match the request ID for request %d", i+1)
 			}
 		}
-
-		if left := util.AnyTestMocksLeft(); left > 1 {
-			t.Errorf("Expected all test mocks to be consumed, got %v left", left)
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
 	})
 
 	t.Run("ContextCancellationDuringRequest", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		network := setupTestNetwork(t, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
@@ -6148,18 +5651,13 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 			return true
 		})
 		assert.Equal(t, 0, inFlightCount, "in-flight requests map should be empty after context cancellation")
-
-		if left := util.AnyTestMocksLeft(); left > 0 {
-			t.Errorf("Expected all test mocks to be consumed, got %v left", left)
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
 	})
 
 	t.Run("LongRunningRequest", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		network := setupTestNetwork(t, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
@@ -6203,20 +5701,11 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 			return true
 		})
 		assert.Equal(t, 0, inFlightCount, "in-flight requests map should be empty after request completion")
-
-		if left := util.AnyTestMocksLeft(); left > 0 {
-			t.Errorf("Expected all test mocks to be consumed, got %v left", left)
-			for _, pending := range gock.Pending() {
-				t.Errorf("Pending mock: %v", pending)
-			}
-		}
 	})
 }
 
 func setupTestNetwork(t *testing.T, upstreamConfig *common.UpstreamConfig) *Network {
 	t.Helper()
-
-	util.SetupMocksForEvmStatePoller()
 
 	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
 	metricsTracker := health.NewTracker("test", time.Minute)

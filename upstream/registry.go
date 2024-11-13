@@ -27,7 +27,7 @@ type UpstreamsRegistry struct {
 
 	allUpstreams []*Upstream
 	upstreamsMu  *sync.RWMutex
-	networkMu    sync.Map // map[string]*sync.RWMutex for per-network locks
+	networkMu    *sync.Map // map[string]*sync.RWMutex for per-network locks
 	// map of network => upstreams
 	networkUpstreams map[string][]*Upstream
 	// map of network -> method (or *) => upstreams
@@ -66,6 +66,7 @@ func NewUpstreamsRegistry(
 		sortedUpstreams:      make(map[string]map[string][]*Upstream),
 		upstreamScores:       make(map[string]map[string]map[string]float64),
 		upstreamsMu:          &sync.RWMutex{},
+		networkMu:            &sync.Map{},
 	}
 }
 
