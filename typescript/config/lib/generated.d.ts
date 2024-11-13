@@ -199,8 +199,8 @@ export interface SelectionPolicyConfig {
     evalInterval?: types.Duration;
     evalFunction?: types.SelectionPolicyEvalFunction | undefined;
     evalPerMethod?: boolean;
-    sampleAfter?: types.Duration;
-    sampleCount?: number;
+    resampleInterval?: types.Duration;
+    resampleCount?: number;
 }
 export type AuthType = string;
 export declare const AuthTypeSecret: AuthType;

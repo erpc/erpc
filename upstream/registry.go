@@ -259,8 +259,7 @@ func (u *UpstreamsRegistry) RUnlockUpstreams() {
 func (u *UpstreamsRegistry) sortAndFilterUpstreams(networkId, method string, upstreams []*Upstream) []*Upstream {
 	activeUpstreams := make([]*Upstream, 0)
 	for _, ups := range upstreams {
-		metrics := u.metricsTracker.GetUpstreamMethodMetrics(ups.Config().Id, networkId, method)
-		if !metrics.Cordoned {
+		if !u.metricsTracker.IsCordoned(ups.Config().Id, networkId, method) {
 			activeUpstreams = append(activeUpstreams, ups)
 		}
 	}

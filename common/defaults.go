@@ -434,11 +434,11 @@ func (c *SelectionPolicyConfig) SetDefaults() {
 			c.EvalFunction = evalFunction
 		}
 	}
-	if c.SampleAfter == 0 {
-		c.SampleAfter = 5 * time.Minute
+	if c.ResampleInterval == 0 {
+		c.ResampleInterval = 5 * time.Minute
 	}
-	if c.SampleCount == 0 {
-		c.SampleCount = 10
+	if c.ResampleCount == 0 {
+		c.ResampleCount = 10
 	}
 }
 
@@ -577,11 +577,11 @@ func NewDefaultNetworkConfig(upstreams []*UpstreamConfig) *NetworkConfig {
 		}
 
 		selectionPolicy := &SelectionPolicyConfig{
-			EvalInterval:  1 * time.Minute,
-			EvalFunction:  evalFunction,
-			EvalPerMethod: false,
-			SampleAfter:   5 * time.Minute,
-			SampleCount:   10,
+			EvalInterval:     1 * time.Minute,
+			EvalFunction:     evalFunction,
+			EvalPerMethod:    false,
+			ResampleInterval: 5 * time.Minute,
+			ResampleCount:    10,
 
 			evalFunctionOriginal: DefaultPolicyFunction,
 		}

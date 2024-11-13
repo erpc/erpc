@@ -3025,6 +3025,9 @@ func TestNetwork_Forward(t *testing.T) {
 
 		gock.New("http://rpc1.localhost").
 			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_traceTransaction")
+			}).
 			Reply(200).
 			Delay(100 * time.Millisecond).
 			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
