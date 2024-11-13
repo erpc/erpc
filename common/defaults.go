@@ -418,7 +418,7 @@ const DefaultPolicyFunction = `
 			return healthyOnes
 		}
 
-		return upstreams
+		return [...fallbacks, ...healthyOnes]
 	}
 `
 
