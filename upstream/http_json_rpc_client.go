@@ -384,7 +384,13 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 	searcher.ConcurrentRead = false
 	searcher.ValidateJSON = false
 
-	c.logger.Trace().Str("response", bodyStr).Msgf("processing batch response from upstream")
+	if c.logger.GetLevel() == zerolog.TraceLevel {
+		if len(bodyBytes) > 20*1024 {
+			c.logger.Trace().Str("head", util.Mem2Str(bodyBytes[:20*1024])).Str("tail", util.Mem2Str(bodyBytes[len(bodyBytes)-20*1024:])).Msgf("processing batch response from upstream (trimmed to first and last 20k)")
+		} else {
+			c.logger.Trace().RawJSON("response", bodyBytes).Msgf("processing batch response from upstream")
+		}
+	}
 
 	rootNode, err := searcher.GetByPath()
 	if err != nil {
@@ -590,7 +596,16 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 	jr, err := nr.JsonRpcResponse()
 
 	if c.logger.GetLevel() == zerolog.TraceLevel {
-		c.logger.Trace().Object("request", nr.Request()).Str("result", string(jr.Result)).Interface("error", jr.Error).Msgf("processing json rpc response from upstream")
+		maxTraceSize := 20 * 1024
+		if len(jr.Result) > maxTraceSize {
+			tailStart := len(jr.Result) - maxTraceSize
+			if tailStart < maxTraceSize {
+				tailStart = maxTraceSize
+			}
+			c.logger.Trace().Str("head", util.Mem2Str(jr.Result[:maxTraceSize])).Str("tail", util.Mem2Str(jr.Result[tailStart:])).Msgf("processing json rpc response from upstream (trimmed to first and last 20k)")
+		} else {
+			c.logger.Trace().RawJSON("result", jr.Result).Interface("error", jr.Error).Msgf("processing json rpc response from upstream")
+		}
 	}
 
 	if err != nil {
