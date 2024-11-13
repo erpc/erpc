@@ -32,11 +32,11 @@ type PolicyEvaluator struct {
 }
 
 type upstreamState struct {
-	mu            *sync.RWMutex
-	isActive      bool
-	sampleAfter   time.Time
-	sampleCounter int
-	lastEvalTime  time.Time
+	mu               *sync.RWMutex
+	isActive         bool
+	resampleInterval time.Time
+	sampleCounter    int
+	lastEvalTime     time.Time
 }
 
 type metricData map[string]interface{}
@@ -223,13 +223,13 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 		if selectedUpstreams[id] {
 			state.isActive = true
 			state.sampleCounter = 0
-			state.sampleAfter = time.Time{}
+			state.resampleInterval = time.Time{}
 		} else {
 			if state.isActive {
 				// Newly deactivated
 				state.isActive = false
-				state.sampleAfter = now.Add(p.config.SampleAfter)
-				state.sampleCounter = p.config.SampleCount
+				state.resampleInterval = now.Add(p.config.ResampleInterval)
+				state.sampleCounter = p.config.ResampleCount
 			}
 		}
 
@@ -237,7 +237,7 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 
 		// Update tracker state
 		if !state.isActive {
-			p.metricsTracker.Cordon(id, p.networkId, method, "selection policy evaluation")
+			p.metricsTracker.Cordon(id, p.networkId, method, "excluded by selection policy")
 		} else {
 			p.metricsTracker.Uncordon(id, p.networkId, method)
 		}
@@ -307,16 +307,16 @@ func (p *PolicyEvaluator) checkPermitForMethod(upstreamId string, method string)
 
 	// Check if we should allow sampling
 	now := time.Now()
-	if !state.sampleAfter.IsZero() && now.After(state.sampleAfter) && state.sampleCounter > 0 {
+	if now.After(state.resampleInterval) && state.sampleCounter > 0 {
 		// Switch to write lock to update counter
 		state.mu.RUnlock()
 		state.mu.Lock()
 		// Double-check conditions after acquiring write lock
-		if !state.sampleAfter.IsZero() && now.After(state.sampleAfter) && state.sampleCounter > 0 {
+		if now.After(state.resampleInterval) && state.sampleCounter > 0 {
 			state.sampleCounter--
 			if state.sampleCounter < 1 {
-				state.sampleCounter = p.config.SampleCount
-				state.sampleAfter = now.Add(p.config.SampleAfter)
+				state.sampleCounter = p.config.ResampleCount
+				state.resampleInterval = now.Add(p.config.ResampleInterval)
 			}
 			state.mu.Unlock()
 			return true

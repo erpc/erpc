@@ -288,22 +288,22 @@ type EvmNetworkConfig struct {
 }
 
 type SelectionPolicyConfig struct {
-	EvalInterval  time.Duration  `yaml:"evalInterval,omitempty" json:"evalInterval,omitempty"`
-	EvalFunction  sobek.Callable `yaml:"evalFunction,omitempty" json:"evalFunction,omitempty" tstype:"types.SelectionPolicyEvalFunction | undefined"`
-	EvalPerMethod bool           `yaml:"evalPerMethod,omitempty" json:"evalPerMethod,omitempty"`
-	SampleAfter   time.Duration  `yaml:"sampleAfter,omitempty" json:"sampleAfter,omitempty"`
-	SampleCount   int            `yaml:"sampleCount,omitempty" json:"sampleCount,omitempty"`
+	EvalInterval     time.Duration  `yaml:"evalInterval,omitempty" json:"evalInterval,omitempty"`
+	EvalFunction     sobek.Callable `yaml:"evalFunction,omitempty" json:"evalFunction,omitempty" tstype:"types.SelectionPolicyEvalFunction | undefined"`
+	EvalPerMethod    bool           `yaml:"evalPerMethod,omitempty" json:"evalPerMethod,omitempty"`
+	ResampleInterval time.Duration  `yaml:"resampleInterval,omitempty" json:"resampleInterval,omitempty"`
+	ResampleCount    int            `yaml:"resampleCount,omitempty" json:"resampleCount,omitempty"`
 
 	evalFunctionOriginal string `yaml:"-" json:"-"`
 }
 
 func (c *SelectionPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type rawSelectionPolicyConfig struct {
-		EvalInterval  string `yaml:"evalInterval"`
-		EvalPerMethod bool   `yaml:"evalPerMethod"`
-		EvalFunction  string `yaml:"evalFunction"`
-		SampleAfter   string `yaml:"sampleAfter"`
-		SampleCount   int    `yaml:"sampleCount"`
+		EvalInterval     string `yaml:"evalInterval"`
+		EvalPerMethod    bool   `yaml:"evalPerMethod"`
+		EvalFunction     string `yaml:"evalFunction"`
+		ResampleInterval string `yaml:"resampleInterval"`
+		ResampleCount    int    `yaml:"resampleCount"`
 	}
 	raw := rawSelectionPolicyConfig{}
 
@@ -311,12 +311,12 @@ func (c *SelectionPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error)
 		return err
 	}
 
-	if raw.SampleAfter != "" {
-		sampleAfter, err := time.ParseDuration(raw.SampleAfter)
+	if raw.ResampleInterval != "" {
+		resampleInterval, err := time.ParseDuration(raw.ResampleInterval)
 		if err != nil {
-			return fmt.Errorf("failed to parse sampleAfter: %v", err)
+			return fmt.Errorf("failed to parse resampleInterval: %v", err)
 		}
-		c.SampleAfter = sampleAfter
+		c.ResampleInterval = resampleInterval
 	}
 
 	if raw.EvalInterval != "" {
@@ -337,7 +337,7 @@ func (c *SelectionPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error)
 	}
 
 	c.EvalPerMethod = raw.EvalPerMethod
-	c.SampleCount = raw.SampleCount
+	c.ResampleCount = raw.ResampleCount
 
 	return nil
 }
@@ -351,11 +351,11 @@ func (c *SelectionPolicyConfig) MarshalJSON() ([]byte, error) {
 		evf = "<function>"
 	}
 	return sonic.Marshal(map[string]interface{}{
-		"evalInterval":  c.EvalInterval,
-		"evalPerMethod": c.EvalPerMethod,
-		"evalFunction":  evf,
-		"sampleAfter":   c.SampleAfter,
-		"sampleCount":   c.SampleCount,
+		"evalInterval":     c.EvalInterval,
+		"evalPerMethod":    c.EvalPerMethod,
+		"evalFunction":     evf,
+		"resampleInterval": c.ResampleInterval,
+		"resampleCount":    c.ResampleCount,
 	})
 }
 

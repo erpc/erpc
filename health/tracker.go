@@ -56,6 +56,20 @@ func (m *TrackedMetrics) ThrottledRate() float64 {
 	return (m.RemoteRateLimitedTotal + m.SelfRateLimitedTotal) / m.RequestsTotal
 }
 
+func (mt *TrackedMetrics) Reset() {
+	mt.Mutex.Lock()
+
+	mt.ErrorsTotal = 0
+	mt.RequestsTotal = 0
+	mt.SelfRateLimitedTotal = 0
+	mt.RemoteRateLimitedTotal = 0
+	mt.LatencySecs.Reset()
+	mt.BlockHeadLag = 0
+
+	mt.LastCollect = time.Now()
+	mt.Mutex.Unlock()
+}
+
 type Tracker struct {
 	projectId string
 	mu        sync.RWMutex
@@ -92,17 +106,7 @@ func (t *Tracker) resetMetrics(ctx context.Context) {
 		case <-ticker.C:
 			t.mu.Lock()
 			for key := range t.metrics {
-				t.metrics[key].Mutex.Lock()
-
-				t.metrics[key].ErrorsTotal = 0
-				t.metrics[key].RequestsTotal = 0
-				t.metrics[key].SelfRateLimitedTotal = 0
-				t.metrics[key].RemoteRateLimitedTotal = 0
-				t.metrics[key].LatencySecs.Reset()
-				t.metrics[key].BlockHeadLag = 0
-
-				t.metrics[key].LastCollect = time.Now()
-				t.metrics[key].Mutex.Unlock()
+				t.metrics[key].Reset()
 			}
 			t.mu.Unlock()
 		}
@@ -420,4 +424,21 @@ func (t *Tracker) GetUpstreamMetrics(upsId string) map[string]*TrackedMetrics {
 	}
 
 	return result
+}
+
+func (t *Tracker) IsCordoned(ups, network, method string) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	if method != "*" {
+		globalKey := t.getKey(ups, network, "*")
+		gmt, ok := t.metrics[globalKey]
+		if ok && gmt.Cordoned {
+			return true
+		}
+	}
+
+	specificKey := t.getKey(ups, network, method)
+	smt, ok := t.metrics[specificKey]
+	return ok && smt.Cordoned
 }

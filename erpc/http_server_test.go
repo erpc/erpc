@@ -116,6 +116,8 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 	t.Run("ConcurrentRequestsWithTimeouts", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
@@ -128,7 +130,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 				"result":  "0x222222",
 			})
 
-		const concurrentRequests = 5
+		const concurrentRequests = 50
 		var wg sync.WaitGroup
 		results := make([]struct {
 			statusCode int
@@ -156,6 +158,8 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 	t.Run("RapidSuccessiveRequests", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
@@ -184,6 +188,8 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 	t.Run("MixedTimeoutAndNonTimeoutRequests", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		totalReqs := 100
 
@@ -393,9 +399,6 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	})
 
 	t.Run("NetworkTimeoutBatchingDisabled", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: util.StringPtr("10s"),
@@ -446,11 +449,13 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
+		util.ResetGock()
+		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
-			Persist().
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -840,11 +845,6 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 
 func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("SimpleHedgePolicyWithoutOtherPoliciesBatchingDisabled", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
-
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: util.StringPtr("10s"),
@@ -887,7 +887,10 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
+		util.ResetGock()
+		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
@@ -923,11 +926,6 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	})
 
 	t.Run("SimpleHedgePolicyWithoutOtherPoliciesBatchingEnabled", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-
-		util.SetupMocksForEvmStatePoller()
-
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: util.StringPtr("10s"),
@@ -978,7 +976,10 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
+		util.ResetGock()
+		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
@@ -1015,11 +1016,6 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	})
 
 	t.Run("HedgeReturnsResponseFromSecondUpstreamWhenFirstUpstreamTimesOut", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-
-		util.SetupMocksForEvmStatePoller()
-
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: util.StringPtr("1500ms"),
@@ -1090,7 +1086,10 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
+		util.ResetGock()
+		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
@@ -1127,11 +1126,6 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	})
 
 	t.Run("HedgeReturnsResponseFromSecondUpstreamWhenFirstUpstreamReturnsSlowBillingIssues", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-
-		util.SetupMocksForEvmStatePoller()
-
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: util.StringPtr("1000ms"),
@@ -1202,11 +1196,13 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
+		util.ResetGock()
+		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
-			Persist().
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -1224,7 +1220,6 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		gock.New("http://rpc2.localhost").
 			Post("/").
-			Persist().
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -1244,11 +1239,6 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	})
 
 	t.Run("ServerTimesOutBeforeHedgeReturnsResponseFromSecondUpstreamWhenFirstUpstreamHasTimeout", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-
-		util.SetupMocksForEvmStatePoller()
-
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: util.StringPtr("30ms"),
@@ -1319,11 +1309,13 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
+		util.ResetGock()
+		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
-			Persist().
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -1341,7 +1333,6 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		gock.New("http://rpc2.localhost").
 			Post("/").
-			Persist().
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -1452,8 +1443,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			time.Sleep(500 * time.Millisecond)
 
 			t.Run("ConcurrentRequests", func(t *testing.T) {
-				// tmu.Lock()
-				// defer tmu.Unlock()
 				util.ResetGock()
 				defer util.ResetGock()
 				util.SetupMocksForEvmStatePoller()
@@ -1566,8 +1555,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			})
 
 			t.Run("InvalidJSON", func(t *testing.T) {
-				// tmu.Lock()
-				// defer tmu.Unlock()
 				util.ResetGock()
 				defer util.ResetGock()
 				util.SetupMocksForEvmStatePoller()
@@ -1588,8 +1575,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			})
 
 			t.Run("UnsupportedMethod", func(t *testing.T) {
-				// tmu.Lock()
-				// defer tmu.Unlock()
 				util.ResetGock()
 				defer util.ResetGock()
 				util.SetupMocksForEvmStatePoller()
@@ -1622,8 +1607,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			})
 
 			t.Run("IgnoredMethod", func(t *testing.T) {
-				// tmu.Lock()
-				// defer tmu.Unlock()
 				util.ResetGock()
 				defer util.ResetGock()
 				util.SetupMocksForEvmStatePoller()
@@ -1656,8 +1639,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			})
 
 			t.Run("InvalidProjectID", func(t *testing.T) {
-				// tmu.Lock()
-				// defer tmu.Unlock()
 				util.ResetGock()
 				defer util.ResetGock()
 				util.SetupMocksForEvmStatePoller()
@@ -1689,8 +1670,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			})
 
 			t.Run("UpstreamLatencyAndTimeout", func(t *testing.T) {
-				// tmu.Lock()
-				// defer tmu.Unlock()
 				util.ResetGock()
 				defer util.ResetGock()
 				util.SetupMocksForEvmStatePoller()
@@ -1721,8 +1700,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			})
 
 			t.Run("UnexpectedPlainErrorResponseFromUpstream", func(t *testing.T) {
-				// tmu.Lock()
-				// defer tmu.Unlock()
 				util.ResetGock()
 				defer util.ResetGock()
 				util.SetupMocksForEvmStatePoller()
@@ -1741,8 +1718,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			})
 
 			t.Run("UnexpectedServerErrorResponseFromUpstream", func(t *testing.T) {
-				// tmu.Lock()
-				// defer tmu.Unlock()
 				util.ResetGock()
 				defer util.ResetGock()
 				util.SetupMocksForEvmStatePoller()
@@ -1762,8 +1737,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			})
 
 			t.Run("MissingIDInJsonRpcRequest", func(t *testing.T) {
-				// tmu.Lock()
-				// defer tmu.Unlock()
 				util.ResetGock()
 				defer util.ResetGock()
 				util.SetupMocksForEvmStatePoller()
@@ -1833,8 +1806,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			})
 
 			t.Run("AutoAddIDandJSONRPCFieldstoRequest", func(t *testing.T) {
-				// tmu.Lock()
-				// defer tmu.Unlock()
 				util.ResetGock()
 				defer util.ResetGock()
 				util.SetupMocksForEvmStatePoller()
@@ -1874,8 +1845,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			})
 
 			t.Run("AlwaysPropagateUpstreamErrorDataField", func(t *testing.T) {
-				// tmu.Lock()
-				// defer tmu.Unlock()
 				util.ResetGock()
 				defer util.ResetGock()
 				util.SetupMocksForEvmStatePoller()
@@ -1891,8 +1860,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			})
 
 			t.Run("KeepIDWhen0IsProvided", func(t *testing.T) {
-				// tmu.Lock()
-				// defer tmu.Unlock()
 				util.ResetGock()
 				defer util.ResetGock()
 				util.SetupMocksForEvmStatePoller()
@@ -1949,7 +1916,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 
 func TestHttpServer_MultipleUpstreams(t *testing.T) {
 	t.Run("UpstreamNotAllowedByDirectiveViaHeaders", func(t *testing.T) {
-
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: util.StringPtr("10s"),
@@ -2045,7 +2011,6 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 	})
 
 	t.Run("UpstreamNotAllowedByDirectiveViaQueryParams", func(t *testing.T) {
-
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: util.StringPtr("10s"),
