@@ -291,6 +291,7 @@ type SelectionPolicyConfig struct {
 	EvalInterval     time.Duration  `yaml:"evalInterval,omitempty" json:"evalInterval,omitempty"`
 	EvalFunction     sobek.Callable `yaml:"evalFunction,omitempty" json:"evalFunction,omitempty" tstype:"types.SelectionPolicyEvalFunction | undefined"`
 	EvalPerMethod    bool           `yaml:"evalPerMethod,omitempty" json:"evalPerMethod,omitempty"`
+	ResampleExcluded bool           `yaml:"resampleExcluded,omitempty" json:"resampleExcluded,omitempty"`
 	ResampleInterval time.Duration  `yaml:"resampleInterval,omitempty" json:"resampleInterval,omitempty"`
 	ResampleCount    int            `yaml:"resampleCount,omitempty" json:"resampleCount,omitempty"`
 

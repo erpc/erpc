@@ -310,6 +310,11 @@ func (p *PolicyEvaluator) checkPermitForMethod(upstreamId string, method string)
 		return true
 	}
 
+	if !p.config.ResampleExcluded {
+		state.mu.RUnlock()
+		return false
+	}
+
 	// Check if we should allow sampling
 	now := time.Now()
 	if now.After(state.resampleInterval) && state.sampleCounter > 0 {

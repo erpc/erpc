@@ -43,6 +43,9 @@ type TrackedMetrics struct {
 }
 
 func (m *TrackedMetrics) ErrorRate() float64 {
+	m.Mutex.RLock()
+	defer m.Mutex.RUnlock()
+
 	if m.RequestsTotal == 0 {
 		return 0
 	}
@@ -50,6 +53,9 @@ func (m *TrackedMetrics) ErrorRate() float64 {
 }
 
 func (m *TrackedMetrics) ThrottledRate() float64 {
+	m.Mutex.RLock()
+	defer m.Mutex.RUnlock()
+
 	if m.RequestsTotal == 0 {
 		return 0
 	}
