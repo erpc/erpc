@@ -684,12 +684,17 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 		if len(jrReq.Params) > index {
 			// TODO: do we need to check if blockNumber is a valid hex?
 			_, ok := jrReq.Params[index].(string)
+
 			if ok {
-				nodeType, ent := u.detectNodeType()
-				if ent != nil {
-					return fmt.Errorf("failed to detect node type: %w", err), false
+				nodeType := u.config.Evm.NodeType
+				if nodeType == "" {
+					nodeType, err = u.detectNodeType()
+					if err != nil {
+						return fmt.Errorf("failed to detect node type: %w", err), false
+					}
 				}
-				if nodeType == "full" {
+
+				if nodeType == common.EvmNodeTypeFull {
 					lb := req.Network().EvmStatePollerOf(u.Config().Id).LatestBlock()
 
 					bn, ebn := req.EvmBlockNumber()
@@ -721,7 +726,7 @@ func isMissingHistoricalStateError(err error) bool {
 		strings.Contains(errMsg, "not found")
 }
 
-func (u *Upstream) detectNodeType() (string, error) {
+func (u *Upstream) detectNodeType() (common.EvmNodeType, error) {
 	// using zero address for universality
 	address := "0x0000000000000000000000000000000000000000"
 

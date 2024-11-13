@@ -250,4 +250,21 @@ func TestUpstream_SkipLogic(t *testing.T) {
 		assert.True(t, skip)
 		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_get_block_by_number", "test"))
 	})
+
+	t.Run("ValidBlockNumberForFullNodeUpstream", func(t *testing.T) {
+		upstream := &Upstream{
+			config: &common.UpstreamConfig{
+				Id: "test",
+				Evm: &common.EvmUpstreamConfig{
+					NodeType:                 "full",
+					MaxAvailableRecentBlocks: 128,
+				},
+			},
+		}
+
+		// latest block is 100
+		reason, skip := upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance", "params":["0x0000000000000000000000000000000000000000", "0x64"]}`)))
+		assert.False(t, skip)
+		assert.Nil(t, reason)
+	})
 }
