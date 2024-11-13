@@ -6068,6 +6068,37 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 	})
 }
 
+func TestNetwork_SkippedUpstreams(t *testing.T) {
+	t.Run("ValidBlockNumberForFullNodeUpstream", func(t *testing.T) {
+		resetGock()
+		defer resetGock()
+
+		network := setupTestNetworkWithFullNodeUpstream(t, nil)
+		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000", "0x1273c18"]}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(safeReadBody(request), "eth_getBalance")
+			}).
+			Reply(200).
+			BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x0"}`)
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(context.Background(), req)
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+
+		if left := anyTestMocksLeft(); left > 1 {
+			t.Errorf("Expected all test mocks to be consumed, got %v left", left)
+			for _, pending := range gock.Pending() {
+				t.Errorf("Pending mock: %v", pending)
+			}
+		}
+	})
+}
+
 func setupTestNetwork(t *testing.T, upstreamConfig *common.UpstreamConfig) *Network {
 	t.Helper()
 
@@ -6083,6 +6114,70 @@ func setupTestNetwork(t *testing.T, upstreamConfig *common.UpstreamConfig) *Netw
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
+			},
+		}
+	}
+	upstreamsRegistry := upstream.NewUpstreamsRegistry(
+		context.Background(),
+		&log.Logger,
+		"test",
+		[]*common.UpstreamConfig{upstreamConfig},
+		rateLimitersRegistry,
+		vendors.NewVendorsRegistry(),
+		metricsTracker,
+		1*time.Second,
+	)
+	network, err := NewNetwork(
+		&log.Logger,
+		"test",
+		&common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm: &common.EvmNetworkConfig{
+				ChainId: 123,
+			},
+		},
+		rateLimitersRegistry,
+		upstreamsRegistry,
+		metricsTracker,
+	)
+	assert.NoError(t, err)
+
+	err = upstreamsRegistry.Bootstrap(context.Background())
+	assert.NoError(t, err)
+	time.Sleep(100 * time.Millisecond)
+
+	err = upstreamsRegistry.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+	assert.NoError(t, err)
+	time.Sleep(100 * time.Millisecond)
+
+	err = network.Bootstrap(context.Background())
+	assert.NoError(t, err)
+	time.Sleep(100 * time.Millisecond)
+
+	h, _ := common.HexToInt64("0x1273c18")
+	network.evmStatePollers["test"].SuggestFinalizedBlock(h)
+	network.evmStatePollers["test"].SuggestLatestBlock(h)
+
+	return network
+}
+
+func setupTestNetworkWithFullNodeUpstream(t *testing.T, upstreamConfig *common.UpstreamConfig) *Network {
+	t.Helper()
+
+	setupMocksForEvmStatePoller()
+
+	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	metricsTracker := health.NewTracker("test", time.Minute)
+
+	if upstreamConfig == nil {
+		upstreamConfig = &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "test",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId:                  123,
+				NodeType:                 "full",
+				MaxAvailableRecentBlocks: 128,
 			},
 		}
 	}

@@ -703,29 +703,7 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if strings.Contains(err.Message, "missing trie node") ||
-			strings.Contains(err.Message, "header not found") ||
-			strings.Contains(err.Message, "could not find block") ||
-			strings.Contains(err.Message, "unknown block") ||
-			strings.Contains(err.Message, "Unknown block") ||
-			strings.Contains(err.Message, "height must be less than or equal") ||
-			strings.Contains(err.Message, "invalid blockhash finalized") ||
-			strings.Contains(err.Message, "Expect block number from id") ||
-			strings.Contains(err.Message, "block not found") ||
-			strings.Contains(err.Message, "block height passed is invalid") ||
-			// Usually happens on Avalanche when querying a pretty recent block:
-			strings.Contains(err.Message, "cannot query unfinalized") ||
-			strings.Contains(err.Message, "height is not available") ||
-			// This usually happens when sending a trace_* request to a newly created block:
-			strings.Contains(err.Message, "genesis is not traceable") ||
-			strings.Contains(err.Message, "could not find FinalizeBlock") ||
-			strings.Contains(err.Message, "no historical rpc") ||
-			(strings.Contains(err.Message, "blocks specified") && strings.Contains(err.Message, "cannot be found")) ||
-			strings.Contains(err.Message, "transaction not found") ||
-			strings.Contains(err.Message, "cannot find transaction") ||
-			strings.Contains(err.Message, "after last accepted block") ||
-			strings.Contains(err.Message, "is greater than latest") ||
-			strings.Contains(err.Message, "No state available") {
+		} else if common.EvmIsMissingDataError(err) {
 			return common.NewErrEndpointMissingData(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),

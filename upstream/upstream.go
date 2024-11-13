@@ -741,7 +741,7 @@ func (u *Upstream) detectNodeType() (common.EvmNodeType, error) {
 	if errBlock1 == nil {
 		// No error, node is an archive node
 		return "archive", nil
-	} else if isMissingHistoricalStateError(errBlock1) {
+	} else if common.EvmIsMissingDataError(errBlock1) {
 		// Error due to missing historical state, proceed to check latest block
 	} else {
 		return "", fmt.Errorf("error getting balance at block 0x1: %w", errBlock1)
