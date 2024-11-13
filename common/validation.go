@@ -3,7 +3,10 @@ package common
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"time"
+
+	"github.com/erpc/erpc/util"
 )
 
 func (c *Config) Validate() error {
@@ -324,7 +327,7 @@ func (u *UpstreamConfig) Validate(c *Config) error {
 		return fmt.Errorf("upstream.*.endpoint is required")
 	}
 	if u.Evm != nil {
-		if err := u.Evm.Validate(); err != nil {
+		if err := u.Evm.Validate(u); err != nil {
 			return err
 		}
 	}
@@ -356,7 +359,13 @@ func (u *UpstreamConfig) Validate(c *Config) error {
 	return nil
 }
 
-func (e *EvmUpstreamConfig) Validate() error {
+func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
+	if !strings.HasPrefix(u.Endpoint, "http") && !strings.HasPrefix(u.Endpoint, "ws") {
+		if e.ChainId > 0 {
+			return fmt.Errorf("upstream.*.evm.chainId must be 0 for non-http endpoints, but '%d' is provided for %s", e.ChainId, util.RedactEndpoint(u.Endpoint))
+		}
+	}
+
 	if e.StatePollerInterval == "" {
 		return fmt.Errorf("upstream.*.evm.statePollerInterval is required")
 	}

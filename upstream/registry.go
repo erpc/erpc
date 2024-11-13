@@ -299,6 +299,23 @@ func (u *UpstreamsRegistry) sortAndFilterUpstreams(networkId, method string, ups
 		return activeUpstreams[i].Config().Id < activeUpstreams[j].Config().Id
 	})
 
+	if u.logger.Trace().Enabled() {
+		ids := make([]string, len(activeUpstreams))
+		for i, ups := range activeUpstreams {
+			ids[i] = ups.Config().Id
+		}
+		scores := make([]float64, len(activeUpstreams))
+		for i, ups := range activeUpstreams {
+			scores[i] = u.upstreamScores[ups.Config().Id][networkId][method]
+		}
+		u.logger.Trace().
+			Str("networkId", networkId).
+			Str("method", method).
+			Strs("upstreams", ids).
+			Floats64("scores", scores).
+			Msgf("sorted upstreams")
+	}
+
 	return activeUpstreams
 }
 

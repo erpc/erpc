@@ -29,6 +29,8 @@ type PolicyEvaluator struct {
 	methodStates map[string]map[string]*upstreamState
 	// Handle global state when evalPerMethod is false
 	globalState map[string]*upstreamState
+
+	evalMutex sync.Mutex
 }
 
 type upstreamState struct {
@@ -158,7 +160,10 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 		p.logger.Debug().Str("method", method).Interface("upstreams", metricsData).Msg("evaluating selection policy function")
 	}
 
-	// Call the evaluation function
+	// Call user-defined evaluation function
+	p.evalMutex.Lock()
+	defer p.evalMutex.Unlock()
+
 	result, err := p.config.EvalFunction(nil, p.runtime.ToValue(metricsData), p.runtime.ToValue(method))
 	if err != nil {
 		return fmt.Errorf("failed to evaluate selection policy: %w", err)

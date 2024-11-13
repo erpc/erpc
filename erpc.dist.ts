@@ -55,10 +55,7 @@ export default createConfig({
             ],
             upstreams: [
                 {
-                    endpoint: "http://localhost:9081",
-                    evm: {
-                        chainId: 123
-                    }
+                    endpoint: "alchemy://xxxxxxxxxxxxxxxxx",
                 },
                 {
                     endpoint: "http://localhost:9082",

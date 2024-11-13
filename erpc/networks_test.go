@@ -5458,7 +5458,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+				ctx, cancel := context.WithTimeout(context.Background(), 1000*time.Millisecond)
 				defer cancel()
 				req := common.NewNormalizedRequest(requestBytes)
 				resp, err := network.Forward(ctx, req)

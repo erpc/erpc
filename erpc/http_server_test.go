@@ -252,9 +252,6 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 
 func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	t.Run("ServerHandlerTimeout", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: util.StringPtr("10ms"),
@@ -297,11 +294,13 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
+		util.ResetGock()
+		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
-			Persist().
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -321,9 +320,6 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	})
 
 	t.Run("NetworkTimeoutBatchingEnabled", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: util.StringPtr("50000ms"),
@@ -375,11 +371,13 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
+		util.ResetGock()
+		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
-			Persist().
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -461,7 +459,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(200).
-			Delay(300 * time.Second).
+			Delay(30 * time.Second).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -475,9 +473,6 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	})
 
 	t.Run("UpstreamRequestTimeoutBatchingEnabled", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: util.StringPtr("2s"),
@@ -524,11 +519,13 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
+		util.ResetGock()
+		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
-			Persist().
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -548,9 +545,6 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	})
 
 	t.Run("UpstreamRequestTimeoutBatchingDisabled", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: util.StringPtr("10s"),
@@ -601,11 +595,13 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
+		util.ResetGock()
+		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
-			Persist().
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -625,9 +621,6 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	})
 
 	t.Run("SameTimeoutLowForServerAndNetwork", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: util.StringPtr("1ms"),
@@ -674,22 +667,10 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
+		util.ResetGock()
+		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-
-		gock.New("http://rpc1.localhost").
-			Post("/").
-			Persist().
-			Filter(func(request *http.Request) bool {
-				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance")
-			}).
-			Reply(200).
-			Delay(30 * time.Second).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0x222222",
-			})
+		defer util.AssertNoPendingMocks(t, 0)
 
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
@@ -698,9 +679,6 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	})
 
 	t.Run("ServerTimeoutNoUpstreamNoNetworkTimeout", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: util.StringPtr("100ms"),
@@ -714,7 +692,11 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{},
+							Failsafe: &common.FailsafeConfig{
+								Retry:   nil,
+								Hedge:   nil,
+								Timeout: nil,
+							},
 						},
 					},
 					Upstreams: []*common.UpstreamConfig{
@@ -725,7 +707,11 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
 							},
-							Failsafe: &common.FailsafeConfig{},
+							Failsafe: &common.FailsafeConfig{
+								Retry:   nil,
+								Hedge:   nil,
+								Timeout: nil,
+							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.TRUE,
 								BatchMaxWait:  "5ms",
@@ -741,11 +727,13 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
+		util.ResetGock()
+		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
-			Persist().
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")
@@ -765,9 +753,6 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	})
 
 	t.Run("MidServerHighNetworkLowUpstreamTimeoutBatchingDisabled", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				MaxTimeout: util.StringPtr("200ms"),
@@ -819,11 +804,13 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
+		util.ResetGock()
+		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
-			Persist().
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getBalance")

@@ -559,12 +559,10 @@ func TestPolicyEvaluator(t *testing.T) {
 		assert.Error(t, err, "Third permit should be denied (sample count exceeded)")
 
 		// Transition: Sampling -> Active (improve metrics during sampling)
-		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-		mt.RecordUpstreamDuration("rpc1", "evm:123", "method1", 10*time.Millisecond)
-		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-		mt.RecordUpstreamDuration("rpc1", "evm:123", "method1", 15*time.Millisecond)
-		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-		mt.RecordUpstreamDuration("rpc1", "evm:123", "method1", 20*time.Millisecond)
+		for i := 0; i < 10; i++ {
+			mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
+			mt.RecordUpstreamDuration("rpc1", "evm:123", "method1", 10*time.Millisecond)
+		}
 
 		// Wait for next evaluation after sampling
 		time.Sleep(75 * time.Millisecond)
@@ -578,13 +576,13 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Transition: Active -> Inactive -> Sampling -> Inactive
 		// (degrade metrics, wait for sampling, fail to improve)
-		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error3")
-		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error4")
+		for i := 0; i < 30; i++ {
+			mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
+			mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error3")
+		}
 
-		// Wait for evaluation + sampling period + next evaluation
-		time.Sleep(config.ResampleInterval + 150*time.Millisecond)
+		// Wait for evaluation
+		time.Sleep(75 * time.Millisecond)
 
 		err = evaluator.AcquirePermit(&logger, ups1, "method1")
 		assert.Error(t, err, "Upstream should return to inactive state after sampling")
