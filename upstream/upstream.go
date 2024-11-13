@@ -638,6 +638,39 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 	}
 
 	// TODO evm: if block can be determined from request and upstream is only full-node and block is historical skip
+	jrReq, err := req.JsonRpcRequest()
+	if err != nil {
+		return fmt.Errorf("failed to get json-rpc request: %w", err), true
+	}
+
+	// sample of methods with block param
+	methodsWithBlockParam := map[string]int{
+		"eth_getBalance":          1,
+		"eth_getCode":             1,
+		"eth_getTransactionCount": 1,
+		"eth_call":                1,
+	}
+
+	if index, exists := methodsWithBlockParam[jrReq.Method]; exists {
+		if len(jrReq.Params) > index {
+			// TODO: do we need to check if blockNumber is a valid hex?
+			_, ok := jrReq.Params[index].(string)
+			if ok {
+				bn, ebn := req.EvmBlockNumber()
+				if ebn != nil {
+					return fmt.Errorf("failed to get current block number: %w", ebn), false
+				}
+				blockToCheck := bn - 1000
+				balanceReq := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0xe5cB067E90D5Cd1F8052B83562Ae670bA4A211a8", "0x%x"]}`, blockToCheck)))
+
+				_, err = u.Forward(context.Background(), balanceReq)
+				if err != nil {
+					return fmt.Errorf("upstream %d is not a full node: %w", u.vendor, err), false
+				}
+				return nil, true
+			}
+		}
+	}
 
 	return nil, false
 }
