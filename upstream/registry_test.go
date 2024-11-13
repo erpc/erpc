@@ -20,7 +20,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 	projectID := "test-project"
 	networkID := "evm:123"
 	method := "eth_call"
-	windowSize := 3 * time.Second
+	windowSize := 300 * time.Millisecond
 
 	t.Run("RefreshScoresForRequests", func(t *testing.T) {
 		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize)
@@ -117,24 +117,25 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 	})
 
 	t.Run("CorrectOrderForErrorRateOverTime", func(t *testing.T) {
+		windowSize := 100 * time.Millisecond
 		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize)
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
 		// Initial phase
-		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 20)
-		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 30)
+		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 30)
+		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 80)
 		simulateRequests(metricsTracker, networkID, "upstream-c", method, 100, 10)
 
 		expectedOrder := []string{"upstream-c", "upstream-a", "upstream-b"}
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
 
 		// Simulate time passing and metrics reset
-		time.Sleep(windowSize)
+		time.Sleep(windowSize + 10*time.Millisecond)
 
 		// Second phase
-		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 15)
-		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 5)
-		simulateRequests(metricsTracker, networkID, "upstream-c", method, 100, 20)
+		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 30)
+		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 10)
+		simulateRequests(metricsTracker, networkID, "upstream-c", method, 100, 80)
 
 		expectedOrder = []string{"upstream-b", "upstream-a", "upstream-c"}
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)

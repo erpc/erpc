@@ -405,7 +405,10 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 					var cancelFn context.CancelFunc
 					ectx, cancelFn = context.WithTimeoutCause(
 						ectx, *u.timeoutDuration,
-						common.NewErrEndpointRequestTimeout(*u.timeoutDuration),
+						// TODO 1ms is a workaround to ensure context carries the timeout deadline (used when calling upstreams),
+						//      but allow the failsafe execution to fail with timeout first for proper error handling.
+						//      Is there a way to do this cleanly? e.g. if failsafe lib works via context rather than Ticker?
+						common.NewErrEndpointRequestTimeout(*u.timeoutDuration+1*time.Millisecond),
 					)
 					defer cancelFn()
 				}
