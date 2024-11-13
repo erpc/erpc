@@ -16,13 +16,17 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestHttpJsonRpcClient_NoResponseErrors(t *testing.T) {
+func TestHttpJsonRpcClient_SingleRequests(t *testing.T) {
 	logger := zerolog.New(zerolog.NewConsoleWriter())
 
 	t.Run("TimeoutError", func(t *testing.T) {
 		defer gock.Off()
 
-		client, err := NewGenericHttpJsonRpcClient(&logger, &Upstream{
+		dur := 1 * time.Second
+		ctx, cancel := context.WithTimeout(context.Background(), dur)
+		defer cancel()
+
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
 				Endpoint: "http://rpc1.localhost:8545",
 			},
@@ -35,10 +39,6 @@ func TestHttpJsonRpcClient_NoResponseErrors(t *testing.T) {
 			Delay(2 * time.Second).
 			JSON(map[string]interface{}{"result": "0x1"})
 
-		dur := 1 * time.Second
-		ctx, cancel := context.WithTimeout(context.Background(), dur)
-		defer cancel()
-
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
 		_, err = client.SendRequest(ctx, req)
 
@@ -49,7 +49,10 @@ func TestHttpJsonRpcClient_NoResponseErrors(t *testing.T) {
 	t.Run("ServerNotRespondingEmptyBody", func(t *testing.T) {
 		defer gock.Off()
 
-		client, err := NewGenericHttpJsonRpcClient(&logger, &Upstream{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
 				Endpoint: "http://rpc1.localhost:8545",
 			},
@@ -72,7 +75,10 @@ func TestHttpJsonRpcClient_NoResponseErrors(t *testing.T) {
 	t.Run("IncompleteResponse", func(t *testing.T) {
 		defer gock.Off()
 
-		client, err := NewGenericHttpJsonRpcClient(&logger, &Upstream{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
 				Endpoint: "http://rpc1.localhost:8545",
 			},
@@ -90,10 +96,82 @@ func TestHttpJsonRpcClient_NoResponseErrors(t *testing.T) {
 		assert.Error(t, err)
 	})
 
+	t.Run("TraceExecutionTimeout", func(t *testing.T) {
+		defer gock.Off()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
+			config: &common.UpstreamConfig{
+				Endpoint: "http://rpc1.localhost:8545",
+			},
+		}, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"})
+		assert.NoError(t, err)
+
+		gock.New("http://rpc1.localhost:8545").
+			Post("/").
+			Reply(200).
+			BodyString(`{"jsonrpc":"2.0","id":1,"result":[{"error":"execution timeout"}]}`)
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"debug_traceBlockByNumber","params":["0x226AECC",{"tracer":"callTracer","timeout":"1ms"}],"id":1}`))
+		_, err = client.SendRequest(context.Background(), req)
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "-32015")
+		assert.Contains(t, err.Error(), "execution timeout")
+	})
+}
+
+func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
+	logger := zerolog.New(zerolog.NewConsoleWriter())
+
+	t.Run("SimpleBatchRequest", func(t *testing.T) {
+		defer gock.Off()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
+			config: &common.UpstreamConfig{
+				Endpoint: "http://rpc1.localhost:8545",
+				JsonRpc: &common.JsonRpcUpstreamConfig{
+					SupportsBatch: &[]bool{true}[0],
+					BatchMaxSize:  5,
+					BatchMaxWait:  "50ms",
+				},
+			},
+		}, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"})
+		assert.NoError(t, err)
+
+		gock.New("http://rpc1.localhost:8545").
+			Post("/").
+			Reply(200).
+			BodyString(`[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"result":"0x2"},{"jsonrpc":"2.0","id":3,"result":"0x3"}]`)
+
+		var wg sync.WaitGroup
+		for i := 0; i < 3; i++ {
+			wg.Add(1)
+			go func(id int) {
+				defer wg.Done()
+				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_blockNumber","params":[]}`, id)))
+				_, err := client.SendRequest(context.Background(), req)
+				if err != nil {
+					assert.NotContains(t, err.Error(), "no response received for request")
+				}
+				assert.NoError(t, err)
+			}(i + 1)
+		}
+		wg.Wait()
+	})
+
 	t.Run("ConcurrentRequestsRaceCondition", func(t *testing.T) {
 		defer gock.Off()
 
-		client, err := NewGenericHttpJsonRpcClient(&logger, &Upstream{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
 				Endpoint: "http://rpc1.localhost:8545",
 				JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -128,50 +206,13 @@ func TestHttpJsonRpcClient_NoResponseErrors(t *testing.T) {
 		wg.Wait()
 	})
 
-	t.Run("RequestMultiplexingIssue", func(t *testing.T) {
-		defer gock.Off()
-
-		client, err := NewGenericHttpJsonRpcClient(&logger, &Upstream{
-			config: &common.UpstreamConfig{
-				Endpoint: "http://rpc1.localhost:8545",
-				JsonRpc: &common.JsonRpcUpstreamConfig{
-					SupportsBatch: &[]bool{true}[0],
-					BatchMaxSize:  5,
-					BatchMaxWait:  "50ms",
-				},
-			},
-		}, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"})
-		assert.NoError(t, err)
-
-		gock.New("http://rpc1.localhost:8545").
-			Post("/").
-			Reply(200).
-			BodyString(`[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"result":"0x2"},{"jsonrpc":"2.0","id":3,"result":"0x3"}]`)
-
-		var wg sync.WaitGroup
-		for i := 0; i < 3; i++ {
-			wg.Add(1)
-			go func(id int) {
-				defer wg.Done()
-				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_blockNumber","params":[]}`, id)))
-				_, err := client.SendRequest(context.Background(), req)
-				if err != nil {
-					assert.NotContains(t, err.Error(), "no response received for request")
-				}
-				assert.NoError(t, err)
-			}(i + 1)
-		}
-		wg.Wait()
-	})
-}
-
-func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
-	logger := zerolog.New(zerolog.NewConsoleWriter())
-
 	t.Run("SeparateBatchRequestsWithSameIDs", func(t *testing.T) {
 		defer gock.Off()
 
-		client, err := NewGenericHttpJsonRpcClient(&logger, &Upstream{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
 				Endpoint: "http://rpc1.localhost",
 				JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -201,9 +242,8 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 					panic(fmt.Sprintf("SeparateBatchRequestsWithSameIDs: resp1 is nil err1: %v", err1))
 				}
 				wr := bytes.NewBuffer([]byte{})
-				rdr, werr := resp1.GetReader()
+				_, werr := resp1.WriteTo(wr)
 				assert.NoError(t, werr)
-				wr.ReadFrom(rdr)
 				txt := wr.String()
 				assert.Equal(t, `{"jsonrpc":"2.0","id":1,"result":"0x1"}`, txt)
 			}()
@@ -214,8 +254,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 				resp6, err6 := client.SendRequest(context.Background(), req6)
 				assert.NoError(t, err6)
 				wr := bytes.NewBuffer([]byte{})
-				rdr, werr := resp6.GetReader()
-				wr.ReadFrom(rdr)
+				_, werr := resp6.WriteTo(wr)
 				assert.NoError(t, werr)
 				txt := wr.String()
 				assert.Equal(t, `{"jsonrpc":"2.0","id":6,"result":"0x6"}`, txt)
@@ -230,7 +269,10 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	t.Run("RequestEndpointTimeout", func(t *testing.T) {
 		defer gock.Off()
 
-		client, err := NewGenericHttpJsonRpcClient(&logger, &Upstream{
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
 				Endpoint: "http://rpc1.localhost:8545",
 			},
@@ -245,9 +287,6 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
 
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-		defer cancel()
-
 		_, err = client.SendRequest(ctx, req)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "remote endpoint request timeout")
@@ -256,7 +295,10 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	t.Run("RequestContextTimeout", func(t *testing.T) {
 		defer gock.Off()
 
-		client, err := NewGenericHttpJsonRpcClient(&logger, &Upstream{
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
 				Endpoint: "http://rpc1.localhost:8545",
 				JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -277,9 +319,6 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 				{"jsonrpc": "2.0", "id": 2, "result": "0x2"},
 			})
 
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-		defer cancel()
-
 		var wg sync.WaitGroup
 		for i := 0; i < 2; i++ {
 			wg.Add(1)
@@ -297,7 +336,10 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	t.Run("SingleErrorForBatchRequest", func(t *testing.T) {
 		defer gock.Off()
 
-		client, err := NewGenericHttpJsonRpcClient(&logger, &Upstream{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
 				Endpoint: "http://rpc1.localhost:8545",
 				JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -335,7 +377,10 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	t.Run("HTMLResponseForBatchRequest", func(t *testing.T) {
 		defer gock.Off()
 
-		client, err := NewGenericHttpJsonRpcClient(&logger, &Upstream{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
 				Endpoint: "http://rpc1.localhost:8545",
 				JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -369,7 +414,10 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	t.Run("SingleStringResponseForBatchRequest", func(t *testing.T) {
 		defer gock.Off()
 
-		client, err := NewGenericHttpJsonRpcClient(&logger, &Upstream{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
 				Endpoint: "http://rpc1.localhost:8545",
 				JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -403,7 +451,10 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	t.Run("SingleObjectResponseForBatchRequest", func(t *testing.T) {
 		defer gock.Off()
 
-		client, err := NewGenericHttpJsonRpcClient(&logger, &Upstream{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
 				Endpoint: "http://rpc1.localhost:8545",
 				JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -439,7 +490,10 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	t.Run("SingleRequestUnauthorized", func(t *testing.T) {
 		defer gock.Off()
 
-		client, err := NewGenericHttpJsonRpcClient(&logger, &Upstream{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
 				Endpoint: "http://rpc1.localhost:8545",
 			},
@@ -465,7 +519,10 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	t.Run("SingleRequestUnsupported", func(t *testing.T) {
 		defer gock.Off()
 
-		client, err := NewGenericHttpJsonRpcClient(&logger, &Upstream{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
 				Endpoint: "http://rpc1.localhost:8545",
 			},
@@ -491,7 +548,10 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	t.Run("SingleRequestCapacityExceeded", func(t *testing.T) {
 		defer gock.Off()
 
-		client, err := NewGenericHttpJsonRpcClient(&logger, &Upstream{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
 				Endpoint: "http://rpc1.localhost:8545",
 				JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -525,15 +585,14 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		}
 		wg.Wait()
 	})
-}
-
-func TestHttpJsonRpcClient_BatchRequestErrors(t *testing.T) {
-	logger := zerolog.New(zerolog.NewConsoleWriter())
 
 	t.Run("PartialBatchResponse", func(t *testing.T) {
 		defer gock.Off()
 
-		client, err := NewGenericHttpJsonRpcClient(&logger, &Upstream{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
 				Endpoint: "http://rpc1.localhost:8545",
 				JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -576,7 +635,10 @@ func TestHttpJsonRpcClient_BatchRequestErrors(t *testing.T) {
 	t.Run("BatchRequestTimeout", func(t *testing.T) {
 		defer gock.Off()
 
-		client, err := NewGenericHttpJsonRpcClient(&logger, &Upstream{
+		ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
+		defer cancel()
+
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
 				Endpoint: "http://rpc1.localhost:8545",
 				JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -593,9 +655,6 @@ func TestHttpJsonRpcClient_BatchRequestErrors(t *testing.T) {
 			Reply(200).
 			Delay(1 * time.Second).
 			BodyString(`[{"jsonrpc":"2.0","id":1,"result":"0x1"},{"jsonrpc":"2.0","id":2,"result":"0x2"},{"jsonrpc":"2.0","id":3,"result":"0x3"}]`)
-
-		ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
-		defer cancel()
 
 		var wg sync.WaitGroup
 		for i := 0; i < 3; i++ {

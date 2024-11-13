@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -16,7 +17,7 @@ import (
 )
 
 func Init(
-	ctx context.Context,
+	appCtx context.Context,
 	logger zerolog.Logger,
 	fs afero.Fs,
 	args []string,
@@ -53,13 +54,13 @@ func Init(
 	var evmJsonRpcCache *EvmJsonRpcCache
 	if cfg.Database != nil {
 		if cfg.Database.EvmJsonRpcCache != nil {
-			evmJsonRpcCache, err = NewEvmJsonRpcCache(ctx, &logger, cfg.Database.EvmJsonRpcCache)
+			evmJsonRpcCache, err = NewEvmJsonRpcCache(appCtx, &logger, cfg.Database.EvmJsonRpcCache)
 			if err != nil {
 				logger.Warn().Msgf("failed to initialize evm json rpc cache: %v", err)
 			}
 		}
 	}
-	erpcInstance, err := NewERPC(ctx, &logger, evmJsonRpcCache, cfg)
+	erpcInstance, err := NewERPC(appCtx, &logger, evmJsonRpcCache, cfg)
 	if err != nil {
 		return err
 	}
@@ -69,7 +70,7 @@ func Init(
 	//
 	logger.Info().Msg("initializing transports")
 	if cfg.Server != nil {
-		httpServer := NewHttpServer(ctx, &logger, cfg.Server, erpcInstance)
+		httpServer := NewHttpServer(appCtx, &logger, cfg.Server, cfg.Admin, erpcInstance)
 		go func() {
 			if err := httpServer.Start(&logger); err != nil {
 				if err != http.ErrServerClosed {
@@ -85,6 +86,9 @@ func Init(
 		addrV6 := fmt.Sprintf("%s:%d", cfg.Metrics.HostV6, cfg.Metrics.Port)
 		logger.Info().Msgf("starting metrics server on port: %d addrV4: %s addrV6: %s", cfg.Metrics.Port, addrV4, addrV6)
 		srv := &http.Server{
+			BaseContext: func(ln net.Listener) context.Context {
+				return appCtx
+			},
 			Addr:              fmt.Sprintf(":%d", cfg.Metrics.Port),
 			Handler:           promhttp.Handler(),
 			ReadHeaderTimeout: 10 * time.Second,
@@ -96,9 +100,9 @@ func Init(
 			}
 		}()
 		go func() {
-			<-ctx.Done()
+			<-appCtx.Done()
 			logger.Info().Msg("shutting down metrics server...")
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			shutdownCtx, cancel := context.WithTimeout(appCtx, 5*time.Second)
 			defer cancel()
 			if err := srv.Shutdown(shutdownCtx); err != nil {
 				logger.Error().Msgf("metrics server forced to shutdown: %s", err)

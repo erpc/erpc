@@ -2,6 +2,18 @@ package common
 
 import "context"
 
+type Scope string
+
+const (
+	// Policies must be created with a "network" in mind,
+	// assuming there will be many upstreams e.g. Retry might endup using a different upstream
+	ScopeNetwork Scope = "network"
+
+	// Policies must be created with one only "upstream" in mind
+	// e.g. Retry with be towards the same upstream
+	ScopeUpstream Scope = "upstream"
+)
+
 type UpstreamType string
 
 const (
@@ -13,6 +25,7 @@ const (
 	UpstreamTypeEvmPimlico   UpstreamType = "evm+pimlico"
 	UpstreamTypeEvmThirdweb  UpstreamType = "evm+thirdweb"
 	UpstreamTypeEvmEtherspot UpstreamType = "evm+etherspot"
+	UpstreamTypeEvmInfura    UpstreamType = "evm+infura"
 )
 
 type Upstream interface {

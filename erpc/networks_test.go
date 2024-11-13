@@ -5,18 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime"
-	"sync"
-	"sync/atomic"
-
-	// "fmt"
 	"io"
 	"net/http"
-
-	// "os"
+	"net/url"
+	"runtime"
 	"strings"
-
-	// "sync"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,7 +26,6 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
-	"github.com/valyala/fasthttp"
 )
 
 var TRUE = true
@@ -66,6 +60,9 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -76,6 +73,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upsReg := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -111,9 +109,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
 		var lastErr error
 		var lastResp *common.NormalizedResponse
 
@@ -157,6 +152,9 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -167,6 +165,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upsReg := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -202,8 +201,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
 
 		var lastErr error
 
@@ -257,6 +254,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Failsafe: fsCfg,
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -282,7 +280,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup)
+		cl, err := clr.GetOrCreateClient(ctx, pup)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -361,6 +359,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Failsafe: fsCfg,
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -386,7 +385,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup)
+		cl, err := clr.GetOrCreateClient(ctx, pup)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -491,6 +490,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Failsafe: upsFsCfg,
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -517,7 +517,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup1)
+		cl, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -532,7 +532,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -635,6 +635,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Failsafe: upsFsCfg,
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -661,7 +662,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup1)
+		cl, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -676,7 +677,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -805,6 +806,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Initialize the upstreams registry
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -830,7 +832,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -845,7 +847,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -992,6 +994,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Initialize the upstreams registry
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -1017,7 +1020,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1032,7 +1035,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1170,6 +1173,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		// Initialize the upstreams registry
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1},
@@ -1195,7 +1199,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1368,6 +1372,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Initialize the upstreams registry
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -1393,7 +1398,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1408,7 +1413,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1565,6 +1570,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Initialize the upstreams registry
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -1590,7 +1596,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1605,7 +1611,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1752,6 +1758,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Initialize the upstreams registry
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -1777,7 +1784,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1792,7 +1799,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1861,7 +1868,7 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(b, "latest")
 			}).
 			Reply(200).
-			JSON([]byte(`{"result": {"number":"0xA98AC7"}}`))
+			JSON([]byte(`{"result":{"number":"0xA98AC7"}}`))
 
 		// Mock the response for the finalized block number request
 		gock.New("http://rpc1.localhost").
@@ -1882,7 +1889,7 @@ func TestNetwork_Forward(t *testing.T) {
 				return strings.Contains(b, "latest")
 			}).
 			Reply(200).
-			JSON([]byte(`{"result": {"number":"0x32DCD5"}}`))
+			JSON([]byte(`{"result":{"number":"0x32DCD5"}}`))
 
 		// Mock the response for the finalized block number request
 		gock.New("http://rpc2.localhost").
@@ -1955,6 +1962,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Initialize the upstreams registry
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -1982,7 +1990,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1997,7 +2005,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2025,7 +2033,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Bootstrap the network and make the simulated request
 		ntw.Bootstrap(ctx)
-		time.Sleep(1000 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest([]byte(`{
@@ -2034,7 +2042,7 @@ func TestNetwork_Forward(t *testing.T) {
 				"params": ["0xabcdef"],
 				"id": 1
 			}`))
-		fakeReq.ApplyDirectivesFromHttp(&fasthttp.RequestHeader{}, &fasthttp.Args{})
+		fakeReq.ApplyDirectivesFromHttp(http.Header{}, url.Values{})
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -2057,6 +2065,229 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		if blockNumber != "0x54C563" {
 			t.Errorf("Expected blockNumber to be %q, got %q", "0x54C563", blockNumber)
+		}
+
+		fromHost, err := jrr.PeekStringByPath("fromHost")
+		if err != nil {
+			t.Fatalf("Failed to get fromHost from result: %v", err)
+		}
+		if fromHost != "rpc2" {
+			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
+		}
+	})
+
+	t.Run("ReturnPendingDataEvenAfterRetryingExhaustedWhenDirectiveIsSet", func(t *testing.T) {
+		defer gock.Off()
+
+		// Mock the response for the latest block number request
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				b := safeReadBody(request)
+				return strings.Contains(b, "latest")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0xA98AC7"}}`))
+
+		// Mock the response for the finalized block number request
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				b := safeReadBody(request)
+				return strings.Contains(b, "finalized")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x21E88E"}}`))
+
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				b := safeReadBody(request)
+				return strings.Contains(b, "latest")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x32DCD5"}}`))
+
+		// Mock the response for the finalized block number request
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				b := safeReadBody(request)
+				return strings.Contains(b, "finalized")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x2A62B1C"}}`))
+
+		// Mock a pending transaction response from the first upstream
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				b := safeReadBody(request)
+				return strings.Contains(b, "eth_getTransactionByHash")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"blockNumber":null,"hash":"0xabcdef","fromHost":"rpc1"}}`))
+
+		// Mock a non-pending transaction response from the second upstream
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				b := safeReadBody(request)
+				return strings.Contains(b, "eth_getTransactionByHash")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"blockNumber":null,"hash":"0xabcdef","fromHost":"rpc2"}}`))
+
+		// Set up a context and a cancellation function
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Initialize various components for the test environment
+		clr := upstream.NewClientRegistry(&log.Logger)
+		fsCfg := &common.FailsafeConfig{
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 3, // Allow up to 3 retry attempts
+			},
+		}
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+			Budgets: []*common.RateLimitBudgetConfig{},
+		}, &log.Logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		vndr := vendors.NewVendorsRegistry()
+		mt := health.NewTracker("prjA", 2*time.Second)
+
+		// Set up upstream configurations
+		up1 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc1",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
+		up2 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc2",
+			Endpoint: "http://rpc2.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
+
+		// Initialize the upstreams registry
+		upr := upstream.NewUpstreamsRegistry(
+			ctx,
+			&log.Logger,
+			"prjA",
+			[]*common.UpstreamConfig{up1, up2},
+			rlr,
+			vndr,
+			mt,
+			0,
+		)
+		err = upr.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Create and register clients for both upstreams
+		pup1, err := upr.NewUpstream(
+			"prjA",
+			up1,
+			&log.Logger,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1.Client = cl1
+
+		pup2, err := upr.NewUpstream(
+			"prjA",
+			up2,
+			&log.Logger,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup2.Client = cl2
+
+		// Set up the network configuration
+		ntw, err := NewNetwork(
+			&log.Logger,
+			"prjA",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId:              123,
+					BlockTrackerInterval: "10h",
+				},
+				Failsafe: fsCfg,
+			},
+			rlr,
+			upr,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Bootstrap the network and make the simulated request
+		ntw.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
+
+		// Create a fake request and forward it through the network
+		fakeReq := common.NewNormalizedRequest([]byte(`{
+				"jsonrpc": "2.0",
+				"method": "eth_getTransactionByHash",
+				"params": ["0xabcdef"],
+				"id": 1
+			}`))
+
+		headers := http.Header{}
+		queryArgs := url.Values{}
+		fakeReq.ApplyDirectivesFromHttp(headers, queryArgs)
+		resp, err := ntw.Forward(ctx, fakeReq)
+
+		if err != nil {
+			t.Fatalf("Expected nil error, got %v", err)
+		}
+
+		// Parse and validate the JSON-RPC response
+		jrr, err := resp.JsonRpcResponse()
+		if err != nil {
+			t.Fatalf("Failed to get JSON-RPC response: %v", err)
+		}
+
+		if jrr.Result == nil {
+			t.Fatalf("Expected non-nil result")
+		}
+
+		hash, err := jrr.PeekStringByPath("hash")
+		if err != nil {
+			t.Fatalf("Failed to get hash from result: %v", err)
+		}
+		if hash != "0xabcdef" {
+			t.Errorf("Expected hash to be %q, got %q", "0xabcdef", hash)
 		}
 
 		fromHost, err := jrr.PeekStringByPath("fromHost")
@@ -2164,6 +2395,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Initialize the upstreams registry
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -2191,7 +2423,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2206,7 +2438,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2234,7 +2466,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Bootstrap the network and make the simulated request
 		ntw.Bootstrap(ctx)
-		time.Sleep(1000 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest([]byte(`{
@@ -2243,9 +2475,11 @@ func TestNetwork_Forward(t *testing.T) {
 				"params": ["0xabcdef"],
 				"id": 1
 			}`))
-		hdr := &fasthttp.RequestHeader{}
-		hdr.Set("x-erpc-retry-pending", "false")
-		fakeReq.ApplyDirectivesFromHttp(hdr, &fasthttp.Args{})
+
+		headers := http.Header{}
+		headers.Set("x-erpc-retry-pending", "false")
+		queryArgs := url.Values{}
+		fakeReq.ApplyDirectivesFromHttp(headers, queryArgs)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -2315,6 +2549,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1},
@@ -2338,7 +2573,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2371,9 +2606,9 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Second request with no-cache directive
 		fakeReq2 := common.NewNormalizedRequest(requestBytes)
-		hdr := &fasthttp.RequestHeader{}
-		hdr.Set("x-erpc-skip-cache-read", "true")
-		fakeReq2.ApplyDirectivesFromHttp(hdr, &fasthttp.Args{})
+		headers := http.Header{}
+		headers.Set("x-erpc-skip-cache-read", "true")
+		fakeReq2.ApplyDirectivesFromHttp(headers, url.Values{})
 		resp2, err := ntw.Forward(ctx, fakeReq2)
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
@@ -2429,6 +2664,7 @@ func TestNetwork_Forward(t *testing.T) {
 			AutoIgnoreUnsupportedMethods: &TRUE,
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -2454,7 +2690,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup)
+		cl, err := clr.GetOrCreateClient(ctx, pup)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2538,6 +2774,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Failsafe: fsCfg,
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -2563,7 +2800,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup)
+		cl, err := clr.GetOrCreateClient(ctx, pup)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2649,6 +2886,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Failsafe: fsCfg,
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -2674,7 +2912,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup)
+		cl, err := clr.GetOrCreateClient(ctx, pup)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2743,8 +2981,12 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
 		mt := health.NewTracker("prjA", 2*time.Second)
 		upsReg := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -2762,9 +3004,6 @@ func TestNetwork_Forward(t *testing.T) {
 			mt,
 			1*time.Second,
 		)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
 
 		err = upsReg.Bootstrap(ctx)
 		if err != nil {
@@ -2847,6 +3086,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -2872,7 +3112,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup)
+		cl, err := clr.GetOrCreateClient(ctx, pup)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2956,6 +3196,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -2981,7 +3222,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup)
+		cl, err := clr.GetOrCreateClient(ctx, pup)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3070,6 +3311,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -3095,7 +3337,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup)
+		cl, err := clr.GetOrCreateClient(ctx, pup)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3179,6 +3421,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
@@ -3204,7 +3447,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup)
+		cl, err := clr.GetOrCreateClient(ctx, pup)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3301,6 +3544,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -3324,7 +3568,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3339,7 +3583,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3442,6 +3686,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -3465,7 +3710,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3480,7 +3725,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3584,6 +3829,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -3607,7 +3853,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3622,7 +3868,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3725,6 +3971,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"test_cb",
 			[]*common.UpstreamConfig{up1},
@@ -3748,7 +3995,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup1)
+		cl, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3844,6 +4091,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"test_cb",
 			[]*common.UpstreamConfig{up1},
@@ -3868,7 +4116,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3970,6 +4218,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"test_cb",
 			[]*common.UpstreamConfig{up1},
@@ -3994,7 +4243,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(pup1)
+		cl, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4095,6 +4344,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1},
@@ -4118,7 +4368,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4217,6 +4467,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -4240,7 +4491,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4255,7 +4506,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4343,6 +4594,7 @@ func TestNetwork_Forward(t *testing.T) {
 			IgnoreMethods: []string{"ignored_method"},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1},
@@ -4366,7 +4618,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4453,6 +4705,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -4476,7 +4729,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl1, err := clr.GetOrCreateClient(pup1)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4491,7 +4744,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl2, err := clr.GetOrCreateClient(pup2)
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4596,6 +4849,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
@@ -4697,6 +4951,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1},
@@ -4794,6 +5049,7 @@ func TestNetwork_Forward(t *testing.T) {
 			VendorName: "llama",
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1},
@@ -4891,6 +5147,7 @@ func TestNetwork_Forward(t *testing.T) {
 			VendorName: "llama",
 		}
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1},
@@ -4977,6 +5234,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		upstreamsRegistry := upstream.NewUpstreamsRegistry(
+			ctx,
 			&logger,
 			projectID,
 			upstreamConfigs,
@@ -5141,6 +5399,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		upr := upstream.NewUpstreamsRegistry(
+			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{upEnvio, upRpc1}, // Both upstreams
@@ -5295,29 +5554,17 @@ func TestNetwork_Forward(t *testing.T) {
 			// Goroutine 2: Access the response concurrently
 			go func() {
 				defer wg.Done()
-				time.Sleep(2000 * time.Millisecond)
+				time.Sleep(500 * time.Millisecond)
 				var res1 string
 				var res2 string
 				jrr1 := jrr1Atomic.Load().(*common.JsonRpcResponse)
 				jrr2 := jrr2Atomic.Load().(*common.JsonRpcResponse)
 				if jrr1 != nil {
-					if j, e := jrr1.MarshalJSON(); e != nil {
-						t.Errorf("Failed to marshal json-rpc response: %v", e)
-					} else {
-						var obj map[string]interface{}
-						common.SonicCfg.Unmarshal(j, &obj)
-						res1, _ = common.SonicCfg.MarshalToString(obj["result"])
-					}
+					res1 = string(jrr1.Result)
 					_ = jrr1.ID()
 				}
 				if jrr2 != nil {
-					if j, e := jrr2.MarshalJSON(); e != nil {
-						t.Errorf("Failed to marshal json-rpc response: %v", e)
-					} else {
-						var obj map[string]interface{}
-						common.SonicCfg.Unmarshal(j, &obj)
-						res2, _ = common.SonicCfg.MarshalToString(obj["result"])
-					}
+					res2 = string(jrr2.Result)
 					_ = jrr2.ID()
 				}
 				assert.NotEmpty(t, res1)
@@ -5332,14 +5579,10 @@ func TestNetwork_Forward(t *testing.T) {
 				assert.NotNil(t, cjrr1)
 				assert.NotNil(t, cjrr2)
 				if cjrr1 != nil {
-					// cjrr1.RLock()
 					assert.Equal(t, res1, string(cjrr1.Result))
-					// cjrr1.RUnlock()
 				}
 				if cjrr2 != nil {
-					// cjrr2.Lock()
 					assert.Equal(t, res2, string(cjrr2.Result))
-					// cjrr2.Unlock()
 				}
 			}()
 
@@ -5844,6 +6087,7 @@ func setupTestNetwork(t *testing.T, upstreamConfig *common.UpstreamConfig) *Netw
 		}
 	}
 	upstreamsRegistry := upstream.NewUpstreamsRegistry(
+		context.Background(),
 		&log.Logger,
 		"test",
 		[]*common.UpstreamConfig{upstreamConfig},
@@ -5914,8 +6158,10 @@ func anyTestMocksLeft() int {
 }
 
 func resetGock() {
-	gock.Off()
+	gock.OffAll()
 	gock.Clean()
+	gock.CleanUnmatchedRequest()
+	gock.Disable()
 }
 
 func safeReadBody(request *http.Request) string {

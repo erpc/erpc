@@ -12,32 +12,10 @@ An upstream is defined to handle 1 or more networks (a.k.a. chains). There are c
 - [`envio`](#envio-json-rpc) A special upstream type for Envio.dev HyperRPC endpoint and automatically adds all chains by HyperRPC.
 - [`pimlico`](#pimlico-json-rpc) A special upstream type for Pimlico.io account-abstraction (ERC-4337) support.
 - [`etherspot`](#etherspot-json-rpc) A special upstream type for Etherspot.io account-abstraction (ERC-4337) support.
+- [`infura`](#infura-json-rpc) A special upstream type that accepts Infura.io API-KEY and automatically adds all their EVM chains.
 
 <Callout type='info'>
   eRPC supports **any EVM-compatible** JSON-RPC endpoint when using `evm` type. Specialized types like "evm+alchemy" are built for well-known providers to make it easier to import "all supported evm chains" with just an API-KEY.
-</Callout>
-
-## Selection mechanism
-
-eRPC records various metrics about each upstream, and uses them to decide which upstream to use when a request is made. These metrics include:
-- **Total request failures** gives higher priority to upstreams with lower failure rate.
-- **Total rate limited requests** gives higher priority to upstreams with lower rate limited requests.
-- **P90 latency of requests** gives higher priority to upstreams with lower latency.
-- **Total requests served** gives higher priority to upstreams with least served requests so they have a chance to prove themselves.
-
-These metrics amount to a certain **Score** per upstream (alchemy, infura, etc) and per method (eth_blockNumber, eth_getLogs, etc), within a defined `windowSize` (default 30 minutes), which can be configured as:
-```yaml filename="erpc.yaml"
-projects:
-  # ...
-  - id: main
-    # ...
-    healthCheck:
-      scoreMetricsWindowSize: 1h
-      # ...
-```
-
-<Callout type='info'>
-  Scoring mechanism only affects the order which upstreams are tried. To completely disable a bad upstream, you should use [Circuit Breaker](https://docs.erpc.cloud/config/failsafe#circuitbreaker-policy) failsafe policy on upstream-level.
 </Callout>
 
 ## Config
@@ -115,6 +93,80 @@ projects:
             jitter: 500ms
 ```
 
+## Priority & selection mechanism
+
+eRPC evaluates each upstream's performance using key metrics to decide the most suitable upstream for each request. These metrics include:
+
+- **Total request failures**: Prioritizes upstreams with lower failure rates.
+- **Rate-limited requests**: Gives preference to upstreams with fewer rate-limited requests.
+- **P90 request latency**: Prioritizes upstreams with lower latency.
+- **Total requests served**: Favors upstreams that have served fewer requests to balance load.
+- **Block head lag**: Prefers upstreams with lower lag compared to the best-performing upstream.
+- **Finalization lag**: Prioritizes upstreams with lower finalization lag.
+
+Each upstream receives a **score** based on these metrics, calculated per method (e.g., `eth_blockNumber`, `eth_getLogs`) over a configurable time window (`windowSize`, default 30 minutes). Adjust the window size in `erpc.yaml` as shown:
+
+```yaml filename="erpc.yaml"
+projects:
+  # ...
+  - id: main
+    # ...
+    healthCheck:
+      scoreMetricsWindowSize: 1h
+      # ...
+```
+
+<Callout type='info'>
+  The scoring mechanism only affects the order in which upstreams are tried. To fully disable an unreliable upstream, use the [Circuit Breaker](https://docs.erpc.cloud/config/failsafe#circuitbreaker-policy) failsafe policy at the upstream level.
+</Callout>
+
+### Customizing scores & priorities
+
+Upstreams are ranked by score, controlling selection order. You can adjust this ranking by setting multipliers at different levels: overall, per network or method, or for specific metrics (e.g., error rate, block lag).
+
+```yaml filename="erpc.yaml"
+upstreams:
+  # ...
+  - id: my-alchemy
+    # ...
+    routing:
+      scoreMultipliers:
+        - network: '*' # Relevant when upstream supports multiple networks (default: all networks)
+          method: '*' # Method(s) where you want to apply these multipliers (default: all methods)
+          # method: 'eth_*|alchemy_*' means apply these multipliers to all methods starting with "eth_" or "alchemy_"
+
+          overall: 1.0        # Adjusts the overall score scale
+          
+          # Default multiplier values:
+          errorRate: 8.0      # Penalize higher error rates by increasing
+          p90latency: 4.0     # Penalize higher latency
+          totalRequests: 1.0  # Give more weight to upstreams with fewer requests
+          throttledRate: 3.0  # Penalize higher throttled requests
+          blockHeadLag: 2.0   # Penalize nodes lagging in block head updates
+          finalizationLag: 1.0 # Penalize nodes lagging in finalization
+```
+
+Example: To prioritize a less expensive (but slower) upstream, adjust the `overall` score multiplier as follows:
+
+```yaml filename="erpc.yaml"
+upstreams:
+  # ...
+  - id: my-cheap-node
+    # ...
+    routing:
+      scoreMultipliers:
+        - overall: 10
+  - id: my-expensive-node
+    # ...
+    routing:
+      scoreMultipliers:
+        - overall: 1
+```
+
+<Callout type='info'>
+  A higher score means the upstream is tried first. If errors occur, other upstreams are attempted.
+</Callout>
+
 ## Upstream Types
 
 ### `evm` JSON-RPC
@@ -178,6 +230,21 @@ projects:
     upstreams:
       - id: my-blastapi
         endpoint: blastapi://YOUR_BLASTAPI_API_KEY
+        # ...
+```
+
+### `infura` JSON-RPC
+
+This upstream type is built specially for [Infura](https://www.infura.io/) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
+
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - id: my-infura
+        endpoint: infura://YOUR_INFURA_API_KEY
         # ...
 ```
 
@@ -256,13 +323,7 @@ projects:
 On some doc pages we like to share our ideas for related future implementations, feel free to open a PR if you're up for a challenge:
 
 <br />
-- [ ] Add a "exclusiveMethods" to make it easier to configure which
-upstreams are only ones supporting certain methods (e.g. alchemy_*)
-- [ ]
-Automatically detect type of EVM nodes (full, archive) and engines (erigon,
-geth, etc)
-- [ ] Implement the logic for "getLogsMaxBlockRange" to split
-multiple requests when the block range is too high.
-- [ ] Add more special types
-for well-known vendors (BlastAPI, Ankr, LlamaRPC, etc) for easier multi-chain
-support.
+- [ ] Introduce a programmable (Typescript) routing selection policy to include/exclude upstreams based on some business logic (e.g. only use expensive nodes if cheap nodes are fully down for a long time).
+- [ ] Automatically detect type of EVM nodes (full, archive) and engines (erigon, geth, etc)
+- [ ] Implement the logic for "getLogsMaxBlockRange" to split multiple requests when the block range is too high.
+- [ ] Add more special types for well-known vendors (BlastAPI, Ankr, LlamaRPC, etc) for easier multi-chain support.

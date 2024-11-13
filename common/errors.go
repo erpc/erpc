@@ -263,16 +263,22 @@ var NewErrInvalidRequest = func(cause error) error {
 
 type ErrInvalidUrlPath struct{ BaseError }
 
+const ErrCodeInvalidUrlPath ErrorCode = "ErrInvalidUrlPath"
+
 var NewErrInvalidUrlPath = func(path string) error {
 	return &ErrInvalidUrlPath{
 		BaseError{
-			Code:    "ErrInvalidUrlPath",
+			Code:    ErrCodeInvalidUrlPath,
 			Message: "path URL must be 3 segments like /<projectId>/<architecture>/<networkId> e.g. /main/evm/42161",
 			Details: map[string]interface{}{
 				"providedPath": path,
 			},
 		},
 	}
+}
+
+func (e *ErrInvalidUrlPath) ErrorStatusCode() int {
+	return http.StatusBadRequest
 }
 
 type ErrInvalidConfig struct{ BaseError }
@@ -719,7 +725,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			} else if HasErrorCode(e, ErrCodeFailsafeCircuitBreakerOpen) {
 				cbOpen++
 				continue
-			} else if errors.Is(e, context.DeadlineExceeded) || HasErrorCode(e, ErrCodeEndpointRequestTimeout) {
+			} else if errors.Is(e, context.DeadlineExceeded) || HasErrorCode(e, ErrCodeEndpointRequestTimeout, ErrCodeFailsafeTimeoutExceeded) {
 				timeout++
 				continue
 			} else if HasErrorCode(e, ErrCodeEndpointServerSideException) {
@@ -855,6 +861,8 @@ var NewErrNoUpstreamsDefined = func(project string) error {
 	}
 }
 
+func (e *ErrNoUpstreamsDefined) ErrorStatusCode() int { return http.StatusNotFound }
+
 type ErrNoUpstreamsFound struct{ BaseError }
 
 var NewErrNoUpstreamsFound = func(project string, network string) error {
@@ -870,7 +878,7 @@ var NewErrNoUpstreamsFound = func(project string, network string) error {
 	}
 }
 
-func (e *ErrNoUpstreamsDefined) ErrorStatusCode() int { return 404 }
+func (e *ErrNoUpstreamsFound) ErrorStatusCode() int { return http.StatusNotFound }
 
 type ErrUpstreamNetworkNotDetected struct{ BaseError }
 
@@ -1088,12 +1096,29 @@ var NewErrFailsafeConfiguration = func(cause error, details map[string]interface
 
 type ErrFailsafeTimeoutExceeded struct{ BaseError }
 
-var NewErrFailsafeTimeoutExceeded = func(cause error) error {
+const ErrCodeFailsafeTimeoutExceeded ErrorCode = "ErrFailsafeTimeoutExceeded"
+
+var NewErrFailsafeTimeoutExceeded = func(scope Scope, cause error, startTime *time.Time) error {
+	var dt map[string]interface{}
+	var duration time.Duration
+	if startTime != nil {
+		duration = time.Since(*startTime)
+		dt = map[string]interface{}{
+			"durationMs": duration.Milliseconds(),
+		}
+	}
+	var msg string
+	if duration > 0 {
+		msg = fmt.Sprintf("failsafe timeout policy exceeded on %s-level after %s", scope, duration)
+	} else {
+		msg = fmt.Sprintf("failsafe timeout policy exceeded on %s-level", scope)
+	}
 	return &ErrFailsafeTimeoutExceeded{
 		BaseError{
-			Code:    "ErrFailsafeTimeoutExceeded",
-			Message: "failsafe timeout policy exceeded",
+			Code:    ErrCodeFailsafeTimeoutExceeded,
+			Message: msg,
 			Cause:   cause,
+			Details: dt,
 		},
 	}
 }
@@ -1102,16 +1127,42 @@ func (e *ErrFailsafeTimeoutExceeded) ErrorStatusCode() int {
 	return http.StatusGatewayTimeout
 }
 
+func (e *ErrFailsafeTimeoutExceeded) DeepestMessage() string {
+	if e.Cause != nil {
+		if se, ok := e.Cause.(StandardError); ok {
+			return fmt.Sprintf("%s: %s", e.Message, se.DeepestMessage())
+		} else {
+			return fmt.Sprintf("%s: %s", e.Message, e.Cause.Error())
+		}
+	}
+	return e.Message
+}
+
 type ErrFailsafeRetryExceeded struct{ BaseError }
 
 const ErrCodeFailsafeRetryExceeded ErrorCode = "ErrFailsafeRetryExceeded"
 
-var NewErrFailsafeRetryExceeded = func(cause error) error {
+var NewErrFailsafeRetryExceeded = func(scope Scope, cause error, startTime *time.Time) error {
+	var dt map[string]interface{}
+	var duration time.Duration
+	if startTime != nil {
+		duration = time.Since(*startTime)
+		dt = map[string]interface{}{
+			"durationMs": duration.Milliseconds(),
+		}
+	}
+	var msg string
+	if duration > 0 {
+		msg = fmt.Sprintf("failsafe retry policy exceeded on %s-level after %s", scope, duration)
+	} else {
+		msg = fmt.Sprintf("failsafe retry policy exceeded on %s-level", scope)
+	}
 	return &ErrFailsafeRetryExceeded{
 		BaseError{
 			Code:    ErrCodeFailsafeRetryExceeded,
-			Message: "failsafe retry policy exceeded",
+			Message: msg,
 			Cause:   cause,
+			Details: dt,
 		},
 	}
 }
@@ -1120,31 +1171,55 @@ func (e *ErrFailsafeRetryExceeded) ErrorStatusCode() int {
 	return 503
 }
 
+func (e *ErrFailsafeRetryExceeded) DeepestMessage() string {
+	if e.Cause != nil {
+		if se, ok := e.Cause.(StandardError); ok {
+			return fmt.Sprintf("%s: %s", e.Message, se.DeepestMessage())
+		} else {
+			return fmt.Sprintf("%s: %s", e.Message, e.Cause)
+		}
+	}
+	return e.Message
+}
+
 type ErrFailsafeCircuitBreakerOpen struct{ BaseError }
 
 const ErrCodeFailsafeCircuitBreakerOpen ErrorCode = "ErrFailsafeCircuitBreakerOpen"
 
-var NewErrFailsafeCircuitBreakerOpen = func(cause error) error {
+var NewErrFailsafeCircuitBreakerOpen = func(scope Scope, cause error, startTime *time.Time) error {
+	var dt map[string]interface{}
+	var duration time.Duration
+	if startTime != nil {
+		duration = time.Since(*startTime)
+		dt = map[string]interface{}{
+			"durationMs": duration.Milliseconds(),
+		}
+	}
+	var msg string
+	if duration > 0 {
+		msg = fmt.Sprintf("failsafe circuit breaker open on %s-level after %s", scope, duration)
+	} else {
+		msg = fmt.Sprintf("failsafe circuit breaker open on %s-level", scope)
+	}
 	return &ErrFailsafeCircuitBreakerOpen{
 		BaseError{
 			Code:    ErrCodeFailsafeCircuitBreakerOpen,
-			Message: "circuit breaker is open due to high error rate",
+			Message: msg,
 			Cause:   cause,
+			Details: dt,
 		},
 	}
 }
 
-type ErrFailsafeUnexpected struct{ BaseError }
-
-var NewErrFailsafeUnexpected = func(cause error, details map[string]interface{}) error {
-	return &ErrFailsafeUnexpected{
-		BaseError{
-			Code:    "ErrFailsafeUnexpected",
-			Message: "unexpected failsafe error type encountered",
-			Cause:   cause,
-			Details: details,
-		},
+func (e *ErrFailsafeCircuitBreakerOpen) DeepestMessage() string {
+	if e.Cause != nil {
+		if se, ok := e.Cause.(StandardError); ok {
+			return fmt.Sprintf("%s: %s", e.Message, se.DeepestMessage())
+		} else {
+			return fmt.Sprintf("%s: %s", e.Message, e.Cause)
+		}
 	}
+	return e.Message
 }
 
 //
@@ -1558,7 +1633,11 @@ func (e *ErrJsonRpcExceptionInternal) NormalizedCode() JsonRpcErrorNumber {
 
 func (e *ErrJsonRpcExceptionInternal) OriginalCode() int {
 	if code, ok := e.Details["originalCode"]; ok {
-		return code.(int)
+		if ic, ok := code.(int); ok {
+			return ic
+		} else if fc, ok := code.(float64); ok {
+			return int(fc)
+		}
 	}
 	return 0
 }
@@ -1641,6 +1720,10 @@ var NewErrRecordNotFound = func(key string, driver string) error {
 }
 
 func HasErrorCode(err error, codes ...ErrorCode) bool {
+	if err == nil {
+		return false
+	}
+
 	if be, ok := err.(StandardError); ok {
 		return be.HasCode(codes...)
 	}

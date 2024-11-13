@@ -23,6 +23,7 @@ type Upstream struct {
 	Client    ClientInterface
 	Logger    zerolog.Logger
 
+	appCtx context.Context
 	config *common.UpstreamConfig
 	vendor common.Vendor
 
@@ -39,6 +40,7 @@ type Upstream struct {
 }
 
 func NewUpstream(
+	appCtx context.Context,
 	projectId string,
 	cfg *common.UpstreamConfig,
 	cr *ClientRegistry,
@@ -49,7 +51,7 @@ func NewUpstream(
 ) (*Upstream, error) {
 	lg := logger.With().Str("upstreamId", cfg.Id).Logger()
 
-	policies, err := CreateFailSafePolicies(&lg, ScopeUpstream, cfg.Id, cfg.Failsafe)
+	policies, err := CreateFailSafePolicies(&lg, common.ScopeUpstream, cfg.Id, cfg.Failsafe)
 	if err != nil {
 		return nil, err
 	}
@@ -60,6 +62,7 @@ func NewUpstream(
 		ProjectId: projectId,
 		Logger:    lg,
 
+		appCtx:               appCtx,
 		config:               cfg,
 		vendor:               vn,
 		metricsTracker:       mt,
@@ -83,7 +86,7 @@ func NewUpstream(
 	if err != nil {
 		return nil, err
 	}
-	if client, err := cr.GetOrCreateClient(pup); err != nil {
+	if client, err := cr.GetOrCreateClient(appCtx, pup); err != nil {
 		return nil, err
 	} else {
 		pup.Client = client
@@ -119,6 +122,7 @@ func (u *Upstream) prepareRequest(nr *common.NormalizedRequest) error {
 		common.UpstreamTypeEvmThirdweb,
 		common.UpstreamTypeEvmEnvio,
 		common.UpstreamTypeEvmEtherspot,
+		common.UpstreamTypeEvmInfura,
 		common.UpstreamTypeEvmPimlico:
 		if u.Client == nil {
 			return common.NewErrJsonRpcExceptionInternal(
@@ -137,7 +141,8 @@ func (u *Upstream) prepareRequest(nr *common.NormalizedRequest) error {
 			u.Client.GetType() == ClientTypeThirdwebHttpJsonRpc ||
 			u.Client.GetType() == ClientTypeEnvioHttpJsonRpc ||
 			u.Client.GetType() == ClientTypePimlicoHttpJsonRpc ||
-			u.Client.GetType() == ClientTypeEtherspotHttpJsonRpc {
+			u.Client.GetType() == ClientTypeEtherspotHttpJsonRpc ||
+			u.Client.GetType() == ClientTypeInfuraHttpJsonRpc {
 			jsonRpcReq, err := nr.JsonRpcRequest()
 			if err != nil {
 				return common.NewErrJsonRpcExceptionInternal(
@@ -209,7 +214,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 		)
 	}
 
-	lg := u.Logger.With().Str("method", method).Str("networkId", netId).Logger()
+	lg := u.Logger.With().Str("method", method).Str("networkId", netId).Interface("id", req.ID()).Logger()
 
 	if limitersBudget != nil {
 		lg.Trace().Str("budget", cfg.RateLimitBudget).Msgf("checking upstream-level rate limiters budget")
@@ -255,6 +260,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 		ClientTypeThirdwebHttpJsonRpc,
 		ClientTypeEnvioHttpJsonRpc,
 		ClientTypeEtherspotHttpJsonRpc,
+		ClientTypeInfuraHttpJsonRpc,
 		ClientTypePimlicoHttpJsonRpc:
 		jsonRpcClient, okClient := u.Client.(HttpJsonRpcClient)
 		if !okClient {
@@ -288,12 +294,16 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 					req.SetLastValidResponse(resp)
 				}
 				if lg.GetLevel() == zerolog.TraceLevel {
-					lg.Debug().Err(errCall).Interface("response", resp).Msgf("upstream call result received")
+					lg.Debug().Err(errCall).Object("response", resp).Msgf("upstream result received (traced)")
 				} else {
-					lg.Debug().Err(errCall).Msgf("upstream call result received")
+					lg.Debug().Err(errCall).Msgf("upstream result received (non-nil response)")
 				}
 			} else {
-				lg.Debug().Err(errCall).Msgf("upstream call result received")
+				if errCall != nil {
+					lg.Debug().Err(errCall).Msgf("upstream result received (errored)")
+				} else {
+					lg.Debug().Msgf("upstream result received (nil response)")
+				}
 			}
 			if errCall != nil {
 				if !errors.Is(errCall, context.Canceled) {
@@ -352,11 +362,14 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 			resp, execErr := executor.
 				WithContext(ctx).
 				GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
-					return tryForward(ctx, exec)
+					if err := exec.Context().Err(); err != nil {
+						return nil, err
+					}
+					return tryForward(exec.Context(), exec)
 				})
 
 			if execErr != nil {
-				return nil, TranslateFailsafeError(u.config.Id, method, execErr)
+				return nil, TranslateFailsafeError(common.ScopeUpstream, u.config.Id, method, execErr, &startTime)
 			}
 
 			return resp, nil
@@ -572,6 +585,10 @@ func (u *Upstream) guessUpstreamType() error {
 		cfg.Type = common.UpstreamTypeEvmEtherspot
 		return nil
 	}
+	if strings.HasPrefix(cfg.Endpoint, "infura://") || strings.HasPrefix(cfg.Endpoint, "evm+infura://") {
+		cfg.Type = common.UpstreamTypeEvmInfura
+		return nil
+	}
 
 	// TODO make actual calls to detect other types (solana, btc, etc)
 	cfg.Type = common.UpstreamTypeEvm
@@ -590,7 +607,7 @@ func (u *Upstream) detectFeatures() error {
 			cfg.Evm = &common.EvmUpstreamConfig{}
 		}
 		if cfg.Evm.ChainId == 0 {
-			nid, err := u.EvmGetChainId(context.Background())
+			nid, err := u.EvmGetChainId(u.appCtx)
 			if err != nil {
 				return common.NewErrUpstreamClientInitialization(
 					fmt.Errorf("failed to get chain id: %w", err),
@@ -673,6 +690,18 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 	}
 
 	return nil, false
+}
+
+func (u *Upstream) getScoreMultipliers(networkId, method string) *common.ScoreMultiplierConfig {
+	if u.config.Routing != nil {
+		for _, mul := range u.config.Routing.ScoreMultipliers {
+			if common.WildcardMatch(mul.Network, networkId) && common.WildcardMatch(mul.Method, method) {
+				return mul
+			}
+		}
+	}
+
+	return common.DefaultScoreMultiplier
 }
 
 func (u *Upstream) MarshalJSON() ([]byte, error) {

@@ -1,9 +1,9 @@
 package erpc
 
 import (
-	"github.com/rs/zerolog"
+	"github.com/erpc/erpc/util"
 )
 
 func init() {
-	zerolog.SetGlobalLevel(zerolog.Disabled)
+	util.ConfigureLoggerViaEnv()
 }

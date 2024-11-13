@@ -2,7 +2,6 @@ package upstream
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"math/rand"
 	"sort"
@@ -16,6 +15,7 @@ import (
 )
 
 type UpstreamsRegistry struct {
+	appCtx               context.Context
 	prjId                string
 	scoreRefreshInterval time.Duration
 	logger               *zerolog.Logger
@@ -40,6 +40,7 @@ type UpstreamsHealth struct {
 }
 
 func NewUpstreamsRegistry(
+	appCtx context.Context,
 	logger *zerolog.Logger,
 	prjId string,
 	upsCfg []*common.UpstreamConfig,
@@ -49,6 +50,7 @@ func NewUpstreamsRegistry(
 	scoreRefreshInterval time.Duration,
 ) *UpstreamsRegistry {
 	return &UpstreamsRegistry{
+		appCtx:               appCtx,
 		prjId:                prjId,
 		scoreRefreshInterval: scoreRefreshInterval,
 		logger:               logger,
@@ -77,7 +79,16 @@ func (u *UpstreamsRegistry) NewUpstream(
 	logger *zerolog.Logger,
 	mt *health.Tracker,
 ) (*Upstream, error) {
-	return NewUpstream(projectId, cfg, u.clientRegistry, u.rateLimitersRegistry, u.vendorsRegistry, logger, mt)
+	return NewUpstream(
+		u.appCtx,
+		projectId,
+		cfg,
+		u.clientRegistry,
+		u.rateLimitersRegistry,
+		u.vendorsRegistry,
+		logger,
+		mt,
+	)
 }
 
 func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(networkId string) error {
@@ -246,7 +257,6 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 	}
 
 	ln := len(u.sortedUpstreams)
-	u.logger.Trace().Str("projectId", u.prjId).Int("networks", ln).Msgf("refreshing upstreams scores")
 
 	allNetworks := make([]string, 0, ln)
 	for networkId := range u.sortedUpstreams {
@@ -308,13 +318,6 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 	for _, ups := range upsList {
 		metrics := u.metricsTracker.GetUpstreamMethodMetrics(ups.Config().Id, networkId, method)
 		metrics.Mutex.RLock()
-		u.logger.Trace().
-			Str("projectId", u.prjId).
-			Str("networkId", networkId).
-			Str("method", method).
-			Str("upstreamId", ups.Config().Id).
-			Interface("metrics", metrics).
-			Msg("queried upstream metrics")
 		p90Latencies = append(p90Latencies, metrics.LatencySecs.P90())
 		blockHeadLags = append(blockHeadLags, metrics.BlockHeadLag)
 		finalizationLags = append(finalizationLags, metrics.FinalizationLag)
@@ -339,6 +342,9 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 	normFinalizationLags := normalizeValues(finalizationLags)
 	for i, ups := range upsList {
 		score := u.calculateScore(
+			ups,
+			networkId,
+			method,
 			normTotalRequests[i],
 			normP90Latencies[i],
 			normErrorRates[i],
@@ -347,27 +353,16 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 			normFinalizationLags[i],
 		)
 		u.upstreamScores[ups.Config().Id][networkId][method] = score
-		u.logger.Trace().Str("projectId", u.prjId).
-			Str("upstreamId", ups.Config().Id).
-			Str("networkId", networkId).
-			Str("method", method).
-			Float64("score", score).
-			Msgf("refreshed score")
 	}
 
 	u.sortUpstreams(networkId, method, upsList)
 	u.sortedUpstreams[networkId][method] = upsList
-
-	if u.logger.GetLevel() >= zerolog.TraceLevel {
-		newSortStr := ""
-		for _, ups := range upsList {
-			newSortStr += fmt.Sprintf("%s ", ups.Config().Id)
-		}
-		u.logger.Trace().Str("projectId", u.prjId).Str("networkId", networkId).Str("method", method).Str("newSort", newSortStr).Msgf("sorted upstreams")
-	}
 }
 
 func (u *UpstreamsRegistry) calculateScore(
+	ups *Upstream,
+	networkId,
+	method string,
 	normTotalRequests,
 	normP90Latency,
 	normErrorRate,
@@ -375,27 +370,41 @@ func (u *UpstreamsRegistry) calculateScore(
 	normBlockHeadLag,
 	normFinalizationLag float64,
 ) float64 {
+	mul := ups.getScoreMultipliers(networkId, method)
+
 	score := 0.0
 
 	// Higher score for lower total requests (to balance the load)
-	score += expCurve(1 - normTotalRequests)
+	if mul.TotalRequests > 0 {
+		score += expCurve(1-normTotalRequests) * mul.TotalRequests
+	}
 
 	// Higher score for lower p90 latency
-	score += expCurve(1-normP90Latency) * 4
+	if mul.P90Latency > 0 {
+		score += expCurve(1-normP90Latency) * mul.P90Latency
+	}
 
 	// Higher score for lower error rate
-	score += expCurve(1-normErrorRate) * 8
+	if mul.ErrorRate > 0 {
+		score += expCurve(1-normErrorRate) * mul.ErrorRate
+	}
 
 	// Higher score for lower throttled rate
-	score += expCurve(1-normThrottledRate) * 3
+	if mul.ThrottledRate > 0 {
+		score += expCurve(1-normThrottledRate) * mul.ThrottledRate
+	}
 
 	// Higher score for lower block head lag
-	score += expCurve(1-normBlockHeadLag) * 2
+	if mul.BlockHeadLag > 0 {
+		score += expCurve(1-normBlockHeadLag) * mul.BlockHeadLag
+	}
 
 	// Higher score for lower finalization lag
-	score += expCurve(1 - normFinalizationLag)
+	if mul.FinalizationLag > 0 {
+		score += expCurve(1-normFinalizationLag) * mul.FinalizationLag
+	}
 
-	return score
+	return score * mul.Overall
 }
 
 func expCurve(x float64) float64 {

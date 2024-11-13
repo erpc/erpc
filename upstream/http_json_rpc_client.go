@@ -3,6 +3,7 @@ package upstream
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -26,6 +27,7 @@ type HttpJsonRpcClient interface {
 type GenericHttpJsonRpcClient struct {
 	Url *url.URL
 
+	appCtx     context.Context
 	logger     *zerolog.Logger
 	upstream   *Upstream
 	httpClient *http.Client
@@ -47,9 +49,11 @@ type batchRequest struct {
 	err      chan error
 }
 
-func NewGenericHttpJsonRpcClient(logger *zerolog.Logger, pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
+func NewGenericHttpJsonRpcClient(appCtx context.Context, logger *zerolog.Logger, pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
 	client := &GenericHttpJsonRpcClient{
-		Url:      parsedUrl,
+		Url: parsedUrl,
+
+		appCtx:   appCtx,
 		logger:   logger,
 		upstream: pu,
 	}
@@ -90,6 +94,11 @@ func NewGenericHttpJsonRpcClient(logger *zerolog.Logger, pu *Upstream, parsedUrl
 			},
 		}
 	}
+
+	go func() {
+		<-appCtx.Done()
+		client.shutdown()
+	}()
 
 	return client, nil
 }
@@ -149,6 +158,15 @@ func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.
 	}
 }
 
+func (c *GenericHttpJsonRpcClient) shutdown() {
+	c.batchMu.Lock()
+	defer c.batchMu.Unlock()
+	if c.batchTimer != nil {
+		c.batchTimer.Stop()
+	}
+	c.processBatch()
+}
+
 func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchRequest) {
 	c.batchMu.Lock()
 
@@ -169,16 +187,20 @@ func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchReques
 			c.batchDeadline = &ctxd
 		}
 	}
-	c.logger.Debug().Msgf("queuing request %+v for batch (current batch size: %d)", id, len(c.batchRequests))
 
 	if c.logger.GetLevel() == zerolog.TraceLevel {
+		ids := make([]interface{}, 0, len(c.batchRequests))
 		for _, req := range c.batchRequests {
+			ids = append(ids, req.request.ID())
 			jrr, _ := req.request.JsonRpcRequest()
 			jrr.Lock()
 			rqs, _ := common.SonicCfg.Marshal(jrr)
 			jrr.Unlock()
-			c.logger.Trace().Interface("id", req.request.Id()).Str("method", jrr.Method).Msgf("pending batch request: %s", string(rqs))
+			c.logger.Trace().Interface("id", req.request.ID()).Str("method", jrr.Method).Msgf("pending batch request: %s", string(rqs))
 		}
+		c.logger.Trace().Interface("ids", ids).Msgf("pending batch requests")
+	} else {
+		c.logger.Debug().Msgf("queuing request %+v for batch (current batch size: %d)", id, len(c.batchRequests))
 	}
 
 	if len(c.batchRequests) == 1 {
@@ -197,17 +219,49 @@ func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchReques
 }
 
 func (c *GenericHttpJsonRpcClient) processBatch() {
+	if c.appCtx != nil {
+		err := c.appCtx.Err()
+		if err != nil {
+			var msg string
+			if err == context.Canceled {
+				msg = "shutting down http client batch processing (ignoring batch requests if any)"
+				err = nil
+			} else {
+				msg = "context error on batch processing (ignoring batch requests if any)"
+			}
+			if c.logger.GetLevel() == zerolog.TraceLevel {
+				c.batchMu.Lock()
+				defer c.batchMu.Unlock()
+				ids := make([]interface{}, 0, len(c.batchRequests))
+				for _, req := range c.batchRequests {
+					ids = append(ids, req.request.ID())
+				}
+				c.logger.Trace().Err(err).Interface("remainingIds", ids).Msg(msg)
+			} else {
+				c.logger.Debug().Err(err).Msg(msg)
+			}
+			return
+		}
+	}
 	var batchCtx context.Context
 	var cancelCtx context.CancelFunc
 
 	c.batchMu.Lock()
-	c.logger.Debug().Msgf("processing batch with %d requests", len(c.batchRequests))
+	if c.logger.GetLevel() == zerolog.TraceLevel {
+		ids := make([]interface{}, 0, len(c.batchRequests))
+		for id := range c.batchRequests {
+			ids = append(ids, id)
+		}
+		c.logger.Debug().Interface("ids", ids).Msgf("processing batch with %d requests", len(c.batchRequests))
+	} else {
+		c.logger.Debug().Msgf("processing batch with %d requests", len(c.batchRequests))
+	}
 	requests := c.batchRequests
 	if c.batchDeadline != nil {
-		batchCtx, cancelCtx = context.WithDeadline(context.Background(), *c.batchDeadline)
+		batchCtx, cancelCtx = context.WithDeadline(c.appCtx, *c.batchDeadline)
 		defer cancelCtx()
 	} else {
-		batchCtx = context.Background()
+		batchCtx = c.appCtx
 	}
 	c.batchRequests = make(map[interface{}]*batchRequest)
 	c.batchDeadline = nil
@@ -221,7 +275,7 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 	batchReq := make([]common.JsonRpcRequest, 0, ln)
 	for _, req := range requests {
 		jrReq, err := req.request.JsonRpcRequest()
-		c.logger.Trace().Interface("id", req.request.Id()).Str("method", jrReq.Method).Msgf("preparing batch request")
+		c.logger.Trace().Interface("id", req.request.ID()).Str("method", jrReq.Method).Msgf("preparing batch request")
 		if err != nil {
 			req.err <- common.NewErrUpstreamRequest(
 				err,
@@ -307,15 +361,18 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 		return
 	}
 
-	searcher := ast.NewSearcher(util.Mem2Str(bodyBytes))
+	bodyStr := util.Mem2Str(bodyBytes)
+	searcher := ast.NewSearcher(bodyStr)
 	searcher.CopyReturn = false
 	searcher.ConcurrentRead = false
 	searcher.ValidateJSON = false
 
+	c.logger.Trace().Str("response", bodyStr).Msgf("processing batch response from upstream")
+
 	rootNode, err := searcher.GetByPath()
 	if err != nil {
 		jrResp := &common.JsonRpcResponse{}
-		err = jrResp.ParseError(util.Mem2Str(bodyBytes))
+		err = jrResp.ParseError(bodyStr)
 		if err != nil {
 			for _, req := range requests {
 				req.err <- err
@@ -352,7 +409,7 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 				id = jrResp.ID()
 			}
 			if id == nil {
-				c.logger.Warn().Msgf("unexpected response received without ID: %s", util.Mem2Str(bodyBytes))
+				c.logger.Warn().Msgf("unexpected response received without ID: %s", bodyStr)
 			} else if req, ok := requests[id]; ok {
 				nr := common.NewNormalizedResponse().WithRequest(req.request).WithJsonRpcResponse(jrResp)
 				if err != nil {
@@ -373,7 +430,7 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 		// Handle any remaining requests that didn't receive a response
 		anyMissingId := false
 		for _, req := range requests {
-			req.err <- fmt.Errorf("no response received for request ID: %d", req.request.Id())
+			req.err <- fmt.Errorf("no response received for request ID: %d", req.request.ID())
 			anyMissingId = true
 		}
 		if anyMissingId {
@@ -400,7 +457,7 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 	} else {
 		// Unexpected response type
 		for _, req := range requests {
-			req.err <- common.NewErrUpstreamMalformedResponse(fmt.Errorf("unexpected response type (not array nor object): %s", util.Mem2Str(bodyBytes)), c.upstream.Config().Id)
+			req.err <- common.NewErrUpstreamMalformedResponse(fmt.Errorf("unexpected response type (not array nor object): %s", bodyStr), c.upstream.Config().Id)
 		}
 	}
 }
@@ -522,19 +579,19 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 		return e
 	}
 
-	if jr.Error == nil {
-		return nil
-	}
-
 	if e := extractJsonRpcError(r, nr, jr); e != nil {
 		return e
+	}
+
+	if jr.Error == nil {
+		return nil
 	}
 
 	e := common.NewErrJsonRpcExceptionInternal(
 		0,
 		common.JsonRpcErrorServerSideException,
-		"unknown json-rpc response",
-		nil,
+		"unknown json-rpc error",
+		jr.Error,
 		map[string]interface{}{
 			"upstreamId": c.upstream.Config().Id,
 			"statusCode": r.StatusCode,
@@ -648,6 +705,7 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			)
 		} else if strings.Contains(err.Message, "missing trie node") ||
 			strings.Contains(err.Message, "header not found") ||
+			strings.Contains(err.Message, "could not find block") ||
 			strings.Contains(err.Message, "unknown block") ||
 			strings.Contains(err.Message, "Unknown block") ||
 			strings.Contains(err.Message, "height must be less than or equal") ||
@@ -719,6 +777,17 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					nil,
 					details,
 				),
+			)
+		} else if strings.Contains(err.Message, "execution timeout") {
+			return common.NewErrEndpointServerSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorNodeTimeout,
+					err.Message,
+					nil,
+					details,
+				),
+				nil,
 			)
 		} else if strings.Contains(err.Message, "reverted") ||
 			strings.Contains(err.Message, "VM execution error") ||
@@ -836,10 +905,10 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 	}
 
 	// There's a special case for certain clients that return a normal response for reverts:
-	if jr != nil {
+	if jr != nil && jr.Result != nil && len(jr.Result) > 0 {
 		dt := util.Mem2Str(jr.Result)
 		// keccak256("Error(string)")
-		if strings.HasPrefix(dt, "0x08c379a0") {
+		if len(dt) > 11 && dt[1:11] == "0x08c379a0" {
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					0,
@@ -847,10 +916,37 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					"transaction reverted",
 					nil,
 					map[string]interface{}{
-						"data": dt,
+						"data": json.RawMessage(jr.Result),
 					},
 				),
 			)
+		} else {
+			// Trace and debug requests might fail due to operation timeout.
+			// The response structure is not a standard json-rpc error response,
+			// so we need to check the response body for a timeout message.
+			// We avoid using JSON parsing to keep it fast on large (50MB) trace data.
+			if rq := nr.Request(); rq != nil {
+				m, _ := rq.Method()
+				if strings.HasPrefix(m, "trace_") ||
+					strings.HasPrefix(m, "debug_") ||
+					strings.HasPrefix(m, "eth_trace") {
+					if strings.Contains(dt, "execution timeout") {
+						// Returning a server-side exception so that retry/failover mechanisms retry same and/or other upstreams.
+						return common.NewErrEndpointServerSideException(
+							common.NewErrJsonRpcExceptionInternal(
+								0,
+								common.JsonRpcErrorNodeTimeout,
+								"execution timeout",
+								nil,
+								map[string]interface{}{
+									"data": json.RawMessage(jr.Result),
+								},
+							),
+							nil,
+						)
+					}
+				}
+			}
 		}
 	}
 

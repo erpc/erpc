@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
@@ -254,15 +255,11 @@ func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
 	return nil, nil
 }
 
-func (r *NormalizedResponse) GetReader() (io.Reader, error) {
-	r.RLock()
-	defer r.RUnlock()
-
+func (r *NormalizedResponse) WriteTo(w io.Writer) (n int64, err error) {
 	if jrr := r.jsonRpcResponse.Load(); jrr != nil {
-		return jrr.GetReader()
+		return jrr.WriteTo(w)
 	}
-
-	return nil, nil
+	return 0, nil
 }
 
 func (r *NormalizedResponse) Release() {
@@ -273,12 +270,31 @@ func (r *NormalizedResponse) Release() {
 	if r.body != nil {
 		err := r.body.Close()
 		if err != nil {
-			log.Error().Err(err).Interface("response", r).Msg("failed to close response body")
+			log.Error().Err(err).Object("response", r).Msg("failed to close response body")
 		}
 		r.body = nil
 	}
 
 	r.jsonRpcResponse.Store(nil)
+}
+
+func (r *NormalizedResponse) MarshalZerologObject(e *zerolog.Event) {
+	if r == nil {
+		return
+	}
+
+	jrr := r.jsonRpcResponse.Load()
+	if jrr != nil {
+		if jrr.errBytes != nil && len(jrr.errBytes) > 0 {
+			e.Interface("id", jrr.ID()).
+				RawJSON("error", jrr.errBytes).
+				RawJSON("result", jrr.Result)
+		} else {
+			e.Interface("id", jrr.ID()).
+				Interface("error", jrr.Error).
+				RawJSON("result", jrr.Result)
+		}
+	}
 }
 
 // CopyResponseForRequest creates a copy of the response for another request

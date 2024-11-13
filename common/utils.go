@@ -73,7 +73,13 @@ func NormalizeHex(value interface{}) (string, error) {
 }
 
 func WildcardMatch(pattern, value string) bool {
-	return wildcard.Match(pattern, value)
+	portions := strings.Split(pattern, "|")
+	for _, portion := range portions {
+		if wildcard.Match(portion, value) {
+			return true
+		}
+	}
+	return false
 }
 
 func RemoveDuplicates(slice []string) []string {
