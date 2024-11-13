@@ -657,7 +657,7 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 	// TODO evm: if block can be determined from request and upstream is only full-node and block is historical skip
 	jrReq, err := req.JsonRpcRequest()
 	if err != nil {
-		return fmt.Errorf("failed to get json-rpc request: %w", err), true
+		return fmt.Errorf("failed to get json-rpc request: %w", err), false
 	}
 
 	// sample of methods with block param
