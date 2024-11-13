@@ -3036,11 +3036,6 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		clr := upstream.NewClientRegistry(&log.Logger)
-		fsCfg := &common.FailsafeConfig{
-			Timeout: &common.TimeoutPolicyConfig{
-				Duration: "30ms",
-			},
-		}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
@@ -3097,7 +3092,11 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: &common.FailsafeConfig{
+					Timeout: &common.TimeoutPolicyConfig{
+						Duration: "30ms",
+					},
+				},
 			},
 			rlr,
 			upr,
@@ -5135,7 +5134,7 @@ func TestNetwork_Forward(t *testing.T) {
 			util.SetupMocksForEvmStatePoller()
 			defer util.AssertNoPendingMocks(t, 0)
 
-			network := setupTestNetwork(t, nil)
+			network := setupTestNetwork(t, context.TODO(), nil, nil)
 			gock.New("http://rpc1.localhost").
 				Post("/").
 				MatchType("json").
@@ -5264,7 +5263,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		// Set up the test environment
-		network := setupTestNetwork(t, &common.UpstreamConfig{
+		network := setupTestNetwork(t, context.TODO(), &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "test",
 			Endpoint: "http://rpc1.localhost",
@@ -5279,7 +5278,7 @@ func TestNetwork_Forward(t *testing.T) {
 					MaxAttempts: 2,
 				},
 			},
-		})
+		}, nil)
 
 		// Mock the response for the batch request
 		gock.New("http://rpc1.localhost").
@@ -5352,6 +5351,105 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 }
 
+func TestNetwork_SelectionScenarios(t *testing.T) {
+	t.Run("StatePollerContributesToErrorRateWhenNotResamplingExcludedUpstreams", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		selectionPolicy := &common.SelectionPolicyConfig{
+			ResampleExcluded: false,
+			EvalInterval:     100 * time.Millisecond,
+		}
+		selectionPolicy.SetDefaults()
+
+		// Mock failing responses for evm state poller
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Times(32).
+			Reply(500).
+			JSON([]byte(`{"error":{"code":-32000,"message":"Internal error"}}`))
+
+		// Now mock successful responses
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x11118888"}}`))
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "finalized")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x11117777"}}`))
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_syncing")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":false}`))
+
+		// Create network with default selection policy and disabled resampling
+		network := setupTestNetwork(t, context.TODO(), &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc1",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId:             123,
+				StatePollerInterval: "50ms", // Fast polling for test
+			},
+			JsonRpc: &common.JsonRpcUpstreamConfig{
+				SupportsBatch: &common.FALSE,
+			},
+		}, &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm: &common.EvmNetworkConfig{
+				ChainId: 123,
+			},
+			SelectionPolicy: selectionPolicy,
+		})
+
+		// Let the state poller run and accumulate errors
+		time.Sleep(300 * time.Millisecond)
+
+		ups1 := network.upstreamsRegistry.GetNetworkUpstreams("evm:123")[0]
+
+		// Verify the upstream is marked as inactive due to high error rate
+		err := network.selectionPolicyEvaluator.AcquirePermit(&log.Logger, ups1, "eth_getBalance")
+		assert.Error(t, err, "Upstream should be inactive due to state poller errors")
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeUpstreamExcludedByPolicy),
+			"Expected upstream to be excluded by policy")
+
+		// Verify metrics show high error rate from state poller requests
+		metrics := network.metricsTracker.GetUpstreamMethodMetrics("rpc1", "evm:123", "*")
+		assert.True(t, metrics.ErrorRate() > 0.7,
+			"Expected error rate above 70%% due to state poller failures, got %.2f%%",
+			metrics.ErrorRate()*100)
+
+		// Let the state poller improve the metrics
+		time.Sleep(600 * time.Millisecond)
+
+		// Verify the upstream becomes active again as error rate improves
+		err = network.selectionPolicyEvaluator.AcquirePermit(&log.Logger, ups1, "eth_getBalance")
+		assert.NoError(t, err, "Upstream should be active after error rate improves")
+
+		// Verify metrics show improved error rate
+		metrics = network.metricsTracker.GetUpstreamMethodMetrics("rpc1", "evm:123", "*")
+		assert.True(t, metrics.ErrorRate() < 0.7,
+			"Expected error rate below 70%% after successful requests, got %.2f%%",
+			metrics.ErrorRate()*100)
+	})
+
+}
+
 func TestNetwork_InFlightRequests(t *testing.T) {
 	t.Run("MultipleSuccessfulConcurrentRequests", func(t *testing.T) {
 		util.ResetGock()
@@ -5359,7 +5457,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1)
 
-		network := setupTestNetwork(t, nil)
+		network := setupTestNetwork(t, context.TODO(), nil, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 
 		gock.New("http://rpc1.localhost").
@@ -5392,7 +5490,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		network := setupTestNetwork(t, nil)
+		network := setupTestNetwork(t, context.TODO(), nil, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 
 		gock.New("http://rpc1.localhost").
@@ -5425,7 +5523,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1)
 
-		network := setupTestNetwork(t, &common.UpstreamConfig{
+		network := setupTestNetwork(t, context.TODO(), &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "test",
 			Endpoint: "http://rpc1.localhost",
@@ -5439,7 +5537,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 					Duration: "50ms",
 				},
 			},
-		})
+		}, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 
 		gock.New("http://rpc1.localhost").
@@ -5458,7 +5556,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				ctx, cancel := context.WithTimeout(context.Background(), 1000*time.Millisecond)
+				ctx, cancel := context.WithTimeout(context.Background(), 10000*time.Millisecond)
 				defer cancel()
 				req := common.NewNormalizedRequest(requestBytes)
 				resp, err := network.Forward(ctx, req)
@@ -5478,7 +5576,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		network := setupTestNetwork(t, nil)
+		network := setupTestNetwork(t, context.TODO(), nil, nil)
 		successRequestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 		failureRequestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"]}`)
 
@@ -5530,7 +5628,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		network := setupTestNetwork(t, nil)
+		network := setupTestNetwork(t, context.TODO(), nil, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 
 		gock.New("http://rpc1.localhost").
@@ -5562,7 +5660,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 1)
 
-		network := setupTestNetwork(t, nil)
+		network := setupTestNetwork(t, context.TODO(), nil, nil)
 
 		// Mock the response from the upstream
 		gock.New("http://rpc1.localhost").
@@ -5615,7 +5713,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		network := setupTestNetwork(t, nil)
+		network := setupTestNetwork(t, context.TODO(), nil, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 
 		gock.New("http://rpc1.localhost").
@@ -5662,7 +5760,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		network := setupTestNetwork(t, nil)
+		network := setupTestNetwork(t, context.TODO(), nil, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 
 		gock.New("http://rpc1.localhost").
@@ -5707,7 +5805,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 	})
 }
 
-func setupTestNetwork(t *testing.T, upstreamConfig *common.UpstreamConfig) *Network {
+func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfig *common.UpstreamConfig, networkConfig *common.NetworkConfig) *Network {
 	t.Helper()
 
 	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
@@ -5733,22 +5831,25 @@ func setupTestNetwork(t *testing.T, upstreamConfig *common.UpstreamConfig) *Netw
 		metricsTracker,
 		1*time.Second,
 	)
-	network, err := NewNetwork(
-		&log.Logger,
-		"test",
-		&common.NetworkConfig{
+	if networkConfig == nil {
+		networkConfig = &common.NetworkConfig{
 			Architecture: common.ArchitectureEvm,
 			Evm: &common.EvmNetworkConfig{
 				ChainId: 123,
 			},
-		},
+		}
+	}
+	network, err := NewNetwork(
+		&log.Logger,
+		"test",
+		networkConfig,
 		rateLimitersRegistry,
 		upstreamsRegistry,
 		metricsTracker,
 	)
 	assert.NoError(t, err)
 
-	err = upstreamsRegistry.Bootstrap(context.Background())
+	err = upstreamsRegistry.Bootstrap(ctx)
 	assert.NoError(t, err)
 	time.Sleep(100 * time.Millisecond)
 
@@ -5756,13 +5857,15 @@ func setupTestNetwork(t *testing.T, upstreamConfig *common.UpstreamConfig) *Netw
 	assert.NoError(t, err)
 	time.Sleep(100 * time.Millisecond)
 
-	err = network.Bootstrap(context.Background())
+	err = network.Bootstrap(ctx)
 	assert.NoError(t, err)
 	time.Sleep(100 * time.Millisecond)
 
-	h, _ := common.HexToInt64("0x1273c18")
-	network.evmStatePollers["test"].SuggestFinalizedBlock(h)
-	network.evmStatePollers["test"].SuggestLatestBlock(h)
+	if upstreamConfig.Id == "test" {
+		h, _ := common.HexToInt64("0x1273c18")
+		network.evmStatePollers["test"].SuggestFinalizedBlock(h)
+		network.evmStatePollers["test"].SuggestLatestBlock(h)
+	}
 
 	return network
 }

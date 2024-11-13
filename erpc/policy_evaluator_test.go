@@ -28,7 +28,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, ups2 := createTestNetwork(t, context.Background())
+		ntw, ups1, ups2, _ := createTestNetwork(t, context.Background())
 
 		// Create eval function that selects upstreams with error rate < 0.5
 		evalFn, err := script.CompileFunction(`
@@ -79,7 +79,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, ups2 := createTestNetwork(t, context.Background())
+		ntw, ups1, ups2, _ := createTestNetwork(t, context.Background())
 
 		t.Run("NonArrayReturn", func(t *testing.T) {
 			evalFn, err := script.CompileFunction(`
@@ -190,7 +190,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, _ := createTestNetwork(t, context.Background())
+		ntw, ups1, _, _ := createTestNetwork(t, context.Background())
 
 		// Create eval function that marks all upstreams as inactive
 		evalFn, err := script.CompileFunction(`
@@ -206,6 +206,7 @@ func TestPolicyEvaluator(t *testing.T) {
 			EvalInterval:     50 * time.Millisecond,
 			EvalPerMethod:    false,
 			EvalFunction:     evalFn,
+			ResampleExcluded: true,
 			ResampleInterval: resampleInterval,
 			ResampleCount:    resampleCount,
 		}
@@ -258,7 +259,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, _ := createTestNetwork(t, context.Background())
+		ntw, ups1, _, _ := createTestNetwork(t, context.Background())
 
 		// Create eval function that selects upstreams with error rate < 0.3
 		evalFn, err := script.CompileFunction(`
@@ -272,6 +273,7 @@ func TestPolicyEvaluator(t *testing.T) {
 			EvalInterval:     50 * time.Millisecond,
 			EvalPerMethod:    false,
 			EvalFunction:     evalFn,
+			ResampleExcluded: true,
 			ResampleInterval: 100 * time.Millisecond,
 			ResampleCount:    2,
 		}
@@ -325,7 +327,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, ups2 := createTestNetwork(t, context.Background())
+		ntw, ups1, ups2, _ := createTestNetwork(t, context.Background())
 
 		// Create eval function that alternates between accepting all and no upstreams
 		evalFn, err := script.CompileFunction(`
@@ -419,7 +421,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, _ := createTestNetwork(t, context.Background())
+		ntw, ups1, _, _ := createTestNetwork(t, context.Background())
 
 		// Create eval function that selects upstreams with error rate < 0.4
 		evalFn, err := script.CompileFunction(`
@@ -501,7 +503,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, _ := createTestNetwork(t, context.Background())
+		ntw, ups1, _, _ := createTestNetwork(t, context.Background())
 
 		// Create eval function that uses a threshold variable to control upstream selection
 		evalFn, err := script.CompileFunction(`
@@ -519,6 +521,7 @@ func TestPolicyEvaluator(t *testing.T) {
 			EvalInterval:     50 * time.Millisecond,
 			EvalPerMethod:    false,
 			EvalFunction:     evalFn,
+			ResampleExcluded: true,
 			ResampleInterval: 100 * time.Millisecond,
 			ResampleCount:    2,
 		}
@@ -594,7 +597,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, _, _ := createTestNetwork(t, context.Background())
+		ntw, _, _, _ := createTestNetwork(t, context.Background())
 
 		// Create eval function that selects upstreams based on error rate threshold
 		evalFn, err := script.CompileFunction(`
@@ -671,7 +674,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, _, _ := createTestNetwork(t, context.Background())
+		ntw, _, _, _ := createTestNetwork(t, context.Background())
 
 		// Create eval function that cordons all upstreams
 		evalFn, err := script.CompileFunction(`
@@ -717,7 +720,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, _ := createTestNetwork(t, context.Background())
+		ntw, ups1, _, _ := createTestNetwork(t, context.Background())
 
 		// Create eval function that counts evaluations
 		evalFn, err := script.CompileFunction(`
@@ -814,7 +817,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, _ := createTestNetwork(t, context.Background())
+		ntw, ups1, _, _ := createTestNetwork(t, context.Background())
 
 		// Create eval function that excludes all upstreams
 		evalFn, err := script.CompileFunction(`
@@ -853,7 +856,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, _ := createTestNetwork(t, context.Background())
+		ntw, ups1, _, _ := createTestNetwork(t, context.Background())
 
 		// Create eval function that excludes all upstreams
 		evalFn, err := script.CompileFunction(`
@@ -867,6 +870,7 @@ func TestPolicyEvaluator(t *testing.T) {
 			EvalInterval:     50 * time.Millisecond,
 			EvalPerMethod:    false,
 			EvalFunction:     evalFn,
+			ResampleExcluded: true,
 			ResampleInterval: 100 * time.Millisecond,
 			ResampleCount:    1000, // Very high sample count
 		}
@@ -898,7 +902,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, _ := createTestNetwork(t, context.Background())
+		ntw, ups1, _, _ := createTestNetwork(t, context.Background())
 
 		// Create eval function that excludes all upstreams
 		evalFn, err := script.CompileFunction(`
@@ -913,6 +917,7 @@ func TestPolicyEvaluator(t *testing.T) {
 			EvalInterval:     50 * time.Millisecond,
 			EvalPerMethod:    false,
 			EvalFunction:     evalFn,
+			ResampleExcluded: true,
 			ResampleInterval: 1 * time.Millisecond, // Very short
 			ResampleCount:    2,
 		}
@@ -966,7 +971,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, _ := createTestNetwork(t, context.Background())
+		ntw, ups1, _, _ := createTestNetwork(t, context.Background())
 
 		// Create eval function that introduces artificial delay to increase chance of race conditions
 		evalFn, err := script.CompileFunction(`
@@ -1156,7 +1161,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, _ := createTestNetwork(t, context.Background())
+		ntw, ups1, _, _ := createTestNetwork(t, context.Background())
 
 		// Create eval function that uses different error thresholds per method
 		evalFn, err := script.CompileFunction(`
@@ -1218,7 +1223,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, _ := createTestNetwork(t, context.Background())
+		ntw, ups1, _, _ := createTestNetwork(t, context.Background())
 
 		evalFn, err := script.CompileFunction(`
 			(upstreams, method) => {
@@ -1275,7 +1280,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, _ := createTestNetwork(t, context.Background())
+		ntw, ups1, _, _ := createTestNetwork(t, context.Background())
 
 		evalFn, err := script.CompileFunction(`
 			(upstreams, method) => {
@@ -1317,9 +1322,344 @@ func TestPolicyEvaluator(t *testing.T) {
 		err = evaluator.AcquirePermit(&logger, ups1, "method1")
 		assert.NoError(t, err, "Should fallback to global evaluation")
 	})
+
+	t.Run("DefaultPolicyActivateFallbackWhenDefaultsUnhealthy", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		ntw, ups1, ups2, _ := createTestNetwork(t, context.Background())
+
+		// Create config with default policy
+		config := &common.SelectionPolicyConfig{
+			EvalInterval:     50 * time.Millisecond,
+			EvalPerMethod:    false,
+			ResampleInterval: 100 * time.Millisecond,
+			ResampleCount:    2,
+		}
+		config.SetDefaults() // This will set the default policy function
+
+		mt := ntw.metricsTracker
+		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
+		require.NoError(t, err)
+
+		ctx := context.Background()
+		err = evaluator.Start(ctx)
+		require.NoError(t, err)
+
+		// Test Case 1: All default upstreams healthy
+		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
+		mt.RecordUpstreamDuration("rpc1", "evm:123", "method1", 10*time.Millisecond)
+		mt.SetLatestBlockNumber("rpc1", "evm:123", 100)
+		mt.SetLatestBlockNumber("*", "evm:123", 105) // Network head
+
+		mt.RecordUpstreamRequest("rpc2", "evm:123", "method1")
+		mt.RecordUpstreamDuration("rpc2", "evm:123", "method1", 15*time.Millisecond)
+		mt.SetLatestBlockNumber("rpc2", "evm:123", 102)
+
+		time.Sleep(75 * time.Millisecond)
+
+		// Should use default upstreams
+		err = evaluator.AcquirePermit(&logger, ups1, "method1")
+		assert.NoError(t, err, "Healthy default upstream should be active")
+		err = evaluator.AcquirePermit(&logger, ups2, "method1")
+		assert.NoError(t, err, "Healthy default upstream should be active")
+
+		// Test Case 2: Default upstreams unhealthy (high error rate)
+		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
+		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error1")
+		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
+		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error2")
+
+		mt.RecordUpstreamRequest("rpc2", "evm:123", "method1")
+		mt.RecordUpstreamFailure("rpc2", "evm:123", "method1", "Error1")
+		mt.RecordUpstreamRequest("rpc2", "evm:123", "method1")
+		mt.RecordUpstreamFailure("rpc2", "evm:123", "method1", "Error2")
+
+		time.Sleep(75 * time.Millisecond)
+
+		// Should include fallback upstream
+		err = evaluator.AcquirePermit(&logger, ups1, "method1")
+		assert.NoError(t, err, "Fallback should be active when defaults are unhealthy")
+	})
+
+	t.Run("DefaultPolicyDisableFallbacksWhenDefaultsHealthy", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		ntw, ups1, ups2, ups3 := createTestNetwork(t, context.Background())
+
+		// Create config with default policy
+		config := &common.SelectionPolicyConfig{
+			EvalInterval:     50 * time.Millisecond,
+			EvalPerMethod:    false,
+			ResampleExcluded: false,
+		}
+		config.SetDefaults() // This will set the default policy function
+
+		mt := ntw.metricsTracker
+		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
+		require.NoError(t, err)
+
+		ctx := context.Background()
+		err = evaluator.Start(ctx)
+		require.NoError(t, err)
+
+		// Set healthy metrics for default upstreams
+		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
+		mt.RecordUpstreamDuration("rpc1", "evm:123", "method1", 10*time.Millisecond)
+		mt.SetLatestBlockNumber("rpc1", "evm:123", 100)
+		mt.SetLatestBlockNumber("*", "evm:123", 105) // Network head
+
+		mt.RecordUpstreamRequest("rpc2", "evm:123", "method1")
+		mt.RecordUpstreamDuration("rpc2", "evm:123", "method1", 15*time.Millisecond)
+		mt.SetLatestBlockNumber("rpc2", "evm:123", 102)
+
+		// Set healthy metrics for fallback upstream
+		mt.RecordUpstreamRequest("rpc3", "evm:123", "method1")
+		mt.RecordUpstreamDuration("rpc3", "evm:123", "method1", 5*time.Millisecond)
+		mt.SetLatestBlockNumber("rpc3", "evm:123", 103)
+
+		time.Sleep(75 * time.Millisecond)
+
+		// Verify default upstreams are active and fallback is disabled
+		err = evaluator.AcquirePermit(&logger, ups1, "method1")
+		assert.NoError(t, err, "Healthy default upstream should be active")
+		err = evaluator.AcquirePermit(&logger, ups2, "method1")
+		assert.NoError(t, err, "Healthy default upstream should be active")
+		err = evaluator.AcquirePermit(&logger, ups3, "method1")
+		assert.Error(t, err, "Fallback should be disabled when defaults are healthy")
+
+		// Now degrade one default upstream
+		for i := 0; i < 10; i++ {
+			mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
+			mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error1")
+		}
+
+		time.Sleep(75 * time.Millisecond)
+
+		// Verify healthy default is still active
+		err = evaluator.AcquirePermit(&logger, ups2, "method1")
+		assert.NoError(t, err, "Healthy default should remain active")
+
+		// Verify unhealthy default is inactive
+		err = evaluator.AcquirePermit(&logger, ups1, "method1")
+		assert.Error(t, err, "Unhealthy default should become inactive")
+
+		// Verify fallback is still disabled since we have one healthy default
+		err = evaluator.AcquirePermit(&logger, ups3, "method1")
+		assert.Error(t, err, "Fallback should remain disabled when at least one default is healthy")
+	})
+
+	t.Run("DefaultPolicyMinHealthyThreshold", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		ntw, ups1, ups2, ups3 := createTestNetwork(t, context.Background())
+
+		// Set environment variable for minimum healthy threshold
+		t.Setenv("ROUTING_POLICY_MIN_HEALTHY_THRESHOLD", "2")
+		t.Setenv("ROUTING_POLICY_MAX_ERROR_RATE", "0.3")
+		t.Setenv("ROUTING_POLICY_MAX_BLOCK_HEAD_LAG", "5")
+
+		config := &common.SelectionPolicyConfig{
+			EvalInterval:  50 * time.Millisecond,
+			EvalPerMethod: false,
+		}
+		config.SetDefaults() // This will set the default policy function
+
+		mt := ntw.metricsTracker
+		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
+		require.NoError(t, err)
+
+		ctx := context.Background()
+		err = evaluator.Start(ctx)
+		require.NoError(t, err)
+
+		// Test Case 1: Only one default healthy (should activate fallbacks)
+		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
+		mt.RecordUpstreamDuration("rpc1", "evm:123", "method1", 10*time.Millisecond)
+		mt.SetLatestBlockNumber("rpc1", "evm:123", 100)
+		mt.SetLatestBlockNumber("*", "evm:123", 102) // Network head
+
+		mt.RecordUpstreamRequest("rpc2", "evm:123", "method1")
+		mt.RecordUpstreamFailure("rpc2", "evm:123", "method1", "Error1")
+		mt.SetLatestBlockNumber("rpc2", "evm:123", 95) // Lagging
+
+		// Set good metrics for fallback
+		mt.RecordUpstreamRequest("rpc3", "evm:123", "method1")
+		mt.RecordUpstreamDuration("rpc3", "evm:123", "method1", 15*time.Millisecond)
+		mt.SetLatestBlockNumber("rpc3", "evm:123", 101)
+
+		time.Sleep(75 * time.Millisecond)
+
+		// Should include fallback since we don't meet min healthy threshold
+		err = evaluator.AcquirePermit(&logger, ups1, "method1")
+		assert.NoError(t, err, "Healthy default should be active")
+		err = evaluator.AcquirePermit(&logger, ups2, "method1")
+		assert.Error(t, err, "Unhealthy default should be inactive")
+		err = evaluator.AcquirePermit(&logger, ups3, "method1")
+		assert.NoError(t, err, "Fallback should be active when below min healthy threshold")
+
+		// Test Case 2: Both defaults become healthy (should disable fallbacks)
+		for i := 0; i < 10; i++ {
+			mt.RecordUpstreamRequest("rpc2", "evm:123", "method1")
+			mt.RecordUpstreamDuration("rpc2", "evm:123", "method1", 20*time.Millisecond)
+		}
+		mt.SetLatestBlockNumber("rpc2", "evm:123", 101)
+
+		time.Sleep(75 * time.Millisecond)
+
+		err = evaluator.AcquirePermit(&logger, ups1, "method1")
+		assert.NoError(t, err, "First healthy default should be active")
+		err = evaluator.AcquirePermit(&logger, ups2, "method1")
+		assert.NoError(t, err, "Second healthy default should be active")
+		err = evaluator.AcquirePermit(&logger, ups3, "method1")
+		assert.Error(t, err, "Fallback should be inactive when enough healthy defaults")
+	})
+
+	t.Run("DefaultPolicyBlockLagThreshold", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		ntw, ups1, ups2, ups3 := createTestNetwork(t, context.Background())
+
+		t.Setenv("ROUTING_POLICY_MAX_BLOCK_HEAD_LAG", "3")
+		t.Setenv("ROUTING_POLICY_MIN_HEALTHY_THRESHOLD", "1")
+
+		config := &common.SelectionPolicyConfig{
+			EvalInterval:  50 * time.Millisecond,
+			EvalPerMethod: false,
+		}
+		config.SetDefaults()
+
+		mt := ntw.metricsTracker
+		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
+		require.NoError(t, err)
+
+		ctx := context.Background()
+		err = evaluator.Start(ctx)
+		require.NoError(t, err)
+
+		// Set network head block
+		mt.SetLatestBlockNumber("*", "evm:123", 100)
+
+		// Test Case 1: Default upstream within lag threshold
+		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
+		mt.RecordUpstreamDuration("rpc1", "evm:123", "method1", 10*time.Millisecond)
+		mt.SetLatestBlockNumber("rpc1", "evm:123", 98) // Lag of 2 blocks
+
+		mt.RecordUpstreamRequest("rpc2", "evm:123", "method1")
+		mt.RecordUpstreamDuration("rpc2", "evm:123", "method1", 15*time.Millisecond)
+		mt.SetLatestBlockNumber("rpc2", "evm:123", 95) // Lag of 5 blocks (exceeds threshold)
+
+		time.Sleep(75 * time.Millisecond)
+
+		err = evaluator.AcquirePermit(&logger, ups1, "method1")
+		assert.NoError(t, err, "Default with acceptable lag should be active")
+		err = evaluator.AcquirePermit(&logger, ups2, "method1")
+		assert.Error(t, err, "Default with excessive lag should be inactive")
+
+		// Test Case 2: All defaults exceed lag threshold
+		mt.SetLatestBlockNumber("rpc1", "evm:123", 95) // Now lagging by 5 blocks
+		mt.SetLatestBlockNumber("rpc3", "evm:123", 98) // Fallback with less lag
+
+		time.Sleep(75 * time.Millisecond)
+
+		err = evaluator.AcquirePermit(&logger, ups1, "method1")
+		assert.Error(t, err, "Lagging default should be inactive")
+		err = evaluator.AcquirePermit(&logger, ups3, "method1")
+		assert.NoError(t, err, "Fallback should be active when defaults are lagging")
+	})
+
+	t.Run("DefaultPolicyErrorRateThreshold", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		ntw, ups1, ups2, ups3 := createTestNetwork(t, context.Background())
+
+		t.Setenv("ROUTING_POLICY_MAX_ERROR_RATE", "0.25")
+		t.Setenv("ROUTING_POLICY_MIN_HEALTHY_THRESHOLD", "1")
+
+		config := &common.SelectionPolicyConfig{
+			EvalInterval:  50 * time.Millisecond,
+			EvalPerMethod: false,
+		}
+		config.SetDefaults()
+
+		mt := ntw.metricsTracker
+		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
+		require.NoError(t, err)
+
+		ctx := context.Background()
+		err = evaluator.Start(ctx)
+		require.NoError(t, err)
+
+		// Set initial block numbers
+		mt.SetLatestBlockNumber("*", "evm:123", 100)
+		mt.SetLatestBlockNumber("rpc1", "evm:123", 99)
+		mt.SetLatestBlockNumber("rpc2", "evm:123", 99)
+		mt.SetLatestBlockNumber("rpc3", "evm:123", 99)
+
+		// Test Case 1: Error rates around threshold
+		// rpc1: 20% error rate (below threshold)
+		for i := 0; i < 8; i++ {
+			mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
+			mt.RecordUpstreamDuration("rpc1", "evm:123", "method1", 10*time.Millisecond)
+		}
+		for i := 0; i < 2; i++ {
+			mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
+			mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error")
+		}
+
+		// rpc2: 30% error rate (above threshold)
+		for i := 0; i < 7; i++ {
+			mt.RecordUpstreamRequest("rpc2", "evm:123", "method1")
+			mt.RecordUpstreamDuration("rpc2", "evm:123", "method1", 15*time.Millisecond)
+		}
+		for i := 0; i < 3; i++ {
+			mt.RecordUpstreamRequest("rpc2", "evm:123", "method1")
+			mt.RecordUpstreamFailure("rpc2", "evm:123", "method1", "Error")
+		}
+
+		time.Sleep(75 * time.Millisecond)
+
+		err = evaluator.AcquirePermit(&logger, ups1, "method1")
+		assert.NoError(t, err, "Default with error rate below threshold should be active")
+		err = evaluator.AcquirePermit(&logger, ups2, "method1")
+		assert.Error(t, err, "Default with error rate above threshold should be inactive")
+
+		// Test Case 2: All defaults exceed error rate threshold
+		for i := 0; i < 5; i++ {
+			mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
+			mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error")
+		}
+
+		// Set good metrics for fallback
+		for i := 0; i < 10; i++ {
+			mt.RecordUpstreamRequest("rpc3", "evm:123", "method1")
+			mt.RecordUpstreamDuration("rpc3", "evm:123", "method1", 20*time.Millisecond)
+		}
+
+		time.Sleep(75 * time.Millisecond)
+
+		err = evaluator.AcquirePermit(&logger, ups1, "method1")
+		assert.Error(t, err, "Default with high error rate should be inactive")
+		err = evaluator.AcquirePermit(&logger, ups3, "method1")
+		assert.NoError(t, err, "Fallback should be active when defaults have high error rates")
+	})
 }
 
-func createTestNetwork(t *testing.T, ctx context.Context, upstreamConfigs ...*common.UpstreamConfig) (*Network, *upstream.Upstream, *upstream.Upstream) {
+func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.Upstream, *upstream.Upstream, *upstream.Upstream) {
 	clr := upstream.NewClientRegistry(&log.Logger)
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 		Budgets: []*common.RateLimitBudgetConfig{},
@@ -1330,26 +1670,32 @@ func createTestNetwork(t *testing.T, ctx context.Context, upstreamConfigs ...*co
 	vndr := vendors.NewVendorsRegistry()
 	mt := health.NewTracker("prjA", time.Minute)
 
-	// If no configs provided, use default test configs
-	if len(upstreamConfigs) == 0 {
-		upstreamConfigs = []*common.UpstreamConfig{
-			{
-				Type:     common.UpstreamTypeEvm,
-				Id:       "rpc1",
-				Endpoint: "http://rpc1.localhost",
-				Evm: &common.EvmUpstreamConfig{
-					ChainId: 123,
-				},
+	upstreamConfigs := []*common.UpstreamConfig{
+		{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc1",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
 			},
-			{
-				Type:     common.UpstreamTypeEvm,
-				Id:       "rpc2",
-				Endpoint: "http://rpc2.localhost",
-				Evm: &common.EvmUpstreamConfig{
-					ChainId: 123,
-				},
+		},
+		{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc2",
+			Endpoint: "http://rpc2.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
 			},
-		}
+		},
+		{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc3",
+			Group:    "fallback",
+			Endpoint: "http://rpc3.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		},
 	}
 
 	upr := upstream.NewUpstreamsRegistry(
@@ -1369,7 +1715,7 @@ func createTestNetwork(t *testing.T, ctx context.Context, upstreamConfigs ...*co
 		t.Fatal(err)
 	}
 
-	var pup1, pup2 *upstream.Upstream
+	var pup1, pup2, pup3 *upstream.Upstream
 	if len(upstreamConfigs) > 0 {
 		pup1, err = upr.NewUpstream(
 			"prjA",
@@ -1404,6 +1750,23 @@ func createTestNetwork(t *testing.T, ctx context.Context, upstreamConfigs ...*co
 		pup2.Client = cl2
 	}
 
+	if len(upstreamConfigs) > 2 {
+		pup3, err = upr.NewUpstream(
+			"prjA",
+			upstreamConfigs[2],
+			&log.Logger,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl3, err := clr.GetOrCreateClient(ctx, pup3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup3.Client = cl3
+	}
+
 	ntw, err := NewNetwork(
 		&log.Logger,
 		"prjA",
@@ -1422,5 +1785,5 @@ func createTestNetwork(t *testing.T, ctx context.Context, upstreamConfigs ...*co
 		t.Fatal(err)
 	}
 
-	return ntw, pup1, pup2
+	return ntw, pup1, pup2, pup3
 }

@@ -434,11 +434,13 @@ func (c *SelectionPolicyConfig) SetDefaults() {
 			c.EvalFunction = evalFunction
 		}
 	}
-	if c.ResampleInterval == 0 {
-		c.ResampleInterval = 5 * time.Minute
-	}
-	if c.ResampleCount == 0 {
-		c.ResampleCount = 10
+	if c.ResampleExcluded {
+		if c.ResampleInterval == 0 {
+			c.ResampleInterval = 5 * time.Minute
+		}
+		if c.ResampleCount == 0 {
+			c.ResampleCount = 10
+		}
 	}
 }
 
