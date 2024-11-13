@@ -57,7 +57,7 @@ func (n *Network) Bootstrap(ctx context.Context) error {
 			}(poller)
 		}
 
-		// Wait for pollers up to 10 so we have block head of all nodes as much as possible.
+		// Wait for pollers up to 30s so we have block head of all nodes as much as possible.
 		// This helps policy evaluator to have more accurate data on initialization.
 		done := make(chan struct{})
 		go func() {
@@ -67,7 +67,7 @@ func (n *Network) Bootstrap(ctx context.Context) error {
 		select {
 		case <-done:
 		case <-time.After(30 * time.Second):
-			n.Logger.Warn().Msg("evm state pollers did not complete within 10 seconds, some upstreams might be down")
+			n.Logger.Warn().Msg("evm state pollers did not complete within 30 seconds, some upstreams might be down")
 		}
 	} else {
 		return fmt.Errorf("network architecture not supported: %s", n.Architecture())
