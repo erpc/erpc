@@ -727,13 +727,9 @@ func isMissingHistoricalStateError(err error) bool {
 }
 
 func (u *Upstream) detectNodeType() (common.EvmNodeType, error) {
-	// using zero address for universality
-	address := "0x0000000000000000000000000000000000000000"
-
 	// Step 1: Attempt to get balance at block 0x1
 	balanceReqBlock1 := common.NewNormalizedRequest([]byte(fmt.Sprintf(
-		`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["%s", "0x1"]}`,
-		address,
+		`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x1", false]}`,
 	)))
 
 	_, errBlock1 := u.Forward(context.Background(), balanceReqBlock1)
@@ -749,8 +745,7 @@ func (u *Upstream) detectNodeType() (common.EvmNodeType, error) {
 
 	// Step 2: Attempt to get balance at the latest block
 	balanceReqLatest := common.NewNormalizedRequest([]byte(fmt.Sprintf(
-		`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["%s", "latest"]}`,
-		address,
+		`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNUmber","params":["latest", false]}`,
 	)))
 
 	_, errLatest := u.Forward(context.Background(), balanceReqLatest)
