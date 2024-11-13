@@ -8,16 +8,8 @@
         "**/node_modules",
         "CHANGELOG.md",
         "generated.ts",
-        "**/dist",
-        "**/.next",
-        "**/generated",
-        "**/cache",
-        "**/out",
-        "**/.ponder",
         "docs/",
-        "benchmarks/apps/subgraph-*",
-        "pnpm-lock.yaml",
-        "**/*.sol"
+        "pnpm-lock.yaml"
       ]
     },
     "formatter": {

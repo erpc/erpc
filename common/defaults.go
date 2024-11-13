@@ -401,24 +401,33 @@ func (s *ScoreMultiplierConfig) SetDefaults() {
 	}
 }
 
+const DefaultPolicyFunction = `
+	(upstreams, method) => {
+		const defaults = upstreams.filter(u => u.config.group !== 'fallback')
+		const fallbacks = upstreams.filter(u => u.config.group === 'fallback')
+		
+		const maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7')
+		const maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10')
+		const minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1')
+		
+		const healthyOnes = defaults.filter(
+			u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
+		)
+		
+		if (healthyOnes.length >= minHealthyThreshold) {
+			return healthyOnes
+		}
+
+		return upstreams
+	}
+`
+
 func (c *SelectionPolicyConfig) SetDefaults() {
 	if c.EvalInterval == 0 {
 		c.EvalInterval = 1 * time.Minute
 	}
 	if c.EvalFunction == nil {
-		evalFunction, err := script.CompileFunction(`
-			(upstreams, method) => {
-				const defaults = upstreams.filter(u => u.config.group !== 'fallback')
-				const fallbacks = upstreams.filter(u => u.config.group === 'fallback')
-				const maxErrorRate = parseFloat(process.env.ROUTING_POLICY_ERROR_RATE || '0.7')
-				const maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_BLOCK_LAG || '10')
-				const healthyOnes = defaults.filter(u => u.errorRate < maxErrorRate || u.blockHeadLag < maxBlockHeadLag)
-				if (healthyOnes.length > 0) {
-					return healthyOnes
-				}
-				return [...healthyOnes, ...fallbacks]
-			}
-		`)
+		evalFunction, err := script.CompileFunction(DefaultPolicyFunction)
 		if err != nil {
 			log.Error().Err(err).Msg("failed to compile default selection policy function")
 		} else {
@@ -561,27 +570,7 @@ func NewDefaultNetworkConfig(upstreams []*UpstreamConfig) *NetworkConfig {
 		},
 	}
 	if hasAnyFallbackUpstream {
-		defaultPolicyFunction := `
-		(upstreams, method) => {
-			const defaults = upstreams.filter(u => u.config.group !== 'fallback')
-			const fallbacks = upstreams.filter(u => u.config.group === 'fallback')
-			
-			const maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7')
-			const maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10')
-			const minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1')
-			
-			const healthyOnes = defaults.filter(
-				u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
-			)
-			
-			if (healthyOnes.length >= minHealthyThreshold) {
-				return healthyOnes
-			}
-
-			return upstreams
-		}
-		`
-		evalFunction, err := script.CompileFunction(defaultPolicyFunction)
+		evalFunction, err := script.CompileFunction(DefaultPolicyFunction)
 		if err != nil {
 			log.Error().Err(err).Msg("failed to compile default selection policy function")
 			return nil
@@ -594,7 +583,7 @@ func NewDefaultNetworkConfig(upstreams []*UpstreamConfig) *NetworkConfig {
 			SampleAfter:   5 * time.Minute,
 			SampleCount:   10,
 
-			evalFunctionOriginal: defaultPolicyFunction,
+			evalFunctionOriginal: DefaultPolicyFunction,
 		}
 
 		n.SelectionPolicy = selectionPolicy

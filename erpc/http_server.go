@@ -582,15 +582,13 @@ func handleErrorResponse(
 }
 
 func (s *HttpServer) Start(logger *zerolog.Logger) error {
-	addrV4 := fmt.Sprintf("%s:%d", *s.config.HttpHostV4, *s.config.HttpPort)
-	addrV6 := fmt.Sprintf("%s:%d", *s.config.HttpHostV6, *s.config.HttpPort)
-
 	var err error
 	var ln net.Listener
 	var ln4 net.Listener
 	var ln6 net.Listener
 
 	if s.config.HttpHostV4 != nil && s.config.ListenV4 != nil && *s.config.ListenV4 {
+		addrV4 := fmt.Sprintf("%s:%d", *s.config.HttpHostV4, *s.config.HttpPort)
 		logger.Info().Msgf("starting http server on port: %d IPv4: %s", s.config.HttpPort, addrV4)
 		ln4, err = net.Listen("tcp4", addrV4)
 		if err != nil {
@@ -598,6 +596,7 @@ func (s *HttpServer) Start(logger *zerolog.Logger) error {
 		}
 	}
 	if s.config.HttpHostV6 != nil && s.config.ListenV6 != nil && *s.config.ListenV6 {
+		addrV6 := fmt.Sprintf("%s:%d", *s.config.HttpHostV6, *s.config.HttpPort)
 		logger.Info().Msgf("starting http server on port: %d IPv6: %s", s.config.HttpPort, addrV6)
 		ln6, err = net.Listen("tcp6", addrV6)
 		if err != nil {

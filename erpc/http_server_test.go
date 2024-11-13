@@ -363,7 +363,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 								Retry: nil,
 								Hedge: nil,
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "200ms",
+									Duration: "300ms",
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
