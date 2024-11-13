@@ -27,6 +27,7 @@ type UpstreamsRegistry struct {
 
 	allUpstreams []*Upstream
 	upstreamsMu  *sync.RWMutex
+	networkMu    sync.Map // map[string]*sync.RWMutex for per-network locks
 	// map of network => upstreams
 	networkUpstreams map[string][]*Upstream
 	// map of network -> method (or *) => upstreams
@@ -94,17 +95,30 @@ func (u *UpstreamsRegistry) NewUpstream(
 	)
 }
 
+func (u *UpstreamsRegistry) getNetworkMutex(networkId string) *sync.RWMutex {
+	mutex, _ := u.networkMu.LoadOrStore(networkId, &sync.RWMutex{})
+	return mutex.(*sync.RWMutex)
+}
+
 func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(networkId string) error {
-	u.upstreamsMu.Lock()
-	defer u.upstreamsMu.Unlock()
+	networkMu := u.getNetworkMutex(networkId)
+	networkMu.Lock()
+	defer networkMu.Unlock()
+
+	u.upstreamsMu.RLock()
+	allUpstreams := u.allUpstreams
+	u.upstreamsMu.RUnlock()
 
 	var upstreams []*Upstream
 	var ids []string
-	for _, ups := range u.allUpstreams {
+	for _, ups := range allUpstreams {
 		if s, e := ups.SupportsNetwork(networkId); e == nil && s {
+			u.upstreamsMu.Lock()
 			upstreams = append(upstreams, ups)
 			ids = append(ids, ups.Config().Id)
+			u.upstreamsMu.Unlock()
 		} else if e != nil {
+			// TODO add a mechanism to re-check upstreams that failed to respond to initial SupportsNetwork (e.g. temporary network outages)
 			u.logger.Warn().Err(e).
 				Str("upstreamId", ups.Config().Id).
 				Str("networkId", networkId).
@@ -118,6 +132,7 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(networkId string) error {
 		return common.NewErrNoUpstreamsFound(u.prjId, networkId)
 	}
 
+	u.upstreamsMu.Lock()
 	u.networkUpstreams[networkId] = upstreams
 
 	if _, ok := u.sortedUpstreams[networkId]; !ok {
@@ -157,6 +172,7 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(networkId string) error {
 			u.upstreamScores[ups.Config().Id]["*"]["*"] = 0
 		}
 	}
+	u.upstreamsMu.Unlock()
 
 	return nil
 }
@@ -171,10 +187,13 @@ func (u *UpstreamsRegistry) GetSortedUpstreams(networkId, method string) ([]*Ups
 	u.upstreamsMu.RUnlock()
 
 	if upsList == nil {
-		u.upstreamsMu.Lock()
-		defer u.upstreamsMu.Unlock()
+		networkMu := u.getNetworkMutex(networkId)
+		networkMu.Lock()
+		defer networkMu.Unlock()
 
+		u.upstreamsMu.RLock()
 		upsList = u.sortedUpstreams[networkId]["*"]
+		u.upstreamsMu.RUnlock()
 		if upsList == nil {
 			upsList = u.GetNetworkUpstreams(networkId)
 			if upsList == nil {
@@ -182,6 +201,7 @@ func (u *UpstreamsRegistry) GetSortedUpstreams(networkId, method string) ([]*Ups
 			}
 		}
 
+		u.upstreamsMu.Lock()
 		// Create a copy of the default upstreams list for this method
 		methodUpsList := make([]*Upstream, len(upsList))
 		copy(methodUpsList, upsList)
@@ -219,6 +239,7 @@ func (u *UpstreamsRegistry) GetSortedUpstreams(networkId, method string) ([]*Ups
 				u.upstreamScores[upid]["*"][method] = 0
 			}
 		}
+		u.upstreamsMu.Unlock()
 
 		return methodUpsList, nil
 	}
@@ -397,8 +418,8 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 		}
 	}
 
-	upsList1 := u.sortAndFilterUpstreams(networkId, method, upsList)
-	u.sortedUpstreams[networkId][method] = upsList1
+	upsList = u.sortAndFilterUpstreams(networkId, method, upsList)
+	u.sortedUpstreams[networkId][method] = upsList
 }
 
 func (u *UpstreamsRegistry) calculateScore(
@@ -475,6 +496,9 @@ func normalizeValues(values []float64) []float64 {
 }
 
 func (u *UpstreamsRegistry) GetUpstreamsHealth() (*UpstreamsHealth, error) {
+	u.upstreamsMu.RLock()
+	defer u.upstreamsMu.RUnlock()
+
 	sortedUpstreams := make(map[string]map[string][]string)
 	upstreamScores := make(map[string]map[string]map[string]float64)
 

@@ -35,6 +35,18 @@ type initOnce struct {
 	err  error
 }
 
+func (p *PreparedProject) Bootstrap(ctx context.Context) error {
+	// initialize all staticly-defined networks
+	for _, nwCfg := range p.Config.Networks {
+		_, err := p.initializeNetwork(nwCfg.NetworkId())
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (p *PreparedProject) GetNetwork(networkId string) (*Network, error) {
 	p.projectMu.RLock()
 	network, ok := p.Networks[networkId]
@@ -142,6 +154,8 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 }
 
 func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) {
+	p.Logger.Info().Str("networkId", networkId).Msgf("initializing network")
+
 	// 1) Find all upstreams that support this network
 	err := p.upstreamsRegistry.PrepareUpstreamsForNetwork(networkId)
 	if err != nil {

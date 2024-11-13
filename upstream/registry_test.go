@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestUpstreamsRegistry(t *testing.T) {
+func TestUpstreamsRegistry_Ordering(t *testing.T) {
 	logger := log.Logger
 	projectID := "test-project"
 	networkID := "evm:123"
@@ -241,7 +241,7 @@ func TestUpstreamsRegistry(t *testing.T) {
 	})
 }
 
-func TestUpstreamScoring(t *testing.T) {
+func TestUpstreamsRegistry_Scoring(t *testing.T) {
 	projectID := "test-project"
 	networkID := "evm:123"
 	method := "eth_call"
@@ -299,7 +299,7 @@ func TestUpstreamScoring(t *testing.T) {
 	}
 }
 
-func TestCalculateScoreDynamicScenarios(t *testing.T) {
+func TestUpstreamsRegistry_DynamicScenarios(t *testing.T) {
 	registry := &UpstreamsRegistry{
 		scoreRefreshInterval: time.Second,
 		logger:               &log.Logger,
@@ -450,7 +450,7 @@ func TestCalculateScoreDynamicScenarios(t *testing.T) {
 	}
 }
 
-func TestPriorityMultiplierScenarios(t *testing.T) {
+func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 	registry := &UpstreamsRegistry{
 		scoreRefreshInterval: time.Second,
 		logger:               &log.Logger,

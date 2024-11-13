@@ -7,6 +7,7 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/upstream"
+	"github.com/erpc/erpc/util"
 	"github.com/erpc/erpc/vendors"
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog/log"
@@ -18,7 +19,7 @@ func TestProject_Forward(t *testing.T) {
 		defer gock.Off()
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
-		setupMocksForEvmStatePoller()
+		util.SetupMocksForEvmStatePoller()
 
 		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
 			&common.RateLimiterConfig{

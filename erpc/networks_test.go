@@ -1,11 +1,9 @@
 package erpc
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"runtime"
@@ -37,7 +35,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Off()
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
-		setupMocksForEvmStatePoller()
+		util.SetupMocksForEvmStatePoller()
 
 		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
 			&common.RateLimiterConfig{
@@ -410,7 +408,7 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
-		if left := anyTestMocksLeft(); left > 0 {
+		if left := util.AnyTestMocksLeft(); left > 0 {
 			t.Errorf("Expected all mocks to be consumed, got %v left", left)
 			for _, pending := range gock.Pending() {
 				t.Errorf("Pending mock: %v", pending)
@@ -739,7 +737,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "latest")
+				return strings.Contains(util.SafeReadBody(request), "latest")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":{"number":"0x9"}}`))
@@ -747,7 +745,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "latest")
+				return strings.Contains(util.SafeReadBody(request), "latest")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":{"number":"0x9"}}`))
@@ -757,7 +755,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "finalized")
+				return strings.Contains(util.SafeReadBody(request), "finalized")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":{"number":"0x8"}}`))
@@ -765,7 +763,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "finalized")
+				return strings.Contains(util.SafeReadBody(request), "finalized")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":{"number":"0x8"}}`))
@@ -775,7 +773,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "eth_syncing")
+				return strings.Contains(util.SafeReadBody(request), "eth_syncing")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":false}`))
@@ -783,7 +781,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "eth_syncing")
+				return strings.Contains(util.SafeReadBody(request), "eth_syncing")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":false}`))
@@ -954,13 +952,13 @@ func TestNetwork_Forward(t *testing.T) {
 			"id": 1
 		}`)
 
-		setupMocksForEvmStatePoller()
+		util.SetupMocksForEvmStatePoller()
 
 		// Mock an empty logs response from the first upstream
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "eth_getLogs")
+				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":[]}`))
@@ -969,7 +967,7 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "eth_getLogs")
+				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":[{"logIndex":444}]}`))
@@ -1143,7 +1141,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "latest")
+				return strings.Contains(util.SafeReadBody(request), "latest")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":{"number":"0x9"}}`))
@@ -1151,7 +1149,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "latest")
+				return strings.Contains(util.SafeReadBody(request), "latest")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":{"number":"0x9"}}`))
@@ -1161,7 +1159,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "finalized")
+				return strings.Contains(util.SafeReadBody(request), "finalized")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result": {"number":"0x8"}}`))
@@ -1169,7 +1167,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "finalized")
+				return strings.Contains(util.SafeReadBody(request), "finalized")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result": {"number":"0x8"}}`))
@@ -1340,7 +1338,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "latest")
+				return strings.Contains(util.SafeReadBody(request), "latest")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":{"number":"0x9"}}`))
@@ -1348,7 +1346,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "latest")
+				return strings.Contains(util.SafeReadBody(request), "latest")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":{"number":"0x9"}}`))
@@ -1358,7 +1356,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "finalized")
+				return strings.Contains(util.SafeReadBody(request), "finalized")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":{"number":"0x8"}}`))
@@ -1366,7 +1364,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "finalized")
+				return strings.Contains(util.SafeReadBody(request), "finalized")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":{"number":"0x8"}}`))
@@ -1376,7 +1374,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "eth_syncing")
+				return strings.Contains(util.SafeReadBody(request), "eth_syncing")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":false}`))
@@ -1384,7 +1382,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "eth_syncing")
+				return strings.Contains(util.SafeReadBody(request), "eth_syncing")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":false}`))
@@ -1574,7 +1572,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "latest")
+				return strings.Contains(util.SafeReadBody(request), "latest")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result": {"number":"0x1273c17"}}`))
@@ -1582,7 +1580,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "latest")
+				return strings.Contains(util.SafeReadBody(request), "latest")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result": {"number":"0x1273c17"}}`))
@@ -1592,7 +1590,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "finalized")
+				return strings.Contains(util.SafeReadBody(request), "finalized")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result": {"number":"0x1273c17"}}`))
@@ -1600,7 +1598,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "finalized")
+				return strings.Contains(util.SafeReadBody(request), "finalized")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result": {"number":"0x1273c17"}}`))
@@ -1610,7 +1608,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "eth_syncing")
+				return strings.Contains(util.SafeReadBody(request), "eth_syncing")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":false}`))
@@ -1618,7 +1616,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "eth_syncing")
+				return strings.Contains(util.SafeReadBody(request), "eth_syncing")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":false}`))
@@ -1795,7 +1793,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "latest")
+				return strings.Contains(util.SafeReadBody(request), "latest")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result": {"number":"0x0"}}`)) // latest block not available
@@ -1803,7 +1801,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "latest")
+				return strings.Contains(util.SafeReadBody(request), "latest")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result": {"number":"0x0"}}`)) // latest block not available
@@ -1813,7 +1811,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "finalized")
+				return strings.Contains(util.SafeReadBody(request), "finalized")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result": {"number":"0x0"}}`)) //  finalzied block not available
@@ -1821,7 +1819,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "finalized")
+				return strings.Contains(util.SafeReadBody(request), "finalized")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result": {"number":"0x0"}}`)) //  finalzied block not available
@@ -1831,7 +1829,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "eth_syncing")
+				return strings.Contains(util.SafeReadBody(request), "eth_syncing")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":false}`))
@@ -1839,7 +1837,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "eth_syncing")
+				return strings.Contains(util.SafeReadBody(request), "eth_syncing")
 			}).
 			Reply(200).
 			JSON([]byte(`{"result":false}`))
@@ -2001,7 +1999,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				b := safeReadBody(request)
+				b := util.SafeReadBody(request)
 				return strings.Contains(b, "latest")
 			}).
 			Reply(200).
@@ -2012,7 +2010,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				b := safeReadBody(request)
+				b := util.SafeReadBody(request)
 				return strings.Contains(b, "finalized")
 			}).
 			Reply(200).
@@ -2022,7 +2020,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				b := safeReadBody(request)
+				b := util.SafeReadBody(request)
 				return strings.Contains(b, "latest")
 			}).
 			Reply(200).
@@ -2033,7 +2031,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				b := safeReadBody(request)
+				b := util.SafeReadBody(request)
 				return strings.Contains(b, "finalized")
 			}).
 			Reply(200).
@@ -2043,7 +2041,7 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				b := safeReadBody(request)
+				b := util.SafeReadBody(request)
 				return strings.Contains(b, "eth_getTransactionByHash")
 			}).
 			Reply(200).
@@ -2053,7 +2051,7 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				b := safeReadBody(request)
+				b := util.SafeReadBody(request)
 				return strings.Contains(b, "eth_getTransactionByHash")
 			}).
 			Reply(200).
@@ -2220,7 +2218,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				b := safeReadBody(request)
+				b := util.SafeReadBody(request)
 				return strings.Contains(b, "latest")
 			}).
 			Reply(200).
@@ -2231,7 +2229,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				b := safeReadBody(request)
+				b := util.SafeReadBody(request)
 				return strings.Contains(b, "finalized")
 			}).
 			Reply(200).
@@ -2241,7 +2239,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				b := safeReadBody(request)
+				b := util.SafeReadBody(request)
 				return strings.Contains(b, "latest")
 			}).
 			Reply(200).
@@ -2252,7 +2250,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				b := safeReadBody(request)
+				b := util.SafeReadBody(request)
 				return strings.Contains(b, "finalized")
 			}).
 			Reply(200).
@@ -2262,7 +2260,7 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				b := safeReadBody(request)
+				b := util.SafeReadBody(request)
 				return strings.Contains(b, "eth_getTransactionByHash")
 			}).
 			Reply(200).
@@ -2272,7 +2270,7 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				b := safeReadBody(request)
+				b := util.SafeReadBody(request)
 				return strings.Contains(b, "eth_getTransactionByHash")
 			}).
 			Reply(200).
@@ -2442,7 +2440,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				b := safeReadBody(request)
+				b := util.SafeReadBody(request)
 				return strings.Contains(b, "latest")
 			}).
 			Reply(200).
@@ -2453,7 +2451,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				b := safeReadBody(request)
+				b := util.SafeReadBody(request)
 				return strings.Contains(b, "finalized")
 			}).
 			Reply(200).
@@ -2463,7 +2461,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				b := safeReadBody(request)
+				b := util.SafeReadBody(request)
 				return strings.Contains(b, "latest")
 			}).
 			Reply(200).
@@ -2474,7 +2472,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				b := safeReadBody(request)
+				b := util.SafeReadBody(request)
 				return strings.Contains(b, "finalized")
 			}).
 			Reply(200).
@@ -2484,7 +2482,7 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Filter(func(request *http.Request) bool {
-				b := safeReadBody(request)
+				b := util.SafeReadBody(request)
 				return strings.Contains(b, "eth_getTransactionByHash")
 			}).
 			Reply(200).
@@ -5406,7 +5404,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Post("/").
 				Filter(func(request *http.Request) bool {
 					// seek body in request without changing the original Body buffer
-					body := safeReadBody(request)
+					body := util.SafeReadBody(request)
 					return strings.Contains(body, method) && strings.Contains(request.Host, upstreamId)
 				}).
 				Reply(200).
@@ -5599,8 +5597,8 @@ func TestNetwork_Forward(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		t.Run("ResponseReleasedBeforeCacheSet", func(t *testing.T) {
-			resetGock()
-			defer resetGock()
+			util.ResetGock()
+			defer util.ResetGock()
 
 			network := setupTestNetwork(t, nil)
 			gock.New("http://rpc1.localhost").
@@ -5729,7 +5727,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer gock.Clean()
 		defer gock.CleanUnmatchedRequest()
 
-		setupMocksForEvmStatePoller()
+		util.SetupMocksForEvmStatePoller()
 
 		// Set up the test environment
 		network := setupTestNetwork(t, &common.UpstreamConfig{
@@ -5818,7 +5816,7 @@ func TestNetwork_Forward(t *testing.T) {
 		assert.Nil(t, err2, "Expected no error for the second request")
 		assert.NotNil(t, resp2, "Expected non-nil response for the second request")
 
-		if left := anyTestMocksLeft(); left > 0 {
+		if left := util.AnyTestMocksLeft(); left > 0 {
 			t.Errorf("Expected all test mocks to be consumed, got %v left", left)
 			for _, pending := range gock.Pending() {
 				t.Errorf("Pending mock: %v", pending)
@@ -5829,8 +5827,8 @@ func TestNetwork_Forward(t *testing.T) {
 
 func TestNetwork_InFlightRequests(t *testing.T) {
 	t.Run("MultipleSuccessfulConcurrentRequests", func(t *testing.T) {
-		resetGock()
-		defer resetGock()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		network := setupTestNetwork(t, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
@@ -5839,7 +5837,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 			Post("/").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "eth_getLogs")
+				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
 			}).
 			Reply(200).
 			Delay(3 * time.Second). // Delay a bit so in-flight multiplexing kicks in
@@ -5858,7 +5856,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		}
 		wg.Wait()
 
-		if left := anyTestMocksLeft(); left > 1 {
+		if left := util.AnyTestMocksLeft(); left > 1 {
 			t.Errorf("Expected all test mocks to be consumed, got %v left", left)
 			for _, pending := range gock.Pending() {
 				t.Errorf("Pending mock: %v", pending)
@@ -5867,8 +5865,8 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 	})
 
 	t.Run("MultipleConcurrentRequestsWithFailure", func(t *testing.T) {
-		resetGock()
-		defer resetGock()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		network := setupTestNetwork(t, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
@@ -5877,7 +5875,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 			Post("/").
 			Times(1).
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "eth_getLogs")
+				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
 			}).
 			Reply(500).
 			Delay(1 * time.Second).
@@ -5896,7 +5894,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		}
 		wg.Wait()
 
-		if left := anyTestMocksLeft(); left > 0 {
+		if left := util.AnyTestMocksLeft(); left > 0 {
 			t.Errorf("Expected all test mocks to be consumed, got %v left", left)
 			for _, pending := range gock.Pending() {
 				t.Errorf("Pending mock: %v", pending)
@@ -5905,8 +5903,8 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 	})
 
 	t.Run("MultipleConcurrentRequestsWithContextTimeout", func(t *testing.T) {
-		resetGock()
-		defer resetGock()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		network := setupTestNetwork(t, &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -5929,7 +5927,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 			Post("/").
 			Persist().
 			Filter(func(request *http.Request) bool {
-				bd := safeReadBody(request)
+				bd := util.SafeReadBody(request)
 				return strings.Contains(bd, "eth_getLogs")
 			}).
 			Reply(200).
@@ -5956,8 +5954,8 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 	})
 
 	t.Run("MixedSuccessAndFailureConcurrentRequests", func(t *testing.T) {
-		resetGock()
-		defer resetGock()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		network := setupTestNetwork(t, nil)
 		successRequestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
@@ -5967,7 +5965,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 			Post("/").
 			Times(1).
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "eth_getLogs")
+				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
 			}).
 			Reply(200).
 			Delay(1 * time.Second).
@@ -5977,7 +5975,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 			Post("/").
 			Times(1).
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "eth_getBalance")
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
 			}).
 			Reply(500).
 			Delay(1 * time.Second).
@@ -6004,7 +6002,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 
 		wg.Wait()
 
-		if left := anyTestMocksLeft(); left > 0 {
+		if left := util.AnyTestMocksLeft(); left > 0 {
 			t.Errorf("Expected all test mocks to be consumed, got %v left", left)
 			for _, pending := range gock.Pending() {
 				t.Errorf("Pending mock: %v", pending)
@@ -6013,8 +6011,8 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 	})
 
 	t.Run("SequentialInFlightRequests", func(t *testing.T) {
-		resetGock()
-		defer resetGock()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		network := setupTestNetwork(t, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
@@ -6023,7 +6021,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 			Post("/").
 			Times(2).
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "eth_getLogs")
+				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
 			}).
 			Reply(200).
 			Delay(1 * time.Second).
@@ -6041,7 +6039,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		assert.NoError(t, err2)
 		assert.NotNil(t, resp2)
 
-		if left := anyTestMocksLeft(); left > 0 {
+		if left := util.AnyTestMocksLeft(); left > 0 {
 			t.Errorf("Expected all test mocks to be consumed, got %v left", left)
 			for _, pending := range gock.Pending() {
 				t.Errorf("Pending mock: %v", pending)
@@ -6050,8 +6048,8 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 	})
 
 	t.Run("JsonRpcIDConsistencyOnConcurrentRequests", func(t *testing.T) {
-		resetGock()
-		defer resetGock()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		network := setupTestNetwork(t, nil)
 
@@ -6099,7 +6097,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 			}
 		}
 
-		if left := anyTestMocksLeft(); left > 1 {
+		if left := util.AnyTestMocksLeft(); left > 1 {
 			t.Errorf("Expected all test mocks to be consumed, got %v left", left)
 			for _, pending := range gock.Pending() {
 				t.Errorf("Pending mock: %v", pending)
@@ -6108,8 +6106,8 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 	})
 
 	t.Run("ContextCancellationDuringRequest", func(t *testing.T) {
-		resetGock()
-		defer resetGock()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		network := setupTestNetwork(t, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
@@ -6117,7 +6115,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("/").
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "eth_getLogs")
+				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
 			}).
 			Reply(200).
 			Delay(2 * time.Second). // Delay to ensure context cancellation occurs before response
@@ -6151,7 +6149,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		})
 		assert.Equal(t, 0, inFlightCount, "in-flight requests map should be empty after context cancellation")
 
-		if left := anyTestMocksLeft(); left > 0 {
+		if left := util.AnyTestMocksLeft(); left > 0 {
 			t.Errorf("Expected all test mocks to be consumed, got %v left", left)
 			for _, pending := range gock.Pending() {
 				t.Errorf("Pending mock: %v", pending)
@@ -6160,8 +6158,8 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 	})
 
 	t.Run("LongRunningRequest", func(t *testing.T) {
-		resetGock()
-		defer resetGock()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		network := setupTestNetwork(t, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
@@ -6169,7 +6167,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("/").
 			Filter(func(request *http.Request) bool {
-				return strings.Contains(safeReadBody(request), "eth_getLogs")
+				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
 			}).
 			Reply(200).
 			Delay(5 * time.Second). // Simulate a long-running request
@@ -6206,7 +6204,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		})
 		assert.Equal(t, 0, inFlightCount, "in-flight requests map should be empty after request completion")
 
-		if left := anyTestMocksLeft(); left > 0 {
+		if left := util.AnyTestMocksLeft(); left > 0 {
 			t.Errorf("Expected all test mocks to be consumed, got %v left", left)
 			for _, pending := range gock.Pending() {
 				t.Errorf("Pending mock: %v", pending)
@@ -6218,7 +6216,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 func setupTestNetwork(t *testing.T, upstreamConfig *common.UpstreamConfig) *Network {
 	t.Helper()
 
-	setupMocksForEvmStatePoller()
+	util.SetupMocksForEvmStatePoller()
 
 	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
 	metricsTracker := health.NewTracker("test", time.Minute)
@@ -6275,63 +6273,4 @@ func setupTestNetwork(t *testing.T, upstreamConfig *common.UpstreamConfig) *Netw
 	network.evmStatePollers["test"].SuggestLatestBlock(h)
 
 	return network
-}
-
-func setupMocksForEvmStatePoller() {
-	resetGock()
-
-	// Mock for evm block tracker
-	gock.New("http://rpc1.localhost").
-		Post("").
-		Persist().
-		Filter(func(request *http.Request) bool {
-			return strings.Contains(safeReadBody(request), "eth_getBlockByNumber")
-		}).
-		Reply(200).
-		JSON([]byte(`{"result": {"number":"0x1273c18"}}`))
-	gock.New("http://rpc1.localhost").
-		Post("").
-		Persist().
-		Filter(func(request *http.Request) bool {
-			return strings.Contains(safeReadBody(request), "eth_syncing")
-		}).
-		Reply(200).
-		JSON([]byte(`{"result":false}`))
-	gock.New("http://rpc2.localhost").
-		Post("").
-		Persist().
-		Filter(func(request *http.Request) bool {
-			return strings.Contains(safeReadBody(request), "eth_getBlockByNumber")
-		}).
-		Reply(200).
-		JSON([]byte(`{"result": {"number":"0x1273c18"}}`))
-	gock.New("http://rpc2.localhost").
-		Post("").
-		Persist().
-		Filter(func(request *http.Request) bool {
-			return strings.Contains(safeReadBody(request), "eth_syncing")
-		}).
-		Reply(200).
-		JSON([]byte(`{"result":false}`))
-}
-
-func anyTestMocksLeft() int {
-	// We have 4 persisted mocks for evm block tracker
-	return len(gock.Pending()) - 4
-}
-
-func resetGock() {
-	gock.OffAll()
-	gock.Clean()
-	gock.CleanUnmatchedRequest()
-	gock.Disable()
-}
-
-func safeReadBody(request *http.Request) string {
-	body, err := io.ReadAll(request.Body)
-	if err != nil {
-		return ""
-	}
-	request.Body = io.NopCloser(bytes.NewBuffer(body))
-	return string(body)
 }
