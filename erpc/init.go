@@ -101,9 +101,7 @@ func Init(
 	}
 
 	if cfg.Metrics != nil && cfg.Metrics.Enabled != nil && *cfg.Metrics.Enabled {
-		addrV4 := fmt.Sprintf("%s:%d", *cfg.Metrics.HostV4, *cfg.Metrics.Port)
-		addrV6 := fmt.Sprintf("%s:%d", *cfg.Metrics.HostV6, *cfg.Metrics.Port)
-		logger.Info().Msgf("starting metrics server on port: %d addrV4: %s addrV6: %s", *cfg.Metrics.Port, addrV4, addrV6)
+		logger.Info().Msgf("starting metrics server on port: %d", *cfg.Metrics.Port)
 		srv := &http.Server{
 			BaseContext: func(ln net.Listener) context.Context {
 				return appCtx

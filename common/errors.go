@@ -622,7 +622,6 @@ const ErrCodeUpstreamsExhausted ErrorCode = "ErrUpstreamsExhausted"
 
 var NewErrUpstreamsExhausted = func(
 	req *NormalizedRequest,
-	// ersObj map[string]error,
 	ersObj *sync.Map,
 	prjId, netId, method string,
 	duration time.Duration,

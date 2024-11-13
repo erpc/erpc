@@ -35,14 +35,19 @@ export default createConfig({
                         evalFunction: function (upstreams, method) {
                             const defaults = upstreams.filter(u => u.config.group !== 'fallback')
                             const fallbacks = upstreams.filter(u => u.config.group === 'fallback')
-                            const maxErrorRate = parseFloat(process.env.ROUTING_POLICY_ERROR_RATE || '0.7')
-                            const maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_BLOCK_LAG || '10')
+                            
+                            const maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7')
+                            const maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10')
+                            const minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1')
+                            
                             const healthyOnes = defaults.filter(
-                                u => u.metrics.errorRate < maxErrorRate || u.metrics.blockHeadLag < maxBlockHeadLag
+                                u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
                             )
-                            if (healthyOnes.length > 0) {
+                            
+                            if (healthyOnes.length >= minHealthyThreshold) {
                                 return healthyOnes
                             }
+                    
                             return [...healthyOnes, ...fallbacks]
                         }
                     }
