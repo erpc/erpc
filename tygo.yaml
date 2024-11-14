@@ -1,0 +1,16 @@
+packages:
+  - path: "github.com/erpc/erpc/common"
+    output_path: "typescript/config/src/generated.ts"
+    flavor: "yaml"
+    type_mappings:
+      time.Duration: "types.Duration"
+    frontmatter: |
+      export * from "./types"
+      import * as types from "./types"
+    exclude_files:
+      - "utils.go"
+      - "vendors.go"
+      - "errors.go"
+      - "json_rpc.go"
+      - "request.go"
+      - "response.go"

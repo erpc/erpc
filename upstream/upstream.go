@@ -28,7 +28,7 @@ type Upstream struct {
 	vendor common.Vendor
 
 	metricsTracker       *health.Tracker
-	failsafePolicies     []failsafe.Policy[*common.NormalizedResponse]
+	timeoutDuration      *time.Duration
 	failsafeExecutor     failsafe.Executor[*common.NormalizedResponse]
 	rateLimitersRegistry *RateLimitersRegistry
 	rateLimiterAutoTuner *RateLimitAutoTuner
@@ -37,6 +37,11 @@ type Upstream struct {
 	methodCheckResultsMu  sync.RWMutex
 	supportedNetworkIds   map[string]bool
 	supportedNetworkIdsMu sync.RWMutex
+
+	// By default "Syncing" is marked as unknown (nil) and that means we will be retrying empty responses
+	// from such upstream, unless we explicitly know that the upstream is fully synced (false).
+	evmSyncingState common.EvmSyncingState
+	evmSyncingMu    sync.RWMutex
 }
 
 func NewUpstream(
@@ -51,9 +56,22 @@ func NewUpstream(
 ) (*Upstream, error) {
 	lg := logger.With().Str("upstreamId", cfg.Id).Logger()
 
-	policies, err := CreateFailSafePolicies(&lg, common.ScopeUpstream, cfg.Id, cfg.Failsafe)
+	policiesMap, err := CreateFailSafePolicies(&lg, common.ScopeUpstream, cfg.Id, cfg.Failsafe)
 	if err != nil {
 		return nil, err
+	}
+	policiesArray := []failsafe.Policy[*common.NormalizedResponse]{}
+	for _, policy := range policiesMap {
+		policiesArray = append(policiesArray, policy)
+	}
+
+	var timeoutDuration *time.Duration
+	if cfg.Failsafe != nil && cfg.Failsafe.Timeout != nil {
+		d, err := time.ParseDuration(cfg.Failsafe.Timeout.Duration)
+		timeoutDuration = &d
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	vn := vr.LookupByUpstream(cfg)
@@ -66,8 +84,8 @@ func NewUpstream(
 		config:               cfg,
 		vendor:               vn,
 		metricsTracker:       mt,
-		failsafePolicies:     policies,
-		failsafeExecutor:     failsafe.NewExecutor[*common.NormalizedResponse](policies...),
+		timeoutDuration:      timeoutDuration,
+		failsafeExecutor:     failsafe.NewExecutor[*common.NormalizedResponse](policiesArray...),
 		rateLimitersRegistry: rlr,
 		methodCheckResults:   map[string]bool{},
 		supportedNetworkIds:  map[string]bool{},
@@ -294,19 +312,32 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 					req.SetLastValidResponse(resp)
 				}
 				if lg.GetLevel() == zerolog.TraceLevel {
-					lg.Debug().Err(errCall).Object("response", resp).Msgf("upstream result received (traced)")
+					lg.Debug().Err(errCall).Object("response", resp).Msgf("upstream request ended with response")
 				} else {
-					lg.Debug().Err(errCall).Msgf("upstream result received (non-nil response)")
+					lg.Debug().Err(errCall).Msgf("upstream request ended with non-nil response")
 				}
 			} else {
 				if errCall != nil {
-					lg.Debug().Err(errCall).Msgf("upstream result received (errored)")
+					if lg.GetLevel() == zerolog.TraceLevel && errors.Is(errCall, context.Canceled) {
+						lg.Trace().Err(errCall).Msgf("upstream request ended due to context cancellation")
+					} else {
+						lg.Debug().Err(errCall).Msgf("upstream request ended with error")
+					}
 				} else {
-					lg.Debug().Msgf("upstream result received (nil response)")
+					lg.Warn().Msgf("upstream request ended with nil response and nil error")
 				}
 			}
 			if errCall != nil {
-				if !errors.Is(errCall, context.Canceled) {
+				if errors.Is(errCall, context.Canceled) || errors.Is(errCall, context.DeadlineExceeded) {
+					if ctxErr := ctx.Err(); ctxErr != nil {
+						cause := context.Cause(ctx)
+						if cause != nil {
+							errCall = cause
+						} else {
+							errCall = ctxErr
+						}
+					}
+				} else {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
 						u.recordRemoteRateLimit(netId, method)
 					} else if common.HasErrorCode(errCall, common.ErrCodeUpstreamRequestSkipped) {
@@ -357,25 +388,50 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 			return resp, nil
 		}
 
-		if u.failsafePolicies != nil && len(u.failsafePolicies) > 0 {
-			executor := u.failsafeExecutor
-			resp, execErr := executor.
-				WithContext(ctx).
-				GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
-					if err := exec.Context().Err(); err != nil {
-						return nil, err
+		executor := u.failsafeExecutor
+		resp, execErr := executor.
+			WithContext(ctx).
+			GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
+				ectx := exec.Context()
+				if ctxErr := ectx.Err(); ctxErr != nil {
+					cause := context.Cause(ectx)
+					if cause != nil {
+						return nil, cause
+					} else {
+						return nil, ctxErr
 					}
-					return tryForward(exec.Context(), exec)
-				})
+				}
+				if u.timeoutDuration != nil {
+					var cancelFn context.CancelFunc
+					ectx, cancelFn = context.WithTimeoutCause(
+						ectx, *u.timeoutDuration,
+						// TODO 5ms is a workaround to ensure context carries the timeout deadline (used when calling upstreams),
+						//      but allow the failsafe execution to fail with timeout first for proper error handling.
+						//      Is there a way to do this cleanly? e.g. if failsafe lib works via context rather than Ticker?
+						common.NewErrEndpointRequestTimeout(*u.timeoutDuration+5*time.Millisecond),
+					)
+					defer cancelFn()
+				}
 
-			if execErr != nil {
-				return nil, TranslateFailsafeError(common.ScopeUpstream, u.config.Id, method, execErr, &startTime)
+				return tryForward(ectx, exec)
+			})
+
+		if _, ok := execErr.(common.StandardError); !ok {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				cause := context.Cause(ctx)
+				if cause != nil {
+					execErr = cause
+				} else {
+					execErr = ctxErr
+				}
 			}
-
-			return resp, nil
-		} else {
-			return tryForward(ctx, nil)
 		}
+
+		if execErr != nil {
+			return nil, TranslateFailsafeError(common.ScopeUpstream, u.config.Id, method, execErr, &startTime)
+		}
+
+		return resp, nil
 	default:
 		return nil, common.NewErrUpstreamClientInitialization(
 			fmt.Errorf("unsupported client type during forward: %s", clientType),
@@ -422,7 +478,19 @@ func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 	return strconv.FormatUint(dec, 10), nil
 }
 
-func (u *Upstream) SupportsNetwork(networkId string) (bool, error) {
+func (u *Upstream) EvmSyncingState() common.EvmSyncingState {
+	u.evmSyncingMu.RLock()
+	defer u.evmSyncingMu.RUnlock()
+	return u.evmSyncingState
+}
+
+func (u *Upstream) SetEvmSyncingState(state common.EvmSyncingState) {
+	u.evmSyncingMu.Lock()
+	u.evmSyncingState = state
+	u.evmSyncingMu.Unlock()
+}
+
+func (u *Upstream) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
 	u.supportedNetworkIdsMu.RLock()
 	supports, exists := u.supportedNetworkIds[networkId]
 	u.supportedNetworkIdsMu.RUnlock()
@@ -430,7 +498,7 @@ func (u *Upstream) SupportsNetwork(networkId string) (bool, error) {
 		return true, nil
 	}
 
-	supports, err := u.Client.SupportsNetwork(networkId)
+	supports, err := u.Client.SupportsNetwork(ctx, networkId)
 	if err != nil {
 		return false, err
 	}
@@ -462,7 +530,7 @@ func (u *Upstream) IgnoreMethod(method string) {
 func (u *Upstream) initRateLimitAutoTuner() {
 	if u.config.RateLimitBudget != "" && u.config.RateLimitAutoTune != nil {
 		cfg := u.config.RateLimitAutoTune
-		if cfg.Enabled {
+		if cfg.Enabled != nil && *cfg.Enabled {
 			budget, err := u.rateLimitersRegistry.GetBudget(u.config.RateLimitBudget)
 			if err == nil {
 				dur, err := time.ParseDuration(cfg.AdjustmentPeriod)
@@ -637,7 +705,7 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 	method, _ := req.Method()
 
 	if u.config.Evm != nil {
-		if u.config.Evm.Syncing != nil && *u.config.Evm.Syncing {
+		if u.EvmSyncingState() == common.EvmSyncingStateSyncing {
 			return common.NewErrUpstreamSyncing(u.config.Id), true
 		}
 	}

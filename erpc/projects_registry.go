@@ -43,7 +43,12 @@ func NewProjectsRegistry(
 	}
 
 	for _, prjCfg := range staticProjects {
-		_, err := reg.RegisterProject(prjCfg)
+		prj, err := reg.RegisterProject(prjCfg)
+		if err != nil {
+			return nil, err
+		}
+
+		err = prj.Bootstrap(appCtx)
 		if err != nil {
 			return nil, err
 		}

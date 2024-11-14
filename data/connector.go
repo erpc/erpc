@@ -24,13 +24,13 @@ func NewConnector(
 	cfg *common.ConnectorConfig,
 ) (Connector, error) {
 	switch cfg.Driver {
-	case "memory":
+	case common.DriverMemory:
 		return NewMemoryConnector(ctx, logger, cfg.Memory)
-	case "redis":
+	case common.DriverRedis:
 		return NewRedisConnector(ctx, logger, cfg.Redis)
-	case "dynamodb":
+	case common.DriverDynamoDB:
 		return NewDynamoDBConnector(ctx, logger, cfg.DynamoDB)
-	case "postgresql":
+	case common.DriverPostgres:
 		return NewPostgreSQLConnector(ctx, logger, cfg.PostgreSQL)
 	}
 

@@ -22,6 +22,7 @@ import (
 )
 
 type HttpServer struct {
+	appCtx context.Context
 	config *common.ServerConfig
 	admin  *common.AdminConfig
 	server *http.Server
@@ -30,15 +31,16 @@ type HttpServer struct {
 }
 
 func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.ServerConfig, admin *common.AdminConfig, erpc *ERPC) *HttpServer {
-	reqMaxTimeout, err := time.ParseDuration(cfg.MaxTimeout)
+	reqMaxTimeout, err := time.ParseDuration(*cfg.MaxTimeout)
 	if err != nil {
-		if cfg.MaxTimeout != "" {
+		if cfg.MaxTimeout != nil {
 			logger.Error().Err(err).Msgf("failed to parse max timeout duration using 30s default")
 		}
 		reqMaxTimeout = 30 * time.Second
 	}
 
 	srv := &HttpServer{
+		appCtx: ctx,
 		config: cfg,
 		admin:  admin,
 		erpc:   erpc,
@@ -46,13 +48,12 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 	}
 
 	srv.server = &http.Server{
-		Handler: http.TimeoutHandler(
-			srv.createRequestHandler(reqMaxTimeout),
-			reqMaxTimeout+1*time.Second,
-			`{"jsonrpc":"2.0","error":{"code":-32603,"message":"unexpected request timeout"}}`,
+		Handler: TimeoutHandler(
+			srv.createRequestHandler(),
+			reqMaxTimeout,
 		),
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 30 * time.Second,
 	}
 
 	go func() {
@@ -67,19 +68,20 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 	return srv
 }
 
-func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Handler {
-	handleRequest := func(r *http.Request, w http.ResponseWriter, writeFinalError func(statusCode int, body string)) {
+func (s *HttpServer) createRequestHandler() http.Handler {
+	handleRequest := func(r *http.Request, w http.ResponseWriter, writeFatalError func(statusCode int, body error)) {
+		startedAt := time.Now()
 		encoder := common.SonicCfg.NewEncoder(w)
 		encoder.SetEscapeHTML(false)
 
 		projectId, architecture, chainId, isAdmin, isHealthCheck, err := s.parseUrlPath(r)
 		if err != nil {
-			handleErrorResponse(s.logger, nil, err, w, encoder, writeFinalError)
+			handleErrorResponse(s.logger, &startedAt, nil, err, w, encoder, writeFatalError)
 			return
 		}
 
 		if isHealthCheck {
-			s.handleHealthCheck(w, encoder, writeFinalError)
+			s.handleHealthCheck(w, &startedAt, encoder, writeFatalError)
 			return
 		}
 
@@ -100,7 +102,7 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Hand
 
 		project, err := s.erpc.GetProject(projectId)
 		if err != nil {
-			handleErrorResponse(&lg, nil, err, w, encoder, writeFinalError)
+			handleErrorResponse(&lg, &startedAt, nil, err, w, encoder, writeFatalError)
 			return
 		}
 
@@ -112,11 +114,11 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Hand
 
 		body, err := util.ReadAll(r.Body, 1024*1024, 10)
 		if err != nil {
-			handleErrorResponse(&lg, nil, err, w, encoder, writeFinalError)
+			handleErrorResponse(&lg, &startedAt, nil, err, w, encoder, writeFatalError)
 			return
 		}
 
-		lg.Debug().RawJSON("body", body).Msgf("received http request")
+		lg.Info().RawJSON("body", body).Msgf("received http request")
 
 		var requests []json.RawMessage
 		isBatch := len(body) > 0 && body[0] == '['
@@ -127,11 +129,12 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Hand
 			if err != nil {
 				handleErrorResponse(
 					&lg,
+					&startedAt,
 					nil,
 					common.NewErrJsonRpcRequestUnmarshal(err),
 					w,
 					encoder,
-					writeFinalError,
+					writeFatalError,
 				)
 				return
 			}
@@ -150,8 +153,7 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Hand
 					if rec := recover(); rec != nil {
 						msg := fmt.Sprintf("unexpected server panic on per-request handler: %v", rec)
 						lg.Error().Msgf(msg)
-						// Since we cannot write to w in a goroutine, collect the error in responses
-						responses[index] = processErrorBody(&lg, nil, fmt.Errorf(msg))
+						responses[index] = processErrorBody(&lg, &startedAt, nil, fmt.Errorf(msg))
 					}
 				}()
 
@@ -176,18 +178,18 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Hand
 					ap, err = auth.NewPayloadFromHttp("admin", nq, headers, queryArgs)
 				}
 				if err != nil {
-					responses[index] = processErrorBody(&rlg, nq, err)
+					responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
 					return
 				}
 
 				if isAdmin {
 					if err := s.erpc.AdminAuthenticate(requestCtx, nq, ap); err != nil {
-						responses[index] = processErrorBody(&rlg, nq, err)
+						responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
 						return
 					}
 				} else {
 					if err := project.AuthenticateConsumer(requestCtx, nq, ap); err != nil {
-						responses[index] = processErrorBody(&rlg, nq, err)
+						responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
 						return
 					}
 				}
@@ -196,7 +198,7 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Hand
 					if s.admin != nil {
 						resp, err := s.erpc.AdminHandleRequest(requestCtx, nq)
 						if err != nil {
-							responses[index] = processErrorBody(&rlg, nq, err)
+							responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
 							return
 						}
 						responses[index] = resp
@@ -204,6 +206,7 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Hand
 					} else {
 						responses[index] = processErrorBody(
 							&rlg,
+							&startedAt,
 							nq,
 							common.NewErrAuthUnauthorized(
 								"",
@@ -219,14 +222,14 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Hand
 				if architecture == "" || chainId == "" {
 					var req map[string]interface{}
 					if err := common.SonicCfg.Unmarshal(rawReq, &req); err != nil {
-						responses[index] = processErrorBody(&rlg, nq, common.NewErrInvalidRequest(err))
+						responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(err))
 						return
 					}
 					if networkIdFromBody, ok := req["networkId"].(string); ok {
 						networkId = networkIdFromBody
 						parts := strings.Split(networkId, ":")
 						if len(parts) != 2 {
-							responses[index] = processErrorBody(&rlg, nq, common.NewErrInvalidRequest(fmt.Errorf(
+							responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(fmt.Errorf(
 								"networkId must follow this format: 'architecture:chainId' for example 'evm:42161'",
 							)))
 							return
@@ -234,7 +237,7 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Hand
 						architecture = parts[0]
 						chainId = parts[1]
 					} else {
-						responses[index] = processErrorBody(&rlg, nq, common.NewErrInvalidRequest(fmt.Errorf(
+						responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(fmt.Errorf(
 							"networkId must follow this format: 'architecture:chainId' for example 'evm:42161'",
 						)))
 						return
@@ -243,16 +246,16 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Hand
 					networkId = fmt.Sprintf("%s:%s", architecture, chainId)
 				}
 
-				nw, err := project.GetNetwork(networkId)
+				nw, err := project.GetNetwork(s.appCtx, networkId)
 				if err != nil {
-					responses[index] = processErrorBody(&rlg, nq, err)
+					responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
 					return
 				}
 				nq.SetNetwork(nw)
 
 				resp, err := project.Forward(requestCtx, networkId, nq)
 				if err != nil {
-					responses[index] = processErrorBody(&rlg, nq, err)
+					responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
 					return
 				}
 
@@ -264,9 +267,13 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Hand
 		requestCtx := r.Context()
 
 		if err := requestCtx.Err(); err != nil {
-			s.logger.Trace().Err(err).Msg("request premature context error")
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-				writeFinalError(http.StatusInternalServerError, fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, err.Error()))
+				cause := context.Cause(requestCtx)
+				if cause != nil {
+					err = cause
+				}
+				s.logger.Trace().Err(err).Msg("request premature context error")
+				writeFatalError(http.StatusInternalServerError, err)
 			}
 			return
 		}
@@ -278,7 +285,6 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Hand
 			bw := NewBatchResponseWriter(responses)
 			_, err = bw.WriteTo(w)
 
-			// Release resources
 			for _, resp := range responses {
 				if r, ok := resp.(*common.NormalizedResponse); ok {
 					r.Release()
@@ -287,7 +293,7 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Hand
 
 			if err != nil && !errors.Is(err, http.ErrHandlerTimeout) {
 				s.logger.Error().Err(err).Msg("failed to write batch response")
-				writeFinalError(http.StatusInternalServerError, fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, err.Error()))
+				writeFatalError(http.StatusInternalServerError, err)
 				return
 			}
 		} else {
@@ -306,7 +312,7 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Hand
 			}
 
 			if err != nil {
-				writeFinalError(http.StatusInternalServerError, fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, err.Error()))
+				writeFatalError(http.StatusInternalServerError, err)
 				return
 			}
 		}
@@ -314,7 +320,7 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Hand
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		finalErrorOnce := &sync.Once{}
-		writeFinalError := func(statusCode int, body string) {
+		writeFatalError := func(statusCode int, err error) {
 			finalErrorOnce.Do(func() {
 				defer func() {
 					if rec := recover(); rec != nil {
@@ -323,6 +329,13 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Hand
 				}()
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(statusCode)
+
+				msg, err := common.SonicCfg.Marshal(err.Error())
+				if err != nil {
+					msg, _ = common.SonicCfg.Marshal(err.Error())
+				}
+				body := fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":%s}}`, msg)
+
 				fmt.Fprint(w, body)
 			})
 		}
@@ -331,24 +344,14 @@ func (s *HttpServer) createRequestHandler(reqMaxTimeout time.Duration) http.Hand
 			if rec := recover(); rec != nil {
 				msg := fmt.Sprintf("unexpected server panic on top-level handler: %v -> %s", rec, debug.Stack())
 				s.logger.Error().Msgf(msg)
-				writeFinalError(
+				writeFatalError(
 					http.StatusInternalServerError,
-					fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"unexpected server panic on top-level handler: %s"}}`, rec),
+					fmt.Errorf(`unexpected server panic on top-level handler: %s`, rec),
 				)
 			}
 		}()
 
-		done := make(chan bool)
-		go func() {
-			handleRequest(r, w, writeFinalError)
-			done <- true
-		}()
-		select {
-		case <-done:
-			return
-		case <-time.After(reqMaxTimeout):
-			writeFinalError(http.StatusGatewayTimeout, `{"jsonrpc":"2.0","error":{"code":-32603,"message":"request handler timeout"}}`)
-		}
+		handleRequest(r, w, writeFatalError)
 	})
 }
 
@@ -422,7 +425,7 @@ func (s *HttpServer) handleCORS(w http.ResponseWriter, r *http.Request, corsConf
 	w.Header().Set("Access-Control-Allow-Headers", strings.Join(corsConfig.AllowedHeaders, ", "))
 	w.Header().Set("Access-Control-Expose-Headers", strings.Join(corsConfig.ExposedHeaders, ", "))
 
-	if corsConfig.AllowCredentials {
+	if corsConfig.AllowCredentials != nil && *corsConfig.AllowCredentials {
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 	}
 
@@ -496,7 +499,7 @@ type HttpJsonRpcErrorResponse struct {
 	Cause   error       `json:"-"`
 }
 
-func processErrorBody(logger *zerolog.Logger, nq *common.NormalizedRequest, err error) interface{} {
+func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.NormalizedRequest, err error) interface{} {
 	if !common.IsNull(err) {
 		if nq != nil {
 			nq.RLock()
@@ -505,9 +508,9 @@ func processErrorBody(logger *zerolog.Logger, nq *common.NormalizedRequest, err 
 			logger.Debug().Err(err).Object("request", nq).Msgf("forward request errored with client-side exception")
 		} else {
 			if e, ok := err.(common.StandardError); ok {
-				logger.Error().Err(err).Object("request", nq).Msgf("failed to forward request: %s", e.DeepestMessage())
+				logger.Warn().Err(err).Object("request", nq).Dur("durationMs", time.Since(*startedAt)).Msgf("failed to forward request: %s", e.DeepestMessage())
 			} else {
-				logger.Error().Err(err).Object("request", nq).Msgf("failed to forward request: %s", err.Error())
+				logger.Warn().Err(err).Object("request", nq).Dur("durationMs", time.Since(*startedAt)).Msgf("failed to forward request: %s", err.Error())
 			}
 		}
 		if nq != nil {
@@ -564,38 +567,42 @@ func decideErrorStatusCode(err error) int {
 
 func handleErrorResponse(
 	logger *zerolog.Logger,
+	startedAt *time.Time,
 	nq *common.NormalizedRequest,
 	err error,
 	w http.ResponseWriter,
 	encoder sonic.Encoder,
-	writeFinalError func(statusCode int, body string),
+	writeFatalError func(statusCode int, body error),
 ) {
-	resp := processErrorBody(logger, nq, err)
+	resp := processErrorBody(logger, startedAt, nq, err)
 	setResponseStatusCode(err, w)
 	err = encoder.Encode(resp)
 	if err != nil {
 		logger.Error().Err(err).Msgf("failed to encode error response")
-		writeFinalError(http.StatusInternalServerError, fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, err.Error()))
+		writeFatalError(http.StatusInternalServerError, err)
 	}
 }
 
 func (s *HttpServer) Start(logger *zerolog.Logger) error {
-	addrV4 := fmt.Sprintf("%s:%d", s.config.HttpHostV4, s.config.HttpPort)
-	addrV6 := fmt.Sprintf("%s:%d", s.config.HttpHostV6, s.config.HttpPort)
-
 	var err error
 	var ln net.Listener
 	var ln4 net.Listener
 	var ln6 net.Listener
 
-	if s.config.HttpHostV4 != "" && s.config.ListenV4 {
-		logger.Info().Msgf("starting http server on port: %d IPv4: %s", s.config.HttpPort, addrV4)
+	if s.config.HttpPort == nil {
+		return fmt.Errorf("server.httpPort is not configured")
+	}
+
+	if s.config.HttpHostV4 != nil && s.config.ListenV4 != nil && *s.config.ListenV4 {
+		addrV4 := fmt.Sprintf("%s:%d", *s.config.HttpHostV4, *s.config.HttpPort)
+		logger.Info().Msgf("starting http server on port: %d IPv4: %s", *s.config.HttpPort, addrV4)
 		ln4, err = net.Listen("tcp4", addrV4)
 		if err != nil {
 			return fmt.Errorf("error listening on IPv4: %w", err)
 		}
 	}
-	if s.config.HttpHostV6 != "" && s.config.ListenV6 {
+	if s.config.HttpHostV6 != nil && s.config.ListenV6 != nil && *s.config.ListenV6 {
+		addrV6 := fmt.Sprintf("%s:%d", *s.config.HttpHostV6, *s.config.HttpPort)
 		logger.Info().Msgf("starting http server on port: %d IPv6: %s", s.config.HttpPort, addrV6)
 		ln6, err = net.Listen("tcp6", addrV6)
 		if err != nil {

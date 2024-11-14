@@ -17,45 +17,84 @@ import (
 )
 
 type Network struct {
-	appCtx context.Context
-	cfg    *common.NetworkConfig
-
 	NetworkId string
 	ProjectId string
 	Logger    *zerolog.Logger
 
-	inFlightRequests *sync.Map
-	evmStatePollers  map[string]*upstream.EvmStatePoller
-
-	failsafePolicies     []failsafe.Policy[*common.NormalizedResponse]
-	failsafeExecutor     failsafe.Executor[*common.NormalizedResponse]
-	rateLimitersRegistry *upstream.RateLimitersRegistry
-	cacheDal             data.CacheDAL
-	metricsTracker       *health.Tracker
-	upstreamsRegistry    *upstream.UpstreamsRegistry
+	bootstrapOnce            sync.Once
+	appCtx                   context.Context
+	cfg                      *common.NetworkConfig
+	inFlightRequests         *sync.Map
+	evmStatePollers          map[string]*upstream.EvmStatePoller
+	timeoutDuration          *time.Duration
+	failsafeExecutor         failsafe.Executor[*common.NormalizedResponse]
+	rateLimitersRegistry     *upstream.RateLimitersRegistry
+	cacheDal                 data.CacheDAL
+	metricsTracker           *health.Tracker
+	upstreamsRegistry        *upstream.UpstreamsRegistry
+	selectionPolicyEvaluator *PolicyEvaluator
 }
 
 func (n *Network) Bootstrap(ctx context.Context) error {
-	n.appCtx = ctx
-	if n.Architecture() == common.ArchitectureEvm {
-		upsList, err := n.upstreamsRegistry.GetSortedUpstreams(n.NetworkId, "*")
-		if err != nil {
-			return err
-		}
-		n.evmStatePollers = make(map[string]*upstream.EvmStatePoller, len(upsList))
-		for _, u := range upsList {
-			poller, err := upstream.NewEvmStatePoller(ctx, n.Logger, n, u, n.metricsTracker)
-			if err != nil {
-				return err
-			}
-			n.evmStatePollers[u.Config().Id] = poller
-			n.Logger.Info().Str("upstreamId", u.Config().Id).Msgf("bootstraped evm state poller to track upstream latest, finalized blocks and syncing states")
-		}
-	} else {
-		return fmt.Errorf("network architecture not supported: %s", n.Architecture())
-	}
+	var err error
 
-	return nil
+	n.bootstrapOnce.Do(func() {
+		n.appCtx = ctx
+		if n.Architecture() == common.ArchitectureEvm {
+			upsList := n.upstreamsRegistry.GetNetworkUpstreams(n.NetworkId)
+			if len(upsList) == 0 {
+				err = fmt.Errorf("no upstreams found for network: %s", n.NetworkId)
+				return
+			}
+			var pollWg sync.WaitGroup
+			n.evmStatePollers = make(map[string]*upstream.EvmStatePoller, len(upsList))
+			for _, u := range upsList {
+				poller, e := upstream.NewEvmStatePoller(ctx, n.Logger, n, u, n.metricsTracker)
+				if e != nil {
+					err = e
+					return
+				}
+				n.evmStatePollers[u.Config().Id] = poller
+				pollWg.Add(1)
+				go func(poller *upstream.EvmStatePoller) {
+					defer pollWg.Done()
+					poller.Poll(ctx)
+				}(poller)
+			}
+
+			// Wait for pollers up to 30s so we have block head of all nodes as much as possible.
+			// This helps policy evaluator to have more accurate data on initialization.
+			done := make(chan struct{})
+			go func() {
+				pollWg.Wait()
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(30 * time.Second):
+				n.Logger.Warn().Msg("evm state pollers did not complete within 30 seconds, some upstreams might be down")
+			}
+		} else {
+			err = fmt.Errorf("network architecture not supported: %s", n.Architecture())
+			return
+		}
+
+		// Initialize policy evaluator if configured
+		if n.cfg.SelectionPolicy != nil {
+			evaluator, e := NewPolicyEvaluator(n.NetworkId, n.Logger, n.cfg.SelectionPolicy, n.upstreamsRegistry, n.metricsTracker)
+			if e != nil {
+				err = fmt.Errorf("failed to create selection policy evaluator: %w", e)
+				return
+			}
+			if e := evaluator.Start(ctx); e != nil {
+				err = fmt.Errorf("failed to start selection policy evaluator: %w", e)
+				return
+			}
+			n.selectionPolicyEvaluator = evaluator
+		}
+	})
+
+	return err
 }
 
 func (n *Network) Id() string {
@@ -145,6 +184,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	) (resp *common.NormalizedResponse, err error) {
 		lg.Debug().Msgf("trying to forward request to upstream")
 
+		if err := n.acquireSelectionPolicyPermit(lg, u, req); err != nil {
+			return nil, err
+		}
+
 		resp, err = u.Forward(ctx, req)
 
 		if !common.IsNull(err) {
@@ -160,7 +203,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		if err != nil {
 			lg.Debug().Err(err).Msgf("finished forwarding request to upstream with error")
 		} else {
-			lg.Info().Msgf("finished forwarding request to upstream with success")
+			lg.Debug().Msgf("finished forwarding request to upstream with success")
 		}
 
 		return resp, err
@@ -168,7 +211,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	// 5) Actual forwarding logic
 	var execution failsafe.Execution[*common.NormalizedResponse]
-	var errorsByUpstream = map[string]error{}
+	errorsByUpstream := &sync.Map{}
 
 	ectx := context.WithValue(ctx, common.RequestContextKey, req)
 
@@ -180,25 +223,58 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			execution = exec
 			req.Unlock()
 
+			ictx := exec.Context()
+			if ctxErr := ictx.Err(); ctxErr != nil {
+				cause := context.Cause(ictx)
+				if cause != nil {
+					return nil, cause
+				} else {
+					return nil, ctxErr
+				}
+			}
+			if n.timeoutDuration != nil {
+				var cancelFn context.CancelFunc
+				ictx, cancelFn = context.WithTimeoutCause(
+					ectx,
+					*n.timeoutDuration,
+					// TODO 5ms is a workaround to ensure context carries the timeout deadline (used when calling upstreams),
+					//      but allow the failsafe execution to fail with timeout first for proper error handling.
+					//      Is there a way to do this cleanly? e.g. if failsafe lib works via context rather than Ticker?
+					common.NewErrNetworkRequestTimeout(*n.timeoutDuration+5*time.Millisecond),
+				)
+
+				defer cancelFn()
+			}
+
+			var err error
+
 			// We should try all upstreams at least once, but using "i" we make sure
 			// across different executions of the failsafe we pick up next upstream vs retrying the same upstream.
 			// This mimicks a round-robin behavior, for example when doing hedge or retries.
 			// Upstream-level retry is handled by the upstream itself (and its own failsafe policies).
 			ln := len(upsList)
 			for count := 0; count < ln; count++ {
-				if err := exec.Context().Err(); err != nil {
-					return nil, err
+				if ctxErr := ictx.Err(); ctxErr != nil {
+					cause := context.Cause(ictx)
+					if cause != nil {
+						return nil, cause
+					} else {
+						return nil, ctxErr
+					}
 				}
 				// We need to use write-lock here because "i" is being updated.
 				req.Lock()
 				u := upsList[i]
+				upsId := u.Config().Id
+				ulg := lg.With().Str("upstreamId", u.Config().Id).Logger()
+				ulg.Trace().Int("index", i).Int("upstreams", ln).Msgf("attempt to forward request to next upstream")
 				i++
 				if i >= ln {
 					i = 0
 				}
-				upsId := u.Config().Id
-				if prevErr, exists := errorsByUpstream[upsId]; exists {
-					if !common.IsRetryableTowardsUpstream(prevErr) || common.IsCapacityIssue(prevErr) {
+				if prevErr, exists := errorsByUpstream.Load(upsId); exists {
+					pe := prevErr.(error)
+					if !common.IsRetryableTowardsUpstream(pe) || common.IsCapacityIssue(pe) {
 						// Do not even try this upstream if we already know
 						// the previous error was not retryable. e.g. Billing issues
 						// Or there was a rate-limit error.
@@ -208,10 +284,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 				req.Unlock()
 
-				ulg := lg.With().Str("upstreamId", u.Config().Id).Logger()
-
-				resp, err := tryForward(u, exec.Context(), &ulg)
-				if e := n.normalizeResponse(req, resp); e != nil {
+				var r *common.NormalizedResponse
+				r, err = tryForward(u, ictx, &ulg)
+				if e := n.normalizeResponse(req, r); e != nil {
 					ulg.Error().Err(e).Msgf("failed to normalize response")
 					err = e
 				}
@@ -225,23 +300,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 
 				if err != nil {
-					req.Lock()
-					if ser, ok := err.(common.StandardError); ok {
-						ber := ser.Base()
-						if ber.Details == nil {
-							ber.Details = map[string]interface{}{}
-						}
-						ber.Details["timestampMs"] = time.Now().UnixMilli()
-					}
-					errorsByUpstream[upsId] = err
-					req.Unlock()
+					errorsByUpstream.Store(upsId, err)
 				}
 
 				if err == nil || isClientErr {
-					if resp != nil {
-						resp.SetUpstream(u)
+					if r != nil {
+						r.SetUpstream(u)
 					}
-					return resp, err
+					return r, err
 				} else if err != nil {
 					continue
 				}
@@ -252,12 +318,24 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				errorsByUpstream,
 				n.ProjectId,
 				n.NetworkId,
+				method,
 				time.Since(startTime),
 				exec.Attempts(),
 				exec.Retries(),
 				exec.Hedges(),
 			)
 		})
+
+	if _, ok := execErr.(common.StandardError); !ok {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			cause := context.Cause(ctx)
+			if cause != nil {
+				execErr = cause
+			} else {
+				execErr = ctxErr
+			}
+		}
+	}
 
 	if execErr != nil {
 		err := upstream.TranslateFailsafeError(common.ScopeNetwork, "", method, execErr, &startTime)
@@ -280,18 +358,17 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					}
 				}
 			} else {
-				if len(errorsByUpstream) > 0 {
-					err = common.NewErrUpstreamsExhausted(
-						req,
-						errorsByUpstream,
-						n.ProjectId,
-						n.NetworkId,
-						time.Since(startTime),
-						execution.Attempts(),
-						execution.Retries(),
-						execution.Hedges(),
-					)
-				}
+				err = common.NewErrUpstreamsExhausted(
+					req,
+					errorsByUpstream,
+					n.ProjectId,
+					n.NetworkId,
+					method,
+					time.Since(startTime),
+					execution.Attempts(),
+					execution.Retries(),
+					execution.Hedges(),
+				)
 				if mlx != nil {
 					mlx.Close(nil, err)
 				}
@@ -366,6 +443,26 @@ func (n *Network) EvmChainId() (int64, error) {
 		return 0, common.NewErrUnknownNetworkID(n.Architecture())
 	}
 	return n.cfg.Evm.ChainId, nil
+}
+
+func (n *Network) acquireSelectionPolicyPermit(lg *zerolog.Logger, ups *upstream.Upstream, req *common.NormalizedRequest) error {
+	if n.cfg.SelectionPolicy == nil {
+		return nil
+	}
+
+	method, err := req.Method()
+	if err != nil {
+		return err
+	}
+
+	if dr := req.Directives(); dr != nil {
+		// If directive is instructed to use specific upstream(s), bypass selection policy evaluation
+		if dr.UseUpstream != "" {
+			return nil
+		}
+	}
+
+	return n.selectionPolicyEvaluator.AcquirePermit(lg, ups, method)
 }
 
 func (n *Network) handleMultiplexing(ctx context.Context, req *common.NormalizedRequest, startTime time.Time) (*Multiplexer, *common.NormalizedResponse, error) {

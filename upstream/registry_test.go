@@ -15,15 +15,17 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestUpstreamsRegistry(t *testing.T) {
-	logger := zerolog.New(zerolog.NewConsoleWriter())
+func TestUpstreamsRegistry_Ordering(t *testing.T) {
+	logger := log.Logger
 	projectID := "test-project"
 	networkID := "evm:123"
 	method := "eth_call"
-	windowSize := 3 * time.Second
+	windowSize := 300 * time.Millisecond
 
 	t.Run("RefreshScoresForRequests", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
 		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 20)
@@ -37,7 +39,9 @@ func TestUpstreamsRegistry(t *testing.T) {
 	})
 
 	t.Run("CorrectOrderForLatency", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method, 10, 0.20)
@@ -51,7 +55,9 @@ func TestUpstreamsRegistry(t *testing.T) {
 	})
 
 	t.Run("CorrectOrderForErrorRate", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, 10*time.Hour)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 10*time.Hour)
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
 		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 30)
@@ -65,7 +71,9 @@ func TestUpstreamsRegistry(t *testing.T) {
 	})
 
 	t.Run("CorrectOrderForBlockLag", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, 10*time.Hour)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 10*time.Hour)
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
 		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 0)
@@ -85,7 +93,9 @@ func TestUpstreamsRegistry(t *testing.T) {
 	})
 
 	t.Run("CorrectOrderForFinalizationLag", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, 10*time.Hour)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 10*time.Hour)
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
 		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 0)
@@ -105,7 +115,9 @@ func TestUpstreamsRegistry(t *testing.T) {
 	})
 
 	t.Run("CorrectOrderForP90Latency", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method, 10, 0.05)
@@ -117,31 +129,36 @@ func TestUpstreamsRegistry(t *testing.T) {
 	})
 
 	t.Run("CorrectOrderForErrorRateOverTime", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize)
+		windowSize := 100 * time.Millisecond
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
 		// Initial phase
-		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 20)
-		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 30)
+		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 30)
+		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 80)
 		simulateRequests(metricsTracker, networkID, "upstream-c", method, 100, 10)
 
 		expectedOrder := []string{"upstream-c", "upstream-a", "upstream-b"}
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
 
 		// Simulate time passing and metrics reset
-		time.Sleep(windowSize)
+		time.Sleep(windowSize + 10*time.Millisecond)
 
 		// Second phase
-		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 15)
-		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 5)
-		simulateRequests(metricsTracker, networkID, "upstream-c", method, 100, 20)
+		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 30)
+		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 10)
+		simulateRequests(metricsTracker, networkID, "upstream-c", method, 100, 80)
 
 		expectedOrder = []string{"upstream-b", "upstream-a", "upstream-c"}
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
 	})
 
 	t.Run("CorrectOrderForRateLimiting", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 		method := "eth_call"
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
@@ -156,7 +173,9 @@ func TestUpstreamsRegistry(t *testing.T) {
 	})
 
 	t.Run("CorrectOrderForTotalRequests", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 		method := "eth_call"
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
@@ -169,7 +188,9 @@ func TestUpstreamsRegistry(t *testing.T) {
 	})
 
 	t.Run("CorrectOrderForMultipleMethodsRequests", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 
 		methodGetLogs := "eth_getLogs"
 		methodTraceTransaction := "eth_traceTransaction"
@@ -194,7 +215,9 @@ func TestUpstreamsRegistry(t *testing.T) {
 	})
 
 	t.Run("CorrectOrderForMultipleMethodsLatencyOverTime", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 
 		method1 := "eth_call"
 		method2 := "eth_getBalance"
@@ -241,7 +264,7 @@ func TestUpstreamsRegistry(t *testing.T) {
 	})
 }
 
-func TestUpstreamScoring(t *testing.T) {
+func TestUpstreamsRegistry_Scoring(t *testing.T) {
 	projectID := "test-project"
 	networkID := "evm:123"
 	method := "eth_call"
@@ -283,7 +306,9 @@ func TestUpstreamScoring(t *testing.T) {
 
 	for _, scenario := range scenarios {
 		t.Run(scenario.name, func(t *testing.T) {
-			registry, metricsTracker := createTestRegistry(projectID, &log.Logger, scenario.windowSize)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			registry, metricsTracker := createTestRegistry(ctx, projectID, &log.Logger, scenario.windowSize)
 			_, _ = registry.GetSortedUpstreams(networkID, method)
 
 			for _, upstream := range scenario.upstreamConfig {
@@ -299,7 +324,7 @@ func TestUpstreamScoring(t *testing.T) {
 	}
 }
 
-func TestCalculateScoreDynamicScenarios(t *testing.T) {
+func TestUpstreamsRegistry_DynamicScenarios(t *testing.T) {
 	registry := &UpstreamsRegistry{
 		scoreRefreshInterval: time.Second,
 		logger:               &log.Logger,
@@ -450,7 +475,7 @@ func TestCalculateScoreDynamicScenarios(t *testing.T) {
 	}
 }
 
-func TestPriorityMultiplierScenarios(t *testing.T) {
+func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 	registry := &UpstreamsRegistry{
 		scoreRefreshInterval: time.Second,
 		logger:               &log.Logger,
@@ -713,9 +738,9 @@ func TestPriorityMultiplierScenarios(t *testing.T) {
 	}
 }
 
-func createTestRegistry(projectID string, logger *zerolog.Logger, windowSize time.Duration) (*UpstreamsRegistry, *health.Tracker) {
+func createTestRegistry(ctx context.Context, projectID string, logger *zerolog.Logger, windowSize time.Duration) (*UpstreamsRegistry, *health.Tracker) {
 	metricsTracker := health.NewTracker(projectID, windowSize)
-	metricsTracker.Bootstrap(context.Background())
+	metricsTracker.Bootstrap(ctx)
 
 	upstreamConfigs := []*common.UpstreamConfig{
 		{Id: "upstream-a", Endpoint: "http://upstream-a.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
@@ -724,7 +749,7 @@ func createTestRegistry(projectID string, logger *zerolog.Logger, windowSize tim
 	}
 
 	registry := NewUpstreamsRegistry(
-		context.Background(),
+		ctx,
 		logger,
 		projectID,
 		upstreamConfigs,
@@ -734,12 +759,12 @@ func createTestRegistry(projectID string, logger *zerolog.Logger, windowSize tim
 		1*time.Second,
 	)
 
-	err := registry.Bootstrap(context.Background())
+	err := registry.Bootstrap(ctx)
 	if err != nil {
 		panic(err)
 	}
 
-	err = registry.PrepareUpstreamsForNetwork("evm:123")
+	err = registry.PrepareUpstreamsForNetwork(ctx, "evm:123")
 	if err != nil {
 		panic(err)
 	}

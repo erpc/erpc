@@ -10,12 +10,20 @@
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}/cmd/erpc",
-            "args": ["${workspaceFolder}/erpc.yaml"],
+            "args": [],
             "env": {
                 "CC": "/usr/bin/cc",
                 "CXX": "/usr/bin/c++",
-                "CGO_ENABLED": "1"
-            }
+                "CGO_ENABLED": "1",
+                "LOG_LEVEL": "trace"
+            },
+            "cwd": "${workspaceFolder}",
+            "showLog": true,
+            "dlvFlags": [
+                "--log",
+                "--log-output",
+                "debugger,debuglineerr,gdbwire,lldbout,rpc"
+            ]
         }
     ]
 }
