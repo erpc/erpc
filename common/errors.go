@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 func IsNull(err interface{}) bool {
@@ -244,6 +246,24 @@ func (e *BaseError) ErrorStatusCode() int {
 
 func (e *BaseError) Base() *BaseError {
 	return e
+}
+
+func (e *BaseError) MarshalZerologObject(v *zerolog.Event) {
+	if e == nil {
+		return
+	}
+	v.Str("code", string(e.Code))
+	v.Str("message", e.Message)
+	if e.Cause != nil {
+		if be, ok := e.Cause.(*ErrUpstreamsExhausted); ok {
+			v.Interface("cause", be.Errors())
+		} else {
+			v.Interface("cause", e.Cause)
+		}
+	}
+	if e.Details != nil {
+		v.Interface("details", e.Details)
+	}
 }
 
 //
