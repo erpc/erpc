@@ -627,7 +627,7 @@ func (u *Upstream) detectFeatures() error {
 		}
 
 		if cfg.Evm.NodeType == "" {
-			nodeType, err := u.detectNodeType()
+			nodeType, err := u.detectNodeType(&common.NormalizedRequest{})
 			if err != nil {
 				return err
 			}
@@ -672,15 +672,7 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 		return fmt.Errorf("failed to get json-rpc request: %w", err), false
 	}
 
-	// sample of methods with block param
-	methodsWithBlockParam := map[string]int{
-		"eth_getBalance":          1,
-		"eth_getCode":             1,
-		"eth_getTransactionCount": 1,
-		"eth_call":                1,
-	}
-
-	if index, exists := methodsWithBlockParam[jrReq.Method]; exists {
+	if index, exists := common.MethodsWithBlockParam[jrReq.Method]; exists {
 		if len(jrReq.Params) > index {
 			// TODO: do we need to check if blockNumber is a valid hex?
 			_, ok := jrReq.Params[index].(string)
@@ -688,7 +680,7 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 			if ok {
 				nodeType := u.config.Evm.NodeType
 				if nodeType == "" {
-					nodeType, err = u.detectNodeType()
+					nodeType, err = u.detectNodeType(req)
 					if err != nil {
 						return fmt.Errorf("failed to detect node type: %w", err), false
 					}
@@ -713,49 +705,61 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 	return nil, false
 }
 
-func isMissingHistoricalStateError(err error) bool {
-	if err == nil {
-		return false
+func (u *Upstream) detectNodeType(req *common.NormalizedRequest) (common.EvmNodeType, error) {
+	// Step 1: Get the latest block number using the state poller
+	lb := req.Network().EvmStatePollerOf(u.Config().Id).LatestBlock()
+
+	// Block heights to check
+	blockHeights := []int64{
+		1,
+		lb / 2,
+		lb - 1024,
+		lb - 128,
+		lb - 32,
 	}
-	errMsg := err.Error()
-	// Check for common error messages indicating missing historical state
-	return strings.Contains(errMsg, "missing trie node") ||
-		strings.Contains(errMsg, "required historical state unavailable") ||
-		strings.Contains(errMsg, "historical state unavailable") ||
-		strings.Contains(errMsg, "state unavailable") ||
-		strings.Contains(errMsg, "not found")
-}
 
-func (u *Upstream) detectNodeType() (common.EvmNodeType, error) {
-	// Step 1: Attempt to get balance at block 0x1
-	balanceReqBlock1 := common.NewNormalizedRequest([]byte(fmt.Sprintf(
-		`{"jsonrpc":"2.0","id":1,"method":"eth_getBalance","params":["0x1", false]}`,
-	)))
+	// Track responses for each block height
+	responses := make(map[int64]bool)
 
-	_, errBlock1 := u.Forward(context.Background(), balanceReqBlock1)
+	for _, blockHeight := range blockHeights {
+		// Normalize the block height to hex format
+		hexBlockHeight, err := common.NormalizeHex(fmt.Sprintf("%x", blockHeight))
 
-	if errBlock1 == nil {
-		// No error, node is an archive node
+		if err != nil {
+			return "", err
+		}
+
+		balanceReq := common.NewNormalizedRequest([]byte(fmt.Sprintf(
+			`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["%s", false]}`,
+			hexBlockHeight,
+		)))
+
+		_, errBlock := u.Forward(context.Background(), balanceReq)
+		if errBlock == nil {
+			// No error, store response for this block height
+			responses[blockHeight] = true
+		} else if common.EvmIsMissingDataError(errBlock) {
+			// Error due to missing historical state, continue checking
+			responses[blockHeight] = false
+		} else {
+			// Log the error for this specific block height
+			u.Logger.Debug().Err(errBlock).Int64("blockHeight", blockHeight).Msg("Error getting balance")
+			responses[blockHeight] = false
+		}
+	}
+
+	// Determine node type based on responses
+	isArchiveNode := responses[1] && responses[lb/2] && responses[lb-1024]
+	isFullNode := !isArchiveNode && (responses[lb-128] || responses[lb-32])
+
+	if isArchiveNode {
 		return "archive", nil
-	} else if common.EvmIsMissingDataError(errBlock1) {
-		// Error due to missing historical state, proceed to check latest block
-	} else {
-		return "", fmt.Errorf("error getting balance at block 0x1: %w", errBlock1)
-	}
-
-	// Step 2: Attempt to get balance at the latest block
-	balanceReqLatest := common.NewNormalizedRequest([]byte(fmt.Sprintf(
-		`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNUmber","params":["latest", false]}`,
-	)))
-
-	_, errLatest := u.Forward(context.Background(), balanceReqLatest)
-
-	if errLatest == nil {
-		// No error, node is a full node
+	} else if isFullNode {
 		return "full", nil
-	} else {
-		return "", fmt.Errorf("error getting balance at latest block: %w", errLatest)
 	}
+
+	// If none of the checks succeeded, it's likely a light node
+	return "light", nil
 }
 
 func (u *Upstream) getScoreMultipliers(networkId, method string) *common.ScoreMultiplierConfig {
