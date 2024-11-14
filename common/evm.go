@@ -5,11 +5,9 @@ import "strings"
 type EvmNodeType string
 
 const (
-	EvmNodeTypeFull      EvmNodeType = "full"
-	EvmNodeTypeArchive   EvmNodeType = "archive"
-	EvmNodeTypeLight     EvmNodeType = "light"
-	EvmNodeTypeSequencer EvmNodeType = "sequencer"
-	EvmNodeTypeExecution EvmNodeType = "execution"
+	EvmNodeTypeFull    EvmNodeType = "full"
+	EvmNodeTypeArchive EvmNodeType = "archive"
+	EvmNodeTypeLight   EvmNodeType = "light"
 )
 
 func IsEvmWriteMethod(method string) bool {
