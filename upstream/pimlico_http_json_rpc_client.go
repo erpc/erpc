@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
 	"net/url"
 	"strconv"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 )
 
 var pimlicoSupportedChains = map[int64]struct{}{
@@ -114,7 +114,7 @@ func (c *PimlicoHttpJsonRpcClient) GetType() ClientType {
 	return ClientTypePimlicoHttpJsonRpc
 }
 
-func (c *PimlicoHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, error) {
+func (c *PimlicoHttpJsonRpcClient) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
 	}
@@ -133,10 +133,9 @@ func (c *PimlicoHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, erro
 	if err != nil {
 		return false, err
 	}
-	ctx, cancel := context.WithTimeoutCause(c.appCtx, 10*time.Second, errors.New("pimlico client timeout during eth_chainId"))
+	ctx, cancel := context.WithTimeoutCause(ctx, 10*time.Second, errors.New("pimlico client timeout during eth_chainId"))
 	defer cancel()
-	rid := rand.Intn(100_000_000) // #nosec G404
-	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, rid)))
+	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, util.RandomID())))
 	resp, err := client.SendRequest(ctx, pr)
 	if err != nil {
 		return false, err

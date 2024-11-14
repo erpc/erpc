@@ -84,7 +84,7 @@ func (c *AlchemyHttpJsonRpcClient) GetType() ClientType {
 	return ClientTypeAlchemyHttpJsonRpc
 }
 
-func (c *AlchemyHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, error) {
+func (c *AlchemyHttpJsonRpcClient) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
 	}

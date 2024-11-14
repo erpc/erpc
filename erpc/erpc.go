@@ -101,10 +101,7 @@ func (e *ERPC) AdminHandleRequest(ctx context.Context, nq *common.NormalizedRequ
 					Id:        n.NetworkId,
 					Upstreams: []*taxonomyUpstream{},
 				}
-				upstreams, err := n.upstreamsRegistry.GetSortedUpstreams(n.NetworkId, "*")
-				if err != nil {
-					return nil, err
-				}
+				upstreams := n.upstreamsRegistry.GetNetworkUpstreams(n.NetworkId)
 				for _, u := range upstreams {
 					ntw.Upstreams = append(ntw.Upstreams, &taxonomyUpstream{Id: u.Config().Id})
 				}
@@ -169,13 +166,13 @@ func (e *ERPC) AdminHandleRequest(ctx context.Context, nq *common.NormalizedRequ
 	}
 }
 
-func (e *ERPC) GetNetwork(projectId string, networkId string) (*Network, error) {
+func (e *ERPC) GetNetwork(ctx context.Context, projectId string, networkId string) (*Network, error) {
 	prj, err := e.GetProject(projectId)
 	if err != nil {
 		return nil, err
 	}
 
-	return prj.GetNetwork(networkId)
+	return prj.GetNetwork(ctx, networkId)
 }
 
 func (e *ERPC) GetProject(projectId string) (*PreparedProject, error) {

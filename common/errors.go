@@ -7,7 +7,10 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 func IsNull(err interface{}) bool {
@@ -243,6 +246,24 @@ func (e *BaseError) ErrorStatusCode() int {
 
 func (e *BaseError) Base() *BaseError {
 	return e
+}
+
+func (e *BaseError) MarshalZerologObject(v *zerolog.Event) {
+	if e == nil {
+		return
+	}
+	v.Str("code", string(e.Code))
+	v.Str("message", e.Message)
+	if e.Cause != nil {
+		if multiErr, ok := e.Cause.(interface{ Unwrap() []error }); ok {
+			v.Interface("cause", multiErr.Unwrap())
+		} else {
+			v.Interface("cause", e.Cause)
+		}
+	}
+	if e.Details != nil {
+		v.Interface("details", e.Details)
+	}
 }
 
 //
@@ -621,18 +642,16 @@ const ErrCodeUpstreamsExhausted ErrorCode = "ErrUpstreamsExhausted"
 
 var NewErrUpstreamsExhausted = func(
 	req *NormalizedRequest,
-	ersObj map[string]error,
-	prjId, netId string,
+	ersObj *sync.Map,
+	prjId, netId, method string,
 	duration time.Duration,
 	attempts, retries, hedges int,
 ) error {
-	// TODO create a new error type that holds a map to avoid creating a new array
 	ers := []error{}
-	req.RLock()
-	for _, err := range ersObj {
-		ers = append(ers, err)
-	}
-	req.RUnlock()
+	ersObj.Range(func(key, value any) bool {
+		ers = append(ers, value.(error))
+		return true
+	})
 	e := &ErrUpstreamsExhausted{
 		BaseError{
 			Code:    ErrCodeUpstreamsExhausted,
@@ -642,6 +661,7 @@ var NewErrUpstreamsExhausted = func(
 				"durationMs": duration.Milliseconds(),
 				"projectId":  prjId,
 				"networkId":  netId,
+				"method":     method,
 				"attempts":   attempts,
 				"retries":    retries,
 				"hedges":     hedges,
@@ -707,6 +727,8 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		client := 0
 		transport := 0
 		cancelled := 0
+		unsynced := 0
+		excluded := 0
 
 		for _, e := range joinedErr.Unwrap() {
 			if HasErrorCode(e, ErrCodeEndpointUnsupported) {
@@ -725,7 +747,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			} else if HasErrorCode(e, ErrCodeFailsafeCircuitBreakerOpen) {
 				cbOpen++
 				continue
-			} else if errors.Is(e, context.DeadlineExceeded) || HasErrorCode(e, ErrCodeEndpointRequestTimeout, ErrCodeFailsafeTimeoutExceeded) {
+			} else if errors.Is(e, context.DeadlineExceeded) || HasErrorCode(e, ErrCodeEndpointRequestTimeout, ErrCodeNetworkRequestTimeout, ErrCodeFailsafeTimeoutExceeded) {
 				timeout++
 				continue
 			} else if HasErrorCode(e, ErrCodeEndpointServerSideException) {
@@ -739,6 +761,12 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 				continue
 			} else if HasErrorCode(e, ErrCodeEndpointTransportFailure) {
 				transport++
+				continue
+			} else if HasErrorCode(e, ErrCodeUpstreamSyncing) {
+				unsynced++
+				continue
+			} else if HasErrorCode(e, ErrCodeUpstreamExcludedByPolicy) {
+				excluded++
 				continue
 			} else if !HasErrorCode(e, ErrCodeUpstreamMethodIgnored) {
 				other++
@@ -772,6 +800,12 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		}
 		if client > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d user errors", client))
+		}
+		if unsynced > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d syncing nodes", unsynced))
+		}
+		if excluded > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d excluded by policy", excluded))
 		}
 		if other > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d other errors", other))
@@ -1099,13 +1133,9 @@ type ErrFailsafeTimeoutExceeded struct{ BaseError }
 const ErrCodeFailsafeTimeoutExceeded ErrorCode = "ErrFailsafeTimeoutExceeded"
 
 var NewErrFailsafeTimeoutExceeded = func(scope Scope, cause error, startTime *time.Time) error {
-	var dt map[string]interface{}
 	var duration time.Duration
 	if startTime != nil {
 		duration = time.Since(*startTime)
-		dt = map[string]interface{}{
-			"durationMs": duration.Milliseconds(),
-		}
 	}
 	var msg string
 	if duration > 0 {
@@ -1118,7 +1148,6 @@ var NewErrFailsafeTimeoutExceeded = func(scope Scope, cause error, startTime *ti
 			Code:    ErrCodeFailsafeTimeoutExceeded,
 			Message: msg,
 			Cause:   cause,
-			Details: dt,
 		},
 	}
 }
@@ -1320,10 +1349,7 @@ var NewErrNetworkRequestTimeout = func(duration time.Duration) error {
 	return &ErrNetworkRequestTimeout{
 		BaseError{
 			Code:    ErrCodeNetworkRequestTimeout,
-			Message: "network-level request towards one or more upstreams timed out",
-			Details: map[string]interface{}{
-				"durationMs": duration.Milliseconds(),
-			},
+			Message: fmt.Sprintf("network-level request towards one or more upstreams timed out after %dms", duration.Milliseconds()),
 		},
 	}
 }
@@ -1352,6 +1378,22 @@ var NewErrUpstreamRateLimitRuleExceeded = func(upstreamId string, budget string,
 
 func (e *ErrUpstreamRateLimitRuleExceeded) ErrorStatusCode() int {
 	return http.StatusTooManyRequests
+}
+
+type ErrUpstreamExcludedByPolicy struct{ BaseError }
+
+const ErrCodeUpstreamExcludedByPolicy ErrorCode = "ErrUpstreamExcludedByPolicy"
+
+var NewErrUpstreamExcludedByPolicy = func(upstreamId string) error {
+	return &ErrUpstreamExcludedByPolicy{
+		BaseError{
+			Code:    ErrCodeUpstreamExcludedByPolicy,
+			Message: "upstream excluded by selection policy evaluation",
+			Details: map[string]interface{}{
+				"upstreamId": upstreamId,
+			},
+		},
+	}
 }
 
 //
@@ -1704,7 +1746,7 @@ type ErrInvalidConnectorDriver struct{ BaseError }
 
 const ErrCodeInvalidConnectorDriver = "ErrInvalidConnectorDriver"
 
-var NewErrInvalidConnectorDriver = func(driver string) error {
+var NewErrInvalidConnectorDriver = func(driver ConnectorDriverType) error {
 	return &ErrInvalidConnectorDriver{
 		BaseError{
 			Code:    ErrCodeInvalidConnectorDriver,
@@ -1754,35 +1796,46 @@ func HasErrorCode(err error, codes ...ErrorCode) bool {
 }
 
 func IsRetryableTowardsUpstream(err error) bool {
-	return (
-	// Circuit breaker is open -> No Retry
-	!HasErrorCode(err, ErrCodeFailsafeCircuitBreakerOpen) &&
+	return !HasErrorCode(
+		err,
+
+		// Circuit breaker is open -> No Retry
+		ErrCodeFailsafeCircuitBreakerOpen,
 
 		// Unsupported features and methods -> No Retry
-		!HasErrorCode(err, ErrCodeUpstreamRequestSkipped) &&
+		ErrCodeUpstreamRequestSkipped,
+		ErrCodeUpstreamMethodIgnored,
+		ErrCodeEndpointUnsupported,
 
 		// Do not try when 3rd-party providers run out of monthly capacity or billing issues
-		!HasErrorCode(err, ErrCodeEndpointBillingIssue) &&
+		ErrCodeEndpointBillingIssue,
 
 		// 400 / 404 / 405 / 413 -> No Retry
 		// RPC-RPC client-side error (invalid params) -> No Retry
-		!HasErrorCode(err, ErrCodeEndpointClientSideException) &&
-		!HasErrorCode(err, ErrCodeJsonRpcRequestUnmarshal) &&
+		ErrCodeEndpointClientSideException,
+		ErrCodeJsonRpcRequestUnmarshal,
 
 		// Upstream-level + 401 / 403 -> No Retry
 		// RPC-RPC vendor billing/capacity/auth -> No Retry
-		!HasErrorCode(err, ErrCodeEndpointUnauthorized))
+		ErrCodeEndpointUnauthorized,
+	)
 }
 
 func IsCapacityIssue(err error) bool {
-	return HasErrorCode(err, ErrCodeProjectRateLimitRuleExceeded) ||
-		HasErrorCode(err, ErrCodeNetworkRateLimitRuleExceeded) ||
-		HasErrorCode(err, ErrCodeUpstreamRateLimitRuleExceeded) ||
-		HasErrorCode(err, ErrCodeAuthRateLimitRuleExceeded) ||
-		HasErrorCode(err, ErrCodeEndpointCapacityExceeded)
+	return HasErrorCode(
+		err,
+		ErrCodeProjectRateLimitRuleExceeded,
+		ErrCodeNetworkRateLimitRuleExceeded,
+		ErrCodeUpstreamRateLimitRuleExceeded,
+		ErrCodeAuthRateLimitRuleExceeded,
+		ErrCodeEndpointCapacityExceeded,
+	)
 }
 
 func IsClientError(err error) bool {
-	return err != nil && (HasErrorCode(err, ErrCodeEndpointClientSideException) ||
-		HasErrorCode(err, ErrCodeJsonRpcRequestUnmarshal))
+	return err != nil && (HasErrorCode(
+		err,
+		ErrCodeEndpointClientSideException,
+		ErrCodeJsonRpcRequestUnmarshal,
+	))
 }

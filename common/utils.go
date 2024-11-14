@@ -10,6 +10,8 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 )
 
+const KeySeparator = "|"
+
 type ContextKey string
 
 // HexToUint64 converts a hexadecimal string to its decimal representation as a string.

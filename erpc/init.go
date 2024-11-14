@@ -2,11 +2,9 @@ package erpc
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -26,13 +24,25 @@ func Init(
 	// 1) Load configuration
 	//
 	logger.Info().Msg("loading eRPC configuration")
-	configPath := "./erpc.yaml"
+	configPath := ""
+	possibleConfigs := []string{"./erpc.ts", "./erpc.yaml", "./erpc.yml"}
+
 	if len(args) > 1 {
 		configPath = args[1]
+	} else {
+		// Check for erpc.ts or erpc.yaml
+		for _, path := range possibleConfigs {
+			if _, err := fs.Stat(path); err == nil {
+				configPath = path
+				break
+			}
+		}
 	}
-	if _, err := fs.Stat(configPath); errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("config file '%s' does not exist", configPath)
+
+	if configPath == "" {
+		return fmt.Errorf("no valid configuration file found in %v", possibleConfigs)
 	}
+
 	logger.Info().Msgf("resolved configuration file to: %s", configPath)
 	cfg, err := common.LoadConfig(fs, configPath)
 
@@ -47,10 +57,19 @@ func Init(
 		logger = logger.Level(level)
 	}
 
+	if logger.GetLevel() <= zerolog.DebugLevel {
+		finalCfgJson, err := common.SonicCfg.Marshal(cfg)
+		if err != nil {
+			logger.Warn().Msgf("failed to marshal final configuration for tracing: %v", err)
+		} else {
+			logger.Debug().RawJSON("config", finalCfgJson).Msg("")
+		}
+	}
+
 	//
 	// 2) Initialize eRPC
 	//
-	logger.Info().Msg("initializing eRPC")
+	logger.Info().Msg("initializing eRPC core")
 	var evmJsonRpcCache *EvmJsonRpcCache
 	if cfg.Database != nil {
 		if cfg.Database.EvmJsonRpcCache != nil {
@@ -81,15 +100,16 @@ func Init(
 		}()
 	}
 
-	if cfg.Metrics != nil && cfg.Metrics.Enabled {
-		addrV4 := fmt.Sprintf("%s:%d", cfg.Metrics.HostV4, cfg.Metrics.Port)
-		addrV6 := fmt.Sprintf("%s:%d", cfg.Metrics.HostV6, cfg.Metrics.Port)
-		logger.Info().Msgf("starting metrics server on port: %d addrV4: %s addrV6: %s", cfg.Metrics.Port, addrV4, addrV6)
+	if cfg.Metrics != nil && cfg.Metrics.Enabled != nil && *cfg.Metrics.Enabled {
+		if cfg.Metrics.Port == nil {
+			return fmt.Errorf("metrics.port is not configured")
+		}
+		logger.Info().Msgf("starting metrics server on port: %d", *cfg.Metrics.Port)
 		srv := &http.Server{
 			BaseContext: func(ln net.Listener) context.Context {
 				return appCtx
 			},
-			Addr:              fmt.Sprintf(":%d", cfg.Metrics.Port),
+			Addr:              fmt.Sprintf(":%d", *cfg.Metrics.Port),
 			Handler:           promhttp.Handler(),
 			ReadHeaderTimeout: 10 * time.Second,
 		}

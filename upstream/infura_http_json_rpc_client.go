@@ -75,7 +75,7 @@ func (c *InfuraHttpJsonRpcClient) GetType() ClientType {
 	return ClientTypeInfuraHttpJsonRpc
 }
 
-func (c *InfuraHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, error) {
+func (c *InfuraHttpJsonRpcClient) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
 	}

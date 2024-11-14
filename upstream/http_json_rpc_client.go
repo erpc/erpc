@@ -20,7 +20,7 @@ import (
 
 type HttpJsonRpcClient interface {
 	GetType() ClientType
-	SupportsNetwork(networkId string) (bool, error)
+	SupportsNetwork(ctx context.Context, networkId string) (bool, error)
 	SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
 }
 
@@ -107,7 +107,7 @@ func (c *GenericHttpJsonRpcClient) GetType() ClientType {
 	return ClientTypeHttpJsonRpc
 }
 
-func (c *GenericHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, error) {
+func (c *GenericHttpJsonRpcClient) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
 	cfg := c.upstream.Config()
 	if cfg.Evm != nil && cfg.Evm.ChainId > 0 {
 		return util.EvmNetworkId(cfg.Evm.ChainId) == networkId, nil
@@ -160,22 +160,21 @@ func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.
 
 func (c *GenericHttpJsonRpcClient) shutdown() {
 	c.batchMu.Lock()
-	defer c.batchMu.Unlock()
 	if c.batchTimer != nil {
 		c.batchTimer.Stop()
 	}
-	c.processBatch()
+	c.processBatch(true)
 }
 
 func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchRequest) {
+	c.logger.Trace().Interface("id", id).Object("request", req.request).Msgf("attempt to queue request for batch")
 	c.batchMu.Lock()
 
 	if _, ok := c.batchRequests[id]; ok {
 		// We must not include multiple requests with same ID in batch requests
 		// to avoid issues when mapping responses.
 		c.batchTimer.Stop()
-		c.batchMu.Unlock()
-		c.processBatch()
+		c.processBatch(true)
 		c.queueRequest(id, req)
 		return
 	}
@@ -184,6 +183,8 @@ func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchReques
 	ctxd, ok := req.ctx.Deadline()
 	if ctxd.After(time.Now()) && ok {
 		if c.batchDeadline == nil || ctxd.After(*c.batchDeadline) {
+			duration := time.Until(ctxd)
+			c.logger.Trace().Dur("duration", duration).Msgf("extending current batch deadline")
 			c.batchDeadline = &ctxd
 		}
 	}
@@ -196,29 +197,29 @@ func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchReques
 			jrr.Lock()
 			rqs, _ := common.SonicCfg.Marshal(jrr)
 			jrr.Unlock()
-			c.logger.Trace().Interface("id", req.request.ID()).Str("method", jrr.Method).Msgf("pending batch request: %s", string(rqs))
+			c.logger.Trace().Interface("id", req.request.ID()).Str("method", jrr.Method).Msgf("request in batch: %s", string(rqs))
 		}
-		c.logger.Trace().Interface("ids", ids).Msgf("pending batch requests")
+		c.logger.Trace().Interface("ids", ids).Msgf("current batch requests")
 	} else {
 		c.logger.Debug().Msgf("queuing request %+v for batch (current batch size: %d)", id, len(c.batchRequests))
 	}
 
 	if len(c.batchRequests) == 1 {
 		c.logger.Trace().Interface("id", id).Msgf("starting batch timer")
-		c.batchTimer = time.AfterFunc(c.batchMaxWait, c.processBatch)
-		c.batchMu.Unlock()
-	} else if len(c.batchRequests) >= c.batchMaxSize {
-		c.logger.Trace().Interface("id", id).Msgf("stopping batch timer to process total of %d requests", len(c.batchRequests))
+		c.batchTimer = time.AfterFunc(c.batchMaxWait, func() { c.processBatch(false) })
+	}
+
+	if len(c.batchRequests) >= c.batchMaxSize {
+		c.logger.Trace().Interface("id", id).Msgf("committing batch to process total of %d requests", len(c.batchRequests))
 		c.batchTimer.Stop()
-		c.batchMu.Unlock()
-		c.processBatch()
+		c.processBatch(true)
 	} else {
 		c.logger.Trace().Interface("id", id).Msgf("continue waiting for batch")
 		c.batchMu.Unlock()
 	}
 }
 
-func (c *GenericHttpJsonRpcClient) processBatch() {
+func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 	if c.appCtx != nil {
 		err := c.appCtx.Err()
 		if err != nil {
@@ -230,12 +231,15 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 				msg = "context error on batch processing (ignoring batch requests if any)"
 			}
 			if c.logger.GetLevel() == zerolog.TraceLevel {
-				c.batchMu.Lock()
-				defer c.batchMu.Unlock()
+				if !alreadyLocked {
+					c.batchMu.Lock()
+					alreadyLocked = false
+				}
 				ids := make([]interface{}, 0, len(c.batchRequests))
 				for _, req := range c.batchRequests {
 					ids = append(ids, req.request.ID())
 				}
+				c.batchMu.Unlock()
 				c.logger.Trace().Err(err).Interface("remainingIds", ids).Msg(msg)
 			} else {
 				c.logger.Debug().Err(err).Msg(msg)
@@ -246,7 +250,9 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 	var batchCtx context.Context
 	var cancelCtx context.CancelFunc
 
-	c.batchMu.Lock()
+	if !alreadyLocked {
+		c.batchMu.Lock()
+	}
 	if c.logger.GetLevel() == zerolog.TraceLevel {
 		ids := make([]interface{}, 0, len(c.batchRequests))
 		for id := range c.batchRequests {
@@ -258,6 +264,10 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 	}
 	requests := c.batchRequests
 	if c.batchDeadline != nil {
+		duration := time.Until(*c.batchDeadline)
+		c.logger.Trace().
+			Dur("deadline", duration).
+			Msg("creating batch context with highest deadline")
 		batchCtx, cancelCtx = context.WithDeadline(c.appCtx, *c.batchDeadline)
 		defer cancelCtx()
 	} else {
@@ -335,7 +345,14 @@ func (c *GenericHttpJsonRpcClient) processBatch() {
 	// Make the HTTP request
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
+		cause := context.Cause(batchCtx)
+		if cause == nil {
+			cause = batchCtx.Err()
+		}
+		if cause != nil {
+			err = cause
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			for _, req := range requests {
 				req.err <- common.NewErrEndpointRequestTimeout(time.Since(reqStartTime))
 			}
@@ -367,7 +384,13 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 	searcher.ConcurrentRead = false
 	searcher.ValidateJSON = false
 
-	c.logger.Trace().Str("response", bodyStr).Msgf("processing batch response from upstream")
+	if c.logger.GetLevel() == zerolog.TraceLevel {
+		if len(bodyBytes) > 20*1024 {
+			c.logger.Trace().Str("head", util.Mem2Str(bodyBytes[:20*1024])).Str("tail", util.Mem2Str(bodyBytes[len(bodyBytes)-20*1024:])).Msgf("processing batch response from upstream (trimmed to first and last 20k)")
+		} else {
+			c.logger.Trace().RawJSON("response", bodyBytes).Msgf("processing batch response from upstream")
+		}
+	}
 
 	rootNode, err := searcher.GetByPath()
 	if err != nil {
@@ -501,6 +524,7 @@ func getJsonRpcResponseFromNode(rootNode ast.Node) (*common.JsonRpcResponse, err
 }
 
 func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	// TODO check if context is cancellable and then get the "cause" that is already set
 	jrReq, err := req.JsonRpcRequest()
 	if err != nil {
 		return nil, common.NewErrUpstreamRequest(
@@ -528,7 +552,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		return nil, err
 	}
 
-	c.logger.Debug().Msgf("sending json rpc POST request to %s: %s", c.Url.Host, requestBody)
+	c.logger.Debug().RawJSON("request", requestBody).Msgf("sending json rpc POST request to %s", c.Url.Host)
 
 	reqStartTime := time.Now()
 	httpReq, errReq := http.NewRequestWithContext(ctx, "POST", c.Url.String(), bytes.NewBuffer(requestBody))
@@ -547,7 +571,14 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
+		cause := context.Cause(ctx)
+		if cause == nil {
+			cause = ctx.Err()
+		}
+		if cause != nil {
+			err = cause
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return nil, common.NewErrEndpointRequestTimeout(time.Since(reqStartTime))
 		}
 		return nil, common.NewErrEndpointTransportFailure(err)
@@ -563,6 +594,19 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 
 func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *common.NormalizedResponse) error {
 	jr, err := nr.JsonRpcResponse()
+
+	if c.logger.GetLevel() == zerolog.TraceLevel {
+		maxTraceSize := 20 * 1024
+		if len(jr.Result) > maxTraceSize {
+			tailStart := len(jr.Result) - maxTraceSize
+			if tailStart < maxTraceSize {
+				tailStart = maxTraceSize
+			}
+			c.logger.Trace().Str("head", util.Mem2Str(jr.Result[:maxTraceSize])).Str("tail", util.Mem2Str(jr.Result[tailStart:])).Msgf("processing json rpc response from upstream (trimmed to first and last 20k)")
+		} else {
+			c.logger.Trace().RawJSON("result", jr.Result).Interface("error", jr.Error).Msgf("processing json rpc response from upstream")
+		}
+	}
 
 	if err != nil {
 		e := common.NewErrJsonRpcExceptionInternal(
@@ -698,6 +742,25 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorCapacityExceeded,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+		} else if strings.HasPrefix(err.Message, "pending block is not available") ||
+			strings.HasPrefix(err.Message, "pending block not found") ||
+			strings.HasPrefix(err.Message, "Pending block not found") ||
+			strings.HasPrefix(err.Message, "safe block not found") ||
+			strings.HasPrefix(err.Message, "Safe block not found") ||
+			strings.HasPrefix(err.Message, "finalized block not found") ||
+			strings.HasPrefix(err.Message, "Finalized block not found") {
+			// This error means node does not support "finalized/safe/pending" blocks.
+			// ref https://github.com/ethereum/go-ethereum/blob/368e16f39d6c7e5cce72a92ec289adbfbaed4854/eth/api_backend.go#L67-L95
+			details["blockTag"] = strings.ToLower(strings.SplitN(err.Message, " ", 2)[0])
+			return common.NewErrEndpointClientSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorClientSideException,
 					err.Message,
 					nil,
 					details,

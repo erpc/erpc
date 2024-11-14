@@ -15,6 +15,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/erpc"
+	"github.com/erpc/erpc/util"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/afero"
@@ -239,15 +240,15 @@ func prepareERPCConfig(fs afero.Fs, config StressTestConfig) (string, string, er
 	mergedConfig := &common.Config{
 		LogLevel: "ERROR",
 		Server: &common.ServerConfig{
-			HttpHostV4: "0.0.0.0",
-			HttpHostV6: "[::]",
-			HttpPort:   config.ServicePort,
+			HttpHostV4: util.StringPtr("0.0.0.0"),
+			HttpHostV6: util.StringPtr("[::]"),
+			HttpPort:   util.IntPtr(config.ServicePort),
 		},
 		Metrics: &common.MetricsConfig{
-			Enabled: true,
-			HostV4:  "0.0.0.0",
-			HostV6:  "[::]",
-			Port:    config.MetricsPort,
+			Enabled: util.BoolPtr(true),
+			HostV4:  util.StringPtr("0.0.0.0"),
+			HostV6:  util.StringPtr("[::]"),
+			Port:    util.IntPtr(config.MetricsPort),
 		},
 		Projects: []*common.ProjectConfig{prjCfg},
 	}

@@ -14,9 +14,9 @@ import (
 	"github.com/rs/zerolog"
 )
 
-func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity string, fsCfg *common.FailsafeConfig) ([]failsafe.Policy[*common.NormalizedResponse], error) {
+func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity string, fsCfg *common.FailsafeConfig) (map[string]failsafe.Policy[*common.NormalizedResponse], error) {
 	// The order of policies below are important as per docs of failsafe-go
-	var policies = []failsafe.Policy[*common.NormalizedResponse]{}
+	var policies = map[string]failsafe.Policy[*common.NormalizedResponse]{}
 
 	if fsCfg == nil {
 		return policies, nil
@@ -27,12 +27,12 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity s
 	// For network-level we want the timeout to apply to the overall lifecycle
 	if fsCfg.Timeout != nil && scope == common.ScopeNetwork {
 		var err error
-		timeoutPolicy, err := createTimeoutPolicy(&lg, entity, fsCfg.Timeout)
+		p, err := createTimeoutPolicy(&lg, entity, fsCfg.Timeout)
 		if err != nil {
 			return nil, err
 		}
 
-		policies = append(policies, timeoutPolicy)
+		policies["timeout"] = p
 	}
 
 	if fsCfg.Retry != nil {
@@ -40,7 +40,7 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity s
 		if err != nil {
 			return nil, err
 		}
-		policies = append(policies, p)
+		policies["retry"] = p
 	}
 
 	// CircuitBreaker does not make sense for network-level requests
@@ -50,7 +50,7 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity s
 			if err != nil {
 				return nil, err
 			}
-			policies = append(policies, p)
+			policies["cb"] = p
 		}
 	}
 
@@ -59,18 +59,18 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity s
 		if err != nil {
 			return nil, err
 		}
-		policies = append(policies, p)
+		policies["hedge"] = p
 	}
 
 	// For upstream-level we want the timeout to apply to each individual request towards upstream
 	if fsCfg.Timeout != nil && scope == common.ScopeUpstream {
 		var err error
-		timeoutPolicy, err := createTimeoutPolicy(&lg, entity, fsCfg.Timeout)
+		p, err := createTimeoutPolicy(&lg, entity, fsCfg.Timeout)
 		if err != nil {
 			return nil, err
 		}
 
-		policies = append(policies, timeoutPolicy)
+		policies["timeout"] = p
 	}
 
 	return policies, nil
@@ -131,7 +131,7 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, entity string, cfg *comm
 						lg = lg.Str("upstreamId", up.Config().Id)
 						cfg := up.Config()
 						if cfg.Evm != nil {
-							lg = lg.Interface("upstreamSyncingState", cfg.Evm.Syncing)
+							lg = lg.Interface("upstreamSyncingState", up.EvmSyncingState())
 						}
 					}
 				}
@@ -161,12 +161,9 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, entity string, cfg *comm
 			up := result.Request().LastUpstream()
 
 			// if "syncing" and null/empty response -> open the circuit
-			cfg := up.Config()
-			if cfg.Evm != nil {
-				if cfg.Evm.Syncing != nil && *cfg.Evm.Syncing {
-					if result.IsResultEmptyish() {
-						return true
-					}
+			if up.EvmSyncingState() == common.EvmSyncingStateSyncing {
+				if result.IsResultEmptyish() {
+					return true
 				}
 			}
 		}
@@ -193,17 +190,22 @@ func createHedgePolicy(logger *zerolog.Logger, entity string, cfg *common.HedgeP
 	}
 
 	builder.OnHedge(func(event failsafe.ExecutionEvent[*common.NormalizedResponse]) bool {
+		var req *common.NormalizedRequest
+		var method string
 		r := event.Context().Value(common.RequestContextKey)
 		if r != nil {
-			req, ok := r.(*common.NormalizedRequest)
+			var ok bool
+			req, ok = r.(*common.NormalizedRequest)
 			if ok && req != nil {
-				method, _ := req.Method()
+				method, _ = req.Method()
 				if method != "" && common.IsEvmWriteMethod(method) {
 					logger.Debug().Str("method", method).Interface("id", req.ID()).Msgf("ignoring hedge for write request")
 					return false
 				}
 			}
 		}
+
+		logger.Trace().Str("method", method).Interface("id", req.ID()).Msgf("attempting to hedge request")
 
 		// Continue with the next hedge
 		return true
@@ -302,15 +304,17 @@ func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolic
 			// try fetching the data as the current upstream is less likely to have the data ready on the next retry attempt.
 			if rds.RetryEmpty {
 				isEmpty := result.IsResultEmptyish()
-				// no Retry-Empty directive + "empty" response -> No Retry
-				if !rds.RetryEmpty && isEmpty {
-					return false
-				}
-				ups := result.Upstream()
-				ucfg := ups.Config()
-				if ucfg.Evm != nil {
+				if isEmpty {
+					// no Retry-Empty directive + "empty" response -> No Retry
+					if !rds.RetryEmpty {
+						return false
+					}
+					ups := result.Upstream()
+					// ucfg := ups.Config()
+					// if ucfg.Evm != nil {
+
 					// has Retry-Empty directive + "empty" response + node is synced + block is finalized -> No Retry
-					if err == nil && rds.RetryEmpty && isEmpty && (ucfg.Evm.Syncing != nil && !*ucfg.Evm.Syncing) {
+					if err == nil && rds.RetryEmpty && isEmpty && (ups.EvmSyncingState() == common.EvmSyncingStateNotSyncing) {
 						bn, ebn := req.EvmBlockNumber()
 						if ebn == nil && bn > 0 {
 							if ntw := req.Network(); ntw != nil {
@@ -323,8 +327,8 @@ func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolic
 							}
 						}
 					}
-				}
-				if isEmpty {
+
+					// }
 					return true
 				}
 			}
