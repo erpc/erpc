@@ -21,6 +21,7 @@ type Network struct {
 	ProjectId string
 	Logger    *zerolog.Logger
 
+	bootstrapOnce            sync.Once
 	appCtx                   context.Context
 	cfg                      *common.NetworkConfig
 	inFlightRequests         *sync.Map
@@ -35,57 +36,65 @@ type Network struct {
 }
 
 func (n *Network) Bootstrap(ctx context.Context) error {
-	n.appCtx = ctx
-	if n.Architecture() == common.ArchitectureEvm {
-		upsList := n.upstreamsRegistry.GetNetworkUpstreams(n.NetworkId)
-		if len(upsList) == 0 {
-			return fmt.Errorf("no upstreams found for network: %s", n.NetworkId)
-		}
-		var pollWg sync.WaitGroup
-		n.evmStatePollers = make(map[string]*upstream.EvmStatePoller, len(upsList))
-		for _, u := range upsList {
-			poller, err := upstream.NewEvmStatePoller(ctx, n.Logger, n, u, n.metricsTracker)
-			if err != nil {
-				return err
+	var err error
+
+	n.bootstrapOnce.Do(func() {
+		n.appCtx = ctx
+		if n.Architecture() == common.ArchitectureEvm {
+			upsList := n.upstreamsRegistry.GetNetworkUpstreams(n.NetworkId)
+			if len(upsList) == 0 {
+				err = fmt.Errorf("no upstreams found for network: %s", n.NetworkId)
+				return
 			}
-			n.evmStatePollers[u.Config().Id] = poller
-			n.Logger.Info().Str("upstreamId", u.Config().Id).Msgf("bootstraped evm state poller to track upstream latest, finalized blocks and syncing states")
-			pollWg.Add(1)
-			go func(poller *upstream.EvmStatePoller) {
-				defer pollWg.Done()
-				poller.Poll(ctx)
-			}(poller)
+			var pollWg sync.WaitGroup
+			n.evmStatePollers = make(map[string]*upstream.EvmStatePoller, len(upsList))
+			for _, u := range upsList {
+				poller, e := upstream.NewEvmStatePoller(ctx, n.Logger, n, u, n.metricsTracker)
+				if e != nil {
+					err = e
+					return
+				}
+				n.evmStatePollers[u.Config().Id] = poller
+				pollWg.Add(1)
+				go func(poller *upstream.EvmStatePoller) {
+					defer pollWg.Done()
+					poller.Poll(ctx)
+				}(poller)
+			}
+
+			// Wait for pollers up to 30s so we have block head of all nodes as much as possible.
+			// This helps policy evaluator to have more accurate data on initialization.
+			done := make(chan struct{})
+			go func() {
+				pollWg.Wait()
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(30 * time.Second):
+				n.Logger.Warn().Msg("evm state pollers did not complete within 30 seconds, some upstreams might be down")
+			}
+		} else {
+			err = fmt.Errorf("network architecture not supported: %s", n.Architecture())
+			return
 		}
 
-		// Wait for pollers up to 30s so we have block head of all nodes as much as possible.
-		// This helps policy evaluator to have more accurate data on initialization.
-		done := make(chan struct{})
-		go func() {
-			pollWg.Wait()
-			close(done)
-		}()
-		select {
-		case <-done:
-		case <-time.After(30 * time.Second):
-			n.Logger.Warn().Msg("evm state pollers did not complete within 30 seconds, some upstreams might be down")
+		// Initialize policy evaluator if configured
+		if n.cfg.SelectionPolicy != nil {
+			evaluator, e := NewPolicyEvaluator(n.NetworkId, n.Logger, n.cfg.SelectionPolicy, n.upstreamsRegistry, n.metricsTracker)
+			if e != nil {
+				err = fmt.Errorf("failed to create selection policy evaluator: %w", e)
+				return
+			}
+			if e := evaluator.Start(ctx); e != nil {
+				err = fmt.Errorf("failed to start selection policy evaluator: %w", e)
+				return
+			}
+			n.selectionPolicyEvaluator = evaluator
 		}
-	} else {
-		return fmt.Errorf("network architecture not supported: %s", n.Architecture())
-	}
+	})
 
-	// Initialize policy evaluator if configured
-	if n.cfg.SelectionPolicy != nil {
-		evaluator, err := NewPolicyEvaluator(n.NetworkId, n.Logger, n.cfg.SelectionPolicy, n.upstreamsRegistry, n.metricsTracker)
-		if err != nil {
-			return fmt.Errorf("failed to create selection policy evaluator: %w", err)
-		}
-		if err := evaluator.Start(ctx); err != nil {
-			return fmt.Errorf("failed to start selection policy evaluator: %w", err)
-		}
-		n.selectionPolicyEvaluator = evaluator
-	}
-
-	return nil
+	return err
 }
 
 func (n *Network) Id() string {

@@ -16,6 +16,11 @@ import (
 
 func init() {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnixMs
+	if logWriter := os.Getenv("LOG_WRITER"); logWriter == "console" {
+		log.Logger = zerolog.New(zerolog.NewConsoleWriter(func(w *zerolog.ConsoleWriter) {
+			w.TimeFormat = "04:05.000ms"
+		})).With().Timestamp().Logger()
+	}
 }
 
 func main() {
