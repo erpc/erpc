@@ -102,6 +102,12 @@ func ResetGock() {
 	gock.Clean()
 	gock.CleanUnmatchedRequest()
 	gock.Disable()
+
+	gock.EnableNetworking()
+	gock.NetworkingFilter(func(req *http.Request) bool {
+		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
+		return shouldMakeRealCall
+	})
 }
 
 func SafeReadBody(request *http.Request) string {

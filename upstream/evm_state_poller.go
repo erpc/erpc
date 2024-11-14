@@ -75,12 +75,15 @@ func (e *EvmStatePoller) initialize(ctx context.Context) error {
 		intvl = cfg.Evm.StatePollerInterval
 	}
 	if intvl == "" {
+		e.logger.Debug().Msgf("skipping evm state poller for upstream as no interval is provided")
 		return nil
 	}
 	interval, err := time.ParseDuration(intvl)
 	if err != nil {
 		return fmt.Errorf("invalid state poller interval: %v", err)
 	}
+
+	e.logger.Info().Msgf("bootstraped evm state poller to track upstream latest, finalized blocks and syncing states")
 
 	go (func() {
 		ticker := time.NewTicker(interval)

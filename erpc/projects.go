@@ -212,7 +212,7 @@ func (p *PreparedProject) initializeNetwork(ctx context.Context, networkId strin
 		return nil, err
 	}
 
-	err = nw.Bootstrap(p.appCtx)
+	err = nw.Bootstrap(ctx)
 	if err != nil {
 		return nil, err
 	}

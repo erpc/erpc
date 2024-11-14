@@ -18,7 +18,7 @@ type NetworksRegistry struct {
 	metricsTracker       *health.Tracker
 	evmJsonRpcCache      *EvmJsonRpcCache
 	rateLimitersRegistry *upstream.RateLimitersRegistry
-	preparedNetworks     map[string]*Network
+	preparedNetworks     sync.Map // map[string]*Network
 }
 
 func NewNetworksRegistry(
@@ -32,7 +32,7 @@ func NewNetworksRegistry(
 		metricsTracker:       metricsTracker,
 		evmJsonRpcCache:      evmJsonRpcCache,
 		rateLimitersRegistry: rateLimitersRegistry,
-		preparedNetworks:     make(map[string]*Network),
+		preparedNetworks:     sync.Map{},
 	}
 	return r
 }
@@ -76,6 +76,7 @@ func NewNetwork(
 		metricsTracker:       metricsTracker,
 		rateLimitersRegistry: rateLimitersRegistry,
 
+		bootstrapOnce:    sync.Once{},
 		inFlightRequests: &sync.Map{},
 		timeoutDuration:  timeoutDuration,
 		failsafeExecutor: failsafe.NewExecutor(policyArray...),
@@ -95,8 +96,8 @@ func (r *NetworksRegistry) RegisterNetwork(
 ) (*Network, error) {
 	var key = fmt.Sprintf("%s-%s", prjCfg.Id, nwCfg.NetworkId())
 
-	if pn, ok := r.preparedNetworks[key]; ok {
-		return pn, nil
+	if pn, ok := r.preparedNetworks.Load(key); ok {
+		return pn.(*Network), nil
 	}
 
 	network, err := NewNetwork(logger, prjCfg.Id, nwCfg, r.rateLimitersRegistry, r.upstreamsRegistry, r.metricsTracker)
@@ -113,10 +114,13 @@ func (r *NetworksRegistry) RegisterNetwork(
 		return nil, errors.New("unknown network architecture")
 	}
 
-	r.preparedNetworks[key] = network
+	r.preparedNetworks.Store(key, network)
 	return network, nil
 }
 
 func (nr *NetworksRegistry) GetNetwork(projectId, networkId string) *Network {
-	return nr.preparedNetworks[fmt.Sprintf("%s-%s", projectId, networkId)]
+	if pn, ok := nr.preparedNetworks.Load(fmt.Sprintf("%s-%s", projectId, networkId)); ok {
+		return pn.(*Network)
+	}
+	return nil
 }
