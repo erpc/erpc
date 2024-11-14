@@ -736,7 +736,7 @@ func (u *Upstream) detectNodeType() (common.EvmNodeType, error) {
 			responses[blockHeight] = false
 		} else {
 			// Log the error for this specific block height
-			u.Logger.Debug().Err(errForward).Int64("blockHeight", blockHeight).Msg("Error getting balance")
+			u.Logger.Debug().Err(errForward).Int64("blockHeight", blockHeight).Msg("could not get block during node type detection")
 			responses[blockHeight] = false
 		}
 	}
