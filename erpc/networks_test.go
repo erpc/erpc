@@ -6176,7 +6176,6 @@ func setupTestNetworkWithFullNodeUpstream(t *testing.T, upstreamConfig *common.U
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:                  123,
-				NodeType:                 "full",
 				MaxAvailableRecentBlocks: 128,
 			},
 		}

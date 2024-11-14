@@ -626,14 +626,6 @@ func (u *Upstream) detectFeatures() error {
 			u.supportedNetworkIdsMu.Unlock()
 		}
 
-		if cfg.Evm.NodeType == "" {
-			nodeType, err := u.detectNodeType()
-			if err != nil {
-				return err
-			}
-			cfg.Evm.NodeType = common.EvmNodeType(nodeType)
-		}
-
 		if cfg.Evm.MaxAvailableRecentBlocks == 0 && cfg.Evm.NodeType == "full" {
 			cfg.Evm.MaxAvailableRecentBlocks = 128
 		}
@@ -672,16 +664,7 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 		return fmt.Errorf("failed to get valid request block number: %w", ebn), false
 	}
 
-	nodeType := u.config.Evm.NodeType
-	if nodeType == "" {
-		detectedNodeType, err := u.detectNodeType()
-		if err != nil {
-			return fmt.Errorf("failed to detect node type: %w", err), false
-		}
-		nodeType = common.EvmNodeType(detectedNodeType)
-	}
-
-	if nodeType == common.EvmNodeTypeFull {
+	if u.config.Evm.NodeType == common.EvmNodeTypeFull {
 		lb := req.Network().EvmStatePollerOf(u.Config().Id).LatestBlock()
 
 		if bn < lb-u.config.Evm.MaxAvailableRecentBlocks {
@@ -692,64 +675,64 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 	return nil, false
 }
 
-func (u *Upstream) detectNodeType() (common.EvmNodeType, error) {
-	// Step 1: Get the latest block number using the state poller
-	req := &common.NormalizedRequest{}
-	lb := req.Network().EvmStatePollerOf(u.Config().Id).LatestBlock()
+// func (u *Upstream) detectNodeType() (common.EvmNodeType, error) {
+// 	// Step 1: Get the latest block number using the state poller
+// 	req := &common.NormalizedRequest{}
+// 	lb := req.Network().EvmStatePollerOf(u.Config().Id).LatestBlock()
 
-	// Block heights to check
-	blockHeights := []int64{
-		1,
-		lb / 2,
-		lb - 1024,
-		lb - 128,
-		lb - 32,
-	}
+// 	// Block heights to check
+// 	blockHeights := []int64{
+// 		1,
+// 		lb / 2,
+// 		lb - 1024,
+// 		lb - 128,
+// 		lb - 32,
+// 	}
 
-	// Track responses for each block height
-	responses := make(map[int64]bool)
+// 	// Track responses for each block height
+// 	responses := make(map[int64]bool)
 
-	for _, blockHeight := range blockHeights {
-		// Normalize the block height to hex format
-		hexBlockHeight, err := common.NormalizeHex(fmt.Sprintf("%x", blockHeight))
+// 	for _, blockHeight := range blockHeights {
+// 		// Normalize the block height to hex format
+// 		hexBlockHeight, err := common.NormalizeHex(fmt.Sprintf("%x", blockHeight))
 
-		if err != nil {
-			return "", err
-		}
+// 		if err != nil {
+// 			return "", err
+// 		}
 
-		balanceReq := common.NewNormalizedRequest([]byte(fmt.Sprintf(
-			`{"jsonrpc":"2.0","id": %d,"method":"eth_getBlockByNumber","params":["%s", false]}`,
-			util.RandomID(),
-			hexBlockHeight,
-		)))
+// 		balanceReq := common.NewNormalizedRequest([]byte(fmt.Sprintf(
+// 			`{"jsonrpc":"2.0","id": %d,"method":"eth_getBlockByNumber","params":["%s", false]}`,
+// 			util.RandomID(),
+// 			hexBlockHeight,
+// 		)))
 
-		_, errBlock := u.Forward(context.Background(), balanceReq)
-		if errBlock == nil {
-			// No error, store response for this block height
-			responses[blockHeight] = true
-		} else if common.EvmIsMissingDataError(errBlock) {
-			// Error due to missing historical state, continue checking
-			responses[blockHeight] = false
-		} else {
-			// Log the error for this specific block height
-			u.Logger.Debug().Err(errBlock).Int64("blockHeight", blockHeight).Msg("Error getting balance")
-			responses[blockHeight] = false
-		}
-	}
+// 		_, errBlock := u.Forward(context.Background(), balanceReq)
+// 		if errBlock == nil {
+// 			// No error, store response for this block height
+// 			responses[blockHeight] = true
+// 		} else if common.EvmIsMissingDataError(errBlock) {
+// 			// Error due to missing historical state, continue checking
+// 			responses[blockHeight] = false
+// 		} else {
+// 			// Log the error for this specific block height
+// 			u.Logger.Debug().Err(errBlock).Int64("blockHeight", blockHeight).Msg("Error getting balance")
+// 			responses[blockHeight] = false
+// 		}
+// 	}
 
-	// Determine node type based on responses
-	isArchiveNode := responses[1] && responses[lb/2] && responses[lb-1024]
-	isFullNode := !isArchiveNode && (responses[lb-128] || responses[lb-32])
+// 	// Determine node type based on responses
+// 	isArchiveNode := responses[1] && responses[lb/2] && responses[lb-1024]
+// 	isFullNode := !isArchiveNode && (responses[lb-128] || responses[lb-32])
 
-	if isArchiveNode {
-		return "archive", nil
-	} else if isFullNode {
-		return "full", nil
-	}
+// 	if isArchiveNode {
+// 		return "archive", nil
+// 	} else if isFullNode {
+// 		return "full", nil
+// 	}
 
-	// If none of the checks succeeded, it's likely a light node
-	return "light", nil
-}
+// 	// If none of the checks succeeded, it's likely a light node
+// 	return "light", nil
+// }
 
 func (u *Upstream) getScoreMultipliers(networkId, method string) *common.ScoreMultiplierConfig {
 	if u.config.Routing != nil {
