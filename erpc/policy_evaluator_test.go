@@ -28,7 +28,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, ups2, _ := createTestNetwork(t, context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that selects upstreams with error rate < 0.5
 		evalFn, err := script.CompileFunction(`
@@ -57,7 +59,6 @@ func TestPolicyEvaluator(t *testing.T) {
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
 		require.NoError(t, err)
 
-		ctx := context.Background()
 		err = evaluator.Start(ctx)
 		require.NoError(t, err)
 
@@ -73,115 +74,130 @@ func TestPolicyEvaluator(t *testing.T) {
 		assert.NoError(t, err)
 	})
 
-	t.Run("InvalidEvalFunction", func(t *testing.T) {
+	t.Run("InvalidEvalFunction_NonArrayReturn", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, ups2, _ := createTestNetwork(t, context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
 
-		t.Run("NonArrayReturn", func(t *testing.T) {
-			evalFn, err := script.CompileFunction(`
-				(upstreams) => {
-					return "not an array";
-				}
-			`)
-			require.NoError(t, err)
-
-			config := &common.SelectionPolicyConfig{
-				EvalInterval:     50 * time.Millisecond,
-				EvalPerMethod:    false,
-				EvalFunction:     evalFn,
-				ResampleInterval: 200 * time.Millisecond,
-				ResampleCount:    1,
+		evalFn, err := script.CompileFunction(`
+			(upstreams) => {
+				return "not an array";
 			}
+		`)
+		require.NoError(t, err)
 
-			evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, ntw.metricsTracker)
-			require.NoError(t, err)
+		config := &common.SelectionPolicyConfig{
+			EvalInterval:     50 * time.Millisecond,
+			EvalPerMethod:    false,
+			EvalFunction:     evalFn,
+			ResampleInterval: 200 * time.Millisecond,
+			ResampleCount:    1,
+		}
 
-			ctx := context.Background()
-			err = evaluator.Start(ctx)
-			require.NoError(t, err)
+		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, ntw.metricsTracker)
+		require.NoError(t, err)
 
-			// Allow time for evaluation
-			time.Sleep(100 * time.Millisecond)
+		err = evaluator.Start(ctx)
+		require.NoError(t, err)
 
-			// Both upstreams should be inactive due to invalid evaluation
-			err = evaluator.AcquirePermit(&logger, ups1, "method1")
-			assert.NoError(t, err)
-			err = evaluator.AcquirePermit(&logger, ups2, "method1")
-			assert.NoError(t, err)
-		})
+		// Allow time for evaluation
+		time.Sleep(100 * time.Millisecond)
 
-		t.Run("InvalidObjectStructure", func(t *testing.T) {
-			evalFn, err := script.CompileFunction(`
-				(upstreams) => {
-					return [{ invalid: "structure" }];
-				}
-			`)
-			require.NoError(t, err)
+		// Both upstreams should be inactive due to invalid evaluation
+		err = evaluator.AcquirePermit(&logger, ups1, "method1")
+		assert.NoError(t, err)
+		err = evaluator.AcquirePermit(&logger, ups2, "method1")
+		assert.NoError(t, err)
+	})
 
-			config := &common.SelectionPolicyConfig{
-				EvalInterval:     50 * time.Millisecond,
-				EvalPerMethod:    false,
-				EvalFunction:     evalFn,
-				ResampleInterval: 200 * time.Millisecond,
-				ResampleCount:    1,
+	t.Run("InvalidEvalFunction_InvalidObjectStructure", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
+
+		evalFn, err := script.CompileFunction(`
+			(upstreams) => {
+				return [{ invalid: "structure" }];
 			}
+		`)
+		require.NoError(t, err)
 
-			evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, ntw.metricsTracker)
-			require.NoError(t, err)
+		config := &common.SelectionPolicyConfig{
+			EvalInterval:     50 * time.Millisecond,
+			EvalPerMethod:    false,
+			EvalFunction:     evalFn,
+			ResampleInterval: 200 * time.Millisecond,
+			ResampleCount:    1,
+		}
 
-			ctx := context.Background()
-			err = evaluator.Start(ctx)
-			require.NoError(t, err)
+		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, ntw.metricsTracker)
+		require.NoError(t, err)
 
-			// Allow time for evaluation
-			time.Sleep(100 * time.Millisecond)
+		err = evaluator.Start(ctx)
+		require.NoError(t, err)
 
-			// Both upstreams should be inactive due to invalid evaluation
-			err = evaluator.AcquirePermit(&logger, ups1, "method1")
-			assert.NoError(t, err)
-			err = evaluator.AcquirePermit(&logger, ups2, "method1")
-			assert.NoError(t, err)
-		})
+		// Allow time for evaluation
+		time.Sleep(100 * time.Millisecond)
 
-		t.Run("MissingIdField", func(t *testing.T) {
-			evalFn, err := script.CompileFunction(`
-				(upstreams) => {
-					return upstreams.map(u => ({
-						metrics: u.metrics,
-						// id field intentionally omitted
-					}));
-				}
-			`)
-			require.NoError(t, err)
+		// Both upstreams should be inactive due to invalid evaluation
+		err = evaluator.AcquirePermit(&logger, ups1, "method1")
+		assert.NoError(t, err)
+		err = evaluator.AcquirePermit(&logger, ups2, "method1")
+		assert.NoError(t, err)
+	})
 
-			config := &common.SelectionPolicyConfig{
-				EvalInterval:     50 * time.Millisecond,
-				EvalPerMethod:    false,
-				EvalFunction:     evalFn,
-				ResampleInterval: 200 * time.Millisecond,
-				ResampleCount:    1,
+	t.Run("InvalidEvalFunction_MissingIdField", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
+
+		evalFn, err := script.CompileFunction(`
+			(upstreams) => {
+				return upstreams.map(u => ({
+					metrics: u.metrics,
+					// id field intentionally omitted
+				}));
 			}
+		`)
+		require.NoError(t, err)
 
-			evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, ntw.metricsTracker)
-			require.NoError(t, err)
+		config := &common.SelectionPolicyConfig{
+			EvalInterval:     50 * time.Millisecond,
+			EvalPerMethod:    false,
+			EvalFunction:     evalFn,
+			ResampleInterval: 200 * time.Millisecond,
+			ResampleCount:    1,
+		}
 
-			ctx := context.Background()
-			err = evaluator.Start(ctx)
-			require.NoError(t, err)
+		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, ntw.metricsTracker)
+		require.NoError(t, err)
 
-			// Allow time for evaluation
-			time.Sleep(100 * time.Millisecond)
+		err = evaluator.Start(ctx)
+		require.NoError(t, err)
 
-			// Both upstreams should be inactive due to invalid evaluation
-			err = evaluator.AcquirePermit(&logger, ups1, "method1")
-			assert.NoError(t, err)
-			err = evaluator.AcquirePermit(&logger, ups2, "method1")
-			assert.NoError(t, err)
-		})
+		// Allow time for evaluation
+		time.Sleep(100 * time.Millisecond)
+
+		// Both upstreams should be inactive due to invalid evaluation
+		err = evaluator.AcquirePermit(&logger, ups1, "method1")
+		assert.NoError(t, err)
+		err = evaluator.AcquirePermit(&logger, ups2, "method1")
+		assert.NoError(t, err)
 	})
 
 	t.Run("SamplingBehavior", func(t *testing.T) {
@@ -190,7 +206,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, _, _ := createTestNetwork(t, context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that marks all upstreams as inactive
 		evalFn, err := script.CompileFunction(`
@@ -214,7 +232,6 @@ func TestPolicyEvaluator(t *testing.T) {
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, ntw.metricsTracker)
 		require.NoError(t, err)
 
-		ctx := context.Background()
 		err = evaluator.Start(ctx)
 		require.NoError(t, err)
 
@@ -259,7 +276,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, _, _ := createTestNetwork(t, context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that selects upstreams with error rate < 0.3
 		evalFn, err := script.CompileFunction(`
@@ -289,7 +308,6 @@ func TestPolicyEvaluator(t *testing.T) {
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
 		require.NoError(t, err)
 
-		ctx := context.Background()
 		err = evaluator.Start(ctx)
 		require.NoError(t, err)
 
@@ -327,7 +345,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, ups2, _ := createTestNetwork(t, context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that alternates between accepting all and no upstreams
 		evalFn, err := script.CompileFunction(`
@@ -351,10 +371,10 @@ func TestPolicyEvaluator(t *testing.T) {
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, ntw.metricsTracker)
 		require.NoError(t, err)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-		defer cancel()
+		ctxLimited, cancelLimited := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancelLimited()
 
-		err = evaluator.Start(ctx)
+		err = evaluator.Start(ctxLimited)
 		require.NoError(t, err)
 
 		// Run multiple goroutines that continuously try to acquire permits
@@ -421,7 +441,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, _, _ := createTestNetwork(t, context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that selects upstreams with error rate < 0.4
 		evalFn, err := script.CompileFunction(`
@@ -448,7 +470,6 @@ func TestPolicyEvaluator(t *testing.T) {
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
 		require.NoError(t, err)
 
-		ctx := context.Background()
 		err = evaluator.Start(ctx)
 		require.NoError(t, err)
 
@@ -503,7 +524,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, _, _ := createTestNetwork(t, context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that uses a threshold variable to control upstream selection
 		evalFn, err := script.CompileFunction(`
@@ -530,7 +553,6 @@ func TestPolicyEvaluator(t *testing.T) {
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
 		require.NoError(t, err)
 
-		ctx := context.Background()
 		err = evaluator.Start(ctx)
 		require.NoError(t, err)
 
@@ -597,7 +619,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, _, _, _ := createTestNetwork(t, context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, _, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that selects upstreams based on error rate threshold
 		evalFn, err := script.CompileFunction(`
@@ -622,7 +646,6 @@ func TestPolicyEvaluator(t *testing.T) {
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
 		require.NoError(t, err)
 
-		ctx := context.Background()
 		err = evaluator.Start(ctx)
 		require.NoError(t, err)
 
@@ -643,7 +666,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		// Verify upstream is cordoned for method1
 		metrics = mt.GetUpstreamMethodMetrics("rpc1", "evm:123", "method1")
 		assert.True(t, metrics.Cordoned.Load(), "Upstream should be cordoned for method1")
-		assert.Contains(t, metrics.CordonedReason, "excluded by selection policy", "Cordon reason should indicate policy exclusion")
+		reason, ok := metrics.CordonedReason.Load().(string)
+		assert.True(t, ok, "Cordon reason should be a string")
+		assert.Contains(t, reason, "excluded by selection policy", "Cordon reason should indicate policy exclusion")
 
 		// Verify different method (method2) is not cordoned
 		metrics = mt.GetUpstreamMethodMetrics("rpc1", "evm:123", "method2")
@@ -674,7 +699,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, _, _, _ := createTestNetwork(t, context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, _, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that cordons all upstreams
 		evalFn, err := script.CompileFunction(`
@@ -696,7 +723,6 @@ func TestPolicyEvaluator(t *testing.T) {
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
 		require.NoError(t, err)
 
-		ctx := context.Background()
 		err = evaluator.Start(ctx)
 		require.NoError(t, err)
 
@@ -720,7 +746,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, _, _ := createTestNetwork(t, context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that counts evaluations
 		evalFn, err := script.CompileFunction(`
@@ -746,7 +774,6 @@ func TestPolicyEvaluator(t *testing.T) {
 		require.NoError(t, err)
 
 		// Test initial evaluation happens immediately
-		ctx, cancel := context.WithCancel(context.Background())
 		err = evaluator.Start(ctx)
 		require.NoError(t, err)
 
@@ -817,7 +844,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, _, _ := createTestNetwork(t, context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that excludes all upstreams
 		evalFn, err := script.CompileFunction(`
@@ -838,7 +867,6 @@ func TestPolicyEvaluator(t *testing.T) {
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, ntw.metricsTracker)
 		require.NoError(t, err)
 
-		ctx := context.Background()
 		err = evaluator.Start(ctx)
 		require.NoError(t, err)
 
@@ -856,7 +884,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, _, _ := createTestNetwork(t, context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that excludes all upstreams
 		evalFn, err := script.CompileFunction(`
@@ -878,7 +908,6 @@ func TestPolicyEvaluator(t *testing.T) {
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, ntw.metricsTracker)
 		require.NoError(t, err)
 
-		ctx := context.Background()
 		err = evaluator.Start(ctx)
 		require.NoError(t, err)
 
@@ -902,10 +931,12 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, _, _ := createTestNetwork(t, context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that excludes all upstreams
-		evalFn, err := script.CompileFunction(`
+		evalFn1, err := script.CompileFunction(`
 			(upstreams) => {
 				return []; // Return empty array to exclude all upstreams
 			}
@@ -916,7 +947,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		shortConfig := &common.SelectionPolicyConfig{
 			EvalInterval:     50 * time.Millisecond,
 			EvalPerMethod:    false,
-			EvalFunction:     evalFn,
+			EvalFunction:     evalFn1,
 			ResampleExcluded: true,
 			ResampleInterval: 1 * time.Millisecond, // Very short
 			ResampleCount:    2,
@@ -925,7 +956,6 @@ func TestPolicyEvaluator(t *testing.T) {
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, shortConfig, ntw.upstreamsRegistry, ntw.metricsTracker)
 		require.NoError(t, err)
 
-		ctx := context.Background()
 		err = evaluator.Start(ctx)
 		require.NoError(t, err)
 
@@ -942,11 +972,18 @@ func TestPolicyEvaluator(t *testing.T) {
 		}
 		assert.Equal(t, 2, samplesGranted, "Should grant exactly ResampleCount permits with very short ResampleInterval")
 
+		evalFn2, err := script.CompileFunction(`
+			(upstreams) => {
+				return []; // Return empty array to exclude all upstreams
+			}
+		`)
+		require.NoError(t, err)
+
 		// Test very long sample after
 		longConfig := &common.SelectionPolicyConfig{
 			EvalInterval:     50 * time.Millisecond,
 			EvalPerMethod:    false,
-			EvalFunction:     evalFn,
+			EvalFunction:     evalFn2,
 			ResampleInterval: 24 * time.Hour, // Very long
 			ResampleCount:    2,
 		}
@@ -971,7 +1008,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, _, _ := createTestNetwork(t, context.Background())
+		ctxRoot, cancelRoot := context.WithCancel(context.Background())
+		defer cancelRoot()
+		ntw, ups1, _, _ := createTestNetwork(t, ctxRoot)
 
 		// Create eval function that introduces artificial delay to increase chance of race conditions
 		evalFn, err := script.CompileFunction(`
@@ -981,7 +1020,7 @@ func TestPolicyEvaluator(t *testing.T) {
 				while (Date.now() - start < 50) {} // 50ms delay
 				return upstreams.filter(u => {
 					if (!u.metrics) return true;
-					return u.metrics.errorRate < 0.5;
+					return u.metrics.errorRate < 0.4;
 				});
 			}
 		`)
@@ -991,6 +1030,7 @@ func TestPolicyEvaluator(t *testing.T) {
 			EvalInterval:     100 * time.Millisecond,
 			EvalPerMethod:    false,
 			EvalFunction:     evalFn,
+			ResampleExcluded: true,
 			ResampleInterval: 200 * time.Millisecond,
 			ResampleCount:    2,
 		}
@@ -999,10 +1039,10 @@ func TestPolicyEvaluator(t *testing.T) {
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
 		require.NoError(t, err)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
+		ctxLimited, cancelLimited := context.WithTimeout(ctxRoot, 2*time.Second)
+		defer cancelLimited()
 
-		err = evaluator.Start(ctx)
+		err = evaluator.Start(ctxLimited)
 		require.NoError(t, err)
 
 		// Wait for initial evaluation
@@ -1020,7 +1060,7 @@ func TestPolicyEvaluator(t *testing.T) {
 
 			for {
 				select {
-				case <-ctx.Done():
+				case <-ctxLimited.Done():
 					return
 				case <-ticker.C:
 					// Update error rate
@@ -1040,6 +1080,9 @@ func TestPolicyEvaluator(t *testing.T) {
 					mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
 					if rand.Float64() < errorRate {
 						mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error")
+						mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error")
+						mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error")
+						mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error")
 					} else {
 						mt.RecordUpstreamDuration("rpc1", "evm:123", "method1", time.Duration(rand.Intn(100))*time.Millisecond)
 					}
@@ -1056,7 +1099,7 @@ func TestPolicyEvaluator(t *testing.T) {
 
 			for {
 				select {
-				case <-ctx.Done():
+				case <-ctxLimited.Done():
 					return
 				case <-ticker.C:
 					// Delete metrics for method1
@@ -1079,7 +1122,7 @@ func TestPolicyEvaluator(t *testing.T) {
 			methodCounter := 2
 			for {
 				select {
-				case <-ctx.Done():
+				case <-ctxLimited.Done():
 					return
 				case <-ticker.C:
 					methodName := fmt.Sprintf("method%d", methodCounter)
@@ -1103,7 +1146,7 @@ func TestPolicyEvaluator(t *testing.T) {
 
 			for {
 				select {
-				case <-ctx.Done():
+				case <-ctxLimited.Done():
 					return
 				case <-ticker.C:
 					err := evaluator.AcquirePermit(&logger, ups1, "method1")
@@ -1115,8 +1158,8 @@ func TestPolicyEvaluator(t *testing.T) {
 		}()
 
 		// Let the test run for a while
-		time.Sleep(1500 * time.Millisecond)
-		cancel()
+		time.Sleep(2000 * time.Millisecond)
+		cancelRoot()
 
 		// Wait for all goroutines to finish
 		<-updateDone
@@ -1161,7 +1204,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, _, _ := createTestNetwork(t, context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that uses different error thresholds per method
 		evalFn, err := script.CompileFunction(`
@@ -1192,7 +1237,6 @@ func TestPolicyEvaluator(t *testing.T) {
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
 		require.NoError(t, err)
 
-		ctx := context.Background()
 		err = evaluator.Start(ctx)
 		require.NoError(t, err)
 
@@ -1223,7 +1267,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, _, _ := createTestNetwork(t, context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		evalFn, err := script.CompileFunction(`
 			(upstreams, method) => {
@@ -1247,7 +1293,6 @@ func TestPolicyEvaluator(t *testing.T) {
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
 		require.NoError(t, err)
 
-		ctx := context.Background()
 		err = evaluator.Start(ctx)
 		require.NoError(t, err)
 
@@ -1280,7 +1325,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, _, _ := createTestNetwork(t, context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		evalFn, err := script.CompileFunction(`
 			(upstreams, method) => {
@@ -1307,7 +1354,6 @@ func TestPolicyEvaluator(t *testing.T) {
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
 		require.NoError(t, err)
 
-		ctx := context.Background()
 		err = evaluator.Start(ctx)
 		require.NoError(t, err)
 
@@ -1329,7 +1375,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, ups2, _ := createTestNetwork(t, context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
 
 		// Create config with default policy
 		config := &common.SelectionPolicyConfig{
@@ -1344,7 +1392,6 @@ func TestPolicyEvaluator(t *testing.T) {
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
 		require.NoError(t, err)
 
-		ctx := context.Background()
 		err = evaluator.Start(ctx)
 		require.NoError(t, err)
 
@@ -1390,7 +1437,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, ups2, ups3 := createTestNetwork(t, context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, ups2, ups3 := createTestNetwork(t, ctx)
 
 		// Create config with default policy
 		config := &common.SelectionPolicyConfig{
@@ -1404,7 +1453,6 @@ func TestPolicyEvaluator(t *testing.T) {
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
 		require.NoError(t, err)
 
-		ctx := context.Background()
 		err = evaluator.Start(ctx)
 		require.NoError(t, err)
 
@@ -1460,7 +1508,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, ups2, ups3 := createTestNetwork(t, context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, ups2, ups3 := createTestNetwork(t, ctx)
 
 		// Set environment variable for minimum healthy threshold
 		t.Setenv("ROUTING_POLICY_MIN_HEALTHY_THRESHOLD", "2")
@@ -1477,7 +1527,6 @@ func TestPolicyEvaluator(t *testing.T) {
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
 		require.NoError(t, err)
 
-		ctx := context.Background()
 		err = evaluator.Start(ctx)
 		require.NoError(t, err)
 
@@ -1529,7 +1578,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, ups2, ups3 := createTestNetwork(t, context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, ups2, ups3 := createTestNetwork(t, ctx)
 
 		t.Setenv("ROUTING_POLICY_MAX_BLOCK_HEAD_LAG", "3")
 		t.Setenv("ROUTING_POLICY_MIN_HEALTHY_THRESHOLD", "1")
@@ -1544,39 +1595,36 @@ func TestPolicyEvaluator(t *testing.T) {
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
 		require.NoError(t, err)
 
-		ctx := context.Background()
 		err = evaluator.Start(ctx)
 		require.NoError(t, err)
 
-		// Set network head block
-		mt.SetLatestBlockNumber("*", "evm:123", 100)
-
 		// Test Case 1: Default upstream within lag threshold
-		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-		mt.RecordUpstreamDuration("rpc1", "evm:123", "method1", 10*time.Millisecond)
-		mt.SetLatestBlockNumber("rpc1", "evm:123", 98) // Lag of 2 blocks
-
-		mt.RecordUpstreamRequest("rpc2", "evm:123", "method1")
-		mt.RecordUpstreamDuration("rpc2", "evm:123", "method1", 15*time.Millisecond)
-		mt.SetLatestBlockNumber("rpc2", "evm:123", 95) // Lag of 5 blocks (exceeds threshold)
+		mt.SetLatestBlockNumber("rpc1", "evm:123", 100) // Leader
+		mt.SetLatestBlockNumber("rpc2", "evm:123", 95)  // Lag of 5 blocks (exceeds threshold)
+		mt.SetLatestBlockNumber("rpc3", "evm:123", 99)  // Small lag for fallback (does not exceed threshold)
 
 		time.Sleep(75 * time.Millisecond)
 
 		err = evaluator.AcquirePermit(&logger, ups1, "method1")
-		assert.NoError(t, err, "Default with acceptable lag should be active")
+		assert.NoError(t, err, "Default ups1 with leader block should be active")
 		err = evaluator.AcquirePermit(&logger, ups2, "method1")
-		assert.Error(t, err, "Default with excessive lag should be inactive")
+		assert.Error(t, err, "Default ups2 with excessive lag should be inactive")
+		err = evaluator.AcquirePermit(&logger, ups3, "method1")
+		assert.Error(t, err, "Fallback ups3 with should be inactive because at least one default is healthy")
 
-		// Test Case 2: All defaults exceed lag threshold
-		mt.SetLatestBlockNumber("rpc1", "evm:123", 95) // Now lagging by 5 blocks
-		mt.SetLatestBlockNumber("rpc3", "evm:123", 98) // Fallback with less lag
+		// // Test Case 2: All defaults exceed lag threshold
+		mt.SetLatestBlockNumber("rpc3", "evm:123", 200) // Fallback becomes leader
+		mt.SetLatestBlockNumber("rpc1", "evm:123", 195) // Now lagging by 5 blocks (exceeds threshold)
+		mt.SetLatestBlockNumber("rpc2", "evm:123", 190) // Now lagging by 10 blocks (exceeds threshold)
 
 		time.Sleep(75 * time.Millisecond)
 
 		err = evaluator.AcquirePermit(&logger, ups1, "method1")
-		assert.Error(t, err, "Lagging default should be inactive")
+		assert.Error(t, err, "Lagging default ups1 should be inactive")
+		err = evaluator.AcquirePermit(&logger, ups2, "method1")
+		assert.Error(t, err, "Lagging default ups2 should be inactive")
 		err = evaluator.AcquirePermit(&logger, ups3, "method1")
-		assert.NoError(t, err, "Fallback should be active when defaults are lagging")
+		assert.NoError(t, err, "Fallback ups3 should be active when all defaults are lagging")
 	})
 
 	t.Run("DefaultPolicyErrorRateThreshold", func(t *testing.T) {
@@ -1585,7 +1633,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		ntw, ups1, ups2, ups3 := createTestNetwork(t, context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ntw, ups1, ups2, ups3 := createTestNetwork(t, ctx)
 
 		t.Setenv("ROUTING_POLICY_MAX_ERROR_RATE", "0.25")
 		t.Setenv("ROUTING_POLICY_MIN_HEALTHY_THRESHOLD", "1")
@@ -1600,7 +1650,6 @@ func TestPolicyEvaluator(t *testing.T) {
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
 		require.NoError(t, err)
 
-		ctx := context.Background()
 		err = evaluator.Start(ctx)
 		require.NoError(t, err)
 

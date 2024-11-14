@@ -162,6 +162,12 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 	p.evalMutex.Lock()
 	defer p.evalMutex.Unlock()
 
+	defer func() {
+		if r := recover(); r != nil {
+			p.logger.Error().Str("method", method).Interface("upstreams", metricsData).Interface("panic", r).Msg("panic in user-defined selection policy function")
+		}
+	}()
+
 	result, err := p.config.EvalFunction(nil, p.runtime.ToValue(metricsData), p.runtime.ToValue(method))
 	if err != nil {
 		return fmt.Errorf("failed to evaluate selection policy: %w", err)
@@ -194,13 +200,13 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 		if !ok {
 			ups, ok = v.(map[string]interface{})
 			if !ok {
-				return fmt.Errorf("unexpected return value from evalFunction, expected objects inside the returned array: %v", result)
+				return fmt.Errorf("unexpected return value from evalFunction, expected objects inside the returned array: %+v raw value: %+v full result: %+v", ups, v, result)
 			}
 		}
 		if upstreamId, ok := ups["id"].(string); ok {
 			selectedUpstreams[upstreamId] = true
 		} else {
-			return fmt.Errorf("unexpected return value from evalFunction, expected a string 'id' in each object of returned array: %v", result)
+			return fmt.Errorf("unexpected return value from evalFunction, expected a string 'id' key in each object of returned array: %+v raw value: %+v full result: %+v", ups, v, result)
 		}
 	}
 
@@ -223,6 +229,8 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 			stateMap[id] = state
 		}
 
+		state.mu.Lock()
+
 		if selectedUpstreams[id] {
 			state.isActive = true
 			state.sampleCounter = 0
@@ -244,6 +252,8 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 		} else {
 			p.metricsTracker.Uncordon(id, p.networkId, method)
 		}
+
+		state.mu.Unlock()
 	}
 
 	return nil
