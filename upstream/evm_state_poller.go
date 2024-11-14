@@ -3,7 +3,6 @@ package upstream
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"sync"
 	"time"
 
@@ -74,18 +73,17 @@ func (e *EvmStatePoller) initialize(ctx context.Context) error {
 	var intvl string
 	if cfg.Evm != nil && cfg.Evm.StatePollerInterval != "" {
 		intvl = cfg.Evm.StatePollerInterval
-	} else if !util.IsTest() {
-		intvl = "30s"
 	}
-
 	if intvl == "" {
+		e.logger.Debug().Msgf("skipping evm state poller for upstream as no interval is provided")
 		return nil
 	}
-
 	interval, err := time.ParseDuration(intvl)
 	if err != nil {
 		return fmt.Errorf("invalid state poller interval: %v", err)
 	}
+
+	e.logger.Info().Msgf("bootstraped evm state poller to track upstream latest, finalized blocks and syncing states")
 
 	go (func() {
 		ticker := time.NewTicker(interval)
@@ -96,17 +94,15 @@ func (e *EvmStatePoller) initialize(ctx context.Context) error {
 				e.logger.Debug().Msg("shutting down evm state poller due to context cancellation")
 				return
 			case <-ticker.C:
-				e.poll(ctx)
+				e.Poll(ctx)
 			}
 		}
 	})()
 
-	go e.poll(ctx)
-
 	return nil
 }
 
-func (e *EvmStatePoller) poll(ctx context.Context) {
+func (e *EvmStatePoller) Poll(ctx context.Context) {
 	var wg sync.WaitGroup
 	// Fetch latest block
 	wg.Add(1)
@@ -123,7 +119,7 @@ func (e *EvmStatePoller) poll(ctx context.Context) {
 		}
 	}()
 
-	// Fetch finalized block (if supports)
+	// Fetch finalized block (if upstream supports)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -132,7 +128,7 @@ func (e *EvmStatePoller) poll(ctx context.Context) {
 		}
 		fb, err := e.fetchFinalizedBlockNumber(ctx)
 		if err != nil {
-			if !common.IsRetryableTowardsUpstream(err) {
+			if !common.IsRetryableTowardsUpstream(err) || common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
 				e.skipFinalizedCheck = true
 				e.logger.Warn().Err(err).Msg("cannot fetch finalized block number in evm state poller")
 			} else {
@@ -176,15 +172,15 @@ func (e *EvmStatePoller) poll(ctx context.Context) {
 		}
 
 		// By default we don't know if the node is syncing or not.
-		upsCfg.Evm.Syncing = nil
+		e.upstream.SetEvmSyncingState(common.EvmSyncingStateUnknown)
 
 		// if we have received enough consecutive "synced" responses, we can assume it's fully synced.
 		if e.synced >= FullySyncedThreshold {
-			upsCfg.Evm.Syncing = &common.FALSE
+			e.upstream.SetEvmSyncingState(common.EvmSyncingStateNotSyncing)
 			e.logger.Info().Bool("syncingResult", syncing).Msg("node is marked as fully synced")
 		} else if e.synced >= 0 && syncing {
+			e.upstream.SetEvmSyncingState(common.EvmSyncingStateSyncing)
 			// If we have received at least one response (syncing or not-syncing) we explicitly assume it's syncing.
-			upsCfg.Evm.Syncing = &common.TRUE
 			e.logger.Debug().Bool("syncingResult", syncing).Msgf("node is marked as still syncing %d out of %d confirmations done so far", e.synced, FullySyncedThreshold)
 		}
 	}()
@@ -254,8 +250,8 @@ func (e *EvmStatePoller) IsBlockFinalized(blockNumber int64) (bool, error) {
 			fb = 0
 		}
 	} else {
-		if latestBlock > 1024 {
-			fb = latestBlock - 1024
+		if latestBlock > common.DefaultEvmFinalityDepth {
+			fb = latestBlock - common.DefaultEvmFinalityDepth
 		} else {
 			fb = 0
 		}
@@ -295,9 +291,8 @@ func (e *EvmStatePoller) fetchFinalizedBlockNumber(ctx context.Context) (int64, 
 }
 
 func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64, error) {
-	randId := rand.Intn(100_000_000) // #nosec G404
 	pr := common.NewNormalizedRequest([]byte(
-		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, randId, blockTag),
+		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), blockTag),
 	))
 	pr.SetNetwork(e.network)
 
@@ -331,7 +326,7 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 }
 
 func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
-	pr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_syncing","params":[]}`))
+	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_syncing","params":[]}`, util.RandomID())))
 	pr.SetNetwork(e.network)
 
 	resp, err := e.upstream.Forward(ctx, pr)

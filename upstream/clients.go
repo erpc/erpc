@@ -27,7 +27,7 @@ const (
 // Define a shared interface for all types of Clients
 type ClientInterface interface {
 	GetType() ClientType
-	SupportsNetwork(networkId string) (bool, error)
+	SupportsNetwork(ctx context.Context, networkId string) (bool, error)
 }
 
 type Client struct {

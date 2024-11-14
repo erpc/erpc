@@ -3,7 +3,6 @@ package upstream
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"net/url"
 	"strconv"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 )
 
 var envioKnownSupportedChains = map[int64]struct{}{
@@ -98,7 +98,7 @@ func (c *EnvioHttpJsonRpcClient) GetType() ClientType {
 	return ClientTypeEnvioHttpJsonRpc
 }
 
-func (c *EnvioHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, error) {
+func (c *EnvioHttpJsonRpcClient) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
 	}
@@ -117,10 +117,9 @@ func (c *EnvioHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, error)
 	if err != nil {
 		return false, err
 	}
-	ctx, cancel := context.WithTimeout(c.appCtx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	rid := rand.Intn(100_000_000) // #nosec G404
-	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, rid)))
+	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, util.RandomID())))
 	resp, err := client.SendRequest(ctx, pr)
 	if err != nil {
 		return false, err

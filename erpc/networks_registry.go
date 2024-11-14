@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
@@ -17,7 +18,7 @@ type NetworksRegistry struct {
 	metricsTracker       *health.Tracker
 	evmJsonRpcCache      *EvmJsonRpcCache
 	rateLimitersRegistry *upstream.RateLimitersRegistry
-	preparedNetworks     map[string]*Network
+	preparedNetworks     sync.Map // map[string]*Network
 }
 
 func NewNetworksRegistry(
@@ -31,7 +32,7 @@ func NewNetworksRegistry(
 		metricsTracker:       metricsTracker,
 		evmJsonRpcCache:      evmJsonRpcCache,
 		rateLimitersRegistry: rateLimitersRegistry,
-		preparedNetworks:     make(map[string]*Network),
+		preparedNetworks:     sync.Map{},
 	}
 	return r
 }
@@ -46,14 +47,22 @@ func NewNetwork(
 ) (*Network, error) {
 	lg := logger.With().Str("component", "proxy").Str("networkId", nwCfg.NetworkId()).Logger()
 
-	var policies []failsafe.Policy[*common.NormalizedResponse]
-	if nwCfg.Failsafe != nil {
-		key := fmt.Sprintf("%s/%s", prjId, nwCfg.NetworkId())
-		pls, err := upstream.CreateFailSafePolicies(&lg, common.ScopeNetwork, key, nwCfg.Failsafe)
+	var policyArray []failsafe.Policy[*common.NormalizedResponse]
+	key := fmt.Sprintf("%s/%s", prjId, nwCfg.NetworkId())
+	pls, err := upstream.CreateFailSafePolicies(&lg, common.ScopeNetwork, key, nwCfg.Failsafe)
+	if err != nil {
+		return nil, err
+	}
+	for _, policy := range pls {
+		policyArray = append(policyArray, policy)
+	}
+	var timeoutDuration *time.Duration
+	if nwCfg.Failsafe != nil && nwCfg.Failsafe.Timeout != nil {
+		d, err := time.ParseDuration(nwCfg.Failsafe.Timeout.Duration)
+		timeoutDuration = &d
 		if err != nil {
 			return nil, err
 		}
-		policies = pls
 	}
 
 	network := &Network{
@@ -67,9 +76,10 @@ func NewNetwork(
 		metricsTracker:       metricsTracker,
 		rateLimitersRegistry: rateLimitersRegistry,
 
+		bootstrapOnce:    sync.Once{},
 		inFlightRequests: &sync.Map{},
-		failsafePolicies: policies,
-		failsafeExecutor: failsafe.NewExecutor(policies...),
+		timeoutDuration:  timeoutDuration,
+		failsafeExecutor: failsafe.NewExecutor(policyArray...),
 	}
 
 	if nwCfg.Architecture == "" {
@@ -86,8 +96,8 @@ func (r *NetworksRegistry) RegisterNetwork(
 ) (*Network, error) {
 	var key = fmt.Sprintf("%s-%s", prjCfg.Id, nwCfg.NetworkId())
 
-	if pn, ok := r.preparedNetworks[key]; ok {
-		return pn, nil
+	if pn, ok := r.preparedNetworks.Load(key); ok {
+		return pn.(*Network), nil
 	}
 
 	network, err := NewNetwork(logger, prjCfg.Id, nwCfg, r.rateLimitersRegistry, r.upstreamsRegistry, r.metricsTracker)
@@ -104,10 +114,13 @@ func (r *NetworksRegistry) RegisterNetwork(
 		return nil, errors.New("unknown network architecture")
 	}
 
-	r.preparedNetworks[key] = network
+	r.preparedNetworks.Store(key, network)
 	return network, nil
 }
 
 func (nr *NetworksRegistry) GetNetwork(projectId, networkId string) *Network {
-	return nr.preparedNetworks[fmt.Sprintf("%s-%s", projectId, networkId)]
+	if pn, ok := nr.preparedNetworks.Load(fmt.Sprintf("%s-%s", projectId, networkId)); ok {
+		return pn.(*Network)
+	}
+	return nil
 }

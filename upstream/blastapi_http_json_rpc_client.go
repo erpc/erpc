@@ -112,7 +112,7 @@ func (c *BlastapiHttpJsonRpcClient) GetType() ClientType {
 	return ClientTypeBlastapiHttpJsonRpc
 }
 
-func (c *BlastapiHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, error) {
+func (c *BlastapiHttpJsonRpcClient) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
 	}

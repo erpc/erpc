@@ -9,9 +9,23 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/erpc"
 	"github.com/erpc/erpc/util"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/afero"
 )
+
+func init() {
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnixMs
+	zerolog.ErrorMarshalFunc = func(err error) interface{} {
+		return err
+	}
+
+	if logWriter := os.Getenv("LOG_WRITER"); logWriter == "console" {
+		log.Logger = zerolog.New(zerolog.NewConsoleWriter(func(w *zerolog.ConsoleWriter) {
+			w.TimeFormat = "04:05.000ms"
+		})).With().Timestamp().Logger()
+	}
+}
 
 func main() {
 	logger := log.With().Logger()
