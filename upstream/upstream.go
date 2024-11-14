@@ -627,7 +627,7 @@ func (u *Upstream) detectFeatures() error {
 		}
 
 		if cfg.Evm.NodeType == "" {
-			nodeType, err := u.detectNodeType(&common.NormalizedRequest{})
+			nodeType, err := u.detectNodeType()
 			if err != nil {
 				return err
 			}
@@ -666,47 +666,35 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 		}
 	}
 
-	// TODO evm: if block can be determined from request and upstream is only full-node and block is historical skip
-	jrReq, err := req.JsonRpcRequest()
-	if err != nil {
-		return fmt.Errorf("failed to get json-rpc request: %w", err), false
+	// if block can be determined from request and upstream is only full-node and block is historical skip
+	bn, ebn := req.EvmBlockNumber()
+	if ebn != nil || bn <= 0 {
+		return fmt.Errorf("failed to get valid request block number: %w", ebn), false
 	}
 
-	if index, exists := common.MethodsWithBlockParam[jrReq.Method]; exists {
-		if len(jrReq.Params) > index {
-			// TODO: do we need to check if blockNumber is a valid hex?
-			_, ok := jrReq.Params[index].(string)
+	nodeType := u.config.Evm.NodeType
+	if nodeType == "" {
+		detectedNodeType, err := u.detectNodeType()
+		if err != nil {
+			return fmt.Errorf("failed to detect node type: %w", err), false
+		}
+		nodeType = common.EvmNodeType(detectedNodeType)
+	}
 
-			if ok {
-				nodeType := u.config.Evm.NodeType
-				if nodeType == "" {
-					nodeType, err = u.detectNodeType(req)
-					if err != nil {
-						return fmt.Errorf("failed to detect node type: %w", err), false
-					}
-				}
+	if nodeType == common.EvmNodeTypeFull {
+		lb := req.Network().EvmStatePollerOf(u.Config().Id).LatestBlock()
 
-				if nodeType == common.EvmNodeTypeFull {
-					lb := req.Network().EvmStatePollerOf(u.Config().Id).LatestBlock()
-
-					bn, ebn := req.EvmBlockNumber()
-					if ebn != nil {
-						return fmt.Errorf("failed to get request block number: %w", ebn), false
-					}
-
-					if bn < lb-int64(u.config.Evm.MaxAvailableRecentBlocks) {
-						return fmt.Errorf("block number %d is out of range (must be >= %d)", bn, lb-int64(u.config.Evm.MaxAvailableRecentBlocks)), true
-					}
-				}
-			}
+		if bn < lb-u.config.Evm.MaxAvailableRecentBlocks {
+			return fmt.Errorf("block number %d is out of range (must be >= %d)", bn, lb-u.config.Evm.MaxAvailableRecentBlocks), true
 		}
 	}
 
 	return nil, false
 }
 
-func (u *Upstream) detectNodeType(req *common.NormalizedRequest) (common.EvmNodeType, error) {
+func (u *Upstream) detectNodeType() (common.EvmNodeType, error) {
 	// Step 1: Get the latest block number using the state poller
+	req := &common.NormalizedRequest{}
 	lb := req.Network().EvmStatePollerOf(u.Config().Id).LatestBlock()
 
 	// Block heights to check
@@ -730,7 +718,8 @@ func (u *Upstream) detectNodeType(req *common.NormalizedRequest) (common.EvmNode
 		}
 
 		balanceReq := common.NewNormalizedRequest([]byte(fmt.Sprintf(
-			`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["%s", false]}`,
+			`{"jsonrpc":"2.0","id": %d,"method":"eth_getBlockByNumber","params":["%s", false]}`,
+			util.RandomID(),
 			hexBlockHeight,
 		)))
 

@@ -288,7 +288,7 @@ type EvmUpstreamConfig struct {
 	Engine                   string      `yaml:"engine" json:"engine"`
 	GetLogsMaxBlockRange     int         `yaml:"getLogsMaxBlockRange" json:"getLogsMaxBlockRange"`
 	StatePollerInterval      string      `yaml:"statePollerInterval" json:"statePollerInterval"`
-	MaxAvailableRecentBlocks int         `yaml:"maxAvailableRecentBlocks" json:"maxAvailableRecentBlocks"`
+	MaxAvailableRecentBlocks int64       `yaml:"maxAvailableRecentBlocks" json:"maxAvailableRecentBlocks"`
 
 	// By default "Syncing" is marked as unknown (nil) and that means we will be retrying empty responses
 	// from such upstream, unless we explicitly know that the upstream is fully synced (false).
