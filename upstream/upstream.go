@@ -665,6 +665,9 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 	}
 
 	if u.config.Evm.NodeType == common.EvmNodeTypeFull {
+		if req.Network() == nil || req.Network().EvmStatePollerOf(u.Config().Id) == nil {
+			return fmt.Errorf("network or state poller is nil"), false
+		}
 		lb := req.Network().EvmStatePollerOf(u.Config().Id).LatestBlock()
 
 		if bn < lb-u.config.Evm.MaxAvailableRecentBlocks {
@@ -679,6 +682,9 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 func (u *Upstream) detectNodeType() (common.EvmNodeType, error) {
 	// Step 1: Get the latest block number using the state poller
 	req := &common.NormalizedRequest{}
+	if req.Network() == nil || req.Network().EvmStatePollerOf(u.Config().Id) == nil {
+		return "", common.NewErrUpstreamClientInitialization(fmt.Errorf("network or state poller is nil"), u.config.Id)
+	}
 	lb := req.Network().EvmStatePollerOf(u.Config().Id).LatestBlock()
 
 	// Block heights to check
