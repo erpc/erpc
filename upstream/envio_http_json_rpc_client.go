@@ -98,7 +98,7 @@ func (c *EnvioHttpJsonRpcClient) GetType() ClientType {
 	return ClientTypeEnvioHttpJsonRpc
 }
 
-func (c *EnvioHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, error) {
+func (c *EnvioHttpJsonRpcClient) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
 	}
@@ -117,7 +117,7 @@ func (c *EnvioHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, error)
 	if err != nil {
 		return false, err
 	}
-	ctx, cancel := context.WithTimeout(c.appCtx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, util.RandomID())))
 	resp, err := client.SendRequest(ctx, pr)

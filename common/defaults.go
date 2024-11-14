@@ -67,6 +67,18 @@ func (s *ServerConfig) SetDefaults() {
 	}
 }
 
+func (m *MetricsConfig) SetDefaults() {
+	if m.HostV4 == nil {
+		m.HostV4 = util.StringPtr("0.0.0.0")
+	}
+	if m.HostV6 == nil {
+		m.HostV6 = util.StringPtr("[::]")
+	}
+	if m.Port == nil {
+		m.Port = util.IntPtr(4001)
+	}
+}
+
 func (a *AdminConfig) SetDefaults() {
 	if a.Auth != nil {
 		a.Auth.SetDefaults()
@@ -155,18 +167,6 @@ func (d *DynamoDBConnectorConfig) SetDefaults() {
 	}
 	if d.ReverseIndexName == "" {
 		d.ReverseIndexName = "idx_groupKey_requestKey"
-	}
-}
-
-func (m *MetricsConfig) SetDefaults() {
-	if m.HostV4 == nil {
-		m.HostV4 = util.StringPtr("0.0.0.0")
-	}
-	if m.HostV6 == nil {
-		m.HostV6 = util.StringPtr("[::]")
-	}
-	if m.Port == nil {
-		m.Port = util.IntPtr(4001)
 	}
 }
 

@@ -20,7 +20,7 @@ import (
 
 type HttpJsonRpcClient interface {
 	GetType() ClientType
-	SupportsNetwork(networkId string) (bool, error)
+	SupportsNetwork(ctx context.Context, networkId string) (bool, error)
 	SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
 }
 
@@ -107,7 +107,7 @@ func (c *GenericHttpJsonRpcClient) GetType() ClientType {
 	return ClientTypeHttpJsonRpc
 }
 
-func (c *GenericHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, error) {
+func (c *GenericHttpJsonRpcClient) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
 	cfg := c.upstream.Config()
 	if cfg.Evm != nil && cfg.Evm.ChainId > 0 {
 		return util.EvmNetworkId(cfg.Evm.ChainId) == networkId, nil

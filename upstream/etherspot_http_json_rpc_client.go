@@ -73,7 +73,7 @@ func (c *EtherspotHttpJsonRpcClient) GetType() ClientType {
 	return ClientTypeEtherspotHttpJsonRpc
 }
 
-func (c *EtherspotHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, error) {
+func (c *EtherspotHttpJsonRpcClient) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
 	}

@@ -14,15 +14,9 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-var erpcMu sync.Mutex
-
 func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
-	erpcMu.Lock()
-	defer erpcMu.Unlock()
-
-	defer gock.Off()
-	defer gock.Clean()
-	defer gock.CleanUnmatchedRequest()
+	util.ResetGock()
+	defer util.ResetGock()
 
 	port := rand.Intn(1000) + 2000
 	cfg := &common.Config{
@@ -105,12 +99,12 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 		t.Errorf("expected nil, got %v", err)
 	}
 
-	nw, err := erpcInstance.GetNetwork("test", "evm:123")
+	nw, err := erpcInstance.GetNetwork(ctx1, "test", "evm:123")
 	if err != nil {
 		t.Errorf("expected nil, got %v", err)
 	}
 
-	nw.upstreamsRegistry.PrepareUpstreamsForNetwork("evm:123")
+	nw.upstreamsRegistry.PrepareUpstreamsForNetwork(ctx1, "evm:123")
 	time.Sleep(100 * time.Millisecond)
 	nw.upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
 	time.Sleep(100 * time.Millisecond)

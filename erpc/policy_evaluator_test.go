@@ -1759,7 +1759,7 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+	err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 	if err != nil {
 		t.Fatal(err)
 	}

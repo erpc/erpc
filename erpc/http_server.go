@@ -22,6 +22,7 @@ import (
 )
 
 type HttpServer struct {
+	appCtx context.Context
 	config *common.ServerConfig
 	admin  *common.AdminConfig
 	server *http.Server
@@ -39,6 +40,7 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 	}
 
 	srv := &HttpServer{
+		appCtx: ctx,
 		config: cfg,
 		admin:  admin,
 		erpc:   erpc,
@@ -244,7 +246,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					networkId = fmt.Sprintf("%s:%s", architecture, chainId)
 				}
 
-				nw, err := project.GetNetwork(networkId)
+				nw, err := project.GetNetwork(s.appCtx, networkId)
 				if err != nil {
 					responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
 					return
@@ -587,9 +589,13 @@ func (s *HttpServer) Start(logger *zerolog.Logger) error {
 	var ln4 net.Listener
 	var ln6 net.Listener
 
+	if s.config.HttpPort == nil {
+		return fmt.Errorf("server.httpPort is not configured")
+	}
+
 	if s.config.HttpHostV4 != nil && s.config.ListenV4 != nil && *s.config.ListenV4 {
 		addrV4 := fmt.Sprintf("%s:%d", *s.config.HttpHostV4, *s.config.HttpPort)
-		logger.Info().Msgf("starting http server on port: %d IPv4: %s", s.config.HttpPort, addrV4)
+		logger.Info().Msgf("starting http server on port: %d IPv4: %s", *s.config.HttpPort, addrV4)
 		ln4, err = net.Listen("tcp4", addrV4)
 		if err != nil {
 			return fmt.Errorf("error listening on IPv4: %w", err)

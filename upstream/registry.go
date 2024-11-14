@@ -101,7 +101,7 @@ func (u *UpstreamsRegistry) getNetworkMutex(networkId string) *sync.RWMutex {
 	return mutex.(*sync.RWMutex)
 }
 
-func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(networkId string) error {
+func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, networkId string) error {
 	networkMu := u.getNetworkMutex(networkId)
 	networkMu.Lock()
 	defer networkMu.Unlock()
@@ -113,7 +113,7 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(networkId string) error {
 	var upstreams []*Upstream
 	var ids []string
 	for _, ups := range allUpstreams {
-		if s, e := ups.SupportsNetwork(networkId); e == nil && s {
+		if s, e := ups.SupportsNetwork(ctx, networkId); e == nil && s {
 			u.upstreamsMu.Lock()
 			upstreams = append(upstreams, ups)
 			ids = append(ids, ups.Config().Id)

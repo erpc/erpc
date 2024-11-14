@@ -3,7 +3,6 @@ package upstream
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"net/url"
 	"strconv"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 )
 
 type ThirdwebHttpJsonRpcClient struct {
@@ -43,7 +43,7 @@ func (c *ThirdwebHttpJsonRpcClient) GetType() ClientType {
 	return ClientTypeThirdwebHttpJsonRpc
 }
 
-func (c *ThirdwebHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, error) {
+func (c *ThirdwebHttpJsonRpcClient) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
 	}
@@ -58,11 +58,10 @@ func (c *ThirdwebHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, err
 	if err != nil {
 		return false, err
 	}
-	ctx, cancel := context.WithTimeout(c.appCtx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	rid := rand.Intn(100_000_000) // #nosec G404
-	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, rid)))
+	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, util.RandomID())))
 	resp, err := client.SendRequest(ctx, pr)
 	if err != nil {
 		return false, err

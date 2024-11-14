@@ -307,7 +307,7 @@ func (u *fakeUpstream) Vendor() common.Vendor {
 	return nil
 }
 
-func (u *fakeUpstream) SupportsNetwork(networkId string) (bool, error) {
+func (u *fakeUpstream) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
 	return true, nil
 }
 

@@ -36,18 +36,21 @@ type initOnce struct {
 }
 
 func (p *PreparedProject) Bootstrap(ctx context.Context) error {
-	// initialize all staticly-defined networks
-	for _, nwCfg := range p.Config.Networks {
-		_, err := p.initializeNetwork(nwCfg.NetworkId())
-		if err != nil {
-			return err
+	p.Logger.Debug().Msgf("initializing all staticly-defined networks")
+
+	go func() {
+		for _, nwCfg := range p.Config.Networks {
+			_, err := p.initializeNetwork(ctx, nwCfg.NetworkId())
+			if err != nil {
+				p.Logger.Error().Err(err).Msgf("failed to initialize network %s", nwCfg.NetworkId())
+			}
 		}
-	}
+	}()
 
 	return nil
 }
 
-func (p *PreparedProject) GetNetwork(networkId string) (*Network, error) {
+func (p *PreparedProject) GetNetwork(ctx context.Context, networkId string) (*Network, error) {
 	p.projectMu.RLock()
 	network, ok := p.Networks[networkId]
 	p.projectMu.RUnlock()
@@ -60,7 +63,7 @@ func (p *PreparedProject) GetNetwork(networkId string) (*Network, error) {
 
 	initializer.once.Do(func() {
 		var err error
-		network, err := p.initializeNetwork(networkId)
+		network, err := p.initializeNetwork(ctx, networkId)
 		if err != nil {
 			initializer.err = err
 			return
@@ -98,7 +101,8 @@ func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, nq *common.N
 }
 
 func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-	network, err := p.GetNetwork(networkId)
+	// We use app context here so that network lazy loading runs within app context not request, as we want it to continue even if current request is cancelled/timed out
+	network, err := p.GetNetwork(p.appCtx, networkId)
 	if err != nil {
 		return nil, err
 	}
@@ -153,11 +157,11 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	return nil, err
 }
 
-func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) {
+func (p *PreparedProject) initializeNetwork(ctx context.Context, networkId string) (*Network, error) {
 	p.Logger.Info().Str("networkId", networkId).Msgf("initializing network")
 
 	// 1) Find all upstreams that support this network
-	err := p.upstreamsRegistry.PrepareUpstreamsForNetwork(networkId)
+	err := p.upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkId)
 	if err != nil {
 		return nil, err
 	}

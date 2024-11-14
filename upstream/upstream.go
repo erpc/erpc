@@ -490,7 +490,7 @@ func (u *Upstream) SetEvmSyncingState(state common.EvmSyncingState) {
 	u.evmSyncingMu.Unlock()
 }
 
-func (u *Upstream) SupportsNetwork(networkId string) (bool, error) {
+func (u *Upstream) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
 	u.supportedNetworkIdsMu.RLock()
 	supports, exists := u.supportedNetworkIds[networkId]
 	u.supportedNetworkIdsMu.RUnlock()
@@ -498,7 +498,7 @@ func (u *Upstream) SupportsNetwork(networkId string) (bool, error) {
 		return true, nil
 	}
 
-	supports, err := u.Client.SupportsNetwork(networkId)
+	supports, err := u.Client.SupportsNetwork(ctx, networkId)
 	if err != nil {
 		return false, err
 	}
