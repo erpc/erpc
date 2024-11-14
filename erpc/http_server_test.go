@@ -2205,7 +2205,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
 
 	sendRequest := func(body string, headers map[string]string, queryParams map[string]string) (int, string) {
-		req, err := http.NewRequest("POST", baseURL+"/test_project/evm/1", strings.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/test_project/evm/1", strings.NewReader(body))
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", "application/json")
 		for k, v := range headers {
@@ -2234,7 +2234,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 	}
 
 	sendOptionsRequest := func(host string) (int, map[string]string, string) {
-		req, err := http.NewRequest("OPTIONS", baseURL+"/test_project/evm/1", nil)
+		req, err := http.NewRequestWithContext(ctx, "OPTIONS", baseURL+"/test_project/evm/1", nil)
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", "application/json")
 		if host != "" {
@@ -2266,6 +2266,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 		cancel()
 		httpServer.server.Shutdown(context.Background())
 		listener.Close()
+		time.Sleep(100 * time.Millisecond) // So that batch processor stops
 		util.ResetGock()
 	}
 }

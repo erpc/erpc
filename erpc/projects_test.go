@@ -9,17 +9,15 @@ import (
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/erpc/erpc/vendors"
-	"github.com/h2non/gock"
 	"github.com/rs/zerolog/log"
 )
 
 func TestProject_Forward(t *testing.T) {
-
 	t.Run("ForwardCorrectlyRateLimitedOnProjectLevel", func(t *testing.T) {
-		defer gock.Off()
-		defer gock.Clean()
-		defer gock.CleanUnmatchedRequest()
+		util.ResetGock()
+		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
 		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
 			&common.RateLimiterConfig{
@@ -43,8 +41,11 @@ func TestProject_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
 		prjReg, err := NewProjectsRegistry(
-			context.Background(),
+			ctx,
 			&log.Logger,
 			[]*common.ProjectConfig{
 				{
@@ -86,7 +87,7 @@ func TestProject_Forward(t *testing.T) {
 
 		for i := 0; i < 5; i++ {
 			fakeReq := common.NewNormalizedRequest([]byte(`{"method": "eth_chainId","params":[]}`))
-			lastResp, lastErr = prj.Forward(context.Background(), "evm:123", fakeReq)
+			lastResp, lastErr = prj.Forward(ctx, "evm:123", fakeReq)
 		}
 
 		var e *common.ErrProjectRateLimitRuleExceeded

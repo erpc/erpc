@@ -14,8 +14,8 @@ import (
 )
 
 type NetworkMetadata struct {
-	evmLatestBlockNumber    int64
-	evmFinalizedBlockNumber int64
+	evmLatestBlockNumber    atomic.Int64
+	evmFinalizedBlockNumber atomic.Int64
 }
 
 type Timer struct {
@@ -41,7 +41,7 @@ type TrackedMetrics struct {
 	BlockHeadLag           atomic.Int64     `json:"blockHeadLag"`
 	FinalizationLag        atomic.Int64     `json:"finalizationLag"`
 	Cordoned               atomic.Bool      `json:"cordoned"`
-	CordonedReason         string           `json:"cordonedReason"`
+	CordonedReason         atomic.Value     `json:"cordonedReason"`
 }
 
 func (m *TrackedMetrics) ErrorRate() float64 {
@@ -144,7 +144,7 @@ func (t *Tracker) Cordon(ups, network, method, reason string) {
 
 	metrics := t.getMetrics(t.getKey(ups, network, method))
 	metrics.Cordoned.Store(true)
-	metrics.CordonedReason = reason
+	metrics.CordonedReason.Store(reason)
 }
 
 func (t *Tracker) Uncordon(ups, network, method string) {
@@ -229,18 +229,18 @@ func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
 
 	// Update network-level highest block head
 	ntwMeta := t.getMetadata(ntwKey)
-	if ntwMeta.evmLatestBlockNumber < blockNumber {
-		ntwMeta.evmLatestBlockNumber = blockNumber
+	if ntwMeta.evmLatestBlockNumber.Load() <= blockNumber {
+		ntwMeta.evmLatestBlockNumber.Store(blockNumber)
 		needsGlobalUpdate = true
 	}
 
 	// Update block head for this upstream
 	upsMeta := t.getMetadata(upsKey)
-	if upsMeta.evmLatestBlockNumber < blockNumber {
-		upsMeta.evmLatestBlockNumber = blockNumber
+	if upsMeta.evmLatestBlockNumber.Load() < blockNumber {
+		upsMeta.evmLatestBlockNumber.Store(blockNumber)
 	}
 
-	upsLag := ntwMeta.evmLatestBlockNumber - upsMeta.evmLatestBlockNumber
+	upsLag := ntwMeta.evmLatestBlockNumber.Load() - upsMeta.evmLatestBlockNumber.Load()
 	MetricUpstreamBlockHeadLag.WithLabelValues(t.projectId, network, ups).Set(float64(upsLag))
 
 	if needsGlobalUpdate {
@@ -256,7 +256,7 @@ func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
 						mt.BlockHeadLag.Store(upsLag)
 					} else {
 						otherUpsMeta := t.getMetadata(t.getKey(parts[0], network, "*"))
-						otherUpsLag := ntwMeta.evmLatestBlockNumber - otherUpsMeta.evmLatestBlockNumber
+						otherUpsLag := ntwMeta.evmLatestBlockNumber.Load() - otherUpsMeta.evmLatestBlockNumber.Load()
 						mt.BlockHeadLag.Store(otherUpsLag)
 						MetricUpstreamBlockHeadLag.WithLabelValues(t.projectId, network, parts[0]).Set(float64(otherUpsLag))
 					}
@@ -290,24 +290,25 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 	// Update network-level highest block head
 	if val, ok := t.metadata.Load(ntwKey); !ok {
 		ntwMeta = &NetworkMetadata{
-			evmFinalizedBlockNumber: blockNumber,
+			evmFinalizedBlockNumber: atomic.Int64{},
 		}
+		ntwMeta.evmFinalizedBlockNumber.Store(blockNumber)
 		t.metadata.Store(ntwKey, ntwMeta)
 	} else {
 		ntwMeta = val.(*NetworkMetadata)
-		if ntwMeta.evmFinalizedBlockNumber < blockNumber {
-			ntwMeta.evmFinalizedBlockNumber = blockNumber
+		if ntwMeta.evmFinalizedBlockNumber.Load() < blockNumber {
+			ntwMeta.evmFinalizedBlockNumber.Store(blockNumber)
 			needsGlobalUpdate = true
 		}
 	}
 
 	// Update block head for this upstream
 	upsMeta = t.getMetadata(upsKey)
-	if upsMeta.evmFinalizedBlockNumber < blockNumber {
-		upsMeta.evmFinalizedBlockNumber = blockNumber
+	if upsMeta.evmFinalizedBlockNumber.Load() < blockNumber {
+		upsMeta.evmFinalizedBlockNumber.Store(blockNumber)
 	}
 
-	upsLag := ntwMeta.evmFinalizedBlockNumber - upsMeta.evmFinalizedBlockNumber
+	upsLag := ntwMeta.evmFinalizedBlockNumber.Load() - upsMeta.evmFinalizedBlockNumber.Load()
 	MetricUpstreamFinalizationLag.WithLabelValues(t.projectId, network, ups).Set(float64(upsLag))
 
 	if needsGlobalUpdate {
@@ -324,7 +325,7 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 					} else {
 						if ov, ok := t.metadata.Load(t.getKey(parts[0], network, "*")); ok {
 							otherUpsMeta := ov.(*NetworkMetadata)
-							otherUpsLag := ntwMeta.evmFinalizedBlockNumber - otherUpsMeta.evmFinalizedBlockNumber
+							otherUpsLag := ntwMeta.evmFinalizedBlockNumber.Load() - otherUpsMeta.evmFinalizedBlockNumber.Load()
 							mt.FinalizationLag.Store(otherUpsLag)
 							MetricUpstreamFinalizationLag.WithLabelValues(t.projectId, network, parts[0]).Set(float64(otherUpsLag))
 						}
