@@ -746,13 +746,13 @@ func (u *Upstream) detectNodeType() (common.EvmNodeType, error) {
 	isFullNode := !isArchiveNode && (responses[lb-128] || responses[lb-32])
 
 	if isArchiveNode {
-		return "archive", nil
+		return common.EvmNodeTypeArchive, nil
 	} else if isFullNode {
-		return "full", nil
+		return common.EvmNodeTypeFull, nil
 	}
 
 	// If none of the checks succeeded, it's likely a light node
-	return "light", nil
+	return common.EvmNodeTypeLight, nil
 }
 
 func (u *Upstream) getScoreMultipliers(networkId, method string) *common.ScoreMultiplierConfig {
