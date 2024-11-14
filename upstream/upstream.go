@@ -676,64 +676,78 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 	return nil, false
 }
 
-// func (u *Upstream) detectNodeType() (common.EvmNodeType, error) {
-// 	// Step 1: Get the latest block number using the state poller
-// 	req := &common.NormalizedRequest{}
-// 	lb := req.Network().EvmStatePollerOf(u.Config().Id).LatestBlock()
+func (u *Upstream) detectNodeType() (common.EvmNodeType, error) {
+	// Step 1: Get the latest block number using the state poller
+	req := &common.NormalizedRequest{}
+	lb := req.Network().EvmStatePollerOf(u.Config().Id).LatestBlock()
 
-// 	// Block heights to check
-// 	blockHeights := []int64{
-// 		1,
-// 		lb / 2,
-// 		lb - 1024,
-// 		lb - 128,
-// 		lb - 32,
-// 	}
+	// Block heights to check
+	blockHeights := []int64{
+		1,
+		lb / 2,
+		lb - 1024,
+		lb - 128,
+		lb - 32,
+	}
 
-// 	// Track responses for each block height
-// 	responses := make(map[int64]bool)
+	// Track responses for each block height
+	responses := make(map[int64]bool)
 
-// 	for _, blockHeight := range blockHeights {
-// 		// Normalize the block height to hex format
-// 		hexBlockHeight, err := common.NormalizeHex(fmt.Sprintf("%x", blockHeight))
+	for _, blockHeight := range blockHeights {
+		// Normalize the block height to hex format
+		hexBlockHeight, err := common.NormalizeHex(fmt.Sprintf("%x", blockHeight))
 
-// 		if err != nil {
-// 			return "", err
-// 		}
+		if err != nil {
+			return "", err
+		}
 
-// 		balanceReq := common.NewNormalizedRequest([]byte(fmt.Sprintf(
-// 			`{"jsonrpc":"2.0","id": %d,"method":"eth_getBlockByNumber","params":["%s", false]}`,
-// 			util.RandomID(),
-// 			hexBlockHeight,
-// 		)))
+		balanceReq := common.NewNormalizedRequest([]byte(fmt.Sprintf(
+			`{"jsonrpc":"2.0","id": %d,"method":"eth_getBlockByNumber","params":["%s", false]}`,
+			util.RandomID(),
+			hexBlockHeight,
+		)))
 
-// 		_, errBlock := u.Forward(context.Background(), balanceReq)
-// 		if errBlock == nil {
-// 			// No error, store response for this block height
-// 			responses[blockHeight] = true
-// 		} else if common.EvmIsMissingDataError(errBlock) {
-// 			// Error due to missing historical state, continue checking
-// 			responses[blockHeight] = false
-// 		} else {
-// 			// Log the error for this specific block height
-// 			u.Logger.Debug().Err(errBlock).Int64("blockHeight", blockHeight).Msg("Error getting balance")
-// 			responses[blockHeight] = false
-// 		}
-// 	}
+		resp, errForward := u.Forward(context.Background(), balanceReq)
+		if errForward != nil {
+			return "", errForward
+		}
 
-// 	// Determine node type based on responses
-// 	isArchiveNode := responses[1] && responses[lb/2] && responses[lb-1024]
-// 	isFullNode := !isArchiveNode && (responses[lb-128] || responses[lb-32])
+		if errForward == nil {
+			rpcResp, err := resp.JsonRpcResponse()
+			if err != nil {
+				return "", err
+			}
+			blockRef, _ := rpcResp.PeekStringByPath("hash")
 
-// 	if isArchiveNode {
-// 		return "archive", nil
-// 	} else if isFullNode {
-// 		return "full", nil
-// 	}
+			// Check if the response contains a valid block
+			if rpcResp != nil && rpcResp.Result != nil && blockRef != "" {
+				responses[blockHeight] = true
+			} else {
+				responses[blockHeight] = false
+			}
+		} else if common.EvmIsMissingDataError(errForward) {
+			// Error due to missing historical state, continue checking
+			responses[blockHeight] = false
+		} else {
+			// Log the error for this specific block height
+			u.Logger.Debug().Err(errForward).Int64("blockHeight", blockHeight).Msg("Error getting balance")
+			responses[blockHeight] = false
+		}
+	}
 
-// 	// If none of the checks succeeded, it's likely a light node
-// 	return "light", nil
-// }
+	// Determine node type based on responses
+	isArchiveNode := responses[1] && responses[lb/2] && responses[lb-1024]
+	isFullNode := !isArchiveNode && (responses[lb-128] || responses[lb-32])
+
+	if isArchiveNode {
+		return "archive", nil
+	} else if isFullNode {
+		return "full", nil
+	}
+
+	// If none of the checks succeeded, it's likely a light node
+	return "light", nil
+}
 
 func (u *Upstream) getScoreMultipliers(networkId, method string) *common.ScoreMultiplierConfig {
 	if u.config.Routing != nil {
