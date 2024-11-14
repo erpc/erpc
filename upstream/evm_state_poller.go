@@ -128,7 +128,7 @@ func (e *EvmStatePoller) Poll(ctx context.Context) {
 		}
 		fb, err := e.fetchFinalizedBlockNumber(ctx)
 		if err != nil {
-			if !common.IsRetryableTowardsUpstream(err) {
+			if !common.IsRetryableTowardsUpstream(err) || common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
 				e.skipFinalizedCheck = true
 				e.logger.Warn().Err(err).Msg("cannot fetch finalized block number in evm state poller")
 			} else {

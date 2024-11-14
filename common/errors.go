@@ -255,8 +255,8 @@ func (e *BaseError) MarshalZerologObject(v *zerolog.Event) {
 	v.Str("code", string(e.Code))
 	v.Str("message", e.Message)
 	if e.Cause != nil {
-		if be, ok := e.Cause.(*ErrUpstreamsExhausted); ok {
-			v.Interface("cause", be.Errors())
+		if multiErr, ok := e.Cause.(interface{ Unwrap() []error }); ok {
+			v.Interface("cause", multiErr.Unwrap())
 		} else {
 			v.Interface("cause", e.Cause)
 		}
