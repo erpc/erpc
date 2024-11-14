@@ -629,7 +629,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		// Initially should be active (no metrics)
 		time.Sleep(75 * time.Millisecond)
 		metrics := mt.GetUpstreamMethodMetrics("rpc1", "evm:123", "method1")
-		assert.False(t, metrics.Cordoned, "Upstream should start uncordoned")
+		assert.False(t, metrics.Cordoned.Load(), "Upstream should start uncordoned")
 
 		// Add bad metrics to trigger cordoning
 		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
@@ -642,12 +642,12 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Verify upstream is cordoned for method1
 		metrics = mt.GetUpstreamMethodMetrics("rpc1", "evm:123", "method1")
-		assert.True(t, metrics.Cordoned, "Upstream should be cordoned for method1")
+		assert.True(t, metrics.Cordoned.Load(), "Upstream should be cordoned for method1")
 		assert.Contains(t, metrics.CordonedReason, "excluded by selection policy", "Cordon reason should indicate policy exclusion")
 
 		// Verify different method (method2) is not cordoned
 		metrics = mt.GetUpstreamMethodMetrics("rpc1", "evm:123", "method2")
-		assert.False(t, metrics.Cordoned, "Different method should not be cordoned")
+		assert.False(t, metrics.Cordoned.Load(), "Different method should not be cordoned")
 
 		// Improve metrics to trigger uncordoning
 		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")

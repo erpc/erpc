@@ -33,8 +33,8 @@ func (s *HttpServer) handleHealthCheck(w http.ResponseWriter, startedAt *time.Ti
 			for _, ups := range h.Upstreams {
 				cfg := ups.Config()
 				mts := metricsTracker.GetUpstreamMethodMetrics(cfg.Id, "*", "*")
-				if mts != nil && mts.RequestsTotal > 0 {
-					errorRate := float64(mts.ErrorsTotal) / float64(mts.RequestsTotal)
+				if mts != nil && mts.RequestsTotal.Load() > 0 {
+					errorRate := float64(mts.ErrorsTotal.Load()) / float64(mts.RequestsTotal.Load())
 					allErrorRates = append(allErrorRates, errorRate)
 				}
 			}

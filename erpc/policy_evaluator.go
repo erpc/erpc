@@ -139,21 +139,19 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 		upsId := ups.Config().Id
 		metrics := p.metricsTracker.GetUpstreamMethodMetrics(upsId, p.networkId, method)
 
-		metrics.Mutex.RLock()
 		metricsData[i] = metricData{
 			"id":     upsId,
 			"config": ups.Config(),
-			"metrics": map[string]float64{
+			"metrics": map[string]interface{}{
 				"errorRate":       metrics.ErrorRate(),
-				"errorsTotal":     metrics.ErrorsTotal,
-				"requestsTotal":   metrics.RequestsTotal,
+				"errorsTotal":     metrics.ErrorsTotal.Load(),
+				"requestsTotal":   metrics.RequestsTotal.Load(),
 				"throttledRate":   metrics.ThrottledRate(),
 				"p90LatencySecs":  metrics.LatencySecs.P90(),
-				"blockHeadLag":    metrics.BlockHeadLag,
-				"finalizationLag": metrics.FinalizationLag,
+				"blockHeadLag":    metrics.BlockHeadLag.Load(),
+				"finalizationLag": metrics.FinalizationLag.Load(),
 			},
 		}
-		metrics.Mutex.RUnlock()
 	}
 
 	if p.logger.GetLevel() == zerolog.TraceLevel {

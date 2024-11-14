@@ -179,6 +179,8 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(networkId string) error {
 }
 
 func (u *UpstreamsRegistry) GetNetworkUpstreams(networkId string) []*Upstream {
+	u.upstreamsMu.RLock()
+	defer u.upstreamsMu.RUnlock()
 	return u.networkUpstreams[networkId]
 }
 
@@ -194,13 +196,14 @@ func (u *UpstreamsRegistry) GetSortedUpstreams(networkId, method string) ([]*Ups
 
 		u.upstreamsMu.RLock()
 		upsList = u.sortedUpstreams[networkId]["*"]
-		u.upstreamsMu.RUnlock()
 		if upsList == nil {
-			upsList = u.GetNetworkUpstreams(networkId)
+			upsList = u.networkUpstreams[networkId]
 			if upsList == nil {
+				u.upstreamsMu.RUnlock()
 				return nil, common.NewErrNoUpstreamsFound(u.prjId, networkId)
 			}
 		}
+		u.upstreamsMu.RUnlock()
 
 		u.upstreamsMu.Lock()
 		// Create a copy of the default upstreams list for this method
@@ -398,14 +401,12 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 
 	for _, ups := range upsList {
 		metrics := u.metricsTracker.GetUpstreamMethodMetrics(ups.Config().Id, networkId, method)
-		metrics.Mutex.RLock()
 		p90Latencies = append(p90Latencies, metrics.LatencySecs.P90())
-		blockHeadLags = append(blockHeadLags, metrics.BlockHeadLag)
-		finalizationLags = append(finalizationLags, metrics.FinalizationLag)
+		blockHeadLags = append(blockHeadLags, float64(metrics.BlockHeadLag.Load()))
+		finalizationLags = append(finalizationLags, float64(metrics.FinalizationLag.Load()))
 		errorRates = append(errorRates, metrics.ErrorRate())
 		throttledRates = append(throttledRates, metrics.ThrottledRate())
-		totalRequests = append(totalRequests, metrics.RequestsTotal)
-		metrics.Mutex.RUnlock()
+		totalRequests = append(totalRequests, float64(metrics.RequestsTotal.Load()))
 	}
 
 	normP90Latencies := normalizeValues(p90Latencies)
