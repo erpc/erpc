@@ -196,9 +196,10 @@ func shouldCacheResponse(
 						if ntw != nil {
 							// We explicitly check for finality on the same upstream that provided the response
 							// to make sure on that specific node the block is actually finalized (vs any other node).
-							stp := ntw.EvmStatePollerOf(ups.Config().Id)
-							if fin, err := stp.IsBlockFinalized(blkNum); err == nil && fin {
-								return fin, nil
+							if stp := ntw.EvmStatePollerOf(ups.Config().Id); stp != nil {
+								if fin, err := stp.IsBlockFinalized(blkNum); err == nil && fin {
+									return fin, nil
+								}
 							}
 						}
 					}

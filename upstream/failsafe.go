@@ -313,10 +313,8 @@ func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolic
 					if err == nil && rds.RetryEmpty && isEmpty && (ucfg.Evm.Syncing != nil && !*ucfg.Evm.Syncing) {
 						bn, ebn := req.EvmBlockNumber()
 						if ebn == nil && bn > 0 {
-							ntw := req.Network()
-							if ntw != nil {
-								statePoller := ntw.EvmStatePollerOf(ups.Config().Id)
-								if statePoller != nil {
+							if ntw := req.Network(); ntw != nil {
+								if statePoller := ntw.EvmStatePollerOf(ups.Config().Id); statePoller != nil {
 									fin, efin := statePoller.IsBlockFinalized(bn)
 									if efin == nil && fin {
 										return false
