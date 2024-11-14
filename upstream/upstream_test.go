@@ -20,7 +20,7 @@ func TestUpstream_SkipLogic(t *testing.T) {
 		assert.True(t, skip)
 		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_getBalance", "test"))
 
-		reason, skip = upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBlockByNumber", "params":["0x1", false]}`)))
+		reason, skip = upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBlockByNumber"}`)))
 		assert.False(t, skip)
 		assert.Nil(t, reason)
 	})
