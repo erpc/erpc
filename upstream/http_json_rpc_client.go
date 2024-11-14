@@ -747,6 +747,25 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
+		} else if strings.Contains(err.Message, "pending block is not available") ||
+			strings.Contains(err.Message, "pending block not found") ||
+			strings.Contains(err.Message, "Pending block not found") ||
+			strings.Contains(err.Message, "safe block not found") ||
+			strings.Contains(err.Message, "Safe block not found") ||
+			strings.Contains(err.Message, "finalized block not found") ||
+			strings.Contains(err.Message, "Finalized block not found") {
+			// This error means node does not support "finalized/safe/pending" blocks.
+			// ref https://github.com/ethereum/go-ethereum/blob/368e16f39d6c7e5cce72a92ec289adbfbaed4854/eth/api_backend.go#L67-L95
+			details["blockTag"] = strings.ToLower(strings.SplitN(err.Message, " ", 2)[0])
+			return common.NewErrEndpointClientSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorClientSideException,
+					err.Message,
+					nil,
+					details,
+				),
+			)
 		} else if strings.Contains(err.Message, "missing trie node") ||
 			strings.Contains(err.Message, "header not found") ||
 			strings.Contains(err.Message, "could not find block") ||
