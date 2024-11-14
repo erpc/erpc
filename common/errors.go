@@ -1525,6 +1525,20 @@ var NewErrEndpointMissingData = func(cause error) error {
 	}
 }
 
+type ErrEndpointDataOutOfRangeForFullNode struct{ BaseError }
+
+const ErrCodeEndpointDataOutOfRangeForFullNode = "ErrCodeEndpointDataOutOfRangeForFullNode"
+
+var NewErrEndpointDataOutOfRangeForFullNode = func(cause error) error {
+	return &ErrEndpointMissingData{
+		BaseError{
+			Code:    ErrCodeEndpointDataOutOfRangeForFullNode,
+			Message: "remote endpoint data is out of range for full node",
+			Cause:   cause,
+		},
+	}
+}
+
 type ErrEndpointRequestTooLarge struct{ BaseError }
 
 const ErrCodeEndpointRequestTooLarge = "ErrEndpointRequestTooLarge"

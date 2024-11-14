@@ -55,3 +55,7 @@ func EvmIsMissingDataError(err error) bool {
 		strings.Contains(err.Error(), "is greater than latest") ||
 		strings.Contains(err.Error(), "No state available")
 }
+
+func EvmDataIsOutOfRangeForFullNodeError(err error) bool {
+	return strings.Contains(err.Error(), "missing trie node")
+}

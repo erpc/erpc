@@ -661,24 +661,22 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 	// if block can be determined from request and upstream is only full-node and block is historical skip
 	bn, ebn := req.EvmBlockNumber()
 	if ebn != nil || bn <= 0 {
-		return fmt.Errorf("failed to get valid request block number: %w", ebn), false
+		return nil, false
 	}
 
 	if u.config.Evm.NodeType == common.EvmNodeTypeFull {
 		ntw := req.Network()
 		if ntw == nil {
-			return fmt.Errorf("network is nil"), false
+			return nil, false
 		}
 
 		statePoller := ntw.EvmStatePollerOf(u.Config().Id)
 		if statePoller == nil {
-			return fmt.Errorf("state poller is nil"), false
+			return nil, false
 		}
 
-		lb := statePoller.LatestBlock()
-
-		if bn < lb-u.config.Evm.MaxAvailableRecentBlocks {
-			return common.NewErrEndpointMissingData(fmt.Errorf("block number %d is out of range (must be >= %d)", bn, lb-u.config.Evm.MaxAvailableRecentBlocks)), true
+		if lb := statePoller.LatestBlock(); bn < lb-u.config.Evm.MaxAvailableRecentBlocks {
+			return common.NewErrEndpointDataOutOfRangeForFullNode(fmt.Errorf("block number %d is out of range (must be >= %d)", bn, lb-u.config.Evm.MaxAvailableRecentBlocks)), true
 		}
 
 	}
