@@ -204,6 +204,7 @@ export interface SelectionPolicyConfig {
   evalInterval?: types.Duration;
   evalFunction?: types.SelectionPolicyEvalFunction | undefined;
   evalPerMethod?: boolean;
+  resampleExcluded?: boolean;
   resampleInterval?: types.Duration;
   resampleCount?: number /* int */;
 }
@@ -274,7 +275,7 @@ export const DefaultPolicyFunction = `
 			return healthyOnes
 		}
 
-		return upstreams
+		return [...fallbacks, ...healthyOnes]
 	}
 `;
 

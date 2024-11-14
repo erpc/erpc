@@ -33,15 +33,11 @@ func TestTracker(t *testing.T) {
 		metrics1 := tracker.GetUpstreamMethodMetrics(ups1.Config().Id, networkID, "method1")
 		metrics2 := tracker.GetUpstreamMethodMetrics(ups2.Config().Id, networkID, "method1")
 
-		metrics1.Mutex.RLock()
-		assert.Equal(t, float64(100), metrics1.RequestsTotal)
-		assert.Equal(t, float64(10), metrics1.ErrorsTotal)
-		metrics1.Mutex.RUnlock()
+		assert.Equal(t, int64(100), metrics1.RequestsTotal.Load())
+		assert.Equal(t, int64(10), metrics1.ErrorsTotal.Load())
 
-		metrics2.Mutex.RLock()
-		assert.Equal(t, float64(50), metrics2.RequestsTotal)
-		assert.Equal(t, float64(5), metrics2.ErrorsTotal)
-		metrics2.Mutex.RUnlock()
+		assert.Equal(t, int64(50), metrics2.RequestsTotal.Load())
+		assert.Equal(t, int64(5), metrics2.ErrorsTotal.Load())
 	})
 
 	t.Run("MetricsOverTime", func(t *testing.T) {
@@ -57,10 +53,8 @@ func TestTracker(t *testing.T) {
 		simulateRequestMetrics(tracker, networkID, ups.Config().Id, "method1", 100, 10)
 
 		metrics1 := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "method1")
-		metrics1.Mutex.RLock()
-		assert.Equal(t, float64(100), metrics1.RequestsTotal)
-		assert.Equal(t, float64(10), metrics1.ErrorsTotal)
-		metrics1.Mutex.RUnlock()
+		assert.Equal(t, int64(100), metrics1.RequestsTotal.Load())
+		assert.Equal(t, int64(10), metrics1.ErrorsTotal.Load())
 
 		time.Sleep(windowSize + 10*time.Millisecond)
 
@@ -68,10 +62,8 @@ func TestTracker(t *testing.T) {
 		simulateRequestMetrics(tracker, networkID, ups.Config().Id, "method1", 50, 5)
 
 		metrics2 := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "method1")
-		metrics2.Mutex.RLock()
-		assert.Equal(t, float64(50), metrics2.RequestsTotal)
-		assert.Equal(t, float64(5), metrics2.ErrorsTotal)
-		metrics2.Mutex.RUnlock()
+		assert.Equal(t, int64(50), metrics2.RequestsTotal.Load())
+		assert.Equal(t, int64(5), metrics2.ErrorsTotal.Load())
 	})
 
 	t.Run("RateLimitingMetrics", func(t *testing.T) {
@@ -86,11 +78,9 @@ func TestTracker(t *testing.T) {
 		simulateRateLimitedRequestMetrics(tracker, networkID, ups.Config().Id, "method1", 100, 20, 10)
 
 		metrics := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "method1")
-		metrics.Mutex.RLock()
-		assert.Equal(t, float64(100), metrics.RequestsTotal)
-		assert.Equal(t, float64(20), metrics.SelfRateLimitedTotal)
-		assert.Equal(t, float64(10), metrics.RemoteRateLimitedTotal)
-		metrics.Mutex.RUnlock()
+		assert.Equal(t, int64(100), metrics.RequestsTotal.Load())
+		assert.Equal(t, int64(20), metrics.SelfRateLimitedTotal.Load())
+		assert.Equal(t, int64(10), metrics.RemoteRateLimitedTotal.Load())
 	})
 
 	t.Run("LatencyMetrics", func(t *testing.T) {
@@ -106,10 +96,8 @@ func TestTracker(t *testing.T) {
 		simulateRequestMetricsWithLatency(tracker, networkID, ups.Config().Id, "method1", 10, 0.05)
 
 		metrics := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "method1")
-		metrics.Mutex.RLock()
 		assert.GreaterOrEqual(t, metrics.LatencySecs.P90(), 0.04)
 		assert.LessOrEqual(t, metrics.LatencySecs.P90(), 0.06)
-		metrics.Mutex.RUnlock()
 	})
 
 	t.Run("MultipleUpstreamsComparison", func(t *testing.T) {
@@ -132,14 +120,14 @@ func TestTracker(t *testing.T) {
 		metrics3 := tracker.GetUpstreamMethodMetrics(ups3.Config().Id, networkID, "method1")
 
 		// Check if metrics are collected correctly
-		assert.Equal(t, float64(100), metrics1.RequestsTotal)
-		assert.Equal(t, float64(80), metrics2.RequestsTotal)
-		assert.Equal(t, float64(120), metrics3.RequestsTotal)
+		assert.Equal(t, int64(100), metrics1.RequestsTotal.Load())
+		assert.Equal(t, int64(80), metrics2.RequestsTotal.Load())
+		assert.Equal(t, int64(120), metrics3.RequestsTotal.Load())
 
 		// Check if error rates are calculated correctly
-		errorRate1 := metrics1.ErrorsTotal / metrics1.RequestsTotal
-		errorRate2 := metrics2.ErrorsTotal / metrics2.RequestsTotal
-		errorRate3 := metrics3.ErrorsTotal / metrics3.RequestsTotal
+		errorRate1 := float64(metrics1.ErrorsTotal.Load()) / float64(metrics1.RequestsTotal.Load())
+		errorRate2 := float64(metrics2.ErrorsTotal.Load()) / float64(metrics2.RequestsTotal.Load())
+		errorRate3 := float64(metrics3.ErrorsTotal.Load()) / float64(metrics3.RequestsTotal.Load())
 
 		assert.True(t, errorRate2 < errorRate1 && errorRate1 < errorRate3, "Error rates should be ordered: ups2 < ups1 < ups3")
 	})
@@ -156,22 +144,18 @@ func TestTracker(t *testing.T) {
 		simulateRequestMetrics(tracker, networkID, ups.Config().Id, "method1", 100, 10)
 
 		metricsBefore := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "method1")
-		metricsBefore.Mutex.RLock()
-		assert.Equal(t, float64(100), metricsBefore.RequestsTotal)
-		assert.Equal(t, float64(10), metricsBefore.ErrorsTotal)
-		assert.Equal(t, float64(0), metricsBefore.SelfRateLimitedTotal)
-		assert.Equal(t, float64(0), metricsBefore.RemoteRateLimitedTotal)
-		metricsBefore.Mutex.RUnlock()
+		assert.Equal(t, int64(100), metricsBefore.RequestsTotal.Load())
+		assert.Equal(t, int64(10), metricsBefore.ErrorsTotal.Load())
+		assert.Equal(t, int64(0), metricsBefore.SelfRateLimitedTotal.Load())
+		assert.Equal(t, int64(0), metricsBefore.RemoteRateLimitedTotal.Load())
 
 		time.Sleep(windowSize + 10*time.Millisecond)
 
 		metricsAfter := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "method1")
-		metricsAfter.Mutex.RLock()
-		assert.Equal(t, float64(0), metricsAfter.RequestsTotal)
-		assert.Equal(t, float64(0), metricsAfter.ErrorsTotal)
-		assert.Equal(t, float64(0), metricsAfter.SelfRateLimitedTotal)
-		assert.Equal(t, float64(0), metricsAfter.RemoteRateLimitedTotal)
-		metricsAfter.Mutex.RUnlock()
+		assert.Equal(t, int64(0), metricsAfter.RequestsTotal.Load())
+		assert.Equal(t, int64(0), metricsAfter.ErrorsTotal.Load())
+		assert.Equal(t, int64(0), metricsAfter.SelfRateLimitedTotal.Load())
+		assert.Equal(t, int64(0), metricsAfter.RemoteRateLimitedTotal.Load())
 	})
 
 	t.Run("DifferentMethods", func(t *testing.T) {
@@ -189,12 +173,8 @@ func TestTracker(t *testing.T) {
 		metrics1 := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "method1")
 		metrics2 := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "method2")
 
-		metrics1.Mutex.RLock()
-		metrics2.Mutex.RLock()
-		assert.Equal(t, float64(100), metrics1.RequestsTotal)
-		assert.Equal(t, float64(50), metrics2.RequestsTotal)
-		metrics1.Mutex.RUnlock()
-		metrics2.Mutex.RUnlock()
+		assert.Equal(t, int64(100), metrics1.RequestsTotal.Load())
+		assert.Equal(t, int64(50), metrics2.RequestsTotal.Load())
 	})
 
 	t.Run("LongTermMetrics", func(t *testing.T) {
@@ -213,10 +193,8 @@ func TestTracker(t *testing.T) {
 		}
 
 		metrics := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "method1")
-		metrics.Mutex.RLock()
-		assert.Equal(t, float64(100), metrics.RequestsTotal)
-		assert.Equal(t, float64(10), metrics.ErrorsTotal)
-		metrics.Mutex.RUnlock()
+		assert.Equal(t, int64(100), metrics.RequestsTotal.Load())
+		assert.Equal(t, int64(10), metrics.ErrorsTotal.Load())
 	})
 
 	t.Run("LongTermMetricsReset", func(t *testing.T) {
@@ -233,10 +211,8 @@ func TestTracker(t *testing.T) {
 			simulateRequestMetrics(tracker, networkID, ups.Config().Id, "method1", 20, 2)
 
 			metrics := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "method1")
-			metrics.Mutex.RLock()
-			assert.Equal(t, float64(20), metrics.RequestsTotal)
-			assert.Equal(t, float64(2), metrics.ErrorsTotal)
-			metrics.Mutex.RUnlock()
+			assert.Equal(t, int64(20), metrics.RequestsTotal.Load())
+			assert.Equal(t, int64(2), metrics.ErrorsTotal.Load())
 
 			time.Sleep(windowSize + 10*time.Millisecond)
 		}
@@ -254,9 +230,7 @@ func TestTracker(t *testing.T) {
 
 		metrics1 := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "*")
 
-		metrics1.Mutex.RLock()
-		assert.Equal(t, float64(150), metrics1.RequestsTotal)
-		metrics1.Mutex.RUnlock()
+		assert.Equal(t, int64(150), metrics1.RequestsTotal.Load())
 	})
 
 	t.Run("MultipleMethodsRequestsIncreaseUpstreamOverall", func(t *testing.T) {
@@ -271,9 +245,7 @@ func TestTracker(t *testing.T) {
 
 		metrics1 := tracker.GetUpstreamMethodMetrics(ups.Config().Id, "*", "*")
 
-		metrics1.Mutex.RLock()
-		assert.Equal(t, float64(150), metrics1.RequestsTotal)
-		metrics1.Mutex.RUnlock()
+		assert.Equal(t, int64(150), metrics1.RequestsTotal.Load())
 	})
 
 	t.Run("LatencyCorrectP90AcrossMethods", func(t *testing.T) {

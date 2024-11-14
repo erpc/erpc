@@ -4,6 +4,9 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"sync/atomic"
+
+	// "sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -29,61 +32,54 @@ func (t *Timer) ObserveDuration() {
 }
 
 type TrackedMetrics struct {
-	Mutex                  sync.RWMutex     `json:"-"`
+	// Mutex                  sync.RWMutex     `json:"-"`
 	LatencySecs            *QuantileTracker `json:"latencySecs"`
-	ErrorsTotal            float64          `json:"errorsTotal"`
-	SelfRateLimitedTotal   float64          `json:"selfRateLimitedTotal"`
-	RemoteRateLimitedTotal float64          `json:"remoteRateLimitedTotal"`
-	RequestsTotal          float64          `json:"requestsTotal"`
-	BlockHeadLag           float64          `json:"blockHeadLag"`
-	FinalizationLag        float64          `json:"finalizationLag"`
-	Cordoned               bool             `json:"cordoned"`
+	ErrorsTotal            atomic.Int64     `json:"errorsTotal"`
+	SelfRateLimitedTotal   atomic.Int64     `json:"selfRateLimitedTotal"`
+	RemoteRateLimitedTotal atomic.Int64     `json:"remoteRateLimitedTotal"`
+	RequestsTotal          atomic.Int64     `json:"requestsTotal"`
+	BlockHeadLag           atomic.Int64     `json:"blockHeadLag"`
+	FinalizationLag        atomic.Int64     `json:"finalizationLag"`
+	Cordoned               atomic.Bool      `json:"cordoned"`
 	CordonedReason         string           `json:"cordonedReason"`
-	LastCollect            time.Time        `json:"lastCollect"`
 }
 
 func (m *TrackedMetrics) ErrorRate() float64 {
-	m.Mutex.RLock()
-	defer m.Mutex.RUnlock()
+	// m.Mutex.RLock()
+	// defer m.Mutex.RUnlock()
 
-	if m.RequestsTotal == 0 {
+	if m.RequestsTotal.Load() == 0 {
 		return 0
 	}
-	return m.ErrorsTotal / m.RequestsTotal
+	return float64(m.ErrorsTotal.Load()) / float64(m.RequestsTotal.Load())
 }
 
 func (m *TrackedMetrics) ThrottledRate() float64 {
-	m.Mutex.RLock()
-	defer m.Mutex.RUnlock()
+	// m.Mutex.RLock()
+	// defer m.Mutex.RUnlock()
 
-	if m.RequestsTotal == 0 {
+	if m.RequestsTotal.Load() == 0 {
 		return 0
 	}
-	return (m.RemoteRateLimitedTotal + m.SelfRateLimitedTotal) / m.RequestsTotal
+	return (float64(m.RemoteRateLimitedTotal.Load()) + float64(m.SelfRateLimitedTotal.Load())) / float64(m.RequestsTotal.Load())
 }
 
 func (mt *TrackedMetrics) Reset() {
-	mt.Mutex.Lock()
-
-	mt.ErrorsTotal = 0
-	mt.RequestsTotal = 0
-	mt.SelfRateLimitedTotal = 0
-	mt.RemoteRateLimitedTotal = 0
+	mt.ErrorsTotal.Store(0)
+	mt.RequestsTotal.Store(0)
+	mt.SelfRateLimitedTotal.Store(0)
+	mt.RemoteRateLimitedTotal.Store(0)
 	mt.LatencySecs.Reset()
-	mt.BlockHeadLag = 0
-
-	mt.LastCollect = time.Now()
-	mt.Mutex.Unlock()
+	mt.BlockHeadLag.Store(0)
 }
 
 type Tracker struct {
 	projectId string
-	mu        sync.RWMutex
 
 	// ups|network|method -> metrics
-	metrics map[string]*TrackedMetrics
+	metrics sync.Map // map[string]*TrackedMetrics
 	// ups|network -> metadata
-	metadata map[string]*NetworkMetadata
+	metadata sync.Map // map[string]*NetworkMetadata
 
 	windowSize time.Duration
 }
@@ -91,8 +87,8 @@ type Tracker struct {
 func NewTracker(projectId string, windowSize time.Duration) *Tracker {
 	return &Tracker{
 		projectId:  projectId,
-		metrics:    make(map[string]*TrackedMetrics),
-		metadata:   make(map[string]*NetworkMetadata),
+		metrics:    sync.Map{},
+		metadata:   sync.Map{},
 		windowSize: windowSize,
 	}
 }
@@ -110,11 +106,10 @@ func (t *Tracker) resetMetrics(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			t.mu.Lock()
-			for key := range t.metrics {
-				t.metrics[key].Reset()
-			}
-			t.mu.Unlock()
+			t.metrics.Range(func(key, value interface{}) bool {
+				value.(*TrackedMetrics).Reset()
+				return true
+			})
 		}
 	}
 }
@@ -132,55 +127,39 @@ func (t *Tracker) getKey(ups, network, method string) string {
 	return ups + common.KeySeparator + network + common.KeySeparator + method
 }
 
-func (t *Tracker) ensureMetricsInitialized(ups, network, method string) {
-	for _, key := range t.getKeys(ups, network, method) {
-		if _, ok := t.metrics[key]; !ok {
-			t.metrics[key] = &TrackedMetrics{
-				LatencySecs:            NewQuantileTracker(t.windowSize),
-				ErrorsTotal:            0,
-				SelfRateLimitedTotal:   0,
-				RemoteRateLimitedTotal: 0,
-				RequestsTotal:          0,
-				BlockHeadLag:           0,
-				LastCollect:            time.Now(),
-			}
-		}
-	}
+func (t *Tracker) getMetrics(key string) *TrackedMetrics {
+	metrics, _ := t.metrics.LoadOrStore(key, &TrackedMetrics{
+		LatencySecs: NewQuantileTracker(t.windowSize),
+	})
+	return metrics.(*TrackedMetrics)
+}
+
+func (t *Tracker) getMetadata(key string) *NetworkMetadata {
+	metadata, _ := t.metadata.LoadOrStore(key, &NetworkMetadata{})
+	return metadata.(*NetworkMetadata)
 }
 
 func (t *Tracker) Cordon(ups, network, method, reason string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	key := t.getKey(ups, network, method)
 	log.Debug().Str("upstream", ups).Str("network", network).Str("method", method).Str("reason", reason).Msg("cordoning upstream to disable routing")
 
-	t.metrics[key].Mutex.Lock()
-	t.metrics[key].Cordoned = true
-	t.metrics[key].CordonedReason = reason
-	t.metrics[key].Mutex.Unlock()
+	metrics := t.getMetrics(t.getKey(ups, network, method))
+	metrics.Cordoned.Store(true)
+	metrics.CordonedReason = reason
 }
 
 func (t *Tracker) Uncordon(ups, network, method string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	key := t.getKey(ups, network, method)
-
-	t.metrics[key].Mutex.Lock()
-	t.metrics[key].Cordoned = false
-	t.metrics[key].Mutex.Unlock()
+	metrics := t.getMetrics(t.getKey(ups, network, method))
+	metrics.Cordoned.Store(false)
 }
 
 func (t *Tracker) RecordUpstreamRequest(ups, network, method string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	t.ensureMetricsInitialized(ups, network, method)
+	metricsList := make([]*TrackedMetrics, 0)
 	for _, key := range t.getKeys(ups, network, method) {
-		t.metrics[key].Mutex.Lock()
-		t.metrics[key].RequestsTotal++
-		t.metrics[key].Mutex.Unlock()
+		metricsList = append(metricsList, t.getMetrics(key))
+	}
+
+	for _, metrics := range metricsList {
+		metrics.RequestsTotal.Add(1)
 	}
 
 	MetricUpstreamRequestTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
@@ -197,169 +176,125 @@ func (t *Tracker) RecordUpstreamDurationStart(ups, network, method string) *Time
 }
 
 func (t *Tracker) RecordUpstreamDuration(ups, network, method string, duration time.Duration) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	t.ensureMetricsInitialized(ups, network, method)
+	metricsList := make([]*TrackedMetrics, 0)
 	for _, key := range t.getKeys(ups, network, method) {
-		t.metrics[key].LatencySecs.Add(duration.Seconds())
+		metricsList = append(metricsList, t.getMetrics(key))
+	}
+
+	for _, metrics := range metricsList {
+		metrics.LatencySecs.Add(duration.Seconds())
 	}
 
 	MetricUpstreamRequestDuration.WithLabelValues(t.projectId, network, ups, method).Observe(duration.Seconds())
 }
 
 func (t *Tracker) RecordUpstreamFailure(ups, network, method, errorType string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	t.ensureMetricsInitialized(ups, network, method)
+	metricsList := make([]*TrackedMetrics, 0)
 	for _, key := range t.getKeys(ups, network, method) {
-		t.metrics[key].Mutex.Lock()
-		t.metrics[key].ErrorsTotal++
-		t.metrics[key].Mutex.Unlock()
+		metricsList = append(metricsList, t.getMetrics(key))
+	}
+
+	for _, metrics := range metricsList {
+		metrics.ErrorsTotal.Add(1)
 	}
 
 	MetricUpstreamErrorTotal.WithLabelValues(t.projectId, network, ups, method, errorType).Inc()
 }
 
 func (t *Tracker) RecordUpstreamSelfRateLimited(ups, network, method string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	t.ensureMetricsInitialized(ups, network, method)
 	for _, key := range t.getKeys(ups, network, method) {
-		t.metrics[key].Mutex.Lock()
-		t.metrics[key].SelfRateLimitedTotal++
-		t.metrics[key].Mutex.Unlock()
+		t.getMetrics(key).SelfRateLimitedTotal.Add(1)
 	}
 
 	MetricUpstreamSelfRateLimitedTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
 }
 
 func (t *Tracker) RecordUpstreamRemoteRateLimited(ups, network, method string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	t.ensureMetricsInitialized(ups, network, method)
 	for _, key := range t.getKeys(ups, network, method) {
-		t.metrics[key].Mutex.Lock()
-		t.metrics[key].RemoteRateLimitedTotal++
-		t.metrics[key].Mutex.Unlock()
+		t.getMetrics(key).RemoteRateLimitedTotal.Add(1)
 	}
 
 	MetricUpstreamRemoteRateLimitedTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
 }
 
 func (t *Tracker) GetUpstreamMethodMetrics(ups, network, method string) *TrackedMetrics {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	key := t.getKey(ups, network, method)
-	metrics, ok := t.metrics[key]
-	if !ok {
-		t.ensureMetricsInitialized(ups, network, method)
-		metrics = t.metrics[key]
-	}
-
-	return metrics
+	return t.getMetrics(t.getKey(ups, network, method))
 }
 
 func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	upsKey := t.getKey(ups, network, "*")
 	ntwKey := t.getKey("*", network, "*")
-
-	var ntwMeta *NetworkMetadata
-	var upsMeta *NetworkMetadata
-	var ok bool
 
 	needsGlobalUpdate := false
 
 	// Update network-level highest block head
-	if ntwMeta, ok = t.metadata[ntwKey]; !ok {
-		ntwMeta = &NetworkMetadata{
-			evmLatestBlockNumber: blockNumber,
-		}
-		t.metadata[ntwKey] = ntwMeta
-	} else {
-		if ntwMeta.evmLatestBlockNumber < blockNumber {
-			ntwMeta.evmLatestBlockNumber = blockNumber
-			needsGlobalUpdate = true
-		}
+	ntwMeta := t.getMetadata(ntwKey)
+	if ntwMeta.evmLatestBlockNumber < blockNumber {
+		ntwMeta.evmLatestBlockNumber = blockNumber
+		needsGlobalUpdate = true
 	}
 
 	// Update block head for this upstream
-	if upsMeta, ok = t.metadata[upsKey]; !ok {
-		upsMeta = &NetworkMetadata{
-			evmLatestBlockNumber: blockNumber,
-		}
-		t.metadata[upsKey] = upsMeta
-	} else {
+	upsMeta := t.getMetadata(upsKey)
+	if upsMeta.evmLatestBlockNumber < blockNumber {
 		upsMeta.evmLatestBlockNumber = blockNumber
 	}
 
-	upsLag := float64(ntwMeta.evmLatestBlockNumber - upsMeta.evmLatestBlockNumber)
-	MetricUpstreamBlockHeadLag.WithLabelValues(t.projectId, network, ups).Set(upsLag)
+	upsLag := ntwMeta.evmLatestBlockNumber - upsMeta.evmLatestBlockNumber
+	MetricUpstreamBlockHeadLag.WithLabelValues(t.projectId, network, ups).Set(float64(upsLag))
 
 	if needsGlobalUpdate {
 		// Loop over all metrics and update items for all upstreams of this network (all their methods),
 		// because the common reference value (highest latest block) has changed.
-		for key, mt := range t.metrics {
+		t.metrics.Range(func(k, v interface{}) bool {
+			key := k.(string)
+			mt := v.(*TrackedMetrics)
 			parts := strings.SplitN(key, common.KeySeparator, 3)
 			if parts[0] != "*" {
 				if parts[1] == network {
 					if parts[0] == ups {
-						mt.Mutex.Lock()
-						mt.BlockHeadLag = upsLag
-						mt.Mutex.Unlock()
+						mt.BlockHeadLag.Store(upsLag)
 					} else {
-						otherUpsMeta, ok := t.metadata[t.getKey(parts[0], network, "*")]
-						if ok {
-							otherUpsLag := float64(ntwMeta.evmLatestBlockNumber - otherUpsMeta.evmLatestBlockNumber)
-							mt.Mutex.Lock()
-							mt.BlockHeadLag = otherUpsLag
-							MetricUpstreamBlockHeadLag.WithLabelValues(t.projectId, network, parts[0]).Set(otherUpsLag)
-							mt.Mutex.Unlock()
-						}
+						otherUpsMeta := t.getMetadata(t.getKey(parts[0], network, "*"))
+						otherUpsLag := ntwMeta.evmLatestBlockNumber - otherUpsMeta.evmLatestBlockNumber
+						mt.BlockHeadLag.Store(otherUpsLag)
+						MetricUpstreamBlockHeadLag.WithLabelValues(t.projectId, network, parts[0]).Set(float64(otherUpsLag))
 					}
 				}
 			}
-		}
+			return true
+		})
 	} else {
 		// Only update items for this upstream and this network (all their methods)
 		prefix := ups + common.KeySeparator + network + common.KeySeparator
-		for key, mt := range t.metrics {
+		t.metrics.Range(func(k, v interface{}) bool {
+			key := k.(string)
+			mt := v.(*TrackedMetrics)
 			if strings.HasPrefix(key, prefix) {
-				mt.Mutex.Lock()
-				mt.BlockHeadLag = upsLag
-				mt.Mutex.Unlock()
+				mt.BlockHeadLag.Store(upsLag)
 			}
-		}
+			return true
+		})
 	}
 }
 
 func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	upsKey := t.getKey(ups, network, "*")
 	ntwKey := t.getKey("*", network, "*")
 
 	var ntwMeta *NetworkMetadata
 	var upsMeta *NetworkMetadata
-	var ok bool
 
 	needsGlobalUpdate := false
 
 	// Update network-level highest block head
-	if ntwMeta, ok = t.metadata[ntwKey]; !ok {
+	if val, ok := t.metadata.Load(ntwKey); !ok {
 		ntwMeta = &NetworkMetadata{
 			evmFinalizedBlockNumber: blockNumber,
 		}
-		t.metadata[ntwKey] = ntwMeta
+		t.metadata.Store(ntwKey, ntwMeta)
 	} else {
+		ntwMeta = val.(*NetworkMetadata)
 		if ntwMeta.evmFinalizedBlockNumber < blockNumber {
 			ntwMeta.evmFinalizedBlockNumber = blockNumber
 			needsGlobalUpdate = true
@@ -367,84 +302,73 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 	}
 
 	// Update block head for this upstream
-	if upsMeta, ok = t.metadata[upsKey]; !ok {
-		upsMeta = &NetworkMetadata{
-			evmFinalizedBlockNumber: blockNumber,
-		}
-		t.metadata[upsKey] = upsMeta
-	} else {
+	upsMeta = t.getMetadata(upsKey)
+	if upsMeta.evmFinalizedBlockNumber < blockNumber {
 		upsMeta.evmFinalizedBlockNumber = blockNumber
 	}
 
-	upsLag := float64(ntwMeta.evmFinalizedBlockNumber - upsMeta.evmFinalizedBlockNumber)
-	MetricUpstreamFinalizationLag.WithLabelValues(t.projectId, network, ups).Set(upsLag)
+	upsLag := ntwMeta.evmFinalizedBlockNumber - upsMeta.evmFinalizedBlockNumber
+	MetricUpstreamFinalizationLag.WithLabelValues(t.projectId, network, ups).Set(float64(upsLag))
 
 	if needsGlobalUpdate {
 		// Loop over all metrics and update items for all upstreams of this network (all their methods),
 		// because the common reference value (highest latest block) has changed.
-		for key, mt := range t.metrics {
+		t.metrics.Range(func(k, v interface{}) bool {
+			key := k.(string)
+			mt := v.(*TrackedMetrics)
 			parts := strings.SplitN(key, common.KeySeparator, 3)
 			if parts[0] != "*" {
 				if parts[1] == network {
 					if parts[0] == ups {
-						mt.Mutex.Lock()
-						mt.FinalizationLag = upsLag
-						mt.Mutex.Unlock()
+						mt.FinalizationLag.Store(upsLag)
 					} else {
-						otherUpsMeta, ok := t.metadata[t.getKey(parts[0], network, "*")]
-						if ok {
-							otherUpsLag := float64(ntwMeta.evmFinalizedBlockNumber - otherUpsMeta.evmFinalizedBlockNumber)
-							mt.Mutex.Lock()
-							mt.FinalizationLag = otherUpsLag
-							MetricUpstreamFinalizationLag.WithLabelValues(t.projectId, network, parts[0]).Set(otherUpsLag)
-							mt.Mutex.Unlock()
+						if ov, ok := t.metadata.Load(t.getKey(parts[0], network, "*")); ok {
+							otherUpsMeta := ov.(*NetworkMetadata)
+							otherUpsLag := ntwMeta.evmFinalizedBlockNumber - otherUpsMeta.evmFinalizedBlockNumber
+							mt.FinalizationLag.Store(otherUpsLag)
+							MetricUpstreamFinalizationLag.WithLabelValues(t.projectId, network, parts[0]).Set(float64(otherUpsLag))
 						}
 					}
 				}
 			}
-		}
+			return true
+		})
 	} else {
 		// Only update items for this upstream and this network (all their methods)
 		prefix := ups + common.KeySeparator + network + common.KeySeparator
-		for key, mt := range t.metrics {
+		t.metrics.Range(func(k, v interface{}) bool {
+			key := k.(string)
+			mt := v.(*TrackedMetrics)
 			if strings.HasPrefix(key, prefix) {
-				mt.Mutex.Lock()
-				mt.FinalizationLag = upsLag
-				mt.Mutex.Unlock()
+				mt.FinalizationLag.Store(upsLag)
 			}
-		}
+			return true
+		})
 	}
 }
 
 func (t *Tracker) GetUpstreamMetrics(upsId string) map[string]*TrackedMetrics {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
 	// network:method -> metrics
 	var result = make(map[string]*TrackedMetrics)
 
-	for key, value := range t.metrics {
+	t.metrics.Range(func(k, v interface{}) bool {
+		key := k.(string)
+		mt := v.(*TrackedMetrics)
 		if strings.HasPrefix(key, upsId) {
-			result[strings.TrimPrefix(key, upsId+common.KeySeparator)] = value
+			result[strings.TrimPrefix(key, upsId+common.KeySeparator)] = mt
 		}
-	}
+		return true
+	})
 
 	return result
 }
 
 func (t *Tracker) IsCordoned(ups, network, method string) bool {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
 	if method != "*" {
-		globalKey := t.getKey(ups, network, "*")
-		gmt, ok := t.metrics[globalKey]
-		if ok && gmt.Cordoned {
+		if t.getMetrics(t.getKey(ups, network, "*")).Cordoned.Load() {
 			return true
 		}
 	}
 
-	specificKey := t.getKey(ups, network, method)
-	smt, ok := t.metrics[specificKey]
-	return ok && smt.Cordoned
+	return t.getMetrics(t.getKey(ups, network, method)).Cordoned.Load()
 }
