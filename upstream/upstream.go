@@ -626,7 +626,7 @@ func (u *Upstream) detectFeatures() error {
 			u.supportedNetworkIdsMu.Unlock()
 		}
 
-		if cfg.Evm.MaxAvailableRecentBlocks == 0 && cfg.Evm.NodeType == "full" {
+		if cfg.Evm.MaxAvailableRecentBlocks == 0 && cfg.Evm.NodeType == common.EvmNodeTypeFull {
 			cfg.Evm.MaxAvailableRecentBlocks = 128
 		}
 
@@ -665,10 +665,17 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 	}
 
 	if u.config.Evm.NodeType == common.EvmNodeTypeFull {
-		if req.Network() == nil || req.Network().EvmStatePollerOf(u.Config().Id) == nil {
-			return fmt.Errorf("network or state poller is nil"), false
+		ntw := req.Network()
+		if ntw == nil {
+			return fmt.Errorf("network is nil"), false
 		}
-		lb := req.Network().EvmStatePollerOf(u.Config().Id).LatestBlock()
+
+		statePoller := ntw.EvmStatePollerOf(u.Config().Id)
+		if statePoller == nil {
+			return fmt.Errorf("state poller is nil"), false
+		}
+
+		lb := statePoller.LatestBlock()
 
 		if bn < lb-u.config.Evm.MaxAvailableRecentBlocks {
 			return common.NewErrEndpointMissingData(fmt.Errorf("block number %d is out of range (must be >= %d)", bn, lb-u.config.Evm.MaxAvailableRecentBlocks)), true
