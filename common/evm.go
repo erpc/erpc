@@ -54,10 +54,3 @@ func EvmIsMissingDataError(err error) bool {
 		strings.Contains(err.Error(), "is greater than latest") ||
 		strings.Contains(err.Error(), "No state available")
 }
-
-var MethodsWithBlockParam = map[string]int{
-	"eth_getBalance":          1,
-	"eth_getCode":             1,
-	"eth_getTransactionCount": 1,
-	"eth_call":                1,
-}
