@@ -668,8 +668,9 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 		lb := req.Network().EvmStatePollerOf(u.Config().Id).LatestBlock()
 
 		if bn < lb-u.config.Evm.MaxAvailableRecentBlocks {
-			return fmt.Errorf("block number %d is out of range (must be >= %d)", bn, lb-u.config.Evm.MaxAvailableRecentBlocks), true
+			return common.NewErrEndpointMissingData(fmt.Errorf("block number %d is out of range (must be >= %d)", bn, lb-u.config.Evm.MaxAvailableRecentBlocks)), true
 		}
+
 	}
 
 	return nil, false
