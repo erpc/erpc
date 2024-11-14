@@ -104,7 +104,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upsReg.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -197,7 +197,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upsReg.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -270,7 +270,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -369,7 +369,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -497,7 +497,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -636,7 +636,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -784,7 +784,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -963,7 +963,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1125,7 +1125,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1307,7 +1307,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1493,7 +1493,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1666,7 +1666,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1831,7 +1831,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2010,7 +2010,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2182,7 +2182,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2334,7 +2334,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2444,7 +2444,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2548,7 +2548,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2654,7 +2654,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2759,7 +2759,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		err = upsReg.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2849,7 +2849,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2959,7 +2959,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3066,7 +3066,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3174,7 +3174,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3289,7 +3289,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3425,7 +3425,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3560,7 +3560,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3694,7 +3694,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3806,7 +3806,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3925,7 +3925,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 		time.Sleep(50 * time.Millisecond)
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4042,7 +4042,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4166,7 +4166,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4286,7 +4286,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4398,7 +4398,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4542,7 +4542,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to bootstrap upstreams registry: %v", err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatalf("Failed to prepare upstreams for network: %v", err)
 		}
@@ -4638,7 +4638,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to bootstrap upstreams registry: %v", err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatalf("Failed to prepare upstreams for network: %v", err)
 		}
@@ -4733,7 +4733,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to bootstrap upstreams registry: %v", err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatalf("Failed to prepare upstreams for network: %v", err)
 		}
@@ -4828,7 +4828,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to bootstrap upstreams registry: %v", err)
 		}
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatalf("Failed to prepare upstreams for network: %v", err)
 		}
@@ -4911,7 +4911,7 @@ func TestNetwork_Forward(t *testing.T) {
 		err = upstreamsRegistry.Bootstrap(ctx)
 		assert.NoError(t, err)
 
-		err = upstreamsRegistry.PrepareUpstreamsForNetwork(networkID)
+		err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkID)
 		assert.NoError(t, err)
 
 		networksRegistry := NewNetworksRegistry(
@@ -4958,7 +4958,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		allMethods := []string{"eth_getLogs", "eth_traceTransaction", "eth_call"}
 
-		upstreamsRegistry.PrepareUpstreamsForNetwork(networkID)
+		upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkID)
 		time.Sleep(2 * time.Second)
 
 		upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
@@ -5081,7 +5081,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Failed to bootstrap upstreams registry: %v", err)
 		}
 
-		err = upr.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 		if err != nil {
 			t.Fatalf("Failed to prepare upstreams for network: %v", err)
 		}
@@ -5894,7 +5894,7 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfig *common.
 	assert.NoError(t, err)
 	time.Sleep(100 * time.Millisecond)
 
-	err = upstreamsRegistry.PrepareUpstreamsForNetwork(util.EvmNetworkId(123))
+	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
 	assert.NoError(t, err)
 	time.Sleep(100 * time.Millisecond)
 

@@ -69,7 +69,7 @@ func Init(
 	//
 	// 2) Initialize eRPC
 	//
-	logger.Info().Msg("initializing eRPC")
+	logger.Info().Msg("initializing eRPC core")
 	var evmJsonRpcCache *EvmJsonRpcCache
 	if cfg.Database != nil {
 		if cfg.Database.EvmJsonRpcCache != nil {
@@ -101,12 +101,15 @@ func Init(
 	}
 
 	if cfg.Metrics != nil && cfg.Metrics.Enabled != nil && *cfg.Metrics.Enabled {
+		if cfg.Metrics.Port == nil {
+			return fmt.Errorf("metrics.port is not configured")
+		}
 		logger.Info().Msgf("starting metrics server on port: %d", *cfg.Metrics.Port)
 		srv := &http.Server{
 			BaseContext: func(ln net.Listener) context.Context {
 				return appCtx
 			},
-			Addr:              fmt.Sprintf(":%d", cfg.Metrics.Port),
+			Addr:              fmt.Sprintf(":%d", *cfg.Metrics.Port),
 			Handler:           promhttp.Handler(),
 			ReadHeaderTimeout: 10 * time.Second,
 		}

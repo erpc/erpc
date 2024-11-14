@@ -158,7 +158,7 @@ func (c *DrpcHttpJsonRpcClient) GetType() ClientType {
 	return ClientTypeDrpcHttpJsonRpc
 }
 
-func (c *DrpcHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, error) {
+func (c *DrpcHttpJsonRpcClient) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
 	}

@@ -179,7 +179,7 @@ func TestInit_HappyPath(t *testing.T) {
 logLevel: DEBUG
 
 server:
-  httpHostV4: "` + localHost + `"
+  httpHostV4: 0.0.0.0 # "` + localHost + `"
   listenV4: true
   httpPort: ` + localPort + `
 
