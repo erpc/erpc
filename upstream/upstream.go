@@ -744,7 +744,7 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 				return nil, false
 			}
 
-			if lb := statePoller.LatestBlock(); lb > 0 && bn <= lb-u.config.Evm.MaxAvailableRecentBlocks {
+			if lb := statePoller.LatestBlock(); lb > 0 && bn < lb-u.config.Evm.MaxAvailableRecentBlocks {
 				// Allow requests for block numbers greater than the latest known block
 				if bn > lb {
 					return nil, false
