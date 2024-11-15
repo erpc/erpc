@@ -727,26 +727,27 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 	}
 
 	// if block can be determined from request and upstream is only full-node and block is historical skip
-	if u.config.Evm != nil && u.config.Evm.NodeType == common.EvmNodeTypeFull {
-		bn, ebn := req.EvmBlockNumber()
-		if ebn != nil || bn <= 0 {
-			return nil, false
-		}
+	if u.config.Evm != nil && u.config.Evm.MaxAvailableRecentBlocks > 0 {
+		if u.config.Evm.NodeType == common.EvmNodeTypeFull {
+			bn, ebn := req.EvmBlockNumber()
+			if ebn != nil || bn <= 0 {
+				return nil, false
+			}
 
-		ntw := req.Network()
-		if ntw == nil {
-			return nil, false
-		}
+			ntw := req.Network()
+			if ntw == nil {
+				return nil, false
+			}
 
-		statePoller := ntw.EvmStatePollerOf(u.Config().Id)
-		if statePoller == nil {
-			return nil, false
-		}
+			statePoller := ntw.EvmStatePollerOf(u.Config().Id)
+			if statePoller == nil {
+				return nil, false
+			}
 
-		if lb := statePoller.LatestBlock(); bn < lb-u.config.Evm.MaxAvailableRecentBlocks {
-			return common.NewErrUpstreamNodeTypeMismatch(fmt.Errorf("block number (%d) in request will not yield result for a fullNodeType upstream since it is not recent enough (must be >= %d)", bn, lb-u.config.Evm.MaxAvailableRecentBlocks), common.EvmNodeTypeArchive, common.EvmNodeTypeFull), true
+			if lb := statePoller.LatestBlock(); bn < lb-u.config.Evm.MaxAvailableRecentBlocks {
+				return common.NewErrUpstreamNodeTypeMismatch(fmt.Errorf("block number (%d) in request will not yield result for a fullNodeType upstream since it is not recent enough (must be >= %d", bn, lb-u.config.Evm.MaxAvailableRecentBlocks), common.EvmNodeTypeArchive, common.EvmNodeTypeFull), true
+			}
 		}
-
 	}
 
 	return nil, false
