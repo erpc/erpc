@@ -29,23 +29,18 @@ ENV CGO_ENABLED=0 \
     GOOS=linux \
     LDFLAGS="-w -s -X common.ErpcVersion=${VERSION} -X common.ErpcCommitSha=${COMMIT_SHA}"
 
-# Build both binaries in parallel
+# Build the binary
 RUN --mount=type=cache,target=/go-cache \
     --mount=type=cache,target=/go-mod-cache \
-    sh -c ' \
-        go build -ldflags="$LDFLAGS" -a -installsuffix cgo -o erpc-server ./cmd/erpc/main.go & \
-        go build -ldflags="$LDFLAGS" -a -installsuffix cgo -tags pprof -o erpc-server-pprof ./cmd/erpc/*.go & \
-        wait \
-    '
+    go build -ldflags="$LDFLAGS" -a -installsuffix cgo -o erpc-server ./cmd/erpc/main.go
 
 # Final stage - using distroless for smaller image
 FROM gcr.io/distroless/static-debian11 AS final
 
 WORKDIR /root
 
-# Copy binaries from the builder
+# Copy binary from the builder
 COPY --from=builder /root/erpc-server .
-COPY --from=builder /root/erpc-server-pprof .
 
 # Expose ports
 EXPOSE 8080 6060
