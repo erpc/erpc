@@ -65,6 +65,9 @@ func (s *ServerConfig) SetDefaults() {
 	if s.MaxTimeout == nil {
 		s.MaxTimeout = util.StringPtr("30s")
 	}
+	if s.EnableGzip == nil {
+		s.EnableGzip = util.BoolPtr(true)
+	}
 }
 
 func (m *MetricsConfig) SetDefaults() {

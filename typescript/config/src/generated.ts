@@ -24,6 +24,7 @@ export interface ServerConfig {
   httpHostV6?: string;
   httpPort?: number /* int */;
   maxTimeout?: string;
+  enableGzip?: boolean;
 }
 export interface AdminConfig {
   auth?: AuthConfig;
@@ -138,8 +139,9 @@ export interface RateLimitAutoTuneConfig {
 }
 export interface JsonRpcUpstreamConfig {
   supportsBatch?: boolean;
-  batchMaxSize: number /* int */;
-  batchMaxWait: string;
+  batchMaxSize?: number /* int */;
+  batchMaxWait?: string;
+  enableGzip?: boolean;
 }
 export interface EvmUpstreamConfig {
   chainId: number /* int */;
