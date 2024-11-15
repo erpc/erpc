@@ -596,15 +596,17 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 	jr, err := nr.JsonRpcResponse()
 
 	if c.logger.GetLevel() == zerolog.TraceLevel {
-		maxTraceSize := 20 * 1024
-		if len(jr.Result) > maxTraceSize {
-			tailStart := len(jr.Result) - maxTraceSize
-			if tailStart < maxTraceSize {
-				tailStart = maxTraceSize
+		if jr != nil {
+			maxTraceSize := 20 * 1024
+			if len(jr.Result) > maxTraceSize {
+				tailStart := len(jr.Result) - maxTraceSize
+				if tailStart < maxTraceSize {
+					tailStart = maxTraceSize
+				}
+				c.logger.Trace().Str("head", util.Mem2Str(jr.Result[:maxTraceSize])).Str("tail", util.Mem2Str(jr.Result[tailStart:])).Msgf("processing json rpc response from upstream (trimmed to first and last 20k)")
+			} else {
+				c.logger.Trace().RawJSON("result", jr.Result).Interface("error", jr.Error).Msgf("processing json rpc response from upstream")
 			}
-			c.logger.Trace().Str("head", util.Mem2Str(jr.Result[:maxTraceSize])).Str("tail", util.Mem2Str(jr.Result[tailStart:])).Msgf("processing json rpc response from upstream (trimmed to first and last 20k)")
-		} else {
-			c.logger.Trace().RawJSON("result", jr.Result).Interface("error", jr.Error).Msgf("processing json rpc response from upstream")
 		}
 	}
 
