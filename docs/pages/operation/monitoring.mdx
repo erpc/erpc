@@ -12,18 +12,101 @@ To get full list of available metrics check the source code of [erpc/health/metr
 
 Here is a list of some of the most important metrics:
 
-| Metric | Description |
-| --- | --- |
-| erpc_upstream_request_total | Total number of actual requests to upstreams. |
-| erpc_upstream_request_duration_seconds | Duration of requests to upstreams. |
-| erpc_upstream_request_errors_total | Total number of errors for requests to upstreams. |
-| erpc_upstream_request_self_rate_limited_total | Total number of self-imposed rate limited requests before sending to upstreams. |
-| erpc_upstream_request_remote_rate_limited_total | Total number of remote rate limited requests by upstreams. |
-| erpc_network_request_received_total | Total number of requests received by the network. |
-| erpc_network_multiplexed_request_total | Total number of multiplexed requests (exactly similar requests made at the same time) received by the network. |
-| erpc_network_failed_request_total | Total number of failed requests received by the network. |
-| erpc_network_request_self_rate_limited_total | Total number of self-imposed rate limited requests before sending to upstreams. |
-| erpc_network_successful_request_total | Total number of successful requests received by the network. |
-| erpc_network_cache_hits_total | Total number of cache hits for requests received by the network. |
-| erpc_network_cache_misses_total | Total number of cache misses for requests received by the network. |
-| erpc_network_request_duration_seconds | Duration of requests received by the network. |
+| Metric                                          | Type      | Description                                                                                 |
+| ----------------------------------------------- | --------- | ------------------------------------------------------------------------------------------- |
+| erpc_upstream_request_total                     | Counter   | Total number of actual requests to upstreams.                                               |
+| erpc_upstream_request_duration_seconds          | Histogram | Duration of requests to upstreams.                                                          |
+| erpc_upstream_request_errors_total              | Counter   | Total number of errors for requests to upstreams.                                           |
+| erpc_upstream_request_self_rate_limited_total   | Counter   | Total number of self-imposed rate limited requests before sending to upstreams.             |
+| erpc_upstream_request_remote_rate_limited_total | Counter   | Total number of remote rate limited requests by upstreams.                                  |
+| erpc_upstream_request_skipped_total             | Counter   | Total number of requests skipped by upstreams.                                              |
+| erpc_upstream_request_missing_data_error_total  | Counter   | Total number of requests where upstream is missing data or not synced yet.                  |
+| erpc_upstream_request_empty_response_total      | Counter   | Total number of empty responses from upstreams.                                             |
+| erpc_upstream_block_head_lag                    | Gauge     | Total number of blocks (head) behind the most up-to-date upstream.                          |
+| erpc_upstream_finalization_lag                  | Gauge     | Total number of finalized blocks behind the most up-to-date upstream.                       |
+| erpc_upstream_score_overall                     | Gauge     | Overall score of upstreams.                                                                 |
+| erpc_upstream_latest_block_number               | Gauge     | Latest block number of upstreams.                                                           |
+| erpc_upstream_finalized_block_number            | Gauge     | Finalized block number of upstreams.                                                        |
+| erpc_upstream_cordoned                          | Gauge     | Whether upstream is excluded from routing by selection policy. (0=uncordoned or 1=cordoned) |
+| erpc_network_request_received_total             | Counter   | Total number of requests received by the network.                                           |
+| erpc_network_multiplexed_request_total          | Counter   | Total number of multiplexed requests received by the network.                               |
+| erpc_network_failed_request_total               | Counter   | Total number of failed requests received by the network.                                    |
+| erpc_network_request_self_rate_limited_total    | Counter   | Total number of self-imposed rate limited requests before sending to upstreams.             |
+| erpc_network_successful_request_total           | Counter   | Total number of successful requests received by the network.                                |
+| erpc_network_cache_hits_total                   | Counter   | Total number of cache hits for requests received by the network.                            |
+| erpc_network_cache_misses_total                 | Counter   | Total number of cache misses for requests received by the network.                          |
+| erpc_network_request_duration_seconds           | Histogram | Duration of requests received by the network.                                               |
+| erpc_project_request_self_rate_limited_total    | Counter   | Total number of self-imposed rate limited requests towards the project.                     |
+| erpc_auth_request_self_rate_limited_total       | Counter   | Total number of self-imposed rate limited requests due to auth config for a project.        |
+| erpc_cors_requests_total                        | Counter   | Total number of CORS requests received.                                                     |
+| erpc_cors_preflight_requests_total              | Counter   | Total number of CORS preflight requests received.                                           |
+| erpc_cors_disallowed_origin_total               | Counter   | Total number of CORS requests from disallowed origins.                                      |
+
+#### PromQL examples
+
+```promql
+# Request rate per second by network over last 5 minutes
+sum(rate(erpc_network_request_received_total{}[5m])) by (network)
+
+# Total daily requests by project and network
+sum(increase(erpc_network_request_received_total{}[24h])) by (project, network)
+
+# Top 5 project and networks by request volume
+topk(5, sum(rate(erpc_network_request_received_total{}[5m])) by (project, network))
+
+# Error rate percentage by network and upstream
+100 * sum(rate(erpc_upstream_request_errors_total{}[5m])) by (network, upstream) /
+sum(rate(erpc_upstream_request_total{}[5m])) by (network, upstream)
+
+# Top error types in the last hour
+topk(10, sum(increase(erpc_upstream_request_errors_total{}[1h])) by (error))
+
+# Missing data errors by network and upstream
+sum(rate(erpc_upstream_request_missing_data_error_total{}[5m])) by (network, upstream)
+
+# 95th percentile request duration by network
+histogram_quantile(0.95, sum(rate(erpc_network_request_duration_seconds_bucket{}[5m])) by (le,network))
+
+# Average request duration for eth_call methods
+sum(rate(erpc_upstream_request_duration_seconds_sum{category="eth_call"}[5m])) by (network, upstream) /
+sum(rate(erpc_upstream_request_duration_seconds_count{category="eth_call"}[5m])) by (network, upstream)
+
+# Identify slow upstreams (avg duration > 500ms)
+sum(rate(erpc_upstream_request_duration_seconds_sum{}[5m])) by (network, upstream) /
+sum(rate(erpc_upstream_request_duration_seconds_count{}[5m])) by (network, upstream) > 0.5
+
+# Cache hit ratio by network
+sum(rate(erpc_network_cache_hits_total{}[5m])) by (network) /
+(
+  sum(rate(erpc_network_cache_hits_total{}[5m])) by (network) +
+  sum(rate(erpc_network_cache_misses_total{}[5m])) by (network)
+)
+
+# Cache miss rate for eth_getBlockByNumber
+rate(erpc_network_cache_misses_total{category="eth_getBlockByNumber"}[5m])
+
+# Self rate-limited requests by project and network
+sum(rate(erpc_network_request_self_rate_limited_total{}[5m])) by (project,network)
+
+# Authentication rate limiting by strategy
+sum(rate(erpc_auth_request_self_rate_limited_total{strategy="jwt"}[5m])) by (project)
+
+# Remote rate limiting from upstreams
+sum(rate(erpc_upstream_request_remote_rate_limited_total{}[5m])) by (upstream)
+
+# Block lag by network and upstream
+max(erpc_upstream_block_head_lag) by (network,upstream)
+
+# Finalization lag alert (lag > 5 blocks)
+max(erpc_upstream_finalization_lag) by (network) > 5
+
+# Block height difference between upstreams
+max(erpc_upstream_latest_block_number) by (network) -
+min(erpc_upstream_latest_block_number) by (network)
+
+# Overall upstream health score
+avg(erpc_upstream_score_overall) by (network, upstream)
+
+# CORS issues by origin
+sum(rate(erpc_cors_disallowed_origin_total{}[5m])) by (project, origin)
+```
