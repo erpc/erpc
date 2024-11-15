@@ -212,9 +212,10 @@ type RateLimitAutoTuneConfig struct {
 }
 
 type JsonRpcUpstreamConfig struct {
-	SupportsBatch *bool  `yaml:"supportsBatch" json:"supportsBatch"`
-	BatchMaxSize  int    `yaml:"batchMaxSize" json:"batchMaxSize"`
-	BatchMaxWait  string `yaml:"batchMaxWait" json:"batchMaxWait"`
+	SupportsBatch         *bool  `yaml:"supportsBatch" json:"supportsBatch"`
+	BatchMaxSize          int    `yaml:"batchMaxSize" json:"batchMaxSize"`
+	BatchMaxWait          string `yaml:"batchMaxWait" json:"batchMaxWait"`
+	EnableGzipCompression *bool  `yaml:"enableGzipCompression" json:"enableGzipCompression"`
 }
 
 type EvmUpstreamConfig struct {

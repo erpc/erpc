@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"path"
@@ -117,9 +118,22 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			}
 		}
 
-		body, err := util.ReadAll(r.Body, 1024*1024, 10)
+		// Handle gzipped request bodies
+		var bodyReader io.Reader = r.Body
+		if r.Header.Get("Content-Encoding") == "gzip" {
+			gzReader, err := gzip.NewReader(r.Body)
+			if err != nil {
+				handleErrorResponse(s.logger, &startedAt, nil, common.NewErrInvalidRequest(fmt.Errorf("invalid gzip body: %w", err)), w, encoder, writeFatalError)
+				return
+			}
+			defer gzReader.Close()
+			bodyReader = gzReader
+		}
+
+		// Replace the existing body read with our potentially decompressed reader
+		body, err := util.ReadAll(bodyReader, 1024*1024, 10)
 		if err != nil {
-			handleErrorResponse(&lg, &startedAt, nil, err, w, encoder, writeFatalError)
+			handleErrorResponse(s.logger, &startedAt, nil, err, w, encoder, writeFatalError)
 			return
 		}
 
