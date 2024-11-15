@@ -5845,7 +5845,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 }
 
 func TestNetwork_SkippedUpstreams(t *testing.T) {
-	t.Run("ValidBlockNumberForFullNodeUpstream", func(t *testing.T) {
+	t.Run("ValidInRangeBlockNumberForFullNodeUpstream", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -5866,6 +5866,30 @@ func TestNetwork_SkippedUpstreams(t *testing.T) {
 		resp, err := network.Forward(context.Background(), req)
 		assert.NoError(t, err)
 		assert.NotNil(t, resp)
+	})
+
+	t.Run("ValidOutOfRangeBlockNumberForFullNodeUpstream", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network := setupTestNetworkWithFullNodeUpstream(t, ctx, nil, nil)
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000", "0x1"]}`)
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+			}).
+			Reply(500).
+			Delay(1 * time.Second).
+			BodyString(`{"jsonrpc":"2.0","id":1,"error":{"code":-32014,"message":"Internal error"}}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(context.Background(), req)
+		assert.Error(t, err)
+		assert.Nil(t, resp)
 	})
 }
 
