@@ -5,8 +5,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-
-	// "sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -32,7 +30,6 @@ func (t *Timer) ObserveDuration() {
 }
 
 type TrackedMetrics struct {
-	// Mutex                  sync.RWMutex     `json:"-"`
 	LatencySecs            *QuantileTracker `json:"latencySecs"`
 	ErrorsTotal            atomic.Int64     `json:"errorsTotal"`
 	SelfRateLimitedTotal   atomic.Int64     `json:"selfRateLimitedTotal"`
@@ -45,9 +42,6 @@ type TrackedMetrics struct {
 }
 
 func (m *TrackedMetrics) ErrorRate() float64 {
-	// m.Mutex.RLock()
-	// defer m.Mutex.RUnlock()
-
 	if m.RequestsTotal.Load() == 0 {
 		return 0
 	}
@@ -55,9 +49,6 @@ func (m *TrackedMetrics) ErrorRate() float64 {
 }
 
 func (m *TrackedMetrics) ThrottledRate() float64 {
-	// m.Mutex.RLock()
-	// defer m.Mutex.RUnlock()
-
 	if m.RequestsTotal.Load() == 0 {
 		return 0
 	}
@@ -145,11 +136,13 @@ func (t *Tracker) Cordon(ups, network, method, reason string) {
 	metrics := t.getMetrics(t.getKey(ups, network, method))
 	metrics.Cordoned.Store(true)
 	metrics.CordonedReason.Store(reason)
+	MetricUpstreamCordoned.WithLabelValues(t.projectId, network, ups, method).Set(1)
 }
 
 func (t *Tracker) Uncordon(ups, network, method string) {
 	metrics := t.getMetrics(t.getKey(ups, network, method))
 	metrics.Cordoned.Store(false)
+	MetricUpstreamCordoned.WithLabelValues(t.projectId, network, ups, method).Set(0)
 }
 
 func (t *Tracker) RecordUpstreamRequest(ups, network, method string) {
@@ -231,6 +224,7 @@ func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
 	ntwMeta := t.getMetadata(ntwKey)
 	if ntwMeta.evmLatestBlockNumber.Load() <= blockNumber {
 		ntwMeta.evmLatestBlockNumber.Store(blockNumber)
+		MetricUpstreamLatestBlockNumber.WithLabelValues(t.projectId, network, "*").Set(float64(blockNumber))
 		needsGlobalUpdate = true
 	}
 
@@ -238,6 +232,7 @@ func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
 	upsMeta := t.getMetadata(upsKey)
 	if upsMeta.evmLatestBlockNumber.Load() < blockNumber {
 		upsMeta.evmLatestBlockNumber.Store(blockNumber)
+		MetricUpstreamLatestBlockNumber.WithLabelValues(t.projectId, network, ups).Set(float64(blockNumber))
 	}
 
 	upsLag := ntwMeta.evmLatestBlockNumber.Load() - upsMeta.evmLatestBlockNumber.Load()
@@ -298,6 +293,7 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 		ntwMeta = val.(*NetworkMetadata)
 		if ntwMeta.evmFinalizedBlockNumber.Load() < blockNumber {
 			ntwMeta.evmFinalizedBlockNumber.Store(blockNumber)
+			MetricUpstreamFinalizedBlockNumber.WithLabelValues(t.projectId, network, "*").Set(float64(blockNumber))
 			needsGlobalUpdate = true
 		}
 	}
@@ -306,6 +302,7 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 	upsMeta = t.getMetadata(upsKey)
 	if upsMeta.evmFinalizedBlockNumber.Load() < blockNumber {
 		upsMeta.evmFinalizedBlockNumber.Store(blockNumber)
+		MetricUpstreamFinalizedBlockNumber.WithLabelValues(t.projectId, network, ups).Set(float64(blockNumber))
 	}
 
 	upsLag := ntwMeta.evmFinalizedBlockNumber.Load() - upsMeta.evmFinalizedBlockNumber.Load()

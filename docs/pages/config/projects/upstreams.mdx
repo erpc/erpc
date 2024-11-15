@@ -5,17 +5,17 @@ import { Callout } from "nextra/components";
 An upstream is defined to handle 1 or more networks (a.k.a. chains). There are currently these types of upstreams:
 
 - [`evm`](#evm-json-rpc) A generic EVM-compatible JSON-RPC endpoint. This is the default and most-used type.
-- [`alchemy`](#alchemy-json-rpc) A special upstream type that accepts Alchemy.com API-KEY and automatically adds all their EVM chains.
-- [`drpc`](#drpc-json-rpc) A special upstream type that accepts dRPC.org API-KEY and automatically adds all their EVM chains.
-- [`blastapi`](#blastapi-json-rpc) A special upstream type that accepts BlastAPI.io API-KEY and automatically adds all their EVM chains.
-- [`thirdweb`](#thirdweb-json-rpc) A special upstream type that accepts Thirdweb.com API-KEY and automatically adds all their EVM chains.
-- [`envio`](#envio-json-rpc) A special upstream type for Envio.dev HyperRPC endpoint and automatically adds all chains by HyperRPC.
-- [`pimlico`](#pimlico-json-rpc) A special upstream type for Pimlico.io account-abstraction (ERC-4337) support.
-- [`etherspot`](#etherspot-json-rpc) A special upstream type for Etherspot.io account-abstraction (ERC-4337) support.
-- [`infura`](#infura-json-rpc) A special upstream type that accepts Infura.io API-KEY and automatically adds all their EVM chains.
+- [`alchemy`](#alchemy-json-rpc) Accepts alchemy.com api key and automatically adds all their EVM chains.
+- [`drpc`](#drpc-json-rpc) Accepts drpc.org api key and automatically adds all their EVM chains.
+- [`blastapi`](#blastapi-json-rpc) Accepts blastapi.io api key and automatically adds all their EVM chains.
+- [`thirdweb`](#thirdweb-json-rpc) Accepts thirdweb.com client-id and automatically adds all their EVM chains.
+- [`envio`](#envio-json-rpc) Accepts envio.dev rpc endpoint and automatically adds all chains by HyperRPC.
+- [`pimlico`](#pimlico-json-rpc) Accepts pimlico.io rpc endpoint for account-abstraction (ERC-4337) support.
+- [`etherspot`](#etherspot-json-rpc) Accepts etherspot.io rpc endpoint for account-abstraction (ERC-4337) support.
+- [`infura`](#infura-json-rpc) Accepts infura.io api key and automatically adds all their EVM chains.
 
 <Callout type='info'>
-  eRPC supports **any EVM-compatible** JSON-RPC endpoint when using `evm` type. Specialized types like "evm+alchemy" are built for well-known providers to make it easier to import "all supported evm chains" with just an API-KEY.
+  eRPC supports **any EVM-compatible** JSON-RPC endpoint when using `evm` type. Specialized types like "alchemy" are built for well-known providers to make it easier to import "all supported evm chains" with just an API-KEY.
 </Callout>
 
 ## Config
