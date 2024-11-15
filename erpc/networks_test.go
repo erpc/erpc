@@ -5914,6 +5914,52 @@ func TestNetwork_SkippedUpstreams(t *testing.T) {
 		assert.NoError(t, err)
 		assert.NotNil(t, resp)
 	})
+
+	t.Run("NotSkippedHistoricalBlockForArchiveNodeUpstream", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network := setupTestNetworkWithArchiveNodeUpstream(t, ctx, nil, nil)
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000", "0x1"]}`)
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+			}).
+			Reply(200).
+			BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x0"}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(context.Background(), req)
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+	})
+
+	t.Run("NotSkippedHistoricalBlockForUnknowneNodeUpstream", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network := setupTestNetwork(t, ctx, nil, nil)
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000", "0x1"]}`)
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+			}).
+			Reply(200).
+			BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x0"}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(context.Background(), req)
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+	})
 }
 
 func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfig *common.UpstreamConfig, networkConfig *common.NetworkConfig) *Network {
