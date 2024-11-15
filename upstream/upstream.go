@@ -727,7 +727,7 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 	}
 
 	// if block can be determined from request and upstream is only full-node and block is historical skip
-	if u.config.Evm.NodeType == common.EvmNodeTypeFull {
+	if u.config.Evm != nil && u.config.Evm.NodeType == common.EvmNodeTypeFull {
 		bn, ebn := req.EvmBlockNumber()
 		if ebn != nil || bn <= 0 {
 			return nil, false
