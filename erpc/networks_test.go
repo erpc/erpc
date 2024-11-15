@@ -5868,7 +5868,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 		assert.NotNil(t, resp)
 	})
 
-	t.Run("SkippedOutOfHistoricalBlockNumberForFullNodeUpstream", func(t *testing.T) {
+	t.Run("SkippedHistoricalBlockNumberForFullNodeUpstream", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 
