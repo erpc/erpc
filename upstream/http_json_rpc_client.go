@@ -34,6 +34,7 @@ type GenericHttpJsonRpcClient struct {
 	upstream   *Upstream
 	httpClient *http.Client
 
+	enableGzip    bool
 	supportsBatch bool
 	batchMaxSize  int
 	batchMaxWait  time.Duration
@@ -81,6 +82,9 @@ func NewGenericHttpJsonRpcClient(appCtx context.Context, logger *zerolog.Logger,
 			}
 
 			client.batchRequests = make(map[interface{}]*batchRequest)
+		}
+		if jc.EnableGzip != nil {
+			client.enableGzip = *jc.EnableGzip
 		}
 	}
 
@@ -606,10 +610,7 @@ func (c *GenericHttpJsonRpcClient) prepareRequest(ctx context.Context, body []by
 	var bodyReader io.Reader = bytes.NewReader(body)
 
 	// Check if gzip compression is enabled
-	if c.upstream.config.JsonRpc != nil &&
-		c.upstream.config.JsonRpc.EnableGzipCompression != nil &&
-		*c.upstream.config.JsonRpc.EnableGzipCompression {
-
+	if c.enableGzip {
 		var buf bytes.Buffer
 		gw := gzip.NewWriter(&buf)
 		if _, err := gw.Write(body); err != nil {
@@ -644,9 +645,7 @@ func (c *GenericHttpJsonRpcClient) prepareRequest(ctx context.Context, body []by
 		c.upstream.config.RateLimitBudget))
 
 	// Add gzip header if compression is enabled
-	if c.upstream.config.JsonRpc != nil &&
-		c.upstream.config.JsonRpc.EnableGzipCompression != nil &&
-		*c.upstream.config.JsonRpc.EnableGzipCompression {
+	if c.enableGzip {
 		httpReq.Header.Set("Content-Encoding", "gzip")
 	}
 

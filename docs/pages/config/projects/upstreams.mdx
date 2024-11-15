@@ -167,9 +167,9 @@ upstreams:
   A higher score means the upstream is tried first. If errors occur, other upstreams are attempted.
 </Callout>
 
-## Upstream Types
+## Upstream types
 
-### `evm` JSON-RPC
+### `evm`
 
 These are generic well-known EVM-compatible JSON-RPC endpoints. This is the default and most-used type. They can be your own self-hosted nodes, or remote 3rd-party provider nodes.
 
@@ -188,7 +188,7 @@ projects:
         # ...
 ```
 
-### `alchemy` JSON-RPC
+### `alchemy`
 
 This upstream type is built specially for [Alchemy](https://alchemy.com) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
 
@@ -203,7 +203,7 @@ projects:
         # ...
 ```
 
-### `drpc` JSON-RPC
+### `drpc`
 
 This upstream type is built specially for [dRPC](https://drpc.org) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
 
@@ -218,7 +218,7 @@ projects:
         # ...
 ```
 
-### `blastapi` JSON-RPC
+### `blastapi`
 
 This upstream type is built specially for [BlastAPI](https://blastapi.io) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
 
@@ -233,7 +233,7 @@ projects:
         # ...
 ```
 
-### `infura` JSON-RPC
+### `infura`
 
 This upstream type is built specially for [Infura](https://www.infura.io/) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
 
@@ -248,7 +248,7 @@ projects:
         # ...
 ```
 
-### `thirdweb` JSON-RPC
+### `thirdweb`
 
 This upstream type is built specially for [Thirdweb](https://thirdweb.com/chainlist) 3rd-party provider to make it easier to import "all supported evm chains" with just a CLIENT-ID.
 
@@ -265,7 +265,7 @@ projects:
 
 For production traffic consult with Thirdweb team about the chains you are goin to use and amount of traffic you expect to handle.
 
-### `envio` JSON-RPC
+### `envio`
 
 Envio [HyperRPC](https://docs.envio.dev/docs/HyperSync/hyperrpc-supported-networks) service provides a higher-performance alternative for certain read methods. When handling requests if a [method is supported by HyperRPC](https://docs.envio.dev/docs/HyperSync/overview-hyperrpc), then this upstream may be used.
 
@@ -284,7 +284,7 @@ projects:
   For indexing use-cases it is recommended to this upstream. This will automatically add all supported EVM chains by HyperRPC.
 </Callout>
 
-### `pimlico` JSON-RPC
+### `pimlico`
 
 [Pimlico](https://pimlico.io) adds account-abstraction (ERC-4337) support to your eRPC instance. With this upstream added when a AA-related request arrives it'll be forwarded to Pimlico, which allows you to use the same RPC endpoint for both usual eth_* methods along with ERC-4337 methods.
 
@@ -301,7 +301,7 @@ projects:
         # ...
 ```
 
-### `etherspot` JSON-RPC
+### `etherspot`
 
 [Etherspot](https://etherspot.io/) adds account-abstraction (ERC-4337) support to your eRPC instance. With this upstream added when a AA-related request arrives it'll be forwarded to Etherspot, which allows you to use the same RPC endpoint for both usual eth_* methods along with ERC-4337 methods.
 
@@ -317,13 +317,45 @@ projects:
         # endpoint: etherspot://xxxxxmy-api-key
         # ...
 ```
+## Compression
+
+eRPC supports gzip compression at multiple points in the request/response cycle:
+
+1. **Client → eRPC**: Clients can send gzipped requests by setting `Content-Encoding: gzip` header
+```bash
+# Example of sending gzipped request to eRPC
+curl -X POST \
+  -H "Content-Encoding: gzip" \
+  -H "Content-Type: application/json" \
+  --data-binary @<(echo '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[]}' | gzip) \
+  http://localhost:4000/main/evm/42161
+```
+
+2. **eRPC → Upstream**: Configurable per upstream to send gzipped requests (disabled by default)
+```yaml
+upstreams:
+  - id: my-infura
+    jsonRpc:
+      enableGzip: true  # Enable gzip when sending requests to this upstream
+```
+
+3. **Upstream → eRPC**: Automatically handles gzipped responses from upstreams when they send `Content-Encoding: gzip`
+
+4. **eRPC → Client**: Automatically enabled when clients send `Accept-Encoding: gzip` header (can be disabled in server config)
+```yaml
+server:
+  enableGzip: true  # Disable gzip compression for responses to clients
+```
+
+<Callout type='info'>
+  Response compression (eRPC → Client) is enabled by default when clients support it. Upstream compression need to be explicitly enabled if provider supports it.
+</Callout>
 
 #### Roadmap
 
 On some doc pages we like to share our ideas for related future implementations, feel free to open a PR if you're up for a challenge:
 
 <br />
-- [ ] Introduce a programmable (Typescript) routing selection policy to include/exclude upstreams based on some business logic (e.g. only use expensive nodes if cheap nodes are fully down for a long time).
 - [ ] Automatically detect type of EVM nodes (full, archive) and engines (erigon, geth, etc)
 - [ ] Implement the logic for "getLogsMaxBlockRange" to split multiple requests when the block range is too high.
 - [ ] Add more special types for well-known vendors (BlastAPI, Ankr, LlamaRPC, etc) for easier multi-chain support.

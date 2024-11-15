@@ -44,13 +44,13 @@ func (c *Config) HasRateLimiterBudget(id string) bool {
 }
 
 type ServerConfig struct {
-	ListenV4    *bool   `yaml:"listenV4,omitempty" json:"listenV4,omitempty"`
-	HttpHostV4  *string `yaml:"httpHostV4,omitempty" json:"httpHostV4,omitempty"`
-	ListenV6    *bool   `yaml:"listenV6,omitempty" json:"listenV6,omitempty"`
-	HttpHostV6  *string `yaml:"httpHostV6,omitempty" json:"httpHostV6,omitempty"`
-	HttpPort    *int    `yaml:"httpPort,omitempty" json:"httpPort,omitempty"`
-	MaxTimeout  *string `yaml:"maxTimeout,omitempty" json:"maxTimeout,omitempty"`
-	DisableGzip bool    `yaml:"disableGzip,omitempty" json:"disableGzip,omitempty"`
+	ListenV4   *bool   `yaml:"listenV4,omitempty" json:"listenV4,omitempty"`
+	HttpHostV4 *string `yaml:"httpHostV4,omitempty" json:"httpHostV4,omitempty"`
+	ListenV6   *bool   `yaml:"listenV6,omitempty" json:"listenV6,omitempty"`
+	HttpHostV6 *string `yaml:"httpHostV6,omitempty" json:"httpHostV6,omitempty"`
+	HttpPort   *int    `yaml:"httpPort,omitempty" json:"httpPort,omitempty"`
+	MaxTimeout *string `yaml:"maxTimeout,omitempty" json:"maxTimeout,omitempty"`
+	EnableGzip *bool   `yaml:"enableGzip,omitempty" json:"enableGzip,omitempty"`
 }
 
 type AdminConfig struct {
@@ -212,10 +212,10 @@ type RateLimitAutoTuneConfig struct {
 }
 
 type JsonRpcUpstreamConfig struct {
-	SupportsBatch         *bool  `yaml:"supportsBatch" json:"supportsBatch"`
-	BatchMaxSize          int    `yaml:"batchMaxSize" json:"batchMaxSize"`
-	BatchMaxWait          string `yaml:"batchMaxWait" json:"batchMaxWait"`
-	EnableGzipCompression *bool  `yaml:"enableGzipCompression" json:"enableGzipCompression"`
+	SupportsBatch *bool  `yaml:"supportsBatch" json:"supportsBatch"`
+	BatchMaxSize  int    `yaml:"batchMaxSize" json:"batchMaxSize"`
+	BatchMaxWait  string `yaml:"batchMaxWait" json:"batchMaxWait"`
+	EnableGzip    *bool  `yaml:"enableGzip" json:"enableGzip"`
 }
 
 type EvmUpstreamConfig struct {

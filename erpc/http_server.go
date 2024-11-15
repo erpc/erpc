@@ -50,7 +50,7 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 	}
 
 	h := srv.createRequestHandler()
-	if !cfg.DisableGzip {
+	if cfg.EnableGzip != nil && *cfg.EnableGzip {
 		h = gzipHandler(h)
 	}
 	srv.server = &http.Server{
