@@ -1,10 +1,12 @@
 package erpc
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"path"
@@ -19,6 +21,7 @@ import (
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 type HttpServer struct {
@@ -33,7 +36,7 @@ type HttpServer struct {
 func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.ServerConfig, admin *common.AdminConfig, erpc *ERPC) *HttpServer {
 	reqMaxTimeout, err := time.ParseDuration(*cfg.MaxTimeout)
 	if err != nil {
-		if cfg.MaxTimeout != nil {
+		if cfg.MaxTimeout != nil && *cfg.MaxTimeout != "" {
 			logger.Error().Err(err).Msgf("failed to parse max timeout duration using 30s default")
 		}
 		reqMaxTimeout = 30 * time.Second
@@ -47,9 +50,13 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 		logger: logger,
 	}
 
+	h := srv.createRequestHandler()
+	if cfg.EnableGzip != nil && *cfg.EnableGzip {
+		h = gzipHandler(h)
+	}
 	srv.server = &http.Server{
 		Handler: TimeoutHandler(
-			srv.createRequestHandler(),
+			h,
 			reqMaxTimeout,
 		),
 		ReadTimeout:  10 * time.Second,
@@ -112,7 +119,20 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			}
 		}
 
-		body, err := util.ReadAll(r.Body, 1024*1024, 10)
+		// Handle gzipped request bodies
+		var bodyReader io.Reader = r.Body
+		if r.Header.Get("Content-Encoding") == "gzip" {
+			gzReader, err := gzip.NewReader(r.Body)
+			if err != nil {
+				handleErrorResponse(&lg, &startedAt, nil, common.NewErrInvalidRequest(fmt.Errorf("invalid gzip body: %w", err)), w, encoder, writeFatalError)
+				return
+			}
+			defer gzReader.Close()
+			bodyReader = gzReader
+		}
+
+		// Replace the existing body read with our potentially decompressed reader
+		body, err := util.ReadAll(bodyReader, 1024*1024, 512)
 		if err != nil {
 			handleErrorResponse(&lg, &startedAt, nil, err, w, encoder, writeFatalError)
 			return
@@ -634,4 +654,53 @@ func (s *HttpServer) Start(logger *zerolog.Logger) error {
 func (s *HttpServer) Shutdown(logger *zerolog.Logger) error {
 	logger.Info().Msg("stopping http server...")
 	return s.server.Shutdown(context.Background())
+}
+
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	gzipWriter *gzip.Writer
+}
+
+func (w *gzipResponseWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		err := w.gzipWriter.Flush()
+		if err != nil {
+			log.Error().Err(err).Msg("failed to flush gzip writer")
+		}
+		flusher.Flush()
+	}
+}
+
+func (w *gzipResponseWriter) Write(b []byte) (int, error) {
+	return w.gzipWriter.Write(b)
+}
+
+func gzipHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check if client accepts gzip encoding
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Initialize gzip writer
+		gz := gzip.NewWriter(w)
+		defer gz.Close()
+
+		// Create gzip response writer
+		gzw := &gzipResponseWriter{
+			ResponseWriter: w,
+			gzipWriter:     gz,
+		}
+
+		// Remove Content-Length header as it will no longer be valid
+		w.Header().Del("Content-Length")
+
+		// Set required headers
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Vary", "Accept-Encoding")
+
+		// Call the next handler with our gzip response writer
+		next.ServeHTTP(gzw, r)
+	})
 }

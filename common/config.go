@@ -50,6 +50,7 @@ type ServerConfig struct {
 	HttpHostV6 *string `yaml:"httpHostV6,omitempty" json:"httpHostV6,omitempty"`
 	HttpPort   *int    `yaml:"httpPort,omitempty" json:"httpPort,omitempty"`
 	MaxTimeout *string `yaml:"maxTimeout,omitempty" json:"maxTimeout,omitempty"`
+	EnableGzip *bool   `yaml:"enableGzip,omitempty" json:"enableGzip,omitempty"`
 }
 
 type AdminConfig struct {
@@ -211,9 +212,10 @@ type RateLimitAutoTuneConfig struct {
 }
 
 type JsonRpcUpstreamConfig struct {
-	SupportsBatch *bool  `yaml:"supportsBatch" json:"supportsBatch"`
-	BatchMaxSize  int    `yaml:"batchMaxSize" json:"batchMaxSize"`
-	BatchMaxWait  string `yaml:"batchMaxWait" json:"batchMaxWait"`
+	SupportsBatch *bool  `yaml:"supportsBatch,omitempty" json:"supportsBatch"`
+	BatchMaxSize  int    `yaml:"batchMaxSize,omitempty" json:"batchMaxSize"`
+	BatchMaxWait  string `yaml:"batchMaxWait,omitempty" json:"batchMaxWait"`
+	EnableGzip    *bool  `yaml:"enableGzip,omitempty" json:"enableGzip"`
 }
 
 type EvmUpstreamConfig struct {
