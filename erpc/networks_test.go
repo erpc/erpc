@@ -5910,7 +5910,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 			Reply(200).
 			BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x0"}`)
 		req := common.NewNormalizedRequest(requestBytes)
-		resp, err := network.Forward(context.Background(), req)
+		resp, err := network.Forward(ctx, req)
 		assert.NoError(t, err)
 		assert.NotNil(t, resp)
 	})
