@@ -5844,7 +5844,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 	})
 }
 
-func TestNetwork_SkippedUpstreams(t *testing.T) {
+func TestNetwork_SkippingUpstreams(t *testing.T) {
 	t.Run("NotSkippedRecentBlockNumberForFullNodeUpstream", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
