@@ -1,6 +1,7 @@
 package erpc
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -33,7 +34,7 @@ type HttpServer struct {
 func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.ServerConfig, admin *common.AdminConfig, erpc *ERPC) *HttpServer {
 	reqMaxTimeout, err := time.ParseDuration(*cfg.MaxTimeout)
 	if err != nil {
-		if cfg.MaxTimeout != nil {
+		if cfg.MaxTimeout != nil && *cfg.MaxTimeout != "" {
 			logger.Error().Err(err).Msgf("failed to parse max timeout duration using 30s default")
 		}
 		reqMaxTimeout = 30 * time.Second
@@ -47,9 +48,13 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 		logger: logger,
 	}
 
+	h := srv.createRequestHandler()
+	if !cfg.DisableGzip {
+		h = gzipHandler(h)
+	}
 	srv.server = &http.Server{
 		Handler: TimeoutHandler(
-			srv.createRequestHandler(),
+			h,
 			reqMaxTimeout,
 		),
 		ReadTimeout:  10 * time.Second,
@@ -634,4 +639,32 @@ func (s *HttpServer) Start(logger *zerolog.Logger) error {
 func (s *HttpServer) Shutdown(logger *zerolog.Logger) error {
 	logger.Info().Msg("stopping http server...")
 	return s.server.Shutdown(context.Background())
+}
+
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	gw *gzip.Writer
+}
+
+func (w *gzipResponseWriter) Write(b []byte) (int, error) {
+	return w.gw.Write(b)
+}
+
+func gzipHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		w.Header().Set("Content-Encoding", "gzip")
+		gw := gzip.NewWriter(w)
+		defer gw.Close()
+
+		gzw := &gzipResponseWriter{
+			ResponseWriter: w,
+			gw:             gw,
+		}
+		next.ServeHTTP(gzw, r)
+	})
 }
