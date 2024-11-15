@@ -24,11 +24,6 @@ func (v *QuicknodeVendor) OverrideConfig(upstream *common.UpstreamConfig) error 
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
 
-	if upstream.JsonRpc.SupportsBatch == nil {
-		upstream.JsonRpc.SupportsBatch = &TRUE
-		upstream.JsonRpc.BatchMaxWait = "100ms"
-		upstream.JsonRpc.BatchMaxSize = 100
-	}
 	if upstream.AutoIgnoreUnsupportedMethods == nil {
 		upstream.AutoIgnoreUnsupportedMethods = &TRUE
 	}
@@ -55,17 +50,6 @@ func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr i
 				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorEvmLogsLargeRange, msg, nil, details),
 				common.EvmBlockRangeTooLarge,
 			)
-		} else if code == -32000 {
-			if strings.Contains(msg, "header not found") || strings.Contains(msg, "could not find block") {
-				return common.NewErrEndpointMissingData(
-					common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorMissingData, msg, nil, details),
-				)
-			} else if strings.Contains(msg, "execution timeout") {
-				return common.NewErrEndpointServerSideException(
-					common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorNodeTimeout, msg, nil, details),
-					nil,
-				)
-			}
 		} else if code == -32009 || code == -32007 {
 			return common.NewErrEndpointCapacityExceeded(
 				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorCapacityExceeded, msg, nil, details),

@@ -44,13 +44,14 @@ var etherspotTestnets = map[int64]struct{}{
 }
 
 type EtherspotHttpJsonRpcClient struct {
+	appCtx   context.Context
 	upstream *Upstream
 	apiKey   string
 	clients  map[int64]HttpJsonRpcClient
 	mu       sync.RWMutex
 }
 
-func NewEtherspotHttpJsonRpcClient(pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
+func NewEtherspotHttpJsonRpcClient(appCtx context.Context, pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
 	if !strings.HasSuffix(parsedUrl.Scheme, "etherspot") {
 		return nil, fmt.Errorf("invalid Etherspot URL scheme: %s", parsedUrl.Scheme)
 	}
@@ -61,6 +62,7 @@ func NewEtherspotHttpJsonRpcClient(pu *Upstream, parsedUrl *url.URL) (HttpJsonRp
 	}
 
 	return &EtherspotHttpJsonRpcClient{
+		appCtx:   appCtx,
 		upstream: pu,
 		apiKey:   apiKey,
 		clients:  make(map[int64]HttpJsonRpcClient),
@@ -71,7 +73,7 @@ func (c *EtherspotHttpJsonRpcClient) GetType() ClientType {
 	return ClientTypeEtherspotHttpJsonRpc
 }
 
-func (c *EtherspotHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, error) {
+func (c *EtherspotHttpJsonRpcClient) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
 	}
@@ -127,7 +129,7 @@ func (c *EtherspotHttpJsonRpcClient) createClient(chainID int64) (HttpJsonRpcCli
 		return nil, err
 	}
 
-	client, err = NewGenericHttpJsonRpcClient(&c.upstream.Logger, c.upstream, parsedURL)
+	client, err = NewGenericHttpJsonRpcClient(c.appCtx, &c.upstream.Logger, c.upstream, parsedURL)
 	if err != nil {
 		return nil, err
 	}

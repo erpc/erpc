@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"sync"
@@ -19,13 +20,14 @@ const (
 	ClientTypeEnvioHttpJsonRpc     ClientType = "EnvioHttpJsonRpc"
 	ClientTypePimlicoHttpJsonRpc   ClientType = "PimlicoHttpJsonRpc"
 	ClientTypeEtherspotHttpJsonRpc ClientType = "EtherspotHttpJsonRpc"
+	ClientTypeInfuraHttpJsonRpc    ClientType = "InfuraHttpJsonRpc"
 	ClientTypeThirdwebHttpJsonRpc  ClientType = "ThirdwebHttpJsonRpc"
 )
 
 // Define a shared interface for all types of Clients
 type ClientInterface interface {
 	GetType() ClientType
-	SupportsNetwork(networkId string) (bool, error)
+	SupportsNetwork(ctx context.Context, networkId string) (bool, error)
 }
 
 type Client struct {
@@ -44,16 +46,16 @@ func NewClientRegistry(logger *zerolog.Logger) *ClientRegistry {
 }
 
 // GetOrCreateClient retrieves an existing client for a given endpoint or creates a new one if it doesn't exist
-func (manager *ClientRegistry) GetOrCreateClient(ups *Upstream) (ClientInterface, error) {
+func (manager *ClientRegistry) GetOrCreateClient(appCtx context.Context, ups *Upstream) (ClientInterface, error) {
 	// Attempt to load an existing client
 	if client, ok := manager.clients.Load(ups.Config().Endpoint); ok {
 		return client.(ClientInterface), nil
 	}
 
-	return manager.CreateClient(ups)
+	return manager.CreateClient(appCtx, ups)
 }
 
-func (manager *ClientRegistry) CreateClient(ups *Upstream) (ClientInterface, error) {
+func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups *Upstream) (ClientInterface, error) {
 	// Create a new client for the endpoint if not already present
 	var once sync.Once
 	var newClient ClientInterface
@@ -68,7 +70,8 @@ func (manager *ClientRegistry) CreateClient(ups *Upstream) (ClientInterface, err
 			switch cfg.Type {
 			case common.UpstreamTypeEvm:
 				if parsedUrl.Scheme == "http" || parsedUrl.Scheme == "https" {
-					newClient, err = NewGenericHttpJsonRpcClient(manager.logger, ups, parsedUrl)
+					lg := manager.logger.With().Str("upstreamId", cfg.Id).Logger()
+					newClient, err = NewGenericHttpJsonRpcClient(appCtx, &lg, ups, parsedUrl)
 					if err != nil {
 						clientErr = fmt.Errorf("failed to create HTTP client for upstream: %v", cfg.Id)
 					}
@@ -79,45 +82,51 @@ func (manager *ClientRegistry) CreateClient(ups *Upstream) (ClientInterface, err
 				}
 
 			case common.UpstreamTypeEvmAlchemy:
-				newClient, err = NewAlchemyHttpJsonRpcClient(ups, parsedUrl)
+				newClient, err = NewAlchemyHttpJsonRpcClient(appCtx, ups, parsedUrl)
 				if err != nil {
 					clientErr = fmt.Errorf("failed to create Alchemy client for upstream: %v", cfg.Id)
 				}
 
 			case common.UpstreamTypeEvmDrpc:
-				newClient, err = NewDrpcHttpJsonRpcClient(ups, parsedUrl)
+				newClient, err = NewDrpcHttpJsonRpcClient(appCtx, ups, parsedUrl)
 				if err != nil {
 					clientErr = fmt.Errorf("failed to create DRPC client for upstream: %v", cfg.Id)
 				}
 
 			case common.UpstreamTypeEvmBlastapi:
-				newClient, err = NewBlastapiHttpJsonRpcClient(ups, parsedUrl)
+				newClient, err = NewBlastapiHttpJsonRpcClient(appCtx, ups, parsedUrl)
 				if err != nil {
 					clientErr = fmt.Errorf("failed to create BlastAPI client for upstream: %v", cfg.Id)
 				}
 
 			case common.UpstreamTypeEvmThirdweb:
-				newClient, err = NewThirdwebHttpJsonRpcClient(ups, parsedUrl)
+				newClient, err = NewThirdwebHttpJsonRpcClient(appCtx, ups, parsedUrl)
 				if err != nil {
 					clientErr = fmt.Errorf("failed to create Thirdweb client for upstream: %v", cfg.Id)
 				}
 
 			case common.UpstreamTypeEvmEnvio:
-				newClient, err = NewEnvioHttpJsonRpcClient(ups, parsedUrl)
+				newClient, err = NewEnvioHttpJsonRpcClient(appCtx, ups, parsedUrl)
 				if err != nil {
 					clientErr = fmt.Errorf("failed to create Envio client for upstream: %v", cfg.Id)
 				}
 
 			case common.UpstreamTypeEvmPimlico:
-				newClient, err = NewPimlicoHttpJsonRpcClient(ups, parsedUrl)
+				newClient, err = NewPimlicoHttpJsonRpcClient(appCtx, ups, parsedUrl)
 				if err != nil {
 					clientErr = fmt.Errorf("failed to create Pimlico client for upstream: %v", cfg.Id)
 				}
 
 			case common.UpstreamTypeEvmEtherspot:
-				newClient, err = NewEtherspotHttpJsonRpcClient(ups, parsedUrl)
+				newClient, err = NewEtherspotHttpJsonRpcClient(appCtx, ups, parsedUrl)
 				if err != nil {
 					clientErr = fmt.Errorf("failed to create Etherspot client for upstream: %v", cfg.Id)
+				}
+
+			case common.UpstreamTypeEvmInfura:
+				newClient, err = NewInfuraHttpJsonRpcClient(appCtx, ups, parsedUrl)
+				if err != nil {
+					clientErr = fmt.Errorf("failed to create Infura client for upstream: %v", cfg.Id)
 				}
 
 			default:

@@ -129,13 +129,14 @@ var drpcNetworkNames = map[int64]string{
 }
 
 type DrpcHttpJsonRpcClient struct {
+	appCtx   context.Context
 	upstream *Upstream
 	apiKey   string
 	clients  map[string]HttpJsonRpcClient
 	mu       sync.RWMutex
 }
 
-func NewDrpcHttpJsonRpcClient(pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
+func NewDrpcHttpJsonRpcClient(appCtx context.Context, pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
 	if !strings.HasSuffix(parsedUrl.Scheme, "drpc") {
 		return nil, fmt.Errorf("invalid DRPC URL scheme: %s", parsedUrl.Scheme)
 	}
@@ -146,6 +147,7 @@ func NewDrpcHttpJsonRpcClient(pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClie
 	}
 
 	return &DrpcHttpJsonRpcClient{
+		appCtx:   appCtx,
 		upstream: pu,
 		apiKey:   apiKey,
 		clients:  make(map[string]HttpJsonRpcClient),
@@ -156,7 +158,7 @@ func (c *DrpcHttpJsonRpcClient) GetType() ClientType {
 	return ClientTypeDrpcHttpJsonRpc
 }
 
-func (c *DrpcHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, error) {
+func (c *DrpcHttpJsonRpcClient) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
 	}
@@ -208,7 +210,7 @@ func (c *DrpcHttpJsonRpcClient) getOrCreateClient(network common.Network) (HttpJ
 		return nil, err
 	}
 
-	client, err = NewGenericHttpJsonRpcClient(&c.upstream.Logger, c.upstream, parsedURL)
+	client, err = NewGenericHttpJsonRpcClient(c.appCtx, &c.upstream.Logger, c.upstream, parsedURL)
 	if err != nil {
 		return nil, err
 	}

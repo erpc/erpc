@@ -8,32 +8,23 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
-	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 )
 
-func init() {
-	zerolog.SetGlobalLevel(zerolog.Disabled)
-}
-
-var erpcMu sync.Mutex
-
 func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
-	erpcMu.Lock()
-	defer erpcMu.Unlock()
-
-	defer gock.Off()
-	defer gock.Clean()
-	defer gock.CleanUnmatchedRequest()
+	util.ResetGock()
+	defer util.ResetGock()
 
 	port := rand.Intn(1000) + 2000
 	cfg := &common.Config{
 		Server: &common.ServerConfig{
-			HttpHostV4: "0.0.0.0",
-			HttpHostV6: "[::]",
-			HttpPort:   port,
+			HttpHostV4: util.StringPtr("0.0.0.0"),
+			HttpHostV6: util.StringPtr("[::]"),
+			HttpPort:   util.IntPtr(port),
+			MaxTimeout: util.StringPtr("5s"),
 		},
 		Projects: []*common.ProjectConfig{
 			{
@@ -60,6 +51,9 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 						Evm: &common.EvmUpstreamConfig{
 							ChainId: 123,
 						},
+						JsonRpc: &common.JsonRpcUpstreamConfig{
+							SupportsBatch: &common.FALSE,
+						},
 					},
 					{
 						Id:       "rpc2",
@@ -67,6 +61,9 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 						Endpoint: "http://rpc2.localhost",
 						Evm: &common.EvmUpstreamConfig{
 							ChainId: 123,
+						},
+						JsonRpc: &common.JsonRpcUpstreamConfig{
+							SupportsBatch: &common.FALSE,
 						},
 					},
 				},
@@ -102,12 +99,12 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 		t.Errorf("expected nil, got %v", err)
 	}
 
-	nw, err := erpcInstance.GetNetwork("test", "evm:123")
+	nw, err := erpcInstance.GetNetwork(ctx1, "test", "evm:123")
 	if err != nil {
 		t.Errorf("expected nil, got %v", err)
 	}
 
-	nw.upstreamsRegistry.PrepareUpstreamsForNetwork("evm:123")
+	nw.upstreamsRegistry.PrepareUpstreamsForNetwork(ctx1, "evm:123")
 	time.Sleep(100 * time.Millisecond)
 	nw.upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
 	time.Sleep(100 * time.Millisecond)

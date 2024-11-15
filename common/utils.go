@@ -10,6 +10,8 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 )
 
+const KeySeparator = "|"
+
 type ContextKey string
 
 // HexToUint64 converts a hexadecimal string to its decimal representation as a string.
@@ -73,7 +75,13 @@ func NormalizeHex(value interface{}) (string, error) {
 }
 
 func WildcardMatch(pattern, value string) bool {
-	return wildcard.Match(pattern, value)
+	portions := strings.Split(pattern, "|")
+	for _, portion := range portions {
+		if wildcard.Match(portion, value) {
+			return true
+		}
+	}
+	return false
 }
 
 func RemoveDuplicates(slice []string) []string {

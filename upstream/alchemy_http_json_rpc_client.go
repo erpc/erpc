@@ -55,13 +55,14 @@ var alchemyNetworkSubdomains = map[int64]string{
 }
 
 type AlchemyHttpJsonRpcClient struct {
+	appCtx   context.Context
 	upstream *Upstream
 	apiKey   string
 	clients  map[string]HttpJsonRpcClient
 	mu       sync.RWMutex
 }
 
-func NewAlchemyHttpJsonRpcClient(pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
+func NewAlchemyHttpJsonRpcClient(appCtx context.Context, pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
 	if !strings.HasSuffix(parsedUrl.Scheme, "alchemy") {
 		return nil, fmt.Errorf("invalid Alchemy URL scheme: %s", parsedUrl.Scheme)
 	}
@@ -72,6 +73,7 @@ func NewAlchemyHttpJsonRpcClient(pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcC
 	}
 
 	return &AlchemyHttpJsonRpcClient{
+		appCtx:   appCtx,
 		upstream: pu,
 		apiKey:   apiKey,
 		clients:  make(map[string]HttpJsonRpcClient),
@@ -82,7 +84,7 @@ func (c *AlchemyHttpJsonRpcClient) GetType() ClientType {
 	return ClientTypeAlchemyHttpJsonRpc
 }
 
-func (c *AlchemyHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, error) {
+func (c *AlchemyHttpJsonRpcClient) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
 	}
@@ -134,7 +136,7 @@ func (c *AlchemyHttpJsonRpcClient) getOrCreateClient(network common.Network) (Ht
 		return nil, err
 	}
 
-	client, err = NewGenericHttpJsonRpcClient(&c.upstream.Logger, c.upstream, parsedURL)
+	client, err = NewGenericHttpJsonRpcClient(c.appCtx, &c.upstream.Logger, c.upstream, parsedURL)
 	if err != nil {
 		return nil, err
 	}

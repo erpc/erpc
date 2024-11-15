@@ -153,9 +153,13 @@ func TestInit_HappyPath(t *testing.T) {
 	//
 	// 1) Create a new mock EVM JSON-RPC server
 	//
-	gock.New("http://fake.localhost/good-evm-rpc").
+	util.SetupMocksForEvmStatePoller()
+	gock.New("http://rpc1.localhost").
 		Times(5).
 		Post("").
+		Filter(func(request *http.Request) bool {
+			return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+		}).
 		Reply(200).
 		JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
 
@@ -175,7 +179,7 @@ func TestInit_HappyPath(t *testing.T) {
 logLevel: DEBUG
 
 server:
-  httpHostV4: "` + localHost + `"
+  httpHostV4: 0.0.0.0 # "` + localHost + `"
   listenV4: true
   httpPort: ` + localPort + `
 
@@ -183,7 +187,7 @@ projects:
   - id: main
     upstreams:
     - id: good-evm-rpc
-      endpoint: http://fake.localhost/good-evm-rpc
+      endpoint: http://rpc1.localhost
       type: evm
       evm:
         chainId: 1
@@ -195,7 +199,7 @@ projects:
 `)
 	args := []string{"erpc-test", cfg.Name()}
 
-	logger := log.With().Logger()
+	logger := log.Logger
 	err = erpc.Init(context.Background(), logger, fs, args)
 	if err != nil {
 		t.Fatal(err)
@@ -206,7 +210,7 @@ projects:
 	//
 	body := bytes.NewBuffer([]byte(`
 		{
-			"method": "eth_getBlockByNumber",
+			"method": "eth_getBalance",
 			"params": [
 				"0x1273c18",
 				false

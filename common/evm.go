@@ -3,10 +3,8 @@ package common
 type EvmNodeType string
 
 const (
-	EvmNodeTypeFull      EvmNodeType = "full"
-	EvmNodeTypeArchive   EvmNodeType = "archive"
-	EvmNodeTypeSequencer EvmNodeType = "sequencer"
-	EvmNodeTypeExecution EvmNodeType = "execution"
+	EvmNodeTypeFull    EvmNodeType = "full"
+	EvmNodeTypeArchive EvmNodeType = "archive"
 )
 
 func IsEvmWriteMethod(method string) bool {
@@ -18,4 +16,12 @@ func IsEvmWriteMethod(method string) bool {
 		method == "eth_newFilter" ||
 		method == "eth_newBlockFilter" ||
 		method == "eth_newPendingTransactionFilter"
+}
+
+type EvmStatePoller interface {
+	LatestBlock() int64
+	FinalizedBlock() int64
+	IsBlockFinalized(blockNumber int64) (bool, error)
+	SuggestFinalizedBlock(blockNumber int64)
+	SuggestLatestBlock(blockNumber int64)
 }

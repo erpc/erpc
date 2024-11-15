@@ -1,13 +1,15 @@
 package erpc
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"path"
-
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -19,41 +21,46 @@ import (
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
-	"github.com/valyala/fasthttp"
+	"github.com/rs/zerolog/log"
 )
 
 type HttpServer struct {
+	appCtx context.Context
 	config *common.ServerConfig
-	server *fasthttp.Server
+	admin  *common.AdminConfig
+	server *http.Server
 	erpc   *ERPC
 	logger *zerolog.Logger
 }
 
-func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.ServerConfig, erpc *ERPC) *HttpServer {
-	reqMaxTimeout, err := time.ParseDuration(cfg.MaxTimeout)
+func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.ServerConfig, admin *common.AdminConfig, erpc *ERPC) *HttpServer {
+	reqMaxTimeout, err := time.ParseDuration(*cfg.MaxTimeout)
 	if err != nil {
-		if cfg.MaxTimeout != "" {
+		if cfg.MaxTimeout != nil && *cfg.MaxTimeout != "" {
 			logger.Error().Err(err).Msgf("failed to parse max timeout duration using 30s default")
 		}
 		reqMaxTimeout = 30 * time.Second
 	}
 
 	srv := &HttpServer{
+		appCtx: ctx,
 		config: cfg,
+		admin:  admin,
 		erpc:   erpc,
 		logger: logger,
 	}
 
-	srv.server = &fasthttp.Server{
-		Handler: fasthttp.TimeoutHandler(
-			srv.createRequestHandler(ctx, reqMaxTimeout),
-			// This is the last resort timeout if nothing could be done in time
-			reqMaxTimeout+1*time.Second,
-			`{"jsonrpc":"2.0","error":{"code":-32603,"message":"request timeout before any upstream responded"}}`,
+	h := srv.createRequestHandler()
+	if cfg.EnableGzip != nil && *cfg.EnableGzip {
+		h = gzipHandler(h)
+	}
+	srv.server = &http.Server{
+		Handler: TimeoutHandler(
+			h,
+			reqMaxTimeout,
 		),
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		Name:         fmt.Sprintf("erpc (%s/%s)", common.ErpcVersion, common.ErpcCommitSha),
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 30 * time.Second,
 	}
 
 	go func() {
@@ -68,54 +75,70 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 	return srv
 }
 
-func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout time.Duration) fasthttp.RequestHandler {
-	return func(fastCtx *fasthttp.RequestCtx) {
-		defer func() {
-			defer func() { recover() }()
-			if r := recover(); r != nil {
-				msg := fmt.Sprintf("unexpected server panic on top-level handler: %v -> %s", r, util.Mem2Str(debug.Stack()))
-				s.logger.Error().Msgf(msg)
-				fastCtx.SetStatusCode(fasthttp.StatusInternalServerError)
-				fastCtx.Response.Header.Set("Content-Type", "application/json")
-				fastCtx.SetBodyString(fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, msg))
-			}
-		}()
-
-		encoder := common.SonicCfg.NewEncoder(fastCtx.Response.BodyWriter())
+func (s *HttpServer) createRequestHandler() http.Handler {
+	handleRequest := func(r *http.Request, w http.ResponseWriter, writeFatalError func(statusCode int, body error)) {
+		startedAt := time.Now()
+		encoder := common.SonicCfg.NewEncoder(w)
 		encoder.SetEscapeHTML(false)
 
-		projectId, architecture, chainId, isAdmin, isHealthCheck, err := s.parseUrlPath(fastCtx)
+		projectId, architecture, chainId, isAdmin, isHealthCheck, err := s.parseUrlPath(r)
 		if err != nil {
-			handleErrorResponse(s.logger, nil, err, fastCtx, encoder)
+			handleErrorResponse(s.logger, &startedAt, nil, err, w, encoder, writeFatalError)
 			return
 		}
 
 		if isHealthCheck {
-			s.handleHealthCheck(fastCtx, encoder)
+			s.handleHealthCheck(w, &startedAt, encoder, writeFatalError)
 			return
 		}
 
-		lg := s.logger.With().Str("projectId", projectId).Str("architecture", architecture).Str("chainId", chainId).Logger()
+		if isAdmin {
+			if s.admin != nil && s.admin.CORS != nil {
+				if !s.handleCORS(w, r, s.admin.CORS) || r.Method == http.MethodOptions {
+					return
+				}
+			}
+		}
+
+		var lg zerolog.Logger
+		if isAdmin {
+			lg = s.logger.With().Str("component", "admin").Logger()
+		} else {
+			lg = s.logger.With().Str("component", "proxy").Str("projectId", projectId).Str("networkId", fmt.Sprintf("%s:%s", architecture, chainId)).Logger()
+		}
 
 		project, err := s.erpc.GetProject(projectId)
 		if err != nil {
-			handleErrorResponse(&lg, nil, err, fastCtx, encoder)
+			handleErrorResponse(&lg, &startedAt, nil, err, w, encoder, writeFatalError)
 			return
 		}
 
-		if project.Config.CORS != nil {
-			if !s.handleCORS(fastCtx, project.Config.CORS) {
-				return
-			}
-
-			if fastCtx.IsOptions() {
+		if project != nil && project.Config.CORS != nil {
+			if !s.handleCORS(w, r, project.Config.CORS) || r.Method == http.MethodOptions {
 				return
 			}
 		}
 
-		body := fastCtx.PostBody()
+		// Handle gzipped request bodies
+		var bodyReader io.Reader = r.Body
+		if r.Header.Get("Content-Encoding") == "gzip" {
+			gzReader, err := gzip.NewReader(r.Body)
+			if err != nil {
+				handleErrorResponse(&lg, &startedAt, nil, common.NewErrInvalidRequest(fmt.Errorf("invalid gzip body: %w", err)), w, encoder, writeFatalError)
+				return
+			}
+			defer gzReader.Close()
+			bodyReader = gzReader
+		}
 
-		lg.Debug().Msgf("received request with body: %s", body)
+		// Replace the existing body read with our potentially decompressed reader
+		body, err := util.ReadAll(bodyReader, 1024*1024, 512)
+		if err != nil {
+			handleErrorResponse(&lg, &startedAt, nil, err, w, encoder, writeFatalError)
+			return
+		}
+
+		lg.Info().RawJSON("body", body).Msgf("received http request")
 
 		var requests []json.RawMessage
 		isBatch := len(body) > 0 && body[0] == '['
@@ -126,10 +149,12 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 			if err != nil {
 				handleErrorResponse(
 					&lg,
+					&startedAt,
 					nil,
 					common.NewErrJsonRpcRequestUnmarshal(err),
-					fastCtx,
+					w,
 					encoder,
+					writeFatalError,
 				)
 				return
 			}
@@ -138,59 +163,62 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 		responses := make([]interface{}, len(requests))
 		var wg sync.WaitGroup
 
-		var headersCopy fasthttp.RequestHeader
-		var queryArgsCopy fasthttp.Args
-		fastCtx.Request.Header.CopyTo(&headersCopy)
-		fastCtx.QueryArgs().CopyTo(&queryArgsCopy)
+		headers := r.Header
+		queryArgs := r.URL.Query()
 
 		for i, reqBody := range requests {
 			wg.Add(1)
-			go func(index int, rawReq json.RawMessage, headersCopy *fasthttp.RequestHeader, queryArgsCopy *fasthttp.Args) {
+			go func(index int, rawReq json.RawMessage, headers http.Header, queryArgs map[string][]string) {
 				defer func() {
-					defer func() { recover() }()
-					if r := recover(); r != nil {
-						msg := fmt.Sprintf("unexpected server panic on per-request handler: %v -> %s", r, util.Mem2Str(debug.Stack()))
+					if rec := recover(); rec != nil {
+						msg := fmt.Sprintf("unexpected server panic on per-request handler: %v", rec)
 						lg.Error().Msgf(msg)
-						fastCtx.SetStatusCode(fasthttp.StatusInternalServerError)
-						fastCtx.Response.Header.Set("Content-Type", "application/json")
-						fastCtx.SetBodyString(fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, msg))
+						responses[index] = processErrorBody(&lg, &startedAt, nil, fmt.Errorf(msg))
 					}
 				}()
 
 				defer wg.Done()
 
-				requestCtx, cancel := context.WithTimeoutCause(mainCtx, reqMaxTimeout, common.NewErrRequestTimeout(reqMaxTimeout))
-				defer cancel()
+				requestCtx := r.Context()
 
 				nq := common.NewNormalizedRequest(rawReq)
-				nq.ApplyDirectivesFromHttp(headersCopy, queryArgsCopy)
+				nq.ApplyDirectivesFromHttp(headers, queryArgs)
 
 				m, _ := nq.Method()
 				rlg := lg.With().Str("method", m).Logger()
 
-				ap, err := auth.NewPayloadFromHttp(project.Config.Id, nq, headersCopy, queryArgsCopy)
+				rlg.Trace().Interface("directives", nq.Directives()).Msgf("applied request directives")
+
+				var ap *auth.AuthPayload
+				var err error
+
+				if project != nil {
+					ap, err = auth.NewPayloadFromHttp(project.Config.Id, nq, headers, queryArgs)
+				} else if isAdmin {
+					ap, err = auth.NewPayloadFromHttp("admin", nq, headers, queryArgs)
+				}
 				if err != nil {
-					responses[index] = processErrorBody(&rlg, nq, err)
+					responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
 					return
 				}
 
 				if isAdmin {
-					if err := project.AuthenticateAdmin(requestCtx, nq, ap); err != nil {
-						responses[index] = processErrorBody(&rlg, nq, err)
+					if err := s.erpc.AdminAuthenticate(requestCtx, nq, ap); err != nil {
+						responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
 						return
 					}
 				} else {
 					if err := project.AuthenticateConsumer(requestCtx, nq, ap); err != nil {
-						responses[index] = processErrorBody(&rlg, nq, err)
+						responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
 						return
 					}
 				}
 
 				if isAdmin {
-					if project.Config.Admin != nil {
-						resp, err := project.HandleAdminRequest(requestCtx, nq)
+					if s.admin != nil {
+						resp, err := s.erpc.AdminHandleRequest(requestCtx, nq)
 						if err != nil {
-							responses[index] = processErrorBody(&rlg, nq, err)
+							responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
 							return
 						}
 						responses[index] = resp
@@ -198,6 +226,7 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 					} else {
 						responses[index] = processErrorBody(
 							&rlg,
+							&startedAt,
 							nq,
 							common.NewErrAuthUnauthorized(
 								"",
@@ -213,14 +242,14 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 				if architecture == "" || chainId == "" {
 					var req map[string]interface{}
 					if err := common.SonicCfg.Unmarshal(rawReq, &req); err != nil {
-						responses[index] = processErrorBody(&rlg, nq, common.NewErrInvalidRequest(err))
+						responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(err))
 						return
 					}
 					if networkIdFromBody, ok := req["networkId"].(string); ok {
 						networkId = networkIdFromBody
 						parts := strings.Split(networkId, ":")
 						if len(parts) != 2 {
-							responses[index] = processErrorBody(&rlg, nq, common.NewErrInvalidRequest(fmt.Errorf(
+							responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(fmt.Errorf(
 								"networkId must follow this format: 'architecture:chainId' for example 'evm:42161'",
 							)))
 							return
@@ -228,7 +257,7 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 						architecture = parts[0]
 						chainId = parts[1]
 					} else {
-						responses[index] = processErrorBody(&rlg, nq, common.NewErrInvalidRequest(fmt.Errorf(
+						responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(fmt.Errorf(
 							"networkId must follow this format: 'architecture:chainId' for example 'evm:42161'",
 						)))
 						return
@@ -237,88 +266,138 @@ func (s *HttpServer) createRequestHandler(mainCtx context.Context, reqMaxTimeout
 					networkId = fmt.Sprintf("%s:%s", architecture, chainId)
 				}
 
-				nw, err := project.GetNetwork(networkId)
+				nw, err := project.GetNetwork(s.appCtx, networkId)
 				if err != nil {
-					responses[index] = processErrorBody(&rlg, nq, err)
+					responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
 					return
 				}
 				nq.SetNetwork(nw)
 
 				resp, err := project.Forward(requestCtx, networkId, nq)
 				if err != nil {
-					responses[index] = processErrorBody(&rlg, nq, err)
+					responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
 					return
 				}
 
 				responses[index] = resp
-			}(i, reqBody, &headersCopy, &queryArgsCopy)
+			}(i, reqBody, headers, queryArgs)
 		}
 
 		wg.Wait()
+		requestCtx := r.Context()
 
-		fastCtx.Response.Header.SetContentType("application/json")
+		if err := requestCtx.Err(); err != nil {
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				cause := context.Cause(requestCtx)
+				if cause != nil {
+					err = cause
+				}
+				s.logger.Trace().Err(err).Msg("request premature context error")
+				writeFatalError(http.StatusInternalServerError, err)
+			}
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
 
 		if isBatch {
-			fastCtx.SetStatusCode(fasthttp.StatusOK)
-			err = encoder.Encode(responses)
+			w.WriteHeader(http.StatusOK)
+			bw := NewBatchResponseWriter(responses)
+			_, err = bw.WriteTo(w)
+
 			for _, resp := range responses {
 				if r, ok := resp.(*common.NormalizedResponse); ok {
 					r.Release()
 				}
 			}
-			if err != nil {
-				fastCtx.SetStatusCode(fasthttp.StatusInternalServerError)
-				fastCtx.Response.Header.Set("Content-Type", "application/json")
-				fastCtx.SetBodyString(fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, err.Error()))
+
+			if err != nil && !errors.Is(err, http.ErrHandlerTimeout) {
+				s.logger.Error().Err(err).Msg("failed to write batch response")
+				writeFatalError(http.StatusInternalServerError, err)
 				return
 			}
 		} else {
 			res := responses[0]
-			setResponseHeaders(res, fastCtx)
-			setResponseStatusCode(res, fastCtx)
-			if r, ok := res.(*common.NormalizedResponse); ok {
-				rdr, err := r.GetReader()
-				if err != nil {
-					fastCtx.SetStatusCode(fasthttp.StatusInternalServerError)
-					fastCtx.SetBodyString(fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, err.Error()))
-					return
-				}
-				fastCtx.Response.SetBodyStream(rdr, -1)
-				r.Release()
-			} else {
-				err = encoder.Encode(res)
+			setResponseHeaders(res, w)
+			setResponseStatusCode(res, w)
+
+			switch v := res.(type) {
+			case *common.NormalizedResponse:
+				_, err = v.WriteTo(w)
+				v.Release()
+			case *HttpJsonRpcErrorResponse:
+				_, err = writeJsonRpcError(w, v)
+			default:
+				err = common.SonicCfg.NewEncoder(w).Encode(res)
 			}
+
 			if err != nil {
-				fastCtx.SetStatusCode(fasthttp.StatusInternalServerError)
-				fastCtx.SetBodyString(fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, err.Error()))
+				writeFatalError(http.StatusInternalServerError, err)
 				return
 			}
 		}
 	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		finalErrorOnce := &sync.Once{}
+		writeFatalError := func(statusCode int, err error) {
+			finalErrorOnce.Do(func() {
+				defer func() {
+					if rec := recover(); rec != nil {
+						s.logger.Error().Msgf("unexpected server panic on final error writer: %v -> %s", rec, debug.Stack())
+					}
+				}()
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(statusCode)
+
+				msg, err := common.SonicCfg.Marshal(err.Error())
+				if err != nil {
+					msg, _ = common.SonicCfg.Marshal(err.Error())
+				}
+				body := fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":%s}}`, msg)
+
+				fmt.Fprint(w, body)
+			})
+		}
+
+		defer func() {
+			if rec := recover(); rec != nil {
+				msg := fmt.Sprintf("unexpected server panic on top-level handler: %v -> %s", rec, debug.Stack())
+				s.logger.Error().Msgf(msg)
+				writeFatalError(
+					http.StatusInternalServerError,
+					fmt.Errorf(`unexpected server panic on top-level handler: %s`, rec),
+				)
+			}
+		}()
+
+		handleRequest(r, w, writeFatalError)
+	})
 }
 
-func (s *HttpServer) parseUrlPath(fctx *fasthttp.RequestCtx) (
+func (s *HttpServer) parseUrlPath(r *http.Request) (
 	projectId, architecture, chainId string,
 	isAdmin bool,
 	isHealthCheck bool,
 	err error,
 ) {
-	isPost := fctx.IsPost()
-	ps := path.Clean(util.Mem2Str(fctx.Path()))
+	ps := path.Clean(r.URL.Path)
 	segments := strings.Split(ps, "/")
 
-	if len(segments) != 2 && len(segments) != 3 && len(segments) != 4 {
+	if len(segments) > 4 {
 		return "", "", "", false, false, common.NewErrInvalidUrlPath(ps)
 	}
 
-	if isPost && len(segments) == 4 {
+	isPost := r.Method == http.MethodPost
+	isOptions := r.Method == http.MethodOptions
+
+	if (isPost || isOptions) && len(segments) == 4 {
 		projectId = segments[1]
 		architecture = segments[2]
 		chainId = segments[3]
-	} else if isPost && len(segments) == 3 && segments[2] == "admin" {
-		projectId = segments[1]
+	} else if (isPost || isOptions) && len(segments) == 2 && segments[1] == "admin" {
 		isAdmin = true
-	} else if len(segments) == 2 && segments[1] == "healthcheck" {
+	} else if len(segments) == 2 && (segments[1] == "healthcheck" || segments[1] == "") {
 		isHealthCheck = true
 	} else {
 		return "", "", "", false, false, common.NewErrInvalidUrlPath(ps)
@@ -327,13 +406,19 @@ func (s *HttpServer) parseUrlPath(fctx *fasthttp.RequestCtx) (
 	return projectId, architecture, chainId, isAdmin, isHealthCheck, nil
 }
 
-func (s *HttpServer) handleCORS(ctx *fasthttp.RequestCtx, corsConfig *common.CORSConfig) bool {
-	origin := util.Mem2Str(ctx.Request.Header.Peek("Origin"))
+func (s *HttpServer) handleCORS(w http.ResponseWriter, r *http.Request, corsConfig *common.CORSConfig) bool {
+	origin := r.Header.Get("Origin")
 	if origin == "" {
+		// When no Origin is provided, we allow the request as there's no point in enforcing CORS.
+		// For example if client is a custom code (not mainstream browser) there's no point in enforcing CORS.
+		// Besides, eRPC is not relying on cookies so CORS is not a big concern (i.e. session hijacking is irrelevant).
+		// Bad actors can just build a custom proxy and spoof headers to bypass it.
+		// Therefore in the context of eRPC, even using "*" (allowed origins) is not a big concern, in this context
+		// CORS is just useful to prevent normies from putting your eRPC URL in their frontend code for example.
 		return true
 	}
 
-	health.MetricCORSRequestsTotal.WithLabelValues(util.Mem2Str(ctx.Path()), origin).Inc()
+	health.MetricCORSRequestsTotal.WithLabelValues(r.URL.Path, origin).Inc()
 
 	allowed := false
 	for _, allowedOrigin := range corsConfig.AllowedOrigins {
@@ -345,62 +430,54 @@ func (s *HttpServer) handleCORS(ctx *fasthttp.RequestCtx, corsConfig *common.COR
 
 	if !allowed {
 		s.logger.Debug().Str("origin", origin).Msg("CORS request from disallowed origin")
-		health.MetricCORSDisallowedOriginTotal.WithLabelValues(util.Mem2Str(ctx.Path()), origin).Inc()
+		health.MetricCORSDisallowedOriginTotal.WithLabelValues(r.URL.Path, origin).Inc()
 
-		if ctx.IsOptions() {
-			ctx.SetStatusCode(fasthttp.StatusNoContent)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
 		} else {
-			ctx.Error("CORS request from disallowed origin", fasthttp.StatusForbidden)
+			http.Error(w, "CORS request from disallowed origin", http.StatusForbidden)
 		}
 		return false
 	}
 
-	ctx.Response.Header.Set("Access-Control-Allow-Origin", origin)
-	ctx.Response.Header.Set("Access-Control-Allow-Methods", strings.Join(corsConfig.AllowedMethods, ", "))
-	ctx.Response.Header.Set("Access-Control-Allow-Headers", strings.Join(corsConfig.AllowedHeaders, ", "))
-	ctx.Response.Header.Set("Access-Control-Expose-Headers", strings.Join(corsConfig.ExposedHeaders, ", "))
+	w.Header().Set("Access-Control-Allow-Origin", origin)
+	w.Header().Set("Access-Control-Allow-Methods", strings.Join(corsConfig.AllowedMethods, ", "))
+	w.Header().Set("Access-Control-Allow-Headers", strings.Join(corsConfig.AllowedHeaders, ", "))
+	w.Header().Set("Access-Control-Expose-Headers", strings.Join(corsConfig.ExposedHeaders, ", "))
 
-	if corsConfig.AllowCredentials {
-		ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
+	if corsConfig.AllowCredentials != nil && *corsConfig.AllowCredentials {
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
 	}
 
 	if corsConfig.MaxAge > 0 {
-		ctx.Response.Header.Set("Access-Control-Max-Age", fmt.Sprintf("%d", corsConfig.MaxAge))
+		w.Header().Set("Access-Control-Max-Age", fmt.Sprintf("%d", corsConfig.MaxAge))
 	}
 
-	if ctx.IsOptions() {
-		health.MetricCORSPreflightRequestsTotal.WithLabelValues(util.Mem2Str(ctx.Path()), origin).Inc()
-		ctx.SetStatusCode(fasthttp.StatusNoContent)
+	if r.Method == http.MethodOptions {
+		health.MetricCORSPreflightRequestsTotal.WithLabelValues(r.URL.Path, origin).Inc()
+		w.WriteHeader(http.StatusNoContent)
 		return false
 	}
 
 	return true
 }
 
-func setResponseHeaders(res interface{}, fastCtx *fasthttp.RequestCtx) {
+func setResponseHeaders(res interface{}, w http.ResponseWriter) {
 	var rm common.ResponseMetadata
 	var ok bool
 	rm, ok = res.(common.ResponseMetadata)
 	if !ok {
-		var jrsp map[string]interface{}
-		var hjrsp *HttpJsonRpcErrorResponse
-		if jrsp, ok = res.(map[string]interface{}); ok {
-			var err error
-			if err, ok = jrsp["cause"].(error); ok {
-				uer := &common.ErrUpstreamsExhausted{}
-				if ok = errors.As(err, &uer); ok {
+		if jrsp, ok := res.(map[string]interface{}); ok {
+			if err, ok := jrsp["cause"].(error); ok {
+				if uer, ok := err.(*common.ErrUpstreamsExhausted); ok {
 					rm = uer
-				} else {
-					uer := &common.ErrUpstreamRequest{}
-					if ok = errors.As(err, &uer); ok {
-						rm = uer
-					}
+				} else if uer, ok := err.(*common.ErrUpstreamRequest); ok {
+					rm = uer
 				}
 			}
-		} else if hjrsp, ok = res.(*HttpJsonRpcErrorResponse); ok {
+		} else if hjrsp, ok := res.(*HttpJsonRpcErrorResponse); ok {
 			if err := hjrsp.Cause; err != nil {
-				uer := &common.ErrUpstreamRequest{}
-				if ok = errors.As(err, &uer); ok {
+				if uer, ok := err.(*common.ErrUpstreamRequest); ok {
 					rm = uer
 				}
 			}
@@ -408,33 +485,31 @@ func setResponseHeaders(res interface{}, fastCtx *fasthttp.RequestCtx) {
 	}
 	if ok && rm != nil {
 		if rm.FromCache() {
-			fastCtx.Response.Header.Set("X-ERPC-Cache", "HIT")
+			w.Header().Set("X-ERPC-Cache", "HIT")
 		} else {
-			fastCtx.Response.Header.Set("X-ERPC-Cache", "MISS")
+			w.Header().Set("X-ERPC-Cache", "MISS")
 		}
 		if rm.UpstreamId() != "" {
-			fastCtx.Response.Header.Set("X-ERPC-Upstream", rm.UpstreamId())
+			w.Header().Set("X-ERPC-Upstream", rm.UpstreamId())
 		}
-		fastCtx.Response.Header.Set("X-ERPC-Attempts", fmt.Sprintf("%d", rm.Attempts()))
-		fastCtx.Response.Header.Set("X-ERPC-Retries", fmt.Sprintf("%d", rm.Retries()))
-		fastCtx.Response.Header.Set("X-ERPC-Hedges", fmt.Sprintf("%d", rm.Hedges()))
+		w.Header().Set("X-ERPC-Attempts", fmt.Sprintf("%d", rm.Attempts()))
+		w.Header().Set("X-ERPC-Retries", fmt.Sprintf("%d", rm.Retries()))
+		w.Header().Set("X-ERPC-Hedges", fmt.Sprintf("%d", rm.Hedges()))
 	}
 }
 
-func setResponseStatusCode(respOrErr interface{}, fastCtx *fasthttp.RequestCtx) {
+func setResponseStatusCode(respOrErr interface{}, w http.ResponseWriter) {
+	statusCode := http.StatusOK
 	if err, ok := respOrErr.(error); ok {
-		fastCtx.SetStatusCode(decideErrorStatusCode(err))
+		statusCode = decideErrorStatusCode(err)
 	} else if resp, ok := respOrErr.(map[string]interface{}); ok {
 		if cause, ok := resp["cause"].(error); ok {
-			fastCtx.SetStatusCode(decideErrorStatusCode(cause))
-		} else {
-			fastCtx.SetStatusCode(fasthttp.StatusOK)
+			statusCode = decideErrorStatusCode(cause)
 		}
 	} else if hjrsp, ok := respOrErr.(*HttpJsonRpcErrorResponse); ok {
-		fastCtx.SetStatusCode(decideErrorStatusCode(hjrsp.Cause))
-	} else {
-		fastCtx.SetStatusCode(fasthttp.StatusOK)
+		statusCode = decideErrorStatusCode(hjrsp.Cause)
 	}
+	w.WriteHeader(statusCode)
 }
 
 type HttpJsonRpcErrorResponse struct {
@@ -444,18 +519,18 @@ type HttpJsonRpcErrorResponse struct {
 	Cause   error       `json:"-"`
 }
 
-func processErrorBody(logger *zerolog.Logger, nq *common.NormalizedRequest, err error) interface{} {
+func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.NormalizedRequest, err error) interface{} {
 	if !common.IsNull(err) {
 		if nq != nil {
 			nq.RLock()
 		}
-		if common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
+		if common.HasErrorCode(err, common.ErrCodeEndpointClientSideException, common.ErrCodeInvalidUrlPath) {
 			logger.Debug().Err(err).Object("request", nq).Msgf("forward request errored with client-side exception")
 		} else {
 			if e, ok := err.(common.StandardError); ok {
-				logger.Error().Err(err).Object("request", nq).Msgf("failed to forward request: %s", e.DeepestMessage())
+				logger.Warn().Err(err).Object("request", nq).Dur("durationMs", time.Since(*startedAt)).Msgf("failed to forward request: %s", e.DeepestMessage())
 			} else {
-				logger.Error().Err(err).Object("request", nq).Msgf("failed to forward request: %s", err.Error())
+				logger.Warn().Err(err).Object("request", nq).Dur("durationMs", time.Since(*startedAt)).Msgf("failed to forward request: %s", err.Error())
 			}
 		}
 		if nq != nil {
@@ -463,7 +538,6 @@ func processErrorBody(logger *zerolog.Logger, nq *common.NormalizedRequest, err 
 		}
 	}
 
-	// TODO extend this section to detect transport mode (besides json-rpc) when more modes are added.
 	err = common.TranslateToJsonRpcException(err)
 	var jsonrpcVersion string = "2.0"
 	var reqId interface{} = nil
@@ -508,40 +582,47 @@ func decideErrorStatusCode(err error) int {
 	if e, ok := err.(common.StandardError); ok {
 		return e.ErrorStatusCode()
 	}
-	return fasthttp.StatusInternalServerError
+	return http.StatusInternalServerError
 }
 
-func handleErrorResponse(logger *zerolog.Logger, nq *common.NormalizedRequest, err error, ctx *fasthttp.RequestCtx, encoder sonic.Encoder) {
-	resp := processErrorBody(logger, nq, err)
-	setResponseStatusCode(err, ctx)
+func handleErrorResponse(
+	logger *zerolog.Logger,
+	startedAt *time.Time,
+	nq *common.NormalizedRequest,
+	err error,
+	w http.ResponseWriter,
+	encoder sonic.Encoder,
+	writeFatalError func(statusCode int, body error),
+) {
+	resp := processErrorBody(logger, startedAt, nq, err)
+	setResponseStatusCode(err, w)
 	err = encoder.Encode(resp)
 	if err != nil {
 		logger.Error().Err(err).Msgf("failed to encode error response")
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-		ctx.Response.Header.Set("Content-Type", "application/json")
-		ctx.SetBodyString(fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"%s"}}`, err.Error()))
-	} else {
-		ctx.Response.Header.Set("Content-Type", "application/json")
+		writeFatalError(http.StatusInternalServerError, err)
 	}
 }
 
 func (s *HttpServer) Start(logger *zerolog.Logger) error {
-	addrV4 := fmt.Sprintf("%s:%d", s.config.HttpHostV4, s.config.HttpPort)
-	addrV6 := fmt.Sprintf("%s:%d", s.config.HttpHostV6, s.config.HttpPort)
-
 	var err error
 	var ln net.Listener
 	var ln4 net.Listener
 	var ln6 net.Listener
 
-	if s.config.HttpHostV4 != "" && s.config.ListenV4 {
-		logger.Info().Msgf("starting http server on port: %d IPv4: %s", s.config.HttpPort, addrV4)
+	if s.config.HttpPort == nil {
+		return fmt.Errorf("server.httpPort is not configured")
+	}
+
+	if s.config.HttpHostV4 != nil && s.config.ListenV4 != nil && *s.config.ListenV4 {
+		addrV4 := fmt.Sprintf("%s:%d", *s.config.HttpHostV4, *s.config.HttpPort)
+		logger.Info().Msgf("starting http server on port: %d IPv4: %s", *s.config.HttpPort, addrV4)
 		ln4, err = net.Listen("tcp4", addrV4)
 		if err != nil {
 			return fmt.Errorf("error listening on IPv4: %w", err)
 		}
 	}
-	if s.config.HttpHostV6 != "" && s.config.ListenV6 {
+	if s.config.HttpHostV6 != nil && s.config.ListenV6 != nil && *s.config.ListenV6 {
+		addrV6 := fmt.Sprintf("%s:%d", *s.config.HttpHostV6, *s.config.HttpPort)
 		logger.Info().Msgf("starting http server on port: %d IPv6: %s", s.config.HttpPort, addrV6)
 		ln6, err = net.Listen("tcp6", addrV6)
 		if err != nil {
@@ -564,7 +645,7 @@ func (s *HttpServer) Start(logger *zerolog.Logger) error {
 	}
 
 	if ln == nil {
-		return fmt.Errorf("you must configure at least one of server.httpPortV4 or server.httpPortV6")
+		return fmt.Errorf("you must configure at least one of server.httpHostV4 or server.httpHostV6")
 	}
 
 	return s.server.Serve(ln)
@@ -572,5 +653,54 @@ func (s *HttpServer) Start(logger *zerolog.Logger) error {
 
 func (s *HttpServer) Shutdown(logger *zerolog.Logger) error {
 	logger.Info().Msg("stopping http server...")
-	return s.server.Shutdown()
+	return s.server.Shutdown(context.Background())
+}
+
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	gzipWriter *gzip.Writer
+}
+
+func (w *gzipResponseWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		err := w.gzipWriter.Flush()
+		if err != nil {
+			log.Error().Err(err).Msg("failed to flush gzip writer")
+		}
+		flusher.Flush()
+	}
+}
+
+func (w *gzipResponseWriter) Write(b []byte) (int, error) {
+	return w.gzipWriter.Write(b)
+}
+
+func gzipHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check if client accepts gzip encoding
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Initialize gzip writer
+		gz := gzip.NewWriter(w)
+		defer gz.Close()
+
+		// Create gzip response writer
+		gzw := &gzipResponseWriter{
+			ResponseWriter: w,
+			gzipWriter:     gz,
+		}
+
+		// Remove Content-Length header as it will no longer be valid
+		w.Header().Del("Content-Length")
+
+		// Set required headers
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Vary", "Accept-Encoding")
+
+		// Call the next handler with our gzip response writer
+		next.ServeHTTP(gzw, r)
+	})
 }

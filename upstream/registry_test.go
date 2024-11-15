@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -14,15 +15,17 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestUpstreamsRegistry(t *testing.T) {
-	logger := zerolog.New(zerolog.NewConsoleWriter())
+func TestUpstreamsRegistry_Ordering(t *testing.T) {
+	logger := log.Logger
 	projectID := "test-project"
 	networkID := "evm:123"
 	method := "eth_call"
-	windowSize := 3 * time.Second
+	windowSize := 300 * time.Millisecond
 
 	t.Run("RefreshScoresForRequests", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
 		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 20)
@@ -36,7 +39,9 @@ func TestUpstreamsRegistry(t *testing.T) {
 	})
 
 	t.Run("CorrectOrderForLatency", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method, 10, 0.20)
@@ -50,7 +55,9 @@ func TestUpstreamsRegistry(t *testing.T) {
 	})
 
 	t.Run("CorrectOrderForErrorRate", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, 10*time.Hour)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 10*time.Hour)
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
 		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 30)
@@ -64,7 +71,9 @@ func TestUpstreamsRegistry(t *testing.T) {
 	})
 
 	t.Run("CorrectOrderForBlockLag", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, 10*time.Hour)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 10*time.Hour)
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
 		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 0)
@@ -84,7 +93,9 @@ func TestUpstreamsRegistry(t *testing.T) {
 	})
 
 	t.Run("CorrectOrderForFinalizationLag", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, 10*time.Hour)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 10*time.Hour)
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
 		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 0)
@@ -104,7 +115,9 @@ func TestUpstreamsRegistry(t *testing.T) {
 	})
 
 	t.Run("CorrectOrderForP90Latency", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method, 10, 0.05)
@@ -116,31 +129,36 @@ func TestUpstreamsRegistry(t *testing.T) {
 	})
 
 	t.Run("CorrectOrderForErrorRateOverTime", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize)
+		windowSize := 100 * time.Millisecond
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
 		// Initial phase
-		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 20)
-		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 30)
+		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 30)
+		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 80)
 		simulateRequests(metricsTracker, networkID, "upstream-c", method, 100, 10)
 
 		expectedOrder := []string{"upstream-c", "upstream-a", "upstream-b"}
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
 
 		// Simulate time passing and metrics reset
-		time.Sleep(windowSize)
+		time.Sleep(windowSize + 10*time.Millisecond)
 
 		// Second phase
-		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 15)
-		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 5)
-		simulateRequests(metricsTracker, networkID, "upstream-c", method, 100, 20)
+		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 30)
+		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 10)
+		simulateRequests(metricsTracker, networkID, "upstream-c", method, 100, 80)
 
 		expectedOrder = []string{"upstream-b", "upstream-a", "upstream-c"}
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
 	})
 
 	t.Run("CorrectOrderForRateLimiting", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 		method := "eth_call"
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
@@ -155,7 +173,9 @@ func TestUpstreamsRegistry(t *testing.T) {
 	})
 
 	t.Run("CorrectOrderForTotalRequests", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 		method := "eth_call"
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
@@ -168,7 +188,9 @@ func TestUpstreamsRegistry(t *testing.T) {
 	})
 
 	t.Run("CorrectOrderForMultipleMethodsRequests", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 
 		methodGetLogs := "eth_getLogs"
 		methodTraceTransaction := "eth_traceTransaction"
@@ -193,7 +215,9 @@ func TestUpstreamsRegistry(t *testing.T) {
 	})
 
 	t.Run("CorrectOrderForMultipleMethodsLatencyOverTime", func(t *testing.T) {
-		registry, metricsTracker := createTestRegistry(projectID, &logger, windowSize)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 
 		method1 := "eth_call"
 		method2 := "eth_getBalance"
@@ -240,7 +264,7 @@ func TestUpstreamsRegistry(t *testing.T) {
 	})
 }
 
-func TestUpstreamScoring(t *testing.T) {
+func TestUpstreamsRegistry_Scoring(t *testing.T) {
 	projectID := "test-project"
 	networkID := "evm:123"
 	method := "eth_call"
@@ -282,7 +306,9 @@ func TestUpstreamScoring(t *testing.T) {
 
 	for _, scenario := range scenarios {
 		t.Run(scenario.name, func(t *testing.T) {
-			registry, metricsTracker := createTestRegistry(projectID, &log.Logger, scenario.windowSize)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			registry, metricsTracker := createTestRegistry(ctx, projectID, &log.Logger, scenario.windowSize)
 			_, _ = registry.GetSortedUpstreams(networkID, method)
 
 			for _, upstream := range scenario.upstreamConfig {
@@ -298,7 +324,7 @@ func TestUpstreamScoring(t *testing.T) {
 	}
 }
 
-func TestCalculateScoreDynamicScenarios(t *testing.T) {
+func TestUpstreamsRegistry_DynamicScenarios(t *testing.T) {
 	registry := &UpstreamsRegistry{
 		scoreRefreshInterval: time.Second,
 		logger:               &log.Logger,
@@ -416,7 +442,15 @@ func TestCalculateScoreDynamicScenarios(t *testing.T) {
 			totalScore := 0.0
 
 			for i, ups := range scenario.upstreams {
+				u := &Upstream{
+					config: &common.UpstreamConfig{
+						Id: fmt.Sprintf("upstream-%d", i),
+					},
+				}
 				score := registry.calculateScore(
+					u,
+					"*",
+					"*",
 					ups.totalRequests,
 					ups.p90Latency,
 					ups.errorRate,
@@ -441,9 +475,272 @@ func TestCalculateScoreDynamicScenarios(t *testing.T) {
 	}
 }
 
-func createTestRegistry(projectID string, logger *zerolog.Logger, windowSize time.Duration) (*UpstreamsRegistry, *health.Tracker) {
+func TestUpstreamsRegistry_Multiplier(t *testing.T) {
+	registry := &UpstreamsRegistry{
+		scoreRefreshInterval: time.Second,
+		logger:               &log.Logger,
+	}
+
+	type upstreamConfig struct {
+		id                 string
+		priorityMultiplier *common.ScoreMultiplierConfig
+		metrics            struct {
+			totalRequests   float64
+			p90Latency      float64
+			errorRate       float64
+			throttledRate   float64
+			blockHeadLag    float64
+			finalizationLag float64
+		}
+	}
+
+	type expectedRange struct {
+		min float64
+		max float64
+	}
+
+	scenarios := []struct {
+		name             string
+		networkId        string
+		method           string
+		upstreams        []upstreamConfig
+		expectedPercents []expectedRange
+		description      string
+	}{
+		{
+			name:      "Premium provider preferred for eth_call",
+			networkId: "evm:1",
+			method:    "eth_call",
+			upstreams: []upstreamConfig{
+				{
+					id: "premium-provider",
+					priorityMultiplier: &common.ScoreMultiplierConfig{
+						Network:   "evm:1",
+						Method:    "eth_call",
+						Overall:   2.0, // Double the weight for this specific method
+						ErrorRate: 8.0, // Heavily penalize errors
+					},
+					metrics: struct {
+						totalRequests, p90Latency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
+					}{
+						totalRequests: 1000,
+						p90Latency:    0.2,
+						errorRate:     0.01, // Very low error rate
+						throttledRate: 0.01,
+					},
+				},
+				{
+					id: "standard-provider",
+					priorityMultiplier: &common.ScoreMultiplierConfig{
+						Network:   "evm:1",
+						Method:    "eth_call",
+						Overall:   1.0,
+						ErrorRate: 2.0,
+					},
+					metrics: struct {
+						totalRequests, p90Latency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
+					}{
+						totalRequests: 800,
+						p90Latency:    0.15, // Actually faster
+						errorRate:     0.02,
+						throttledRate: 0.02,
+					},
+				},
+			},
+			expectedPercents: []expectedRange{
+				{0.85, 0.95}, // Premium provider should get majority of traffic
+				{0.05, 0.15}, // Standard provider gets less despite better latency
+			},
+			description: "Premium provider should receive more traffic due to higher overall multiplier, even though standard provider has better latency",
+		},
+		{
+			name:      "Archive node preferred for eth_getLogs",
+			networkId: "evm:1",
+			method:    "eth_getLogs",
+			upstreams: []upstreamConfig{
+				{
+					id: "archive-node",
+					priorityMultiplier: &common.ScoreMultiplierConfig{
+						Network:    "evm:1",
+						Method:     "eth_getLogs",
+						Overall:    3.0, // Heavily prefer for historical queries
+						P90Latency: 2.0, // Latency less important for historical data
+					},
+					metrics: struct {
+						totalRequests, p90Latency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
+					}{
+						totalRequests: 500,
+						p90Latency:    0.5, // Slower but more reliable
+						errorRate:     0.01,
+						throttledRate: 0.01,
+					},
+				},
+				{
+					id: "full-node",
+					priorityMultiplier: &common.ScoreMultiplierConfig{
+						Network:    "evm:1",
+						Method:     "eth_getLogs",
+						Overall:    1.0,
+						P90Latency: 2.0,
+					},
+					metrics: struct {
+						totalRequests, p90Latency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
+					}{
+						totalRequests: 200,
+						p90Latency:    0.2,
+						errorRate:     0.05, // Higher error rate for historical queries
+						throttledRate: 0.02,
+					},
+				},
+			},
+			expectedPercents: []expectedRange{
+				{0.50, 0.60}, // Archive node should get majority of historical queries
+				{0.40, 0.50}, // Full node gets less traffic for historical data
+			},
+			description: "Archive node should receive more eth_getLogs traffic due to higher reliability despite slower response times",
+		},
+		{
+			name:      "Low latency node preferred for eth_getBalance",
+			networkId: "evm:1",
+			method:    "eth_getBalance",
+			upstreams: []upstreamConfig{
+				{
+					id: "fast-node",
+					priorityMultiplier: &common.ScoreMultiplierConfig{
+						Network:    "evm:1",
+						Method:     "eth_getBalance",
+						Overall:    1.0,
+						P90Latency: 8.0, // Heavily weight latency
+					},
+					metrics: struct {
+						totalRequests, p90Latency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
+					}{
+						totalRequests: 1000,
+						p90Latency:    0.05, // Very fast
+						errorRate:     0.02,
+						throttledRate: 0.01,
+					},
+				},
+				{
+					id: "slow-node",
+					priorityMultiplier: &common.ScoreMultiplierConfig{
+						Network:    "evm:1",
+						Method:     "eth_getBalance",
+						Overall:    1.0,
+						P90Latency: 8.0, // Same latency weight
+					},
+					metrics: struct {
+						totalRequests, p90Latency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
+					}{
+						totalRequests: 1000,
+						p90Latency:    0.2,  // Slower
+						errorRate:     0.01, // Slightly better error rate
+						throttledRate: 0.01,
+					},
+				},
+			},
+			expectedPercents: []expectedRange{
+				{0.50, 0.60}, // Fast node should get more traffic
+				{0.40, 0.50}, // Slow node gets less despite better error rate
+			},
+			description: "Fast node should receive more eth_getBalance traffic due to better latency, which is heavily weighted for this method",
+		},
+		{
+			name:      "Latest block preference for eth_getBlockByNumber",
+			networkId: "evm:1",
+			method:    "eth_getBlockByNumber",
+			upstreams: []upstreamConfig{
+				{
+					id: "realtime-node",
+					priorityMultiplier: &common.ScoreMultiplierConfig{
+						Network:      "evm:1",
+						Method:       "eth_getBlockByNumber",
+						Overall:      1.0,
+						BlockHeadLag: 5.0, // Heavily weight block lag
+					},
+					metrics: struct {
+						totalRequests, p90Latency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
+					}{
+						totalRequests: 1000,
+						p90Latency:    0.1,
+						errorRate:     0.02,
+						throttledRate: 0.01,
+						blockHeadLag:  0.4, // Small lag
+					},
+				},
+				{
+					id: "delayed-node",
+					priorityMultiplier: &common.ScoreMultiplierConfig{
+						Network:      "evm:1",
+						Method:       "eth_getBlockByNumber",
+						Overall:      1.0,
+						BlockHeadLag: 5.0, // Same block lag weight
+					},
+					metrics: struct {
+						totalRequests, p90Latency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
+					}{
+						totalRequests: 1000,
+						p90Latency:    0.1,
+						errorRate:     0.01,
+						throttledRate: 0.01,
+						blockHeadLag:  0.8, // Larger lag
+					},
+				},
+			},
+			expectedPercents: []expectedRange{
+				{0.90, 100},  // Realtime node should get more traffic
+				{0.00, 0.10}, // Delayed node gets less due to block lag
+			},
+			description: "Node with smaller block lag should receive more traffic for latest block queries",
+		},
+	}
+
+	for _, scenario := range scenarios {
+		t.Run(scenario.name, func(t *testing.T) {
+			scores := make([]float64, len(scenario.upstreams))
+			totalScore := 0.0
+
+			for i, ups := range scenario.upstreams {
+				u := &Upstream{
+					config: &common.UpstreamConfig{
+						Id: ups.id,
+						Routing: &common.RoutingConfig{
+							ScoreMultipliers: []*common.ScoreMultiplierConfig{ups.priorityMultiplier},
+						},
+					},
+				}
+
+				score := registry.calculateScore(
+					u,
+					scenario.networkId,
+					scenario.method,
+					ups.metrics.totalRequests,
+					ups.metrics.p90Latency,
+					ups.metrics.errorRate,
+					ups.metrics.throttledRate,
+					ups.metrics.blockHeadLag,
+					ups.metrics.finalizationLag,
+				)
+				scores[i] = float64(score)
+				totalScore += float64(score)
+			}
+
+			for i, score := range scores {
+				percent := score / totalScore
+				t.Logf("Upstream %s: Score: %f, Percent: %f", scenario.upstreams[i].id, score, percent)
+
+				assert.GreaterOrEqual(t, percent, scenario.expectedPercents[i].min,
+					"Upstream %s percent should be greater than or equal to %f", scenario.upstreams[i].id, scenario.expectedPercents[i].min)
+				assert.LessOrEqual(t, percent, scenario.expectedPercents[i].max,
+					"Upstream %s percent should be less than or equal to %f", scenario.upstreams[i].id, scenario.expectedPercents[i].max)
+			}
+		})
+	}
+}
+
+func createTestRegistry(ctx context.Context, projectID string, logger *zerolog.Logger, windowSize time.Duration) (*UpstreamsRegistry, *health.Tracker) {
 	metricsTracker := health.NewTracker(projectID, windowSize)
-	metricsTracker.Bootstrap(context.Background())
+	metricsTracker.Bootstrap(ctx)
 
 	upstreamConfigs := []*common.UpstreamConfig{
 		{Id: "upstream-a", Endpoint: "http://upstream-a.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
@@ -452,6 +749,7 @@ func createTestRegistry(projectID string, logger *zerolog.Logger, windowSize tim
 	}
 
 	registry := NewUpstreamsRegistry(
+		ctx,
 		logger,
 		projectID,
 		upstreamConfigs,
@@ -461,12 +759,12 @@ func createTestRegistry(projectID string, logger *zerolog.Logger, windowSize tim
 		1*time.Second,
 	)
 
-	err := registry.Bootstrap(context.Background())
+	err := registry.Bootstrap(ctx)
 	if err != nil {
 		panic(err)
 	}
 
-	err = registry.PrepareUpstreamsForNetwork("evm:123")
+	err = registry.PrepareUpstreamsForNetwork(ctx, "evm:123")
 	if err != nil {
 		panic(err)
 	}

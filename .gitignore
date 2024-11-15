@@ -9,6 +9,8 @@ vendor/
 coverage.txt
 .DS_Store
 erpc.yaml
+erpc.ts
 .generated-go-semantic-release-changelog.md
 .semrel/
 __debug*
+node_modules

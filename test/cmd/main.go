@@ -15,15 +15,15 @@ import (
 func main() {
 	// Define server configurations
 	serverConfigs := []test.ServerConfig{
-		{Port: 9081, FailureRate: 0.1, LimitedRate: 0.005, MinDelay: 50 * time.Millisecond, MaxDelay: 200 * time.Millisecond, SampleFile: "test/samples/evm-json-rpc.json"},
-		{Port: 9082, FailureRate: 0.3, LimitedRate: 0.2, MinDelay: 100 * time.Millisecond, MaxDelay: 300 * time.Millisecond, SampleFile: "test/samples/evm-json-rpc.json"},
-		{Port: 9083, FailureRate: 0.05, LimitedRate: 0.01, MinDelay: 30 * time.Millisecond, MaxDelay: 150 * time.Millisecond, SampleFile: "test/samples/evm-json-rpc.json"},
+		{Port: 9081, FailureRate: 0, LimitedRate: 0.005, MinDelay: 50 * time.Millisecond, MaxDelay: 200 * time.Millisecond, SampleFile: "test/samples/evm-json-rpc.json"},
+		{Port: 9082, FailureRate: 1, LimitedRate: 0.2, MinDelay: 100 * time.Millisecond, MaxDelay: 300 * time.Millisecond, SampleFile: "test/samples/evm-json-rpc.json"},
+		{Port: 9083, FailureRate: 0.05, LimitedRate: 0.01, MinDelay: 300 * time.Millisecond, MaxDelay: 500 * time.Millisecond, SampleFile: "test/samples/evm-json-rpc.json"},
 	}
 
 	// Add servers up to 9185
-	for i := 9084; i <= 9185; i++ {
-		serverConfigs = append(serverConfigs, test.ServerConfig{Port: i, FailureRate: 0.05, LimitedRate: 0.01, MinDelay: 30 * time.Millisecond, MaxDelay: 150 * time.Millisecond, SampleFile: "test/samples/evm-json-rpc.json"})
-	}
+	// for i := 9084; i <= 9185; i++ {
+	// 	serverConfigs = append(serverConfigs, test.ServerConfig{Port: i, FailureRate: 0.05, LimitedRate: 0.01, MinDelay: 30 * time.Millisecond, MaxDelay: 150 * time.Millisecond, SampleFile: "test/samples/evm-json-rpc.json"})
+	// }
 
 	// Create fake servers using the existing function
 	fakeServers := test.CreateFakeServers(serverConfigs)

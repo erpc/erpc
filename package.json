@@ -1,0 +1,22 @@
+{
+    "private": true,
+    "devDependencies": {
+        "@biomejs/biome": "^1.8.1",
+        "esbuild": "^0.24.0",
+        "typescript": "5.1.6"
+    },
+    "dependencies": {
+        "@erpc-cloud/config": "workspace:*"
+    },
+    "packageManager": "pnpm@9.10.0",
+    "pnpm": {
+        "peerDependencyRules": {
+            "ignoreMissing": [
+                "node-fetch"
+            ]
+        }
+    },
+    "engines": {
+        "node": ">=18.14"
+    }
+}

@@ -3,7 +3,6 @@ package upstream
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"net/url"
 	"strconv"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 )
 
 var envioKnownSupportedChains = map[int64]struct{}{
@@ -69,13 +69,14 @@ var envioKnownSupportedChains = map[int64]struct{}{
 }
 
 type EnvioHttpJsonRpcClient struct {
+	appCtx     context.Context
 	upstream   *Upstream
 	rootDomain string
 	clients    map[int64]HttpJsonRpcClient
 	mu         sync.RWMutex
 }
 
-func NewEnvioHttpJsonRpcClient(pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
+func NewEnvioHttpJsonRpcClient(appCtx context.Context, pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
 	if !strings.HasSuffix(parsedUrl.Scheme, "envio") {
 		return nil, fmt.Errorf("invalid Envio URL scheme: %s", parsedUrl.Scheme)
 	}
@@ -86,6 +87,7 @@ func NewEnvioHttpJsonRpcClient(pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcCli
 	}
 
 	return &EnvioHttpJsonRpcClient{
+		appCtx:     appCtx,
 		upstream:   pu,
 		rootDomain: rootDomain,
 		clients:    make(map[int64]HttpJsonRpcClient),
@@ -96,7 +98,7 @@ func (c *EnvioHttpJsonRpcClient) GetType() ClientType {
 	return ClientTypeEnvioHttpJsonRpc
 }
 
-func (c *EnvioHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, error) {
+func (c *EnvioHttpJsonRpcClient) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
 	}
@@ -115,10 +117,9 @@ func (c *EnvioHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, error)
 	if err != nil {
 		return false, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	rid := rand.Intn(100_000_000) // #nosec G404
-	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, rid)))
+	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, util.RandomID())))
 	resp, err := client.SendRequest(ctx, pr)
 	if err != nil {
 		return false, err
@@ -170,7 +171,7 @@ func (c *EnvioHttpJsonRpcClient) createClient(chainID int64) (HttpJsonRpcClient,
 		return nil, err
 	}
 
-	client, err = NewGenericHttpJsonRpcClient(&c.upstream.Logger, c.upstream, parsedURL)
+	client, err = NewGenericHttpJsonRpcClient(c.appCtx, &c.upstream.Logger, c.upstream, parsedURL)
 	if err != nil {
 		return nil, err
 	}

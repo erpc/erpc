@@ -43,7 +43,10 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 		"eth_getTransactionByBlockNumberAndIndex",
 		"eth_getUncleCountByBlockNumber",
 		"eth_getBlockTransactionCountByNumber",
-		"eth_getBlockReceipts":
+		"eth_getBlockReceipts",
+		"trace_block",
+		"debug_traceBlockByNumber",
+		"debug_traceBlockByHash":
 		if len(r.Params) > 0 {
 			if bns, ok := r.Params[0].(string); ok {
 				if strings.HasPrefix(bns, "0x") {
@@ -84,6 +87,8 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 
 	case "eth_feeHistory",
 		"eth_getAccount":
+		// TODO Whould we add "eth_estimateGas" now or after extended caching features?
+		// TODO We don't want to create too many cache keys for heavy frontend use-cases.
 		if len(r.Params) > 1 {
 			if bns, ok := r.Params[1].(string); ok {
 				if strings.HasPrefix(bns, "0x") {
@@ -106,7 +111,8 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 	case "eth_getBalance",
 		"eth_getTransactionCount",
 		"eth_getCode",
-		"eth_call":
+		"eth_call",
+		"debug_traceCall":
 		if len(r.Params) > 1 {
 			switch secondParam := r.Params[1].(type) {
 			case string:

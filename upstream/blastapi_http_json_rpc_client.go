@@ -83,13 +83,14 @@ var blastapiNetworkNames = map[int64]string{
 }
 
 type BlastapiHttpJsonRpcClient struct {
+	appCtx   context.Context
 	upstream *Upstream
 	apiKey   string
 	clients  map[string]HttpJsonRpcClient
 	mu       sync.RWMutex
 }
 
-func NewBlastapiHttpJsonRpcClient(pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
+func NewBlastapiHttpJsonRpcClient(appCtx context.Context, pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
 	if !strings.HasSuffix(parsedUrl.Scheme, "blastapi") {
 		return nil, fmt.Errorf("invalid BlastAPI URL scheme: %s", parsedUrl.Scheme)
 	}
@@ -100,6 +101,7 @@ func NewBlastapiHttpJsonRpcClient(pu *Upstream, parsedUrl *url.URL) (HttpJsonRpc
 	}
 
 	return &BlastapiHttpJsonRpcClient{
+		appCtx:   appCtx,
 		upstream: pu,
 		apiKey:   apiKey,
 		clients:  make(map[string]HttpJsonRpcClient),
@@ -110,7 +112,7 @@ func (c *BlastapiHttpJsonRpcClient) GetType() ClientType {
 	return ClientTypeBlastapiHttpJsonRpc
 }
 
-func (c *BlastapiHttpJsonRpcClient) SupportsNetwork(networkId string) (bool, error) {
+func (c *BlastapiHttpJsonRpcClient) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
 	}
@@ -165,7 +167,7 @@ func (c *BlastapiHttpJsonRpcClient) getOrCreateClient(network common.Network) (H
 		return nil, err
 	}
 
-	client, err = NewGenericHttpJsonRpcClient(&c.upstream.Logger, c.upstream, parsedURL)
+	client, err = NewGenericHttpJsonRpcClient(c.appCtx, &c.upstream.Logger, c.upstream, parsedURL)
 	if err != nil {
 		return nil, err
 	}

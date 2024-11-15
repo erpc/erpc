@@ -21,29 +21,72 @@ type PreparedProject struct {
 	Logger   *zerolog.Logger
 
 	appCtx               context.Context
-	networksMu           sync.RWMutex
+	projectMu            *sync.RWMutex
+	networkInitializers  *sync.Map
 	networksRegistry     *NetworksRegistry
 	consumerAuthRegistry *auth.AuthRegistry
-	adminAuthRegistry    *auth.AuthRegistry
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	upstreamsRegistry    *upstream.UpstreamsRegistry
 	evmJsonRpcCache      *EvmJsonRpcCache
 }
 
-func (p *PreparedProject) GetNetwork(networkId string) (network *Network, err error) {
-	p.networksMu.RLock()
-	network, ok := p.Networks[networkId]
-	p.networksMu.RUnlock()
-	if !ok {
-		p.networksMu.Lock()
-		defer p.networksMu.Unlock()
-		network, err = p.initializeNetwork(networkId)
-		if err != nil {
-			return nil, err
+type initOnce struct {
+	once sync.Once
+	err  error
+}
+
+func (p *PreparedProject) Bootstrap(ctx context.Context) error {
+	p.Logger.Debug().Msgf("initializing all staticly-defined networks")
+
+	go func() {
+		for _, nwCfg := range p.Config.Networks {
+			_, err := p.initializeNetwork(ctx, nwCfg.NetworkId())
+			if err != nil {
+				p.Logger.Error().Err(err).Msgf("failed to initialize network %s", nwCfg.NetworkId())
+			}
 		}
-		p.Networks[networkId] = network
+	}()
+
+	return nil
+}
+
+func (p *PreparedProject) GetNetwork(ctx context.Context, networkId string) (*Network, error) {
+	p.projectMu.RLock()
+	network, ok := p.Networks[networkId]
+	p.projectMu.RUnlock()
+	if ok {
+		return network, nil
 	}
-	return
+
+	value, _ := p.networkInitializers.LoadOrStore(networkId, &initOnce{})
+	initializer := value.(*initOnce)
+
+	initializer.once.Do(func() {
+		var err error
+		network, err := p.initializeNetwork(ctx, networkId)
+		if err != nil {
+			initializer.err = err
+			return
+		}
+
+		p.projectMu.Lock()
+		p.Networks[networkId] = network
+		p.projectMu.Unlock()
+	})
+
+	if initializer.err != nil {
+		return nil, initializer.err
+	}
+
+	p.projectMu.RLock()
+	network = p.Networks[networkId]
+	p.projectMu.RUnlock()
+
+	return network, nil
+}
+
+func (p *PreparedProject) GatherHealthInfo() (*upstream.UpstreamsHealth, error) {
+	return p.upstreamsRegistry.GetUpstreamsHealth()
 }
 
 func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, nq *common.NormalizedRequest, ap *auth.AuthPayload) error {
@@ -57,18 +100,9 @@ func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, nq *common.N
 	return nil
 }
 
-func (p *PreparedProject) AuthenticateAdmin(ctx context.Context, nq *common.NormalizedRequest, ap *auth.AuthPayload) error {
-	if p.adminAuthRegistry != nil {
-		err := p.adminAuthRegistry.Authenticate(ctx, nq, ap)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-	network, err := p.GetNetwork(networkId)
+	// We use app context here so that network lazy loading runs within app context not request, as we want it to continue even if current request is cancelled/timed out
+	network, err := p.GetNetwork(p.appCtx, networkId)
 	if err != nil {
 		return nil, err
 	}
@@ -88,29 +122,46 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	defer timer.ObserveDuration()
 
 	health.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.NetworkId, method).Inc()
-	lg := p.Logger.With().Str("method", method).Int64("id", nq.Id()).Str("ptr", fmt.Sprintf("%p", nq)).Logger()
-	lg.Debug().Msgf("forwarding request to network")
+	lg := p.Logger.With().
+		Str("component", "proxy").
+		Str("projectId", p.Config.Id).
+		Str("networkId", network.NetworkId).
+		Str("method", method).
+		Interface("id", nq.ID()).
+		Str("ptr", fmt.Sprintf("%p", nq)).
+		Logger()
+
+	if lg.GetLevel() == zerolog.TraceLevel {
+		lg.Debug().Object("request", nq).Msgf("forwarding request for network")
+	} else {
+		lg.Debug().Msgf("forwarding request for network")
+	}
 	resp, err := network.Forward(ctx, nq)
 
 	if err == nil || common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
 		if err != nil {
 			lg.Info().Err(err).Msgf("finished forwarding request for network with some client-side exception")
 		} else {
-			lg.Info().Msgf("successfully forwarded request for network")
+			if lg.GetLevel() == zerolog.TraceLevel {
+				lg.Info().Err(err).Object("response", resp).Msgf("successfully forwarded request for network")
+			} else {
+				lg.Info().Msgf("successfully forwarded request for network")
+			}
 		}
 		health.MetricNetworkSuccessfulRequests.WithLabelValues(p.Config.Id, network.NetworkId, method).Inc()
 		return resp, err
 	} else {
-		lg.Warn().Err(err).Msgf("failed to forward request for network")
 		health.MetricNetworkFailedRequests.WithLabelValues(network.ProjectId, network.NetworkId, method, common.ErrorSummary(err)).Inc()
 	}
 
 	return nil, err
 }
 
-func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) {
+func (p *PreparedProject) initializeNetwork(ctx context.Context, networkId string) (*Network, error) {
+	p.Logger.Info().Str("networkId", networkId).Msgf("initializing network")
+
 	// 1) Find all upstreams that support this network
-	err := p.upstreamsRegistry.PrepareUpstreamsForNetwork(networkId)
+	err := p.upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkId)
 	if err != nil {
 		return nil, err
 	}
@@ -125,9 +176,7 @@ func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) 
 	}
 
 	if nwCfg == nil {
-		nwCfg = &common.NetworkConfig{
-			Failsafe: common.NetworkDefaultFailsafeConfig,
-		}
+		nwCfg = common.NewDefaultNetworkConfig(p.Config.Upstreams)
 
 		s := strings.Split(networkId, ":")
 		if len(s) != 2 {
@@ -145,6 +194,12 @@ func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) 
 				ChainId: int64(c),
 			}
 		}
+		p.projectMu.Lock()
+		if p.Config.Networks == nil || len(p.Config.Networks) == 0 {
+			p.Config.Networks = []*common.NetworkConfig{}
+		}
+		p.Config.Networks = append(p.Config.Networks, nwCfg)
+		p.projectMu.Unlock()
 	}
 
 	// 3) Register and prepare the network in registry
@@ -157,7 +212,7 @@ func (p *PreparedProject) initializeNetwork(networkId string) (*Network, error) 
 		return nil, err
 	}
 
-	err = nw.Bootstrap(p.appCtx)
+	err = nw.Bootstrap(ctx)
 	if err != nil {
 		return nil, err
 	}

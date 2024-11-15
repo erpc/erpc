@@ -1,10 +1,16 @@
 package common
 
 import (
+	"fmt"
 	"os"
+	"time"
+
+	"strings"
 
 	"github.com/bytedance/sonic"
+	"github.com/erpc/erpc/common/script"
 	"github.com/erpc/erpc/util"
+	"github.com/grafana/sobek"
 	"github.com/rs/zerolog"
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v3"
@@ -19,34 +25,54 @@ var (
 
 // Config represents the configuration of the application.
 type Config struct {
-	LogLevel     string             `yaml:"logLevel" json:"logLevel"`
+	LogLevel     string             `yaml:"logLevel" json:"logLevel" tstype:"types.LogLevel"`
 	Server       *ServerConfig      `yaml:"server" json:"server"`
+	Admin        *AdminConfig       `yaml:"admin" json:"admin"`
 	Database     *DatabaseConfig    `yaml:"database" json:"database"`
 	Projects     []*ProjectConfig   `yaml:"projects" json:"projects"`
 	RateLimiters *RateLimiterConfig `yaml:"rateLimiters" json:"rateLimiters"`
 	Metrics      *MetricsConfig     `yaml:"metrics" json:"metrics"`
-	Admin        *AdminConfig       `yaml:"admin" json:"admin"`
+}
+
+func (c *Config) HasRateLimiterBudget(id string) bool {
+	for _, budget := range c.RateLimiters.Budgets {
+		if budget.Id == id {
+			return true
+		}
+	}
+	return false
 }
 
 type ServerConfig struct {
-	ListenV4   bool   `yaml:"listenV4" json:"listenV4"`
-	HttpHostV4 string `yaml:"httpHostV4" json:"httpHostV4"`
-	ListenV6   bool   `yaml:"listenV6" json:"listenV6"`
-	HttpHostV6 string `yaml:"httpHostV6" json:"httpHostV6"`
-	HttpPort   int    `yaml:"httpPort" json:"httpPort"`
-	MaxTimeout string `yaml:"maxTimeout" json:"maxTimeout"`
+	ListenV4   *bool   `yaml:"listenV4,omitempty" json:"listenV4,omitempty"`
+	HttpHostV4 *string `yaml:"httpHostV4,omitempty" json:"httpHostV4,omitempty"`
+	ListenV6   *bool   `yaml:"listenV6,omitempty" json:"listenV6,omitempty"`
+	HttpHostV6 *string `yaml:"httpHostV6,omitempty" json:"httpHostV6,omitempty"`
+	HttpPort   *int    `yaml:"httpPort,omitempty" json:"httpPort,omitempty"`
+	MaxTimeout *string `yaml:"maxTimeout,omitempty" json:"maxTimeout,omitempty"`
+	EnableGzip *bool   `yaml:"enableGzip,omitempty" json:"enableGzip,omitempty"`
 }
 
 type AdminConfig struct {
 	Auth *AuthConfig `yaml:"auth" json:"auth"`
+	CORS *CORSConfig `yaml:"cors" json:"cors"`
 }
 
 type DatabaseConfig struct {
 	EvmJsonRpcCache *ConnectorConfig `yaml:"evmJsonRpcCache" json:"evmJsonRpcCache"`
 }
 
+type ConnectorDriverType string
+
+const (
+	DriverMemory   ConnectorDriverType = "memory"
+	DriverRedis    ConnectorDriverType = "redis"
+	DriverPostgres ConnectorDriverType = "postgres"
+	DriverDynamoDB ConnectorDriverType = "dynamodb"
+)
+
 type ConnectorConfig struct {
-	Driver     string                     `yaml:"driver" json:"driver"`
+	Driver     ConnectorDriverType        `yaml:"driver" json:"driver" tstype:"types.ConnectorDriverType"`
 	Memory     *MemoryConnectorConfig     `yaml:"memory" json:"memory"`
 	Redis      *RedisConnectorConfig      `yaml:"redis" json:"redis"`
 	DynamoDB   *DynamoDBConnectorConfig   `yaml:"dynamodb" json:"dynamodb"`
@@ -68,7 +94,7 @@ type TLSConfig struct {
 
 type RedisConnectorConfig struct {
 	Addr         string     `yaml:"addr" json:"addr"`
-	Password     string     `yaml:"password" json:"password"`
+	Password     string     `yaml:"password" json:"-"`
 	DB           int        `yaml:"db" json:"db"`
 	TLS          *TLSConfig `yaml:"tls" json:"tls"`
 	ConnPoolSize int        `yaml:"connPoolSize" json:"connPoolSize"`
@@ -130,13 +156,12 @@ func (a *AwsAuthConfig) MarshalJSON() ([]byte, error) {
 
 type ProjectConfig struct {
 	Id              string             `yaml:"id" json:"id"`
-	Admin           *AdminConfig       `yaml:"admin" json:"admin"`
-	Auth            *AuthConfig        `yaml:"auth" json:"auth"`
-	CORS            *CORSConfig        `yaml:"cors" json:"cors"`
+	Auth            *AuthConfig        `yaml:"auth,omitempty" json:"auth,omitempty"`
+	CORS            *CORSConfig        `yaml:"cors,omitempty" json:"cors,omitempty"`
 	Upstreams       []*UpstreamConfig  `yaml:"upstreams" json:"upstreams"`
-	Networks        []*NetworkConfig   `yaml:"networks" json:"networks"`
-	RateLimitBudget string             `yaml:"rateLimitBudget" json:"rateLimitBudget"`
-	HealthCheck     *HealthCheckConfig `yaml:"healthCheck" json:"healthCheck"`
+	Networks        []*NetworkConfig   `yaml:"networks,omitempty" json:"networks,omitempty"`
+	RateLimitBudget string             `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
+	HealthCheck     *HealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck,omitempty"`
 }
 
 type CORSConfig struct {
@@ -144,26 +169,43 @@ type CORSConfig struct {
 	AllowedMethods   []string `yaml:"allowedMethods" json:"allowedMethods"`
 	AllowedHeaders   []string `yaml:"allowedHeaders" json:"allowedHeaders"`
 	ExposedHeaders   []string `yaml:"exposedHeaders" json:"exposedHeaders"`
-	AllowCredentials bool     `yaml:"allowCredentials" json:"allowCredentials"`
+	AllowCredentials *bool    `yaml:"allowCredentials" json:"allowCredentials"`
 	MaxAge           int      `yaml:"maxAge" json:"maxAge"`
 }
 
 type UpstreamConfig struct {
-	Id                           string                   `yaml:"id" json:"id"`
-	Type                         UpstreamType             `yaml:"type" json:"type"` // evm, evm+alchemy, solana
-	VendorName                   string                   `yaml:"vendorName" json:"vendorName"`
+	Id                           string                   `yaml:"id,omitempty" json:"id"`
+	Type                         UpstreamType             `yaml:"type,omitempty" json:"type"`
+	Group                        string                   `yaml:"group,omitempty" json:"group"`
+	VendorName                   string                   `yaml:"vendorName,omitempty" json:"vendorName"`
 	Endpoint                     string                   `yaml:"endpoint" json:"endpoint"`
-	Evm                          *EvmUpstreamConfig       `yaml:"evm" json:"evm"`
-	JsonRpc                      *JsonRpcUpstreamConfig   `yaml:"jsonRpc" json:"jsonRpc"`
-	IgnoreMethods                []string                 `yaml:"ignoreMethods" json:"ignoreMethods"`
-	AllowMethods                 []string                 `yaml:"allowMethods" json:"allowMethods"`
-	AutoIgnoreUnsupportedMethods *bool                    `yaml:"autoIgnoreUnsupportedMethods" json:"autoIgnoreUnsupportedMethods"`
-	Failsafe                     *FailsafeConfig          `yaml:"failsafe" json:"failsafe"`
-	RateLimitBudget              string                   `yaml:"rateLimitBudget" json:"rateLimitBudget"`
-	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune" json:"rateLimitAutoTune"`
+	Evm                          *EvmUpstreamConfig       `yaml:"evm,omitempty" json:"evm"`
+	JsonRpc                      *JsonRpcUpstreamConfig   `yaml:"jsonRpc,omitempty" json:"jsonRpc"`
+	IgnoreMethods                []string                 `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
+	AllowMethods                 []string                 `yaml:"allowMethods,omitempty" json:"allowMethods"`
+	AutoIgnoreUnsupportedMethods *bool                    `yaml:"autoIgnoreUnsupportedMethods,omitempty" json:"autoIgnoreUnsupportedMethods"`
+	Failsafe                     *FailsafeConfig          `yaml:"failsafe,omitempty" json:"failsafe"`
+	RateLimitBudget              string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
+	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune,omitempty" json:"rateLimitAutoTune"`
+	Routing                      *RoutingConfig           `yaml:"routing,omitempty" json:"routing"`
 }
 
-// redact Endpoint
+type RoutingConfig struct {
+	ScoreMultipliers []*ScoreMultiplierConfig `yaml:"scoreMultipliers" json:"scoreMultipliers"`
+}
+
+type ScoreMultiplierConfig struct {
+	Network         string  `yaml:"network" json:"network"`
+	Method          string  `yaml:"method" json:"method"`
+	Overall         float64 `yaml:"overall" json:"overall"`
+	ErrorRate       float64 `yaml:"errorRate" json:"errorRate"`
+	P90Latency      float64 `yaml:"p90latency" json:"p90latency"`
+	TotalRequests   float64 `yaml:"totalRequests" json:"totalRequests"`
+	ThrottledRate   float64 `yaml:"throttledRate" json:"throttledRate"`
+	BlockHeadLag    float64 `yaml:"blockHeadLag" json:"blockHeadLag"`
+	FinalizationLag float64 `yaml:"finalizationLag" json:"finalizationLag"`
+}
+
 func (u *UpstreamConfig) MarshalJSON() ([]byte, error) {
 	type Alias UpstreamConfig
 	return sonic.Marshal(&struct {
@@ -176,7 +218,7 @@ func (u *UpstreamConfig) MarshalJSON() ([]byte, error) {
 }
 
 type RateLimitAutoTuneConfig struct {
-	Enabled            bool    `yaml:"enabled" json:"enabled"`
+	Enabled            *bool   `yaml:"enabled" json:"enabled"`
 	AdjustmentPeriod   string  `yaml:"adjustmentPeriod" json:"adjustmentPeriod"`
 	ErrorRateThreshold float64 `yaml:"errorRateThreshold" json:"errorRateThreshold"`
 	IncreaseFactor     float64 `yaml:"increaseFactor" json:"increaseFactor"`
@@ -186,21 +228,16 @@ type RateLimitAutoTuneConfig struct {
 }
 
 type JsonRpcUpstreamConfig struct {
-	SupportsBatch *bool  `yaml:"supportsBatch" json:"supportsBatch"`
-	BatchMaxSize  int    `yaml:"batchMaxSize" json:"batchMaxSize"`
-	BatchMaxWait  string `yaml:"batchMaxWait" json:"batchMaxWait"`
+	SupportsBatch *bool  `yaml:"supportsBatch,omitempty" json:"supportsBatch"`
+	BatchMaxSize  int    `yaml:"batchMaxSize,omitempty" json:"batchMaxSize"`
+	BatchMaxWait  string `yaml:"batchMaxWait,omitempty" json:"batchMaxWait"`
+	EnableGzip    *bool  `yaml:"enableGzip,omitempty" json:"enableGzip"`
 }
 
 type EvmUpstreamConfig struct {
-	ChainId              int         `yaml:"chainId" json:"chainId"`
-	NodeType             EvmNodeType `yaml:"nodeType" json:"nodeType"`
-	Engine               string      `yaml:"engine" json:"engine"`
-	GetLogsMaxBlockRange int         `yaml:"getLogsMaxBlockRange" json:"getLogsMaxBlockRange"`
-	StatePollerInterval  string      `yaml:"statePollerInterval" json:"statePollerInterval"`
-
-	// By default "Syncing" is marked as unknown (nil) and that means we will be retrying empty responses
-	// from such upstream, unless we explicitly know that the upstream is fully synced (false).
-	Syncing *bool `yaml:"syncing" json:"syncing"`
+	ChainId             int         `yaml:"chainId" json:"chainId"`
+	NodeType            EvmNodeType `yaml:"nodeType,omitempty" json:"nodeType"`
+	StatePollerInterval string      `yaml:"statePollerInterval,omitempty" json:"statePollerInterval"`
 }
 
 type FailsafeConfig struct {
@@ -256,16 +293,89 @@ type HealthCheckConfig struct {
 }
 
 type NetworkConfig struct {
-	Architecture    NetworkArchitecture `yaml:"architecture" json:"architecture"`
-	RateLimitBudget string              `yaml:"rateLimitBudget" json:"rateLimitBudget"`
-	Failsafe        *FailsafeConfig     `yaml:"failsafe" json:"failsafe"`
-	Evm             *EvmNetworkConfig   `yaml:"evm" json:"evm"`
+	Architecture    NetworkArchitecture    `yaml:"architecture" json:"architecture" tstype:"'evm'"`
+	RateLimitBudget string                 `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
+	Failsafe        *FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe,omitempty"`
+	Evm             *EvmNetworkConfig      `yaml:"evm,omitempty" json:"evm,omitempty"`
+	SelectionPolicy *SelectionPolicyConfig `yaml:"selectionPolicy,omitempty" json:"selectionPolicy,omitempty"`
 }
 
 type EvmNetworkConfig struct {
-	ChainId              int64  `yaml:"chainId" json:"chainId"`
-	FinalityDepth        int64  `yaml:"finalityDepth" json:"finalityDepth"`
-	BlockTrackerInterval string `yaml:"blockTrackerInterval" json:"blockTrackerInterval"`
+	ChainId       int64 `yaml:"chainId" json:"chainId"`
+	FinalityDepth int64 `yaml:"finalityDepth,omitempty" json:"finalityDepth,omitempty"`
+}
+
+type SelectionPolicyConfig struct {
+	EvalInterval     time.Duration  `yaml:"evalInterval,omitempty" json:"evalInterval,omitempty"`
+	EvalFunction     sobek.Callable `yaml:"evalFunction,omitempty" json:"evalFunction,omitempty" tstype:"types.SelectionPolicyEvalFunction | undefined"`
+	EvalPerMethod    bool           `yaml:"evalPerMethod,omitempty" json:"evalPerMethod,omitempty"`
+	ResampleExcluded bool           `yaml:"resampleExcluded,omitempty" json:"resampleExcluded,omitempty"`
+	ResampleInterval time.Duration  `yaml:"resampleInterval,omitempty" json:"resampleInterval,omitempty"`
+	ResampleCount    int            `yaml:"resampleCount,omitempty" json:"resampleCount,omitempty"`
+
+	evalFunctionOriginal string `yaml:"-" json:"-"`
+}
+
+func (c *SelectionPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type rawSelectionPolicyConfig struct {
+		EvalInterval     string `yaml:"evalInterval"`
+		EvalPerMethod    bool   `yaml:"evalPerMethod"`
+		EvalFunction     string `yaml:"evalFunction"`
+		ResampleInterval string `yaml:"resampleInterval"`
+		ResampleCount    int    `yaml:"resampleCount"`
+	}
+	raw := rawSelectionPolicyConfig{}
+
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+
+	if raw.ResampleInterval != "" {
+		resampleInterval, err := time.ParseDuration(raw.ResampleInterval)
+		if err != nil {
+			return fmt.Errorf("failed to parse resampleInterval: %v", err)
+		}
+		c.ResampleInterval = resampleInterval
+	}
+
+	if raw.EvalInterval != "" {
+		evalInterval, err := time.ParseDuration(raw.EvalInterval)
+		if err != nil {
+			return fmt.Errorf("failed to parse evalInterval: %v", err)
+		}
+		c.EvalInterval = evalInterval
+		c.evalFunctionOriginal = raw.EvalFunction
+	}
+
+	if raw.EvalFunction != "" {
+		evalFunction, err := script.CompileFunction(raw.EvalFunction)
+		c.EvalFunction = evalFunction
+		if err != nil {
+			return fmt.Errorf("failed to compile selectionPolicy.evalFunction: %v", err)
+		}
+	}
+
+	c.EvalPerMethod = raw.EvalPerMethod
+	c.ResampleCount = raw.ResampleCount
+
+	return nil
+}
+
+func (c *SelectionPolicyConfig) MarshalJSON() ([]byte, error) {
+	evf := "<undefined>"
+	if c.evalFunctionOriginal != "" {
+		evf = c.evalFunctionOriginal
+	}
+	if c.EvalFunction != nil {
+		evf = "<function>"
+	}
+	return sonic.Marshal(map[string]interface{}{
+		"evalInterval":     c.EvalInterval,
+		"evalPerMethod":    c.EvalPerMethod,
+		"evalFunction":     evf,
+		"resampleInterval": c.ResampleInterval,
+		"resampleCount":    c.ResampleCount,
+	})
 }
 
 type AuthType string
@@ -282,15 +392,15 @@ type AuthConfig struct {
 }
 
 type AuthStrategyConfig struct {
-	IgnoreMethods   []string `yaml:"ignoreMethods" json:"ignoreMethods"`
-	AllowMethods    []string `yaml:"allowMethods" json:"allowMethods"`
-	RateLimitBudget string   `yaml:"rateLimitBudget" json:"rateLimitBudget"`
+	IgnoreMethods   []string `yaml:"ignoreMethods,omitempty" json:"ignoreMethods,omitempty"`
+	AllowMethods    []string `yaml:"allowMethods,omitempty" json:"allowMethods,omitempty"`
+	RateLimitBudget string   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
 
 	Type    AuthType               `yaml:"type" json:"type"`
-	Network *NetworkStrategyConfig `yaml:"network" json:"network"`
-	Secret  *SecretStrategyConfig  `yaml:"secret" json:"secret"`
-	Jwt     *JwtStrategyConfig     `yaml:"jwt" json:"jwt"`
-	Siwe    *SiweStrategyConfig    `yaml:"siwe" json:"siwe"`
+	Network *NetworkStrategyConfig `yaml:"network,omitempty" json:"network,omitempty"`
+	Secret  *SecretStrategyConfig  `yaml:"secret,omitempty" json:"secret,omitempty"`
+	Jwt     *JwtStrategyConfig     `yaml:"jwt,omitempty" json:"jwt,omitempty"`
+	Siwe    *SiweStrategyConfig    `yaml:"siwe,omitempty" json:"siwe,omitempty"`
 }
 
 type SecretStrategyConfig struct {
@@ -324,34 +434,80 @@ type NetworkStrategyConfig struct {
 }
 
 type MetricsConfig struct {
-	Enabled  bool   `yaml:"enabled" json:"enabled"`
-	ListenV4 bool   `yaml:"listenV4" json:"listenV4"`
-	HostV4   string `yaml:"hostV4" json:"hostV4"`
-	ListenV6 bool   `yaml:"listenV6" json:"listenV6"`
-	HostV6   string `yaml:"hostV6" json:"hostV6"`
-	Port     int    `yaml:"port" json:"port"`
+	Enabled  *bool   `yaml:"enabled" json:"enabled"`
+	ListenV4 *bool   `yaml:"listenV4" json:"listenV4"`
+	HostV4   *string `yaml:"hostV4" json:"hostV4"`
+	ListenV6 *bool   `yaml:"listenV6" json:"listenV6"`
+	HostV6   *string `yaml:"hostV6" json:"hostV6"`
+	Port     *int    `yaml:"port" json:"port"`
 }
 
 var cfgInstance *Config
 
 // LoadConfig loads the configuration from the specified file.
+// It supports both YAML and TypeScript (.ts) files.
 func LoadConfig(fs afero.Fs, filename string) (*Config, error) {
 	data, err := afero.ReadFile(fs, filename)
-
 	if err != nil {
 		return nil, err
 	}
 
-	// Expand environment variables
-	expandedData := []byte(os.ExpandEnv(string(data)))
-
 	var cfg Config
-	err = yaml.Unmarshal(expandedData, &cfg)
+
+	if strings.HasSuffix(filename, ".ts") || strings.HasSuffix(filename, ".js") {
+		cfgPtr, err := loadConfigFromTypescript(filename)
+		if err != nil {
+			return nil, err
+		}
+		cfg = *cfgPtr
+	} else {
+		expandedData := []byte(os.ExpandEnv(string(data)))
+		err = yaml.Unmarshal(expandedData, &cfg)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	cfg.SetDefaults()
+
+	err = cfg.Validate()
 	if err != nil {
 		return nil, err
 	}
 
 	cfgInstance = &cfg
+
+	return &cfg, nil
+}
+
+func loadConfigFromTypescript(filename string) (*Config, error) {
+	contents, err := script.CompileTypeScript(filename)
+	if err != nil {
+		return nil, err
+	}
+
+	runtime, err := script.NewRuntime()
+	if err != nil {
+		return nil, err
+	}
+	_, err = runtime.Evaluate(contents)
+	if err != nil {
+		return nil, err
+	}
+
+	defaultExport := runtime.Exports().Get("default")
+
+	// Get the config object default-exported from the TS code
+	v := defaultExport.(*sobek.Object)
+	if v == nil {
+		return nil, fmt.Errorf("config object must be default exported from TypeScript code AND must be the last statement in the file")
+	}
+
+	var cfg Config
+	err = script.MapJavascriptObjectToGo(v, &cfg)
+	if err != nil {
+		return nil, err
+	}
 
 	return &cfg, nil
 }
@@ -389,130 +545,4 @@ func (c *NetworkConfig) NetworkId() string {
 	default:
 		return ""
 	}
-}
-
-func (c *ServerConfig) MarshalZerologObject(e *zerolog.Event) {
-	e.Str("hostV4", c.HttpHostV4).
-		Str("hostV6", c.HttpHostV6).
-		Int("port", c.HttpPort).
-		Str("maxTimeout", c.MaxTimeout)
-}
-
-func (s *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	type rawConfig Config
-	var raw rawConfig
-	if !util.IsTest() {
-		raw = rawConfig{
-			LogLevel: "INFO",
-			Server: &ServerConfig{
-				HttpHostV4: "0.0.0.0",
-				ListenV4:   true,
-				HttpHostV6: "[::]",
-				ListenV6:   false,
-				HttpPort:   4000,
-			},
-			Database: &DatabaseConfig{
-				EvmJsonRpcCache: nil,
-			},
-			Metrics: &MetricsConfig{
-				Enabled:  true,
-				HostV4:   "0.0.0.0",
-				ListenV4: true,
-				HostV6:   "[::]",
-				ListenV6: false,
-				Port:     4001,
-			},
-		}
-	}
-	if err := unmarshal(&raw); err != nil {
-		return err
-	}
-
-	*s = Config(raw)
-	return nil
-}
-
-func (s *UpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	type rawUpstreamConfig UpstreamConfig
-	raw := rawUpstreamConfig{
-		Failsafe: &FailsafeConfig{
-			Timeout: &TimeoutPolicyConfig{
-				Duration: "15s",
-			},
-			Retry: &RetryPolicyConfig{
-				MaxAttempts:     3,
-				Delay:           "500ms",
-				Jitter:          "500ms",
-				BackoffMaxDelay: "5s",
-				BackoffFactor:   1.5,
-			},
-			CircuitBreaker: &CircuitBreakerPolicyConfig{
-				FailureThresholdCount:    800,
-				FailureThresholdCapacity: 1000,
-				HalfOpenAfter:            "5m",
-				SuccessThresholdCount:    3,
-				SuccessThresholdCapacity: 3,
-			},
-		},
-		RateLimitAutoTune: &RateLimitAutoTuneConfig{
-			Enabled:            true,
-			AdjustmentPeriod:   "1m",
-			ErrorRateThreshold: 0.1,
-			IncreaseFactor:     1.05,
-			DecreaseFactor:     0.9,
-			MinBudget:          0,
-			MaxBudget:          10_000,
-		},
-	}
-	if err := unmarshal(&raw); err != nil {
-		return err
-	}
-
-	if raw.Endpoint == "" {
-		return NewErrInvalidConfig("upstream.*.endpoint is required")
-	}
-	if raw.Id == "" {
-		raw.Id = util.RedactEndpoint(raw.Endpoint)
-	}
-
-	*s = UpstreamConfig(raw)
-	return nil
-}
-
-var NetworkDefaultFailsafeConfig = &FailsafeConfig{
-	Hedge: &HedgePolicyConfig{
-		Delay:    "200ms",
-		MaxCount: 3,
-	},
-	Retry: &RetryPolicyConfig{
-		MaxAttempts:     3,
-		Delay:           "1s",
-		Jitter:          "500ms",
-		BackoffMaxDelay: "10s",
-		BackoffFactor:   2,
-	},
-	Timeout: &TimeoutPolicyConfig{
-		Duration: "30s",
-	},
-}
-
-func (c *NetworkConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	type rawNetworkConfig NetworkConfig
-	raw := rawNetworkConfig{
-		Failsafe: NetworkDefaultFailsafeConfig,
-	}
-	if err := unmarshal(&raw); err != nil {
-		return err
-	}
-
-	if raw.Architecture == "" {
-		return NewErrInvalidConfig("network.*.architecture is required")
-	}
-
-	if raw.Architecture == "evm" && raw.Evm == nil {
-		return NewErrInvalidConfig("network.*.evm is required for evm networks")
-	}
-
-	*c = NetworkConfig(raw)
-	return nil
 }

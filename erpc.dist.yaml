@@ -10,6 +10,7 @@ database:
 server:
   httpHostV4: 0.0.0.0
   httpPort: 4000
+  maxTimeout: 50s
 metrics:
   enabled: true
   hostV4: 0.0.0.0
@@ -60,6 +61,17 @@ projects:
             backoffMaxDelay: 10s
             backoffFactor: 0.3
             jitter: 500ms
+      - id: infura-multi-chain-example-1
+        endpoint: infura://${YOUR_INFURA_API_KEY}
+        rateLimitBudget: default-budget
+        failsafe:
+          timeout:
+            duration: 15s
+          retry:
+            maxCount: 2
+            delay: 1000ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
       - id: blastapi-chain-42161
         type: evm
         endpoint: https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
@@ -96,6 +108,18 @@ projects:
         rateLimitBudget: global-quicknode
         evm:
           chainId: 42161
+        failsafe:
+          timeout:
+            duration: 15s
+          retry:
+            maxCount: 2
+            delay: 1000ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 500ms
+      - id: infura-multi-chain-example-1
+        endpoint: alchemy://XXXX_YOUR_ALCHEMY_API_KEY_HERE_XXXX
+        rateLimitBudget: global
         failsafe:
           timeout:
             duration: 15s

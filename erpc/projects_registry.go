@@ -1,9 +1,8 @@
 package erpc
 
 import (
-	// "context"
-
 	"context"
+	"sync"
 	"time"
 
 	"github.com/erpc/erpc/auth"
@@ -26,7 +25,7 @@ type ProjectsRegistry struct {
 }
 
 func NewProjectsRegistry(
-	ctx context.Context,
+	appCtx context.Context,
 	logger *zerolog.Logger,
 	staticProjects []*common.ProjectConfig,
 	evmJsonRpcCache *EvmJsonRpcCache,
@@ -34,8 +33,8 @@ func NewProjectsRegistry(
 	vendorsRegistry *vendors.VendorsRegistry,
 ) (*ProjectsRegistry, error) {
 	reg := &ProjectsRegistry{
+		appCtx:               appCtx,
 		logger:               logger,
-		appCtx:               ctx,
 		staticProjects:       staticProjects,
 		preparedProjects:     make(map[string]*PreparedProject),
 		rateLimitersRegistry: rateLimitersRegistry,
@@ -44,7 +43,12 @@ func NewProjectsRegistry(
 	}
 
 	for _, prjCfg := range staticProjects {
-		_, err := reg.RegisterProject(prjCfg)
+		prj, err := reg.RegisterProject(prjCfg)
+		if err != nil {
+			return nil, err
+		}
+
+		err = prj.Bootstrap(appCtx)
 		if err != nil {
 			return nil, err
 		}
@@ -54,6 +58,9 @@ func NewProjectsRegistry(
 }
 
 func (r *ProjectsRegistry) GetProject(projectId string) (project *PreparedProject, err error) {
+	if projectId == "" {
+		return nil, nil
+	}
 	project, exists := r.preparedProjects[projectId]
 	if !exists {
 		project, err = r.loadProject(projectId)
@@ -66,7 +73,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		return nil, common.NewErrProjectAlreadyExists(prjCfg.Id)
 	}
 
-	lg := r.logger.With().Str("project", prjCfg.Id).Logger()
+	lg := r.logger.With().Str("projectId", prjCfg.Id).Logger()
 
 	ws := "30m"
 	if prjCfg.HealthCheck != nil && prjCfg.HealthCheck.ScoreMetricsWindowSize != "" {
@@ -78,6 +85,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 	}
 	metricsTracker := health.NewTracker(prjCfg.Id, wsDuration)
 	upstreamsRegistry := upstream.NewUpstreamsRegistry(
+		r.appCtx,
 		&lg,
 		prjCfg.Id,
 		prjCfg.Upstreams,
@@ -104,21 +112,15 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 			return nil, err
 		}
 	}
-	var adminAuthRegistry *auth.AuthRegistry
-	if prjCfg.Admin != nil && prjCfg.Admin.Auth != nil {
-		adminAuthRegistry, err = auth.NewAuthRegistry(&lg, prjCfg.Id, prjCfg.Admin.Auth, r.rateLimitersRegistry)
-		if err != nil {
-			return nil, err
-		}
-	}
 
 	pp := &PreparedProject{
 		Config: prjCfg,
 		Logger: &lg,
 
 		appCtx:               r.appCtx,
+		projectMu:            &sync.RWMutex{},
+		networkInitializers:  &sync.Map{},
 		consumerAuthRegistry: consumerAuthRegistry,
-		adminAuthRegistry:    adminAuthRegistry,
 		networksRegistry:     networksRegistry,
 		upstreamsRegistry:    upstreamsRegistry,
 		rateLimitersRegistry: r.rateLimitersRegistry,
