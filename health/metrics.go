@@ -73,6 +73,30 @@ var (
 		Help:      "Total number of finalized blocks behind the most up-to-date upstream.",
 	}, []string{"project", "network", "upstream"})
 
+	MetricUpstreamScoreOverall = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_score_overall",
+		Help:      "Overall score of upstreams used for ordering during routing.",
+	}, []string{"project", "network", "upstream", "category"})
+
+	MetricUpstreamLatestBlockNumber = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_latest_block_number",
+		Help:      "Latest block number of upstreams.",
+	}, []string{"project", "network", "upstream"})
+
+	MetricUpstreamFinalizedBlockNumber = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_finalized_block_number",
+		Help:      "Finalized block number of upstreams.",
+	}, []string{"project", "network", "upstream"})
+
+	MetricUpstreamCordoned = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_cordoned",
+		Help:      "Whether upstream is un/cordoned (excluded from routing by selection policy).",
+	}, []string{"project", "network", "upstream", "category"})
+
 	MetricNetworkRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_request_self_rate_limited_total",
