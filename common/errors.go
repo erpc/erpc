@@ -1567,16 +1567,17 @@ var NewErrEndpointMissingData = func(cause error) error {
 	}
 }
 
-type ErrEndpointDataOutOfRangeForFullNode struct{ BaseError }
+type ErrUpstreamNodeTypeMismatch struct{ BaseError }
 
-const ErrCodeEndpointDataOutOfRangeForFullNode = "ErrCodeEndpointDataOutOfRangeForFullNode"
+const ErrCodeUpstreamNodeTypeMismatch = "ErrUpstreamNodeTypeMismatch"
 
-var NewErrEndpointDataOutOfRangeForFullNode = func(cause error) error {
-	return &ErrEndpointDataOutOfRangeForFullNode{
+var NewErrUpstreamNodeTypeMismatch = func(cause error, expected EvmNodeType, actual EvmNodeType) error {
+	return &ErrUpstreamNodeTypeMismatch{
 		BaseError{
-			Code:    ErrCodeEndpointDataOutOfRangeForFullNode,
-			Message: "remote endpoint data is out of range for full node",
+			Code:    ErrCodeUpstreamNodeTypeMismatch,
+			Message: "node type does not match what is required for this request",
 			Cause:   cause,
+			Details: // ... {expectedNodeType: expected, ...
 		},
 	}
 }
