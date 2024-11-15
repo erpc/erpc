@@ -744,7 +744,7 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 		}
 
 		if lb := statePoller.LatestBlock(); bn < lb-u.config.Evm.MaxAvailableRecentBlocks {
-			return common.NewErrEndpointDataOutOfRangeForFullNode(fmt.Errorf("block number %d is out of range (must be >= %d)", bn, lb-u.config.Evm.MaxAvailableRecentBlocks)), true
+			return common.NewErrUpstreamNodeTypeMismatch(fmt.Errorf("block number (%d) in request will not yield result for a fullNodeType upstream since it is not recent enough (must be >= %d)", bn, lb-u.config.Evm.MaxAvailableRecentBlocks), common.EvmNodeTypeArchive, common.EvmNodeTypeFull), true
 		}
 
 	}

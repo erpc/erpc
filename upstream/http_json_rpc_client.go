@@ -776,16 +776,6 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if common.EvmDataIsOutOfRangeForFullNodeError(err) {
-			return common.NewErrEndpointDataOutOfRangeForFullNode(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorMissingData,
-					err.Message,
-					nil,
-					details,
-				),
-			)
 		} else if code == -32004 || code == -32001 {
 			return common.NewErrEndpointUnsupported(
 				common.NewErrJsonRpcExceptionInternal(
