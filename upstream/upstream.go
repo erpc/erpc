@@ -744,7 +744,11 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 				return nil, false
 			}
 
-			if lb := statePoller.LatestBlock(); bn < lb-u.config.Evm.MaxAvailableRecentBlocks {
+			if lb := statePoller.LatestBlock(); lb > 0 && bn <= lb-u.config.Evm.MaxAvailableRecentBlocks {
+				// Allow requests for block numbers greater than the latest known block
+				if bn > lb {
+					return nil, false
+				}
 				return common.NewErrUpstreamNodeTypeMismatch(fmt.Errorf("block number (%d) in request will not yield result for a fullNodeType upstream since it is not recent enough (must be >= %d", bn, lb-u.config.Evm.MaxAvailableRecentBlocks), common.EvmNodeTypeArchive, common.EvmNodeTypeFull), true
 			}
 		}
