@@ -20,6 +20,7 @@ export interface ServerConfig {
     httpPort?: number;
     maxTimeout?: string;
     enableGzip?: boolean;
+    tls?: TLSConfig;
 }
 export interface AdminConfig {
     auth?: AuthConfig;
@@ -47,8 +48,8 @@ export interface TLSConfig {
     enabled: boolean;
     certFile: string;
     keyFile: string;
-    caFile: string;
-    insecureSkipVerify: boolean;
+    caFile?: string;
+    insecureSkipVerify?: boolean;
 }
 export interface RedisConnectorConfig {
     addr: string;
