@@ -5845,7 +5845,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 }
 
 func TestNetwork_SkippedUpstreams(t *testing.T) {
-	t.Run("ValidInRangeBlockNumberForFullNodeUpstream", func(t *testing.T) {
+	t.Run("NotSkippedRecentBlockNumberForFullNodeUpstream", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -5868,7 +5868,7 @@ func TestNetwork_SkippedUpstreams(t *testing.T) {
 		assert.NotNil(t, resp)
 	})
 
-	t.Run("ValidOutOfRangeBlockNumberForFullNodeUpstream", func(t *testing.T) {
+	t.Run("SkippedOutOfHistoricalBlockNumberForFullNodeUpstream", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 
@@ -5890,6 +5890,29 @@ func TestNetwork_SkippedUpstreams(t *testing.T) {
 		resp, err := network.Forward(context.Background(), req)
 		assert.Error(t, err)
 		assert.Nil(t, resp)
+	})
+
+	t.Run("NotSkippedHistoricalBlockForArchiveNodeUpstream", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network := setupTestNetworkWithArchiveNodeUpstream(t, ctx, nil, nil)
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000", "0x1"]}`)
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+			}).
+			Reply(200).
+			BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x0"}`)
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(context.Background(), req)
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
 	})
 }
 
@@ -5973,6 +5996,72 @@ func setupTestNetworkWithFullNodeUpstream(t *testing.T, ctx context.Context, ups
 				ChainId:                  123,
 				NodeType:                 common.EvmNodeTypeFull,
 				MaxAvailableRecentBlocks: 128,
+			},
+		}
+	}
+	upstreamsRegistry := upstream.NewUpstreamsRegistry(
+		ctx,
+		&log.Logger,
+		"test",
+		[]*common.UpstreamConfig{upstreamConfig},
+		rateLimitersRegistry,
+		vendors.NewVendorsRegistry(),
+		metricsTracker,
+		1*time.Second,
+	)
+	if networkConfig == nil {
+		networkConfig = &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm: &common.EvmNetworkConfig{
+				ChainId: 123,
+			},
+		}
+	}
+	network, err := NewNetwork(
+		&log.Logger,
+		"test",
+		networkConfig,
+		rateLimitersRegistry,
+		upstreamsRegistry,
+		metricsTracker,
+	)
+	assert.NoError(t, err)
+
+	err = upstreamsRegistry.Bootstrap(ctx)
+	assert.NoError(t, err)
+	time.Sleep(100 * time.Millisecond)
+
+	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+	assert.NoError(t, err)
+	time.Sleep(100 * time.Millisecond)
+
+	err = network.Bootstrap(ctx)
+	assert.NoError(t, err)
+	time.Sleep(100 * time.Millisecond)
+
+	if upstreamConfig.Id == "test" {
+		h, _ := common.HexToInt64("0x1273c18")
+		network.evmStatePollers["test"].SuggestFinalizedBlock(h)
+		network.evmStatePollers["test"].SuggestLatestBlock(h)
+	}
+
+	return network
+}
+
+func setupTestNetworkWithArchiveNodeUpstream(t *testing.T, ctx context.Context, upstreamConfig *common.UpstreamConfig, networkConfig *common.NetworkConfig) *Network {
+	t.Helper()
+
+	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	metricsTracker := health.NewTracker("test", time.Minute)
+
+	if upstreamConfig == nil {
+		upstreamConfig = &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "test",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId:  123,
+				NodeType: common.EvmNodeTypeArchive,
 			},
 		}
 	}
