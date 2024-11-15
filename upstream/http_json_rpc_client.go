@@ -592,8 +592,8 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 	if resp.Header.Get("Content-Encoding") == "gzip" {
 		gzReader, err := gzip.NewReader(resp.Body)
 		if err != nil {
-			resp.Body.Close()
-			return nil, common.NewErrEndpointTransportFailure(fmt.Errorf("error creating gzip reader: %w", err))
+			e := resp.Body.Close()
+			return nil, common.NewErrEndpointTransportFailure(fmt.Errorf("cannot create gzip reader: %w %w", err, e))
 		}
 		bodyReader = gzReader
 	}
