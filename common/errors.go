@@ -1572,7 +1572,7 @@ type ErrEndpointDataOutOfRangeForFullNode struct{ BaseError }
 const ErrCodeEndpointDataOutOfRangeForFullNode = "ErrCodeEndpointDataOutOfRangeForFullNode"
 
 var NewErrEndpointDataOutOfRangeForFullNode = func(cause error) error {
-	return &ErrEndpointMissingData{
+	return &ErrEndpointDataOutOfRangeForFullNode{
 		BaseError{
 			Code:    ErrCodeEndpointDataOutOfRangeForFullNode,
 			Message: "remote endpoint data is out of range for full node",
