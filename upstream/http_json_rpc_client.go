@@ -327,8 +327,6 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 		return
 	}
 
-	c.logger.Debug().Msgf("sending batch json rpc POST request to %s: %s", c.Url.Host, requestBody)
-
 	reqStartTime := time.Now()
 	httpReq, err := c.prepareRequest(batchCtx, requestBody)
 	if err != nil {
@@ -348,6 +346,8 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("User-Agent", fmt.Sprintf("erpc (%s/%s; Project/%s; Budget/%s)", common.ErpcVersion, common.ErpcCommitSha, c.upstream.ProjectId, c.upstream.config.RateLimitBudget))
+
+	c.logger.Debug().Str("host", c.Url.Host).RawJSON("request", requestBody).Interface("headers", httpReq.Header).Msgf("sending json rpc POST request (batch)")
 
 	// Make the HTTP request
 	resp, err := c.httpClient.Do(httpReq)
@@ -557,8 +557,6 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		return nil, err
 	}
 
-	c.logger.Debug().RawJSON("request", requestBody).Msgf("sending json rpc POST request to %s", c.Url.Host)
-
 	reqStartTime := time.Now()
 	httpReq, err := c.prepareRequest(ctx, requestBody)
 	if err != nil {
@@ -572,6 +570,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 			},
 		}
 	}
+	c.logger.Debug().Str("host", c.Url.Host).RawJSON("request", requestBody).Interface("headers", httpReq.Header).Msg("sending json rpc POST request (single)")
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -587,14 +586,15 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		}
 		return nil, common.NewErrEndpointTransportFailure(err)
 	}
+	defer resp.Body.Close()
 
 	var bodyReader io.ReadCloser = resp.Body
 	if resp.Header.Get("Content-Encoding") == "gzip" {
 		gzReader, err := gzip.NewReader(resp.Body)
 		if err != nil {
-			e := resp.Body.Close()
-			return nil, common.NewErrEndpointTransportFailure(fmt.Errorf("cannot create gzip reader: %w %w", err, e))
+			return nil, common.NewErrEndpointTransportFailure(fmt.Errorf("cannot create gzip reader: %w", err))
 		}
+		defer gzReader.Close()
 		bodyReader = gzReader
 	}
 

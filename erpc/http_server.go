@@ -21,6 +21,7 @@ import (
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 type HttpServer struct {
@@ -123,7 +124,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		if r.Header.Get("Content-Encoding") == "gzip" {
 			gzReader, err := gzip.NewReader(r.Body)
 			if err != nil {
-				handleErrorResponse(s.logger, &startedAt, nil, common.NewErrInvalidRequest(fmt.Errorf("invalid gzip body: %w", err)), w, encoder, writeFatalError)
+				handleErrorResponse(&lg, &startedAt, nil, common.NewErrInvalidRequest(fmt.Errorf("invalid gzip body: %w", err)), w, encoder, writeFatalError)
 				return
 			}
 			defer gzReader.Close()
@@ -131,9 +132,9 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		}
 
 		// Replace the existing body read with our potentially decompressed reader
-		body, err := util.ReadAll(bodyReader, 1024*1024, 10)
+		body, err := util.ReadAll(bodyReader, 1024*1024, 512)
 		if err != nil {
-			handleErrorResponse(s.logger, &startedAt, nil, err, w, encoder, writeFatalError)
+			handleErrorResponse(&lg, &startedAt, nil, err, w, encoder, writeFatalError)
 			return
 		}
 
@@ -657,28 +658,49 @@ func (s *HttpServer) Shutdown(logger *zerolog.Logger) error {
 
 type gzipResponseWriter struct {
 	http.ResponseWriter
-	gw *gzip.Writer
+	gzipWriter *gzip.Writer
+}
+
+func (w *gzipResponseWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		err := w.gzipWriter.Flush()
+		if err != nil {
+			log.Error().Err(err).Msg("failed to flush gzip writer")
+		}
+		flusher.Flush()
+	}
 }
 
 func (w *gzipResponseWriter) Write(b []byte) (int, error) {
-	return w.gw.Write(b)
+	return w.gzipWriter.Write(b)
 }
 
 func gzipHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check if client accepts gzip encoding
 		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		w.Header().Set("Content-Encoding", "gzip")
-		gw := gzip.NewWriter(w)
-		defer gw.Close()
+		// Initialize gzip writer
+		gz := gzip.NewWriter(w)
+		defer gz.Close()
 
+		// Create gzip response writer
 		gzw := &gzipResponseWriter{
 			ResponseWriter: w,
-			gw:             gw,
+			gzipWriter:     gz,
 		}
+
+		// Remove Content-Length header as it will no longer be valid
+		w.Header().Del("Content-Length")
+
+		// Set required headers
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Vary", "Accept-Encoding")
+
+		// Call the next handler with our gzip response writer
 		next.ServeHTTP(gzw, r)
 	})
 }

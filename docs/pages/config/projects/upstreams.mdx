@@ -336,7 +336,7 @@ curl -X POST \
 upstreams:
   - id: my-infura
     jsonRpc:
-      enableGzip: true  # Enable gzip when sending requests to this upstream
+      enableGzip: false  # gzip when sending requests to this upstream (disabled by default)
 ```
 
 3. **Upstream → eRPC**: Automatically handles gzipped responses from upstreams when they send `Content-Encoding: gzip`
@@ -344,11 +344,11 @@ upstreams:
 4. **eRPC → Client**: Automatically enabled when clients send `Accept-Encoding: gzip` header (can be disabled in server config)
 ```yaml
 server:
-  enableGzip: true  # Disable gzip compression for responses to clients
+  enableGzip: true  # gzip compression for responses to clients (enabled by default)
 ```
 
 <Callout type='info'>
-  Response compression (eRPC → Client) is enabled by default when clients support it. Upstream compression need to be explicitly enabled if provider supports it.
+  Using gzip can reduce ingress/egress bandwidth costs, and in certain cases (e.g. large RPC requests) it can improve performance.
 </Callout>
 
 #### Roadmap
