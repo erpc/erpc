@@ -30,8 +30,7 @@ type EvmStatePoller interface {
 }
 
 func EvmIsMissingDataError(err error) bool {
-	return strings.Contains(err.Error(), "missing trie node") ||
-		strings.Contains(err.Error(), "header not found") ||
+	return strings.Contains(err.Error(), "header not found") ||
 		strings.Contains(err.Error(), "could not find block") ||
 		strings.Contains(err.Error(), "unknown block") ||
 		strings.Contains(err.Error(), "height must be less than or equal") ||
