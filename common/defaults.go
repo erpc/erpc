@@ -86,9 +86,14 @@ func (a *AdminConfig) SetDefaults() {
 	if a.Auth != nil {
 		a.Auth.SetDefaults()
 	}
-	if a.CORS != nil {
-		a.CORS.SetDefaults()
+	if a.CORS == nil {
+		// It is safe to enable CORS of * for admin endpoint since requests are protected by Secret Tokens
+		a.CORS = &CORSConfig{
+			AllowedOrigins:   []string{"*"},
+			AllowCredentials: util.BoolPtr(false),
+		}
 	}
+	a.CORS.SetDefaults()
 }
 
 func (d *DatabaseConfig) SetDefaults() {
