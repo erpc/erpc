@@ -20,8 +20,22 @@ func (c *Config) SetDefaults() {
 
 	if c.Database == nil {
 		c.Database = &DatabaseConfig{
-			EvmJsonRpcCache: &ConnectorConfig{
-				Driver: DriverMemory,
+			EvmJsonRpcCache: &CacheConfig{
+				Connectors: []*ConnectorConfig{
+					{
+						Id:     "default-memory",
+						Driver: DriverMemory,
+					},
+				},
+				Policies: []*CachePolicyConfig{
+					{
+						Network:          "*",
+						Method:           "*",
+						RequiredFinality: DataFinalityStateUnknown,
+						TTL:              "",
+						Connector:        "default-memory",
+					},
+				},
 			},
 		}
 	}
@@ -46,6 +60,10 @@ func (c *Config) SetDefaults() {
 		c.RateLimiters.SetDefaults()
 	}
 }
+
+func (c *CacheConfig) SetDefaults() {}
+
+func (c *CachePolicyConfig) SetDefaults() {}
 
 func (s *ServerConfig) SetDefaults() {
 	if s.ListenV4 == nil {

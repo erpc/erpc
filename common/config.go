@@ -59,7 +59,44 @@ type AdminConfig struct {
 }
 
 type DatabaseConfig struct {
-	EvmJsonRpcCache *ConnectorConfig `yaml:"evmJsonRpcCache" json:"evmJsonRpcCache"`
+	EvmJsonRpcCache *CacheConfig `yaml:"evmJsonRpcCache" json:"evmJsonRpcCache"`
+}
+
+type CacheConfig struct {
+	Connectors []*ConnectorConfig   `yaml:"connectors" json:"connectors"`
+	Policies   []*CachePolicyConfig `yaml:"policies" json:"policies"`
+}
+
+func (c *CacheConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	if err := unmarshal(&c); err != nil {
+		// Backward compatibility for old config format
+		var raw ConnectorConfig
+		if err := unmarshal(&raw); err != nil {
+			return err
+		}
+		raw.Id = "default"
+		c.Connectors = []*ConnectorConfig{&raw}
+		c.Policies = []*CachePolicyConfig{
+			{
+				Network:          "*",
+				Method:           "*",
+				RequiredFinality: DataFinalityStateUnknown,
+				TTL:              "",
+				Connector:        "default",
+			},
+		}
+	}
+
+	return nil
+}
+
+type CachePolicyConfig struct {
+	Network string `yaml:"network" json:"network"`
+	Method  string `yaml:"method" json:"method"`
+	// TODO what are actual use-cases for this? "only target recent data" | "only target finalized data" | "target all data" | anything else?
+	RequiredFinality DataFinalityState `yaml:"requiredFinality" json:"requiredFinality"`
+	TTL              string            `yaml:"ttl,omitempty" json:"ttl,omitempty"`
+	Connector        string            `yaml:"connector" json:"connector"`
 }
 
 type ConnectorDriverType string
@@ -72,12 +109,12 @@ const (
 )
 
 type ConnectorConfig struct {
+	Id         string                     `yaml:"id" json:"id"`
 	Driver     ConnectorDriverType        `yaml:"driver" json:"driver" tstype:"types.ConnectorDriverType"`
-	Memory     *MemoryConnectorConfig     `yaml:"memory" json:"memory"`
-	Redis      *RedisConnectorConfig      `yaml:"redis" json:"redis"`
-	DynamoDB   *DynamoDBConnectorConfig   `yaml:"dynamodb" json:"dynamodb"`
-	PostgreSQL *PostgreSQLConnectorConfig `yaml:"postgresql" json:"postgresql"`
-	Methods    []*MethodCacheConfig       `yaml:"methods" json:"methods"`
+	Memory     *MemoryConnectorConfig     `yaml:"memory,omitempty" json:"memory,omitempty"`
+	Redis      *RedisConnectorConfig      `yaml:"redis,omitempty" json:"redis,omitempty"`
+	DynamoDB   *DynamoDBConnectorConfig   `yaml:"dynamodb,omitempty" json:"dynamodb,omitempty"`
+	PostgreSQL *PostgreSQLConnectorConfig `yaml:"postgresql,omitempty" json:"postgresql,omitempty"`
 }
 
 type MemoryConnectorConfig struct {
@@ -106,12 +143,8 @@ func (r *RedisConnectorConfig) MarshalJSON() ([]byte, error) {
 		"password":     "REDACTED",
 		"db":           r.DB,
 		"connPoolSize": r.ConnPoolSize,
+		"tls":          r.TLS,
 	})
-}
-
-type MethodCacheConfig struct {
-	Method string `yaml:"method" json:"method"`
-	TTL    string `yamle:"ttl" json:"ttl"`
 }
 
 type DynamoDBConnectorConfig struct {

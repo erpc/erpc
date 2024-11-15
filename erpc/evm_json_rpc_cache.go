@@ -13,34 +13,56 @@ import (
 )
 
 type EvmJsonRpcCache struct {
-	conn    data.Connector
-	network *Network
-	logger  *zerolog.Logger
+	policies []*data.CachePolicy
+	network  *Network
+	logger   *zerolog.Logger
 }
 
 const (
 	JsonRpcCacheContext common.ContextKey = "jsonRpcCache"
 )
 
-func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common.ConnectorConfig) (*EvmJsonRpcCache, error) {
+func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common.CacheConfig) (*EvmJsonRpcCache, error) {
 	logger.Info().Msg("initializing evm json rpc cache...")
 
-	c, err := data.NewConnector(ctx, logger, cfg)
-	if err != nil {
-		return nil, err
+	// Create connectors map
+	connectors := make(map[string]data.Connector)
+	for _, connCfg := range cfg.Connectors {
+		c, err := data.NewConnector(ctx, logger, connCfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create connector %s: %w", connCfg.Id, err)
+		}
+		connectors[connCfg.Id] = c
 	}
 
-	// set TTL method overrides
-	for _, cacheInfo := range cfg.Methods {
-		if err := c.SetTTL(cacheInfo.Method, cacheInfo.TTL); err != nil {
-			return nil, err
+	// Create policies
+	var policies []*data.CachePolicy
+	for _, policyCfg := range cfg.Policies {
+		connector, exists := connectors[policyCfg.Connector]
+		if !exists {
+			return nil, fmt.Errorf("connector %s not found for policy", policyCfg.Connector)
 		}
+
+		policy, err := data.NewCachePolicy(policyCfg, connector)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create policy: %w", err)
+		}
+		policies = append(policies, policy)
 	}
 
 	return &EvmJsonRpcCache{
-		conn:   c,
-		logger: logger,
+		policies: policies,
+		logger:   logger,
 	}, nil
+}
+
+func (c *EvmJsonRpcCache) findMatchingPolicy(networkId string, upstreamId string, method string, isFinalized bool) *data.CachePolicy {
+	for _, policy := range c.policies {
+		if policy.Matches(networkId, upstreamId, method, isFinalized) {
+			return policy
+		}
+	}
+	return nil
 }
 
 func (c *EvmJsonRpcCache) WithNetwork(network *Network) *EvmJsonRpcCache {
@@ -58,7 +80,15 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		return nil, err
 	}
 
-	hasTTL := c.conn.HasTTL(rpcReq.Method)
+	// Find matching policy
+	policy := c.findMatchingPolicy(req.NetworkId(), req.UpstreamId(), rpcReq.Method, blockNumber != 0)
+	if policy == nil {
+		return nil, nil
+	}
+
+	// Use policy's connector
+	connector := policy.GetConnector()
+
 	rpcReq.RLock()
 	defer rpcReq.RUnlock()
 
@@ -66,7 +96,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	if err != nil {
 		return nil, err
 	}
-	if blockRef == "" && blockNumber == 0 && !hasTTL {
+	if blockRef == "" && blockNumber == 0 {
 		return nil, nil
 	}
 	if blockNumber != 0 {
@@ -83,9 +113,9 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 
 	var resultString string
 	if blockRef != "*" {
-		resultString, err = c.conn.Get(ctx, data.ConnectorMainIndex, groupKey, requestKey)
+		resultString, err = connector.Get(ctx, data.ConnectorMainIndex, groupKey, requestKey)
 	} else {
-		resultString, err = c.conn.Get(ctx, data.ConnectorReverseIndex, groupKey, requestKey)
+		resultString, err = connector.Get(ctx, data.ConnectorReverseIndex, groupKey, requestKey)
 	}
 	if err != nil {
 		return nil, err
@@ -132,9 +162,12 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		return err
 	}
 
-	hasTTL := c.conn.HasTTL(rpcReq.Method)
+	policy := c.findMatchingPolicy(req.NetworkId(), resp.Upstream().Config().Id, rpcReq.Method, blockNumber != 0)
+	if policy == nil {
+		return nil
+	}
 
-	if blockRef == "" && blockNumber == 0 && !hasTTL {
+	if blockRef == "" && blockNumber == 0 {
 		// Do not cache if we can't resolve a block reference (e.g. latest block requests)
 		lg.Debug().
 			Str("blockRef", blockRef).
@@ -173,9 +206,12 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 			Msg("caching the response")
 	}
 
+	connector := policy.GetConnector()
+	ttl := policy.GetTTL()
+
 	ctx, cancel := context.WithTimeoutCause(ctx, 5*time.Second, errors.New("evm json-rpc cache driver timeout during set"))
 	defer cancel()
-	return c.conn.Set(ctx, pk, rk, util.Mem2Str(rpcResp.Result))
+	return connector.Set(ctx, pk, rk, util.Mem2Str(rpcResp.Result), ttl)
 }
 
 func shouldCacheResponse(
