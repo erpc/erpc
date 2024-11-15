@@ -1577,7 +1577,10 @@ var NewErrUpstreamNodeTypeMismatch = func(cause error, expected EvmNodeType, act
 			Code:    ErrCodeUpstreamNodeTypeMismatch,
 			Message: "node type does not match what is required for this request",
 			Cause:   cause,
-			Details: // ... {expectedNodeType: expected, ...
+			Details: map[string]interface{}{
+				"expected": expected,
+				"actual":   actual,
+			},
 		},
 	}
 }
