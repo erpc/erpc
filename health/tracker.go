@@ -55,6 +55,20 @@ func (m *TrackedMetrics) ThrottledRate() float64 {
 	return (float64(m.RemoteRateLimitedTotal.Load()) + float64(m.SelfRateLimitedTotal.Load())) / float64(m.RequestsTotal.Load())
 }
 
+func (m *TrackedMetrics) MarshalJSON() ([]byte, error) {
+	return common.SonicCfg.Marshal(map[string]interface{}{
+		"latencySecs":            m.LatencySecs,
+		"errorsTotal":            m.ErrorsTotal.Load(),
+		"selfRateLimitedTotal":   m.SelfRateLimitedTotal.Load(),
+		"remoteRateLimitedTotal": m.RemoteRateLimitedTotal.Load(),
+		"requestsTotal":          m.RequestsTotal.Load(),
+		"blockHeadLag":           m.BlockHeadLag.Load(),
+		"finalizationLag":        m.FinalizationLag.Load(),
+		"cordoned":               m.Cordoned.Load(),
+		"cordonedReason":         m.CordonedReason.Load(),
+	})
+}
+
 func (mt *TrackedMetrics) Reset() {
 	mt.ErrorsTotal.Store(0)
 	mt.RequestsTotal.Store(0)

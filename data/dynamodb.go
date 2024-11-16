@@ -205,7 +205,7 @@ func createTableIfNotExists(
 	_, err = client.UpdateTimeToLive(&dynamodb.UpdateTimeToLiveInput{
 		TableName: aws.String(cfg.Table),
 		TimeToLiveSpecification: &dynamodb.TimeToLiveSpecification{
-			AttributeName: aws.String("ttl"),
+			AttributeName: aws.String(cfg.TTLAttributeName),
 			Enabled:       aws.Bool(true),
 		},
 	})
@@ -359,7 +359,7 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 			ExpressionAttributeNames:  exprAttrNames,
 			ExpressionAttributeValues: exprAttrValues,
 		}
-		d.logger.Debug().Msgf("getting item from dynamodb with input: %+v", qi)
+		d.logger.Debug().Str("index", d.reverseIndexName).Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("getting item from dynamodb")
 		result, err := d.client.QueryWithContext(ctx, qi)
 		if err != nil {
 			return "", err
@@ -378,7 +378,7 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 				S: aws.String(rangeKey),
 			},
 		}
-		d.logger.Debug().Msgf("getting item from dynamodb with key: %+v", ky)
+		d.logger.Debug().Str("index", "n/a").Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("getting item from dynamodb")
 		result, err := d.client.GetItemWithContext(ctx, &dynamodb.GetItemInput{
 			TableName: aws.String(d.table),
 			Key:       ky,

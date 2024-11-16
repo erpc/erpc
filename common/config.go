@@ -63,27 +63,50 @@ type DatabaseConfig struct {
 }
 
 type CacheConfig struct {
-	Connectors []*ConnectorConfig   `yaml:"connectors" json:"connectors"`
+	Connectors []*ConnectorConfig   `yaml:"connectors" json:"connectors" tstype:"types.ConnectorConfig[]"`
 	Policies   []*CachePolicyConfig `yaml:"policies" json:"policies"`
 }
 
 func (c *CacheConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	if err := unmarshal(&c); err != nil {
+	type rawCacheConfig CacheConfig
+	raw := rawCacheConfig{}
+
+	if err := unmarshal(&raw); err != nil || (raw.Connectors == nil && raw.Policies == nil) || (len(raw.Connectors) == 0 && len(raw.Policies) == 0) {
 		// Backward compatibility for old config format
-		var raw ConnectorConfig
-		if err := unmarshal(&raw); err != nil {
+		var rawBackward ConnectorConfig
+		if err := unmarshal(&rawBackward); err != nil {
 			return err
 		}
-		raw.Id = "default"
-		c.Connectors = []*ConnectorConfig{&raw}
+		rawBackward.Id = "default"
+		c.Connectors = []*ConnectorConfig{&rawBackward}
 		c.Policies = []*CachePolicyConfig{
 			{
-				Network:          "*",
-				Method:           "*",
-				RequiredFinality: DataFinalityStateUnknown,
-				TTL:              0,
-				Connector:        "default",
+				Network:   "*",
+				Method:    "*",
+				Finality:  DataFinalityStateFinalized,
+				TTL:       0,
+				Connector: "default",
 			},
+		}
+		// PostgreSQL might not be very efficient for these short default TTLs
+		if rawBackward.Driver != DriverPostgreSQL {
+			c.Policies = append(
+				c.Policies,
+				&CachePolicyConfig{
+					Network:   "*",
+					Method:    "*",
+					Finality:  DataFinalityStateUnknown,
+					TTL:       30 * time.Second,
+					Connector: "default",
+				},
+				&CachePolicyConfig{
+					Network:   "*",
+					Method:    "*",
+					Finality:  DataFinalityStateUnfinalized,
+					TTL:       30 * time.Second,
+					Connector: "default",
+				},
+			)
 		}
 	}
 
@@ -91,11 +114,11 @@ func (c *CacheConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 }
 
 type CachePolicyConfig struct {
-	Network          string            `yaml:"network" json:"network"`
-	Method           string            `yaml:"method" json:"method"`
-	RequiredFinality DataFinalityState `yaml:"requiredFinality" json:"requiredFinality"`
-	TTL              time.Duration     `yaml:"ttl,omitempty" json:"ttl,omitempty"`
-	Connector        string            `yaml:"connector" json:"connector"`
+	Network   string            `yaml:"network" json:"network"`
+	Method    string            `yaml:"method" json:"method"`
+	Finality  DataFinalityState `yaml:"finality" json:"finality"`
+	TTL       time.Duration     `yaml:"ttl,omitempty" json:"ttl,omitempty"`
+	Connector string            `yaml:"connector" json:"connector"`
 }
 
 func (c *CachePolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
@@ -107,27 +130,42 @@ func (c *CachePolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) err
 	if err := unmarshal(&raw); err != nil {
 		return err
 	}
-	ttl, err := time.ParseDuration(raw.TTL)
-	if err != nil {
-		return fmt.Errorf("failed to parse ttl: %v", err)
-	}
 	*c = raw.CachePolicyConfig
-	c.TTL = ttl
+	if raw.TTL != "" {
+		ttl, err := time.ParseDuration(raw.TTL)
+		if err != nil {
+			return fmt.Errorf("failed to parse ttl: %v", err)
+		}
+		c.TTL = ttl
+	} else {
+		// Set default value of 0 when TTL is not specified, which means no ttl
+		c.TTL = time.Duration(0)
+	}
 	return nil
+}
+
+func (c *CachePolicyConfig) MarshalJSON() ([]byte, error) {
+	return sonic.Marshal(map[string]interface{}{
+		"network":   c.Network,
+		"method":    c.Method,
+		"finality":  c.Finality,
+		"ttl":       c.TTL,
+		"connector": c.Connector,
+	})
 }
 
 type ConnectorDriverType string
 
 const (
-	DriverMemory   ConnectorDriverType = "memory"
-	DriverRedis    ConnectorDriverType = "redis"
-	DriverPostgres ConnectorDriverType = "postgres"
-	DriverDynamoDB ConnectorDriverType = "dynamodb"
+	DriverMemory     ConnectorDriverType = "memory"
+	DriverRedis      ConnectorDriverType = "redis"
+	DriverPostgreSQL ConnectorDriverType = "postgresql"
+	DriverDynamoDB   ConnectorDriverType = "dynamodb"
 )
 
 type ConnectorConfig struct {
 	Id         string                     `yaml:"id" json:"id"`
-	Driver     ConnectorDriverType        `yaml:"driver" json:"driver" tstype:"types.ConnectorDriverType"`
+	Driver     ConnectorDriverType        `yaml:"driver" json:"driver"`
 	Memory     *MemoryConnectorConfig     `yaml:"memory,omitempty" json:"memory,omitempty"`
 	Redis      *RedisConnectorConfig      `yaml:"redis,omitempty" json:"redis,omitempty"`
 	DynamoDB   *DynamoDBConnectorConfig   `yaml:"dynamodb,omitempty" json:"dynamodb,omitempty"`

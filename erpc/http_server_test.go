@@ -2586,7 +2586,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
 			}).
 			Reply(200).
-			Delay(500 * time.Millisecond).
+			Delay(1000 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,

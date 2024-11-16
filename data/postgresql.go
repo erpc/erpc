@@ -24,7 +24,6 @@ type PostgreSQLConnector struct {
 	conn          *pgxpool.Pool
 	table         string
 	cleanupTicker *time.Ticker
-	done          chan struct{}
 }
 
 func NewPostgreSQLConnector(
@@ -41,7 +40,6 @@ func NewPostgreSQLConnector(
 		logger:        &lg,
 		table:         cfg.Table,
 		cleanupTicker: time.NewTicker(5 * time.Minute),
-		done:          make(chan struct{}),
 	}
 
 	// Attempt the actual connecting in background to avoid blocking the main thread.
@@ -87,6 +85,15 @@ func (p *PostgreSQLConnector) connect(ctx context.Context, cfg *common.PostgreSQ
 	`, cfg.Table))
 	if err != nil {
 		return fmt.Errorf("failed to create table: %w", err)
+	}
+
+	// Add expires_at column if it doesn't exist
+	_, err = conn.Exec(ctx, fmt.Sprintf(`
+        ALTER TABLE %s
+        ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP WITH TIME ZONE
+    `, cfg.Table))
+	if err != nil {
+		return fmt.Errorf("failed to add expires_at column: %w", err)
 	}
 
 	// Create index for reverse lookups
@@ -259,9 +266,6 @@ func (p *PostgreSQLConnector) startCleanup(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			p.logger.Debug().Msg("stopping cleanup routine due to context cancellation")
-			return
-		case <-p.done:
-			p.logger.Debug().Msg("stopping cleanup routine due to connector shutdown")
 			return
 		case <-p.cleanupTicker.C:
 			if err := p.cleanupExpired(ctx); err != nil {

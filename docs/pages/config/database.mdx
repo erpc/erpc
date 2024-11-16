@@ -14,13 +14,96 @@ database:
 
 ### `evmJsonRpcCache`
 
-This config defines the destination for caching JSON-RPC cals towards any EVM architecture upstream.
+This config defines the destination for caching JSON-RPC calls towards any EVM architecture upstream.
 Caching mechanism is non-blocking on critical path, and is used as best-effort. If the database is not available, the cache set/get will be skipped.
 
 <Callout type="info">
   Make sure the storage requirements meet your usage, for example caching 70m
   blocks + 10m txs + 10m traces on Arbitrum needs 200GB of storage.
 </Callout>
+
+The cache config allows you to define multiple connectors (storage backends) and policies for different finality states. Here's the basic structure:
+
+```yaml filename="erpc.yaml"
+database:
+  evmJsonRpcCache:
+    # Define one or more storage connectors with unique IDs useful in policies
+    connectors:
+      - id: memory-cache
+        driver: memory # Refer to "memory" driver docs below
+        memory:
+          maxItems: 100000
+      - id: redis-cache-local
+        driver: redis # Refer to "redis" driver docs below
+        redis:
+          addr: localhost:6379
+          password: "xxxxxxxxx"
+          db: 0
+          connPoolSize: 128
+      - id: redis-cache-momento
+        driver: redis # Refer to "redis" driver docs below
+        redis:
+          addr: momento.aws.momentohq.com:6379
+          password: "xxxxxxxxx"
+          db: 0
+          connPoolSize: 128
+      - id: postgres-cache
+        driver: postgresql # Refer to "postgresql" driver docs below
+        postgresql:
+          connectionUri: >-
+            postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name
+          table: rpc_cache
+      # ... any driver can be used multiple times
+    
+    # Define caching policies for different network/method/finality states
+    policies:
+      - network: "*"
+        method: "*"
+        finality: finalized
+        connector: memory-cache
+        ttl: 0
+      - network: "*"
+        method: "*"
+        finality: unfinalized
+        connector: memory-cache
+        ttl: 30s
+      - network: "*"
+        method: "*"
+        finality: unknown
+        connector: memory-cache
+        ttl: 30s
+      - network: "*" # supports * as wildcard and | as OR operator
+        method: "eth_getLogs|trace_*" # supports * as wildcard and | as OR operator
+        finality: finalized
+        connector: postgres-cache
+        ttl: 0
+      - network: "evm:42161|evm:10" # supports * as wildcard and | as OR operator
+        method: "arbtrace_*" # supports * as wildcard and | as OR operator
+        finality: finalized
+        connector: postgres-cache
+        ttl: 1d
+```
+
+<Callout type="info">
+By default, eRPC enables an in-memory cache with these policies:
+- Finalized data: cached forever with 100k max items
+- Unknown/Unfinalized data: cached for 30 seconds to be reorg safe
+</Callout>
+
+#### Cache policies
+
+You can create multiple policies to define different caching behavior for different networks, methods, and finality states.
+
+* On each cache "set" operation all policies that match the network/method/finality state will be used to store the data.
+* On each cache "get" operation all policies that match the network/method will be used to retrieve the data, from top to bottom as defined in the config, the first policy that returns a cache hit will be used.
+
+### Finality states
+
+The cache system recognizes three finality states:
+
+- `finalized`: Data from blocks that are confirmed as finalized (safe to cache long-term). This is based on 'finalized' block fetched via eth_getBlockByNumber of the upstream corresponding to the received response (not other upstreams).
+- `unfinalized`: Data from recent blocks that could still be reorged
+- `unknown`: When block number cannot be determined from request/response (e.g., `eth_traceTransaction`), or when upstream does not support 'finalized' tag in eth_getBlockByNumber.
 
 #### Re-org mechanism
 
@@ -73,8 +156,11 @@ Mainly useful for local testing or when you don't need to cache too much data.
 # ...
 database:
   evmJsonRpcCache:
-    driver: memory
-    maxItems: 10000
+    connectors:
+      - id: memory-cache
+        driver: memory
+        memory:
+          maxItems: 10000
 ```
 
 ### Redis
@@ -85,11 +171,13 @@ Redis is useful when you need to store cached data temporarily with **eviction p
 # ...
 database:
   evmJsonRpcCache:
-    driver: redis
-    redis:
-      addr: YOUR_REDIS_ADDRESS_HERE
-      password: YOUR_REDIS_PASSWORD_HERE
-      db: XXX
+    connectors:
+      - id: redis-cache
+        driver: redis
+        redis:
+          addr: YOUR_REDIS_ADDRESS_HERE
+          password: YOUR_REDIS_PASSWORD_HERE
+          db: XXX
 # ...
 ```
 
@@ -112,11 +200,13 @@ Useful when you need to store cached data permanently without TTL i.e. forever.
 # ...
 database:
   evmJsonRpcCache:
-    driver: postgresql
-    postgresql:
-      connectionUri: >-
-        postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name
-      table: rpc_cache
+    connectors:
+      - id: postgres-cache
+        driver: postgresql
+        postgresql:
+          connectionUri: >-
+            postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name
+          table: rpc_cache
 # ...
 ```
 
@@ -128,16 +218,18 @@ When you need to have scalable (compared to Postgres) permanent caching and are 
 # ...
 database:
   evmJsonRpcCache:
-    driver: dynamodb
-    dynamodb:
-      table: rpc_cache
-      region: eu-west-1
-      endpoint: https://dynamodb.eu-west-1.amazonaws.com # Optional
-      # Auth is optional if you are running within AWS.
-      auth:
-        mode: secret # file, or env
-        accessKeyId: YOUR_ACCESS_KEY_ID # Only if mode is secret
-        secretAccessKey: YOUR_SECRET_ACCESS_KEY # Only if mode is secret
-        profile: xxxxx # Only if mode is file
-        credentialsFile: xxxx # Only if mode is file
+    connectors:
+      - id: dynamodb-cache
+        driver: dynamodb
+        dynamodb:
+          table: rpc_cache
+          region: eu-west-1
+          endpoint: https://dynamodb.eu-west-1.amazonaws.com # Optional
+          # Auth is optional if you are running within AWS.
+          auth:
+            mode: secret # file, or env
+            accessKeyId: YOUR_ACCESS_KEY_ID # Only if mode is secret
+            secretAccessKey: YOUR_SECRET_ACCESS_KEY # Only if mode is secret
+            profile: xxxxx # Only if mode is file
+            credentialsFile: xxxx # Only if mode is file
 ```

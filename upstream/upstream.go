@@ -113,7 +113,7 @@ func NewUpstream(
 	go func() {
 		err = pup.detectFeatures()
 		if err != nil {
-			lg.Error().Err(err).Msgf("could not fully detect features for upstream")
+			lg.Warn().Err(err).Msgf("skipping auto feature detection for upstream due to error")
 		}
 	}()
 

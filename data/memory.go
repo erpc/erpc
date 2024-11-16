@@ -22,7 +22,6 @@ type MemoryConnector struct {
 	logger        *zerolog.Logger
 	cache         *lru.Cache[string, cacheItem]
 	cleanupTicker *time.Ticker
-	done          chan struct{}
 }
 
 type cacheItem struct {
@@ -54,9 +53,10 @@ func NewMemoryConnector(
 	}
 
 	c := &MemoryConnector{
-		id:     id,
-		logger: &lg,
-		cache:  cache,
+		id:            id,
+		logger:        &lg,
+		cache:         cache,
+		cleanupTicker: time.NewTicker(1 * time.Minute),
 	}
 
 	go c.startCleanup(ctx)
@@ -71,9 +71,6 @@ func (m *MemoryConnector) startCleanup(ctx context.Context) {
 		case <-ctx.Done():
 			m.logger.Debug().Msg("stopping cleanup routine due to context cancellation")
 			return
-		case <-m.done:
-			m.logger.Debug().Msg("stopping cleanup routine due to connector shutdown")
-			return
 		case <-m.cleanupTicker.C:
 			m.cleanupExpired()
 		}
@@ -85,7 +82,7 @@ func (m *MemoryConnector) Id() string {
 }
 
 func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey, value string, ttl *time.Duration) error {
-	m.logger.Debug().Msgf("writing to memory with partition key: %s and range key: %s", partitionKey, rangeKey)
+	m.logger.Debug().Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("writing to memory")
 
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
 
@@ -93,7 +90,7 @@ func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey, value
 		value: value,
 	}
 
-	if ttl != nil {
+	if ttl != nil && *ttl > 0 {
 		expiresAt := time.Now().Add(*ttl)
 		item.expiresAt = &expiresAt
 	}
@@ -108,7 +105,7 @@ func (m *MemoryConnector) Get(ctx context.Context, index, partitionKey, rangeKey
 	}
 
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
-	m.logger.Debug().Msgf("getting item from memory with key: %s", key)
+	m.logger.Debug().Str("key", key).Msg("getting item from memory")
 
 	item, ok := m.cache.Get(key)
 	if !ok {

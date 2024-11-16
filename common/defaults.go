@@ -23,17 +23,31 @@ func (c *Config) SetDefaults() {
 			EvmJsonRpcCache: &CacheConfig{
 				Connectors: []*ConnectorConfig{
 					{
-						Id:     "default-memory",
+						Id:     "memory-cache",
 						Driver: DriverMemory,
 					},
 				},
 				Policies: []*CachePolicyConfig{
 					{
-						Network:          "*",
-						Method:           "*",
-						RequiredFinality: DataFinalityStateUnknown,
-						TTL:              0,
-						Connector:        "default-memory",
+						Network:   "*",
+						Method:    "*",
+						Finality:  DataFinalityStateFinalized,
+						TTL:       0, // Forever
+						Connector: "memory-cache",
+					},
+					{
+						Network:   "*",
+						Method:    "*",
+						Finality:  DataFinalityStateUnknown,
+						TTL:       30 * time.Second,
+						Connector: "memory-cache",
+					},
+					{
+						Network:   "*",
+						Method:    "*",
+						Finality:  DataFinalityStateUnfinalized,
+						TTL:       30 * time.Second,
+						Connector: "memory-cache",
 					},
 				},
 			},
@@ -61,7 +75,18 @@ func (c *Config) SetDefaults() {
 	}
 }
 
-func (c *CacheConfig) SetDefaults() {}
+func (c *CacheConfig) SetDefaults() {
+	if len(c.Policies) > 0 {
+		for _, policy := range c.Policies {
+			policy.SetDefaults()
+		}
+	}
+	if len(c.Connectors) > 0 {
+		for _, connector := range c.Connectors {
+			connector.SetDefaults()
+		}
+	}
+}
 
 func (c *CachePolicyConfig) SetDefaults() {}
 

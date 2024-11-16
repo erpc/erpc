@@ -1,5 +1,10 @@
 package common
 
+import (
+	"fmt"
+	"strings"
+)
+
 type DataFinalityState int
 
 const (
@@ -16,12 +21,13 @@ func (f DataFinalityState) MarshalJSON() ([]byte, error) {
 	return SonicCfg.Marshal(f.String())
 }
 
-func (f *DataFinalityState) UnmarshalJSON(data []byte) error {
+func (f *DataFinalityState) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	var s string
-	if err := SonicCfg.Unmarshal(data, &s); err != nil {
+	if err := unmarshal(&s); err != nil {
 		return err
 	}
-	switch s {
+
+	switch strings.ToLower(s) {
 	case "unknown":
 		*f = DataFinalityStateUnknown
 	case "unfinalized":
@@ -29,5 +35,6 @@ func (f *DataFinalityState) UnmarshalJSON(data []byte) error {
 	case "finalized":
 		*f = DataFinalityStateFinalized
 	}
-	return nil
+
+	return fmt.Errorf("invalid data finality state: %s", s)
 }

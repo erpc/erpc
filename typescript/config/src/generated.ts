@@ -31,15 +31,27 @@ export interface AdminConfig {
   cors?: CORSConfig;
 }
 export interface DatabaseConfig {
-  evmJsonRpcCache?: ConnectorConfig;
+  evmJsonRpcCache?: CacheConfig;
+}
+export interface CacheConfig {
+  connectors: types.ConnectorConfig[];
+  policies: (CachePolicyConfig | undefined)[];
+}
+export interface CachePolicyConfig {
+  network: string;
+  method: string;
+  finality: DataFinalityState;
+  ttl?: types.Duration;
+  connector: string;
 }
 export type ConnectorDriverType = string;
 export const DriverMemory: ConnectorDriverType = "memory";
 export const DriverRedis: ConnectorDriverType = "redis";
-export const DriverPostgres: ConnectorDriverType = "postgres";
+export const DriverPostgreSQL: ConnectorDriverType = "postgresql";
 export const DriverDynamoDB: ConnectorDriverType = "dynamodb";
 export interface ConnectorConfig {
-  driver: types.ConnectorDriverType;
+  id: string;
+  driver: ConnectorDriverType;
   memory?: MemoryConnectorConfig;
   redis?: RedisConnectorConfig;
   dynamodb?: DynamoDBConnectorConfig;
@@ -59,6 +71,7 @@ export interface RedisConnectorConfig {
   addr: string;
   db: number /* int */;
   tls?: TLSConfig;
+  connPoolSize: number /* int */;
 }
 export interface DynamoDBConnectorConfig {
   table: string;
@@ -68,6 +81,7 @@ export interface DynamoDBConnectorConfig {
   partitionKeyName: string;
   rangeKeyName: string;
   reverseIndexName: string;
+  ttlAttributeName: string;
 }
 export interface PostgreSQLConnectorConfig {
   connectionUri: string;
@@ -255,6 +269,14 @@ export interface MetricsConfig {
   hostV6?: string;
   port?: number /* int */;
 }
+
+//////////
+// source: data.go
+
+export type DataFinalityState = number /* int */;
+export const DataFinalityStateUnknown: DataFinalityState = 0;
+export const DataFinalityStateUnfinalized: DataFinalityState = 1;
+export const DataFinalityStateFinalized: DataFinalityState = 2;
 
 //////////
 // source: defaults.go

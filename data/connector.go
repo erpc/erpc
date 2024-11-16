@@ -31,7 +31,7 @@ func NewConnector(
 		return NewRedisConnector(ctx, logger, cfg.Id, cfg.Redis)
 	case common.DriverDynamoDB:
 		return NewDynamoDBConnector(ctx, logger, cfg.Id, cfg.DynamoDB)
-	case common.DriverPostgres:
+	case common.DriverPostgreSQL:
 		return NewPostgreSQLConnector(ctx, logger, cfg.Id, cfg.PostgreSQL)
 	}
 

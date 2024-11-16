@@ -153,10 +153,15 @@ func (c *CacheConfig) Validate() error {
 	if len(c.Connectors) == 0 {
 		return fmt.Errorf("cache.*.connectors is required, add at least one connector")
 	}
+	existingIds := make(map[string]bool)
 	for _, connector := range c.Connectors {
 		if err := connector.Validate(); err != nil {
 			return err
 		}
+		if existingIds[connector.Id] {
+			return fmt.Errorf("cache.*.connectors.*.id must be unique, '%s' is duplicated", connector.Id)
+		}
+		existingIds[connector.Id] = true
 	}
 	if len(c.Policies) == 0 {
 		return fmt.Errorf("cache.*.policies is required, add at least one policy")
@@ -176,16 +181,25 @@ func (p *CachePolicyConfig) Validate(c *CacheConfig) error {
 	if p.Method == "" {
 		return fmt.Errorf("cache.*.policies.*.method is required")
 	}
-	return nil
+	if p.Connector == "" {
+		return fmt.Errorf("cache.*.policies.*.connector is required")
+	}
+
+	for _, connector := range c.Connectors {
+		if connector.Id == p.Connector {
+			return nil
+		}
+	}
+	return fmt.Errorf("cache.*.policies.*.connector '%s' does not exist in cache.connectors", p.Connector)
 }
 
 func (c *ConnectorConfig) Validate() error {
 	if c.Driver == "" {
 		return fmt.Errorf("database.*.connector.driver is required")
 	}
-	drivers := []ConnectorDriverType{DriverMemory, DriverRedis, DriverPostgres, DriverDynamoDB}
+	drivers := []ConnectorDriverType{DriverMemory, DriverRedis, DriverPostgreSQL, DriverDynamoDB}
 	if !slices.Contains(drivers, c.Driver) {
-		return fmt.Errorf("database.*.connector.driver is invalid must be one of: %v", drivers)
+		return fmt.Errorf("database.*.connector.driver '%s' is invalid must be one of: %v", c.Driver, drivers)
 	}
 	if c.Driver == DriverMemory && c.Memory == nil {
 		return fmt.Errorf("database.*.connector.memory is required when driver is memory")
@@ -193,7 +207,7 @@ func (c *ConnectorConfig) Validate() error {
 	if c.Driver == DriverRedis && c.Redis == nil {
 		return fmt.Errorf("database.*.connector.redis is required when driver is redis")
 	}
-	if c.Driver == DriverPostgres && c.PostgreSQL == nil {
+	if c.Driver == DriverPostgreSQL && c.PostgreSQL == nil {
 		return fmt.Errorf("database.*.connector.postgres is required when driver is postgres")
 	}
 	if c.Driver == DriverDynamoDB && c.DynamoDB == nil {
@@ -283,19 +297,30 @@ func (p *ProjectConfig) Validate(c *Config) error {
 		return fmt.Errorf("project id is required")
 	}
 	if p.Upstreams != nil && len(p.Upstreams) > 0 {
+		existingIds := make(map[string]bool)
 		for _, upstream := range p.Upstreams {
 			if err := upstream.Validate(c); err != nil {
 				return err
 			}
+			if existingIds[upstream.Id] {
+				return fmt.Errorf("project.*.upstreams.*.id must be unique, '%s' is duplicated", upstream.Id)
+			}
+			existingIds[upstream.Id] = true
 		}
 	} else {
 		return fmt.Errorf("project.*.upstreams is required, add at least one upstream")
 	}
 	if p.Networks != nil {
+		existingIds := make(map[string]bool)
 		for _, network := range p.Networks {
 			if err := network.Validate(c); err != nil {
 				return err
 			}
+			ntwId := network.NetworkId()
+			if existingIds[ntwId] {
+				return fmt.Errorf("project.*.networks.*.id must be unique, '%s' is duplicated", ntwId)
+			}
+			existingIds[ntwId] = true
 		}
 	}
 	if p.Auth != nil {
@@ -367,7 +392,7 @@ func (s *AuthStrategyConfig) Validate() error {
 			return err
 		}
 	default:
-		return fmt.Errorf("auth.*.type is invalid must be one of: %v", []AuthType{
+		return fmt.Errorf("auth.*.type '%s' is invalid must be one of: %v", s.Type, []AuthType{
 			AuthTypeNetwork,
 			AuthTypeSecret,
 			AuthTypeJwt,
@@ -470,7 +495,7 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 			EvmNodeTypeFull,
 		}
 		if !slices.Contains(allowed, e.NodeType) {
-			return fmt.Errorf("upstream.*.evm.nodeType is invalid must be one of: %v", allowed)
+			return fmt.Errorf("upstream.*.evm.nodeType '%s' is invalid must be one of: %v", e.NodeType, allowed)
 		}
 	}
 	return nil

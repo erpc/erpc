@@ -41,6 +41,10 @@ func NewNormalizedResponse() *NormalizedResponse {
 }
 
 func (r *NormalizedResponse) FromCache() bool {
+	if r == nil {
+		return false
+	}
+
 	return r.fromCache
 }
 
@@ -50,6 +54,10 @@ func (r *NormalizedResponse) SetFromCache(fromCache bool) *NormalizedResponse {
 }
 
 func (r *NormalizedResponse) Attempts() int {
+	if r == nil {
+		return 0
+	}
+
 	return r.attempts
 }
 
@@ -59,6 +67,10 @@ func (r *NormalizedResponse) SetAttempts(attempts int) *NormalizedResponse {
 }
 
 func (r *NormalizedResponse) Retries() int {
+	if r == nil {
+		return 0
+	}
+
 	return r.retries
 }
 
@@ -68,6 +80,10 @@ func (r *NormalizedResponse) SetRetries(retries int) *NormalizedResponse {
 }
 
 func (r *NormalizedResponse) Hedges() int {
+	if r == nil {
+		return 0
+	}
+
 	return r.hedges
 }
 
@@ -77,7 +93,7 @@ func (r *NormalizedResponse) SetHedges(hedges int) *NormalizedResponse {
 }
 
 func (r *NormalizedResponse) Upstream() Upstream {
-	if r.upstream == nil {
+	if r == nil || r.upstream == nil {
 		return nil
 	}
 
@@ -85,7 +101,7 @@ func (r *NormalizedResponse) Upstream() Upstream {
 }
 
 func (r *NormalizedResponse) UpstreamId() string {
-	if r.upstream == nil {
+	if r == nil || r.upstream == nil {
 		return ""
 	}
 
@@ -158,6 +174,10 @@ func (r *NormalizedResponse) Request() *NormalizedRequest {
 }
 
 func (r *NormalizedResponse) Error() error {
+	if r == nil {
+		return nil
+	}
+
 	if r.err != nil {
 		return r.err
 	}

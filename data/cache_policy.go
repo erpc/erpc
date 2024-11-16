@@ -18,6 +18,10 @@ func NewCachePolicy(cfg *common.CachePolicyConfig, connector Connector) (*CacheP
 	}, nil
 }
 
+func (p *CachePolicy) MarshalJSON() ([]byte, error) {
+	return common.SonicCfg.Marshal(p.config)
+}
+
 func (p *CachePolicy) MatchesForSet(networkId, method string, finality common.DataFinalityState) bool {
 	if !common.WildcardMatch(p.config.Network, networkId) {
 		return false
@@ -28,7 +32,7 @@ func (p *CachePolicy) MatchesForSet(networkId, method string, finality common.Da
 	}
 
 	// TODO do we need to make unknown superset of finalized/unfinalized?
-	return p.config.RequiredFinality == finality
+	return p.config.Finality == finality
 }
 
 func (p *CachePolicy) MatchesForGet(networkId, method string) bool {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -56,13 +57,23 @@ func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 	}, nil
 }
 
-func (c *EvmJsonRpcCache) findSetPolicies(networkId string, method string, finality common.DataFinalityState) *data.CachePolicy {
+func (c *EvmJsonRpcCache) WithNetwork(network *Network) *EvmJsonRpcCache {
+	network.Logger.Debug().Msgf("creating EvmJsonRpcCache")
+	return &EvmJsonRpcCache{
+		logger:   c.logger,
+		policies: c.policies,
+		network:  network,
+	}
+}
+
+func (c *EvmJsonRpcCache) findSetPolicies(networkId string, method string, finality common.DataFinalityState) []*data.CachePolicy {
+	var policies []*data.CachePolicy
 	for _, policy := range c.policies {
 		if policy.MatchesForSet(networkId, method, finality) {
-			return policy
+			policies = append(policies, policy)
 		}
 	}
-	return nil
+	return policies
 }
 
 func (c *EvmJsonRpcCache) findGetPolicies(networkId string, method string) []*data.CachePolicy {
@@ -73,14 +84,6 @@ func (c *EvmJsonRpcCache) findGetPolicies(networkId string, method string) []*da
 		}
 	}
 	return policies
-}
-
-func (c *EvmJsonRpcCache) WithNetwork(network *Network) *EvmJsonRpcCache {
-	network.Logger.Debug().Msgf("creating EvmJsonRpcCache")
-	return &EvmJsonRpcCache{
-		logger:  c.logger,
-		network: network,
-	}
 }
 
 func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
@@ -104,11 +107,21 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		if jrr != nil {
 			break
 		}
-		c.logger.Debug().Str("connector", connector.Id()).Err(err).Msg("skipping cache policy %s because it returned nil or error")
+		if c.logger.GetLevel() == zerolog.TraceLevel {
+			c.logger.Trace().Interface("policy", policy).Str("connector", connector.Id()).Err(err).Msg("skipping cache policy because it returned nil or error")
+		} else {
+			c.logger.Debug().Str("connector", connector.Id()).Err(err).Msg("skipping cache policy because it returned nil or error")
+		}
 	}
 
 	if jrr == nil {
 		return nil, nil
+	}
+
+	if c.logger.GetLevel() <= zerolog.DebugLevel {
+		c.logger.Trace().Str("method", rpcReq.Method).RawJSON("result", jrr.Result).Msg("returning cached response")
+	} else {
+		c.logger.Debug().Str("method", rpcReq.Method).Msg("returning cached response")
 	}
 
 	return common.NewNormalizedResponse().
@@ -150,7 +163,7 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 		return nil, err
 	}
 
-	if resultString == `""` || resultString == "null" || resultString == "[]" || resultString == "{}" {
+	if resultString == `` || resultString == `""` || resultString == "null" || resultString == "[]" || resultString == "{}" {
 		return nil, nil
 	}
 
@@ -189,8 +202,9 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		return err
 	}
 
-	policy := c.findSetPolicies(ntwId, rpcReq.Method, resp.FinalityState())
-	if policy == nil {
+	finState := resp.FinalityState()
+	policies := c.findSetPolicies(ntwId, rpcReq.Method, finState)
+	if len(policies) == 0 {
 		return nil
 	}
 
@@ -223,22 +237,57 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		return err
 	}
 
-	if lg.GetLevel() <= zerolog.DebugLevel {
+	if lg.GetLevel() <= zerolog.TraceLevel {
 		lg.Debug().
 			Str("blockRef", blockRef).
 			Str("primaryKey", pk).
 			Str("rangeKey", rk).
 			Int64("blockNumber", blockNumber).
-			Str("result", util.Mem2Str(rpcResp.Result)).
+			Interface("policies", policies).
+			RawJSON("result", rpcResp.Result).
+			Str("finalityState", finState.String()).
+			Msg("caching the response")
+	} else {
+		lg.Debug().
+			Str("blockRef", blockRef).
+			Str("primaryKey", pk).
+			Str("rangeKey", rk).
+			Int("policies", len(policies)).
+			Int64("blockNumber", blockNumber).
+			Str("finalityState", finState.String()).
 			Msg("caching the response")
 	}
 
-	connector := policy.GetConnector()
-	ttl := policy.GetTTL()
+	wg := sync.WaitGroup{}
+	errs := []error{}
+	errsMu := sync.Mutex{}
+	for _, policy := range policies {
+		wg.Add(1)
+		go func(policy *data.CachePolicy) {
+			defer wg.Done()
+			connector := policy.GetConnector()
+			ttl := policy.GetTTL()
 
-	ctx, cancel := context.WithTimeoutCause(ctx, 5*time.Second, errors.New("evm json-rpc cache driver timeout during set"))
-	defer cancel()
-	return connector.Set(ctx, pk, rk, util.Mem2Str(rpcResp.Result), ttl)
+			ctx, cancel := context.WithTimeoutCause(ctx, 5*time.Second, errors.New("evm json-rpc cache driver timeout during set"))
+			defer cancel()
+			err := connector.Set(ctx, pk, rk, util.Mem2Str(rpcResp.Result), ttl)
+			if err != nil {
+				errsMu.Lock()
+				errs = append(errs, err)
+				errsMu.Unlock()
+			}
+		}(policy)
+	}
+	wg.Wait()
+
+	if len(errs) > 0 {
+		if len(errs) == 1 {
+			return errs[0]
+		}
+		return fmt.Errorf("failed to set cache for %d policies: %v", len(errs), errs)
+	}
+
+	return nil
 }
 
 func shouldCacheResponse(

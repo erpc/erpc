@@ -5140,8 +5140,8 @@ func TestNetwork_Forward(t *testing.T) {
 				MatchType("json").
 				JSON(map[string]interface{}{
 					"jsonrpc": "2.0",
-					"method":  "eth_getTransactionReceipt",
-					"params":  []interface{}{"0x1111"},
+					"method":  "eth_getBalance",
+					"params":  []interface{}{"0x11", "0x11"},
 					"id":      11111,
 				}).
 				Reply(200).
@@ -5158,7 +5158,7 @@ func TestNetwork_Forward(t *testing.T) {
 				JSON(map[string]interface{}{
 					"jsonrpc": "2.0",
 					"method":  "eth_getBalance",
-					"params":  []interface{}{"0x2222", "0x2222"},
+					"params":  []interface{}{"0x22", "0x22"},
 					"id":      22222,
 				}).
 				Reply(200).
@@ -5176,9 +5176,10 @@ func TestNetwork_Forward(t *testing.T) {
 				t.Fatalf("Failed to create mock memory connector: %v", errc)
 			}
 			policy, errp := data.NewCachePolicy(&common.CachePolicyConfig{
-				Network: "*",
-				Method:  "*",
-				TTL:     5 * time.Minute,
+				Network:   "*",
+				Method:    "*",
+				TTL:       5 * time.Minute,
+				Connector: "mock",
 			}, conn)
 			if errp != nil {
 				t.Fatalf("Failed to create cache policy: %v", errp)
@@ -5192,8 +5193,8 @@ func TestNetwork_Forward(t *testing.T) {
 			network.cacheDal = slowCache
 
 			// Make the request
-			req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0x1111"],"id":11111}`))
-			req2 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x2222", "0x2222"],"id":22222}`))
+			req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x11", "0x11"],"id":11111}`))
+			req2 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x22", "0x22"],"id":22222}`))
 
 			// Use a WaitGroup to ensure both goroutines complete
 			var wg sync.WaitGroup
@@ -5211,7 +5212,12 @@ func TestNetwork_Forward(t *testing.T) {
 					t.Errorf("Unexpected error: %v", err)
 					return
 				}
-				jrr1Value, _ := resp1.JsonRpcResponse()
+				jrr1Value, err := resp1.JsonRpcResponse()
+				fmt.Println("jrr1Value ====== ", jrr1Value)
+				if err != nil {
+					t.Errorf("Unexpected error: %v", err)
+					return
+				}
 				jrr1Atomic.Store(jrr1Value)
 				// Simulate immediate release of the response
 				resp1.Release()
@@ -5221,7 +5227,12 @@ func TestNetwork_Forward(t *testing.T) {
 					t.Errorf("Unexpected error: %v", err)
 					return
 				}
-				jrr2Value, _ := resp2.JsonRpcResponse()
+				jrr2Value, err := resp2.JsonRpcResponse()
+				fmt.Println("jrr2Value ====== ", jrr2Value)
+				if err != nil {
+					t.Errorf("Unexpected error: %v", err)
+					return
+				}
 				jrr2Atomic.Store(jrr2Value)
 				resp2.Release()
 			}()
