@@ -729,6 +729,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		cancelled := 0
 		unsynced := 0
 		excluded := 0
+		nodeTypeMismatch := 0
 
 		for _, e := range joinedErr.Unwrap() {
 			if HasErrorCode(e, ErrCodeEndpointUnsupported) {
@@ -768,6 +769,9 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			} else if HasErrorCode(e, ErrCodeUpstreamExcludedByPolicy) {
 				excluded++
 				continue
+			} else if HasErrorCode(e, ErrCodeUpstreamNodeTypeMismatch) {
+				nodeTypeMismatch++
+				continue
 			} else if !HasErrorCode(e, ErrCodeUpstreamMethodIgnored) {
 				other++
 			}
@@ -806,6 +810,9 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		}
 		if excluded > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d excluded by policy", excluded))
+		}
+		if nodeTypeMismatch > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d node type mismatches", nodeTypeMismatch))
 		}
 		if other > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d other errors", other))
