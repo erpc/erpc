@@ -81,7 +81,7 @@ func (c *CacheConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 				Network:          "*",
 				Method:           "*",
 				RequiredFinality: DataFinalityStateUnknown,
-				TTL:              "",
+				TTL:              0,
 				Connector:        "default",
 			},
 		}
@@ -91,12 +91,29 @@ func (c *CacheConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 }
 
 type CachePolicyConfig struct {
-	Network string `yaml:"network" json:"network"`
-	Method  string `yaml:"method" json:"method"`
-	// TODO what are actual use-cases for this? "only target recent data" | "only target finalized data" | "target all data" | anything else?
+	Network          string            `yaml:"network" json:"network"`
+	Method           string            `yaml:"method" json:"method"`
 	RequiredFinality DataFinalityState `yaml:"requiredFinality" json:"requiredFinality"`
-	TTL              string            `yaml:"ttl,omitempty" json:"ttl,omitempty"`
+	TTL              time.Duration     `yaml:"ttl,omitempty" json:"ttl,omitempty"`
 	Connector        string            `yaml:"connector" json:"connector"`
+}
+
+func (c *CachePolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type rawCachePolicyConfig struct {
+		CachePolicyConfig
+		TTL string `yaml:"ttl"`
+	}
+	raw := rawCachePolicyConfig{}
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+	ttl, err := time.ParseDuration(raw.TTL)
+	if err != nil {
+		return fmt.Errorf("failed to parse ttl: %v", err)
+	}
+	*c = raw.CachePolicyConfig
+	c.TTL = ttl
+	return nil
 }
 
 type ConnectorDriverType string
@@ -155,6 +172,7 @@ type DynamoDBConnectorConfig struct {
 	PartitionKeyName string         `yaml:"partitionKeyName" json:"partitionKeyName"`
 	RangeKeyName     string         `yaml:"rangeKeyName" json:"rangeKeyName"`
 	ReverseIndexName string         `yaml:"reverseIndexName" json:"reverseIndexName"`
+	TTLAttributeName string         `yaml:"ttlAttributeName" json:"ttlAttributeName"`
 }
 
 type PostgreSQLConnectorConfig struct {

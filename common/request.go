@@ -205,6 +205,10 @@ func (r *NormalizedRequest) JsonRpcRequest() (*JsonRpcRequest, error) {
 }
 
 func (r *NormalizedRequest) Method() (string, error) {
+	if r == nil {
+		return "", nil
+	}
+
 	if r.method != "" {
 		return r.method, nil
 	}

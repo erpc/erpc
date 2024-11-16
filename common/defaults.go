@@ -32,7 +32,7 @@ func (c *Config) SetDefaults() {
 						Network:          "*",
 						Method:           "*",
 						RequiredFinality: DataFinalityStateUnknown,
-						TTL:              "",
+						TTL:              0,
 						Connector:        "default-memory",
 					},
 				},
@@ -173,6 +173,9 @@ func (r *RedisConnectorConfig) SetDefaults() {
 	if r.Addr == "" {
 		r.Addr = "localhost:6379"
 	}
+	if r.ConnPoolSize == 0 {
+		r.ConnPoolSize = 128
+	}
 }
 
 func (p *PostgreSQLConnectorConfig) SetDefaults() {
@@ -193,6 +196,9 @@ func (d *DynamoDBConnectorConfig) SetDefaults() {
 	}
 	if d.ReverseIndexName == "" {
 		d.ReverseIndexName = "idx_groupKey_requestKey"
+	}
+	if d.TTLAttributeName == "" {
+		d.TTLAttributeName = "ttl"
 	}
 }
 

@@ -7,6 +7,11 @@ import (
 	"strings"
 )
 
+// List of methods that static result is expected for. i.e. result will not change over time
+var EvmStaticMethods = map[string]bool{
+	"eth_chainId": true,
+}
+
 func ExtractEvmBlockReference(rpcReq *JsonRpcRequest, rpcResp *JsonRpcResponse) (string, int64, error) {
 	blockRef, blockNumber, err := ExtractEvmBlockReferenceFromRequest(rpcReq)
 	if err != nil {
@@ -36,6 +41,11 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 
 	r.RLock()
 	defer r.RUnlock()
+
+	if _, ok := EvmStaticMethods[r.Method]; ok {
+		// Static methods are not expected to change over time so we can cache them forever
+		return "*", 0, nil
+	}
 
 	switch r.Method {
 	case "eth_getBlockByNumber",
@@ -161,8 +171,7 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 			return "", 0, fmt.Errorf("unexpected missing 2nd parameter for method %s: %+v", r.Method, r.Params)
 		}
 
-	case "eth_chainId",
-		"eth_getTransactionReceipt",
+	case "eth_getTransactionReceipt",
 		"eth_getTransactionByHash",
 		"arbtrace_replayTransaction",
 		"trace_replayTransaction",

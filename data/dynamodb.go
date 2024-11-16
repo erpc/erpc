@@ -22,9 +22,11 @@ const (
 var _ Connector = (*DynamoDBConnector)(nil)
 
 type DynamoDBConnector struct {
+	id               string
 	logger           *zerolog.Logger
 	client           *dynamodb.DynamoDB
 	table            string
+	ttlAttributeName string
 	partitionKeyName string
 	rangeKeyName     string
 	reverseIndexName string
@@ -33,16 +35,20 @@ type DynamoDBConnector struct {
 func NewDynamoDBConnector(
 	ctx context.Context,
 	logger *zerolog.Logger,
+	id string,
 	cfg *common.DynamoDBConnectorConfig,
 ) (*DynamoDBConnector, error) {
-	logger.Debug().Msgf("creating DynamoDBConnector with config: %+v", cfg)
+	lg := logger.With().Str("connector", id).Logger()
+	lg.Debug().Interface("config", cfg).Msg("creating DynamoDBConnector")
 
 	connector := &DynamoDBConnector{
-		logger:           logger,
+		id:               id,
+		logger:           &lg,
 		table:            cfg.Table,
 		partitionKeyName: cfg.PartitionKeyName,
 		rangeKeyName:     cfg.RangeKeyName,
 		reverseIndexName: cfg.ReverseIndexName,
+		ttlAttributeName: cfg.TTLAttributeName,
 	}
 
 	// Attempt the actual connecting in background to avoid blocking the main thread.
@@ -196,6 +202,19 @@ func createTableIfNotExists(
 		return err
 	}
 
+	_, err = client.UpdateTimeToLive(&dynamodb.UpdateTimeToLiveInput{
+		TableName: aws.String(cfg.Table),
+		TimeToLiveSpecification: &dynamodb.TimeToLiveSpecification{
+			AttributeName: aws.String("ttl"),
+			Enabled:       aws.Bool(true),
+		},
+	})
+
+	if err != nil && !strings.Contains(err.Error(), "already enabled") {
+		logger.Error().Err(err).Msg("failed to enable TTL on table")
+		return err
+	}
+
 	logger.Debug().Msgf("dynamodb table '%s' is ready", cfg.Table)
 
 	return nil
@@ -261,16 +280,11 @@ func ensureGlobalSecondaryIndexes(
 	return err
 }
 
-func (d *DynamoDBConnector) SetTTL(_ string, _ string) error {
-	d.logger.Debug().Msgf("Method TTLs not implemented for DynamoDBConnector")
-	return nil
+func (d *DynamoDBConnector) Id() string {
+	return d.id
 }
 
-func (d *DynamoDBConnector) HasTTL(_ string) bool {
-	return false
-}
-
-func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, value string) error {
+func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, value string, ttl *time.Duration) error {
 	if d.client == nil {
 		return fmt.Errorf("DynamoDB client not initialized yet")
 	}
@@ -287,6 +301,14 @@ func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, val
 		"value": {
 			S: aws.String(value),
 		},
+	}
+
+	// Add TTL if provided
+	if ttl != nil {
+		expirationTime := time.Now().Add(*ttl).Unix()
+		item[d.ttlAttributeName] = &dynamodb.AttributeValue{
+			N: aws.String(fmt.Sprintf("%d", expirationTime)),
+		}
 	}
 
 	_, err := d.client.PutItemWithContext(ctx, &dynamodb.PutItemInput{

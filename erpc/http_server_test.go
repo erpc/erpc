@@ -1544,10 +1544,22 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			name: "CachingEnabled",
 			configure: func(cfg *common.Config) {
 				cfg.Database = &common.DatabaseConfig{
-					EvmJsonRpcCache: &common.ConnectorConfig{
-						Driver: "memory",
-						Memory: &common.MemoryConnectorConfig{
-							MaxItems: 100,
+					EvmJsonRpcCache: &common.CacheConfig{
+						Connectors: []*common.ConnectorConfig{
+							{
+								Id:     "mock",
+								Driver: common.DriverMemory,
+								Memory: &common.MemoryConnectorConfig{
+									MaxItems: 1000,
+								},
+							},
+						},
+						Policies: []*common.CachePolicyConfig{
+							{
+								Network: "*",
+								Method:  "*",
+								TTL:     5 * time.Minute,
+							},
 						},
 					},
 				}

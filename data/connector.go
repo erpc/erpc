@@ -14,11 +14,9 @@ const (
 )
 
 type Connector interface {
+	Id() string
 	Get(ctx context.Context, index, partitionKey, rangeKey string) (string, error)
 	Set(ctx context.Context, partitionKey, rangeKey, value string, ttl *time.Duration) error
-	SetTTL(method string, ttlStr string) error
-	HasTTL(method string) bool
-	Delete(ctx context.Context, index, partitionKey, rangeKey string) error
 }
 
 func NewConnector(
@@ -28,13 +26,13 @@ func NewConnector(
 ) (Connector, error) {
 	switch cfg.Driver {
 	case common.DriverMemory:
-		return NewMemoryConnector(ctx, logger, cfg.Memory)
+		return NewMemoryConnector(ctx, logger, cfg.Id, cfg.Memory)
 	case common.DriverRedis:
-		return NewRedisConnector(ctx, logger, cfg.Redis)
+		return NewRedisConnector(ctx, logger, cfg.Id, cfg.Redis)
 	case common.DriverDynamoDB:
-		return NewDynamoDBConnector(ctx, logger, cfg.DynamoDB)
+		return NewDynamoDBConnector(ctx, logger, cfg.Id, cfg.DynamoDB)
 	case common.DriverPostgres:
-		return NewPostgreSQLConnector(ctx, logger, cfg.PostgreSQL)
+		return NewPostgreSQLConnector(ctx, logger, cfg.Id, cfg.PostgreSQL)
 	}
 
 	return nil, common.NewErrInvalidConnectorDriver(cfg.Driver)

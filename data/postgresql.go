@@ -19,59 +19,72 @@ const (
 var _ Connector = (*PostgreSQLConnector)(nil)
 
 type PostgreSQLConnector struct {
-	cfg    *common.PostgreSQLConnectorConfig
-	logger *zerolog.Logger
-	conn   *pgxpool.Pool
-	table  string
+	id            string
+	logger        *zerolog.Logger
+	conn          *pgxpool.Pool
+	table         string
+	cleanupTicker *time.Ticker
+	done          chan struct{}
 }
 
-func NewPostgreSQLConnector(ctx context.Context, logger *zerolog.Logger, cfg *common.PostgreSQLConnectorConfig) (*PostgreSQLConnector, error) {
-	logger.Debug().Msgf("creating PostgreSQLConnector with for table: %s", cfg.Table)
-	p := &PostgreSQLConnector{
-		cfg:    cfg,
-		logger: logger,
-		table:  cfg.Table,
+func NewPostgreSQLConnector(
+	ctx context.Context,
+	logger *zerolog.Logger,
+	id string,
+	cfg *common.PostgreSQLConnectorConfig,
+) (*PostgreSQLConnector, error) {
+	lg := logger.With().Str("connector", id).Logger()
+	lg.Debug().Interface("config", cfg).Msg("creating PostgreSQLConnector")
+
+	connector := &PostgreSQLConnector{
+		id:            id,
+		logger:        &lg,
+		table:         cfg.Table,
+		cleanupTicker: time.NewTicker(5 * time.Minute),
+		done:          make(chan struct{}),
 	}
 
 	// Attempt the actual connecting in background to avoid blocking the main thread.
-	// Retry every 10 seconds until success and give up after 30 failed attempts.
 	go func() {
 		for i := 0; i < 30; i++ {
 			select {
 			case <-ctx.Done():
-				logger.Error().Msg("Context cancelled while attempting to connect to PostgreSQL")
+				lg.Error().Msg("context cancelled while attempting to connect to PostgreSQL")
 				return
 			default:
-				logger.Debug().Msgf("attempting to connect to PostgreSQL (attempt %d of 30)", i+1)
-				err := p.connect(ctx)
+				lg.Debug().Msgf("attempting to connect to PostgreSQL (attempt %d of 30)", i+1)
+				err := connector.connect(ctx, cfg)
 				if err == nil {
+					// Start TTL cleanup routine after successful connection
+					go connector.startCleanup(ctx)
 					return
 				}
-				logger.Warn().Msgf("failed to connect to PostgreSQL (attempt %d of 30): %s", i+1, err)
+				lg.Warn().Err(err).Msgf("failed to connect to PostgreSQL (attempt %d of 30)", i+1)
 				time.Sleep(10 * time.Second)
 			}
 		}
-		logger.Error().Msg("Failed to connect to PostgreSQL after maximum attempts")
+		lg.Error().Msg("failed to connect to PostgreSQL after maximum attempts")
 	}()
 
-	return p, nil
+	return connector, nil
 }
 
-func (p *PostgreSQLConnector) connect(ctx context.Context) error {
-	conn, err := pgxpool.Connect(ctx, p.cfg.ConnectionUri)
+func (p *PostgreSQLConnector) connect(ctx context.Context, cfg *common.PostgreSQLConnectorConfig) error {
+	conn, err := pgxpool.Connect(ctx, cfg.ConnectionUri)
 	if err != nil {
 		return fmt.Errorf("failed to connect to PostgreSQL: %w", err)
 	}
 
-	// Create table if not exists
+	// Create table if not exists with TTL column
 	_, err = conn.Exec(ctx, fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS %s (
 			partition_key TEXT,
 			range_key TEXT,
 			value TEXT,
+			expires_at TIMESTAMP WITH TIME ZONE,
 			PRIMARY KEY (partition_key, range_key)
 		)
-	`, p.cfg.Table))
+	`, cfg.Table))
 	if err != nil {
 		return fmt.Errorf("failed to create table: %w", err)
 	}
@@ -79,38 +92,75 @@ func (p *PostgreSQLConnector) connect(ctx context.Context) error {
 	// Create index for reverse lookups
 	_, err = conn.Exec(ctx, fmt.Sprintf(`
 		CREATE INDEX IF NOT EXISTS idx_reverse ON %s (range_key, partition_key)
-	`, p.cfg.Table))
+	`, cfg.Table))
 	if err != nil {
 		return fmt.Errorf("failed to create reverse index: %w", err)
 	}
 
+	// Create index for TTL cleanup
+	_, err = conn.Exec(ctx, fmt.Sprintf(`
+		CREATE INDEX IF NOT EXISTS idx_expires_at ON %s (expires_at)
+		WHERE expires_at IS NOT NULL
+	`, cfg.Table))
+	if err != nil {
+		return fmt.Errorf("failed to create TTL index: %w", err)
+	}
+
+	// Try to set up pg_cron cleanup job if extension exists
+	var hasPgCron bool
+	err = conn.QueryRow(ctx, `
+        SELECT EXISTS (
+            SELECT 1 FROM pg_extension WHERE extname = 'pg_cron'
+        )
+    `).Scan(&hasPgCron)
+	if err != nil {
+		p.logger.Warn().Err(err).Msg("failed to check for pg_cron extension")
+	}
+
+	if hasPgCron {
+		// Create cleanup job using pg_cron
+		_, err = conn.Exec(ctx, fmt.Sprintf(`
+            SELECT cron.schedule('*/5 * * * *', $$
+                DELETE FROM %s
+                WHERE expires_at IS NOT NULL AND expires_at <= NOW()
+            $$)
+        `, p.table))
+		if err != nil {
+			p.logger.Warn().Err(err).Msg("failed to create pg_cron cleanup job, falling back to local cleanup")
+		} else {
+			p.logger.Info().Msg("successfully configured pg_cron cleanup job")
+			// Don't start the local cleanup routine since we're using pg_cron
+			p.cleanupTicker = nil
+		}
+	}
+
 	p.conn = conn
-
 	return nil
 }
 
-func (p *PostgreSQLConnector) SetTTL(_ string, _ string) error {
-	p.logger.Debug().Msgf("Method TTLs not implemented for PostgresSQLConnector")
-	return nil
+func (p *PostgreSQLConnector) Id() string {
+	return p.id
 }
 
-func (p *PostgreSQLConnector) HasTTL(_ string) bool {
-	return false
-}
-
-func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey, value string) error {
+func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey, value string, ttl *time.Duration) error {
 	if p.conn == nil {
 		return fmt.Errorf("PostgreSQLConnector not connected yet")
 	}
 
 	p.logger.Debug().Msgf("writing to PostgreSQL with partition key: %s and range key: %s", partitionKey, rangeKey)
 
+	var expiresAt *time.Time
+	if ttl != nil {
+		t := time.Now().Add(*ttl)
+		expiresAt = &t
+	}
+
 	_, err := p.conn.Exec(ctx, fmt.Sprintf(`
-		INSERT INTO %s (partition_key, range_key, value)
-		VALUES ($1, $2, $3)
+		INSERT INTO %s (partition_key, range_key, value, expires_at)
+		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (partition_key, range_key) DO UPDATE
-		SET value = $3
-	`, p.table), partitionKey, rangeKey, value)
+		SET value = $3, expires_at = $4
+	`, p.table), partitionKey, rangeKey, value, expiresAt)
 
 	return err
 }
@@ -131,12 +181,14 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 		query = fmt.Sprintf(`
 			SELECT value FROM %s
 			WHERE range_key = $1 AND partition_key = $2
+			AND (expires_at IS NULL OR expires_at > NOW())
 		`, p.table)
 		args = []interface{}{rangeKey, partitionKey}
 	} else {
 		query = fmt.Sprintf(`
 			SELECT value FROM %s
 			WHERE partition_key = $1 AND range_key = $2
+			AND (expires_at IS NULL OR expires_at > NOW())
 		`, p.table)
 		args = []interface{}{partitionKey, rangeKey}
 	}
@@ -195,51 +247,41 @@ func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, index, partit
 	return value, nil
 }
 
-func (p *PostgreSQLConnector) Delete(ctx context.Context, index, partitionKey, rangeKey string) error {
-	if p.conn == nil {
-		return fmt.Errorf("PostgreSQLConnector not connected yet")
+func (p *PostgreSQLConnector) startCleanup(ctx context.Context) {
+	// Skip cleanup routine if we're using pg_cron
+	if p.cleanupTicker == nil {
+		p.logger.Debug().Msg("skipping local cleanup routine (using pg_cron)")
+		return
 	}
 
-	if strings.HasSuffix(rangeKey, "*") {
-		return p.deleteWithPrefix(ctx, index, partitionKey, rangeKey)
-	} else {
-		return p.deleteSingleItem(ctx, partitionKey, rangeKey)
+	p.logger.Debug().Msg("starting local expired items cleanup routine")
+	for {
+		select {
+		case <-ctx.Done():
+			p.logger.Debug().Msg("stopping cleanup routine due to context cancellation")
+			return
+		case <-p.done:
+			p.logger.Debug().Msg("stopping cleanup routine due to connector shutdown")
+			return
+		case <-p.cleanupTicker.C:
+			if err := p.cleanupExpired(ctx); err != nil {
+				p.logger.Error().Err(err).Msg("failed to cleanup expired items")
+			}
+		}
 	}
 }
 
-func (p *PostgreSQLConnector) deleteSingleItem(ctx context.Context, partitionKey, rangeKey string) error {
-	_, err := p.conn.Exec(ctx, fmt.Sprintf(`
+func (p *PostgreSQLConnector) cleanupExpired(ctx context.Context) error {
+	result, err := p.conn.Exec(ctx, fmt.Sprintf(`
 		DELETE FROM %s
-		WHERE partition_key = $1 AND range_key = $2
-	`, p.table), partitionKey, rangeKey)
-
-	return err
-}
-
-func (p *PostgreSQLConnector) deleteWithPrefix(ctx context.Context, index, partitionKey, rangeKey string) error {
-	var query string
-	var args []interface{}
-
-	if index == ConnectorReverseIndex {
-		query = fmt.Sprintf(`
-			DELETE FROM %s
-			WHERE range_key LIKE $1 AND partition_key = $2
-		`, p.table)
-		args = []interface{}{
-			strings.ReplaceAll(rangeKey, "*", "%"),
-			partitionKey,
-		}
-	} else {
-		query = fmt.Sprintf(`
-			DELETE FROM %s
-			WHERE partition_key = $1 AND range_key LIKE $2
-		`, p.table)
-		args = []interface{}{
-			partitionKey,
-			strings.ReplaceAll(rangeKey, "*", "%"),
-		}
+		WHERE expires_at IS NOT NULL AND expires_at <= NOW()
+	`, p.table))
+	if err != nil {
+		return err
 	}
 
-	_, err := p.conn.Exec(ctx, query, args...)
-	return err
+	if rowsAffected := result.RowsAffected(); rowsAffected > 0 {
+		p.logger.Debug().Int64("count", rowsAffected).Msg("removed expired items")
+	}
+	return nil
 }

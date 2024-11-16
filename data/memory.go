@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	lru "github.com/hashicorp/golang-lru/v2"
@@ -17,11 +18,27 @@ const (
 var _ Connector = (*MemoryConnector)(nil)
 
 type MemoryConnector struct {
-	logger *zerolog.Logger
-	cache  *lru.Cache[string, string]
+	id            string
+	logger        *zerolog.Logger
+	cache         *lru.Cache[string, cacheItem]
+	cleanupTicker *time.Ticker
+	done          chan struct{}
 }
 
-func NewMemoryConnector(ctx context.Context, logger *zerolog.Logger, cfg *common.MemoryConnectorConfig) (*MemoryConnector, error) {
+type cacheItem struct {
+	value     string
+	expiresAt *time.Time
+}
+
+func NewMemoryConnector(
+	ctx context.Context,
+	logger *zerolog.Logger,
+	id string,
+	cfg *common.MemoryConnectorConfig,
+) (*MemoryConnector, error) {
+	lg := logger.With().Str("connector", id).Logger()
+	lg.Debug().Interface("config", cfg).Msg("creating MemoryConnector")
+
 	if cfg != nil && cfg.MaxItems <= 0 {
 		return nil, fmt.Errorf("maxItems must be greater than 0")
 	}
@@ -31,29 +48,57 @@ func NewMemoryConnector(ctx context.Context, logger *zerolog.Logger, cfg *common
 		maxItems = cfg.MaxItems
 	}
 
-	cache, err := lru.New[string, string](maxItems)
+	cache, err := lru.New[string, cacheItem](maxItems)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create LRU cache: %w", err)
 	}
 
-	return &MemoryConnector{
-		logger: logger,
+	c := &MemoryConnector{
+		id:     id,
+		logger: &lg,
 		cache:  cache,
-	}, nil
+	}
+
+	go c.startCleanup(ctx)
+
+	return c, nil
 }
 
-func (m *MemoryConnector) SetTTL(_ string, _ string) error {
-	m.logger.Debug().Msgf("Method TTLs not implemented for MemoryConnector")
-	return nil
+func (m *MemoryConnector) startCleanup(ctx context.Context) {
+	m.logger.Debug().Msg("starting expired items cleanup routine")
+	for {
+		select {
+		case <-ctx.Done():
+			m.logger.Debug().Msg("stopping cleanup routine due to context cancellation")
+			return
+		case <-m.done:
+			m.logger.Debug().Msg("stopping cleanup routine due to connector shutdown")
+			return
+		case <-m.cleanupTicker.C:
+			m.cleanupExpired()
+		}
+	}
 }
 
-func (d *MemoryConnector) HasTTL(_ string) bool {
-	return false
+func (m *MemoryConnector) Id() string {
+	return m.id
 }
 
-func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey, value string) error {
+func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey, value string, ttl *time.Duration) error {
+	m.logger.Debug().Msgf("writing to memory with partition key: %s and range key: %s", partitionKey, rangeKey)
+
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
-	m.cache.Add(key, value)
+
+	item := cacheItem{
+		value: value,
+	}
+
+	if ttl != nil {
+		expiresAt := time.Now().Add(*ttl)
+		item.expiresAt = &expiresAt
+	}
+
+	m.cache.Add(key, item)
 	return nil
 }
 
@@ -63,50 +108,56 @@ func (m *MemoryConnector) Get(ctx context.Context, index, partitionKey, rangeKey
 	}
 
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
-	value, ok := m.cache.Get(key)
+	m.logger.Debug().Msgf("getting item from memory with key: %s", key)
+
+	item, ok := m.cache.Get(key)
 	if !ok {
 		return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s", partitionKey, rangeKey), MemoryDriverName)
 	}
-	return value, nil
+
+	// Check if item has expired
+	if item.expiresAt != nil && time.Now().After(*item.expiresAt) {
+		m.cache.Remove(key)
+		return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s", partitionKey, rangeKey), MemoryDriverName)
+	}
+
+	return item.value, nil
 }
 
 func (m *MemoryConnector) getWithWildcard(_ context.Context, _, partitionKey, rangeKey string) (string, error) {
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
 	for _, k := range m.cache.Keys() {
 		if common.WildcardMatch(key, k) {
-			value, _ := m.cache.Get(k)
-			return value, nil
+			item, _ := m.cache.Get(k)
+			// Check expiration
+			if item.expiresAt != nil && time.Now().After(*item.expiresAt) {
+				m.cache.Remove(k)
+				continue
+			}
+			return item.value, nil
 		}
 	}
 	return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s", partitionKey, rangeKey), MemoryDriverName)
 }
 
-func (m *MemoryConnector) Delete(ctx context.Context, index, partitionKey, rangeKey string) error {
-	if strings.HasSuffix(partitionKey, "*") || strings.HasSuffix(rangeKey, "*") {
-		return m.deleteWithWildcard(ctx, index, partitionKey, rangeKey)
-	}
+func (m *MemoryConnector) cleanupExpired() {
+	now := time.Now()
+	expiredKeys := make([]string, 0)
 
-	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
-	m.cache.Remove(key)
-	return nil
-}
-
-func (m *MemoryConnector) deleteWithWildcard(_ context.Context, _, partitionKey, rangeKey string) error {
-	prefixPK := strings.TrimSuffix(partitionKey, "*")
-	prefixRK := strings.TrimSuffix(rangeKey, "*")
-
+	// First pass: collect expired keys
 	for _, key := range m.cache.Keys() {
-		parts := strings.Split(key, ":")
-		if len(parts) == 2 &&
-			(partitionKey == "*" || strings.HasPrefix(parts[0], prefixPK)) &&
-			(rangeKey == "*" || strings.HasPrefix(parts[1], prefixRK)) {
-			m.cache.Remove(key)
+		if item, ok := m.cache.Peek(key); ok {
+			if item.expiresAt != nil && now.After(*item.expiresAt) {
+				expiredKeys = append(expiredKeys, key)
+			}
 		}
 	}
 
-	return nil
-}
-
-func (m *MemoryConnector) Close(ctx context.Context) error {
-	return nil
+	// Second pass: remove expired items
+	if len(expiredKeys) > 0 {
+		m.logger.Trace().Int("count", len(expiredKeys)).Msg("removing expired items")
+		for _, key := range expiredKeys {
+			m.cache.Remove(key)
+		}
+	}
 }

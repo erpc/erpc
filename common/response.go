@@ -246,6 +246,46 @@ func (r *NormalizedResponse) EvmBlockNumber() (int64, error) {
 	return bn, nil
 }
 
+func (r *NormalizedResponse) FinalityState() (finality DataFinalityState) {
+	finality = DataFinalityStateUnknown
+
+	if r == nil {
+		return
+	}
+
+	if method, _ := r.request.Method(); method != "" {
+		if _, ok := EvmStaticMethods[method]; ok {
+			// Static methods are not expected to change over time so we can consider them finalized
+			finality = DataFinalityStateFinalized
+			return
+		}
+	}
+
+	if r.request != nil {
+		ntw := r.request.Network()
+		if ntw != nil {
+			evmBn, _ := r.EvmBlockNumber()
+			if evmBn > 0 {
+				upstream := r.Upstream()
+				if upstream != nil {
+					stp := ntw.EvmStatePollerOf(upstream.Config().Id)
+					if stp != nil {
+						if isFinalized, err := stp.IsBlockFinalized(evmBn); err == nil {
+							if isFinalized {
+								finality = DataFinalityStateFinalized
+							} else {
+								finality = DataFinalityStateUnfinalized
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return
+}
+
 func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
 	r.RLock()
 	defer r.RUnlock()

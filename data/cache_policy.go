@@ -1,7 +1,6 @@
 package data
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -10,27 +9,16 @@ import (
 type CachePolicy struct {
 	config    *common.CachePolicyConfig
 	connector Connector
-	ttl       *time.Duration
 }
 
 func NewCachePolicy(cfg *common.CachePolicyConfig, connector Connector) (*CachePolicy, error) {
-	var ttl *time.Duration
-	if cfg.TTL != "" {
-		d, err := time.ParseDuration(cfg.TTL)
-		if err != nil {
-			return nil, fmt.Errorf("invalid TTL duration: %w", err)
-		}
-		ttl = &d
-	}
-
 	return &CachePolicy{
 		config:    cfg,
 		connector: connector,
-		ttl:       ttl,
 	}, nil
 }
 
-func (p *CachePolicy) Matches(networkId, method string, isFinalized bool) bool {
+func (p *CachePolicy) MatchesForSet(networkId, method string, finality common.DataFinalityState) bool {
 	if !common.WildcardMatch(p.config.Network, networkId) {
 		return false
 	}
@@ -39,17 +27,23 @@ func (p *CachePolicy) Matches(networkId, method string, isFinalized bool) bool {
 		return false
 	}
 
-	// Match finality
-	switch p.config.RequiredFinality {
-	case common.DataFinalityStateUnfinalized:
-		return !isFinalized
-	case common.DataFinalityStateFinalized:
-		return isFinalized
-	case common.DataFinalityStateUnknown:
-		return true
-	default:
+	// TODO do we need to make unknown superset of finalized/unfinalized?
+	return p.config.RequiredFinality == finality
+}
+
+func (p *CachePolicy) MatchesForGet(networkId, method string) bool {
+	if !common.WildcardMatch(p.config.Network, networkId) {
 		return false
 	}
+
+	if !common.WildcardMatch(p.config.Method, method) {
+		return false
+	}
+
+	// When fetching data we need to iterate over all policies as we don't know finality of the data when originally written
+	// We will iterate from first to last policy (matched on network/method) to see which one has the data
+	// Therefore it is recommended to put the fastest most up-to-date policy first
+	return true
 }
 
 func (p *CachePolicy) GetConnector() Connector {
@@ -57,5 +51,5 @@ func (p *CachePolicy) GetConnector() Connector {
 }
 
 func (p *CachePolicy) GetTTL() *time.Duration {
-	return p.ttl
+	return &p.config.TTL
 }

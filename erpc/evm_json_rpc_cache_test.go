@@ -14,6 +14,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 type upsTestCfg struct {
@@ -23,10 +24,11 @@ type upsTestCfg struct {
 	lstBn   int64
 }
 
-func createCacheTestFixtures(upstreamConfigs []upsTestCfg) (*data.MockConnector, *Network, []*upstream.Upstream, *EvmJsonRpcCache) {
+func createCacheTestFixtures(upstreamConfigs []upsTestCfg) ([]*data.MockConnector, *Network, []*upstream.Upstream, *EvmJsonRpcCache) {
 	logger := log.Logger
 
-	mockConnector := &data.MockConnector{}
+	mockConnector1 := data.NewMockConnector("mock1")
+	mockConnector2 := data.NewMockConnector("mock2")
 	mockNetwork := &Network{
 		NetworkId: "evm:123",
 		Logger:    &logger,
@@ -68,17 +70,16 @@ func createCacheTestFixtures(upstreamConfigs []upsTestCfg) (*data.MockConnector,
 	}
 
 	cache := &EvmJsonRpcCache{
-		conn:    mockConnector,
 		logger:  &logger,
 		network: mockNetwork,
 	}
 
-	return mockConnector, mockNetwork, upstreams, cache
+	return []*data.MockConnector{mockConnector1, mockConnector2}, mockNetwork, upstreams, cache
 }
 
 func TestEvmJsonRpcCache_Set(t *testing.T) {
 	t.Run("DoNotCacheWhenEthGetTransactionByHashMissingBlockNumber", func(t *testing.T) {
-		mockConnector, _, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		mockConnectors, _, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionByHash","params":["0x123"],"id":1}`))
 		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":{"hash":"0x123","blockNumber":null}}`))
@@ -86,43 +87,41 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		err := cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
-		mockConnector.AssertNotCalled(t, "Set")
+		mockConnectors[0].AssertNotCalled(t, "Set")
 	})
 
 	t.Run("CacheIfBlockNumberIsFinalizedWhenBlockIsIrrelevantForPrimaryKey", func(t *testing.T) {
-		mockConnector, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xabc",false],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":{"hash":"0xabc","blockNumber":"0x2"}}`))
 
-		mockConnector.On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-		mockConnector.On("HasTTL", mock.AnythingOfType("string")).Return(false)
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
 		err := cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
-		mockConnector.AssertCalled(t, "Set", mock.Anything, "evm:123:*", mock.Anything, mock.Anything)
+		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:*", mock.Anything, mock.Anything)
 	})
 
 	t.Run("CacheIfBlockNumberIsFinalizedWhenBlockIsUsedForPrimaryKey", func(t *testing.T) {
-		mockConnector, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x2",false],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":{"hash":"0xabc","number":"0x2"}}`))
 
-		mockConnector.On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-		mockConnector.On("HasTTL", mock.AnythingOfType("string")).Return(false)
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
 		err := cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
-		mockConnector.AssertCalled(t, "Set", mock.Anything, "evm:123:2", mock.Anything, mock.Anything)
+		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:2", mock.Anything, mock.Anything)
 	})
 
 	t.Run("SkipWhenNoRefAndNoBlockNumberFound", func(t *testing.T) {
-		mockConnector, _, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		mockConnectors, _, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
 		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":"0x1234"}`))
@@ -130,11 +129,11 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		err := cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
-		mockConnector.AssertNotCalled(t, "Set")
+		mockConnectors[0].AssertNotCalled(t, "Set")
 	})
 
 	t.Run("CacheIfBlockRefFoundWhetherBlockNumberExistsOrNot", func(t *testing.T) {
-		mockConnector, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
 		testCases := []struct {
 			name        string
@@ -165,13 +164,13 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				req.SetNetwork(mockNetwork)
 				resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(tc.result))
 
-				mockConnector.On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
-				mockConnector.On("HasTTL", mock.AnythingOfType("string")).Return(false)
+				mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
+				mockConnectors[0].On("HasTTL", mock.AnythingOfType("string")).Return(false)
 
 				err := cache.Set(context.Background(), req, resp)
 
 				assert.NoError(t, err)
-				mockConnector.AssertCalled(t, "Set", mock.Anything, mock.MatchedBy(func(key string) bool {
+				mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.MatchedBy(func(key string) bool {
 					return key == "evm:123:"+tc.expectedRef
 				}), mock.Anything, mock.Anything)
 			})
@@ -179,117 +178,189 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("CacheResponseForFinalizedBlock", func(t *testing.T) {
-		mockConnector, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1",false],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":{"number":"0x1","hash":"0xabc"}}`))
 
-		mockConnector.On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-		mockConnector.On("HasTTL", mock.AnythingOfType("string")).Return(false)
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
 		err := cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
-		mockConnector.AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("SkipCachingForUnfinalizedBlock", func(t *testing.T) {
-		mockConnector, _, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		mockConnectors, _, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x399",false],"id":1}`))
 		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":{"number":"0x399","hash":"0xdef"}}`))
 
-		mockConnector.On("HasTTL", mock.AnythingOfType("string")).Return(false)
 		err := cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
-		mockConnector.AssertNotCalled(t, "Set")
+		mockConnectors[0].AssertNotCalled(t, "Set")
 	})
 
 	t.Run("ShouldNotCacheEmptyResponseIfNodeNotSynced", func(t *testing.T) {
-		mockConnector, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateSyncing, finBn: 10, lstBn: 15}})
+		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateSyncing, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
 
-		mockConnector.On("HasTTL", mock.AnythingOfType("string")).Return(false)
 		err := cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
-		mockConnector.AssertNotCalled(t, "Set")
+		mockConnectors[0].AssertNotCalled(t, "Set")
 	})
 
 	t.Run("ShouldNotCacheEmptyResponseIfUnknownSyncState", func(t *testing.T) {
-		mockConnector, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
 
-		mockConnector.On("HasTTL", mock.AnythingOfType("string")).Return(false)
 		err := cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
-		mockConnector.AssertNotCalled(t, "Set")
+		mockConnectors[0].AssertNotCalled(t, "Set")
 	})
 
 	t.Run("ShouldNotCacheEmptyResponseIfBlockNotFinalized", func(t *testing.T) {
-		mockConnector, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
+		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x14"],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
 
-		mockConnector.On("HasTTL", mock.AnythingOfType("string")).Return(false)
 		err := cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
-		mockConnector.AssertNotCalled(t, "Set")
+		mockConnectors[0].AssertNotCalled(t, "Set")
 	})
 
 	t.Run("ShouldNotCacheEmptyResponseIfCannotDetermineBlockNumber", func(t *testing.T) {
-		mockConnector, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
+		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
 
-		mockConnector.On("HasTTL", mock.AnythingOfType("string")).Return(false)
 		err := cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
-		mockConnector.AssertNotCalled(t, "Set")
+		mockConnectors[0].AssertNotCalled(t, "Set")
 	})
 
 	t.Run("ShouldCacheEmptyResponseIfNodeSyncedAndBlockFinalized", func(t *testing.T) {
-		mockConnector, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
+		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
 
-		mockConnector.On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-		mockConnector.On("HasTTL", mock.AnythingOfType("string")).Return(false)
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
 		err := cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
-		mockConnector.AssertCalled(t, "Set", mock.Anything, "evm:123:5", mock.Anything, mock.Anything)
+		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:5", mock.Anything, mock.Anything)
+	})
+}
+
+func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
+	t.Run("ShouldSetTTLWhenPolicyDefinesIt", func(t *testing.T) {
+		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{
+			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
+		})
+
+		ttl := 5 * time.Minute
+		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network: "evm:123",
+			Method:  "eth_getBalance",
+			TTL:     ttl,
+		}, mockConnectors[0])
+		require.NoError(t, err)
+		cache.policies = []*data.CachePolicy{
+			policy,
+		}
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
+		req.SetNetwork(mockNetwork)
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
+
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, ttl).Return(nil)
+
+		err = cache.Set(context.Background(), req, resp)
+
+		assert.NoError(t, err)
+		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:5", mock.Anything, mock.Anything, &ttl)
+	})
+
+	t.Run("ShouldNotSetTTLWhenPolicyDoesNotDefineIt", func(t *testing.T) {
+		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
+		req.SetNetwork(mockNetwork)
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
+
+		err := cache.Set(context.Background(), req, resp)
+
+		assert.NoError(t, err)
+		mockConnectors[0].AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, (*time.Duration)(nil))
+	})
+
+	t.Run("ShouldRespectPolicyNetworkAndMethodMatching", func(t *testing.T) {
+		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
+
+		policy0, err0 := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network: "evm:123",
+			Method:  "eth_getBlockByNumber",
+			TTL:     2 * time.Minute,
+		}, mockConnectors[0])
+		require.NoError(t, err0)
+
+		ttl := 6 * time.Minute
+		policy1, err1 := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network: "evm:123",
+			Method:  "eth_getBalance",
+			TTL:     ttl,
+		}, mockConnectors[1])
+		require.NoError(t, err1)
+
+		cache.policies = []*data.CachePolicy{
+			policy0,
+			policy1,
+		}
+
+		req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
+		req1.SetNetwork(mockNetwork)
+		resp1 := common.NewNormalizedResponse().WithRequest(req1).WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
+
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		mockConnectors[1].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+		err := cache.Set(context.Background(), req1, resp1)
+
+		assert.NoError(t, err)
+		mockConnectors[0].AssertNotCalled(t, "Set")
+		mockConnectors[1].AssertCalled(t, "Set", mock.Anything, "evm:123:5", mock.Anything, mock.Anything, &ttl)
 	})
 }
 
 func TestEvmJsonRpcCache_Get(t *testing.T) {
 	t.Run("ReturnCachedResponseForFinalizedBlock", func(t *testing.T) {
-		mockConnector, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1",false],"id":1}`))
 		req.SetNetwork(mockNetwork)
 
 		cachedResponse := `{"number":"0x1","hash":"0xabc"}`
-		mockConnector.On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything).Return(cachedResponse, nil)
-		mockConnector.On("HasTTL", mock.AnythingOfType("string")).Return(false)
+		mockConnectors[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything).Return(cachedResponse, nil)
 
 		resp, err := cache.Get(context.Background(), req)
 
@@ -302,22 +373,21 @@ func TestEvmJsonRpcCache_Get(t *testing.T) {
 	})
 
 	t.Run("SkipCacheForUnfinalizedBlock", func(t *testing.T) {
-		mockConnector, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x32345",false],"id":1}`))
 		req.SetNetwork(mockNetwork)
-		mockConnector.On("HasTTL", mock.AnythingOfType("string")).Return(false)
 		resp, err := cache.Get(context.Background(), req)
 
 		assert.NoError(t, err)
 		assert.Nil(t, resp)
-		mockConnector.AssertNotCalled(t, "Get")
+		mockConnectors[0].AssertNotCalled(t, "Get")
 	})
 }
 
 func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
 	t.Run("ShouldNotCacheEmptyResponseWhenUpstreamIsNotSynced", func(t *testing.T) {
-		mockConnector, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateSyncing, finBn: 10, lstBn: 15}})
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateSyncing, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{
 			"jsonrpc": "2.0",
@@ -334,11 +404,11 @@ func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
 		resp.SetUpstream(mockUpstreams[0])
 		err := cache.Set(context.Background(), req, resp)
 		assert.NoError(t, err)
-		mockConnector.AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+		mockConnectors[0].AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("ShouldNotCacheEmptyResponseWhenBlockNotFinalizedOnSpecificUpstream", func(t *testing.T) {
-		mockConnector, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 3, lstBn: 15},
 			{id: "upsB", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 16},
 		})
@@ -354,11 +424,11 @@ func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
 		err := cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
-		mockConnector.AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+		mockConnectors[0].AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("ShouldCacheEmptyResponseWhenBlockFinalizedOnSpecificUpstream", func(t *testing.T) {
-		mockConnector, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 3, lstBn: 15},
 			{id: "upsB", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 16},
 		})
@@ -371,16 +441,16 @@ func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
 			WithRequest(req)
 		resp.SetUpstream(mockUpstreams[1])
 
-		mockConnector.On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
 		err := cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
-		mockConnector.AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("ShouldCacheEmptyResponseWhenBlockFinalizedOnSpecificNonSyncedUpstream", func(t *testing.T) {
-		mockConnector, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 3, lstBn: 15},
 			{id: "upsB", syncing: common.EvmSyncingStateSyncing, finBn: 10, lstBn: 16},
 		})
@@ -396,6 +466,6 @@ func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
 		err := cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
-		mockConnector.AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+		mockConnectors[0].AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	})
 }

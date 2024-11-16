@@ -56,20 +56,29 @@ func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 	}, nil
 }
 
-func (c *EvmJsonRpcCache) findMatchingPolicy(networkId string, upstreamId string, method string, isFinalized bool) *data.CachePolicy {
+func (c *EvmJsonRpcCache) findSetPolicies(networkId string, method string, finality common.DataFinalityState) *data.CachePolicy {
 	for _, policy := range c.policies {
-		if policy.Matches(networkId, upstreamId, method, isFinalized) {
+		if policy.MatchesForSet(networkId, method, finality) {
 			return policy
 		}
 	}
 	return nil
 }
 
+func (c *EvmJsonRpcCache) findGetPolicies(networkId string, method string) []*data.CachePolicy {
+	var policies []*data.CachePolicy
+	for _, policy := range c.policies {
+		if policy.MatchesForGet(networkId, method) {
+			policies = append(policies, policy)
+		}
+	}
+	return policies
+}
+
 func (c *EvmJsonRpcCache) WithNetwork(network *Network) *EvmJsonRpcCache {
 	network.Logger.Debug().Msgf("creating EvmJsonRpcCache")
 	return &EvmJsonRpcCache{
 		logger:  c.logger,
-		conn:    c.conn,
 		network: network,
 	}
 }
@@ -80,15 +89,35 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		return nil, err
 	}
 
+	ntwId := req.NetworkId()
+
 	// Find matching policy
-	policy := c.findMatchingPolicy(req.NetworkId(), req.UpstreamId(), rpcReq.Method, blockNumber != 0)
-	if policy == nil {
+	policies := c.findGetPolicies(ntwId, rpcReq.Method)
+	if len(policies) == 0 {
 		return nil, nil
 	}
 
-	// Use policy's connector
-	connector := policy.GetConnector()
+	var jrr *common.JsonRpcResponse
+	for _, policy := range policies {
+		connector := policy.GetConnector()
+		jrr, err = c.doGet(ctx, connector, req, rpcReq)
+		if jrr != nil {
+			break
+		}
+		c.logger.Debug().Str("connector", connector.Id()).Err(err).Msg("skipping cache policy %s because it returned nil or error")
+	}
 
+	if jrr == nil {
+		return nil, nil
+	}
+
+	return common.NewNormalizedResponse().
+		WithRequest(req).
+		WithFromCache(true).
+		WithJsonRpcResponse(jrr), nil
+}
+
+func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, req *common.NormalizedRequest, rpcReq *common.JsonRpcRequest) (*common.JsonRpcResponse, error) {
 	rpcReq.RLock()
 	defer rpcReq.RUnlock()
 
@@ -133,10 +162,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		return nil, err
 	}
 
-	return common.NewNormalizedResponse().
-		WithRequest(req).
-		WithFromCache(true).
-		WithJsonRpcResponse(jrr), nil
+	return jrr, nil
 }
 
 func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
@@ -150,7 +176,8 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		return err
 	}
 
-	lg := c.logger.With().Str("networkId", req.NetworkId()).Str("method", rpcReq.Method).Logger()
+	ntwId := req.NetworkId()
+	lg := c.logger.With().Str("networkId", ntwId).Str("method", rpcReq.Method).Logger()
 
 	shouldCache, err := shouldCacheResponse(lg, req, resp, rpcReq, rpcResp)
 	if !shouldCache || err != nil {
@@ -162,7 +189,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		return err
 	}
 
-	policy := c.findMatchingPolicy(req.NetworkId(), resp.Upstream().Config().Id, rpcReq.Method, blockNumber != 0)
+	policy := c.findSetPolicies(ntwId, rpcReq.Method, resp.FinalityState())
 	if policy == nil {
 		return nil
 	}
@@ -276,17 +303,6 @@ func shouldCacheResponse(
 	}
 
 	return true, nil
-}
-
-func (c *EvmJsonRpcCache) DeleteByGroupKey(ctx context.Context, groupKeys ...string) error {
-	for _, groupKey := range groupKeys {
-		err := c.conn.Delete(ctx, data.ConnectorMainIndex, groupKey, "")
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
 
 func (c *EvmJsonRpcCache) shouldCacheForBlock(blockNumber int64) (bool, error) {

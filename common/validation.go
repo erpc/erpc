@@ -149,6 +149,36 @@ func (d *DatabaseConfig) Validate() error {
 	return nil
 }
 
+func (c *CacheConfig) Validate() error {
+	if len(c.Connectors) == 0 {
+		return fmt.Errorf("cache.*.connectors is required, add at least one connector")
+	}
+	for _, connector := range c.Connectors {
+		if err := connector.Validate(); err != nil {
+			return err
+		}
+	}
+	if len(c.Policies) == 0 {
+		return fmt.Errorf("cache.*.policies is required, add at least one policy")
+	}
+	for _, policy := range c.Policies {
+		if err := policy.Validate(c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *CachePolicyConfig) Validate(c *CacheConfig) error {
+	if p.Network == "" {
+		return fmt.Errorf("cache.*.policies.*.network is required")
+	}
+	if p.Method == "" {
+		return fmt.Errorf("cache.*.policies.*.method is required")
+	}
+	return nil
+}
+
 func (c *ConnectorConfig) Validate() error {
 	if c.Driver == "" {
 		return fmt.Errorf("database.*.connector.driver is required")
@@ -184,6 +214,67 @@ func (c *ConnectorConfig) Validate() error {
 		return fmt.Errorf("database.*.connector.dynamodb is mutually exclusive with database.*.connector.memory, database.*.connector.redis, and database.*.connector.postgres")
 	}
 
+	if c.DynamoDB != nil {
+		if err := c.DynamoDB.Validate(); err != nil {
+			return err
+		}
+	}
+	if c.PostgreSQL != nil {
+		if err := c.PostgreSQL.Validate(); err != nil {
+			return err
+		}
+	}
+	if c.Redis != nil {
+		if err := c.Redis.Validate(); err != nil {
+			return err
+		}
+	}
+	if c.Memory != nil {
+		if err := c.Memory.Validate(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (p *DynamoDBConnectorConfig) Validate() error {
+	if p.Table == "" {
+		return fmt.Errorf("database.*.connector.dynamodb.table is required")
+	}
+	if p.PartitionKeyName == "" {
+		return fmt.Errorf("database.*.connector.dynamodb.partitionKeyName is required")
+	}
+	if p.RangeKeyName == "" {
+		return fmt.Errorf("database.*.connector.dynamodb.rangeKeyName is required")
+	}
+	if p.ReverseIndexName == "" {
+		return fmt.Errorf("database.*.connector.dynamodb.reverseIndexName is required")
+	}
+	if p.TTLAttributeName == "" {
+		return fmt.Errorf("database.*.connector.dynamodb.ttlAttributeName is required")
+	}
+	return nil
+}
+
+func (p *PostgreSQLConnectorConfig) Validate() error {
+	if p.ConnectionUri == "" {
+		return fmt.Errorf("database.*.connector.postgres.connectionUri is required")
+	}
+	if p.Table == "" {
+		return fmt.Errorf("database.*.connector.postgres.table is required")
+	}
+	return nil
+}
+
+func (p *RedisConnectorConfig) Validate() error {
+	if p.Addr == "" {
+		return fmt.Errorf("database.*.connector.redis.addr is required")
+	}
+	return nil
+}
+
+func (p *MemoryConnectorConfig) Validate() error {
 	return nil
 }
 

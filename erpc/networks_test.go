@@ -5169,14 +5169,24 @@ func TestNetwork_Forward(t *testing.T) {
 				})
 
 			// Create a slow cache to increase the chance of a race condition
-			conn, errc := data.NewMockMemoryConnector(ctx, &log.Logger, &common.MemoryConnectorConfig{
+			conn, errc := data.NewMockMemoryConnector(ctx, &log.Logger, "mock", &common.MemoryConnectorConfig{
 				MaxItems: 1000,
 			}, 100*time.Millisecond)
 			if errc != nil {
 				t.Fatalf("Failed to create mock memory connector: %v", errc)
 			}
+			policy, errp := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network: "*",
+				Method:  "*",
+				TTL:     5 * time.Minute,
+			}, conn)
+			if errp != nil {
+				t.Fatalf("Failed to create cache policy: %v", errp)
+			}
 			slowCache := (&EvmJsonRpcCache{
-				conn:   conn,
+				policies: []*data.CachePolicy{
+					policy,
+				},
 				logger: &log.Logger,
 			}).WithNetwork(network)
 			network.cacheDal = slowCache
