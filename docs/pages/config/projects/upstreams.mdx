@@ -55,10 +55,16 @@ projects:
           minBudget: 0
           maxBudget: 10_000
 
-        # chainId is optional and will be detected from the endpoint (eth_chainId),
-        # but it is recommended to set it explicitly, for faster initialization.
         evm:
-          chainId: 42161]
+          # chainId is optional and will be detected from the endpoint (eth_chainId),
+          # but it is recommended to set it explicitly, for faster initialization.
+          chainId: 42161
+          # statePollerInterval is required and can be used to change the interval for checking the node's liveness. Default is 30s.
+          statePollerInterval: 5s
+          # nodeType is optional and you can manually set it to "full" or "archive"
+          nodeType: full
+          # maxAvailableRecentBlocks is optional and can be used to limit the maximum number of recent blocks to be served by this upstream. Default is 128 for full nodes.
+          maxAvailableRecentBlocks: 128
 
         # To allow auto-batching requests towards the upstream.
         # Remember even if "supportsBatch" is false, you still can send batch requests to eRPC
