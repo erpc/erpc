@@ -5905,7 +5905,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 				return strings.Contains(body, "eth_getBalance")
 			}).
 			Reply(200).
-			JSON([]byte(`{"result":[{"value":0x1,"fromHost":"rpc1"}]}`))```
+			JSON([]byte(`{"result":[{"value":0x1,"fromHost":"rpc1"}]}`))
 
 		gock.New("http://rpc2.localhost").
 			Post("").
