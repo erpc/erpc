@@ -261,6 +261,7 @@ func (e *EvmUpstreamConfig) SetDefaults() {
 		switch e.NodeType {
 		case "full":
 			e.MaxAvailableRecentBlocks = 128
+		}
 	}
 }
 
