@@ -252,6 +252,19 @@ func (e *EvmUpstreamConfig) SetDefaults() {
 	if e.StatePollerInterval == "" {
 		e.StatePollerInterval = "30s"
 	}
+
+	if e.NodeType == "" {
+		e.NodeType = "archive"
+	}
+
+	if e.MaxAvailableRecentBlocks == 0 {
+		switch e.NodeType {
+		case "full":
+			e.MaxAvailableRecentBlocks = 128
+		case "archive":
+			e.MaxAvailableRecentBlocks = 0
+		}
+	}
 }
 
 func (j *JsonRpcUpstreamConfig) SetDefaults() {}
