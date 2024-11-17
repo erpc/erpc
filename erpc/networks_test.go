@@ -5904,8 +5904,8 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 				body := util.SafeReadBody(request)
 				return strings.Contains(body, "eth_getBalance")
 			}).
-			Reply(500).
-			JSON([]byte(`{"error":{"code":-32000,"message":"Internal error"},"id":1}`))
+			Reply(200).
+			JSON([]byte(`{"result":[{"value":0x1,"fromHost":"rpc1"}]}`))```
 
 		gock.New("http://rpc2.localhost").
 			Post("").
