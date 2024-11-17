@@ -118,7 +118,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	method, _ := req.Method()
 	lg := n.Logger.With().Str("method", method).Interface("id", req.ID()).Str("ptr", fmt.Sprintf("%p", req)).Logger()
 
-	mlx, resp, err := n.handleMultiplexing(ctx, req, startTime)
+	mlx, resp, err := n.handleMultiplexing(ctx, &lg, req, startTime)
 	if err != nil || resp != nil {
 		// When the original request is already fulfilled by multiplexer
 		return resp, err
@@ -465,10 +465,10 @@ func (n *Network) acquireSelectionPolicyPermit(lg *zerolog.Logger, ups *upstream
 	return n.selectionPolicyEvaluator.AcquirePermit(lg, ups, method)
 }
 
-func (n *Network) handleMultiplexing(ctx context.Context, req *common.NormalizedRequest, startTime time.Time) (*Multiplexer, *common.NormalizedResponse, error) {
+func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, req *common.NormalizedRequest, startTime time.Time) (*Multiplexer, *common.NormalizedResponse, error) {
 	mlxHash, err := req.CacheHash()
 	if err != nil || mlxHash == "" {
-		n.Logger.Debug().Str("hash", mlxHash).Err(err).Object("request", req).Msgf("could not get multiplexing hash for request")
+		lg.Debug().Str("hash", mlxHash).Err(err).Object("request", req).Msgf("could not get multiplexing hash for request")
 		return nil, nil, nil
 	}
 
@@ -478,7 +478,12 @@ func (n *Network) handleMultiplexing(ctx context.Context, req *common.Normalized
 		method, _ := req.Method()
 		health.MetricNetworkMultiplexedRequests.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 
+		lg.Debug().Str("hash", mlxHash).Msgf("found identical request initiating multiplexer")
+
 		resp, err := n.waitForMultiplexResult(ctx, inf, req, startTime)
+
+		lg.Trace().Str("hash", mlxHash).Object("response", resp).Err(err).Msgf("multiplexed request result")
+
 		if err != nil {
 			return nil, nil, err
 		}

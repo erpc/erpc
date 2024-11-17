@@ -2532,6 +2532,70 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			})
 		})
 	}
+
+	t.Run("ManyRequestsMultiplexedInOneUpstream", func(t *testing.T) {
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("5s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+						},
+					},
+				},
+			},
+		}
+
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(500 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x123456",
+			})
+
+		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		wg := &sync.WaitGroup{}
+		for i := 0; i < 10; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				statusCode, body := sendRequest(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":%d}`, i), nil, nil)
+				assert.Equal(t, http.StatusOK, statusCode)
+				assert.Contains(t, body, "0x123456")
+			}(i)
+		}
+		wg.Wait()
+	})
 }
 
 func TestHttpServer_MultipleUpstreams(t *testing.T) {

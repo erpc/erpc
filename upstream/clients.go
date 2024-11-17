@@ -70,7 +70,8 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups *Upstrea
 			switch cfg.Type {
 			case common.UpstreamTypeEvm:
 				if parsedUrl.Scheme == "http" || parsedUrl.Scheme == "https" {
-					newClient, err = NewGenericHttpJsonRpcClient(appCtx, manager.logger, ups, parsedUrl)
+					lg := manager.logger.With().Str("upstreamId", cfg.Id).Logger()
+					newClient, err = NewGenericHttpJsonRpcClient(appCtx, &lg, ups, parsedUrl)
 					if err != nil {
 						clientErr = fmt.Errorf("failed to create HTTP client for upstream: %v", cfg.Id)
 					}

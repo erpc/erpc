@@ -66,7 +66,7 @@ func (s *ServerConfig) Validate() error {
 			}
 		}
 	}
-	if s.MaxTimeout == nil {
+	if s.MaxTimeout == nil || *s.MaxTimeout == "" {
 		return fmt.Errorf("server.maxTimeout is required")
 	}
 	_, err := time.ParseDuration(*s.MaxTimeout)

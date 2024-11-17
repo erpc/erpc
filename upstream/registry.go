@@ -416,6 +416,7 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 	normBlockHeadLags := normalizeValues(blockHeadLags)
 	normFinalizationLags := normalizeValues(finalizationLags)
 	for i, ups := range upsList {
+		upsId := ups.Config().Id
 		score := u.calculateScore(
 			ups,
 			networkId,
@@ -429,11 +430,12 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 		)
 		// Upstream might not have scores initialized yet (especially when networkId is *)
 		// TODO add a test case to send request to network A when network B is defined in config but no requests sent yet
-		if upsc, ok := u.upstreamScores[ups.Config().Id]; ok {
+		if upsc, ok := u.upstreamScores[upsId]; ok {
 			if _, ok := upsc[networkId]; ok {
 				upsc[networkId][method] = score
 			}
 		}
+		health.MetricUpstreamScoreOverall.WithLabelValues(u.prjId, networkId, upsId, method).Set(score)
 	}
 
 	upsList = u.sortAndFilterUpstreams(networkId, method, upsList)

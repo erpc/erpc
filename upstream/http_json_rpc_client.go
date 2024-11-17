@@ -2,10 +2,12 @@ package upstream
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -32,6 +34,7 @@ type GenericHttpJsonRpcClient struct {
 	upstream   *Upstream
 	httpClient *http.Client
 
+	enableGzip    bool
 	supportsBatch bool
 	batchMaxSize  int
 	batchMaxWait  time.Duration
@@ -79,6 +82,9 @@ func NewGenericHttpJsonRpcClient(appCtx context.Context, logger *zerolog.Logger,
 			}
 
 			client.batchRequests = make(map[interface{}]*batchRequest)
+		}
+		if jc.EnableGzip != nil {
+			client.enableGzip = *jc.EnableGzip
 		}
 	}
 
@@ -321,10 +327,8 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 		return
 	}
 
-	c.logger.Debug().Msgf("sending batch json rpc POST request to %s: %s", c.Url.Host, requestBody)
-
 	reqStartTime := time.Now()
-	httpReq, err := http.NewRequestWithContext(batchCtx, "POST", c.Url.String(), bytes.NewReader(requestBody))
+	httpReq, err := c.prepareRequest(batchCtx, requestBody)
 	if err != nil {
 		for _, req := range requests {
 			req.err <- &common.BaseError{
@@ -339,8 +343,11 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 		}
 		return
 	}
+
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("User-Agent", fmt.Sprintf("erpc (%s/%s; Project/%s; Budget/%s)", common.ErpcVersion, common.ErpcCommitSha, c.upstream.ProjectId, c.upstream.config.RateLimitBudget))
+
+	c.logger.Debug().Str("host", c.Url.Host).RawJSON("request", requestBody).Interface("headers", httpReq.Header).Msgf("sending json rpc POST request (batch)")
 
 	// Make the HTTP request
 	resp, err := c.httpClient.Do(httpReq)
@@ -368,9 +375,7 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 }
 
 func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}]*batchRequest, resp *http.Response) {
-	defer resp.Body.Close()
-
-	bodyBytes, err := util.ReadAll(resp.Body, 128*1024, int(resp.ContentLength)) // 128KB
+	bodyBytes, err := readResponseBody(resp, int(resp.ContentLength))
 	if err != nil {
 		for _, req := range requests {
 			req.err <- err
@@ -552,15 +557,12 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		return nil, err
 	}
 
-	c.logger.Debug().RawJSON("request", requestBody).Msgf("sending json rpc POST request to %s", c.Url.Host)
-
 	reqStartTime := time.Now()
-	httpReq, errReq := http.NewRequestWithContext(ctx, "POST", c.Url.String(), bytes.NewBuffer(requestBody))
-	httpReq.Header.Set("Content-Type", "application/json")
-	if errReq != nil {
+	httpReq, err := c.prepareRequest(ctx, requestBody)
+	if err != nil {
 		return nil, &common.BaseError{
 			Code:    "ErrHttp",
-			Message: fmt.Sprintf("%v", errReq),
+			Message: fmt.Sprintf("%v", err),
 			Details: map[string]interface{}{
 				"url":        c.Url.String(),
 				"upstreamId": c.upstream.Config().Id,
@@ -568,6 +570,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 			},
 		}
 	}
+	c.logger.Debug().Str("host", c.Url.Host).RawJSON("request", requestBody).Interface("headers", httpReq.Header).Msg("sending json rpc POST request (single)")
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -583,28 +586,104 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		}
 		return nil, common.NewErrEndpointTransportFailure(err)
 	}
+	defer resp.Body.Close()
+
+	var bodyReader io.ReadCloser = resp.Body
+	if resp.Header.Get("Content-Encoding") == "gzip" {
+		gzReader, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			return nil, common.NewErrEndpointTransportFailure(fmt.Errorf("cannot create gzip reader: %w", err))
+		}
+		defer gzReader.Close()
+		bodyReader = gzReader
+	}
 
 	nr := common.NewNormalizedResponse().
 		WithRequest(req).
-		WithBody(resp.Body).
+		WithBody(bodyReader).
 		WithExpectedSize(int(resp.ContentLength))
 
 	return nr, c.normalizeJsonRpcError(resp, nr)
+}
+
+func (c *GenericHttpJsonRpcClient) prepareRequest(ctx context.Context, body []byte) (*http.Request, error) {
+	var bodyReader io.Reader = bytes.NewReader(body)
+
+	// Check if gzip compression is enabled
+	if c.enableGzip {
+		var buf bytes.Buffer
+		gw := gzip.NewWriter(&buf)
+		if _, err := gw.Write(body); err != nil {
+			return nil, err
+		}
+		if err := gw.Close(); err != nil {
+			return nil, err
+		}
+		if c.logger.GetLevel() <= zerolog.TraceLevel {
+			compressedSize := buf.Len()
+			originalSize := len(body)
+			c.logger.Debug().
+				Int("originalSize", originalSize).
+				Int("compressedSize", compressedSize).
+				Float64("compressionRatio", float64(compressedSize)/float64(originalSize)).
+				Msg("compressed request body")
+		}
+		bodyReader = &buf
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.Url.String(), bodyReader)
+	if err != nil {
+		return nil, err
+	}
+
+	httpReq.Header.Set("Accept-Encoding", "gzip")
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("User-Agent", fmt.Sprintf("erpc (%s/%s; Project/%s; Budget/%s)",
+		common.ErpcVersion,
+		common.ErpcCommitSha,
+		c.upstream.ProjectId,
+		c.upstream.config.RateLimitBudget))
+
+	// Add gzip header if compression is enabled
+	if c.enableGzip {
+		httpReq.Header.Set("Content-Encoding", "gzip")
+	}
+
+	return httpReq, nil
+}
+
+func readResponseBody(resp *http.Response, expectedSize int) ([]byte, error) {
+	var reader io.ReadCloser = resp.Body
+	defer resp.Body.Close()
+
+	// Check if response is gzipped
+	if resp.Header.Get("Content-Encoding") == "gzip" {
+		var err error
+		reader, err = gzip.NewReader(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("error creating gzip reader: %w", err)
+		}
+		defer reader.Close()
+	}
+
+	return util.ReadAll(reader, 128*1024, expectedSize) // 128KB
 }
 
 func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *common.NormalizedResponse) error {
 	jr, err := nr.JsonRpcResponse()
 
 	if c.logger.GetLevel() == zerolog.TraceLevel {
-		maxTraceSize := 20 * 1024
-		if len(jr.Result) > maxTraceSize {
-			tailStart := len(jr.Result) - maxTraceSize
-			if tailStart < maxTraceSize {
-				tailStart = maxTraceSize
+		if jr != nil {
+			maxTraceSize := 20 * 1024
+			if len(jr.Result) > maxTraceSize {
+				tailStart := len(jr.Result) - maxTraceSize
+				if tailStart < maxTraceSize {
+					tailStart = maxTraceSize
+				}
+				c.logger.Trace().Str("head", util.Mem2Str(jr.Result[:maxTraceSize])).Str("tail", util.Mem2Str(jr.Result[tailStart:])).Msgf("processing json rpc response from upstream (trimmed to first and last 20k)")
+			} else {
+				c.logger.Trace().RawJSON("result", jr.Result).Interface("error", jr.Error).Msgf("processing json rpc response from upstream")
 			}
-			c.logger.Trace().Str("head", util.Mem2Str(jr.Result[:maxTraceSize])).Str("tail", util.Mem2Str(jr.Result[tailStart:])).Msgf("processing json rpc response from upstream (trimmed to first and last 20k)")
-		} else {
-			c.logger.Trace().RawJSON("result", jr.Result).Interface("error", jr.Error).Msgf("processing json rpc response from upstream")
 		}
 	}
 

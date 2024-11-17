@@ -123,10 +123,11 @@ func (r *NormalizedResponse) JsonRpcResponse() (*JsonRpcResponse, error) {
 		if err != nil {
 			return nil, err
 		}
+		r.jsonRpcResponse.Store(jrr)
+		return jrr, nil
 	}
 
-	r.jsonRpcResponse.Store(jrr)
-	return jrr, nil
+	return nil, nil
 }
 
 func (r *NormalizedResponse) WithBody(body io.ReadCloser) *NormalizedResponse {
@@ -275,8 +276,6 @@ func (r *NormalizedResponse) Release() {
 		}
 		r.body = nil
 	}
-
-	r.jsonRpcResponse.Store(nil)
 }
 
 func (r *NormalizedResponse) MarshalZerologObject(e *zerolog.Event) {
