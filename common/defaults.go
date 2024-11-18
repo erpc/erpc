@@ -304,8 +304,8 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig) {
 const DefaultEvmFinalityDepth = 1024
 
 func (e *EvmNetworkConfig) SetDefaults() {
-	if e.FinalityDepth == 0 {
-		e.FinalityDepth = DefaultEvmFinalityDepth
+	if e.FallbackFinalityDepth == 0 {
+		e.FallbackFinalityDepth = DefaultEvmFinalityDepth
 	}
 }
 
@@ -580,10 +580,10 @@ func NewDefaultNetworkConfig(upstreams []*UpstreamConfig) *NetworkConfig {
 			},
 			Retry: &RetryPolicyConfig{
 				MaxAttempts:     3,
-				Delay:           "1s",
-				Jitter:          "500ms",
-				BackoffMaxDelay: "10s",
-				BackoffFactor:   2,
+				Delay:           "500ms",
+				Jitter:          "100ms",
+				BackoffMaxDelay: "5s",
+				BackoffFactor:   1.5,
 			},
 			Timeout: &TimeoutPolicyConfig{
 				Duration: "30s",

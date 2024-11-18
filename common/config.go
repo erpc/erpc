@@ -286,8 +286,8 @@ type NetworkConfig struct {
 }
 
 type EvmNetworkConfig struct {
-	ChainId       int64 `yaml:"chainId" json:"chainId"`
-	FinalityDepth int64 `yaml:"finalityDepth,omitempty" json:"finalityDepth,omitempty"`
+	ChainId               int64 `yaml:"chainId" json:"chainId"`
+	FallbackFinalityDepth int64 `yaml:"fallbackFinalityDepth,omitempty" json:"fallbackFinalityDepth,omitempty"`
 }
 
 type SelectionPolicyConfig struct {

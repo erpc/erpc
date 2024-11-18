@@ -14,3 +14,4 @@ erpc.ts
 .semrel/
 __debug*
 node_modules
+.next

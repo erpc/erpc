@@ -147,6 +147,7 @@ export interface EvmUpstreamConfig {
   chainId: number /* int */;
   nodeType?: EvmNodeType;
   statePollerInterval?: string;
+  maxAvailableRecentBlocks?: number /* int64 */;
 }
 export interface FailsafeConfig {
   retry?: RetryPolicyConfig;
@@ -200,7 +201,7 @@ export interface NetworkConfig {
 }
 export interface EvmNetworkConfig {
   chainId: number /* int64 */;
-  finalityDepth?: number /* int64 */;
+  fallbackFinalityDepth?: number /* int64 */;
 }
 export interface SelectionPolicyConfig {
   evalInterval?: types.Duration;
@@ -287,6 +288,7 @@ export const DefaultPolicyFunction = `
 export type EvmNodeType = string;
 export const EvmNodeTypeFull: EvmNodeType = "full";
 export const EvmNodeTypeArchive: EvmNodeType = "archive";
+export const EvmNodeTypeLight: EvmNodeType = "light";
 export type EvmStatePoller = any;
 
 //////////
