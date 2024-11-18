@@ -114,11 +114,12 @@ func (c *CacheConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 }
 
 type CachePolicyConfig struct {
-	Network   string            `yaml:"network" json:"network"`
-	Method    string            `yaml:"method" json:"method"`
-	Finality  DataFinalityState `yaml:"finality" json:"finality"`
-	TTL       time.Duration     `yaml:"ttl,omitempty" json:"ttl,omitempty"`
 	Connector string            `yaml:"connector" json:"connector"`
+	Network   string            `yaml:"network,omitempty" json:"network"`
+	Method    string            `yaml:"method,omitempty" json:"method"`
+	Params    []string          `yaml:"params,omitempty" json:"params"`
+	Finality  DataFinalityState `yaml:"finality" json:"finality"`
+	TTL       time.Duration     `yaml:"ttl,omitempty" json:"ttl"`
 }
 
 func (c *CachePolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
@@ -148,6 +149,7 @@ func (c *CachePolicyConfig) MarshalJSON() ([]byte, error) {
 	return sonic.Marshal(map[string]interface{}{
 		"network":   c.Network,
 		"method":    c.Method,
+		"params":    c.Params,
 		"finality":  c.Finality,
 		"ttl":       c.TTL,
 		"connector": c.Connector,

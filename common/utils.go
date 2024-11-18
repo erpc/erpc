@@ -77,7 +77,11 @@ func NormalizeHex(value interface{}) (string, error) {
 func WildcardMatch(pattern, value string) bool {
 	portions := strings.Split(pattern, "|")
 	for _, portion := range portions {
-		if wildcard.Match(portion, value) {
+		if portion == "<empty>" {
+			if value == "" {
+				return true
+			}
+		} else if wildcard.Match(portion, value) {
 			return true
 		}
 	}

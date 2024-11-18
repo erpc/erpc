@@ -32,6 +32,7 @@ func (p *CachePolicy) MatchesForSet(networkId, method string, finality common.Da
 	}
 
 	// TODO do we need to make unknown superset of finalized/unfinalized?
+	// TODO do we need to differentiate between different unknown (eth_trace*) and missing (chain does not support finalized)?
 	return p.config.Finality == finality
 }
 
