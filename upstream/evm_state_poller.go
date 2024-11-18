@@ -123,9 +123,6 @@ func (e *EvmStatePoller) Poll(ctx context.Context) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if e.skipFinalizedCheck {
-			return
-		}
 		fb, err := e.fetchFinalizedBlockNumber(ctx)
 		if err != nil {
 			if !common.IsRetryableTowardsUpstream(err) || common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
@@ -243,9 +240,9 @@ func (e *EvmStatePoller) IsBlockFinalized(blockNumber int64) (bool, error) {
 	var fb int64
 	ntwCfg := e.network.Config()
 
-	if ntwCfg.Evm != nil && ntwCfg.Evm.FinalityDepth > 0 {
-		if latestBlock > ntwCfg.Evm.FinalityDepth {
-			fb = latestBlock - ntwCfg.Evm.FinalityDepth
+	if ntwCfg.Evm != nil && ntwCfg.Evm.FallbackFinalityDepth > 0 {
+		if latestBlock > ntwCfg.Evm.FallbackFinalityDepth {
+			fb = latestBlock - ntwCfg.Evm.FallbackFinalityDepth
 		} else {
 			fb = 0
 		}
@@ -331,9 +328,12 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 
 	resp, err := e.upstream.Forward(ctx, pr)
 	if err != nil {
-		if common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) ||
-			common.HasErrorCode(err, common.ErrCodeUpstreamRequestSkipped) ||
-			common.HasErrorCode(err, common.ErrCodeEndpointUnsupported) {
+		if common.HasErrorCode(err,
+			common.ErrCodeEndpointClientSideException,
+			common.ErrCodeUpstreamRequestSkipped,
+			common.ErrCodeUpstreamMethodIgnored,
+			common.ErrCodeEndpointUnsupported,
+		) {
 			e.skipSyncingCheck = true
 		}
 		return false, err

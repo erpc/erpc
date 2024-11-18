@@ -1,0 +1,173 @@
+import { Steps } from "nextra/components";
+
+# Kubernetes installation
+
+eRPC can be deployed on Kubernetes using the following manifests. These examples provide a basic setup that you can customize based on your needs.
+
+<Steps>
+
+### Configuration
+
+First, create a ConfigMap and a Secret for your eRPC configuration:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: erpc-config
+data:
+  erpc.yaml: |
+    logLevel: debug
+    projects:
+     - id: main
+       upstreams:
+       - endpoint: alchemy://${ALCHEMY_API_KEY}
+       - endpoint: blastapi://${BLASTAPI_API_KEY}
+       - endpoint: https://mynode-chain-1.svc.cluster.local
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: erpc-secrets
+type: Opaque
+stringData:
+  ALCHEMY_API_KEY: your-alchemy-key-here
+  BLASTAPI_API_KEY: your-blastapi-key-here
+```
+
+### Deployment
+
+Deploy eRPC with the following configuration:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: erpc
+  labels:
+    app: erpc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: erpc
+  template:
+    metadata:
+      labels:
+        app: erpc
+    spec:
+      containers:
+      - name: erpc
+        image: ghcr.io/erpc/erpc:latest
+        resources:
+          requests:
+            cpu: "0.5"
+            memory: "256Mi"
+          limits:
+            cpu: "1"
+            memory: "512Mi"
+        envFrom:
+        - secretRef:
+            name: erpc-secrets
+        ports:
+        - containerPort: 4000
+          name: http
+        - containerPort: 4001
+          name: metrics
+        volumeMounts:
+        - name: config
+          mountPath: /root/erpc.yaml
+          subPath: erpc.yaml
+        readinessProbe:
+          httpGet:
+            path: /healthcheck
+            port: 4000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthcheck
+            port: 4000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: config
+        configMap:
+          name: erpc-config
+```
+
+### Service
+
+Expose eRPC using a Service:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: erpc
+  labels:
+    app: erpc
+spec:
+  ports:
+  - port: 4000
+    name: http
+    targetPort: 4000
+  - port: 4001
+    name: metrics
+    targetPort: 4001
+  selector:
+    app: erpc
+```
+
+### Horizontal Pod Autoscaling
+
+Configure automatic scaling based on CPU and memory usage:
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: erpc
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: erpc
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 80
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+```
+
+### Installation
+
+Apply the manifests using kubectl:
+
+```bash
+# Apply the manifests
+kubectl apply -f erpc-configmap.yaml
+kubectl apply -f erpc-secret.yaml
+kubectl apply -f erpc-deployment.yaml
+kubectl apply -f erpc-service.yaml
+kubectl apply -f erpc-hpa.yaml
+
+# Verify the deployment
+kubectl get pods
+kubectl get services
+kubectl get hpa
+```
+
+The eRPC service will be available within your cluster at `erpc:4000` for HTTP traffic and `erpc:4001` for metrics.
+
+</Steps>
