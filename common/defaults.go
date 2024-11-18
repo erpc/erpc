@@ -580,9 +580,9 @@ func NewDefaultNetworkConfig(upstreams []*UpstreamConfig) *NetworkConfig {
 			},
 			Retry: &RetryPolicyConfig{
 				MaxAttempts:     3,
-				Delay:           "500ms",
-				Jitter:          "100ms",
-				BackoffMaxDelay: "5s",
+				Delay:           "100ms",
+				Jitter:          "0ms",
+				BackoffMaxDelay: "1s",
 				BackoffFactor:   1.5,
 			},
 			Timeout: &TimeoutPolicyConfig{

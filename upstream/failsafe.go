@@ -256,7 +256,9 @@ func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolic
 			})
 		}
 
-		builder = builder.WithJitter(jitterDuration)
+		if jitterDuration > 0 {
+			builder = builder.WithJitter(jitterDuration)
+		}
 	}
 
 	builder.HandleIf(func(result *common.NormalizedResponse, err error) bool {

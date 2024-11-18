@@ -45,9 +45,9 @@ projects:
             # It is recommended to set a retry policy on network-level to make sure if one upstream is rate-limited,
             # the request will be retried on another upstream.
             maxCount: 3
-            delay: 500ms
-            jitter: 100ms
-            backoffMaxDelay: 5s
+            delay: 100ms
+            jitter: 0ms
+            backoffMaxDelay: 1s
             backoffFactor: 1.5
           # Defining a "hedge" is highly-recommended on network-level because if upstream A is being slow for
           # a specific request, it can start a new parallel hedged request to upstream B, for whichever responds faster.
