@@ -1,4 +1,4 @@
-import { Callout } from "nextra/components";
+import { Callout, Tabs, Tab } from "nextra/components";
 
 # Complete config example
 
@@ -41,10 +41,256 @@ projects:
    - endpoint: envio://rpc.hypersync.xyz # Add all supported methods and chains of envio.dev HyperRPC
 ```
 
-### Full `erpc.yaml`
+### Full config example
 
 To have more control over the configuration, you can use the example below.
 
+{/* prettier-ignore */}
+<Tabs items={["typescript", "yaml"]}>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+/**
+ * Converted config in TypeScript. Copy and create erpc.ts so the binary automatically imports it.
+ */
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  // Log level helps in debugging or error detection.
+  logLevel: "warn",
+
+  // Database configurations for caching, dynamic configs, rate limit persistence, etc.
+  database: {
+    evmJsonRpcCache: {
+      driver: "postgresql",
+      postgresql: {
+        connectionUri:
+          "postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name",
+        table: "rpc_cache",
+      },
+    },
+  },
+
+  // Main server configuration for eRPC to listen for requests.
+  server: {
+    listenV4: true,
+    httpHostV4: "0.0.0.0",
+    listenV6: false,
+    httpHostV6: "[::]",
+    httpPort: 4000,
+    maxTimeout: "30s",
+    enableGzip: true,
+  },
+
+  // Optional Prometheus metrics server.
+  metrics: {
+    enabled: true,
+    listenV4: true,
+    hostV4: "0.0.0.0",
+    listenV6: false,
+    hostV6: "[::]",
+    port: 4001,
+  },
+
+  // Projects configuration.
+  projects: [
+    {
+      id: "main",
+      rateLimitBudget: "frontend-budget",
+      networks: [
+        {
+          architecture: "evm",
+          evm: {
+            chainId: 1,
+          },
+          failsafe: {
+            timeout: {
+              duration: "30s",
+            },
+            retry: {
+              maxCount: 3,
+              delay: "500ms",
+              backoffMaxDelay: "10s",
+              backoffFactor: 0.3,
+              jitter: "500ms",
+            },
+            hedge: {
+              delay: "3000ms",
+              maxCount: 2,
+            },
+            circuitBreaker: {
+              failureThresholdCount: 30,
+              failureThresholdCapacity: 100,
+              halfOpenAfter: "60s",
+              successThresholdCount: 8,
+              successThresholdCapacity: 10,
+            },
+          },
+        },
+        {
+          architecture: "evm",
+          evm: {
+            chainId: 42161,
+          },
+          failsafe: {
+            timeout: {
+              duration: "30s",
+            },
+            retry: {
+              maxCount: 5,
+              delay: "500ms",
+              backoffMaxDelay: "10s",
+              backoffFactor: 0.3,
+              jitter: "200ms",
+            },
+            hedge: {
+              delay: "1000ms",
+              maxCount: 2,
+            },
+          },
+        },
+      ],
+      upstreams: [
+        {
+          id: "blastapi-chain-42161",
+          type: "evm",
+          endpoint: "https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx",
+          rateLimitBudget: "global-blast",
+          evm: {
+            chainId: 42161,
+          },
+          ignoreMethods: ["alchemy_*", "eth_traceTransaction"],
+          failsafe: {
+            timeout: {
+              duration: "15s",
+            },
+            retry: {
+              maxCount: 2,
+              delay: "1000ms",
+              backoffMaxDelay: "10s",
+              backoffFactor: 0.3,
+              jitter: "500ms",
+            },
+          },
+        },
+        {
+          id: "blastapi-chain-1",
+          type: "evm",
+          endpoint: "https://eth-mainnet.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx",
+          rateLimitBudget: "global-blast",
+          evm: {
+            chainId: 1,
+          },
+          failsafe: {
+            timeout: {
+              duration: "15s",
+            },
+            retry: {
+              maxCount: 2,
+              delay: "1000ms",
+              backoffMaxDelay: "10s",
+              backoffFactor: 0.3,
+              jitter: "500ms",
+            },
+          },
+        },
+        {
+          id: "quiknode-chain-42161",
+          type: "evm",
+          endpoint:
+            "https://xxxxxx-xxxxxx.arbitrum-mainnet.quiknode.pro/xxxxxxxxxxxxxxxxxxxxxxxx/",
+          rateLimitBudget: "global-quicknode",
+          autoIgnoreUnsupportedMethods: false,
+          jsonRpc: {
+            supportsBatch: true,
+            batchMaxSize: 10,
+            batchMaxWait: "100ms",
+          },
+          evm: {
+            chainId: 42161,
+          },
+          failsafe: {
+            timeout: {
+              duration: "15s",
+            },
+            retry: {
+              maxCount: 2,
+              delay: "1000ms",
+              backoffMaxDelay: "10s",
+              backoffFactor: 0.3,
+              jitter: "500ms",
+            },
+          },
+        },
+        {
+          id: "alchemy-multi-chain-example",
+          endpoint: "alchemy://XXXX_YOUR_ALCHEMY_API_KEY_HERE_XXXX",
+          rateLimitBudget: "global",
+          failsafe: {
+            timeout: {
+              duration: "15s",
+            },
+            retry: {
+              maxCount: 2,
+              delay: "1000ms",
+              backoffMaxDelay: "10s",
+              backoffFactor: 0.3,
+              jitter: "500ms",
+            },
+          },
+        },
+      ],
+    },
+  ],
+
+  // Rate limiter configurations.
+  rateLimiters: {
+    budgets: [
+      {
+        id: "default-budget",
+        rules: [
+          {
+            method: "*",
+            maxCount: 10000,
+            period: "1s",
+          },
+        ],
+      },
+      {
+        id: "global-blast",
+        rules: [
+          {
+            method: "*",
+            maxCount: 1000,
+            period: "1s",
+          },
+        ],
+      },
+      {
+        id: "global-quicknode",
+        rules: [
+          {
+            method: "*",
+            maxCount: 300,
+            period: "1s",
+          },
+        ],
+      },
+      {
+        id: "frontend-budget",
+        rules: [
+          {
+            method: "*",
+            maxCount: 500,
+            period: "1s",
+          },
+        ],
+      },
+    ],
+  },
+});
+```
+</Tabs.Tab>
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # Log level helps in debugging or error detection:
 # - debug: information down to actual request and responses, and decisions about rate-liming etc.
@@ -254,6 +500,8 @@ rateLimiters:
           maxCount: 500
           period: 1s
 ```
+</Tabs.Tab>
+</Tabs>
 
 #### Roadmap
 
