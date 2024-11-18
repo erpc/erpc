@@ -28,9 +28,9 @@ __export(src_exports, {
 module.exports = __toCommonJS(src_exports);
 
 // src/generated.ts
-var DataFinalityStateUnknown = 0;
+var DataFinalityStateFinalized = 0;
 var DataFinalityStateUnfinalized = 1;
-var DataFinalityStateFinalized = 2;
+var DataFinalityStateUnknown = 2;
 
 // src/index.ts
 var createConfig = (cfg) => {

@@ -655,3 +655,214 @@ func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
 		mockConnectors[0].AssertNotCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	})
 }
+
+func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
+	mockConnector := data.NewMockConnector("test")
+
+	testCases := []struct {
+		name    string
+		config  *common.CachePolicyConfig
+		method  string
+		params  []interface{}
+		matches bool
+	}{
+		// Basic parameter matching
+		{
+			name: "NoParamsInPolicy",
+			config: &common.CachePolicyConfig{
+				Network:  "evm:1",
+				Method:   "eth_getBlockByNumber",
+				Finality: common.DataFinalityStateFinalized,
+			},
+			method:  "eth_getBlockByNumber",
+			params:  []interface{}{"0x1", true},
+			matches: true,
+		},
+		{
+			name: "ExactMatch",
+			config: &common.CachePolicyConfig{
+				Network:  "evm:1",
+				Method:   "eth_getBlockByNumber",
+				Params:   []interface{}{"0x1", "true"},
+				Finality: common.DataFinalityStateFinalized,
+			},
+			method:  "eth_getBlockByNumber",
+			params:  []interface{}{"0x1", true},
+			matches: true,
+		},
+
+		// Numeric comparisons
+		{
+			name: "BlockNumberGreaterThan",
+			config: &common.CachePolicyConfig{
+				Network:  "evm:1",
+				Method:   "eth_getBlockByNumber",
+				Params:   []interface{}{">0x100", "*"},
+				Finality: common.DataFinalityStateFinalized,
+			},
+			method:  "eth_getBlockByNumber",
+			params:  []interface{}{"0x200", false},
+			matches: true,
+		},
+		{
+			name: "BlockNumberLessThan",
+			config: &common.CachePolicyConfig{
+				Network:  "evm:1",
+				Method:   "eth_getBlockByNumber",
+				Params:   []interface{}{"<0x100", "*"},
+				Finality: common.DataFinalityStateFinalized,
+			},
+			method:  "eth_getBlockByNumber",
+			params:  []interface{}{"0x50", false},
+			matches: true,
+		},
+		{
+			name: "BlockNumberRange",
+			config: &common.CachePolicyConfig{
+				Network:  "evm:1",
+				Method:   "eth_getBlockByNumber",
+				Params:   []interface{}{">=0x100|<=0x200", "*"},
+				Finality: common.DataFinalityStateFinalized,
+			},
+			method:  "eth_getBlockByNumber",
+			params:  []interface{}{"0x150", false},
+			matches: true,
+		},
+
+		// eth_getLogs specific tests
+		{
+			name: "GetLogsWithBlockRange",
+			config: &common.CachePolicyConfig{
+				Network: "evm:1",
+				Method:  "eth_getLogs",
+				Params: []interface{}{
+					map[string]interface{}{"fromBlock": ">0x100", "toBlock": "<=0x200"},
+				},
+				Finality: common.DataFinalityStateFinalized,
+			},
+			method: "eth_getLogs",
+			params: []interface{}{
+				map[string]interface{}{
+					"fromBlock": "0x150",
+					"toBlock":   "0x180",
+				},
+			},
+			matches: true,
+		},
+		{
+			name: "GetLogsWithTopics",
+			config: &common.CachePolicyConfig{
+				Network: "evm:1",
+				Method:  "eth_getLogs",
+				Params: []interface{}{
+					map[string]interface{}{"topics": []interface{}{"0x*"}},
+				},
+				Finality: common.DataFinalityStateFinalized,
+			},
+			method: "eth_getLogs",
+			params: []interface{}{
+				map[string]interface{}{
+					"topics": []interface{}{"0xabcdef"},
+				},
+			},
+			matches: true,
+		},
+
+		// Edge cases
+		{
+			name: "EmptyParamMatch",
+			config: &common.CachePolicyConfig{
+				Network:  "evm:1",
+				Method:   "eth_getTransactionByHash",
+				Params:   []interface{}{"*", "<empty>"},
+				Finality: common.DataFinalityStateFinalized,
+			},
+			method:  "eth_getTransactionByHash",
+			params:  []interface{}{"0x123", nil},
+			matches: true,
+		},
+		{
+			name: "MixedNumericAndWildcard",
+			config: &common.CachePolicyConfig{
+				Network:  "evm:1",
+				Method:   "eth_getBlockByNumber",
+				Params:   []interface{}{">=0x100|latest", "*"},
+				Finality: common.DataFinalityStateFinalized,
+			},
+			method:  "eth_getBlockByNumber",
+			params:  []interface{}{"latest", false},
+			matches: true,
+		},
+
+		// Negative cases
+		{
+			name: "NotEnoughParamsNonStar",
+			config: &common.CachePolicyConfig{
+				Network:  "evm:1",
+				Method:   "eth_getBlockByNumber",
+				Params:   []interface{}{"0x1", "true", "extra"},
+				Finality: common.DataFinalityStateFinalized,
+			},
+			method:  "eth_getBlockByNumber",
+			params:  []interface{}{"0x1", true},
+			matches: false,
+		},
+		{
+			name: "NotEnoughParamsStar",
+			config: &common.CachePolicyConfig{
+				Network:  "evm:1",
+				Method:   "eth_getBlockByNumber",
+				Params:   []interface{}{"0x1", "true", "*"},
+				Finality: common.DataFinalityStateFinalized,
+			},
+			method:  "eth_getBlockByNumber",
+			params:  []interface{}{"0x1", true},
+			matches: true,
+		},
+		{
+			name: "NumericMismatch",
+			config: &common.CachePolicyConfig{
+				Network:  "evm:1",
+				Method:   "eth_getBlockByNumber",
+				Params:   []interface{}{">0x100", "*"},
+				Finality: common.DataFinalityStateFinalized,
+			},
+			method:  "eth_getBlockByNumber",
+			params:  []interface{}{"0x50", false},
+			matches: false,
+		},
+		{
+			name: "GetLogsRangeMismatch",
+			config: &common.CachePolicyConfig{
+				Network: "evm:1",
+				Method:  "eth_getLogs",
+				Params: []interface{}{
+					map[string]interface{}{"fromBlock": ">0x100", "toBlock": "<=0x200"},
+				},
+				Finality: common.DataFinalityStateFinalized,
+			},
+			method: "eth_getLogs",
+			params: []interface{}{
+				map[string]interface{}{
+					"fromBlock": "0x50",
+					"toBlock":   "0x300",
+				},
+			},
+			matches: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			policy, err := data.NewCachePolicy(tc.config, mockConnector)
+			require.NoError(t, err)
+
+			// Test both Set and Get matching
+			matchesSet := policy.MatchesForSet(tc.config.Network, tc.method, tc.params, common.DataFinalityStateFinalized)
+			matchesGet := policy.MatchesForGet(tc.config.Network, tc.method, tc.params)
+
+			assert.Equal(t, tc.matches, matchesSet, "MatchesForSet returned unexpected result")
+			assert.Equal(t, tc.matches, matchesGet, "MatchesForGet returned unexpected result")
+		})
+	}
+}

@@ -109,6 +109,8 @@ func (c *CacheConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 				},
 			)
 		}
+	} else {
+		*c = CacheConfig(raw)
 	}
 
 	return nil
@@ -118,7 +120,7 @@ type CachePolicyConfig struct {
 	Connector string            `yaml:"connector" json:"connector"`
 	Network   string            `yaml:"network,omitempty" json:"network"`
 	Method    string            `yaml:"method,omitempty" json:"method"`
-	Params    []string          `yaml:"params,omitempty" json:"params"`
+	Params    []interface{}     `yaml:"params,omitempty" json:"params"`
 	Finality  DataFinalityState `yaml:"finality" json:"finality"`
 	TTL       time.Duration     `yaml:"ttl,omitempty" json:"ttl"`
 }

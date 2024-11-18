@@ -66,20 +66,41 @@ func (c *EvmJsonRpcCache) WithNetwork(network *Network) *EvmJsonRpcCache {
 	}
 }
 
-func (c *EvmJsonRpcCache) findSetPolicies(networkId string, method string, finality common.DataFinalityState) []*data.CachePolicy {
+func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState) []*data.CachePolicy {
 	var policies []*data.CachePolicy
 	for _, policy := range c.policies {
-		if policy.MatchesForSet(networkId, method, finality) {
+		// Add debug logging for complex param matching
+		if c.logger.GetLevel() <= zerolog.TraceLevel {
+			c.logger.Trace().
+				Str("networkId", networkId).
+				Str("method", method).
+				Interface("params", params).
+				Interface("policy", policy).
+				Str("finality", finality.String()).
+				Msg("checking policy match for set")
+		}
+
+		if policy.MatchesForSet(networkId, method, params, finality) {
 			policies = append(policies, policy)
 		}
 	}
 	return policies
 }
 
-func (c *EvmJsonRpcCache) findGetPolicies(networkId string, method string) []*data.CachePolicy {
+func (c *EvmJsonRpcCache) findGetPolicies(networkId, method string, params []interface{}) []*data.CachePolicy {
 	var policies []*data.CachePolicy
 	for _, policy := range c.policies {
-		if policy.MatchesForGet(networkId, method) {
+		// Add debug logging for complex param matching
+		if c.logger.GetLevel() <= zerolog.TraceLevel {
+			c.logger.Trace().
+				Str("networkId", networkId).
+				Str("method", method).
+				Interface("params", params).
+				Interface("policy", policy).
+				Msg("checking policy match for get")
+		}
+
+		if policy.MatchesForGet(networkId, method, params) {
 			policies = append(policies, policy)
 		}
 	}
@@ -93,9 +114,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	}
 
 	ntwId := req.NetworkId()
-
-	// Find matching policy
-	policies := c.findGetPolicies(ntwId, rpcReq.Method)
+	policies := c.findGetPolicies(ntwId, rpcReq.Method, rpcReq.Params)
 	if len(policies) == 0 {
 		return nil, nil
 	}
@@ -203,7 +222,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 	}
 
 	finState := resp.FinalityState()
-	policies := c.findSetPolicies(ntwId, rpcReq.Method, finState)
+	policies := c.findSetPolicies(ntwId, rpcReq.Method, rpcReq.Params, finState)
 	if len(policies) == 0 {
 		return nil
 	}

@@ -42,7 +42,7 @@ export interface CachePolicyConfig {
   connector: string;
   network?: string;
   method?: string;
-  params?: string[];
+  params?: any[];
   finality: DataFinalityState;
   ttl?: types.Duration;
 }
@@ -277,9 +277,13 @@ export interface MetricsConfig {
 // source: data.go
 
 export type DataFinalityState = number /* int */;
-export const DataFinalityStateUnknown: DataFinalityState = 0;
+/**
+ * Finalized gets 0 intentionally so that when user has not specified finality,
+ * it defaults to finalized, which is safest sane default for caching.
+ */
+export const DataFinalityStateFinalized: DataFinalityState = 0;
 export const DataFinalityStateUnfinalized: DataFinalityState = 1;
-export const DataFinalityStateFinalized: DataFinalityState = 2;
+export const DataFinalityStateUnknown: DataFinalityState = 2;
 
 //////////
 // source: defaults.go

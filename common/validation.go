@@ -208,7 +208,7 @@ func (c *ConnectorConfig) Validate() error {
 		return fmt.Errorf("database.*.connector.redis is required when driver is redis")
 	}
 	if c.Driver == DriverPostgreSQL && c.PostgreSQL == nil {
-		return fmt.Errorf("database.*.connector.postgres is required when driver is postgres")
+		return fmt.Errorf("database.*.connector.postgresql is required when driver is postgresql")
 	}
 	if c.Driver == DriverDynamoDB && c.DynamoDB == nil {
 		return fmt.Errorf("database.*.connector.dynamodb is required when driver is dynamodb")
@@ -216,16 +216,16 @@ func (c *ConnectorConfig) Validate() error {
 
 	// TODO switch to go-validator library :D
 	if c.Memory != nil && (c.Redis != nil || c.PostgreSQL != nil || c.DynamoDB != nil) {
-		return fmt.Errorf("database.*.connector.memory is mutually exclusive with database.*.connector.redis, database.*.connector.postgres, and database.*.connector.dynamodb")
+		return fmt.Errorf("database.*.connector.memory is mutually exclusive with database.*.connector.redis, database.*.connector.postgresql, and database.*.connector.dynamodb")
 	}
 	if c.Redis != nil && (c.Memory != nil || c.PostgreSQL != nil || c.DynamoDB != nil) {
-		return fmt.Errorf("database.*.connector.redis is mutually exclusive with database.*.connector.memory, database.*.connector.postgres, and database.*.connector.dynamodb")
+		return fmt.Errorf("database.*.connector.redis is mutually exclusive with database.*.connector.memory, database.*.connector.postgresql, and database.*.connector.dynamodb")
 	}
 	if c.PostgreSQL != nil && (c.Memory != nil || c.Redis != nil || c.DynamoDB != nil) {
-		return fmt.Errorf("database.*.connector.postgres is mutually exclusive with database.*.connector.memory, database.*.connector.redis, and database.*.connector.dynamodb")
+		return fmt.Errorf("database.*.connector.postgresql is mutually exclusive with database.*.connector.memory, database.*.connector.redis, and database.*.connector.dynamodb")
 	}
 	if c.DynamoDB != nil && (c.Memory != nil || c.Redis != nil || c.PostgreSQL != nil) {
-		return fmt.Errorf("database.*.connector.dynamodb is mutually exclusive with database.*.connector.memory, database.*.connector.redis, and database.*.connector.postgres")
+		return fmt.Errorf("database.*.connector.dynamodb is mutually exclusive with database.*.connector.memory, database.*.connector.redis, and database.*.connector.postgresql")
 	}
 
 	if c.DynamoDB != nil {
@@ -273,10 +273,10 @@ func (p *DynamoDBConnectorConfig) Validate() error {
 
 func (p *PostgreSQLConnectorConfig) Validate() error {
 	if p.ConnectionUri == "" {
-		return fmt.Errorf("database.*.connector.postgres.connectionUri is required")
+		return fmt.Errorf("database.*.connector.postgresql.connectionUri is required")
 	}
 	if p.Table == "" {
-		return fmt.Errorf("database.*.connector.postgres.table is required")
+		return fmt.Errorf("database.*.connector.postgresql.table is required")
 	}
 	return nil
 }

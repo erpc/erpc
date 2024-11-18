@@ -81,11 +81,76 @@ func WildcardMatch(pattern, value string) bool {
 			if value == "" {
 				return true
 			}
-		} else if wildcard.Match(portion, value) {
+			continue
+		}
+
+		// Check for numeric comparisons
+		if strings.HasPrefix(value, "0x") {
+			// TODO do we we need to handle decimal values for value (most values in json-erpc params are hex-based)?
+			if len(portion) > 2 && strings.HasPrefix(portion, ">=") {
+				return compareNumbers(portion[2:], value, ">=")
+			}
+			if len(portion) > 2 && strings.HasPrefix(portion, "<=") {
+				return compareNumbers(portion[2:], value, "<=")
+			}
+			if len(portion) > 1 && strings.HasPrefix(portion, ">") {
+				return compareNumbers(portion[1:], value, ">")
+			}
+			if len(portion) > 1 && strings.HasPrefix(portion, "<") {
+				return compareNumbers(portion[1:], value, "<")
+			}
+			if len(portion) > 1 && strings.HasPrefix(portion, "=") {
+				return compareNumbers(portion[1:], value, "=")
+			}
+		}
+
+		if wildcard.Match(portion, value) {
 			return true
 		}
 	}
 	return false
+}
+
+func compareNumbers(pattern, value, op string) bool {
+	patternNum, err := parseNumber(pattern)
+	if err != nil {
+		return false
+	}
+
+	valueNum, err := parseNumber(value)
+	if err != nil {
+		return false
+	}
+
+	switch op {
+	case ">=":
+		return valueNum >= patternNum
+	case "<=":
+		return valueNum <= patternNum
+	case ">":
+		return valueNum > patternNum
+	case "<":
+		return valueNum < patternNum
+	case "=":
+		return valueNum == patternNum
+	}
+	return false
+}
+
+func parseNumber(s string) (int64, error) {
+	// Try parsing as hex
+	if strings.HasPrefix(strings.ToLower(s), "0x") {
+		if num, err := strconv.ParseInt(s[2:], 16, 64); err == nil {
+			return num, nil
+		}
+	}
+
+	// Try parsing as decimal
+	if num, err := strconv.ParseInt(s, 0, 64); err == nil {
+		return num, nil
+	}
+
+	return 0, fmt.Errorf("unable to parse number: %s", s)
 }
 
 func RemoveDuplicates(slice []string) []string {

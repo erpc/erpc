@@ -88,7 +88,14 @@ func (c *CacheConfig) SetDefaults() {
 	}
 }
 
-func (c *CachePolicyConfig) SetDefaults() {}
+func (c *CachePolicyConfig) SetDefaults() {
+	if c.Method == "" {
+		c.Method = "*"
+	}
+	if c.Network == "" {
+		c.Network = "*"
+	}
+}
 
 func (s *ServerConfig) SetDefaults() {
 	if s.ListenV4 == nil {
@@ -153,34 +160,34 @@ func (c *ConnectorConfig) SetDefaults() {
 	if c.Memory != nil {
 		c.Driver = DriverMemory
 	}
-	if c.Driver == "memory" {
+	if c.Driver == DriverMemory {
 		if c.Memory == nil {
 			c.Memory = &MemoryConnectorConfig{}
 		}
 		c.Memory.SetDefaults()
 	}
 	if c.Redis != nil {
-		c.Driver = "redis"
+		c.Driver = DriverRedis
 	}
-	if c.Driver == "redis" {
+	if c.Driver == DriverRedis {
 		if c.Redis == nil {
 			c.Redis = &RedisConnectorConfig{}
 		}
 		c.Redis.SetDefaults()
 	}
 	if c.PostgreSQL != nil {
-		c.Driver = "postgres"
+		c.Driver = DriverPostgreSQL
 	}
-	if c.Driver == "postgres" {
+	if c.Driver == DriverPostgreSQL {
 		if c.PostgreSQL == nil {
 			c.PostgreSQL = &PostgreSQLConnectorConfig{}
 		}
 		c.PostgreSQL.SetDefaults()
 	}
 	if c.DynamoDB != nil {
-		c.Driver = "dynamodb"
+		c.Driver = DriverDynamoDB
 	}
-	if c.Driver == "dynamodb" {
+	if c.Driver == DriverDynamoDB {
 		if c.DynamoDB == nil {
 			c.DynamoDB = &DynamoDBConnectorConfig{}
 		}

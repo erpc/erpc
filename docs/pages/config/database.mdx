@@ -8,8 +8,16 @@ Long-term storage is optional but used for various purposes such as caching, rat
 # ...
 database:
   evmJsonRpcCache:
-    driver: memory | redis | postgresql | dynamodb
-    # ... (driver specific config, see below)
+    connectors:
+      - id: string
+        driver: memory | redis | postgresql | dynamodb
+        # ... (driver specific config, see below)
+    policies:
+      - network: string
+        method: string
+        finality: finalized | unfinalized | unknown
+        connector: string
+        ttl: duration
 ```
 
 ### `evmJsonRpcCache`
@@ -97,6 +105,90 @@ You can create multiple policies to define different caching behavior for differ
 * On each cache "set" operation all policies that match the network/method/finality state will be used to store the data.
 * On each cache "get" operation all policies that match the network/method will be used to retrieve the data, from top to bottom as defined in the config, the first policy that returns a cache hit will be used.
 
+#### Policy matching
+
+Each policy can define matching rules for:
+
+```yaml filename="erpc.yaml"
+policies:
+  - network: "evm:42161|evm:10" # (OPTIONAL) Network ID matching
+    method: "eth_getLogs|trace_*" # (OPTIONAL) Method name matching
+    params: # (OPTIONAL) parameter matching
+      - ">=0x100|<=0x200" # First parameter
+      - "*" # Second parameter
+      # ... additional param matchers
+    finality: finalized
+    connector: postgres-cache
+    ttl: 1d
+```
+
+##### Parameter Matching
+
+The `params` field allows you to define matching rules for RPC method parameters. This is useful for creating granular caching policies based on specific parameter values:
+
+```yaml filename="erpc.yaml"
+database:
+  evmJsonRpcCache:
+    policies:
+      # Cache eth_getLogs requests for specific block ranges
+      - network: "*"
+        method: "eth_getLogs"
+        params:
+          - fromBlock: ">=0x100"
+            toBlock: "<=0x200"
+        finality: finalized
+        connector: postgres-cache
+        ttl: 1d
+      
+      # Cache eth_getBlockByNumber for specific blocks
+      - network: "*"
+        method: "eth_getBlockByNumber"
+        params:
+          - ">=0x100|<=0x200" # Block number range
+          - "*" # Include details flag
+        finality: finalized
+        connector: redis-cache
+        ttl: 1h
+```
+
+The parameter matcher supports:
+
+* **Wildcards**: Use `*` to match any value
+* **OR operator**: Use `|` to specify multiple valid values
+* **Numeric comparisons**: For hex/decimal numbers:
+  * `>value` - Greater than
+  * `>=value` - Greater than or equal
+  * `<value` - Less than  
+  * `<=value` - Less than or equal
+* **Object matching**: For nested parameter objects (like in eth_getLogs), you can specify matchers for individual fields
+* **Array matching**: For array parameters, each element can have its own matcher
+* **Empty values**: Use `<empty>` to match null/undefined values
+
+##### Examples
+
+Here are some example parameter matching patterns:
+
+```yaml filename="erpc.yaml"
+# Match specific block numbers
+params: ["0x1|0x2|0x3", "*"]
+
+# Match block number ranges
+params: [">=0x100|<=0x200", "*"]
+
+# Match eth_getLogs with specific criteria
+params:
+  - fromBlock: ">=0x100"
+    toBlock: "<=0x200"
+    address: "*"
+    topics: ["*"]
+
+# Match array parameters:
+params: [[">0x123", ">=0x456"], "*"]
+
+# Match empty parameters:
+params: ["*", "<empty>"]
+```
+
 ### Finality states
 
 The cache system recognizes three finality states:
@@ -178,6 +270,7 @@ database:
           addr: YOUR_REDIS_ADDRESS_HERE
           password: YOUR_REDIS_PASSWORD_HERE
           db: XXX
+          connPoolSize: 128
 # ...
 ```
 
