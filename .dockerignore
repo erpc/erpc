@@ -3,3 +3,4 @@ _ignore.*
 coverage.txt
 node_modules
 test
+.next

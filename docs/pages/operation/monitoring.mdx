@@ -44,7 +44,7 @@ Here is a list of some of the most important metrics:
 
 #### PromQL examples
 
-```promql
+```bash
 # Request rate per second by network over last 5 minutes
 sum(rate(erpc_network_request_received_total{}[5m])) by (network)
 

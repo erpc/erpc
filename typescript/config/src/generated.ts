@@ -25,6 +25,7 @@ export interface ServerConfig {
   httpPort?: number /* int */;
   maxTimeout?: string;
   enableGzip?: boolean;
+  tls?: TLSConfig;
 }
 export interface AdminConfig {
   auth?: AuthConfig;
@@ -38,11 +39,12 @@ export interface CacheConfig {
   policies: (CachePolicyConfig | undefined)[];
 }
 export interface CachePolicyConfig {
-  network: string;
-  method: string;
+  connector: string;
+  network?: string;
+  method?: string;
+  params?: string[];
   finality: DataFinalityState;
   ttl?: types.Duration;
-  connector: string;
 }
 export type ConnectorDriverType = string;
 export const DriverMemory: ConnectorDriverType = "memory";
@@ -64,8 +66,8 @@ export interface TLSConfig {
   enabled: boolean;
   certFile: string;
   keyFile: string;
-  caFile: string;
-  insecureSkipVerify: boolean;
+  caFile?: string;
+  insecureSkipVerify?: boolean;
 }
 export interface RedisConnectorConfig {
   addr: string;
@@ -161,6 +163,7 @@ export interface EvmUpstreamConfig {
   chainId: number /* int */;
   nodeType?: EvmNodeType;
   statePollerInterval?: string;
+  maxAvailableRecentBlocks?: number /* int64 */;
 }
 export interface FailsafeConfig {
   retry?: RetryPolicyConfig;
@@ -214,7 +217,7 @@ export interface NetworkConfig {
 }
 export interface EvmNetworkConfig {
   chainId: number /* int64 */;
-  finalityDepth?: number /* int64 */;
+  fallbackFinalityDepth?: number /* int64 */;
 }
 export interface SelectionPolicyConfig {
   evalInterval?: types.Duration;
@@ -309,6 +312,7 @@ export const DefaultPolicyFunction = `
 export type EvmNodeType = string;
 export const EvmNodeTypeFull: EvmNodeType = "full";
 export const EvmNodeTypeArchive: EvmNodeType = "archive";
+export const EvmNodeTypeLight: EvmNodeType = "light";
 export type EvmStatePoller = any;
 
 //////////

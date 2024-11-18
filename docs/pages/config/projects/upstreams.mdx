@@ -28,17 +28,39 @@ projects:
 
     # Each upstream supports 1 or more networks (i.e. evm chains)
     upstreams:
-      - id: blastapi-chain-42161
-        type: evm
-        endpoint: https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
+      # (REQUIRED) Endpoint URL supports http(s) scheme along with custom schemes like "alchemy://" defined below in this docs.
+      - endpoint: https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
+        
+        # (OPTIONAL) Upstream ID is optional and can be used to identify the upstream in logs/metrics.
+        id: blastapi-chain-42161
 
-        # Defines which budget to use when hadnling requests of this upstream (e.g. to limit total RPS)
+        # (OPTIONAL) Configurations for EVM-compatible upstreams.
+        evm:
+          # (OPTIONAL) chainId is optional and will be detected from the endpoint (eth_chainId),
+          # but it is recommended to set it explicitly, for faster initialization. 
+          # DEFAULT: auto-detected.
+          chainId: 42161
+          # (OPTIONAL) statePollerInterval used to periodically fetch the latest/finalized/sync states.
+          # DEFAULT: 30s.
+          statePollerInterval: 30s
+          # (OPTIONAL) nodeType is optional and you can manually set it to "full" or "archive".
+          # DEFAULT: archive
+          nodeType: full
+          # (OPTIONAL) maxAvailableRecentBlocks limits the maximum number of recent blocks to be served by this upstream.
+          # DEFAULT: 128 (for "full" nodes).
+          maxAvailableRecentBlocks: 128
+          # (OPTIONAL) fallbackFinalityDepth is optional and allows to manually set the finality depth.
+          # DEFAULT: <none> - eRPC will auto-detect via eth_getBlockByNumber(finalized).
+          fallbackFinalityDepth: 1024
+
+        # (OPTIONAL) Defines which budget to use when hadnling requests of this upstream (e.g. to limit total RPS)
         # Since budgets can be applied to multiple upstreams they all consume from the same budget.
         # For example "global-blast" below can be applied to all chains supported by BlastAPI,
         # to ensure you're not hitting them more than your account allows.
+        # DEFAULT: <none> - no budget applied.
         rateLimitBudget: global-blast
 
-        # Rate limit budget can be automatically adjusted based on the "rate-limited" error rate,
+        # (OPTIONAL) Rate limit budget can be automatically adjusted based on the "rate-limited" error rate,
         # received from upstream. Auto-tuning is enabled by default with values below.
         # This is useful to automatically increase the budget if an upstream is capable of handling more requests,
         # and decrease the budget if upstream is degraded.
@@ -46,6 +68,7 @@ projects:
         # if the value (0 to 1) is above "errorRateThreshold" then budget will be decreased by "decreaseFactor",
         # if the value is below "errorRateThreshold" then budget will be increased by "increaseFactor".
         # Note that the new budget will be applied to any upstream using this budget (e.g. Quicknode budget decreases).
+        # DEFAULT: if any budget is defined, auto-tuning is enabled with these values:
         rateLimitAutoTune:
           enabled: true
           adjustmentPeriod: 1m
@@ -55,39 +78,30 @@ projects:
           minBudget: 0
           maxBudget: 10_000
 
-        evm:
-          # (OPTIONAL) chainId is optional and will be detected from the endpoint (eth_chainId),
-          # but it is recommended to set it explicitly, for faster initialization.
-          chainId: 42161
-          # (OPTIONAL) statePollerInterval used to periodically fetch the latest/finalized/sync states. DEFAULT: 30s.
-          statePollerInterval: 30s
-          # (OPTIONAL) nodeType is optional and you can manually set it to "full" or "archive". DEFAULT: archive
-          nodeType: full
-          # (OPTIONAL) maxAvailableRecentBlocks limits the maximum number of recent blocks to be served by this upstream. DEFAULT: 128 (for "full" nodes).
-          maxAvailableRecentBlocks: 128
-
-        # To allow auto-batching requests towards the upstream.
+        # (OPTIONAL) To allow auto-batching requests towards the upstream.
         # Remember even if "supportsBatch" is false, you still can send batch requests to eRPC
         # but they will be sent to upstream as individual requests.
         jsonRpc:
           supportsBatch: true
-          batchMaxSize: 100
-          batchMaxWait: 100ms
+          batchMaxSize: 10
+          batchMaxWait: 50ms
 
-        # Which methods must never be sent to this upstream.
+        # (OPTIONAL) Which methods must never be sent to this upstream.
         # For example this can be used to avoid archive calls (traces) to full nodes
         ignoreMethods:
           - "eth_traceTransaction"
           - "alchemy_*"
-        # Explicitly allowed methods will take precedence over ignoreMethods.
+        # (OPTIONAL) Explicitly allowed methods will take precedence over ignoreMethods.
         # For example if you only want eth_getLogs to be served, set ignore methods to "*" and allowMethods to "eth_getLogs".
         allowMethods:
           - "eth_getLogs"
-        # By default a dynamic mechanism automatically adds "Unsupported" methods to ignoreMethods,
+        # (OPTIONAL) By default a dynamic mechanism automatically adds "Unsupported" methods to ignoreMethods,
         # based on errors returned by the upstream. Set this to false to disable this behavior.
+        # Default: true
         autoIgnoreUnsupportedMethods: true
 
-        # Refer to "Failsafe" section for more details:
+        # (OPTIONAL) Refer to "Failsafe" docs section for more details.
+        # Here is "default" configuration if not explicitly set:
         failsafe:
           timeout:
             duration: 15s
@@ -97,6 +111,15 @@ projects:
             backoffMaxDelay: 10s
             backoffFactor: 0.3
             jitter: 500ms
+          circuitBreaker:
+            # Open circuit after 80% of requests so far have failed (160 out of 200 last requests)
+            failureThresholdCount: 160 
+            failureThresholdCapacity: 200
+            # Wait 5 minutes before trying again
+            halfOpenAfter: 5m
+            # Close circuit after 3 successful requests (3 out of 10)
+            successThresholdCount: 3
+            successThresholdCapacity: 10
 ```
 
 ## Priority & selection mechanism
@@ -141,15 +164,17 @@ upstreams:
           method: '*' # Method(s) where you want to apply these multipliers (default: all methods)
           # method: 'eth_*|alchemy_*' means apply these multipliers to all methods starting with "eth_" or "alchemy_"
 
-          overall: 1.0        # Adjusts the overall score scale
+          # (OPTIONAL) Adjusts the overall score scale.
+          # DEFAULT: 1.0
+          overall: 1.0
           
-          # Default multiplier values:
-          errorRate: 8.0      # Penalize higher error rates by increasing
-          p90latency: 4.0     # Penalize higher latency
-          totalRequests: 1.0  # Give more weight to upstreams with fewer requests
-          throttledRate: 3.0  # Penalize higher throttled requests
-          blockHeadLag: 2.0   # Penalize nodes lagging in block head updates
-          finalizationLag: 1.0 # Penalize nodes lagging in finalization
+          # (OPTIONAL) Default multiplier values:
+          errorRate: 8.0       # Penalize higher error rates by increasing this value.
+          p90latency: 4.0      # Penalize higher latency by increasing this value.
+          totalRequests: 1.0   # Give more weight to upstreams with fewer requests.
+          throttledRate: 3.0   # Penalize higher throttled requests by increasing this value.
+          blockHeadLag: 2.0    # Penalize nodes lagging in block head updates by increasing this value.
+          finalizationLag: 1.0 # Penalize nodes lagging in finalization by increasing this value.
 ```
 
 Example: To prioritize a less expensive (but slower) upstream, adjust the `overall` score multiplier as follows:
@@ -188,9 +213,22 @@ projects:
       - id: my-infura
         type: evm
         endpoint: https://mainnet.infura.io/v3/YOUR_INFURA_KEY
+
+        # (OPTIONAL) Configurations for EVM-compatible upstreams.
         evm:
-          chainId: 1 # Optional. If this is not set it'll be detected from the endpoint (eth_chainId)
-          nodeType: full # Optional. Can be "full" or "archive"
+          # (OPTIONAL) chainId is optional and will be detected from the endpoint (eth_chainId),
+          # but it is recommended to set it explicitly, for faster initialization. 
+          # DEFAULT: auto-detected.
+          chainId: 42161
+          # (OPTIONAL) statePollerInterval used to periodically fetch the latest/finalized/sync states.
+          # DEFAULT: 30s.
+          statePollerInterval: 30s
+          # (OPTIONAL) nodeType is optional and you can manually set it to "full" or "archive".
+          # DEFAULT: archive
+          nodeType: full
+          # (OPTIONAL) maxAvailableRecentBlocks limits the maximum number of recent blocks to be served by this upstream.
+          # DEFAULT: 128 (for "full" nodes).
+          maxAvailableRecentBlocks: 128
         # ...
 ```
 

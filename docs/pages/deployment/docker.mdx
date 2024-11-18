@@ -1,0 +1,84 @@
+import { Steps } from "nextra/components";
+import { Callout } from "nextra/components";
+
+# Docker installation
+
+eRPC provides official Docker images that can be used to quickly deploy the service. Follow these steps to get started:
+
+<Steps>
+
+### Create configuration
+
+Create your `erpc.yaml` configuration file. You can start with the minimal example:
+
+```yaml
+logLevel: debug
+projects:
+ - id: main
+   upstreams:
+   - endpoint: alchemy://XXX_MY_ALCHEMY_API_KEY_XXX
+   - endpoint: blastapi://XXX_MY_BLASTAPI_API_KEY_XXX
+```
+
+<Callout type="info">
+  See the [complete config example](/config/example) for all available options and detailed explanations.
+</Callout>
+
+### Run eRPC container
+
+Run the Docker container, mounting your configuration file:
+
+```bash
+docker run -v $(pwd)/erpc.yaml:/root/erpc.yaml \
+  -p 4000:4000 -p 4001:4001 \
+  ghcr.io/erpc/erpc:latest
+```
+
+### Test the deployment
+
+Send a test request to verify the setup:
+
+```bash
+curl --location 'http://localhost:4000/main/evm/1' \
+--header 'Content-Type: application/json' \
+--data '{
+    "method": "eth_getBlockByNumber",
+    "params": ["0x1203319", false],
+    "id": 1,
+    "jsonrpc": "2.0"
+}'
+```
+
+### Setup monitoring (optional)
+
+For production deployments, we recommend setting up monitoring with Prometheus and Grafana. You can use our docker-compose setup:
+
+```bash
+# Clone the repo if you haven't
+git clone https://github.com/erpc/erpc.git
+cd erpc
+
+# Start the monitoring stack
+docker-compose up -d
+```
+
+See the [monitoring guide](/operation/monitoring) for more details on metrics and dashboards.
+
+</Steps>
+
+## Docker Compose
+
+For production deployments, you might want to use docker-compose to manage eRPC along with its monitoring stack. Here's a basic example:
+
+```yaml
+version: '3.8'
+services:
+  erpc:
+    image: ghcr.io/erpc/erpc:latest
+    ports:
+      - "4000:4000"
+      - "4001:4001"
+    volumes:
+      - ./erpc.yaml:/root/erpc.yaml
+    restart: unless-stopped
+```
