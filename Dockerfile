@@ -35,7 +35,7 @@ RUN --mount=type=cache,target=/go-cache \
     go build -ldflags="$LDFLAGS" -a -installsuffix cgo -o erpc-server ./cmd/erpc/main.go
 
 # Final stage - using distroless for smaller image
-FROM gcr.io/distroless/static-debian11 AS final
+FROM debian:12 AS final
 
 WORKDIR /root
 

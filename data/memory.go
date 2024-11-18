@@ -113,7 +113,7 @@ func (m *MemoryConnector) Get(ctx context.Context, index, partitionKey, rangeKey
 	}
 
 	// Check if item has expired
-	if item.expiresAt != nil && time.Now().After(*item.expiresAt) {
+	if item.expiresAt != nil && !time.Now().Before(*item.expiresAt) {
 		m.cache.Remove(key)
 		return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s", partitionKey, rangeKey), MemoryDriverName)
 	}
