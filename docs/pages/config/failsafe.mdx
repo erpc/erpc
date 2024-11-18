@@ -129,6 +129,20 @@ projects:
             maxCount: 1
 ```
 
+To disable hedge policy, set it to null:
+
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+        failsafe:
+          hedge: ~
+```
+
 ## `circuitBreaker` policy
 
 When upstreams are constantly failing, the `circuitBreaker` policy will temporarily remove them from list of available upstreams.
@@ -149,20 +163,41 @@ projects:
           # ...
           circuitBreaker:
             # These two variables indicate how many failures and capacity to tolerate before opening the circuit.
+            # e.g. if 30 requests have failed out of last 100 requests, circuit breaker will be opened:
             failureThresholdCount: 30
             failureThresholdCapacity: 100
             # How long to wait before trying to re-enable the upstream after circuit breaker was opened.
+            # e.g. after 60s give the upstream another chance:
             halfOpenAfter: 60s
             # These two variables indicate how many successes are required in half-open state before closing the circuit,
             # and putting the upstream back in available upstreams.
+            # e.g. after 8 requests have succeeded out of last 10 requests, circuit breaker will be closed:
             successThresholdCount: 8
             successThresholdCapacity: 10
 ```
+
+To disable circuit breaker policy, set it to null:
+
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    upstreams:
+      - id: blastapi-chain-42161
+        failsafe:
+          circuitBreaker: ~
+```
+
+<Callout type="info">
+- Circuit breaker "open" means that upstream is temporarily removed from the list of available upstreams.
+- Circuit breaker "half-open" means that upstream is tentatively put back into the list of available upstreams,
+  but with reduced capacity (e.g. only 10 requests are allowed).
+- Circuit breaker "closed" means that upstream is fully recovered and put back into the list of available upstreams.
+</Callout>
 
 #### Roadmap
 
 On some doc pages we like to share our ideas for related future implementations, feel free to open a PR if you're up for a challenge:
 
 <br />
-- [ ] Allow defining failsafe policies on a per-method basis (e.g. different
-behavior for eth_getLogs vs other methods).
+- [ ] Allow defining failsafe policies on a per-method basis (e.g. different behavior for eth_getLogs vs other methods).

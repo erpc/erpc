@@ -1,4 +1,5 @@
 import HighlevelDiagram from "../public/assets/hla-diagram.svg";
+import { Steps } from "nextra/components";
 
 # Introducing eRPC
 
@@ -9,7 +10,11 @@ eRPC is a fault-tolerant EVM RPC proxy and permanent caching solution. It is bui
 
 # Quick start
 
-1. Create your [`erpc.yaml`](/config/example) configuration file based on the `erpc.yaml.dist` file:
+<Steps>
+
+### Create configuration
+
+Create your [`erpc.yaml`](/config/example) configuration file based on the `erpc.yaml.dist` file:
 
 ```bash
 cp erpc.yaml.dist erpc.yaml
@@ -18,13 +23,17 @@ code erpc.yaml
 
 See [a complete config example](/config/example) for inspiration.
 
-2. Use the Docker image:
+### Run with Docker
+
+Use the Docker image:
 
 ```bash
 docker run -v $(pwd)/erpc.yaml:/root/erpc.yaml -p 4000:4000 -p 4001:4001 ghcr.io/erpc/erpc:latest
 ```
 
-3. Send your first request:
+### Test the setup
+
+Send your first request:
 
 ```bash
 curl --location 'http://localhost:4000/main/evm/42161' \
@@ -40,7 +49,9 @@ curl --location 'http://localhost:4000/main/evm/42161' \
 }'
 ```
 
-4. Bring up monitoring stack (Prometheus, Grafana) using docker-compose:
+### Setup monitoring (optional)
+
+Bring up monitoring stack (Prometheus, Grafana) using docker-compose:
 
 ```bash
 # clone the repo if you haven't
@@ -51,11 +62,17 @@ cd erpc
 docker-compose up -d
 ```
 
-5. Open Grafana at [http://localhost:3000](http://localhost:3000) and login with the following credentials:
+### Access Grafana
+
+Open Grafana at [http://localhost:3000](http://localhost:3000) and login with the following credentials:
 
 - username: `admin`
 - password: `admin`
 
-6. Send more requests and watch the metrics being collected and visualized in Grafana.
+### Monitor metrics
+
+Send more requests and watch the metrics being collected and visualized in Grafana.
 
 ![eRPC Grafana Dashboard](/assets/monitoring-example-erpc.png)
+
+</Steps>

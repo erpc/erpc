@@ -13,8 +13,5 @@ module.exports = {
 	},
 	monitoring: {
 		title: "Monitoring",
-	},
-	cloud: {
-		title: "Cloud",
 	}
 };
