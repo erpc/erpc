@@ -5865,6 +5865,194 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 	})
 }
 
+func TestNetwork_SkippingUpstreams(t *testing.T) {
+
+	t.Run("NotSkippedRecentBlockNumberForFullNodeUpstream", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000", "0x11118888"]}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBalance")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":[{"value":0x1,"fromHost":"rpc1"}]}`))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeFull, 128, common.EvmNodeTypeArchive, 0)
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+		// Convert the raw response to a map to access custom fields like fromHost
+		jrr, err := resp.JsonRpcResponse()
+		if err != nil {
+			t.Fatalf("Failed to get JSON-RPC response: %v", err)
+		}
+
+		if jrr.Result == nil {
+			t.Fatalf("Expected non-nil result")
+		}
+
+		fromHost, err := jrr.PeekStringByPath(0, "fromHost")
+		if err != nil {
+			t.Fatalf("Failed to get fromHost from result: %v", err)
+		}
+		if fromHost != "rpc1" {
+			t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
+		}
+	})
+
+	t.Run("SkippedHistoricalBlockNumberForFullNodeUpstream", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 1)
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000", "0x1"]}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBalance")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":[{"value":0x1,"fromHost":"rpc1"}]}`))
+
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBalance")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":[{"value":0x1,"fromHost":"rpc2"}]}`))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeFull, 128, common.EvmNodeTypeArchive, 0)
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+		// Convert the raw response to a map to access custom fields like fromHost
+		jrr, err := resp.JsonRpcResponse()
+		if err != nil {
+			t.Fatalf("Failed to get JSON-RPC response: %v", err)
+		}
+
+		if jrr.Result == nil {
+			t.Fatalf("Expected non-nil result")
+		}
+
+		fromHost, err := jrr.PeekStringByPath(0, "fromHost")
+		if err != nil {
+			t.Fatalf("Failed to get fromHost from result: %v", err)
+		}
+		if fromHost != "rpc2" {
+			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
+		}
+	})
+
+	t.Run("NotSkippedHistoricalBlockNumberForArchiveNodeUpstream", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000", "0x1"]}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBalance")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":[{"value":0x1,"fromHost":"rpc1"}]}`))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128)
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+		// Convert the raw response to a map to access custom fields like fromHost
+		jrr, err := resp.JsonRpcResponse()
+		if err != nil {
+			t.Fatalf("Failed to get JSON-RPC response: %v", err)
+		}
+
+		if jrr.Result == nil {
+			t.Fatalf("Expected non-nil result")
+		}
+
+		fromHost, err := jrr.PeekStringByPath(0, "fromHost")
+		if err != nil {
+			t.Fatalf("Failed to get fromHost from result: %v", err)
+		}
+		if fromHost != "rpc1" {
+			t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
+		}
+	})
+
+	t.Run("NotSkippedHistoricalBlockForUnknowneNodeUpstream", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x0000000000000000000000000000000000000000", "0x1"]}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBalance")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":[{"value":0x1,"fromHost":"rpc1"}]}`))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, "", 0, common.EvmNodeTypeArchive, 0)
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+		// Convert the raw response to a map to access custom fields like fromHost
+		jrr, err := resp.JsonRpcResponse()
+		if err != nil {
+			t.Fatalf("Failed to get JSON-RPC response: %v", err)
+		}
+
+		if jrr.Result == nil {
+			t.Fatalf("Expected non-nil result")
+		}
+
+		fromHost, err := jrr.PeekStringByPath(0, "fromHost")
+		if err != nil {
+			t.Fatalf("Failed to get fromHost from result: %v", err)
+		}
+		if fromHost != "rpc1" {
+			t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
+		}
+	})
+}
+
 func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfig *common.UpstreamConfig, networkConfig *common.NetworkConfig) *Network {
 	t.Helper()
 
@@ -5926,6 +6114,93 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfig *common.
 		network.evmStatePollers["test"].SuggestFinalizedBlock(h)
 		network.evmStatePollers["test"].SuggestLatestBlock(h)
 	}
+
+	return network
+}
+
+func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.Context, nodeType1 common.EvmNodeType, maxRecentBlocks1 int64, nodeType2 common.EvmNodeType, maxRecentBlocks2 int64) *Network {
+	t.Helper()
+
+	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+	metricsTracker := health.NewTracker("test", time.Minute)
+
+	up1 := &common.UpstreamConfig{
+		Type:     common.UpstreamTypeEvm,
+		Id:       "rpc1",
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId:                  123,
+			NodeType:                 nodeType1,
+			MaxAvailableRecentBlocks: maxRecentBlocks1,
+		},
+	}
+
+	up2 := &common.UpstreamConfig{
+		Type:     common.UpstreamTypeEvm,
+		Id:       "rpc2",
+		Endpoint: "http://rpc2.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId:                  123,
+			NodeType:                 nodeType2,
+			MaxAvailableRecentBlocks: maxRecentBlocks2,
+		},
+	}
+
+	upstreamsRegistry := upstream.NewUpstreamsRegistry(
+		ctx,
+		&log.Logger,
+		"test",
+		[]*common.UpstreamConfig{up1, up2},
+		rateLimitersRegistry,
+		vendors.NewVendorsRegistry(),
+		metricsTracker,
+		1*time.Second,
+	)
+
+	fsCfg := &common.FailsafeConfig{
+		Hedge:   nil,
+		Timeout: nil,
+		Retry:   nil,
+	}
+
+	networkConfig := &common.NetworkConfig{
+		Architecture: common.ArchitectureEvm,
+		Evm: &common.EvmNetworkConfig{
+			ChainId: 123,
+		},
+		Failsafe: fsCfg,
+	}
+	network, err := NewNetwork(
+		&log.Logger,
+		"test",
+		networkConfig,
+		rateLimitersRegistry,
+		upstreamsRegistry,
+		metricsTracker,
+	)
+	assert.NoError(t, err)
+
+	err = upstreamsRegistry.Bootstrap(ctx)
+	assert.NoError(t, err)
+	time.Sleep(100 * time.Millisecond)
+
+	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+	assert.NoError(t, err)
+	time.Sleep(100 * time.Millisecond)
+
+	err = network.Bootstrap(ctx)
+	assert.NoError(t, err)
+	time.Sleep(100 * time.Millisecond)
+
+	fb1, _ := common.HexToInt64("0x11117777")
+	network.evmStatePollers["rpc1"].SuggestFinalizedBlock(fb1)
+	lb1, _ := common.HexToInt64("0x11118888")
+	network.evmStatePollers["rpc1"].SuggestLatestBlock(lb1)
+
+	fb2, _ := common.HexToInt64("0x22227777")
+	network.evmStatePollers["rpc2"].SuggestFinalizedBlock(fb2)
+	lb2, _ := common.HexToInt64("0x22228888")
+	network.evmStatePollers["rpc2"].SuggestLatestBlock(lb2)
 
 	return network
 }

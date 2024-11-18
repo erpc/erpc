@@ -326,9 +326,10 @@ type JsonRpcUpstreamConfig struct {
 }
 
 type EvmUpstreamConfig struct {
-	ChainId             int         `yaml:"chainId" json:"chainId"`
-	NodeType            EvmNodeType `yaml:"nodeType,omitempty" json:"nodeType"`
-	StatePollerInterval string      `yaml:"statePollerInterval,omitempty" json:"statePollerInterval"`
+	ChainId                  int         `yaml:"chainId" json:"chainId"`
+	NodeType                 EvmNodeType `yaml:"nodeType,omitempty" json:"nodeType"`
+	StatePollerInterval      string      `yaml:"statePollerInterval,omitempty" json:"statePollerInterval"`
+	MaxAvailableRecentBlocks int64       `yaml:"maxAvailableRecentBlocks,omitempty" json:"maxAvailableRecentBlocks"`
 }
 
 type FailsafeConfig struct {

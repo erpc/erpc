@@ -693,7 +693,11 @@ func (u *Upstream) detectFeatures() error {
 			u.supportedNetworkIds[util.EvmNetworkId(cfg.Evm.ChainId)] = true
 			u.supportedNetworkIdsMu.Unlock()
 		}
-		// TODO evm: check full vs archive node
+
+		if cfg.Evm.MaxAvailableRecentBlocks == 0 && cfg.Evm.NodeType == common.EvmNodeTypeFull {
+			cfg.Evm.MaxAvailableRecentBlocks = 128
+		}
+
 		// TODO evm: check trace methods availability (by engine? erigon/geth/etc)
 		// TODO evm: detect max eth_getLogs max block range
 	}
@@ -722,7 +726,33 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 		}
 	}
 
-	// TODO evm: if block can be determined from request and upstream is only full-node and block is historical skip
+	// if block can be determined from request and upstream is only full-node and block is historical skip
+	if u.config.Evm != nil && u.config.Evm.MaxAvailableRecentBlocks > 0 {
+		if u.config.Evm.NodeType == common.EvmNodeTypeFull {
+			bn, ebn := req.EvmBlockNumber()
+			if ebn != nil || bn <= 0 {
+				return nil, false
+			}
+
+			ntw := req.Network()
+			if ntw == nil {
+				return nil, false
+			}
+
+			statePoller := ntw.EvmStatePollerOf(u.Config().Id)
+			if statePoller == nil {
+				return nil, false
+			}
+
+			if lb := statePoller.LatestBlock(); lb > 0 && bn < lb-u.config.Evm.MaxAvailableRecentBlocks {
+				// Allow requests for block numbers greater than the latest known block
+				if bn > lb {
+					return nil, false
+				}
+				return common.NewErrUpstreamNodeTypeMismatch(fmt.Errorf("block number (%d) in request will not yield result for a fullNodeType upstream since it is not recent enough (must be >= %d", bn, lb-u.config.Evm.MaxAvailableRecentBlocks), common.EvmNodeTypeArchive, common.EvmNodeTypeFull), true
+			}
+		}
+	}
 
 	return nil, false
 }
