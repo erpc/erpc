@@ -76,6 +76,12 @@ server:
   httpPort: 4000
   maxTimeout: 30s
   enableGzip: true
+  tls:
+    enabled: false
+    certFile: "/path/to/cert.pem"
+    keyFile: "/path/to/key.pem"
+    caFile: "/path/to/ca.pem"  # Optional, for client cert verification
+    insecureSkipVerify: false  # Optional, defaults to false
 
 # Optional Prometheus metrics server.
 metrics:

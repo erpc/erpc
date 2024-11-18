@@ -11,10 +11,21 @@ These are the main reasons eRPC was built:
 - [Failover](/config/failsafe) across multiple upstreams by tracking their response time, error rate, blockchain sync status, etc.
 - Offer self-imposed [rate limitting](/rate-limiting) per project, or network, or upstream to avoid abuse, and unintentional DDoS.
 - Prometheus metrics collection and Grafana dashboards to [monitor](/operation/monitoring) costs, usage and health of your RPC endpoints.
+- [Caching](/config/caching) and multiplexing (auto-merging identical requests) to reduce redundant RPC calls and costs.
 
 # Use-cases
 
 For the start the main focus of eRPC will be on read-heavy use-cases such as:
+
+### Frontend of dApps
+
+Often many requests made from dApps can be multiplexed into a single RPC call, or use cache to reduce costs.
+
+Here are real production case studies where eRPC serves 8k RPS and 1B requests / month:
+
+- 🚀 [Moonwell: How eRPC slashed RPC calls by 67%](https://erpc.cloud/case-studies/moonwell)
+- 🚀 [Chronicle: How eRPC reduced RPC cost by 45%](https://erpc.cloud/case-studies/chronicle)
+
 
 ### Data indexing using Ponder, Graph, Envio, Flair, etc.
 

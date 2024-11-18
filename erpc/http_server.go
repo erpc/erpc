@@ -3,12 +3,15 @@ package erpc
 import (
 	"compress/gzip"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path"
 	"runtime/debug"
 	"strings"
@@ -646,6 +649,40 @@ func (s *HttpServer) Start(logger *zerolog.Logger) error {
 
 	if ln == nil {
 		return fmt.Errorf("you must configure at least one of server.httpHostV4 or server.httpHostV6")
+	}
+
+	// Handle TLS configuration if enabled
+	if s.config.TLS != nil && s.config.TLS.Enabled {
+		tlsConfig := &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		}
+
+		// Load certificate and key
+		cert, err := tls.LoadX509KeyPair(s.config.TLS.CertFile, s.config.TLS.KeyFile)
+		if err != nil {
+			return fmt.Errorf("failed to load TLS certificate and key: %w", err)
+		}
+		tlsConfig.Certificates = []tls.Certificate{cert}
+
+		// Load CA if specified
+		if s.config.TLS.CAFile != "" {
+			caCert, err := os.ReadFile(s.config.TLS.CAFile)
+			if err != nil {
+				return fmt.Errorf("failed to read CA file: %w", err)
+			}
+			caCertPool := x509.NewCertPool()
+			if !caCertPool.AppendCertsFromPEM(caCert) {
+				return fmt.Errorf("failed to parse CA certificate")
+			}
+			tlsConfig.ClientCAs = caCertPool
+			tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+		}
+
+		tlsConfig.InsecureSkipVerify = s.config.TLS.InsecureSkipVerify
+
+		// Wrap the listener with TLS
+		ln = tls.NewListener(ln, tlsConfig)
+		logger.Info().Msg("TLS enabled for HTTP server")
 	}
 
 	return s.server.Serve(ln)
