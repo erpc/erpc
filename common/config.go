@@ -44,13 +44,14 @@ func (c *Config) HasRateLimiterBudget(id string) bool {
 }
 
 type ServerConfig struct {
-	ListenV4   *bool   `yaml:"listenV4,omitempty" json:"listenV4,omitempty"`
-	HttpHostV4 *string `yaml:"httpHostV4,omitempty" json:"httpHostV4,omitempty"`
-	ListenV6   *bool   `yaml:"listenV6,omitempty" json:"listenV6,omitempty"`
-	HttpHostV6 *string `yaml:"httpHostV6,omitempty" json:"httpHostV6,omitempty"`
-	HttpPort   *int    `yaml:"httpPort,omitempty" json:"httpPort,omitempty"`
-	MaxTimeout *string `yaml:"maxTimeout,omitempty" json:"maxTimeout,omitempty"`
-	EnableGzip *bool   `yaml:"enableGzip,omitempty" json:"enableGzip,omitempty"`
+	ListenV4   *bool      `yaml:"listenV4,omitempty" json:"listenV4,omitempty"`
+	HttpHostV4 *string    `yaml:"httpHostV4,omitempty" json:"httpHostV4,omitempty"`
+	ListenV6   *bool      `yaml:"listenV6,omitempty" json:"listenV6,omitempty"`
+	HttpHostV6 *string    `yaml:"httpHostV6,omitempty" json:"httpHostV6,omitempty"`
+	HttpPort   *int       `yaml:"httpPort,omitempty" json:"httpPort,omitempty"`
+	MaxTimeout *string    `yaml:"maxTimeout,omitempty" json:"maxTimeout,omitempty"`
+	EnableGzip *bool      `yaml:"enableGzip,omitempty" json:"enableGzip,omitempty"`
+	TLS        *TLSConfig `yaml:"tls,omitempty" json:"tls,omitempty"`
 }
 
 type AdminConfig struct {
@@ -87,8 +88,8 @@ type TLSConfig struct {
 	Enabled            bool   `yaml:"enabled" json:"enabled"`
 	CertFile           string `yaml:"certFile" json:"certFile"`
 	KeyFile            string `yaml:"keyFile" json:"keyFile"`
-	CAFile             string `yaml:"caFile" json:"caFile"`
-	InsecureSkipVerify bool   `yaml:"insecureSkipVerify" json:"insecureSkipVerify"`
+	CAFile             string `yaml:"caFile,omitempty" json:"caFile"`
+	InsecureSkipVerify bool   `yaml:"insecureSkipVerify,omitempty" json:"insecureSkipVerify"`
 }
 
 type RedisConnectorConfig struct {
