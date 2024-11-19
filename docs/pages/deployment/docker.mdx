@@ -1,5 +1,4 @@
-import { Steps } from "nextra/components";
-import { Callout } from "nextra/components";
+import { Callout, Steps, Tabs, Tab } from "nextra/components";
 
 # Docker installation
 
@@ -11,6 +10,8 @@ eRPC provides official Docker images that can be used to quickly deploy the serv
 
 Create your `erpc.yaml` configuration file. You can start with the minimal example:
 
+<Tabs items={["yaml", "typescript"]}>
+  <Tabs.Tab>
 ```yaml
 logLevel: debug
 projects:
@@ -19,6 +20,30 @@ projects:
    - endpoint: alchemy://XXX_MY_ALCHEMY_API_KEY_XXX
    - endpoint: blastapi://XXX_MY_BLASTAPI_API_KEY_XXX
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  logLevel: "debug",
+  projects: [
+    {
+      id: "main",
+      upstreams: [
+        {
+          endpoint: "alchemy://XXX_MY_ALCHEMY_API_KEY_XXX",
+        },
+        {
+          endpoint: "blastapi://XXX_MY_BLASTAPI_API_KEY_XXX",
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 <Callout type="info">
   See the [complete config example](/config/example) for all available options and detailed explanations.
