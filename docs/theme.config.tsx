@@ -66,7 +66,7 @@ export default {
 		const isDefault = route === '/' || !config.title
 		const image =
 		  'https://erpc-test.up.railway.app' +
-		  (isDefault ? '/assets/og.jpeg' : `/og?title=${config.title}`)
+		  (isDefault ? `/og?title=eRPC` : `/og?title=${config.title}`)
 	
 		const description =
 		  config.frontMatter.description ||
