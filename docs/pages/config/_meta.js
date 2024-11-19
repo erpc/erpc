@@ -1,6 +1,6 @@
 module.exports = {
 	"example": {
-		title: "Example",
+		title: "erpc.yaml / erpc.ts",
 	},
 	"projects": {
 		title: "Projects",
