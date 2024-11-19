@@ -60,13 +60,13 @@ export default createConfig({
           endpoint: "https://xxxxx.matic.quiknode.pro/xxxxxxxxxx/",
         },
         {
-          endpoint: "drpc://XXX_MY_DRPC.ORG_API_KEY_XXX", // Add all supported chains of drpc.org
+          endpoint: `drpc://${process.env.DRPC_API_KEY}`, // Add all supported chains of drpc.org
         },
         {
-          endpoint: "blastapi://XXX_MY_BLASTAPI.IO_API_KEY_XXX", // Add all supported chains of blastapi.io
+          endpoint: `blastapi://${process.env.BLASTAPI_API_KEY}`, // Add all supported chains of blastapi.io
         },
         {
-          endpoint: "alchemy://XXX_MY_ALCHEMY.COM_API_KEY_XXX", // Add all supported chains of alchemy.com
+          endpoint: `alchemy://${process.env.ALCHEMY_API_KEY}`, // Add all supported chains of alchemy.com
         },
         {
           endpoint: "envio://rpc.hypersync.xyz", // Add all supported methods and chains of envio.dev HyperRPC
@@ -516,7 +516,7 @@ export default createConfig({
           // For certain known providers (such as Alchemy) you use a custom protocol name
           // which allows a single upstream to import "all chains" supported by that provider.
           // Note that these chains are hard-coded in the repo, so if they support a new chain eRPC must be updated.
-          endpoint: "alchemy://XXXX_YOUR_ALCHEMY_API_KEY_HERE_XXXX",
+          endpoint: `alchemy://${process.env.ALCHEMY_API_KEY}`,
           rateLimitBudget: "global",
           failsafe: {
             timeout: {
