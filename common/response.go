@@ -274,33 +274,47 @@ func (r *NormalizedResponse) FinalityState() (finality DataFinalityState) {
 		return
 	}
 
-	if method, _ := r.request.Method(); method != "" {
-		if _, ok := EvmStaticMethods[method]; ok {
-			// Static methods are not expected to change over time so we can consider them finalized
-			finality = DataFinalityStateFinalized
-			return
-		}
+	method, _ := r.request.Method()
+	if _, ok := EvmStaticMethods[method]; ok {
+		// Static methods are not expected to change over time so we can consider them finalized
+		finality = DataFinalityStateFinalized
+		return
 	}
 
-	if r.request != nil {
-		ntw := r.request.Network()
-		if ntw != nil {
-			evmBn, _ := r.request.EvmBlockNumber()
-			if evmBn > 0 {
-				upstream := r.Upstream()
-				if upstream != nil {
-					stp := ntw.EvmStatePollerOf(upstream.Config().Id)
-					if stp != nil {
-						if isFinalized, err := stp.IsBlockFinalized(evmBn); err == nil {
-							if isFinalized {
-								finality = DataFinalityStateFinalized
-							} else {
-								finality = DataFinalityStateUnfinalized
-							}
-						}
+	if r.request == nil {
+		return
+	}
+
+	ntw := r.request.Network()
+	if ntw == nil {
+		return
+	}
+
+	evmBn, _ := r.request.EvmBlockNumber()
+
+	if evmBn > 0 {
+		upstream := r.Upstream()
+		if upstream != nil {
+			stp := ntw.EvmStatePollerOf(upstream.Config().Id)
+			if stp != nil {
+				if isFinalized, err := stp.IsBlockFinalized(evmBn); err == nil {
+					if isFinalized {
+						finality = DataFinalityStateFinalized
+					} else {
+						finality = DataFinalityStateUnfinalized
 					}
 				}
 			}
+		}
+	} else {
+		// Certain methods that return data for 'pending' blocks/transactions are always considered unfinalized
+		switch method {
+		case "eth_getTransactionByHash",
+			"eth_getTransactionReceipt",
+			"eth_getTransactionByBlockHashAndIndex",
+			"eth_getTransactionByBlockNumberAndIndex":
+			// No block number means the data is for 'pending' block/transaction
+			finality = DataFinalityStateUnfinalized
 		}
 	}
 

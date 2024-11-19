@@ -18,7 +18,7 @@ func NewCachePolicy(cfg *common.CachePolicyConfig, connector Connector) (*CacheP
 	return &CachePolicy{
 		config:    cfg,
 		connector: connector,
-		str:       fmt.Sprintf("n=%s m=%s f=%s p=%v", cfg.Network, cfg.Method, cfg.Finality.String(), cfg.Params != nil),
+		str:       fmt.Sprintf("network=%s method=%s finality=%s params=%v", cfg.Network, cfg.Method, cfg.Finality.String(), cfg.Params != nil),
 	}, nil
 }
 
@@ -61,6 +61,10 @@ func (p *CachePolicy) MatchesForGet(networkId, method string, params []interface
 	// We will iterate from first to last policy (matched on network/method) to see which one has the data
 	// Therefore it is recommended to put the fastest most up-to-date policy first
 	return true
+}
+
+func (p *CachePolicy) AllowEmptyish() bool {
+	return p.config.AllowEmptyish
 }
 
 func (p *CachePolicy) matchParams(params []interface{}) bool {

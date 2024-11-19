@@ -44,7 +44,8 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 
 	if _, ok := EvmStaticMethods[r.Method]; ok {
 		// Static methods are not expected to change over time so we can cache them forever
-		return "*", 0, nil
+		// We use block number 1 as a signal to indicate data is finalized on first ever block
+		return "*", 1, nil
 	}
 
 	switch r.Method {
@@ -69,7 +70,7 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 					}
 					return strconv.FormatInt(bni, 10), bni, nil
 				} else {
-					return "", 0, nil
+					return bns, 0, nil
 				}
 			}
 		} else {
@@ -80,14 +81,20 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 		if len(r.Params) > 0 {
 			if logsFilter, ok := r.Params[0].(map[string]interface{}); ok {
 				if from, ok := logsFilter["fromBlock"].(string); ok {
-					if to, ok := logsFilter["toBlock"].(string); ok && strings.HasPrefix(to, "0x") {
-						toInt, err := HexToInt64(to)
-						if err != nil {
-							return "", 0, err
+					if to, ok := logsFilter["toBlock"].(string); ok {
+						if strings.HasPrefix(to, "0x") {
+							toInt, err := HexToInt64(to)
+							if err != nil {
+								return "", 0, err
+							}
+							// Block ref is combo of from-to which makes sure cache key is unique for this range.
+							// Block number is the highest value to ensure non-finalized ranges are not cached.
+							return strings.ToLower(fmt.Sprintf("%s-%s", from, to)), toInt, nil
+						} else {
+							// If "to" is a block tag like 'latest' we don't have a specific block number
+							// TODO Should we iterate over response logs and fetch the highest block number?
+							return strings.ToLower(fmt.Sprintf("%s-%s", from, to)), 0, nil
 						}
-						// Block ref is combo of from-to which makes sure cache key is unique for this range.
-						// Block number is the highest value to ensure non-finalized ranges are not cached.
-						return strings.ToLower(fmt.Sprintf("%s-%s", from, to)), toInt, nil
 					}
 				}
 			}
@@ -96,9 +103,8 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 		return "", 0, nil
 
 	case "eth_feeHistory",
+		"eth_estimateGas",
 		"eth_getAccount":
-		// TODO Whould we add "eth_estimateGas" now or after extended caching features?
-		// TODO We don't want to create too many cache keys for heavy frontend use-cases.
 		if len(r.Params) > 1 {
 			if bns, ok := r.Params[1].(string); ok {
 				if strings.HasPrefix(bns, "0x") {
@@ -111,7 +117,7 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 					}
 					return strconv.FormatInt(bni, 10), bni, nil
 				} else {
-					return "", 0, nil
+					return bns, 0, nil
 				}
 			}
 		} else {
@@ -138,17 +144,20 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 					}
 					return strconv.FormatInt(bni, 10), bni, nil
 				}
-				return "", 0, nil
+				return secondParam, 0, nil
 
 			case map[string]interface{}:
 				// Handle the 2nd parameter as an object
 				if blockNumber, exists := secondParam["blockNumber"]; exists {
-					if bns, ok := blockNumber.(string); ok && strings.HasPrefix(bns, "0x") {
-						bni, err := HexToInt64(bns)
-						if err != nil {
-							return bns, 0, err
+					if bns, ok := blockNumber.(string); ok {
+						if strings.HasPrefix(bns, "0x") {
+							bni, err := HexToInt64(bns)
+							if err != nil {
+								return bns, 0, err
+							}
+							return strconv.FormatInt(bni, 10), bni, nil
 						}
-						return strconv.FormatInt(bni, 10), bni, nil
+						return bns, 0, nil
 					}
 					return "", 0, nil
 				}
@@ -213,23 +222,25 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 					}
 					return strconv.FormatInt(bni, 10), bni, nil
 				}
-				return "", 0, nil
+				return thirdParam, 0, nil
 
 			case map[string]interface{}:
 				// Handle the 3rd parameter as an object
 				if blockNumber, exists := thirdParam["blockNumber"]; exists {
-					if bns, ok := blockNumber.(string); ok && strings.HasPrefix(bns, "0x") {
-						bni, err := HexToInt64(bns)
-						if err != nil {
-							return bns, 0, err
+					if bns, ok := blockNumber.(string); ok {
+						if strings.HasPrefix(bns, "0x") {
+							bni, err := HexToInt64(bns)
+							if err != nil {
+								return bns, 0, err
+							}
+							return strconv.FormatInt(bni, 10), bni, nil
 						}
-						return strconv.FormatInt(bni, 10), bni, nil
 					}
 					return "", 0, nil
 				}
 
 				if blockHash, exists := thirdParam["blockHash"]; exists {
-					if bh, ok := blockHash.(string); ok && strings.HasPrefix(bh, "0x") {
+					if bh, ok := blockHash.(string); ok {
 						return bh, 0, nil
 					}
 					return "", 0, nil

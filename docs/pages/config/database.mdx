@@ -17,6 +17,7 @@ database:
         method: string
         params: []any
         finality: finalized | unfinalized | unknown
+        allowEmptyish: boolean
         connector: string
         ttl: duration
 ```
@@ -190,19 +191,21 @@ params: [[">0x123", ">=0x456"], "*"]
 params: ["*", "<empty>"]
 ```
 
-### Finality states
+
+
+#### Finality states
 
 The cache system recognizes three finality states:
 
 - `finalized`: Data from blocks that are confirmed as finalized (safe to cache long-term). This is based on 'finalized' block fetched via eth_getBlockByNumber of the upstream corresponding to the received response (not other upstreams).
-- `unfinalized`: Data from recent blocks that could still be reorged
-- `unknown`: When block number cannot be determined from request/response (e.g., `eth_traceTransaction`).
+- `unfinalized`: Data from recent blocks that could still be reorged, any data/transaction from pending blocks is considered unfinalized.
+- `unknown`: When block number cannot be determined from request/response (e.g., `eth_traceTransaction`). Most often it is safe to cache this data without reorg safety because they are not referenced by final actual blocks.
 
 #### Re-org mechanism
 
-At the moment eRPC will track finalized block, only cache data for finalized blocks. This first version will ensure invalidation is not needed. In [future releases](https://erpc.featurebase.app/p/caching-un-finalized-data) it is planned to add capability to cache unfinalized data and invalidaiton re-org.
+TODO explain how to deal with reorgs with multiple policies
 
-> For chains which do not support "finalized" block method, eRPC will consider last 1024 blocks unfinalized. This number can be configured via `network.evm.fallbackFinalityDepth`.
+For chains which do not support "finalized" block method, eRPC will consider last 1024 blocks unfinalized. This number can be configured via `network.evm.fallbackFinalityDepth`.
 
 #### Cacheable methods
 Methods are cached if they include a `blockNumber` or `blockHash` in the request or response, allowing cache invalidation during blockchain reorgs. If no blockNumber is present, caching is still viable if the method returns data unaffected by reorgs, like `eth_chainId`, or if the data won't change after a reorg, such as `eth_getTransactionReceipt`. Here is an overview of cacheable methods:

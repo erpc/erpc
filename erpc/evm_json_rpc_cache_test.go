@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -425,6 +426,129 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		// Only the finalized policy connector should be called since block 5 is finalized
 		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:*", mock.Anything, mock.Anything, mock.Anything)
 		mockConnectors[1].AssertNotCalled(t, "Set")
+	})
+
+	t.Run("CachingBehaviorWithDefaultConfig", func(t *testing.T) {
+		// Create test fixtures with default config
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
+		})
+
+		// Create default policies as defined in common/defaults.go
+		finalizedPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:   "*",
+			Method:    "*",
+			Finality:  common.DataFinalityStateFinalized,
+			TTL:       0, // Forever
+			Connector: "mock1",
+		}, mockConnectors[0])
+		require.NoError(t, err)
+
+		unknownPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:   "*",
+			Method:    "*",
+			Finality:  common.DataFinalityStateUnknown,
+			TTL:       30 * time.Second,
+			Connector: "mock1",
+		}, mockConnectors[0])
+		require.NoError(t, err)
+
+		unfinalizedPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:   "*",
+			Method:    "*",
+			Finality:  common.DataFinalityStateUnfinalized,
+			TTL:       30 * time.Second,
+			Connector: "mock1",
+		}, mockConnectors[0])
+		require.NoError(t, err)
+
+		cache.policies = []*data.CachePolicy{finalizedPolicy, unknownPolicy, unfinalizedPolicy}
+
+		testCases := []struct {
+			name           string
+			method         string
+			params         string
+			result         string
+			expectedCache  bool
+			expectedPolicy *data.CachePolicy
+		}{
+			// {
+			// 	name:           "Latest Block Request",
+			// 	method:         "eth_getBlockByNumber",
+			// 	params:         `["latest",false]`,
+			// 	result:         `{"result":{"number":"0xf","hash":"0xabc"}}`,
+			// 	expectedCache:  true,
+			// 	expectedPolicy: unfinalizedPolicy, // Should match unfinalized policy with 30s TTL
+			// },
+			// {
+			// 	name:           "Finalized Block Request",
+			// 	method:         "eth_getBlockByNumber",
+			// 	params:         `["0x5",false]`,
+			// 	result:         `{"result":{"number":"0x5","hash":"0xdef"}}`,
+			// 	expectedCache:  true,
+			// 	expectedPolicy: finalizedPolicy, // Should match finalized policy with no TTL
+			// },
+			{
+				name:           "Pending Transaction Request",
+				method:         "eth_getTransactionByHash",
+				params:         `["0x123"]`,
+				result:         `{"result":{"hash":"0x123","blockNumber":null}}`,
+				expectedCache:  true,
+				expectedPolicy: unknownPolicy, // Should match unknown policy with 30s TTL
+			},
+		}
+
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":%s,"id":1}`, tc.method, tc.params)))
+				req.SetNetwork(mockNetwork)
+				resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,%s}`, tc.result)))
+				resp.SetUpstream(mockUpstreams[0])
+				req.SetLastValidResponse(resp)
+
+				mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+				err := cache.Set(context.Background(), req, resp)
+
+				assert.NoError(t, err)
+				if tc.expectedCache {
+					mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, tc.expectedPolicy.GetTTL())
+				} else {
+					mockConnectors[0].AssertNotCalled(t, "Set")
+				}
+			})
+		}
+	})
+
+	t.Run("CustomPolicyForLatestBlocks", func(t *testing.T) {
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
+		})
+
+		// Create a custom policy specifically for latest block requests
+		latestBlockPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:  "evm:123",
+			Method:   "eth_getBlockByNumber",
+			Params:   []interface{}{"latest", "*"},
+			TTL:      5 * time.Second,
+			Finality: common.DataFinalityStateUnfinalized,
+		}, mockConnectors[0])
+		require.NoError(t, err)
+		cache.policies = []*data.CachePolicy{latestBlockPolicy}
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":1}`))
+		req.SetNetwork(mockNetwork)
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":{"number":"0xf","hash":"0xabc"}}`))
+		resp.SetUpstream(mockUpstreams[0])
+		req.SetLastValidResponse(resp)
+
+		ttl := 5 * time.Second
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl).Return(nil)
+
+		err = cache.Set(context.Background(), req, resp)
+
+		assert.NoError(t, err)
+		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl)
 	})
 }
 

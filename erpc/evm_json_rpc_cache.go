@@ -188,12 +188,6 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 	if blockRef == "" && blockNumber == 0 {
 		return nil, nil
 	}
-	if blockNumber != 0 {
-		s, err := c.shouldCacheForBlock(blockNumber)
-		if err == nil && !s {
-			return nil, nil
-		}
-	}
 
 	groupKey, requestKey, err := generateKeysForJsonRpcRequest(req, blockRef)
 	if err != nil {
@@ -239,11 +233,6 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 	ntwId := req.NetworkId()
 	lg := c.logger.With().Str("networkId", ntwId).Str("method", rpcReq.Method).Logger()
 
-	shouldCache, err := shouldCacheResponse(lg, req, resp, rpcReq, rpcResp)
-	if !shouldCache || err != nil {
-		return err
-	}
-
 	blockRef, blockNumber, err := common.ExtractEvmBlockReference(rpcReq, rpcResp)
 	if err != nil {
 		return err
@@ -255,29 +244,27 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		return nil
 	}
 
-	if blockRef == "" && blockNumber == 0 {
-		// Do not cache if we can't resolve a block reference (e.g. latest block requests)
-		lg.Debug().
-			Str("blockRef", blockRef).
-			Int64("blockNumber", blockNumber).
-			Msg("will not cache the response because it has no block reference or block number")
-		return nil
-	}
+	// if blockRef == "" && blockNumber == 0 {
+	// 	// Do not cache if we can't resolve a block reference (e.g. latest block requests)
+	// 	lg.Debug().
+	// 		Str("blockRef", blockRef).
+	// 		Int64("blockNumber", blockNumber).
+	// 		Msg("will not cache the response because it has no block reference or block number")
+	// 	return nil
+	// }
 
-	if blockNumber > 0 {
-		s, e := c.shouldCacheForBlock(blockNumber)
-		if !s || e != nil {
-			if lg.GetLevel() <= zerolog.DebugLevel {
-				lg.Debug().
-					Err(e).
-					Str("blockRef", blockRef).
-					Int64("blockNumber", blockNumber).
-					Str("result", util.Mem2Str(rpcResp.Result)).
-					Msg("will not cache the response because block is not finalized")
-			}
-			return e
-		}
-	}
+	// s, e := c.shouldCacheForBlock(blockNumber)
+	// if !s || e != nil {
+	// 	if lg.GetLevel() <= zerolog.DebugLevel {
+	// 		lg.Debug().
+	// 			Err(e).
+	// 			Str("blockRef", blockRef).
+	// 			Int64("blockNumber", blockNumber).
+	// 			Str("result", util.Mem2Str(rpcResp.Result)).
+	// 			Msg("will not cache the response based on policy config")
+	// 	}
+	// 	return e
+	// }
 
 	pk, rk, err := generateKeysForJsonRpcRequest(req, blockRef)
 	if err != nil {
@@ -285,7 +272,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 	}
 
 	if lg.GetLevel() <= zerolog.TraceLevel {
-		lg.Debug().
+		lg.Trace().
 			Str("blockRef", blockRef).
 			Str("primaryKey", pk).
 			Str("rangeKey", rk).
@@ -315,9 +302,25 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 			connector := policy.GetConnector()
 			ttl := policy.GetTTL()
 
+			shouldCache, err := shouldCacheResponse(lg, resp, rpcResp, policy)
+			if !shouldCache {
+				if err != nil {
+					health.MetricCacheSetErrorTotal.WithLabelValues(
+						c.network.ProjectId,
+						req.NetworkId(),
+						rpcReq.Method,
+						connector.Id(),
+						policy.String(),
+						ttl.String(),
+						common.ErrorSummary(err),
+					).Inc()
+				}
+				return
+			}
+
 			ctx, cancel := context.WithTimeoutCause(ctx, 5*time.Second, errors.New("evm json-rpc cache driver timeout during set"))
 			defer cancel()
-			err := connector.Set(ctx, pk, rk, util.Mem2Str(rpcResp.Result), ttl)
+			err = connector.Set(ctx, pk, rk, util.Mem2Str(rpcResp.Result), ttl)
 			if err != nil {
 				errsMu.Lock()
 				errs = append(errs, err)
@@ -357,72 +360,29 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 
 func shouldCacheResponse(
 	lg zerolog.Logger,
-	req *common.NormalizedRequest,
 	resp *common.NormalizedResponse,
-	rpcReq *common.JsonRpcRequest,
 	rpcResp *common.JsonRpcResponse,
+	policy *data.CachePolicy,
 ) (bool, error) {
-	if resp == nil ||
-		resp.IsObjectNull() ||
-		resp.IsResultEmptyish() ||
-		rpcResp == nil ||
-		rpcResp.Result == nil ||
-		rpcResp.Error != nil {
-		ups := resp.Upstream()
-		if ups != nil {
-			upsCfg := ups.Config()
-			if upsCfg.Evm != nil {
-				if ups.EvmSyncingState() == common.EvmSyncingStateNotSyncing {
-					blkNum, err := req.EvmBlockNumber()
-					if err == nil && blkNum > 0 {
-						ntw := req.Network()
-						if ntw != nil {
-							// We explicitly check for finality on the same upstream that provided the response
-							// to make sure on that specific node the block is actually finalized (vs any other node).
-							if stp := ntw.EvmStatePollerOf(ups.Config().Id); stp != nil {
-								if fin, err := stp.IsBlockFinalized(blkNum); err == nil && fin {
-									return fin, nil
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-
-		lg.Debug().Msg("skip caching because it has no result or has error and we cannot determine finality and sync-state")
+	// Never cache responses with errors
+	if rpcResp != nil && rpcResp.Error != nil {
+		lg.Debug().Msg("skip caching because response contains an error")
 		return false, nil
 	}
 
-	switch rpcReq.Method {
-	case "eth_getTransactionByHash",
-		"eth_getTransactionReceipt",
-		"eth_getTransactionByBlockHashAndIndex",
-		"eth_getTransactionByBlockNumberAndIndex":
-
-		// When transactions are not yet included in a block blockNumber/blockHash is still unknown
-		// For these transaction for now we will not cache the response, but still must be returned
-		// to the client because they might be intentionally looking for pending txs.
-		// Is there a reliable way to cache these and bust in-case of a reorg?
-		blkRef, blkNum, err := common.ExtractEvmBlockReferenceFromResponse(rpcReq, rpcResp)
-		if err != nil {
-			lg.Error().Err(err).Msg("skip caching because error extracting block reference from response")
-			return false, err
-		}
-		if blkRef == "" && blkNum == 0 {
-			lg.Debug().Msg("skip caching because block number/hash is not yet available (unconfirmed tx?)")
+	// Only check for emptyish results if allowEmptyish is false
+	if !policy.AllowEmptyish() {
+		if resp == nil || rpcResp == nil || rpcResp.Result == nil {
+			lg.Debug().Msg("skip caching because response is nil and allowEmptyish=false")
 			return false, nil
 		}
-
-		return true, nil
+		if resp.IsObjectNull() || resp.IsResultEmptyish() {
+			lg.Debug().Msg("skip caching because result is empty/null and allowEmptyish=false")
+			return false, nil
+		}
 	}
 
 	return true, nil
-}
-
-func (c *EvmJsonRpcCache) shouldCacheForBlock(blockNumber int64) (bool, error) {
-	// This check returns true if the block is considered finalized by any upstream
-	return c.network.EvmIsBlockFinalized(blockNumber)
 }
 
 func generateKeysForJsonRpcRequest(req *common.NormalizedRequest, blockRef string) (string, string, error) {
