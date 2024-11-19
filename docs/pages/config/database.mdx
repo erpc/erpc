@@ -18,6 +18,8 @@ database:
         params: []any
         finality: finalized | unfinalized | unknown
         empty: ignore | allow | only
+        minItemSize: string # xB | xKB | xMB
+        maxItemSize: string # xB | xKB | xMB
         connector: string
         ttl: duration
 ```
@@ -107,7 +109,7 @@ By default, eRPC enables an in-memory cache with these policies:
 
 #### Cache policies
 
-You can create multiple policies to define different caching behavior for different networks, methods, and finality states.
+You can create multiple policies to define different caching behavior for different networks, methods, finality state, emptyish checks, and item size limits.
 
 * On each cache "set" operation all policies that match the network/method/finality state will be used to store the data.
 * On each cache "get" operation all policies that match the network/method will be used to retrieve the data, from top to bottom as defined in the config, the first policy that returns a cache hit will be used.

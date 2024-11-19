@@ -185,12 +185,38 @@ func (p *CachePolicyConfig) Validate(c *CacheConfig) error {
 		return fmt.Errorf("cache.*.policies.*.connector is required")
 	}
 
+	found := false
 	for _, connector := range c.Connectors {
 		if connector.Id == p.Connector {
-			return nil
+			found = true
+			break
 		}
 	}
-	return fmt.Errorf("cache.*.policies.*.connector '%s' does not exist in cache.connectors", p.Connector)
+	if !found {
+		return fmt.Errorf("cache.*.policies.*.connector '%s' does not exist in cache.connectors", p.Connector)
+	}
+
+	if p.MinItemSize != nil {
+		if _, err := util.ParseByteSize(*p.MinItemSize); err != nil {
+			return fmt.Errorf("cache.*.policies.*.minItemSize is invalid: %w", err)
+		}
+	}
+
+	if p.MaxItemSize != nil {
+		if _, err := util.ParseByteSize(*p.MaxItemSize); err != nil {
+			return fmt.Errorf("cache.*.policies.*.maxItemSize is invalid: %w", err)
+		}
+	}
+
+	if p.MinItemSize != nil && p.MaxItemSize != nil {
+		minSize, _ := util.ParseByteSize(*p.MinItemSize)
+		maxSize, _ := util.ParseByteSize(*p.MaxItemSize)
+		if minSize > maxSize {
+			return fmt.Errorf("cache.*.policies.*.minItemSize must be less than or equal to maxItemSize")
+		}
+	}
+
+	return nil
 }
 
 func (c *ConnectorConfig) Validate() error {

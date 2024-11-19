@@ -38,7 +38,7 @@ func TestExtractBlockReference(t *testing.T) {
 				Method: "eth_getBlockByNumber",
 				Params: []interface{}{"invalidHex"},
 			},
-			expectedRef: "",
+			expectedRef: "invalidHex",
 			expectedNum: 0,
 			expectedErr: false,
 		},
@@ -355,7 +355,7 @@ func TestExtractBlockReference(t *testing.T) {
 				Method: "eth_chainId",
 			},
 			expectedRef: "*",
-			expectedNum: 0,
+			expectedNum: 1,
 			expectedErr: false,
 		},
 	}

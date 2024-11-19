@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -1164,4 +1165,101 @@ func TestEvmJsonRpcCache_EmptyStates(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestEvmJsonRpcCache_ItemSizeLimits(t *testing.T) {
+	mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+		{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
+	})
+
+	testCases := []struct {
+		name          string
+		minSize       *string
+		maxSize       *string
+		responseSize  int
+		shouldCache   bool
+		expectedError bool
+	}{
+		{
+			name:         "NoSizeLimits",
+			responseSize: 1000,
+			shouldCache:  true,
+		},
+		{
+			name:         "WithinSizeLimits",
+			minSize:      util.StringPtr("100B"),
+			maxSize:      util.StringPtr("2KB"),
+			responseSize: 1000,
+			shouldCache:  true,
+		},
+		{
+			name:         "TooSmall",
+			minSize:      util.StringPtr("1KB"),
+			responseSize: 500,
+			shouldCache:  false,
+		},
+		{
+			name:         "TooLarge",
+			maxSize:      util.StringPtr("1KB"),
+			responseSize: 2000,
+			shouldCache:  false,
+		},
+		{
+			name:          "InvalidMinSize",
+			minSize:       util.StringPtr("-1KB"),
+			responseSize:  1000,
+			expectedError: true,
+		},
+		{
+			name:          "InvalidMaxSize",
+			maxSize:       util.StringPtr("1XB"),
+			responseSize:  1000,
+			expectedError: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+				Network:     "evm:123",
+				Method:      "eth_getBalance",
+				MinItemSize: tc.minSize,
+				MaxItemSize: tc.maxSize,
+				Finality:    common.DataFinalityStateFinalized,
+			}, mockConnectors[0])
+
+			if tc.expectedError {
+				assert.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
+			cache.policies = []*data.CachePolicy{policy}
+
+			// Create response with specific size
+			responseBody := strings.Repeat("x", tc.responseSize)
+
+			req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
+			req.SetNetwork(mockNetwork)
+			resp := common.NewNormalizedResponse().
+				WithBody(util.StringToReaderCloser(fmt.Sprintf(`{"result":"%s"}`, responseBody))).
+				WithRequest(req)
+			resp.SetUpstream(mockUpstreams[0])
+			req.SetLastValidResponse(resp)
+
+			mockConnectors[0].ExpectedCalls = nil
+			if tc.shouldCache {
+				mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+			}
+
+			err = cache.Set(context.Background(), req, resp)
+			assert.NoError(t, err)
+
+			if tc.shouldCache {
+				mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+			} else {
+				mockConnectors[0].AssertNotCalled(t, "Set")
+			}
+		})
+	}
 }

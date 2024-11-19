@@ -373,6 +373,12 @@ func shouldCacheResponse(
 		return false, nil
 	}
 
+	// Check if the response size is within the limits
+	if !policy.MatchesSizeLimits(len(rpcResp.Result)) {
+		lg.Debug().Int("size", len(rpcResp.Result)).Msg("skip caching because response size does not match policy limits")
+		return false, nil
+	}
+
 	// Check if we should cache empty results
 	isEmpty := resp == nil || rpcResp == nil || rpcResp.Result == nil || resp.IsObjectNull() || resp.IsResultEmptyish()
 	switch policy.EmptyState() {

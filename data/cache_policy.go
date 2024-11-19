@@ -6,19 +6,50 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 )
 
 type CachePolicy struct {
 	config    *common.CachePolicyConfig
 	connector Connector
 	str       string
+	minSize   *int
+	maxSize   *int
 }
 
 func NewCachePolicy(cfg *common.CachePolicyConfig, connector Connector) (*CachePolicy, error) {
+	var minSize, maxSize *int
+
+	if cfg.MinItemSize != nil {
+		parsed, err := util.ParseByteSize(*cfg.MinItemSize)
+		if err != nil {
+			return nil, fmt.Errorf("invalid minItemSize: %w", err)
+		}
+		minSize = &parsed
+	}
+
+	if cfg.MaxItemSize != nil {
+		parsed, err := util.ParseByteSize(*cfg.MaxItemSize)
+		if err != nil {
+			return nil, fmt.Errorf("invalid maxItemSize: %w", err)
+		}
+		maxSize = &parsed
+	}
+
+	str := fmt.Sprintf("network=%s method=%s finality=%s", cfg.Network, cfg.Method, cfg.Finality.String())
+	if minSize != nil || maxSize != nil {
+		str = fmt.Sprintf("%s minSize=%d maxSize=%d", str, minSize, maxSize)
+	}
+	if cfg.Params != nil {
+		str = fmt.Sprintf("%s params=%v", str, cfg.Params != nil)
+	}
+
 	return &CachePolicy{
 		config:    cfg,
 		connector: connector,
-		str:       fmt.Sprintf("network=%s method=%s finality=%s params=%v", cfg.Network, cfg.Method, cfg.Finality.String(), cfg.Params != nil),
+		str:       str,
+		minSize:   minSize,
+		maxSize:   maxSize,
 	}, nil
 }
 
@@ -60,6 +91,16 @@ func (p *CachePolicy) MatchesForGet(networkId, method string, params []interface
 	// When fetching data we need to iterate over all policies as we don't know finality of the data when originally written
 	// We will iterate from first to last policy (matched on network/method) to see which one has the data
 	// Therefore it is recommended to put the fastest most up-to-date policy first
+	return true
+}
+
+func (p *CachePolicy) MatchesSizeLimits(size int) bool {
+	if p.minSize != nil && size < *p.minSize {
+		return false
+	}
+	if p.maxSize != nil && size > *p.maxSize {
+		return false
+	}
 	return true
 }
 

@@ -120,13 +120,15 @@ func (c *CacheConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 }
 
 type CachePolicyConfig struct {
-	Connector string             `yaml:"connector" json:"connector"`
-	Network   string             `yaml:"network,omitempty" json:"network"`
-	Method    string             `yaml:"method,omitempty" json:"method"`
-	Params    []interface{}      `yaml:"params,omitempty" json:"params"`
-	Finality  DataFinalityState  `yaml:"finality" json:"finality"`
-	Empty     CacheEmptyBehavior `yaml:"empty,omitempty" json:"empty"`
-	TTL       time.Duration      `yaml:"ttl,omitempty" json:"ttl"`
+	Connector   string             `yaml:"connector" json:"connector"`
+	Network     string             `yaml:"network,omitempty" json:"network"`
+	Method      string             `yaml:"method,omitempty" json:"method"`
+	Params      []interface{}      `yaml:"params,omitempty" json:"params"`
+	Finality    DataFinalityState  `yaml:"finality" json:"finality"`
+	Empty       CacheEmptyBehavior `yaml:"empty,omitempty" json:"empty"`
+	MinItemSize *string            `yaml:"minItemSize,omitempty" json:"minItemSize,omitempty"`
+	MaxItemSize *string            `yaml:"maxItemSize,omitempty" json:"maxItemSize,omitempty"`
+	TTL         time.Duration      `yaml:"ttl,omitempty" json:"ttl"`
 }
 
 func (c *CachePolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
