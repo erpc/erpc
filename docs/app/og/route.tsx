@@ -25,7 +25,7 @@ export async function GET(req: Request): Promise<Response> {
             backgroundPosition: '-30px -10px'
           }}
         >
-          <img height="40" src={`https://erpc-test.up.railway.app/assets/logo.jpeg`} />
+          <img height="150" src={`https://erpc-test.up.railway.app/assets/logo.jpeg`} />
           <h1
             tw="text-transparent text-[82px] m-0 mb-10 tracking-tighter leading-[1.1]"
             style={{
