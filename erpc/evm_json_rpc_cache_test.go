@@ -1024,3 +1024,144 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 		})
 	}
 }
+
+func TestEvmJsonRpcCache_EmptyStates(t *testing.T) {
+	t.Run("EmptyStateBehaviors", func(t *testing.T) {
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
+		})
+
+		testCases := []struct {
+			name          string
+			emptyBehavior common.CacheEmptyBehavior
+			response      string
+			shouldCache   bool
+			expectedError bool
+			errorContains string
+		}{
+			{
+				name:          "IgnoreEmpty_WithEmptyResult",
+				emptyBehavior: common.CacheEmptyBehaviorIgnore,
+				response:      `{"result":null}`,
+				shouldCache:   false,
+			},
+			{
+				name:          "IgnoreEmpty_WithNonEmptyResult",
+				emptyBehavior: common.CacheEmptyBehaviorIgnore,
+				response:      `{"result":{"value":"0x123"}}`,
+				shouldCache:   true,
+			},
+			{
+				name:          "AllowEmpty_WithEmptyResult",
+				emptyBehavior: common.CacheEmptyBehaviorAllow,
+				response:      `{"result":null}`,
+				shouldCache:   true,
+			},
+			{
+				name:          "AllowEmpty_WithNonEmptyResult",
+				emptyBehavior: common.CacheEmptyBehaviorAllow,
+				response:      `{"result":{"value":"0x123"}}`,
+				shouldCache:   true,
+			},
+			{
+				name:          "OnlyEmpty_WithEmptyResult",
+				emptyBehavior: common.CacheEmptyBehaviorOnly,
+				response:      `{"result":null}`,
+				shouldCache:   true,
+			},
+			{
+				name:          "OnlyEmpty_WithNonEmptyResult",
+				emptyBehavior: common.CacheEmptyBehaviorOnly,
+				response:      `{"result":{"value":"0x123"}}`,
+				shouldCache:   false,
+			},
+			{
+				name:          "InvalidEmptyBehavior",
+				emptyBehavior: common.CacheEmptyBehavior(99),
+				response:      `{"result":null}`,
+				shouldCache:   false,
+				expectedError: true,
+				errorContains: "unknown cache empty behavior",
+			},
+			{
+				name:          "IgnoreEmpty_WithEmptyArray",
+				emptyBehavior: common.CacheEmptyBehaviorIgnore,
+				response:      `{"result":[]}`,
+				shouldCache:   false,
+			},
+			{
+				name:          "IgnoreEmpty_WithEmptyObject",
+				emptyBehavior: common.CacheEmptyBehaviorIgnore,
+				response:      `{"result":{}}`,
+				shouldCache:   false,
+			},
+			{
+				name:          "IgnoreEmpty_WithEmptyString",
+				emptyBehavior: common.CacheEmptyBehaviorIgnore,
+				response:      `{"result":""}`,
+				shouldCache:   false,
+			},
+			{
+				name:          "AllowEmpty_WithSpecialValues",
+				emptyBehavior: common.CacheEmptyBehaviorAllow,
+				response:      `{"result":"0x0"}`,
+				shouldCache:   true,
+			},
+		}
+
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				// Create policy with specific empty behavior
+				policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+					Network:  "evm:123",
+					Method:   "eth_getBalance",
+					Empty:    tc.emptyBehavior,
+					Finality: common.DataFinalityStateFinalized,
+				}, mockConnectors[0])
+				require.NoError(t, err)
+				cache.policies = []*data.CachePolicy{policy}
+
+				// Create request and response
+				req := common.NewNormalizedRequest([]byte(`{
+					"jsonrpc": "2.0",
+					"method": "eth_getBalance",
+					"params": ["0x123", "0x5"],
+					"id": 1
+				}`))
+				req.SetNetwork(mockNetwork)
+				resp := common.NewNormalizedResponse().
+					WithBody(util.StringToReaderCloser(tc.response)).
+					WithRequest(req)
+				resp.SetUpstream(mockUpstreams[0])
+				req.SetLastValidResponse(resp)
+
+				// Reset mock and set expectations
+				mockConnectors[0].ExpectedCalls = nil
+				if tc.shouldCache {
+					mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+				}
+
+				// Test caching behavior
+				err = cache.Set(context.Background(), req, resp)
+
+				if tc.expectedError {
+					assert.Error(t, err)
+					if tc.errorContains != "" {
+						if err == nil {
+							t.Fatalf("expected error, got nil")
+						} else {
+							assert.Contains(t, err.Error(), tc.errorContains)
+						}
+					}
+				} else {
+					assert.NoError(t, err)
+					if tc.shouldCache {
+						mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+					} else {
+						mockConnectors[0].AssertNotCalled(t, "Set")
+					}
+				}
+			})
+		}
+	})
+}

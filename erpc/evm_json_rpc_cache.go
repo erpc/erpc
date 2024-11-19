@@ -181,7 +181,7 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 	rpcReq.RLock()
 	defer rpcReq.RUnlock()
 
-	blockRef, blockNumber, err := common.ExtractEvmBlockReferenceFromRequest(rpcReq)
+	blockRef, blockNumber, err := req.EvmBlockRefAndNumber()
 	if err != nil {
 		return nil, err
 	}
@@ -233,7 +233,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 	ntwId := req.NetworkId()
 	lg := c.logger.With().Str("networkId", ntwId).Str("method", rpcReq.Method).Logger()
 
-	blockRef, blockNumber, err := common.ExtractEvmBlockReference(rpcReq, rpcResp)
+	blockRef, blockNumber, err := req.EvmBlockRefAndNumber()
 	if err != nil {
 		return err
 	}
@@ -315,6 +315,9 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 						common.ErrorSummary(err),
 					).Inc()
 				}
+				errsMu.Lock()
+				errs = append(errs, err)
+				errsMu.Unlock()
 				return
 			}
 
@@ -370,19 +373,18 @@ func shouldCacheResponse(
 		return false, nil
 	}
 
-	// Only check for emptyish results if allowEmptyish is false
-	if !policy.AllowEmptyish() {
-		if resp == nil || rpcResp == nil || rpcResp.Result == nil {
-			lg.Debug().Msg("skip caching because response is nil and allowEmptyish=false")
-			return false, nil
-		}
-		if resp.IsObjectNull() || resp.IsResultEmptyish() {
-			lg.Debug().Msg("skip caching because result is empty/null and allowEmptyish=false")
-			return false, nil
-		}
+	// Check if we should cache empty results
+	isEmpty := resp == nil || rpcResp == nil || rpcResp.Result == nil || resp.IsObjectNull() || resp.IsResultEmptyish()
+	switch policy.EmptyState() {
+	case common.CacheEmptyBehaviorIgnore:
+		return !isEmpty, nil
+	case common.CacheEmptyBehaviorAllow:
+		return true, nil
+	case common.CacheEmptyBehaviorOnly:
+		return isEmpty, nil
+	default:
+		return false, fmt.Errorf("unknown cache empty behavior: %s", policy.EmptyState())
 	}
-
-	return true, nil
 }
 
 func generateKeysForJsonRpcRequest(req *common.NormalizedRequest, blockRef string) (string, string, error) {

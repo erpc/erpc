@@ -240,7 +240,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 		if len(rules) > 0 {
 			for _, rule := range rules {
 				if !rule.Limiter.TryAcquirePermit() {
-					lg.Warn().Str("budget", cfg.RateLimitBudget).Msgf("upstream-level rate limit '%v' exceeded", rule.Config)
+					lg.Debug().Str("budget", cfg.RateLimitBudget).Msgf("upstream-level rate limit '%v' exceeded", rule.Config)
 					u.metricsTracker.RecordUpstreamSelfRateLimited(
 						netId,
 						cfg.Id,
@@ -729,7 +729,7 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 	// if block can be determined from request and upstream is only full-node and block is historical skip
 	if u.config.Evm != nil && u.config.Evm.MaxAvailableRecentBlocks > 0 {
 		if u.config.Evm.NodeType == common.EvmNodeTypeFull {
-			bn, ebn := req.EvmBlockNumber()
+			_, bn, ebn := req.EvmBlockRefAndNumber()
 			if ebn != nil || bn <= 0 {
 				return nil, false
 			}

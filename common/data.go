@@ -43,3 +43,15 @@ func (f *DataFinalityState) UnmarshalYAML(unmarshal func(interface{}) error) err
 
 	return fmt.Errorf("invalid data finality state: %s", s)
 }
+
+type CacheEmptyBehavior int
+
+const (
+	CacheEmptyBehaviorIgnore CacheEmptyBehavior = iota
+	CacheEmptyBehaviorAllow
+	CacheEmptyBehaviorOnly
+)
+
+func (b CacheEmptyBehavior) String() string {
+	return []string{"ignore", "allow", "only"}[b]
+}

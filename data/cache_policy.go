@@ -63,8 +63,8 @@ func (p *CachePolicy) MatchesForGet(networkId, method string, params []interface
 	return true
 }
 
-func (p *CachePolicy) AllowEmptyish() bool {
-	return p.config.AllowEmptyish
+func (p *CachePolicy) EmptyState() common.CacheEmptyBehavior {
+	return p.config.Empty
 }
 
 func (p *CachePolicy) matchParams(params []interface{}) bool {

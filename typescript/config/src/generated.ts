@@ -44,6 +44,7 @@ export interface CachePolicyConfig {
   method?: string;
   params?: any[];
   finality: DataFinalityState;
+  empty?: CacheEmptyBehavior;
   ttl?: types.Duration;
 }
 export type ConnectorDriverType = string;
@@ -284,6 +285,10 @@ export type DataFinalityState = number /* int */;
 export const DataFinalityStateFinalized: DataFinalityState = 0;
 export const DataFinalityStateUnfinalized: DataFinalityState = 1;
 export const DataFinalityStateUnknown: DataFinalityState = 2;
+export type CacheEmptyBehavior = number /* int */;
+export const CacheEmptyBehaviorIgnore: CacheEmptyBehavior = 0;
+export const CacheEmptyBehaviorAllow: CacheEmptyBehavior = 1;
+export const CacheEmptyBehaviorOnly: CacheEmptyBehavior = 2;
 
 //////////
 // source: defaults.go

@@ -50,6 +50,8 @@ type NormalizedRequest struct {
 
 	lastValidResponse atomic.Pointer[NormalizedResponse]
 	lastUpstream      atomic.Value
+	evmBlockRef       atomic.Value
+	evmBlockNumber    atomic.Value
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {
@@ -245,34 +247,72 @@ func (r *NormalizedRequest) MarshalZerologObject(e *zerolog.Event) {
 	}
 }
 
-func (r *NormalizedRequest) EvmBlockNumber() (int64, error) {
+// EvmBlockRefAndNumber extracts any possible block reference and number from the request and from response if it exists.
+// This method is more 'complete' than NormalizedResponse.EvmBlockRefAndNumber() because we might not even have a response
+// in certain situations (for example, when we are using failsafe retries).
+func (r *NormalizedRequest) EvmBlockRefAndNumber() (string, int64, error) {
 	if r == nil {
-		return 0, nil
+		return "", 0, nil
 	}
 
+	var blockNumber int64
+	var blockRef string
+
+	// Try to load from local cache
+	if bn := r.evmBlockNumber.Load(); bn != nil {
+		blockNumber = bn.(int64)
+	}
+	if br := r.evmBlockRef.Load(); br != nil {
+		blockRef = br.(string)
+	}
+
+	if blockRef != "" && blockNumber != 0 {
+		return blockRef, blockNumber, nil
+	}
+
+	// Try to load from JSON-RPC request
 	rpcReq, err := r.JsonRpcRequest()
 	if err != nil {
-		return 0, err
+		return blockRef, blockNumber, err
 	}
 
-	_, bn, err := ExtractEvmBlockReferenceFromRequest(rpcReq)
+	br, bn, err := ExtractEvmBlockReferenceFromRequest(rpcReq)
+	if br != "" {
+		blockRef = br
+	}
+	if bn > 0 {
+		blockNumber = bn
+	}
 	if err != nil {
-		return 0, err
-	} else if bn > 0 {
-		return bn, nil
+		return blockRef, blockNumber, err
 	}
 
-	lvr := r.lastValidResponse.Load()
-	if lvr == nil {
-		return 0, nil
+	// Try to load from last valid response
+	if blockRef == "" || blockNumber == 0 {
+		lvr := r.lastValidResponse.Load()
+		if lvr != nil {
+			br, bn, err = lvr.EvmBlockRefAndNumber()
+			if br != "" {
+				blockRef = br
+			}
+			if bn > 0 {
+				blockNumber = bn
+			}
+			if err != nil {
+				return blockRef, blockNumber, err
+			}
+		}
 	}
 
-	bn, err = lvr.EvmBlockNumber()
-	if err != nil {
-		return 0, err
+	// Store to local cache
+	if blockNumber > 0 {
+		r.evmBlockNumber.Store(blockNumber)
+	}
+	if blockRef != "" {
+		r.evmBlockRef.Store(blockRef)
 	}
 
-	return bn, nil
+	return blockRef, blockNumber, nil
 }
 
 func (r *NormalizedRequest) MarshalJSON() ([]byte, error) {

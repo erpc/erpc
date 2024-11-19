@@ -85,6 +85,7 @@ func (c *CacheConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 				Network:   "*",
 				Method:    "*",
 				Finality:  DataFinalityStateFinalized,
+				Empty:     CacheEmptyBehaviorAllow,
 				TTL:       0,
 				Connector: "default",
 			},
@@ -97,6 +98,7 @@ func (c *CacheConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 					Network:   "*",
 					Method:    "*",
 					Finality:  DataFinalityStateUnknown,
+					Empty:     CacheEmptyBehaviorAllow,
 					TTL:       30 * time.Second,
 					Connector: "default",
 				},
@@ -104,6 +106,7 @@ func (c *CacheConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 					Network:   "*",
 					Method:    "*",
 					Finality:  DataFinalityStateUnfinalized,
+					Empty:     CacheEmptyBehaviorAllow,
 					TTL:       30 * time.Second,
 					Connector: "default",
 				},
@@ -117,13 +120,13 @@ func (c *CacheConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 }
 
 type CachePolicyConfig struct {
-	Connector     string            `yaml:"connector" json:"connector"`
-	Network       string            `yaml:"network,omitempty" json:"network"`
-	Method        string            `yaml:"method,omitempty" json:"method"`
-	Params        []interface{}     `yaml:"params,omitempty" json:"params"`
-	Finality      DataFinalityState `yaml:"finality" json:"finality"`
-	AllowEmptyish bool              `yaml:"allowEmptyish,omitempty" json:"allowEmptyish"`
-	TTL           time.Duration     `yaml:"ttl,omitempty" json:"ttl"`
+	Connector string             `yaml:"connector" json:"connector"`
+	Network   string             `yaml:"network,omitempty" json:"network"`
+	Method    string             `yaml:"method,omitempty" json:"method"`
+	Params    []interface{}      `yaml:"params,omitempty" json:"params"`
+	Finality  DataFinalityState  `yaml:"finality" json:"finality"`
+	Empty     CacheEmptyBehavior `yaml:"empty,omitempty" json:"empty"`
+	TTL       time.Duration      `yaml:"ttl,omitempty" json:"ttl"`
 }
 
 func (c *CachePolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {

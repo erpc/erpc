@@ -26,7 +26,8 @@ type NormalizedResponse struct {
 	upstream  Upstream
 
 	jsonRpcResponse atomic.Pointer[JsonRpcResponse]
-	evmBlockNumber  atomic.Int64
+	evmBlockNumber  atomic.Value
+	evmBlockRef     atomic.Value
 }
 
 type ResponseMetadata interface {
@@ -234,37 +235,57 @@ func (r *NormalizedResponse) IsObjectNull() bool {
 	return false
 }
 
-func (r *NormalizedResponse) EvmBlockNumber() (int64, error) {
+func (r *NormalizedResponse) EvmBlockRefAndNumber() (string, int64, error) {
 	if r == nil {
-		return 0, nil
+		return "", 0, nil
 	}
 
-	if n := r.evmBlockNumber.Load(); n != 0 {
-		return n, nil
+	var blockNumber int64
+	var blockRef string
+
+	// Try to load from local cache
+	if n := r.evmBlockNumber.Load(); n != nil {
+		blockNumber = n.(int64)
+	}
+	if br := r.evmBlockRef.Load(); br != nil {
+		blockRef = br.(string)
+	}
+	if blockRef != "" && blockNumber != 0 {
+		return blockRef, blockNumber, nil
 	}
 
+	// Try to load from response (enriched with request context)
 	if r.request == nil {
-		return 0, nil
+		return blockRef, blockNumber, nil
 	}
-
-	rq, err := r.request.JsonRpcRequest()
-	if err != nil {
-		return 0, err
-	}
-
 	jrr := r.jsonRpcResponse.Load()
 	if jrr == nil {
-		return 0, nil
+		return blockRef, blockNumber, nil
 	}
-
-	_, bn, err := ExtractEvmBlockReferenceFromResponse(rq, jrr)
+	rq, err := r.request.JsonRpcRequest()
 	if err != nil {
-		return 0, err
+		return blockRef, blockNumber, err
+	}
+	br, bn, err := ExtractEvmBlockReferenceFromResponse(rq, jrr)
+	if br != "" {
+		blockRef = br
+	}
+	if bn != 0 {
+		blockNumber = bn
+	}
+	if err != nil {
+		return blockRef, blockNumber, err
 	}
 
-	r.evmBlockNumber.Store(bn)
+	// Store to local cache
+	if blockNumber != 0 {
+		r.evmBlockNumber.Store(blockNumber)
+	}
+	if blockRef != "" {
+		r.evmBlockRef.Store(blockRef)
+	}
 
-	return bn, nil
+	return blockRef, blockNumber, nil
 }
 
 func (r *NormalizedResponse) FinalityState() (finality DataFinalityState) {
@@ -290,14 +311,14 @@ func (r *NormalizedResponse) FinalityState() (finality DataFinalityState) {
 		return
 	}
 
-	evmBn, _ := r.request.EvmBlockNumber()
+	_, blockNumber, _ := r.request.EvmBlockRefAndNumber()
 
-	if evmBn > 0 {
+	if blockNumber > 0 {
 		upstream := r.Upstream()
 		if upstream != nil {
 			stp := ntw.EvmStatePollerOf(upstream.Config().Id)
 			if stp != nil {
-				if isFinalized, err := stp.IsBlockFinalized(evmBn); err == nil {
+				if isFinalized, err := stp.IsBlockFinalized(blockNumber); err == nil {
 					if isFinalized {
 						finality = DataFinalityStateFinalized
 					} else {
@@ -309,7 +330,9 @@ func (r *NormalizedResponse) FinalityState() (finality DataFinalityState) {
 	} else {
 		// Certain methods that return data for 'pending' blocks/transactions are always considered unfinalized
 		switch method {
-		case "eth_getTransactionByHash",
+		case "eth_getBlockByNumber",
+			"eth_getBlockByHash",
+			"eth_getTransactionByHash",
 			"eth_getTransactionReceipt",
 			"eth_getTransactionByBlockHashAndIndex",
 			"eth_getTransactionByBlockNumberAndIndex":
