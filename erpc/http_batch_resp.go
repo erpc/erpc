@@ -1,6 +1,7 @@
 package erpc
 
 import (
+	"fmt"
 	"io"
 
 	"github.com/erpc/erpc/common"
@@ -41,6 +42,17 @@ func (b *BatchResponseWriter) WriteTo(w io.Writer) (n int64, err error) {
 			written, err = v.WriteTo(w)
 		case *HttpJsonRpcErrorResponse:
 			written, err = writeJsonRpcError(w, v)
+		case error:
+			// TODO we should determine the format when we have others besides json-rpc
+			errResp := &HttpJsonRpcErrorResponse{
+				Jsonrpc: "2.0",
+				Id:      nil, // This is unexpected error where we can't determine the request ID
+				Error: &common.ErrJsonRpcExceptionExternal{
+					Code:    int(common.JsonRpcErrorServerSideException), // -32603
+					Message: v.Error(),
+				},
+			}
+			written, err = writeJsonRpcError(w, errResp)
 		default:
 			// Fallback to regular JSON encoding for unknown types
 			var buf []byte
@@ -54,6 +66,9 @@ func (b *BatchResponseWriter) WriteTo(w io.Writer) (n int64, err error) {
 		}
 		if err != nil {
 			return n + written, err
+		}
+		if written == 0 {
+			return n, fmt.Errorf("no bytes written for response %d error: %w", i, err)
 		}
 		n += written
 	}
