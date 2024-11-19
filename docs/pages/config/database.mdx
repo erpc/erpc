@@ -4,7 +4,7 @@ import { Callout, Tabs, Tab } from "nextra/components";
 
 Long-term storage is optional but used for various purposes such as caching, rate limit persistence, etc.
 
-<Tabs items={["yaml", "typescript"]}>
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
   <Tabs.Tab>  
 ```yaml filename="erpc.yaml"
 # ...
@@ -89,7 +89,7 @@ Depending on your use-case you can use different drivers.
 
 Mainly useful for local testing or when you don't need to cache too much data.
 
-<Tabs items={["yaml", "typescript"]}>
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
@@ -119,7 +119,7 @@ export default createConfig({
 
 Redis is useful when you need to store cached data temporarily with **eviction policy** (e.g. certain amount of memory).
 
-<Tabs items={["yaml", "typescript"]}>
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
@@ -168,7 +168,7 @@ Useful when you need to store cached data permanently without TTL i.e. forever.
   table and requried indexes.
 </Callout>
 
-<Tabs items={["yaml", "typescript"]}>
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
@@ -207,7 +207,7 @@ export default createConfig({
 
 When you need to have scalable (compared to Postgres) permanent caching and are happy with the costs.
 
-<Tabs items={["yaml", "typescript"]}>
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...

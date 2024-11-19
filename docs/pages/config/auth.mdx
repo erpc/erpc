@@ -12,7 +12,7 @@ The appropriate strategy will be activated based on request payload. For example
 - [`jwt`](#jwt)
 - [`siwe`](#siwe)
 
-<Tabs items={["yaml", "typescript"]}>
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 logLevel: debug
@@ -89,7 +89,7 @@ You can allow or disallow certain methods when a client is authenticated by a sp
 Both allowMethods and ignoreMethods support wildcard `*` anywhere in the method name.
 
 
-<Tabs items={["yaml", "typescript"]}>
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 projects:
@@ -155,7 +155,7 @@ For each strategy item defined for a project you can enforce a separate rate lim
     For example in sample below, no matter how many actual clients use the premium secret token, all of them **together** cannot exceed 1000 requests per second.
 </Callout>
 
-<Tabs items={["yaml", "typescript"]}>
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 projects:
@@ -250,7 +250,7 @@ A simple strategy that allows you to define a secret value that will be checked 
     If you still want to use this strategy on frontend, make sure [CORS configuration](/config/projects/cors) are defined to reduce the potential abuse.
 </Callout>
 
-<Tabs items={["yaml", "typescript"]}>
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 projects:
@@ -345,7 +345,7 @@ curl -X POST https://localhost:4000 \
 
 To prevent requests based on IP address of the client, use `network` strategy:
 
-<Tabs items={["yaml", "typescript"]}>
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 projects:
@@ -465,7 +465,7 @@ Use [JWT](https://jwt.io/) strategy to only allow requests carrying a JWT token 
 
 This strategy respects the JWT token's expiration (`exp` claim) and will reject the request if token has expired.
 
-<Tabs items={["yaml", "typescript"]}>
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 projects:
@@ -573,7 +573,7 @@ Many frontend dApps already use [Sign-in with Ethereum](https://eips.ethereum.or
     Message (which includes your statement, domain, expiration, etc) must be provided as base64 encoded string.
 </Callout>
 
-<Tabs items={["yaml", "typescript"]}>
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 projects:

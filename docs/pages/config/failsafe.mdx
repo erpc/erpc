@@ -15,7 +15,7 @@ Config source code: [common/config.go](https://github.com/erpc/erpc/blob/main/co
 
 This policy simply sets a timeout for the request, either on Network-level (when requests are sent to eRPC), or on Upstream-level (when requests are sent to a specific upstream).
 
-<Tabs items={["yaml", "typescript"]}>
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
@@ -92,7 +92,7 @@ export default createConfig({
 
 This policies will retry certain retriable failures, either on network-level and/or upstream-level.
 
-<Tabs items={["yaml", "typescript"]}>
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
@@ -220,7 +220,7 @@ When a request towards an upstream is slow, the `hedge` policy will start a new 
   started, whichever responds faster will be returned to the client.
 </Callout>
 
-<Tabs items={["yaml", "typescript"]}>
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
@@ -287,7 +287,7 @@ export default createConfig({
 
 To disable hedge policy, set it to null:
 
-<Tabs items={["yaml", "typescript"]}>
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
@@ -336,7 +336,7 @@ When upstreams are constantly failing, the `circuitBreaker` policy will temporar
   temporarily broken upstreams are not used, and will give them time to recover.
 </Callout>
 
-<Tabs items={["yaml", "typescript"]}>
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
@@ -404,7 +404,7 @@ export default createConfig({
 
 To disable circuit breaker policy, set it to null:
 
-<Tabs items={["yaml", "typescript"]}>
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...

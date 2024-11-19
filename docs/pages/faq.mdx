@@ -13,7 +13,7 @@ export ETHEREUM_RPC_URL=https://mainnet.infura.io/v3/YOUR_INFURA_KEY
 ````
 
 2. **Use placeholders in config**: Add placeholders in your config file where you want the env variables to be used:
-<Tabs items={["yaml", "typescript"]}>
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
  upstreams:
@@ -35,7 +35,7 @@ upstreams: [
 
 To disable caching, set [`evmJsonRpcCache`](https://docs.erpc.cloud/config/database#evmjsonrpccache) to `null` in your configuration:
 
-<Tabs items={["yaml", "typescript"]}>
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 database:

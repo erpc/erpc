@@ -26,7 +26,7 @@ eRPC will auto-detect or use sane defaults for various configs such as retries, 
   A single instance of eRPC can server multiple projects (frontend, indexer, etc) and multiple chains.
 </Callout>
 
-<Tabs items={["yaml", "typescript"]}>
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 logLevel: debug
@@ -84,7 +84,7 @@ export default createConfig({
 
 To have more control over the configuration, you can use the example below.
 
-<Tabs items={["yaml", "typescript"]}>
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # Log level helps in debugging or error detection:
