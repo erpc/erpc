@@ -174,7 +174,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			go func(index int, rawReq json.RawMessage, headers http.Header, queryArgs map[string][]string) {
 				defer func() {
 					if rec := recover(); rec != nil {
-						msg := fmt.Sprintf("unexpected server panic on per-request handler: %v", rec)
+						msg := fmt.Sprintf("unexpected server panic on per-request handler: %v stack: %s", rec, string(debug.Stack()))
 						lg.Error().Msgf(msg)
 						responses[index] = processErrorBody(&lg, &startedAt, nil, fmt.Errorf(msg))
 					}

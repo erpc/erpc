@@ -131,6 +131,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 				rpcReq.Method,
 				connector.Id(),
 				policy.String(),
+				policy.GetTTL().String(),
 			).Inc()
 			break
 		} else if err == nil {
@@ -140,6 +141,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 				rpcReq.Method,
 				connector.Id(),
 				policy.String(),
+				policy.GetTTL().String(),
 			).Inc()
 		} else {
 			health.MetricCacheGetErrorTotal.WithLabelValues(
@@ -148,6 +150,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 				rpcReq.Method,
 				connector.Id(),
 				policy.String(),
+				policy.GetTTL().String(),
 				common.ErrorSummary(err),
 			).Inc()
 		}

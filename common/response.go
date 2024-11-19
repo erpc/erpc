@@ -1,6 +1,7 @@
 package common
 
 import (
+	"fmt"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -318,10 +319,15 @@ func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
 }
 
 func (r *NormalizedResponse) WriteTo(w io.Writer) (n int64, err error) {
+	if r == nil {
+		return 0, fmt.Errorf("unexpected nil response when calling NormalizedResponse.WriteTo")
+	}
+
 	if jrr := r.jsonRpcResponse.Load(); jrr != nil {
 		return jrr.WriteTo(w)
 	}
-	return 0, nil
+
+	return 0, fmt.Errorf("unexpected empty response when calling NormalizedResponse.WriteTo")
 }
 
 func (r *NormalizedResponse) Release() {
