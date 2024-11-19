@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -368,6 +369,14 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 			return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s", partitionKey, rangeKey), DynamoDBDriverName)
 		}
 
+		// Check if the item has expired
+		if ttl, exists := result.Items[0][d.ttlAttributeName]; exists {
+			expirationTime, err := strconv.ParseInt(*ttl.N, 10, 64)
+			if err == nil && time.Now().Unix() > expirationTime {
+				return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s (expired)", partitionKey, rangeKey), DynamoDBDriverName)
+			}
+		}
+
 		value = *result.Items[0]["value"].S
 	} else {
 		ky := map[string]*dynamodb.AttributeValue{
@@ -390,6 +399,14 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 
 		if result.Item == nil {
 			return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s", partitionKey, rangeKey), DynamoDBDriverName)
+		}
+
+		// Check if the item has expired
+		if ttl, exists := result.Item[d.ttlAttributeName]; exists {
+			expirationTime, err := strconv.ParseInt(*ttl.N, 10, 64)
+			if err == nil && time.Now().Unix() > expirationTime {
+				return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s (expired)", partitionKey, rangeKey), DynamoDBDriverName)
+			}
 		}
 
 		value = *result.Item["value"].S

@@ -129,7 +129,7 @@ func (p *PostgreSQLConnector) connect(ctx context.Context, cfg *common.PostgreSQ
 		_, err = conn.Exec(ctx, fmt.Sprintf(`
             SELECT cron.schedule('*/5 * * * *', $$
                 DELETE FROM %s
-                WHERE expires_at IS NOT NULL AND expires_at <= NOW()
+                WHERE expires_at IS NOT NULL AND expires_at <= NOW() AT TIME ZONE 'UTC'
             $$)
         `, p.table))
 		if err != nil {
@@ -158,7 +158,7 @@ func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey, v
 
 	var expiresAt *time.Time
 	if ttl != nil {
-		t := time.Now().Add(*ttl)
+		t := time.Now().UTC().Add(*ttl)
 		expiresAt = &t
 	}
 
@@ -186,17 +186,17 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 
 	if index == ConnectorReverseIndex {
 		query = fmt.Sprintf(`
-			SELECT value FROM %s
-			WHERE range_key = $1 AND partition_key = $2
-			AND (expires_at IS NULL OR expires_at > NOW())
-		`, p.table)
+            SELECT value FROM %s
+            WHERE range_key = $1 AND partition_key = $2
+            AND (expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'UTC')
+        `, p.table)
 		args = []interface{}{rangeKey, partitionKey}
 	} else {
 		query = fmt.Sprintf(`
-			SELECT value FROM %s
-			WHERE partition_key = $1 AND range_key = $2
-			AND (expires_at IS NULL OR expires_at > NOW())
-		`, p.table)
+            SELECT value FROM %s
+            WHERE partition_key = $1 AND range_key = $2
+            AND (expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'UTC')
+        `, p.table)
 		args = []interface{}{partitionKey, rangeKey}
 	}
 
@@ -278,7 +278,7 @@ func (p *PostgreSQLConnector) startCleanup(ctx context.Context) {
 func (p *PostgreSQLConnector) cleanupExpired(ctx context.Context) error {
 	result, err := p.conn.Exec(ctx, fmt.Sprintf(`
 		DELETE FROM %s
-		WHERE expires_at IS NOT NULL AND expires_at <= NOW()
+		WHERE expires_at IS NOT NULL AND expires_at <= NOW() AT TIME ZONE 'UTC'
 	`, p.table))
 	if err != nil {
 		return err

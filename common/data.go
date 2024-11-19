@@ -16,7 +16,7 @@ const (
 )
 
 func (f DataFinalityState) String() string {
-	return []string{"unknown", "unfinalized", "finalized"}[f]
+	return []string{"finalized", "unfinalized", "unknown"}[f]
 }
 
 func (f DataFinalityState) MarshalJSON() ([]byte, error) {
