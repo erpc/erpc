@@ -15,6 +15,7 @@ database:
     policies:
       - network: string
         method: string
+        params: []any
         finality: finalized | unfinalized | unknown
         connector: string
         ttl: duration
@@ -195,7 +196,7 @@ The cache system recognizes three finality states:
 
 - `finalized`: Data from blocks that are confirmed as finalized (safe to cache long-term). This is based on 'finalized' block fetched via eth_getBlockByNumber of the upstream corresponding to the received response (not other upstreams).
 - `unfinalized`: Data from recent blocks that could still be reorged
-- `unknown`: When block number cannot be determined from request/response (e.g., `eth_traceTransaction`), or when upstream does not support 'finalized' tag in eth_getBlockByNumber.
+- `unknown`: When block number cannot be determined from request/response (e.g., `eth_traceTransaction`).
 
 #### Re-org mechanism
 

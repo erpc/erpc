@@ -9,6 +9,7 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
@@ -124,7 +125,31 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		connector := policy.GetConnector()
 		jrr, err = c.doGet(ctx, connector, req, rpcReq)
 		if jrr != nil {
+			health.MetricCacheGetSuccessHitTotal.WithLabelValues(
+				c.network.ProjectId,
+				req.NetworkId(),
+				rpcReq.Method,
+				connector.Id(),
+				policy.String(),
+			).Inc()
 			break
+		} else if err == nil {
+			health.MetricCacheGetSuccessMissTotal.WithLabelValues(
+				c.network.ProjectId,
+				req.NetworkId(),
+				rpcReq.Method,
+				connector.Id(),
+				policy.String(),
+			).Inc()
+		} else {
+			health.MetricCacheGetErrorTotal.WithLabelValues(
+				c.network.ProjectId,
+				req.NetworkId(),
+				rpcReq.Method,
+				connector.Id(),
+				policy.String(),
+				common.ErrorSummary(err),
+			).Inc()
 		}
 		if c.logger.GetLevel() == zerolog.TraceLevel {
 			c.logger.Trace().Interface("policy", policy).Str("connector", connector.Id()).Err(err).Msg("skipping cache policy because it returned nil or error")
@@ -294,6 +319,24 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 				errsMu.Lock()
 				errs = append(errs, err)
 				errsMu.Unlock()
+				health.MetricCacheSetErrorTotal.WithLabelValues(
+					c.network.ProjectId,
+					req.NetworkId(),
+					rpcReq.Method,
+					connector.Id(),
+					policy.String(),
+					ttl.String(),
+					common.ErrorSummary(err),
+				).Inc()
+			} else {
+				health.MetricCacheSetSuccessTotal.WithLabelValues(
+					c.network.ProjectId,
+					req.NetworkId(),
+					rpcReq.Method,
+					connector.Id(),
+					policy.String(),
+					ttl.String(),
+				).Inc()
 			}
 		}(policy)
 	}

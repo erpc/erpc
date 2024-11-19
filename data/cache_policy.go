@@ -11,12 +11,14 @@ import (
 type CachePolicy struct {
 	config    *common.CachePolicyConfig
 	connector Connector
+	str       string
 }
 
 func NewCachePolicy(cfg *common.CachePolicyConfig, connector Connector) (*CachePolicy, error) {
 	return &CachePolicy{
 		config:    cfg,
 		connector: connector,
+		str:       fmt.Sprintf("n=%s m=%s f=%s p=%v", cfg.Network, cfg.Method, cfg.Finality.String(), cfg.Params != nil),
 	}, nil
 }
 
@@ -132,6 +134,10 @@ func paramToString(param interface{}) string {
 
 func (p *CachePolicy) GetConnector() Connector {
 	return p.connector
+}
+
+func (p *CachePolicy) String() string {
+	return p.str
 }
 
 func (p *CachePolicy) GetTTL() *time.Duration {
