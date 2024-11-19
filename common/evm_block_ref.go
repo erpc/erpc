@@ -284,7 +284,8 @@ func ExtractEvmBlockReferenceFromResponse(rpcReq *JsonRpcRequest, rpcResp *JsonR
 
 			return blockRef, blockNumber, nil
 		}
-	case "eth_getBlockByNumber":
+	case "eth_getBlockByNumber",
+		"eth_getBlockByHash":
 		if len(rpcResp.Result) > 0 {
 			blockRef, _ := rpcResp.PeekStringByPath("hash")
 			blockNumberStr, _ := rpcResp.PeekStringByPath("number")

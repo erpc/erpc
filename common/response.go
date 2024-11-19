@@ -284,7 +284,7 @@ func (r *NormalizedResponse) FinalityState() (finality DataFinalityState) {
 	if r.request != nil {
 		ntw := r.request.Network()
 		if ntw != nil {
-			evmBn, _ := r.EvmBlockNumber()
+			evmBn, _ := r.request.EvmBlockNumber()
 			if evmBn > 0 {
 				upstream := r.Upstream()
 				if upstream != nil {
