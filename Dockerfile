@@ -3,10 +3,6 @@
 # Build stage
 FROM golang:1.22-alpine AS builder
 
-# Enable build cache
-ENV GOCACHE=/go-cache
-ENV GOMODCACHE=/go-mod-cache
-
 # Set the working directory
 WORKDIR /root
 
@@ -14,8 +10,7 @@ WORKDIR /root
 COPY go.mod go.sum ./
 
 # Download dependencies in a separate layer
-RUN --mount=type=cache,target=/go-mod-cache \
-    go mod download
+RUN go mod download
 
 # Copy the source code
 COPY . .
@@ -30,9 +25,7 @@ ENV CGO_ENABLED=0 \
     LDFLAGS="-w -s -X common.ErpcVersion=${VERSION} -X common.ErpcCommitSha=${COMMIT_SHA}"
 
 # Build the binary
-RUN --mount=type=cache,target=/go-cache \
-    --mount=type=cache,target=/go-mod-cache \
-    go build -ldflags="$LDFLAGS" -a -installsuffix cgo -o erpc-server ./cmd/erpc/main.go
+RUN go build -ldflags="$LDFLAGS" -a -installsuffix cgo -o erpc-server ./cmd/erpc/main.go
 
 # Final stage - using distroless for smaller image
 FROM gcr.io/distroless/static-debian11 AS final

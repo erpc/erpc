@@ -58,16 +58,6 @@ jobs:
         with:
           go-version: '1.22.x'
 
-      - name: Restore Go Modules Cache
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cache/go-build
-            ${{ env.GOPATH }}/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
-
       - name: Run GoReleaser
         if: github.event.inputs.version_tag != ''
         uses: goreleaser/goreleaser-action@v6
@@ -103,15 +93,6 @@ jobs:
           buildkitd-flags: --debug
           driver-opts: network=host
 
-      - name: Cache Docker layers
-        uses: actions/cache@v3
-        id: docker-cache
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-buildx-
-
       - name: Set up Docker tags
         id: tag_param
         run: |
@@ -134,8 +115,6 @@ jobs:
             COMMIT_SHA=${{ steps.short_sha.outputs.SHORT_SHA }}
           tags: |
             ghcr.io/${{ steps.tag_param.outputs.repo }}:main
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache
 
       - name: Build and push Docker image with tags
         if: github.event.inputs.version_tag != ''
@@ -150,5 +129,3 @@ jobs:
           tags: |
             ghcr.io/${{ steps.tag_param.outputs.repo }}:${{ github.event.inputs.version_tag }}
             ghcr.io/${{ steps.tag_param.outputs.repo }}:latest
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache
