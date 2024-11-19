@@ -19,7 +19,7 @@ An upstream is defined to handle 1 or more networks (a.k.a. chains). There are c
 </Callout>
 
 ## Config
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
@@ -274,7 +274,7 @@ eRPC evaluates each upstream's performance using key metrics to decide the most 
 
 Each upstream receives a **score** based on these metrics, calculated per method (e.g., `eth_blockNumber`, `eth_getLogs`) over a configurable time window (`windowSize`, default 30 minutes). Adjust the window size in `erpc.yaml` as shown:
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 projects:
@@ -314,7 +314,7 @@ export default createConfig({
 
 Upstreams are ranked by score, controlling selection order. You can adjust this ranking by setting multipliers at different levels: overall, per network or method, or for specific metrics (e.g., error rate, block lag).
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 upstreams:
@@ -381,7 +381,7 @@ export default createConfig({
 
 Example: To prioritize a less expensive (but slower) upstream, adjust the `overall` score multiplier as follows:
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 upstreams:
@@ -444,7 +444,7 @@ export default createConfig({
 
 These are generic well-known EVM-compatible JSON-RPC endpoints. This is the default and most-used type. They can be your own self-hosted nodes, or remote 3rd-party provider nodes.
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
@@ -520,7 +520,7 @@ export default createConfig({
 
 This upstream type is built specially for [Alchemy](https://alchemy.com) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
@@ -560,7 +560,7 @@ export default createConfig({
 
 This upstream type is built specially for [dRPC](https://drpc.org) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>  
 ```yaml filename="erpc.yaml"
 # ...
@@ -600,7 +600,7 @@ export default createConfig({
 
 This upstream type is built specially for [BlastAPI](https://blastapi.io) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
@@ -640,7 +640,7 @@ export default createConfig({
 
 This upstream type is built specially for [Infura](https://www.infura.io/) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
@@ -680,7 +680,7 @@ export default createConfig({
 
 This upstream type is built specially for [Thirdweb](https://thirdweb.com/chainlist) 3rd-party provider to make it easier to import "all supported evm chains" with just a CLIENT-ID.
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
@@ -722,7 +722,7 @@ For production traffic consult with Thirdweb team about the chains you are goin 
 
 Envio [HyperRPC](https://docs.envio.dev/docs/HyperSync/hyperrpc-supported-networks) service provides a higher-performance alternative for certain read methods. When handling requests if a [method is supported by HyperRPC](https://docs.envio.dev/docs/HyperSync/overview-hyperrpc), then this upstream may be used.
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
@@ -766,7 +766,7 @@ export default createConfig({
 
 [Pimlico](https://pimlico.io) adds account-abstraction (ERC-4337) support to your eRPC instance. With this upstream added when a AA-related request arrives it'll be forwarded to Pimlico, which allows you to use the same RPC endpoint for both usual eth_* methods along with ERC-4337 methods.
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
@@ -809,7 +809,7 @@ export default createConfig({
 [Etherspot](https://etherspot.io/) adds account-abstraction (ERC-4337) support to your eRPC instance. With this upstream added when a AA-related request arrives it'll be forwarded to Etherspot, which allows you to use the same RPC endpoint for both usual eth_* methods along with ERC-4337 methods.
 
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
@@ -864,7 +864,7 @@ curl -X POST \
 2. **eRPC → Upstream**: Configurable per upstream to send gzipped requests (disabled by default)
 
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 upstreams:
@@ -895,7 +895,7 @@ export default createConfig({
 
 4. **eRPC → Client**: Automatically enabled when clients send `Accept-Encoding: gzip` header (can be disabled in server config)
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 server:

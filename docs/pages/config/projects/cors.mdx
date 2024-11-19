@@ -8,7 +8,7 @@ When using eRPC directly from the browser (i.e., frontend), you might need to en
 
 Here's an example of how to configure CORS in your `erpc.yaml` file:
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 projects:
@@ -124,7 +124,7 @@ export default createConfig({
 
 For a basic web application where you want to allow requests only from your main domain:
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 cors:
@@ -164,7 +164,7 @@ cors: {
 
 If your application spans multiple subdomains:
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 cors:
@@ -214,7 +214,7 @@ cors: {
 
 For a development environment where you need more permissive settings:
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 cors:

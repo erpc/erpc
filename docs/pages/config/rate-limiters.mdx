@@ -8,7 +8,7 @@ A "budget" can be assigned to one or more upstreams, and those upstreams will sh
 
 ### Config
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
@@ -165,7 +165,7 @@ The auto-tuner feature allows dynamic adjustment of rate limits based on the ups
 
 The auto-tuner is enabled by default when an upstream has any rate limit budget defined. Here's an example configuration with explanations:
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml
 upstreams:
@@ -216,7 +216,7 @@ The auto-tuner works by monitoring the "rate limited" (e.g. 429 status code) err
 
 By default, the auto-tuner is enabled with the following configuration:
 
-<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalTabIndex">
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml
 rateLimitAutoTune:
