@@ -1,3 +1,5 @@
+import { Tabs, Tab } from 'nextra/components'
+
 # Cross-Origin Resource Sharing (CORS)
 
 When using eRPC directly from the browser (i.e., frontend), you might need to enable Cross-Origin Resource Sharing (CORS) so that only your domains are allowed to access eRPC endpoints.
@@ -6,6 +8,8 @@ When using eRPC directly from the browser (i.e., frontend), you might need to en
 
 Here's an example of how to configure CORS in your `erpc.yaml` file:
 
+<Tabs items={["yaml", "typescript"]}>
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 projects:
   - id: main
@@ -35,6 +39,53 @@ projects:
 rateLimiters:
   # ...
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      cors: {
+        // List of allowed origins. Use ["*"] to allow any origin
+        allowedOrigins: [
+          "https://example.com",
+          "https://*.example.com",
+        ],
+        // HTTP methods allowed for CORS requests
+        allowedMethods: [
+          "GET",
+          "POST",
+          "OPTIONS",
+        ],
+        // Headers allowed in actual requests
+        allowedHeaders: [
+          "Content-Type",
+          "Authorization",
+        ],
+        // Headers exposed to the browser
+        exposedHeaders: [
+          "X-Request-ID",
+        ],
+        // Whether the browser should include credentials with requests
+        allowCredentials: true,
+        // How long (in seconds) browsers should cache preflight request results
+        maxAge: 3600,
+      },
+      upstreams: [
+        // ...
+      ],
+    },
+  ],
+  rateLimiters: {
+    // ...
+  },
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 #### `allowedOrigins`
 - Type: array of strings
@@ -73,7 +124,9 @@ rateLimiters:
 
 For a basic web application where you want to allow requests only from your main domain:
 
-```yaml
+<Tabs items={["yaml", "typescript"]}>
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
 cors:
   allowedOrigins: 
     - "https://myapp.com"
@@ -85,12 +138,35 @@ cors:
   allowCredentials: false
   maxAge: 300
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+cors: {
+    allowedOrigins: [
+      "https://myapp.com",
+    ],
+    allowedMethods: [
+      "GET",
+      "POST",
+    ],
+    allowedHeaders: [
+      "Content-Type",
+    ],
+    allowCredentials: false,
+    maxAge: 300,
+}
+```
+</Tabs.Tab>
+</Tabs>
+
 
 ### Multiple Subdomains
 
 If your application spans multiple subdomains:
 
-```yaml
+<Tabs items={["yaml", "typescript"]}>
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
 cors:
   allowedOrigins: 
     - "https://*.myapp.com"
@@ -107,12 +183,40 @@ cors:
   allowCredentials: true
   maxAge: 3600
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+cors: {
+  allowedOrigins: [
+    "https://*.myapp.com",
+  ],
+  allowedMethods: [
+    "GET",
+    "POST",
+    "PUT",
+    "DELETE",
+  ],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+  ],
+  exposedHeaders: [
+    "X-Request-ID",
+  ],
+  allowCredentials: true,
+  maxAge: 3600,
+}
+```
+</Tabs.Tab>
+</Tabs>
 
 ### Development Environment
 
 For a development environment where you need more permissive settings:
 
-```yaml
+<Tabs items={["yaml", "typescript"]}>
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
 cors:
   allowedOrigins: 
     - "http://localhost:3000"
@@ -128,3 +232,27 @@ cors:
   allowCredentials: true
   maxAge: 86400
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+cors: {
+  allowedOrigins: [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+  ],
+  allowedMethods: [
+    "GET",
+    "POST",
+    "PUT",
+    "DELETE",
+    "OPTIONS",
+  ],    
+  allowedHeaders: [
+    "*",
+  ],
+  allowCredentials: true,
+  maxAge: 86400,
+}
+```
+</Tabs.Tab>
+</Tabs>
