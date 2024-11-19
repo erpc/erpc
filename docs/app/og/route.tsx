@@ -1,13 +1,12 @@
 import { ImageResponse } from 'next/og'
-import path from 'path';
-import { readFile } from 'fs/promises';
 
 export const runtime = 'edge'
 
-export async function GET(req: Request): Promise<Response> {
-  const fontPath = path.join(process.cwd(), 'assets', 'Inter-SemiBold.otf');
-  const fontData = await readFile(fontPath);
+const font = fetch(new URL('./Inter-SemiBold.otf', import.meta.url)).then(res =>
+  res.arrayBuffer()
+)
 
+export async function GET(req: Request): Promise<Response> {
   try {
     const { searchParams } = new URL(req.url)
 
@@ -48,7 +47,7 @@ export async function GET(req: Request): Promise<Response> {
         fonts: [
           {
             name: 'inter',
-            data: fontData,
+            data: await font,
             style: 'normal'
           }
         ]
