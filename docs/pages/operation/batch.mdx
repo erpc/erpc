@@ -1,4 +1,4 @@
-import { Callout } from "nextra/components";
+import { Callout, Tabs, Tab } from "nextra/components";
 
 # Batch requests
 
@@ -31,6 +31,8 @@ eRPC automatically batches requests towards upstreams which support it. Addition
 
 You can explicitly enable batching for an upstream as follows:
 
+<Tabs items={["yaml", "typescript"]}>
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
 projects:
@@ -47,6 +49,36 @@ projects:
           # The maximum amount of requests in a single batch, which is usually enforced by the provider.
           batchMaxSize: 100
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      upstreams: [
+        {
+          id: "blastapi-chain-42161",
+          // ...
+          endpoint: "https://arbitrum-one.blastapi.io/xxxxxx",
+          jsonRpc: {
+            // When enabled eRPC will wait for a specified amount of time to batch as many requests as possible.
+            supportsBatch: true,
+            // The maximum amount of time to wait to collect requests for a batch.
+            batchMaxWait: "100ms",
+            // The maximum amount of requests in a single batch, which is usually enforced by the provider.
+            batchMaxSize: 100,
+          },
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 <Callout type="info">
   For certain known providers (Alchemy, Infura, etc) batching is enabled by default.
