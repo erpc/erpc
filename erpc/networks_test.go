@@ -5213,7 +5213,6 @@ func TestNetwork_Forward(t *testing.T) {
 					return
 				}
 				jrr1Value, err := resp1.JsonRpcResponse()
-				fmt.Println("jrr1Value ====== ", jrr1Value)
 				if err != nil {
 					t.Errorf("Unexpected error: %v", err)
 					return
@@ -5228,7 +5227,6 @@ func TestNetwork_Forward(t *testing.T) {
 					return
 				}
 				jrr2Value, err := resp2.JsonRpcResponse()
-				fmt.Println("jrr2Value ====== ", jrr2Value)
 				if err != nil {
 					t.Errorf("Unexpected error: %v", err)
 					return

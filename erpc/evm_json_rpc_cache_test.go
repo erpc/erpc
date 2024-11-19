@@ -106,7 +106,8 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 
 		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
 			Network: "evm:123",
-			Method:  "eth_getTransactionReceipt",
+			Method:      "eth_getTransactionReceipt",
+			Finality:    common.DataFinalityStateFinalized,
 		}, mockConnectors[0])
 		require.NoError(t, err)
 		cache.policies = []*data.CachePolicy{
@@ -118,7 +119,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		err = cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
-		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:*", mock.Anything, mock.Anything, mock.Anything)
+		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:2", mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("CacheIfBlockNumberIsFinalizedWhenBlockIsUsedForPrimaryKey", func(t *testing.T) {
@@ -183,10 +184,10 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			},
 			{
 				name:        "WithOnlyBlockRef",
-				method:      "eth_getBlockByHash",
-				params:      `["0xdef",false]`,
-				result:      `{"result":{"hash":"0xdef"}}`,
-				expectedRef: "0xdef",
+				method:      "eth_getAccount",
+				params:      `["0xabc","0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"]`,
+				result:      `{"result":{"balance":"0x123"}}`,
+				expectedRef: "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 				finality:    common.DataFinalityStateUnknown,
 			},
 		}
@@ -384,8 +385,8 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		err = cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
-		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:*", mock.Anything, mock.Anything, mock.Anything)
-		mockConnectors[1].AssertCalled(t, "Set", mock.Anything, "evm:123:*", mock.Anything, mock.Anything, mock.Anything)
+		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:1", mock.Anything, mock.Anything, mock.Anything)
+		mockConnectors[1].AssertCalled(t, "Set", mock.Anything, "evm:123:1", mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("RespectFinalityStateWhenStoring", func(t *testing.T) {
@@ -425,7 +426,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 
 		assert.NoError(t, err)
 		// Only the finalized policy connector should be called since block 5 is finalized
-		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:*", mock.Anything, mock.Anything, mock.Anything)
+		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:1", mock.Anything, mock.Anything, mock.Anything)
 		mockConnectors[1].AssertNotCalled(t, "Set")
 	})
 
@@ -473,27 +474,35 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			expectedCache  bool
 			expectedPolicy *data.CachePolicy
 		}{
-			// {
-			// 	name:           "Latest Block Request",
-			// 	method:         "eth_getBlockByNumber",
-			// 	params:         `["latest",false]`,
-			// 	result:         `{"result":{"number":"0xf","hash":"0xabc"}}`,
-			// 	expectedCache:  true,
-			// 	expectedPolicy: unfinalizedPolicy, // Should match unfinalized policy with 30s TTL
-			// },
-			// {
-			// 	name:           "Finalized Block Request",
-			// 	method:         "eth_getBlockByNumber",
-			// 	params:         `["0x5",false]`,
-			// 	result:         `{"result":{"number":"0x5","hash":"0xdef"}}`,
-			// 	expectedCache:  true,
-			// 	expectedPolicy: finalizedPolicy, // Should match finalized policy with no TTL
-			// },
+			{
+				name:           "Latest Block Request",
+				method:         "eth_getBlockByNumber",
+				params:         `["latest",false]`,
+				result:         `"result":{"number":"0xf","hash":"0xabc"}`,
+				expectedCache:  true,
+				expectedPolicy: unfinalizedPolicy, // Should match unfinalized policy with 30s TTL
+			},
+			{
+				name:           "Finalized Block Request",
+				method:         "eth_getBlockByNumber",
+				params:         `["0x5",false]`,
+				result:         `"result":{"number":"0x5","hash":"0xdef"}`,
+				expectedCache:  true,
+				expectedPolicy: finalizedPolicy, // Should match finalized policy with no TTL
+			},
 			{
 				name:           "Pending Transaction Request",
 				method:         "eth_getTransactionByHash",
 				params:         `["0x123"]`,
-				result:         `{"result":{"hash":"0x123","blockNumber":null}}`,
+				result:         `"result":{"hash":"0x123","blockNumber":null}`,
+				expectedCache:  true,
+				expectedPolicy: unfinalizedPolicy, // Should match unfinalized policy with 30s TTL
+			},
+			{
+				name:           "Unknown Block Number Request",
+				method:         "eth_getAccount",
+				params:         `["0xabc","0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"]`,
+				result:         `"result":{"balance":"0x123"}`,
 				expectedCache:  true,
 				expectedPolicy: unknownPolicy, // Should match unknown policy with 30s TTL
 			},
@@ -782,6 +791,7 @@ func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
 		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
 			Network: "evm:123",
 			Method:  "eth_getBalance",
+			Empty:   common.CacheEmptyBehaviorAllow,
 		}, mockConnectors[0])
 		require.NoError(t, err)
 		cache.policies = []*data.CachePolicy{

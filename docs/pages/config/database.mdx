@@ -103,8 +103,8 @@ database:
 
 <Callout type="info">
 By default, eRPC enables an in-memory cache with these policies:
-- Finalized data: cached forever with 100k max items
-- Unknown/Unfinalized data: cached for 30 seconds to be reorg safe
+- `finalized` data: cached forever with 100k max items and 1mb max item size.
+- `unknown` and `unfinalized` data: cached for 30 seconds to be reorg safe yet reduce redundant RPC calls.
 </Callout>
 
 #### Cache policies
@@ -127,6 +127,9 @@ policies:
       - "*" # Second parameter
       # ... additional param matchers
     finality: finalized
+    empty: ignore
+    minItemSize: 10b
+    maxItemSize: 100mb
     connector: postgres-cache
     ttl: 1d
 
@@ -195,17 +198,17 @@ The parameter matcher supports:
 
 The cache system recognizes three finality states:
 
-- `finalized`: Data from blocks that are confirmed as finalized (safe to cache long-term). This is based on 'finalized' block fetched via eth_getBlockByNumber of the upstream corresponding to the received response (not other upstreams).
-- `unfinalized`: Data from recent blocks that could still be reorged, any data/transaction from pending blocks is considered unfinalized.
-- `unknown`: When block number cannot be determined from request/response (e.g., `eth_traceTransaction`). Most often it is safe to cache this data without reorg safety because they are not referenced by final actual blocks.
+- `finalized`: (default) Data from blocks that are confirmed as finalized (safe to cache long-term). This is based on 'finalized' block fetched via eth_getBlockByNumber of the upstream corresponding to the received response (not other upstreams).
+- `unfinalized`: Data from recent blocks that could still be reorged. Also any data/transaction from pending blocks is considered unfinalized.
+- `unknown`: When block number cannot be determined from request/response (e.g., `eth_traceTransaction`). Most often it is safe to cache this data without reorg safety because they are not referenced by final actual blocks (e.g. eth_getTransactionByHash).
 
 #### `empty` states
 
-The cache system recognizes three empty states:
+The cache can match three empty states:
 
-- `ignore`: Ignore empty responses (default) and do not cache them
-- `allow`: Cache empty responses
-- `only`: Only cache empty responses
+- `ignore`: (default) Ignore empty responses and do not cache them.
+- `allow`: Allow caching empty responses as well.
+- `only`: Only cache empty responses, e.g. if you want to give different TTL.
 
 These values are considered empty:
 
