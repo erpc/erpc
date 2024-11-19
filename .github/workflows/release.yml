@@ -41,33 +41,6 @@ jobs:
           git tag ${{ github.event.inputs.version_tag }} -f
           git push origin ${{ github.event.inputs.version_tag }} -f
 
-  release:
-    runs-on: large
-    needs: tag
-    steps:
-      - name: Checkout
-        if: github.event.inputs.version_tag != ''
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event.inputs.commit_sha || github.ref }}
-
-      - name: Set up Go
-        if: github.event.inputs.version_tag != ''
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22.x'
-
-      - name: Run GoReleaser
-        if: github.event.inputs.version_tag != ''
-        uses: goreleaser/goreleaser-action@v6
-        with:
-          distribution: goreleaser
-          version: "~> v2"
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
   docker-image:
     runs-on: large
     needs: tag
@@ -129,3 +102,30 @@ jobs:
           tags: |
             ghcr.io/${{ steps.tag_param.outputs.repo }}:${{ github.event.inputs.version_tag }}
             ghcr.io/${{ steps.tag_param.outputs.repo }}:latest
+
+  release:
+    runs-on: large
+    needs: docker-image
+    steps:
+      - name: Checkout
+        if: github.event.inputs.version_tag != ''
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.commit_sha || github.ref }}
+
+      - name: Set up Go
+        if: github.event.inputs.version_tag != ''
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.x'
+
+      - name: Run GoReleaser
+        if: github.event.inputs.version_tag != ''
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
