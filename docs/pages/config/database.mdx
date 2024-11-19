@@ -1,9 +1,11 @@
-import { Callout } from "nextra/components";
+import { Callout, Tabs, Tab } from "nextra/components";
 
 # Database
 
 Long-term storage is optional but used for various purposes such as caching, rate limit persistence, etc.
 
+<Tabs items={["yaml", "typescript"]}>
+  <Tabs.Tab>  
 ```yaml filename="erpc.yaml"
 # ...
 database:
@@ -11,6 +13,24 @@ database:
     driver: memory | redis | postgresql | dynamodb
     # ... (driver specific config, see below)
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  database: {
+    evmJsonRpcCache: {
+      // Possible drivers: "memory", "redis", "postgresql", "dynamodb"
+      driver: "memory", // Replace "memory" with your desired driver
+      // ... (driver specific config, see below)
+    },
+  },
+});
+
+```
+</Tabs.Tab>
+</Tabs>
 
 ### `evmJsonRpcCache`
 
@@ -69,6 +89,8 @@ Depending on your use-case you can use different drivers.
 
 Mainly useful for local testing or when you don't need to cache too much data.
 
+<Tabs items={["yaml", "typescript"]}>
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
 database:
@@ -76,11 +98,29 @@ database:
     driver: memory
     maxItems: 10000
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  database: {
+    evmJsonRpcCache: {
+      driver: "memory",
+      maxItems: 10000,
+    },
+  },
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 ### Redis
 
 Redis is useful when you need to store cached data temporarily with **eviction policy** (e.g. certain amount of memory).
 
+<Tabs items={["yaml", "typescript"]}>
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
 database:
@@ -92,6 +132,26 @@ database:
       db: XXX
 # ...
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  database: {
+    evmJsonRpcCache: {
+      driver: "redis",
+      redis: {
+        addr: "YOUR_REDIS_ADDRESS_HERE",
+        password: "YOUR_REDIS_PASSWORD_HERE",
+        db: "XXX"
+      },
+    },
+  },
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 Example of Redis config with eviction policy:
 ```conf
@@ -108,6 +168,8 @@ Useful when you need to store cached data permanently without TTL i.e. forever.
   table and requried indexes.
 </Callout>
 
+<Tabs items={["yaml", "typescript"]}>
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
 database:
@@ -119,11 +181,34 @@ database:
       table: rpc_cache
 # ...
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  database: {
+    evmJsonRpcCache: {
+      driver: "postgresql",
+      postgresql: {
+        connectionUri: >-
+          "postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name"
+        table: "rpc_cache"
+      },
+    },
+  },
+});
+```
+</Tabs.Tab>
+</Tabs>
+
 
 ### DynamoDB
 
 When you need to have scalable (compared to Postgres) permanent caching and are happy with the costs.
 
+<Tabs items={["yaml", "typescript"]}>
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
 database:
@@ -141,3 +226,30 @@ database:
         profile: xxxxx # Only if mode is file
         credentialsFile: xxxx # Only if mode is file
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  database: {
+    evmJsonRpcCache: {
+      driver: "dynamodb",
+      dynamodb: {
+        table: "rpc_cache",
+        region: "eu-west-1",
+        endpoint: "https://dynamodb.eu-west-1.amazonaws.com", // Optional
+        auth: {
+          mode: "secret", // file, or env
+          accessKeyId: "YOUR_ACCESS_KEY_ID", // Only if mode is secret
+          secretAccessKey: "YOUR_SECRET_ACCESS_KEY", // Only if mode is secret
+          profile: "xxxx", // Only if mode is file
+          credentialsFile: "xxxx", // Only if mode is file
+        }
+      },
+    },
+  },
+});
+```
+</Tabs.Tab>
+</Tabs>
