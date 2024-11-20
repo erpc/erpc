@@ -45,6 +45,8 @@ export interface CachePolicyConfig {
   params?: any[];
   finality: DataFinalityState;
   empty?: CacheEmptyBehavior;
+  minItemSize?: string;
+  maxItemSize?: string;
   ttl?: types.Duration;
 }
 export type ConnectorDriverType = string;
@@ -311,7 +313,9 @@ export const DefaultPolicyFunction = `
 			return healthyOnes
 		}
 
-		return [...fallbacks, ...healthyOnes]
+		// The reason all upstreams are returned is to be less harsh and still consider default nodes (in case they have intermittent issues)
+		// Order of upstreams does not matter as that will be decided by the upstream scoring mechanism
+		return upstreams
 	}
 `;
 
@@ -323,6 +327,10 @@ export const EvmNodeTypeFull: EvmNodeType = "full";
 export const EvmNodeTypeArchive: EvmNodeType = "archive";
 export const EvmNodeTypeLight: EvmNodeType = "light";
 export type EvmStatePoller = any;
+
+//////////
+// source: matcher.go
+
 
 //////////
 // source: network.go

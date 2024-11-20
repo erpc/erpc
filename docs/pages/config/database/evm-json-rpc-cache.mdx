@@ -112,13 +112,13 @@ database:
         finality: unfinalized
         empty: ignore
         connector: memory-cache
-        ttl: 30s
+        ttl: 5s
       - network: "*"
         method: "*"
         finality: unknown
         empty: allow
         connector: memory-cache
-        ttl: 30s
+        ttl: 5s
       - network: "*" # supports * as wildcard and | as OR operator
         method: "eth_getLogs | trace_*" # supports * as wildcard and | as OR operator
         finality: finalized
@@ -233,7 +233,7 @@ export default createConfig({
 <Callout type="info">
 By default, eRPC enables an in-memory cache with these policies:
 - `finalized` data: cached forever with 100k max items and 1mb max item size.
-- `unknown` and `unfinalized` data: cached for 30 seconds to be reorg safe yet reduce redundant RPC calls.
+- `unknown` and `unfinalized` data: cached for 5 seconds to be reorg safe yet reduce redundant RPC calls.
 </Callout>
 
 #### Cache policies
@@ -446,7 +446,7 @@ The cache system provides mechanisms to handle blockchain reorganizations (re-or
      method: "eth_getBlockByNumber"
      finality: unfinalized
      connector: memory-cache
-     ttl: 30s
+     ttl: 5s
    ```
 
 3. **Mixed strategy example**
@@ -465,7 +465,7 @@ The cache system provides mechanisms to handle blockchain reorganizations (re-or
        method: "eth_getBlockByNumber"
        finality: unfinalized
        connector: memory-cache
-       ttl: 30s
+       ttl: 5s
    ```
 
 This approach is useful for various scenarios:

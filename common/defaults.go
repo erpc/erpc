@@ -41,7 +41,7 @@ func (c *Config) SetDefaults() {
 						Method:      "*",
 						Finality:    DataFinalityStateUnknown,
 						MaxItemSize: util.StringPtr("1mb"),
-						TTL:         30 * time.Second,
+						TTL:         5 * time.Second,
 						Connector:   "memory-cache",
 					},
 					{
@@ -49,7 +49,7 @@ func (c *Config) SetDefaults() {
 						Method:      "*",
 						Finality:    DataFinalityStateUnfinalized,
 						MaxItemSize: util.StringPtr("1mb"),
-						TTL:         30 * time.Second,
+						TTL:         5 * time.Second,
 						Connector:   "memory-cache",
 					},
 				},
@@ -496,7 +496,9 @@ const DefaultPolicyFunction = `
 			return healthyOnes
 		}
 
-		return [...fallbacks, ...healthyOnes]
+		// The reason all upstreams are returned is to be less harsh and still consider default nodes (in case they have intermittent issues)
+		// Order of upstreams does not matter as that will be decided by the upstream scoring mechanism
+		return upstreams
 	}
 `
 

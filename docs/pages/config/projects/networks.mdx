@@ -72,8 +72,9 @@ projects:
                 return healthyOnes
               }
 
-              // Otherwise, return all healthy upstreams plus all fallback ones.
-              return [...healthyOnes, ...fallbacks]
+              // The reason all upstreams are returned is to be less harsh and still consider default nodes (in case they have intermittent issues)
+              // Order of upstreams does not matter as that will be decided by the upstream scoring mechanism
+              return upstreams
             }
           
           # When an upstream is excluded, you can give it a chance on a regular basis
@@ -183,8 +184,9 @@ export default createConfig({
                   return healthyOnes;
                 }
 
-                // Otherwise, return all healthy upstreams plus all fallback ones.
-                return [...healthyOnes, ...fallbacks];
+                // The reason all upstreams are returned is to be less harsh and still consider default nodes (in case they have intermittent issues)
+                // Order of upstreams does not matter as that will be decided by the upstream scoring mechanism
+                return upstreams;
               }
             ,
             

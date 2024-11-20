@@ -15,6 +15,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/common/script"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/upstream"
@@ -5377,9 +5378,15 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 
+		evalFn, _ := script.CompileFunction(`
+			(upstreams) => {
+				return upstreams.filter(u => u.metrics.errorRate < 0.7);
+			}
+		`)
 		selectionPolicy := &common.SelectionPolicyConfig{
 			ResampleExcluded: false,
 			EvalInterval:     100 * time.Millisecond,
+			EvalFunction:     evalFn,
 		}
 		selectionPolicy.SetDefaults()
 
