@@ -332,6 +332,8 @@ func (r *NormalizedResponse) FinalityState() (finality DataFinalityState) {
 		switch method {
 		case "eth_getBlockByNumber",
 			"eth_getBlockByHash",
+			"eth_getUncleByBlockHashAndIndex",
+			"eth_getUncleByBlockNumberAndIndex",
 			"eth_getTransactionByHash",
 			"eth_getTransactionReceipt",
 			"eth_getTransactionByBlockHashAndIndex",

@@ -30,18 +30,18 @@ type parser struct {
 }
 
 func WildcardMatch(pattern, value string) (bool, error) {
-    tokens, err := tokenize(pattern)
-    if err != nil {
-        return false, err
-    }
-    
-    p := &parser{tokens: tokens}
-    matcher, err := p.parseExpression()
-    if err != nil {
-        return false, err
-    }
-    
-    return matcher(value), nil
+	tokens, err := tokenize(pattern)
+	if err != nil {
+		return false, err
+	}
+
+	p := &parser{tokens: tokens}
+	matcher, err := p.parseExpression()
+	if err != nil {
+		return false, err
+	}
+
+	return matcher(value), nil
 }
 
 // ValidatePattern checks if a pattern string is syntactically valid.
@@ -212,28 +212,28 @@ func (p *parser) advance() {
 }
 
 func (p *parser) parseExpression() (func(string) bool, error) {
-    return p.parseOr()
+	return p.parseOr()
 }
 
 func (p *parser) parseOr() (func(string) bool, error) {
-    left, err := p.parseAnd()
-    if err != nil {
-        return nil, err
-    }
+	left, err := p.parseAnd()
+	if err != nil {
+		return nil, err
+	}
 
-    for p.pos < len(p.tokens) && p.current().typ == tokenOr {
-        p.advance() // consume OR
-        right, err := p.parseAnd()
-        if err != nil {
-            return nil, err
-        }
-        prev := left
-        left = func(s string) bool {
-            return prev(s) || right(s)
-        }
-    }
+	for p.pos < len(p.tokens) && p.current().typ == tokenOr {
+		p.advance() // consume OR
+		right, err := p.parseAnd()
+		if err != nil {
+			return nil, err
+		}
+		prev := left
+		left = func(s string) bool {
+			return prev(s) || right(s)
+		}
+	}
 
-    return left, nil
+	return left, nil
 }
 
 func (p *parser) parseAnd() (func(string) bool, error) {
@@ -272,18 +272,18 @@ func (p *parser) parseUnary() (func(string) bool, error) {
 }
 
 func (p *parser) parsePrimary() (func(string) bool, error) {
-    if p.current().typ == tokenLParen {
-        p.advance() // consume (
-        expr, err := p.parseExpression()
-        if err != nil {
-            return nil, err
-        }
-        if p.current().typ != tokenRParen {
-            return nil, fmt.Errorf("expected closing parenthesis")
-        }
-        p.advance() // consume )
-        return expr, nil
-    }
+	if p.current().typ == tokenLParen {
+		p.advance() // consume (
+		expr, err := p.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		if p.current().typ != tokenRParen {
+			return nil, fmt.Errorf("expected closing parenthesis")
+		}
+		p.advance() // consume )
+		return expr, nil
+	}
 
 	if p.current().typ == tokenPattern {
 		pattern := p.current().value

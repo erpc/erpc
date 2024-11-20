@@ -177,7 +177,7 @@ func TestValidatePattern(t *testing.T) {
 		{"valid AND pattern", "0x1234 & 0x5678", false},
 		{"valid complex pattern", "(0x1234 | 0x5678) & !0x9abc", false},
 		{"valid hex comparison", ">=0x100", false},
-		
+
 		{"invalid operator placement", "| 0x1234", true},
 		{"missing operand", "0x1234 &", true},
 		{"unmatched parenthesis", "(0x1234", true},

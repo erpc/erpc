@@ -33,12 +33,12 @@ func TestExtractBlockReference(t *testing.T) {
 			expectedErr: false,
 		},
 		{
-			name: "invalid hex in eth_getBlockByNumber",
+			name: "unknown tag in eth_getBlockByNumber",
 			request: &JsonRpcRequest{
 				Method: "eth_getBlockByNumber",
-				Params: []interface{}{"invalidHex"},
+				Params: []interface{}{"unknownTag"},
 			},
-			expectedRef: "invalidHex",
+			expectedRef: "unknownTag",
 			expectedNum: 0,
 			expectedErr: false,
 		},
@@ -103,7 +103,7 @@ func TestExtractBlockReference(t *testing.T) {
 					},
 				},
 			},
-			expectedRef: "0x1b4-0x1b5",
+			expectedRef: "436-437",
 			expectedNum: 437,
 			expectedErr: false,
 		},
@@ -135,7 +135,7 @@ func TestExtractBlockReference(t *testing.T) {
 			},
 			expectedRef: "",
 			expectedNum: 0,
-			expectedErr: true,
+			expectedErr: false,
 		},
 		{
 			name: "eth_getCode",

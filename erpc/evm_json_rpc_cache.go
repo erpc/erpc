@@ -192,11 +192,20 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 	rpcReq.RLock()
 	defer rpcReq.RUnlock()
 
-	blockRef, blockNumber, err := req.EvmBlockRefAndNumber()
+	blockRef, _, err := req.EvmBlockRefAndNumber()
 	if err != nil {
 		return nil, err
 	}
-	if blockRef == "" && blockNumber == 0 {
+	if blockRef == "" {
+		if c.logger.GetLevel() <= zerolog.TraceLevel {
+			c.logger.Trace().
+				Object("request", req).
+				Msg("skip fetching from cache because we cannot resolve a block reference")
+		} else {
+			c.logger.Debug().
+				Str("method", rpcReq.Method).
+				Msg("skip fetching from cache because we cannot resolve a block reference")
+		}
 		return nil, nil
 	}
 
@@ -206,10 +215,10 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 	}
 
 	var resultString string
-	if blockRef != "*" {
-		resultString, err = connector.Get(ctx, data.ConnectorMainIndex, groupKey, requestKey)
-	} else {
+	if blockRef == "*" {
 		resultString, err = connector.Get(ctx, data.ConnectorReverseIndex, groupKey, requestKey)
+	} else {
+		resultString, err = connector.Get(ctx, data.ConnectorMainIndex, groupKey, requestKey)
 	}
 	if err != nil {
 		return nil, err
@@ -258,27 +267,23 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		return nil
 	}
 
-	// if blockRef == "" && blockNumber == 0 {
-	// 	// Do not cache if we can't resolve a block reference (e.g. latest block requests)
-	// 	lg.Debug().
-	// 		Str("blockRef", blockRef).
-	// 		Int64("blockNumber", blockNumber).
-	// 		Msg("will not cache the response because it has no block reference or block number")
-	// 	return nil
-	// }
-
-	// s, e := c.shouldCacheForBlock(blockNumber)
-	// if !s || e != nil {
-	// 	if lg.GetLevel() <= zerolog.DebugLevel {
-	// 		lg.Debug().
-	// 			Err(e).
-	// 			Str("blockRef", blockRef).
-	// 			Int64("blockNumber", blockNumber).
-	// 			Str("result", util.Mem2Str(rpcResp.Result)).
-	// 			Msg("will not cache the response based on policy config")
-	// 	}
-	// 	return e
-	// }
+	if blockRef == "" {
+		// Do not cache if we can't resolve a block reference (e.g. unknown methods)
+		if c.logger.GetLevel() <= zerolog.TraceLevel {
+			c.logger.Trace().
+				Object("request", req).
+				Str("blockRef", blockRef).
+				Int64("blockNumber", blockNumber).
+				Msg("will not cache the response because we cannot resolve a block reference")
+		} else {
+			lg.Debug().
+				Str("method", rpcReq.Method).
+				Str("blockRef", blockRef).
+				Int64("blockNumber", blockNumber).
+				Msg("will not cache the response because we cannot resolve a block reference")
+		}
+		return nil
+	}
 
 	pk, rk, err := generateKeysForJsonRpcRequest(req, blockRef)
 	if err != nil {
