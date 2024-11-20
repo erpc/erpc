@@ -4,7 +4,7 @@ description: Selection policies allow you to influence how upstreams are selecte
 
 import { Callout, Tabs, Tab } from 'nextra/components'
 
-### Selection Policy
+### Selection Policies
 
 **Selection Policy** allows you to influence how upstreams are selected to serve (or not) traffic. A selection policy is defined at the network level and is responsible for returning a list of upstreams that must remain active. 
 
@@ -17,14 +17,6 @@ The primary purpose of a selection policy is to define acceptable performance me
   Selection policies are not executed per request, instead they run on an interval much like a healthcheck and update the available upstreams.
 </Callout>
 
-#### Use Cases
-
-- **Block Lag Management:** Disable upstreams that are lagging behind more than a specified number of blocks until they resync.
-- **Error Rate Handling:** Exclude upstreams exceeding a certain error rate and periodically check their status.
-- **Cost-Efficiency Optimization:** Prioritize "cheap" nodes and fallback to "fast" nodes only when necessary.
-
-#### Config
-
 By default, a "default" selection policy is activated if at least one upstream is assigned to the "fallback" group. This default policy incorporates basic logic for error rates and block lag, which can be tuned via theese environment variables 
 
 * `ROUTING_POLICY_MAX_ERROR_RATE` (Default: `0.7`): Maximum allowed error rate.
@@ -32,6 +24,14 @@ By default, a "default" selection policy is activated if at least one upstream i
 * `ROUTING_POLICY_MIN_HEALTHY_THRESHOLD` (Default: `1`): Minimum number of healthy upstreams that must be included in default group.
 
 These environment variables allow you to adjust the default logic without rewriting the policy function.
+
+#### Use Cases
+
+- **Block Lag Management:** Disable upstreams that are lagging behind more than a specified number of blocks until they resync.
+- **Error Rate Handling:** Exclude upstreams exceeding a certain error rate and periodically check their status.
+- **Cost-Efficiency Optimization:** Prioritize "cheap" nodes and fallback to "fast" nodes only when necessary.
+
+#### Config
 
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
@@ -197,37 +197,53 @@ export default createConfig({
 
 `Upstreams` and `method` are available as variables in the `evalFunction`.
 
-```typescript
+```ts filename="types.d.ts"
 // Current upstream
 export type Upstream = {
-	id: string
-	config: UpstreamConfig
-	metrics: UpstreamMetrics
-}
+    id: string;
+    config: UpstreamConfig;
+    metrics: UpstreamMetrics;
+};
 
+// Upstream configuration
+export type UpstreamConfig = {
+    // Upstream ID is optional and can be used to identify the upstream in logs/metrics.
+    id: string;
+
+    // Each upstream can have an arbitrary group name which is used in metrics, as well as 
+    // useful when writing an eval function in selectionPolicy below.
+    // Use "fallback" group to let eRPC automatically create a "default" selection policy on the network level
+    // and then fallback to this group if the default one doesn't have enough healthy upstreams.
+    group: string;
+
+    // Endpoint URL supports http(s) scheme along with custom schemes like "alchemy://" defined below in this docs.
+    endpoint: string;
+};
+
+// Upstream metrics
 export type UpstreamMetrics = {
-  // p90 rate of errors of last X minutes (X is based on `project.healthCheck.scoreMetricsWindowSize`)
-	errorRate: number
-  
-  // total errors of this upstream
-	errorsTotal: number
-  
-  // total requests served by this upstream
-	requestsTotal: number
-  
-  // Throttled rate of this upstream.
-	throttledRate: number
-  
-  // 90th percentile latency in seconds for this upstream.
-	p90LatencySecs: number
-  
-  // Block head lag in seconds for this upstream.
-	blockHeadLag: number
-  
-  // Finalization lag in seconds for this upstream.
-	finalizationLag: number
-}
+    // p90 rate of errors of last X minutes (X is based on `project.healthCheck.scoreMetricsWindowSize`)
+    errorRate: number;
+
+    // total errors of this upstream
+    errorsTotal: number;
+
+    // total requests served by this upstream
+    requestsTotal: number;
+
+    // Throttled rate of this upstream.
+    throttledRate: number;
+
+    // p90 latency in seconds for this upstream.
+    p90LatencySecs: number;
+
+    // Block head lag in seconds for this upstream.
+    blockHeadLag: number;
+
+    // Finalization lag in seconds for this upstream.
+    finalizationLag: number;
+};
 
 // Method is either `*` (all methods) or a specific method name.
-export type Method = '*' | string
+export type Method = '*' | string;
 ```
