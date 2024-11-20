@@ -96,7 +96,7 @@ See the [monitoring guide](/operation/monitoring) for more details on metrics an
 
 </Steps>
 
-## Docker Compose
+## Docker compose
 
 For production deployments, you might want to use docker-compose to manage eRPC along with its monitoring stack. Here's a basic example:
 
@@ -112,3 +112,70 @@ services:
       - ./erpc.yaml:/root/erpc.yaml
     restart: unless-stopped
 ```
+
+## Installing custom NPM modules
+
+When using TypeScript configuration with additional NPM dependencies beyond `@erpc-cloud/config`, you'll need to make these dependencies available inside the Docker container. There are two approaches to achieve this:
+
+### Option 1: Building a custom image
+
+Create a custom Dockerfile that includes your dependencies:
+
+```dockerfile
+FROM debian:12
+
+COPY package.json pnpm-lock.yaml /root/
+# COPY package.json package-lock.json /root/  # For npm
+# COPY package.json yarn.lock /root/          # For yarn
+
+RUN pnpm install
+# RUN npm install   # For npm
+# RUN yarn install  # For yarn
+
+FROM ghcr.io/erpc/erpc:latest
+
+COPY --from=0 /root/node_modules /root/node_modules
+```
+
+Build and run your custom image:
+
+```bash
+docker build -t erpc-custom -f Dockerfile.custom .
+docker run -v $(pwd)/erpc.ts:/root/erpc.ts \
+  -p 4000:4000 -p 4001:4001 \
+  erpc-custom
+```
+
+### Option 2: Mounting host dependencies
+
+Alternatively, you can mount your local `package.json` and `node_modules` directly:
+
+```bash
+docker run \
+  -v $(pwd)/package.json:/root/package.json \
+  -v $(pwd)/node_modules:/root/node_modules \
+  -v $(pwd)/erpc.ts:/root/erpc.ts \
+  -p 4000:4000 -p 4001:4001 \
+  ghcr.io/erpc/erpc:latest
+```
+
+For docker-compose, add the volumes to your service configuration:
+
+```yaml
+version: '3.8'
+services:
+  erpc:
+    image: ghcr.io/erpc/erpc:latest
+    ports:
+      - "4000:4000"
+      - "4001:4001"
+    volumes:
+      - ./erpc.ts:/root/erpc.ts
+      - ./package.json:/root/package.json
+      - ./node_modules:/root/node_modules
+    restart: unless-stopped
+```
+
+<Callout type="info">
+  If you're only using the `@erpc-cloud/config` package, you don't need these additional steps. The base image already includes this package.
+</Callout>

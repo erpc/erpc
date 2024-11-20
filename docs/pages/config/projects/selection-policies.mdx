@@ -6,7 +6,7 @@ import { Callout, Tabs, Tab } from 'nextra/components'
 
 ### Selection policies
 
-**Selection Policy** allows you to influence how upstreams are selected to serve (or not) traffic. A selection policy is defined at the network level and is responsible for returning a list of upstreams that must remain active. 
+**Selection policy** allows you to influence how upstreams are selected to serve traffic (or not). A selection policy is defined at the network level and is responsible for returning a list of upstreams that must remain active. 
 
 The primary purpose of a selection policy is to define acceptable performance metrics and/or required conditions for selecting an upstream node.
 <Callout type='info'>
@@ -32,6 +32,10 @@ These environment variables allow you to adjust the default logic without rewrit
 - **Block Lag:** Disable upstreams that are lagging behind more than a specified number of blocks until they resync.
 - **Error Rate:** Exclude upstreams exceeding a certain error rate and periodically check their status.
 - **Cost-Efficiency:** Prioritize "cheap" nodes and fallback to "fast" nodes only is all cheap nodes are down.
+
+##### Looking to influence selection ordering?
+
+If you only want to change ordering of upstreams (not entirely exclude them) check out [Scoring multipliers](/config/projects/upstreams#customizing-scores--priorities) docs. Remember selection policy will NOT influence the ordering of upstreams.
 
 #### Config
 

@@ -15,11 +15,20 @@ This example config demonstrates all features of eRPC in one place. For more exp
 - [Rate limiters](/config/rate-limiters): to configure various self-imposed budgets to prevent pressure on upstreams.
 - [Failsafe](/config/failsafe): explains different policies such as retry, timeout, and hedges, used for networks and upstreams.
 
-By default `erpc` binary will look for `./erpc.yaml` file in the current directory. You can change this path by passing an argument to the binary:
+By default `erpc` binary will look for `./erpc.ts`, `./erpc.yaml`, `./erpc.yml` files in the current directory. You can change this path by passing an argument to the binary:
 
-```bash
-$ erpc /path/to/your/erpc.yaml
-```
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+  ```bash
+  $ erpc /path/to/your/erpc.yaml
+  ```
+  </Tabs.Tab>
+  <Tabs.Tab>
+  ```bash
+  $ erpc /path/to/your/erpc.ts
+  ```
+  </Tabs.Tab>
+</Tabs>
 
 ### Minimal config example
 
