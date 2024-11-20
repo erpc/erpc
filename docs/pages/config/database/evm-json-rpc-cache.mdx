@@ -1,0 +1,304 @@
+---
+description: evmJsonRpcCachehe defines the storage backend for the eRPC cache...
+---
+
+import { Callout } from "nextra/components";
+
+### `evmJsonRpcCache`
+
+This feature defines the destination for caching JSON-RPC calls towards any EVM architecture upstream.
+Caching mechanism is non-blocking on critical path, and is used as best-effort. If the database is not available, the cache set/get will be skipped.
+
+```yaml filename="erpc.yaml"
+# ...
+database:
+  evmJsonRpcCache:
+    connectors:
+      - id: string
+        driver: memory | redis | postgresql | dynamodb
+        # ... (driver specific config, see below)
+    policies:
+      - network: string
+        method: string
+        params: []any
+        finality: finalized | unfinalized | unknown
+        empty: ignore | allow | only
+        minItemSize: string # xB | xKB | xMB
+        maxItemSize: string # xB | xKB | xMB
+        connector: string
+        ttl: duration
+```
+
+<Callout type="info">
+  Make sure the storage requirements meet your usage, for example caching 70m
+  blocks + 10m txs + 10m traces on Arbitrum needs 200GB of storage.
+</Callout>
+
+The cache config allows you to define multiple connectors (storage backends) and policies for different finality states. Here's the basic structure:
+
+```yaml filename="erpc.yaml"
+database:
+  evmJsonRpcCache:
+    # Define one or more storage connectors with unique IDs useful in policies
+    connectors:
+      - id: memory-cache
+        driver: memory # Refer to "memory" driver docs below
+        memory:
+          maxItems: 100000
+      - id: redis-cache-local
+        driver: redis # Refer to "redis" driver docs below
+        redis:
+          addr: localhost:6379
+          password: "xxxxxxxxx"
+          db: 0
+          connPoolSize: 128
+      - id: redis-cache-momento
+        driver: redis # Refer to "redis" driver docs below
+        redis:
+          addr: momento.aws.momentohq.com:6379
+          password: "xxxxxxxxx"
+          db: 0
+          connPoolSize: 128
+      - id: postgres-cache
+        driver: postgresql # Refer to "postgresql" driver docs below
+        postgresql:
+          connectionUri: >-
+            postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name
+          table: rpc_cache
+      # ... any driver can be used multiple times
+    
+    # Define caching policies for different network/method/finality states
+    policies:
+      - network: "*"
+        method: "*"
+        finality: finalized
+        empty: allow
+        connector: memory-cache
+        ttl: 0
+      - network: "*"
+        method: "*"
+        finality: unfinalized
+        empty: ignore
+        connector: memory-cache
+        ttl: 30s
+      - network: "*"
+        method: "*"
+        finality: unknown
+        empty: allow
+        connector: memory-cache
+        ttl: 30s
+      - network: "*" # supports * as wildcard and | as OR operator
+        method: "eth_getLogs | trace_*" # supports * as wildcard and | as OR operator
+        finality: finalized
+        empty: allow
+        connector: postgres-cache
+        ttl: 0
+      - network: "evm:42161 | evm:10" # supports * as wildcard and | as OR operator
+        method: "arbtrace_*" # supports * as wildcard and | as OR operator
+        finality: finalized
+        empty: ignore
+        connector: postgres-cache
+        ttl: 1d
+```
+
+<Callout type="info">
+By default, eRPC enables an in-memory cache with these policies:
+- `finalized` data: cached forever with 100k max items and 1mb max item size.
+- `unknown` and `unfinalized` data: cached for 30 seconds to be reorg safe yet reduce redundant RPC calls.
+</Callout>
+
+#### Cache policies
+
+You can create multiple policies to define different caching behavior for different networks, methods, finality state, emptyish checks, and item size limits.
+
+* On each cache "set" operation all policies that match the network/method/finality state will be used to store the data.
+* On each cache "get" operation all policies that match the network/method will be used to retrieve the data, from top to bottom as defined in the config, the first policy that returns a cache hit will be used.
+
+#### Policy matching
+
+Each policy can define matching rules for:
+
+```yaml filename="erpc.yaml"
+policies:
+  - network: "evm:42161 | evm:10" # (OPTIONAL) Network ID matching
+    method: "eth_getLogs | trace_*" # (OPTIONAL) Method name matching
+    params: # (OPTIONAL) parameter matching
+      - ">=0x100 | <=0x200" # First parameter
+      - "*" # Second parameter
+      # ... additional param matchers
+    finality: finalized
+    empty: ignore
+    minItemSize: 10b
+    maxItemSize: 100mb
+    connector: postgres-cache
+    ttl: 1d
+
+  #
+  # The `params` field allows you to define matching rules for RPC method parameters. This is useful for creating granular caching policies based on specific parameter values:
+  #
+
+  # Cache eth_getLogs requests for specific block ranges
+  - network: "*"
+    method: "eth_getLogs"
+    params:
+      - fromBlock: ">=0x100"
+        toBlock: "<=0x200"
+    finality: finalized
+    connector: postgres-cache
+    ttl: 1d
+  
+  # Cache eth_getBlockByNumber for specific blocks
+  - network: "*"
+    method: "eth_getBlockByNumber"
+    params:
+      - ">=0x100 | <=0x200" # Block number range
+      - "*" # Include details flag
+    finality: finalized
+    connector: redis-cache
+    ttl: 1h
+
+#
+# More examples for params matching:
+#
+
+# Match specific block numbers
+params: ["0x1 | 0x2 | 0x3", "*"]
+
+# Match block number ranges
+params: [">=0x100 | <=0x200", "*"]
+
+# Match eth_getLogs with specific criteria
+params:
+  - fromBlock: ">=0x100"
+    toBlock: "<=0x200"
+    address: "*"
+    topics: ["*"]
+
+# Match array parameters:
+params: [[">0x123", ">=0x456"], "*"]
+
+# Match empty parameters:
+params: ["*", "<empty>"]
+```
+
+The parameter matcher supports:
+
+* **Wildcards**: Use `*` to match any value
+* **OR operator**: Use `|` to specify multiple valid values
+* **Numeric comparisons**: For hex/decimal numbers:
+  * `>value` - Greater than
+  * `>=value` - Greater than or equal
+  * `<value` - Less than  
+  * `<=value` - Less than or equal
+* **Object matching**: For nested parameter objects (like in eth_getLogs), you can specify matchers for individual fields
+* **Array matching**: For array parameters, each element can have its own matcher
+* **Empty values**: Use `<empty>` to match null/undefined values
+
+#### `finality` states
+
+The cache system recognizes three finality states:
+
+- `finalized`: (default) Data from blocks that are confirmed as finalized (safe to cache long-term). This is based on 'finalized' block fetched via eth_getBlockByNumber of the upstream corresponding to the received response (not other upstreams).
+- `unfinalized`: Data from recent blocks that could still be reorged. Also any data/transaction from pending blocks is considered unfinalized.
+- `unknown`: When block number cannot be determined from request/response (e.g., `eth_traceTransaction`). Most often it is safe to cache this data without reorg safety because they are not referenced by final actual blocks (e.g. eth_getTransactionByHash).
+
+#### `empty` states
+
+The cache can match three empty states:
+
+- `ignore`: (default) Ignore empty responses and do not cache them.
+- `allow`: Allow caching empty responses as well.
+- `only`: Only cache empty responses, e.g. if you want to give different TTL.
+
+These values are considered empty:
+
+- `null` for example for a non-existent block
+- `[]` (empty array) for example for an empty array from eth_getLogs
+- `{}` (empty object) for example when trace results is empty
+- `0x` (empty hex) for example for an empty string from eth_getCode or eth_call
+
+#### Re-org mechanism
+
+The cache system provides mechanisms to handle blockchain reorganizations (re-orgs) through the finality state matchers and TTL settings. Here are the key strategies:
+
+1. **Finalized data caching**
+   - Use the `finality: finalized` matcher for data that is confirmed and safe from re-orgs
+   - This data can be cached with long or infinite TTL (`ttl: 0`)
+   - Example: Historical block data, old transaction receipts
+
+2. **Unfinalized data caching**
+   - Use `finality: unfinalized` for recent blocks that could be re-orged
+   - Set short TTL values (10-30 seconds recommended)
+   - Example: Recent blocks, pending transactions
+   ```yaml
+   - network: "*"
+     method: "eth_getBlockByNumber"
+     finality: unfinalized
+     connector: memory-cache
+     ttl: 30s
+   ```
+
+3. **Mixed strategy example**
+   You can combine multiple policies for the same method:
+   ```yaml
+   policies:
+     # Cache finalized blocks forever
+     - network: "*"
+       method: "eth_getBlockByNumber"
+       finality: finalized
+       connector: postgres-cache
+       ttl: 0
+     
+     # Cache unfinalized blocks briefly
+     - network: "*"
+       method: "eth_getBlockByNumber"
+       finality: unfinalized
+       connector: memory-cache
+       ttl: 30s
+   ```
+
+This approach is useful for various scenarios:
+- Caching gas estimates briefly to reduce RPC calls
+- Temporarily storing `eth_blockNumber` results
+- Balancing between performance and data consistency
+
+<Callout type="warning">
+Make sure to properly test your dApps/indexer full flow to ensure unfinalized data caching works as expected.
+</Callout>
+
+For chains which do not support "finalized" block method, eRPC will consider last 1024 blocks unfinalized. This number can be configured via `network.evm.fallbackFinalityDepth`.
+
+#### Cacheable methods
+Methods are cached if they include a `blockNumber` or `blockHash` in the request or response, allowing cache invalidation during blockchain reorgs.
+If no blockNumber is present, caching is still viable if the method returns data unaffected by reorgs, like `eth_chainId`, or if the data won't change after a reorg, such as `eth_getTransactionReceipt`.
+Here is an overview of cacheable methods:
+
+| Method Name                               | Description                                                                               |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `eth_getTransactionReceipt`               | Retrieves the receipt of a transaction by its hash.                                       |
+| `eth_getTransactionByHash`                | Retrieves a transaction based on its hash.                                                |
+| `arbtrace_replayTransaction`              | Replays a transaction on the blockchain (specific to Arbitrum).                           |
+| `trace_replayTransaction`                 | Replays a transaction and returns the trace of execution.                                 |
+| `debug_traceTransaction`                  | Traces the execution of a transaction.                                                    |
+| `trace_transaction`                       | Returns the trace of a transaction by its hash.                                           |
+| `eth_chainId`                             | Returns the chain ID of the network.                                                      |
+| `eth_estimateGas`                         | Estimates the gas needed to execute a transaction. (short TTL is recommended)             |
+| `eth_getBlockByNumber`                    | Retrieves a block by its number.                                                          |
+| `eth_getUncleByBlockNumberAndIndex`       | Retrieves an uncle block by its number and index.                                         |
+| `eth_getTransactionByBlockNumberAndIndex` | Retrieves a transaction by block number and transaction index.                            |
+| `eth_getUncleCountByBlockNumber`          | Retrieves the number of uncles in a block by block number.                                |
+| `eth_getBlockTransactionCountByNumber`    | Retrieves the number of transactions in a block by block number.                          |
+| `eth_getBlockReceipts`                    | Retrieves all receipts for a block by block number.                                       |
+| `eth_getLogs`                             | Retrieves logs based on filter criteria.                                                  |
+| `eth_getBalance`                          | Retrieves the balance of an account at a specified block.                                 |
+| `eth_getCode`                             | Retrieves the code at a given address at a specified block.                               |
+| `eth_getTransactionCount`                 | Retrieves the number of transactions sent from an address at a specified block.           |
+| `eth_call`                                | Executes a new message call immediately without creating a transaction on the blockchain. |
+| `eth_feeHistory`                          | Returns the history of gas fees.                                                          |
+| `eth_getAccount`                          | Retrieves account information at a specified block.                                       |
+| `eth_getBlockByHash`                      | Retrieves a block by its hash.                                                            |
+| `eth_getTransactionByBlockHashAndIndex`   | Retrieves a transaction by block hash and transaction index.                              |
+| `eth_getBlockTransactionCountByHash`      | Retrieves the number of transactions in a block by block hash.                            |
+| `eth_getUncleCountByBlockHash`            | Retrieves the number of uncles in a block by block hash.                                  |
+| `eth_getProof`                            | Retrieves the proof for an account and its storage.                                       |
+| `eth_getStorageAt`                        | Retrieves the value from a storage position at a specified address and block.             |

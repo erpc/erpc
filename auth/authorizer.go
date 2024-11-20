@@ -74,7 +74,12 @@ func (a *Authorizer) shouldApplyToMethod(method string) bool {
 
 	if len(a.cfg.IgnoreMethods) > 0 {
 		for _, ignoreMethod := range a.cfg.IgnoreMethods {
-			if common.WildcardMatch(ignoreMethod, method) {
+			match, err := common.WildcardMatch(ignoreMethod, method)
+			if err != nil {
+				a.logger.Error().Err(err).Msgf("error matching ignore method %s with method %s", ignoreMethod, method)
+				continue
+			}
+			if match {
 				shouldApply = false
 				break
 			}
@@ -83,7 +88,12 @@ func (a *Authorizer) shouldApplyToMethod(method string) bool {
 
 	if len(a.cfg.AllowMethods) > 0 {
 		for _, allowMethod := range a.cfg.AllowMethods {
-			if common.WildcardMatch(allowMethod, method) {
+			match, err := common.WildcardMatch(allowMethod, method)
+			if err != nil {
+				a.logger.Error().Err(err).Msgf("error matching allow method %s with method %s", allowMethod, method)
+				continue
+			}
+			if match {
 				shouldApply = true
 				break
 			}
@@ -112,7 +122,10 @@ func (a *Authorizer) acquireRateLimitPermit(req *common.NormalizedRequest) error
 	}
 	lg := a.logger.With().Str("method", method).Logger()
 
-	rules := rlb.GetRulesByMethod(method)
+	rules, errRules := rlb.GetRulesByMethod(method)
+	if errRules != nil {
+		return errRules
+	}
 	lg.Debug().Msgf("found %d auth-level rate limiters", len(rules))
 
 	if len(rules) > 0 {

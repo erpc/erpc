@@ -174,7 +174,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			go func(index int, rawReq json.RawMessage, headers http.Header, queryArgs map[string][]string) {
 				defer func() {
 					if rec := recover(); rec != nil {
-						msg := fmt.Sprintf("unexpected server panic on per-request handler: %v", rec)
+						msg := fmt.Sprintf("unexpected server panic on per-request handler: %v stack: %s", rec, string(debug.Stack()))
 						lg.Error().Msgf(msg)
 						responses[index] = processErrorBody(&lg, &startedAt, nil, fmt.Errorf(msg))
 					}
@@ -425,7 +425,12 @@ func (s *HttpServer) handleCORS(w http.ResponseWriter, r *http.Request, corsConf
 
 	allowed := false
 	for _, allowedOrigin := range corsConfig.AllowedOrigins {
-		if common.WildcardMatch(allowedOrigin, origin) {
+		match, err := common.WildcardMatch(allowedOrigin, origin)
+		if err != nil {
+			s.logger.Error().Err(err).Msgf("failed to match CORS origin")
+			continue
+		}
+		if match {
 			allowed = true
 			break
 		}

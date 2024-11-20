@@ -1,0 +1,50 @@
+---
+description: Certain configurations accept a matcher syntax with some basic operations designed for blockchain json-rpc request/response values...
+---
+
+# Matcher syntax
+
+Certain configurations accept a matcher syntax with some basic operations designed for blockchain json-rpc request/response values.
+
+Matchers are used in the following configurations:
+- [Upstream](/config/projects/upstreams)'s allowMethods or ignoreMethods.
+- [Cache policy](/config/database/evm-json-rpc-cache#cache-policies) patterns for network/method/params.
+
+## Examples
+
+```js
+// Match one exact method OR any eth_ method
+arbtrace_transaction | eth_*
+
+// Match all methods expect those prefixed with alchemy_*
+!alchemy_*
+
+// Match a number between 1 and 100
+>=1 & <=100
+
+// Match some block tags AND any numeric blocks higher than 1000 (also with hex example)
+(latest | safe | finalized) | >=1000
+(latest | safe | finalized) | >=0x4096
+
+// Match only numeric values (e.g. ignore block tags)
+0x*
+```
+
+## Operations
+
+### Wildcards
+- `*` - matches any number of characters
+- `<empty>` - matches an empty string
+
+### Logical Operations
+- `|` - OR operation
+- `&` - AND operation
+- `!` - NOT operation
+- `()` - grouping/nesting operations
+
+### Numeric Comparisons (for hex values)
+- `>` - greater than
+- `<` - less than
+- `>=` - greater than or equal
+- `<=` - less than or equal
+- `=` - equal to

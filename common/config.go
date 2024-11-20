@@ -60,24 +60,127 @@ type AdminConfig struct {
 }
 
 type DatabaseConfig struct {
-	EvmJsonRpcCache *ConnectorConfig `yaml:"evmJsonRpcCache" json:"evmJsonRpcCache"`
+	EvmJsonRpcCache *CacheConfig `yaml:"evmJsonRpcCache" json:"evmJsonRpcCache"`
+}
+
+type CacheConfig struct {
+	Connectors []*ConnectorConfig   `yaml:"connectors" json:"connectors" tstype:"types.ConnectorConfig[]"`
+	Policies   []*CachePolicyConfig `yaml:"policies" json:"policies"`
+}
+
+func (c *CacheConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type rawCacheConfig CacheConfig
+	raw := rawCacheConfig{}
+
+	if err := unmarshal(&raw); err != nil || (raw.Connectors == nil && raw.Policies == nil) || (len(raw.Connectors) == 0 && len(raw.Policies) == 0) {
+		// Backward compatibility for old config format
+		var rawBackward ConnectorConfig
+		if err := unmarshal(&rawBackward); err != nil {
+			return err
+		}
+		rawBackward.Id = "default"
+		c.Connectors = []*ConnectorConfig{&rawBackward}
+		c.Policies = []*CachePolicyConfig{
+			{
+				Network:   "*",
+				Method:    "*",
+				Finality:  DataFinalityStateFinalized,
+				Empty:     CacheEmptyBehaviorAllow,
+				TTL:       0,
+				Connector: "default",
+			},
+		}
+		// PostgreSQL might not be very efficient for these short default TTLs
+		if rawBackward.Driver != DriverPostgreSQL {
+			c.Policies = append(
+				c.Policies,
+				&CachePolicyConfig{
+					Network:   "*",
+					Method:    "*",
+					Finality:  DataFinalityStateUnknown,
+					Empty:     CacheEmptyBehaviorAllow,
+					TTL:       30 * time.Second,
+					Connector: "default",
+				},
+				&CachePolicyConfig{
+					Network:   "*",
+					Method:    "*",
+					Finality:  DataFinalityStateUnfinalized,
+					Empty:     CacheEmptyBehaviorAllow,
+					TTL:       30 * time.Second,
+					Connector: "default",
+				},
+			)
+		}
+	} else {
+		*c = CacheConfig(raw)
+	}
+
+	return nil
+}
+
+type CachePolicyConfig struct {
+	Connector   string             `yaml:"connector" json:"connector"`
+	Network     string             `yaml:"network,omitempty" json:"network"`
+	Method      string             `yaml:"method,omitempty" json:"method"`
+	Params      []interface{}      `yaml:"params,omitempty" json:"params"`
+	Finality    DataFinalityState  `yaml:"finality" json:"finality"`
+	Empty       CacheEmptyBehavior `yaml:"empty,omitempty" json:"empty"`
+	MinItemSize *string            `yaml:"minItemSize,omitempty" json:"minItemSize,omitempty"`
+	MaxItemSize *string            `yaml:"maxItemSize,omitempty" json:"maxItemSize,omitempty"`
+	TTL         time.Duration      `yaml:"ttl,omitempty" json:"ttl"`
+}
+
+func (c *CachePolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type rawCachePolicyConfig struct {
+		CachePolicyConfig
+		TTL string `yaml:"ttl"`
+	}
+	raw := rawCachePolicyConfig{}
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+	*c = raw.CachePolicyConfig
+	if raw.TTL != "" {
+		ttl, err := time.ParseDuration(raw.TTL)
+		if err != nil {
+			return fmt.Errorf("failed to parse ttl: %v", err)
+		}
+		c.TTL = ttl
+	} else {
+		// Set default value of 0 when TTL is not specified, which means no ttl
+		c.TTL = time.Duration(0)
+	}
+	return nil
+}
+
+func (c *CachePolicyConfig) MarshalJSON() ([]byte, error) {
+	return sonic.Marshal(map[string]interface{}{
+		"network":   c.Network,
+		"method":    c.Method,
+		"params":    c.Params,
+		"finality":  c.Finality,
+		"ttl":       c.TTL,
+		"connector": c.Connector,
+	})
 }
 
 type ConnectorDriverType string
 
 const (
-	DriverMemory   ConnectorDriverType = "memory"
-	DriverRedis    ConnectorDriverType = "redis"
-	DriverPostgres ConnectorDriverType = "postgres"
-	DriverDynamoDB ConnectorDriverType = "dynamodb"
+	DriverMemory     ConnectorDriverType = "memory"
+	DriverRedis      ConnectorDriverType = "redis"
+	DriverPostgreSQL ConnectorDriverType = "postgresql"
+	DriverDynamoDB   ConnectorDriverType = "dynamodb"
 )
 
 type ConnectorConfig struct {
-	Driver     ConnectorDriverType        `yaml:"driver" json:"driver" tstype:"types.ConnectorDriverType"`
-	Memory     *MemoryConnectorConfig     `yaml:"memory" json:"memory"`
-	Redis      *RedisConnectorConfig      `yaml:"redis" json:"redis"`
-	DynamoDB   *DynamoDBConnectorConfig   `yaml:"dynamodb" json:"dynamodb"`
-	PostgreSQL *PostgreSQLConnectorConfig `yaml:"postgresql" json:"postgresql"`
+	Id         string                     `yaml:"id" json:"id"`
+	Driver     ConnectorDriverType        `yaml:"driver" json:"driver"`
+	Memory     *MemoryConnectorConfig     `yaml:"memory,omitempty" json:"memory,omitempty"`
+	Redis      *RedisConnectorConfig      `yaml:"redis,omitempty" json:"redis,omitempty"`
+	DynamoDB   *DynamoDBConnectorConfig   `yaml:"dynamodb,omitempty" json:"dynamodb,omitempty"`
+	PostgreSQL *PostgreSQLConnectorConfig `yaml:"postgresql,omitempty" json:"postgresql,omitempty"`
 }
 
 type MemoryConnectorConfig struct {
@@ -93,10 +196,21 @@ type TLSConfig struct {
 }
 
 type RedisConnectorConfig struct {
-	Addr     string     `yaml:"addr" json:"addr"`
-	Password string     `yaml:"password" json:"-"`
-	DB       int        `yaml:"db" json:"db"`
-	TLS      *TLSConfig `yaml:"tls" json:"tls"`
+	Addr         string     `yaml:"addr" json:"addr"`
+	Password     string     `yaml:"password" json:"-"`
+	DB           int        `yaml:"db" json:"db"`
+	TLS          *TLSConfig `yaml:"tls" json:"tls"`
+	ConnPoolSize int        `yaml:"connPoolSize" json:"connPoolSize"`
+}
+
+func (r *RedisConnectorConfig) MarshalJSON() ([]byte, error) {
+	return sonic.Marshal(map[string]interface{}{
+		"addr":         r.Addr,
+		"password":     "REDACTED",
+		"db":           r.DB,
+		"connPoolSize": r.ConnPoolSize,
+		"tls":          r.TLS,
+	})
 }
 
 type DynamoDBConnectorConfig struct {
@@ -107,6 +221,7 @@ type DynamoDBConnectorConfig struct {
 	PartitionKeyName string         `yaml:"partitionKeyName" json:"partitionKeyName"`
 	RangeKeyName     string         `yaml:"rangeKeyName" json:"rangeKeyName"`
 	ReverseIndexName string         `yaml:"reverseIndexName" json:"reverseIndexName"`
+	TTLAttributeName string         `yaml:"ttlAttributeName" json:"ttlAttributeName"`
 }
 
 type PostgreSQLConnectorConfig struct {

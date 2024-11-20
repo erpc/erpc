@@ -1,4 +1,10 @@
-import type { UpstreamConfig } from "./generated"
+import type {
+	UpstreamConfig,
+	MemoryConnectorConfig,
+	RedisConnectorConfig,
+	DynamoDBConnectorConfig,
+	PostgreSQLConnectorConfig,
+} from "./generated"
 
 export type Duration = `${number}ms` | `${number}s` | `${number}m` | `${number}h`
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'disabled' | undefined
@@ -19,3 +25,25 @@ export type UpstreamMetrics = {
 	finalizationLag: number
 }
 export type SelectionPolicyEvalFunction = (upstreams: Upstream[], method: '*' | string) => Upstream[]
+
+export type ConnectorConfig =
+	| {
+		id: string;
+		driver: 'memory';
+		memory: MemoryConnectorConfig;
+	}
+	| {
+		id: string;
+		driver: 'redis';
+		redis: RedisConnectorConfig;
+	}
+	| {
+		id: string;
+		driver: 'dynamodb';
+		dynamodb: DynamoDBConnectorConfig;
+	}
+	| {
+		id: string;
+		driver: 'postgresql';
+		postgresql: PostgreSQLConnectorConfig;
+	};

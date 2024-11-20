@@ -27,15 +27,28 @@ export interface AdminConfig {
     cors?: CORSConfig;
 }
 export interface DatabaseConfig {
-    evmJsonRpcCache?: ConnectorConfig;
+    evmJsonRpcCache?: CacheConfig;
+}
+export interface CacheConfig {
+    connectors: types.ConnectorConfig[];
+    policies: (CachePolicyConfig | undefined)[];
+}
+export interface CachePolicyConfig {
+    connector: string;
+    network?: string;
+    method?: string;
+    params?: any[];
+    finality: DataFinalityState;
+    ttl?: types.Duration;
 }
 export type ConnectorDriverType = string;
 export declare const DriverMemory: ConnectorDriverType;
 export declare const DriverRedis: ConnectorDriverType;
-export declare const DriverPostgres: ConnectorDriverType;
+export declare const DriverPostgreSQL: ConnectorDriverType;
 export declare const DriverDynamoDB: ConnectorDriverType;
 export interface ConnectorConfig {
-    driver: types.ConnectorDriverType;
+    id: string;
+    driver: ConnectorDriverType;
     memory?: MemoryConnectorConfig;
     redis?: RedisConnectorConfig;
     dynamodb?: DynamoDBConnectorConfig;
@@ -55,6 +68,7 @@ export interface RedisConnectorConfig {
     addr: string;
     db: number;
     tls?: TLSConfig;
+    connPoolSize: number;
 }
 export interface DynamoDBConnectorConfig {
     table: string;
@@ -64,6 +78,7 @@ export interface DynamoDBConnectorConfig {
     partitionKeyName: string;
     rangeKeyName: string;
     reverseIndexName: string;
+    ttlAttributeName: string;
 }
 export interface PostgreSQLConnectorConfig {
     connectionUri: string;
@@ -254,6 +269,14 @@ export interface MetricsConfig {
     hostV6?: string;
     port?: number;
 }
+export type DataFinalityState = number;
+/**
+ * Finalized gets 0 intentionally so that when user has not specified finality,
+ * it defaults to finalized, which is safest sane default for caching.
+ */
+export declare const DataFinalityStateFinalized: DataFinalityState;
+export declare const DataFinalityStateUnfinalized: DataFinalityState;
+export declare const DataFinalityStateUnknown: DataFinalityState;
 export declare const DefaultEvmFinalityDepth = 1024;
 export declare const DefaultPolicyFunction = "\n\t(upstreams, method) => {\n\t\tconst defaults = upstreams.filter(u => u.config.group !== 'fallback')\n\t\tconst fallbacks = upstreams.filter(u => u.config.group === 'fallback')\n\t\t\n\t\tconst maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7')\n\t\tconst maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10')\n\t\tconst minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1')\n\t\t\n\t\tconst healthyOnes = defaults.filter(\n\t\t\tu => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag\n\t\t)\n\t\t\n\t\tif (healthyOnes.length >= minHealthyThreshold) {\n\t\t\treturn healthyOnes\n\t\t}\n\n\t\treturn [...fallbacks, ...healthyOnes]\n\t}\n";
 export type EvmNodeType = string;

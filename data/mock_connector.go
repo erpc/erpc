@@ -12,6 +12,13 @@ import (
 // MockConnector is a mock implementation of the Connector interface
 type MockConnector struct {
 	mock.Mock
+	id string
+}
+
+var _ Connector = (*MockConnector)(nil)
+
+func (m *MockConnector) Id() string {
+	return m.id
 }
 
 // Get mocks the Get method of the Connector interface
@@ -21,20 +28,14 @@ func (m *MockConnector) Get(ctx context.Context, index, partitionKey, rangeKey s
 }
 
 // Set mocks the Set method of the Connector interface
-func (m *MockConnector) Set(ctx context.Context, partitionKey, rangeKey, value string) error {
-	args := m.Called(ctx, partitionKey, rangeKey, value)
-	return args.Error(0)
-}
-
-// Delete mocks the Delete method of the Connector interface
-func (m *MockConnector) Delete(ctx context.Context, index, partitionKey, rangeKey string) error {
-	args := m.Called(ctx, index, partitionKey, rangeKey)
+func (m *MockConnector) Set(ctx context.Context, partitionKey, rangeKey, value string, ttl *time.Duration) error {
+	args := m.Called(ctx, partitionKey, rangeKey, value, ttl)
 	return args.Error(0)
 }
 
 // NewMockConnector creates a new instance of MockConnector
-func NewMockConnector() *MockConnector {
-	return &MockConnector{}
+func NewMockConnector(id string) *MockConnector {
+	return &MockConnector{id: id}
 }
 
 // MockMemoryConnector extends MemoryConnector with a fake delay feature
@@ -44,8 +45,8 @@ type MockMemoryConnector struct {
 }
 
 // NewMockMemoryConnector creates a new MockMemoryConnector
-func NewMockMemoryConnector(ctx context.Context, logger *zerolog.Logger, cfg *common.MemoryConnectorConfig, fakeDelay time.Duration) (*MockMemoryConnector, error) {
-	baseConnector, err := NewMemoryConnector(ctx, logger, cfg)
+func NewMockMemoryConnector(ctx context.Context, logger *zerolog.Logger, id string, cfg *common.MemoryConnectorConfig, fakeDelay time.Duration) (*MockMemoryConnector, error) {
+	baseConnector, err := NewMemoryConnector(ctx, logger, id, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -57,9 +58,9 @@ func NewMockMemoryConnector(ctx context.Context, logger *zerolog.Logger, cfg *co
 }
 
 // Set overrides the base Set method to include a fake delay
-func (m *MockMemoryConnector) Set(ctx context.Context, partitionKey, rangeKey, value string) error {
+func (m *MockMemoryConnector) Set(ctx context.Context, partitionKey, rangeKey, value string, ttl *time.Duration) error {
 	time.Sleep(m.fakeDelay)
-	return m.MemoryConnector.Set(ctx, partitionKey, rangeKey, value)
+	return m.MemoryConnector.Set(ctx, partitionKey, rangeKey, value, ttl)
 }
 
 // Get overrides the base Get method to include a fake delay
