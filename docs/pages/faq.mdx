@@ -1,3 +1,9 @@
+---
+description: Frequently asked questions
+---
+
+import { Tabs, Tab } from "nextra/components";
+
 ## Frequently Asked Questions
 
 ### How to set env variables?
@@ -11,20 +17,40 @@ export ETHEREUM_RPC_URL=https://mainnet.infura.io/v3/YOUR_INFURA_KEY
 ````
 
 2. **Use placeholders in config**: Add placeholders in your config file where you want the env variables to be used:
-```yaml 
-...
-
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
  upstreams:
       - endpoint: ${ETHEREUM_RPC_URL}
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+upstreams: [
+  {
+    endpoint: process.env.ETHEREUM_RPC_URL,
+  },
+],
+```
+</Tabs.Tab>
+</Tabs>
 
 ### How to disable caching?
 
 To disable caching, set [`evmJsonRpcCache`](https://docs.erpc.cloud/config/database#evmjsonrpccache) to `null` in your configuration:
 
-```yaml
-...
-
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
 database:
   evmJsonRpcCache: ~
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+database: {
+  evmJsonRpcCache: null,
+},
+```
+</Tabs.Tab>
+</Tabs>

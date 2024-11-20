@@ -1,4 +1,8 @@
-import { Callout } from "nextra/components";
+---
+description: An upstream is defined to handle 1 or more networks (a.k.a. chains)...
+---
+
+import { Callout, Tabs, Tab } from "nextra/components";
 
 # Upstreams
 
@@ -19,7 +23,8 @@ An upstream is defined to handle 1 or more networks (a.k.a. chains). There are c
 </Callout>
 
 ## Config
-
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
 projects:
@@ -30,6 +35,12 @@ projects:
     upstreams:
       # (REQUIRED) Endpoint URL supports http(s) scheme along with custom schemes like "alchemy://" defined below in this docs.
       - endpoint: https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
+
+        # Each upstream can have an arbitrary group name which is used in metrics, as well as 
+        # useful when writing an eval function in selectionPolicy below.
+        # Use "fallback" group to let eRPC automatically create a "default" selection policy on the network level
+        # and then fallback to this group if the default one doesn't have enough healthy upstreams.
+        group: fallback
         
         # (OPTIONAL) Upstream ID is optional and can be used to identify the upstream in logs/metrics.
         id: blastapi-chain-42161
@@ -121,6 +132,152 @@ projects:
             successThresholdCount: 3
             successThresholdCapacity: 10
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  // ...
+  projects: [
+    {
+      id: "main",
+      // ...
+
+      // Each upstream supports 1 or more networks (i.e. evm chains)
+      upstreams: [
+        // (REQUIRED) Endpoint URL supports http(s) scheme along with custom schemes like "alchemy://" defined below in this docs.
+        {
+          endpoint: "https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx",
+
+          /*
+          * (OPTIONAL) Each upstream can have an arbitrary group name which is used in metrics, as well as 
+          * useful when writing an eval function in selectionPolicy below.
+          * Use "fallback" group to let eRPC automatically create a "default" selection policy on the network level
+          * and then fallback to this group if the default one doesn't have enough healthy upstreams.
+          */
+          group: "fallback",
+
+          // (OPTIONAL) Upstream ID is optional and can be used to identify the upstream in logs/metrics.
+          id: "blastapi-chain-42161",
+
+          // (OPTIONAL) Configurations for EVM-compatible upstreams.
+          evm: {
+            /*
+            * (OPTIONAL) chainId is optional and will be detected from the endpoint (eth_chainId),
+            * but it is recommended to set it explicitly, for faster initialization. 
+            * DEFAULT: auto-detected.
+            */
+            chainId: 42161,
+            // (OPTIONAL) statePollerInterval used to periodically fetch the latest/finalized/sync states.
+            // DEFAULT: 30s.
+            statePollerInterval: "30s",
+            // (OPTIONAL) nodeType is optional and you can manually set it to "full" or "archive".
+            // DEFAULT: archive
+            nodeType: "full",
+            // (OPTIONAL) maxAvailableRecentBlocks limits the maximum number of recent blocks to be served by this upstream.
+            // DEFAULT: 128 (for "full" nodes).
+            maxAvailableRecentBlocks: 128,
+            // (OPTIONAL) fallbackFinalityDepth is optional and allows to manually set the finality depth.
+            // DEFAULT: <none> - eRPC will auto-detect via eth_getBlockByNumber(finalized).
+            fallbackFinalityDepth: 1024,
+          },
+
+          /**
+          * (OPTIONAL) Defines which budget to use when hadnling requests of this upstream (e.g. to limit total RPS)
+          * Since budgets can be applied to multiple upstreams they all consume from the same budget.
+          * For example "global-blast" below can be applied to all chains supported by BlastAPI,
+          * to ensure you're not hitting them more than your account allows.
+          * DEFAULT: <none> - no budget applied.
+          */
+          rateLimitBudget: "global-blast",
+          /*
+          * (OPTIONAL) Rate limit budget can be automatically adjusted based on the "rate-limited" error rate,
+          * received from upstream. Auto-tuning is enabled by default with values below.
+          * This is useful to automatically increase the budget if an upstream is capable of handling more requests,
+          * and decrease the budget if upstream is degraded.
+          * 
+          * Every "adjustmentPeriod" total number of requests vs rate-limited will be calculated,
+          * 
+          * - if the value (0 to 1) is above "errorRateThreshold" then budget will be decreased by "decreaseFactor",
+          * - if the value is below "errorRateThreshold" then budget will be increased by "increaseFactor".
+          * 
+          * Note that the new budget will be applied to any upstream using this budget (e.g. Quicknode budget decreases).
+          * 
+          * DEFAULT: if any budget is defined, auto-tuning is enabled with these values:
+          */
+          rateLimitAutoTune: {
+            enabled: true,
+            adjustmentPeriod: "1m",
+            errorRateThreshold: 0.1,
+            increaseFactor: 1.05,
+            decreaseFactor: 0.9,
+            minBudget: 0,
+            maxBudget: 10_000,
+          },
+
+          /*
+          * (OPTIONAL) To allow auto-batching requests towards the upstream.
+          * Remember even if "supportsBatch" is false, you still can send batch requests to eRPC
+          * but they will be sent to upstream as individual requests.
+          */
+          jsonRpc: {
+            supportsBatch: true,
+            batchMaxSize: 10,
+            batchMaxWait: "50ms",
+          },
+
+          // (OPTIONAL) Which methods must never be sent to this upstream.
+          // For example this can be used to avoid archive calls (traces) to full nodes
+          ignoreMethods: [
+            "eth_traceTransaction",
+            "alchemy_*",
+          ],
+          // (OPTIONAL) Explicitly allowed methods will take precedence over ignoreMethods.
+          // For example if you only want eth_getLogs to be served, set ignore methods to "*" and allowMethods to "eth_getLogs".
+          allowMethods: [
+            "eth_getLogs",
+          ],
+          /*
+          * (OPTIONAL) By default a dynamic mechanism automatically adds "Unsupported" methods to ignoreMethods,
+          * based on errors returned by the upstream. Set this to false to disable this behavior.
+          * Default: true
+          */
+          autoIgnoreUnsupportedMethods: true,
+
+          // (OPTIONAL) Refer to "Failsafe" docs section for more details.
+          // Here is "default" configuration if not explicitly set:
+          failsafe: {
+            timeout: {
+              duration: "15s",
+            },
+            retry: {
+              maxCount: 2,
+              delay: "1000ms",
+              backoffMaxDelay: "10s",
+              backoffFactor: 0.3,
+              jitter: "500ms",
+            },
+            circuitBreaker: {
+              // Open circuit after 80% of requests so far have failed (160 out of 200 last requests)
+              failureThresholdCount: 160,
+              failureThresholdCapacity: 200,
+              // Wait 5 minutes before trying again
+              halfOpenAfter: "5m",
+              // Close circuit after 3 successful requests (3 out of 10)
+              successThresholdCount: 3,
+              successThresholdCapacity: 10,
+            },
+          },
+        },
+      ],
+    },
+  ],
+});
+
+```
+</Tabs.Tab>
+</Tabs>
 
 ## Priority & selection mechanism
 
@@ -135,6 +292,8 @@ eRPC evaluates each upstream's performance using key metrics to decide the most 
 
 Each upstream receives a **score** based on these metrics, calculated per method (e.g., `eth_blockNumber`, `eth_getLogs`) over a configurable time window (`windowSize`, default 30 minutes). Adjust the window size in `erpc.yaml` as shown:
 
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 projects:
   # ...
@@ -144,6 +303,26 @@ projects:
       scoreMetricsWindowSize: 1h
       # ...
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  // ...
+  projects: [
+    {
+      id: "main",
+      // ...
+      healthCheck: {
+        scoreMetricsWindowSize: "1h",
+      },
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 <Callout type='info'>
   The scoring mechanism only affects the order in which upstreams are tried. To fully disable an unreliable upstream, use the [Circuit Breaker](https://docs.erpc.cloud/config/failsafe#circuitbreaker-policy) failsafe policy at the upstream level.
@@ -153,6 +332,8 @@ projects:
 
 Upstreams are ranked by score, controlling selection order. You can adjust this ranking by setting multipliers at different levels: overall, per network or method, or for specific metrics (e.g., error rate, block lag).
 
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 upstreams:
   # ...
@@ -176,9 +357,50 @@ upstreams:
           blockHeadLag: 2.0    # Penalize nodes lagging in block head updates by increasing this value.
           finalizationLag: 1.0 # Penalize nodes lagging in finalization by increasing this value.
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  upstreams: [
+    // ...
+    {
+      id: "my-alchemy",
+      // ...
+      routing: {
+        scoreMultipliers: [
+          {
+            network: "*", // Relevant when upstream supports multiple networks (default: all networks)
+            method: "*", // Method(s) where you want to apply these multipliers (default: all methods)
+            // method: 'eth_*|alchemy_*' means apply these multipliers to all methods starting with "eth_" or "alchemy_"
+
+            // (OPTIONAL) Adjusts the overall score scale.
+            // DEFAULT: 1.0
+            overall: 1.0,
+
+            // (OPTIONAL) Default multiplier values:
+            errorRate: 8.0,       // Penalize higher error rates by increasing this value.
+            p90latency: 4.0,      // Penalize higher latency by increasing this value.
+            totalRequests: 1.0,   // Give more weight to upstreams with fewer requests.
+            throttledRate: 3.0,   // Penalize higher throttled requests by increasing this value.
+            blockHeadLag: 2.0,    // Penalize nodes lagging in block head updates by increasing this value.
+            finalizationLag: 1.0, // Penalize nodes lagging in finalization by increasing this value.
+          },
+        ],
+      },
+    },
+  ],
+});
+
+```
+</Tabs.Tab>
+</Tabs>
 
 Example: To prioritize a less expensive (but slower) upstream, adjust the `overall` score multiplier as follows:
 
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 upstreams:
   # ...
@@ -193,6 +415,42 @@ upstreams:
       scoreMultipliers:
         - overall: 1
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  upstreams: [
+    // ...
+    {
+      id: "my-cheap-node",
+      // ...
+      routing: {
+        scoreMultipliers: [
+          {
+            overall: 10,
+          },
+        ],
+      },
+    },
+    {
+      id: "my-expensive-node",
+      // ...
+      routing: {
+        scoreMultipliers: [
+          {
+            overall: 1,
+          },
+        ],
+      },
+    },
+  ],
+});
+
+```
+</Tabs.Tab>
+</Tabs>
 
 <Callout type='info'>
   A higher score means the upstream is tried first. If errors occur, other upstreams are attempted.
@@ -204,6 +462,8 @@ upstreams:
 
 These are generic well-known EVM-compatible JSON-RPC endpoints. This is the default and most-used type. They can be your own self-hosted nodes, or remote 3rd-party provider nodes.
 
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
 projects:
@@ -231,11 +491,55 @@ projects:
           maxAvailableRecentBlocks: 128
         # ...
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          id: "my-infura",
+          type: "evm",
+          endpoint: "https://mainnet.infura.io/v3/YOUR_INFURA_KEY",
+
+          // (OPTIONAL) Configurations for EVM-compatible upstreams.
+          evm: {
+            // (OPTIONAL) chainId is optional and will be detected from the endpoint (eth_chainId),
+            // but it is recommended to set it explicitly, for faster initialization. 
+            // DEFAULT: auto-detected.
+            chainId: 42161,
+            // (OPTIONAL) statePollerInterval used to periodically fetch the latest/finalized/sync states.
+            // DEFAULT: 30s.
+            statePollerInterval: "30s",
+            // (OPTIONAL) nodeType is optional and you can manually set it to "full" or "archive".
+            // DEFAULT: archive
+            nodeType: "full",
+            // (OPTIONAL) maxAvailableRecentBlocks limits the maximum number of recent blocks to be served by this upstream.
+            // DEFAULT: 128 (for "full" nodes").
+            maxAvailableRecentBlocks: 128,
+          },
+          // ...
+        },
+      ],
+    },
+  ],
+});
+
+```
+</Tabs.Tab>
+</Tabs>
 
 ### `alchemy`
 
 This upstream type is built specially for [Alchemy](https://alchemy.com) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
 
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
 projects:
@@ -246,11 +550,36 @@ projects:
         endpoint: alchemy://YOUR_ALCHEMY_API_KEY
         # ...
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          id: "my-alchemy",
+          endpoint: "alchemy://YOUR_ALCHEMY_API_KEY",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 ### `drpc`
 
 This upstream type is built specially for [dRPC](https://drpc.org) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
 
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>  
 ```yaml filename="erpc.yaml"
 # ...
 projects:
@@ -261,11 +590,36 @@ projects:
         endpoint: drpc://YOUR_DRPC_API_KEY
         # ...
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          id: "my-drpc",
+          endpoint: "drpc://YOUR_DRPC_API_KEY",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 ### `blastapi`
 
 This upstream type is built specially for [BlastAPI](https://blastapi.io) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
 
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
 projects:
@@ -276,11 +630,36 @@ projects:
         endpoint: blastapi://YOUR_BLASTAPI_API_KEY
         # ...
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          id: "my-blastapi",
+          endpoint: "blastapi://YOUR_BLASTAPI_API_KEY",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 ### `infura`
 
 This upstream type is built specially for [Infura](https://www.infura.io/) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
 
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
 projects:
@@ -291,11 +670,36 @@ projects:
         endpoint: infura://YOUR_INFURA_API_KEY
         # ...
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          id: "my-infura",
+          endpoint: "infura://YOUR_INFURA_API_KEY",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 ### `thirdweb`
 
 This upstream type is built specially for [Thirdweb](https://thirdweb.com/chainlist) 3rd-party provider to make it easier to import "all supported evm chains" with just a CLIENT-ID.
 
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
 projects:
@@ -306,6 +710,29 @@ projects:
         endpoint: thirdweb://YOUR_THIRDWEB_CLIENT_ID
         # ...
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          id: "my-thirdweb",
+          endpoint: "thirdweb://YOUR_THIRDWEB_CLIENT_ID",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 For production traffic consult with Thirdweb team about the chains you are goin to use and amount of traffic you expect to handle.
 
@@ -313,6 +740,8 @@ For production traffic consult with Thirdweb team about the chains you are goin 
 
 Envio [HyperRPC](https://docs.envio.dev/docs/HyperSync/hyperrpc-supported-networks) service provides a higher-performance alternative for certain read methods. When handling requests if a [method is supported by HyperRPC](https://docs.envio.dev/docs/HyperSync/overview-hyperrpc), then this upstream may be used.
 
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
 projects:
@@ -323,6 +752,29 @@ projects:
         endpoint: envio://rpc.hypersync.xyz
         # ...
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          id: "envio-public",
+          endpoint: "envio://rpc.hypersync.xyz",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 <Callout type='info'>
   For indexing use-cases it is recommended to this upstream. This will automatically add all supported EVM chains by HyperRPC.
@@ -332,6 +784,8 @@ projects:
 
 [Pimlico](https://pimlico.io) adds account-abstraction (ERC-4337) support to your eRPC instance. With this upstream added when a AA-related request arrives it'll be forwarded to Pimlico, which allows you to use the same RPC endpoint for both usual eth_* methods along with ERC-4337 methods.
 
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
 projects:
@@ -344,11 +798,37 @@ projects:
         # endpoint: pimlico://xxxxxmy-api-key
         # ...
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          id: "pimlico-public",
+          endpoint: "pimlico://public",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 ### `etherspot`
 
 [Etherspot](https://etherspot.io/) adds account-abstraction (ERC-4337) support to your eRPC instance. With this upstream added when a AA-related request arrives it'll be forwarded to Etherspot, which allows you to use the same RPC endpoint for both usual eth_* methods along with ERC-4337 methods.
 
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
 projects:
@@ -361,6 +841,30 @@ projects:
         # endpoint: etherspot://xxxxxmy-api-key
         # ...
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          id: "etherspot-public",
+          endpoint: "etherspot://public",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
 ## Compression
 
 eRPC supports gzip compression at multiple points in the request/response cycle:
@@ -376,20 +880,58 @@ curl -X POST \
 ```
 
 2. **eRPC → Upstream**: Configurable per upstream to send gzipped requests (disabled by default)
-```yaml
+
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
 upstreams:
   - id: my-infura
     jsonRpc:
       enableGzip: false  # gzip when sending requests to this upstream (disabled by default)
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  upstreams: [
+    {
+      id: "my-infura",
+      jsonRpc: { 
+        enableGzip: false // gzip when sending requests to this upstream (disabled by default)
+      },
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 3. **Upstream → eRPC**: Automatically handles gzipped responses from upstreams when they send `Content-Encoding: gzip`
 
 4. **eRPC → Client**: Automatically enabled when clients send `Accept-Encoding: gzip` header (can be disabled in server config)
-```yaml
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
 server:
   enableGzip: true  # gzip compression for responses to clients (enabled by default)
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  server: {
+    enableGzip: true, // gzip compression for responses to clients (enabled by default)
+  },
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 <Callout type='info'>
   Using gzip can reduce ingress/egress bandwidth costs, and in certain cases (e.g. large RPC requests) it can improve performance.
