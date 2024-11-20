@@ -32,6 +32,56 @@ projects:
           # DEFAULT: auto-detect - via eth_getBlockByNumber(finalized).
           fallbackFinalityDepth: 1024
 
+        # (OPTIONAL) Refer to "Selection Policy" section for more details.
+        # Here are default values used for selectionPolicy if not explicitly defined:
+        selectionPolicy:
+          # Every 1 minute evaluate which upstreams must be included,
+          # based on the arbitrary logic (e.g., <90% error rate and <10 block lag):
+          evalInterval: 1m
+          
+          # To isolate selection evaluation and result to each "method" separately change this flag to true
+          evalPerMethod: false
+          
+          # Freeform TypeScript-based logic to select upstreams to be included by returning them:
+          evalFunction: |
+            (upstreams, method) => {
+              
+              const defaults = upstreams.filter(u => u.config.group !== 'fallback')
+              const fallbacks = upstreams.filter(u => u.config.group === 'fallback')
+              
+              // Maximum allowed error rate.
+              const maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7')
+              
+              // Maximum allowed block head lag.
+              const maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10')
+              
+              // Minimum number of healthy upstreams that must be included in default group.
+              const minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1')
+              
+              // Filter upstreams that are healthy based on error rate and block head lag.
+              const healthyOnes = defaults.filter(
+                u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
+              )
+              
+              // If there are enough healthy upstreams, return them.
+              if (healthyOnes.length >= minHealthyThreshold) {
+                return healthyOnes
+              }
+
+              // Otherwise, return all healthy upstreams plus all fallback ones.
+              return [...healthyOnes, ...fallbacks]
+            }
+          
+          # When an upstream is excluded, you can give it a chance on a regular basis
+          # to handle a certain number of sample requests again, so that metrics are refreshed.
+          # For example, to see if error rate is improving after 5 minutes, or still too high.
+          # This is conceptually similar to how a circuit-breaker works in a "half-open" state.
+          # Resampling is not always needed because the "evm state poller" component will still make
+          # requests for the "latest" block, which still updates errorRate.
+          resampleExcluded: false
+          resampleInterval: 5m
+          resampleCount: 10
+
         # (OPTIONAL) A network-level rate limit budget applied to all requests despite upstreams own rate-limits.
         # For example even if upstreams can handle 1000 RPS, and network-level is limited to 100 RPS,
         # the request will be rate-limited to 100 RPS.
@@ -92,6 +142,62 @@ export default createConfig({
             * DEFAULT: auto-detect - via eth_getBlockByNumber(finalized).
             */
             fallbackFinalityDepth: 1024,
+          },
+
+          /**
+          * (OPTIONAL) Refer to "Selection Policy" section for more details.
+          * Here are default values used for selectionPolicy if not explicitly defined:
+          */
+          selectionPolicy: {
+            // Every 1 minute evaluate which upstreams must be included,
+            // based on the arbitrary logic (e.g., <90% error rate and <10 block lag):
+            evalInterval: "1m",
+            
+            // Freeform TypeScript-based logic to select upstreams to be included by returning them:
+            evalFunction:
+              (upstreams, method) => {
+                // Separate upstreams into two groups:
+                const defaults = upstreams.filter(u => u.config.group !== 'fallback');
+                const fallbacks = upstreams.filter(u => u.config.group === 'fallback');
+                
+                // Maximum allowed error rate.
+                const maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7');
+                
+                // Maximum allowed block head lag.
+                const maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10');
+                
+                // Minimum number of healthy upstreams that must be included in default group.
+                const minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1');
+                
+                // Filter upstreams that are healthy based on error rate and block head lag.
+                const healthyOnes = defaults.filter(
+                  u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
+                );    
+                
+                // If there are enough healthy upstreams, return them.
+                if (healthyOnes.length >= minHealthyThreshold) {
+                  return healthyOnes;
+                }
+
+                // Otherwise, return all healthy upstreams plus all fallback ones.
+                return [...healthyOnes, ...fallbacks];
+              }
+            ,
+            
+            // To isolate selection evaluation and result to each "method" separately, set this flag to true
+            evalPerMethod: false,
+            
+            /*
+            * When an upstream is excluded, you can give it a chance on a regular basis
+            * to handle a certain number of sample requests again, so that metrics are refreshed.
+            * For example, to see if error rate is improving after 5 minutes, or still too high.
+            * This is conceptually similar to how a circuit-breaker works in a "half-open" state.
+            * Resampling is not always needed because the "evm state poller" component will still make
+            * requests for the "latest" block, which still updates errorRate.
+            */
+            resampleExcluded: false,
+            resampleInterval: "5m",
+            resampleCount: 10,
           },
 
           /**

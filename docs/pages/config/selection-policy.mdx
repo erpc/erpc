@@ -137,7 +137,7 @@ export default createConfig({
             evalInterval: "1m",
             
             // Freeform TypeScript-based logic to select upstreams to be included by returning them:
-            evalFunction: `
+            evalFunction:
               (upstreams, method) => {
                 // Separate upstreams into two groups:
                 const defaults = upstreams.filter(u => u.config.group !== 'fallback');
@@ -165,7 +165,7 @@ export default createConfig({
                 // Otherwise, return all healthy upstreams plus all fallback ones.
                 return [...healthyOnes, ...fallbacks];
               }
-            `,
+            ,
             
             // To isolate selection evaluation and result to each "method" separately, set this flag to true
             evalPerMethod: false,
