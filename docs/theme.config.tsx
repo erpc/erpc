@@ -62,6 +62,7 @@ export default {
 	},
 	head: function useHead() {
 		const config = useConfig()
+		console.log('CONFIG', config)
 		const { route } = useRouter()
 		const isDefault = route === '/' || !config.title
 		const image =
@@ -91,47 +92,3 @@ export default {
 		  </>
 		)
 	  }
-	// head: (
-	// 	<>
-	// 		<title>eRPC - EVM RPC Proxy & Cache Service</title>
-	// 		<link rel="icon" href="./assets/favicon.ico" type="image/x-icon"></link>
-	// 		<meta
-	// 			name="description"
-	// 			content="Fault-tolerant EVM RPC load balancer with reorg-aware permanent caching and auto-discovery of node providers."
-	// 		/>
-	// 		<meta
-	// 			property="og:title"
-	// 			content="eRPC - EVM RPC Proxy & Cache Service"
-	// 		/>
-	// 		<meta
-	// 			property="og:description"
-	// 			content="Fault-tolerant EVM RPC load balancer with reorg-aware permanent caching and auto-discovery of node providers."
-	// 		/>
-	// 		<meta
-	// 			property="og:image"
-	// 			content="https://i.imgur.com/kGC41ms.png"
-	// 		/>
-	// 		<meta
-	// 			property="og:url"
-	// 			content="https://erpc.cloud"
-	// 		/>
-	// 		<meta
-	// 			name="twitter:card"
-	// 			content="summary_large_image"
-	// 		/>
-	// 		<meta
-	// 			name="twitter:title"
-	// 			content="eRPC - EVM RPC Proxy & Cache Service"
-	// 		/>
-	// 		<meta
-	// 			name="twitter:description"
-	// 			content="Fault-tolerant EVM RPC load balancer with reorg-aware permanent caching and auto-discovery of node providers."
-	// 		/>
-	// 		<meta
-	// 			name="twitter:image"
-	// 			content="https://i.imgur.com/kGC41ms.png"
-	// 		/>
-	// 		<script defer data-domain="erpc.cloud" src="https://plausible.io/js/script.js"></script>
-	// 	</>
-	// )
-};
