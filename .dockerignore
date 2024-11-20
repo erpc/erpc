@@ -1,6 +1,44 @@
-erpc.yaml
-_ignore.*
-coverage.txt
-node_modules
-test
-.next
+# Version control
+.git
+.gitignore
+
+# Build artifacts
+bin/
+dist/
+build/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Development and IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Test files
+*_test.go
+*.test
+coverage.out
+test/
+
+# Dependencies that will be reinstalled
+node_modules/
+
+# Local development files
+.env
+.env.local
+*.log
+tmp/
+
+# Documentation
+docs/
+*.md
+LICENSE
+
+# Docker files themselves
+Dockerfile
+.dockerignore
+docker-compose*.yml

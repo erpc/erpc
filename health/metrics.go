@@ -164,6 +164,36 @@ var (
 		Help:      "Total number of self-imposed (locally) rate limited requests due to auth config for a project.",
 	}, []string{"project", "strategy", "category"})
 
+	MetricCacheSetSuccessTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "cache_set_success_total",
+		Help:      "Total number of cache set operations.",
+	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+
+	MetricCacheSetErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "cache_set_error_total",
+		Help:      "Total number of cache set errors.",
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
+
+	MetricCacheGetSuccessHitTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "cache_get_success_hit_total",
+		Help:      "Total number of cache get hits.",
+	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+
+	MetricCacheGetSuccessMissTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "cache_get_success_miss_total",
+		Help:      "Total number of cache get misses.",
+	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+
+	MetricCacheGetErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "cache_get_error_total",
+		Help:      "Total number of cache get errors.",
+	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
+
 	MetricCORSRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cors_requests_total",

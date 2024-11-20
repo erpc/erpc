@@ -27,8 +27,8 @@
 
 # Case Studies
 
-[🚀 Moonwell: How eRPC slashed RPC calls by 67%](https://erpc.cloud/case-studies/moonwell)<br/>
-[🚀 Chronicle: How eRPC reduced RPC cost by 45%](https://erpc.cloud/case-studies/chronicle)
+* 🚀 [Moonwell: How eRPC slashed RPC calls by 67%](https://erpc.cloud/case-studies/moonwell)
+* 🚀 [Chronicle: How eRPC reduced RPC cost by 45%](https://erpc.cloud/case-studies/chronicle)
 
 # Usage & Docs
 

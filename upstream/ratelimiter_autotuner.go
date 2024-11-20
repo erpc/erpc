@@ -80,7 +80,11 @@ func (arl *RateLimitAutoTuner) RecordError(method string) {
 func (arl *RateLimitAutoTuner) adjustBudget(method string) {
 	lastAdjustment, exists := arl.lastAdjustments[method]
 	if !exists || time.Since(lastAdjustment) >= arl.adjustmentPeriod {
-		rules := arl.budget.GetRulesByMethod(method)
+		rules, err := arl.budget.GetRulesByMethod(method)
+		if err != nil {
+			arl.logger.Warn().Err(err).Msgf("failed to get rules for method %s", method)
+			return
+		}
 		for _, rule := range rules {
 			currentMax := rule.Config.MaxCount
 			erc := arl.errorCounts[method].errorCount

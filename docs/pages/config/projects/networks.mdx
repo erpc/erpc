@@ -20,7 +20,7 @@ projects:
     # Only provide network list if you want to customize features such as failsafe policies, rate limit budget, finality depth, etc.
     networks:
       - architecture: evm
-        # When "evm" is used, "chainId" is required, so that rate limit budget or failsafe policies are properly applied.
+        # (OPTIONAL) When "evm" is used, "chainId" is required, so that rate limit budget or failsafe policies are properly applied.
         evm:
           # (REQUIRED) chainId is required when "evm" architecture is used.
           chainId: 1

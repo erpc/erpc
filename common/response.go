@@ -1,6 +1,7 @@
 package common
 
 import (
+	"fmt"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -25,7 +26,8 @@ type NormalizedResponse struct {
 	upstream  Upstream
 
 	jsonRpcResponse atomic.Pointer[JsonRpcResponse]
-	evmBlockNumber  atomic.Int64
+	evmBlockNumber  atomic.Value
+	evmBlockRef     atomic.Value
 }
 
 type ResponseMetadata interface {
@@ -41,6 +43,10 @@ func NewNormalizedResponse() *NormalizedResponse {
 }
 
 func (r *NormalizedResponse) FromCache() bool {
+	if r == nil {
+		return false
+	}
+
 	return r.fromCache
 }
 
@@ -50,6 +56,10 @@ func (r *NormalizedResponse) SetFromCache(fromCache bool) *NormalizedResponse {
 }
 
 func (r *NormalizedResponse) Attempts() int {
+	if r == nil {
+		return 0
+	}
+
 	return r.attempts
 }
 
@@ -59,6 +69,10 @@ func (r *NormalizedResponse) SetAttempts(attempts int) *NormalizedResponse {
 }
 
 func (r *NormalizedResponse) Retries() int {
+	if r == nil {
+		return 0
+	}
+
 	return r.retries
 }
 
@@ -68,6 +82,10 @@ func (r *NormalizedResponse) SetRetries(retries int) *NormalizedResponse {
 }
 
 func (r *NormalizedResponse) Hedges() int {
+	if r == nil {
+		return 0
+	}
+
 	return r.hedges
 }
 
@@ -77,7 +95,7 @@ func (r *NormalizedResponse) SetHedges(hedges int) *NormalizedResponse {
 }
 
 func (r *NormalizedResponse) Upstream() Upstream {
-	if r.upstream == nil {
+	if r == nil || r.upstream == nil {
 		return nil
 	}
 
@@ -85,7 +103,7 @@ func (r *NormalizedResponse) Upstream() Upstream {
 }
 
 func (r *NormalizedResponse) UpstreamId() string {
-	if r.upstream == nil {
+	if r == nil || r.upstream == nil {
 		return ""
 	}
 
@@ -158,6 +176,10 @@ func (r *NormalizedResponse) Request() *NormalizedRequest {
 }
 
 func (r *NormalizedResponse) Error() error {
+	if r == nil {
+		return nil
+	}
+
 	if r.err != nil {
 		return r.err
 	}
@@ -213,37 +235,115 @@ func (r *NormalizedResponse) IsObjectNull() bool {
 	return false
 }
 
-func (r *NormalizedResponse) EvmBlockNumber() (int64, error) {
+func (r *NormalizedResponse) EvmBlockRefAndNumber() (string, int64, error) {
 	if r == nil {
-		return 0, nil
+		return "", 0, nil
 	}
 
-	if n := r.evmBlockNumber.Load(); n != 0 {
-		return n, nil
+	var blockNumber int64
+	var blockRef string
+
+	// Try to load from local cache
+	if n := r.evmBlockNumber.Load(); n != nil {
+		blockNumber = n.(int64)
+	}
+	if br := r.evmBlockRef.Load(); br != nil {
+		blockRef = br.(string)
+	}
+	if blockRef != "" && blockNumber != 0 {
+		return blockRef, blockNumber, nil
+	}
+
+	// Try to load from response (enriched with request context)
+	if r.request == nil {
+		return blockRef, blockNumber, nil
+	}
+	jrr := r.jsonRpcResponse.Load()
+	if jrr == nil {
+		return blockRef, blockNumber, nil
+	}
+	rq, err := r.request.JsonRpcRequest()
+	if err != nil {
+		return blockRef, blockNumber, err
+	}
+	br, bn, err := ExtractEvmBlockReferenceFromResponse(rq, jrr)
+	if br != "" {
+		blockRef = br
+	}
+	if bn != 0 {
+		blockNumber = bn
+	}
+	if err != nil {
+		return blockRef, blockNumber, err
+	}
+
+	// Store to local cache
+	if blockNumber != 0 {
+		r.evmBlockNumber.Store(blockNumber)
+	}
+	if blockRef != "" {
+		r.evmBlockRef.Store(blockRef)
+	}
+
+	return blockRef, blockNumber, nil
+}
+
+func (r *NormalizedResponse) FinalityState() (finality DataFinalityState) {
+	finality = DataFinalityStateUnknown
+
+	if r == nil {
+		return
+	}
+
+	method, _ := r.request.Method()
+	if _, ok := EvmStaticMethods[method]; ok {
+		// Static methods are not expected to change over time so we can consider them finalized
+		finality = DataFinalityStateFinalized
+		return
 	}
 
 	if r.request == nil {
-		return 0, nil
+		return
 	}
 
-	rq, err := r.request.JsonRpcRequest()
-	if err != nil {
-		return 0, err
+	ntw := r.request.Network()
+	if ntw == nil {
+		return
 	}
 
-	jrr := r.jsonRpcResponse.Load()
-	if jrr == nil {
-		return 0, nil
+	_, blockNumber, _ := r.request.EvmBlockRefAndNumber()
+
+	if blockNumber > 0 {
+		upstream := r.Upstream()
+		if upstream != nil {
+			stp := ntw.EvmStatePollerOf(upstream.Config().Id)
+			if stp != nil {
+				if isFinalized, err := stp.IsBlockFinalized(blockNumber); err == nil {
+					if isFinalized {
+						finality = DataFinalityStateFinalized
+					} else {
+						finality = DataFinalityStateUnfinalized
+					}
+				}
+			}
+		}
+	} else {
+		// Certain methods that return data for 'pending' blocks/transactions are always considered unfinalized
+		switch method {
+		case "eth_getBlockByNumber",
+			"eth_getBlockByHash",
+			"eth_getUncleByBlockHashAndIndex",
+			"eth_getUncleByBlockNumberAndIndex",
+			"eth_getTransactionByHash",
+			"eth_getTransactionReceipt",
+			"eth_getTransactionByBlockHashAndIndex",
+			"eth_getTransactionByBlockNumberAndIndex":
+			// No block number means the data is for 'pending' block/transaction
+			finality = DataFinalityStateUnfinalized
+		}
 	}
 
-	_, bn, err := ExtractEvmBlockReferenceFromResponse(rq, jrr)
-	if err != nil {
-		return 0, err
-	}
-
-	r.evmBlockNumber.Store(bn)
-
-	return bn, nil
+	return
 }
 
 func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
@@ -258,10 +358,15 @@ func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
 }
 
 func (r *NormalizedResponse) WriteTo(w io.Writer) (n int64, err error) {
+	if r == nil {
+		return 0, fmt.Errorf("unexpected nil response when calling NormalizedResponse.WriteTo")
+	}
+
 	if jrr := r.jsonRpcResponse.Load(); jrr != nil {
 		return jrr.WriteTo(w)
 	}
-	return 0, nil
+
+	return 0, fmt.Errorf("unexpected empty response when calling NormalizedResponse.WriteTo")
 }
 
 func (r *NormalizedResponse) Release() {
