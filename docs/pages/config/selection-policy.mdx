@@ -1,0 +1,192 @@
+import { Callout, Tabs, Tab } from 'nextra/components'
+
+### Selection Policy
+
+**Selection Policy** allows you to influence how upstreams are selected to serve (or not) traffic. A selection policy is defined at the network level and is responsible for returning a list of upstreams that must remain active. 
+
+The primary purpose of a selection policy is to define acceptable performance metrics and/or required conditions for selecting an upstream node.
+
+<Callout type='info'>
+  Selection policies can be configured to run per-method and network or per-network only. <br />
+</Callout>
+
+<Callout type='info'>
+   By default, a "default" selection policy is activated if at least one upstream is assigned to the "fallback" group. This default policy incorporates basic logic for error rates and block lag, which can be tuned via theese environment variables 
+   
+   * `ROUTING_POLICY_MAX_ERROR_RATE` (Default: `0.7`): Maximum allowed error rate.
+   * `ROUTING_POLICY_MAX_BLOCK_HEAD_LAG` (Default: `10`): Maximum allowed block head lag.
+   * `ROUTING_POLICY_MIN_HEALTHY_THRESHOLD` (Default: `1`): Minimum number of healthy upstreams that must be included in default group.
+   
+   These environment variables allow you to adjust the default logic without rewriting the policy function.
+</Callout>
+
+<Callout type='info'>
+  Selection policies are not executed per request, instead they run on an interval much like a healthcheck and update the available upstreams.
+</Callout>
+
+#### Use Cases
+
+- **Block Lag Management:** Disable upstreams that are lagging behind more than a specified number of blocks until they resync.
+- **Error Rate Handling:** Exclude upstreams exceeding a certain error rate and periodically check their status.
+- **Cost-Efficiency Optimization:** Prioritize "cheap" nodes and fallback to "fast" nodes only when necessary.
+
+#### Config
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main 
+
+    upstreams:
+      - endpoint: cheap-1.com
+      - endpoint: cheap-2.com
+      - endpoint: fast-1.com
+        # Each upstream can have an arbitrary group name which is used in metrics, as well as 
+        # useful when writing an eval function in selectionPolicy below.
+        group: fallback
+      - endpoint: fast-2.com
+        group: fallback
+
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+
+        # Determines when to include or exclude upstreams depending on their health and performance
+        selectionPolicy:
+          # Every 1 minute evaluate which upstreams must be included,
+          # based on the arbitrary logic (e.g., <90% error rate and <10 block lag):
+          evalInterval: 1m
+          
+          # Freeform TypeScript-based logic to select upstreams to be included by returning them:
+          evalFunction: |
+            (upstreams, method) => {
+              
+              const defaults = upstreams.filter(u => u.config.group !== 'fallback')
+              const fallbacks = upstreams.filter(u => u.config.group === 'fallback')
+              
+              // Maximum allowed error rate.
+              const maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7')
+              
+              // Maximum allowed block head lag.
+              const maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10')
+              
+              // Minimum number of healthy upstreams that must be included in default group.
+              const minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1')
+              
+              // Filter upstreams that are healthy based on error rate and block head lag.
+              const healthyOnes = defaults.filter(
+                u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
+              )
+              
+              // If there are enough healthy upstreams, return them.
+              if (healthyOnes.length >= minHealthyThreshold) {
+                return healthyOnes
+              }
+
+              // Otherwise, return all healthy upstreams plus all fallback ones.
+              return [...healthyOnes, ...fallbacks]
+            }
+          
+          # To isolate selection evaluation and result to each "method" separately change this flag to true
+          evalPerMethod: false
+
+
+          
+          # When an upstream is excluded, you can give it a chance on a regular basis
+          # to handle a certain number of sample requests again, so that metrics are refreshed.
+          # For example, to see if error rate is improving after 5 minutes, or still too high.
+          # This is conceptually similar to how a circuit-breaker works in a "half-open" state.
+          # Resampling is not always needed because the "evm state poller" component will still make
+          # requests for the "latest" block, which still updates errorRate.
+          resampleExcluded: false
+          resampleInterval: 5m
+          resampleCount: 100
+```
+</Tabs.Tab>
+<Tabs.Tab>
+```typescript filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+
+      upstreams: [
+        { endpoint: "cheap-1.com" },
+        { endpoint: "cheap-2.com" },
+        { endpoint: "fast-1.com", group: "fallback" },
+        { endpoint: "fast-2.com", group: "fallback" },
+      ],
+
+      networks: [
+        {
+          architecture: "evm",
+          evm: {
+            chainId: 1,
+          },
+
+          /**
+           * Determines when to include or exclude upstreams depending on their health and performance
+           */
+          selectionPolicy: {
+            // Every 1 minute evaluate which upstreams must be included,
+            // based on the arbitrary logic (e.g., <90% error rate and <10 block lag):
+            evalInterval: "1m",
+            
+            // Freeform TypeScript-based logic to select upstreams to be included by returning them:
+            evalFunction: `
+              (upstreams, method) => {
+                // Separate upstreams into two groups:
+                const defaults = upstreams.filter(u => u.config.group !== 'fallback');
+                const fallbacks = upstreams.filter(u => u.config.group === 'fallback');
+                
+                // Maximum allowed error rate.
+                const maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7');
+                
+                // Maximum allowed block head lag.
+                const maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10');
+                
+                // Minimum number of healthy upstreams that must be included in default group.
+                const minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1');
+                
+                // Filter upstreams that are healthy based on error rate and block head lag.
+                const healthyOnes = defaults.filter(
+                  u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
+                );    
+                
+                // If there are enough healthy upstreams, return them.
+                if (healthyOnes.length >= minHealthyThreshold) {
+                  return healthyOnes;
+                }
+
+                // Otherwise, return all healthy upstreams plus all fallback ones.
+                return [...healthyOnes, ...fallbacks];
+              }
+            `,
+            
+            // To isolate selection evaluation and result to each "method" separately, set this flag to true
+            evalPerMethod: false,
+            
+            /*
+            * When an upstream is excluded, you can give it a chance on a regular basis
+            * to handle a certain number of sample requests again, so that metrics are refreshed.
+            * For example, to see if error rate is improving after 5 minutes, or still too high.
+            * This is conceptually similar to how a circuit-breaker works in a "half-open" state.
+            * Resampling is not always needed because the "evm state poller" component will still make
+            * requests for the "latest" block, which still updates errorRate.
+            */
+            resampleExcluded: false,
+            resampleInterval: "5m",
+            resampleCount: 100,
+          },
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
