@@ -149,13 +149,83 @@ func (d *DatabaseConfig) Validate() error {
 	return nil
 }
 
+func (c *CacheConfig) Validate() error {
+	if len(c.Connectors) == 0 {
+		return fmt.Errorf("cache.*.connectors is required, add at least one connector")
+	}
+	existingIds := make(map[string]bool)
+	for _, connector := range c.Connectors {
+		if err := connector.Validate(); err != nil {
+			return err
+		}
+		if existingIds[connector.Id] {
+			return fmt.Errorf("cache.*.connectors.*.id must be unique, '%s' is duplicated", connector.Id)
+		}
+		existingIds[connector.Id] = true
+	}
+	if len(c.Policies) == 0 {
+		return fmt.Errorf("cache.*.policies is required, add at least one policy")
+	}
+	for _, policy := range c.Policies {
+		if err := policy.Validate(c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *CachePolicyConfig) Validate(c *CacheConfig) error {
+	if p.Network == "" {
+		return fmt.Errorf("cache.*.policies.*.network is required")
+	}
+	if p.Method == "" {
+		return fmt.Errorf("cache.*.policies.*.method is required")
+	}
+	if p.Connector == "" {
+		return fmt.Errorf("cache.*.policies.*.connector is required")
+	}
+
+	found := false
+	for _, connector := range c.Connectors {
+		if connector.Id == p.Connector {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("cache.*.policies.*.connector '%s' does not exist in cache.connectors", p.Connector)
+	}
+
+	if p.MinItemSize != nil {
+		if _, err := util.ParseByteSize(*p.MinItemSize); err != nil {
+			return fmt.Errorf("cache.*.policies.*.minItemSize is invalid: %w", err)
+		}
+	}
+
+	if p.MaxItemSize != nil {
+		if _, err := util.ParseByteSize(*p.MaxItemSize); err != nil {
+			return fmt.Errorf("cache.*.policies.*.maxItemSize is invalid: %w", err)
+		}
+	}
+
+	if p.MinItemSize != nil && p.MaxItemSize != nil {
+		minSize, _ := util.ParseByteSize(*p.MinItemSize)
+		maxSize, _ := util.ParseByteSize(*p.MaxItemSize)
+		if minSize > maxSize {
+			return fmt.Errorf("cache.*.policies.*.minItemSize must be less than or equal to maxItemSize")
+		}
+	}
+
+	return nil
+}
+
 func (c *ConnectorConfig) Validate() error {
 	if c.Driver == "" {
 		return fmt.Errorf("database.*.connector.driver is required")
 	}
-	drivers := []ConnectorDriverType{DriverMemory, DriverRedis, DriverPostgres, DriverDynamoDB}
+	drivers := []ConnectorDriverType{DriverMemory, DriverRedis, DriverPostgreSQL, DriverDynamoDB}
 	if !slices.Contains(drivers, c.Driver) {
-		return fmt.Errorf("database.*.connector.driver is invalid must be one of: %v", drivers)
+		return fmt.Errorf("database.*.connector.driver '%s' is invalid must be one of: %v", c.Driver, drivers)
 	}
 	if c.Driver == DriverMemory && c.Memory == nil {
 		return fmt.Errorf("database.*.connector.memory is required when driver is memory")
@@ -163,8 +233,8 @@ func (c *ConnectorConfig) Validate() error {
 	if c.Driver == DriverRedis && c.Redis == nil {
 		return fmt.Errorf("database.*.connector.redis is required when driver is redis")
 	}
-	if c.Driver == DriverPostgres && c.PostgreSQL == nil {
-		return fmt.Errorf("database.*.connector.postgres is required when driver is postgres")
+	if c.Driver == DriverPostgreSQL && c.PostgreSQL == nil {
+		return fmt.Errorf("database.*.connector.postgresql is required when driver is postgresql")
 	}
 	if c.Driver == DriverDynamoDB && c.DynamoDB == nil {
 		return fmt.Errorf("database.*.connector.dynamodb is required when driver is dynamodb")
@@ -172,18 +242,79 @@ func (c *ConnectorConfig) Validate() error {
 
 	// TODO switch to go-validator library :D
 	if c.Memory != nil && (c.Redis != nil || c.PostgreSQL != nil || c.DynamoDB != nil) {
-		return fmt.Errorf("database.*.connector.memory is mutually exclusive with database.*.connector.redis, database.*.connector.postgres, and database.*.connector.dynamodb")
+		return fmt.Errorf("database.*.connector.memory is mutually exclusive with database.*.connector.redis, database.*.connector.postgresql, and database.*.connector.dynamodb")
 	}
 	if c.Redis != nil && (c.Memory != nil || c.PostgreSQL != nil || c.DynamoDB != nil) {
-		return fmt.Errorf("database.*.connector.redis is mutually exclusive with database.*.connector.memory, database.*.connector.postgres, and database.*.connector.dynamodb")
+		return fmt.Errorf("database.*.connector.redis is mutually exclusive with database.*.connector.memory, database.*.connector.postgresql, and database.*.connector.dynamodb")
 	}
 	if c.PostgreSQL != nil && (c.Memory != nil || c.Redis != nil || c.DynamoDB != nil) {
-		return fmt.Errorf("database.*.connector.postgres is mutually exclusive with database.*.connector.memory, database.*.connector.redis, and database.*.connector.dynamodb")
+		return fmt.Errorf("database.*.connector.postgresql is mutually exclusive with database.*.connector.memory, database.*.connector.redis, and database.*.connector.dynamodb")
 	}
 	if c.DynamoDB != nil && (c.Memory != nil || c.Redis != nil || c.PostgreSQL != nil) {
-		return fmt.Errorf("database.*.connector.dynamodb is mutually exclusive with database.*.connector.memory, database.*.connector.redis, and database.*.connector.postgres")
+		return fmt.Errorf("database.*.connector.dynamodb is mutually exclusive with database.*.connector.memory, database.*.connector.redis, and database.*.connector.postgresql")
 	}
 
+	if c.DynamoDB != nil {
+		if err := c.DynamoDB.Validate(); err != nil {
+			return err
+		}
+	}
+	if c.PostgreSQL != nil {
+		if err := c.PostgreSQL.Validate(); err != nil {
+			return err
+		}
+	}
+	if c.Redis != nil {
+		if err := c.Redis.Validate(); err != nil {
+			return err
+		}
+	}
+	if c.Memory != nil {
+		if err := c.Memory.Validate(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (p *DynamoDBConnectorConfig) Validate() error {
+	if p.Table == "" {
+		return fmt.Errorf("database.*.connector.dynamodb.table is required")
+	}
+	if p.PartitionKeyName == "" {
+		return fmt.Errorf("database.*.connector.dynamodb.partitionKeyName is required")
+	}
+	if p.RangeKeyName == "" {
+		return fmt.Errorf("database.*.connector.dynamodb.rangeKeyName is required")
+	}
+	if p.ReverseIndexName == "" {
+		return fmt.Errorf("database.*.connector.dynamodb.reverseIndexName is required")
+	}
+	if p.TTLAttributeName == "" {
+		return fmt.Errorf("database.*.connector.dynamodb.ttlAttributeName is required")
+	}
+	return nil
+}
+
+func (p *PostgreSQLConnectorConfig) Validate() error {
+	if p.ConnectionUri == "" {
+		return fmt.Errorf("database.*.connector.postgresql.connectionUri is required")
+	}
+	if p.Table == "" {
+		return fmt.Errorf("database.*.connector.postgresql.table is required")
+	}
+	return nil
+}
+
+func (p *RedisConnectorConfig) Validate() error {
+	if p.Addr == "" {
+		return fmt.Errorf("database.*.connector.redis.addr is required")
+	}
+	return nil
+}
+
+func (p *MemoryConnectorConfig) Validate() error {
 	return nil
 }
 
@@ -192,19 +323,30 @@ func (p *ProjectConfig) Validate(c *Config) error {
 		return fmt.Errorf("project id is required")
 	}
 	if p.Upstreams != nil && len(p.Upstreams) > 0 {
+		existingIds := make(map[string]bool)
 		for _, upstream := range p.Upstreams {
 			if err := upstream.Validate(c); err != nil {
 				return err
 			}
+			if existingIds[upstream.Id] {
+				return fmt.Errorf("project.*.upstreams.*.id must be unique, '%s' is duplicated", upstream.Id)
+			}
+			existingIds[upstream.Id] = true
 		}
 	} else {
 		return fmt.Errorf("project.*.upstreams is required, add at least one upstream")
 	}
 	if p.Networks != nil {
+		existingIds := make(map[string]bool)
 		for _, network := range p.Networks {
 			if err := network.Validate(c); err != nil {
 				return err
 			}
+			ntwId := network.NetworkId()
+			if existingIds[ntwId] {
+				return fmt.Errorf("project.*.networks.*.id must be unique, '%s' is duplicated", ntwId)
+			}
+			existingIds[ntwId] = true
 		}
 	}
 	if p.Auth != nil {
@@ -276,7 +418,7 @@ func (s *AuthStrategyConfig) Validate() error {
 			return err
 		}
 	default:
-		return fmt.Errorf("auth.*.type is invalid must be one of: %v", []AuthType{
+		return fmt.Errorf("auth.*.type '%s' is invalid must be one of: %v", s.Type, []AuthType{
 			AuthTypeNetwork,
 			AuthTypeSecret,
 			AuthTypeJwt,
@@ -379,7 +521,7 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 			EvmNodeTypeFull,
 		}
 		if !slices.Contains(allowed, e.NodeType) {
-			return fmt.Errorf("upstream.*.evm.nodeType is invalid must be one of: %v", allowed)
+			return fmt.Errorf("upstream.*.evm.nodeType '%s' is invalid must be one of: %v", e.NodeType, allowed)
 		}
 	}
 	return nil

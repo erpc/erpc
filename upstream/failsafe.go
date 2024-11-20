@@ -317,7 +317,7 @@ func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolic
 
 					// has Retry-Empty directive + "empty" response + node is synced + block is finalized -> No Retry
 					if err == nil && rds.RetryEmpty && isEmpty && (ups.EvmSyncingState() == common.EvmSyncingStateNotSyncing) {
-						bn, ebn := req.EvmBlockNumber()
+						_, bn, ebn := req.EvmBlockRefAndNumber()
 						if ebn == nil && bn > 0 {
 							if ntw := req.Network(); ntw != nil {
 								if statePoller := ntw.EvmStatePollerOf(ups.Config().Id); statePoller != nil {
@@ -338,16 +338,19 @@ func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolic
 			// For pending transactions retry on network-level to give a chance of receiving
 			// the full TX data when it is available.
 			if rds.RetryPending {
-				method, _ := result.Request().Method()
-				switch method {
-				case "eth_getTransactionReceipt",
-					"eth_getTransactionByHash",
-					"eth_getTransactionByBlockHashAndIndex",
-					"eth_getTransactionByBlockNumberAndIndex":
-					blkNum, err := result.EvmBlockNumber()
-					if err == nil {
-						if blkNum == 0 {
-							return true
+				req := result.Request()
+				if req != nil {
+					method, _ := req.Method()
+					switch method {
+					case "eth_getTransactionReceipt",
+						"eth_getTransactionByHash",
+						"eth_getTransactionByBlockHashAndIndex",
+						"eth_getTransactionByBlockNumberAndIndex":
+						_, blkNum, err := req.EvmBlockRefAndNumber()
+						if err == nil {
+							if blkNum == 0 {
+								return true
+							}
 						}
 					}
 				}
@@ -355,10 +358,11 @@ func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolic
 		}
 
 		// Must not retry any 'write' methods
-		if result != nil && result.Request() != nil {
-			method, _ := result.Request().Method()
-			if method != "" && common.IsEvmWriteMethod(method) {
-				return false
+		if result != nil {
+			if req := result.Request(); req != nil {
+				if method, _ := req.Method(); method != "" && common.IsEvmWriteMethod(method) {
+					return false
+				}
 			}
 		}
 

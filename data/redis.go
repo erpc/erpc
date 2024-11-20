@@ -22,39 +22,45 @@ const (
 var _ Connector = (*RedisConnector)(nil)
 
 type RedisConnector struct {
+	id     string
 	logger *zerolog.Logger
 	client *redis.Client
+	ttls   map[string]time.Duration
 }
 
 func NewRedisConnector(
 	ctx context.Context,
 	logger *zerolog.Logger,
+	id string,
 	cfg *common.RedisConnectorConfig,
 ) (*RedisConnector, error) {
-	logger.Debug().Msgf("creating RedisConnector with config: %+v", cfg)
+	lg := logger.With().Str("connector", id).Logger()
+	lg.Debug().Interface("config", cfg).Msg("creating RedisConnector")
 
 	connector := &RedisConnector{
-		logger: logger,
+		id:     id,
+		logger: &lg,
+		ttls:   make(map[string]time.Duration),
 	}
 
 	// Attempt the actual connecting in background to avoid blocking the main thread.
 	go func() {
-		for i := 0; i < 30; i++ {
+		for i := 0; i < 600; i++ {
 			select {
 			case <-ctx.Done():
-				logger.Error().Msg("Context cancelled while attempting to connect to Redis")
+				lg.Error().Msg("context cancelled while attempting to connect to Redis")
 				return
 			default:
-				logger.Debug().Msgf("attempting to connect to Redis (attempt %d of 30)", i+1)
+				lg.Debug().Msgf("attempting to connect to Redis (attempt %d)", i+1)
 				err := connector.connect(ctx, cfg)
 				if err == nil {
 					return
 				}
-				logger.Warn().Msgf("failed to connect to Redis (attempt %d of 30): %s", i+1, err)
-				time.Sleep(10 * time.Second)
+				lg.Warn().Err(err).Msgf("failed to connect to Redis (attempt %d)", i+1)
+				time.Sleep(30 * time.Second)
 			}
 		}
-		logger.Error().Msg("Failed to connect to Redis after maximum attempts")
+		lg.Error().Msg("failed to connect to Redis after maximum attempts")
 	}()
 
 	return connector, nil
@@ -65,6 +71,7 @@ func (r *RedisConnector) connect(ctx context.Context, cfg *common.RedisConnector
 		Addr:     cfg.Addr,
 		Password: cfg.Password,
 		DB:       cfg.DB,
+		PoolSize: cfg.ConnPoolSize,
 	}
 
 	if cfg.TLS != nil && cfg.TLS.Enabled {
@@ -112,14 +119,26 @@ func createTLSConfig(tlsCfg *common.TLSConfig) (*tls.Config, error) {
 	return config, nil
 }
 
-func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey, value string) error {
+func (r *RedisConnector) Id() string {
+	return r.id
+}
+
+func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey, value string, ttl *time.Duration) error {
 	if r.client == nil {
 		return fmt.Errorf("redis client not initialized yet")
 	}
 
 	r.logger.Debug().Msgf("writing to Redis with partition key: %s and range key: %s", partitionKey, rangeKey)
+
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
-	rs := r.client.Set(ctx, key, value, 0)
+
+	// Use the provided TTL if one exists, otherwise set with no expiration
+	duration := time.Duration(0)
+	if ttl != nil {
+		duration = *ttl
+	}
+
+	rs := r.client.Set(ctx, key, value, duration)
 	return rs.Err()
 }
 

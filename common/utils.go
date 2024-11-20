@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/IGLOU-EU/go-wildcard/v2"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 )
 
@@ -72,16 +71,6 @@ func NormalizeHex(value interface{}) (string, error) {
 	default:
 		return "", fmt.Errorf("value is not a string or number: %+v", v)
 	}
-}
-
-func WildcardMatch(pattern, value string) bool {
-	portions := strings.Split(pattern, "|")
-	for _, portion := range portions {
-		if wildcard.Match(portion, value) {
-			return true
-		}
-	}
-	return false
 }
 
 func RemoveDuplicates(slice []string) []string {

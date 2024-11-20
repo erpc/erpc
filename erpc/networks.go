@@ -350,7 +350,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					// because cache layer already is not caching unfinalized data.
 					resp = lvr
 				} else if n.Architecture() == common.ArchitectureEvm {
-					evmBlkNum, err := lvr.EvmBlockNumber()
+					_, evmBlkNum, err := req.EvmBlockRefAndNumber()
 					if err == nil && evmBlkNum == 0 {
 						// For pending txs we can accept the response, if after retries it is still pending.
 						// This avoids failing with "retry" error, when we actually do have a response but blockNumber is null since tx is pending.
@@ -617,7 +617,10 @@ func (n *Network) acquireRateLimitPermit(req *common.NormalizedRequest) error {
 	}
 	lg := n.Logger.With().Str("method", method).Logger()
 
-	rules := rlb.GetRulesByMethod(method)
+	rules, errRules := rlb.GetRulesByMethod(method)
+	if errRules != nil {
+		return errRules
+	}
 	lg.Debug().Msgf("found %d network-level rate limiters", len(rules))
 
 	if len(rules) > 0 {

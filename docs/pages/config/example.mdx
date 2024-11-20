@@ -61,11 +61,43 @@ database:
   evmJsonRpcCache:
     # Refer to "Database" section for more details.
     # Note that table, schema and indexes will be created automatically if they don't exist.
-    driver: postgresql
-    postgresql:
-      connectionUri: >-
-        postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name
-      table: rpc_cache
+    connectors:
+      - id: memory-cache
+        driver: memory
+        memory:
+          maxItems: 100000
+      - id: postgres-cache
+        driver: postgresql
+        postgresql:
+          connectionUri: >-
+            postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name
+          table: rpc_cache
+    policies:
+      - network: "*"
+        method: "*"
+        finality: finalized
+        connector: memory-cache
+        ttl: 0
+      - network: "*"
+        method: "*"
+        finality: unfinalized
+        connector: memory-cache
+        ttl: 30s
+      - network: "*"
+        method: "*"
+        finality: unknown
+        connector: memory-cache
+        ttl: 30s
+      - network: "*" # supports * as wildcard and | as OR operator
+        method: "eth_getLogs|trace_*" # supports * as wildcard and | as OR operator
+        finality: finalized
+        connector: postgres-cache
+        ttl: 0
+      - network: "evm:42161|evm:10" # supports * as wildcard and | as OR operator
+        method: "arbtrace_*" # supports * as wildcard and | as OR operator
+        finality: finalized
+        connector: postgres-cache
+        ttl: 1d
 
 # The main server for eRPC to listen for requests.
 server:

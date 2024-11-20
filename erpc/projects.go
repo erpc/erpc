@@ -239,7 +239,10 @@ func (p *PreparedProject) acquireRateLimitPermit(req *common.NormalizedRequest) 
 	}
 	lg := p.Logger.With().Str("method", method).Logger()
 
-	rules := rlb.GetRulesByMethod(method)
+	rules, errRules := rlb.GetRulesByMethod(method)
+	if errRules != nil {
+		return errRules
+	}
 	lg.Debug().Msgf("found %d network-level rate limiters", len(rules))
 
 	if len(rules) > 0 {

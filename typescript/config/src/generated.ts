@@ -32,15 +32,29 @@ export interface AdminConfig {
   cors?: CORSConfig;
 }
 export interface DatabaseConfig {
-  evmJsonRpcCache?: ConnectorConfig;
+  evmJsonRpcCache?: CacheConfig;
+}
+export interface CacheConfig {
+  connectors: types.ConnectorConfig[];
+  policies: (CachePolicyConfig | undefined)[];
+}
+export interface CachePolicyConfig {
+  connector: string;
+  network?: string;
+  method?: string;
+  params?: any[];
+  finality: DataFinalityState;
+  empty?: CacheEmptyBehavior;
+  ttl?: types.Duration;
 }
 export type ConnectorDriverType = string;
 export const DriverMemory: ConnectorDriverType = "memory";
 export const DriverRedis: ConnectorDriverType = "redis";
-export const DriverPostgres: ConnectorDriverType = "postgres";
+export const DriverPostgreSQL: ConnectorDriverType = "postgresql";
 export const DriverDynamoDB: ConnectorDriverType = "dynamodb";
 export interface ConnectorConfig {
-  driver: types.ConnectorDriverType;
+  id: string;
+  driver: ConnectorDriverType;
   memory?: MemoryConnectorConfig;
   redis?: RedisConnectorConfig;
   dynamodb?: DynamoDBConnectorConfig;
@@ -60,6 +74,7 @@ export interface RedisConnectorConfig {
   addr: string;
   db: number /* int */;
   tls?: TLSConfig;
+  connPoolSize: number /* int */;
 }
 export interface DynamoDBConnectorConfig {
   table: string;
@@ -69,6 +84,7 @@ export interface DynamoDBConnectorConfig {
   partitionKeyName: string;
   rangeKeyName: string;
   reverseIndexName: string;
+  ttlAttributeName: string;
 }
 export interface PostgreSQLConnectorConfig {
   connectionUri: string;
@@ -257,6 +273,22 @@ export interface MetricsConfig {
   hostV6?: string;
   port?: number /* int */;
 }
+
+//////////
+// source: data.go
+
+export type DataFinalityState = number /* int */;
+/**
+ * Finalized gets 0 intentionally so that when user has not specified finality,
+ * it defaults to finalized, which is safest sane default for caching.
+ */
+export const DataFinalityStateFinalized: DataFinalityState = 0;
+export const DataFinalityStateUnfinalized: DataFinalityState = 1;
+export const DataFinalityStateUnknown: DataFinalityState = 2;
+export type CacheEmptyBehavior = number /* int */;
+export const CacheEmptyBehaviorIgnore: CacheEmptyBehavior = 0;
+export const CacheEmptyBehaviorAllow: CacheEmptyBehavior = 1;
+export const CacheEmptyBehaviorOnly: CacheEmptyBehavior = 2;
 
 //////////
 // source: defaults.go

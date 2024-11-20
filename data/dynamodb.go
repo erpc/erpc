@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,9 +23,11 @@ const (
 var _ Connector = (*DynamoDBConnector)(nil)
 
 type DynamoDBConnector struct {
+	id               string
 	logger           *zerolog.Logger
 	client           *dynamodb.DynamoDB
 	table            string
+	ttlAttributeName string
 	partitionKeyName string
 	rangeKeyName     string
 	reverseIndexName string
@@ -33,16 +36,20 @@ type DynamoDBConnector struct {
 func NewDynamoDBConnector(
 	ctx context.Context,
 	logger *zerolog.Logger,
+	id string,
 	cfg *common.DynamoDBConnectorConfig,
 ) (*DynamoDBConnector, error) {
-	logger.Debug().Msgf("creating DynamoDBConnector with config: %+v", cfg)
+	lg := logger.With().Str("connector", id).Logger()
+	lg.Debug().Interface("config", cfg).Msg("creating DynamoDBConnector")
 
 	connector := &DynamoDBConnector{
-		logger:           logger,
+		id:               id,
+		logger:           &lg,
 		table:            cfg.Table,
 		partitionKeyName: cfg.PartitionKeyName,
 		rangeKeyName:     cfg.RangeKeyName,
 		reverseIndexName: cfg.ReverseIndexName,
+		ttlAttributeName: cfg.TTLAttributeName,
 	}
 
 	// Attempt the actual connecting in background to avoid blocking the main thread.
@@ -196,6 +203,19 @@ func createTableIfNotExists(
 		return err
 	}
 
+	_, err = client.UpdateTimeToLive(&dynamodb.UpdateTimeToLiveInput{
+		TableName: aws.String(cfg.Table),
+		TimeToLiveSpecification: &dynamodb.TimeToLiveSpecification{
+			AttributeName: aws.String(cfg.TTLAttributeName),
+			Enabled:       aws.Bool(true),
+		},
+	})
+
+	if err != nil && !strings.Contains(err.Error(), "already enabled") {
+		logger.Error().Err(err).Msg("failed to enable TTL on table")
+		return err
+	}
+
 	logger.Debug().Msgf("dynamodb table '%s' is ready", cfg.Table)
 
 	return nil
@@ -261,7 +281,11 @@ func ensureGlobalSecondaryIndexes(
 	return err
 }
 
-func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, value string) error {
+func (d *DynamoDBConnector) Id() string {
+	return d.id
+}
+
+func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, value string, ttl *time.Duration) error {
 	if d.client == nil {
 		return fmt.Errorf("DynamoDB client not initialized yet")
 	}
@@ -278,6 +302,14 @@ func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, val
 		"value": {
 			S: aws.String(value),
 		},
+	}
+
+	// Add TTL if provided
+	if ttl != nil {
+		expirationTime := time.Now().Add(*ttl).Unix()
+		item[d.ttlAttributeName] = &dynamodb.AttributeValue{
+			N: aws.String(fmt.Sprintf("%d", expirationTime)),
+		}
 	}
 
 	_, err := d.client.PutItemWithContext(ctx, &dynamodb.PutItemInput{
@@ -328,13 +360,21 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 			ExpressionAttributeNames:  exprAttrNames,
 			ExpressionAttributeValues: exprAttrValues,
 		}
-		d.logger.Debug().Msgf("getting item from dynamodb with input: %+v", qi)
+		d.logger.Debug().Str("index", d.reverseIndexName).Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("getting item from dynamodb")
 		result, err := d.client.QueryWithContext(ctx, qi)
 		if err != nil {
 			return "", err
 		}
 		if len(result.Items) == 0 {
 			return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s", partitionKey, rangeKey), DynamoDBDriverName)
+		}
+
+		// Check if the item has expired
+		if ttl, exists := result.Items[0][d.ttlAttributeName]; exists {
+			expirationTime, err := strconv.ParseInt(*ttl.N, 10, 64)
+			if err == nil && time.Now().Unix() > expirationTime {
+				return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s (expired)", partitionKey, rangeKey), DynamoDBDriverName)
+			}
 		}
 
 		value = *result.Items[0]["value"].S
@@ -347,7 +387,7 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 				S: aws.String(rangeKey),
 			},
 		}
-		d.logger.Debug().Msgf("getting item from dynamodb with key: %+v", ky)
+		d.logger.Debug().Str("index", "n/a").Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("getting item from dynamodb")
 		result, err := d.client.GetItemWithContext(ctx, &dynamodb.GetItemInput{
 			TableName: aws.String(d.table),
 			Key:       ky,
@@ -359,6 +399,14 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 
 		if result.Item == nil {
 			return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s", partitionKey, rangeKey), DynamoDBDriverName)
+		}
+
+		// Check if the item has expired
+		if ttl, exists := result.Item[d.ttlAttributeName]; exists {
+			expirationTime, err := strconv.ParseInt(*ttl.N, 10, 64)
+			if err == nil && time.Now().Unix() > expirationTime {
+				return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s (expired)", partitionKey, rangeKey), DynamoDBDriverName)
+			}
 		}
 
 		value = *result.Item["value"].S

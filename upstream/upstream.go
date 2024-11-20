@@ -113,7 +113,7 @@ func NewUpstream(
 	go func() {
 		err = pup.detectFeatures()
 		if err != nil {
-			lg.Error().Err(err).Msgf("could not fully detect features for upstream")
+			lg.Warn().Err(err).Msgf("skipping auto feature detection for upstream due to error")
 		}
 	}()
 
@@ -236,11 +236,14 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (
 
 	if limitersBudget != nil {
 		lg.Trace().Str("budget", cfg.RateLimitBudget).Msgf("checking upstream-level rate limiters budget")
-		rules := limitersBudget.GetRulesByMethod(method)
+		rules, err := limitersBudget.GetRulesByMethod(method)
+		if err != nil {
+			return nil, err
+		}
 		if len(rules) > 0 {
 			for _, rule := range rules {
 				if !rule.Limiter.TryAcquirePermit() {
-					lg.Warn().Str("budget", cfg.RateLimitBudget).Msgf("upstream-level rate limit '%v' exceeded", rule.Config)
+					lg.Debug().Str("budget", cfg.RateLimitBudget).Msgf("upstream-level rate limit '%v' exceeded", rule.Config)
 					u.metricsTracker.RecordUpstreamSelfRateLimited(
 						netId,
 						cfg.Id,
@@ -571,12 +574,12 @@ func (u *Upstream) recordRemoteRateLimit(netId, method string) {
 	}
 }
 
-func (u *Upstream) shouldHandleMethod(method string) (v bool) {
+func (u *Upstream) shouldHandleMethod(method string) (v bool, err error) {
 	cfg := u.Config()
 	u.methodCheckResultsMu.RLock()
 	if s, ok := u.methodCheckResults[method]; ok {
 		u.methodCheckResultsMu.RUnlock()
-		return s
+		return s, nil
 	}
 	u.methodCheckResultsMu.RUnlock()
 
@@ -587,7 +590,11 @@ func (u *Upstream) shouldHandleMethod(method string) (v bool) {
 
 	if cfg.IgnoreMethods != nil {
 		for _, m := range cfg.IgnoreMethods {
-			if common.WildcardMatch(m, method) {
+			match, err := common.WildcardMatch(m, method)
+			if err != nil {
+				return false, err
+			}
+			if match {
 				v = false
 				break
 			}
@@ -596,7 +603,11 @@ func (u *Upstream) shouldHandleMethod(method string) (v bool) {
 
 	if cfg.AllowMethods != nil {
 		for _, m := range cfg.AllowMethods {
-			if common.WildcardMatch(m, method) {
+			match, err := common.WildcardMatch(m, method)
+			if err != nil {
+				return false, err
+			}
+			if match {
 				v = true
 				break
 			}
@@ -615,7 +626,7 @@ func (u *Upstream) shouldHandleMethod(method string) (v bool) {
 
 	u.Logger.Debug().Bool("allowed", v).Str("method", method).Msg("method support result")
 
-	return v
+	return v, nil
 }
 
 func (u *Upstream) guessUpstreamType() error {
@@ -714,14 +725,22 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 		}
 	}
 
-	if !u.shouldHandleMethod(method) {
+	allowed, err := u.shouldHandleMethod(method)
+	if err != nil {
+		return err, true
+	}
+	if !allowed {
 		u.Logger.Debug().Str("method", method).Msg("method not allowed or ignored by upstread")
 		return common.NewErrUpstreamMethodIgnored(method, u.config.Id), true
 	}
 
 	dirs := req.Directives()
 	if dirs.UseUpstream != "" {
-		if !common.WildcardMatch(dirs.UseUpstream, u.config.Id) {
+		match, err := common.WildcardMatch(dirs.UseUpstream, u.config.Id)
+		if err != nil {
+			return err, true
+		}
+		if !match {
 			return common.NewErrUpstreamNotAllowed(u.config.Id), true
 		}
 	}
@@ -729,7 +748,7 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 	// if block can be determined from request and upstream is only full-node and block is historical skip
 	if u.config.Evm != nil && u.config.Evm.MaxAvailableRecentBlocks > 0 {
 		if u.config.Evm.NodeType == common.EvmNodeTypeFull {
-			bn, ebn := req.EvmBlockNumber()
+			_, bn, ebn := req.EvmBlockRefAndNumber()
 			if ebn != nil || bn <= 0 {
 				return nil, false
 			}
@@ -760,7 +779,15 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 func (u *Upstream) getScoreMultipliers(networkId, method string) *common.ScoreMultiplierConfig {
 	if u.config.Routing != nil {
 		for _, mul := range u.config.Routing.ScoreMultipliers {
-			if common.WildcardMatch(mul.Network, networkId) && common.WildcardMatch(mul.Method, method) {
+			matchNet, err := common.WildcardMatch(mul.Network, networkId)
+			if err != nil {
+				continue
+			}
+			matchMeth, err := common.WildcardMatch(mul.Method, method)
+			if err != nil {
+				continue
+			}
+			if matchNet && matchMeth {
 				return mul
 			}
 		}

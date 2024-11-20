@@ -20,8 +20,39 @@ func (c *Config) SetDefaults() {
 
 	if c.Database == nil {
 		c.Database = &DatabaseConfig{
-			EvmJsonRpcCache: &ConnectorConfig{
-				Driver: DriverMemory,
+			EvmJsonRpcCache: &CacheConfig{
+				Connectors: []*ConnectorConfig{
+					{
+						Id:     "memory-cache",
+						Driver: DriverMemory,
+					},
+				},
+				Policies: []*CachePolicyConfig{
+					{
+						Network:     "*",
+						Method:      "*",
+						Finality:    DataFinalityStateFinalized,
+						MaxItemSize: util.StringPtr("1mb"),
+						TTL:         0, // Forever
+						Connector:   "memory-cache",
+					},
+					{
+						Network:     "*",
+						Method:      "*",
+						Finality:    DataFinalityStateUnknown,
+						MaxItemSize: util.StringPtr("1mb"),
+						TTL:         30 * time.Second,
+						Connector:   "memory-cache",
+					},
+					{
+						Network:     "*",
+						Method:      "*",
+						Finality:    DataFinalityStateUnfinalized,
+						MaxItemSize: util.StringPtr("1mb"),
+						TTL:         30 * time.Second,
+						Connector:   "memory-cache",
+					},
+				},
 			},
 		}
 	}
@@ -44,6 +75,28 @@ func (c *Config) SetDefaults() {
 
 	if c.RateLimiters != nil {
 		c.RateLimiters.SetDefaults()
+	}
+}
+
+func (c *CacheConfig) SetDefaults() {
+	if len(c.Policies) > 0 {
+		for _, policy := range c.Policies {
+			policy.SetDefaults()
+		}
+	}
+	if len(c.Connectors) > 0 {
+		for _, connector := range c.Connectors {
+			connector.SetDefaults()
+		}
+	}
+}
+
+func (c *CachePolicyConfig) SetDefaults() {
+	if c.Method == "" {
+		c.Method = "*"
+	}
+	if c.Network == "" {
+		c.Network = "*"
 	}
 }
 
@@ -110,34 +163,34 @@ func (c *ConnectorConfig) SetDefaults() {
 	if c.Memory != nil {
 		c.Driver = DriverMemory
 	}
-	if c.Driver == "memory" {
+	if c.Driver == DriverMemory {
 		if c.Memory == nil {
 			c.Memory = &MemoryConnectorConfig{}
 		}
 		c.Memory.SetDefaults()
 	}
 	if c.Redis != nil {
-		c.Driver = "redis"
+		c.Driver = DriverRedis
 	}
-	if c.Driver == "redis" {
+	if c.Driver == DriverRedis {
 		if c.Redis == nil {
 			c.Redis = &RedisConnectorConfig{}
 		}
 		c.Redis.SetDefaults()
 	}
 	if c.PostgreSQL != nil {
-		c.Driver = "postgres"
+		c.Driver = DriverPostgreSQL
 	}
-	if c.Driver == "postgres" {
+	if c.Driver == DriverPostgreSQL {
 		if c.PostgreSQL == nil {
 			c.PostgreSQL = &PostgreSQLConnectorConfig{}
 		}
 		c.PostgreSQL.SetDefaults()
 	}
 	if c.DynamoDB != nil {
-		c.Driver = "dynamodb"
+		c.Driver = DriverDynamoDB
 	}
-	if c.Driver == "dynamodb" {
+	if c.Driver == DriverDynamoDB {
 		if c.DynamoDB == nil {
 			c.DynamoDB = &DynamoDBConnectorConfig{}
 		}
@@ -154,6 +207,9 @@ func (m *MemoryConnectorConfig) SetDefaults() {
 func (r *RedisConnectorConfig) SetDefaults() {
 	if r.Addr == "" {
 		r.Addr = "localhost:6379"
+	}
+	if r.ConnPoolSize == 0 {
+		r.ConnPoolSize = 128
 	}
 }
 
@@ -175,6 +231,9 @@ func (d *DynamoDBConnectorConfig) SetDefaults() {
 	}
 	if d.ReverseIndexName == "" {
 		d.ReverseIndexName = "idx_groupKey_requestKey"
+	}
+	if d.TTLAttributeName == "" {
+		d.TTLAttributeName = "ttl"
 	}
 }
 
