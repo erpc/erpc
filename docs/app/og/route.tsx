@@ -14,6 +14,8 @@ export async function GET(req: Request): Promise<Response> {
     const title =
       searchParams.get('title')?.slice(0, 75) || 'eRPC Docs'
 
+    const description = searchParams.get('description')?.slice(0, 75) || 'open-source fault-tolerant evm rpc proxy and cache'
+
     return new ImageResponse(
       (
         <div
@@ -25,7 +27,7 @@ export async function GET(req: Request): Promise<Response> {
             backgroundPosition: '-30px -10px'
           }}
         >
-          <img height="150" src={`https://erpc-test.up.railway.app/assets/logo.jpeg`} />
+          <img height="150" style={{ marginLeft: '-20px' }} src={`https://erpc-test.up.railway.app/assets/logo.jpeg`} />
           <h1
             tw="text-transparent text-[82px] m-0 mb-10 tracking-tighter leading-[1.1]"
             style={{
@@ -37,7 +39,7 @@ export async function GET(req: Request): Promise<Response> {
             {title}
           </h1>
           <p tw="m-0 text-3xl tracking-tight">
-          open-source fault-tolerant evm rpc proxy and cache
+          {description}
           </p>
         </div>
       ),

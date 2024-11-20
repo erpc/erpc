@@ -62,12 +62,11 @@ export default {
 	},
 	head: function useHead() {
 		const config = useConfig()
-		console.log('CONFIG', config)
 		const { route } = useRouter()
 		const isDefault = route === '/' || !config.title
 		const image =
 		  'https://erpc-test.up.railway.app' +
-		  (isDefault ? `/og?title=eRPC` : `/og?title=${config.title}`)
+		  (isDefault ? `/og?title=eRPC&description=open-source%20fault-tolerant%20evm%20rpc%20proxy%20and%20cache` : `/og?title=${config.title}&description=${config.frontMatter.description}`)
 	
 		const description =
 		  config.frontMatter.description ||
@@ -91,4 +90,5 @@ export default {
 			<meta name="apple-mobile-web-app-title" content="eRPC" />
 		  </>
 		)
-	  }
+	}
+}
