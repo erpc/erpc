@@ -38,9 +38,9 @@ export async function GET(req: Request): Promise<Response> {
           >
             {title}
           </h1>
-          <h3 tw="m-0 text- tracking-tight">
+          <h2 tw="m-0 text- tracking-tight">
           {description}
-          </h3>
+          </h2>
         </div>
       ),
       {
