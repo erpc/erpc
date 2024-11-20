@@ -10,11 +10,8 @@ export async function GET(req: Request): Promise<Response> {
   try {
     const { searchParams } = new URL(req.url)
 
-    // ?title=<title>
-    const title =
-      searchParams.get('title')?.slice(0, 75) || 'eRPC Docs'
-
-    const description = searchParams.get('description')?.slice(0, 75) || 'open-source fault-tolerant evm rpc proxy and cache'
+    const title = searchParams.get('title')?.slice(0, 75) || 'eRPC Docs'
+    const description = searchParams.get('description') || 'open-source fault-tolerant evm rpc proxy and cache'
 
     return new ImageResponse(
       (
@@ -38,9 +35,9 @@ export async function GET(req: Request): Promise<Response> {
           >
             {title}
           </h1>
-          <h2 tw="m-0 text-4xl tracking-tight">
+          <p tw="m-0 text-4xl tracking-tight">
           {description}
-          </h2>
+          </p>
         </div>
       ),
       {
