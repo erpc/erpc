@@ -31,6 +31,12 @@ projects:
     upstreams:
       # (REQUIRED) Endpoint URL supports http(s) scheme along with custom schemes like "alchemy://" defined below in this docs.
       - endpoint: https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
+
+        # Each upstream can have an arbitrary group name which is used in metrics, as well as 
+        # useful when writing an eval function in selectionPolicy below.
+        # Use "fallback" group to let eRPC automatically create a "default" selection policy on the network level
+        # and then fallback to this group if the default one doesn't have enough healthy upstreams.
+        group: fallback
         
         # (OPTIONAL) Upstream ID is optional and can be used to identify the upstream in logs/metrics.
         id: blastapi-chain-42161
@@ -139,6 +145,14 @@ export default createConfig({
         // (REQUIRED) Endpoint URL supports http(s) scheme along with custom schemes like "alchemy://" defined below in this docs.
         {
           endpoint: "https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx",
+
+          /*
+          * (OPTIONAL) Each upstream can have an arbitrary group name which is used in metrics, as well as 
+          * useful when writing an eval function in selectionPolicy below.
+          * Use "fallback" group to let eRPC automatically create a "default" selection policy on the network level
+          * and then fallback to this group if the default one doesn't have enough healthy upstreams.
+          */
+          group: "fallback",
 
           // (OPTIONAL) Upstream ID is optional and can be used to identify the upstream in logs/metrics.
           id: "blastapi-chain-42161",
