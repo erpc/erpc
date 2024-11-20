@@ -105,9 +105,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetLastValidResponse(resp)
 
 		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network: "evm:123",
-			Method:      "eth_getTransactionReceipt",
-			Finality:    common.DataFinalityStateFinalized,
+			Network:  "evm:123",
+			Method:   "eth_getTransactionReceipt",
+			Finality: common.DataFinalityStateFinalized,
 		}, mockConnectors[0])
 		require.NoError(t, err)
 		cache.policies = []*data.CachePolicy{
@@ -1027,8 +1027,10 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 			require.NoError(t, err)
 
 			// Test both Set and Get matching
-			matchesSet := policy.MatchesForSet(tc.config.Network, tc.method, tc.params, common.DataFinalityStateFinalized)
-			matchesGet := policy.MatchesForGet(tc.config.Network, tc.method, tc.params)
+			matchesSet, err := policy.MatchesForSet(tc.config.Network, tc.method, tc.params, common.DataFinalityStateFinalized)
+			require.NoError(t, err)
+			matchesGet, err := policy.MatchesForGet(tc.config.Network, tc.method, tc.params)
+			require.NoError(t, err)
 
 			assert.Equal(t, tc.matches, matchesSet, "MatchesForSet returned unexpected result")
 			assert.Equal(t, tc.matches, matchesGet, "MatchesForGet returned unexpected result")

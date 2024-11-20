@@ -21,19 +21,23 @@ type RateLimitRule struct {
 	Limiter ratelimiter.RateLimiter[interface{}]
 }
 
-func (b *RateLimiterBudget) GetRulesByMethod(method string) []*RateLimitRule {
+func (b *RateLimiterBudget) GetRulesByMethod(method string) ([]*RateLimitRule, error) {
 	b.rulesMu.RLock()
 	defer b.rulesMu.RUnlock()
 
 	rules := make([]*RateLimitRule, 0)
 
 	for _, rule := range b.Rules {
-		if rule.Config.Method == method || common.WildcardMatch(rule.Config.Method, method) {
+		match, err := common.WildcardMatch(rule.Config.Method, method)
+		if err != nil {
+			return nil, err
+		}
+		if rule.Config.Method == method || match {
 			rules = append(rules, rule)
 		}
 	}
 
-	return rules
+	return rules, nil
 }
 
 func (b *RateLimiterBudget) AdjustBudget(rule *RateLimitRule, newMaxCount uint) error {

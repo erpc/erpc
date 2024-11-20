@@ -221,7 +221,8 @@ func TestCachePolicy_MatchParam(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			result := matchParam(tc.pattern, tc.param)
+			result, err := matchParam(tc.pattern, tc.param)
+			assert.NoError(t, err)
 			assert.Equal(t, tc.expected, result)
 		})
 	}
@@ -294,7 +295,8 @@ func TestCachePolicy_MatchParams(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			policy, err := NewCachePolicy(tc.config, mockConnector)
 			assert.NoError(t, err)
-			result := policy.matchParams(tc.params)
+			result, err := policy.matchParams(tc.params)
+			assert.NoError(t, err)
 			assert.Equal(t, tc.expected, result)
 		})
 	}

@@ -425,7 +425,12 @@ func (s *HttpServer) handleCORS(w http.ResponseWriter, r *http.Request, corsConf
 
 	allowed := false
 	for _, allowedOrigin := range corsConfig.AllowedOrigins {
-		if common.WildcardMatch(allowedOrigin, origin) {
+		match, err := common.WildcardMatch(allowedOrigin, origin)
+		if err != nil {
+			s.logger.Error().Err(err).Msgf("failed to match CORS origin")
+			continue
+		}
+		if match {
 			allowed = true
 			break
 		}

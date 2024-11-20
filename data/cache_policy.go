@@ -57,41 +57,65 @@ func (p *CachePolicy) MarshalJSON() ([]byte, error) {
 	return common.SonicCfg.Marshal(p.config)
 }
 
-func (p *CachePolicy) MatchesForSet(networkId, method string, params []interface{}, finality common.DataFinalityState) bool {
-	if !common.WildcardMatch(p.config.Network, networkId) {
-		return false
+func (p *CachePolicy) MatchesForSet(networkId, method string, params []interface{}, finality common.DataFinalityState) (bool, error) {
+	match, err := common.WildcardMatch(p.config.Network, networkId)
+	if err != nil {
+		return false, err
+	}
+	if !match {
+		return false, nil
 	}
 
-	if !common.WildcardMatch(p.config.Method, method) {
-		return false
+	match, err = common.WildcardMatch(p.config.Method, method)
+	if err != nil {
+		return false, err
+	}
+	if !match {
+		return false, nil
 	}
 
-	if !p.matchParams(params) {
-		return false
+	match, err = p.matchParams(params)
+	if err != nil {
+		return false, err
+	}
+	if !match {
+		return false, nil
 	}
 
 	// TODO do we need to make unknown superset of finalized/unfinalized?
 	// TODO do we need to differentiate between 'unknown' (eth_trace*) and 'missing' (chain does not support finalized)?
-	return p.config.Finality == finality
+	return p.config.Finality == finality, nil
 }
 
-func (p *CachePolicy) MatchesForGet(networkId, method string, params []interface{}) bool {
-	if !common.WildcardMatch(p.config.Network, networkId) {
-		return false
+func (p *CachePolicy) MatchesForGet(networkId, method string, params []interface{}) (bool, error) {
+	match, err := common.WildcardMatch(p.config.Network, networkId)
+	if err != nil {
+		return false, err
+	}
+	if !match {
+		return false, nil
 	}
 
-	if !common.WildcardMatch(p.config.Method, method) {
-		return false
+	match, err = common.WildcardMatch(p.config.Method, method)
+	if err != nil {
+		return false, err
+	}
+	if !match {
+		return false, nil
 	}
 
-	if !p.matchParams(params) {
-		return false
+	match, err = p.matchParams(params)
+	if err != nil {
+		return false, err
+	}
+	if !match {
+		return false, nil
 	}
 
 	// When fetching data we need to iterate over all policies as we don't know finality of the data when originally written
 	// We will iterate from first to last policy (matched on network/method) to see which one has the data
 	// Therefore it is recommended to put the fastest most up-to-date policy first
-	return true
+	return true, nil
 }
 
 func (p *CachePolicy) MatchesSizeLimits(size int) bool {
@@ -108,9 +132,9 @@ func (p *CachePolicy) EmptyState() common.CacheEmptyBehavior {
 	return p.config.Empty
 }
 
-func (p *CachePolicy) matchParams(params []interface{}) bool {
+func (p *CachePolicy) matchParams(params []interface{}) (bool, error) {
 	if len(p.config.Params) == 0 {
-		return true
+		return true, nil
 	}
 
 	for i, pattern := range p.config.Params {
@@ -118,45 +142,61 @@ func (p *CachePolicy) matchParams(params []interface{}) bool {
 		if i < len(params) {
 			v = params[i]
 		}
-		if !matchParam(pattern, v) {
-			return false
+		match, err := matchParam(pattern, v)
+		if err != nil {
+			return false, err
+		}
+		if !match {
+			return false, nil
 		}
 	}
-	return true
+	return true, nil
 }
 
-func matchParam(pattern interface{}, param interface{}) bool {
+func matchParam(pattern interface{}, param interface{}) (bool, error) {
 	switch p := pattern.(type) {
 	case map[string]interface{}:
 		// For objects, recursively match each field
 		paramMap, ok := param.(map[string]interface{})
 		if !ok {
-			return false
+			return false, nil
 		}
 		for k, v := range p {
 			paramValue, exists := paramMap[k]
-			if !exists || !matchParam(v, paramValue) {
-				return false
+			match, err := matchParam(v, paramValue)
+			if err != nil {
+				return false, err
+			}
+			if !exists || !match {
+				return false, nil
 			}
 		}
-		return true
+		return true, nil
 	case []interface{}:
 		// For arrays, match each element
 		paramArray, ok := param.([]interface{})
 		if !ok || len(p) != len(paramArray) {
-			return false
+			return false, nil
 		}
 		for i, v := range p {
-			if !matchParam(v, paramArray[i]) {
-				return false
+			match, err := matchParam(v, paramArray[i])
+			if err != nil {
+				return false, err
+			}
+			if !match {
+				return false, nil
 			}
 		}
-		return true
+		return true, nil
 	case string:
-		return common.WildcardMatch(p, paramToString(param))
+		match, err := common.WildcardMatch(p, paramToString(param))
+		if err != nil {
+			return false, err
+		}
+		return match, nil
 	default:
 		// For other types, convert both to strings and compare
-		return paramToString(pattern) == paramToString(param)
+		return paramToString(pattern) == paramToString(param), nil
 	}
 }
 

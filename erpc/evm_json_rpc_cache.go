@@ -67,7 +67,7 @@ func (c *EvmJsonRpcCache) WithNetwork(network *Network) *EvmJsonRpcCache {
 	}
 }
 
-func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState) []*data.CachePolicy {
+func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState) ([]*data.CachePolicy, error) {
 	var policies []*data.CachePolicy
 	for _, policy := range c.policies {
 		// Add debug logging for complex param matching
@@ -81,14 +81,18 @@ func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []int
 				Msg("checking policy match for set")
 		}
 
-		if policy.MatchesForSet(networkId, method, params, finality) {
+		match, err := policy.MatchesForSet(networkId, method, params, finality)
+		if err != nil {
+			return nil, err
+		}
+		if match {
 			policies = append(policies, policy)
 		}
 	}
-	return policies
+	return policies, nil
 }
 
-func (c *EvmJsonRpcCache) findGetPolicies(networkId, method string, params []interface{}) []*data.CachePolicy {
+func (c *EvmJsonRpcCache) findGetPolicies(networkId, method string, params []interface{}) ([]*data.CachePolicy, error) {
 	var policies []*data.CachePolicy
 	for _, policy := range c.policies {
 		// Add debug logging for complex param matching
@@ -101,11 +105,15 @@ func (c *EvmJsonRpcCache) findGetPolicies(networkId, method string, params []int
 				Msg("checking policy match for get")
 		}
 
-		if policy.MatchesForGet(networkId, method, params) {
+		match, err := policy.MatchesForGet(networkId, method, params)
+		if err != nil {
+			return nil, err
+		}
+		if match {
 			policies = append(policies, policy)
 		}
 	}
-	return policies
+	return policies, nil
 }
 
 func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
@@ -115,7 +123,10 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	}
 
 	ntwId := req.NetworkId()
-	policies := c.findGetPolicies(ntwId, rpcReq.Method, rpcReq.Params)
+	policies, err := c.findGetPolicies(ntwId, rpcReq.Method, rpcReq.Params)
+	if err != nil {
+		return nil, err
+	}
 	if len(policies) == 0 {
 		return nil, nil
 	}
@@ -239,7 +250,10 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 	}
 
 	finState := resp.FinalityState()
-	policies := c.findSetPolicies(ntwId, rpcReq.Method, rpcReq.Params, finState)
+	policies, err := c.findSetPolicies(ntwId, rpcReq.Method, rpcReq.Params, finState)
+	if err != nil {
+		return err
+	}
 	if len(policies) == 0 {
 		return nil
 	}

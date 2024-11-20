@@ -151,19 +151,22 @@ func TestRateLimiterBudget_GetRulesByMethod(t *testing.T) {
 	require.NotNil(t, budget)
 
 	t.Run("exact match", func(t *testing.T) {
-		rules := budget.GetRulesByMethod("exact-method")
+		rules, err := budget.GetRulesByMethod("exact-method")
+		require.NoError(t, err)
 		assert.Len(t, rules, 1)
 		assert.Equal(t, "exact-method", rules[0].Config.Method)
 	})
 
 	t.Run("wildcard match", func(t *testing.T) {
-		rules := budget.GetRulesByMethod("wildcard")
+		rules, err := budget.GetRulesByMethod("wildcard")
+		require.NoError(t, err)
 		assert.Len(t, rules, 1)
 		assert.Equal(t, "wild*", rules[0].Config.Method)
 	})
 
 	t.Run("no match", func(t *testing.T) {
-		rules := budget.GetRulesByMethod("non-existing")
+		rules, err := budget.GetRulesByMethod("non-existing")
+		require.NoError(t, err)
 		assert.Len(t, rules, 0)
 	})
 }
@@ -202,7 +205,8 @@ func TestRateLimiter_ConcurrentPermits(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < numRequests; j++ {
-				rules := budget.GetRulesByMethod("test-method")
+				rules, err := budget.GetRulesByMethod("test-method")
+				require.NoError(t, err)
 				require.Len(t, rules, 1)
 				ok := rules[0].Limiter.TryAcquirePermit()
 				require.True(t, ok)
@@ -241,13 +245,16 @@ func TestRateLimiter_ExceedCapacity(t *testing.T) {
 	require.NotNil(t, budget)
 
 	for i := 0; i < 10; i++ {
-		rules := budget.GetRulesByMethod("test-method")
+		rules, err := budget.GetRulesByMethod("test-method")
+		require.NoError(t, err)
 		require.Len(t, rules, 1)
 		ok := rules[0].Limiter.TryAcquirePermit()
 		require.True(t, ok)
 	}
 
-	rules := budget.GetRulesByMethod("test-method")
+	rules, err := budget.GetRulesByMethod("test-method")
+	require.NoError(t, err)
+	require.Len(t, rules, 1)
 	ok := rules[0].Limiter.TryAcquirePermit()
 	require.False(t, ok)
 }

@@ -124,7 +124,11 @@ func (m *MemoryConnector) Get(ctx context.Context, index, partitionKey, rangeKey
 func (m *MemoryConnector) getWithWildcard(_ context.Context, _, partitionKey, rangeKey string) (string, error) {
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
 	for _, k := range m.cache.Keys() {
-		if common.WildcardMatch(key, k) {
+		match, err := common.WildcardMatch(key, k)
+		if err != nil {
+			return "", err
+		}
+		if match {
 			item, _ := m.cache.Get(k)
 			// Check expiration
 			if item.expiresAt != nil && time.Now().After(*item.expiresAt) {
