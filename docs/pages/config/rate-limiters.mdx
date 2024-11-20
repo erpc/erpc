@@ -1,3 +1,9 @@
+---
+description: Self-imposed rate limits when sending requests to upstreams (RPS, Daily, etc) can be defined using rate limiter budgets...
+---
+
+import { Callout, Tabs, Tab } from "nextra/components";
+
 # Rate limiters
 
 To add self-imposed rate limits when sending requests to upstreams (RPS, Daily, etc) you can define one or more rate limiter budgets.
@@ -6,6 +12,8 @@ A "budget" can be assigned to one or more upstreams, and those upstreams will sh
 
 ### Config
 
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
 projects:
@@ -60,6 +68,97 @@ rateLimiters:
           maxCount: 300
           period: 1s
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+
+      // A project can have a budget that applies to all requests (any network or upstream)
+      // Useful to prevent a project (e.g. frontend, or indexer) to send too much requests.
+      rateLimitBudget: "frontend",
+
+      // ...
+
+      // Each upstream can have its own budget
+      upstreams: [
+        {
+          id: "blastapi-chain-42161",
+          type: "evm",
+          endpoint: "https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx",
+          rateLimitBudget: "global-blast",
+          // ...
+        },
+        {
+          id: "blastapi-chain-1",
+          type: "evm",
+          endpoint: "https://eth-mainnet.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx",
+          rateLimitBudget: "global-blast",
+          // ...
+        },
+        {
+          id: "quiknode-chain-42161",
+          type: "evm",
+          endpoint:
+            "https://xxxxxx-xxxxxx.arbitrum-mainnet.quiknode.pro/xxxxxxxxxxxxxxxxxxxxxxxx/",
+          rateLimitBudget: "global-quicknode",
+          // ...
+        },
+      ],
+    },
+  ],
+
+  // Rate limiter allows you to create "shared" budgets for upstreams.
+  // For example upstream A and B can use the same budget, which means both of them together must not exceed the defined limits.
+  rateLimiters: {
+    budgets: [
+      {
+        id: "frontend",
+        rules: [
+          {
+            method: "*",
+            maxCount: 1000,
+            period: "1s",
+          },
+          {
+            method: "eth_trace*",
+            maxCount: 100,
+            period: "1s",
+          },
+        ],
+      },
+      {
+        id: "global-blast",
+        rules: [
+          // You can limit which methods apply to this rule e.g. eth_getLogs or eth_* or * (all methods).
+          {
+            method: "*",
+            maxCount: 1000,
+            period: "1s",
+          },
+        ],
+      },
+      {
+        id: "global-quicknode",
+        rules: [
+          {
+            method: "*",
+            maxCount: 300,
+            period: "1s",
+          },
+        ],
+      },
+    ],
+  },
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 ## Auto-tuner
 
@@ -70,6 +169,8 @@ The auto-tuner feature allows dynamic adjustment of rate limits based on the ups
 
 The auto-tuner is enabled by default when an upstream has any rate limit budget defined. Here's an example configuration with explanations:
 
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
 ```yaml
 upstreams:
   - id: example-upstream
@@ -85,6 +186,33 @@ upstreams:
       minBudget: 1                 # Minimum rate limit (default: 0)
       maxBudget: 10000             # Maximum rate limit (default: 10000)
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  upstreams: [
+    {
+      id: "example-upstream",
+      type: "evm",
+      endpoint: "https://example-endpoint.com",
+      rateLimitBudget: "example-budget",
+      rateLimitAutoTune: {
+        enabled: true,                // Enable auto-tuning (default: true)
+        adjustmentPeriod: "1m",       // How often to adjust the rate limit (default: "1m")
+        errorRateThreshold: 0.1,      // Maximum acceptable error rate (default: 0.1)
+        increaseFactor: 1.05,         // Factor to increase the limit by (default: 1.05)
+        decreaseFactor: 0.9,          // Factor to decrease the limit by (default: 0.9)
+        minBudget: 1,                 // Minimum rate limit (default: 0)
+        maxBudget: 10000,             // Maximum rate limit (default: 10000)
+      },
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 It's recommended to set `minBudget` to at least 1. This ensures that some requests are always routed to the upstream, allowing the auto-tuner to re-adjust if the provider can handle more requests.
 
@@ -92,6 +220,8 @@ The auto-tuner works by monitoring the "rate limited" (e.g. 429 status code) err
 
 By default, the auto-tuner is enabled with the following configuration:
 
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
 ```yaml
 rateLimitAutoTune:
   enabled: true
@@ -102,5 +232,20 @@ rateLimitAutoTune:
   minBudget: 0
   maxBudget: 10000
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+ rateLimitAutoTune: {
+    enabled: true,
+    adjustmentPeriod: "1m",
+    errorRateThreshold: 0.1,
+    increaseFactor: 1.05,
+    decreaseFactor: 0.9,
+    minBudget: 0,
+    maxBudget: 10000,
+  },
+```
+</Tabs.Tab>
+</Tabs>
 
 You can override these defaults by specifying the desired values in your configuration.

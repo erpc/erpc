@@ -1,4 +1,8 @@
-import { Callout } from 'nextra/components'
+---
+description: A network represents a chain in EVM, and it is a local grouping for upstreams...
+---
+
+import { Callout, Tabs, Tab } from 'nextra/components'
 
 # Networks
 
@@ -10,6 +14,8 @@ A network represents a chain in EVM, and it is a local grouping for upstreams.
 
 You can configure failover behavior per network as follows:
 
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 projects:
   - id: main
@@ -29,6 +35,56 @@ projects:
           # Defining this fallback helps with increasing cache-hit rate and reducing redundant 'retry' attempts on empty responses, as we know which data is finalized.
           # DEFAULT: auto-detect - via eth_getBlockByNumber(finalized).
           fallbackFinalityDepth: 1024
+
+        # (OPTIONAL) Refer to "Selection Policy" section for more details.
+        # Here are default values used for selectionPolicy if not explicitly defined:
+        selectionPolicy:
+          # Every 1 minute evaluate which upstreams must be included,
+          # based on the arbitrary logic (e.g., <90% error rate and <10 block lag):
+          evalInterval: 1m
+          
+          # To isolate selection evaluation and result to each "method" separately change this flag to true
+          evalPerMethod: false
+          
+          # Freeform TypeScript-based logic to select upstreams to be included by returning them:
+          evalFunction: |
+            (upstreams, method) => {
+              
+              const defaults = upstreams.filter(u => u.config.group !== 'fallback')
+              const fallbacks = upstreams.filter(u => u.config.group === 'fallback')
+              
+              // Maximum allowed error rate.
+              const maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7')
+              
+              // Maximum allowed block head lag.
+              const maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10')
+              
+              // Minimum number of healthy upstreams that must be included in default group.
+              const minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1')
+              
+              // Filter upstreams that are healthy based on error rate and block head lag.
+              const healthyOnes = defaults.filter(
+                u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
+              )
+              
+              // If there are enough healthy upstreams, return them.
+              if (healthyOnes.length >= minHealthyThreshold) {
+                return healthyOnes
+              }
+
+              // Otherwise, return all healthy upstreams plus all fallback ones.
+              return [...healthyOnes, ...fallbacks]
+            }
+          
+          # When an upstream is excluded, you can give it a chance on a regular basis
+          # to handle a certain number of sample requests again, so that metrics are refreshed.
+          # For example, to see if error rate is improving after 5 minutes, or still too high.
+          # This is conceptually similar to how a circuit-breaker works in a "half-open" state.
+          # Resampling is not always needed because the "evm state poller" component will still make
+          # requests for the "latest" block, which still updates errorRate.
+          resampleExcluded: false
+          resampleInterval: 5m
+          resampleCount: 10
 
         # (OPTIONAL) A network-level rate limit budget applied to all requests despite upstreams own rate-limits.
         # For example even if upstreams can handle 1000 RPS, and network-level is limited to 100 RPS,
@@ -60,6 +116,136 @@ projects:
     # ...
 # ...
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+
+      /**
+      * (OPTIONAL) This array configures network-specific (a.k.a chain-specific) features.
+      * For each network "architecture" and corresponding network id (e.g. evm.chainId) is required.
+      * You don't need to define networks as they will be automatically detected from configured endpoints.
+      * Only provide network list if you want to customize features such as failsafe policies, rate limit budget, finality depth, etc.
+      */
+      networks: [
+        {
+          architecture: "evm",
+          // When "evm" is used, "chainId" is required, so that rate limit budget or failsafe policies are properly applied.
+          evm: {
+            // (REQUIRED) chainId is required when "evm" architecture is used.
+            chainId: 1,
+            /**
+            * (OPTIONAL) fallbackFinalityDepth is optional and allows to manually set a finality depth in case upstream does not support eth_getBlockByNumber(finalized).
+            * In case this fallback is used, finalized block will be 'LatestBlock - fallbackFinalityDepth'.
+            * Defining this fallback helps with increasing cache-hit rate and reducing redundant 'retry' attempts on empty responses, as we know which data is finalized.
+            * DEFAULT: auto-detect - via eth_getBlockByNumber(finalized).
+            */
+            fallbackFinalityDepth: 1024,
+          },
+
+          /**
+          * (OPTIONAL) Refer to "Selection Policy" section for more details.
+          * Here are default values used for selectionPolicy if not explicitly defined:
+          */
+          selectionPolicy: {
+            // Every 1 minute evaluate which upstreams must be included,
+            // based on the arbitrary logic (e.g., <90% error rate and <10 block lag):
+            evalInterval: "1m",
+            
+            // Freeform TypeScript-based logic to select upstreams to be included by returning them:
+            evalFunction:
+              (upstreams, method) => {
+                // Separate upstreams into two groups:
+                const defaults = upstreams.filter(u => u.config.group !== 'fallback');
+                const fallbacks = upstreams.filter(u => u.config.group === 'fallback');
+                
+                // Maximum allowed error rate.
+                const maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7');
+                
+                // Maximum allowed block head lag.
+                const maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10');
+                
+                // Minimum number of healthy upstreams that must be included in default group.
+                const minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1');
+                
+                // Filter upstreams that are healthy based on error rate and block head lag.
+                const healthyOnes = defaults.filter(
+                  u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
+                );    
+                
+                // If there are enough healthy upstreams, return them.
+                if (healthyOnes.length >= minHealthyThreshold) {
+                  return healthyOnes;
+                }
+
+                // Otherwise, return all healthy upstreams plus all fallback ones.
+                return [...healthyOnes, ...fallbacks];
+              }
+            ,
+            
+            // To isolate selection evaluation and result to each "method" separately, set this flag to true
+            evalPerMethod: false,
+            
+            /*
+            * When an upstream is excluded, you can give it a chance on a regular basis
+            * to handle a certain number of sample requests again, so that metrics are refreshed.
+            * For example, to see if error rate is improving after 5 minutes, or still too high.
+            * This is conceptually similar to how a circuit-breaker works in a "half-open" state.
+            * Resampling is not always needed because the "evm state poller" component will still make
+            * requests for the "latest" block, which still updates errorRate.
+            */
+            resampleExcluded: false,
+            resampleInterval: "5m",
+            resampleCount: 10,
+          },
+
+          /**
+          * (OPTIONAL) A network-level rate limit budget applied to all requests despite upstreams own rate-limits.
+          * For example even if upstreams can handle 1000 RPS, and network-level is limited to 100 RPS,
+          * the request will be rate-limited to 100 RPS.
+          */
+          rateLimitBudget: "my-limiter-budget",
+
+          // (OPTIONAL) Refer to "Failsafe" section for more details.
+          // Here are default values used for networks if not explicitly defined:
+          failsafe: {
+            timeout: {
+              // On network-level "timeout" is applied for the whole lifecycle of the request (including however many retries happens on upstream)
+              duration: "30s",
+            },
+            retry: {
+              // It is recommended to set a retry policy on network-level to make sure if one upstream is rate-limited,
+              // the request will be retried on another upstream.
+              maxCount: 3,
+              delay: "100ms",
+              jitter: "0ms",
+              backoffMaxDelay: "1s",
+              backoffFactor: 1.5,
+            },
+            // Defining a "hedge" is highly-recommended on network-level because if upstream A is being slow for
+            // a specific request, it can start a new parallel hedged request to upstream B, for whichever responds faster.
+            hedge: {
+              delay: "200ms",
+              maxCount: 3,
+            },
+          },
+        },
+      ],
+
+      upstreams: [
+        // Refer to "Upstreams" section to learn how to configure upstreams.
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 ### Architectures
 

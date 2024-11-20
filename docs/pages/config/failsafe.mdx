@@ -1,4 +1,8 @@
-import { Callout } from "nextra/components";
+---
+description: Failsafe policies are defined on network/upstream level to help with intermittent issues and increase general resiliency...
+---
+
+import { Callout, Tabs, Tab } from "nextra/components";
 
 # Failsafe
 
@@ -15,6 +19,8 @@ Config source code: [common/config.go](https://github.com/erpc/erpc/blob/main/co
 
 This policy simply sets a timeout for the request, either on Network-level (when requests are sent to eRPC), or on Upstream-level (when requests are sent to a specific upstream).
 
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
 projects:
@@ -39,11 +45,59 @@ projects:
             # e.g. if retry policy is set to 2 retries total time will be 30s for:
             duration: 15s
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      networks: [
+        {
+          architecture: "evm",
+          evm: {
+            chainId: 42161,
+          },
+          failsafe: {
+            //...
+            timeout: {
+              // Network-level timeout applies to the whole lifecycle of the request,
+              // this includes retries on network and/or upstream level.
+              duration: "30s",
+            },
+          },
+        },
+      ],
+
+      upstreams: [
+        {
+          id: "blastapi-chain-42161",
+          //...
+          failsafe: {
+            timeout: {
+              // Upstream-level timeout applies each request sent towards the upstream,
+              // e.g. if retry policy is set to 2 retries total time will be 30s for:
+              duration: "15s",
+            },
+          },
+        },
+      ],
+    },
+  ],
+});
+
+```
+</Tabs.Tab>
+</Tabs>
 
 ## `retry` policy
 
 This policies will retry certain retriable failures, either on network-level and/or upstream-level.
 
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
 projects:
@@ -84,6 +138,69 @@ projects:
             backoffFactor: 0.3
             jitter: 500ms
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      networks: [
+        {
+          architecture: "evm",
+          evm: {
+            chainId: 1,
+          },
+          failsafe: {
+            // ...
+            // On network-level retry policy applies to the incoming request to eRPC,
+            // this is additional to the retry policy set on upstream level.
+            retry: {
+              // Total retries besides the initial request:
+              maxCount: 3,
+              // Min delay between retries:
+              delay: "500ms",
+              // Maximum delay between retries:
+              backoffMaxDelay: "10s",
+              // Multiplier for each retry for exponential backoff:
+              backoffFactor: 0.3,
+              // Random jitter to avoid thundering herd,
+              // e.g. add between 0 to 500ms to each retry delay:
+              jitter: "500ms",
+            },
+          },
+        },
+      ],
+
+      upstreams: [
+        {
+          id: "blastapi-chain-42161",
+          // ...
+          failsafe: {
+            /*
+            * Upstream-level retry policy applies each request sent towards the upstream,
+            * this is additional to the retry policy set on network level.
+            * For example if network has 2 retries and upstream has 2 retries,
+            * total retries will be 4.
+            */
+            retry: {
+              maxCount: 2,
+              delay: "1000ms",
+              backoffMaxDelay: "10s",
+              backoffFactor: 0.3,
+              jitter: "500ms",
+            },
+          },
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 These errors will be retried:
 
@@ -107,6 +224,8 @@ When a request towards an upstream is slow, the `hedge` policy will start a new 
   started, whichever responds faster will be returned to the client.
 </Callout>
 
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
 projects:
@@ -128,9 +247,52 @@ projects:
             # a new request towards upstream C will be started.
             maxCount: 1
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      networks: [
+        {
+          architecture: "evm",
+          evm: {
+            chainId: 1,
+          },
+          failsafe: {
+            // ...
+            hedge: {
+              /*
+              * Delay means how long to wait before starting a simultaneous hedged request.
+              * e.g. if upstream A did not respond within 500ms, a new request towards upstream B will be started,
+              * and whichever responds faster will be returned to the client.
+              */
+              delay: "500ms",
+              /*
+              * In total how many hedges to start.
+              * e.g. if maxCount is 2, and upstream A did not respond within 500ms,
+              * a new request towards upstream B will be started. If B also did not respond,
+              * a new request towards upstream C will be started.
+              */
+              maxCount: 1,
+            },
+          },
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 To disable hedge policy, set it to null:
 
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
 projects:
@@ -142,6 +304,32 @@ projects:
         failsafe:
           hedge: ~
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      networks: [
+        {
+          architecture: "evm",
+          evm: {
+            chainId: 1,
+          },
+          failsafe: {
+            hedge: null,
+          },
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 ## `circuitBreaker` policy
 
@@ -152,6 +340,8 @@ When upstreams are constantly failing, the `circuitBreaker` policy will temporar
   temporarily broken upstreams are not used, and will give them time to recover.
 </Callout>
 
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
 projects:
@@ -175,9 +365,51 @@ projects:
             successThresholdCount: 8
             successThresholdCapacity: 10
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      upstreams: [
+        {
+          id: "blastapi-chain-42161",
+          // ...
+          failsafe: {
+            // ...
+            circuitBreaker: {
+              // These two variables indicate how many failures and capacity to tolerate before opening the circuit.
+              // e.g. if 30 requests have failed out of last 100 requests, circuit breaker will be opened:
+              failureThresholdCount: 30,
+              failureThresholdCapacity: 100,
+              // How long to wait before trying to re-enable the upstream after circuit breaker was opened.
+              // e.g. after 60s give the upstream another chance:
+              halfOpenAfter: "60s",
+              /*
+              * These two variables indicate how many successes are required in half-open state before closing the circuit,
+              * and putting the upstream back in available upstreams.
+              * e.g. after 8 requests have succeeded out of last 10 requests, circuit breaker will be closed:
+              */
+              successThresholdCount: 8,
+              successThresholdCapacity: 10,
+            },
+          },
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 To disable circuit breaker policy, set it to null:
 
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
 ```yaml filename="erpc.yaml"
 # ...
 projects:
@@ -187,6 +419,29 @@ projects:
         failsafe:
           circuitBreaker: ~
 ```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      upstreams: [
+        {
+          id: "blastapi-chain-42161",
+          failsafe: {
+            circuitBreaker: null,
+          },
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 <Callout type="info">
 - Circuit breaker "open" means that upstream is temporarily removed from the list of available upstreams.

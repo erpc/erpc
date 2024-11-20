@@ -1,4 +1,5 @@
 import { useRouter } from "next/router";
+import {useConfig } from 'nextra-theme-docs'
 
 export default {
 	docsRepositoryBase: "https://github.com/erpc/erpc/tree/main/docs",
@@ -59,47 +60,35 @@ export default {
 			};
 		}
 	},
-	head: (
-		<>
-			<title>eRPC - EVM RPC Proxy & Cache Service</title>
-			<link rel="icon" href="./assets/favicon.ico" type="image/x-icon"></link>
-			<meta
-				name="description"
-				content="Fault-tolerant EVM RPC load balancer with reorg-aware permanent caching and auto-discovery of node providers."
-			/>
-			<meta
-				property="og:title"
-				content="eRPC - EVM RPC Proxy & Cache Service"
-			/>
-			<meta
-				property="og:description"
-				content="Fault-tolerant EVM RPC load balancer with reorg-aware permanent caching and auto-discovery of node providers."
-			/>
-			<meta
-				property="og:image"
-				content="https://i.imgur.com/kGC41ms.png"
-			/>
-			<meta
-				property="og:url"
-				content="https://erpc.cloud"
-			/>
-			<meta
-				name="twitter:card"
-				content="summary_large_image"
-			/>
-			<meta
-				name="twitter:title"
-				content="eRPC - EVM RPC Proxy & Cache Service"
-			/>
-			<meta
-				name="twitter:description"
-				content="Fault-tolerant EVM RPC load balancer with reorg-aware permanent caching and auto-discovery of node providers."
-			/>
-			<meta
-				name="twitter:image"
-				content="https://i.imgur.com/kGC41ms.png"
-			/>
-			<script defer data-domain="erpc.cloud" src="https://plausible.io/js/script.js"></script>
-		</>
-	)
-};
+	head: function useHead() {
+		const config = useConfig()
+		const { route } = useRouter()
+		const isDefault = route === '/' || !config.title
+		const image =
+		  'https://erpc-test.up.railway.app' +
+		  (isDefault ? `/og?title=eRPC&description=open-source%20fault-tolerant%20evm%20rpc%20proxy%20and%20cache` : `/og?title=${config.title}&description=${config.frontMatter.description}`)
+	
+		const description =
+		  config.frontMatter.description ||
+		  'open-source fault-tolerant evm rpc proxy and cache'
+		const title = config.title + (route === '/' ? '' : ' - eRPC')
+	
+		return (
+		  <>
+			<title>{title}</title>
+	 		<link rel="icon" href="./assets/favicon.ico" type="image/x-icon"></link>
+			<meta property="og:title" content={title} />
+			<meta name="description" content={description} />
+			<meta property="og:description" content={description} />
+			<meta property="og:image" content={image} />
+	
+			<meta name="msapplication-TileColor" content="#fff" />
+			<meta httpEquiv="Content-Language" content="en" />
+			<meta name="twitter:card" content="summary_large_image" />
+			<meta name="twitter:site:domain" content="docs.erpc.cloud" />
+			<meta name="twitter:url" content="https://docs.erpc.cloud" />
+			<meta name="apple-mobile-web-app-title" content="eRPC" />
+		  </>
+		)
+	}
+}
