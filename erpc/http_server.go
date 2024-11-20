@@ -491,7 +491,7 @@ func setResponseHeaders(res interface{}, w http.ResponseWriter) {
 			}
 		}
 	}
-	if ok && rm != nil {
+	if ok && rm != nil && !rm.IsObjectNull() {
 		if rm.FromCache() {
 			w.Header().Set("X-ERPC-Cache", "HIT")
 		} else {

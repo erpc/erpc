@@ -36,6 +36,7 @@ type ResponseMetadata interface {
 	Retries() int
 	Hedges() int
 	UpstreamId() string
+	IsObjectNull() bool
 }
 
 func NewNormalizedResponse() *NormalizedResponse {
@@ -46,7 +47,6 @@ func (r *NormalizedResponse) FromCache() bool {
 	if r == nil {
 		return false
 	}
-
 	return r.fromCache
 }
 
@@ -59,7 +59,6 @@ func (r *NormalizedResponse) Attempts() int {
 	if r == nil {
 		return 0
 	}
-
 	return r.attempts
 }
 
@@ -72,7 +71,6 @@ func (r *NormalizedResponse) Retries() int {
 	if r == nil {
 		return 0
 	}
-
 	return r.retries
 }
 
@@ -85,7 +83,6 @@ func (r *NormalizedResponse) Hedges() int {
 	if r == nil {
 		return 0
 	}
-
 	return r.hedges
 }
 
