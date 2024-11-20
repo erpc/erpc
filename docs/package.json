@@ -10,11 +10,9 @@
 		"@radix-ui/react-slot": "^1.1.0",
 		"@svgr/webpack": "^8.1.0",
 		"clsx": "^2.1.1",
-		"fs": "0.0.1-security",
 		"next": "^14.2.18",
 		"nextra": "^2.13.4",
 		"nextra-theme-docs": "^2.13.4",
-		"path": "^0.12.7",
 		"react": "^18.3.1",
 		"react-dom": "^18.3.1"
 	},
