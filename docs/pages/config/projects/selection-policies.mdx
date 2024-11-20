@@ -9,22 +9,11 @@ import { Callout, Tabs, Tab } from 'nextra/components'
 **Selection Policy** allows you to influence how upstreams are selected to serve (or not) traffic. A selection policy is defined at the network level and is responsible for returning a list of upstreams that must remain active. 
 
 The primary purpose of a selection policy is to define acceptable performance metrics and/or required conditions for selecting an upstream node.
-
 <Callout type='info'>
   Selection policies can be configured to run per-method and network or per-network only. <br />
 </Callout>
 
-<Callout type='info'>
-   By default, a "default" selection policy is activated if at least one upstream is assigned to the "fallback" group. This default policy incorporates basic logic for error rates and block lag, which can be tuned via theese environment variables 
-   
-   * `ROUTING_POLICY_MAX_ERROR_RATE` (Default: `0.7`): Maximum allowed error rate.
-   * `ROUTING_POLICY_MAX_BLOCK_HEAD_LAG` (Default: `10`): Maximum allowed block head lag.
-   * `ROUTING_POLICY_MIN_HEALTHY_THRESHOLD` (Default: `1`): Minimum number of healthy upstreams that must be included in default group.
-   
-   These environment variables allow you to adjust the default logic without rewriting the policy function.
-</Callout>
-
-<Callout type='info'>
+<Callout type='warning'>
   Selection policies are not executed per request, instead they run on an interval much like a healthcheck and update the available upstreams.
 </Callout>
 
@@ -35,6 +24,14 @@ The primary purpose of a selection policy is to define acceptable performance me
 - **Cost-Efficiency Optimization:** Prioritize "cheap" nodes and fallback to "fast" nodes only when necessary.
 
 #### Config
+
+By default, a "default" selection policy is activated if at least one upstream is assigned to the "fallback" group. This default policy incorporates basic logic for error rates and block lag, which can be tuned via theese environment variables 
+
+* `ROUTING_POLICY_MAX_ERROR_RATE` (Default: `0.7`): Maximum allowed error rate.
+* `ROUTING_POLICY_MAX_BLOCK_HEAD_LAG` (Default: `10`): Maximum allowed block head lag.
+* `ROUTING_POLICY_MIN_HEALTHY_THRESHOLD` (Default: `1`): Minimum number of healthy upstreams that must be included in default group.
+
+These environment variables allow you to adjust the default logic without rewriting the policy function.
 
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>

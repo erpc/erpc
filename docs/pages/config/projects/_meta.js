@@ -5,6 +5,9 @@ module.exports = {
 	upstreams: {
 		title: "Upstreams",
 	},
+	selectionPolicies: {
+		title: "Selection policies",
+	},
 	cors: {
 		title: "CORS",
 	},
