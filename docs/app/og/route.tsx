@@ -27,7 +27,7 @@ export async function GET(req: Request): Promise<Response> {
             backgroundPosition: '-30px -10px'
           }}
         >
-          <img height="150" style={{ marginLeft: '-20px' }} src={`https://erpc-test.up.railway.app/assets/logo.jpeg`} />
+          <img height="150" style={{ marginLeft: '-30px' }} src={`https://erpc-test.up.railway.app/assets/logo.jpeg`} />
           <h1
             tw="text-transparent text-[82px] m-0 mb-10 tracking-tighter leading-[1.1]"
             style={{
@@ -38,9 +38,9 @@ export async function GET(req: Request): Promise<Response> {
           >
             {title}
           </h1>
-          <p tw="m-0 text-3xl tracking-tight">
+          <h3 tw="m-0 text- tracking-tight">
           {description}
-          </p>
+          </h3>
         </div>
       ),
       {
