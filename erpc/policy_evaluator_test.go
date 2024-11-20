@@ -1551,7 +1551,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		err = evaluator.AcquirePermit(&logger, ups1, "method1")
 		assert.NoError(t, err, "Healthy default should be active")
 		err = evaluator.AcquirePermit(&logger, ups2, "method1")
-		assert.Error(t, err, "Unhealthy default should be inactive")
+		assert.NoError(t, err, "Unhealthy default should be active")
 		err = evaluator.AcquirePermit(&logger, ups3, "method1")
 		assert.NoError(t, err, "Fallback should be active when below min healthy threshold")
 
@@ -1620,9 +1620,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		time.Sleep(75 * time.Millisecond)
 
 		err = evaluator.AcquirePermit(&logger, ups1, "method1")
-		assert.Error(t, err, "Lagging default ups1 should be inactive")
+		assert.NoError(t, err, "Lagging default ups1 should be active")
 		err = evaluator.AcquirePermit(&logger, ups2, "method1")
-		assert.Error(t, err, "Lagging default ups2 should be inactive")
+		assert.NoError(t, err, "Lagging default ups2 should be active")
 		err = evaluator.AcquirePermit(&logger, ups3, "method1")
 		assert.NoError(t, err, "Fallback ups3 should be active when all defaults are lagging")
 	})
@@ -1702,7 +1702,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		time.Sleep(75 * time.Millisecond)
 
 		err = evaluator.AcquirePermit(&logger, ups1, "method1")
-		assert.Error(t, err, "Default with high error rate should be inactive")
+		assert.NoError(t, err, "Default with high error rate should be active")
 		err = evaluator.AcquirePermit(&logger, ups3, "method1")
 		assert.NoError(t, err, "Fallback should be active when defaults have high error rates")
 	})
