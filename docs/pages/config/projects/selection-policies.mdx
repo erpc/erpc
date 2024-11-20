@@ -17,7 +17,9 @@ The primary purpose of a selection policy is to define acceptable performance me
   Selection policies are not executed per request, instead they run on an interval much like a healthcheck and update the available upstreams.
 </Callout>
 
-By default, a "default" selection policy is activated if at least one upstream is assigned to the "fallback" group. This default policy incorporates basic logic for error rates and block lag, which can be tuned via theese environment variables 
+#### Default fallback policy
+
+By default a built-in selection policy is activated if **at least one upstream** is assigned to the "fallback" group. This default policy incorporates basic logic for error rates and block lag, which can be tuned via theese environment variables 
 
 * `ROUTING_POLICY_MAX_ERROR_RATE` (Default: `0.7`): Maximum allowed error rate.
 * `ROUTING_POLICY_MAX_BLOCK_HEAD_LAG` (Default: `10`): Maximum allowed block head lag.
