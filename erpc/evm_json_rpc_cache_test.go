@@ -83,9 +83,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	t.Run("DoNotCacheWhenEthGetTransactionByHashMissingBlockNumber", func(t *testing.T) {
 		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionByHash","params":["0x123"],"id":1}`))
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionByHash","params":["0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"],"id":1}`))
 		req.SetNetwork(mockNetwork)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":{"hash":"0x123","blockNumber":null}}`))
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":{"hash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","blockNumber":null}}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(resp)
 
@@ -177,9 +177,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			{
 				name:        "WithBlockNumberAndRef",
 				method:      "eth_getBlockByHash",
-				params:      `["0xabc",false]`,
-				result:      `{"result":{"hash":"0xabc","number":"0x1"}}`,
-				expectedRef: "0xabc",
+				params:      `["0x6315fbbb83862798c81820bbaae8bfbc542b8abf73c130583f2b36521cf10624",false]`,
+				result:      `{"result":{"hash":"0x6315fbbb83862798c81820bbaae8bfbc542b8abf73c130583f2b36521cf10624","number":"0x1"}}`,
+				expectedRef: "0x6315fbbb83862798c81820bbaae8bfbc542b8abf73c130583f2b36521cf10624",
 				finality:    common.DataFinalityStateFinalized,
 			},
 			{

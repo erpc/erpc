@@ -48,7 +48,7 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 		return "*", 1, nil
 	}
 
-	var blockParamIndex int
+	blockParamIndex := -1
 	switch r.Method {
 	case "eth_getProof",
 		"eth_getStorageAt":
@@ -103,7 +103,7 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 	var blockRef string
 	var blockNumber int64
 
-	if len(r.Params)-1 >= blockParamIndex {
+	if blockParamIndex >= 0 && len(r.Params)-1 >= blockParamIndex {
 		blockRef, blockNumber, err = parseCompositeBlockParam(r.Params[blockParamIndex])
 		if err != nil {
 			return "", 0, err
