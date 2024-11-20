@@ -140,7 +140,8 @@ export default createConfig({
             // based on the arbitrary logic (e.g., <90% error rate and <10 block lag):
             evalInterval: "1m",
             
-            // Freeform TypeScript-based logic to select upstreams to be included by returning them:
+            // Freeform TypeScript-based logic to select upstreams to be included by returning them.
+            // Reference "upstreams" and "method" explained in "evalFunction" section below.
             evalFunction:
               (upstreams, method) => {
                 // Separate upstreams into two groups:
@@ -194,3 +195,42 @@ export default createConfig({
 ```
 </Tabs.Tab>
 </Tabs>
+
+#### `evalFunction` parameters
+
+`Upstreams` and `method` are available as variables in the `evalFunction`.
+
+```typescript
+// Current upstream
+export type Upstream = {
+	id: string
+	config: UpstreamConfig
+	metrics: UpstreamMetrics
+}
+
+export type UpstreamMetrics = {
+  // p90 rate of errors of last X minutes (X is based on `project.healthCheck.scoreMetricsWindowSize`)
+	errorRate: number
+  
+  // total errors of this upstream
+	errorsTotal: number
+  
+  // total requests served by this upstream
+	requestsTotal: number
+  
+  // Throttled rate of this upstream.
+	throttledRate: number
+  
+  // 90th percentile latency in seconds for this upstream.
+	p90LatencySecs: number
+  
+  // Block head lag in seconds for this upstream.
+	blockHeadLag: number
+  
+  // Finalization lag in seconds for this upstream.
+	finalizationLag: number
+}
+
+// Method is either `*` (all methods) or a specific method name.
+export type Method = '*' | string
+```
