@@ -37,12 +37,17 @@ var DataFinalityStateUnknown = 2;
 var ConfigBuilder = class {
   constructor(config) {
     this.config = config;
+    this.store = {
+      upstreams: {},
+      networks: {}
+    };
   }
   /**
    * Adds rate limiters to the configuration.
    * @param budgets A record where keys are budget identifiers and values are arrays of RateLimitRuleConfig.
    */
-  addRateLimiters(budgets) {
+  addRateLimiters(args) {
+    const budgets = typeof args === "function" ? args({ config: this.config, store: this.store }) : args;
     const mappedRateLimiters = Object.entries(
       budgets
     ).map(([id, rules]) => ({
@@ -61,7 +66,8 @@ var ConfigBuilder = class {
    * Adds a project to the configuration.
    * @param project The project configuration.
    */
-  addProject(project) {
+  addProject(args) {
+    const project = typeof args === "function" ? args({ config: this.config, store: this.store }) : args;
     const newProjects = [
       ...this.config.projects || [],
       project
@@ -69,6 +75,17 @@ var ConfigBuilder = class {
     this.config = {
       ...this.config,
       projects: newProjects
+    };
+    return this;
+  }
+  /**
+   * Decorate the current builder with new values in it's store.
+   */
+  decorate(args) {
+    const { scope, value } = typeof args === "function" ? args({ config: this.config, store: this.store }) : args;
+    this.store[scope] = {
+      ...this.store[scope],
+      ...value
     };
     return this;
   }
