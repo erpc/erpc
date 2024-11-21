@@ -1,4 +1,4 @@
-import type { DynamoDBConnectorConfig, MemoryConnectorConfig, PostgreSQLConnectorConfig, RedisConnectorConfig, UpstreamConfig } from "./generated";
+import type { DynamoDBConnectorConfig, MemoryConnectorConfig, PostgreSQLConnectorConfig, RedisConnectorConfig, UpstreamConfig } from "../generated";
 export type Duration = `${number}ms` | `${number}s` | `${number}m` | `${number}h`;
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error" | "disabled" | undefined;
 export type ConnectorDriverType = "memory" | "redis" | "postgres" | "dynamodb";
@@ -34,4 +34,4 @@ export type ConnectorConfig = {
     driver: "postgresql";
     postgresql: PostgreSQLConnectorConfig;
 };
-//# sourceMappingURL=types.d.ts.map
+//# sourceMappingURL=generic.d.ts.map

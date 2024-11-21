@@ -12,6 +12,8 @@ npm install @erpc-cloud/config
 
 And create a `erpc.ts` file:
 
+### Direct configuration export
+
 ```typescript
 import { createConfig } from "@erpc-cloud/config";
 
@@ -49,6 +51,48 @@ export default createConfig({
     ]
 })
 ```
+
+### Builder configuration export
+
+## Builder usage
+
+You could also use the builder to generate the config:
+
+```typescript
+import { initErpcConfig } from "@erpc-cloud/config";
+
+export default initErpcConfig({
+  logLevel: "info",
+  server: {
+    httpHostV4: "0.0.0.0",
+    httpPort: 4000,
+  },
+})
+  .addRateLimiters({
+    budget1: [
+      {
+        method: "*",
+        period: "1s",
+        maxCount: 10,
+        waitTime: "1s",
+      },
+    ]
+  })
+  .addProject({
+    id: "project1",
+    rateLimitBudget: "budget1",
+    upstreams: [
+      {
+        id: "test",
+        endpoint: "http://localhost:3000",
+        rateLimitBudget: "budget1",
+      },
+    ],
+  })
+  .build();
+```
+
+### Running eRPC
 
 And then run eRPC with the config:
 
@@ -96,3 +140,4 @@ docker run \
     -v $(pwd)/node_modules:/root/node_modules \
     -p 4000:4000 -p 4001:4001 ghcr.io/erpc/erpc:latest
 ```
+

@@ -6,14 +6,14 @@
   "types": "./lib/index.d.ts",
   "typings": "./dist/index.d.ts",
   "scripts": {
+    "typecheck": "tsc --noEmit",
+    "format": "biome check --write .",
+    "format:check": "biome check .",
     "build": "pnpm build:lib && pnpm build:types",
     "build:lib": "esbuild src/index.ts --outdir=lib --bundle --outbase=src --platform=node --format=cjs --sourcemap",
     "build:types": "tsc src/index.ts --emitDeclarationOnly --declaration --outDir lib --declarationMap --moduleResolution nodenext"
   },
-  "files": [
-    "lib",
-    "src/*.ts"
-  ],
+  "files": ["lib", "src/*.ts"],
   "exports": {
     ".": {
       "types": "./lib/index.d.ts",

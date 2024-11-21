@@ -23,7 +23,8 @@ __export(src_exports, {
   DataFinalityStateFinalized: () => DataFinalityStateFinalized,
   DataFinalityStateUnfinalized: () => DataFinalityStateUnfinalized,
   DataFinalityStateUnknown: () => DataFinalityStateUnknown,
-  createConfig: () => createConfig
+  createConfig: () => createConfig,
+  initErpcConfig: () => initErpcConfig
 });
 module.exports = __toCommonJS(src_exports);
 
@@ -31,6 +32,56 @@ module.exports = __toCommonJS(src_exports);
 var DataFinalityStateFinalized = 0;
 var DataFinalityStateUnfinalized = 1;
 var DataFinalityStateUnknown = 2;
+
+// src/builder/index.ts
+var ConfigBuilder = class {
+  constructor(config) {
+    this.config = config;
+  }
+  /**
+   * Adds rate limiters to the configuration.
+   * @param budgets A record where keys are budget identifiers and values are arrays of RateLimitRuleConfig.
+   */
+  addRateLimiters(budgets) {
+    const mappedRateLimiters = Object.entries(
+      budgets
+    ).map(([id, rules]) => ({
+      id,
+      rules
+    }));
+    const rateLimiters = this.config.rateLimiters ?? { budgets: [] };
+    rateLimiters.budgets.push(...mappedRateLimiters);
+    this.config = {
+      ...this.config,
+      rateLimiters
+    };
+    return this;
+  }
+  /**
+   * Adds a project to the configuration.
+   * @param project The project configuration.
+   */
+  addProject(project) {
+    const newProjects = [
+      ...this.config.projects || [],
+      project
+    ];
+    this.config = {
+      ...this.config,
+      projects: newProjects
+    };
+    return this;
+  }
+  /**
+   * Builds the final configuration.
+   */
+  build() {
+    return this.config;
+  }
+};
+function initErpcConfig(baseConfig) {
+  return new ConfigBuilder(baseConfig);
+}
 
 // src/index.ts
 var createConfig = (cfg) => {
@@ -41,6 +92,7 @@ var createConfig = (cfg) => {
   DataFinalityStateFinalized,
   DataFinalityStateUnfinalized,
   DataFinalityStateUnknown,
-  createConfig
+  createConfig,
+  initErpcConfig
 });
 //# sourceMappingURL=index.js.map
