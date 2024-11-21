@@ -225,6 +225,12 @@ func (p *PostgreSQLConnectorConfig) SetDefaults() {
 	if p.Table == "" {
 		p.Table = "erpc_json_rpc_cache"
 	}
+	if p.MinConns == 0 {
+		p.MinConns = 4
+	}
+	if p.MaxConns == 0 {
+		p.MaxConns = 32
+	}
 }
 
 func (d *DynamoDBConnectorConfig) SetDefaults() {

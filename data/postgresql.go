@@ -22,6 +22,8 @@ type PostgreSQLConnector struct {
 	id            string
 	logger        *zerolog.Logger
 	conn          *pgxpool.Pool
+	minConns      int32
+	maxConns      int32
 	table         string
 	cleanupTicker *time.Ticker
 }
@@ -39,6 +41,8 @@ func NewPostgreSQLConnector(
 		id:            id,
 		logger:        &lg,
 		table:         cfg.Table,
+		minConns:      cfg.MinConns,
+		maxConns:      cfg.MaxConns,
 		cleanupTicker: time.NewTicker(5 * time.Minute),
 	}
 
@@ -68,7 +72,15 @@ func NewPostgreSQLConnector(
 }
 
 func (p *PostgreSQLConnector) connect(ctx context.Context, cfg *common.PostgreSQLConnectorConfig) error {
-	conn, err := pgxpool.Connect(ctx, cfg.ConnectionUri)
+	config, err := pgxpool.ParseConfig(cfg.ConnectionUri)
+	if err != nil {
+		return fmt.Errorf("failed to parse connection URI: %w", err)
+	}
+	config.MinConns = p.minConns
+	config.MaxConns = p.maxConns
+	config.MaxConnLifetime = 5 * time.Hour
+	config.MaxConnIdleTime = 30 * time.Minute
+	conn, err := pgxpool.ConnectConfig(ctx, config)
 	if err != nil {
 		return fmt.Errorf("failed to connect to PostgreSQL: %w", err)
 	}
@@ -98,7 +110,7 @@ func (p *PostgreSQLConnector) connect(ctx context.Context, cfg *common.PostgreSQ
 
 	// Create index for reverse lookups
 	_, err = conn.Exec(ctx, fmt.Sprintf(`
-		CREATE INDEX IF NOT EXISTS idx_reverse ON %s (range_key, partition_key)
+		CREATE INDEX IF NOT EXISTS idx_reverse ON %s (partition_key, range_key) INCLUDE (value)
 	`, cfg.Table))
 	if err != nil {
 		return fmt.Errorf("failed to create reverse index: %w", err)

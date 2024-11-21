@@ -235,12 +235,16 @@ type DynamoDBConnectorConfig struct {
 type PostgreSQLConnectorConfig struct {
 	ConnectionUri string `yaml:"connectionUri" json:"connectionUri"`
 	Table         string `yaml:"table" json:"table"`
+	MinConns      int32  `yaml:"minConns,omitempty" json:"minConns"`
+	MaxConns      int32  `yaml:"maxConns,omitempty" json:"maxConns"`
 }
 
 func (p *PostgreSQLConnectorConfig) MarshalJSON() ([]byte, error) {
 	return sonic.Marshal(map[string]string{
 		"connectionUri": util.RedactEndpoint(p.ConnectionUri),
 		"table":         p.Table,
+		"minConns":      fmt.Sprintf("%d", p.MinConns),
+		"maxConns":      fmt.Sprintf("%d", p.MaxConns),
 	})
 }
 
