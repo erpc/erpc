@@ -91,6 +91,8 @@ export interface DynamoDBConnectorConfig {
 export interface PostgreSQLConnectorConfig {
   connectionUri: string;
   table: string;
+  minConns: number /* int32 */;
+  maxConns: number /* int32 */;
 }
 export interface AwsAuthConfig {
   mode: string; // "file", "env", "secret"
