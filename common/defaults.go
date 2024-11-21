@@ -41,7 +41,7 @@ func (c *Config) SetDefaults() {
 						Method:      "*",
 						Finality:    DataFinalityStateUnknown,
 						MaxItemSize: util.StringPtr("1mb"),
-						TTL:         5 * time.Second,
+						TTL:         30 * time.Second,
 						Connector:   "memory-cache",
 					},
 					{
@@ -50,6 +50,14 @@ func (c *Config) SetDefaults() {
 						Finality:    DataFinalityStateUnfinalized,
 						MaxItemSize: util.StringPtr("1mb"),
 						TTL:         5 * time.Second,
+						Connector:   "memory-cache",
+					},
+					{
+						Network:     "*",
+						Method:      "*",
+						Finality:    DataFinalityStateRealtime,
+						MaxItemSize: util.StringPtr("1mb"),
+						TTL:         2 * time.Second,
 						Connector:   "memory-cache",
 					},
 				},

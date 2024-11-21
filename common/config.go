@@ -107,7 +107,15 @@ func (c *CacheConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 					Method:    "*",
 					Finality:  DataFinalityStateUnfinalized,
 					Empty:     CacheEmptyBehaviorAllow,
-					TTL:       30 * time.Second,
+					TTL:       5 * time.Second,
+					Connector: "default",
+				},
+				&CachePolicyConfig{
+					Network:   "*",
+					Method:    "*",
+					Finality:  DataFinalityStateRealtime,
+					Empty:     CacheEmptyBehaviorAllow,
+					TTL:       2 * time.Second,
 					Connector: "default",
 				},
 			)

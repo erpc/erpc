@@ -12,6 +12,17 @@ var EvmStaticMethods = map[string]bool{
 	"eth_chainId": true,
 }
 
+// List of methods that are expected to return new data on every new block
+var EvmRealtimeMethods = map[string]bool{
+	"net_peerCount":            true,
+	"eth_maxPriorityFeePerGas": true,
+	"eth_hashrate":             true,
+	"eth_gasPrice":             true,
+	"eth_blockNumber":          true,
+	"eth_blobBaseFee":          true,
+	"erigon_blockNumber":       true,
+}
+
 func ExtractEvmBlockReference(rpcReq *JsonRpcRequest, rpcResp *JsonRpcResponse) (string, int64, error) {
 	blockRef, blockNumber, err := ExtractEvmBlockReferenceFromRequest(rpcReq)
 	if err != nil {
@@ -46,6 +57,13 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 		// Static methods are not expected to change over time so we can cache them forever
 		// We use block number 1 as a signal to indicate data is finalized on first ever block
 		return "*", 1, nil
+	}
+
+	if _, ok := EvmRealtimeMethods[r.Method]; ok {
+		// Certain methods are expected to always return new data on every new block.
+		// For these methods we can always return "*" as blockRef to indicate data it can be cached
+		// if there's a 'realtime' cache policy specifically targeting these methods.
+		return "*", 0, nil
 	}
 
 	blockParamIndex := -1
@@ -140,16 +158,6 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 		// For example this is not safe to do for eth_getBlockByNumber because users
 		// require this method always give them current accurate data (even if it's reorged).
 		// Returning "*" as blockRef means that these data are safe be cached irrevelant of their block.
-		return "*", 0, nil
-
-	case "eth_blockNumber",
-		"eth_blobBaseFee",
-		"eth_hashrate",
-		"net_peerCount",
-		"eth_gasPrice":
-		// Certain methods are expected to always return unfinalized data.
-		// For these methods we can always return "*" as blockRef to indicate data it can be cached
-		// if there's an 'unfinalized' cache policy specifically targeting these methods.
 		return "*", 0, nil
 	}
 
