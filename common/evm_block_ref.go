@@ -79,6 +79,9 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 		"eth_getTransactionByBlockHashAndIndex",
 		"eth_getBlockByHash",
 		"debug_traceBlockByHash",
+		"debug_getRawBlock",
+		"debug_getRawHeader",
+		"debug_getRawReceipts",
 		"eth_getBlockTransactionCountByHash",
 		"eth_getUncleCountByBlockHash",
 		"erigon_getHeaderByNumber",
@@ -142,8 +145,9 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 	case "eth_blockNumber",
 		"eth_blobBaseFee",
 		"eth_hashrate",
-		"net_peerCount":
-		// Certain methods (e.g. eth_blockNumber) are expected to always return unfinalized data.
+		"net_peerCount",
+		"eth_gasPrice":
+		// Certain methods are expected to always return unfinalized data.
 		// For these methods we can always return "*" as blockRef to indicate data it can be cached
 		// if there's an 'unfinalized' cache policy specifically targeting these methods.
 		return "*", 0, nil
