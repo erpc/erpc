@@ -276,9 +276,23 @@ export type DataFinalityState = number;
 /**
  * Finalized gets 0 intentionally so that when user has not specified finality,
  * it defaults to finalized, which is safest sane default for caching.
+ * This attribute will be calculated based on extracted block number (from request and/or response)
+ * and comparing to the upstream (one that returned the response) 'finalized' block (fetch via evm state poller).
  */
 export declare const DataFinalityStateFinalized: DataFinalityState;
+/**
+ * When we CAN determine the block number, and it's after the upstream 'finalized' block, we consider the data unfinalized.
+ */
 export declare const DataFinalityStateUnfinalized: DataFinalityState;
+/**
+ * Certain methods points are meant to be realtime and updated with every new block (e.g. eth_gasPrice).
+ * These can be cached with short TTLs to improve performance.
+ */
+export declare const DataFinalityStateRealtime: DataFinalityState;
+/**
+ * When we CANNOT determine the block number (e.g some trace by hash calls), we consider the data unknown.
+ * Most often it is safe to cache this data for longer as they're access when block hash is provided directly.
+ */
 export declare const DataFinalityStateUnknown: DataFinalityState;
 export type CacheEmptyBehavior = number;
 export declare const CacheEmptyBehaviorIgnore: CacheEmptyBehavior;

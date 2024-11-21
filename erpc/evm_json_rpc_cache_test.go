@@ -119,7 +119,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		err = cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
-		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:2", mock.Anything, mock.Anything, mock.Anything)
+		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:*", mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("CacheIfBlockNumberIsFinalizedWhenBlockIsUsedForPrimaryKey", func(t *testing.T) {
@@ -385,8 +385,8 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		err = cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
-		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:1", mock.Anything, mock.Anything, mock.Anything)
-		mockConnectors[1].AssertCalled(t, "Set", mock.Anything, "evm:123:1", mock.Anything, mock.Anything, mock.Anything)
+		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:*", mock.Anything, mock.Anything, mock.Anything)
+		mockConnectors[1].AssertCalled(t, "Set", mock.Anything, "evm:123:*", mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("RespectFinalityStateWhenStoring", func(t *testing.T) {
@@ -394,9 +394,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
 		})
 
-		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionByHash","params":["0x123"],"id":1}`))
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionByHash","params":["0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"],"id":1}`))
 		req.SetNetwork(mockNetwork)
-		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":{"hash":"0x123","blockNumber":"0x1"}}`))
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":{"hash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","blockNumber":"0x1"}}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(resp)
 
@@ -426,7 +426,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 
 		assert.NoError(t, err)
 		// Only the finalized policy connector should be called since block 5 is finalized
-		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:1", mock.Anything, mock.Anything, mock.Anything)
+		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:*", mock.Anything, mock.Anything, mock.Anything)
 		mockConnectors[1].AssertNotCalled(t, "Set")
 	})
 

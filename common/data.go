@@ -10,13 +10,24 @@ type DataFinalityState int
 const (
 	// Finalized gets 0 intentionally so that when user has not specified finality,
 	// it defaults to finalized, which is safest sane default for caching.
+	// This attribute will be calculated based on extracted block number (from request and/or response)
+	// and comparing to the upstream (one that returned the response) 'finalized' block (fetch via evm state poller).
 	DataFinalityStateFinalized DataFinalityState = iota
+
+	// When we CAN determine the block number, and it's after the upstream 'finalized' block, we consider the data unfinalized.
 	DataFinalityStateUnfinalized
+
+	// Certain methods points are meant to be realtime and updated with every new block (e.g. eth_gasPrice).
+	// These can be cached with short TTLs to improve performance.
+	DataFinalityStateRealtime
+
+	// When we CANNOT determine the block number (e.g some trace by hash calls), we consider the data unknown.
+	// Most often it is safe to cache this data for longer as they're access when block hash is provided directly.
 	DataFinalityStateUnknown
 )
 
 func (f DataFinalityState) String() string {
-	return []string{"finalized", "unfinalized", "unknown"}[f]
+	return []string{"finalized", "unfinalized", "realtime", "unknown"}[f]
 }
 
 func (f DataFinalityState) MarshalJSON() ([]byte, error) {

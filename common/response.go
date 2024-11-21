@@ -325,18 +325,22 @@ func (r *NormalizedResponse) FinalityState() (finality DataFinalityState) {
 			}
 		}
 	} else {
-		// Certain methods that return data for 'pending' blocks/transactions are always considered unfinalized
-		switch method {
-		case "eth_getBlockByNumber",
-			"eth_getBlockByHash",
-			"eth_getUncleByBlockHashAndIndex",
-			"eth_getUncleByBlockNumberAndIndex",
-			"eth_getTransactionByHash",
-			"eth_getTransactionReceipt",
-			"eth_getTransactionByBlockHashAndIndex",
-			"eth_getTransactionByBlockNumberAndIndex":
-			// No block number means the data is for 'pending' block/transaction
-			finality = DataFinalityStateUnfinalized
+		if _, ok := EvmRealtimeMethods[method]; ok {
+			finality = DataFinalityStateRealtime
+		} else {
+			switch method {
+			case "eth_getBlockByNumber",
+				"eth_getBlockByHash",
+				"eth_getUncleByBlockHashAndIndex",
+				"eth_getUncleByBlockNumberAndIndex",
+				"eth_getTransactionByHash",
+				"eth_getTransactionReceipt",
+				"eth_getTransactionByBlockHashAndIndex",
+				"eth_getTransactionByBlockNumberAndIndex":
+				// Certain methods that return data for 'pending' blocks/transactions are always considered unfinalized
+				// No block number means the data is for 'pending' block/transaction
+				finality = DataFinalityStateUnfinalized
+			}
 		}
 	}
 
