@@ -325,7 +325,6 @@ func (r *NormalizedResponse) FinalityState() (finality DataFinalityState) {
 			}
 		}
 	} else {
-		// Certain methods that return data for 'pending' blocks/transactions are always considered unfinalized
 		switch method {
 		case "eth_getBlockByNumber",
 			"eth_getBlockByHash",
@@ -335,7 +334,16 @@ func (r *NormalizedResponse) FinalityState() (finality DataFinalityState) {
 			"eth_getTransactionReceipt",
 			"eth_getTransactionByBlockHashAndIndex",
 			"eth_getTransactionByBlockNumberAndIndex":
+			// Certain methods that return data for 'pending' blocks/transactions are always considered unfinalized
 			// No block number means the data is for 'pending' block/transaction
+			finality = DataFinalityStateUnfinalized
+		case "eth_blockNumber",
+			"erigon_blockNumber",
+			"eth_blobBaseFee",
+			"eth_hashrate",
+			"net_peerCount":
+			// Certain methods always return unfinalized data due to their nature.
+			// These can be cached if there's a 'unfinalized' cache policy specifically targeting them.
 			finality = DataFinalityStateUnfinalized
 		}
 	}

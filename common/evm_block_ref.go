@@ -51,7 +51,8 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 	blockParamIndex := -1
 	switch r.Method {
 	case "eth_getProof",
-		"eth_getStorageAt":
+		"eth_getStorageAt",
+		"arbtrace_call":
 		blockParamIndex = 2
 	case "eth_feeHistory",
 		"eth_getAccount",
@@ -60,7 +61,10 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 		"eth_getTransactionCount",
 		"eth_getCode",
 		"eth_call",
-		"debug_traceCall":
+		"debug_traceCall",
+		"eth_simulateV1",
+		"erigon_getBlockByTimestamp",
+		"arbtrace_callMany":
 		blockParamIndex = 1
 	case "eth_getBlockByNumber",
 		"eth_getUncleByBlockNumberAndIndex",
@@ -70,11 +74,16 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 		"eth_getBlockReceipts",
 		"trace_block",
 		"debug_traceBlockByNumber",
-		"debug_traceBlockByHash",
-		"eth_getBlockByHash",
+		"trace_replayBlockTransactions",
+		"debug_storageRangeAt",
 		"eth_getTransactionByBlockHashAndIndex",
+		"eth_getBlockByHash",
+		"debug_traceBlockByHash",
 		"eth_getBlockTransactionCountByHash",
-		"eth_getUncleCountByBlockHash":
+		"eth_getUncleCountByBlockHash",
+		"erigon_getHeaderByNumber",
+		"arbtrace_block",
+		"arbtrace_replayBlockTransactions":
 		blockParamIndex = 0
 	case "eth_getLogs":
 		// Special handling for eth_getLogs
@@ -119,13 +128,24 @@ func ExtractEvmBlockReferenceFromRequest(r *JsonRpcRequest) (string, int64, erro
 		"arbtrace_replayTransaction",
 		"trace_replayTransaction",
 		"debug_traceTransaction",
-		"trace_transaction":
+		"trace_rawTransaction",
+		"trace_transaction",
+		"debug_traceBlock":
 		// For certain data it is safe to keep the data in cache even after reorg,
 		// because if client explcitly querying such data (e.g. a specific tx hash receipt)
 		// they know it might be reorged from a separate process.
 		// For example this is not safe to do for eth_getBlockByNumber because users
 		// require this method always give them current accurate data (even if it's reorged).
-		// Returning "*" as blockRef means that these data can be cached irrevelant of their block.
+		// Returning "*" as blockRef means that these data are safe be cached irrevelant of their block.
+		return "*", 0, nil
+
+	case "eth_blockNumber",
+		"eth_blobBaseFee",
+		"eth_hashrate",
+		"net_peerCount":
+		// Certain methods (e.g. eth_blockNumber) are expected to always return unfinalized data.
+		// For these methods we can always return "*" as blockRef to indicate data it can be cached
+		// if there's an 'unfinalized' cache policy specifically targeting these methods.
 		return "*", 0, nil
 	}
 
@@ -166,7 +186,8 @@ func ExtractEvmBlockReferenceFromResponse(rpcReq *JsonRpcRequest, rpcResp *JsonR
 		}
 	case "eth_getTransactionReceipt",
 		"eth_getTransactionByHash",
-		"eth_getTransactionByBlockHashAndIndex":
+		"eth_getTransactionByBlockHashAndIndex",
+		"erigon_getBlockReceiptsByBlockHash":
 		if len(rpcResp.Result) > 0 {
 			blockRef, _ := rpcResp.PeekStringByPath("blockHash")
 			blockNumberStr, _ := rpcResp.PeekStringByPath("blockNumber")
@@ -188,6 +209,8 @@ func ExtractEvmBlockReferenceFromResponse(rpcReq *JsonRpcRequest, rpcResp *JsonR
 		}
 	case "eth_getBlockByNumber",
 		"eth_getBlockByHash",
+		"erigon_getHeaderByHash",
+		"erigon_getHeaderByNumber",
 		"eth_getUncleByBlockHashAndIndex":
 		if len(rpcResp.Result) > 0 {
 			blockRef, _ := rpcResp.PeekStringByPath("hash")
