@@ -715,11 +715,10 @@ func TestEvmJsonRpcCache_Get(t *testing.T) {
 		cache.policies = []*data.CachePolicy{policy1, policy2}
 
 		// First connector returns nil
-		mockConnectors[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).Return("", nil)
+		mockConnectors[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).Return("", common.NewErrRecordNotFound("test", "mock1"))
 
 		// Second connector returns data
 		cachedResponse := `{"number":"0x1","hash":"0xabc"}`
-		mockConnectors[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).Return("", nil)
 		mockConnectors[1].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).Return(cachedResponse, nil)
 
 		resp, err := cache.Get(context.Background(), req)

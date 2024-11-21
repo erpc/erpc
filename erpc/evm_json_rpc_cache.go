@@ -224,10 +224,6 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 		return nil, err
 	}
 
-	if resultString == `` || resultString == `""` || resultString == "null" || resultString == "[]" || resultString == "{}" {
-		return nil, nil
-	}
-
 	jrr := &common.JsonRpcResponse{
 		Result: util.Str2Mem(resultString),
 	}
