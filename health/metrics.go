@@ -17,24 +17,20 @@ var (
 		Name:      "upstream_request_duration_seconds",
 		Help:      "Duration of actual requests towards upstreams.",
 		Buckets: []float64{
-			0.0005, // 0.5 ms
-			0.001,  // 1 ms
-			0.005,  // 5 ms
-			0.01,   // 10 ms
-			0.025,  // 25 ms
-			0.05,   // 50 ms
-			0.1,    // 100 ms
-			0.25,   // 250 ms
-			0.5,    // 500 ms
-			1,      // 1 s
-			2.5,    // 2.5 s
-			5,      // 5 s
-			10,     // 10 s
-			30,     // 30 s
-			60,     // 60 s
-			300,    // 5 min
-			1800,   // 30 min
-			3600,   // 1 hour
+			0.005, // 5 ms
+			0.01,  // 10 ms
+			0.025, // 25 ms
+			0.05,  // 50 ms
+			0.1,   // 100 ms
+			0.25,  // 250 ms
+			0.5,   // 500 ms
+			1,     // 1 s
+			2.5,   // 2.5 s
+			5,     // 5 s
+			10,    // 10 s
+			30,    // 30 s
+			60,    // 60 s
+			300,   // 5 min
 		},
 	}, []string{"project", "network", "upstream", "category"})
 
@@ -157,24 +153,20 @@ var (
 		Name:      "network_request_duration_seconds",
 		Help:      "Duration of requests for a network.",
 		Buckets: []float64{
-			0.0005, // 0.5 ms
-			0.001,  // 1 ms
-			0.005,  // 5 ms
-			0.01,   // 10 ms
-			0.025,  // 25 ms
-			0.05,   // 50 ms
-			0.1,    // 100 ms
-			0.25,   // 250 ms
-			0.5,    // 500 ms
-			1,      // 1 s
-			2.5,    // 2.5 s
-			5,      // 5 s
-			10,     // 10 s
-			30,     // 30 s
-			60,     // 60 s
-			300,    // 5 min
-			1800,   // 30 min
-			3600,   // 1 hour
+			0.005, // 5 ms
+			0.01,  // 10 ms
+			0.025, // 25 ms
+			0.05,  // 50 ms
+			0.1,   // 100 ms
+			0.25,  // 250 ms
+			0.5,   // 500 ms
+			1,     // 1 s
+			2.5,   // 2.5 s
+			5,     // 5 s
+			10,    // 10 s
+			30,    // 30 s
+			60,    // 60 s
+			300,   // 5 min
 		},
 	}, []string{"project", "network", "category"})
 
