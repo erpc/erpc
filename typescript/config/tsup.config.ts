@@ -1,7 +1,7 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  // Target version (es2022, tu support viem + bigint literals)
+  // Target version (es2022, to support viem + bigint literals)
   target: "es2022",
   // All of our entry-points
   entry: ["src/index.ts"],
