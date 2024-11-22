@@ -11,13 +11,13 @@ importers:
       '@erpc-cloud/config':
         specifier: workspace:*
         version: link:typescript/config
+      esbuild:
+        specifier: 0.24.0
+        version: 0.24.0
     devDependencies:
       '@biomejs/biome':
         specifier: 1.9.4
         version: 1.9.4
-      esbuild:
-        specifier: 0.24.0
-        version: 0.24.0
       typescript:
         specifier: 5.1.6
         version: 5.1.6
