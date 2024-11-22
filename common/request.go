@@ -292,7 +292,14 @@ func (r *NormalizedRequest) EvmBlockRefAndNumber() (string, int64, error) {
 		lvr := r.lastValidResponse.Load()
 		if lvr != nil {
 			br, bn, err = lvr.EvmBlockRefAndNumber()
-			if br != "" {
+			if br != "" && blockRef == "" {
+				// The condition (blockRef == "") makes sure if request already has a ref we won't override it from response.
+				// For example eth_getBlockByNumber(latest) will have a "latest" ref, so it'll be cached under "latest" ref,
+				// and we don't it to be stored as the actual blockHash returned in the response, so that we can have a cache hit.
+				// TODO An ideal version stores the data for all eth_getBlockByNumber(latest) and eth_getBlockByNumber(blockNumber),
+				// and eth_getBlockByNumber(blockHash) where blockNumber/blockHash is the actual block number returned in the response.
+				// So that if user gets the latest block cache is populated for when they provide that specific block as well.
+				// When implementing that feature remember that CacheHash() must be calculated based on response's number/hash.
 				blockRef = br
 			}
 			if bn > 0 {

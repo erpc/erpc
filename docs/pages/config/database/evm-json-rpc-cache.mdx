@@ -22,7 +22,7 @@ database:
       - network: string
         method: string
         params: []any
-        finality: finalized | unfinalized | unknown
+        finality: finalized | unfinalized | realtime | unknown
         empty: ignore | allow | only
         minItemSize: string # xB | xKB | xMB
         maxItemSize: string # xB | xKB | xMB
@@ -46,7 +46,7 @@ export default createConfig({
         network?: string,
         method?: string,
         params?: any[],
-        finality: "finalized" | "unfinalized" | "unknown",
+        finality: "finalized" | "unfinalized" | "realtime" | "unknown",
         empty?: "ignore" | "allow" | "only",
         minItemSize?: string, // e.g. "1KB", "1MB"
         maxItemSize?: string, // e.g. "1KB", "1MB"
@@ -232,8 +232,10 @@ export default createConfig({
 
 <Callout type="info">
 By default, eRPC enables an in-memory cache with these policies:
-- `finalized` data: cached forever with 100k max items and 1mb max item size.
-- `unknown` and `unfinalized` data: cached for 5 seconds to be reorg safe yet reduce redundant RPC calls.
+- `finalized` data: cached **forever** with 100k max items and 1mb max item size.
+- `unfinalized` data: cached for **5 seconds** to be reorg safe yet reduce redundant RPC calls.
+- `unknown` data: cached for **30 seconds** as it's generally safe to cache but we don't want to cache them forever.
+- `realtime` data: cached for **2 seconds** to be as fresh as possible.
 </Callout>
 
 #### Cache policies
@@ -411,6 +413,7 @@ The cache system recognizes three finality states:
 
 - `finalized`: (default) Data from blocks that are confirmed as finalized (safe to cache long-term). This is based on 'finalized' block fetched via eth_getBlockByNumber of the upstream corresponding to the received response (not other upstreams).
 - `unfinalized`: Data from recent blocks that could still be reorged. Also any data/transaction from pending blocks is considered unfinalized.
+- `realtime`: Data that is expected to be updated on every new block (e.g. eth_blockNumber, eth_gasPrice, eth_maxPriorityFeePerGas, etc). You must use a short TTL (i.e. 2 * block time) to ensure it's fresh enough.
 - `unknown`: When block number cannot be determined from request/response (e.g., `eth_traceTransaction`). Most often it is safe to cache this data without reorg safety because they are not referenced by final actual blocks (e.g. eth_getTransactionByHash).
 
 #### `empty` states
@@ -482,34 +485,52 @@ For chains which do not support "finalized" block method, eRPC will consider las
 #### Cacheable methods
 Methods are cached if they include a `blockNumber` or `blockHash` in the request or response, allowing cache invalidation during blockchain reorgs.
 If no blockNumber is present, caching is still viable if the method returns data unaffected by reorgs, like `eth_chainId`, or if the data won't change after a reorg, such as `eth_getTransactionReceipt`.
-Here is an overview of cacheable methods:
+Here is an overview of **some** cacheable methods:
 
-| Method Name                               | Description                                                                               |
-| ----------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `eth_getTransactionReceipt`               | Retrieves the receipt of a transaction by its hash.                                       |
-| `eth_getTransactionByHash`                | Retrieves a transaction based on its hash.                                                |
-| `arbtrace_replayTransaction`              | Replays a transaction on the blockchain (specific to Arbitrum).                           |
-| `trace_replayTransaction`                 | Replays a transaction and returns the trace of execution.                                 |
-| `debug_traceTransaction`                  | Traces the execution of a transaction.                                                    |
-| `trace_transaction`                       | Returns the trace of a transaction by its hash.                                           |
-| `eth_chainId`                             | Returns the chain ID of the network.                                                      |
-| `eth_estimateGas`                         | Estimates the gas needed to execute a transaction. (short TTL is recommended)             |
-| `eth_getBlockByNumber`                    | Retrieves a block by its number.                                                          |
-| `eth_getUncleByBlockNumberAndIndex`       | Retrieves an uncle block by its number and index.                                         |
-| `eth_getTransactionByBlockNumberAndIndex` | Retrieves a transaction by block number and transaction index.                            |
-| `eth_getUncleCountByBlockNumber`          | Retrieves the number of uncles in a block by block number.                                |
-| `eth_getBlockTransactionCountByNumber`    | Retrieves the number of transactions in a block by block number.                          |
-| `eth_getBlockReceipts`                    | Retrieves all receipts for a block by block number.                                       |
-| `eth_getLogs`                             | Retrieves logs based on filter criteria.                                                  |
-| `eth_getBalance`                          | Retrieves the balance of an account at a specified block.                                 |
-| `eth_getCode`                             | Retrieves the code at a given address at a specified block.                               |
-| `eth_getTransactionCount`                 | Retrieves the number of transactions sent from an address at a specified block.           |
-| `eth_call`                                | Executes a new message call immediately without creating a transaction on the blockchain. |
-| `eth_feeHistory`                          | Returns the history of gas fees.                                                          |
-| `eth_getAccount`                          | Retrieves account information at a specified block.                                       |
-| `eth_getBlockByHash`                      | Retrieves a block by its hash.                                                            |
-| `eth_getTransactionByBlockHashAndIndex`   | Retrieves a transaction by block hash and transaction index.                              |
-| `eth_getBlockTransactionCountByHash`      | Retrieves the number of transactions in a block by block hash.                            |
-| `eth_getUncleCountByBlockHash`            | Retrieves the number of uncles in a block by block hash.                                  |
-| `eth_getProof`                            | Retrieves the proof for an account and its storage.                                       |
-| `eth_getStorageAt`                        | Retrieves the value from a storage position at a specified address and block.             |
+| Method Name                               | Description                                                               |
+| ----------------------------------------- | ------------------------------------------------------------------------- |
+| `trace_transaction`                       | Returns the trace of a transaction                                        |
+| `trace_replayTransaction`                 | Replays a transaction and returns the trace                               |
+| `trace_replayBlockTransactions`           | Replays and traces all transactions in a block                            |
+| `trace_rawTransaction`                    | Traces a raw transaction                                                  |
+| `trace_block`                             | Returns the trace of all transactions in a block                          |
+| `eth_simulateV1`                          | Simulates a transaction (v1)                                              |
+| `eth_getUncleCountByBlockNumber`          | Retrieves the number of uncles in a block                                 |
+| `eth_getUncleCountByBlockHash`            | Retrieves the number of uncles in a block by hash                         |
+| `eth_getUncleByBlockNumberAndIndex`       | Retrieves an uncle block by number and index                              |
+| `eth_getTransactionReceipt`               | Retrieves the receipt of a transaction                                    |
+| `eth_getTransactionCount`                 | Retrieves the number of transactions sent from an address                 |
+| `eth_getTransactionByHash`                | Retrieves a transaction by its hash                                       |
+| `eth_getTransactionByBlockNumberAndIndex` | Retrieves a transaction by block number and index                         |
+| `eth_getTransactionByBlockHashAndIndex`   | Retrieves a transaction by block hash and index                           |
+| `eth_getStorageAt`                        | Retrieves the value from a storage position at a specified address        |
+| `eth_getProof`                            | Retrieves the proof for an account and its storage                        |
+| `eth_getLogs`                             | Retrieves logs based on filter criteria                                   |
+| `eth_getCode`                             | Retrieves the code at a given address                                     |
+| `eth_getBlockTransactionCountByNumber`    | Retrieves the number of transactions in a block                           |
+| `eth_getBlockTransactionCountByHash`      | Retrieves the number of transactions in a block by hash                   |
+| `eth_getBlockReceipts`                    | Retrieves all receipts for a block                                        |
+| `eth_getBlockByNumber`                    | Retrieves a block by its number                                           |
+| `eth_getBlockByHash`                      | Retrieves a block by its hash                                             |
+| `eth_getBalance`                          | Retrieves the balance of an account                                       |
+| `eth_getAccount`                          | Retrieves account information at a specified block                        |
+| `eth_feeHistory`                          | Returns the history of gas fees                                           |
+| `eth_estimateGas`                         | Estimates the gas needed to execute a transaction (short TTL recommended) |
+| `eth_chainId`                             | Returns the chain ID of the network (static method)                       |
+| `eth_call`                                | Executes a new message call without creating a transaction                |
+| `erigon_getHeaderByNumber`                | Retrieves a block header by number (Erigon specific)                      |
+| `erigon_getBlockByTimestamp`              | Retrieves a block by its timestamp (Erigon specific)                      |
+| `debug_traceTransaction`                  | Traces the execution of a transaction                                     |
+| `debug_traceCall`                         | Traces a call without creating a transaction                              |
+| `debug_traceBlockByNumber`                | Traces all transactions in a block by number                              |
+| `debug_traceBlockByHash`                  | Traces all transactions in a block by hash                                |
+| `debug_traceBlock`                        | Traces all transactions in a block                                        |
+| `debug_storageRangeAt`                    | Returns the storage range at a given block                                |
+| `debug_getRawReceipts`                    | Retrieves the raw transaction receipts                                    |
+| `debug_getRawHeader`                      | Retrieves the raw block header                                            |
+| `debug_getRawBlock`                       | Retrieves the raw block data                                              |
+| `arbtrace_replayTransaction`              | Replays a transaction (Arbitrum specific)                                 |
+| `arbtrace_replayBlockTransactions`        | Replays and traces all transactions in a block (Arbitrum specific)        |
+| `arbtrace_callMany`                       | Executes multiple calls and returns traces (Arbitrum specific)            |
+| `arbtrace_call`                           | Executes a call and returns the trace (Arbitrum specific)                 |
+| `arbtrace_block`                          | Returns the trace of all transactions in a block (Arbitrum specific)      |

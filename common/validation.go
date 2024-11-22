@@ -304,6 +304,12 @@ func (p *PostgreSQLConnectorConfig) Validate() error {
 	if p.Table == "" {
 		return fmt.Errorf("database.*.connector.postgresql.table is required")
 	}
+	if p.MinConns == 0 {
+		return fmt.Errorf("database.*.connector.postgresql.minConns is required")
+	}
+	if p.MaxConns == 0 {
+		return fmt.Errorf("database.*.connector.postgresql.maxConns is required")
+	}
 	return nil
 }
 

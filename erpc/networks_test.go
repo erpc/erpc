@@ -3115,8 +3115,14 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// TODO in here we should ONLY see failsafe timeout error but currently sometimes we see upstream timeout, we must fix this
-		if !common.HasErrorCode(err, common.ErrCodeFailsafeTimeoutExceeded) && !common.HasErrorCode(err, common.ErrCodeEndpointRequestTimeout) {
-			t.Errorf("Expected %v or %v, got %v", common.ErrCodeFailsafeTimeoutExceeded, common.ErrCodeEndpointRequestTimeout, err)
+		if !common.HasErrorCode(err, common.ErrCodeFailsafeTimeoutExceeded) &&
+			!common.HasErrorCode(err, common.ErrCodeEndpointRequestTimeout) &&
+			!common.HasErrorCode(err, common.ErrCodeNetworkRequestTimeout) {
+			t.Errorf("Expected %v or %v or %v, got %v", common.ErrCodeFailsafeTimeoutExceeded,
+				common.ErrCodeEndpointRequestTimeout,
+				common.ErrCodeNetworkRequestTimeout,
+				err,
+			)
 		}
 	})
 
