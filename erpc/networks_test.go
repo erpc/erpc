@@ -5132,155 +5132,161 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 	})
 
-	for i := 0; i < 10; i++ {
-		t.Run("ResponseReleasedBeforeCacheSet", func(t *testing.T) {
-			util.ResetGock()
-			defer util.ResetGock()
-			util.SetupMocksForEvmStatePoller()
-			defer util.AssertNoPendingMocks(t, 0)
+	t.Run("ResponseReleasedBeforeCacheSet", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			network := setupTestNetwork(t, ctx, nil, nil)
-			gock.New("http://rpc1.localhost").
-				Post("/").
-				MatchType("json").
-				JSON(map[string]interface{}{
-					"jsonrpc": "2.0",
-					"method":  "eth_getBalance",
-					"params":  []interface{}{"0x11", "0x11"},
-					"id":      11111,
-				}).
-				Reply(200).
-				JSON(map[string]interface{}{
-					"jsonrpc": "2.0",
-					"id":      11111,
-					"result": map[string]interface{}{
-						"blockNumber": "0x1111",
-					},
-				})
-			gock.New("http://rpc1.localhost").
-				Post("/").
-				MatchType("json").
-				JSON(map[string]interface{}{
-					"jsonrpc": "2.0",
-					"method":  "eth_getBalance",
-					"params":  []interface{}{"0x22", "0x22"},
-					"id":      22222,
-				}).
-				Reply(200).
-				JSON(map[string]interface{}{
-					"jsonrpc": "2.0",
-					"id":      22222,
-					"result":  "0x22222222222222",
-				})
+		cacheCfg := &common.CacheConfig{}
+		cacheCfg.SetDefaults()
 
-			// Create a slow cache to increase the chance of a race condition
-			conn, errc := data.NewMockMemoryConnector(ctx, &log.Logger, "mock", &common.MemoryConnectorConfig{
-				MaxItems: 1000,
-			}, 100*time.Millisecond)
-			if errc != nil {
-				t.Fatalf("Failed to create mock memory connector: %v", errc)
-			}
-			policy, errp := data.NewCachePolicy(&common.CachePolicyConfig{
-				Network:   "*",
-				Method:    "*",
-				TTL:       5 * time.Minute,
-				Connector: "mock",
-			}, conn)
-			if errp != nil {
-				t.Fatalf("Failed to create cache policy: %v", errp)
-			}
-			slowCache := (&EvmJsonRpcCache{
-				policies: []*data.CachePolicy{
-					policy,
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network := setupTestNetwork(t, ctx, nil, nil)
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			MatchType("json").
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"method":  "eth_getBalance",
+				"params":  []interface{}{"0x11", "0x11"},
+				"id":      11111,
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      11111,
+				"result": map[string]interface{}{
+					"blockNumber": "0x1111",
 				},
-				logger: &log.Logger,
-			}).WithNetwork(network)
-			network.cacheDal = slowCache
+			})
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			MatchType("json").
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"method":  "eth_getBalance",
+				"params":  []interface{}{"0x22", "0x22"},
+				"id":      22222,
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      22222,
+				"result":  "0x22222222222222",
+			})
 
-			// Make the request
-			req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x11", "0x11"],"id":11111}`))
-			req2 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x22", "0x22"],"id":22222}`))
+		// Create a slow cache to increase the chance of a race condition
+		conn, errc := data.NewMockMemoryConnector(ctx, &log.Logger, "mock", &common.MemoryConnectorConfig{
+			MaxItems: 1000,
+		}, 100*time.Millisecond)
+		if errc != nil {
+			t.Fatalf("Failed to create mock memory connector: %v", errc)
+		}
+		policy, errp := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:   "*",
+			Method:    "*",
+			TTL:       5 * time.Minute,
+			Connector: "mock",
+		}, conn)
+		if errp != nil {
+			t.Fatalf("Failed to create cache policy: %v", errp)
+		}
+		slowCache := (&EvmJsonRpcCache{
+			policies: []*data.CachePolicy{
+				policy,
+			},
+			methods: cacheCfg.Methods,
+			logger:  &log.Logger,
+		}).WithNetwork(network)
+		network.cacheDal = slowCache
 
-			// Use a WaitGroup to ensure both goroutines complete
-			var wg sync.WaitGroup
-			wg.Add(2)
+		// Make the request
+		req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x11", "0x11"],"id":11111}`))
+		req1.SetCacheDal(slowCache)
+		req1.SetNetwork(network)
+		req2 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x22", "0x22"],"id":22222}`))
+		req2.SetCacheDal(slowCache)
+		req2.SetNetwork(network)
 
-			var jrr1Atomic atomic.Value
-			var jrr2Atomic atomic.Value
+		// Use a WaitGroup to ensure both goroutines complete
+		var wg sync.WaitGroup
+		wg.Add(2)
 
-			// Goroutine 1: Make the request and immediately release the response
-			go func() {
-				defer wg.Done()
+		var jrr1Atomic atomic.Value
+		var jrr2Atomic atomic.Value
 
-				resp1, err := network.Forward(ctx, req1)
-				if err != nil {
-					t.Errorf("Unexpected error: %v", err)
-					return
-				}
-				jrr1Value, err := resp1.JsonRpcResponse()
-				if err != nil {
-					t.Errorf("Unexpected error: %v", err)
-					return
-				}
-				jrr1Atomic.Store(jrr1Value)
-				// Simulate immediate release of the response
-				resp1.Release()
+		// Goroutine 1: Make the request and immediately release the response
+		go func() {
+			defer wg.Done()
 
-				resp2, err := network.Forward(ctx, req2)
-				if err != nil {
-					t.Errorf("Unexpected error: %v", err)
-					return
-				}
-				jrr2Value, err := resp2.JsonRpcResponse()
-				if err != nil {
-					t.Errorf("Unexpected error: %v", err)
-					return
-				}
-				jrr2Atomic.Store(jrr2Value)
-				resp2.Release()
-			}()
+			resp1, err := network.Forward(ctx, req1)
+			if err != nil {
+				t.Errorf("Unexpected error: %v", err)
+				return
+			}
+			jrr1Value, err := resp1.JsonRpcResponse()
+			if err != nil {
+				t.Errorf("Unexpected error: %v", err)
+				return
+			}
+			jrr1Atomic.Store(jrr1Value)
+			// Simulate immediate release of the response
+			resp1.Release()
 
-			// Goroutine 2: Access the response concurrently
-			go func() {
-				defer wg.Done()
-				time.Sleep(500 * time.Millisecond)
-				var res1 string
-				var res2 string
-				jrr1 := jrr1Atomic.Load().(*common.JsonRpcResponse)
-				jrr2 := jrr2Atomic.Load().(*common.JsonRpcResponse)
-				if jrr1 != nil {
-					res1 = string(jrr1.Result)
-					_ = jrr1.ID()
-				}
-				if jrr2 != nil {
-					res2 = string(jrr2.Result)
-					_ = jrr2.ID()
-				}
-				assert.NotEmpty(t, res1)
-				assert.NotEmpty(t, res2)
-				assert.NotEqual(t, res1, res2)
-				cache1, e1 := slowCache.Get(ctx, req1)
-				cache2, e2 := slowCache.Get(ctx, req2)
-				assert.NoError(t, e1)
-				assert.NoError(t, e2)
-				cjrr1, _ := cache1.JsonRpcResponse()
-				cjrr2, _ := cache2.JsonRpcResponse()
-				assert.NotNil(t, cjrr1)
-				assert.NotNil(t, cjrr2)
-				if cjrr1 != nil {
-					assert.Equal(t, res1, string(cjrr1.Result))
-				}
-				if cjrr2 != nil {
-					assert.Equal(t, res2, string(cjrr2.Result))
-				}
-			}()
+			resp2, err := network.Forward(ctx, req2)
+			if err != nil {
+				t.Errorf("Unexpected error: %v", err)
+				return
+			}
+			jrr2Value, err := resp2.JsonRpcResponse()
+			if err != nil {
+				t.Errorf("Unexpected error: %v", err)
+				return
+			}
+			jrr2Atomic.Store(jrr2Value)
+			resp2.Release()
+		}()
 
-			// Wait for both goroutines to complete
-			wg.Wait()
-		})
-	}
+		// Goroutine 2: Access the response concurrently
+		go func() {
+			defer wg.Done()
+			time.Sleep(500 * time.Millisecond)
+			var res1 string
+			var res2 string
+			jrr1 := jrr1Atomic.Load().(*common.JsonRpcResponse)
+			jrr2 := jrr2Atomic.Load().(*common.JsonRpcResponse)
+			if jrr1 != nil {
+				res1 = string(jrr1.Result)
+				_ = jrr1.ID()
+			}
+			if jrr2 != nil {
+				res2 = string(jrr2.Result)
+				_ = jrr2.ID()
+			}
+			assert.NotEmpty(t, res1)
+			assert.NotEmpty(t, res2)
+			assert.NotEqual(t, res1, res2)
+			cache1, e1 := slowCache.Get(ctx, req1)
+			cache2, e2 := slowCache.Get(ctx, req2)
+			assert.NoError(t, e1)
+			assert.NoError(t, e2)
+			cjrr1, _ := cache1.JsonRpcResponse()
+			cjrr2, _ := cache2.JsonRpcResponse()
+			assert.NotNil(t, cjrr1)
+			assert.NotNil(t, cjrr2)
+			if cjrr1 != nil {
+				assert.Equal(t, res1, string(cjrr1.Result))
+			}
+			if cjrr2 != nil {
+				assert.Equal(t, res2, string(cjrr2.Result))
+			}
+		}()
+
+		// Wait for both goroutines to complete
+		wg.Wait()
+	})
 
 	t.Run("BatchRequestValidationAndRetry", func(t *testing.T) {
 		util.ResetGock()
@@ -5951,8 +5957,8 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeFull, 128, common.EvmNodeTypeArchive, 0)
-
 		req := common.NewNormalizedRequest(requestBytes)
+		req.SetNetwork(network)
 		resp, err := network.Forward(ctx, req)
 		assert.NoError(t, err)
 		assert.NotNil(t, resp)

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/upstream"
 	"github.com/failsafe-go/failsafe-go"
@@ -29,7 +28,7 @@ type Network struct {
 	timeoutDuration          *time.Duration
 	failsafeExecutor         failsafe.Executor[*common.NormalizedResponse]
 	rateLimitersRegistry     *upstream.RateLimitersRegistry
-	cacheDal                 data.CacheDAL
+	cacheDal                 common.CacheDAL
 	metricsTracker           *health.Tracker
 	upstreamsRegistry        *upstream.UpstreamsRegistry
 	selectionPolicyEvaluator *PolicyEvaluator
@@ -114,6 +113,7 @@ func (n *Network) Architecture() common.NetworkArchitecture {
 func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	startTime := time.Now()
 	req.SetNetwork(n)
+	req.SetCacheDal(n.cacheDal)
 
 	method, _ := req.Method()
 	lg := n.Logger.With().Str("method", method).Interface("id", req.ID()).Str("ptr", fmt.Sprintf("%p", req)).Logger()

@@ -3,6 +3,18 @@ export * from "./types"
 import * as types from "./types"
 
 //////////
+// source: cache_dal.go
+
+export type CacheDAL = any;
+
+//////////
+// source: cache_mock.go
+
+export interface MockCacheDal {
+  mock: any /* mock.Mock */;
+}
+
+//////////
 // source: config.go
 
 /**
@@ -37,6 +49,13 @@ export interface DatabaseConfig {
 export interface CacheConfig {
   connectors: types.ConnectorConfig[];
   policies: (CachePolicyConfig | undefined)[];
+  methods: { [key: string]: CacheMethodConfig | undefined};
+}
+export interface CacheMethodConfig {
+  reqRefs: any[][];
+  respRefs: any[][];
+  finalized: boolean;
+  realtime: boolean;
 }
 export interface CachePolicyConfig {
   connector: string;
@@ -91,8 +110,8 @@ export interface DynamoDBConnectorConfig {
 export interface PostgreSQLConnectorConfig {
   connectionUri: string;
   table: string;
-  minConns: number /* int32 */;
-  maxConns: number /* int32 */;
+  minConns?: number /* int32 */;
+  maxConns?: number /* int32 */;
 }
 export interface AwsAuthConfig {
   mode: string; // "file", "env", "secret"
