@@ -10,7 +10,8 @@
         "generated.ts",
         "docs/",
         "pnpm-lock.yaml",
-        "lib/*"
+        "lib/*",
+        "dist/*"
       ]
     },
     "formatter": {
