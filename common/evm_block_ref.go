@@ -10,151 +10,127 @@ func ExtractEvmBlockReferenceFromRequest(cacheDal CacheDAL, r *JsonRpcRequest) (
 	if r == nil {
 		return "", 0, errors.New("cannot extract block reference when json-rpc request is nil")
 	}
-	if cacheDal == nil || cacheDal.IsObjectNull() {
+	methodConfig := getMethodConfig(cacheDal, r.Method)
+	if methodConfig == nil {
+		// For unknown methods blockRef and/or blockNumber will be empty therefore such data will not be cached despite any caching policies.
+		// This strict behavior avoids caching data that we're not aware of its nature.
 		return "", 0, nil
 	}
 
 	r.RLock()
 	defer r.RUnlock()
 
-	if cfg := cacheDal.MethodConfig(r.Method); cfg != nil {
-		if cfg.Finalized {
-			// Static methods are not expected to change over time so we can cache them forever
-			// We use block number 1 as a signal to indicate data is finalized on first ever block
-			return "*", 1, nil
-		} else if cfg.Realtime {
-			// Certain methods are expected to always return new data on every new block.
-			// For these methods we can always return "*" as blockRef to indicate data it can be cached
-			// if there's a 'realtime' cache policy specifically targeting these methods.
-			return "*", 0, nil
-		}
+	if methodConfig.Finalized {
+		// Static methods are not expected to change over time so we can cache them forever
+		// We use block number 1 as a signal to indicate data is finalized on first ever block
+		return "*", 1, nil
+	} else if methodConfig.Realtime {
+		// Certain methods are expected to always return new data on every new block.
+		// For these methods we can always return "*" as blockRef to indicate data it can be cached
+		// if there's a 'realtime' cache policy specifically targeting these methods.
+		return "*", 0, nil
+	}
 
-		var blockRef string
-		var blockNumber int64
+	var blockRef string
+	var blockNumber int64
 
-		if len(cfg.ReqRefs) > 0 {
-			if len(cfg.ReqRefs) == 1 && len(cfg.ReqRefs[0]) == 1 && cfg.ReqRefs[0][0] == "*" {
-				// This special case is for methods that can be cached regardless of their block number or hash
-				// e.g. eth_getTransactionReceipt, eth_getTransactionByHash, etc.
-				blockRef = "*"
-			} else {
-				for _, ref := range cfg.ReqRefs {
-					if val, err := r.PeekByPath(ref...); err == nil {
-						bref, bn, err := parseCompositeBlockParam(val)
-						if err != nil {
-							return "", 0, err
-						}
-						if bref != "" {
-							if blockRef == "" {
-								blockRef = bref
-							} else {
-								// This special case is when a method has multiple block parameters (eth_getLogs)
-								// We can't use a specific block reference because later if reorg invalidation is added
-								// it is not easy to check if this cache entry includes that reorged block.
-								// Therefore users must ONLY cache finalized data for these methods (or short TTLs for unfinalized data).
-								// Later we'll either need bespoke caching logic for these methods, or find a nice way
-								// to invalidate these cache entries when ANY of their blocks are reorged.
-								blockRef = "*"
-							}
-						}
-						if bn > blockNumber {
-							blockNumber = bn
-						}
-					} else {
+	if len(methodConfig.ReqRefs) > 0 {
+		if len(methodConfig.ReqRefs) == 1 && len(methodConfig.ReqRefs[0]) == 1 && methodConfig.ReqRefs[0][0] == "*" {
+			// This special case is for methods that can be cached regardless of their block number or hash
+			// e.g. eth_getTransactionReceipt, eth_getTransactionByHash, etc.
+			blockRef = "*"
+		} else {
+			for _, ref := range methodConfig.ReqRefs {
+				if val, err := r.PeekByPath(ref...); err == nil {
+					bref, bn, err := parseCompositeBlockParam(val)
+					if err != nil {
 						return "", 0, err
 					}
+					if bref != "" {
+						if blockRef == "" {
+							blockRef = bref
+						} else {
+							// This special case is when a method has multiple block parameters (eth_getLogs)
+							// We can't use a specific block reference because later if reorg invalidation is added
+							// it is not easy to check if this cache entry includes that reorged block.
+							// Therefore users must ONLY cache finalized data for these methods (or short TTLs for unfinalized data).
+							// Later we'll either need bespoke caching logic for these methods, or find a nice way
+							// to invalidate these cache entries when ANY of their blocks are reorged.
+							blockRef = "*"
+						}
+					}
+					if bn > blockNumber {
+						blockNumber = bn
+					}
+				} else {
+					return "", 0, err
 				}
 			}
 		}
-
-		return blockRef, blockNumber, nil
 	}
 
-	// For unknown methods blockRef and/or blockNumber will be empty therefore such data will not be cached despite any caching policies.
-	// This strict behavior avoids caching data that we're not aware of its nature.
-	return "", 0, nil
+	return blockRef, blockNumber, nil
 }
 
 func ExtractEvmBlockReferenceFromResponse(cacheDal CacheDAL, rpcReq *JsonRpcRequest, rpcResp *JsonRpcResponse) (string, int64, error) {
 	if rpcReq == nil {
 		return "", 0, errors.New("cannot extract block reference when json-rpc request is nil")
 	}
-
 	if rpcResp == nil {
 		return "", 0, errors.New("cannot extract block reference when json-rpc response is nil")
 	}
 
-	switch rpcReq.Method {
-	case "eth_getBlockReceipts":
-		if len(rpcResp.Result) > 0 {
-			blockRef, _ := rpcResp.PeekStringByPath(0, "blockHash")
-			blockNumberStr, _ := rpcResp.PeekStringByPath(0, "blockNumber")
+	methodConfig := getMethodConfig(cacheDal, rpcReq.Method)
+	if methodConfig == nil || len(rpcResp.Result) == 0 {
+		return "", 0, nil
+	}
 
-			var blockNumber int64
-			if blockNumberStr != "" {
-				bn, err := HexToInt64(blockNumberStr)
+	// Use response refs from method config to extract block reference
+	if len(methodConfig.RespRefs) > 0 {
+		blockRef := ""
+		blockNumber := int64(0)
+
+		for _, ref := range methodConfig.RespRefs {
+			if val, err := rpcResp.PeekStringByPath(ref...); err == nil {
+				bref, bn, err := parseCompositeBlockParam(val)
 				if err != nil {
 					return "", 0, err
 				}
-				blockNumber = bn
-			}
-
-			if blockRef == "" && blockNumber > 0 {
-				blockRef = strconv.FormatInt(blockNumber, 10)
-			}
-
-			return blockRef, blockNumber, nil
-		}
-	case "eth_getTransactionReceipt",
-		"eth_getTransactionByHash",
-		"eth_getTransactionByBlockHashAndIndex",
-		"erigon_getBlockReceiptsByBlockHash":
-		if len(rpcResp.Result) > 0 {
-			blockRef, _ := rpcResp.PeekStringByPath("blockHash")
-			blockNumberStr, _ := rpcResp.PeekStringByPath("blockNumber")
-
-			var blockNumber int64
-			if blockNumberStr != "" {
-				bn, err := HexToInt64(blockNumberStr)
-				if err != nil {
-					return "", 0, err
+				if bref != "" && (blockRef == "" || blockRef == "*") {
+					blockRef = bref
 				}
-				blockNumber = bn
-			}
-
-			if blockRef == "" && blockNumber > 0 {
-				blockRef = strconv.FormatInt(blockNumber, 10)
-			}
-
-			return blockRef, blockNumber, nil
-		}
-	case "eth_getBlockByNumber",
-		"eth_getBlockByHash",
-		"erigon_getHeaderByHash",
-		"erigon_getHeaderByNumber",
-		"eth_getUncleByBlockHashAndIndex":
-		if len(rpcResp.Result) > 0 {
-			blockRef, _ := rpcResp.PeekStringByPath("hash")
-			blockNumberStr, _ := rpcResp.PeekStringByPath("number")
-
-			var blockNumber int64
-			if blockNumberStr != "" {
-				bn, err := HexToInt64(blockNumberStr)
-				if err != nil {
-					return "", 0, err
+				if bn > blockNumber {
+					blockNumber = bn
 				}
-				blockNumber = bn
 			}
-
-			if blockRef == "" && blockNumber > 0 {
-				blockRef = strconv.FormatInt(blockNumber, 10)
-			}
-
-			return blockRef, blockNumber, nil
 		}
+
+		if blockNumber > 0 {
+			blockRef = strconv.FormatInt(blockNumber, 10)
+		}
+
+		return blockRef, blockNumber, nil
 	}
 
 	return "", 0, nil
+}
+
+func getMethodConfig(cacheDal CacheDAL, method string) (cfg *CacheMethodConfig) {
+	if cacheDal != nil && !cacheDal.IsObjectNull() {
+		// First lookup the method in configured cache methods
+		cfg = cacheDal.MethodConfig(method)
+	}
+
+	if cfg == nil {
+		// If cacheDal is nil or empty or missing the method, we should get the method config from the default set of known methods.
+		// This is necessary so that usual blockNumber detection used in various flows still resolves correctly.
+		cfg = DefaultWithBlockCacheMethods[method]
+		if cfg == nil {
+			cfg = DefaultSpecialCacheMethods[method]
+		}
+	}
+
+	return
 }
 
 func parseCompositeBlockParam(param interface{}) (string, int64, error) {

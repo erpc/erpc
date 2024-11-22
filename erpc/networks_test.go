@@ -5957,8 +5957,8 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeFull, 128, common.EvmNodeTypeArchive, 0)
-
 		req := common.NewNormalizedRequest(requestBytes)
+		req.SetNetwork(network)
 		resp, err := network.Forward(ctx, req)
 		assert.NoError(t, err)
 		assert.NotNil(t, resp)

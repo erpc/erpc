@@ -343,9 +343,9 @@ func TestExtractBlockReference(t *testing.T) {
 				Method: "eth_getTransactionReceipt",
 			},
 			response: &JsonRpcResponse{
-				Result: []byte(`{"blockNumber":"0x1b4","blockHash":"0xaaaaaabbbbccccc"}`),
+				Result: []byte(`{"blockNumber":"0x1b4","blockHash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}`),
 			},
-			expectedRef: "0xaaaaaabbbbccccc",
+			expectedRef: "436",
 			expectedNum: 436,
 			expectedErr: false,
 		},
@@ -373,10 +373,12 @@ func TestExtractBlockReference(t *testing.T) {
 			} else {
 				nrq := &NormalizedRequest{}
 				nrq.jsonRpcRequest = tt.request
+				nrq.cacheDal = cacheDal
 				nrs := &NormalizedResponse{}
 				nrs.request = nrq
 				nrs.jsonRpcResponse.Store(tt.response)
-				blkRef, blkNum, err = nrs.EvmBlockRefAndNumber()
+				nrq.SetLastValidResponse(nrs)
+				blkRef, blkNum, err = nrq.EvmBlockRefAndNumber()
 			}
 
 			if tt.expectedErr {

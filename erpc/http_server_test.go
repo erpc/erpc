@@ -2559,6 +2559,12 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 							Evm: &common.EvmNetworkConfig{
 								ChainId: 1,
 							},
+							Failsafe: &common.FailsafeConfig{
+								Retry:          nil,
+								CircuitBreaker: nil,
+								Hedge:          nil,
+								Timeout:        nil,
+							},
 						},
 					},
 					Upstreams: []*common.UpstreamConfig{
@@ -2568,6 +2574,12 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Retry:          nil,
+								CircuitBreaker: nil,
+								Hedge:          nil,
+								Timeout:        nil,
 							},
 						},
 					},
@@ -2586,7 +2598,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
 			}).
 			Reply(200).
-			Delay(2000 * time.Millisecond).
+			Delay(3000 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
