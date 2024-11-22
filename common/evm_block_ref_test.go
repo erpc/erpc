@@ -103,9 +103,23 @@ func TestExtractBlockReference(t *testing.T) {
 					},
 				},
 			},
-			expectedRef: "436-437",
+			expectedRef: "*",
 			expectedNum: 437,
 			expectedErr: false,
+		},
+		{
+			name: "eth_getLogs",
+			request: &JsonRpcRequest{
+				Method: "eth_getLogs",
+				Params: []interface{}{
+					map[string]interface{}{
+						"fromBlock": "0x1b4",
+					},
+				},
+			},
+			expectedRef: "",
+			expectedNum: 0,
+			expectedErr: true,
 		},
 		{
 			name: "missing parameters in eth_getLogs",
@@ -115,7 +129,7 @@ func TestExtractBlockReference(t *testing.T) {
 			},
 			expectedRef: "",
 			expectedNum: 0,
-			expectedErr: false,
+			expectedErr: true,
 		},
 		{
 			name: "eth_getBalance",
@@ -135,7 +149,7 @@ func TestExtractBlockReference(t *testing.T) {
 			},
 			expectedRef: "",
 			expectedNum: 0,
-			expectedErr: false,
+			expectedErr: true,
 		},
 		{
 			name: "eth_getCode",
@@ -343,9 +357,9 @@ func TestExtractBlockReference(t *testing.T) {
 				Method: "eth_getTransactionReceipt",
 			},
 			response: &JsonRpcResponse{
-				Result: []byte(`{"blockNumber":"0x1b4","blockHash":"0xaaaaaabbbbccccc"}`),
+				Result: []byte(`{"blockNumber":"0x1b4","blockHash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}`),
 			},
-			expectedRef: "*",
+			expectedRef: "436",
 			expectedNum: 436,
 			expectedErr: false,
 		},
@@ -360,6 +374,8 @@ func TestExtractBlockReference(t *testing.T) {
 		},
 	}
 
+	cacheDal := &MockCacheDal{}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var blkRef string
@@ -367,9 +383,16 @@ func TestExtractBlockReference(t *testing.T) {
 			var err error
 
 			if tt.response == nil {
-				blkRef, blkNum, err = ExtractEvmBlockReferenceFromRequest(tt.request)
+				blkRef, blkNum, err = ExtractEvmBlockReferenceFromRequest(cacheDal, tt.request)
 			} else {
-				blkRef, blkNum, err = ExtractEvmBlockReference(tt.request, tt.response)
+				nrq := &NormalizedRequest{}
+				nrq.jsonRpcRequest = tt.request
+				nrq.cacheDal = cacheDal
+				nrs := &NormalizedResponse{}
+				nrs.request = nrq
+				nrs.jsonRpcResponse.Store(tt.response)
+				nrq.SetLastValidResponse(nrs)
+				blkRef, blkNum, err = nrq.EvmBlockRefAndNumber()
 			}
 
 			if tt.expectedErr {

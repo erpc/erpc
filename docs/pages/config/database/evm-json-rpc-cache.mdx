@@ -14,20 +14,33 @@ Caching mechanism is non-blocking on critical path, and is used as best-effort. 
 ```yaml filename="erpc.yaml"
 database:
   evmJsonRpcCache:
+    # Backend storage connectors where to store the cache
     connectors:
       - id: string
         driver: memory | redis | postgresql | dynamodb
         # ... (driver specific config, see below)
+    
+    # Cache policies for different network/method/finality states
     policies:
-      - network: string
-        method: string
-        params: []any
-        finality: finalized | unfinalized | realtime | unknown
-        empty: ignore | allow | only
-        minItemSize: string # xB | xKB | xMB
-        maxItemSize: string # xB | xKB | xMB
-        connector: string
-        ttl: duration
+      - network: string # Optional (default: "*")
+        method: string # Optional (default: "*")
+        params: []any # Optional
+        finality: finalized | unfinalized | realtime | unknown # Optional (default: finalized)
+        empty: ignore | allow | only # Optional (default: ignore)
+        minItemSize: string # Optional - xB | xKB | xMB
+        maxItemSize: string # Optional - xB | xKB | xMB
+        connector: string # Required
+        ttl: duration # Optional (default: "0" means forever) - 100ms, 5s, 1m, ...
+    
+    # Optional cache methods configuration to override default supported methods
+    # These are used to understand nature of each method and where to find the block reference.
+    # Scroll to bottom of this page for default supported methods and examples.
+    methods:
+      <method_name>:
+        reqRefs: [][]any # Optional - array of path to potential palce of block number/hash in request.params
+        respRefs: [][]any # Optional - array of path to potential palce of block number/hash in response.result
+        finalized: bool # Optional - this method always returns finalized data (e.g. eth_chainId)
+        realtime: bool # Optional - this method always returns realtime data (e.g. eth_gasPrice)
 ```
 </Tab>
 <Tab>
@@ -51,7 +64,7 @@ export default createConfig({
         minItemSize?: string, // e.g. "1KB", "1MB"
         maxItemSize?: string, // e.g. "1KB", "1MB"
         connector: string,
-        ttl: string | number // duration in seconds if number
+        ttl: string // 100ms, 5s, 1m, ...
       }]
     }
   }
@@ -485,52 +498,374 @@ For chains which do not support "finalized" block method, eRPC will consider las
 #### Cacheable methods
 Methods are cached if they include a `blockNumber` or `blockHash` in the request or response, allowing cache invalidation during blockchain reorgs.
 If no blockNumber is present, caching is still viable if the method returns data unaffected by reorgs, like `eth_chainId`, or if the data won't change after a reorg, such as `eth_getTransactionReceipt`.
-Here is an overview of **some** cacheable methods:
 
-| Method Name                               | Description                                                               |
-| ----------------------------------------- | ------------------------------------------------------------------------- |
-| `trace_transaction`                       | Returns the trace of a transaction                                        |
-| `trace_replayTransaction`                 | Replays a transaction and returns the trace                               |
-| `trace_replayBlockTransactions`           | Replays and traces all transactions in a block                            |
-| `trace_rawTransaction`                    | Traces a raw transaction                                                  |
-| `trace_block`                             | Returns the trace of all transactions in a block                          |
-| `eth_simulateV1`                          | Simulates a transaction (v1)                                              |
-| `eth_getUncleCountByBlockNumber`          | Retrieves the number of uncles in a block                                 |
-| `eth_getUncleCountByBlockHash`            | Retrieves the number of uncles in a block by hash                         |
-| `eth_getUncleByBlockNumberAndIndex`       | Retrieves an uncle block by number and index                              |
-| `eth_getTransactionReceipt`               | Retrieves the receipt of a transaction                                    |
-| `eth_getTransactionCount`                 | Retrieves the number of transactions sent from an address                 |
-| `eth_getTransactionByHash`                | Retrieves a transaction by its hash                                       |
-| `eth_getTransactionByBlockNumberAndIndex` | Retrieves a transaction by block number and index                         |
-| `eth_getTransactionByBlockHashAndIndex`   | Retrieves a transaction by block hash and index                           |
-| `eth_getStorageAt`                        | Retrieves the value from a storage position at a specified address        |
-| `eth_getProof`                            | Retrieves the proof for an account and its storage                        |
-| `eth_getLogs`                             | Retrieves logs based on filter criteria                                   |
-| `eth_getCode`                             | Retrieves the code at a given address                                     |
-| `eth_getBlockTransactionCountByNumber`    | Retrieves the number of transactions in a block                           |
-| `eth_getBlockTransactionCountByHash`      | Retrieves the number of transactions in a block by hash                   |
-| `eth_getBlockReceipts`                    | Retrieves all receipts for a block                                        |
-| `eth_getBlockByNumber`                    | Retrieves a block by its number                                           |
-| `eth_getBlockByHash`                      | Retrieves a block by its hash                                             |
-| `eth_getBalance`                          | Retrieves the balance of an account                                       |
-| `eth_getAccount`                          | Retrieves account information at a specified block                        |
-| `eth_feeHistory`                          | Returns the history of gas fees                                           |
-| `eth_estimateGas`                         | Estimates the gas needed to execute a transaction (short TTL recommended) |
-| `eth_chainId`                             | Returns the chain ID of the network (static method)                       |
-| `eth_call`                                | Executes a new message call without creating a transaction                |
-| `erigon_getHeaderByNumber`                | Retrieves a block header by number (Erigon specific)                      |
-| `erigon_getBlockByTimestamp`              | Retrieves a block by its timestamp (Erigon specific)                      |
-| `debug_traceTransaction`                  | Traces the execution of a transaction                                     |
-| `debug_traceCall`                         | Traces a call without creating a transaction                              |
-| `debug_traceBlockByNumber`                | Traces all transactions in a block by number                              |
-| `debug_traceBlockByHash`                  | Traces all transactions in a block by hash                                |
-| `debug_traceBlock`                        | Traces all transactions in a block                                        |
-| `debug_storageRangeAt`                    | Returns the storage range at a given block                                |
-| `debug_getRawReceipts`                    | Retrieves the raw transaction receipts                                    |
-| `debug_getRawHeader`                      | Retrieves the raw block header                                            |
-| `debug_getRawBlock`                       | Retrieves the raw block data                                              |
-| `arbtrace_replayTransaction`              | Replays a transaction (Arbitrum specific)                                 |
-| `arbtrace_replayBlockTransactions`        | Replays and traces all transactions in a block (Arbitrum specific)        |
-| `arbtrace_callMany`                       | Executes multiple calls and returns traces (Arbitrum specific)            |
-| `arbtrace_call`                           | Executes a call and returns the trace (Arbitrum specific)                 |
-| `arbtrace_block`                          | Returns the trace of all transactions in a block (Arbitrum specific)      |
+By default, eRPC comes with pre-configured method caching rules. Here's the default configuration:
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+<Tab>
+```yaml filename="erpc.yaml"
+database:
+  evmJsonRpcCache:
+    # Here are default supported methods and their configuration:
+    methods:
+      # Static methods that return fixed values:
+      eth_chainId:
+        finalized: true
+      net_version:
+        finalized: true
+
+      # Realtime methods that change frequently (i.e. on every block):
+      eth_hashrate:
+        realtime: true
+      eth_mining:
+        realtime: true
+      eth_syncing:
+        realtime: true
+      net_peerCount:
+        realtime: true
+      eth_gasPrice:
+        realtime: true
+      eth_maxPriorityFeePerGas:
+        realtime: true
+      eth_blobBaseFee:
+        realtime: true
+      eth_blockNumber:
+        realtime: true
+      erigon_blockNumber:
+        realtime: true
+
+      # Methods with block references in request/response:
+      # Make sure number is first in the array if hash is also present
+      eth_getLogs:
+        reqRefs: 
+          - [0, fromBlock]
+          - [0, toBlock]
+      eth_getBlockByHash:
+        reqRefs: [[0]]
+        respRefs: [[number], [hash]]
+      eth_getBlockByNumber:
+        reqRefs: [[0]]
+        respRefs: [[number], [hash]]
+      eth_getTransactionByBlockHashAndIndex:
+        reqRefs: [[0]]
+        respRefs: [[blockNumber], [blockHash]]
+      eth_getTransactionByBlockNumberAndIndex:
+        reqRefs: [[0]]
+        respRefs: [[blockNumber], [blockHash]]
+      eth_getUncleByBlockHashAndIndex:
+        reqRefs: [[0]]
+        respRefs: [[number], [hash]]
+      eth_getUncleByBlockNumberAndIndex:
+        reqRefs: [[0]]
+        respRefs: [[number], [hash]]
+      eth_getBlockTransactionCountByHash:
+        reqRefs: [[0]]
+      eth_getBlockTransactionCountByNumber:
+        reqRefs: [[0]]
+      eth_getUncleCountByBlockHash:
+        reqRefs: [[0]]
+      eth_getUncleCountByBlockNumber:
+        reqRefs: [[0]]
+      eth_getStorageAt:
+        reqRefs: [[2]]
+      eth_getBalance:
+        reqRefs: [[1]]
+      eth_getTransactionCount:
+        reqRefs: [[1]]
+      eth_getCode:
+        reqRefs: [[1]]
+      eth_call:
+        reqRefs: [[1]]
+      eth_getProof:
+        reqRefs: [[2]]
+      arbtrace_call:
+        reqRefs: [[2]]
+      eth_feeHistory:
+        reqRefs: [[1]]
+      eth_getAccount:
+        reqRefs: [[1]]
+      eth_estimateGas:
+        reqRefs: [[1]]
+      debug_traceCall:
+        reqRefs: [[1]]
+      eth_simulateV1:
+        reqRefs: [[1]]
+      erigon_getBlockByTimestamp:
+        reqRefs: [[1]]
+      arbtrace_callMany:
+        reqRefs: [[1]]
+      eth_getBlockReceipts:
+        reqRefs: [[0]]
+      trace_block:
+        reqRefs: [[0]]
+      debug_traceBlockByNumber:
+        reqRefs: [[0]]
+      trace_replayBlockTransactions:
+        reqRefs: [[0]]
+      debug_storageRangeAt:
+        reqRefs: [[0]]
+      debug_traceBlockByHash:
+        reqRefs: [[0]]
+      debug_getRawBlock:
+        reqRefs: [[0]]
+      debug_getRawHeader:
+        reqRefs: [[0]]
+      debug_getRawReceipts:
+        reqRefs: [[0]]
+      erigon_getHeaderByNumber:
+        reqRefs: [[0]]
+      arbtrace_block:
+        reqRefs: [[0]]
+      arbtrace_replayBlockTransactions:
+        reqRefs: [[0]]
+
+      # Special methods that can be cached regardless of block:
+      # Most often finality of these responses is 'unknown'.
+      # For these data it is safe to keep the data in cache even after reorg,
+      # because if client explcitly querying such data (e.g. a specific tx hash receipt)
+      # they know it might be reorged from a separate process.
+      # For example this is not safe to do for eth_getBlockByNumber because users
+      # require the method to always give them current accurate data (even if it's reorged).
+      # Using "*" as request blockRef means that these data are safe be cached irrevelant of their block.
+      eth_getTransactionReceipt:
+        reqRefs: [["*"]]
+        respRefs: [[blockNumber], [blockHash]]
+      eth_getTransactionByHash:
+        reqRefs: [["*"]]
+        respRefs: [[blockNumber], [blockHash]]
+      arbtrace_replayTransaction:
+        reqRefs: [["*"]]
+      trace_replayTransaction:
+        reqRefs: [["*"]]
+      debug_traceTransaction:
+        reqRefs: [["*"]]
+      trace_rawTransaction:
+        reqRefs: [["*"]]
+      trace_transaction:
+        reqRefs: [["*"]]
+      debug_traceBlock:
+        reqRefs: [["*"]]
+```
+</Tab>
+<Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+export default createConfig({
+  database: {
+    evmJsonRpcCache: {
+      methods: {
+        // Static methods that return fixed values:
+        eth_chainId: {
+          finalized: true
+        },
+        net_version: {
+          finalized: true
+        },
+
+        // Realtime methods that change frequently (i.e. on every block):
+        eth_hashrate: {
+          realtime: true
+        },
+        eth_mining: {
+          realtime: true
+        },
+        eth_syncing: {
+          realtime: true
+        },
+        net_peerCount: {
+          realtime: true
+        },
+        eth_gasPrice: {
+          realtime: true
+        },
+        eth_maxPriorityFeePerGas: {
+          realtime: true
+        },
+        eth_blobBaseFee: {
+          realtime: true
+        },
+        eth_blockNumber: {
+          realtime: true
+        },
+        erigon_blockNumber: {
+          realtime: true
+        },
+
+        // Methods with block references in request/response:
+        // Make sure number is first in the array if hash is also present
+        eth_getLogs: {
+          reqRefs: [
+            [0, "fromBlock"],
+            [0, "toBlock"]
+          ]
+        },
+        eth_getBlockByHash: {
+          reqRefs: [[0]],
+          respRefs: [["number"], ["hash"]]
+        },
+        eth_getBlockByNumber: {
+          reqRefs: [[0]],
+          respRefs: [["number"], ["hash"]]
+        },
+        eth_getTransactionByBlockHashAndIndex: {
+          reqRefs: [[0]],
+          respRefs: [["blockNumber"], ["blockHash"]]
+        },
+        eth_getTransactionByBlockNumberAndIndex: {
+          reqRefs: [[0]],
+          respRefs: [["blockNumber"], ["blockHash"]]
+        },
+        eth_getUncleByBlockHashAndIndex: {
+          reqRefs: [[0]],
+          respRefs: [["number"], ["hash"]]
+        },
+        eth_getUncleByBlockNumberAndIndex: {
+          reqRefs: [[0]],
+          respRefs: [["number"], ["hash"]]
+        },
+        eth_getBlockTransactionCountByHash: {
+          reqRefs: [[0]]
+        },
+        eth_getBlockTransactionCountByNumber: {
+          reqRefs: [[0]]
+        },
+        eth_getUncleCountByBlockHash: {
+          reqRefs: [[0]]
+        },
+        eth_getUncleCountByBlockNumber: {
+          reqRefs: [[0]]
+        },
+        eth_getStorageAt: {
+          reqRefs: [[2]]
+        },
+        eth_getBalance: {
+          reqRefs: [[1]]
+        },
+        eth_getTransactionCount: {
+          reqRefs: [[1]]
+        },
+        eth_getCode: {
+          reqRefs: [[1]]
+        },
+        eth_call: {
+          reqRefs: [[1]]
+        },
+        eth_getProof: {
+          reqRefs: [[2]]
+        },
+        arbtrace_call: {
+          reqRefs: [[2]]
+        },
+        eth_feeHistory: {
+          reqRefs: [[1]]
+        },
+        eth_getAccount: {
+          reqRefs: [[1]]
+        },
+        eth_estimateGas: {
+          reqRefs: [[1]]
+        },
+        debug_traceCall: {
+          reqRefs: [[1]]
+        },
+        eth_simulateV1: {
+          reqRefs: [[1]]
+        },
+        erigon_getBlockByTimestamp: {
+          reqRefs: [[1]]
+        },
+        arbtrace_callMany: {
+          reqRefs: [[1]]
+        },
+        eth_getBlockReceipts: {
+          reqRefs: [[0]]
+        },
+        trace_block: {
+          reqRefs: [[0]]
+        },
+        debug_traceBlockByNumber: {
+          reqRefs: [[0]]
+        },
+        trace_replayBlockTransactions: {
+          reqRefs: [[0]]
+        },
+        debug_storageRangeAt: {
+          reqRefs: [[0]]
+        },
+        debug_traceBlockByHash: {
+          reqRefs: [[0]]
+        },
+        debug_getRawBlock: {
+          reqRefs: [[0]]
+        },
+        debug_getRawHeader: {
+          reqRefs: [[0]]
+        },
+        debug_getRawReceipts: {
+          reqRefs: [[0]]
+        },
+        erigon_getHeaderByNumber: {
+          reqRefs: [[0]]
+        },
+        arbtrace_block: {
+          reqRefs: [[0]]
+        },
+        arbtrace_replayBlockTransactions: {
+          reqRefs: [[0]]
+        },
+
+        // Special methods that can be cached regardless of block:
+        // Most often finality of these responses is 'unknown'.
+        // For these data it is safe to keep the data in cache even after reorg,
+        // because if client explcitly querying such data (e.g. a specific tx hash receipt)
+        // they know it might be reorged from a separate process.
+        // For example this is not safe to do for eth_getBlockByNumber because users
+        // require the method to always give them current accurate data (even if it's reorged).
+        // Using "*" as request blockRef means that these data are safe be cached irrevelant of their block.
+        eth_getTransactionReceipt: {
+          reqRefs: [["*"]],
+          respRefs: [["blockNumber"], ["blockHash"]]
+        },
+        eth_getTransactionByHash: {
+          reqRefs: [["*"]],
+          respRefs: [["blockNumber"], ["blockHash"]]
+        },
+        arbtrace_replayTransaction: {
+          reqRefs: [["*"]]
+        },
+        trace_replayTransaction: {
+          reqRefs: [["*"]]
+        },
+        debug_traceTransaction: {
+          reqRefs: [["*"]]
+        },
+        trace_rawTransaction: {
+          reqRefs: [["*"]]
+        },
+        trace_transaction: {
+          reqRefs: [["*"]]
+        },
+        debug_traceBlock: {
+          reqRefs: [["*"]]
+        }
+      }
+    }
+  }
+});
+```
+</Tab>
+</Tabs>
+
+To customize the cacheable methods, you can override the default configuration. Note that if you customize the methods, you must include ALL methods you want to cache - the defaults will not be merged.
+
+<Callout type="warning">
+When customizing methods, make sure to include all methods you want to cache. The default configuration will be completely replaced by your custom configuration.
+</Callout>
+
+Here's how method configuration works:
+
+- `finalized: true` - Method returns static data that never changes.
+- `realtime: true` - Method returns data that changes frequently (e.g. on every block).
+- `reqRefs` - Array of paths to find block numbers/hashes in the request.
+- `respRefs` - Array of paths to find block numbers/hashes in the response.
+- Special value `[["*"]]` means the method can be cached regardless of block reorgs.

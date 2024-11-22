@@ -100,7 +100,14 @@ func (r *NetworksRegistry) RegisterNetwork(
 		return pn.(*Network), nil
 	}
 
-	network, err := NewNetwork(logger, prjCfg.Id, nwCfg, r.rateLimitersRegistry, r.upstreamsRegistry, r.metricsTracker)
+	network, err := NewNetwork(
+		logger,
+		prjCfg.Id,
+		nwCfg,
+		r.rateLimitersRegistry,
+		r.upstreamsRegistry,
+		r.metricsTracker,
+	)
 	if err != nil {
 		return nil, err
 	}

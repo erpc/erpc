@@ -1781,14 +1781,33 @@ type ErrRecordNotFound struct{ BaseError }
 
 const ErrCodeRecordNotFound = "ErrRecordNotFound"
 
-var NewErrRecordNotFound = func(key string, driver string) error {
+var NewErrRecordNotFound = func(pk, rk, driver string) error {
 	return &ErrRecordNotFound{
 		BaseError{
 			Code:    ErrCodeRecordNotFound,
 			Message: "record not found",
 			Details: map[string]interface{}{
-				"key":    key,
-				"driver": driver,
+				"partitionKey": pk,
+				"rangeKey":     rk,
+				"driver":       driver,
+			},
+		},
+	}
+}
+
+type ErrRecordExpired struct{ BaseError }
+
+const ErrCodeRecordExpired = "ErrRecordExpired"
+
+var NewErrRecordExpired = func(pk, rk, driver string) error {
+	return &ErrRecordExpired{
+		BaseError{
+			Code:    ErrCodeRecordExpired,
+			Message: "record expired",
+			Details: map[string]interface{}{
+				"partitionKey": pk,
+				"rangeKey":     rk,
+				"driver":       driver,
 			},
 		},
 	}

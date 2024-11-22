@@ -41,8 +41,9 @@ type RequestDirectives struct {
 type NormalizedRequest struct {
 	sync.RWMutex
 
-	network Network
-	body    []byte
+	network  Network
+	cacheDal CacheDAL
+	body     []byte
 
 	method         string
 	directives     *RequestDirectives
@@ -124,6 +125,10 @@ func (r *NormalizedRequest) NetworkId() string {
 
 func (r *NormalizedRequest) SetNetwork(network Network) {
 	r.network = network
+}
+
+func (r *NormalizedRequest) SetCacheDal(cacheDal CacheDAL) {
+	r.cacheDal = cacheDal
 }
 
 func (r *NormalizedRequest) ApplyDirectivesFromHttp(headers http.Header, queryArgs url.Values) {
@@ -276,7 +281,7 @@ func (r *NormalizedRequest) EvmBlockRefAndNumber() (string, int64, error) {
 		return blockRef, blockNumber, err
 	}
 
-	br, bn, err := ExtractEvmBlockReferenceFromRequest(rpcReq)
+	br, bn, err := ExtractEvmBlockReferenceFromRequest(r.cacheDal, rpcReq)
 	if br != "" {
 		blockRef = br
 	}
@@ -292,14 +297,17 @@ func (r *NormalizedRequest) EvmBlockRefAndNumber() (string, int64, error) {
 		lvr := r.lastValidResponse.Load()
 		if lvr != nil {
 			br, bn, err = lvr.EvmBlockRefAndNumber()
-			if br != "" && blockRef == "" {
-				// The condition (blockRef == "") makes sure if request already has a ref we won't override it from response.
+			if br != "" && (blockRef == "" || blockRef == "*") {
+				// The condition (blockRef == ""|"*") makes sure if request already has a ref we won't override it from response.
 				// For example eth_getBlockByNumber(latest) will have a "latest" ref, so it'll be cached under "latest" ref,
-				// and we don't it to be stored as the actual blockHash returned in the response, so that we can have a cache hit.
+				// and we don't want it to be stored as the actual blockHash returned in the response, so that we can have a cache hit.
+				// In case of "*" since it means any block, we can still augment it from response ref, because during cache.Get()
+				// we'll be using reverse index (i.e. ignoring ref), but after reorg invalidation is added a specific block ref is useful.
+				//
 				// TODO An ideal version stores the data for all eth_getBlockByNumber(latest) and eth_getBlockByNumber(blockNumber),
-				// and eth_getBlockByNumber(blockHash) where blockNumber/blockHash is the actual block number returned in the response.
-				// So that if user gets the latest block cache is populated for when they provide that specific block as well.
-				// When implementing that feature remember that CacheHash() must be calculated based on response's number/hash.
+				// and eth_getBlockByNumber(blockHash) where blockNumber/blockHash are the actual values returned in the response.
+				// So that if user gets the latest block, then cache is populated for when they provide that specific block as well.
+				// When implementing that feature remember that CacheHash() must be calculated separately for each number/hash combo.
 				blockRef = br
 			}
 			if bn > 0 {

@@ -511,6 +511,48 @@ func (r *JsonRpcRequest) CacheHash() (string, error) {
 	return fmt.Sprintf("%s:%x", r.Method, b), nil
 }
 
+func (r *JsonRpcRequest) PeekByPath(path ...interface{}) (interface{}, error) {
+	if r == nil || len(r.Params) == 0 {
+		return nil, fmt.Errorf("cannot peek path on empty params")
+	}
+
+	// Start with params array as current value
+	var current interface{} = r.Params
+
+	// Traverse through path elements
+	for _, p := range path {
+		switch idx := p.(type) {
+		case int:
+			// Array index access
+			arr, ok := current.([]interface{})
+			if !ok {
+				return nil, fmt.Errorf("expected array at path element %v, got %T", p, current)
+			}
+			if idx < 0 || idx >= len(arr) {
+				return nil, fmt.Errorf("array index %d out of bounds", idx)
+			}
+			current = arr[idx]
+
+		case string:
+			// Map key access
+			m, ok := current.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("expected map at path element %v, got %T", p, current)
+			}
+			val, exists := m[idx]
+			if !exists {
+				return nil, fmt.Errorf("key %s not found in map", idx)
+			}
+			current = val
+
+		default:
+			return nil, fmt.Errorf("unsupported path element type: %T", p)
+		}
+	}
+
+	return current, nil
+}
+
 func hashValue(h io.Writer, v interface{}) error {
 	switch t := v.(type) {
 	case bool:

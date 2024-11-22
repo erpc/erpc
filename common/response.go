@@ -263,7 +263,7 @@ func (r *NormalizedResponse) EvmBlockRefAndNumber() (string, int64, error) {
 	if err != nil {
 		return blockRef, blockNumber, err
 	}
-	br, bn, err := ExtractEvmBlockReferenceFromResponse(rq, jrr)
+	br, bn, err := ExtractEvmBlockReferenceFromResponse(r.request.cacheDal, rq, jrr)
 	if br != "" {
 		blockRef = br
 	}
@@ -283,68 +283,6 @@ func (r *NormalizedResponse) EvmBlockRefAndNumber() (string, int64, error) {
 	}
 
 	return blockRef, blockNumber, nil
-}
-
-func (r *NormalizedResponse) FinalityState() (finality DataFinalityState) {
-	finality = DataFinalityStateUnknown
-
-	if r == nil {
-		return
-	}
-
-	method, _ := r.request.Method()
-	if _, ok := EvmStaticMethods[method]; ok {
-		// Static methods are not expected to change over time so we can consider them finalized
-		finality = DataFinalityStateFinalized
-		return
-	}
-
-	if r.request == nil {
-		return
-	}
-
-	ntw := r.request.Network()
-	if ntw == nil {
-		return
-	}
-
-	_, blockNumber, _ := r.request.EvmBlockRefAndNumber()
-
-	if blockNumber > 0 {
-		upstream := r.Upstream()
-		if upstream != nil {
-			stp := ntw.EvmStatePollerOf(upstream.Config().Id)
-			if stp != nil {
-				if isFinalized, err := stp.IsBlockFinalized(blockNumber); err == nil {
-					if isFinalized {
-						finality = DataFinalityStateFinalized
-					} else {
-						finality = DataFinalityStateUnfinalized
-					}
-				}
-			}
-		}
-	} else {
-		if _, ok := EvmRealtimeMethods[method]; ok {
-			finality = DataFinalityStateRealtime
-		} else {
-			switch method {
-			case "eth_getBlockByNumber",
-				"eth_getBlockByHash",
-				"eth_getUncleByBlockHashAndIndex",
-				"eth_getUncleByBlockNumberAndIndex",
-				"eth_getTransactionByHash",
-				"eth_getTransactionReceipt",
-				"eth_getTransactionByBlockHashAndIndex",
-				"eth_getTransactionByBlockNumberAndIndex":
-				// Certain methods that return data for 'pending' blocks/transactions are always considered unfinalized
-				// No block number means the data is for 'pending' block/transaction
-				finality = DataFinalityStateUnfinalized
-			}
-		}
-	}
-
-	return
 }
 
 func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
