@@ -86,6 +86,232 @@ func (c *Config) SetDefaults() {
 	}
 }
 
+// These methods return a fixed value that does not change over time
+var DefaultStaticCacheMethods = map[string]*CacheMethodConfig{
+	"eth_chainId": {
+		Finalized: true,
+	},
+	"net_version": {
+		Finalized: true,
+	},
+}
+
+// These methods return a value that changes in realtime (e.g. per block)
+var DefaultRealtimeCacheMethods = map[string]*CacheMethodConfig{
+	"eth_hashrate": {
+		Realtime: true,
+	},
+	"eth_mining": {
+		Realtime: true,
+	},
+	"eth_syncing": {
+		Realtime: true,
+	},
+	"net_peerCount": {
+		Realtime: true,
+	},
+	"eth_gasPrice": {
+		Realtime: true,
+	},
+	"eth_maxPriorityFeePerGas": {
+		Realtime: true,
+	},
+	"eth_blobBaseFee": {
+		Realtime: true,
+	},
+	"eth_blockNumber": {
+		Realtime: true,
+	},
+	"erigon_blockNumber": {
+		Realtime: true,
+	},
+}
+
+// Common path references to where to find the block number, tag or hash in the request
+var FirstParam = [][]interface{}{
+	{0},
+}
+var SecondParam = [][]interface{}{
+	{1},
+}
+var ThirdParam = [][]interface{}{
+	{2},
+}
+var NumberOrHashParam = [][]interface{}{
+	{"number"},
+	{"hash"},
+}
+var BlockNumberOrBlockHashParam = [][]interface{}{
+	{"blockNumber"},
+	{"blockHash"},
+}
+
+// This special case of "*" is used for methods that can be cached regardless of their block number or hash
+var ArbitraryBlock = [][]interface{}{
+	{"*"},
+}
+
+// These methods always reference block number, tag or hash in their request (and sometimes in response)
+var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
+	"eth_getLogs": {
+		ReqRefs: [][]interface{}{
+			{0, "fromBlock"},
+			{0, "toBlock"},
+		},
+	},
+	"eth_getBlockByHash": {
+		ReqRefs:  FirstParam,
+		RespRefs: NumberOrHashParam,
+	},
+	"eth_getBlockByNumber": {
+		ReqRefs:  FirstParam,
+		RespRefs: NumberOrHashParam,
+	},
+	"eth_getTransactionByBlockHashAndIndex": {
+		ReqRefs:  FirstParam,
+		RespRefs: BlockNumberOrBlockHashParam,
+	},
+	"eth_getTransactionByBlockNumberAndIndex": {
+		ReqRefs:  FirstParam,
+		RespRefs: BlockNumberOrBlockHashParam,
+	},
+	"eth_getUncleByBlockHashAndIndex": {
+		ReqRefs:  FirstParam,
+		RespRefs: NumberOrHashParam,
+	},
+	"eth_getUncleByBlockNumberAndIndex": {
+		ReqRefs:  FirstParam,
+		RespRefs: NumberOrHashParam,
+	},
+	"eth_getBlockTransactionCountByHash": {
+		ReqRefs: FirstParam,
+	},
+	"eth_getBlockTransactionCountByNumber": {
+		ReqRefs: FirstParam,
+	},
+	"eth_getUncleCountByBlockHash": {
+		ReqRefs: FirstParam,
+	},
+	"eth_getUncleCountByBlockNumber": {
+		ReqRefs: FirstParam,
+	},
+	"eth_getStorageAt": {
+		ReqRefs: ThirdParam,
+	},
+	"eth_getBalance": {
+		ReqRefs: SecondParam,
+	},
+	"eth_getTransactionCount": {
+		ReqRefs: SecondParam,
+	},
+	"eth_getCode": {
+		ReqRefs: SecondParam,
+	},
+	"eth_call": {
+		ReqRefs: SecondParam,
+	},
+	"eth_getProof": {
+		ReqRefs: ThirdParam,
+	},
+	"arbtrace_call": {
+		ReqRefs: ThirdParam,
+	},
+	"eth_feeHistory": {
+		ReqRefs: SecondParam,
+	},
+	"eth_getAccount": {
+		ReqRefs: SecondParam,
+	},
+	"eth_estimateGas": {
+		ReqRefs: SecondParam,
+	},
+	"debug_traceCall": {
+		ReqRefs: SecondParam,
+	},
+	"eth_simulateV1": {
+		ReqRefs: SecondParam,
+	},
+	"erigon_getBlockByTimestamp": {
+		ReqRefs: SecondParam,
+	},
+	"arbtrace_callMany": {
+		ReqRefs: SecondParam,
+	},
+	"eth_getBlockReceipts": {
+		ReqRefs: FirstParam,
+	},
+	"trace_block": {
+		ReqRefs: FirstParam,
+	},
+	"debug_traceBlockByNumber": {
+		ReqRefs: FirstParam,
+	},
+	"trace_replayBlockTransactions": {
+		ReqRefs: FirstParam,
+	},
+	"debug_storageRangeAt": {
+		ReqRefs: FirstParam,
+	},
+	"debug_traceBlockByHash": {
+		ReqRefs: FirstParam,
+	},
+	"debug_getRawBlock": {
+		ReqRefs: FirstParam,
+	},
+	"debug_getRawHeader": {
+		ReqRefs: FirstParam,
+	},
+	"debug_getRawReceipts": {
+		ReqRefs: FirstParam,
+	},
+	"erigon_getHeaderByNumber": {
+		ReqRefs: FirstParam,
+	},
+	"arbtrace_block": {
+		ReqRefs: FirstParam,
+	},
+	"arbtrace_replayBlockTransactions": {
+		ReqRefs: FirstParam,
+	},
+}
+
+// Special methods that can be cached regardless of block.
+// Most often finality of these responses is 'unknown'.
+// For these data it is safe to keep the data in cache even after reorg,
+// because if client explcitly querying such data (e.g. a specific tx hash receipt)
+// they know it might be reorged from a separate process.
+// For example this is not safe to do for eth_getBlockByNumber because users
+// require this method always give them current accurate data (even if it's reorged).
+// Returning "*" as blockRef means that these data are safe be cached irrevelant of their block.
+var DefaultSpecialCacheMethods = map[string]*CacheMethodConfig{
+	"eth_getTransactionReceipt": {
+		ReqRefs:  ArbitraryBlock,
+		RespRefs: BlockNumberOrBlockHashParam,
+	},
+	"eth_getTransactionByHash": {
+		ReqRefs:  ArbitraryBlock,
+		RespRefs: BlockNumberOrBlockHashParam,
+	},
+	"arbtrace_replayTransaction": {
+		ReqRefs: ArbitraryBlock,
+	},
+	"trace_replayTransaction": {
+		ReqRefs: ArbitraryBlock,
+	},
+	"debug_traceTransaction": {
+		ReqRefs: ArbitraryBlock,
+	},
+	"trace_rawTransaction": {
+		ReqRefs: ArbitraryBlock,
+	},
+	"trace_transaction": {
+		ReqRefs: ArbitraryBlock,
+	},
+	"debug_traceBlock": {
+		ReqRefs: ArbitraryBlock,
+	},
+}
+
 func (c *CacheConfig) SetDefaults() {
 	if len(c.Policies) > 0 {
 		for _, policy := range c.Policies {
@@ -96,6 +322,24 @@ func (c *CacheConfig) SetDefaults() {
 		for _, connector := range c.Connectors {
 			connector.SetDefaults()
 		}
+	}
+
+	if c.Methods == nil {
+		// Merge all default methods into a single map
+		mergedMethods := map[string]*CacheMethodConfig{}
+		for name, method := range DefaultStaticCacheMethods {
+			mergedMethods[name] = method
+		}
+		for name, method := range DefaultRealtimeCacheMethods {
+			mergedMethods[name] = method
+		}
+		for name, method := range DefaultWithBlockCacheMethods {
+			mergedMethods[name] = method
+		}
+		for name, method := range DefaultSpecialCacheMethods {
+			mergedMethods[name] = method
+		}
+		c.Methods = mergedMethods
 	}
 }
 

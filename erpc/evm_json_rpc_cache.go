@@ -16,6 +16,7 @@ import (
 
 type EvmJsonRpcCache struct {
 	policies []*data.CachePolicy
+	methods  map[string]*common.CacheMethodConfig
 	network  *Network
 	logger   *zerolog.Logger
 }
@@ -54,6 +55,7 @@ func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 
 	return &EvmJsonRpcCache{
 		policies: policies,
+		methods:  cfg.Methods,
 		logger:   logger,
 	}, nil
 }
@@ -63,57 +65,9 @@ func (c *EvmJsonRpcCache) WithNetwork(network *Network) *EvmJsonRpcCache {
 	return &EvmJsonRpcCache{
 		logger:   c.logger,
 		policies: c.policies,
+		methods:  c.methods,
 		network:  network,
 	}
-}
-
-func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState) ([]*data.CachePolicy, error) {
-	var policies []*data.CachePolicy
-	for _, policy := range c.policies {
-		// Add debug logging for complex param matching
-		if c.logger.GetLevel() <= zerolog.TraceLevel {
-			c.logger.Trace().
-				Str("networkId", networkId).
-				Str("method", method).
-				Interface("params", params).
-				Interface("policy", policy).
-				Str("finality", finality.String()).
-				Msg("checking policy match for set")
-		}
-
-		match, err := policy.MatchesForSet(networkId, method, params, finality)
-		if err != nil {
-			return nil, err
-		}
-		if match {
-			policies = append(policies, policy)
-		}
-	}
-	return policies, nil
-}
-
-func (c *EvmJsonRpcCache) findGetPolicies(networkId, method string, params []interface{}) ([]*data.CachePolicy, error) {
-	var policies []*data.CachePolicy
-	for _, policy := range c.policies {
-		// Add debug logging for complex param matching
-		if c.logger.GetLevel() <= zerolog.TraceLevel {
-			c.logger.Trace().
-				Str("networkId", networkId).
-				Str("method", method).
-				Interface("params", params).
-				Interface("policy", policy).
-				Msg("checking policy match for get")
-		}
-
-		match, err := policy.MatchesForGet(networkId, method, params)
-		if err != nil {
-			return nil, err
-		}
-		if match {
-			policies = append(policies, policy)
-		}
-	}
-	return policies, nil
 }
 
 func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
@@ -188,53 +142,6 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		WithJsonRpcResponse(jrr), nil
 }
 
-func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, req *common.NormalizedRequest, rpcReq *common.JsonRpcRequest) (*common.JsonRpcResponse, error) {
-	rpcReq.RLock()
-	defer rpcReq.RUnlock()
-
-	blockRef, _, err := req.EvmBlockRefAndNumber()
-	if err != nil {
-		return nil, err
-	}
-	if blockRef == "" {
-		if c.logger.GetLevel() <= zerolog.TraceLevel {
-			c.logger.Trace().
-				Object("request", req).
-				Msg("skip fetching from cache because we cannot resolve a block reference")
-		} else {
-			c.logger.Debug().
-				Str("method", rpcReq.Method).
-				Msg("skip fetching from cache because we cannot resolve a block reference")
-		}
-		return nil, nil
-	}
-
-	groupKey, requestKey, err := generateKeysForJsonRpcRequest(req, blockRef)
-	if err != nil {
-		return nil, err
-	}
-
-	var resultString string
-	if blockRef == "*" {
-		resultString, err = connector.Get(ctx, data.ConnectorReverseIndex, groupKey, requestKey)
-	} else {
-		resultString, err = connector.Get(ctx, data.ConnectorMainIndex, groupKey, requestKey)
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	jrr := &common.JsonRpcResponse{
-		Result: util.Str2Mem(resultString),
-	}
-	err = jrr.SetID(rpcReq.ID)
-	if err != nil {
-		return nil, err
-	}
-
-	return jrr, nil
-}
-
 func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
 	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
@@ -254,7 +161,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		return err
 	}
 
-	finState := resp.FinalityState()
+	finState := c.getFinalityState(resp)
 	policies, err := c.findSetPolicies(ntwId, rpcReq.Method, rpcReq.Params, finState)
 	if err != nil {
 		return err
@@ -376,6 +283,176 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 	return nil
 }
 
+func (c *EvmJsonRpcCache) MethodConfig(method string) *common.CacheMethodConfig {
+	if cfg, ok := c.methods[method]; ok {
+		return cfg
+	}
+	return nil
+}
+
+func (c *EvmJsonRpcCache) IsObjectNull() bool {
+	return c == nil || c.network == nil
+}
+
+func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState) ([]*data.CachePolicy, error) {
+	var policies []*data.CachePolicy
+	for _, policy := range c.policies {
+		// Add debug logging for complex param matching
+		if c.logger.GetLevel() <= zerolog.TraceLevel {
+			c.logger.Trace().
+				Str("networkId", networkId).
+				Str("method", method).
+				Interface("params", params).
+				Interface("policy", policy).
+				Str("finality", finality.String()).
+				Msg("checking policy match for set")
+		}
+
+		match, err := policy.MatchesForSet(networkId, method, params, finality)
+		if err != nil {
+			return nil, err
+		}
+		if match {
+			policies = append(policies, policy)
+		}
+	}
+	return policies, nil
+}
+
+func (c *EvmJsonRpcCache) findGetPolicies(networkId, method string, params []interface{}) ([]*data.CachePolicy, error) {
+	var policies []*data.CachePolicy
+	for _, policy := range c.policies {
+		// Add debug logging for complex param matching
+		if c.logger.GetLevel() <= zerolog.TraceLevel {
+			c.logger.Trace().
+				Str("networkId", networkId).
+				Str("method", method).
+				Interface("params", params).
+				Interface("policy", policy).
+				Msg("checking policy match for get")
+		}
+
+		match, err := policy.MatchesForGet(networkId, method, params)
+		if err != nil {
+			return nil, err
+		}
+		if match {
+			policies = append(policies, policy)
+		}
+	}
+	return policies, nil
+}
+
+func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, req *common.NormalizedRequest, rpcReq *common.JsonRpcRequest) (*common.JsonRpcResponse, error) {
+	rpcReq.RLock()
+	defer rpcReq.RUnlock()
+
+	blockRef, _, err := req.EvmBlockRefAndNumber()
+	if err != nil {
+		return nil, err
+	}
+	if blockRef == "" {
+		if c.logger.GetLevel() <= zerolog.TraceLevel {
+			c.logger.Trace().
+				Object("request", req).
+				Msg("skip fetching from cache because we cannot resolve a block reference")
+		} else {
+			c.logger.Debug().
+				Str("method", rpcReq.Method).
+				Msg("skip fetching from cache because we cannot resolve a block reference")
+		}
+		return nil, nil
+	}
+
+	groupKey, requestKey, err := generateKeysForJsonRpcRequest(req, blockRef)
+	if err != nil {
+		return nil, err
+	}
+
+	c.logger.Trace().Str("pk", groupKey).Str("rk", requestKey).Msg("fetching from cache")
+
+	var resultString string
+	if blockRef == "*" {
+		resultString, err = connector.Get(ctx, data.ConnectorReverseIndex, groupKey, requestKey)
+	} else {
+		resultString, err = connector.Get(ctx, data.ConnectorMainIndex, groupKey, requestKey)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	jrr := &common.JsonRpcResponse{
+		Result: util.Str2Mem(resultString),
+	}
+	err = jrr.SetID(rpcReq.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	return jrr, nil
+}
+
+func (c *EvmJsonRpcCache) getFinalityState(r *common.NormalizedResponse) (finality common.DataFinalityState) {
+	finality = common.DataFinalityStateUnknown
+
+	if r == nil {
+		return
+	}
+
+	req := r.Request()
+	if req == nil {
+		return
+	}
+
+	method, _ := req.Method()
+	if cfg, ok := c.methods[method]; ok {
+		if cfg.Finalized {
+			finality = common.DataFinalityStateFinalized
+			return
+		} else if cfg.Realtime {
+			finality = common.DataFinalityStateRealtime
+			return
+		}
+	}
+
+	ntw := req.Network()
+	if ntw == nil {
+		return
+	}
+
+	_, blockNumber, _ := req.EvmBlockRefAndNumber()
+
+	if blockNumber > 0 {
+		upstream := r.Upstream()
+		if upstream != nil {
+			stp := ntw.EvmStatePollerOf(upstream.Config().Id)
+			if stp != nil {
+				if isFinalized, err := stp.IsBlockFinalized(blockNumber); err == nil {
+					if isFinalized {
+						finality = common.DataFinalityStateFinalized
+					} else {
+						finality = common.DataFinalityStateUnfinalized
+					}
+				}
+			}
+		}
+	}
+	// else {
+	// 	if _, ok := EvmRealtimeMethods[method]; ok {
+	// 		finality = DataFinalityStateRealtime
+	// 	} else {
+	// 		switch method {
+	// 		case :
+	// 			// Certain methods that return data for 'pending' blocks/transactions are always considered unfinalized
+	// 			// No block number means the data is for 'pending' block/transaction
+	// 			finality = DataFinalityStateUnfinalized
+	// 		}
+	// 	}
+	// }
+
+	return
+}
+
 func shouldCacheResponse(
 	lg zerolog.Logger,
 	resp *common.NormalizedResponse,
@@ -408,7 +485,10 @@ func shouldCacheResponse(
 	}
 }
 
-func generateKeysForJsonRpcRequest(req *common.NormalizedRequest, blockRef string) (string, string, error) {
+func generateKeysForJsonRpcRequest(
+	req *common.NormalizedRequest,
+	blockRef string,
+) (string, string, error) {
 	cacheKey, err := req.CacheHash()
 	if err != nil {
 		return "", "", err

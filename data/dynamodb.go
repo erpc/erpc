@@ -366,14 +366,14 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 			return "", err
 		}
 		if len(result.Items) == 0 {
-			return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s", partitionKey, rangeKey), DynamoDBDriverName)
+			return "", common.NewErrRecordNotFound(partitionKey, rangeKey, DynamoDBDriverName)
 		}
 
 		// Check if the item has expired
 		if ttl, exists := result.Items[0][d.ttlAttributeName]; exists {
 			expirationTime, err := strconv.ParseInt(*ttl.N, 10, 64)
 			if err == nil && time.Now().Unix() > expirationTime {
-				return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s (expired)", partitionKey, rangeKey), DynamoDBDriverName)
+				return "", common.NewErrRecordExpired(partitionKey, rangeKey, DynamoDBDriverName)
 			}
 		}
 
@@ -398,14 +398,14 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 		}
 
 		if result.Item == nil {
-			return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s", partitionKey, rangeKey), DynamoDBDriverName)
+			return "", common.NewErrRecordNotFound(partitionKey, rangeKey, DynamoDBDriverName)
 		}
 
 		// Check if the item has expired
 		if ttl, exists := result.Item[d.ttlAttributeName]; exists {
 			expirationTime, err := strconv.ParseInt(*ttl.N, 10, 64)
 			if err == nil && time.Now().Unix() > expirationTime {
-				return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s (expired)", partitionKey, rangeKey), DynamoDBDriverName)
+				return "", common.NewErrRecordExpired(partitionKey, rangeKey, DynamoDBDriverName)
 			}
 		}
 

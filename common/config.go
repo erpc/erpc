@@ -64,8 +64,16 @@ type DatabaseConfig struct {
 }
 
 type CacheConfig struct {
-	Connectors []*ConnectorConfig   `yaml:"connectors" json:"connectors" tstype:"types.ConnectorConfig[]"`
-	Policies   []*CachePolicyConfig `yaml:"policies" json:"policies"`
+	Connectors []*ConnectorConfig            `yaml:"connectors" json:"connectors" tstype:"types.ConnectorConfig[]"`
+	Policies   []*CachePolicyConfig          `yaml:"policies" json:"policies"`
+	Methods    map[string]*CacheMethodConfig `yaml:"methods" json:"methods"`
+}
+
+type CacheMethodConfig struct {
+	ReqRefs   [][]interface{} `yaml:"reqRefs" json:"reqRefs"`
+	RespRefs  [][]interface{} `yaml:"respRefs" json:"respRefs"`
+	Finalized bool            `yaml:"finalized" json:"finalized"`
+	Realtime  bool            `yaml:"realtime" json:"realtime"`
 }
 
 func (c *CacheConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
