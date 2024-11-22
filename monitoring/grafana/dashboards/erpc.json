@@ -581,7 +581,7 @@
       ],
       "thresholds": [],
       "timeRegions": [],
-      "title": "Network-level cache Hits/Misses",
+      "title": "Network-level cache total Hits/Misses",
       "tooltip": {
         "shared": true,
         "sort": 0,
@@ -618,6 +618,201 @@
         "type": "prometheus",
         "uid": "PBFA97CFB590B2093"
       },
+      "fill": 1,
+      "fillGradient": 0,
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 58
+      },
+      "hiddenSeries": false,
+      "id": 16,
+      "legend": {
+        "avg": false,
+        "current": false,
+        "hideEmpty": true,
+        "hideZero": true,
+        "max": false,
+        "min": false,
+        "show": true,
+        "total": false,
+        "values": false
+      },
+      "lines": true,
+      "linewidth": 1,
+      "nullPointMode": "null",
+      "options": {
+        "alertThreshold": true
+      },
+      "percentage": false,
+      "pluginVersion": "9.3.2",
+      "pointradius": 2,
+      "points": false,
+      "renderer": "flot",
+      "seriesOverrides": [],
+      "spaceLength": 10,
+      "stack": false,
+      "steppedLine": false,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "expr": "sum(rate(erpc_cache_set_success_total{}[1m])) by (project, network, category, connector, policy, ttl)",
+          "legendFormat": "Success - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "expr": "sum(rate(erpc_cache_set_error_total{}[1m])) by (project, network, category, connector, policy, ttl, error)",
+          "legendFormat": "Error - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}, Error={{error}}",
+          "refId": "B"
+        }
+      ],
+      "thresholds": [],
+      "timeRegions": [],
+      "title": "Network-level cache Set operations",
+      "tooltip": {
+        "shared": true,
+        "sort": 0,
+        "value_type": "individual"
+      },
+      "type": "graph",
+      "xaxis": {
+        "mode": "time",
+        "show": true,
+        "values": []
+      },
+      "yaxes": [
+        {
+          "format": "short",
+          "show": true
+        },
+        {
+          "format": "short",
+          "show": true
+        }
+      ],
+      "yaxis": {
+        "align": false
+      }
+    },
+    {
+      "aliasColors": {},
+      "bars": false,
+      "dashLength": 10,
+      "dashes": false,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "fill": 1,
+      "fillGradient": 0,
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 68
+      },
+      "hiddenSeries": false,
+      "id": 17,
+      "legend": {
+        "avg": false,
+        "current": false,
+        "hideEmpty": true,
+        "hideZero": true,
+        "max": false,
+        "min": false,
+        "show": true,
+        "total": false,
+        "values": false
+      },
+      "lines": true,
+      "linewidth": 1,
+      "nullPointMode": "null",
+      "options": {
+        "alertThreshold": true
+      },
+      "percentage": false,
+      "pluginVersion": "9.3.2",
+      "pointradius": 2,
+      "points": false,
+      "renderer": "flot",
+      "seriesOverrides": [],
+      "spaceLength": 10,
+      "stack": false,
+      "steppedLine": false,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "expr": "sum(rate(erpc_cache_get_success_hit_total{}[1m])) by (project, network, category, connector, policy, ttl)",
+          "legendFormat": "Hit - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "expr": "sum(rate(erpc_cache_get_success_miss_total{}[1m])) by (project, network, category, connector, policy, ttl)",
+          "legendFormat": "Miss - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "expr": "sum(rate(erpc_cache_get_error_total{}[1m])) by (project, network, category, connector, policy, ttl, error)",
+          "legendFormat": "Error - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}, Error={{error}}",
+          "refId": "C"
+        }
+      ],
+      "thresholds": [],
+      "timeRegions": [],
+      "title": "Network-level cache Get operations",
+      "tooltip": {
+        "shared": true,
+        "sort": 0,
+        "value_type": "individual"
+      },
+      "type": "graph",
+      "xaxis": {
+        "mode": "time",
+        "show": true,
+        "values": []
+      },
+      "yaxes": [
+        {
+          "format": "short",
+          "show": true
+        },
+        {
+          "format": "short",
+          "show": true
+        }
+      ],
+      "yaxis": {
+        "align": false
+      }
+    },
+    {
+      "aliasColors": {},
+      "bars": false,
+      "dashLength": 10,
+      "dashes": false,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
       "description": "These are real requests sent to upstream endpoints, including retries",
       "fill": 1,
       "fillGradient": 0,
@@ -625,7 +820,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 58
+        "y": 78
       },
       "hiddenSeries": false,
       "id": 4,
@@ -716,7 +911,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 70
+        "y": 90
       },
       "hiddenSeries": false,
       "id": 15,
@@ -807,7 +1002,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 79
+        "y": 99
       },
       "hiddenSeries": false,
       "id": 7,
@@ -919,7 +1114,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 91
+        "y": 111
       },
       "hiddenSeries": false,
       "id": 10,
@@ -1007,7 +1202,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 101
+        "y": 121
       },
       "hiddenSeries": false,
       "id": 11,
