@@ -108,6 +108,20 @@ func TestExtractBlockReference(t *testing.T) {
 			expectedErr: false,
 		},
 		{
+			name: "eth_getLogs",
+			request: &JsonRpcRequest{
+				Method: "eth_getLogs",
+				Params: []interface{}{
+					map[string]interface{}{
+						"fromBlock": "0x1b4",
+					},
+				},
+			},
+			expectedRef: "",
+			expectedNum: 0,
+			expectedErr: true,
+		},
+		{
 			name: "missing parameters in eth_getLogs",
 			request: &JsonRpcRequest{
 				Method: "eth_getLogs",

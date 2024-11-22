@@ -1787,9 +1787,9 @@ var NewErrRecordNotFound = func(pk, rk, driver string) error {
 			Code:    ErrCodeRecordNotFound,
 			Message: "record not found",
 			Details: map[string]interface{}{
-				"pk":     pk,
-				"rk":     rk,
-				"driver": driver,
+				"partitionKey": pk,
+				"rangeKey":     rk,
+				"driver":       driver,
 			},
 		},
 	}

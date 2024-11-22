@@ -238,7 +238,8 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 		ReqRefs: SecondParam,
 	},
 	"eth_getBlockReceipts": {
-		ReqRefs: FirstParam,
+		ReqRefs:  FirstParam,
+		RespRefs: BlockNumberOrBlockHashParam,
 	},
 	"trace_block": {
 		ReqRefs: FirstParam,

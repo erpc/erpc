@@ -437,18 +437,6 @@ func (c *EvmJsonRpcCache) getFinalityState(r *common.NormalizedResponse) (finali
 			}
 		}
 	}
-	// else {
-	// 	if _, ok := EvmRealtimeMethods[method]; ok {
-	// 		finality = DataFinalityStateRealtime
-	// 	} else {
-	// 		switch method {
-	// 		case :
-	// 			// Certain methods that return data for 'pending' blocks/transactions are always considered unfinalized
-	// 			// No block number means the data is for 'pending' block/transaction
-	// 			finality = DataFinalityStateUnfinalized
-	// 		}
-	// 	}
-	// }
 
 	return
 }
