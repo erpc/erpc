@@ -91,6 +91,8 @@ export interface DynamoDBConnectorConfig {
 export interface PostgreSQLConnectorConfig {
   connectionUri: string;
   table: string;
+  minConns: number /* int32 */;
+  maxConns: number /* int32 */;
 }
 export interface AwsAuthConfig {
   mode: string; // "file", "env", "secret"
@@ -283,10 +285,24 @@ export type DataFinalityState = number /* int */;
 /**
  * Finalized gets 0 intentionally so that when user has not specified finality,
  * it defaults to finalized, which is safest sane default for caching.
+ * This attribute will be calculated based on extracted block number (from request and/or response)
+ * and comparing to the upstream (one that returned the response) 'finalized' block (fetch via evm state poller).
  */
 export const DataFinalityStateFinalized: DataFinalityState = 0;
+/**
+ * When we CAN determine the block number, and it's after the upstream 'finalized' block, we consider the data unfinalized.
+ */
 export const DataFinalityStateUnfinalized: DataFinalityState = 1;
-export const DataFinalityStateUnknown: DataFinalityState = 2;
+/**
+ * Certain methods points are meant to be realtime and updated with every new block (e.g. eth_gasPrice).
+ * These can be cached with short TTLs to improve performance.
+ */
+export const DataFinalityStateRealtime: DataFinalityState = 2;
+/**
+ * When we CANNOT determine the block number (e.g some trace by hash calls), we consider the data unknown.
+ * Most often it is safe to cache this data for longer as they're access when block hash is provided directly.
+ */
+export const DataFinalityStateUnknown: DataFinalityState = 3;
 export type CacheEmptyBehavior = number /* int */;
 export const CacheEmptyBehaviorIgnore: CacheEmptyBehavior = 0;
 export const CacheEmptyBehaviorAllow: CacheEmptyBehavior = 1;
