@@ -110,29 +110,52 @@ type CachePolicyConfig struct {
 	Network     string             `yaml:"network,omitempty" json:"network"`
 	Method      string             `yaml:"method,omitempty" json:"method"`
 	Params      []interface{}      `yaml:"params,omitempty" json:"params"`
-	Finality    DataFinalityState  `yaml:"finality" json:"finality"`
+	Finality    DataFinalityState  `yaml:"finality,omitempty" json:"finality"`
 	Empty       CacheEmptyBehavior `yaml:"empty,omitempty" json:"empty"`
-	MinItemSize *string            `yaml:"minItemSize,omitempty" json:"minItemSize,omitempty"`
-	MaxItemSize *string            `yaml:"maxItemSize,omitempty" json:"maxItemSize,omitempty"`
+	MinItemSize *string            `yaml:"minItemSize,omitempty" json:"minItemSize"`
+	MaxItemSize *string            `yaml:"maxItemSize,omitempty" json:"maxItemSize"`
 	TTL         time.Duration      `yaml:"ttl,omitempty" json:"ttl"`
 }
 
 func (c *CachePolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type rawCachePolicyConfig struct {
-		CachePolicyConfig
-		TTL string `yaml:"ttl"`
+		Connector   string             `yaml:"connector"`
+		Network     string             `yaml:"network,omitempty"`
+		Method      string             `yaml:"method,omitempty"`
+		Params      []interface{}      `yaml:"params,omitempty"`
+		Finality    DataFinalityState  `yaml:"finality,omitempty"`
+		Empty       CacheEmptyBehavior `yaml:"empty,omitempty"`
+		MinItemSize *string            `yaml:"minItemSize,omitempty"`
+		MaxItemSize *string            `yaml:"maxItemSize,omitempty"`
+		TTL         interface{}        `yaml:"ttl"`
 	}
 	raw := rawCachePolicyConfig{}
 	if err := unmarshal(&raw); err != nil {
 		return err
 	}
-	*c = raw.CachePolicyConfig
-	if raw.TTL != "" {
-		ttl, err := time.ParseDuration(raw.TTL)
-		if err != nil {
-			return fmt.Errorf("failed to parse ttl: %v", err)
+	*c = CachePolicyConfig{
+		Connector:   raw.Connector,
+		Network:     raw.Network,
+		Method:      raw.Method,
+		Params:      raw.Params,
+		Finality:    raw.Finality,
+		Empty:       raw.Empty,
+		MinItemSize: raw.MinItemSize,
+		MaxItemSize: raw.MaxItemSize,
+	}
+	if raw.TTL != nil {
+		switch v := raw.TTL.(type) {
+		case string:
+			ttl, err := time.ParseDuration(v)
+			if err != nil {
+				return fmt.Errorf("failed to parse ttl: %v", err)
+			}
+			c.TTL = ttl
+		case int:
+			c.TTL = time.Duration(v) * time.Second
+		default:
+			return fmt.Errorf("invalid ttl type: %T", v)
 		}
-		c.TTL = ttl
 	} else {
 		// Set default value of 0 when TTL is not specified, which means no ttl
 		c.TTL = time.Duration(0)
