@@ -269,12 +269,19 @@ func (a *AwsAuthConfig) MarshalJSON() ([]byte, error) {
 
 type ProjectConfig struct {
 	Id              string             `yaml:"id" json:"id"`
-	Auth            *AuthConfig        `yaml:"auth,omitempty" json:"auth,omitempty"`
-	CORS            *CORSConfig        `yaml:"cors,omitempty" json:"cors,omitempty"`
+	Auth            *AuthConfig        `yaml:"auth,omitempty" json:"auth"`
+	CORS            *CORSConfig        `yaml:"cors,omitempty" json:"cors"`
 	Upstreams       []*UpstreamConfig  `yaml:"upstreams" json:"upstreams"`
-	Networks        []*NetworkConfig   `yaml:"networks,omitempty" json:"networks,omitempty"`
-	RateLimitBudget string             `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
-	HealthCheck     *HealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck,omitempty"`
+	NetworkDefaults *NetworkDefaults   `yaml:"networkDefaults,omitempty" json:"networkDefaults"`
+	Networks        []*NetworkConfig   `yaml:"networks,omitempty" json:"networks"`
+	RateLimitBudget string             `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
+	HealthCheck     *HealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
+}
+
+type NetworkDefaults struct {
+	RateLimitBudget string                 `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
+	Failsafe        *FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe"`
+	SelectionPolicy *SelectionPolicyConfig `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
 }
 
 type CORSConfig struct {
