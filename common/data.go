@@ -66,3 +66,23 @@ const (
 func (b CacheEmptyBehavior) String() string {
 	return []string{"ignore", "allow", "only"}[b]
 }
+
+func (b *CacheEmptyBehavior) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	var s string
+	if err := unmarshal(&s); err != nil {
+		return err
+	}
+	switch strings.ToLower(s) {
+	case "ignore":
+		*b = CacheEmptyBehaviorIgnore
+		return nil
+	case "allow":
+		*b = CacheEmptyBehaviorAllow
+		return nil
+	case "only":
+		*b = CacheEmptyBehaviorOnly
+		return nil
+	}
+
+	return fmt.Errorf("invalid cache empty behavior: %s", s)
+}
