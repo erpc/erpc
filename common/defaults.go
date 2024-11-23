@@ -504,7 +504,7 @@ func (p *ProjectConfig) SetDefaults() {
 	}
 	if p.Networks != nil {
 		for _, network := range p.Networks {
-			network.SetDefaults(p.Upstreams)
+			network.SetDefaults(p.Upstreams, p.NetworkDefaults)
 		}
 	}
 	if p.Auth != nil {
@@ -545,7 +545,7 @@ func (u *UpstreamConfig) SetDefaults() {
 			},
 		}
 	}
-	u.Failsafe.SetDefaults()
+	u.Failsafe.SetDefaults(nil)
 
 	if u.RateLimitAutoTune == nil && u.RateLimitBudget != "" {
 		u.RateLimitAutoTune = &RateLimitAutoTuneConfig{}
@@ -585,18 +585,35 @@ func (e *EvmUpstreamConfig) SetDefaults() {
 
 func (j *JsonRpcUpstreamConfig) SetDefaults() {}
 
-func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig) {
+func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *NetworkDefaults) {
+	sysDefCfg := NewDefaultNetworkConfig(upstreams)
+	if defaults != nil {
+		if n.RateLimitBudget == "" {
+			n.RateLimitBudget = defaults.RateLimitBudget
+		}
+		if defaults.Failsafe != nil {
+			if n.Failsafe == nil {
+				n.Failsafe = &FailsafeConfig{}
+				*n.Failsafe = *defaults.Failsafe
+			} else {
+				n.Failsafe.SetDefaults(defaults.Failsafe)
+			}
+		}
+		if n.SelectionPolicy == nil && defaults.SelectionPolicy != nil {
+			n.SelectionPolicy = &SelectionPolicyConfig{}
+			*n.SelectionPolicy = *defaults.SelectionPolicy
+		}
+	} else if n.Failsafe != nil {
+		n.Failsafe.SetDefaults(sysDefCfg.Failsafe)
+	} else {
+		n.Failsafe = sysDefCfg.Failsafe
+	}
+
 	if n.Architecture == "" {
 		if n.Evm != nil {
 			n.Architecture = "evm"
 		}
 	}
-
-	if n.Failsafe == nil {
-		nwCfg := NewDefaultNetworkConfig(upstreams)
-		n.Failsafe = nwCfg.Failsafe
-	}
-	n.Failsafe.SetDefaults()
 
 	if n.Architecture == "evm" && n.Evm == nil {
 		n.Evm = &EvmNetworkConfig{}
@@ -627,44 +644,91 @@ func (e *EvmNetworkConfig) SetDefaults() {
 	}
 }
 
-func (f *FailsafeConfig) SetDefaults() {
+func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) {
 	if f.Timeout != nil {
-		f.Timeout.SetDefaults()
+		if defaults != nil && defaults.Timeout != nil {
+			f.Timeout.SetDefaults(defaults.Timeout)
+		} else {
+			f.Timeout.SetDefaults(nil)
+		}
 	}
 	if f.Retry != nil {
-		f.Retry.SetDefaults()
+		if defaults != nil && defaults.Retry != nil {
+			f.Retry.SetDefaults(defaults.Retry)
+		} else {
+			f.Retry.SetDefaults(nil)
+		}
 	}
 	if f.CircuitBreaker != nil {
-		f.CircuitBreaker.SetDefaults()
+		if defaults != nil && defaults.CircuitBreaker != nil {
+			f.CircuitBreaker.SetDefaults(defaults.CircuitBreaker)
+		} else {
+			f.CircuitBreaker.SetDefaults(nil)
+		}
 	}
 }
 
-func (t *TimeoutPolicyConfig) SetDefaults() {}
+func (t *TimeoutPolicyConfig) SetDefaults(defaults *TimeoutPolicyConfig) {
+	if defaults != nil && t.Duration == "" {
+		t.Duration = defaults.Duration
+	}
+}
 
-func (r *RetryPolicyConfig) SetDefaults() {
+func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) {
+	if r.MaxAttempts == 0 {
+		if defaults != nil && defaults.MaxAttempts != 0 {
+			r.MaxAttempts = defaults.MaxAttempts
+		} else {
+			r.MaxAttempts = 3
+		}
+	}
 	if r.BackoffFactor == 0 {
-		r.BackoffFactor = 1.5
+		if defaults != nil && defaults.BackoffFactor != 0 {
+			r.BackoffFactor = defaults.BackoffFactor
+		} else {
+			r.BackoffFactor = 1.3
+		}
 	}
 	if r.BackoffMaxDelay == "" {
-		r.BackoffMaxDelay = "5s"
+		if defaults != nil && defaults.BackoffMaxDelay != "" {
+			r.BackoffMaxDelay = defaults.BackoffMaxDelay
+		} else {
+			r.BackoffMaxDelay = "5s"
+		}
 	}
 	if r.Delay == "" {
-		r.Delay = "300ms"
+		if defaults != nil && defaults.Delay != "" {
+			r.Delay = defaults.Delay
+		} else {
+			r.Delay = "100ms"
+		}
 	}
 	if r.Jitter == "" {
-		r.Jitter = "100ms"
+		if defaults != nil && defaults.Jitter != "" {
+			r.Jitter = defaults.Jitter
+		} else {
+			r.Jitter = "0ms"
+		}
 	}
 }
 
-func (h *HedgePolicyConfig) SetDefaults() {
+func (h *HedgePolicyConfig) SetDefaults(defaults *HedgePolicyConfig) {
 	if h.Delay == "" {
-		h.Delay = "100ms"
+		if defaults != nil && defaults.Delay != "" {
+			h.Delay = defaults.Delay
+		} else {
+			h.Delay = "100ms"
+		}
 	}
 }
 
-func (c *CircuitBreakerPolicyConfig) SetDefaults() {
+func (c *CircuitBreakerPolicyConfig) SetDefaults(defaults *CircuitBreakerPolicyConfig) {
 	if c.HalfOpenAfter == "" {
-		c.HalfOpenAfter = "5m"
+		if defaults != nil && defaults.HalfOpenAfter != "" {
+			c.HalfOpenAfter = defaults.HalfOpenAfter
+		} else {
+			c.HalfOpenAfter = "5m"
+		}
 	}
 }
 
