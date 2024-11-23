@@ -114,32 +114,43 @@ database:
     
     # Define caching policies for different network/method/finality states
     policies:
+      # Example: Cache all methods with finalized data including empty responses
       - network: "*"
         method: "*"
         finality: finalized
         empty: allow
         connector: memory-cache
         ttl: 0
+      # Example: Cache unfinalized data only for 5 seconds (getLogs of a recent block) except empty responses
       - network: "*"
         method: "*"
         finality: unfinalized
         empty: ignore
         connector: memory-cache
         ttl: 5s
+      # Example: Cache unknown finalization data (eth_trace*) only for 10 seconds
       - network: "*"
         method: "*"
         finality: unknown
-        empty: allow
+        empty: ignore
         connector: memory-cache
-        ttl: 5s
-      - network: "*" # supports * as wildcard and | as OR operator
-        method: "eth_getLogs | trace_*" # supports * as wildcard and | as OR operator
+        ttl: 10s
+      # Example: Cache realtime data only for 2 seconds (eth_blockNumber, eth_gasPrice, etc) to reduce costs yet fresh enough data
+      - network: "*"
+        method: "*"
+        finality: realtime
+        empty: ignore
+        connector: memory-cache
+        ttl: 2s
+      
+      - network: "*" # "network" supports * as wildcard and | as OR operator
+        method: "eth_getLogs | trace_*" # "method" supports * as wildcard and | as OR operator
         finality: finalized
         empty: allow
         connector: postgres-cache
         ttl: 0
-      - network: "evm:42161 | evm:10" # supports * as wildcard and | as OR operator
-        method: "arbtrace_*" # supports * as wildcard and | as OR operator
+      - network: "evm:42161 | evm:10"
+        method: "arbtrace_*"
         finality: finalized
         empty: ignore
         connector: postgres-cache
@@ -242,14 +253,6 @@ export default createConfig({
 ```
 </Tab>
 </Tabs>
-
-<Callout type="info">
-By default, eRPC enables an in-memory cache with these policies:
-- `finalized` data: cached **forever** with 100k max items and 1mb max item size.
-- `unfinalized` data: cached for **5 seconds** to be reorg safe yet reduce redundant RPC calls.
-- `unknown` data: cached for **30 seconds** as it's generally safe to cache but we don't want to cache them forever.
-- `realtime` data: cached for **2 seconds** to be as fresh as possible.
-</Callout>
 
 #### Cache policies
 
