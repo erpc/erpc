@@ -44,6 +44,8 @@ func NewCachePolicy(cfg *common.CachePolicyConfig, connector Connector) (*CacheP
 		str = fmt.Sprintf("%s params=%v", str, cfg.Params != nil)
 	}
 
+	str = fmt.Sprintf("policy(%s)", str)
+
 	return &CachePolicy{
 		config:    cfg,
 		connector: connector,
