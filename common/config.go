@@ -98,36 +98,6 @@ func (c *CacheConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 				Connector: "default",
 			},
 		}
-		// PostgreSQL might not be very efficient for these short default TTLs
-		if rawBackward.Driver != DriverPostgreSQL {
-			c.Policies = append(
-				c.Policies,
-				&CachePolicyConfig{
-					Network:   "*",
-					Method:    "*",
-					Finality:  DataFinalityStateUnknown,
-					Empty:     CacheEmptyBehaviorAllow,
-					TTL:       30 * time.Second,
-					Connector: "default",
-				},
-				&CachePolicyConfig{
-					Network:   "*",
-					Method:    "*",
-					Finality:  DataFinalityStateUnfinalized,
-					Empty:     CacheEmptyBehaviorAllow,
-					TTL:       5 * time.Second,
-					Connector: "default",
-				},
-				&CachePolicyConfig{
-					Network:   "*",
-					Method:    "*",
-					Finality:  DataFinalityStateRealtime,
-					Empty:     CacheEmptyBehaviorAllow,
-					TTL:       2 * time.Second,
-					Connector: "default",
-				},
-			)
-		}
 	} else {
 		*c = CacheConfig(raw)
 	}
