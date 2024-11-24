@@ -279,9 +279,10 @@ type ProjectConfig struct {
 }
 
 type NetworkDefaults struct {
-	RateLimitBudget string                 `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
-	Failsafe        *FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe"`
-	SelectionPolicy *SelectionPolicyConfig `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
+	RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
+	Failsafe          *FailsafeConfig          `yaml:"failsafe,omitempty" json:"failsafe"`
+	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
+	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
 }
 
 type CORSConfig struct {
@@ -414,25 +415,33 @@ type HealthCheckConfig struct {
 }
 
 type NetworkConfig struct {
-	Architecture    NetworkArchitecture    `yaml:"architecture" json:"architecture" tstype:"'evm'"`
-	RateLimitBudget string                 `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
-	Failsafe        *FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe,omitempty"`
-	Evm             *EvmNetworkConfig      `yaml:"evm,omitempty" json:"evm,omitempty"`
-	SelectionPolicy *SelectionPolicyConfig `yaml:"selectionPolicy,omitempty" json:"selectionPolicy,omitempty"`
+	Architecture      NetworkArchitecture      `yaml:"architecture" json:"architecture" tstype:"'evm'"`
+	RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
+	Failsafe          *FailsafeConfig          `yaml:"failsafe,omitempty" json:"failsafe"`
+	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm"`
+	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
+	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
+}
+
+type DirectiveDefaultsConfig struct {
+	RetryEmpty    *bool   `yaml:"retryEmpty,omitempty" json:"retryEmpty"`
+	RetryPending  *bool   `yaml:"retryPending,omitempty" json:"retryPending"`
+	SkipCacheRead *bool   `yaml:"skipCacheRead,omitempty" json:"skipCacheRead"`
+	UseUpstream   *string `yaml:"useUpstream,omitempty" json:"useUpstream"`
 }
 
 type EvmNetworkConfig struct {
 	ChainId               int64 `yaml:"chainId" json:"chainId"`
-	FallbackFinalityDepth int64 `yaml:"fallbackFinalityDepth,omitempty" json:"fallbackFinalityDepth,omitempty"`
+	FallbackFinalityDepth int64 `yaml:"fallbackFinalityDepth,omitempty" json:"fallbackFinalityDepth"`
 }
 
 type SelectionPolicyConfig struct {
-	EvalInterval     time.Duration  `yaml:"evalInterval,omitempty" json:"evalInterval,omitempty"`
-	EvalFunction     sobek.Callable `yaml:"evalFunction,omitempty" json:"evalFunction,omitempty" tstype:"types.SelectionPolicyEvalFunction | undefined"`
-	EvalPerMethod    bool           `yaml:"evalPerMethod,omitempty" json:"evalPerMethod,omitempty"`
-	ResampleExcluded bool           `yaml:"resampleExcluded,omitempty" json:"resampleExcluded,omitempty"`
-	ResampleInterval time.Duration  `yaml:"resampleInterval,omitempty" json:"resampleInterval,omitempty"`
-	ResampleCount    int            `yaml:"resampleCount,omitempty" json:"resampleCount,omitempty"`
+	EvalInterval     time.Duration  `yaml:"evalInterval,omitempty" json:"evalInterval"`
+	EvalFunction     sobek.Callable `yaml:"evalFunction,omitempty" json:"evalFunction" tstype:"types.SelectionPolicyEvalFunction | undefined"`
+	EvalPerMethod    bool           `yaml:"evalPerMethod,omitempty" json:"evalPerMethod"`
+	ResampleExcluded bool           `yaml:"resampleExcluded,omitempty" json:"resampleExcluded"`
+	ResampleInterval time.Duration  `yaml:"resampleInterval,omitempty" json:"resampleInterval"`
+	ResampleCount    int            `yaml:"resampleCount,omitempty" json:"resampleCount"`
 
 	evalFunctionOriginal string `yaml:"-" json:"-"`
 }

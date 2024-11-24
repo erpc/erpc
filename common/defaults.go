@@ -603,6 +603,10 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			n.SelectionPolicy = &SelectionPolicyConfig{}
 			*n.SelectionPolicy = *defaults.SelectionPolicy
 		}
+		if n.DirectiveDefaults == nil && defaults.DirectiveDefaults != nil {
+			n.DirectiveDefaults = &DirectiveDefaultsConfig{}
+			*n.DirectiveDefaults = *defaults.DirectiveDefaults
+		}
 	} else if n.Failsafe != nil {
 		n.Failsafe.SetDefaults(sysDefCfg.Failsafe)
 	} else {
