@@ -165,7 +165,7 @@ func (r *NormalizedRequest) ApplyDirectivesFromHttp(headers http.Header, queryAr
 	}
 
 	r.directives.RetryEmpty = headers.Get("X-ERPC-Retry-Empty") != "false"
-	r.directives.RetryPending = headers.Get("X-ERPC-Retry-Pending") != "false"
+	r.directives.RetryPending = headers.Get("X-ERPC-Retry-Pending") == "true"
 	r.directives.SkipCacheRead = headers.Get("X-ERPC-Skip-Cache-Read") == "true"
 	r.directives.UseUpstream = headers.Get("X-ERPC-Use-Upstream")
 
@@ -178,7 +178,7 @@ func (r *NormalizedRequest) ApplyDirectivesFromHttp(headers http.Header, queryAr
 	}
 
 	if retryPending := queryArgs.Get("retry-pending"); retryPending != "" {
-		r.directives.RetryPending = strings.ToLower(strings.TrimSpace(retryPending)) != "false"
+		r.directives.RetryPending = strings.ToLower(strings.TrimSpace(retryPending)) == "true"
 	}
 
 	if skipCacheRead := queryArgs.Get("skip-cache-read"); skipCacheRead != "" {
