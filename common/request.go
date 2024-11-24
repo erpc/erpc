@@ -131,31 +131,59 @@ func (r *NormalizedRequest) SetCacheDal(cacheDal CacheDAL) {
 	r.cacheDal = cacheDal
 }
 
-func (r *NormalizedRequest) ApplyDirectivesFromHttp(headers http.Header, queryArgs url.Values) {
-	drc := &RequestDirectives{
-		RetryEmpty:    headers.Get("X-ERPC-Retry-Empty") != "false",
-		RetryPending:  headers.Get("X-ERPC-Retry-Pending") != "false",
-		SkipCacheRead: headers.Get("X-ERPC-Skip-Cache-Read") == "true",
-		UseUpstream:   headers.Get("X-ERPC-Use-Upstream"),
+func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveDefaultsConfig) {
+	if directiveDefaults == nil {
+		return
+	}
+	r.Lock()
+	defer r.Unlock()
+
+	if r.directives == nil {
+		r.directives = &RequestDirectives{}
 	}
 
+	if directiveDefaults.RetryEmpty != nil {
+		r.directives.RetryEmpty = *directiveDefaults.RetryEmpty
+	}
+	if directiveDefaults.RetryPending != nil {
+		r.directives.RetryPending = *directiveDefaults.RetryPending
+	}
+	if directiveDefaults.SkipCacheRead != nil {
+		r.directives.SkipCacheRead = *directiveDefaults.SkipCacheRead
+	}
+	if directiveDefaults.UseUpstream != nil {
+		r.directives.UseUpstream = *directiveDefaults.UseUpstream
+	}
+}
+
+func (r *NormalizedRequest) ApplyDirectivesFromHttp(headers http.Header, queryArgs url.Values) {
+	r.Lock()
+	defer r.Unlock()
+
+	if r.directives == nil {
+		r.directives = &RequestDirectives{}
+	}
+
+	r.directives.RetryEmpty = headers.Get("X-ERPC-Retry-Empty") != "false"
+	r.directives.RetryPending = headers.Get("X-ERPC-Retry-Pending") != "false"
+	r.directives.SkipCacheRead = headers.Get("X-ERPC-Skip-Cache-Read") == "true"
+	r.directives.UseUpstream = headers.Get("X-ERPC-Use-Upstream")
+
 	if useUpstream := queryArgs.Get("use-upstream"); useUpstream != "" {
-		drc.UseUpstream = strings.TrimSpace(useUpstream)
+		r.directives.UseUpstream = strings.TrimSpace(useUpstream)
 	}
 
 	if retryEmpty := queryArgs.Get("retry-empty"); retryEmpty != "" {
-		drc.RetryEmpty = strings.ToLower(strings.TrimSpace(retryEmpty)) != "false"
+		r.directives.RetryEmpty = strings.ToLower(strings.TrimSpace(retryEmpty)) != "false"
 	}
 
 	if retryPending := queryArgs.Get("retry-pending"); retryPending != "" {
-		drc.RetryPending = strings.ToLower(strings.TrimSpace(retryPending)) != "false"
+		r.directives.RetryPending = strings.ToLower(strings.TrimSpace(retryPending)) != "false"
 	}
 
 	if skipCacheRead := queryArgs.Get("skip-cache-read"); skipCacheRead != "" {
-		drc.SkipCacheRead = strings.ToLower(strings.TrimSpace(skipCacheRead)) != "false"
+		r.directives.SkipCacheRead = strings.ToLower(strings.TrimSpace(skipCacheRead)) != "false"
 	}
-
-	r.directives = drc
 }
 
 func (r *NormalizedRequest) SkipCacheRead() bool {

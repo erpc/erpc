@@ -287,6 +287,15 @@ projects:
       # https://docs.erpc.cloud/config/projects/selection-policies#config
       selectionPolicy:
         #...
+
+      # (OPTIONAL) Default directives to apply to all requests for this network.
+      # These can be overridden by request-specific directives via HTTP headers or query parameters.
+      # See https://docs.erpc.cloud/operation/directives for more details about each directive.
+      directiveDefaults:
+        retryEmpty: true                       # OPTIONAL (default: true)
+        retryPending: true                     # OPTIONAL (default: true)
+        skipCacheRead: false                   # OPTIONAL (default: false)
+        useUpstream: "alchemy-*|localnode-*"   # OPTIONAL (default: *)
     
     # (OPTIONAL) List of customizations per network if needed can be defined as usual:
     # For each static network, first networkDefaults will be applied (deep object merge),
@@ -340,6 +349,16 @@ export default createConfig({
         // https://docs.erpc.cloud/config/projects/selection-policies#config
         selectionPolicy: {
           // ...
+        },
+
+        // (OPTIONAL) Default directives to apply to all requests for this network.
+        // These can be overridden by request-specific directives via HTTP headers or query parameters.
+        // See https://docs.erpc.cloud/operation/directives for more details about each directive.
+        directiveDefaults: {
+          retryEmpty: true,                       // OPTIONAL (default: true)
+          retryPending: true,                     // OPTIONAL (default: true)
+          skipCacheRead: false,                   // OPTIONAL (default: false)
+          useUpstream: "alchemy-*|localnode-*"    // OPTIONAL (default: *)
         },
       },
 
