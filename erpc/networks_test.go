@@ -1898,7 +1898,9 @@ func TestNetwork_Forward(t *testing.T) {
 				"params": ["0xabcdef"],
 				"id": 1
 			}`))
-		fakeReq.ApplyDirectivesFromHttp(http.Header{}, url.Values{})
+		fakeReq.ApplyDirectivesFromHttp(http.Header{
+			"X-Erpc-Retry-Pending": []string{"true"},
+		}, url.Values{})
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -1929,6 +1931,167 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		if fromHost != "rpc2" {
 			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
+		}
+	})
+
+	t.Run("RetryPendingDirectiveFromDefaults", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		// Mock responses similar to RetryPendingTXsWhenDirectiveIsSet
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getTransactionByHash")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"blockNumber":null,"hash":"0xabcdef","fromHost":"rpc1"}}`))
+
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getTransactionByHash")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"blockNumber":"0x54C563","hash":"0xabcdef","fromHost":"rpc2"}}`))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Initialize test components
+		clr := upstream.NewClientRegistry(&log.Logger)
+		fsCfg := &common.FailsafeConfig{
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 2,
+			},
+		}
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+			Budgets: []*common.RateLimitBudgetConfig{},
+		}, &log.Logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Set up test environment
+		vndr := vendors.NewVendorsRegistry()
+		mt := health.NewTracker("prjA", 2*time.Second)
+		up1 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc1",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
+		up2 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc2",
+			Endpoint: "http://rpc2.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
+
+		// Set up registry with both upstreams
+		upr := upstream.NewUpstreamsRegistry(
+			ctx,
+			&log.Logger,
+			"prjA",
+			[]*common.UpstreamConfig{up1, up2},
+			rlr,
+			vndr,
+			mt,
+			0,
+		)
+		if err := upr.Bootstrap(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
+			t.Fatal(err)
+		}
+
+		// Create and register clients
+		pup1, err := upr.NewUpstream("prjA", up1, &log.Logger, mt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1.Client = cl1
+
+		pup2, err := upr.NewUpstream("prjA", up2, &log.Logger, mt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup2.Client = cl2
+
+		// Set up network with directiveDefaults
+		retryPending := true
+		ntw, err := NewNetwork(
+			&log.Logger,
+			"prjA",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+				},
+				Failsafe: fsCfg,
+				DirectiveDefaults: &common.DirectiveDefaultsConfig{
+					RetryPending: &retryPending,
+				},
+			},
+			rlr,
+			upr,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		ntw.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
+
+		// Create request without explicit directives
+		fakeReq := common.NewNormalizedRequest([]byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getTransactionByHash",
+			"params": ["0xabcdef"],
+			"id": 1
+		}`))
+
+		resp, err := ntw.Forward(ctx, fakeReq)
+		if err != nil {
+			t.Fatalf("Expected nil error, got %v", err)
+		}
+
+		// Verify response shows retry behavior from defaults
+		jrr, err := resp.JsonRpcResponse()
+		if err != nil {
+			t.Fatalf("Failed to get JSON-RPC response: %v", err)
+		}
+
+		blockNumber, err := jrr.PeekStringByPath("blockNumber")
+		if err != nil {
+			t.Fatalf("Failed to get blockNumber: %v", err)
+		}
+		if blockNumber != "0x54C563" {
+			t.Errorf("Expected blockNumber %q, got %q", "0x54C563", blockNumber)
+		}
+
+		fromHost, err := jrr.PeekStringByPath("fromHost")
+		if err != nil {
+			t.Fatalf("Failed to get fromHost: %v", err)
+		}
+		if fromHost != "rpc2" {
+			t.Errorf("Expected fromHost %q, got %q", "rpc2", fromHost)
 		}
 	})
 
@@ -2078,7 +2241,9 @@ func TestNetwork_Forward(t *testing.T) {
 				"id": 1
 			}`))
 
-		headers := http.Header{}
+		headers := http.Header{
+			"X-Erpc-Retry-Pending": []string{"true"},
+		}
 		queryArgs := url.Values{}
 		fakeReq.ApplyDirectivesFromHttp(headers, queryArgs)
 		resp, err := ntw.Forward(ctx, fakeReq)

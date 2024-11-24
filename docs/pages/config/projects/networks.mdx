@@ -293,7 +293,7 @@ projects:
       # See https://docs.erpc.cloud/operation/directives for more details about each directive.
       directiveDefaults:
         retryEmpty: true                       # OPTIONAL (default: true)
-        retryPending: true                     # OPTIONAL (default: true)
+        retryPending: false                    # OPTIONAL (default: false)
         skipCacheRead: false                   # OPTIONAL (default: false)
         useUpstream: "alchemy-*|localnode-*"   # OPTIONAL (default: *)
     
@@ -356,7 +356,7 @@ export default createConfig({
         // See https://docs.erpc.cloud/operation/directives for more details about each directive.
         directiveDefaults: {
           retryEmpty: true,                       // OPTIONAL (default: true)
-          retryPending: true,                     // OPTIONAL (default: true)
+          retryPending: false,                    // OPTIONAL (default: false)
           skipCacheRead: false,                   // OPTIONAL (default: false)
           useUpstream: "alchemy-*|localnode-*"    // OPTIONAL (default: *)
         },
