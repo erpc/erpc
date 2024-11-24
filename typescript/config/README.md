@@ -62,31 +62,44 @@ The builder provides a flexible way to create your eRPC configuration, with seve
 import { initErpcConfig } from "@erpc-cloud/config";
 
 export default initErpcConfig({
-  logLevel: "debug",
+  logLevel: "info",
 })
   .addRateLimiters({
-    rateLimiter1: [
+    // Rate limiter budget for the porject
+    projectBudget: [
       {
         method: "*",
+        period: "1s",
+        waitTime: "1m",
         maxCount: 1000,
-        period: "1m",
-        waitTime: "1s",
+      },
+    ],
+    // Rate limiter for the upstream
+    upstreamBudget: [
+      {
+        method: "*",
+        period: "1s",
+        waitTime: "1m",
+        maxCount: 1000,
       },
     ],
   })
-  .decorate({
-    scope: "upstreams",
-    value: {
-      upstream1: {
+  .addProject({
+    // Project with one upstream
+    id: "main-project",
+    upstreams: [
+      {
+        id: "upstream-1",
         endpoint: "http://localhost:3000",
+        rateLimitBudget: "upstreamBudget",
       },
-    },
+    ],
+    rateLimitBudget: "projectBudget",
   })
-  .addProject(({ store: { upstreams } }) => ({
-    id: "project1",
-    upstreams: [upstreams.upstream1],
-  }));
+  .build()
 ```
+
+You can check a more [complete example here](/typescript/config/example/full.ts).
 
 #### Available Methods
 

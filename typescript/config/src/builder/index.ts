@@ -44,7 +44,8 @@ class ConfigBuilder<
     args: BuilderMethodArgs<TBudgets, TConfig, TStore>,
   ): ConfigBuilder<
     TConfig & { rateLimiters: { budgets: TBudgets } },
-    TRateLimitBudgetKeys | (keyof TBudgets & string)
+    TRateLimitBudgetKeys | (keyof TBudgets & string),
+    TStore
   > {
     // Get the budgets from the args
     const budgets =
@@ -71,7 +72,8 @@ class ConfigBuilder<
     // Return this with the new types
     return this as unknown as ConfigBuilder<
       TConfig & { rateLimiters: { budgets: TBudgets } },
-      TRateLimitBudgetKeys | (keyof TBudgets & string)
+      TRateLimitBudgetKeys | (keyof TBudgets & string),
+      TStore
     >;
   }
 
@@ -92,7 +94,8 @@ class ConfigBuilder<
         TProject,
       ];
     },
-    TRateLimitBudgetKeys
+    TRateLimitBudgetKeys,
+    TStore
   > {
     // Get the project from the args
     const project =
@@ -120,7 +123,8 @@ class ConfigBuilder<
           TProject,
         ];
       },
-      TRateLimitBudgetKeys
+      TRateLimitBudgetKeys,
+      TStore
     >;
   }
 
