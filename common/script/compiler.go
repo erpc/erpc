@@ -17,7 +17,7 @@ func CompileTypeScript(entrypoint string) (string, error) {
 		Platform:    api.PlatformNode,
 		GlobalName:  "exports",
 		EntryPoints: []string{entrypoint},
-		Sourcemap:   api.SourceMapNone,
+		Sourcemap:   api.SourceMapInline,
 	}
 
 	buildOptions.Loader = map[string]api.Loader{
