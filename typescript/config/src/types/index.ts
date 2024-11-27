@@ -2,9 +2,13 @@ export type {
   Duration,
   LogLevel,
   ConnectorDriverType,
-  Upstream,
-  UpstreamMetrics,
-  SelectionPolicyEvalFunction,
+  UpstreamType,
   ConnectorConfig,
+  NetworkArchitecture,
 } from "./generic";
+export type {
+  PolicyEvalUpstreamMetrics,
+  PolicyEvalUpstream,
+  SelectionPolicyEvalFunction,
+} from "./policyEval";
 export type { ReplaceRateLimiter } from "./configBuilder";

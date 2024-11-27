@@ -3,13 +3,13 @@ import type {
   ProjectConfig,
   RateLimitBudgetConfig,
   RateLimitRuleConfig,
-  ReplaceRateLimiter,
 } from "../generated";
 import type {
   BuilderMethodArgs,
   BuilderStore,
   BuilderStoreValues,
   DecorateArgs,
+  ReplaceRateLimiter,
 } from "../types/configBuilder";
 
 /**

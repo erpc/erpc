@@ -23,9 +23,12 @@ var (
 	FALSE         = false
 )
 
+// Simple type to represent a duration string in the config
+type DurationString = string
+
 // Config represents the configuration of the application.
 type Config struct {
-	LogLevel     string             `yaml:"logLevel" json:"logLevel" tstype:"types.LogLevel"`
+	LogLevel     string             `yaml:"logLevel" json:"logLevel" tstype:"LogLevel"`
 	Server       *ServerConfig      `yaml:"server" json:"server"`
 	Admin        *AdminConfig       `yaml:"admin" json:"admin"`
 	Database     *DatabaseConfig    `yaml:"database" json:"database"`
@@ -64,7 +67,7 @@ type DatabaseConfig struct {
 }
 
 type CacheConfig struct {
-	Connectors []*ConnectorConfig   `yaml:"connectors" json:"connectors" tstype:"types.ConnectorConfig[]"`
+	Connectors []*ConnectorConfig   `yaml:"connectors" json:"connectors" tstype:"TsConnectorConfig[]"`
 	Policies   []*CachePolicyConfig `yaml:"policies" json:"policies"`
 }
 
@@ -184,7 +187,7 @@ const (
 
 type ConnectorConfig struct {
 	Id         string                     `yaml:"id" json:"id"`
-	Driver     ConnectorDriverType        `yaml:"driver" json:"driver"`
+	Driver     ConnectorDriverType        `yaml:"driver" json:"driver" tstype:"TsConnectorDriverType"`
 	Memory     *MemoryConnectorConfig     `yaml:"memory,omitempty" json:"memory,omitempty"`
 	Redis      *RedisConnectorConfig      `yaml:"redis,omitempty" json:"redis,omitempty"`
 	DynamoDB   *DynamoDBConnectorConfig   `yaml:"dynamodb,omitempty" json:"dynamodb,omitempty"`
@@ -249,7 +252,7 @@ func (p *PostgreSQLConnectorConfig) MarshalJSON() ([]byte, error) {
 }
 
 type AwsAuthConfig struct {
-	Mode            string `yaml:"mode" json:"mode"` // "file", "env", "secret"
+	Mode            string `yaml:"mode" json:"mode" tstype:"'file' | 'env' | 'secret'"` // "file", "env", "secret"
 	CredentialsFile string `yaml:"credentialsFile" json:"credentialsFile"`
 	Profile         string `yaml:"profile" json:"profile"`
 	AccessKeyID     string `yaml:"accessKeyID" json:"accessKeyID"`
@@ -287,7 +290,7 @@ type CORSConfig struct {
 
 type UpstreamConfig struct {
 	Id                           string                   `yaml:"id,omitempty" json:"id"`
-	Type                         UpstreamType             `yaml:"type,omitempty" json:"type"`
+	Type                         UpstreamType             `yaml:"type,omitempty" json:"type" tstype:"TsUpstreamType"`
 	Group                        string                   `yaml:"group,omitempty" json:"group"`
 	VendorName                   string                   `yaml:"vendorName,omitempty" json:"vendorName"`
 	Endpoint                     string                   `yaml:"endpoint" json:"endpoint"`
@@ -330,13 +333,13 @@ func (u *UpstreamConfig) MarshalJSON() ([]byte, error) {
 }
 
 type RateLimitAutoTuneConfig struct {
-	Enabled            *bool   `yaml:"enabled" json:"enabled"`
-	AdjustmentPeriod   string  `yaml:"adjustmentPeriod" json:"adjustmentPeriod"`
-	ErrorRateThreshold float64 `yaml:"errorRateThreshold" json:"errorRateThreshold"`
-	IncreaseFactor     float64 `yaml:"increaseFactor" json:"increaseFactor"`
-	DecreaseFactor     float64 `yaml:"decreaseFactor" json:"decreaseFactor"`
-	MinBudget          int     `yaml:"minBudget" json:"minBudget"`
-	MaxBudget          int     `yaml:"maxBudget" json:"maxBudget"`
+	Enabled            *bool          `yaml:"enabled" json:"enabled"`
+	AdjustmentPeriod   DurationString `yaml:"adjustmentPeriod" json:"adjustmentPeriod" tstype:"Duration"`
+	ErrorRateThreshold float64        `yaml:"errorRateThreshold" json:"errorRateThreshold"`
+	IncreaseFactor     float64        `yaml:"increaseFactor" json:"increaseFactor"`
+	DecreaseFactor     float64        `yaml:"decreaseFactor" json:"decreaseFactor"`
+	MinBudget          int            `yaml:"minBudget" json:"minBudget"`
+	MaxBudget          int            `yaml:"maxBudget" json:"maxBudget"`
 }
 
 type JsonRpcUpstreamConfig struct {
@@ -377,7 +380,7 @@ type CircuitBreakerPolicyConfig struct {
 }
 
 type TimeoutPolicyConfig struct {
-	Duration string `yaml:"duration" json:"duration"`
+	Duration DurationString `yaml:"duration" json:"duration" tstype:"Duration"`
 }
 
 type HedgePolicyConfig struct {
@@ -395,10 +398,10 @@ type RateLimitBudgetConfig struct {
 }
 
 type RateLimitRuleConfig struct {
-	Method   string `yaml:"method" json:"method"`
-	MaxCount uint   `yaml:"maxCount" json:"maxCount"`
-	Period   string `yaml:"period" json:"period"`
-	WaitTime string `yaml:"waitTime" json:"waitTime"`
+	Method   string         `yaml:"method" json:"method"`
+	MaxCount uint           `yaml:"maxCount" json:"maxCount"`
+	Period   DurationString `yaml:"period" json:"period" tstype:"Duration"`
+	WaitTime DurationString `yaml:"waitTime" json:"waitTime" tstype:"Duration"`
 }
 
 type HealthCheckConfig struct {
@@ -406,7 +409,7 @@ type HealthCheckConfig struct {
 }
 
 type NetworkConfig struct {
-	Architecture    NetworkArchitecture    `yaml:"architecture" json:"architecture" tstype:"'evm'"`
+	Architecture    NetworkArchitecture    `yaml:"architecture" json:"architecture" tstype:"TsNetworkArchitecture"`
 	RateLimitBudget string                 `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
 	Failsafe        *FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe,omitempty"`
 	Evm             *EvmNetworkConfig      `yaml:"evm,omitempty" json:"evm,omitempty"`
@@ -420,7 +423,7 @@ type EvmNetworkConfig struct {
 
 type SelectionPolicyConfig struct {
 	EvalInterval     time.Duration  `yaml:"evalInterval,omitempty" json:"evalInterval,omitempty"`
-	EvalFunction     sobek.Callable `yaml:"evalFunction,omitempty" json:"evalFunction,omitempty" tstype:"types.SelectionPolicyEvalFunction | undefined"`
+	EvalFunction     sobek.Callable `yaml:"evalFunction,omitempty" json:"evalFunction,omitempty" tstype:"SelectionPolicyEvalFunction | undefined"`
 	EvalPerMethod    bool           `yaml:"evalPerMethod,omitempty" json:"evalPerMethod,omitempty"`
 	ResampleExcluded bool           `yaml:"resampleExcluded,omitempty" json:"resampleExcluded,omitempty"`
 	ResampleInterval time.Duration  `yaml:"resampleInterval,omitempty" json:"resampleInterval,omitempty"`

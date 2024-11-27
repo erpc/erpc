@@ -1,9 +1,4 @@
-import type {
-  Config,
-  NetworkConfig,
-  ProjectConfig,
-  UpstreamConfig,
-} from "../generated";
+import type { Config, NetworkConfig, UpstreamConfig } from "../generated";
 
 /**
  * Replace every "rateLimitBudget: string" in the object and every sub ojectif, with a "rateLimitBudget: RateLimiterIds[number]"
