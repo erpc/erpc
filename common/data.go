@@ -47,6 +47,9 @@ func (f *DataFinalityState) UnmarshalYAML(unmarshal func(interface{}) error) err
 	case "unfinalized":
 		*f = DataFinalityStateUnfinalized
 		return nil
+	case "realtime":
+		*f = DataFinalityStateRealtime
+		return nil
 	case "finalized":
 		*f = DataFinalityStateFinalized
 		return nil
