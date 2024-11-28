@@ -1,8 +1,13 @@
 import type {
   DynamoDBConnectorConfig,
+  AuthStrategyConfig as GenAuthStrategyConfig,
+  JwtStrategyConfig,
   MemoryConnectorConfig,
+  NetworkStrategyConfig,
   PostgreSQLConnectorConfig,
   RedisConnectorConfig,
+  SecretStrategyConfig,
+  SiweStrategyConfig,
 } from "../generated";
 
 /**
@@ -87,3 +92,34 @@ export type UpstreamType =
   | "evm+infura"
   | "evm+pimlico"
   | "evm+thirdweb";
+
+/**
+ * Supported auth type
+ */
+export type AuthType = "secret" | "jwt" | "siwe" | "network";
+
+/**
+ * Connector config depending on the upstream type
+ */
+export type AuthStrategyConfig = Omit<
+  GenAuthStrategyConfig,
+  "type" | "network" | "secret" | "jwt" | "siwe"
+> &
+  (
+    | {
+        type: "secret";
+        secret: SecretStrategyConfig;
+      }
+    | {
+        type: "network";
+        secret: NetworkStrategyConfig;
+      }
+    | {
+        type: "jwt";
+        secret: JwtStrategyConfig;
+      }
+    | {
+        type: "siwe";
+        secret: SiweStrategyConfig;
+      }
+  );

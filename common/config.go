@@ -507,7 +507,7 @@ const (
 )
 
 type AuthConfig struct {
-	Strategies []*AuthStrategyConfig `yaml:"strategies" json:"strategies"`
+	Strategies []*AuthStrategyConfig `yaml:"strategies" json:"strategies" tstype:"TsAuthStrategyConfig[]"`
 }
 
 type AuthStrategyConfig struct {
@@ -515,7 +515,7 @@ type AuthStrategyConfig struct {
 	AllowMethods    []string `yaml:"allowMethods,omitempty" json:"allowMethods,omitempty"`
 	RateLimitBudget string   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
 
-	Type    AuthType               `yaml:"type" json:"type"`
+	Type    AuthType               `yaml:"type" json:"type" tstype:"TsAuthType"`
 	Network *NetworkStrategyConfig `yaml:"network,omitempty" json:"network,omitempty"`
 	Secret  *SecretStrategyConfig  `yaml:"secret,omitempty" json:"secret,omitempty"`
 	Jwt     *JwtStrategyConfig     `yaml:"jwt,omitempty" json:"jwt,omitempty"`

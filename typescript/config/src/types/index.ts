@@ -6,6 +6,8 @@ export type {
   UpstreamType,
   ConnectorConfig,
   NetworkArchitecture,
+  AuthType,
+  AuthStrategyConfig,
 } from "./generic";
 export type {
   PolicyEvalUpstreamMetrics,

@@ -21,6 +21,8 @@ packages:
         ConnectorConfig as TsConnectorConfig,
         UpstreamType as TsUpstreamType,
         NetworkArchitecture as TsNetworkArchitecture,
+        AuthType as TsAuthType,
+        AuthStrategyConfig as TsAuthStrategyConfig,
         SelectionPolicyEvalFunction
       } from "./types"
     exclude_files:

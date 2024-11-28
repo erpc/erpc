@@ -41,6 +41,11 @@ export {
   UpstreamTypeEvmThirdweb,
   UpstreamTypeEvmEtherspot,
   UpstreamTypeEvmInfura,
+  // Auth types
+  AuthTypeSecret,
+  AuthTypeJwt,
+  AuthTypeSiwe,
+  AuthTypeNetwork,
 } from "./generated";
 export type {
   Config,

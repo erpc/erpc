@@ -7,6 +7,8 @@ import type {
   ConnectorConfig as TsConnectorConfig,
   UpstreamType as TsUpstreamType,
   NetworkArchitecture as TsNetworkArchitecture,
+  AuthType as TsAuthType,
+  AuthStrategyConfig as TsAuthStrategyConfig,
   SelectionPolicyEvalFunction
 } from "./types"
 
@@ -254,13 +256,13 @@ export const AuthTypeJwt: AuthType = "jwt";
 export const AuthTypeSiwe: AuthType = "siwe";
 export const AuthTypeNetwork: AuthType = "network";
 export interface AuthConfig {
-  strategies: (AuthStrategyConfig | undefined)[];
+  strategies: TsAuthStrategyConfig[];
 }
 export interface AuthStrategyConfig {
   ignoreMethods?: string[];
   allowMethods?: string[];
   rateLimitBudget?: string;
-  type: AuthType;
+  type: TsAuthType;
   network?: NetworkStrategyConfig;
   secret?: SecretStrategyConfig;
   jwt?: JwtStrategyConfig;
