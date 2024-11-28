@@ -80,7 +80,7 @@ export interface CachePolicyConfig {
   network?: string;
   method?: string;
   params?: any[];
-  finality: DataFinalityState;
+  finality?: DataFinalityState;
   empty?: CacheEmptyBehavior;
   minItemSize?: ByteSize;
   maxItemSize?: ByteSize;
@@ -143,9 +143,16 @@ export interface ProjectConfig {
   auth?: AuthConfig;
   cors?: CORSConfig;
   upstreams: (UpstreamConfig | undefined)[];
+  networkDefaults?: NetworkDefaults;
   networks?: (NetworkConfig | undefined)[];
   rateLimitBudget?: string;
   healthCheck?: HealthCheckConfig;
+}
+export interface NetworkDefaults {
+  rateLimitBudget?: string;
+  failsafe?: FailsafeConfig;
+  selectionPolicy?: SelectionPolicyConfig;
+  directiveDefaults?: DirectiveDefaultsConfig;
 }
 export interface CORSConfig {
   allowedOrigins: string[];
@@ -256,6 +263,13 @@ export interface NetworkConfig {
   failsafe?: FailsafeConfig;
   evm?: EvmNetworkConfig;
   selectionPolicy?: SelectionPolicyConfig;
+  directiveDefaults?: DirectiveDefaultsConfig;
+}
+export interface DirectiveDefaultsConfig {
+  retryEmpty?: boolean;
+  retryPending?: boolean;
+  skipCacheRead?: boolean;
+  useUpstream?: string;
 }
 export interface EvmNetworkConfig {
   chainId: number /* int64 */;
