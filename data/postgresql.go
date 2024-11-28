@@ -218,7 +218,7 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 	err := p.conn.QueryRow(ctx, query, args...).Scan(&value)
 
 	if err == pgx.ErrNoRows {
-		return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s", partitionKey, rangeKey), PostgreSQLDriverName)
+		return "", common.NewErrRecordNotFound(partitionKey, rangeKey, PostgreSQLDriverName)
 	} else if err != nil {
 		return "", err
 	}
@@ -258,7 +258,7 @@ func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, index, partit
 	err := p.conn.QueryRow(ctx, query, args...).Scan(&value)
 
 	if err == pgx.ErrNoRows {
-		return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s", partitionKey, rangeKey), PostgreSQLDriverName)
+		return "", common.NewErrRecordNotFound(partitionKey, rangeKey, PostgreSQLDriverName)
 	} else if err != nil {
 		return "", err
 	}

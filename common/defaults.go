@@ -86,6 +86,233 @@ func (c *Config) SetDefaults() {
 	}
 }
 
+// These methods return a fixed value that does not change over time
+var DefaultStaticCacheMethods = map[string]*CacheMethodConfig{
+	"eth_chainId": {
+		Finalized: true,
+	},
+	"net_version": {
+		Finalized: true,
+	},
+}
+
+// These methods return a value that changes in realtime (e.g. per block)
+var DefaultRealtimeCacheMethods = map[string]*CacheMethodConfig{
+	"eth_hashrate": {
+		Realtime: true,
+	},
+	"eth_mining": {
+		Realtime: true,
+	},
+	"eth_syncing": {
+		Realtime: true,
+	},
+	"net_peerCount": {
+		Realtime: true,
+	},
+	"eth_gasPrice": {
+		Realtime: true,
+	},
+	"eth_maxPriorityFeePerGas": {
+		Realtime: true,
+	},
+	"eth_blobBaseFee": {
+		Realtime: true,
+	},
+	"eth_blockNumber": {
+		Realtime: true,
+	},
+	"erigon_blockNumber": {
+		Realtime: true,
+	},
+}
+
+// Common path references to where to find the block number, tag or hash in the request
+var FirstParam = [][]interface{}{
+	{0},
+}
+var SecondParam = [][]interface{}{
+	{1},
+}
+var ThirdParam = [][]interface{}{
+	{2},
+}
+var NumberOrHashParam = [][]interface{}{
+	{"number"},
+	{"hash"},
+}
+var BlockNumberOrBlockHashParam = [][]interface{}{
+	{"blockNumber"},
+	{"blockHash"},
+}
+
+// This special case of "*" is used for methods that can be cached regardless of their block number or hash
+var ArbitraryBlock = [][]interface{}{
+	{"*"},
+}
+
+// These methods always reference block number, tag or hash in their request (and sometimes in response)
+var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
+	"eth_getLogs": {
+		ReqRefs: [][]interface{}{
+			{0, "fromBlock"},
+			{0, "toBlock"},
+		},
+	},
+	"eth_getBlockByHash": {
+		ReqRefs:  FirstParam,
+		RespRefs: NumberOrHashParam,
+	},
+	"eth_getBlockByNumber": {
+		ReqRefs:  FirstParam,
+		RespRefs: NumberOrHashParam,
+	},
+	"eth_getTransactionByBlockHashAndIndex": {
+		ReqRefs:  FirstParam,
+		RespRefs: BlockNumberOrBlockHashParam,
+	},
+	"eth_getTransactionByBlockNumberAndIndex": {
+		ReqRefs:  FirstParam,
+		RespRefs: BlockNumberOrBlockHashParam,
+	},
+	"eth_getUncleByBlockHashAndIndex": {
+		ReqRefs:  FirstParam,
+		RespRefs: NumberOrHashParam,
+	},
+	"eth_getUncleByBlockNumberAndIndex": {
+		ReqRefs:  FirstParam,
+		RespRefs: NumberOrHashParam,
+	},
+	"eth_getBlockTransactionCountByHash": {
+		ReqRefs: FirstParam,
+	},
+	"eth_getBlockTransactionCountByNumber": {
+		ReqRefs: FirstParam,
+	},
+	"eth_getUncleCountByBlockHash": {
+		ReqRefs: FirstParam,
+	},
+	"eth_getUncleCountByBlockNumber": {
+		ReqRefs: FirstParam,
+	},
+	"eth_getStorageAt": {
+		ReqRefs: ThirdParam,
+	},
+	"eth_getBalance": {
+		ReqRefs: SecondParam,
+	},
+	"eth_getTransactionCount": {
+		ReqRefs: SecondParam,
+	},
+	"eth_getCode": {
+		ReqRefs: SecondParam,
+	},
+	"eth_call": {
+		ReqRefs: SecondParam,
+	},
+	"eth_getProof": {
+		ReqRefs: ThirdParam,
+	},
+	"arbtrace_call": {
+		ReqRefs: ThirdParam,
+	},
+	"eth_feeHistory": {
+		ReqRefs: SecondParam,
+	},
+	"eth_getAccount": {
+		ReqRefs: SecondParam,
+	},
+	"eth_estimateGas": {
+		ReqRefs: SecondParam,
+	},
+	"debug_traceCall": {
+		ReqRefs: SecondParam,
+	},
+	"eth_simulateV1": {
+		ReqRefs: SecondParam,
+	},
+	"erigon_getBlockByTimestamp": {
+		ReqRefs: SecondParam,
+	},
+	"arbtrace_callMany": {
+		ReqRefs: SecondParam,
+	},
+	"eth_getBlockReceipts": {
+		ReqRefs:  FirstParam,
+		RespRefs: BlockNumberOrBlockHashParam,
+	},
+	"trace_block": {
+		ReqRefs: FirstParam,
+	},
+	"debug_traceBlockByNumber": {
+		ReqRefs: FirstParam,
+	},
+	"trace_replayBlockTransactions": {
+		ReqRefs: FirstParam,
+	},
+	"debug_storageRangeAt": {
+		ReqRefs: FirstParam,
+	},
+	"debug_traceBlockByHash": {
+		ReqRefs: FirstParam,
+	},
+	"debug_getRawBlock": {
+		ReqRefs: FirstParam,
+	},
+	"debug_getRawHeader": {
+		ReqRefs: FirstParam,
+	},
+	"debug_getRawReceipts": {
+		ReqRefs: FirstParam,
+	},
+	"erigon_getHeaderByNumber": {
+		ReqRefs: FirstParam,
+	},
+	"arbtrace_block": {
+		ReqRefs: FirstParam,
+	},
+	"arbtrace_replayBlockTransactions": {
+		ReqRefs: FirstParam,
+	},
+}
+
+// Special methods that can be cached regardless of block.
+// Most often finality of these responses is 'unknown'.
+// For these data it is safe to keep the data in cache even after reorg,
+// because if client explcitly querying such data (e.g. a specific tx hash receipt)
+// they know it might be reorged from a separate process.
+// For example this is not safe to do for eth_getBlockByNumber because users
+// require this method always give them current accurate data (even if it's reorged).
+// Returning "*" as blockRef means that these data are safe be cached irrevelant of their block.
+var DefaultSpecialCacheMethods = map[string]*CacheMethodConfig{
+	"eth_getTransactionReceipt": {
+		ReqRefs:  ArbitraryBlock,
+		RespRefs: BlockNumberOrBlockHashParam,
+	},
+	"eth_getTransactionByHash": {
+		ReqRefs:  ArbitraryBlock,
+		RespRefs: BlockNumberOrBlockHashParam,
+	},
+	"arbtrace_replayTransaction": {
+		ReqRefs: ArbitraryBlock,
+	},
+	"trace_replayTransaction": {
+		ReqRefs: ArbitraryBlock,
+	},
+	"debug_traceTransaction": {
+		ReqRefs: ArbitraryBlock,
+	},
+	"trace_rawTransaction": {
+		ReqRefs: ArbitraryBlock,
+	},
+	"trace_transaction": {
+		ReqRefs: ArbitraryBlock,
+	},
+	"debug_traceBlock": {
+		ReqRefs: ArbitraryBlock,
+	},
+}
+
 func (c *CacheConfig) SetDefaults() {
 	if len(c.Policies) > 0 {
 		for _, policy := range c.Policies {
@@ -96,6 +323,24 @@ func (c *CacheConfig) SetDefaults() {
 		for _, connector := range c.Connectors {
 			connector.SetDefaults()
 		}
+	}
+
+	if c.Methods == nil {
+		// Merge all default methods into a single map
+		mergedMethods := map[string]*CacheMethodConfig{}
+		for name, method := range DefaultStaticCacheMethods {
+			mergedMethods[name] = method
+		}
+		for name, method := range DefaultRealtimeCacheMethods {
+			mergedMethods[name] = method
+		}
+		for name, method := range DefaultWithBlockCacheMethods {
+			mergedMethods[name] = method
+		}
+		for name, method := range DefaultSpecialCacheMethods {
+			mergedMethods[name] = method
+		}
+		c.Methods = mergedMethods
 	}
 }
 
@@ -259,7 +504,7 @@ func (p *ProjectConfig) SetDefaults() {
 	}
 	if p.Networks != nil {
 		for _, network := range p.Networks {
-			network.SetDefaults(p.Upstreams)
+			network.SetDefaults(p.Upstreams, p.NetworkDefaults)
 		}
 	}
 	if p.Auth != nil {
@@ -300,7 +545,7 @@ func (u *UpstreamConfig) SetDefaults() {
 			},
 		}
 	}
-	u.Failsafe.SetDefaults()
+	u.Failsafe.SetDefaults(nil)
 
 	if u.RateLimitAutoTune == nil && u.RateLimitBudget != "" {
 		u.RateLimitAutoTune = &RateLimitAutoTuneConfig{}
@@ -340,18 +585,39 @@ func (e *EvmUpstreamConfig) SetDefaults() {
 
 func (j *JsonRpcUpstreamConfig) SetDefaults() {}
 
-func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig) {
+func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *NetworkDefaults) {
+	sysDefCfg := NewDefaultNetworkConfig(upstreams)
+	if defaults != nil {
+		if n.RateLimitBudget == "" {
+			n.RateLimitBudget = defaults.RateLimitBudget
+		}
+		if defaults.Failsafe != nil {
+			if n.Failsafe == nil {
+				n.Failsafe = &FailsafeConfig{}
+				*n.Failsafe = *defaults.Failsafe
+			} else {
+				n.Failsafe.SetDefaults(defaults.Failsafe)
+			}
+		}
+		if n.SelectionPolicy == nil && defaults.SelectionPolicy != nil {
+			n.SelectionPolicy = &SelectionPolicyConfig{}
+			*n.SelectionPolicy = *defaults.SelectionPolicy
+		}
+		if n.DirectiveDefaults == nil && defaults.DirectiveDefaults != nil {
+			n.DirectiveDefaults = &DirectiveDefaultsConfig{}
+			*n.DirectiveDefaults = *defaults.DirectiveDefaults
+		}
+	} else if n.Failsafe != nil {
+		n.Failsafe.SetDefaults(sysDefCfg.Failsafe)
+	} else {
+		n.Failsafe = sysDefCfg.Failsafe
+	}
+
 	if n.Architecture == "" {
 		if n.Evm != nil {
 			n.Architecture = "evm"
 		}
 	}
-
-	if n.Failsafe == nil {
-		nwCfg := NewDefaultNetworkConfig(upstreams)
-		n.Failsafe = nwCfg.Failsafe
-	}
-	n.Failsafe.SetDefaults()
 
 	if n.Architecture == "evm" && n.Evm == nil {
 		n.Evm = &EvmNetworkConfig{}
@@ -382,44 +648,91 @@ func (e *EvmNetworkConfig) SetDefaults() {
 	}
 }
 
-func (f *FailsafeConfig) SetDefaults() {
+func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) {
 	if f.Timeout != nil {
-		f.Timeout.SetDefaults()
+		if defaults != nil && defaults.Timeout != nil {
+			f.Timeout.SetDefaults(defaults.Timeout)
+		} else {
+			f.Timeout.SetDefaults(nil)
+		}
 	}
 	if f.Retry != nil {
-		f.Retry.SetDefaults()
+		if defaults != nil && defaults.Retry != nil {
+			f.Retry.SetDefaults(defaults.Retry)
+		} else {
+			f.Retry.SetDefaults(nil)
+		}
 	}
 	if f.CircuitBreaker != nil {
-		f.CircuitBreaker.SetDefaults()
+		if defaults != nil && defaults.CircuitBreaker != nil {
+			f.CircuitBreaker.SetDefaults(defaults.CircuitBreaker)
+		} else {
+			f.CircuitBreaker.SetDefaults(nil)
+		}
 	}
 }
 
-func (t *TimeoutPolicyConfig) SetDefaults() {}
+func (t *TimeoutPolicyConfig) SetDefaults(defaults *TimeoutPolicyConfig) {
+	if defaults != nil && t.Duration == "" {
+		t.Duration = defaults.Duration
+	}
+}
 
-func (r *RetryPolicyConfig) SetDefaults() {
+func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) {
+	if r.MaxAttempts == 0 {
+		if defaults != nil && defaults.MaxAttempts != 0 {
+			r.MaxAttempts = defaults.MaxAttempts
+		} else {
+			r.MaxAttempts = 3
+		}
+	}
 	if r.BackoffFactor == 0 {
-		r.BackoffFactor = 1.5
+		if defaults != nil && defaults.BackoffFactor != 0 {
+			r.BackoffFactor = defaults.BackoffFactor
+		} else {
+			r.BackoffFactor = 1.3
+		}
 	}
 	if r.BackoffMaxDelay == "" {
-		r.BackoffMaxDelay = "5s"
+		if defaults != nil && defaults.BackoffMaxDelay != "" {
+			r.BackoffMaxDelay = defaults.BackoffMaxDelay
+		} else {
+			r.BackoffMaxDelay = "5s"
+		}
 	}
 	if r.Delay == "" {
-		r.Delay = "300ms"
+		if defaults != nil && defaults.Delay != "" {
+			r.Delay = defaults.Delay
+		} else {
+			r.Delay = "100ms"
+		}
 	}
 	if r.Jitter == "" {
-		r.Jitter = "100ms"
+		if defaults != nil && defaults.Jitter != "" {
+			r.Jitter = defaults.Jitter
+		} else {
+			r.Jitter = "0ms"
+		}
 	}
 }
 
-func (h *HedgePolicyConfig) SetDefaults() {
+func (h *HedgePolicyConfig) SetDefaults(defaults *HedgePolicyConfig) {
 	if h.Delay == "" {
-		h.Delay = "100ms"
+		if defaults != nil && defaults.Delay != "" {
+			h.Delay = defaults.Delay
+		} else {
+			h.Delay = "100ms"
+		}
 	}
 }
 
-func (c *CircuitBreakerPolicyConfig) SetDefaults() {
+func (c *CircuitBreakerPolicyConfig) SetDefaults(defaults *CircuitBreakerPolicyConfig) {
 	if c.HalfOpenAfter == "" {
-		c.HalfOpenAfter = "5m"
+		if defaults != nil && defaults.HalfOpenAfter != "" {
+			c.HalfOpenAfter = defaults.HalfOpenAfter
+		} else {
+			c.HalfOpenAfter = "5m"
+		}
 	}
 }
 

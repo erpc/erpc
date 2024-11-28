@@ -109,13 +109,13 @@ func (m *MemoryConnector) Get(ctx context.Context, index, partitionKey, rangeKey
 
 	item, ok := m.cache.Get(key)
 	if !ok {
-		return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s", partitionKey, rangeKey), MemoryDriverName)
+		return "", common.NewErrRecordNotFound(partitionKey, rangeKey, MemoryDriverName)
 	}
 
 	// Check if item has expired
 	if item.expiresAt != nil && !time.Now().Before(*item.expiresAt) {
 		m.cache.Remove(key)
-		return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s", partitionKey, rangeKey), MemoryDriverName)
+		return "", common.NewErrRecordNotFound(partitionKey, rangeKey, MemoryDriverName)
 	}
 
 	return item.value, nil
@@ -138,7 +138,7 @@ func (m *MemoryConnector) getWithWildcard(_ context.Context, _, partitionKey, ra
 			return item.value, nil
 		}
 	}
-	return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s", partitionKey, rangeKey), MemoryDriverName)
+	return "", common.NewErrRecordNotFound(partitionKey, rangeKey, MemoryDriverName)
 }
 
 func (m *MemoryConnector) cleanupExpired() {

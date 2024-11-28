@@ -1,12 +1,12 @@
 ---
-description: A network represents a chain in EVM, and it is a local grouping for upstreams...
+description: A network represents a chain, and it is a logical grouping of upstreams...
 ---
 
 import { Callout, Tabs, Tab } from 'nextra/components'
 
 # Networks
 
-A network represents a chain in EVM, and it is a local grouping for upstreams.
+A network represents a chain (e.g., evm, solana, etc), and it is a logical grouping of upstreams.
 
 <Callout type='info'>
   [Upstreams](/config/projects/upstreams) are configured separately, and on the first request to a network, the eRPC will automatically find any upstream that support that network.
@@ -22,7 +22,7 @@ projects:
 
     # (OPTIONAL) This array configures network-specific (a.k.a chain-specific) features.
     # For each network "architecture" and corresponding network id (e.g. evm.chainId) is required.
-    # You don't need to define networks as they will be automatically detected from configured endpoints.
+    # You don't need to define networks as they will be automatically detected from configured endpoints (lazy-loaded).
     # Only provide network list if you want to customize features such as failsafe policies, rate limit budget, finality depth, etc.
     networks:
       - architecture: evm
@@ -130,7 +130,7 @@ export default createConfig({
       /**
       * (OPTIONAL) This array configures network-specific (a.k.a chain-specific) features.
       * For each network "architecture" and corresponding network id (e.g. evm.chainId) is required.
-      * You don't need to define networks as they will be automatically detected from configured endpoints.
+      * You don't need to define networks as they will be automatically detected from configured endpoints (lazy-loaded).
       * Only provide network list if you want to customize features such as failsafe policies, rate limit budget, finality depth, etc.
       */
       networks: [
@@ -248,6 +248,137 @@ export default createConfig({
 ```
 </Tabs.Tab>
 </Tabs>
+
+## Default config and lazy-loading
+
+Networks are lazy-loaded on first request for a network (if not explicitly defined in config). You can configure "networkDefaults" to set default values for all networks (both static or lazy-loaded):
+
+<Tabs items={["yaml"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+<Tabs.Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    networkDefaults:
+      # (OPTIONAL) A network-level rate limit budget applied to all requests despite upstreams own rate-limits.
+      # For example even if upstreams can handle 1000 RPS, and network-level is limited to 100 RPS,
+      # the request will be rate-limited to 100 RPS.
+      # Defaults to no rate limit budget.
+      rateLimitBudget: "my-default-budget"
+
+      # (OPTIONAL) Refer to "Failsafe" section for more details.
+      # https://docs.erpc.cloud/config/failsafe
+      # If a network has its own failsafe defined, it will not take any of policies from networkDefaults.
+      # i.e. if network has only "timeout" policy, it will NOT get hedge/retry from networkDefaults (those will be disabled).
+      # Here are default values used for networkDefaults if not explicitly defined:
+      failsafe:
+        timeout:
+          duration: "30s"
+        hedge:
+          delay: "200ms"
+          maxCount: 3
+        retry:
+          maxCount: 3
+          delay: "100ms"
+          jitter: "0ms"
+          backoffMaxDelay: "1s"
+          backoffFactor: 1.5
+
+      # (OPTIONAL) Refer to "Selection Policy" section for more details about default values.
+      # https://docs.erpc.cloud/config/projects/selection-policies#config
+      selectionPolicy:
+        #...
+
+      # (OPTIONAL) Default directives to apply to all requests for this network.
+      # These can be overridden by request-specific directives via HTTP headers or query parameters.
+      # See https://docs.erpc.cloud/operation/directives for more details about each directive.
+      directiveDefaults:
+        retryEmpty: true                       # OPTIONAL (default: true)
+        retryPending: false                    # OPTIONAL (default: false)
+        skipCacheRead: false                   # OPTIONAL (default: false)
+        useUpstream: "alchemy-*|localnode-*"   # OPTIONAL (default: *)
+    
+    # (OPTIONAL) List of customizations per network if needed can be defined as usual:
+    # For each static network, first networkDefaults will be applied (deep object merge),
+    # then network-specific overrides can be applied.
+    networks:
+      # ...
+```
+</Tabs.Tab>
+<Tabs.Tab>
+```ts filename="erpc.ts"
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      
+      networkDefaults: {
+        // Which network(s) to apply defaults to (this supports Matcher syntax)
+        // Defaults to all networks (*).
+        target: "evm:*",
+
+        // (OPTIONAL) A network-level rate limit budget applied to all requests despite upstreams own rate-limits.
+        // For example even if upstreams can handle 1000 RPS, and network-level is limited to 100 RPS,
+        // the request will be rate-limited to 100 RPS.
+        // Defaults to no rate limit budget.
+        rateLimitBudget: "my-default-budget",
+
+        // (OPTIONAL) Refer to "Failsafe" section for more details.
+        // https://docs.erpc.cloud/config/failsafe
+        // Here are default values used for networks if not explicitly defined:
+        failsafe: {
+          timeout: {
+            duration: "30s",
+          },
+          hedge: {
+            delay: "200ms",
+            maxCount: 3,
+          },
+          retry: {
+            maxCount: 3,
+            delay: "100ms",
+            jitter: "0ms",
+            backoffMaxDelay: "1s",
+            backoffFactor: 1.5,
+          },
+        },
+
+        // (OPTIONAL) Refer to "Selection Policy" section for more details about default values.
+        // https://docs.erpc.cloud/config/projects/selection-policies#config
+        selectionPolicy: {
+          // ...
+        },
+
+        // (OPTIONAL) Default directives to apply to all requests for this network.
+        // These can be overridden by request-specific directives via HTTP headers or query parameters.
+        // See https://docs.erpc.cloud/operation/directives for more details about each directive.
+        directiveDefaults: {
+          retryEmpty: true,                       // OPTIONAL (default: true)
+          retryPending: false,                    // OPTIONAL (default: false)
+          skipCacheRead: false,                   // OPTIONAL (default: false)
+          useUpstream: "alchemy-*|localnode-*"    // OPTIONAL (default: *)
+        },
+      },
+
+      // (OPTIONAL) List of customizations per network if needed can be defined as usual:
+      // For each static network, first networkDefaults will be applied (deep object merge),
+      // then network-specific overrides can be applied.
+      networks: [
+        // ...
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+<Callout type='info'>
+  If a network has its own `failsafe:` defined, it will not take any of policies from networkDefaults.<br />
+  e.g. if a network only has "timeout" policy, it will **NOT** get hedge/retry from networkDefaults (those will be disabled).
+</Callout>
 
 ### Architectures
 

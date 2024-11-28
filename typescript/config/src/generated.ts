@@ -13,6 +13,18 @@ import type {
 } from "./types"
 
 //////////
+// source: cache_dal.go
+
+export type CacheDAL = any;
+
+//////////
+// source: cache_mock.go
+
+export interface MockCacheDal {
+  mock: any /* mock.Mock */;
+}
+
+//////////
 // source: config.go
 
 /**
@@ -55,6 +67,13 @@ export interface DatabaseConfig {
 export interface CacheConfig {
   connectors: TsConnectorConfig[];
   policies: (CachePolicyConfig | undefined)[];
+  methods: { [key: string]: CacheMethodConfig | undefined};
+}
+export interface CacheMethodConfig {
+  reqRefs: any[][];
+  respRefs: any[][];
+  finalized: boolean;
+  realtime: boolean;
 }
 export interface CachePolicyConfig {
   connector: string;

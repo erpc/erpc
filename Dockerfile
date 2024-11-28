@@ -65,6 +65,9 @@ FROM debian:12 AS final
 
 WORKDIR /root
 
+# Install CA certificates
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+
 # Copy Go binary from go-builder
 COPY --from=go-builder /root/erpc-server .
 

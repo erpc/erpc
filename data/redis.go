@@ -158,7 +158,7 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 			return "", err
 		}
 		if len(keys) == 0 {
-			return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s", partitionKey, rangeKey), RedisDriverName)
+			return "", common.NewErrRecordNotFound(partitionKey, rangeKey, RedisDriverName)
 		}
 		key = keys[0]
 	}
@@ -167,7 +167,7 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 	value, err = r.client.Get(ctx, key).Result()
 
 	if err == redis.Nil {
-		return "", common.NewErrRecordNotFound(fmt.Sprintf("PK: %s RK: %s", partitionKey, rangeKey), RedisDriverName)
+		return "", common.NewErrRecordNotFound(partitionKey, rangeKey, RedisDriverName)
 	} else if err != nil {
 		return "", err
 	}

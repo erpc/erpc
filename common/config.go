@@ -70,8 +70,16 @@ type DatabaseConfig struct {
 }
 
 type CacheConfig struct {
-	Connectors []*ConnectorConfig   `yaml:"connectors" json:"connectors" tstype:"TsConnectorConfig[]"`
-	Policies   []*CachePolicyConfig `yaml:"policies" json:"policies"`
+	Connectors []*ConnectorConfig            `yaml:"connectors" json:"connectors" tstype:"TsConnectorConfig[]"`
+	Policies   []*CachePolicyConfig          `yaml:"policies" json:"policies"`
+	Methods    map[string]*CacheMethodConfig `yaml:"methods" json:"methods"`
+}
+
+type CacheMethodConfig struct {
+	ReqRefs   [][]interface{} `yaml:"reqRefs" json:"reqRefs"`
+	RespRefs  [][]interface{} `yaml:"respRefs" json:"respRefs"`
+	Finalized bool            `yaml:"finalized" json:"finalized"`
+	Realtime  bool            `yaml:"realtime" json:"realtime"`
 }
 
 func (c *CacheConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
@@ -96,36 +104,6 @@ func (c *CacheConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 				Connector: "default",
 			},
 		}
-		// PostgreSQL might not be very efficient for these short default TTLs
-		if rawBackward.Driver != DriverPostgreSQL {
-			c.Policies = append(
-				c.Policies,
-				&CachePolicyConfig{
-					Network:   "*",
-					Method:    "*",
-					Finality:  DataFinalityStateUnknown,
-					Empty:     CacheEmptyBehaviorAllow,
-					TTL:       30 * time.Second,
-					Connector: "default",
-				},
-				&CachePolicyConfig{
-					Network:   "*",
-					Method:    "*",
-					Finality:  DataFinalityStateUnfinalized,
-					Empty:     CacheEmptyBehaviorAllow,
-					TTL:       5 * time.Second,
-					Connector: "default",
-				},
-				&CachePolicyConfig{
-					Network:   "*",
-					Method:    "*",
-					Finality:  DataFinalityStateRealtime,
-					Empty:     CacheEmptyBehaviorAllow,
-					TTL:       2 * time.Second,
-					Connector: "default",
-				},
-			)
-		}
 	} else {
 		*c = CacheConfig(raw)
 	}
@@ -138,29 +116,52 @@ type CachePolicyConfig struct {
 	Network     string             `yaml:"network,omitempty" json:"network"`
 	Method      string             `yaml:"method,omitempty" json:"method"`
 	Params      []interface{}      `yaml:"params,omitempty" json:"params"`
-	Finality    DataFinalityState  `yaml:"finality" json:"finality"`
+	Finality    DataFinalityState  `yaml:"finality,omitempty" json:"finality"`
 	Empty       CacheEmptyBehavior `yaml:"empty,omitempty" json:"empty"`
-	MinItemSize *ByteSizeString    `yaml:"minItemSize,omitempty" json:"minItemSize,omitempty" tstype:"ByteSize"`
-	MaxItemSize *ByteSizeString    `yaml:"maxItemSize,omitempty" json:"maxItemSize,omitempty" tstype:"ByteSize"`
+	MinItemSize *ByteSizeString    `yaml:"minItemSize,omitempty" json:"minItemSize" tstype:"ByteSize"`
+	MaxItemSize *ByteSizeString    `yaml:"maxItemSize,omitempty" json:"maxItemSize" tstype:"ByteSize"`
 	TTL         time.Duration      `yaml:"ttl,omitempty" json:"ttl"`
 }
 
 func (c *CachePolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type rawCachePolicyConfig struct {
-		CachePolicyConfig
-		TTL string `yaml:"ttl"`
+		Connector   string             `yaml:"connector"`
+		Network     string             `yaml:"network,omitempty"`
+		Method      string             `yaml:"method,omitempty"`
+		Params      []interface{}      `yaml:"params,omitempty"`
+		Finality    DataFinalityState  `yaml:"finality,omitempty"`
+		Empty       CacheEmptyBehavior `yaml:"empty,omitempty"`
+		MinItemSize *string            `yaml:"minItemSize,omitempty"`
+		MaxItemSize *string            `yaml:"maxItemSize,omitempty"`
+		TTL         interface{}        `yaml:"ttl"`
 	}
 	raw := rawCachePolicyConfig{}
 	if err := unmarshal(&raw); err != nil {
 		return err
 	}
-	*c = raw.CachePolicyConfig
-	if raw.TTL != "" {
-		ttl, err := time.ParseDuration(raw.TTL)
-		if err != nil {
-			return fmt.Errorf("failed to parse ttl: %v", err)
+	*c = CachePolicyConfig{
+		Connector:   raw.Connector,
+		Network:     raw.Network,
+		Method:      raw.Method,
+		Params:      raw.Params,
+		Finality:    raw.Finality,
+		Empty:       raw.Empty,
+		MinItemSize: raw.MinItemSize,
+		MaxItemSize: raw.MaxItemSize,
+	}
+	if raw.TTL != nil {
+		switch v := raw.TTL.(type) {
+		case string:
+			ttl, err := time.ParseDuration(v)
+			if err != nil {
+				return fmt.Errorf("failed to parse ttl: %v", err)
+			}
+			c.TTL = ttl
+		case int:
+			c.TTL = time.Duration(v) * time.Second
+		default:
+			return fmt.Errorf("invalid ttl type: %T", v)
 		}
-		c.TTL = ttl
 	} else {
 		// Set default value of 0 when TTL is not specified, which means no ttl
 		c.TTL = time.Duration(0)
@@ -274,12 +275,20 @@ func (a *AwsAuthConfig) MarshalJSON() ([]byte, error) {
 
 type ProjectConfig struct {
 	Id              string             `yaml:"id" json:"id"`
-	Auth            *AuthConfig        `yaml:"auth,omitempty" json:"auth,omitempty"`
-	CORS            *CORSConfig        `yaml:"cors,omitempty" json:"cors,omitempty"`
+	Auth            *AuthConfig        `yaml:"auth,omitempty" json:"auth"`
+	CORS            *CORSConfig        `yaml:"cors,omitempty" json:"cors"`
 	Upstreams       []*UpstreamConfig  `yaml:"upstreams" json:"upstreams"`
-	Networks        []*NetworkConfig   `yaml:"networks,omitempty" json:"networks,omitempty"`
-	RateLimitBudget string             `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
-	HealthCheck     *HealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck,omitempty"`
+	NetworkDefaults *NetworkDefaults   `yaml:"networkDefaults,omitempty" json:"networkDefaults"`
+	Networks        []*NetworkConfig   `yaml:"networks,omitempty" json:"networks"`
+	RateLimitBudget string             `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
+	HealthCheck     *HealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
+}
+
+type NetworkDefaults struct {
+	RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
+	Failsafe          *FailsafeConfig          `yaml:"failsafe,omitempty" json:"failsafe"`
+	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
+	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
 }
 
 type CORSConfig struct {
@@ -412,25 +421,33 @@ type HealthCheckConfig struct {
 }
 
 type NetworkConfig struct {
-	Architecture    NetworkArchitecture    `yaml:"architecture" json:"architecture" tstype:"TsNetworkArchitecture"`
-	RateLimitBudget string                 `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
-	Failsafe        *FailsafeConfig        `yaml:"failsafe,omitempty" json:"failsafe,omitempty"`
-	Evm             *EvmNetworkConfig      `yaml:"evm,omitempty" json:"evm,omitempty"`
-	SelectionPolicy *SelectionPolicyConfig `yaml:"selectionPolicy,omitempty" json:"selectionPolicy,omitempty"`
+	Architecture      NetworkArchitecture      `yaml:"architecture" json:"architecture" tstype:"TsNetworkArchitecture"`
+	RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
+	Failsafe          *FailsafeConfig          `yaml:"failsafe,omitempty" json:"failsafe"`
+	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm"`
+	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
+	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
+}
+
+type DirectiveDefaultsConfig struct {
+	RetryEmpty    *bool   `yaml:"retryEmpty,omitempty" json:"retryEmpty"`
+	RetryPending  *bool   `yaml:"retryPending,omitempty" json:"retryPending"`
+	SkipCacheRead *bool   `yaml:"skipCacheRead,omitempty" json:"skipCacheRead"`
+	UseUpstream   *string `yaml:"useUpstream,omitempty" json:"useUpstream"`
 }
 
 type EvmNetworkConfig struct {
 	ChainId               int64 `yaml:"chainId" json:"chainId"`
-	FallbackFinalityDepth int64 `yaml:"fallbackFinalityDepth,omitempty" json:"fallbackFinalityDepth,omitempty"`
+	FallbackFinalityDepth int64 `yaml:"fallbackFinalityDepth,omitempty" json:"fallbackFinalityDepth"`
 }
 
 type SelectionPolicyConfig struct {
-	EvalInterval     time.Duration  `yaml:"evalInterval,omitempty" json:"evalInterval,omitempty"`
-	EvalFunction     sobek.Callable `yaml:"evalFunction,omitempty" json:"evalFunction,omitempty" tstype:"SelectionPolicyEvalFunction | undefined"`
-	EvalPerMethod    bool           `yaml:"evalPerMethod,omitempty" json:"evalPerMethod,omitempty"`
-	ResampleExcluded bool           `yaml:"resampleExcluded,omitempty" json:"resampleExcluded,omitempty"`
-	ResampleInterval time.Duration  `yaml:"resampleInterval,omitempty" json:"resampleInterval,omitempty"`
-	ResampleCount    int            `yaml:"resampleCount,omitempty" json:"resampleCount,omitempty"`
+	EvalInterval     time.Duration  `yaml:"evalInterval,omitempty" json:"evalInterval"`
+	EvalFunction     sobek.Callable `yaml:"evalFunction,omitempty" json:"evalFunction" tstype:"SelectionPolicyEvalFunction | undefined"`
+	EvalPerMethod    bool           `yaml:"evalPerMethod,omitempty" json:"evalPerMethod"`
+	ResampleExcluded bool           `yaml:"resampleExcluded,omitempty" json:"resampleExcluded"`
+	ResampleInterval time.Duration  `yaml:"resampleInterval,omitempty" json:"resampleInterval"`
+	ResampleCount    int            `yaml:"resampleCount,omitempty" json:"resampleCount"`
 
 	evalFunctionOriginal string `yaml:"-" json:"-"`
 }
