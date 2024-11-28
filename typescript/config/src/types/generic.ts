@@ -34,7 +34,7 @@ export type NetworkArchitecture = "evm";
 /**
  * Supported connector driver type overide
  */
-export type ConnectorDriverType = "memory" | "redis" | "postgres" | "dynamodb";
+export type ConnectorDriverType = "memory" | "redis" | "postgresql" | "dynamodb";
 
 /**
  * Connector config depending on the upstream type
