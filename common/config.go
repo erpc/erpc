@@ -23,8 +23,11 @@ var (
 	FALSE         = false
 )
 
-// Simple type to represent a duration string in the config
+// Simple type to represent a duration string in the config (will be parsed via time.ParseDuration)
 type DurationString = string
+
+// Simple type to represent a byte size in string (will be parsed via ParseByteSize)
+type ByteSizeString = string
 
 // Config represents the configuration of the application.
 type Config struct {
@@ -137,8 +140,8 @@ type CachePolicyConfig struct {
 	Params      []interface{}      `yaml:"params,omitempty" json:"params"`
 	Finality    DataFinalityState  `yaml:"finality" json:"finality"`
 	Empty       CacheEmptyBehavior `yaml:"empty,omitempty" json:"empty"`
-	MinItemSize *string            `yaml:"minItemSize,omitempty" json:"minItemSize,omitempty"`
-	MaxItemSize *string            `yaml:"maxItemSize,omitempty" json:"maxItemSize,omitempty"`
+	MinItemSize *ByteSizeString    `yaml:"minItemSize,omitempty" json:"minItemSize,omitempty" tstype:"ByteSize"`
+	MaxItemSize *ByteSizeString    `yaml:"maxItemSize,omitempty" json:"maxItemSize,omitempty" tstype:"ByteSize"`
 	TTL         time.Duration      `yaml:"ttl,omitempty" json:"ttl"`
 }
 

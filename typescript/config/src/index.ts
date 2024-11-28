@@ -2,6 +2,7 @@ export type {
   // Tygo generic replacement
   LogLevel,
   Duration,
+  ByteSize,
   NetworkArchitecture,
   ConnectorDriverType,
   ConnectorConfig,
@@ -15,6 +16,7 @@ export {
   // Data finality const exports
   DataFinalityStateUnfinalized,
   DataFinalityStateFinalized,
+  DataFinalityStateRealtime,
   DataFinalityStateUnknown,
   // Scope exports
   ScopeNetwork,

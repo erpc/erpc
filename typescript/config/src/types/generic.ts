@@ -18,13 +18,22 @@ export type LogLevel =
   | undefined;
 
 /**
- * Generic type representing a time.Duration config
+ * Generic type representing a string that will be parsed via `time.ParseDuration` config
  */
 export type Duration =
   | `${number}ms`
   | `${number}s`
   | `${number}m`
   | `${number}h`;
+
+/**
+ * Generic type representing a time.Duration config
+ */
+export type ByteSize =
+  | `${number}kb`
+  | `${number}mb`
+  | `${number}b`
+  | `${number}`; // Same as bytes;
 
 /**
  * Suported network architecture
@@ -34,7 +43,11 @@ export type NetworkArchitecture = "evm";
 /**
  * Supported connector driver type overide
  */
-export type ConnectorDriverType = "memory" | "redis" | "postgresql" | "dynamodb";
+export type ConnectorDriverType =
+  | "memory"
+  | "redis"
+  | "postgresql"
+  | "dynamodb";
 
 /**
  * Connector config depending on the upstream type

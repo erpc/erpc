@@ -5,16 +5,18 @@ packages:
     type_mappings:
       time.Duration: "number /* time in nanoseconds (time.Duration) */"
       # The following doesn't work, cause tygo only replace types when it's an `ast.SelectorExpr`, and following types are simple `ast.Ident`
-      #  So either create a PR on tygo to support this, or use tags (solution as of right now)
-      # ConnectorDriverType: "TsConnectorDriverType"
-      # ConnectorConfig: "TsConnectorConfig"
-      # UpstreamType: "TsUpstreamType"
-      # NetworkArchitecture: "TsNetworkArchitecture"
-      # DurationString: "Duration"
+      #  waiting for PR: https://github.com/gzuidhof/tygo/pull/74
+      # id_ConnectorDriverType: "TsConnectorDriverType"
+      # id_ConnectorConfig: "TsConnectorConfig"
+      # id_UpstreamType: "TsUpstreamType"
+      # id_NetworkArchitecture: "TsNetworkArchitecture"
+      # id_DurationString: "Duration"
+      # id_ByteSizeString: "ByteSize"
     frontmatter: |
       import type { 
         LogLevel,
         Duration,
+        ByteSize,
         ConnectorDriverType as TsConnectorDriverType,
         ConnectorConfig as TsConnectorConfig,
         UpstreamType as TsUpstreamType,

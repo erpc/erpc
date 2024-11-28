@@ -1,5 +1,6 @@
 export type {
   Duration,
+  ByteSize,
   LogLevel,
   ConnectorDriverType,
   UpstreamType,

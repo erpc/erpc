@@ -2,6 +2,7 @@
 import type { 
   LogLevel,
   Duration,
+  ByteSize,
   ConnectorDriverType as TsConnectorDriverType,
   ConnectorConfig as TsConnectorConfig,
   UpstreamType as TsUpstreamType,
@@ -13,9 +14,13 @@ import type {
 // source: config.go
 
 /**
- * Simple type to represent a duration string in the config
+ * Simple type to represent a duration string in the config (will be parsed via time.ParseDuration)
  */
 export type DurationString = string;
+/**
+ * Simple type to represent a byte size in string (will be parsed via ParseByteSize)
+ */
+export type ByteSizeString = string;
 /**
  * Config represents the configuration of the application.
  */
@@ -56,8 +61,8 @@ export interface CachePolicyConfig {
   params?: any[];
   finality: DataFinalityState;
   empty?: CacheEmptyBehavior;
-  minItemSize?: string;
-  maxItemSize?: string;
+  minItemSize?: ByteSize;
+  maxItemSize?: ByteSize;
   ttl?: number /* time in nanoseconds (time.Duration) */;
 }
 export type ConnectorDriverType = string;
