@@ -401,12 +401,12 @@ type HedgePolicyConfig struct {
 }
 
 type RateLimiterConfig struct {
-	Budgets []*RateLimitBudgetConfig `yaml:"budgets" json:"budgets"`
+	Budgets []*RateLimitBudgetConfig `yaml:"budgets" json:"budgets" tstype:"RateLimitBudgetConfig[]"`
 }
 
 type RateLimitBudgetConfig struct {
 	Id    string                 `yaml:"id" json:"id"`
-	Rules []*RateLimitRuleConfig `yaml:"rules" json:"rules"`
+	Rules []*RateLimitRuleConfig `yaml:"rules" json:"rules" tstype:"RateLimitRuleConfig[]"`
 }
 
 type RateLimitRuleConfig struct {

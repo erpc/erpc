@@ -109,7 +109,7 @@ Every builder method accepts either the arguments directly or a function that ta
 
 - **`addRateLimiters(options: Record\<TKeys,RateLimitRuleConfig[]>)`**: Adds rate limiters to your configuration.
 
-- **`decorate(options: { scope: "upstreams" | "networks"; value: NetworkConfig | UpstreamConfig)`**: Adds values to the store for `networks` or `upstreams`.
+- **`decorate(scope: "upstreams" | "networks", value: Record\<TStoreKey, NetworkConfig | UpstreamConfig>)`**: Adds values to the store for `networks` or `upstreams`.
 
   - **Scope**: Determines which store (`networks` or `upstreams`) to push values to.
   - **Value**: Either a static configuration or a function that returns the expected configuration.
@@ -142,14 +142,11 @@ export default initErpcConfig({
       },
     ],
   })
-  .decorate({
-    scope: "upstreams",
-    value: {
+  .decorate("upstreams", {
       upstream1: {
         endpoint: "http://localhost:3000",
         rateLimitBudget: "rpcLimiter",
       },
-    },
   })
   .addProject(({ store: { upstreams } }) => ({
     id: "project1",
