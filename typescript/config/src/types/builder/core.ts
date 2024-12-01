@@ -1,4 +1,3 @@
-import type { Prettify } from "viem";
 import type { Config } from "../../generated";
 import type {
   RateLimiterIdsFromConfig,
@@ -40,4 +39,4 @@ export type BuilderMethodArgs<
 export type ConfigAwareObject<
   TObject extends Object,
   TConfig extends Partial<Config>,
-> = Prettify<ReplaceRateLimiter<TObject, RateLimiterIdsFromConfig<TConfig>>>;
+> = ReplaceRateLimiter<TObject, RateLimiterIdsFromConfig<TConfig>>;

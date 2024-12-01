@@ -1,4 +1,4 @@
-import { initErpcConfig } from "../src";
+import { initErpcConfig } from "../dist";
 
 /**
  * More complexe example with:

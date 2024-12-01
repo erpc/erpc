@@ -103,18 +103,16 @@ You can check a more [complete example here](/typescript/config/example/full.ts)
 
 #### Available Methods
 
-Every builder method accepts either the arguments directly or a function that takes the current configuration and store, and returns the expected arguments.
-
 - **`initErpcConfig(config: InitConfig)`**: Initializes the configuration with basic settings such as `logLevel` and `server` properties.
 
-- **`addRateLimiters(options: Record\<TKeys,RateLimitRuleConfig[]>)`**: Adds rate limiters to your configuration.
+- **`addRateLimiters(budgets: Record\<TKeys,RateLimitRuleConfig[]>)`**: Adds rate limiters to your configuration.
 
 - **`decorate(scope: "upstreams" | "networks", value: Record\<TStoreKey, NetworkConfig | UpstreamConfig>)`**: Adds values to the store for `networks` or `upstreams`.
 
   - **Scope**: Determines which store (`networks` or `upstreams`) to push values to.
-  - **Value**: Either a static configuration or a function that returns the expected configuration.
+  - **Value**: The static values to add the the builder store
 
-- **`addProject(project: ProjectConfig)`**: Adds a project to your configuration.
+- **`addProject(project: ProjectConfig | ({config: Config, store: Store} => ProjectConfig))`**: Adds a project to your configuration.
 
 #### Example Usage
 

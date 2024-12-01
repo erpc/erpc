@@ -1,4 +1,3 @@
-import type { Prettify } from "viem";
 import type { NetworkConfig, UpstreamConfig } from "../../generated";
 
 /**
@@ -32,12 +31,14 @@ export type AddToStore<
   TStore extends AnyBuilderStore,
   TScope extends keyof BuilderStoreValues,
   TNewKeys extends string,
-  TValue extends BuilderStoreValues[TScope] extends never
-    ? never
-    : BuilderStoreValues[TScope] = BuilderStoreValues[TScope],
 > = {
   // Iterate over each scope in the current store
   [PrevScope in keyof TStore]: PrevScope extends TScope
-    ? Prettify<TStore[PrevScope] & Record<TNewKeys, TValue>> // Add the new keys to the store
+    ? {
+        // If the scope is the target scope, add the new keys to the store
+        [StoreKey in keyof TStore[PrevScope] | TNewKeys]: StoreKey extends never
+          ? never
+          : BuilderStoreValues[PrevScope];
+      }
     : TStore[PrevScope]; // If not target scope, just put previous store values
 };

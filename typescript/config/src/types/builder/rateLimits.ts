@@ -1,4 +1,3 @@
-import type { Prettify } from "viem";
 import type { Config, RateLimitBudgetConfig } from "../../generated";
 
 /**
@@ -7,27 +6,21 @@ import type { Config, RateLimitBudgetConfig } from "../../generated";
 export type AddRateLimitersBudgets<
   TConfig extends Partial<Config>,
   TNewKeys extends string,
-> = Prettify<
-  TConfig extends {
-    rateLimiters: { budgets: RateLimitBudgetConfig[] };
-  }
-    ? TConfig & {
-        rateLimiters: {
-          budgets: Prettify<
-            Omit<RateLimitBudgetConfig, "id"> & {
-              id: TNewKeys | RateLimiterIdsFromConfig<TConfig>;
-            }
-          >[];
-        };
-      }
-    : TConfig & {
-        rateLimiters: {
-          budgets: Prettify<
-            Omit<RateLimitBudgetConfig, "id"> & { id: TNewKeys }
-          >[];
-        };
-      }
->;
+> = TConfig extends {
+  rateLimiters: { budgets: RateLimitBudgetConfig[] };
+}
+  ? TConfig & {
+      rateLimiters: {
+        budgets: (Omit<RateLimitBudgetConfig, "id"> & {
+          id: TNewKeys | TConfig["rateLimiters"]["budgets"][number]["id"];
+        })[];
+      };
+    }
+  : TConfig & {
+      rateLimiters: {
+        budgets: (Omit<RateLimitBudgetConfig, "id"> & { id: TNewKeys })[];
+      };
+    };
 
 /**
  * Helper types to retreive the supported rate limiter ids from a Config object
@@ -37,7 +30,7 @@ export type RateLimiterIdsFromConfig<TConfig extends Partial<Config>> =
     rateLimiters: { budgets: { id: string }[] };
   }
     ? TConfig["rateLimiters"]["budgets"][number]["id"]
-    : never;
+    : string & {};
 
 /**
  * Replace every "rateLimitBudget: string" in the object and every sub ojectif, with a "rateLimitBudget: RateLimiterIds[number]"
@@ -45,14 +38,11 @@ export type RateLimiterIdsFromConfig<TConfig extends Partial<Config>> =
 export type ReplaceRateLimiter<
   T extends Object,
   RateLimiterIds extends string,
-> = Prettify<
-  (T extends {
-    rateLimitBudget?: string;
-  }
-    ? Omit<T, "rateLimitBudget"> & { rateLimitBudget?: RateLimiterIds }
-    : T) & {
-    [K in keyof T]: T[K] extends Object
-      ? ReplaceRateLimiter<T[K], RateLimiterIds>
-      : T[K];
-  }
->;
+> = {
+  // Iterate over all the key of our object
+  [ObjKey in keyof T]: ObjKey extends "rateLimitBudget"
+    ? RateLimiterIds // If the key is "rateLimitBudget", replace the value with RateLimiterIds
+    : T[ObjKey] extends Object // Otherwise, check if the key is a subobject, if that's the case, call ReplaceRateLimiter recursively
+      ? ReplaceRateLimiter<T[ObjKey], RateLimiterIds>
+      : T[ObjKey];
+};

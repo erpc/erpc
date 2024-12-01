@@ -72,7 +72,7 @@ class ConfigBuilder<
       [RateLimitRuleConfig, ...RateLimitRuleConfig[]]
     >,
   >(
-    args: BuilderMethodArgs<TBudgets, TConfig, TStore>,
+    budgets: TBudgets,
   ): ConfigBuilder<
     AddRateLimitersBudgets<
       TConfig,
@@ -80,12 +80,6 @@ class ConfigBuilder<
     >,
     TStore
   > {
-    // Get the budgets from the args
-    const budgets =
-      typeof args === "function"
-        ? args({ config: this.config, store: this.store })
-        : args;
-
     // Format the rate limiters budgets
     const mappedRateLimiters: RateLimitBudgetConfig[] = Object.entries(
       budgets,
@@ -176,12 +170,14 @@ class ConfigBuilder<
     TScope extends keyof BuilderStoreValues,
     TDecorationArgs extends Record<
       string,
-      ConfigAwareObject<BuilderStoreValues[TScope], TConfig>
+      TScope extends keyof BuilderStoreValues
+        ? BuilderStoreValues[TScope]
+        : never
     >,
     TNewStoreKeys extends keyof TDecorationArgs,
   >(
     scope: TScope,
-    args: BuilderMethodArgs<TDecorationArgs, TConfig, TStore>,
+    value: ConfigAwareObject<TDecorationArgs, TConfig>,
   ): ConfigBuilder<
     TConfig,
     AddToStore<
@@ -190,12 +186,6 @@ class ConfigBuilder<
       TNewStoreKeys extends string ? TNewStoreKeys : never
     >
   > {
-    // Extract the value we want to add
-    const value =
-      typeof args === "function"
-        ? args({ config: this.config, store: this.store })
-        : args;
-
     // Append that value to the store
     this.store[scope] = {
       ...this.store[scope],

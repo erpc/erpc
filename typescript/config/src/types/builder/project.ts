@@ -1,4 +1,3 @@
-import type { Prettify } from "viem";
 import type { Config, ProjectConfig } from "../../generated";
 
 /**
@@ -7,14 +6,18 @@ import type { Config, ProjectConfig } from "../../generated";
 export type AddProject<
   TConfig extends Partial<Config>,
   TProject extends ProjectConfig,
-> = Prettify<
-  TConfig extends {
-    projects: { budgets: ProjectConfig[] };
-  }
-    ? TConfig & {
-        projects: [...TConfig["projects"], TProject];
-      }
-    : TConfig & {
-        projects: [TProject];
-      }
->;
+> = TConfig extends {
+  projects: any[];
+}
+  ? {
+      // Config already included a projects key, add the new project to the array
+      [K in keyof TConfig]: K extends "projects"
+        ? [TProject, ...TConfig[K]]
+        : TConfig[K];
+    }
+  : {
+      // Config didn't include a projects before, add the key with the new project
+      [K in keyof TConfig | "projects"]: K extends "projects"
+        ? [TProject]
+        : TConfig[K];
+    };
