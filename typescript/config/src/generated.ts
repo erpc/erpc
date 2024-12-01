@@ -242,11 +242,11 @@ export interface HedgePolicyConfig {
   maxCount: number /* int */;
 }
 export interface RateLimiterConfig {
-  budgets: (RateLimitBudgetConfig | undefined)[];
+  budgets: RateLimitBudgetConfig[];
 }
 export interface RateLimitBudgetConfig {
   id: string;
-  rules: (RateLimitRuleConfig | undefined)[];
+  rules: RateLimitRuleConfig[];
 }
 export interface RateLimitRuleConfig {
   method: string;

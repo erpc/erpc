@@ -14,4 +14,4 @@ export type {
   PolicyEvalUpstream,
   SelectionPolicyEvalFunction,
 } from "./policyEval";
-export type { ReplaceRateLimiter } from "./configBuilder";
+export type { BuilderContext } from "./builder";

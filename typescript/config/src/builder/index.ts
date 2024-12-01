@@ -5,30 +5,31 @@ import type {
   RateLimitRuleConfig,
 } from "../generated";
 import type {
+  AddProject,
+  AddRateLimitersBudgets,
+  AddToStore,
   BuilderMethodArgs,
   BuilderStore,
   BuilderStoreValues,
-  DecorateArgs,
-  ReplaceRateLimiter,
-} from "../types/configBuilder";
+  ConfigAwareObject,
+} from "../types/builder";
 
 /**
- * Object types observation:
- * - RateLimitRuleConfig.waitTime: Could be optional?
- */
-
-/**
- * Top level erpc config builder
+ * Config Builder is here to ease the building of large erpc configuration.
+ * Main advantages of using this builder compared to the simple default config export type are:
+ *  - Strong type completion, on every fields of the configuration.
+ *  - Reuse of shared configuration (upstreams, networks) between projects.
+ *  - Extensability, you could  add your own module to the builder.
+ *  - Better Dev experience, with the help of the IDE to build the configuration.
  */
 class ConfigBuilder<
   TConfig extends Partial<Config> = {},
-  TRateLimitBudgetKeys extends string = never,
   TStore extends BuilderStore<string, string> = BuilderStore<never, never>,
 > {
   private config: TConfig;
   private store: TStore;
 
-  constructor(config: TConfig) {
+  constructor(config: Omit<Config, "rateLimiters" | "projects">) {
     this.config = config as TConfig;
     this.store = {
       upstreams: {},
@@ -38,28 +39,57 @@ class ConfigBuilder<
 
   /**
    * Adds rate limiters to the configuration.
-   * @param budgets A record where keys are budget identifiers and values are arrays of RateLimitRuleConfig.
+   * All the rate limiters added using this method will automaticly be pushed to the final configuration.
+   * This method provide strong type completion around every `rayteLimitBudget` field in the configuration (e.g. in auth, networks, upstreams etc).
+   *
+   * Example:
+   * ```typescript
+   * initErpcConfig({
+   *   logLevel: "info",
+   * })
+   * .addRateLimiters({
+   *   demoBudget: [
+   *     {
+   *       method: "eth_getBlockByNumber",
+   *       waitTime: "1s",
+   *       period: "1s",
+   *       maxCount: 1000,
+   *     },
+   *   ],
+   * })
+   * .addProject({
+   *   id: "test",
+   *   rateLimitBudget: "demoBudget", // <- Strong type completion here, if you input a wrong budget id, you will get an error.
+   * })
+   * .build();
+   * ```
+   *
+   * @param budgets A record where keys are budget identifiers and values are arrays of `RateLimitRuleConfig`.
    */
-  addRateLimiters<TBudgets extends Record<string, RateLimitRuleConfig[]>>(
-    args: BuilderMethodArgs<TBudgets, TConfig, TStore>,
+  addRateLimiters<
+    TBudgets extends Record<
+      string,
+      [RateLimitRuleConfig, ...RateLimitRuleConfig[]]
+    >,
+  >(
+    budgets: TBudgets,
   ): ConfigBuilder<
-    TConfig & { rateLimiters: { budgets: TBudgets } },
-    TRateLimitBudgetKeys | (keyof TBudgets & string),
+    AddRateLimitersBudgets<
+      TConfig,
+      keyof TBudgets extends string ? keyof TBudgets : never
+    >,
     TStore
   > {
-    // Get the budgets from the args
-    const budgets =
-      typeof args === "function"
-        ? args({ config: this.config, store: this.store })
-        : args;
-
     // Format the rate limiters budgets
     const mappedRateLimiters: RateLimitBudgetConfig[] = Object.entries(
       budgets,
-    ).map(([id, rules]) => ({
-      id,
-      rules,
-    }));
+    ).map(
+      ([id, rules]) =>
+        ({
+          id,
+          rules,
+        }) as unknown as RateLimitBudgetConfig,
+    );
 
     // Push them to the configuration
     const rateLimiters = this.config.rateLimiters ?? { budgets: [] };
@@ -67,12 +97,14 @@ class ConfigBuilder<
     this.config = {
       ...this.config,
       rateLimiters,
-    } as TConfig & { rateLimiters: { budgets: TBudgets } };
+    };
 
     // Return this with the new types
     return this as unknown as ConfigBuilder<
-      TConfig & { rateLimiters: { budgets: TBudgets } },
-      TRateLimitBudgetKeys | (keyof TBudgets & string),
+      AddRateLimitersBudgets<
+        TConfig,
+        keyof TBudgets extends string ? keyof TBudgets : never
+      >,
       TStore
     >;
   }
@@ -82,21 +114,8 @@ class ConfigBuilder<
    * @param project The project configuration.
    */
   addProject<TProject extends ProjectConfig>(
-    args: BuilderMethodArgs<
-      ReplaceRateLimiter<ProjectConfig, TRateLimitBudgetKeys>,
-      TConfig,
-      TStore
-    >,
-  ): ConfigBuilder<
-    TConfig & {
-      projects: [
-        ...(TConfig["projects"] extends any[] ? TConfig["projects"] : []),
-        TProject,
-      ];
-    },
-    TRateLimitBudgetKeys,
-    TStore
-  > {
+    args: BuilderMethodArgs<ProjectConfig, TConfig, TStore>,
+  ): ConfigBuilder<AddProject<TConfig, TProject>, TStore> {
     // Get the project from the args
     const project =
       typeof args === "function"
@@ -104,55 +123,69 @@ class ConfigBuilder<
         : args;
 
     // Rebuild the project array
-    const newProjects = [
-      ...(this.config.projects || []),
-      project,
-    ] as TProject[];
+    const newProjects = [...(this.config.projects || []), project];
 
     // Push them to the config
     this.config = {
       ...this.config,
       projects: newProjects,
-    } as TConfig;
+    };
 
     // Return this with the new types
     return this as unknown as ConfigBuilder<
-      TConfig & {
-        projects: [
-          ...(TConfig["projects"] extends any[] ? TConfig["projects"] : []),
-          TProject,
-        ];
-      },
-      TRateLimitBudgetKeys,
+      AddProject<TConfig, TProject>,
       TStore
     >;
   }
 
   /**
    * Decorate the current builder with new values in it's store.
+   * This help to add some shared networks / upstreams config inside the builder sotre. The valeus could then be retreived by the builder methods.
+   * For multi projects erpc config, with a shared upstreams, it can looks like this:
+   * ```typescript
+   * initErpcConfig({
+   *  logLevel: "info",
+   * })
+   * .decorate("upstreams", {
+   *    mainNode: {
+   *      endpoint: "https://my-main-node.com",
+   *    }
+   * })
+   * .addProject(({ config, store : { upstreams } }) => ({
+   *   id: "dev-rpc",
+   *   upstreams: [upstreams.mainNode],
+   * }))
+   * .addProject(({ config, store : { upstreams } }) => ({
+   *  id: "prod-rpc",
+   *  upstreams: [upstreams.mainNode],
+   * }))
+   * .build();
+   * ```
+   *
+   * @param scope The scope to decorate (`upstreams` or `networks`).
+   * @param args The values to add to the store.
+   * @returns The builder with the new values in the store.
    */
-  decorate<TScope extends keyof TStore, TNewKeys extends string>(
-    args: DecorateArgs<TScope, TNewKeys, TRateLimitBudgetKeys, TStore, TConfig>,
+  decorate<
+    TScope extends keyof BuilderStoreValues,
+    TDecorationArgs extends Record<
+      string,
+      TScope extends keyof BuilderStoreValues
+        ? BuilderStoreValues[TScope]
+        : never
+    >,
+    TNewStoreKeys extends keyof TDecorationArgs,
+  >(
+    scope: TScope,
+    value: ConfigAwareObject<TDecorationArgs, TConfig>,
   ): ConfigBuilder<
     TConfig,
-    TRateLimitBudgetKeys,
-    TStore & {
-      [scope in TScope]: Record<
-        keyof TStore[TScope] extends never
-          ? TNewKeys
-          : keyof TStore[TScope] | TNewKeys,
-        TScope extends keyof BuilderStoreValues
-          ? BuilderStoreValues[TScope]
-          : never
-      >;
-    }
+    AddToStore<
+      TStore,
+      TScope,
+      TNewStoreKeys extends string ? TNewStoreKeys : never
+    >
   > {
-    // Extract the value we want to add
-    const { scope, value } =
-      typeof args === "function"
-        ? args({ config: this.config, store: this.store })
-        : args;
-
     // Append that value to the store
     this.store[scope] = {
       ...this.store[scope],
@@ -161,35 +194,44 @@ class ConfigBuilder<
 
     return this as unknown as ConfigBuilder<
       TConfig,
-      TRateLimitBudgetKeys,
-      TStore & {
-        [scope in TScope]: Record<
-          keyof TStore[TScope] extends never
-            ? TNewKeys
-            : keyof TStore[TScope] | TNewKeys,
-          TScope extends keyof BuilderStoreValues
-            ? BuilderStoreValues[TScope]
-            : never
-        >;
-      }
+      AddToStore<
+        TStore,
+        TScope,
+        TNewStoreKeys extends string ? TNewStoreKeys : never
+      >
     >;
   }
 
   /**
    * Builds the final configuration.
+   * This should be the last statement of every builder chains, and if not used, the erpc server instance wouin't be able to resulve the current config.
+   * @returns The final erpc `Config` object, containing everything we want.
+   * @throws If the configuration isn't valid (e.g. no projects)
    */
-  build(): TConfig extends Config ? Config : never {
-    return this.config as any;
+  build(): Config {
+    if (!this.config.projects || this.config.projects.length === 0) {
+      throw new Error("No projects added to the configuration");
+    }
+    return this.config as Config;
   }
 }
 
 /**
  * Initializes the ERPC configuration builder.
- * @param baseConfig The base configuration without rate limiters and projects.
- * @returns A new builder instance.
+ * Example:
+ * ```typescript
+ * initErpcConfig({
+ *  logLevel: "info",
+ * })
+ *  // some configuration via builder here
+ * .build();
+ * ```
+ *
+ * @param `baseConfig` The erpc configuration without rate limiters and projects (log level, servers config, databases etc).
+ * @returns A fresh builder instance.
  */
 export function initErpcConfig<
-  T extends Omit<Config, "rateLimiters" | "projects">,
->(baseConfig: T): ConfigBuilder<T, never> {
-  return new ConfigBuilder<T, never>(baseConfig);
+  TInitial extends Omit<Config, "rateLimiters" | "projects">,
+>(baseConfig: TInitial): ConfigBuilder<TInitial, BuilderStore<never, never>> {
+  return new ConfigBuilder(baseConfig);
 }

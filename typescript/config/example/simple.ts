@@ -1,4 +1,4 @@
-import { initErpcConfig } from "../dist/index.js";
+import { initErpcConfig } from "../src";
 
 /**
  * Very simple example, creating a config with:
