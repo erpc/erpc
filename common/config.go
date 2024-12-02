@@ -44,21 +44,33 @@ func (c *Config) HasRateLimiterBudget(id string) bool {
 }
 
 type ServerConfig struct {
-	ListenV4     *bool      `yaml:"listenV4,omitempty" json:"listenV4"`
-	HttpHostV4   *string    `yaml:"httpHostV4,omitempty" json:"httpHostV4"`
-	ListenV6     *bool      `yaml:"listenV6,omitempty" json:"listenV6"`
-	HttpHostV6   *string    `yaml:"httpHostV6,omitempty" json:"httpHostV6"`
-	HttpPort     *int       `yaml:"httpPort,omitempty" json:"httpPort"`
-	MaxTimeout   *string    `yaml:"maxTimeout,omitempty" json:"maxTimeout"`
-	ReadTimeout  *string    `yaml:"readTimeout,omitempty" json:"readTimeout"`
-	WriteTimeout *string    `yaml:"writeTimeout,omitempty" json:"writeTimeout"`
-	EnableGzip   *bool      `yaml:"enableGzip,omitempty" json:"enableGzip"`
-	TLS          *TLSConfig `yaml:"tls,omitempty" json:"tls"`
+	ListenV4     *bool           `yaml:"listenV4,omitempty" json:"listenV4"`
+	HttpHostV4   *string         `yaml:"httpHostV4,omitempty" json:"httpHostV4"`
+	ListenV6     *bool           `yaml:"listenV6,omitempty" json:"listenV6"`
+	HttpHostV6   *string         `yaml:"httpHostV6,omitempty" json:"httpHostV6"`
+	HttpPort     *int            `yaml:"httpPort,omitempty" json:"httpPort"`
+	MaxTimeout   *string         `yaml:"maxTimeout,omitempty" json:"maxTimeout"`
+	ReadTimeout  *string         `yaml:"readTimeout,omitempty" json:"readTimeout"`
+	WriteTimeout *string         `yaml:"writeTimeout,omitempty" json:"writeTimeout"`
+	EnableGzip   *bool           `yaml:"enableGzip,omitempty" json:"enableGzip"`
+	TLS          *TLSConfig      `yaml:"tls,omitempty" json:"tls"`
+	Aliasing     *AliasingConfig `yaml:"aliasing" json:"aliasing"`
 }
 
 type AdminConfig struct {
 	Auth *AuthConfig `yaml:"auth" json:"auth"`
 	CORS *CORSConfig `yaml:"cors" json:"cors"`
+}
+
+type AliasingConfig struct {
+	Rules []*AliasingRuleConfig `yaml:"rules" json:"rules"`
+}
+
+type AliasingRuleConfig struct {
+	MatchDomain       string `yaml:"matchDomain" json:"matchDomain"`
+	ServeProject      string `yaml:"serveProject" json:"serveProject"`
+	ServeArchitecture string `yaml:"serveArchitecture" json:"serveArchitecture"`
+	ServeChain        string `yaml:"serveChain" json:"serveChain"`
 }
 
 type DatabaseConfig struct {
