@@ -228,7 +228,9 @@ export default createConfig({
           },
 
           // (OPTIONAL) Which methods must never be sent to this upstream.
-          // For example this can be used to avoid archive calls (traces) to full nodes
+          // For example this can be used to avoid archive calls (traces) to full nodes.
+          // Note if ignoreMethods is NOT defined and allowMethods is defined, a ['*'] will be added automatically,
+          // to ignore all other methods by default. To change this behavior you can explicitly set ignoreMethods to any desired value.
           ignoreMethods: [
             "eth_traceTransaction",
             "alchemy_*",
@@ -278,6 +280,61 @@ export default createConfig({
 ```
 </Tabs.Tab>
 </Tabs>
+
+
+### Config defaults
+
+The `project.upstreamDefaults` configuration allows you to set default values for all [`upstreams`](/config/projects/upstreams) in a project. These defaults are applied before any upstream-specific configurations:
+
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    
+    upstreams:
+      # ... example above ^
+    
+    upstreamDefaults:
+      # Default group for all upstreams
+      group: "default"
+      
+      # Default JSON-RPC settings
+      jsonRpc:
+        supportsBatch: true
+        batchMaxSize: 10
+        batchMaxWait: "50ms"
+      
+      # Default failsafe policies
+      failsafe:
+        timeout:
+          duration: "15s"
+        retry:
+          maxAttempts: 3
+          delay: "300ms"
+          jitter: "100ms"
+          backoffMaxDelay: "5s"
+          backoffFactor: 1.5
+        circuitBreaker:
+          failureThresholdCount: 160
+          failureThresholdCapacity: 200
+          halfOpenAfter: "5m"
+          successThresholdCount: 3
+          successThresholdCapacity: 3
+
+      # Default method filters
+      ignoreMethods:
+        - "eth_traceTransaction"
+        - "alchemy_*"
+      allowMethods:
+        - "eth_getLogs"
+```
+
+Default values are only applied if the upstream doesn't have those values explicitly set. This allows you to have consistent configuration across all upstreams while still maintaining the ability to override specific values when needed.
+
+<Callout type='info'>
+  Defaults are merged on the first-level only (and not a deep merge).<br />
+  i.e. If an upstream has its own `failsafe:` defined, it will not take any of policies from upstreamDefaults.<br />
+  e.g. if an upstream.failsafe only has "timeout" policy, it will **NOT** get retry/circuitBreaker from upstreamDefaults (those will be disabled).
+</Callout>
 
 ## Priority & selection mechanism
 
