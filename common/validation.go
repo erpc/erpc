@@ -328,6 +328,11 @@ func (p *ProjectConfig) Validate(c *Config) error {
 	if p.Id == "" {
 		return fmt.Errorf("project id is required")
 	}
+	if p.UpstreamDefaults != nil {
+		if err := p.UpstreamDefaults.ValidateForDefaults(); err != nil {
+			return err
+		}
+	}
 	if p.Upstreams != nil && len(p.Upstreams) > 0 {
 		existingIds := make(map[string]bool)
 		for _, upstream := range p.Upstreams {
@@ -466,6 +471,13 @@ func (c *CORSConfig) Validate() error {
 func (h *HealthCheckConfig) Validate() error {
 	if h.ScoreMetricsWindowSize == "" {
 		return fmt.Errorf("project.*.healthCheck.scoreMetricsWindowSize is required")
+	}
+	return nil
+}
+
+func (u *UpstreamConfig) ValidateForDefaults() error {
+	if u.Id != "" {
+		return fmt.Errorf("upstreamDefaults.*.id is not allowed")
 	}
 	return nil
 }
