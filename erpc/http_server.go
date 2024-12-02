@@ -42,7 +42,21 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 		if cfg.MaxTimeout != nil && *cfg.MaxTimeout != "" {
 			logger.Error().Err(err).Msgf("failed to parse max timeout duration using 30s default")
 		}
-		reqMaxTimeout = 30 * time.Second
+		reqMaxTimeout = 150 * time.Second
+	}
+	readTimeout := 30 * time.Second
+	if cfg.ReadTimeout != nil {
+		readTimeout, err = time.ParseDuration(*cfg.ReadTimeout)
+		if err != nil {
+			logger.Error().Err(err).Msgf("failed to parse read timeout duration using 30s default")
+		}
+	}
+	writeTimeout := 120 * time.Second
+	if cfg.WriteTimeout != nil {
+		writeTimeout, err = time.ParseDuration(*cfg.WriteTimeout)
+		if err != nil {
+			logger.Error().Err(err).Msgf("failed to parse write timeout duration using 120s default")
+		}
 	}
 
 	srv := &HttpServer{
@@ -62,8 +76,8 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 			h,
 			reqMaxTimeout,
 		),
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		ReadTimeout:  readTimeout,
+		WriteTimeout: writeTimeout,
 	}
 
 	go func() {

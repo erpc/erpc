@@ -369,7 +369,13 @@ func (s *ServerConfig) SetDefaults() {
 		s.HttpPort = util.IntPtr(4000)
 	}
 	if s.MaxTimeout == nil {
-		s.MaxTimeout = util.StringPtr("30s")
+		s.MaxTimeout = util.StringPtr("150s")
+	}
+	if s.ReadTimeout == nil {
+		s.ReadTimeout = util.StringPtr("30s")
+	}
+	if s.WriteTimeout == nil {
+		s.WriteTimeout = util.StringPtr("120s")
 	}
 	if s.EnableGzip == nil {
 		s.EnableGzip = util.BoolPtr(true)
