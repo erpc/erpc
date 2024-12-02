@@ -36,6 +36,9 @@ type RequestDirectives struct {
 	// Value can use "*" star char as a wildcard to target multiple upstreams.
 	// For example "alchemy" or "my-own-*", etc.
 	UseUpstream string `json:"useUpstream"`
+
+	// Instruct the proxy to bypass method exclusion checks.
+	ByPassMethodExclusion bool `json:"byPassMethodExclusion"`
 }
 
 type NormalizedRequest struct {
