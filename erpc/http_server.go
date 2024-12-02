@@ -105,7 +105,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		}
 
 		if isHealthCheck {
-			s.handleHealthCheck(w, &startedAt, encoder, writeFatalError)
+			s.handleHealthCheck(w, &startedAt, projectId, encoder, writeFatalError)
 			return
 		}
 
@@ -391,7 +391,6 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		handleRequest(r, w, writeFatalError)
 	})
 }
-
 func (s *HttpServer) parseUrlPath(r *http.Request) (
 	projectId, architecture, chainId string,
 	isAdmin bool,
@@ -401,7 +400,8 @@ func (s *HttpServer) parseUrlPath(r *http.Request) (
 	ps := path.Clean(r.URL.Path)
 	segments := strings.Split(ps, "/")
 
-	if len(segments) > 4 {
+	// Support both /healthcheck and /{projectId}/{arch}/{chainId}/healthcheck
+	if len(segments) > 5 {
 		return "", "", "", false, false, common.NewErrInvalidUrlPath(ps)
 	}
 
@@ -415,6 +415,11 @@ func (s *HttpServer) parseUrlPath(r *http.Request) (
 	} else if (isPost || isOptions) && len(segments) == 2 && segments[1] == "admin" {
 		isAdmin = true
 	} else if len(segments) == 2 && (segments[1] == "healthcheck" || segments[1] == "") {
+		isHealthCheck = true
+	} else if len(segments) == 5 && segments[4] == "healthcheck" {
+		projectId = segments[1]
+		architecture = segments[2] 
+		chainId = segments[3]
 		isHealthCheck = true
 	} else {
 		return "", "", "", false, false, common.NewErrInvalidUrlPath(ps)
