@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/health"
 	"github.com/failsafe-go/failsafe-go/ratelimiter"
 	"github.com/rs/zerolog"
 )
@@ -52,12 +53,14 @@ func (b *RateLimiterBudget) AdjustBudget(rule *RateLimitRule, newMaxCount uint) 
 		MaxCount: newMaxCount,
 		WaitTime: rule.Config.WaitTime,
 	}
-	newLimiter, err := b.registry.createRateLimiter(newCfg)
+	newLimiter, err := b.registry.createRateLimiter(b.Id, newCfg)
 	if err != nil {
 		return err
 	}
 	rule.Config = newCfg
 	rule.Limiter = newLimiter
+
+	health.MetricRateLimiterBudgetMaxCount.WithLabelValues(b.Id, rule.Config.Method).Set(float64(newMaxCount))
 
 	return nil
 }
