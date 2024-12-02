@@ -189,7 +189,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			return nil, err
 		}
 
-		resp, err = u.Forward(ctx, req)
+		resp, err = u.Forward(ctx, req, false)
 
 		if !common.IsNull(err) {
 			// If upstream complains that the method is not supported let's dynamically add it ignoreMethods config

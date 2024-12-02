@@ -293,7 +293,7 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 	))
 	pr.SetNetwork(e.network)
 
-	resp, err := e.upstream.Forward(ctx, pr)
+	resp, err := e.upstream.Forward(ctx, pr, true)
 	if err != nil {
 		return 0, err
 	}
@@ -326,7 +326,7 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_syncing","params":[]}`, util.RandomID())))
 	pr.SetNetwork(e.network)
 
-	resp, err := e.upstream.Forward(ctx, pr)
+	resp, err := e.upstream.Forward(ctx, pr, true)
 	if err != nil {
 		if common.HasErrorCode(err,
 			common.ErrCodeEndpointClientSideException,
