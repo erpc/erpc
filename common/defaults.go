@@ -505,6 +505,9 @@ func (d *DynamoDBConnectorConfig) SetDefaults() {
 func (p *ProjectConfig) SetDefaults() {
 	if p.Upstreams != nil {
 		for _, upstream := range p.Upstreams {
+			if p.UpstreamDefaults != nil {
+				upstream.ApplyDefaults(p.UpstreamDefaults)
+			}
 			upstream.SetDefaults()
 		}
 	}
@@ -523,6 +526,45 @@ func (p *ProjectConfig) SetDefaults() {
 		p.HealthCheck = &HealthCheckConfig{}
 	}
 	p.HealthCheck.SetDefaults()
+}
+
+func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) {
+	if defaults == nil {
+		return
+	}
+
+	// Only apply if not already set by user
+	if u.Group == "" {
+		u.Group = defaults.Group
+	}
+
+	if u.Failsafe == nil {
+		u.Failsafe = defaults.Failsafe
+	}
+
+	if u.RateLimitAutoTune == nil && u.RateLimitBudget == "" && defaults.RateLimitAutoTune != nil {
+		u.RateLimitAutoTune = defaults.RateLimitAutoTune
+	}
+
+	if u.Evm == nil && defaults.Evm != nil {
+		u.Evm = defaults.Evm
+	}
+
+	if u.JsonRpc == nil && defaults.JsonRpc != nil {
+		u.JsonRpc = defaults.JsonRpc
+	}
+
+	if u.Routing == nil && defaults.Routing != nil {
+		u.Routing = defaults.Routing
+	}
+
+	// Apply default methods if none specified
+	if u.AllowMethods == nil && defaults.AllowMethods != nil {
+		u.AllowMethods = defaults.AllowMethods
+	}
+	if u.IgnoreMethods == nil && defaults.IgnoreMethods != nil {
+		u.IgnoreMethods = defaults.IgnoreMethods
+	}
 }
 
 func (u *UpstreamConfig) SetDefaults() {

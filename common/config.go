@@ -270,14 +270,15 @@ func (a *AwsAuthConfig) MarshalJSON() ([]byte, error) {
 }
 
 type ProjectConfig struct {
-	Id              string             `yaml:"id" json:"id"`
-	Auth            *AuthConfig        `yaml:"auth,omitempty" json:"auth"`
-	CORS            *CORSConfig        `yaml:"cors,omitempty" json:"cors"`
-	Upstreams       []*UpstreamConfig  `yaml:"upstreams" json:"upstreams"`
-	NetworkDefaults *NetworkDefaults   `yaml:"networkDefaults,omitempty" json:"networkDefaults"`
-	Networks        []*NetworkConfig   `yaml:"networks,omitempty" json:"networks"`
-	RateLimitBudget string             `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
-	HealthCheck     *HealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
+	Id               string             `yaml:"id" json:"id"`
+	Auth             *AuthConfig        `yaml:"auth,omitempty" json:"auth"`
+	CORS             *CORSConfig        `yaml:"cors,omitempty" json:"cors"`
+	UpstreamDefaults *UpstreamConfig    `yaml:"upstreamDefaults,omitempty" json:"upstreamDefaults"`
+	Upstreams        []*UpstreamConfig  `yaml:"upstreams" json:"upstreams"`
+	NetworkDefaults  *NetworkDefaults   `yaml:"networkDefaults,omitempty" json:"networkDefaults"`
+	Networks         []*NetworkConfig   `yaml:"networks,omitempty" json:"networks"`
+	RateLimitBudget  string             `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
+	HealthCheck      *HealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
 }
 
 type NetworkDefaults struct {
