@@ -107,6 +107,24 @@ To have more control over the configuration, you can use the example below.
 # - error: these are problems that have end-user impact, such as misconfigurations.
 logLevel: warn
 
+# The main server for eRPC to listen for requests.
+server:
+  listenV4: true
+  httpHostV4: "0.0.0.0"
+  listenV6: false
+  httpHostV6: "[::]"
+  httpPort: 4000
+  maxTimeout: 30s
+  readTimeout: 10s
+  writeTimeout: 20s
+  enableGzip: true
+  tls:
+    enabled: false
+    certFile: "/path/to/cert.pem"
+    keyFile: "/path/to/key.pem"
+    caFile: "/path/to/ca.pem"  # Optional, for client cert verification
+    insecureSkipVerify: false  # Optional, defaults to false
+
 # There are various use-cases of database in erpc, such as caching, dynamic configs, rate limit persistence, etc.
 database:
   # `evmJsonRpcCache` defines the destination for caching JSON-RPC cals towards any EVM architecture upstream.
@@ -152,22 +170,6 @@ database:
         finality: finalized
         connector: postgres-cache
         ttl: 1d
-
-# The main server for eRPC to listen for requests.
-server:
-  listenV4: true
-  httpHostV4: "0.0.0.0"
-  listenV6: false
-  httpHostV6: "[::]"
-  httpPort: 4000
-  maxTimeout: 30s
-  enableGzip: true
-  tls:
-    enabled: false
-    certFile: "/path/to/cert.pem"
-    keyFile: "/path/to/key.pem"
-    caFile: "/path/to/ca.pem"  # Optional, for client cert verification
-    insecureSkipVerify: false  # Optional, defaults to false
 
 # Optional Prometheus metrics server.
 metrics:
