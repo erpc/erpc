@@ -809,6 +809,9 @@ func (c *CircuitBreakerPolicyConfig) SetDefaults(defaults *CircuitBreakerPolicyC
 }
 
 func (r *RateLimitAutoTuneConfig) SetDefaults() {
+	if r.Enabled == nil {
+		r.Enabled = util.BoolPtr(true)
+	}
 	if r.AdjustmentPeriod == "" {
 		r.AdjustmentPeriod = "1m"
 	}
