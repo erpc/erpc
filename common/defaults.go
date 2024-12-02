@@ -570,6 +570,14 @@ func (u *UpstreamConfig) SetDefaults() {
 	if u.Routing != nil {
 		u.Routing.SetDefaults()
 	}
+
+	// By default if any allowed methods are specified, all other methods are ignored (unless ignoreMethods is explicitly defined by user)
+	// Similar to how common network security policies work.
+	if u.AllowMethods != nil {
+		if u.IgnoreMethods == nil {
+			u.IgnoreMethods = []string{"*"}
+		}
+	}
 }
 
 func (e *EvmUpstreamConfig) SetDefaults() {
