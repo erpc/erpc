@@ -15,6 +15,8 @@ import (
 const FullySyncedThreshold = 4
 
 type EvmStatePoller struct {
+	Enabled  bool
+
 	logger   *zerolog.Logger
 	upstream *Upstream
 	network  common.Network
@@ -83,7 +85,14 @@ func (e *EvmStatePoller) initialize(ctx context.Context) error {
 		return fmt.Errorf("invalid state poller interval: %v", err)
 	}
 
-	e.logger.Info().Msgf("bootstraped evm state poller to track upstream latest, finalized blocks and syncing states")
+	if interval == 0 {
+		e.logger.Debug().Msg("skipping evm state poller for upstream as interval is 0")
+		return nil
+	} else {
+		e.logger.Info().Msgf("bootstraped evm state poller to track upstream latest, finalized blocks and syncing states")
+	}
+
+	e.Enabled = true
 
 	go (func() {
 		ticker := time.NewTicker(interval)

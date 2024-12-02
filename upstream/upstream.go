@@ -199,8 +199,10 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 	startTime := time.Now()
 	cfg := u.Config()
 
-	if reason, skip := u.shouldSkip(req); skip {
-		return nil, common.NewErrUpstreamRequestSkipped(reason, cfg.Id)
+	if !byPassMethodExclusion {
+		if reason, skip := u.shouldSkip(req); skip {
+			return nil, common.NewErrUpstreamRequestSkipped(reason, cfg.Id)
+		}
 	}
 
 	clientType := u.Client.GetType()

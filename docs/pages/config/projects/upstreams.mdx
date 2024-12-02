@@ -538,6 +538,8 @@ projects:
           # DEFAULT: auto-detected.
           chainId: 42161
           # (OPTIONAL) statePollerInterval used to periodically fetch the latest/finalized/sync states.
+          # To disable state polling set this value to 0, which means no regular calls to RPC for latest/finalized/sync states.
+          # The consequence of this is all data will be considered "unfinalized" or "unknown" despite their block numbers (and where if theye're actually finalized or not).
           # DEFAULT: 30s.
           statePollerInterval: 30s
           # (OPTIONAL) nodeType is optional and you can manually set it to "full" or "archive".
