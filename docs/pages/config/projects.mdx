@@ -14,8 +14,10 @@ The `projects:` array is the top-most configuration, and it is required to have 
 
 - `id:` a unique identifier used in logs and metrics.
 - [`rateLimitBudget:`](/config/rate-limiters) a budget for the total number of requests that this project is allowed to serve.
-- [`networks:`](#networks) an array of custom configuration for one or more of the supported networks.
-- [`upstreams:`](#upstreams) an array of all upstreams to use in this project.
+- [`networks:`](/config/projects/networks) an array of custom configuration for one or more of the supported networks.
+- [`networkDefaults:`](/config/projects/networks#config-defaults) default configuration for all networks in this project.
+- [`upstreams:`](/config/projects/upstreams) an array of all upstreams to use in this project.
+- [`upstreamDefaults:`](/config/projects/upstreams#config-defaults) default configuration for all upstreams in this project.
 
 #### Example
 
