@@ -249,3 +249,11 @@ rateLimitAutoTune:
 </Tabs>
 
 You can override these defaults by specifying the desired values in your configuration.
+
+### Metrics
+
+The following metrics are available for rate limiter budgets:
+
+- `erpc_rate_limiter_budget_max_count` with labels `budget` and `method`
+
+This metrics shows how maxCount is adjusted over time if auto-tuning is enabled.
