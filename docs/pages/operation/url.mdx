@@ -1,14 +1,16 @@
 ---
-description: URL structure for eRPC...
+description: URL structure for eRPC clients...
 ---
 
 import { Callout } from "nextra/components";
 
 # URL
 
-eRPC supports two endpoints, one for single-chain requests and one for multi-chain requests.
+eRPC supports several URL patterns for making requests, with options for both single-chain and multi-chain endpoints.
 
 ## Single-chain requests
+
+### Standard URL pattern
 
 When making requests only for a single chain, you can use this URL structure:
 
@@ -28,7 +30,6 @@ Target network architecture you configured in [erpc.yaml](/config/example), for 
 ##### `<chain-id>`
 Target chain ID that one or more upstreams support, for example `1` or `42161`.
 
-
 ```bash
 # A cURL example of sending a request to a project named "main" and Ethereum mainnet chain:
 
@@ -44,6 +45,103 @@ curl --location 'http://localhost:4000/main/evm/1' \
     "jsonrpc": "2.0"
 }'
 ```
+
+### Domain aliasing
+If configured with domain aliasing, you can have predefined project and network values:
+
+```yaml filename="erpc.yaml"
+server:
+  # ...
+  aliasing:
+    rules:
+      - matchDomain: "*" # (OPTIONAL) Pattern to match Host header, defaults to `*` (all domains)
+      - serveProject: "main" # (OPTIONAL) Project ID to serve for matched domains
+      - serveArchitecture: "evm" # (OPTIONAL) Network architecture (e.g., "evm")
+      - serveChain: "1" # (OPTIONAL) Chain ID (e.g., "1" for Ethereum mainnet)
+```
+
+#### Configuration examples
+
+- **No aliasing** - full URL is required
+```yaml
+aliasing: ~
+```
+```
+https://api.myservice.com/main/evm/1
+```
+
+- **Project only**
+```yaml
+server:
+  aliasing:
+    rules:
+      - matchDomain: "api.myservice.com"
+        serveProject: "main"
+```
+```
+https://api.myservice.com/evm/1
+```
+
+- **Project and architecture**
+```yaml
+server:
+  aliasing:
+    rules:
+      - matchDomain: "evm.myservice.com"
+        serveProject: "main"
+        serveArchitecture: "evm"
+```
+```
+https://evm.myservice.com/1
+```
+
+- **Full aliasing**
+```yaml
+server:
+  aliasing:
+    rules:
+      - matchDomain: "eth.myservice.com"
+        serveProject: "main"
+        serveArchitecture: "evm"
+        serveChain: "1"
+```
+```
+https://eth.myservice.com
+```
+
+#### Multiple rules example
+
+You can define multiple rules to handle different domains:
+
+```yaml
+server:
+  aliasing:
+    rules:
+      # Ethereum Mainnet specific endpoint
+      - matchDomain: "eth.myservice.com"
+        serveProject: "main"
+        serveArchitecture: "evm"
+        serveChain: "1"
+      
+      # Arbitrum specific endpoint
+      - matchDomain: "arbitrum.myservice.com"
+        serveProject: "main"
+        serveArchitecture: "evm"
+        serveChain: "42161"
+      
+      # Generic EVM endpoint (requires chain ID in URL)
+      - matchDomain: "evm.myservice.com"
+        serveProject: "main"
+        serveArchitecture: "evm"
+      
+      # Project-specific endpoint (requires architecture and chain in URL)
+      - matchDomain: "api.myservice.com"
+        serveProject: "main"
+```
+
+<Callout type="info">
+  Alias domains are matched with `Host` header using [matcher syntax](/config/matcher)
+</Callout>
 
 ## Multi-chain requests
 
@@ -104,3 +202,21 @@ curl http://localhost:4000/main/evm/1/healthcheck -v
 <Callout type="info">
 The healthcheck endpoints verify active upstreams (i.e. those which received at least 1 request) for total error rate, and will return a non-200 response if all endpoints have a +99% error rate. For project-specific healthchecks, only the upstreams for the specified network are checked.
 </Callout>
+
+### Aliasing healthcheck
+
+If you have configured domain aliasing, you can append the `/healthcheck` to the URL:
+
+```bash
+# When aliasing is NOT used:
+curl http://eth.myapi.com/main/evm/42161/healthcheck -v
+
+# When only project is aliased:
+curl http://eth.myapi.com/evm/42161/healthcheck -v
+
+# When only project and network architecture is aliased:
+curl http://eth.myapi.com/42161/healthcheck -v
+
+# When all project, network architecture and chain are aliased:
+curl http://eth.myapi.com/healthcheck -v
+```

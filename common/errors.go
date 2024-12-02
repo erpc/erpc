@@ -286,11 +286,11 @@ type ErrInvalidUrlPath struct{ BaseError }
 
 const ErrCodeInvalidUrlPath ErrorCode = "ErrInvalidUrlPath"
 
-var NewErrInvalidUrlPath = func(path string) error {
+var NewErrInvalidUrlPath = func(reason, path string) error {
 	return &ErrInvalidUrlPath{
 		BaseError{
 			Code:    ErrCodeInvalidUrlPath,
-			Message: "path URL must be 3 segments like /<projectId>/<architecture>/<networkId> e.g. /main/evm/42161",
+			Message: fmt.Sprintf("url path is not valid: %s", reason),
 			Details: map[string]interface{}{
 				"providedPath": path,
 			},
@@ -400,10 +400,7 @@ var NewErrProjectNotFound = func(projectId string) error {
 	return &ErrProjectNotFound{
 		BaseError{
 			Code:    "ErrProjectNotFound",
-			Message: "project not configured in the config",
-			Details: map[string]interface{}{
-				"projectId": projectId,
-			},
+			Message: fmt.Sprintf("project '%s' not configured in the config", projectId),
 		},
 	}
 }

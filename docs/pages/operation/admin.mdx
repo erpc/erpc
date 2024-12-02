@@ -1,0 +1,236 @@
+---
+description: Administrative operations for eRPC...
+---
+
+## Admin endpoint
+
+Administrative operations are available through:
+```
+https://<hostname>/admin
+```
+
+Admin endpoints require authentication configured under root `admin` section:
+```yaml filename="erpc.yaml"
+admin:
+  auth:
+    strategies:
+      - type: secret
+        secret:
+          value: <your-secret>
+
+server:
+  # ...
+projects:
+  # ...
+```
+### Available admin methods
+
+#### erpc_taxonomy
+Returns a taxonomy of projects, networks, and upstreams configured in the system.
+
+**Example request:**
+```bash
+curl --location 'http://localhost:4000/admin?secret=<your-secret-here>' \
+# OR as a header:
+# --header 'X-ERPC-Secret-Token: <your-secret-here>' \
+--header 'Content-Type: application/json' \
+--data '{
+    "method": "erpc_taxonomy",
+    "id": 1,
+    "jsonrpc": "2.0"
+}'
+```
+
+**Example Response:**
+```json
+{
+    "jsonrpc": "2.0",
+    "result": {
+        "projects": [
+            {
+                "id": "frontend",
+                "networks": [
+                    {
+                        "id": "evm:1",
+                        "upstreams": [
+                            {
+                                "id": "blastapi-test"
+                            },
+                            {
+                                "id": "my-alchemy"
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+}
+```
+
+#### erpc_project
+Returns detailed configuration and upstream scoring/health information for a specific project.
+
+**Example request:**
+```bash
+curl --location 'http://localhost:4000/admin?secret=<your-secret-here>' \
+# OR as a header:
+# --header 'X-ERPC-Secret-Token: <your-secret-here>' \
+--header 'Content-Type: application/json' \
+--data '{
+    "method": "erpc_project",
+    "params": ["main"],
+    "id": 1,
+    "jsonrpc": "2.0"
+}'
+```
+
+**Example response:**
+```json
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+        "config": {
+            "id": "frontend",
+            "cors": { /* ... */ },
+            "upstreams": [
+                {
+                    "id": "blastapi-test",
+                    "endpoint": "blastapi#redacted=e6401",
+                    "type": "evm",
+                    "ignoreMethods": [
+                        "*"
+                    ],
+                    "allowMethods": [
+                        "eth_blockNumber"
+                    ],
+                },
+                // ...
+            ],
+            "networks": [
+                {
+                    "architecture": "evm",
+                    "evm": {
+                        "chainId": 1,
+                        "fallbackFinalityDepth": 1024
+                    },
+                    "rateLimitBudget": "my-network-budget",
+                    // ...
+                }
+            ],
+            "rateLimitBudget": "my-project-budget",
+            // ...
+        },
+        "health": {
+            "upstreams": [
+                {
+                    "id": "blastapi#redacted=e6401",
+                    "metrics": {
+                        "evm:1|eth_blockNumber": {
+                            "errorsTotal": 0,
+                            "remoteRateLimitedTotal": 0,
+                            "blockHeadLag": 0,
+                            "finalizationLag": 0,
+                            "cordoned": false,
+                            "latencySecs": {
+                                "p90": 0.110877458
+                            },
+                            "selfRateLimitedTotal": 0,
+                            "requestsTotal": 1,
+                            "cordonedReason": null
+                        },
+                        "*|eth_blockNumber": {
+                            "blockHeadLag": 0,
+                            "cordoned": false,
+                            "cordonedReason": null,
+                            "selfRateLimitedTotal": 0,
+                            "errorsTotal": 0,
+                            "remoteRateLimitedTotal": 0,
+                            "requestsTotal": 1,
+                            "finalizationLag": 0,
+                            "latencySecs": {
+                                "p90": 0.110877458
+                            }
+                        },
+                        "evm:1|*": {
+                            "blockHeadLag": 0,
+                            "finalizationLag": 0,
+                            "cordoned": false,
+                            "cordonedReason": null,
+                            "latencySecs": {
+                                "p90": 0.110877458
+                            },
+                            "errorsTotal": 0,
+                            "remoteRateLimitedTotal": 0,
+                            "selfRateLimitedTotal": 0,
+                            "requestsTotal": 1
+                        },
+                        "*|*": {
+                            "blockHeadLag": 0,
+                            "finalizationLag": 0,
+                            "latencySecs": {
+                                "p90": 0.110877458
+                            },
+                            "selfRateLimitedTotal": 0,
+                            "remoteRateLimitedTotal": 0,
+                            "requestsTotal": 1,
+                            "errorsTotal": 0,
+                            "cordoned": false,
+                            "cordonedReason": null
+                        }
+                    },
+                    "activeNetworks": [
+                        "evm:1"
+                    ]
+                },
+                // ...
+            ],
+            "sortedUpstreams": {
+                "evm:1": {
+                    "*": [
+                        "my-alchemy",
+                        "blastapi-test"
+                    ],
+                    "eth_blockNumber": [
+                        "my-alchemy",
+                        "blastapi-test"
+                    ]
+                },
+                "*": {
+                    "*": [
+                        "blastapi-test",
+                        "my-alchemy"
+                    ],
+                    "eth_blockNumber": [
+                        "my-alchemy",
+                        "blastapi-test"
+                    ]
+                }
+            },
+            "upstreamScores": {
+                "blastapi-test": {
+                    "evm:1": {
+                        "eth_blockNumber": 14,
+                        "*": 14
+                    },
+                    "*": {
+                        "*": 15.41420133288338,
+                        "eth_blockNumber": 14
+                    }
+                },
+                "my-alchemy": {
+                    "evm:1": {
+                        "*": 19,
+                        "eth_blockNumber": 19
+                    },
+                    "*": {
+                        "eth_blockNumber": 19,
+                        "*": 14
+                    }
+                }
+            }
+        }
+    }
+}
+```

@@ -555,7 +555,7 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) {
 		u.RateLimitAutoTune = defaults.RateLimitAutoTune
 	}
 	// IMPORTANT: Some of the configs must be copied vs referenced, because the object might be updated in runtime onyl this specific upstream
-	// TODO Should we refactor so this won't happen 
+	// TODO Should we refactor so this won't happen
 	if u.Evm == nil && defaults.Evm != nil {
 		u.Evm = &EvmUpstreamConfig{
 			ChainId:                  defaults.Evm.ChainId,
