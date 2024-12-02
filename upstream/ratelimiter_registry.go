@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/health"
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/failsafe-go/failsafe-go/ratelimiter"
 	"github.com/rs/zerolog"
@@ -45,7 +46,7 @@ func (r *RateLimitersRegistry) bootstrap() error {
 		for _, rule := range budgetCfg.Rules {
 			r.logger.Debug().Msgf("preparing rate limiter rule: %v", rule)
 
-			limiter, err := r.createRateLimiter(rule)
+			limiter, err := r.createRateLimiter(budgetCfg.Id, rule)
 			if err != nil {
 				return err
 			}
@@ -64,7 +65,7 @@ func (r *RateLimitersRegistry) bootstrap() error {
 	return nil
 }
 
-func (r *RateLimitersRegistry) createRateLimiter(rule *common.RateLimitRuleConfig) (ratelimiter.RateLimiter[interface{}], error) {
+func (r *RateLimitersRegistry) createRateLimiter(budgetId string, rule *common.RateLimitRuleConfig) (ratelimiter.RateLimiter[interface{}], error) {
 	duration, err := time.ParseDuration(rule.Period)
 	if err != nil {
 		return nil, common.NewErrRateLimitInvalidConfig(fmt.Errorf("failed to parse duration for limit %v: %w", rule, err))
@@ -85,7 +86,10 @@ func (r *RateLimitersRegistry) createRateLimiter(rule *common.RateLimitRuleConfi
 	})
 
 	limiter := builder.Build()
-	r.logger.Debug().Msgf("rate limiter rule prepared: %v with max: %d duration: %d", limiter, rule.MaxCount, duration)
+	r.logger.Debug().Str("budget", budgetId).Str("method", rule.Method).Msgf("rate limiter rule prepared with max: %d per %s", rule.MaxCount, rule.Period)
+
+	health.MetricRateLimiterBudgetMaxCount.WithLabelValues(budgetId, rule.Method).Set(float64(rule.MaxCount))
+
 	return limiter, nil
 }
 

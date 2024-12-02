@@ -176,6 +176,12 @@ var (
 		Help:      "Total number of self-imposed (locally) rate limited requests towards the project.",
 	}, []string{"project", "category"})
 
+	MetricRateLimiterBudgetMaxCount = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "rate_limiter_budget_max_count",
+		Help:      "Maximum number of requests allowed per second for a rate limiter budget (including auto-tuner).",
+	}, []string{"budget", "method"})
+
 	MetricAuthRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "auth_request_self_rate_limited_total",
