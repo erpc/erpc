@@ -15,7 +15,7 @@ import (
 const FullySyncedThreshold = 4
 
 type EvmStatePoller struct {
-	Enabled  bool
+	Enabled bool
 
 	logger   *zerolog.Logger
 	upstream *Upstream

@@ -8,6 +8,8 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -15,8 +17,10 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -2011,7 +2015,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 
 				assert.Contains(t, errorResponse, "error")
 				errorObj := errorResponse["error"].(map[string]interface{})
-				assert.Contains(t, errorObj["message"], "project not configured")
+				assert.Contains(t, errorObj["message"], "not configured")
 			})
 
 			t.Run("UpstreamLatencyAndTimeout", func(t *testing.T) {
@@ -2925,6 +2929,400 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 		assert.Equal(t, "https://erpc.cloud", headers["Access-Control-Allow-Origin"])
 		assert.Equal(t, "POST", headers["Access-Control-Allow-Methods"])
 	})
+}
+
+func TestHttpServer_ParseUrlPath(t *testing.T) {
+	tests := []struct {
+		name               string
+		path               string
+		method             string
+		preSelectedProject string
+		preSelectedArch    string
+		preSelectedChain   string
+		wantProject        string
+		wantArch           string
+		wantChain          string
+		wantAdmin          bool
+		wantHealthcheck    bool
+		wantErr            bool
+		errContains        string
+	}{
+		{
+			name:        "Basic path with all segments",
+			path:        "/myproject/evm/1",
+			method:      "POST",
+			wantProject: "myproject",
+			wantArch:    "evm",
+			wantChain:   "1",
+			wantAdmin:   false,
+			wantErr:     false,
+		},
+		{
+			name:        "Admin endpoint",
+			path:        "/admin",
+			method:      "POST",
+			wantProject: "",
+			wantArch:    "",
+			wantChain:   "",
+			wantAdmin:   true,
+			wantErr:     false,
+		},
+		{
+			name:        "Admin endpoint with OPTIONS",
+			path:        "/admin",
+			method:      "OPTIONS",
+			wantProject: "",
+			wantArch:    "",
+			wantChain:   "",
+			wantAdmin:   true,
+			wantErr:     false,
+		},
+		{
+			name:            "Root healthcheck GET",
+			path:            "/",
+			method:          "GET",
+			wantProject:     "",
+			wantArch:        "",
+			wantChain:       "",
+			wantAdmin:       false,
+			wantHealthcheck: true,
+			wantErr:         false,
+		},
+		{
+			name:            "Root healthcheck with empty path GET",
+			path:            "",
+			method:          "GET",
+			wantProject:     "",
+			wantArch:        "",
+			wantChain:       "",
+			wantAdmin:       false,
+			wantHealthcheck: true,
+			wantErr:         false,
+		},
+		{
+			name:             "Project healthcheck",
+			path:             "/myproject/healthcheck",
+			method:           "GET",
+			preSelectedArch:  "evm",
+			preSelectedChain: "1",
+			wantProject:      "myproject",
+			wantArch:         "evm",
+			wantChain:        "1",
+			wantAdmin:        false,
+			wantHealthcheck:  true,
+			wantErr:          false,
+		},
+		{
+			name:            "Full path healthcheck",
+			path:            "/myproject/evm/1/healthcheck",
+			method:          "GET",
+			wantProject:     "myproject",
+			wantArch:        "evm",
+			wantChain:       "1",
+			wantAdmin:       false,
+			wantHealthcheck: true,
+			wantErr:         false,
+		},
+		{
+			name:               "Project preselected, valid path",
+			path:               "/evm/1",
+			method:             "POST",
+			preSelectedProject: "myproject",
+			wantProject:        "myproject",
+			wantArch:           "evm",
+			wantChain:          "1",
+			wantErr:            false,
+		},
+		{
+			name:               "Project and arch preselected, valid path",
+			path:               "/1",
+			method:             "POST",
+			preSelectedProject: "myproject",
+			preSelectedArch:    "evm",
+			wantProject:        "myproject",
+			wantArch:           "evm",
+			wantChain:          "1",
+			wantErr:            false,
+		},
+		{
+			name:               "All preselected, valid empty path",
+			path:               "/",
+			method:             "POST",
+			preSelectedProject: "myproject",
+			preSelectedArch:    "evm",
+			preSelectedChain:   "1",
+			wantProject:        "myproject",
+			wantArch:           "evm",
+			wantChain:          "1",
+			wantErr:            false,
+		},
+		{
+			name:               "All preselected, healthcheck",
+			path:               "/healthcheck",
+			method:             "GET",
+			preSelectedProject: "myproject",
+			preSelectedArch:    "evm",
+			preSelectedChain:   "1",
+			wantProject:        "myproject",
+			wantArch:           "evm",
+			wantChain:          "1",
+			wantHealthcheck:    true,
+			wantErr:            false,
+		},
+		{
+			name:        "Invalid path - too many segments",
+			path:        "/myproject/evm/1/extra",
+			method:      "POST",
+			wantErr:     true,
+			errContains: "must only provide",
+		},
+		{
+			name:        "Invalid path - wrong architecture",
+			path:        "/myproject/x/1",
+			method:      "POST",
+			wantErr:     true,
+			errContains: "architecture is not valid",
+		},
+		{
+			name:               "Invalid path - project preselected but missing arch",
+			path:               "/1",
+			method:             "POST",
+			preSelectedProject: "myproject",
+			wantErr:            true,
+			errContains:        "architecture is not valid",
+		},
+		{
+			name:               "Invalid path - project and chain preselected",
+			path:               "/evm",
+			method:             "POST",
+			preSelectedProject: "myproject",
+			preSelectedChain:   "1",
+			wantErr:            true,
+			errContains:        "it is not possible to alias for project and chain WITHOUT architecture",
+		},
+		{
+			name:        "Invalid path - empty architecture segment",
+			path:        "/myproject//1",
+			method:      "POST",
+			wantErr:     true,
+			errContains: "architecture is not valid",
+		},
+		{
+			name:        "Root path POST without preselection",
+			path:        "/",
+			method:      "POST",
+			wantErr:     true,
+			errContains: "project is required",
+		},
+		{
+			name:             "Architecture and chain preselected",
+			path:             "/myproject",
+			method:           "POST",
+			preSelectedArch:  "evm",
+			preSelectedChain: "1",
+			wantProject:      "myproject",
+			wantArch:         "evm",
+			wantChain:        "1",
+			wantErr:          false,
+		},
+		{
+			name:             "Architecture and chain preselected with healthcheck",
+			path:             "/myproject/healthcheck",
+			method:           "GET",
+			preSelectedArch:  "evm",
+			preSelectedChain: "1",
+			wantProject:      "myproject",
+			wantArch:         "evm",
+			wantChain:        "1",
+			wantHealthcheck:  true,
+			wantErr:          false,
+		},
+		{
+			name:        "Only project provided",
+			path:        "/myproject",
+			method:      "POST",
+			wantProject: "myproject",
+			wantErr:     false,
+		},
+		{
+			name:        "Project and architecture provided",
+			path:        "/myproject/evm",
+			method:      "POST",
+			wantProject: "myproject",
+			wantArch:    "evm",
+			wantErr:     false,
+		},
+		{
+			name:        "Project and chainId provided but not architecture",
+			path:        "/myproject/1",
+			method:      "POST",
+			wantProject: "myproject",
+			wantChain:   "1",
+			wantErr:     true,
+			errContains: "architecture is not valid",
+		},
+		{
+			name:            "Project and chainId provided with preselected architecture",
+			path:            "/myproject/1",
+			method:          "POST",
+			preSelectedArch: "evm",
+			wantProject:     "myproject",
+			wantArch:        "evm",
+			wantChain:       "1",
+			wantErr:         false,
+		},
+		{
+			name:               "Only architecture provided",
+			path:               "/evm",
+			method:             "POST",
+			preSelectedProject: "myproject",
+			preSelectedChain:   "1",
+			wantErr:            true,
+			errContains:        "it is not possible",
+		},
+		{
+			name:               "Only chainId provided",
+			path:               "/1",
+			method:             "POST",
+			preSelectedProject: "myproject",
+			preSelectedArch:    "evm",
+			wantProject:        "myproject",
+			wantArch:           "evm",
+			wantChain:          "1",
+			wantErr:            false,
+		},
+		{
+			name:               "Architecture and chainId provided",
+			path:               "/evm/1",
+			method:             "POST",
+			preSelectedProject: "myproject",
+			wantProject:        "myproject",
+			wantArch:           "evm",
+			wantChain:          "1",
+			wantErr:            false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &HttpServer{}
+			r := &http.Request{
+				Method: tt.method,
+				URL: &url.URL{
+					Path: tt.path,
+				},
+			}
+
+			project, arch, chain, isAdmin, isHealth, err := s.parseUrlPath(r, tt.preSelectedProject, tt.preSelectedArch, tt.preSelectedChain)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.errContains != "" {
+					assert.Contains(t, err.Error(), tt.errContains)
+				}
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantProject, project)
+			assert.Equal(t, tt.wantArch, arch)
+			assert.Equal(t, tt.wantChain, chain)
+			assert.Equal(t, tt.wantAdmin, isAdmin)
+			assert.Equal(t, tt.wantHealthcheck, isHealth)
+		})
+	}
+}
+
+func TestHttpServer_HandleHealthCheck(t *testing.T) {
+	tests := []struct {
+		name         string
+		setupServer  func() *HttpServer
+		projectId    string
+		wantStatus   int
+		wantBody     string
+		wantCacheHit bool
+	}{
+		{
+			name: "Basic healthcheck",
+			setupServer: func() *HttpServer {
+				return &HttpServer{
+					logger: &zerolog.Logger{},
+					erpc: &ERPC{
+						projectsRegistry: &ProjectsRegistry{
+							preparedProjects: map[string]*PreparedProject{
+								"test": {
+									upstreamsRegistry: upstream.NewUpstreamsRegistry(context.TODO(), &zerolog.Logger{}, "", nil, nil, nil, nil, 0*time.Second),
+								},
+							},
+						},
+					},
+				}
+			},
+			projectId:  "test",
+			wantStatus: http.StatusOK,
+			wantBody:   `OK`,
+		},
+		{
+			name: "Project not found",
+			setupServer: func() *HttpServer {
+				return &HttpServer{
+					logger: &zerolog.Logger{},
+					erpc: &ERPC{
+						projectsRegistry: &ProjectsRegistry{
+							preparedProjects: map[string]*PreparedProject{},
+						},
+					},
+				}
+			},
+			projectId:  "nonexistent",
+			wantStatus: http.StatusNotFound,
+			wantBody:   "not configured",
+		},
+		{
+			name: "Root healthcheck",
+			setupServer: func() *HttpServer {
+				return &HttpServer{
+					logger: &zerolog.Logger{},
+					erpc: &ERPC{
+						projectsRegistry: &ProjectsRegistry{
+							preparedProjects: map[string]*PreparedProject{
+								"test": {
+									upstreamsRegistry: upstream.NewUpstreamsRegistry(context.TODO(), &zerolog.Logger{}, "", nil, nil, nil, nil, 0*time.Second),
+								},
+							},
+						},
+					},
+				}
+			},
+			projectId:  "",
+			wantStatus: http.StatusOK,
+			wantBody:   `OK`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := tt.setupServer()
+			w := httptest.NewRecorder()
+			startTime := time.Now()
+
+			encoder := common.SonicCfg.NewEncoder(w)
+			s.handleHealthCheck(w, &startTime, tt.projectId, encoder, func(code int, err error) {
+				w.WriteHeader(code)
+				encoder.Encode(map[string]string{"error": err.Error()})
+			})
+
+			resp := w.Result()
+			body, _ := io.ReadAll(resp.Body)
+
+			assert.Equal(t, tt.wantStatus, resp.StatusCode)
+			assert.Contains(t, string(body), tt.wantBody)
+
+			if tt.wantCacheHit {
+				assert.Equal(t, "HIT", resp.Header.Get("X-ERPC-Cache"))
+			}
+		})
+	}
 }
 
 func createServerTestFixtures(cfg *common.Config, t *testing.T) (
