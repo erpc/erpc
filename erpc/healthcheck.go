@@ -10,15 +10,25 @@ import (
 	"github.com/bytedance/sonic"
 )
 
-func (s *HttpServer) handleHealthCheck(w http.ResponseWriter, startedAt *time.Time, encoder sonic.Encoder, writeFatalError func(statusCode int, body error)) {
-	logger := s.logger.With().Str("handler", "healthcheck").Logger()
+func (s *HttpServer) handleHealthCheck(w http.ResponseWriter, startedAt *time.Time, projectId string, encoder sonic.Encoder, writeFatalError func(statusCode int, body error)) {
+	logger := s.logger.With().Str("handler", "healthcheck").Str("projectId", projectId).Logger()
 
 	if s.erpc == nil {
 		handleErrorResponse(&logger, startedAt, nil, errors.New("eRPC is not initialized"), w, encoder, writeFatalError)
 		return
 	}
 
-	projects := s.erpc.GetProjects()
+	var projects []*PreparedProject
+	if projectId == "" {
+		projects = s.erpc.GetProjects()
+	} else {
+		project, err := s.erpc.GetProject(projectId)
+		if err != nil {
+			handleErrorResponse(&logger, startedAt, nil, err, w, encoder, writeFatalError)
+			return
+		}
+		projects = []*PreparedProject{project}
+	}
 
 	for _, project := range projects {
 		h, err := project.GatherHealthInfo()

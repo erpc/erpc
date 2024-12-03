@@ -8,31 +8,31 @@ export const options = {
   scenarios: {    
     constant_request_rate: {
       executor: 'constant-arrival-rate',
-      rate: 500,
+      rate: 5000,
       timeUnit: '1s',
-      duration: '30m',
-      preAllocatedVUs: 1000,
-      maxVUs: 1000,
+      duration: '10m',
+      preAllocatedVUs: 5000,
+      maxVUs: 5000,
     },
   },
   ext: {
     loadimpact: {
       distribution: {
-        distributionLabel1: { loadZone: 'amazon:de:frankfurt', percent: 80 },
-        distributionLabel2: { loadZone: 'amazon:gb:london', percent: 20 },
+        distributionLabel1: { loadZone: 'amazon:de:frankfurt', percent: 100 },
+        // distributionLabel2: { loadZone: 'amazon:gb:london', percent: 20 },
       },
     },
   },
 };
 
-const samplePayload = JSON.stringify({
-  "jsonrpc": "2.0",
-  "method": "eth_getBlockByNumber",
-  "params": [
-    "0x1346edf",
-    false
-  ]
-});
+// const samplePayload = JSON.stringify({
+//   "jsonrpc": "2.0",
+//   "method": "eth_getBlockByNumber",
+//   "params": [
+//     "0x1346edf",
+//     false
+//   ]
+// });
 // const samplePayload = JSON.stringify({
 //   "jsonrpc": "2.0",
 //   "method": "debug_traceTransaction",
@@ -44,10 +44,23 @@ const samplePayload = JSON.stringify({
 export default function () {
   const params = {
     headers: { 'Content-Type': 'application/json' },
+    insecureSkipTLSVerify: true,
   };
 
+  const samplePayload = JSON.stringify({
+    "jsonrpc": "2.0",
+    "method": "eth_getBlockByNumber",
+    "params": [
+      `0x1${Math.floor(Math.random() * 0xFFFFF).toString(16).padStart(5, '0')}`,
+      false
+    ]
+  });
+
   // const res = http.post('http://localhost:8081', samplePayload, params);
-  const res = http.post('http://localhost:4000/main/evm/123', samplePayload, params);
+  // const res = http.post('http://142.132.247.137/aram-test/evm/42161', samplePayload, params);
+  // const res = http.post('https://flair-test-default.hosted.erpc.cloud/aram-test/evm/42161', samplePayload, params);
+  // const res = http.post('https://a0c8339.eu-central.dch.erpc.cloud/aram-test/evm/42161', samplePayload, params);
+  const res = http.post('http://162.55.155.59:4000/aram-test/evm/42161', samplePayload, params);
 
   check(res, {
     'status is 200': (r) => r.status === 200,

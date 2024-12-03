@@ -53,12 +53,16 @@ func (n *Network) Bootstrap(ctx context.Context) error {
 					err = e
 					return
 				}
-				n.evmStatePollers[u.Config().Id] = poller
-				pollWg.Add(1)
-				go func(poller *upstream.EvmStatePoller) {
-					defer pollWg.Done()
-					poller.Poll(ctx)
-				}(poller)
+				if poller != nil {
+					n.evmStatePollers[u.Config().Id] = poller
+					if poller.Enabled {
+						pollWg.Add(1)
+						go func(poller *upstream.EvmStatePoller) {
+							defer pollWg.Done()
+							poller.Poll(ctx)
+						}(poller)
+					}
+				}
 			}
 
 			// Wait for pollers up to 30s so we have block head of all nodes as much as possible.
@@ -189,7 +193,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			return nil, err
 		}
 
-		resp, err = u.Forward(ctx, req)
+		resp, err = u.Forward(ctx, req, false)
 
 		if !common.IsNull(err) {
 			// If upstream complains that the method is not supported let's dynamically add it ignoreMethods config

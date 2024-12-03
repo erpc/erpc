@@ -30,7 +30,8 @@ ENV CGO_ENABLED=0 \
     LDFLAGS="-w -s -X common.ErpcVersion=${VERSION} -X common.ErpcCommitSha=${COMMIT_SHA}"
 
 # Build the Go binary
-RUN go build -ldflags="$LDFLAGS" -a -installsuffix cgo -o erpc-server ./cmd/erpc/main.go
+RUN go build -v -ldflags="$LDFLAGS" -a -installsuffix cgo -o erpc-server ./cmd/erpc/main.go && \
+    go build -v -ldflags="$LDFLAGS" -a -installsuffix cgo -tags pprof -o erpc-server-pprof ./cmd/erpc/*.go
 
 # Global typescript related image
 FROM node:20-alpine AS ts-core
@@ -61,15 +62,18 @@ COPY package.json /temp/prod/package.json
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store cd /temp/prod && pnpm install --prod --frozen-lockfile
 
 # Final stage
-FROM debian:12 AS final
+FROM debian:stable AS final
 
 WORKDIR /root
 
 # Install CA certificates
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update --allow-insecure-repositories \
+    && apt-get install -y debian-archive-keyring ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy Go binary from go-builder
 COPY --from=go-builder /root/erpc-server .
+COPY --from=go-builder /root/erpc-server-pprof .
 
 # Copy TypeScript package files from ts-builder
 COPY --from=ts-dev /temp/dev/typescript ./typescript

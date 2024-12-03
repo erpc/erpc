@@ -15,6 +15,8 @@ import (
 const FullySyncedThreshold = 4
 
 type EvmStatePoller struct {
+	Enabled bool
+
 	logger   *zerolog.Logger
 	upstream *Upstream
 	network  common.Network
@@ -83,7 +85,14 @@ func (e *EvmStatePoller) initialize(ctx context.Context) error {
 		return fmt.Errorf("invalid state poller interval: %v", err)
 	}
 
-	e.logger.Info().Msgf("bootstraped evm state poller to track upstream latest, finalized blocks and syncing states")
+	if interval == 0 {
+		e.logger.Debug().Msg("skipping evm state poller for upstream as interval is 0")
+		return nil
+	} else {
+		e.logger.Info().Msgf("bootstraped evm state poller to track upstream latest, finalized blocks and syncing states")
+	}
+
+	e.Enabled = true
 
 	go (func() {
 		ticker := time.NewTicker(interval)
@@ -293,7 +302,7 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 	))
 	pr.SetNetwork(e.network)
 
-	resp, err := e.upstream.Forward(ctx, pr)
+	resp, err := e.upstream.Forward(ctx, pr, true)
 	if err != nil {
 		return 0, err
 	}
@@ -326,7 +335,7 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_syncing","params":[]}`, util.RandomID())))
 	pr.SetNetwork(e.network)
 
-	resp, err := e.upstream.Forward(ctx, pr)
+	resp, err := e.upstream.Forward(ctx, pr, true)
 	if err != nil {
 		if common.HasErrorCode(err,
 			common.ErrCodeEndpointClientSideException,

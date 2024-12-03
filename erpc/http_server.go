@@ -42,7 +42,21 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 		if cfg.MaxTimeout != nil && *cfg.MaxTimeout != "" {
 			logger.Error().Err(err).Msgf("failed to parse max timeout duration using 30s default")
 		}
-		reqMaxTimeout = 30 * time.Second
+		reqMaxTimeout = 150 * time.Second
+	}
+	readTimeout := 30 * time.Second
+	if cfg.ReadTimeout != nil {
+		readTimeout, err = time.ParseDuration(*cfg.ReadTimeout)
+		if err != nil {
+			logger.Error().Err(err).Msgf("failed to parse read timeout duration using 30s default")
+		}
+	}
+	writeTimeout := 120 * time.Second
+	if cfg.WriteTimeout != nil {
+		writeTimeout, err = time.ParseDuration(*cfg.WriteTimeout)
+		if err != nil {
+			logger.Error().Err(err).Msgf("failed to parse write timeout duration using 120s default")
+		}
 	}
 
 	srv := &HttpServer{
@@ -62,8 +76,8 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 			h,
 			reqMaxTimeout,
 		),
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		ReadTimeout:  readTimeout,
+		WriteTimeout: writeTimeout,
 	}
 
 	go func() {
@@ -84,14 +98,43 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		encoder := common.SonicCfg.NewEncoder(w)
 		encoder.SetEscapeHTML(false)
 
-		projectId, architecture, chainId, isAdmin, isHealthCheck, err := s.parseUrlPath(r)
+		// Get host without port number
+		host := r.Host
+		if colonIndex := strings.Index(host, ":"); colonIndex != -1 {
+			host = host[:colonIndex]
+		}
+
+		var projectId, architecture, chainId string
+		var isAdmin, isHealthCheck bool
+		var err error
+
+		// Check aliasing rules
+		if s.config.Aliasing != nil {
+			for _, rule := range s.config.Aliasing.Rules {
+				matched, err := common.WildcardMatch(rule.MatchDomain, host)
+				if err != nil {
+					s.logger.Error().Err(err).Interface("rule", rule).Msg("failed to match aliasing rule")
+					continue
+				}
+				if matched {
+					projectId = rule.ServeProject
+					architecture = rule.ServeArchitecture
+					chainId = rule.ServeChain
+					break
+				}
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+
+		projectId, architecture, chainId, isAdmin, isHealthCheck, err = s.parseUrlPath(r, projectId, architecture, chainId)
 		if err != nil {
 			handleErrorResponse(s.logger, &startedAt, nil, err, w, encoder, writeFatalError)
 			return
 		}
 
 		if isHealthCheck {
-			s.handleHealthCheck(w, &startedAt, encoder, writeFatalError)
+			s.handleHealthCheck(w, &startedAt, projectId, encoder, writeFatalError)
 			return
 		}
 
@@ -108,6 +151,11 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			lg = s.logger.With().Str("component", "admin").Logger()
 		} else {
 			lg = s.logger.With().Str("component", "proxy").Str("projectId", projectId).Str("networkId", fmt.Sprintf("%s:%s", architecture, chainId)).Logger()
+		}
+
+		if projectId == "" {
+			handleErrorResponse(&lg, &startedAt, nil, common.NewErrInvalidRequest(fmt.Errorf("projectId is required in path or must be aliased")), w, encoder, writeFatalError)
+			return
 		}
 
 		project, err := s.erpc.GetProject(projectId)
@@ -251,22 +299,20 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					if networkIdFromBody, ok := req["networkId"].(string); ok {
 						networkId = networkIdFromBody
 						parts := strings.Split(networkId, ":")
-						if len(parts) != 2 {
-							responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(fmt.Errorf(
-								"networkId must follow this format: 'architecture:chainId' for example 'evm:42161'",
-							)))
-							return
+						if len(parts) == 2 {
+							architecture = parts[0]
+							chainId = parts[1]
 						}
-						architecture = parts[0]
-						chainId = parts[1]
-					} else {
-						responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(fmt.Errorf(
-							"networkId must follow this format: 'architecture:chainId' for example 'evm:42161'",
-						)))
-						return
 					}
 				} else {
 					networkId = fmt.Sprintf("%s:%s", architecture, chainId)
+				}
+
+				if architecture == "" || chainId == "" {
+					responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(fmt.Errorf(
+						"architecture and chain must be provided in URL (for example /<project>/evm/42161) or in request body (for example \"networkId\":\"evm:42161\") or configureed via domain aliasing",
+					)))
+					return
 				}
 
 				nw, err := project.GetNetwork(s.appCtx, networkId)
@@ -300,8 +346,6 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			}
 			return
 		}
-
-		w.Header().Set("Content-Type", "application/json")
 
 		if isBatch {
 			w.WriteHeader(http.StatusOK)
@@ -350,7 +394,6 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 						s.logger.Error().Msgf("unexpected server panic on final error writer: %v -> %s", rec, debug.Stack())
 					}
 				}()
-				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(statusCode)
 
 				msg, err := common.SonicCfg.Marshal(err.Error())
@@ -378,7 +421,12 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 	})
 }
 
-func (s *HttpServer) parseUrlPath(r *http.Request) (
+func (s *HttpServer) parseUrlPath(
+	r *http.Request,
+	preSelectedProjectId,
+	preSelectedArchitecture,
+	preSelectedChainId string,
+) (
 	projectId, architecture, chainId string,
 	isAdmin bool,
 	isHealthCheck bool,
@@ -387,23 +435,133 @@ func (s *HttpServer) parseUrlPath(r *http.Request) (
 	ps := path.Clean(r.URL.Path)
 	segments := strings.Split(ps, "/")
 
-	if len(segments) > 4 {
-		return "", "", "", false, false, common.NewErrInvalidUrlPath(ps)
-	}
+	// Remove empty first segment from leading slash
+	segments = segments[1:]
 
 	isPost := r.Method == http.MethodPost
 	isOptions := r.Method == http.MethodOptions
 
-	if (isPost || isOptions) && len(segments) == 4 {
-		projectId = segments[1]
-		architecture = segments[2]
-		chainId = segments[3]
-	} else if (isPost || isOptions) && len(segments) == 2 && segments[1] == "admin" {
-		isAdmin = true
-	} else if len(segments) == 2 && (segments[1] == "healthcheck" || segments[1] == "") {
+	// Initialize with preselected values
+	projectId = preSelectedProjectId
+	architecture = preSelectedArchitecture
+	chainId = preSelectedChainId
+
+	// Special case for admin endpoint
+	if len(segments) == 1 && segments[0] == "admin" && (isPost || isOptions) {
+		return "", "", "", true, false, nil
+	}
+
+	// Handle healthcheck variations
+	if len(segments) > 0 && segments[len(segments)-1] == "healthcheck" {
 		isHealthCheck = true
-	} else {
-		return "", "", "", false, false, common.NewErrInvalidUrlPath(ps)
+		segments = segments[:len(segments)-1] // Remove healthcheck segment
+	} else if len(segments) == 0 || (len(segments) == 1 && segments[0] == "") {
+		if !(isPost || isOptions) {
+			isHealthCheck = true
+			segments = nil
+		}
+	}
+
+	// Parse remaining segments based on what's preselected
+	switch {
+	case projectId == "" && architecture == "" && chainId == "":
+		// Case: Nothing preselected
+		switch len(segments) {
+		case 1:
+			projectId = segments[0]
+		case 2:
+			projectId = segments[0]
+			architecture = segments[1]
+		case 3:
+			projectId = segments[0]
+			architecture = segments[1]
+			chainId = segments[2]
+		case 0:
+			if !isHealthCheck {
+				return "", "", "", false, false, common.NewErrInvalidUrlPath("must provide /<project>/<architecture>/<chainId>", ps)
+			}
+		default:
+			return "", "", "", false, false, common.NewErrInvalidUrlPath("must only provide /<project>/<architecture>/<chainId>", ps)
+		}
+
+	case projectId != "" && architecture == "" && chainId == "":
+		// Case: Only projectId preselected
+		switch len(segments) {
+		case 1:
+			architecture = segments[0]
+		case 2:
+			architecture = segments[0]
+			chainId = segments[1]
+		case 0:
+			if !isHealthCheck {
+				return "", "", "", false, false, common.NewErrInvalidUrlPath("for project-only alias must provide /<architecture>/<chainId>", ps)
+			}
+		default:
+			return "", "", "", false, false, common.NewErrInvalidUrlPath("for project-only alias must only provide /<architecture>/<chainId>", ps)
+		}
+
+	case projectId != "" && architecture != "" && chainId == "":
+		// Case: ProjectId and architecture preselected
+		switch len(segments) {
+		case 1:
+			chainId = segments[0]
+			if chainId == "" && !isHealthCheck {
+				return "", "", "", false, false, common.NewErrInvalidUrlPath("for project-and-architecture alias must provide /<chainId>", ps)
+			}
+		case 0:
+			if !isHealthCheck {
+				return "", "", "", false, false, common.NewErrInvalidUrlPath("for project-and-architecture alias must provide /<chainId>", ps)
+			}
+		default:
+			return "", "", "", false, false, common.NewErrInvalidUrlPath("for project-and-architecture alias must only provide /<chainId>", ps)
+		}
+
+	case projectId != "" && architecture != "" && chainId != "":
+		// Case: All values preselected
+		if len(segments) > 1 && !isHealthCheck {
+			return "", "", "", false, false, common.NewErrInvalidUrlPath("must not provide anything on the path and only use /", ps)
+		}
+
+	case projectId == "" && architecture != "" && chainId != "":
+		switch len(segments) {
+		case 1:
+			projectId = segments[0]
+			if projectId == "" && !isHealthCheck {
+				return "", "", "", false, false, common.NewErrInvalidUrlPath("for architecture-and-chain alias must provide /<project>", ps)
+			}
+		case 0:
+			if !isHealthCheck {
+				return "", "", "", false, false, common.NewErrInvalidUrlPath("for architecture-and-chain alias must provide /<project>", ps)
+			}
+		default:
+			return "", "", "", false, false, common.NewErrInvalidUrlPath("for architecture-and-chain alias must only provide /<project>", ps)
+		}
+
+	case projectId == "" && architecture != "" && chainId == "":
+		switch len(segments) {
+		case 1:
+			projectId = segments[0]
+		case 2:
+			projectId = segments[0]
+			chainId = segments[1]
+		default:
+			return "", "", "", false, false, common.NewErrInvalidUrlPath("for architecture-only alias must only provide /<project>", ps)
+		}
+
+	default:
+		if projectId != "" && architecture == "" && chainId != "" {
+			return "", "", "", false, false, common.NewErrInvalidUrlPath("it is not possible to alias for project and chain WITHOUT architecture", ps)
+		}
+		// Invalid combination of preselected values
+		return "", "", "", false, false, common.NewErrInvalidUrlPath("invalid combination of path elements and/or aliasing rules", ps)
+	}
+
+	if projectId == "" && !isHealthCheck {
+		return "", "", "", false, false, common.NewErrInvalidUrlPath("project is required either in path or via domain aliasing", ps)
+	}
+
+	if (chainId != "" || architecture != "") && !common.IsValidArchitecture(architecture) {
+		return "", "", "", false, false, common.NewErrInvalidUrlPath("architecture is not valid (must be 'evm')", ps)
 	}
 
 	return projectId, architecture, chainId, isAdmin, isHealthCheck, nil

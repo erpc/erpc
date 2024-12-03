@@ -194,13 +194,15 @@ func (u *Upstream) prepareRequest(nr *common.NormalizedRequest) error {
 	return nil
 }
 
-// Forward is used during lifecycle of a proxied request, it uses writers and readers for better performance
-func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, byPassMethodExclusion bool) (*common.NormalizedResponse, error) {
+	// TODO Should we move byPassMethodExclusion to directives? How do we prevent clients from setting it?
 	startTime := time.Now()
 	cfg := u.Config()
 
-	if reason, skip := u.shouldSkip(req); skip {
-		return nil, common.NewErrUpstreamRequestSkipped(reason, cfg.Id)
+	if !byPassMethodExclusion {
+		if reason, skip := u.shouldSkip(req); skip {
+			return nil, common.NewErrUpstreamRequestSkipped(reason, cfg.Id)
+		}
 	}
 
 	clientType := u.Client.GetType()
@@ -452,7 +454,7 @@ func (u *Upstream) Executor() failsafe.Executor[*common.NormalizedResponse] {
 func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 	pr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_chainId","params":[]}`))
 
-	resp, err := u.Forward(ctx, pr)
+	resp, err := u.Forward(ctx, pr, true)
 	if err != nil {
 		return "", err
 	}

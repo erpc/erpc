@@ -13,5 +13,8 @@ module.exports = {
 	},
 	monitoring: {
 		title: "Monitoring",
+	},
+	admin: {
+		title: "Admin",
 	}
 };

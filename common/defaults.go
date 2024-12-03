@@ -369,7 +369,13 @@ func (s *ServerConfig) SetDefaults() {
 		s.HttpPort = util.IntPtr(4000)
 	}
 	if s.MaxTimeout == nil {
-		s.MaxTimeout = util.StringPtr("30s")
+		s.MaxTimeout = util.StringPtr("150s")
+	}
+	if s.ReadTimeout == nil {
+		s.ReadTimeout = util.StringPtr("30s")
+	}
+	if s.WriteTimeout == nil {
+		s.WriteTimeout = util.StringPtr("120s")
 	}
 	if s.EnableGzip == nil {
 		s.EnableGzip = util.BoolPtr(true)
@@ -499,6 +505,9 @@ func (d *DynamoDBConnectorConfig) SetDefaults() {
 func (p *ProjectConfig) SetDefaults() {
 	if p.Upstreams != nil {
 		for _, upstream := range p.Upstreams {
+			if p.UpstreamDefaults != nil {
+				upstream.ApplyDefaults(p.UpstreamDefaults)
+			}
 			upstream.SetDefaults()
 		}
 	}
@@ -517,6 +526,61 @@ func (p *ProjectConfig) SetDefaults() {
 		p.HealthCheck = &HealthCheckConfig{}
 	}
 	p.HealthCheck.SetDefaults()
+}
+
+func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) {
+	if defaults == nil {
+		return
+	}
+
+	if u.Endpoint == "" {
+		u.Endpoint = defaults.Endpoint
+	}
+	if u.Type == "" {
+		u.Type = defaults.Type
+	}
+	if u.VendorName == "" {
+		u.VendorName = defaults.VendorName
+	}
+	if u.Group == "" {
+		u.Group = defaults.Group
+	}
+	if u.Failsafe == nil && defaults.Failsafe != nil {
+		u.Failsafe = defaults.Failsafe
+	}
+	if u.RateLimitBudget == "" {
+		u.RateLimitBudget = defaults.RateLimitBudget
+	}
+	if u.RateLimitAutoTune == nil {
+		u.RateLimitAutoTune = defaults.RateLimitAutoTune
+	}
+	// IMPORTANT: Some of the configs must be copied vs referenced, because the object might be updated in runtime onyl this specific upstream
+	// TODO Should we refactor so this won't happen
+	if u.Evm == nil && defaults.Evm != nil {
+		u.Evm = &EvmUpstreamConfig{
+			ChainId:                  defaults.Evm.ChainId,
+			NodeType:                 defaults.Evm.NodeType,
+			StatePollerInterval:      defaults.Evm.StatePollerInterval,
+			MaxAvailableRecentBlocks: defaults.Evm.MaxAvailableRecentBlocks,
+		}
+	}
+	if u.JsonRpc == nil && defaults.JsonRpc != nil {
+		u.JsonRpc = &JsonRpcUpstreamConfig{
+			SupportsBatch: defaults.JsonRpc.SupportsBatch,
+			BatchMaxSize:  defaults.JsonRpc.BatchMaxSize,
+			BatchMaxWait:  defaults.JsonRpc.BatchMaxWait,
+			EnableGzip:    defaults.JsonRpc.EnableGzip,
+		}
+	}
+	if u.Routing == nil {
+		u.Routing = defaults.Routing
+	}
+	if u.AllowMethods == nil && defaults.AllowMethods != nil {
+		u.AllowMethods = append([]string{}, defaults.AllowMethods...)
+	}
+	if u.IgnoreMethods == nil && defaults.IgnoreMethods != nil {
+		u.IgnoreMethods = append([]string{}, defaults.IgnoreMethods...)
+	}
 }
 
 func (u *UpstreamConfig) SetDefaults() {
@@ -563,6 +627,14 @@ func (u *UpstreamConfig) SetDefaults() {
 
 	if u.Routing != nil {
 		u.Routing.SetDefaults()
+	}
+
+	// By default if any allowed methods are specified, all other methods are ignored (unless ignoreMethods is explicitly defined by user)
+	// Similar to how common network security policies work.
+	if u.AllowMethods != nil {
+		if u.IgnoreMethods == nil {
+			u.IgnoreMethods = []string{"*"}
+		}
 	}
 }
 

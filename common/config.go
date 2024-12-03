@@ -50,19 +50,33 @@ func (c *Config) HasRateLimiterBudget(id string) bool {
 }
 
 type ServerConfig struct {
-	ListenV4   *bool      `yaml:"listenV4,omitempty" json:"listenV4,omitempty"`
-	HttpHostV4 *string    `yaml:"httpHostV4,omitempty" json:"httpHostV4,omitempty"`
-	ListenV6   *bool      `yaml:"listenV6,omitempty" json:"listenV6,omitempty"`
-	HttpHostV6 *string    `yaml:"httpHostV6,omitempty" json:"httpHostV6,omitempty"`
-	HttpPort   *int       `yaml:"httpPort,omitempty" json:"httpPort,omitempty"`
-	MaxTimeout *string    `yaml:"maxTimeout,omitempty" json:"maxTimeout,omitempty"`
-	EnableGzip *bool      `yaml:"enableGzip,omitempty" json:"enableGzip,omitempty"`
-	TLS        *TLSConfig `yaml:"tls,omitempty" json:"tls,omitempty"`
+	ListenV4     *bool           `yaml:"listenV4,omitempty" json:"listenV4"`
+	HttpHostV4   *string         `yaml:"httpHostV4,omitempty" json:"httpHostV4"`
+	ListenV6     *bool           `yaml:"listenV6,omitempty" json:"listenV6"`
+	HttpHostV6   *string         `yaml:"httpHostV6,omitempty" json:"httpHostV6"`
+	HttpPort     *int            `yaml:"httpPort,omitempty" json:"httpPort"`
+	MaxTimeout   *string         `yaml:"maxTimeout,omitempty" json:"maxTimeout"`
+	ReadTimeout  *string         `yaml:"readTimeout,omitempty" json:"readTimeout"`
+	WriteTimeout *string         `yaml:"writeTimeout,omitempty" json:"writeTimeout"`
+	EnableGzip   *bool           `yaml:"enableGzip,omitempty" json:"enableGzip"`
+	TLS          *TLSConfig      `yaml:"tls,omitempty" json:"tls"`
+	Aliasing     *AliasingConfig `yaml:"aliasing" json:"aliasing"`
 }
 
 type AdminConfig struct {
 	Auth *AuthConfig `yaml:"auth" json:"auth"`
 	CORS *CORSConfig `yaml:"cors" json:"cors"`
+}
+
+type AliasingConfig struct {
+	Rules []*AliasingRuleConfig `yaml:"rules" json:"rules"`
+}
+
+type AliasingRuleConfig struct {
+	MatchDomain       string `yaml:"matchDomain" json:"matchDomain"`
+	ServeProject      string `yaml:"serveProject" json:"serveProject"`
+	ServeArchitecture string `yaml:"serveArchitecture" json:"serveArchitecture"`
+	ServeChain        string `yaml:"serveChain" json:"serveChain"`
 }
 
 type DatabaseConfig struct {
@@ -274,14 +288,15 @@ func (a *AwsAuthConfig) MarshalJSON() ([]byte, error) {
 }
 
 type ProjectConfig struct {
-	Id              string             `yaml:"id" json:"id"`
-	Auth            *AuthConfig        `yaml:"auth,omitempty" json:"auth"`
-	CORS            *CORSConfig        `yaml:"cors,omitempty" json:"cors"`
-	Upstreams       []*UpstreamConfig  `yaml:"upstreams" json:"upstreams"`
-	NetworkDefaults *NetworkDefaults   `yaml:"networkDefaults,omitempty" json:"networkDefaults"`
-	Networks        []*NetworkConfig   `yaml:"networks,omitempty" json:"networks"`
-	RateLimitBudget string             `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
-	HealthCheck     *HealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
+	Id               string             `yaml:"id" json:"id"`
+	Auth             *AuthConfig        `yaml:"auth,omitempty" json:"auth"`
+	CORS             *CORSConfig        `yaml:"cors,omitempty" json:"cors"`
+	UpstreamDefaults *UpstreamConfig    `yaml:"upstreamDefaults,omitempty" json:"upstreamDefaults"`
+	Upstreams        []*UpstreamConfig  `yaml:"upstreams" json:"upstreams"`
+	NetworkDefaults  *NetworkDefaults   `yaml:"networkDefaults,omitempty" json:"networkDefaults"`
+	Networks         []*NetworkConfig   `yaml:"networks,omitempty" json:"networks"`
+	RateLimitBudget  string             `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
+	HealthCheck      *HealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
 }
 
 type NetworkDefaults struct {
