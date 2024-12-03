@@ -272,14 +272,20 @@ func (e *BaseError) MarshalZerologObject(v *zerolog.Event) {
 
 type ErrInvalidRequest struct{ BaseError }
 
+const ErrCodeInvalidRequest ErrorCode = "ErrInvalidRequest"
+
 var NewErrInvalidRequest = func(cause error) error {
 	return &ErrInvalidRequest{
 		BaseError{
-			Code:    "ErrInvalidRequest",
+			Code:    ErrCodeInvalidRequest,
 			Message: "invalid request body or headers",
 			Cause:   cause,
 		},
 	}
+}
+
+func (e *ErrInvalidRequest) ErrorStatusCode() int {
+	return http.StatusBadRequest
 }
 
 type ErrInvalidUrlPath struct{ BaseError }
@@ -728,6 +734,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		rateLimit := 0
 		cbOpen := 0
 		billing := 0
+		skips := 0
 		other := 0
 		client := 0
 		transport := 0
@@ -762,7 +769,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			} else if HasErrorCode(e, ErrCodeUpstreamHedgeCancelled) {
 				cancelled++
 				continue
-			} else if HasErrorCode(e, ErrCodeEndpointClientSideException) || HasErrorCode(e, ErrCodeJsonRpcRequestUnmarshal) {
+			} else if HasErrorCode(e, ErrCodeEndpointClientSideException, ErrCodeJsonRpcRequestUnmarshal, ErrCodeInvalidRequest, ErrCodeInvalidUrlPath) {
 				client++
 				continue
 			} else if HasErrorCode(e, ErrCodeEndpointTransportFailure) {
@@ -777,32 +784,35 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			} else if HasErrorCode(e, ErrCodeUpstreamNodeTypeMismatch) {
 				nodeTypeMismatch++
 				continue
-			} else if !HasErrorCode(e, ErrCodeUpstreamMethodIgnored) {
+			} else if HasErrorCode(e, ErrCodeUpstreamMethodIgnored, ErrCodeUpstreamRequestSkipped) {
+				skips++
+				continue
+			} else {
 				other++
 			}
 		}
 
 		reasons := []string{}
 		if unsupported > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d unsupported method", unsupported))
+			reasons = append(reasons, fmt.Sprintf("%d upstream unsupported method", unsupported))
 		}
 		if missing > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d missing data", missing))
+			reasons = append(reasons, fmt.Sprintf("%d upstream missing data", missing))
 		}
 		if timeout > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d timeout", timeout))
+			reasons = append(reasons, fmt.Sprintf("%d upstream timeout", timeout))
 		}
 		if serverError > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d server errors", serverError))
+			reasons = append(reasons, fmt.Sprintf("%d upstream server errors", serverError))
 		}
 		if rateLimit > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d rate limited", rateLimit))
+			reasons = append(reasons, fmt.Sprintf("%d upstreamrate limited", rateLimit))
 		}
 		if cbOpen > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d circuit breaker open", cbOpen))
+			reasons = append(reasons, fmt.Sprintf("%d upstream circuit breaker open", cbOpen))
 		}
 		if billing > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d billing issues", billing))
+			reasons = append(reasons, fmt.Sprintf("%d upstream billing issues", billing))
 		}
 		if cancelled > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d hedges cancelled", cancelled))
@@ -814,13 +824,16 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			reasons = append(reasons, fmt.Sprintf("%d syncing nodes", unsynced))
 		}
 		if excluded > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d excluded by policy", excluded))
+			reasons = append(reasons, fmt.Sprintf("%d upstream excluded by policy", excluded))
 		}
 		if nodeTypeMismatch > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d node type mismatches", nodeTypeMismatch))
 		}
+		if skips > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d upstream skipped", skips))
+		}
 		if other > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d other errors", other))
+			reasons = append(reasons, fmt.Sprintf("%d other upstream errors", other))
 		}
 
 		return strings.Join(reasons, ", ")
@@ -852,7 +865,19 @@ func (e *ErrUpstreamsExhausted) DeepestMessage() string {
 		return s
 	}
 
-	return e.Message
+	if joinedErr, ok := e.Cause.(interface{ Unwrap() []error }); ok {
+		children := joinedErr.Unwrap()
+		if len(children) == 1 && children[0] != nil {
+			if ste, ok := children[0].(StandardError); ok {
+				return ste.DeepestMessage()
+			} else {
+				return children[0].Error()
+			}
+		}
+		return ""
+	}
+
+	return ""
 }
 
 func (e *ErrUpstreamsExhausted) UpstreamId() string {
@@ -915,7 +940,7 @@ var NewErrNoUpstreamsFound = func(project string, network string) error {
 	return &ErrNoUpstreamsFound{
 		BaseError{
 			Code:    "ErrNoUpstreamsFound",
-			Message: "no upstreams found for network",
+			Message: fmt.Sprintf("no upstreams found for network '%s' and project '%s'", network, project),
 			Details: map[string]interface{}{
 				"project": project,
 				"network": network,

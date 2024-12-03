@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/rs/zerolog/log"
 )
 
 type JSONRPCRequest struct {
@@ -70,7 +71,7 @@ func NewFakeServer(port int, failureRate float64, limitedRate float64, minDelay,
 func (fs *FakeServer) loadSamples(filePath string) error {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
-		return fmt.Errorf("failed to read sample file: %w", err)
+		return fmt.Errorf("failed to read sample file from %s: %w", filePath, err)
 	}
 
 	if err := sonic.Unmarshal(data, &fs.samples); err != nil {
@@ -107,9 +108,11 @@ func (fs *FakeServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// Read the request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		log.Error().Err(err).Msg("Failed to read request body")
 		fs.sendErrorResponse(w, nil, -32700, "Parse error")
 		return
 	}
+	log.Info().Str("body", string(body)).Msg("Request received")
 
 	// Try to unmarshal as a batch request
 	var batchReq []JSONRPCRequest
@@ -129,6 +132,7 @@ func (fs *FakeServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Error().Err(err).Msg("Invalid JSON-RPC request")
 	// Invalid JSON-RPC request
 	fs.sendErrorResponse(w, nil, -32600, "Invalid Request")
 }
@@ -168,7 +172,13 @@ func (fs *FakeServer) handleSingleRequest(w http.ResponseWriter, req JSONRPCRequ
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Length", strconv.Itoa(len(buf.Bytes())))
-		w.Write(buf.Bytes())
+		bt := buf.Bytes()
+		if len(bt) > 1024 {
+			log.Info().Str("response", string(bt[:1024])).Msg("Response sent (partial)")
+		} else {
+			log.Info().Str("response", string(bt)).Msg("Response sent")
+		}
+		w.Write(bt)
 	}
 }
 
@@ -246,7 +256,18 @@ func (fs *FakeServer) sendErrorResponse(w http.ResponseWriter, id interface{}, c
 		ID:      id,
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	buf := &bytes.Buffer{}
+	if err := json.NewEncoder(buf).Encode(response); err != nil {
+		log.Error().Err(err).Msg("Failed to encode response")
+		return
+	}
+	bt := buf.Bytes()
+	if len(bt) > 1024 {
+		log.Info().Str("response", string(bt[:1024])).Msg("Response sent (partial)")
+	} else {
+		log.Info().Str("response", string(bt)).Msg("Response sent")
+	}
+	w.Write(bt)
 }
 
 func (fs *FakeServer) findMatchingSample(req JSONRPCRequest) *JSONRPCResponse {

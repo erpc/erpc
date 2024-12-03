@@ -1,0 +1,19 @@
+servers:
+  - port: 9081
+    failureRate: 0
+    limitedRate: 0.005
+    minDelay: 50ms
+    maxDelay: 200ms
+    sampleFile: "test/samples/evm-json-rpc.json"
+  - port: 9082
+    failureRate: 1
+    limitedRate: 0.2
+    minDelay: 100ms
+    maxDelay: 300ms
+    sampleFile: "test/samples/evm-json-rpc.json"
+  - port: 9083
+    failureRate: 0.05
+    limitedRate: 0.01
+    minDelay: 300ms
+    maxDelay: 500ms
+    sampleFile: "test/samples/evm-json-rpc.json"
