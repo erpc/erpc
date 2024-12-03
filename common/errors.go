@@ -806,7 +806,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			reasons = append(reasons, fmt.Sprintf("%d upstream server errors", serverError))
 		}
 		if rateLimit > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d upstreamrate limited", rateLimit))
+			reasons = append(reasons, fmt.Sprintf("%d upstream rate limited", rateLimit))
 		}
 		if cbOpen > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d upstream circuit breaker open", cbOpen))
