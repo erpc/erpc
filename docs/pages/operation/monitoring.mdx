@@ -41,11 +41,18 @@ Here is a list of some of the most important metrics:
 | erpc_network_cache_misses_total                 | Counter   | Total number of cache misses for requests received by the network.                          |
 | erpc_network_request_duration_seconds           | Histogram | Duration of requests received by the network.                                               |
 | erpc_project_request_self_rate_limited_total    | Counter   | Total number of self-imposed rate limited requests towards the project.                     |
+| erpc_rate_limiter_budget_max_count              | Gauge     | Maximum number of requests allowed per second for a rate limiter budget                     |
 | erpc_auth_request_self_rate_limited_total       | Counter   | Total number of self-imposed rate limited requests due to auth config for a project.        |
+| erpc_cache_set_success_total                    | Counter   | Total number of cache set operations.                                                       |
+| erpc_cache_set_error_total                      | Counter   | Total number of cache set errors.                                                           |
+| erpc_cache_set_skipped_total                    | Counter   | Total number of cache set skips.                                                            |
+| erpc_cache_get_success_hit_total                | Counter   | Total number of cache get hits.                                                             |
+| erpc_cache_get_success_miss_total               | Counter   | Total number of cache get misses.                                                           |
+| erpc_cache_get_error_total                      | Counter   | Total number of cache get errors.                                                           |
+| erpc_cache_get_skipped_total                    | Counter   | Total number of cache get skips (i.e. no matching policy found).                            |
 | erpc_cors_requests_total                        | Counter   | Total number of CORS requests received.                                                     |
 | erpc_cors_preflight_requests_total              | Counter   | Total number of CORS preflight requests received.                                           |
 | erpc_cors_disallowed_origin_total               | Counter   | Total number of CORS requests from disallowed origins.                                      |
-| erpc_rate_limiter_budget_max_count              | Gauge     | Maximum number of requests allowed per second for a rate limiter budget                     |
 
 #### PromQL examples
 

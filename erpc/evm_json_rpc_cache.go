@@ -82,6 +82,11 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		return nil, err
 	}
 	if len(policies) == 0 {
+		health.MetricCacheGetSkippedTotal.WithLabelValues(
+			c.network.ProjectId,
+			req.NetworkId(),
+			rpcReq.Method,
+		).Inc()
 		return nil, nil
 	}
 
@@ -235,6 +240,15 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 						policy.String(),
 						ttl.String(),
 						common.ErrorSummary(err),
+					).Inc()
+				} else {
+					health.MetricCacheSetSkippedTotal.WithLabelValues(
+						c.network.ProjectId,
+						req.NetworkId(),
+						rpcReq.Method,
+						connector.Id(),
+						policy.String(),
+						ttl.String(),
 					).Inc()
 				}
 				errsMu.Lock()
