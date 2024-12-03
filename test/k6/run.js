@@ -8,11 +8,11 @@ export const options = {
   scenarios: {    
     constant_request_rate: {
       executor: 'constant-arrival-rate',
-      rate: 2000,
+      rate: 6000,
       timeUnit: '1s',
-      duration: '10m',
-      preAllocatedVUs: 10,
-      maxVUs: 2000,
+      duration: '4m',
+      preAllocatedVUs: 1000,
+      maxVUs: 6000,
     },
   },
   ext: {
@@ -59,8 +59,8 @@ export default function () {
   // const res = http.post('http://localhost:8081', samplePayload, params);
   // const res = http.post('http://142.132.247.137/aram-test/evm/42161', samplePayload, params);
   // const res = http.post('https://flair-test-default.hosted.erpc.cloud/aram-test/evm/42161', samplePayload, params);
-  const res = http.post('https://a0c8339.eu-central.dch.erpc.cloud/aram-test/evm/42161', samplePayload, params);
-  // const res = http.post('http://162.55.155.59/aram-test/evm/42161', samplePayload, params);
+  // const res = http.post('https://a0c8339.eu-central.dch.erpc.cloud/aram-test/evm/42161', samplePayload, params);
+  const res = http.post('http://162.55.155.59/aram-test/evm/42161', samplePayload, params);
 
   check(res, {
     'status is 200': (r) => r.status === 200,

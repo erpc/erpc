@@ -393,3 +393,24 @@ func (r *NormalizedRequest) CacheHash() (string, error) {
 
 	return "", fmt.Errorf("request is not valid to generate cache hash")
 }
+
+func (r *NormalizedRequest) Validate() error {
+	if r == nil {
+		return NewErrInvalidRequest(fmt.Errorf("request is nil"))
+	}
+
+	if r.body == nil && r.jsonRpcRequest == nil {
+		return NewErrInvalidRequest(fmt.Errorf("request body is nil"))
+	}
+
+	method, err := r.Method()
+	if err != nil {
+		return NewErrInvalidRequest(err)
+	}
+
+	if method == "" {
+		return NewErrInvalidRequest(fmt.Errorf("method is required"))
+	}
+
+	return nil
+}

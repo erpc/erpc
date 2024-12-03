@@ -22,7 +22,6 @@ build/
 *_test.go
 *.test
 coverage.out
-test/
 
 # Dependencies that will be reinstalled
 node_modules/

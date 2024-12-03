@@ -1,0 +1,138 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-server
+  namespace: erpc
+  labels:
+    app: fake-server
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: fake-server
+  template:
+    metadata:
+      labels:
+        app: fake-server
+    spec:
+      containers:
+      - name: fake-server
+        image: flairsdk/erpc:fake
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 9081
+          name: server-1
+        - containerPort: 9082
+          name: server-2
+        - containerPort: 9083
+          name: server-3
+        resources:
+          requests:
+            cpu: "1"
+            memory: "128Mi"
+          limits:
+            cpu: "2"
+            memory: "1Gi"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/config.yaml
+          subPath: config.yaml
+      volumes:
+      - name: config-volume
+        configMap:
+          name: fake-server-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fake-server
+  namespace: erpc
+  labels:
+    app: fake-server
+spec:
+  type: ClusterIP
+  ports:
+  - port: 9081
+    targetPort: 9081
+    protocol: TCP
+    name: server-1
+  - port: 9082
+    targetPort: 9082
+    protocol: TCP
+    name: server-2
+  - port: 9083
+    targetPort: 9083
+    protocol: TCP
+    name: server-3
+  selector:
+    app: fake-server
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fake-server
+  namespace: erpc
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: cilium
+  rules:
+  - host: fake.eu-central.dch.erpc.cloud
+    http:
+      paths:
+      - path: /server1
+        pathType: Prefix
+        backend:
+          service:
+            name: fake-server
+            port:
+              number: 9081
+      - path: /server2
+        pathType: Prefix
+        backend:
+          service:
+            name: fake-server
+            port:
+              number: 9082
+      - path: /server3
+        pathType: Prefix
+        backend:
+          service:
+            name: fake-server
+            port:
+              number: 9083
+  tls:
+  - hosts:
+    - fake.eu-central.dch.erpc.cloud
+    secretName: fake-server-letsencrypt-tls
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fake-server-config
+  namespace: erpc
+data:
+  config.yaml: |
+    servers:
+      - port: 9081
+        failureRate: 0
+        limitedRate: 0.005
+        minDelay: 50ms
+        maxDelay: 200ms
+        sampleFile: "/app/evm-json-rpc.json"
+      - port: 9082
+        failureRate: 1
+        limitedRate: 0.2
+        minDelay: 100ms
+        maxDelay: 300ms
+        sampleFile: "/app/evm-json-rpc.json"
+      - port: 9083
+        failureRate: 0.05
+        limitedRate: 0.01
+        minDelay: 300ms
+        maxDelay: 500ms
+        sampleFile: "/app/evm-json-rpc.json"

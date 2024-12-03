@@ -1,0 +1,34 @@
+# Use a Go base image
+FROM golang:1.22-alpine AS builder
+
+WORKDIR /app
+
+# Copy go mod and sum files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy the source code
+COPY . .
+
+# Build the test command
+RUN go build -o test-server ./test/cmd/main.go
+
+# Use a minimal base image for the final stage
+FROM alpine:latest
+
+WORKDIR /app
+
+# Copy the built binary
+COPY --from=builder /app/test-server .
+
+# Copy the YAML configuration file
+COPY ./test/config.yaml .
+
+# Copy the sample JSON files
+COPY ./test/samples/evm-json-rpc.json .
+
+# Expose the ports used by the fake servers
+EXPOSE 9081-9185
+
+# Run the test server
+CMD ["./test-server", "-config", "config.yaml"]

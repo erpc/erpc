@@ -1,32 +1,40 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/erpc/erpc/test"
 	"github.com/rs/zerolog/log"
+	"gopkg.in/yaml.v2"
 )
 
+type Config struct {
+	Servers []test.ServerConfig `yaml:"servers"`
+}
+
 func main() {
-	// Define server configurations
-	serverConfigs := []test.ServerConfig{
-		{Port: 9081, FailureRate: 0, LimitedRate: 0.005, MinDelay: 50 * time.Millisecond, MaxDelay: 200 * time.Millisecond, SampleFile: "test/samples/evm-json-rpc.json"},
-		{Port: 9082, FailureRate: 1, LimitedRate: 0.2, MinDelay: 100 * time.Millisecond, MaxDelay: 300 * time.Millisecond, SampleFile: "test/samples/evm-json-rpc.json"},
-		{Port: 9083, FailureRate: 0.05, LimitedRate: 0.01, MinDelay: 300 * time.Millisecond, MaxDelay: 500 * time.Millisecond, SampleFile: "test/samples/evm-json-rpc.json"},
+	// Parse command-line flags
+	configFile := flag.String("config", "config.yaml", "Path to the YAML configuration file")
+	flag.Parse()
+
+	// Read server configurations from YAML file
+	configData, err := os.ReadFile(*configFile)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to read configuration file")
 	}
 
-	// Add servers up to 9185
-	// for i := 9084; i <= 9185; i++ {
-	// 	serverConfigs = append(serverConfigs, test.ServerConfig{Port: i, FailureRate: 0.05, LimitedRate: 0.01, MinDelay: 30 * time.Millisecond, MaxDelay: 150 * time.Millisecond, SampleFile: "test/samples/evm-json-rpc.json"})
-	// }
+	var config Config
+	if err := yaml.Unmarshal(configData, &config); err != nil {
+		log.Fatal().Err(err).Msg("Failed to parse configuration file")
+	}
 
-	// Create fake servers using the existing function
-	fakeServers := test.CreateFakeServers(serverConfigs)
+	// Create fake servers using the configuration
+	fakeServers := test.CreateFakeServers(config.Servers)
 
 	// Start all fake servers
 	var wg sync.WaitGroup

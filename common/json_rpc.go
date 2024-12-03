@@ -652,6 +652,16 @@ func TranslateToJsonRpcException(err error) error {
 		)
 	}
 
+	if HasErrorCode(err, ErrCodeInvalidRequest, ErrCodeInvalidUrlPath) {
+		return NewErrJsonRpcExceptionInternal(
+			0,
+			JsonRpcErrorClientSideException,
+			"bad request url and/or body",
+			err,
+			nil,
+		)
+	}
+
 	var msg = "internal server error"
 	if se, ok := err.(StandardError); ok {
 		msg = se.DeepestMessage()
