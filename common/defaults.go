@@ -822,10 +822,10 @@ func (r *RateLimitAutoTuneConfig) SetDefaults() {
 		r.IncreaseFactor = 1.05
 	}
 	if r.DecreaseFactor == 0 {
-		r.DecreaseFactor = 0.9
+		r.DecreaseFactor = 0.95
 	}
 	if r.MaxBudget == 0 {
-		r.MaxBudget = 10000
+		r.MaxBudget = 100000
 	}
 }
 

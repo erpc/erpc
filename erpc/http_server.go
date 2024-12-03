@@ -235,6 +235,11 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				nq := common.NewNormalizedRequest(rawReq)
 				nq.ApplyDirectivesFromHttp(headers, queryArgs)
 
+				if err := nq.Validate(); err != nil {
+					responses[index] = processErrorBody(&lg, &startedAt, nq, err)
+					return
+				}
+
 				m, _ := nq.Method()
 				rlg := lg.With().Str("method", m).Logger()
 
@@ -690,7 +695,12 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 		if nq != nil {
 			nq.RLock()
 		}
-		if common.HasErrorCode(err, common.ErrCodeEndpointClientSideException, common.ErrCodeInvalidUrlPath) {
+		if common.HasErrorCode(
+			err,
+			common.ErrCodeEndpointClientSideException,
+			common.ErrCodeInvalidUrlPath,
+			common.ErrCodeInvalidRequest,
+		) {
 			logger.Debug().Err(err).Object("request", nq).Msgf("forward request errored with client-side exception")
 		} else {
 			if e, ok := err.(common.StandardError); ok {
@@ -716,9 +726,14 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 	}
 	jre := &common.ErrJsonRpcExceptionInternal{}
 	if errors.As(err, &jre) {
+		message := jre.Message
+		deepestMessage := jre.DeepestMessage()
+		if message != deepestMessage {
+			message = fmt.Sprintf("%s: %s", message, deepestMessage)
+		}
 		errObj := map[string]interface{}{
 			"code":    jre.NormalizedCode(),
-			"message": jre.Message,
+			"message": message,
 		}
 		if jre.Details["data"] != nil {
 			errObj["data"] = jre.Details["data"]

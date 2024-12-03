@@ -23,13 +23,13 @@ import (
 )
 
 type ServerConfig struct {
-	Port             int
-	FailureRate      float64
-	LimitedRate      float64
-	MinDelay         time.Duration
-	MaxDelay         time.Duration
-	SampleFile       string
-	AdditionalConfig *common.UpstreamConfig
+	Port             int    `yaml:"port"`
+	FailureRate      float64 `yaml:"failureRate"`
+	LimitedRate      float64 `yaml:"limitedRate"`
+	MinDelay         time.Duration `yaml:"minDelay"`
+	MaxDelay         time.Duration `yaml:"maxDelay"`
+	SampleFile       string        `yaml:"sampleFile"`
+	AdditionalConfig *common.UpstreamConfig `yaml:"additionalConfig"`
 }
 
 type StressTestConfig struct {
