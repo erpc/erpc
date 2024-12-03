@@ -200,6 +200,12 @@ var (
 		Help:      "Total number of cache set errors.",
 	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
 
+	MetricCacheSetSkippedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "cache_set_skipped_total",
+		Help:      "Total number of cache set skips.",
+	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+
 	MetricCacheGetSuccessHitTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_get_success_hit_total",
@@ -217,6 +223,12 @@ var (
 		Name:      "cache_get_error_total",
 		Help:      "Total number of cache get errors.",
 	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
+
+	MetricCacheGetSkippedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "cache_get_skipped_total",
+		Help:      "Total number of cache get skips (i.e. no matching policy found).",
+	}, []string{"project", "network", "category"})
 
 	MetricCORSRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
