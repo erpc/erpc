@@ -54,12 +54,24 @@ export interface ServerConfig {
   httpHostV6?: string;
   httpPort?: number /* int */;
   maxTimeout?: string;
+  readTimeout?: string;
+  writeTimeout?: string;
   enableGzip?: boolean;
   tls?: TLSConfig;
+  aliasing?: AliasingConfig;
 }
 export interface AdminConfig {
   auth?: AuthConfig;
   cors?: CORSConfig;
+}
+export interface AliasingConfig {
+  rules: (AliasingRuleConfig | undefined)[];
+}
+export interface AliasingRuleConfig {
+  matchDomain: string;
+  serveProject: string;
+  serveArchitecture: string;
+  serveChain: string;
 }
 export interface DatabaseConfig {
   evmJsonRpcCache?: CacheConfig;
@@ -142,6 +154,7 @@ export interface ProjectConfig {
   id: string;
   auth?: AuthConfig;
   cors?: CORSConfig;
+  upstreamDefaults?: UpstreamConfig;
   upstreams: (UpstreamConfig | undefined)[];
   networkDefaults?: NetworkDefaults;
   networks?: (NetworkConfig | undefined)[];
