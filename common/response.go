@@ -309,6 +309,10 @@ func (r *NormalizedResponse) WriteTo(w io.Writer) (n int64, err error) {
 }
 
 func (r *NormalizedResponse) Release() {
+	if r == nil {
+		return
+	}
+
 	r.Lock()
 	defer r.Unlock()
 
