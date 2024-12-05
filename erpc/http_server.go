@@ -153,7 +153,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			lg = s.logger.With().Str("component", "proxy").Str("projectId", projectId).Str("networkId", fmt.Sprintf("%s:%s", architecture, chainId)).Logger()
 		}
 
-		if projectId == "" {
+		if projectId == "" && !isAdmin {
 			handleErrorResponse(&lg, &startedAt, nil, common.NewErrInvalidRequest(fmt.Errorf("projectId is required in path or must be aliased")), w, encoder, writeFatalError)
 			return
 		}
