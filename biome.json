@@ -1,5 +1,5 @@
 {
-    "$schema": "https://biomejs.dev/schemas/1.4.1/schema.json",
+  "$schema": "node_modules/@biomejs/biome/configuration_schema.json",
     "organizeImports": {
       "enabled": true
     },
@@ -9,7 +9,9 @@
         "CHANGELOG.md",
         "generated.ts",
         "docs/",
-        "pnpm-lock.yaml"
+        "pnpm-lock.yaml",
+        "lib/*",
+        "dist/*"
       ]
     },
     "formatter": {
@@ -39,6 +41,9 @@
         },
         "performance": {
           "noAccumulatingSpread": "off"
+        },
+        "correctness": {
+          "noUnusedImports": "error"
         }
       }
     }
