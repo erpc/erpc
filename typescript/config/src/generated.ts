@@ -347,8 +347,8 @@ export const DefaultPolicyFunction = `
 		if (healthyOnes.length >= minHealthyThreshold) {
 			return healthyOnes
 		}
-
-    if (fallbacks.length > 0) {
+  
+		if (fallbacks.length > 0) {
 			let healthyFallbacks = fallbacks.filter(
 				u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
 			)
