@@ -1,5 +1,9 @@
 export * from "./types";
 import * as types from "./types";
+export type CacheDAL = any;
+export interface MockCacheDal {
+    mock: any;
+}
 /**
  * Config represents the configuration of the application.
  */
@@ -32,6 +36,15 @@ export interface DatabaseConfig {
 export interface CacheConfig {
     connectors: types.ConnectorConfig[];
     policies: (CachePolicyConfig | undefined)[];
+    methods: {
+        [key: string]: CacheMethodConfig | undefined;
+    };
+}
+export interface CacheMethodConfig {
+    reqRefs: any[][];
+    respRefs: any[][];
+    finalized: boolean;
+    realtime: boolean;
 }
 export interface CachePolicyConfig {
     connector: string;
@@ -86,6 +99,8 @@ export interface DynamoDBConnectorConfig {
 export interface PostgreSQLConnectorConfig {
     connectionUri: string;
     table: string;
+    minConns?: number;
+    maxConns?: number;
 }
 export interface AwsAuthConfig {
     mode: string;
@@ -299,7 +314,7 @@ export declare const CacheEmptyBehaviorIgnore: CacheEmptyBehavior;
 export declare const CacheEmptyBehaviorAllow: CacheEmptyBehavior;
 export declare const CacheEmptyBehaviorOnly: CacheEmptyBehavior;
 export declare const DefaultEvmFinalityDepth = 1024;
-export declare const DefaultPolicyFunction = "\n\t(upstreams, method) => {\n\t\tconst defaults = upstreams.filter(u => u.config.group !== 'fallback')\n\t\tconst fallbacks = upstreams.filter(u => u.config.group === 'fallback')\n\t\t\n\t\tconst maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7')\n\t\tconst maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10')\n\t\tconst minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1')\n\t\t\n\t\tconst healthyOnes = defaults.filter(\n\t\t\tu => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag\n\t\t)\n\t\t\n\t\tif (healthyOnes.length >= minHealthyThreshold) {\n\t\t\treturn healthyOnes\n\t\t}\n\n\t\t// The reason all upstreams are returned is to be less harsh and still consider default nodes (in case they have intermittent issues)\n\t\t// Order of upstreams does not matter as that will be decided by the upstream scoring mechanism\n\t\treturn upstreams\n\t}\n";
+export declare const DefaultPolicyFunction = "\n\t(upstreams, method) => {\n\t\tconst defaults = upstreams.filter(u => u.config.group !== 'fallback')\n\t\tconst fallbacks = upstreams.filter(u => u.config.group === 'fallback')\n\t\t\n\t\tconst maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7')\n\t\tconst maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10')\n\t\tconst minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1')\n\t\t\n\t\tconst healthyOnes = defaults.filter(\n\t\t\tu => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag\n\t\t)\n\t\t\n\t\tif (healthyOnes.length >= minHealthyThreshold) {\n\t\t\treturn healthyOnes\n\t\t}\n  \n\t\tif (fallbacks.length > 0) {\n\t\t\tlet healthyFallbacks = fallbacks.filter(\n\t\t\t\tu => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag\n\t\t\t)\n      \n\t\t\tif (healthyFallbacks.length > 0) {\n\t\t\t\treturn healthyFallbacks\n\t\t\t}\n\t\t}\n\n\t\t// The reason all upstreams are returned is to be less harsh and still consider default nodes (in case they have intermittent issues)\n\t\t// Order of upstreams does not matter as that will be decided by the upstream scoring mechanism\n\t\treturn upstreams\n\t}\n";
 export type EvmNodeType = string;
 export declare const EvmNodeTypeFull: EvmNodeType;
 export declare const EvmNodeTypeArchive: EvmNodeType;

@@ -347,6 +347,16 @@ export const DefaultPolicyFunction = `
 		if (healthyOnes.length >= minHealthyThreshold) {
 			return healthyOnes
 		}
+  
+		if (fallbacks.length > 0) {
+			let healthyFallbacks = fallbacks.filter(
+				u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
+			)
+      
+			if (healthyFallbacks.length > 0) {
+				return healthyFallbacks
+			}
+		}
 
 		// The reason all upstreams are returned is to be less harsh and still consider default nodes (in case they have intermittent issues)
 		// Order of upstreams does not matter as that will be decided by the upstream scoring mechanism
