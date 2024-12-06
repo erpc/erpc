@@ -198,10 +198,14 @@ export default createConfig({
                   return healthyOnes;
                 }
 
+                // If there are fallbacks defined, try to use them
                 if (fallbacks.length > 0) {
+                  // Apply same health filtering as default rpcs
                   let healthyFallbacks = fallbacks.filter(
                     u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
                   )
+                  
+                  // If there are healthy fallbacks use them
                   if (healthyFallbacks.length > 0) {
                     return healthyFallbacks
                   }
