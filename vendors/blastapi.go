@@ -24,10 +24,6 @@ func (v *BlastApiVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
 
-	if upstream.AutoIgnoreUnsupportedMethods == nil {
-		upstream.AutoIgnoreUnsupportedMethods = &TRUE
-	}
-
 	return nil
 }
 

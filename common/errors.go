@@ -1876,7 +1876,7 @@ func IsRetryableTowardsUpstream(err error) bool {
 		ErrCodeJsonRpcRequestUnmarshal,
 
 		// Upstream-level + 401 / 403 -> No Retry
-		// RPC-RPC vendor billing/capacity/auth -> No Retry
+		// RPC vendor billing/capacity/auth -> No Retry
 		ErrCodeEndpointUnauthorized,
 	)
 }
