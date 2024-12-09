@@ -20,14 +20,6 @@ func (v *PimlicoVendor) Name() string {
 }
 
 func (v *PimlicoVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
-	if upstream.JsonRpc == nil {
-		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
-	}
-
-	if upstream.AutoIgnoreUnsupportedMethods == nil {
-		upstream.AutoIgnoreUnsupportedMethods = &TRUE
-	}
-
 	if upstream.IgnoreMethods == nil {
 		upstream.IgnoreMethods = []string{"*"}
 	}

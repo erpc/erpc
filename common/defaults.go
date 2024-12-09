@@ -554,8 +554,8 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) {
 	if u.RateLimitAutoTune == nil {
 		u.RateLimitAutoTune = defaults.RateLimitAutoTune
 	}
-	// IMPORTANT: Some of the configs must be copied vs referenced, because the object might be updated in runtime onyl this specific upstream
-	// TODO Should we refactor so this won't happen
+	// IMPORTANT: Some of the configs must be copied vs referenced, because the object might be updated in runtime only for this specific upstream
+	// TODO Should we refactor so this won't happen?
 	if u.Evm == nil && defaults.Evm != nil {
 		u.Evm = &EvmUpstreamConfig{
 			ChainId:                  defaults.Evm.ChainId,
@@ -580,6 +580,9 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) {
 	}
 	if u.IgnoreMethods == nil && defaults.IgnoreMethods != nil {
 		u.IgnoreMethods = append([]string{}, defaults.IgnoreMethods...)
+	}
+	if u.AutoIgnoreUnsupportedMethods == nil && defaults.AutoIgnoreUnsupportedMethods != nil {
+		u.AutoIgnoreUnsupportedMethods = defaults.AutoIgnoreUnsupportedMethods
 	}
 }
 
