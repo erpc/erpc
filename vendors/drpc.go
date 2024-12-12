@@ -22,16 +22,6 @@ func (v *DrpcVendor) Name() string {
 }
 
 func (v *DrpcVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
-	if upstream.JsonRpc == nil {
-		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
-	}
-
-	// By default disable auto-ignore because free-tier plans of dRPC
-	// might give wrong responses when using public nodes.
-	if upstream.AutoIgnoreUnsupportedMethods == nil {
-		upstream.AutoIgnoreUnsupportedMethods = &FALSE
-	}
-
 	return nil
 }
 

@@ -20,14 +20,6 @@ func (v *ThirdwebVendor) Name() string {
 }
 
 func (v *ThirdwebVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
-	if upstream.JsonRpc == nil {
-		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
-	}
-
-	if upstream.AutoIgnoreUnsupportedMethods == nil {
-		upstream.AutoIgnoreUnsupportedMethods = &TRUE
-	}
-
 	return nil
 }
 

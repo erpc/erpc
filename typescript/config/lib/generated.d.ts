@@ -23,20 +23,32 @@ export interface ServerConfig {
     httpHostV6?: string;
     httpPort?: number;
     maxTimeout?: string;
+    readTimeout?: string;
+    writeTimeout?: string;
     enableGzip?: boolean;
     tls?: TLSConfig;
+    aliasing?: AliasingConfig;
 }
 export interface AdminConfig {
     auth?: AuthConfig;
     cors?: CORSConfig;
 }
+export interface AliasingConfig {
+    rules: (AliasingRuleConfig | undefined)[];
+}
+export interface AliasingRuleConfig {
+    matchDomain: string;
+    serveProject: string;
+    serveArchitecture: string;
+    serveChain: string;
+}
 export interface DatabaseConfig {
     evmJsonRpcCache?: CacheConfig;
 }
 export interface CacheConfig {
-    connectors: types.ConnectorConfig[];
-    policies: (CachePolicyConfig | undefined)[];
-    methods: {
+    connectors?: types.ConnectorConfig[];
+    policies?: (CachePolicyConfig | undefined)[];
+    methods?: {
         [key: string]: CacheMethodConfig | undefined;
     };
 }
@@ -51,7 +63,7 @@ export interface CachePolicyConfig {
     network?: string;
     method?: string;
     params?: any[];
-    finality: DataFinalityState;
+    finality?: DataFinalityState;
     empty?: CacheEmptyBehavior;
     minItemSize?: string;
     maxItemSize?: string;
@@ -113,10 +125,18 @@ export interface ProjectConfig {
     id: string;
     auth?: AuthConfig;
     cors?: CORSConfig;
+    upstreamDefaults?: UpstreamConfig;
     upstreams: (UpstreamConfig | undefined)[];
+    networkDefaults?: NetworkDefaults;
     networks?: (NetworkConfig | undefined)[];
     rateLimitBudget?: string;
     healthCheck?: HealthCheckConfig;
+}
+export interface NetworkDefaults {
+    rateLimitBudget?: string;
+    failsafe?: FailsafeConfig;
+    selectionPolicy?: SelectionPolicyConfig;
+    directiveDefaults?: DirectiveDefaultsConfig;
 }
 export interface CORSConfig {
     allowedOrigins: string[];
@@ -227,6 +247,13 @@ export interface NetworkConfig {
     failsafe?: FailsafeConfig;
     evm?: EvmNetworkConfig;
     selectionPolicy?: SelectionPolicyConfig;
+    directiveDefaults?: DirectiveDefaultsConfig;
+}
+export interface DirectiveDefaultsConfig {
+    retryEmpty?: boolean;
+    retryPending?: boolean;
+    skipCacheRead?: boolean;
+    useUpstream?: string;
 }
 export interface EvmNetworkConfig {
     chainId: number;
@@ -314,7 +341,7 @@ export declare const CacheEmptyBehaviorIgnore: CacheEmptyBehavior;
 export declare const CacheEmptyBehaviorAllow: CacheEmptyBehavior;
 export declare const CacheEmptyBehaviorOnly: CacheEmptyBehavior;
 export declare const DefaultEvmFinalityDepth = 1024;
-export declare const DefaultPolicyFunction = "\n\t(upstreams, method) => {\n\t\tconst defaults = upstreams.filter(u => u.config.group !== 'fallback')\n\t\tconst fallbacks = upstreams.filter(u => u.config.group === 'fallback')\n\t\t\n\t\tconst maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7')\n\t\tconst maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10')\n\t\tconst minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1')\n\t\t\n\t\tconst healthyOnes = defaults.filter(\n\t\t\tu => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag\n\t\t)\n\t\t\n\t\tif (healthyOnes.length >= minHealthyThreshold) {\n\t\t\treturn healthyOnes\n\t\t}\n  \n\t\tif (fallbacks.length > 0) {\n\t\t\tlet healthyFallbacks = fallbacks.filter(\n\t\t\t\tu => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag\n\t\t\t)\n      \n\t\t\tif (healthyFallbacks.length > 0) {\n\t\t\t\treturn healthyFallbacks\n\t\t\t}\n\t\t}\n\n\t\t// The reason all upstreams are returned is to be less harsh and still consider default nodes (in case they have intermittent issues)\n\t\t// Order of upstreams does not matter as that will be decided by the upstream scoring mechanism\n\t\treturn upstreams\n\t}\n";
+export declare const DefaultPolicyFunction = "\n\t(upstreams, method) => {\n\t\tconst defaults = upstreams.filter(u => u.config.group !== 'fallback')\n\t\tconst fallbacks = upstreams.filter(u => u.config.group === 'fallback')\n\t\t\n\t\tconst maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7')\n\t\tconst maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10')\n\t\tconst minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1')\n\t\t\n\t\tconst healthyOnes = defaults.filter(\n\t\t\tu => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag\n\t\t)\n\t\t\n\t\tif (healthyOnes.length >= minHealthyThreshold) {\n\t\t\treturn healthyOnes\n\t\t}\n\n\t\tif (fallbacks.length > 0) {\n\t\t\tlet healthyFallbacks = fallbacks.filter(\n\t\t\t\tu => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag\n\t\t\t)\n\t\t\t\n\t\t\tif (healthyFallbacks.length > 0) {\n\t\t\t\treturn healthyFallbacks\n\t\t\t}\n\t\t}\n\n\t\t// The reason all upstreams are returned is to be less harsh and still consider default nodes (in case they have intermittent issues)\n\t\t// Order of upstreams does not matter as that will be decided by the upstream scoring mechanism\n\t\treturn upstreams\n\t}\n";
 export type EvmNodeType = string;
 export declare const EvmNodeTypeFull: EvmNodeType;
 export declare const EvmNodeTypeArchive: EvmNodeType;

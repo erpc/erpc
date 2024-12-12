@@ -36,20 +36,32 @@ export interface ServerConfig {
   httpHostV6?: string;
   httpPort?: number /* int */;
   maxTimeout?: string;
+  readTimeout?: string;
+  writeTimeout?: string;
   enableGzip?: boolean;
   tls?: TLSConfig;
+  aliasing?: AliasingConfig;
 }
 export interface AdminConfig {
   auth?: AuthConfig;
   cors?: CORSConfig;
 }
+export interface AliasingConfig {
+  rules: (AliasingRuleConfig | undefined)[];
+}
+export interface AliasingRuleConfig {
+  matchDomain: string;
+  serveProject: string;
+  serveArchitecture: string;
+  serveChain: string;
+}
 export interface DatabaseConfig {
   evmJsonRpcCache?: CacheConfig;
 }
 export interface CacheConfig {
-  connectors: types.ConnectorConfig[];
-  policies: (CachePolicyConfig | undefined)[];
-  methods: { [key: string]: CacheMethodConfig | undefined};
+  connectors?: types.ConnectorConfig[];
+  policies?: (CachePolicyConfig | undefined)[];
+  methods?: { [key: string]: CacheMethodConfig | undefined};
 }
 export interface CacheMethodConfig {
   reqRefs: any[][];
@@ -62,7 +74,7 @@ export interface CachePolicyConfig {
   network?: string;
   method?: string;
   params?: any[];
-  finality: DataFinalityState;
+  finality?: DataFinalityState;
   empty?: CacheEmptyBehavior;
   minItemSize?: string;
   maxItemSize?: string;
@@ -124,10 +136,18 @@ export interface ProjectConfig {
   id: string;
   auth?: AuthConfig;
   cors?: CORSConfig;
+  upstreamDefaults?: UpstreamConfig;
   upstreams: (UpstreamConfig | undefined)[];
+  networkDefaults?: NetworkDefaults;
   networks?: (NetworkConfig | undefined)[];
   rateLimitBudget?: string;
   healthCheck?: HealthCheckConfig;
+}
+export interface NetworkDefaults {
+  rateLimitBudget?: string;
+  failsafe?: FailsafeConfig;
+  selectionPolicy?: SelectionPolicyConfig;
+  directiveDefaults?: DirectiveDefaultsConfig;
 }
 export interface CORSConfig {
   allowedOrigins: string[];
@@ -238,6 +258,13 @@ export interface NetworkConfig {
   failsafe?: FailsafeConfig;
   evm?: EvmNetworkConfig;
   selectionPolicy?: SelectionPolicyConfig;
+  directiveDefaults?: DirectiveDefaultsConfig;
+}
+export interface DirectiveDefaultsConfig {
+  retryEmpty?: boolean;
+  retryPending?: boolean;
+  skipCacheRead?: boolean;
+  useUpstream?: string;
 }
 export interface EvmNetworkConfig {
   chainId: number /* int64 */;
@@ -347,12 +374,12 @@ export const DefaultPolicyFunction = `
 		if (healthyOnes.length >= minHealthyThreshold) {
 			return healthyOnes
 		}
-  
+
 		if (fallbacks.length > 0) {
 			let healthyFallbacks = fallbacks.filter(
 				u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
 			)
-      
+			
 			if (healthyFallbacks.length > 0) {
 				return healthyFallbacks
 			}

@@ -20,7 +20,11 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // src/index.ts
 var src_exports = {};
 __export(src_exports, {
+  CacheEmptyBehaviorAllow: () => CacheEmptyBehaviorAllow,
+  CacheEmptyBehaviorIgnore: () => CacheEmptyBehaviorIgnore,
+  CacheEmptyBehaviorOnly: () => CacheEmptyBehaviorOnly,
   DataFinalityStateFinalized: () => DataFinalityStateFinalized,
+  DataFinalityStateRealtime: () => DataFinalityStateRealtime,
   DataFinalityStateUnfinalized: () => DataFinalityStateUnfinalized,
   DataFinalityStateUnknown: () => DataFinalityStateUnknown,
   createConfig: () => createConfig
@@ -30,7 +34,11 @@ module.exports = __toCommonJS(src_exports);
 // src/generated.ts
 var DataFinalityStateFinalized = 0;
 var DataFinalityStateUnfinalized = 1;
+var DataFinalityStateRealtime = 2;
 var DataFinalityStateUnknown = 3;
+var CacheEmptyBehaviorIgnore = 0;
+var CacheEmptyBehaviorAllow = 1;
+var CacheEmptyBehaviorOnly = 2;
 
 // src/index.ts
 var createConfig = (cfg) => {
@@ -38,7 +46,11 @@ var createConfig = (cfg) => {
 };
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
+  CacheEmptyBehaviorAllow,
+  CacheEmptyBehaviorIgnore,
+  CacheEmptyBehaviorOnly,
   DataFinalityStateFinalized,
+  DataFinalityStateRealtime,
   DataFinalityStateUnfinalized,
   DataFinalityStateUnknown,
   createConfig

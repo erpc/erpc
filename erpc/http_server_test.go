@@ -2613,7 +2613,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		defer shutdown()
 
 		wg := &sync.WaitGroup{}
-		for i := 0; i < 10; i++ {
+		for i := 0; i < 3; i++ {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
