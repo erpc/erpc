@@ -78,9 +78,9 @@ type DatabaseConfig struct {
 }
 
 type CacheConfig struct {
-	Connectors []*ConnectorConfig            `yaml:"connectors" json:"connectors" tstype:"types.ConnectorConfig[]"`
-	Policies   []*CachePolicyConfig          `yaml:"policies" json:"policies"`
-	Methods    map[string]*CacheMethodConfig `yaml:"methods" json:"methods"`
+	Connectors []*ConnectorConfig            `yaml:"connectors,omitempty" json:"connectors" tstype:"types.ConnectorConfig[]"`
+	Policies   []*CachePolicyConfig          `yaml:"policies,omitempty" json:"policies"`
+	Methods    map[string]*CacheMethodConfig `yaml:"methods,omitempty" json:"methods"`
 }
 
 type CacheMethodConfig struct {

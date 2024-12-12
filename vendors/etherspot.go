@@ -24,10 +24,6 @@ func (v *EtherspotVendor) OverrideConfig(upstream *common.UpstreamConfig) error 
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
 
-	if upstream.AutoIgnoreUnsupportedMethods == nil {
-		upstream.AutoIgnoreUnsupportedMethods = &TRUE
-	}
-
 	if upstream.IgnoreMethods == nil {
 		upstream.IgnoreMethods = []string{"*"}
 	}

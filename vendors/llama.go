@@ -20,14 +20,6 @@ func (v *LlamaVendor) Name() string {
 }
 
 func (v *LlamaVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
-	if upstream.JsonRpc == nil {
-		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
-	}
-
-	if upstream.AutoIgnoreUnsupportedMethods == nil {
-		upstream.AutoIgnoreUnsupportedMethods = &TRUE
-	}
-
 	return nil
 }
 
