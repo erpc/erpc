@@ -4,6 +4,7 @@
 [![CI][ci-badge]][ci-url]
 [![Telegram chat][tg-badge]][tg-url]
 [![License][license-badge]][license-url]
+[![CLA assistant](https://cla-assistant.io/readme/badge/erpc/erpc)](https://cla-assistant.io/erpc/erpc)
 <a href="https://twitter.com/intent/tweet?text=EVM%20RPC%20proxy%20to%20increase%20reliability%20and%20reduce%20costs%20of%20your%20RPC%20usage%20https://www.erpc.cloud&hashtags=rpc,proxy,caching">
 <img alt="tweet" src="https://img.shields.io/twitter/url/http/shields.io.svg?style=social"/>
 </a>
@@ -66,6 +67,10 @@ make run
 # License
 
 Apache 2.0
+
+## Important Notice for Contributors
+
+By contributing to this project, you agree that your contributions may be used in both the open-source and enterprise versions of the software. Please review our [Contributing Guidelines](./CONTRIBUTING.md) and [Contributor License Agreement](./CLA.md) before submitting your contributions.
 
 [ci-badge]: https://img.shields.io/badge/CI-passing-brightgreen
 [ci-url]: https://github.com/erpc/erpc/actions/workflows/development.yml
