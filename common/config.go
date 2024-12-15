@@ -12,6 +12,7 @@ import (
 	"github.com/erpc/erpc/util"
 	"github.com/grafana/sobek"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v3"
 )
@@ -111,6 +112,9 @@ func (c *CacheConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 				TTL:       0,
 				Connector: "default",
 			},
+		}
+		if err != nil {
+			log.Warn().Err(err).Msg("failed to unmarshal old cache config, please update to new structure based on cache docs")
 		}
 	} else {
 		*c = CacheConfig(raw)
