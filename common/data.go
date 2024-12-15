@@ -41,17 +41,17 @@ func (f *DataFinalityState) UnmarshalYAML(unmarshal func(interface{}) error) err
 	}
 
 	switch strings.ToLower(s) {
-	case "unknown":
-		*f = DataFinalityStateUnknown
+	case "finalized", "0":
+		*f = DataFinalityStateFinalized
 		return nil
-	case "unfinalized":
+	case "unfinalized", "1":
 		*f = DataFinalityStateUnfinalized
 		return nil
-	case "realtime":
+	case "realtime", "2":
 		*f = DataFinalityStateRealtime
 		return nil
-	case "finalized":
-		*f = DataFinalityStateFinalized
+	case "unknown", "3":
+		*f = DataFinalityStateUnknown
 		return nil
 	}
 
@@ -76,13 +76,13 @@ func (b *CacheEmptyBehavior) UnmarshalYAML(unmarshal func(interface{}) error) er
 		return err
 	}
 	switch strings.ToLower(s) {
-	case "ignore":
+	case "ignore", "0":
 		*b = CacheEmptyBehaviorIgnore
 		return nil
-	case "allow":
+	case "allow", "1":
 		*b = CacheEmptyBehaviorAllow
 		return nil
-	case "only":
+	case "only", "2":
 		*b = CacheEmptyBehaviorOnly
 		return nil
 	}
