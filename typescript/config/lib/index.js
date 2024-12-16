@@ -20,6 +20,11 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // src/index.ts
 var src_exports = {};
 __export(src_exports, {
+  ArchitectureEvm: () => ArchitectureEvm,
+  AuthTypeJwt: () => AuthTypeJwt,
+  AuthTypeNetwork: () => AuthTypeNetwork,
+  AuthTypeSecret: () => AuthTypeSecret,
+  AuthTypeSiwe: () => AuthTypeSiwe,
   CacheEmptyBehaviorAllow: () => CacheEmptyBehaviorAllow,
   CacheEmptyBehaviorIgnore: () => CacheEmptyBehaviorIgnore,
   CacheEmptyBehaviorOnly: () => CacheEmptyBehaviorOnly,
@@ -27,11 +32,29 @@ __export(src_exports, {
   DataFinalityStateRealtime: () => DataFinalityStateRealtime,
   DataFinalityStateUnfinalized: () => DataFinalityStateUnfinalized,
   DataFinalityStateUnknown: () => DataFinalityStateUnknown,
+  EvmNodeTypeArchive: () => EvmNodeTypeArchive,
+  EvmNodeTypeFull: () => EvmNodeTypeFull,
+  EvmNodeTypeLight: () => EvmNodeTypeLight,
+  ScopeNetwork: () => ScopeNetwork,
+  ScopeUpstream: () => ScopeUpstream,
+  UpstreamTypeEvm: () => UpstreamTypeEvm,
+  UpstreamTypeEvmAlchemy: () => UpstreamTypeEvmAlchemy,
+  UpstreamTypeEvmBlastapi: () => UpstreamTypeEvmBlastapi,
+  UpstreamTypeEvmDrpc: () => UpstreamTypeEvmDrpc,
+  UpstreamTypeEvmEnvio: () => UpstreamTypeEvmEnvio,
+  UpstreamTypeEvmEtherspot: () => UpstreamTypeEvmEtherspot,
+  UpstreamTypeEvmInfura: () => UpstreamTypeEvmInfura,
+  UpstreamTypeEvmPimlico: () => UpstreamTypeEvmPimlico,
+  UpstreamTypeEvmThirdweb: () => UpstreamTypeEvmThirdweb,
   createConfig: () => createConfig
 });
 module.exports = __toCommonJS(src_exports);
 
 // src/generated.ts
+var AuthTypeSecret = "secret";
+var AuthTypeJwt = "jwt";
+var AuthTypeSiwe = "siwe";
+var AuthTypeNetwork = "network";
 var DataFinalityStateFinalized = 0;
 var DataFinalityStateUnfinalized = 1;
 var DataFinalityStateRealtime = 2;
@@ -39,6 +62,21 @@ var DataFinalityStateUnknown = 3;
 var CacheEmptyBehaviorIgnore = 0;
 var CacheEmptyBehaviorAllow = 1;
 var CacheEmptyBehaviorOnly = 2;
+var EvmNodeTypeFull = "full";
+var EvmNodeTypeArchive = "archive";
+var EvmNodeTypeLight = "light";
+var ArchitectureEvm = "evm";
+var ScopeNetwork = "network";
+var ScopeUpstream = "upstream";
+var UpstreamTypeEvm = "evm";
+var UpstreamTypeEvmAlchemy = "evm+alchemy";
+var UpstreamTypeEvmDrpc = "evm+drpc";
+var UpstreamTypeEvmBlastapi = "evm+blastapi";
+var UpstreamTypeEvmEnvio = "evm+envio";
+var UpstreamTypeEvmPimlico = "evm+pimlico";
+var UpstreamTypeEvmThirdweb = "evm+thirdweb";
+var UpstreamTypeEvmEtherspot = "evm+etherspot";
+var UpstreamTypeEvmInfura = "evm+infura";
 
 // src/index.ts
 var createConfig = (cfg) => {
@@ -46,6 +84,11 @@ var createConfig = (cfg) => {
 };
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
+  ArchitectureEvm,
+  AuthTypeJwt,
+  AuthTypeNetwork,
+  AuthTypeSecret,
+  AuthTypeSiwe,
   CacheEmptyBehaviorAllow,
   CacheEmptyBehaviorIgnore,
   CacheEmptyBehaviorOnly,
@@ -53,6 +96,20 @@ var createConfig = (cfg) => {
   DataFinalityStateRealtime,
   DataFinalityStateUnfinalized,
   DataFinalityStateUnknown,
+  EvmNodeTypeArchive,
+  EvmNodeTypeFull,
+  EvmNodeTypeLight,
+  ScopeNetwork,
+  ScopeUpstream,
+  UpstreamTypeEvm,
+  UpstreamTypeEvmAlchemy,
+  UpstreamTypeEvmBlastapi,
+  UpstreamTypeEvmDrpc,
+  UpstreamTypeEvmEnvio,
+  UpstreamTypeEvmEtherspot,
+  UpstreamTypeEvmInfura,
+  UpstreamTypeEvmPimlico,
+  UpstreamTypeEvmThirdweb,
   createConfig
 });
 //# sourceMappingURL=index.js.map
