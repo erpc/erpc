@@ -63,6 +63,12 @@ vi erpc.yaml
 make run
 ```
 
+## Contributors
+
+<a href="https://github.com/erpc/erpc/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=erpc/erpc" />
+</a>
+
 # License
 
 Apache 2.0
