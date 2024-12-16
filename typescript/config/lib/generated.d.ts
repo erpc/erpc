@@ -1,5 +1,4 @@
-export * from "./types";
-import * as types from "./types";
+import type { LogLevel, Duration, ByteSize, ConnectorDriverType as TsConnectorDriverType, ConnectorConfig as TsConnectorConfig, UpstreamType as TsUpstreamType, AuthType as TsAuthType, AuthStrategyConfig as TsAuthStrategyConfig, SelectionPolicyEvalFunction } from "./types";
 export type CacheDAL = any;
 export interface MockCacheDal {
     mock: any;
@@ -8,7 +7,7 @@ export interface MockCacheDal {
  * Config represents the configuration of the application.
  */
 export interface Config {
-    logLevel: types.LogLevel;
+    logLevel: LogLevel;
     server?: ServerConfig;
     admin?: AdminConfig;
     database?: DatabaseConfig;
@@ -46,7 +45,7 @@ export interface DatabaseConfig {
     evmJsonRpcCache?: CacheConfig;
 }
 export interface CacheConfig {
-    connectors?: types.ConnectorConfig[];
+    connectors?: TsConnectorConfig[];
     policies?: (CachePolicyConfig | undefined)[];
     methods?: {
         [key: string]: CacheMethodConfig | undefined;
@@ -65,9 +64,9 @@ export interface CachePolicyConfig {
     params?: any[];
     finality?: DataFinalityState;
     empty?: CacheEmptyBehavior;
-    minItemSize?: string;
-    maxItemSize?: string;
-    ttl?: types.Duration;
+    minItemSize?: ByteSize;
+    maxItemSize?: ByteSize;
+    ttl?: number;
 }
 export type ConnectorDriverType = string;
 export declare const DriverMemory: ConnectorDriverType;
@@ -76,7 +75,7 @@ export declare const DriverPostgreSQL: ConnectorDriverType;
 export declare const DriverDynamoDB: ConnectorDriverType;
 export interface ConnectorConfig {
     id: string;
-    driver: ConnectorDriverType;
+    driver: TsConnectorDriverType;
     memory?: MemoryConnectorConfig;
     redis?: RedisConnectorConfig;
     dynamodb?: DynamoDBConnectorConfig;
@@ -115,7 +114,7 @@ export interface PostgreSQLConnectorConfig {
     maxConns?: number;
 }
 export interface AwsAuthConfig {
-    mode: string;
+    mode: 'file' | 'env' | 'secret';
     credentialsFile: string;
     profile: string;
     accessKeyID: string;
@@ -148,7 +147,7 @@ export interface CORSConfig {
 }
 export interface UpstreamConfig {
     id?: string;
-    type?: UpstreamType;
+    type?: TsUpstreamType;
     group?: string;
     vendorName?: string;
     endpoint: string;
@@ -179,7 +178,7 @@ export interface ScoreMultiplierConfig {
 export type Alias = UpstreamConfig;
 export interface RateLimitAutoTuneConfig {
     enabled?: boolean;
-    adjustmentPeriod: string;
+    adjustmentPeriod: Duration;
     errorRateThreshold: number;
     increaseFactor: number;
     decreaseFactor: number;
@@ -219,24 +218,24 @@ export interface CircuitBreakerPolicyConfig {
     successThresholdCapacity: number;
 }
 export interface TimeoutPolicyConfig {
-    duration: string;
+    duration: Duration;
 }
 export interface HedgePolicyConfig {
     delay: string;
     maxCount: number;
 }
 export interface RateLimiterConfig {
-    budgets: (RateLimitBudgetConfig | undefined)[];
+    budgets: RateLimitBudgetConfig[];
 }
 export interface RateLimitBudgetConfig {
     id: string;
-    rules: (RateLimitRuleConfig | undefined)[];
+    rules: RateLimitRuleConfig[];
 }
 export interface RateLimitRuleConfig {
     method: string;
     maxCount: number;
-    period: string;
-    waitTime: string;
+    period: Duration;
+    waitTime: Duration;
 }
 export interface HealthCheckConfig {
     scoreMetricsWindowSize: string;
@@ -260,11 +259,11 @@ export interface EvmNetworkConfig {
     fallbackFinalityDepth?: number;
 }
 export interface SelectionPolicyConfig {
-    evalInterval?: types.Duration;
-    evalFunction?: types.SelectionPolicyEvalFunction | undefined;
+    evalInterval?: number;
+    evalFunction?: SelectionPolicyEvalFunction | undefined;
     evalPerMethod?: boolean;
     resampleExcluded?: boolean;
-    resampleInterval?: types.Duration;
+    resampleInterval?: number;
     resampleCount?: number;
 }
 export type AuthType = string;
@@ -273,13 +272,13 @@ export declare const AuthTypeJwt: AuthType;
 export declare const AuthTypeSiwe: AuthType;
 export declare const AuthTypeNetwork: AuthType;
 export interface AuthConfig {
-    strategies: (AuthStrategyConfig | undefined)[];
+    strategies: TsAuthStrategyConfig[];
 }
 export interface AuthStrategyConfig {
     ignoreMethods?: string[];
     allowMethods?: string[];
     rateLimitBudget?: string;
-    type: AuthType;
+    type: TsAuthType;
     network?: NetworkStrategyConfig;
     secret?: SecretStrategyConfig;
     jwt?: JwtStrategyConfig;

@@ -26,7 +26,7 @@ var (
 
 // Config represents the configuration of the application.
 type Config struct {
-	LogLevel     string             `yaml:"logLevel" json:"logLevel" tstype:"types.LogLevel"`
+	LogLevel     string             `yaml:"logLevel" json:"logLevel" tstype:"LogLevel"`
 	Server       *ServerConfig      `yaml:"server" json:"server"`
 	Admin        *AdminConfig       `yaml:"admin" json:"admin"`
 	Database     *DatabaseConfig    `yaml:"database" json:"database"`
@@ -79,7 +79,7 @@ type DatabaseConfig struct {
 }
 
 type CacheConfig struct {
-	Connectors []*ConnectorConfig            `yaml:"connectors,omitempty" json:"connectors" tstype:"types.ConnectorConfig[]"`
+	Connectors []*ConnectorConfig            `yaml:"connectors,omitempty" json:"connectors" tstype:"TsConnectorConfig[]"`
 	Policies   []*CachePolicyConfig          `yaml:"policies,omitempty" json:"policies"`
 	Methods    map[string]*CacheMethodConfig `yaml:"methods,omitempty" json:"methods"`
 }
@@ -130,8 +130,8 @@ type CachePolicyConfig struct {
 	Params      []interface{}      `yaml:"params,omitempty" json:"params"`
 	Finality    DataFinalityState  `yaml:"finality,omitempty" json:"finality"`
 	Empty       CacheEmptyBehavior `yaml:"empty,omitempty" json:"empty"`
-	MinItemSize *string            `yaml:"minItemSize,omitempty" json:"minItemSize"`
-	MaxItemSize *string            `yaml:"maxItemSize,omitempty" json:"maxItemSize"`
+	MinItemSize *string            `yaml:"minItemSize,omitempty" json:"minItemSize" tstype:"ByteSize"`
+	MaxItemSize *string            `yaml:"maxItemSize,omitempty" json:"maxItemSize" tstype:"ByteSize"`
 	TTL         time.Duration      `yaml:"ttl,omitempty" json:"ttl"`
 }
 
@@ -203,7 +203,7 @@ const (
 
 type ConnectorConfig struct {
 	Id         string                     `yaml:"id" json:"id"`
-	Driver     ConnectorDriverType        `yaml:"driver" json:"driver"`
+	Driver     ConnectorDriverType        `yaml:"driver" json:"driver" tstype:"TsConnectorDriverType"`
 	Memory     *MemoryConnectorConfig     `yaml:"memory,omitempty" json:"memory,omitempty"`
 	Redis      *RedisConnectorConfig      `yaml:"redis,omitempty" json:"redis,omitempty"`
 	DynamoDB   *DynamoDBConnectorConfig   `yaml:"dynamodb,omitempty" json:"dynamodb,omitempty"`
@@ -268,7 +268,7 @@ func (p *PostgreSQLConnectorConfig) MarshalJSON() ([]byte, error) {
 }
 
 type AwsAuthConfig struct {
-	Mode            string `yaml:"mode" json:"mode"` // "file", "env", "secret"
+	Mode            string `yaml:"mode" json:"mode" tstype:"'file' | 'env' | 'secret'"` // "file", "env", "secret"
 	CredentialsFile string `yaml:"credentialsFile" json:"credentialsFile"`
 	Profile         string `yaml:"profile" json:"profile"`
 	AccessKeyID     string `yaml:"accessKeyID" json:"accessKeyID"`
@@ -315,7 +315,7 @@ type CORSConfig struct {
 
 type UpstreamConfig struct {
 	Id                           string                   `yaml:"id,omitempty" json:"id"`
-	Type                         UpstreamType             `yaml:"type,omitempty" json:"type"`
+	Type                         UpstreamType             `yaml:"type,omitempty" json:"type" tstype:"TsUpstreamType"`
 	Group                        string                   `yaml:"group,omitempty" json:"group"`
 	VendorName                   string                   `yaml:"vendorName,omitempty" json:"vendorName"`
 	Endpoint                     string                   `yaml:"endpoint" json:"endpoint"`
@@ -359,7 +359,7 @@ func (u *UpstreamConfig) MarshalJSON() ([]byte, error) {
 
 type RateLimitAutoTuneConfig struct {
 	Enabled            *bool   `yaml:"enabled" json:"enabled"`
-	AdjustmentPeriod   string  `yaml:"adjustmentPeriod" json:"adjustmentPeriod"`
+	AdjustmentPeriod   string  `yaml:"adjustmentPeriod" json:"adjustmentPeriod" tstype:"Duration"`
 	ErrorRateThreshold float64 `yaml:"errorRateThreshold" json:"errorRateThreshold"`
 	IncreaseFactor     float64 `yaml:"increaseFactor" json:"increaseFactor"`
 	DecreaseFactor     float64 `yaml:"decreaseFactor" json:"decreaseFactor"`
@@ -405,7 +405,7 @@ type CircuitBreakerPolicyConfig struct {
 }
 
 type TimeoutPolicyConfig struct {
-	Duration string `yaml:"duration" json:"duration"`
+	Duration string `yaml:"duration" json:"duration" tstype:"Duration"`
 }
 
 type HedgePolicyConfig struct {
@@ -414,19 +414,19 @@ type HedgePolicyConfig struct {
 }
 
 type RateLimiterConfig struct {
-	Budgets []*RateLimitBudgetConfig `yaml:"budgets" json:"budgets"`
+	Budgets []*RateLimitBudgetConfig `yaml:"budgets" json:"budgets" tstype:"RateLimitBudgetConfig[]"`
 }
 
 type RateLimitBudgetConfig struct {
 	Id    string                 `yaml:"id" json:"id"`
-	Rules []*RateLimitRuleConfig `yaml:"rules" json:"rules"`
+	Rules []*RateLimitRuleConfig `yaml:"rules" json:"rules" tstype:"RateLimitRuleConfig[]"`
 }
 
 type RateLimitRuleConfig struct {
 	Method   string `yaml:"method" json:"method"`
 	MaxCount uint   `yaml:"maxCount" json:"maxCount"`
-	Period   string `yaml:"period" json:"period"`
-	WaitTime string `yaml:"waitTime" json:"waitTime"`
+	Period   string `yaml:"period" json:"period" tstype:"Duration"`
+	WaitTime string `yaml:"waitTime" json:"waitTime" tstype:"Duration"`
 }
 
 type HealthCheckConfig struct {
@@ -434,7 +434,7 @@ type HealthCheckConfig struct {
 }
 
 type NetworkConfig struct {
-	Architecture      NetworkArchitecture      `yaml:"architecture" json:"architecture" tstype:"'evm'"`
+	Architecture      NetworkArchitecture      `yaml:"architecture" json:"architecture" tstype:"'evm'" tstype:"TsNetworkArchitecture"`
 	RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	Failsafe          *FailsafeConfig          `yaml:"failsafe,omitempty" json:"failsafe"`
 	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm"`
@@ -456,7 +456,7 @@ type EvmNetworkConfig struct {
 
 type SelectionPolicyConfig struct {
 	EvalInterval     time.Duration  `yaml:"evalInterval,omitempty" json:"evalInterval"`
-	EvalFunction     sobek.Callable `yaml:"evalFunction,omitempty" json:"evalFunction" tstype:"types.SelectionPolicyEvalFunction | undefined"`
+	EvalFunction     sobek.Callable `yaml:"evalFunction,omitempty" json:"evalFunction" tstype:"SelectionPolicyEvalFunction | undefined"`
 	EvalPerMethod    bool           `yaml:"evalPerMethod,omitempty" json:"evalPerMethod"`
 	ResampleExcluded bool           `yaml:"resampleExcluded,omitempty" json:"resampleExcluded"`
 	ResampleInterval time.Duration  `yaml:"resampleInterval,omitempty" json:"resampleInterval"`
@@ -537,7 +537,7 @@ const (
 )
 
 type AuthConfig struct {
-	Strategies []*AuthStrategyConfig `yaml:"strategies" json:"strategies"`
+	Strategies []*AuthStrategyConfig `yaml:"strategies" json:"strategies" tstype:"TsAuthStrategyConfig[]"`
 }
 
 type AuthStrategyConfig struct {
@@ -545,7 +545,7 @@ type AuthStrategyConfig struct {
 	AllowMethods    []string `yaml:"allowMethods,omitempty" json:"allowMethods,omitempty"`
 	RateLimitBudget string   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget,omitempty"`
 
-	Type    AuthType               `yaml:"type" json:"type"`
+	Type    AuthType               `yaml:"type" json:"type" tstype:"TsAuthType"`
 	Network *NetworkStrategyConfig `yaml:"network,omitempty" json:"network,omitempty"`
 	Secret  *SecretStrategyConfig  `yaml:"secret,omitempty" json:"secret,omitempty"`
 	Jwt     *JwtStrategyConfig     `yaml:"jwt,omitempty" json:"jwt,omitempty"`

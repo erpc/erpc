@@ -1,5 +1,13 @@
 # syntax = docker/dockerfile:1.4
 
+# This Dockerfile is used to build the eRPC server image.
+# Docker build stages:
+#     - go-builder -> build the go binary
+#     - ts-core -> Core stage for TS related stuff (just installing pnpm)
+#     - ts-dev -> Install dev dependencies and compile the SDK
+#     - ts-prod -> Install prod dependencies only
+#     - final -> Final stage where we copy the Go binary and the TS files
+
 # Build stage for Go
 FROM golang:1.22-alpine AS go-builder
 
@@ -25,21 +33,34 @@ ENV CGO_ENABLED=0 \
 RUN go build -v -ldflags="$LDFLAGS" -a -installsuffix cgo -o erpc-server ./cmd/erpc/main.go && \
     go build -v -ldflags="$LDFLAGS" -a -installsuffix cgo -tags pprof -o erpc-server-pprof ./cmd/erpc/*.go
 
-# Build stage for TypeScript package
-FROM node:20-alpine AS ts-builder
+# Global typescript related image
+FROM node:20-alpine AS ts-core
+RUN npm install -g pnpm
 
-WORKDIR /root
-
-# Install pnpm
+# Stage where we will install dev dependencies + compile sdk
+FROM ts-core AS ts-dev
+RUN mkdir -p /temp/dev
 RUN npm install -g pnpm
 
 # Copy only the TypeScript package files
-COPY typescript /root/typescript
-COPY package.json /root/package.json
-COPY pnpm* /root/
+COPY typescript /temp/dev/typescript
+COPY pnpm* /temp/dev/
+COPY package.json /temp/dev/package.json
 
-# Install dependencies and build
-RUN pnpm install && pnpm build
+# Install everything and build
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store cd /temp/dev &&  pnpm install --frozen-lockfile 
+RUN cd /temp/dev && pnpm build
+
+# Stage where we will install prod dependencies only
+FROM ts-core AS ts-prod
+RUN mkdir -p /temp/prod
+
+COPY typescript /temp/prod/typescript
+COPY pnpm* /temp/prod/
+COPY package.json /temp/prod/package.json
+
+# Install every prod dependencies
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store cd /temp/prod && pnpm install --prod --frozen-lockfile
 
 # Final stage
 FROM debian:stable AS final
@@ -55,9 +76,9 @@ RUN apt-get update --allow-insecure-repositories \
 COPY --from=go-builder /root/erpc-server .
 COPY --from=go-builder /root/erpc-server-pprof .
 
-# Copy TypeScript package files from ts-builder
-COPY --from=ts-builder /root/node_modules ./node_modules
-COPY --from=ts-builder /root/typescript ./typescript
+# Copy TypeScript package files from ts-dev and ts-prod
+COPY --from=ts-dev /temp/dev/typescript ./typescript
+COPY --from=ts-prod /temp/prod/node_modules ./node_modules
 
 # Expose ports
 EXPOSE 8080 6060
