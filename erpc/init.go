@@ -25,7 +25,7 @@ func Init(
 	//
 	logger.Info().Msg("loading eRPC configuration")
 	configPath := ""
-	possibleConfigs := []string{"./erpc.ts", "./erpc.yaml", "./erpc.yml"}
+	possibleConfigs := []string{"./erpc.js", "./erpc.ts", "./erpc.yaml", "./erpc.yml"}
 
 	if len(args) > 1 {
 		configPath = args[1]

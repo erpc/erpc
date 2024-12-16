@@ -3,10 +3,28 @@ packages:
     output_path: "typescript/config/src/generated.ts"
     flavor: "yaml"
     type_mappings:
-      time.Duration: "types.Duration"
+      time.Duration: "number /* time in nanoseconds (time.Duration) */"
+      # The following doesn't work, cause tygo only replace types when it's an `ast.SelectorExpr`, and following types are simple `ast.Ident`
+      #  waiting for PR: https://github.com/gzuidhof/tygo/pull/74
+      # id_ConnectorDriverType: "TsConnectorDriverType"
+      # id_ConnectorConfig: "TsConnectorConfig"
+      # id_UpstreamType: "TsUpstreamType"
+      # id_NetworkArchitecture: "TsNetworkArchitecture"
+      # id_DurationString: "Duration"
+      # id_ByteSizeString: "ByteSize"
     frontmatter: |
-      export * from "./types"
-      import * as types from "./types"
+      import type { 
+        LogLevel,
+        Duration,
+        ByteSize,
+        ConnectorDriverType as TsConnectorDriverType,
+        ConnectorConfig as TsConnectorConfig,
+        UpstreamType as TsUpstreamType,
+        NetworkArchitecture as TsNetworkArchitecture,
+        AuthType as TsAuthType,
+        AuthStrategyConfig as TsAuthStrategyConfig,
+        SelectionPolicyEvalFunction
+      } from "./types"
     exclude_files:
       - "utils.go"
       - "vendors.go"
