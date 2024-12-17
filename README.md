@@ -70,13 +70,14 @@ make run
   <img src="https://contrib.rocks/image?repo=erpc/erpc" />
 </a>
 
+
+## Contributing Guidelines and CLA
+
+By contributing to this project, you agree that your contributions may be used in both the open-source and enterprise versions of the software. Please review our [Contributing Guidelines](./CONTRIBUTING.md) and [Contributor License Agreement](./CLA.md) before submitting your contributions.
+
 # License
 
 Apache 2.0
-
-## Important Notice for Contributors
-
-By contributing to this project, you agree that your contributions may be used in both the open-source and enterprise versions of the software. Please review our [Contributing Guidelines](./CONTRIBUTING.md) and [Contributor License Agreement](./CLA.md) before submitting your contributions.
 
 [ci-badge]: https://img.shields.io/badge/CI-passing-brightgreen
 [ci-url]: https://github.com/erpc/erpc/actions/workflows/development.yml
