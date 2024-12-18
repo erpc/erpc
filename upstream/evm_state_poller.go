@@ -288,6 +288,10 @@ func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 	}
 }
 
+func (e *EvmStatePoller) IsObjectNull() bool {
+	return e == nil || e.upstream == nil
+}
+
 func (e *EvmStatePoller) fetchLatestBlockNumber(ctx context.Context) (int64, error) {
 	return e.fetchBlock(ctx, "latest")
 }
