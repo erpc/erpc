@@ -335,18 +335,6 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				}
 			}
 			if errCall != nil {
-				// if errors.Is(errCall, context.Canceled) || errors.Is(errCall, context.DeadlineExceeded) {
-				// 	if ctxErr := ctx.Err(); ctxErr != nil {
-				// 		cause := context.Cause(ctx)
-				// 		if cause != nil {
-				// 			errCall = cause
-				// 		} else {
-				// 			errCall = ctxErr
-				// 		}
-				// 	}
-				// 	return nil, errCall
-				// }
-
 				if common.HasErrorCode(errCall, common.ErrCodeUpstreamRequestSkipped) {
 					health.MetricUpstreamSkippedTotal.WithLabelValues(u.ProjectId, cfg.Id, netId, method).Inc()
 				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointMissingData) {
@@ -771,7 +759,7 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 			}
 
 			statePoller := ntw.EvmStatePollerOf(u.Config().Id)
-			if statePoller == nil {
+			if statePoller == nil || statePoller.IsObjectNull() {
 				return nil, false
 			}
 

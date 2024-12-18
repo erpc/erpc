@@ -226,8 +226,8 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 
 		// Phase 1: Initial performance
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method1, 5, 0.01)
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-c", method1, 5, 0.03)
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", method1, 5, 0.05)
+		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-c", method1, 5, 0.3)
+		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", method1, 5, 0.8)
 
 		expectedOrderMethod1Phase1 := []string{"upstream-a", "upstream-c", "upstream-b"}
 		checkUpstreamScoreOrder(t, registry, networkID, method1, expectedOrderMethod1Phase1)

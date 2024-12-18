@@ -300,7 +300,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				isHedged := exec.Hedges() > 0
 
 				if isHedged {
-					health.MetricUpstreamHedgedRequestTotal.WithLabelValues(n.ProjectId, n.NetworkId, u.Config().Id, method, fmt.Sprintf("%d", exec.Hedges())).Inc()
+					health.MetricNetworkHedgedRequestTotal.WithLabelValues(n.ProjectId, n.NetworkId, u.Config().Id, method, fmt.Sprintf("%d", exec.Hedges())).Inc()
 					if err != nil && errors.Is(err, context.Canceled) {
 						ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
 						return nil, common.NewErrUpstreamHedgeCancelled(u.Config().Id, context.Cause(exec.Context()))
@@ -333,17 +333,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				exec.Hedges(),
 			)
 		})
-
-	if _, ok := execErr.(common.StandardError); !ok {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			cause := context.Cause(ctx)
-			if cause != nil {
-				execErr = cause
-			} else {
-				execErr = ctxErr
-			}
-		}
-	}
 
 	if execErr != nil {
 		err := upstream.TranslateFailsafeError(common.ScopeNetwork, "", method, execErr, &startTime)
