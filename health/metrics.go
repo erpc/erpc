@@ -40,12 +40,6 @@ var (
 		Help:      "Total number of errors for actual requests towards upstreams.",
 	}, []string{"project", "network", "upstream", "category", "error", "severity"})
 
-	MetricUpstreamHedgedRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: "erpc",
-		Name:      "upstream_hedged_request_total",
-		Help:      "Total number of hedged requests towards upstreams.",
-	}, []string{"project", "network", "upstream", "category", "attempt"})
-
 	MetricUpstreamSelfRateLimitedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_self_rate_limited_total",
@@ -129,6 +123,12 @@ var (
 		Name:      "network_multiplexed_request_total",
 		Help:      "Total number of multiplexed requests for a network.",
 	}, []string{"project", "network", "category"})
+
+	MetricNetworkHedgedRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_hedged_request_total",
+		Help:      "Total number of hedged requests towards a network.",
+	}, []string{"project", "network", "upstream", "category", "attempt"})
 
 	MetricNetworkFailedRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
