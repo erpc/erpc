@@ -440,7 +440,7 @@ func (c *EvmJsonRpcCache) getFinalityState(r *common.NormalizedResponse) (finali
 		upstream := r.Upstream()
 		if upstream != nil {
 			stp := ntw.EvmStatePollerOf(upstream.Config().Id)
-			if stp != nil {
+			if stp != nil && !stp.IsObjectNull() {
 				if isFinalized, err := stp.IsBlockFinalized(blockNumber); err == nil {
 					if isFinalized {
 						finality = common.DataFinalityStateFinalized

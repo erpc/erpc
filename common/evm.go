@@ -27,6 +27,7 @@ type EvmStatePoller interface {
 	IsBlockFinalized(blockNumber int64) (bool, error)
 	SuggestFinalizedBlock(blockNumber int64)
 	SuggestLatestBlock(blockNumber int64)
+	IsObjectNull() bool
 }
 
 func EvmIsMissingDataError(err error) bool {
