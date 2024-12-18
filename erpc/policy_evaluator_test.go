@@ -51,7 +51,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		mt := ntw.metricsTracker
 
 		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "RandomError")
+		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
 
 		mt.RecordUpstreamRequest("rpc2", "evm:123", "method1")
 		mt.RecordUpstreamDuration("rpc2", "evm:123", "method1", 10*time.Millisecond)
@@ -301,9 +301,9 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Initially set high error rate
 		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error1")
+		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
 		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error2")
+		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
 
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
 		require.NoError(t, err)
@@ -491,11 +491,11 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Degrade metrics
 		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error1")
+		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
 		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error2")
+		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
 		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error3")
+		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
 
 		// Wait for evaluation
 		time.Sleep(75 * time.Millisecond)
@@ -563,9 +563,9 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Transition: Active -> Inactive (add bad metrics)
 		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error1")
+		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
 		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error2")
+		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
 
 		// Wait for evaluation
 		time.Sleep(75 * time.Millisecond)
@@ -603,7 +603,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		// (degrade metrics, wait for sampling, fail to improve)
 		for i := 0; i < 30; i++ {
 			mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-			mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error3")
+			mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
 		}
 
 		// Wait for evaluation
@@ -656,9 +656,9 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Add bad metrics to trigger cordoning
 		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error1")
+		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
 		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error2")
+		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
 
 		// Wait for evaluation
 		time.Sleep(75 * time.Millisecond)
@@ -728,9 +728,9 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Create failures
 		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error1")
+		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
 		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error2")
+		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
 
 		// Wait for evaluation
 		time.Sleep(75 * time.Millisecond)
@@ -1079,10 +1079,10 @@ func TestPolicyEvaluator(t *testing.T) {
 					// Record new metrics
 					mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
 					if rand.Float64() < errorRate {
-						mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error")
-						mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error")
-						mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error")
-						mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error")
+						mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
+						mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
+						mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
+						mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
 					} else {
 						mt.RecordUpstreamDuration("rpc1", "evm:123", "method1", time.Duration(rand.Intn(100))*time.Millisecond)
 					}
@@ -1242,11 +1242,11 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Set error rate of 0.4 (should be active for method2, inactive for method3)
 		mt.RecordUpstreamRequest("rpc1", "evm:123", "method2")
-		mt.RecordUpstreamFailure("rpc1", "evm:123", "method2", "Error1")
+		mt.RecordUpstreamFailure("rpc1", "evm:123", "method2")
 		mt.RecordUpstreamRequest("rpc1", "evm:123", "method2")
 		mt.RecordUpstreamDuration("rpc1", "evm:123", "method2", 10*time.Millisecond)
 		mt.RecordUpstreamRequest("rpc1", "evm:123", "method3")
-		mt.RecordUpstreamFailure("rpc1", "evm:123", "method3", "Error1")
+		mt.RecordUpstreamFailure("rpc1", "evm:123", "method3")
 		mt.RecordUpstreamRequest("rpc1", "evm:123", "method3")
 		mt.RecordUpstreamDuration("rpc1", "evm:123", "method3", 10*time.Millisecond)
 
@@ -1298,9 +1298,9 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Set high error rate for method1
 		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error1")
+		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
 		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error2")
+		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
 
 		// Set low error rate for method2
 		mt.RecordUpstreamRequest("rpc1", "evm:123", "method2")
@@ -1415,14 +1415,14 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Test Case 2: Default upstreams unhealthy (high error rate)
 		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error1")
+		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
 		mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error2")
+		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
 
 		mt.RecordUpstreamRequest("rpc2", "evm:123", "method1")
-		mt.RecordUpstreamFailure("rpc2", "evm:123", "method1", "Error1")
+		mt.RecordUpstreamFailure("rpc2", "evm:123", "method1")
 		mt.RecordUpstreamRequest("rpc2", "evm:123", "method1")
-		mt.RecordUpstreamFailure("rpc2", "evm:123", "method1", "Error2")
+		mt.RecordUpstreamFailure("rpc2", "evm:123", "method1")
 
 		time.Sleep(75 * time.Millisecond)
 
@@ -1484,7 +1484,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		// Now degrade one default upstream
 		for i := 0; i < 10; i++ {
 			mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-			mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error1")
+			mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
 		}
 
 		time.Sleep(75 * time.Millisecond)
@@ -1537,7 +1537,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		mt.SetLatestBlockNumber("*", "evm:123", 102) // Network head
 
 		mt.RecordUpstreamRequest("rpc2", "evm:123", "method1")
-		mt.RecordUpstreamFailure("rpc2", "evm:123", "method1", "Error1")
+		mt.RecordUpstreamFailure("rpc2", "evm:123", "method1")
 		mt.SetLatestBlockNumber("rpc2", "evm:123", 95) // Lagging
 
 		// Set good metrics for fallback
@@ -1667,7 +1667,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		}
 		for i := 0; i < 2; i++ {
 			mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-			mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error")
+			mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
 		}
 
 		// rpc2: 30% error rate (above threshold)
@@ -1677,7 +1677,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		}
 		for i := 0; i < 3; i++ {
 			mt.RecordUpstreamRequest("rpc2", "evm:123", "method1")
-			mt.RecordUpstreamFailure("rpc2", "evm:123", "method1", "Error")
+			mt.RecordUpstreamFailure("rpc2", "evm:123", "method1")
 		}
 
 		time.Sleep(75 * time.Millisecond)
@@ -1690,7 +1690,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		// Test Case 2: All defaults exceed error rate threshold
 		for i := 0; i < 5; i++ {
 			mt.RecordUpstreamRequest("rpc1", "evm:123", "method1")
-			mt.RecordUpstreamFailure("rpc1", "evm:123", "method1", "Error")
+			mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
 		}
 
 		// Set good metrics for fallback

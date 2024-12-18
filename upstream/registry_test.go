@@ -776,7 +776,7 @@ func simulateRequests(tracker *health.Tracker, network, upstream, method string,
 	for i := 0; i < total; i++ {
 		tracker.RecordUpstreamRequest(upstream, network, method)
 		if i < errors {
-			tracker.RecordUpstreamFailure(upstream, network, method, "test-error")
+			tracker.RecordUpstreamFailure(upstream, network, method)
 		}
 	}
 }
@@ -812,7 +812,7 @@ func simulateRequestsWithLatency(tracker *health.Tracker, network, upstream, met
 func simulateFailedRequests(tracker *health.Tracker, network, upstream, method string, count int) {
 	for i := 0; i < count; i++ {
 		tracker.RecordUpstreamRequest(upstream, network, method)
-		tracker.RecordUpstreamFailure(upstream, network, method, "test-error")
+		tracker.RecordUpstreamFailure(upstream, network, method)
 	}
 }
 
