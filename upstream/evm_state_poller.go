@@ -132,10 +132,14 @@ func (e *EvmStatePoller) Poll(ctx context.Context) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		if e.shouldSkipFinalizedCheck() {
+			return
+		}
+
 		fb, err := e.fetchFinalizedBlockNumber(ctx)
 		if err != nil {
 			if !common.IsRetryableTowardsUpstream(err) || common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
-				e.skipFinalizedCheck = true
+				e.setSkipFinalizedCheck(true)
 				e.logger.Warn().Err(err).Msg("cannot fetch finalized block number in evm state poller")
 			} else {
 				e.logger.Debug().Err(err).Msg("failed to get finalized block number in evm state poller")
@@ -177,7 +181,7 @@ func (e *EvmStatePoller) Poll(ctx context.Context) {
 			upsCfg.Evm = &common.EvmUpstreamConfig{}
 		}
 
-		// By default we don't know if the node is syncing or not.
+		// By default, we don't know if the node is syncing or not.
 		e.upstream.SetEvmSyncingState(common.EvmSyncingStateUnknown)
 
 		// if we have received enough consecutive "synced" responses, we can assume it's fully synced.
@@ -212,6 +216,20 @@ func (e *EvmStatePoller) setFinalizedBlockNumber(blockNumber int64) {
 	defer e.mu.Unlock()
 	e.finalizedBlockNumber = blockNumber
 	e.tracker.SetFinalizedBlockNumber(e.upstream.config.Id, e.network.Id(), blockNumber)
+}
+
+func (e *EvmStatePoller) shouldSkipFinalizedCheck() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	return e.skipSyncingCheck
+}
+
+func (e *EvmStatePoller) setSkipFinalizedCheck(skip bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.skipSyncingCheck = skip
 }
 
 func (e *EvmStatePoller) FinalizedBlock() int64 {
