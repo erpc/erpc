@@ -308,8 +308,10 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				netId,
 				method,
 			)
+			health.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, netId, cfg.Id, method, strconv.Itoa(exec.Attempts())).Inc()
 			timer := u.metricsTracker.RecordUpstreamDurationStart(cfg.Id, netId, method)
 			defer timer.ObserveDuration()
+
 			resp, errCall := jsonRpcClient.SendRequest(ctx, req)
 			if resp != nil {
 				jrr, _ := resp.JsonRpcResponse()
@@ -333,30 +335,37 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				}
 			}
 			if errCall != nil {
-				if errors.Is(errCall, context.Canceled) || errors.Is(errCall, context.DeadlineExceeded) {
-					if ctxErr := ctx.Err(); ctxErr != nil {
-						cause := context.Cause(ctx)
-						if cause != nil {
-							errCall = cause
-						} else {
-							errCall = ctxErr
-						}
-					}
+				// if errors.Is(errCall, context.Canceled) || errors.Is(errCall, context.DeadlineExceeded) {
+				// 	if ctxErr := ctx.Err(); ctxErr != nil {
+				// 		cause := context.Cause(ctx)
+				// 		if cause != nil {
+				// 			errCall = cause
+				// 		} else {
+				// 			errCall = ctxErr
+				// 		}
+				// 	}
+				// 	return nil, errCall
+				// }
+
+				if common.HasErrorCode(errCall, common.ErrCodeUpstreamRequestSkipped) {
+					health.MetricUpstreamSkippedTotal.WithLabelValues(u.ProjectId, cfg.Id, netId, method).Inc()
+				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointMissingData) {
+					health.MetricUpstreamMissingDataErrorTotal.WithLabelValues(u.ProjectId, cfg.Id, netId, method).Inc()
 				} else {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
 						u.recordRemoteRateLimit(netId, method)
-					} else if common.HasErrorCode(errCall, common.ErrCodeUpstreamRequestSkipped) {
-						health.MetricUpstreamSkippedTotal.WithLabelValues(u.ProjectId, cfg.Id, netId, method).Inc()
-					} else if common.HasErrorCode(errCall, common.ErrCodeEndpointMissingData) {
-						health.MetricUpstreamMissingDataErrorTotal.WithLabelValues(u.ProjectId, cfg.Id, netId, method).Inc()
-					} else if !common.HasErrorCode(errCall, common.ErrCodeEndpointClientSideException) {
+					}
+					severity := common.ClassifySeverity(errCall)
+					if severity == common.SeverityCritical {
+						// We only consider a subset of errors in metrics tracker (which is used for score calculation)
+						// so that we only penalize upstreams for internal issues (not rate limits, or client-side, or method support issues, etc.)
 						u.metricsTracker.RecordUpstreamFailure(
 							cfg.Id,
 							netId,
 							method,
-							common.ErrorSummary(errCall),
 						)
 					}
+					health.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, netId, cfg.Id, method, common.ErrorSummary(errCall), string(severity)).Inc()
 				}
 
 				if exec != nil {
@@ -409,11 +418,12 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				if u.timeoutDuration != nil {
 					var cancelFn context.CancelFunc
 					ectx, cancelFn = context.WithTimeoutCause(
-						ectx, *u.timeoutDuration,
+						ectx,
+						*u.timeoutDuration+5*time.Millisecond,
 						// TODO 5ms is a workaround to ensure context carries the timeout deadline (used when calling upstreams),
 						//      but allow the failsafe execution to fail with timeout first for proper error handling.
 						//      Is there a way to do this cleanly? e.g. if failsafe lib works via context rather than Ticker?
-						common.NewErrEndpointRequestTimeout(*u.timeoutDuration+5*time.Millisecond),
+						common.NewErrEndpointRequestTimeout(*u.timeoutDuration, nil),
 					)
 					defer cancelFn()
 				}

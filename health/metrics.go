@@ -10,7 +10,7 @@ var (
 		Namespace: "erpc",
 		Name:      "upstream_request_total",
 		Help:      "Total number of actual requests to upstreams.",
-	}, []string{"project", "network", "upstream", "category"})
+	}, []string{"project", "network", "upstream", "category", "attempt"})
 
 	MetricUpstreamRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
@@ -38,7 +38,13 @@ var (
 		Namespace: "erpc",
 		Name:      "upstream_request_errors_total",
 		Help:      "Total number of errors for actual requests towards upstreams.",
-	}, []string{"project", "network", "upstream", "category", "error"})
+	}, []string{"project", "network", "upstream", "category", "error", "severity"})
+
+	MetricUpstreamHedgedRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_hedged_request_total",
+		Help:      "Total number of hedged requests towards upstreams.",
+	}, []string{"project", "network", "upstream", "category", "attempt"})
 
 	MetricUpstreamSelfRateLimitedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
