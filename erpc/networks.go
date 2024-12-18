@@ -241,11 +241,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				var cancelFn context.CancelFunc
 				ictx, cancelFn = context.WithTimeoutCause(
 					ectx,
-					*n.timeoutDuration,
+					*n.timeoutDuration+5*time.Millisecond,
 					// TODO 5ms is a workaround to ensure context carries the timeout deadline (used when calling upstreams),
 					//      but allow the failsafe execution to fail with timeout first for proper error handling.
 					//      Is there a way to do this cleanly? e.g. if failsafe lib works via context rather than Ticker?
-					common.NewErrNetworkRequestTimeout(*n.timeoutDuration+5*time.Millisecond),
+					common.NewErrNetworkRequestTimeout(*n.timeoutDuration, nil),
 				)
 
 				defer cancelFn()
@@ -299,9 +299,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				isClientErr := common.IsClientError(err)
 				isHedged := exec.Hedges() > 0
 
-				if isHedged && (err != nil && errors.Is(err, context.Canceled)) {
-					ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
-					return nil, common.NewErrUpstreamHedgeCancelled(u.Config().Id, context.Cause(exec.Context()))
+				if isHedged {
+					health.MetricUpstreamHedgedRequestTotal.WithLabelValues(n.ProjectId, n.NetworkId, u.Config().Id, method, fmt.Sprintf("%d", exec.Hedges())).Inc()
+					if err != nil && errors.Is(err, context.Canceled) {
+						ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
+						return nil, common.NewErrUpstreamHedgeCancelled(u.Config().Id, context.Cause(exec.Context()))
+					}
 				}
 
 				if err != nil {
@@ -528,7 +531,7 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 		n.cleanupMultiplexer(mlx)
 		err := ctx.Err()
 		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, common.NewErrNetworkRequestTimeout(time.Since(startTime))
+			return nil, common.NewErrNetworkRequestTimeout(time.Since(startTime), err)
 		}
 		return nil, err
 	}

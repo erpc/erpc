@@ -158,7 +158,7 @@ func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.
 	case <-ctx.Done():
 		err := ctx.Err()
 		if errors.Is(err, context.DeadlineExceeded) {
-			err = common.NewErrEndpointRequestTimeout(time.Since(startedAt))
+			err = common.NewErrEndpointRequestTimeout(time.Since(startedAt), err)
 		}
 		return nil, err
 	}
@@ -359,9 +359,9 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 		if cause != nil {
 			err = cause
 		}
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		if errors.Is(err, context.DeadlineExceeded) {
 			for _, req := range requests {
-				req.err <- common.NewErrEndpointRequestTimeout(time.Since(reqStartTime))
+				req.err <- common.NewErrEndpointRequestTimeout(time.Since(reqStartTime), err)
 			}
 		} else {
 			for _, req := range requests {
@@ -581,8 +581,8 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		if cause != nil {
 			err = cause
 		}
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-			return nil, common.NewErrEndpointRequestTimeout(time.Since(reqStartTime))
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, common.NewErrEndpointRequestTimeout(time.Since(reqStartTime), err)
 		}
 		return nil, common.NewErrEndpointTransportFailure(err)
 	}
