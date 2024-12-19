@@ -222,14 +222,14 @@ func (e *EvmStatePoller) shouldSkipFinalizedCheck() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
-	return e.skipSyncingCheck
+	return e.skipFinalizedCheck
 }
 
 func (e *EvmStatePoller) setSkipFinalizedCheck(skip bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	e.skipSyncingCheck = skip
+	e.skipFinalizedCheck = skip
 }
 
 func (e *EvmStatePoller) FinalizedBlock() int64 {
