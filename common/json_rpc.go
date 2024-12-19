@@ -529,7 +529,7 @@ func (r *JsonRpcRequest) PeekByPath(path ...interface{}) (interface{}, error) {
 				return nil, fmt.Errorf("expected array at path element %v, got %T", p, current)
 			}
 			if idx < 0 || idx >= len(arr) {
-				return nil, fmt.Errorf("array index %d out of bounds", idx)
+				return nil, fmt.Errorf("array index %d out of bounds, array length: %d", idx, len(arr))
 			}
 			current = arr[idx]
 
@@ -541,7 +541,7 @@ func (r *JsonRpcRequest) PeekByPath(path ...interface{}) (interface{}, error) {
 			}
 			val, exists := m[idx]
 			if !exists {
-				return nil, fmt.Errorf("key %s not found in map", idx)
+				return nil, fmt.Errorf("key %s not found in map %+v", idx, m)
 			}
 			current = val
 

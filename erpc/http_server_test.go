@@ -567,8 +567,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
 		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
-		// TODO in here we should ONLY see network-level timeout but currently sometimes we see upstream timeout, we must fix this
-		assert.Contains(t, body, "timeout") // policy exceeded on network-level
+		assert.Contains(t, body, "exceeded on network-level")
 	})
 
 	t.Run("NetworkTimeoutBatchingDisabled", func(t *testing.T) {
@@ -645,8 +644,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
 		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
-		// TODO in here we should ONLY see network-level timeout but currently sometimes we see upstream timeout, we must fix this
-		assert.Contains(t, body, "timeout") // policy exceeded on network-level
+		assert.Contains(t, body, "exceeded on network-level")
 	})
 
 	t.Run("UpstreamRequestTimeoutBatchingEnabled", func(t *testing.T) {
@@ -855,7 +853,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
 		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
-		assert.Contains(t, body, "timeout")
+		assert.Contains(t, body, "http request handling timeout")
 	})
 
 	t.Run("ServerTimeoutNoUpstreamNoNetworkTimeout", func(t *testing.T) {
@@ -929,8 +927,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
 		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
-		// TODO in here we should ONLY see http server timeout but currently sometimes we see upstream timeout, we must fix this
-		assert.Contains(t, body, "timeout") // http request handling timeout
+		assert.Contains(t, body, "http request handling timeout")
 	})
 
 	t.Run("MidServerHighNetworkLowUpstreamTimeoutBatchingDisabled", func(t *testing.T) {

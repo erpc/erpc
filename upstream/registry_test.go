@@ -226,8 +226,8 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 
 		// Phase 1: Initial performance
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method1, 5, 0.01)
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-c", method1, 5, 0.03)
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", method1, 5, 0.05)
+		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-c", method1, 5, 0.3)
+		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", method1, 5, 0.8)
 
 		expectedOrderMethod1Phase1 := []string{"upstream-a", "upstream-c", "upstream-b"}
 		checkUpstreamScoreOrder(t, registry, networkID, method1, expectedOrderMethod1Phase1)
@@ -776,7 +776,7 @@ func simulateRequests(tracker *health.Tracker, network, upstream, method string,
 	for i := 0; i < total; i++ {
 		tracker.RecordUpstreamRequest(upstream, network, method)
 		if i < errors {
-			tracker.RecordUpstreamFailure(upstream, network, method, "test-error")
+			tracker.RecordUpstreamFailure(upstream, network, method)
 		}
 	}
 }
@@ -812,7 +812,7 @@ func simulateRequestsWithLatency(tracker *health.Tracker, network, upstream, met
 func simulateFailedRequests(tracker *health.Tracker, network, upstream, method string, count int) {
 	for i := 0; i < count; i++ {
 		tracker.RecordUpstreamRequest(upstream, network, method)
-		tracker.RecordUpstreamFailure(upstream, network, method, "test-error")
+		tracker.RecordUpstreamFailure(upstream, network, method)
 	}
 }
 

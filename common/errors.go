@@ -1382,11 +1382,12 @@ type ErrNetworkRequestTimeout struct{ BaseError }
 
 const ErrCodeNetworkRequestTimeout ErrorCode = "ErrNetworkRequestTimeout"
 
-var NewErrNetworkRequestTimeout = func(duration time.Duration) error {
+var NewErrNetworkRequestTimeout = func(duration time.Duration, cause error) error {
 	return &ErrNetworkRequestTimeout{
 		BaseError{
 			Code:    ErrCodeNetworkRequestTimeout,
 			Message: fmt.Sprintf("network-level request towards one or more upstreams timed out after %dms", duration.Milliseconds()),
+			Cause:   cause,
 		},
 	}
 }
@@ -1538,7 +1539,7 @@ type ErrEndpointRequestTimeout struct{ BaseError }
 
 const ErrCodeEndpointRequestTimeout = "ErrEndpointRequestTimeout"
 
-var NewErrEndpointRequestTimeout = func(dur time.Duration) error {
+var NewErrEndpointRequestTimeout = func(dur time.Duration, cause error) error {
 	return &ErrEndpointRequestTimeout{
 		BaseError{
 			Code:    ErrCodeEndpointRequestTimeout,
@@ -1546,6 +1547,7 @@ var NewErrEndpointRequestTimeout = func(dur time.Duration) error {
 			Details: map[string]interface{}{
 				"durationMs": dur.Milliseconds(),
 			},
+			Cause: cause,
 		},
 	}
 }
@@ -1898,4 +1900,26 @@ func IsClientError(err error) bool {
 		ErrCodeEndpointClientSideException,
 		ErrCodeJsonRpcRequestUnmarshal,
 	))
+}
+
+// Severity represents how "alert-worthy" an error is.
+type Severity string
+
+const (
+	SeverityCritical Severity = "critical"
+	SeverityWarning  Severity = "warning"
+	SeverityInfo     Severity = "info"
+)
+
+func ClassifySeverity(err error) Severity {
+	if err == nil {
+		return SeverityInfo
+	}
+	if IsClientError(err) {
+		return SeverityInfo
+	}
+	if IsCapacityIssue(err) || !IsRetryableTowardsUpstream(err) {
+		return SeverityWarning
+	}
+	return SeverityCritical
 }

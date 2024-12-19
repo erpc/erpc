@@ -168,8 +168,6 @@ func (t *Tracker) RecordUpstreamRequest(ups, network, method string) {
 	for _, metrics := range metricsList {
 		metrics.RequestsTotal.Add(1)
 	}
-
-	MetricUpstreamRequestTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
 }
 
 func (t *Tracker) RecordUpstreamDurationStart(ups, network, method string) *Timer {
@@ -195,7 +193,7 @@ func (t *Tracker) RecordUpstreamDuration(ups, network, method string, duration t
 	MetricUpstreamRequestDuration.WithLabelValues(t.projectId, network, ups, method).Observe(duration.Seconds())
 }
 
-func (t *Tracker) RecordUpstreamFailure(ups, network, method, errorType string) {
+func (t *Tracker) RecordUpstreamFailure(ups, network, method string) {
 	metricsList := make([]*TrackedMetrics, 0)
 	for _, key := range t.getKeys(ups, network, method) {
 		metricsList = append(metricsList, t.getMetrics(key))
@@ -204,8 +202,6 @@ func (t *Tracker) RecordUpstreamFailure(ups, network, method, errorType string) 
 	for _, metrics := range metricsList {
 		metrics.ErrorsTotal.Add(1)
 	}
-
-	MetricUpstreamErrorTotal.WithLabelValues(t.projectId, network, ups, method, errorType).Inc()
 }
 
 func (t *Tracker) RecordUpstreamSelfRateLimited(ups, network, method string) {

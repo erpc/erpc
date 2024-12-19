@@ -315,7 +315,7 @@ func simulateRequestMetrics(tracker *Tracker, network, upstream, method string, 
 	for i := 0; i < total; i++ {
 		tracker.RecordUpstreamRequest(upstream, network, method)
 		if i < errors {
-			tracker.RecordUpstreamFailure(upstream, network, method, "test-error")
+			tracker.RecordUpstreamFailure(upstream, network, method)
 		}
 	}
 }

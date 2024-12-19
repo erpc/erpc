@@ -434,7 +434,7 @@ type HealthCheckConfig struct {
 }
 
 type NetworkConfig struct {
-	Architecture      NetworkArchitecture      `yaml:"architecture" json:"architecture" tstype:"'evm'" tstype:"TsNetworkArchitecture"`
+	Architecture      NetworkArchitecture      `yaml:"architecture" json:"architecture" tstype:"TsNetworkArchitecture"`
 	RateLimitBudget   string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	Failsafe          *FailsafeConfig          `yaml:"failsafe,omitempty" json:"failsafe"`
 	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm"`

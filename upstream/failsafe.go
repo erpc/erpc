@@ -312,15 +312,12 @@ func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolic
 						return false
 					}
 					ups := result.Upstream()
-					// ucfg := ups.Config()
-					// if ucfg.Evm != nil {
-
 					// has Retry-Empty directive + "empty" response + node is synced + block is finalized -> No Retry
 					if err == nil && rds.RetryEmpty && isEmpty && (ups.EvmSyncingState() == common.EvmSyncingStateNotSyncing) {
 						_, bn, ebn := req.EvmBlockRefAndNumber()
 						if ebn == nil && bn > 0 {
 							if ntw := req.Network(); ntw != nil {
-								if statePoller := ntw.EvmStatePollerOf(ups.Config().Id); statePoller != nil {
+								if statePoller := ntw.EvmStatePollerOf(ups.Config().Id); statePoller != nil && !statePoller.IsObjectNull() {
 									fin, efin := statePoller.IsBlockFinalized(bn)
 									if efin == nil && fin {
 										return false
@@ -329,8 +326,6 @@ func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolic
 							}
 						}
 					}
-
-					// }
 					return true
 				}
 			}

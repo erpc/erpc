@@ -5782,9 +5782,8 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 				req := common.NewNormalizedRequest(requestBytes)
 				resp, err := network.Forward(ctx, req)
 				assert.Error(t, err)
-				// TODO we should only expect ErrFailsafeTimeoutExceeded, but for now ErrEndpointRequestTimeout is also sometimes returned
-				if !common.HasErrorCode(err, "ErrFailsafeTimeoutExceeded") && !common.HasErrorCode(err, "ErrEndpointRequestTimeout") {
-					t.Errorf("Expected ErrFailsafeTimeoutExceeded or ErrEndpointRequestTimeout, got %v", err)
+				if !common.HasErrorCode(err, "ErrFailsafeTimeoutExceeded") {
+					t.Errorf("Expected ErrFailsafeTimeoutExceeded, got %v", err)
 				}
 				assert.Nil(t, resp)
 			}()
@@ -5981,7 +5980,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 
 		assert.Error(t, err)
 		assert.Nil(t, resp)
-		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointRequestTimeout))
+		assert.True(t, errors.Is(err, context.Canceled))
 
 		// Verify cleanup
 		inFlightCount := 0
