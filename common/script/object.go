@@ -126,6 +126,51 @@ func setJsValueToGoField(jsValue sobek.Value, fieldValue reflect.Value) error {
 		} else {
 			return fmt.Errorf("field is not a function")
 		}
+	case reflect.Map:
+		if jsValue == sobek.Undefined() || jsValue == sobek.Null() {
+			return nil
+		}
+
+		jsObj, ok := jsValue.(*sobek.Object)
+		if !ok {
+			return fmt.Errorf("expected object but got %v", jsValue)
+		}
+
+		// Create a new map if it's nil
+		if fieldValue.IsNil() {
+			fieldValue.Set(reflect.MakeMap(fieldValue.Type()))
+		}
+
+		// Get the key and value types for the map
+		mapKeyType := fieldValue.Type().Key()
+		mapValueType := fieldValue.Type().Elem()
+
+		// Get all keys from the JavaScript object
+		keys := jsObj.Keys()
+
+		for _, key := range keys {
+			jsMapValue := jsObj.Get(key)
+			if jsMapValue == sobek.Undefined() {
+				continue
+			}
+
+			// Create and set the map key (assuming string keys for now)
+			mapKey := reflect.New(mapKeyType).Elem()
+			if mapKeyType.Kind() == reflect.String {
+				mapKey.SetString(key)
+			} else {
+				return fmt.Errorf("unsupported map key type: %v", mapKeyType.Kind())
+			}
+
+			// Create and set the map value
+			mapValue := reflect.New(mapValueType).Elem()
+			err := setJsValueToGoField(jsMapValue, mapValue)
+			if err != nil {
+				return fmt.Errorf("failed to set map value for key %s: %v", key, err)
+			}
+
+			fieldValue.SetMapIndex(mapKey, mapValue)
+		}
 	case reflect.Interface:
 		fieldValue.Set(reflect.ValueOf(jsValue.Export()))
 	default:
