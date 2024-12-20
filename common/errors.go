@@ -1053,15 +1053,12 @@ type ErrUpstreamHedgeCancelled struct{ BaseError }
 
 const ErrCodeUpstreamHedgeCancelled ErrorCode = "ErrUpstreamHedgeCancelled"
 
-var NewErrUpstreamHedgeCancelled = func(upstreamId string, cause error) error {
+var NewErrUpstreamHedgeCancelled = func(cause error) error {
 	return &ErrUpstreamHedgeCancelled{
 		BaseError{
 			Code:    ErrCodeUpstreamHedgeCancelled,
 			Message: "hedged request cancelled in favor of another response",
-			Details: map[string]interface{}{
-				"upstreamId": upstreamId,
-			},
-			Cause: cause,
+			Cause:   cause,
 		},
 	}
 }
@@ -1919,6 +1916,13 @@ func ClassifySeverity(err error) Severity {
 		return SeverityInfo
 	}
 	if IsCapacityIssue(err) || !IsRetryableTowardsUpstream(err) {
+		return SeverityWarning
+	}
+	// Usually context cancellation is due to discarded hedged requests.
+	// Theoretically any cancellation must be intentional and must not be considered as an error.
+	// Upstream timeouts will be DeadlineExceeded errors or other forms of timeout errors which will be classified as SeverityCritical.
+	// This is considered warning (and info) because it still means the upstream was too slow to respond.
+	if HasErrorCode(err, ErrCodeUpstreamHedgeCancelled) {
 		return SeverityWarning
 	}
 	return SeverityCritical
