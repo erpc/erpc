@@ -244,6 +244,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					*n.timeoutDuration+5*time.Millisecond,
 					// TODO 5ms is a workaround to ensure context carries the timeout deadline (used when calling upstreams),
 					//      but allow the failsafe execution to fail with timeout first for proper error handling.
+					//      Carrying the timeout helps setting correct timeout on actual http request to upstream.
 					//      Is there a way to do this cleanly? e.g. if failsafe lib works via context rather than Ticker?
 					common.NewErrNetworkRequestTimeout(*n.timeoutDuration, nil),
 				)
@@ -301,9 +302,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 				if isHedged {
 					health.MetricNetworkHedgedRequestTotal.WithLabelValues(n.ProjectId, n.NetworkId, u.Config().Id, method, fmt.Sprintf("%d", exec.Hedges())).Inc()
-					if err != nil && errors.Is(err, context.Canceled) {
+					if err != nil && common.HasErrorCode(err, common.ErrCodeUpstreamHedgeCancelled) {
 						ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
-						return nil, common.NewErrUpstreamHedgeCancelled(u.Config().Id, context.Cause(exec.Context()))
+						return nil, err
 					}
 				}
 

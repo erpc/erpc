@@ -410,6 +410,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 						*u.timeoutDuration+5*time.Millisecond,
 						// TODO 5ms is a workaround to ensure context carries the timeout deadline (used when calling upstreams),
 						//      but allow the failsafe execution to fail with timeout first for proper error handling.
+						//      Carrying the timeout helps setting correct timeout on actual http request to upstream.
 						//      Is there a way to do this cleanly? e.g. if failsafe lib works via context rather than Ticker?
 						common.NewErrEndpointRequestTimeout(*u.timeoutDuration, nil),
 					)
