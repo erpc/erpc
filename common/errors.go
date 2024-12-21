@@ -84,6 +84,7 @@ type StandardError interface {
 	GetCause() error
 	ErrorStatusCode() int
 	Base() *BaseError
+	MarshalZerologObject(v *zerolog.Event)
 }
 
 func (e *BaseError) GetCode() ErrorCode {
@@ -257,8 +258,10 @@ func (e *BaseError) MarshalZerologObject(v *zerolog.Event) {
 	if e.Cause != nil {
 		if multiErr, ok := e.Cause.(interface{ Unwrap() []error }); ok {
 			v.Interface("cause", multiErr.Unwrap())
+		} else if se, ok := e.Cause.(StandardError); ok {
+			v.Object("cause", se)
 		} else {
-			v.Interface("cause", e.Cause)
+			v.Str("cause", e.Cause.Error())
 		}
 	}
 	if e.Details != nil {
