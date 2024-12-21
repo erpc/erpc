@@ -125,6 +125,15 @@ server:
     caFile: "/path/to/ca.pem"  # Optional, for client cert verification
     insecureSkipVerify: false  # Optional, defaults to false
 
+# Optional Prometheus metrics server
+metrics:
+  enabled: true
+  listenV4: true
+  hostV4: "0.0.0.0"
+  listenV6: false
+  hostV6: "[::]"
+  port: 4001
+
 # There are various use-cases of database in erpc, such as caching, dynamic configs, rate limit persistence, etc.
 database:
   # `evmJsonRpcCache` defines the destination for caching JSON-RPC cals towards any EVM architecture upstream.
@@ -154,6 +163,7 @@ database:
         method: "*"
         finality: unfinalized
         connector: memory-cache
+        maxItemSize: 1MB # optional max size of item to store via this policy
         ttl: 5s
       - network: "*"
         method: "*"
@@ -170,15 +180,6 @@ database:
         finality: finalized
         connector: postgres-cache
         ttl: 1d
-
-# Optional Prometheus metrics server.
-metrics:
-  enabled: true
-  listenV4: true
-  hostV4: "0.0.0.0"
-  listenV6: false
-  hostV6: "[::]"
-  port: 4001
 
 # Each project is a collection of networks and upstreams.
 # For example "backend", "indexer", "frontend", and you want to use only 1 project you can name it "main"
@@ -204,21 +205,21 @@ projects:
             duration: 30s
           retry:
             maxCount: 3
-            delay: 500ms
-            backoffMaxDelay: 10s
-            backoffFactor: 0.3
-            jitter: 500ms
+            delay: 0ms
+            backoffMaxDelay: 3s
+            backoffFactor: 1.2
+            jitter: 0ms
           # Defining a "hedge" is highly-recommended on network-level because if upstream A is being slow for
           # a specific request, it can start a new parallel hedged request to upstream B, for whichever responds faster.
           hedge:
-            delay: 3000ms
-            maxCount: 2
+            delay: 500ms
+            maxCount: 1
           circuitBreaker:
-            failureThresholdCount: 30
-            failureThresholdCapacity: 100
-            halfOpenAfter: 60s
-            successThresholdCount: 8
-            successThresholdCapacity: 10
+            failureThresholdCount: 160 # 80% error rate
+            failureThresholdCapacity: 200
+            halfOpenAfter: 5m
+            successThresholdCount: 3
+            successThresholdCapacity: 3
       - architecture: evm
         evm:
           chainId: 42161
@@ -226,14 +227,14 @@ projects:
           timeout:
             duration: 30s
           retry:
-            maxCount: 5
-            delay: 500ms
-            backoffMaxDelay: 10s
-            backoffFactor: 0.3
-            jitter: 200ms
+            maxCount: 3
+            delay: 0ms
+            backoffMaxDelay: 3s
+            backoffFactor: 1.2
+            jitter: 0ms
           hedge:
-            delay: 1000ms
-            maxCount: 2
+            delay: 500ms
+            maxCount: 1
 
     # Each upstream supports 1 or more networks (chains)
     upstreams:
@@ -255,10 +256,10 @@ projects:
             duration: 15s
           retry:
             maxCount: 2
-            delay: 1000ms
-            backoffMaxDelay: 10s
-            backoffFactor: 0.3
-            jitter: 500ms
+            delay: 500ms
+            backoffMaxDelay: 3s
+            backoffFactor: 1.2
+            jitter: 0ms
       - id: blastapi-chain-1
         type: evm
         endpoint: https://eth-mainnet.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
@@ -270,10 +271,10 @@ projects:
             duration: 15s
           retry:
             maxCount: 2
-            delay: 1000ms
-            backoffMaxDelay: 10s
-            backoffFactor: 0.3
-            jitter: 500ms
+            delay: 500ms
+            backoffMaxDelay: 3s
+            backoffFactor: 1.2
+            jitter: 0ms
       - id: quiknode-chain-42161
         type: evm
         endpoint: https://xxxxxx-xxxxxx.arbitrum-mainnet.quiknode.pro/xxxxxxxxxxxxxxxxxxxxxxxx/
@@ -295,10 +296,10 @@ projects:
             duration: 15s
           retry:
             maxCount: 2
-            delay: 1000ms
-            backoffMaxDelay: 10s
-            backoffFactor: 0.3
-            jitter: 500ms
+            delay: 500ms
+            backoffMaxDelay: 3s
+            backoffFactor: 1.2
+            jitter: 0ms
 
         # "id" is a unique identifier to distinguish in logs and metrics.
       - id: alchemy-multi-chain-example
@@ -312,10 +313,10 @@ projects:
             duration: 15s
           retry:
             maxCount: 2
-            delay: 1000ms
-            backoffMaxDelay: 10s
-            backoffFactor: 0.3
-            jitter: 500ms
+            delay: 500ms
+            backoffMaxDelay: 3s
+            backoffFactor: 1.2
+            jitter: 0ms
 
 # Rate limiter allows you to create "shared" budgets for upstreams.
 # For example upstream A and B can use the same budget, which means both of them together must not exceed the defined limits.
@@ -441,7 +442,7 @@ export default createConfig({
     },
   },
 
-  // Optional Prometheus metrics server.
+  // Optional Prometheus metrics server
   metrics: {
     enabled: true,
     listenV4: true,
@@ -472,30 +473,30 @@ export default createConfig({
             chainId: 1,
           },
           // Refer to "Failsafe" section for more details.
-          // On network-level "timeout" is applied for the whole lifecycle of the request (including however many retries)
+          // On network-level "timeout" is applied for the whole lifecycle of the request (including however many retries on upstreams)
           failsafe: {
             timeout: {
               duration: "30s",
             },
             retry: {
               maxCount: 3,
-              delay: "500ms",
-              backoffMaxDelay: "10s",
-              backoffFactor: 0.3,
-              jitter: "500ms",
+              delay: "0ms",
+              backoffMaxDelay: "3s",
+              backoffFactor: 1.2,
+              jitter: "0ms",
             },
             // Defining a "hedge" is highly-recommended on network-level because if upstream A is being slow for
             // a specific request, it can start a new parallel hedged request to upstream B, for whichever responds faster.
             hedge: {
-              delay: "3000ms",
-              maxCount: 2,
+              delay: "500ms",
+              maxCount: 1,
             },
             circuitBreaker: {
-              failureThresholdCount: 30,
-              failureThresholdCapacity: 100,
-              halfOpenAfter: "60s",
-              successThresholdCount: 8,
-              successThresholdCapacity: 10,
+              failureThresholdCount: 160, // 80% error rate
+              failureThresholdCapacity: 200,
+              halfOpenAfter: "5m",
+              successThresholdCount: 3,
+              successThresholdCapacity: 3,
             },
           },
         },
@@ -511,13 +512,13 @@ export default createConfig({
             retry: {
               maxCount: 5,
               delay: "500ms",
-              backoffMaxDelay: "10s",
-              backoffFactor: 0.3,
-              jitter: "200ms",
+              backoffMaxDelay: "3s",
+              backoffFactor: 1.2,
+              jitter: "0ms",
             },
             hedge: {
-              delay: "1000ms",
-              maxCount: 2,
+              delay: "500ms",
+              maxCount: 1,
             },
           },
         },
@@ -544,10 +545,10 @@ export default createConfig({
             },
             retry: {
               maxCount: 2,
-              delay: "1000ms",
-              backoffMaxDelay: "10s",
-              backoffFactor: 0.3,
-              jitter: "500ms",
+              delay: "500ms",
+              backoffMaxDelay: "3s",
+              backoffFactor: 1.2,
+              jitter: "0ms",
             },
           },
         },
@@ -565,10 +566,10 @@ export default createConfig({
             },
             retry: {
               maxCount: 2,
-              delay: "1000ms",
-              backoffMaxDelay: "10s",
-              backoffFactor: 0.3,
-              jitter: "500ms",
+              delay: "500ms",
+              backoffMaxDelay: "3s",
+              backoffFactor: 1.2,
+              jitter: "0ms",
             },
           },
         },
@@ -578,9 +579,10 @@ export default createConfig({
           endpoint:
             "https://xxxxxx-xxxxxx.arbitrum-mainnet.quiknode.pro/xxxxxxxxxxxxxxxxxxxxxxxx/",
           rateLimitBudget: "global-quicknode",
-          // You can disable auto-ignoring unsupported methods, and instead define them explicitly.
-          // This is useful if provider (e.g. dRPC) is not consistent with "unsupported method" responses.
-          autoIgnoreUnsupportedMethods: false,
+          // You can enable auto-ignoring unsupported methods, instead of defining them explicitly.
+          // NOTE: some providers (e.g. dRPC) are not consistent with "unsupported method" responses,
+          // so this feature might mark methods as unsupported that are actually supported!
+          autoIgnoreUnsupportedMethods: true,
           // To allow auto-batching requests towards the upstream, use these settings.
           // Remember if "supportsBatch" is false, you still can send batch requests to eRPC
           // but they will be sent to upstream as individual requests.
@@ -598,10 +600,10 @@ export default createConfig({
             },
             retry: {
               maxCount: 2,
-              delay: "1000ms",
-              backoffMaxDelay: "10s",
-              backoffFactor: 0.3,
-              jitter: "500ms",
+              delay: "500ms",
+              backoffMaxDelay: "3s",
+              backoffFactor: 1.2,
+              jitter: "0ms",
             },
           },
         },
@@ -619,10 +621,10 @@ export default createConfig({
             },
             retry: {
               maxCount: 2,
-              delay: "1000ms",
-              backoffMaxDelay: "10s",
-              backoffFactor: 0.3,
-              jitter: "500ms",
+              delay: "500ms",
+              backoffMaxDelay: "3s",
+              backoffFactor: 1.2,
+              jitter: "0ms",
             },
           },
         },

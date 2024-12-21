@@ -468,7 +468,7 @@ func (p *ProjectConfig) SetDefaults() {
 			if p.UpstreamDefaults != nil {
 				upstream.ApplyDefaults(p.UpstreamDefaults)
 			}
-			upstream.SetDefaults()
+			upstream.SetDefaults(p.UpstreamDefaults)
 		}
 	}
 	if p.Networks != nil {
@@ -546,34 +546,18 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) {
 	}
 }
 
-func (u *UpstreamConfig) SetDefaults() {
+func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) {
 	if u.Id == "" {
 		u.Id = util.RedactEndpoint(u.Endpoint)
 	}
 
-	if u.Failsafe == nil {
-		u.Failsafe = &FailsafeConfig{
-			Timeout: &TimeoutPolicyConfig{
-				Duration: "15s",
-			},
-			Retry: &RetryPolicyConfig{
-				MaxAttempts:     3,
-				Delay:           "300ms",
-				Jitter:          "100ms",
-				BackoffMaxDelay: "5s",
-				BackoffFactor:   1.5,
-			},
-			CircuitBreaker: &CircuitBreakerPolicyConfig{
-				FailureThresholdCount:    160, // 80% error rate
-				FailureThresholdCapacity: 200,
-				HalfOpenAfter:            "5m",
-				SuccessThresholdCount:    3,
-				SuccessThresholdCapacity: 3,
-			},
+	if u.Failsafe != nil {
+		if defaults != nil && defaults.Failsafe != nil {
+			u.Failsafe.SetDefaults(defaults.Failsafe)
+		} else {
+			u.Failsafe.SetDefaults(nil)
 		}
 	}
-	u.Failsafe.SetDefaults(nil)
-
 	if u.RateLimitAutoTune == nil && u.RateLimitBudget != "" {
 		u.RateLimitAutoTune = &RateLimitAutoTuneConfig{}
 	}
@@ -587,7 +571,6 @@ func (u *UpstreamConfig) SetDefaults() {
 	if u.JsonRpc != nil {
 		u.JsonRpc.SetDefaults()
 	}
-
 	if u.Routing != nil {
 		u.Routing.SetDefaults()
 	}
@@ -1008,24 +991,7 @@ func NewDefaultNetworkConfig(upstreams []*UpstreamConfig) *NetworkConfig {
 	hasAnyFallbackUpstream := slices.ContainsFunc(upstreams, func(u *UpstreamConfig) bool {
 		return u.Group == "fallback"
 	})
-	n := &NetworkConfig{
-		Failsafe: &FailsafeConfig{
-			Hedge: &HedgePolicyConfig{
-				Delay:    "200ms",
-				MaxCount: 3,
-			},
-			Retry: &RetryPolicyConfig{
-				MaxAttempts:     3,
-				Delay:           "100ms",
-				Jitter:          "0ms",
-				BackoffMaxDelay: "1s",
-				BackoffFactor:   1.5,
-			},
-			Timeout: &TimeoutPolicyConfig{
-				Duration: "30s",
-			},
-		},
-	}
+	n := &NetworkConfig{}
 	if hasAnyFallbackUpstream {
 		evalFunction, err := script.CompileFunction(DefaultPolicyFunction)
 		if err != nil {
