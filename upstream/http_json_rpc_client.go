@@ -903,6 +903,21 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					}
 				}
 			}
+			if strings.Contains(err.Message, "tx of type") {
+				// TODO For now we're returning a server-side exception for this error
+				// so that the request is retried on a different upstream which supports the requested TX type.
+				// This must be properly handled when "Upstream Features" is implemented which allows for feature-based routing.
+				return common.NewErrEndpointServerSideException(
+					common.NewErrJsonRpcExceptionInternal(
+						int(code),
+						common.JsonRpcErrorCallException,
+						err.Message,
+						nil,
+						details,
+					),
+					nil,
+				)
+			}
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
