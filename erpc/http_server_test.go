@@ -1530,7 +1530,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 					Networks: []*common.NetworkConfig{
 						{
 							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{ChainId: 1},
+							Evm:          &common.EvmNetworkConfig{ChainId: 1},
 							Failsafe: &common.FailsafeConfig{
 								// We allow a 2-attempt hedge: the “original” plus 1 “hedge”.
 								Hedge: &common.HedgePolicyConfig{
@@ -1623,7 +1623,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 					Networks: []*common.NetworkConfig{
 						{
 							Architecture: common.ArchitectureEvm,
-							Evm: &common.EvmNetworkConfig{ChainId: 1},
+							Evm:          &common.EvmNetworkConfig{ChainId: 1},
 							Failsafe: &common.FailsafeConfig{
 								// We allow a 2-attempt hedge: the “original” plus 1 “hedge”.
 								Hedge: &common.HedgePolicyConfig{

@@ -337,15 +337,15 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 			ctx,
 			&log.Logger,
 			[]*common.ProjectConfig{prjConfig},
-			nil,                     // EvmJsonRpcCache
-			rateLimiters,           // RateLimitersRegistry
+			nil,          // EvmJsonRpcCache
+			rateLimiters, // RateLimitersRegistry
 			vendors.NewVendorsRegistry(),
 		)
 		if err != nil {
 			t.Fatalf("failed to create ProjectsRegistry: %v", err)
 		}
 
-		// Begin mocking an upstream response for a brand new chain "evm:9999" 
+		// Begin mocking an upstream response for a brand new chain "evm:9999"
 		// that isn't explicitly defined in prjConfig.Networks:
 		gock.New("http://mock.localhost").
 			Post("/").
