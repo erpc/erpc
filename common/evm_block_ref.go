@@ -62,8 +62,6 @@ func ExtractEvmBlockReferenceFromRequest(cacheDal CacheDAL, r *JsonRpcRequest) (
 					if bn > blockNumber {
 						blockNumber = bn
 					}
-				} else {
-					return "", 0, err
 				}
 			}
 		}

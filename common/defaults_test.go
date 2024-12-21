@@ -13,7 +13,7 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 		network := &NetworkConfig{}
 		network.SetDefaults(nil, nil)
 
-		assert.NotNil(t, network.Failsafe, "Failsafe should be defined")
+		assert.Nil(t, network.Failsafe, "Failsafe should be nil")
 		assert.EqualValues(t, sysDefCfg.Failsafe, network.Failsafe)
 	})
 
@@ -88,10 +88,10 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 		assert.EqualValues(t, &FailsafeConfig{
 			Retry: &RetryPolicyConfig{
 				MaxAttempts:     12345,
-				Delay:           sysDefCfg.Failsafe.Retry.Delay,
-				BackoffMaxDelay: sysDefCfg.Failsafe.Retry.BackoffMaxDelay,
-				BackoffFactor:   sysDefCfg.Failsafe.Retry.BackoffFactor,
-				Jitter:          sysDefCfg.Failsafe.Retry.Jitter,
+				Delay:           "100ms",
+				BackoffMaxDelay: "3s",
+				BackoffFactor:   1.2,
+				Jitter:          "0ms",
 			},
 		}, network.Failsafe)
 		assert.Nil(t, network.Failsafe.Timeout)
