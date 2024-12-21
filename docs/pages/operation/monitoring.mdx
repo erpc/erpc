@@ -2,9 +2,45 @@
 description: Network-level and upstream-level metrics are available via Prometheus and Grafana...
 ---
 
+import { Tabs, Tab } from "nextra/components";
+
 # Monitoring and metrics
 
 Network-level and upstream-level metrics are available via [Prometheus](https://prometheus.io/) and [Grafana](https://grafana.com/).
+
+To enable metrics via config:
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+metrics:
+  enabled: true
+  listenV4: true
+  hostV4: "0.0.0.0"
+  listenV6: false
+  hostV6: "[::]"
+  port: 4001
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+ 
+export default createConfig({
+  // ...
+  metrics: {
+    enabled: true,
+    listenV4: true,
+    hostV4: "0.0.0.0",
+    listenV6: false,
+    hostV6: "[::]",
+    port: 4001,
+  }
+});
+```
+</Tabs.Tab>
+</Tabs>
+
 
 Refer to [erpc/docker-compose.yml](https://github.com/erpc/erpc/blob/main/docker-compose.yml#L4-L17) and [erpc/monitoring](https://github.com/erpc/erpc/tree/main/monitoring) for ready-made templates to bring up montoring.
 
