@@ -708,14 +708,14 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) {
 		if defaults != nil && defaults.BackoffFactor != 0 {
 			r.BackoffFactor = defaults.BackoffFactor
 		} else {
-			r.BackoffFactor = 1.3
+			r.BackoffFactor = 1.2
 		}
 	}
 	if r.BackoffMaxDelay == "" {
 		if defaults != nil && defaults.BackoffMaxDelay != "" {
 			r.BackoffMaxDelay = defaults.BackoffMaxDelay
 		} else {
-			r.BackoffMaxDelay = "5s"
+			r.BackoffMaxDelay = "3s"
 		}
 	}
 	if r.Delay == "" {
