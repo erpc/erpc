@@ -18,53 +18,9 @@ func (c *Config) SetDefaults() {
 	}
 	c.Server.SetDefaults()
 
-	if c.Database == nil {
-		c.Database = &DatabaseConfig{
-			EvmJsonRpcCache: &CacheConfig{
-				Connectors: []*ConnectorConfig{
-					{
-						Id:     "memory-cache",
-						Driver: DriverMemory,
-					},
-				},
-				Policies: []*CachePolicyConfig{
-					{
-						Network:     "*",
-						Method:      "*",
-						Finality:    DataFinalityStateFinalized,
-						MaxItemSize: util.StringPtr("1mb"),
-						TTL:         0, // Forever
-						Connector:   "memory-cache",
-					},
-					{
-						Network:     "*",
-						Method:      "*",
-						Finality:    DataFinalityStateUnknown,
-						MaxItemSize: util.StringPtr("1mb"),
-						TTL:         30 * time.Second,
-						Connector:   "memory-cache",
-					},
-					{
-						Network:     "*",
-						Method:      "*",
-						Finality:    DataFinalityStateUnfinalized,
-						MaxItemSize: util.StringPtr("1mb"),
-						TTL:         5 * time.Second,
-						Connector:   "memory-cache",
-					},
-					{
-						Network:     "*",
-						Method:      "*",
-						Finality:    DataFinalityStateRealtime,
-						MaxItemSize: util.StringPtr("1mb"),
-						TTL:         2 * time.Second,
-						Connector:   "memory-cache",
-					},
-				},
-			},
-		}
+	if c.Database != nil {
+		c.Database.SetDefaults()
 	}
-	c.Database.SetDefaults()
 
 	if c.Metrics == nil {
 		c.Metrics = &MetricsConfig{}
