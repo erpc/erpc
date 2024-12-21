@@ -65,6 +65,8 @@ func NewNetwork(
 		}
 	}
 
+	lg.Debug().Interface("config", nwCfg.Failsafe).Interface("policies", pls).Msg("creating network")
+
 	network := &Network{
 		ProjectId: prjId,
 		NetworkId: nwCfg.NetworkId(),

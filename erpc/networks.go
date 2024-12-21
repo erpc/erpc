@@ -239,14 +239,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			}
 			if n.timeoutDuration != nil {
 				var cancelFn context.CancelFunc
-				ictx, cancelFn = context.WithTimeoutCause(
+				ictx, cancelFn = context.WithTimeout(
 					ectx,
-					*n.timeoutDuration+5*time.Millisecond,
-					// TODO 5ms is a workaround to ensure context carries the timeout deadline (used when calling upstreams),
-					//      but allow the failsafe execution to fail with timeout first for proper error handling.
-					//      Carrying the timeout helps setting correct timeout on actual http request to upstream.
+					// TODO Carrying the timeout helps setting correct timeout on actual http request to upstream (during batch mode). 
 					//      Is there a way to do this cleanly? e.g. if failsafe lib works via context rather than Ticker?
-					common.NewErrNetworkRequestTimeout(*n.timeoutDuration, nil),
+					//      5ms is a workaround to ensure context carries the timeout deadline (used when calling upstreams),
+					//      but allow the failsafe execution to fail with timeout first for proper error handling.
+					*n.timeoutDuration+5*time.Millisecond,
 				)
 
 				defer cancelFn()
@@ -289,6 +288,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					}
 				}
 				req.Unlock()
+				isHedged := exec.Hedges() > 0
+				if isHedged {
+					health.MetricNetworkHedgedRequestTotal.WithLabelValues(n.ProjectId, n.NetworkId, u.Config().Id, method, fmt.Sprintf("%d", exec.Hedges())).Inc()
+				}
 
 				var r *common.NormalizedResponse
 				r, err = tryForward(u, ictx, &ulg)
@@ -298,13 +301,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 
 				isClientErr := common.IsClientError(err)
-				isHedged := exec.Hedges() > 0
-
 				if isHedged {
-					health.MetricNetworkHedgedRequestTotal.WithLabelValues(n.ProjectId, n.NetworkId, u.Config().Id, method, fmt.Sprintf("%d", exec.Hedges())).Inc()
-					if err != nil && common.HasErrorCode(err, common.ErrCodeUpstreamHedgeCancelled) {
+					if err != nil && common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled) {
 						ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
-						return nil, err
+						return nil, common.NewErrUpstreamHedgeCancelled(u.Config().Id, err)
 					}
 				}
 
