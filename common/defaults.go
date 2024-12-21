@@ -113,6 +113,7 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 		ReqRefs: [][]interface{}{
 			{0, "fromBlock"},
 			{0, "toBlock"},
+			{0, "blockHash"},
 		},
 	},
 	"eth_getBlockByHash": {
