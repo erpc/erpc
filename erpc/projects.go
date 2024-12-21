@@ -143,7 +143,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 			lg.Info().Err(err).Msgf("finished forwarding request for network with some client-side exception")
 		} else {
 			if lg.GetLevel() == zerolog.TraceLevel {
-				lg.Info().Err(err).Object("response", resp).Msgf("successfully forwarded request for network")
+				lg.Info().Object("response", resp).Msgf("successfully forwarded request for network")
 			} else {
 				lg.Info().Msgf("successfully forwarded request for network")
 			}
@@ -151,6 +151,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		health.MetricNetworkSuccessfulRequests.WithLabelValues(p.Config.Id, network.NetworkId, method).Inc()
 		return resp, err
 	} else {
+		lg.Debug().Err(err).Object("request", nq).Msgf("failed to forward request for network")
 		health.MetricNetworkFailedRequests.WithLabelValues(network.ProjectId, network.NetworkId, method, common.ErrorSummary(err)).Inc()
 	}
 
@@ -176,8 +177,7 @@ func (p *PreparedProject) initializeNetwork(ctx context.Context, networkId strin
 	}
 
 	if nwCfg == nil {
-		nwCfg = common.NewDefaultNetworkConfig(p.Config.Upstreams)
-
+		nwCfg = &common.NetworkConfig{}
 		s := strings.Split(networkId, ":")
 		if len(s) != 2 {
 			// TODO use more appropriate error for non-evm
@@ -194,6 +194,7 @@ func (p *PreparedProject) initializeNetwork(ctx context.Context, networkId strin
 				ChainId: int64(c),
 			}
 		}
+		nwCfg.SetDefaults(p.Config.Upstreams, p.Config.NetworkDefaults)
 		p.projectMu.Lock()
 		if p.Config.Networks == nil || len(p.Config.Networks) == 0 {
 			p.Config.Networks = []*common.NetworkConfig{}
