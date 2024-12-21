@@ -192,8 +192,7 @@ projects:
       evm:
         chainId: 1
     networks:
-    - id: mainnet
-      architecture: evm
+    - architecture: evm
       evm:
         chainId: 1
 `)
