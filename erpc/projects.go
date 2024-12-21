@@ -39,7 +39,10 @@ func (p *PreparedProject) Bootstrap(ctx context.Context) error {
 	p.Logger.Debug().Msgf("initializing all staticly-defined networks")
 
 	go func() {
-		for _, nwCfg := range p.Config.Networks {
+		p.projectMu.RLock()
+		nl := p.Config.Networks
+		p.projectMu.RUnlock()
+		for _, nwCfg := range nl {
 			_, err := p.initializeNetwork(ctx, nwCfg.NetworkId())
 			if err != nil {
 				p.Logger.Error().Err(err).Msgf("failed to initialize network %s", nwCfg.NetworkId())
