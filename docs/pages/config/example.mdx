@@ -279,9 +279,10 @@ projects:
         type: evm
         endpoint: https://xxxxxx-xxxxxx.arbitrum-mainnet.quiknode.pro/xxxxxxxxxxxxxxxxxxxxxxxx/
         rateLimitBudget: global-quicknode
-        # You can disable auto-ignoring unsupported methods, and instead define them explicitly.
-        # This is useful if provider (e.g. dRPC) is not consistent with "unsupported method" responses.
-        autoIgnoreUnsupportedMethods: false
+        # You can enable auto-ignoring unsupported methods, instead of defining them explicitly.
+        # NOTE: some providers (e.g. dRPC) are not consistent with "unsupported method" responses,
+        # so this feature might mark methods as unsupported that are actually supported!
+        autoIgnoreUnsupportedMethods: true
         # To allow auto-batching requests towards the upstream, use these settings.
         # Remember if "supportsBatch" is false, you still can send batch requests to eRPC
         # but they will be sent to upstream as individual requests.

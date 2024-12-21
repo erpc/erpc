@@ -93,7 +93,7 @@ func TestExtractBlockReference(t *testing.T) {
 			expectedErr: false,
 		},
 		{
-			name: "eth_getLogs",
+			name: "eth_getLogs with from/to numbers",
 			request: &JsonRpcRequest{
 				Method: "eth_getLogs",
 				Params: []interface{}{
@@ -108,7 +108,21 @@ func TestExtractBlockReference(t *testing.T) {
 			expectedErr: false,
 		},
 		{
-			name: "eth_getLogs",
+			name: "eth_getLogs with blockHash",
+			request: &JsonRpcRequest{
+				Method: "eth_getLogs",
+				Params: []interface{}{
+					map[string]interface{}{
+						"blockHash": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+					},
+				},
+			},
+			expectedRef: "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+			expectedNum: 0,
+			expectedErr: false,
+		},
+		{
+			name: "eth_getLogs with missing fromBlock",
 			request: &JsonRpcRequest{
 				Method: "eth_getLogs",
 				Params: []interface{}{
@@ -117,9 +131,9 @@ func TestExtractBlockReference(t *testing.T) {
 					},
 				},
 			},
-			expectedRef: "",
-			expectedNum: 0,
-			expectedErr: true,
+			expectedRef: "436",
+			expectedNum: 436,
+			expectedErr: false,
 		},
 		{
 			name: "missing parameters in eth_getLogs",
@@ -129,7 +143,7 @@ func TestExtractBlockReference(t *testing.T) {
 			},
 			expectedRef: "",
 			expectedNum: 0,
-			expectedErr: true,
+			expectedErr: false,
 		},
 		{
 			name: "eth_getBalance",
@@ -149,7 +163,7 @@ func TestExtractBlockReference(t *testing.T) {
 			},
 			expectedRef: "",
 			expectedNum: 0,
-			expectedErr: true,
+			expectedErr: false,
 		},
 		{
 			name: "eth_getCode",
