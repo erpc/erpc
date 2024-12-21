@@ -1,6 +1,7 @@
 package common
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"time"
@@ -578,7 +579,9 @@ func LoadConfig(fs afero.Fs, filename string) (*Config, error) {
 		cfg = *cfgPtr
 	} else {
 		expandedData := []byte(os.ExpandEnv(string(data)))
-		err = yaml.Unmarshal(expandedData, &cfg)
+		decoder := yaml.NewDecoder(bytes.NewReader(expandedData))
+		decoder.KnownFields(true)
+		err = decoder.Decode(&cfg)
 		if err != nil {
 			return nil, err
 		}
