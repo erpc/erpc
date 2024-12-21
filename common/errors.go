@@ -1053,12 +1053,15 @@ type ErrUpstreamHedgeCancelled struct{ BaseError }
 
 const ErrCodeUpstreamHedgeCancelled ErrorCode = "ErrUpstreamHedgeCancelled"
 
-var NewErrUpstreamHedgeCancelled = func(cause error) error {
+var NewErrUpstreamHedgeCancelled = func(upstreamId string, cause error) error {
 	return &ErrUpstreamHedgeCancelled{
 		BaseError{
 			Code:    ErrCodeUpstreamHedgeCancelled,
-			Message: "hedged request cancelled in favor of another response",
-			Cause:   cause,
+			Message: "hedged request cancelled in favor of another upstream response",
+			Details: map[string]interface{}{
+				"upstreamId": upstreamId,
+			},
+			Cause: cause,
 		},
 	}
 }
@@ -1553,6 +1556,20 @@ func (e *ErrEndpointRequestTimeout) ErrorStatusCode() int {
 	return http.StatusGatewayTimeout
 }
 
+type ErrEndpointRequestCanceled struct{ BaseError }
+
+const ErrCodeEndpointRequestCanceled = "ErrEndpointRequestCanceled"
+
+var NewErrEndpointRequestCanceled = func(cause error) error {
+	return &ErrEndpointRequestCanceled{
+		BaseError{
+			Code:    ErrCodeEndpointRequestCanceled,
+			Message: "remote endpoint request canceled (e.g. discarded hedge request)",
+			Cause:   cause,
+		},
+	}
+}
+
 type ErrEndpointCapacityExceeded struct{ BaseError }
 
 const ErrCodeEndpointCapacityExceeded = "ErrEndpointCapacityExceeded"
@@ -1919,10 +1936,10 @@ func ClassifySeverity(err error) Severity {
 		return SeverityWarning
 	}
 	// Usually context cancellation is due to discarded hedged requests.
-	// Theoretically any cancellation must be intentional and must not be considered as an error.
+	// Theoretically any cancellation must be intentional and must not be considered as a critical error.
 	// Upstream timeouts will be DeadlineExceeded errors or other forms of timeout errors which will be classified as SeverityCritical.
-	// This is considered warning (and info) because it still means the upstream was too slow to respond.
-	if HasErrorCode(err, ErrCodeUpstreamHedgeCancelled) {
+	// This is considered warning (not info) because it still means the upstream was too slow to respond (in case of a hedge).
+	if HasErrorCode(err, ErrCodeEndpointRequestCanceled) {
 		return SeverityWarning
 	}
 	return SeverityCritical
