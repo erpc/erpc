@@ -383,6 +383,9 @@ func (s *ServerConfig) SetDefaults() {
 }
 
 func (m *MetricsConfig) SetDefaults() {
+	if m.Enabled == nil {
+		m.Enabled = util.BoolPtr(true)
+	}
 	if m.HostV4 == nil {
 		m.HostV4 = util.StringPtr("0.0.0.0")
 	}
