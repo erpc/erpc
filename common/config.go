@@ -12,7 +12,6 @@ import (
 	"github.com/erpc/erpc/util"
 	"github.com/grafana/sobek"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v3"
 )
@@ -89,38 +88,6 @@ type CacheMethodConfig struct {
 	RespRefs  [][]interface{} `yaml:"respRefs" json:"respRefs"`
 	Finalized bool            `yaml:"finalized" json:"finalized"`
 	Realtime  bool            `yaml:"realtime" json:"realtime"`
-}
-
-func (c *CacheConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	type rawCacheConfig CacheConfig
-	raw := rawCacheConfig{}
-
-	if err := unmarshal(&raw); err != nil || (raw.Connectors == nil && raw.Policies == nil) || (len(raw.Connectors) == 0 && len(raw.Policies) == 0) {
-		// Backward compatibility for old config format
-		var rawBackward ConnectorConfig
-		if err := unmarshal(&rawBackward); err != nil {
-			return err
-		}
-		rawBackward.Id = "default"
-		c.Connectors = []*ConnectorConfig{&rawBackward}
-		c.Policies = []*CachePolicyConfig{
-			{
-				Network:   "*",
-				Method:    "*",
-				Finality:  DataFinalityStateFinalized,
-				Empty:     CacheEmptyBehaviorAllow,
-				TTL:       0,
-				Connector: "default",
-			},
-		}
-		if err != nil {
-			log.Warn().Err(err).Msg("failed to unmarshal old cache config, please update to new structure based on cache docs")
-		}
-	} else {
-		*c = CacheConfig(raw)
-	}
-
-	return nil
 }
 
 type CachePolicyConfig struct {
