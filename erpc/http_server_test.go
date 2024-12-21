@@ -1517,6 +1517,192 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
 		assert.Contains(t, body, ErrHandlerTimeout.Error())
 	})
+
+	t.Run("HedgeDiscardsSlowerCall_FirstRequestCancelled", func(t *testing.T) {
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				// Enough total server time to let hedged calls finish.
+				MaxTimeout: util.StringPtr("2s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{ChainId: 1},
+							Failsafe: &common.FailsafeConfig{
+								// We allow a 2-attempt hedge: the “original” plus 1 “hedge”.
+								Hedge: &common.HedgePolicyConfig{
+									MaxCount: 1,
+									Delay:    "10ms",
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		// Mock #1 (slower) – "original request"
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance") && strings.Contains(string(body), "SLOW")
+			}).
+			Reply(200).
+			Delay(300 * time.Millisecond). // This will be canceled if the hedge wins
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      99,
+				"result":  "0xSLOW",
+			})
+
+		// Mock #2 (faster) – "hedge request"
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance") && strings.Contains(string(body), "FAST")
+			}).
+			Reply(200).
+			Delay(50 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      99,
+				"result":  "0xFAST",
+			})
+
+		// Launch the test server with above config
+		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		// We'll ask for a single "eth_getBalance" call but pass distinct markers SLOW/FAST to
+		// ensure that Gock can differentiate which is the "original" vs. "hedge" request body.
+		// In real usage, hedged calls have identical payloads. Here we just need to disambiguate
+		// the two mocks so we can see which is canceled, which returns successfully, etc.
+		jsonBody := `{"jsonrpc":"2.0","id":99,"method":"eth_getBalance","params":["0xSLOW","true","0xFAST","true"]}`
+
+		statusCode, body := sendRequest(jsonBody, nil, nil)
+
+		// From the user's perspective, we must see a 200 + "0xFAST" rather than "context canceled"
+		assert.Equal(t, http.StatusOK, statusCode, "Expected 200 OK from hedged request")
+		assert.Contains(t, body, "0xFAST", "Expected final result from faster hedge call")
+		assert.NotContains(t, body, "context canceled", "Must never return 'context canceled' to the user")
+	})
+
+	t.Run("HedgeDiscardsSlowerCall_SecondRequestCancelled", func(t *testing.T) {
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				// Enough total server time to let hedged calls finish.
+				MaxTimeout: util.StringPtr("2s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{ChainId: 1},
+							Failsafe: &common.FailsafeConfig{
+								// We allow a 2-attempt hedge: the “original” plus 1 “hedge”.
+								Hedge: &common.HedgePolicyConfig{
+									MaxCount: 1,
+									Delay:    "10ms",
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		// Mock #1 (faster) – "hedge request"
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance") && strings.Contains(string(body), "FAST")
+			}).
+			Reply(200).
+			Delay(300 * time.Millisecond). // This will be canceled if the hedge wins
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      99,
+				"result":  "0xFAST",
+			})
+
+		// Mock #2 (slower) – "original request"
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance") && strings.Contains(string(body), "SLOW")
+			}).
+			Reply(200).
+			Delay(5000 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      99,
+				"result":  "0xSLOW",
+			})
+
+		// Launch the test server with above config
+		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		// We'll ask for a single "eth_getBalance" call but pass distinct markers SLOW/FAST to
+		// ensure that Gock can differentiate which is the "original" vs. "hedge" request body.
+		// In real usage, hedged calls have identical payloads. Here we just need to disambiguate
+		// the two mocks so we can see which is canceled, which returns successfully, etc.
+		jsonBody := `{"jsonrpc":"2.0","id":99,"method":"eth_getBalance","params":["0xSLOW","true","0xFAST","true"]}`
+
+		statusCode, body := sendRequest(jsonBody, nil, nil)
+
+		// From the user's perspective, we must see a 200 + "0xFAST" rather than "context canceled"
+		assert.Equal(t, http.StatusOK, statusCode, "Expected 200 OK from hedged request")
+		assert.Contains(t, body, "0xFAST", "Expected final result from faster hedge call")
+		assert.NotContains(t, body, "context canceled", "Must never return 'context canceled' to the user")
+	})
 }
 
 func TestHttpServer_SingleUpstream(t *testing.T) {
