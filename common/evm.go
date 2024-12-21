@@ -52,5 +52,6 @@ func EvmIsMissingDataError(err error) bool {
 		strings.Contains(err.Error(), "cannot find transaction") ||
 		strings.Contains(err.Error(), "after last accepted block") ||
 		strings.Contains(err.Error(), "is greater than latest") ||
-		strings.Contains(err.Error(), "No state available")
+		strings.Contains(err.Error(), "No state available") ||
+		strings.Contains(err.Error(), "trie does not")
 }

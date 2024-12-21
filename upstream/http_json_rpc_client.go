@@ -879,54 +879,6 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if code == -32602 ||
-			strings.Contains(err.Message, "param is required") ||
-			strings.Contains(err.Message, "Invalid Request") ||
-			strings.Contains(err.Message, "validation errors") ||
-			strings.Contains(err.Message, "invalid argument") {
-			if dt, ok := err.Data.(map[string]interface{}); ok {
-				if msg, ok := dt["message"]; ok {
-					if strings.Contains(msg.(string), "validation errors in batch") {
-						// Intentionally return a server-side error for failed requests in a batch
-						// so they are retried in a different batch.
-						// TODO Should we split a batch instead on json-rpc client level?
-						return common.NewErrEndpointServerSideException(
-							common.NewErrJsonRpcExceptionInternal(
-								int(code),
-								common.JsonRpcErrorServerSideException,
-								err.Message,
-								nil,
-								details,
-							),
-							nil,
-						)
-					}
-				}
-			}
-			if strings.Contains(err.Message, "tx of type") {
-				// TODO For now we're returning a server-side exception for this error
-				// so that the request is retried on a different upstream which supports the requested TX type.
-				// This must be properly handled when "Upstream Features" is implemented which allows for feature-based routing.
-				return common.NewErrEndpointServerSideException(
-					common.NewErrJsonRpcExceptionInternal(
-						int(code),
-						common.JsonRpcErrorCallException,
-						err.Message,
-						nil,
-						details,
-					),
-					nil,
-				)
-			}
-			return common.NewErrEndpointClientSideException(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorInvalidArgument,
-					err.Message,
-					nil,
-					details,
-				),
-			)
 		} else if strings.Contains(err.Message, "execution timeout") {
 			return common.NewErrEndpointServerSideException(
 				common.NewErrJsonRpcExceptionInternal(
@@ -954,7 +906,8 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		} else if strings.Contains(err.Message, "insufficient funds") ||
 			strings.Contains(err.Message, "insufficient balance") ||
 			strings.Contains(err.Message, "out of gas") ||
-			strings.Contains(err.Message, "gas too low") {
+			strings.Contains(err.Message, "gas too low") ||
+			strings.Contains(err.Message, "IntrinsicGas") {
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -1021,6 +974,25 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				),
 			)
 		} else if code == -32600 {
+			if dt, ok := err.Data.(map[string]interface{}); ok {
+				if msg, ok := dt["message"]; ok {
+					if strings.Contains(msg.(string), "validation errors in batch") {
+						// Intentionally return a server-side error for failed requests in a batch
+						// so they are retried in a different batch.
+						// TODO Should we split a batch instead on json-rpc client level?
+						return common.NewErrEndpointServerSideException(
+							common.NewErrJsonRpcExceptionInternal(
+								int(code),
+								common.JsonRpcErrorServerSideException,
+								err.Message,
+								nil,
+								details,
+							),
+							nil,
+						)
+					}
+				}
+			}
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -1035,6 +1007,35 @@ func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorUnauthorized,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+		} else if code == -32602 ||
+			strings.Contains(err.Message, "param is required") ||
+			strings.Contains(err.Message, "Invalid Request") ||
+			strings.Contains(err.Message, "validation errors") ||
+			strings.Contains(err.Message, "invalid argument") {
+			if strings.Contains(err.Message, "tx of type") {
+				// TODO For now we're returning a server-side exception for this error
+				// so that the request is retried on a different upstream which supports the requested TX type.
+				// This must be properly handled when "Upstream Features" is implemented which allows for feature-based routing.
+				return common.NewErrEndpointServerSideException(
+					common.NewErrJsonRpcExceptionInternal(
+						int(code),
+						common.JsonRpcErrorCallException,
+						err.Message,
+						nil,
+						details,
+					),
+					nil,
+				)
+			}
+			return common.NewErrEndpointClientSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorInvalidArgument,
 					err.Message,
 					nil,
 					details,
