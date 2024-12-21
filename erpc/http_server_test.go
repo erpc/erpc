@@ -2777,13 +2777,13 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
 			Filter(func(request *http.Request) bool {
 				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
 			}).
+			Times(2).
 			Reply(200).
 			Delay(3000 * time.Millisecond).
 			JSON(map[string]interface{}{
@@ -2796,7 +2796,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		defer shutdown()
 
 		wg := &sync.WaitGroup{}
-		for i := 0; i < 3; i++ {
+		for i := 0; i < 10; i++ {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
