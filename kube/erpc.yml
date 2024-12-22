@@ -85,7 +85,7 @@ data:
             timeout:
               duration: 5s
             retry: 
-              maxCount: 3
+              maxAttempts: 3
               delay: 1s
               backoffMaxDelay: 10s
               backoffFactor: 0.3
@@ -97,7 +97,7 @@ data:
             timeout:
               duration: 5s
             retry: 
-              maxCount: 3
+              maxAttempts: 3
               delay: 1s
               backoffMaxDelay: 10s
               backoffFactor: 0.3
@@ -109,7 +109,7 @@ data:
             timeout:
               duration: 5s
             retry: 
-              maxCount: 3
+              maxAttempts: 3
               delay: 1s
               backoffMaxDelay: 10s
               backoffFactor: 0.3

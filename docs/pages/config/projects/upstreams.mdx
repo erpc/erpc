@@ -117,7 +117,7 @@ projects:
           timeout:
             duration: 15s
           retry:
-            maxCount: 2
+            maxAttempts: 2
             delay: 1000ms
             backoffMaxDelay: 10s
             backoffFactor: 0.3
@@ -254,7 +254,7 @@ export default createConfig({
               duration: "15s",
             },
             retry: {
-              maxCount: 2,
+              maxAttempts: 2,
               delay: "1000ms",
               backoffMaxDelay: "10s",
               backoffFactor: 0.3,
