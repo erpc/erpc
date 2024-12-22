@@ -115,7 +115,7 @@ projects:
           retry:
             # It is recommended to set a retry policy on network-level to make sure if one upstream is rate-limited,
             # the request will be retried on another upstream.
-            maxCount: 3
+            maxAttempts: 3
             delay: 100ms
             jitter: 0ms
             backoffMaxDelay: 1s
@@ -250,7 +250,7 @@ export default createConfig({
             retry: {
               // It is recommended to set a retry policy on network-level to make sure if one upstream is rate-limited,
               // the request will be retried on another upstream.
-              maxCount: 3,
+              maxAttempts: 3,
               delay: "100ms",
               jitter: "0ms",
               backoffMaxDelay: "1s",
@@ -304,7 +304,7 @@ projects:
           delay: "200ms"
           maxCount: 3
         retry:
-          maxCount: 3
+          maxAttempts: 3
           delay: "100ms"
           jitter: "0ms"
           backoffMaxDelay: "1s"
@@ -364,7 +364,7 @@ export default createConfig({
             maxCount: 3,
           },
           retry: {
-            maxCount: 3,
+            maxAttempts: 3,
             delay: "100ms",
             jitter: "0ms",
             backoffMaxDelay: "1s",

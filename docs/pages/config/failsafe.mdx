@@ -112,7 +112,7 @@ projects:
           # this is additional to the retry policy set on upstream level.
           retry:
             # Total retries besides the initial request:
-            maxCount: 3
+            maxAttempts: 3
             # Min delay between retries:
             delay: 500ms
             # Maximum delay between retries:
@@ -132,7 +132,7 @@ projects:
           # For example if network has 2 retries and upstream has 2 retries,
           # total retries will be 4.
           retry:
-            maxCount: 2
+            maxAttempts: 2
             delay: 1000ms
             backoffMaxDelay: 10s
             backoffFactor: 0.3
@@ -159,7 +159,7 @@ export default createConfig({
             // this is additional to the retry policy set on upstream level.
             retry: {
               // Total retries besides the initial request:
-              maxCount: 3,
+              maxAttempts: 3,
               // Min delay between retries:
               delay: "500ms",
               // Maximum delay between retries:
@@ -186,7 +186,7 @@ export default createConfig({
             * total retries will be 4.
             */
             retry: {
-              maxCount: 2,
+              maxAttempts: 2,
               delay: "1000ms",
               backoffMaxDelay: "10s",
               backoffFactor: 0.3,

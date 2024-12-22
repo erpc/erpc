@@ -25,7 +25,7 @@ projects:
           timeout:
             duration: 30s
           retry:
-            maxCount: 3
+            maxAttempts: 3
             delay: 500ms
             backoffMaxDelay: 10s
             backoffFactor: 0.3
@@ -40,7 +40,7 @@ projects:
           timeout:
             duration: 30s
           retry:
-            maxCount: 5
+            maxAttempts: 5
             delay: 500ms
             backoffMaxDelay: 10s
             backoffFactor: 0.3
@@ -56,7 +56,7 @@ projects:
           timeout:
             duration: 15s
           retry:
-            maxCount: 2
+            maxAttempts: 2
             delay: 1000ms
             backoffMaxDelay: 10s
             backoffFactor: 0.3
@@ -68,7 +68,7 @@ projects:
           timeout:
             duration: 15s
           retry:
-            maxCount: 2
+            maxAttempts: 2
             delay: 1000ms
             backoffMaxDelay: 10s
             backoffFactor: 0.3
@@ -82,7 +82,7 @@ projects:
           timeout:
             duration: 15s
           retry:
-            maxCount: 2
+            maxAttempts: 2
             delay: 1000ms
             backoffMaxDelay: 10s
             backoffFactor: 0.3
@@ -97,7 +97,7 @@ projects:
           timeout:
             duration: 15s
           retry:
-            maxCount: 2
+            maxAttempts: 2
             delay: 1000ms
             backoffMaxDelay: 10s
             backoffFactor: 0.3
@@ -112,7 +112,7 @@ projects:
           timeout:
             duration: 15s
           retry:
-            maxCount: 2
+            maxAttempts: 2
             delay: 1000ms
             backoffMaxDelay: 10s
             backoffFactor: 0.3
@@ -124,7 +124,7 @@ projects:
           timeout:
             duration: 15s
           retry:
-            maxCount: 2
+            maxAttempts: 2
             delay: 1000ms
             backoffMaxDelay: 10s
             backoffFactor: 0.3
