@@ -742,6 +742,26 @@ func (h *HedgePolicyConfig) SetDefaults(defaults *HedgePolicyConfig) {
 			h.Delay = "100ms"
 		}
 	}
+	if h.Quantile == "" {
+		if defaults != nil && defaults.Quantile != "" {
+			h.Quantile = defaults.Quantile
+		}
+	}
+	if h.MinDelay == "" {
+		if defaults != nil && defaults.MinDelay != "" {
+			h.MinDelay = defaults.MinDelay
+		} else {
+			h.MinDelay = "0ms"
+		}
+	}
+	if h.MaxDelay == "" {
+		if defaults != nil && defaults.MaxDelay != "" {
+			h.MaxDelay = defaults.MaxDelay
+		} else {
+			// Intentionally high, so it never hits in practical scenarios
+			h.MaxDelay = "999s"
+		}
+	}
 }
 
 func (c *CircuitBreakerPolicyConfig) SetDefaults(defaults *CircuitBreakerPolicyConfig) {

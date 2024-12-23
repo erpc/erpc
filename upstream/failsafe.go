@@ -3,6 +3,7 @@ package upstream
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -176,6 +177,8 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, entity string, cfg *comm
 }
 
 func createHedgePolicy(logger *zerolog.Logger, entity string, cfg *common.HedgePolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+	var builder hedgepolicy.HedgePolicyBuilder[*common.NormalizedResponse]
+
 	delay, err := time.ParseDuration(cfg.Delay)
 	if err != nil {
 		return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse hedge.delay: %v", err), map[string]interface{}{
@@ -183,7 +186,66 @@ func createHedgePolicy(logger *zerolog.Logger, entity string, cfg *common.HedgeP
 			"policy": cfg,
 		})
 	}
-	builder := hedgepolicy.BuilderWithDelay[*common.NormalizedResponse](delay)
+
+	if cfg.Quantile != "" {
+		minDelay, err := time.ParseDuration(cfg.MinDelay)
+		if err != nil {
+			return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse hedge.minDelay: %v", err), map[string]interface{}{
+				"entity": entity,
+				"policy": cfg,
+			})
+		}
+		maxDelay, err := time.ParseDuration(cfg.MaxDelay)
+		if err != nil {
+			return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse hedge.maxDelay: %v", err), map[string]interface{}{
+				"entity": entity,
+				"policy": cfg,
+			})
+		}
+		dynQuantile := strings.ToLower(cfg.Quantile)
+		builder = hedgepolicy.BuilderWithDelayFunc(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse]) time.Duration {
+			ctx := exec.Context()
+			if ctx != nil {
+				req := ctx.Value(common.RequestContextKey)
+				if req != nil {
+					if req, ok := req.(*common.NormalizedRequest); ok {
+						ntw := req.Network()
+						if ntw != nil {
+							m, _ := req.Method()
+							if m != "" {
+								mt := ntw.GetMethodMetrics(m)
+								if mt != nil {
+									rt := mt.GetLatencySecs()
+									var dr time.Duration
+									switch dynQuantile {
+									case "p90":
+										dr = time.Duration(rt.P90())
+									case "p95":
+										dr = time.Duration(rt.P95())
+									case "p99":
+										dr = time.Duration(rt.P99())
+									}
+									// When quantile is specified, we add the delay to the quantile value,
+									// and then clamp the value between minDelay and maxDelay.
+									dr += delay
+									if dr < minDelay {
+										dr = minDelay
+									}
+									if dr > maxDelay {
+										dr = maxDelay
+									}
+									return dr
+								}
+							}
+						}
+					}
+				}
+			}
+			return delay
+		})
+	} else {
+		builder = hedgepolicy.BuilderWithDelay[*common.NormalizedResponse](delay)
+	}
 
 	if cfg.MaxCount > 0 {
 		builder = builder.WithMaxHedges(cfg.MaxCount)

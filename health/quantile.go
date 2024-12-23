@@ -1,82 +1,77 @@
 package health
 
 import (
-	"sort"
 	"sync"
-	"time"
 
+	"github.com/DataDog/sketches-go/ddsketch"
 	"github.com/bytedance/sonic"
 )
 
 type QuantileTracker struct {
-	windowSize time.Duration
-	values     []struct {
-		value     float64
-		timestamp time.Time
-	}
-	mu sync.RWMutex
+	mu     sync.RWMutex
+	sketch *ddsketch.DDSketch
 }
 
-func NewQuantileTracker(windowSize time.Duration) *QuantileTracker {
+func NewQuantileTracker() *QuantileTracker {
+	// e.g. 1% relative accuracy
+	sketch, _ := ddsketch.NewDefaultDDSketch(0.01)
 	return &QuantileTracker{
-		windowSize: windowSize,
-		values: make([]struct {
-			value     float64
-			timestamp time.Time
-		}, 0),
+		sketch: sketch,
 	}
 }
 
-// Add adds a new value to the tracker, maintaining the time-based window
-func (p *QuantileTracker) Add(value float64) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	now := time.Now()
-	p.values = append(p.values, struct {
-		value     float64
-		timestamp time.Time
-	}{value, now})
-
-	// Remove values outside the time window
-	cutoff := now.Add(-p.windowSize)
-	for len(p.values) > 0 && p.values[0].timestamp.Before(cutoff) {
-		p.values = p.values[1:]
-	}
+func (q *QuantileTracker) Add(value float64) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.sketch.Add(value)
 }
 
-// P90 calculates the 90th percentile of the current values in the time window
-func (p *QuantileTracker) P90() float64 {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	if len(p.values) == 0 {
-		return 0.0 // or some default value or error
-	}
-
-	sortedValues := make([]float64, len(p.values))
-	for i, v := range p.values {
-		sortedValues[i] = v.value
-	}
-	sort.Float64s(sortedValues)
-
-	index := int(float64(len(sortedValues)-1) * 0.9)
-	return sortedValues[index]
+func (q *QuantileTracker) P90() float64 {
+	return q.GetQuantile(0.90)
 }
 
-func (p *QuantileTracker) Reset() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.values = make([]struct {
-		value     float64
-		timestamp time.Time
-	}, 0)
+func (q *QuantileTracker) P95() float64 {
+	return q.GetQuantile(0.95)
 }
 
-func (p *QuantileTracker) MarshalJSON() ([]byte, error) {
+func (q *QuantileTracker) P99() float64 {
+	return q.GetQuantile(0.99)
+}
+
+func (q *QuantileTracker) Reset() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	// Re-init the sketch
+	q.sketch, _ = ddsketch.NewDefaultDDSketch(0.01)
+}
+
+func (q *QuantileTracker) MarshalJSON() ([]byte, error) {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+
+	// If the sketch is empty, sketches-go returns 0 for quantiles
+	p90, _ := q.sketch.GetValueAtQuantile(0.90)
+	p95, _ := q.sketch.GetValueAtQuantile(0.95)
+	p99, _ := q.sketch.GetValueAtQuantile(0.99)
+
 	return sonic.Marshal(struct {
 		P90 float64 `json:"p90"`
+		P95 float64 `json:"p95"`
+		P99 float64 `json:"p99"`
 	}{
-		P90: p.P90(),
+		P90: p90,
+		P95: p95,
+		P99: p99,
 	})
+}
+
+func (q *QuantileTracker) GetQuantile(qtile float64) float64 {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	val, err := q.sketch.GetValueAtQuantile(qtile)
+	if err != nil {
+		// If there's no data, return 0
+		return 0
+	}
+	return val
 }

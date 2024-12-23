@@ -410,6 +410,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	return resp, nil
 }
 
+func (n *Network) GetMethodMetrics(method string) common.TrackedMetrics {
+	if method == "" {
+		return nil
+	}
+
+	return n.metricsTracker.GetNetworkMethodMetrics(n.NetworkId, method)
+}
+
 func (n *Network) EvmStatePollerOf(upstreamId string) common.EvmStatePoller {
 	return n.evmStatePollers[upstreamId]
 }

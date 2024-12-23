@@ -148,6 +148,8 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 				"requestsTotal":   metrics.RequestsTotal.Load(),
 				"throttledRate":   metrics.ThrottledRate(),
 				"p90LatencySecs":  metrics.LatencySecs.P90(),
+				"p95LatencySecs":  metrics.LatencySecs.P95(),
+				"p99LatencySecs":  metrics.LatencySecs.P99(),
 				"blockHeadLag":    metrics.BlockHeadLag.Load(),
 				"finalizationLag": metrics.FinalizationLag.Load(),
 			},

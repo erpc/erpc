@@ -9,6 +9,8 @@ export type PolicyEvalUpstreamMetrics = {
   requestsTotal: number;
   throttledRate: number;
   p90LatencySecs: number;
+  p95LatencySecs: number;
+  p99LatencySecs: number;
   blockHeadLag: number;
   finalizationLag: number;
 };
