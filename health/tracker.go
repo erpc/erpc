@@ -14,13 +14,10 @@ import (
 // Key Types
 // ------------------------------------
 
-// Instead of ups|network|method strings, we store them in a small struct.
-// This avoids the overhead of string splitting and concatenation at high RPS.
 type tripletKey struct {
 	ups, network, method string
 }
 
-// Similarly for network metadata, which is keyed by (ups, network).
 type duoKey struct {
 	ups, network string
 }
@@ -52,7 +49,7 @@ func (t *Timer) ObserveDuration() {
 // ------------------------------------
 
 type TrackedMetrics struct {
-	LatencySecs            *QuantileTracker `json:"latencySecs"`
+	ResponseQuantiles      *QuantileTracker `json:"responseQuantiles"`
 	ErrorsTotal            atomic.Int64     `json:"errorsTotal"`
 	SelfRateLimitedTotal   atomic.Int64     `json:"selfRateLimitedTotal"`
 	RemoteRateLimitedTotal atomic.Int64     `json:"remoteRateLimitedTotal"`
@@ -72,8 +69,8 @@ func (m *TrackedMetrics) ErrorRate() float64 {
 	return float64(m.ErrorsTotal.Load()) / float64(reqs)
 }
 
-func (m *TrackedMetrics) GetLatencySecs() common.QuantileTracker {
-	return m.LatencySecs
+func (m *TrackedMetrics) GetResponseQuantiles() common.QuantileTracker {
+	return m.ResponseQuantiles
 }
 
 // ThrottledRate returns fraction of requests that were throttled (self or remote).
@@ -87,9 +84,8 @@ func (m *TrackedMetrics) ThrottledRate() float64 {
 }
 
 func (m *TrackedMetrics) MarshalJSON() ([]byte, error) {
-	// Use your existing common.SonicCfg (or std library) to JSON-encode.
 	return common.SonicCfg.Marshal(map[string]interface{}{
-		"latencySecs":            m.LatencySecs,
+		"responseQuantiles":      m.ResponseQuantiles,
 		"errorsTotal":            m.ErrorsTotal.Load(),
 		"selfRateLimitedTotal":   m.SelfRateLimitedTotal.Load(),
 		"remoteRateLimitedTotal": m.RemoteRateLimitedTotal.Load(),
@@ -109,7 +105,7 @@ func (m *TrackedMetrics) Reset() {
 	m.RemoteRateLimitedTotal.Store(0)
 	m.BlockHeadLag.Store(0)
 	m.FinalizationLag.Store(0)
-	m.LatencySecs.Reset()
+	m.ResponseQuantiles.Reset()
 	// You may or may not want to uncordon on reset.
 	// If you want to preserve cordon across windows, comment these out:
 	m.Cordoned.Store(false)
@@ -174,13 +170,10 @@ func (t *Tracker) getKeys(ups, network, method string) []tripletKey {
 	return []tripletKey{
 		{ups, network, method},
 		{ups, network, "*"},
+		{ups, "*", "*"},
 		{"*", network, method},
 		{"*", network, "*"},
 	}
-}
-
-func (t *Tracker) getMetadataKey(ups, network string) duoKey {
-	return duoKey{ups, network}
 }
 
 // getMetrics retrieves or creates the TrackedMetrics for a specific (ups, network, method).
@@ -199,7 +192,7 @@ func (t *Tracker) getMetrics(k tripletKey) *TrackedMetrics {
 		return m
 	}
 	m = &TrackedMetrics{
-		LatencySecs: NewQuantileTracker(),
+		ResponseQuantiles: NewQuantileTracker(),
 	}
 	t.metrics[k] = m
 	return m
@@ -303,7 +296,7 @@ func (t *Tracker) RecordUpstreamDuration(ups, network, method string, duration t
 	sec := duration.Seconds()
 	for _, k := range keys {
 		m := t.getMetrics(k)
-		m.LatencySecs.Add(sec)
+		m.ResponseQuantiles.Add(sec)
 	}
 	MetricUpstreamRequestDuration.WithLabelValues(t.projectId, network, ups, method).Observe(sec)
 }
@@ -363,12 +356,6 @@ func (t *Tracker) GetUpstreamMetrics(upsId string) map[string]*TrackedMetrics {
 	return result
 }
 
-// GetNetworkMetrics returns the pre-aggregated metrics for the entire network,
-// keyed by ("*", network, "*") so you do NOT need a heavy pass over all upstreams.
-func (t *Tracker) GetNetworkMetrics(network string) *TrackedMetrics {
-	return t.getMetrics(tripletKey{"*", network, "*"})
-}
-
 func (t *Tracker) GetNetworkMethodMetrics(network, method string) *TrackedMetrics {
 	return t.getMetrics(tripletKey{"*", network, method})
 }
@@ -380,81 +367,139 @@ func (t *Tracker) GetNetworkMethodMetrics(network, method string) *TrackedMetric
 // SetLatestBlockNumber updates HEAD block for (ups, network), then sets block-lag in
 // the relevant expansions. Also updates aggregator metrics for ("*", network, "*").
 func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
-	mdKey := t.getMetadataKey(ups, network)
-	ntwMdKey := t.getMetadataKey("*", network)
+	// Prepare the keys
+	mdKey := duoKey{ups: ups, network: network}
+	ntwMdKey := duoKey{ups: "*", network: network}
 
-	upsMeta := t.getMetadata(mdKey)
+	// We’ll need to track whether we updated the network’s highest block
+	needsGlobalUpdate := false
+
+	// 1) Possibly update the network-level highest block head
 	ntwMeta := t.getMetadata(ntwMdKey)
-
-	// Possibly update the network-level highest block head
 	oldNtwVal := ntwMeta.evmLatestBlockNumber.Load()
 	if blockNumber > oldNtwVal {
 		ntwMeta.evmLatestBlockNumber.Store(blockNumber)
-		MetricUpstreamLatestBlockNumber.WithLabelValues(t.projectId, network, "*").Set(float64(blockNumber))
+		MetricUpstreamLatestBlockNumber.
+			WithLabelValues(t.projectId, network, "*").
+			Set(float64(blockNumber))
+		needsGlobalUpdate = true
 	}
 
-	// Update this upstream's latest block
+	// 2) Update this upstream’s latest block
+	upsMeta := t.getMetadata(mdKey)
 	oldUpsVal := upsMeta.evmLatestBlockNumber.Load()
 	if blockNumber > oldUpsVal {
 		upsMeta.evmLatestBlockNumber.Store(blockNumber)
-		MetricUpstreamLatestBlockNumber.WithLabelValues(t.projectId, network, ups).Set(float64(blockNumber))
+		MetricUpstreamLatestBlockNumber.
+			WithLabelValues(t.projectId, network, ups).
+			Set(float64(blockNumber))
 	}
 
-	// Recompute lag for this upstream
-	ntwVal := ntwMeta.evmLatestBlockNumber.Load()
-	upsVal := upsMeta.evmLatestBlockNumber.Load()
-	upsLag := ntwVal - upsVal
-	MetricUpstreamBlockHeadLag.WithLabelValues(t.projectId, network, ups).Set(float64(upsLag))
+	// 3) Recompute block head lag for this upstream
+	//    (difference between the network-level “highest block” and this upstream’s block)
+	upsLag := ntwMeta.evmLatestBlockNumber.Load() - upsMeta.evmLatestBlockNumber.Load()
+	MetricUpstreamBlockHeadLag.
+		WithLabelValues(t.projectId, network, ups).
+		Set(float64(upsLag))
 
-	// Update the four expansions (ups,network,method -> blockHeadLag)
-	// We do NOT have method here, so we handle all possible methods via "prefix" in the map,
-	// or simply store the lag in those expansions. Because we do a full aggregator approach,
-	// we can do a quick pass. At high RPS, you might do something more nuanced.
-	prefixExact := tripletKey{ups: ups, network: network}
-	t.mu.RLock()
-	for k, tm := range t.metrics {
-		if k.ups == prefixExact.ups && k.network == prefixExact.network {
-			tm.BlockHeadLag.Store(upsLag)
+	// 4) Update the TrackedMetrics.BlockHeadLag fields accordingly
+	//    - if needsGlobalUpdate == true, update for all upstreams on this network
+	//    - otherwise, only update for this single upstream
+	if needsGlobalUpdate {
+		t.mu.RLock()
+		defer t.mu.RUnlock()
+		// Loop through *all* known metrics
+		for k, tm := range t.metrics {
+			if k.network == network {
+				// Recompute lag for each upstream in this network
+				otherUpsMeta := t.getMetadata(duoKey{ups: k.ups, network: k.network})
+				otherLag := ntwMeta.evmLatestBlockNumber.Load() - otherUpsMeta.evmLatestBlockNumber.Load()
+
+				tm.BlockHeadLag.Store(otherLag)
+				MetricUpstreamBlockHeadLag.
+					WithLabelValues(t.projectId, network, k.ups).
+					Set(float64(otherLag))
+			}
+		}
+	} else {
+		// Only update items for this single upstream in this network (all methods)
+		t.mu.RLock()
+		defer t.mu.RUnlock()
+		for k, tm := range t.metrics {
+			// We match by ups and network, ignoring method
+			if k.ups == ups && k.network == network {
+				tm.BlockHeadLag.Store(upsLag)
+			}
 		}
 	}
-	t.mu.RUnlock()
 }
 
-// SetFinalizedBlockNumber updates finalization block for (ups, network), then sets final-lag.
 func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64) {
-	mdKey := t.getMetadataKey(ups, network)
-	ntwMdKey := t.getMetadataKey("*", network)
+	mdKey := duoKey{ups, network}
+	ntwMdKey := duoKey{"*", network}
 
 	upsMeta := t.getMetadata(mdKey)
 	ntwMeta := t.getMetadata(ntwMdKey)
+
+	needsGlobalUpdate := false
 
 	// Possibly update the network-level highest finalized block
 	oldNtwVal := ntwMeta.evmFinalizedBlockNumber.Load()
 	if blockNumber > oldNtwVal {
 		ntwMeta.evmFinalizedBlockNumber.Store(blockNumber)
-		MetricUpstreamFinalizedBlockNumber.WithLabelValues(t.projectId, network, "*").Set(float64(blockNumber))
+		MetricUpstreamFinalizedBlockNumber.
+			WithLabelValues(t.projectId, network, "*").
+			Set(float64(blockNumber))
+
+		needsGlobalUpdate = true
 	}
 
 	// Update this upstream's finalized block
 	oldUpsVal := upsMeta.evmFinalizedBlockNumber.Load()
 	if blockNumber > oldUpsVal {
 		upsMeta.evmFinalizedBlockNumber.Store(blockNumber)
-		MetricUpstreamFinalizedBlockNumber.WithLabelValues(t.projectId, network, ups).Set(float64(blockNumber))
+		MetricUpstreamFinalizedBlockNumber.
+			WithLabelValues(t.projectId, network, ups).
+			Set(float64(blockNumber))
 	}
 
-	// Recompute finalization-lag
+	// Recompute finalization lag for just this upstream
 	ntwVal := ntwMeta.evmFinalizedBlockNumber.Load()
 	upsVal := upsMeta.evmFinalizedBlockNumber.Load()
 	upsLag := ntwVal - upsVal
-	MetricUpstreamFinalizationLag.WithLabelValues(t.projectId, network, ups).Set(float64(upsLag))
 
-	// Update expansions similarly, by scanning the map for that (ups, network).
-	prefixExact := tripletKey{ups: ups, network: network}
-	t.mu.RLock()
-	for k, tm := range t.metrics {
-		if k.ups == prefixExact.ups && k.network == prefixExact.network {
-			tm.FinalizationLag.Store(upsLag)
+	// Update Prometheus for this upstream
+	MetricUpstreamFinalizationLag.
+		WithLabelValues(t.projectId, network, ups).
+		Set(float64(upsLag))
+
+	// Now decide whether to update only this upstream or all upstreams in the network
+	if needsGlobalUpdate {
+		// The highest finalized block in the network changed;
+		// update every upstream's finalization lag for this network.
+		t.mu.RLock()
+		defer t.mu.RUnlock()
+
+		for k, tm := range t.metrics {
+			if k.network == network {
+				otherUpsMeta := t.getMetadata(duoKey{ups: k.ups, network: k.network})
+				otherLag := ntwVal - otherUpsMeta.evmFinalizedBlockNumber.Load()
+
+				tm.FinalizationLag.Store(otherLag)
+				MetricUpstreamFinalizationLag.
+					WithLabelValues(t.projectId, network, k.ups).
+					Set(float64(otherLag))
+			}
+		}
+	} else {
+		// Only update finalization lag for this single upstream (all methods)
+		t.mu.RLock()
+		defer t.mu.RUnlock()
+
+		for k, tm := range t.metrics {
+			if k.ups == ups && k.network == network {
+				tm.FinalizationLag.Store(upsLag)
+			}
 		}
 	}
-	t.mu.RUnlock()
 }

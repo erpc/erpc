@@ -1,5 +1,7 @@
 package common
 
+import "time"
+
 type NetworkArchitecture string
 
 const (
@@ -21,14 +23,11 @@ func IsValidArchitecture(architecture string) bool {
 
 type QuantileTracker interface {
 	Add(value float64)
-	GetQuantile(qtile float64) float64
-	P90() float64
-	P95() float64
-	P99() float64
+	GetQuantile(qtile float64) time.Duration
 	Reset()
 }
 
 type TrackedMetrics interface {
 	ErrorRate() float64
-	GetLatencySecs() QuantileTracker
+	GetResponseQuantiles() QuantileTracker
 }

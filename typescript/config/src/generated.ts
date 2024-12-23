@@ -245,6 +245,9 @@ export interface TimeoutPolicyConfig {
 export interface HedgePolicyConfig {
   delay: string;
   maxCount: number /* int */;
+  quantile: number /* float64 */;
+  minDelay: Duration;
+  maxDelay: Duration;
 }
 export interface RateLimiterConfig {
   budgets: RateLimitBudgetConfig[];
@@ -263,7 +266,7 @@ export interface HealthCheckConfig {
   scoreMetricsWindowSize: string;
 }
 export interface NetworkConfig {
-  architecture: 'evm';
+  architecture: TsNetworkArchitecture;
   rateLimitBudget?: string;
   failsafe?: FailsafeConfig;
   evm?: EvmNetworkConfig;
@@ -420,6 +423,8 @@ export type EvmStatePoller = any;
 export type NetworkArchitecture = string;
 export const ArchitectureEvm: NetworkArchitecture = "evm";
 export type Network = any;
+export type QuantileTracker = any;
+export type TrackedMetrics = any;
 
 //////////
 // source: upstream.go

@@ -3,7 +3,6 @@ package upstream
 import (
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -187,7 +186,7 @@ func createHedgePolicy(logger *zerolog.Logger, entity string, cfg *common.HedgeP
 		})
 	}
 
-	if cfg.Quantile != "" {
+	if cfg.Quantile > 0 {
 		minDelay, err := time.ParseDuration(cfg.MinDelay)
 		if err != nil {
 			return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse hedge.minDelay: %v", err), map[string]interface{}{
@@ -202,7 +201,6 @@ func createHedgePolicy(logger *zerolog.Logger, entity string, cfg *common.HedgeP
 				"policy": cfg,
 			})
 		}
-		dynQuantile := strings.ToLower(cfg.Quantile)
 		builder = hedgepolicy.BuilderWithDelayFunc(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse]) time.Duration {
 			ctx := exec.Context()
 			if ctx != nil {
@@ -215,16 +213,8 @@ func createHedgePolicy(logger *zerolog.Logger, entity string, cfg *common.HedgeP
 							if m != "" {
 								mt := ntw.GetMethodMetrics(m)
 								if mt != nil {
-									rt := mt.GetLatencySecs()
-									var dr time.Duration
-									switch dynQuantile {
-									case "p90":
-										dr = time.Duration(rt.P90())
-									case "p95":
-										dr = time.Duration(rt.P95())
-									case "p99":
-										dr = time.Duration(rt.P99())
-									}
+									qt := mt.GetResponseQuantiles()
+									dr := qt.GetQuantile(cfg.Quantile)
 									// When quantile is specified, we add the delay to the quantile value,
 									// and then clamp the value between minDelay and maxDelay.
 									dr += delay
@@ -234,6 +224,7 @@ func createHedgePolicy(logger *zerolog.Logger, entity string, cfg *common.HedgeP
 									if dr > maxDelay {
 										dr = maxDelay
 									}
+									logger.Trace().Object("request", req).Dur("delay", dr).Msgf("calculated hedge delay")
 									return dr
 								}
 							}

@@ -377,11 +377,11 @@ type TimeoutPolicyConfig struct {
 }
 
 type HedgePolicyConfig struct {
-	Delay    string `yaml:"delay" json:"delay"`
-	MaxCount int    `yaml:"maxCount" json:"maxCount"`
-	Quantile string `yaml:"quantile" json:"quantile" tstype:"'p90' | 'p95' | 'p99'"`
-	MinDelay string `yaml:"minDelay" json:"minDelay" tstype:"Duration"`
-	MaxDelay string `yaml:"maxDelay" json:"maxDelay" tstype:"Duration"`
+	Delay    string  `yaml:"delay" json:"delay"`
+	MaxCount int     `yaml:"maxCount" json:"maxCount"`
+	Quantile float64 `yaml:"quantile" json:"quantile"`
+	MinDelay string  `yaml:"minDelay" json:"minDelay" tstype:"Duration"`
+	MaxDelay string  `yaml:"maxDelay" json:"maxDelay" tstype:"Duration"`
 }
 
 type RateLimiterConfig struct {

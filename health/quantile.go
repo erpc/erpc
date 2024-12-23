@@ -2,6 +2,7 @@ package health
 
 import (
 	"sync"
+	"time"
 
 	"github.com/DataDog/sketches-go/ddsketch"
 	"github.com/bytedance/sonic"
@@ -26,18 +27,6 @@ func (q *QuantileTracker) Add(value float64) {
 	q.sketch.Add(value)
 }
 
-func (q *QuantileTracker) P90() float64 {
-	return q.GetQuantile(0.90)
-}
-
-func (q *QuantileTracker) P95() float64 {
-	return q.GetQuantile(0.95)
-}
-
-func (q *QuantileTracker) P99() float64 {
-	return q.GetQuantile(0.99)
-}
-
 func (q *QuantileTracker) Reset() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -49,29 +38,28 @@ func (q *QuantileTracker) MarshalJSON() ([]byte, error) {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
 
-	// If the sketch is empty, sketches-go returns 0 for quantiles
-	p90, _ := q.sketch.GetValueAtQuantile(0.90)
-	p95, _ := q.sketch.GetValueAtQuantile(0.95)
-	p99, _ := q.sketch.GetValueAtQuantile(0.99)
-
 	return sonic.Marshal(struct {
+		P50 float64 `json:"p50"`
+		P70 float64 `json:"p70"`
 		P90 float64 `json:"p90"`
 		P95 float64 `json:"p95"`
 		P99 float64 `json:"p99"`
 	}{
-		P90: p90,
-		P95: p95,
-		P99: p99,
+		P50: q.GetQuantile(0.50).Seconds(),
+		P70: q.GetQuantile(0.70).Seconds(),
+		P90: q.GetQuantile(0.90).Seconds(),
+		P95: q.GetQuantile(0.95).Seconds(),
+		P99: q.GetQuantile(0.99).Seconds(),
 	})
 }
 
-func (q *QuantileTracker) GetQuantile(qtile float64) float64 {
+func (q *QuantileTracker) GetQuantile(qtile float64) time.Duration {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
-	val, err := q.sketch.GetValueAtQuantile(qtile)
+	seconds, err := q.sketch.GetValueAtQuantile(qtile)
 	if err != nil {
 		// If there's no data, return 0
 		return 0
 	}
-	return val
+	return time.Duration(seconds * float64(time.Second))
 }
