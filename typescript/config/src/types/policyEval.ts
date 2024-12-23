@@ -8,9 +8,16 @@ export type PolicyEvalUpstreamMetrics = {
   errorsTotal: number;
   requestsTotal: number;
   throttledRate: number;
-  p90LatencySecs: number;
+  p90ResponseSeconds: number;
+  p95ResponseSeconds: number;
+  p99ResponseSeconds: number;
   blockHeadLag: number;
   finalizationLag: number;
+
+  // @deprecated
+  p90LatencySecs: number;
+  p95LatencySecs: number;
+  p99LatencySecs: number;
 };
 
 /**

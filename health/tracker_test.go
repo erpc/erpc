@@ -96,8 +96,8 @@ func TestTracker(t *testing.T) {
 		simulateRequestMetricsWithLatency(tracker, networkID, ups.Config().Id, "method1", 10, 0.05)
 
 		metrics := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "method1")
-		assert.GreaterOrEqual(t, metrics.LatencySecs.P90(), 0.04)
-		assert.LessOrEqual(t, metrics.LatencySecs.P90(), 0.06)
+		assert.GreaterOrEqual(t, metrics.ResponseQuantiles.GetQuantile(0.90).Seconds(), 0.04)
+		assert.LessOrEqual(t, metrics.ResponseQuantiles.GetQuantile(0.90).Seconds(), 0.06)
 	})
 
 	t.Run("MultipleUpstreamsComparison", func(t *testing.T) {
@@ -259,8 +259,9 @@ func TestTracker(t *testing.T) {
 		simulateRequestMetricsWithLatency(tracker, networkID, ups.Config().Id, "method2", 90, 0.02)
 
 		metrics1 := tracker.GetUpstreamMethodMetrics(ups.Config().Id, "*", "*")
-		assert.GreaterOrEqual(t, metrics1.LatencySecs.P90(), 0.02)
-		assert.LessOrEqual(t, metrics1.LatencySecs.P90(), 0.03)
+		qt := metrics1.ResponseQuantiles.GetQuantile(0.90).Seconds()
+		assert.GreaterOrEqual(t, qt, 0.02)
+		assert.LessOrEqual(t, qt, 0.021)
 	})
 
 	t.Run("LatencyCorrectP90SingleMethod", func(t *testing.T) {
@@ -274,8 +275,8 @@ func TestTracker(t *testing.T) {
 		simulateRequestMetricsWithLatency(tracker, networkID, ups.Config().Id, "method1", 90, 0.02)
 
 		metrics1 := tracker.GetUpstreamMethodMetrics(ups.Config().Id, networkID, "method1")
-		assert.GreaterOrEqual(t, metrics1.LatencySecs.P90(), 0.02)
-		assert.LessOrEqual(t, metrics1.LatencySecs.P90(), 0.03)
+		assert.GreaterOrEqual(t, metrics1.ResponseQuantiles.GetQuantile(0.90).Seconds(), 0.02)
+		assert.LessOrEqual(t, metrics1.ResponseQuantiles.GetQuantile(0.90).Seconds(), 0.03)
 	})
 }
 

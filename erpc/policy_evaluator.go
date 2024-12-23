@@ -143,13 +143,20 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 			"id":     upsId,
 			"config": ups.Config(),
 			"metrics": map[string]interface{}{
-				"errorRate":       metrics.ErrorRate(),
-				"errorsTotal":     metrics.ErrorsTotal.Load(),
-				"requestsTotal":   metrics.RequestsTotal.Load(),
-				"throttledRate":   metrics.ThrottledRate(),
-				"p90LatencySecs":  metrics.LatencySecs.P90(),
-				"blockHeadLag":    metrics.BlockHeadLag.Load(),
-				"finalizationLag": metrics.FinalizationLag.Load(),
+				"errorRate":          metrics.ErrorRate(),
+				"errorsTotal":        metrics.ErrorsTotal.Load(),
+				"requestsTotal":      metrics.RequestsTotal.Load(),
+				"throttledRate":      metrics.ThrottledRate(),
+				"p90ResponseSeconds": metrics.ResponseQuantiles.GetQuantile(0.90).Seconds(),
+				"p95ResponseSeconds": metrics.ResponseQuantiles.GetQuantile(0.95).Seconds(),
+				"p99ResponseSeconds": metrics.ResponseQuantiles.GetQuantile(0.99).Seconds(),
+				"blockHeadLag":       metrics.BlockHeadLag.Load(),
+				"finalizationLag":    metrics.FinalizationLag.Load(),
+
+				// @deprecated
+				"p90LatencySecs": metrics.ResponseQuantiles.GetQuantile(0.90).Seconds(),
+				"p95LatencySecs": metrics.ResponseQuantiles.GetQuantile(0.95).Seconds(),
+				"p99LatencySecs": metrics.ResponseQuantiles.GetQuantile(0.99).Seconds(),
 			},
 		}
 	}
