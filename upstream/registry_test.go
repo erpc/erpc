@@ -45,8 +45,8 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		_, _ = registry.GetSortedUpstreams(networkID, method)
 
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method, 10, 0.20)
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", method, 10, 0.30)
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-c", method, 10, 0.10)
+		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", method, 10, 0.70)
+		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-c", method, 10, 0.02)
 
 		registry.RefreshUpstreamNetworkMethodScores()
 
@@ -296,8 +296,8 @@ func TestUpstreamsRegistry_Scoring(t *testing.T) {
 			name:       "ExtremeFailureRate",
 			windowSize: 6 * time.Second,
 			upstreamConfig: []upstreamMetrics{
-				{"upstream-a", 1, 0.05, 100},
-				{"upstream-b", 1, 0.1, 100},
+				{"upstream-a", 1, 0.2, 100},
+				{"upstream-b", 1, 0.8, 100},
 				{"upstream-c", 1, 0.01, 100},
 			},
 			expectedOrder: []string{"upstream-b", "upstream-a", "upstream-c"},

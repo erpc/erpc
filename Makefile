@@ -58,7 +58,7 @@ test-race:
 
 .PHONY: bench
 bench:
-	@go test -run=^$$ -bench=. -benchmem -count=10 -v ./... 
+	@go test -run=^$$ -bench=. -benchmem -count=6 -v ./... 
 
 .PHONY: coverage
 coverage:

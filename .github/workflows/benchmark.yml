@@ -76,9 +76,23 @@ jobs:
             const fs = require('fs');
             const benchmarkResult = fs.readFileSync('benchmark-result.txt', 'utf8');
             
-            const header = process.env.PREV_STEP_STATUS === 'failure' 
-              ? '### ❌ Benchmark Results (Performance regression detected!)'
-              : '### ✅ Benchmark Results';
+            // Extract the overall performance change (geomean line)
+            const geomeanMatch = benchmarkResult.match(/geomean\s+[\d.µ]+\s+[\d.µ]+\s+([+-]\d+\.\d+)%/);
+            const changePercent = geomeanMatch ? geomeanMatch[1] : null;
+            
+            let header;
+            if (changePercent) {
+              const change = parseFloat(changePercent || '0');
+              if (change < 0) {
+                header = `### ✅ Benchmark Results (${Math.abs(change).toFixed(2)}% faster)`;
+              } else if (change > 0) {
+                header = `### ❌ Benchmark Results (${change.toFixed(2)}% slower)`;
+              } else {
+                header = '### ℹ️ Benchmark Results (No significant change)';
+              }
+            } else {
+              header = '### ℹ️ Benchmark Results';
+            }
             
             const comment = `${header}\n\`\`\`\n${benchmarkResult}\n\`\`\``;
             

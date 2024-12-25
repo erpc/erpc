@@ -165,7 +165,7 @@ func BenchmarkReadHeavy(b *testing.B) {
 			// Do 9 reads for every write
 			if reads < 9 {
 				_ = tracker.GetUpstreamMethodMetrics(ups, network, method)
-				// _ = tracker.GetNetworkMethodMetrics(network, method)
+				_ = tracker.GetNetworkMethodMetrics(network, method)
 				reads++
 			} else {
 				tracker.RecordUpstreamRequest(ups, network, method)

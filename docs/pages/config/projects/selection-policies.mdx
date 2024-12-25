@@ -240,8 +240,14 @@ export type UpstreamMetrics = {
     // Throttled rate of this upstream.
     throttledRate: number;
 
-    // p90 latency in seconds for this upstream.
-    p90LatencySecs: number;
+    // p90 response time in seconds for this upstream.
+    p90ResponseSeconds: number;
+
+    // p95 response time in seconds for this upstream.
+    p95ResponseSeconds: number;
+
+    // p99 response time in seconds for this upstream.
+    p99ResponseSeconds: number;
 
     // Block head lag in seconds for this upstream.
     blockHeadLag: number;

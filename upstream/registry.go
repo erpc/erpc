@@ -401,7 +401,7 @@ func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsLis
 
 	for _, ups := range upsList {
 		metrics := u.metricsTracker.GetUpstreamMethodMetrics(ups.Config().Id, networkId, method)
-		p90Latencies = append(p90Latencies, metrics.LatencySecs.P90())
+		p90Latencies = append(p90Latencies, metrics.ResponseQuantiles.GetQuantile(0.90).Seconds())
 		blockHeadLags = append(blockHeadLags, float64(metrics.BlockHeadLag.Load()))
 		finalizationLags = append(finalizationLags, float64(metrics.FinalizationLag.Load()))
 		errorRates = append(errorRates, metrics.ErrorRate())
