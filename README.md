@@ -60,7 +60,7 @@ git clone https://github.com/erpc/erpc.git
 make setup
 ```
 
-3. Create a `erpc.yaml` configuration file based on the [`erpc.yaml.dist`](./erpc.yaml.dist) file, and use your RPC provider credentials:
+3. Create a `erpc.yaml` configuration file based on the [`erpc.dist.yaml`](./erpc.dist.yaml) file, and use your RPC provider credentials:
 
 ```bash
 cp erpc.yaml.dist erpc.yaml
