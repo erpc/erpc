@@ -340,7 +340,7 @@ func (s *ServerConfig) SetDefaults() {
 }
 
 func (m *MetricsConfig) SetDefaults() {
-	if m.Enabled == nil {
+	if m.Enabled == nil && !util.IsTest() {
 		m.Enabled = util.BoolPtr(true)
 	}
 	if m.HostV4 == nil {
@@ -476,6 +476,12 @@ func (p *ProjectConfig) SetDefaults() {
 			network.SetDefaults(p.Upstreams, p.NetworkDefaults)
 		}
 	}
+	if p.NetworkDefaults != nil {
+		p.NetworkDefaults.SetDefaults()
+	}
+	if p.UpstreamDefaults != nil {
+		p.UpstreamDefaults.SetDefaults(nil)
+	}
 	if p.Auth != nil {
 		p.Auth.SetDefaults()
 	}
@@ -486,6 +492,15 @@ func (p *ProjectConfig) SetDefaults() {
 		p.HealthCheck = &HealthCheckConfig{}
 	}
 	p.HealthCheck.SetDefaults()
+}
+
+func (n *NetworkDefaults) SetDefaults() {
+	if n.Failsafe != nil {
+		n.Failsafe.SetDefaults(nil)
+	}
+	if n.SelectionPolicy != nil {
+		n.SelectionPolicy.SetDefaults()
+	}
 }
 
 func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) {
@@ -681,6 +696,13 @@ func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) {
 			f.Retry.SetDefaults(nil)
 		}
 	}
+	if f.Hedge != nil {
+		if defaults != nil && defaults.Hedge != nil {
+			f.Hedge.SetDefaults(defaults.Hedge)
+		} else {
+			f.Hedge.SetDefaults(nil)
+		}
+	}
 	if f.CircuitBreaker != nil {
 		if defaults != nil && defaults.CircuitBreaker != nil {
 			f.CircuitBreaker.SetDefaults(defaults.CircuitBreaker)
@@ -739,7 +761,27 @@ func (h *HedgePolicyConfig) SetDefaults(defaults *HedgePolicyConfig) {
 		if defaults != nil && defaults.Delay != "" {
 			h.Delay = defaults.Delay
 		} else {
-			h.Delay = "100ms"
+			h.Delay = "0ms"
+		}
+	}
+	if h.Quantile == 0 {
+		if defaults != nil && defaults.Quantile != 0 {
+			h.Quantile = defaults.Quantile
+		}
+	}
+	if h.MinDelay == "" {
+		if defaults != nil && defaults.MinDelay != "" {
+			h.MinDelay = defaults.MinDelay
+		} else {
+			h.MinDelay = "100ms"
+		}
+	}
+	if h.MaxDelay == "" {
+		if defaults != nil && defaults.MaxDelay != "" {
+			h.MaxDelay = defaults.MaxDelay
+		} else {
+			// Intentionally high, so it never hits in practical scenarios
+			h.MaxDelay = "999s"
 		}
 	}
 }

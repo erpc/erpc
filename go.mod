@@ -3,6 +3,7 @@ module github.com/erpc/erpc
 go 1.22.3
 
 require (
+	github.com/DataDog/sketches-go v1.4.6
 	github.com/IGLOU-EU/go-wildcard/v2 v2.0.2
 	github.com/aws/aws-sdk-go v1.55.5
 	github.com/bytedance/sonic v1.12.3

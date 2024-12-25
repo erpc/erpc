@@ -44,6 +44,9 @@ server:
   httpHostV4: "` + localHost + `"
   listenV4: true
   httpPort: ` + localPort + `
+
+metrics:
+  enabled: false
 `)
 
 	os.Args = []string{"erpc-test", f.Name()}

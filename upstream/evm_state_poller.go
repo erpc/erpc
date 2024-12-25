@@ -200,8 +200,8 @@ func (e *EvmStatePoller) Poll(ctx context.Context) {
 
 func (e *EvmStatePoller) setLatestBlockNumber(blockNumber int64) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	e.latestBlockNumber = blockNumber
+	e.mu.Unlock()
 	e.tracker.SetLatestBlockNumber(e.upstream.config.Id, e.network.Id(), blockNumber)
 }
 
@@ -213,8 +213,8 @@ func (e *EvmStatePoller) LatestBlock() int64 {
 
 func (e *EvmStatePoller) setFinalizedBlockNumber(blockNumber int64) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	e.finalizedBlockNumber = blockNumber
+	e.mu.Unlock()
 	e.tracker.SetFinalizedBlockNumber(e.upstream.config.Id, e.network.Id(), blockNumber)
 }
 
