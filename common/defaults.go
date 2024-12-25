@@ -340,7 +340,7 @@ func (s *ServerConfig) SetDefaults() {
 }
 
 func (m *MetricsConfig) SetDefaults() {
-	if m.Enabled == nil {
+	if m.Enabled == nil && !util.IsTest() {
 		m.Enabled = util.BoolPtr(true)
 	}
 	if m.HostV4 == nil {

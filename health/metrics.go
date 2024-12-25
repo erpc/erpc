@@ -130,6 +130,12 @@ var (
 		Help:      "Total number of hedged requests towards a network.",
 	}, []string{"project", "network", "upstream", "category", "attempt"})
 
+	MetricNetworkHedgeDiscardsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "network_hedge_discards_total",
+		Help:      "Total number of hedged requests discarded towards a network (i.e. attempt > 1 means wasted requests).",
+	}, []string{"project", "network", "upstream", "category", "attempt", "hedge"})
+
 	MetricNetworkFailedRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_failed_request_total",

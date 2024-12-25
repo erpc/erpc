@@ -176,46 +176,30 @@ func (t *Tracker) getKeys(ups, network, method string) []tripletKey {
 	}
 }
 
-// getMetrics retrieves or creates the TrackedMetrics for a specific (ups, network, method).
-func (t *Tracker) getMetrics(k tripletKey) *TrackedMetrics {
-	t.mu.RLock()
-	m, ok := t.metrics[k]
-	t.mu.RUnlock()
-	if ok {
-		return m
-	}
-
-	// If not found, upgrade to a write lock and create it.
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if m, ok = t.metrics[k]; ok {
-		return m
-	}
-	m = &TrackedMetrics{
-		ResponseQuantiles: NewQuantileTracker(),
-	}
-	t.metrics[k] = m
-	return m
-}
-
-// getMetadata retrieves or creates the NetworkMetadata for a specific (ups, network).
 func (t *Tracker) getMetadata(k duoKey) *NetworkMetadata {
-	t.mu.RLock()
+    t.mu.RLock()
 	md, ok := t.metadata[k]
 	t.mu.RUnlock()
-	if ok {
-		return md
+	if !ok {
+		md = &NetworkMetadata{}
+		t.mu.Lock()
+		t.metadata[k] = md
+		t.mu.Unlock()
 	}
-
-	// If not found, upgrade to a write lock and create it.
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if md, ok = t.metadata[k]; ok {
-		return md
-	}
-	md = &NetworkMetadata{}
-	t.metadata[k] = md
 	return md
+}
+
+func (t *Tracker) getMetrics(k tripletKey) *TrackedMetrics {
+    t.mu.RLock()
+	m, ok := t.metrics[k]
+	t.mu.RUnlock()
+	if !ok {
+		m = &TrackedMetrics{ResponseQuantiles: NewQuantileTracker()}
+		t.mu.Lock()
+		t.metrics[k] = m
+		t.mu.Unlock()
+	}
+	return m
 }
 
 // --------------------
@@ -406,8 +390,8 @@ func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
 	//    - if needsGlobalUpdate == true, update for all upstreams on this network
 	//    - otherwise, only update for this single upstream
 	if needsGlobalUpdate {
-		t.mu.RLock()
-		defer t.mu.RUnlock()
+		// t.mu.RLock()
+		// defer t.mu.RUnlock()
 		// Loop through *all* known metrics
 		for k, tm := range t.metrics {
 			if k.network == network {
@@ -477,8 +461,8 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 	if needsGlobalUpdate {
 		// The highest finalized block in the network changed;
 		// update every upstream's finalization lag for this network.
-		t.mu.RLock()
-		defer t.mu.RUnlock()
+		// t.mu.RLock()
+		// defer t.mu.RUnlock()
 
 		for k, tm := range t.metrics {
 			if k.network == network {
