@@ -213,7 +213,6 @@ These errors will not be retried:
 
 - `4xx` and generally any error that indicate client-side issues (invalid request, invalid parameters, etc).
 - `UnsupportedMethods` which means upstream does not support certain methods (e.g. eth_traceTransaction)
-
 ## `hedge` policy
 
 When a request towards an upstream is slow, the `hedge` policy will start a new simultaneous request towards the next upstream.
@@ -237,15 +236,20 @@ projects:
         failsafe:
           # ...
           hedge:
-            # Delay means how long to wait before starting a simultaneous hedged request.
-            # e.g. if upstream A did not respond within 500ms, a new request towards upstream B will be started,
-            # and whichever responds faster will be returned to the client.
-            delay: 500ms
-            # In total how many hedges to start.
-            # e.g. if maxCount is 2, and upstream A did not respond within 500ms,
-            # a new request towards upstream B will be started. If B also did not respond,
-            # a new request towards upstream C will be started.
+            # Recommended: Use quantile-based hedging, e.g. p99:
+            quantile: 0.99
+            # This fixed-delay is always added to whatever is the quantile-based delay.
+            delay: 0ms
+            # Minimum delay to wait before trigger next hedge.
+            minDelay: 100ms
+            # Maximum delay to wait before trigger next hedge.
+            maxDelay: 2s
+            # Maximum number of hedges to trigger.
             maxCount: 1
+
+            # Alternative: Simple fixed-delay hedging
+            # delay: 500ms
+            # maxCount: 1
 ```
 </Tabs.Tab>
   <Tabs.Tab>
@@ -263,21 +267,17 @@ export default createConfig({
             chainId: 1,
           },
           failsafe: {
-            // ...
             hedge: {
-              /*
-              * Delay means how long to wait before starting a simultaneous hedged request.
-              * e.g. if upstream A did not respond within 500ms, a new request towards upstream B will be started,
-              * and whichever responds faster will be returned to the client.
-              */
-              delay: "500ms",
-              /*
-              * In total how many hedges to start.
-              * e.g. if maxCount is 2, and upstream A did not respond within 500ms,
-              * a new request towards upstream B will be started. If B also did not respond,
-              * a new request towards upstream C will be started.
-              */
+              // Recommended: Use quantile-based hedging
+              quantile: 0.99,
+              delay: "0ms",
+              minDelay: "100ms",
+              maxDelay: "2s",
               maxCount: 1,
+
+              // Alternative: Simple fixed-delay hedging
+              // delay: "500ms",
+              // maxCount: 1,
             },
           },
         },
@@ -289,44 +289,30 @@ export default createConfig({
 </Tabs.Tab>
 </Tabs>
 
+The hedge policy supports two modes:
+
+1. **Quantile-based hedging (recommended)**: Uses per-method response time statistics across all upstreams to determine optimal hedge timing. Set `quantile: 0.99` to hedge after the 99th percentile response time plus `delay`. Use `minDelay` and `maxDelay` to bound the hedge timing. Using quantile-based means eRPC will observe the response time of a specific method (across all upstreams) for a while and then decides what should be the hedge delay. This approach means highest effective ness for this feature and lowest wasted number of resources.
+
+2. **Fixed-delay hedging**: Simply waits for `delay` duration before hedging. This approach might be less effective and wasteful by trigger too many hedges that will be discarded anyway.
+
+You can monitor hedging effectiveness through the `erpc_network_hedged_request_total` and `erpc_network_hedge_discards_total` metrics in the sample [Grafana dashboard](/operation/monitoring):
+
+![Hedged Requests Effectiveness](./images/hedged-requests-effectiveness.png)
+
 To disable hedge policy, set it to null:
 
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
-# ...
-projects:
-  - id: main
-    networks:
-      - architecture: evm
-        evm:
-          chainId: 1
-        failsafe:
-          hedge: ~
+failsafe:
+  hedge: ~
 ```
 </Tabs.Tab>
   <Tabs.Tab>
 ```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
-
-export default createConfig({
-  projects: [
-    {
-      id: "main",
-      networks: [
-        {
-          architecture: "evm",
-          evm: {
-            chainId: 1,
-          },
-          failsafe: {
-            hedge: null,
-          },
-        },
-      ],
-    },
-  ],
-});
+failsafe: {
+  hedge: null,
+}
 ```
 </Tabs.Tab>
 </Tabs>
