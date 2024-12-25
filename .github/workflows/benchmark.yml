@@ -69,7 +69,7 @@ jobs:
           }
 
       - name: Comment PR with benchmark results
-        if: always()
+        if: github.event_name == 'pull_request' && always()
         uses: actions/github-script@v6
         with:
           script: |
