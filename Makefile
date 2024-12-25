@@ -56,6 +56,10 @@ test-race:
 	@go test ./cmd/... -count 5 -parallel 5 -v -race
 	@go test $$(ls -d */ | grep -v "cmd/" | grep -v "test/" | awk '{print "./" $$1 "..."}') -count 15 -parallel 15 -v -timeout 30m -race
 
+.PHONY: bench
+bench:
+	@go test -run=^$$ -bench=. -benchmem -count=10 -v ./... 
+
 .PHONY: coverage
 coverage:
 	@go clean -testcache
