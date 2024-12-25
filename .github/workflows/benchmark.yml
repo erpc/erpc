@@ -77,7 +77,7 @@ jobs:
             const benchmarkResult = fs.readFileSync('benchmark-result.txt', 'utf8');
             
             // Extract the overall performance change (geomean line)
-            const geomeanMatch = benchmarkResult.match(/geomean\s+[\d.µ]+\s+[\d.µ]+\s+([+-]\d+\.\d+)%/);
+            const geomeanMatch = benchmarkResult.match(/geomean\s+[\d\.µn]+\s+[\d\.µn]+\s+([+-]\d+\.\d+)%/);
             const changePercent = geomeanMatch ? geomeanMatch[1] : null;
             
             let header;
