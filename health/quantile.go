@@ -6,6 +6,7 @@ import (
 
 	"github.com/DataDog/sketches-go/ddsketch"
 	"github.com/bytedance/sonic"
+	"github.com/rs/zerolog/log"
 )
 
 type QuantileTracker struct {
@@ -24,7 +25,10 @@ func NewQuantileTracker() *QuantileTracker {
 func (q *QuantileTracker) Add(value float64) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	q.sketch.Add(value)
+	err := q.sketch.Add(value)
+	if err != nil {
+		log.Warn().Err(err).Float64("value", value).Msg("failed to add value to quantile tracker")
+	}
 }
 
 func (q *QuantileTracker) Reset() {

@@ -177,7 +177,7 @@ func (t *Tracker) getKeys(ups, network, method string) []tripletKey {
 }
 
 func (t *Tracker) getMetadata(k duoKey) *NetworkMetadata {
-    t.mu.RLock()
+	t.mu.RLock()
 	md, ok := t.metadata[k]
 	t.mu.RUnlock()
 	if !ok {
@@ -190,7 +190,7 @@ func (t *Tracker) getMetadata(k duoKey) *NetworkMetadata {
 }
 
 func (t *Tracker) getMetrics(k tripletKey) *TrackedMetrics {
-    t.mu.RLock()
+	t.mu.RLock()
 	m, ok := t.metrics[k]
 	t.mu.RUnlock()
 	if !ok {
