@@ -1,0 +1,115 @@
+name: benchmark
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - '**.go'
+      - 'Makefile'
+  push:
+    branches:
+      - main
+permissions:
+  pull-requests: write
+  contents: read
+jobs:
+  regression:
+    runs-on: large
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.x'
+          
+      - name: Install benchstat
+        run: go install golang.org/x/perf/cmd/benchstat@latest
+
+      - name: Run benchmark on main branch
+        run: |
+          git checkout main
+          make bench > /tmp/benchmark-main.txt || touch /tmp/benchmark-main.txt
+
+      - name: Run benchmark on PR branch
+        run: |
+          git checkout ${{ github.event.pull_request.head.sha }}
+          make bench > /tmp/benchmark-pr.txt
+
+      - name: Compare benchmarks and check degradation
+        run: |
+          benchstat /tmp/benchmark-main.txt /tmp/benchmark-pr.txt > benchmark-result.txt
+          
+          # Process with awk to check for >5% degradation
+          # Look for lines with △ (indicating change) and extract percentage
+          awk '
+          function abs(v) {return v < 0 ? -v : v}
+          /△/ {
+            # Extract the percentage change from the last column
+            match($0, /[+-][0-9]+\.[0-9]+%/)
+            if (RLENGTH > 0) {
+              percentage = substr($0, RSTART, RLENGTH)
+              # Remove % and convert to number
+              gsub(/%/, "", percentage)
+              percentage = percentage + 0
+              
+              # Check if degradation is more than 5%
+              if (percentage > 5) {
+                print "FAIL: Performance degradation of " percentage "% detected in: " $0
+                exit 1
+              }
+              if (percentage < 0) {
+                print "IMPROVED: Performance improved by " -percentage "%: " $0
+              }
+            }
+          }' benchmark-result.txt || {
+            echo "::error::Significant performance degradation detected (>5%)"
+            exit 1
+          }
+
+      - name: Comment PR with benchmark results
+        if: always()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const benchmarkResult = fs.readFileSync('benchmark-result.txt', 'utf8');
+            
+            const header = process.env.PREV_STEP_STATUS === 'failure' 
+              ? '### ❌ Benchmark Results (Performance regression detected!)'
+              : '### ✅ Benchmark Results';
+            
+            const comment = `${header}\n\`\`\`\n${benchmarkResult}\n\`\`\``;
+            
+            // Get all comments
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            
+            // Find existing benchmark comment
+            const benchmarkComment = comments.data.find(comment => 
+              comment.body.includes('Benchmark Results')
+            );
+            
+            if (benchmarkComment) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: benchmarkComment.id,
+                body: comment
+              });
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: comment
+              });
+            }
+        env:
+          PREV_STEP_STATUS: ${{ job.steps.benchmark.outcome }}
