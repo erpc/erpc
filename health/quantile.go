@@ -58,8 +58,8 @@ func (q *QuantileTracker) MarshalJSON() ([]byte, error) {
 }
 
 func (q *QuantileTracker) GetQuantile(qtile float64) time.Duration {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	seconds, err := q.sketch.GetValueAtQuantile(qtile)
 	if err != nil {
 		// If there's no data, return 0

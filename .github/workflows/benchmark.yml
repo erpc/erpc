@@ -5,7 +5,9 @@ on:
     paths:
       - '**.go'
       - 'Makefile'
-      - 'test/**.txt'
+  push:
+    branches:
+      - main
 permissions:
   pull-requests: write
   contents: read
@@ -28,16 +30,16 @@ jobs:
       - name: Run benchmark on main branch
         run: |
           git checkout main
-          make bench > benchmark-main.txt || touch benchmark-main.txt
+          make bench > /tmp/benchmark-main.txt || touch /tmp/benchmark-main.txt
 
       - name: Run benchmark on PR branch
         run: |
           git checkout ${{ github.event.pull_request.head.sha }}
-          make bench > benchmark-pr.txt
+          make bench > /tmp/benchmark-pr.txt
 
       - name: Compare benchmarks and check degradation
         run: |
-          benchstat benchmark-main.txt benchmark-pr.txt > benchmark-result.txt
+          benchstat /tmp/benchmark-main.txt /tmp/benchmark-pr.txt > benchmark-result.txt
           
           # Process with awk to check for >5% degradation
           # Look for lines with △ (indicating change) and extract percentage
@@ -74,9 +76,23 @@ jobs:
             const fs = require('fs');
             const benchmarkResult = fs.readFileSync('benchmark-result.txt', 'utf8');
             
-            const header = process.env.PREV_STEP_STATUS === 'failure' 
-              ? '### ❌ Benchmark Results (Performance regression detected!)'
-              : '### ✅ Benchmark Results';
+            // Extract the overall performance change (geomean line)
+            const geomeanMatch = benchmarkResult.match(/geomean\s+[\d.µ]+\s+[\d.µ]+\s+([+-]\d+\.\d+)%/);
+            const changePercent = geomeanMatch ? geomeanMatch[1] : null;
+            
+            let header;
+            if (changePercent) {
+              const change = parseFloat(changePercent || '0');
+              if (change < 0) {
+                header = `### ✅ Benchmark Results (${Math.abs(change).toFixed(2)}% faster)`;
+              } else if (change > 0) {
+                header = `### ❌ Benchmark Results (${change.toFixed(2)}% slower)`;
+              } else {
+                header = '### ℹ️ Benchmark Results (No significant change)';
+              }
+            } else {
+              header = '### ℹ️ Benchmark Results';
+            }
             
             const comment = `${header}\n\`\`\`\n${benchmarkResult}\n\`\`\``;
             
