@@ -122,6 +122,22 @@ func (e *ERPC) AdminHandleRequest(ctx context.Context, nq *common.NormalizedRequ
 		}
 		return common.NewNormalizedResponse().WithJsonRpcResponse(jrrs), nil
 
+	case "erpc_config":
+		jrr, err := nq.JsonRpcRequest()
+		if err != nil {
+			return nil, err
+		}
+
+		jrrs, err := common.NewJsonRpcResponse(
+			jrr.ID,
+			e.cfg,
+			nil,
+		)
+		if err != nil {
+			return nil, err
+		}
+		return common.NewNormalizedResponse().WithJsonRpcResponse(jrrs), nil
+
 	case "erpc_project":
 		jrr, err := nq.JsonRpcRequest()
 		if err != nil {
