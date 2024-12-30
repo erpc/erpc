@@ -7,11 +7,62 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
+var alchemyNetworkSubdomains = map[int64]string{
+	1:         "eth-mainnet",
+	10:        "opt-mainnet",
+	100:       "gnosis-mainnet",
+	10200:     "gnosis-chiado",
+	1088:      "metis-mainnet",
+	1101:      "polygonzkevm-mainnet",
+	11011:     "shape-sepolia",
+	11155111:  "eth-sepolia",
+	11155420:  "opt-sepolia",
+	137:       "polygon-mainnet",
+	168587773: "blast-sepolia",
+	17000:     "eth-holesky",
+	204:       "opbnb-mainnet",
+	2442:      "polygonzkevm-cardona",
+	250:       "fantom-mainnet",
+	300:       "zksync-sepolia",
+	324:       "zksync-mainnet",
+	4002:      "fantom-testnet",
+	42161:     "arb-mainnet",
+	421614:    "arb-sepolia",
+	42170:     "arbnova-mainnet",
+	43113:     "avax-fuji",
+	43114:     "avax-mainnet",
+	5000:      "mantle-mainnet",
+	56:        "bnb-mainnet",
+	5611:      "opbnb-testnet",
+	59141:     "linea-sepolia",
+	59144:     "linea-mainnet",
+	592:       "astar-mainnet",
+	7000:      "zetachain-mainnet",
+	7001:      "zetachain-testnet",
+	7777777:   "zora-mainnet",
+	80002:     "polygon-amoy",
+	81457:     "blast-mainnet",
+	8453:      "base-mainnet",
+	84532:     "base-sepolia",
+	97:        "bnb-testnet",
+	999999999: "zora-sepolia",
+	534351:    "scroll-sepolia",
+	534352:    "scroll-mainnet",
+}
+
 type AlchemyVendor struct {
 	common.Vendor
 }
 
-var TRUE bool = true
+type AlchemySettings struct {
+	ApiKey string `yaml:"apiKey" json:"apiKey"`
+}
+
+func (s *AlchemySettings) Validate() error {
+	return nil
+}
+
+func (s *AlchemySettings) SetDefaults() {}
 
 func CreateAlchemyVendor() common.Vendor {
 	return &AlchemyVendor{}

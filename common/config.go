@@ -272,6 +272,7 @@ type ProjectConfig struct {
 	Id               string             `yaml:"id" json:"id"`
 	Auth             *AuthConfig        `yaml:"auth,omitempty" json:"auth"`
 	CORS             *CORSConfig        `yaml:"cors,omitempty" json:"cors"`
+	Providers        []*ProviderConfig  `yaml:"providers" json:"providers"`
 	UpstreamDefaults *UpstreamConfig    `yaml:"upstreamDefaults,omitempty" json:"upstreamDefaults"`
 	Upstreams        []*UpstreamConfig  `yaml:"upstreams" json:"upstreams"`
 	NetworkDefaults  *NetworkDefaults   `yaml:"networkDefaults,omitempty" json:"networkDefaults"`
@@ -294,6 +295,18 @@ type CORSConfig struct {
 	ExposedHeaders   []string `yaml:"exposedHeaders" json:"exposedHeaders"`
 	AllowCredentials *bool    `yaml:"allowCredentials" json:"allowCredentials"`
 	MaxAge           int      `yaml:"maxAge" json:"maxAge"`
+}
+
+type VendorSettings interface {
+	SetDefaults()
+	Validate() error
+}
+
+type ProviderConfig struct {
+	Vendor       string                     `yaml:"vendor" json:"vendor"`
+	Settings     VendorSettings             `yaml:"settings,omitempty" json:"settings"`
+	OnlyNetworks []string                   `yaml:"onlyNetworks,omitempty" json:"onlyNetworks"`
+	Overrides    map[string]*UpstreamConfig `yaml:"overrides,omitempty" json:"overrides"`
 }
 
 type UpstreamConfig struct {
