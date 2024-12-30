@@ -2,7 +2,8 @@
 version: 2
 
 builds:
-  - env:
+  - id: erpc
+    env:
       - CGO_ENABLED=0
     goos:
       - linux
@@ -17,11 +18,42 @@ builds:
     main: ./cmd/erpc/main.go
     ldflags:
       - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+  
+  - id: id: erpc-validate
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    main: ./cmd/validate/main.go
+    binary: erpc-validate
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
 
-archives:
-  - format: binary
+archives:  
+  - id: erpc
+    builds: [erpc]
+    format: binary
     name_template: >-
       {{ .ProjectName }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+
+  - id: erpc-validate
+    builds: [erpc-validate]
+    format: binary
+    name_template: >-
+      erpc-validate_
       {{- .Os }}_
       {{- if eq .Arch "amd64" }}x86_64
       {{- else if eq .Arch "386" }}i386
