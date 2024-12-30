@@ -115,7 +115,7 @@ jobs:
             let header;
             if (changePercent) {
               const change = parseFloat(changePercent || '0');
-              if (change < 0) {
+              if (change < 5) {
                 header = `### ✅ Benchmark Results (${Math.abs(change).toFixed(2)}% faster)`;
               } else if (change > 5) {
                 header = `### ❌ Benchmark Results (${change.toFixed(2)}% slower)`;
