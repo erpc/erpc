@@ -191,11 +191,14 @@ type TLSConfig struct {
 }
 
 type RedisConnectorConfig struct {
-	Addr         string     `yaml:"addr" json:"addr"`
-	Password     string     `yaml:"password" json:"-"`
-	DB           int        `yaml:"db" json:"db"`
-	TLS          *TLSConfig `yaml:"tls" json:"tls"`
-	ConnPoolSize int        `yaml:"connPoolSize" json:"connPoolSize"`
+	Addr         string        `yaml:"addr" json:"addr"`
+	Password     string        `yaml:"password" json:"-"`
+	DB           int           `yaml:"db" json:"db"`
+	TLS          *TLSConfig    `yaml:"tls" json:"tls"`
+	ConnPoolSize int           `yaml:"connPoolSize" json:"connPoolSize"`
+	InitTimeout  time.Duration `yaml:"initTimeout,omitempty" json:"initTimeout"`
+	GetTimeout   time.Duration `yaml:"getTimeout,omitempty" json:"getTimeout"`
+	SetTimeout   time.Duration `yaml:"setTimeout,omitempty" json:"setTimeout"`
 }
 
 func (r *RedisConnectorConfig) MarshalJSON() ([]byte, error) {
@@ -205,6 +208,9 @@ func (r *RedisConnectorConfig) MarshalJSON() ([]byte, error) {
 		"db":           r.DB,
 		"connPoolSize": r.ConnPoolSize,
 		"tls":          r.TLS,
+		"initTimeout":  r.InitTimeout.String(),
+		"getTimeout":   r.GetTimeout.String(),
+		"setTimeout":   r.SetTimeout.String(),
 	})
 }
 
@@ -217,13 +223,19 @@ type DynamoDBConnectorConfig struct {
 	RangeKeyName     string         `yaml:"rangeKeyName" json:"rangeKeyName"`
 	ReverseIndexName string         `yaml:"reverseIndexName" json:"reverseIndexName"`
 	TTLAttributeName string         `yaml:"ttlAttributeName" json:"ttlAttributeName"`
+	InitTimeout      time.Duration  `yaml:"initTimeout,omitempty" json:"initTimeout"`
+	GetTimeout       time.Duration  `yaml:"getTimeout,omitempty" json:"getTimeout"`
+	SetTimeout       time.Duration  `yaml:"setTimeout,omitempty" json:"setTimeout"`
 }
 
 type PostgreSQLConnectorConfig struct {
-	ConnectionUri string `yaml:"connectionUri" json:"connectionUri"`
-	Table         string `yaml:"table" json:"table"`
-	MinConns      int32  `yaml:"minConns,omitempty" json:"minConns"`
-	MaxConns      int32  `yaml:"maxConns,omitempty" json:"maxConns"`
+	ConnectionUri string        `yaml:"connectionUri" json:"connectionUri"`
+	Table         string        `yaml:"table" json:"table"`
+	MinConns      int32         `yaml:"minConns,omitempty" json:"minConns"`
+	MaxConns      int32         `yaml:"maxConns,omitempty" json:"maxConns"`
+	InitTimeout   time.Duration `yaml:"initTimeout,omitempty" json:"initTimeout"`
+	GetTimeout    time.Duration `yaml:"getTimeout,omitempty" json:"getTimeout"`
+	SetTimeout    time.Duration `yaml:"setTimeout,omitempty" json:"setTimeout"`
 }
 
 func (p *PostgreSQLConnectorConfig) MarshalJSON() ([]byte, error) {
@@ -232,6 +244,9 @@ func (p *PostgreSQLConnectorConfig) MarshalJSON() ([]byte, error) {
 		"table":         p.Table,
 		"minConns":      fmt.Sprintf("%d", p.MinConns),
 		"maxConns":      fmt.Sprintf("%d", p.MaxConns),
+		"initTimeout":   p.InitTimeout.String(),
+		"getTimeout":    p.GetTimeout.String(),
+		"setTimeout":    p.SetTimeout.String(),
 	})
 }
 

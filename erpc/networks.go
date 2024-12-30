@@ -141,9 +141,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// 2) Get from cache if exists
 	if n.cacheDal != nil && !req.SkipCacheRead() {
 		lg.Debug().Msgf("checking cache for request")
-		cctx, cancel := context.WithTimeoutCause(ctx, 2*time.Second, errors.New("cache driver timeout during get"))
-		defer cancel()
-		resp, err := n.cacheDal.Get(cctx, req)
+		resp, err := n.cacheDal.Get(ctx, req)
 		if err != nil {
 			lg.Debug().Err(err).Msgf("could not find response in cache")
 			health.MetricNetworkCacheMisses.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()

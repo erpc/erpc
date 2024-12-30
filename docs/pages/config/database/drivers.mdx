@@ -64,6 +64,14 @@ database:
           password: YOUR_REDIS_PASSWORD_HERE
           db: XXX
           connPoolSize: 128
+          tls:
+            enabled: false # or "true" if redis is configured with TLS
+            certFile: /path/to/client.crt # Optional
+            keyFile: /path/to/client.key # Optional
+            caFile: /path/to/ca.crt # Optional
+          initTimeout: 5s
+          getTimeout: 1s
+          setTimeout: 2s
 ```
 </Tab>
 <Tab>
@@ -81,7 +89,16 @@ export default createConfig({
             addr: "YOUR_REDIS_ADDRESS_HERE",
             password: "YOUR_REDIS_PASSWORD_HERE",
             db: 0,
-            connPoolSize: 128
+            connPoolSize: 128,
+            tls: {
+              enabled: false // or "true" if redis is configured with TLS
+              certFile: "/path/to/client.crt" // Optional
+              keyFile: "/path/to/client.key" // Optional
+              caFile: "/path/to/ca.crt" // Optional
+            },
+            initTimeout: "5s",
+            getTimeout: "1s",
+            setTimeout: "2s"
           }
         }
       ]
@@ -118,6 +135,9 @@ database:
           connectionUri: >-
             postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name
           table: rpc_cache
+          initTimeout: 5s
+          getTimeout: 1s
+          setTimeout: 2s
 ```
 </Tab>
 <Tab>
@@ -133,7 +153,10 @@ export default createConfig({
           driver: "postgresql",
           postgresql: {
             connectionUri: "postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name",
-            table: "rpc_cache"
+            table: "rpc_cache",
+            initTimeout: "5s",
+            getTimeout: "1s",
+            setTimeout: "2s"
           }
         }
       ]
@@ -158,6 +181,9 @@ database:
         dynamodb:
           table: rpc_cache
           region: eu-west-1
+          initTimeout: 5s
+          getTimeout: 1s
+          setTimeout: 2s
           endpoint: https://dynamodb.eu-west-1.amazonaws.com # Optional
           # Auth is optional if you are running within AWS.
           auth:
@@ -183,6 +209,9 @@ export default createConfig({
             table: "rpc_cache",
             region: "eu-west-1",
             endpoint: "https://dynamodb.eu-west-1.amazonaws.com", // Optional
+            initTimeout: "5s",
+            getTimeout: "1s",
+            setTimeout: "2s",
             // Auth is optional if you are running within AWS.
             auth: {
               mode: "secret", // "file" or "env"

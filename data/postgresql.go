@@ -26,6 +26,9 @@ type PostgreSQLConnector struct {
 	maxConns      int32
 	table         string
 	cleanupTicker *time.Ticker
+	initTimeout   time.Duration
+	getTimeout    time.Duration
+	setTimeout    time.Duration
 }
 
 func NewPostgreSQLConnector(
@@ -43,6 +46,9 @@ func NewPostgreSQLConnector(
 		table:         cfg.Table,
 		minConns:      cfg.MinConns,
 		maxConns:      cfg.MaxConns,
+		initTimeout:   cfg.InitTimeout,
+		getTimeout:    cfg.GetTimeout,
+		setTimeout:    cfg.SetTimeout,
 		cleanupTicker: time.NewTicker(5 * time.Minute),
 	}
 
@@ -80,6 +86,10 @@ func (p *PostgreSQLConnector) connect(ctx context.Context, cfg *common.PostgreSQ
 	config.MaxConns = p.maxConns
 	config.MaxConnLifetime = 5 * time.Hour
 	config.MaxConnIdleTime = 30 * time.Minute
+
+	ctx, cancel := context.WithTimeout(ctx, p.initTimeout)
+	defer cancel()
+
 	conn, err := pgxpool.ConnectConfig(ctx, config)
 	if err != nil {
 		return fmt.Errorf("failed to connect to PostgreSQL: %w", err)
@@ -174,6 +184,9 @@ func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey, v
 		expiresAt = &t
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, p.setTimeout)
+	defer cancel()
+
 	_, err := p.conn.Exec(ctx, fmt.Sprintf(`
 		INSERT INTO %s (partition_key, range_key, value, expires_at)
 		VALUES ($1, $2, $3, $4)
@@ -191,6 +204,9 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 
 	var query string
 	var args []interface{}
+
+	ctx, cancel := context.WithTimeout(ctx, p.getTimeout)
+	defer cancel()
 
 	if strings.HasSuffix(partitionKey, "*") || strings.HasSuffix(rangeKey, "*") {
 		return p.getWithWildcard(ctx, index, partitionKey, rangeKey)

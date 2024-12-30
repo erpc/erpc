@@ -294,6 +294,15 @@ func (p *DynamoDBConnectorConfig) Validate() error {
 	if p.TTLAttributeName == "" {
 		return fmt.Errorf("database.*.connector.dynamodb.ttlAttributeName is required")
 	}
+	if p.InitTimeout == 0 {
+		return fmt.Errorf("database.*.connector.dynamodb.initTimeout is required")
+	}
+	if p.GetTimeout == 0 {
+		return fmt.Errorf("database.*.connector.dynamodb.getTimeout is required")
+	}
+	if p.SetTimeout == 0 {
+		return fmt.Errorf("database.*.connector.dynamodb.setTimeout is required")
+	}
 	return nil
 }
 
@@ -310,12 +319,30 @@ func (p *PostgreSQLConnectorConfig) Validate() error {
 	if p.MaxConns == 0 {
 		return fmt.Errorf("database.*.connector.postgresql.maxConns is required")
 	}
+	if p.InitTimeout == 0 {
+		return fmt.Errorf("database.*.connector.postgresql.initTimeout is required")
+	}
+	if p.GetTimeout == 0 {
+		return fmt.Errorf("database.*.connector.postgresql.getTimeout is required")
+	}
+	if p.SetTimeout == 0 {
+		return fmt.Errorf("database.*.connector.postgresql.setTimeout is required")
+	}
 	return nil
 }
 
 func (p *RedisConnectorConfig) Validate() error {
 	if p.Addr == "" {
 		return fmt.Errorf("database.*.connector.redis.addr is required")
+	}
+	if p.InitTimeout == 0 {
+		return fmt.Errorf("database.*.connector.redis.initTimeout is required")
+	}
+	if p.GetTimeout == 0 {
+		return fmt.Errorf("database.*.connector.redis.getTimeout is required")
+	}
+	if p.SetTimeout == 0 {
+		return fmt.Errorf("database.*.connector.redis.setTimeout is required")
 	}
 	return nil
 }
