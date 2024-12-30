@@ -2,74 +2,13 @@ package main
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
-	"github.com/spf13/afero"
 )
 
-func init() {
-	// Reuse the same logging setup
-	zerolog.TimeFieldFormat = zerolog.TimeFormatUnixMs
-	zerolog.ErrorMarshalFunc = func(err error) interface{} {
-		return err
-	}
-
-	// Use console writer by default for better readability
-	consoleWriter := zerolog.ConsoleWriter{
-		Out:        os.Stdout,
-		TimeFormat: "15:04:05.000",
-		NoColor:    false,
-		PartsOrder: []string{
-			zerolog.TimestampFieldName,
-			zerolog.LevelFieldName,
-			"component",
-			zerolog.MessageFieldName,
-		},
-		FieldsExclude: []string{"time"},
-	}
-	log.Logger = zerolog.New(consoleWriter).With().Timestamp().Logger()
-}
-
-func main() {
-	logger := log.With().Logger()
-	logger.Info().Msgf("eRPC config validator version: %s, commit: %s", common.ErpcVersion, common.ErpcCommitSha)
-
-	if err := validateConfig(logger); err != nil {
-		logger.Error().Msgf("validation failed: %v", err)
-		os.Exit(1)
-	}
-}
-
-func validateConfig(logger zerolog.Logger) error {
-	fs := afero.NewOsFs()
-	configPath := ""
-	possibleConfigs := []string{"./erpc.js", "./erpc.ts", "./erpc.yaml", "./erpc.yml"}
-
-	if len(os.Args) > 1 {
-		configPath = os.Args[1]
-	} else {
-		// Check for erpc.ts or erpc.yaml
-		for _, path := range possibleConfigs {
-			if _, err := fs.Stat(path); err == nil {
-				configPath = path
-				break
-			}
-		}
-	}
-
-	if configPath == "" {
-		return fmt.Errorf("no valid configuration file found in %v", possibleConfigs)
-	}
-
-	logger.Info().Msgf("validating configuration file: %s", configPath)
-	cfg, err := common.LoadConfig(fs, configPath)
-	if err != nil {
-		return fmt.Errorf("failed to load configuration from %s: %v", configPath, err)
-	}
-
+// Analyse a config object and print a few stats
+func AnalyseConfig(cfg *common.Config, logger zerolog.Logger) error {
 	// Print configuration statistics
 	stats := calculateConfigStats(cfg)
 	printConfigStats(logger, stats)
