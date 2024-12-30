@@ -60,6 +60,8 @@ func TestMain_Start_MissingConfigFile(t *testing.T) {
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 
+	// Add info log
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	// Capture logs
 	var logBuf strings.Builder
 	log.Logger = zerolog.New(&logBuf)
@@ -100,6 +102,8 @@ func TestMain_Start_InvalidConfig(t *testing.T) {
 	}
 	cfg.WriteString("invalid yaml")
 
+	// Add info log
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	// Capture logs
 	var logBuf strings.Builder
 	log.Logger = zerolog.New(&logBuf)
@@ -147,6 +151,8 @@ metrics:
   enabled: false
 `)
 
+	// Add info log
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
 	// Capture logs
 	var logBuf strings.Builder
 	log.Logger = zerolog.New(&logBuf)
