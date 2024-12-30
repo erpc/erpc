@@ -140,13 +140,13 @@ var (
 		Namespace: "erpc",
 		Name:      "network_failed_request_total",
 		Help:      "Total number of failed requests for a network.",
-	}, []string{"project", "network", "category", "error"})
+	}, []string{"project", "network", "category", "attempt", "error"})
 
 	MetricNetworkSuccessfulRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_successful_request_total",
 		Help:      "Total number of successful requests for a network.",
-	}, []string{"project", "network", "category"})
+	}, []string{"project", "network", "category", "attempt"})
 
 	MetricNetworkCacheHits = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
