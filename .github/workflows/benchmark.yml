@@ -1,60 +1,92 @@
 name: benchmark
+
 on:
-  pull_request:
-    types: [opened, synchronize]
+  pull_request_target:
+    types: [opened, synchronize, reopened]
     paths:
       - '**.go'
       - 'Makefile'
   push:
     branches:
       - main
+
 permissions:
+  issues: write
   pull-requests: write
   contents: read
+
 jobs:
-  regression:
+  performance:
     runs-on: large
     steps:
-      - uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-      
-      - name: Setup Go
+      - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.22.x'
-          
+      
+      - name: Check out PR code (pull_request_target)
+        if: ${{ github.event_name == 'pull_request_target' }}
+        uses: actions/checkout@v3
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Check out main branch
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
       - name: Install benchstat
         run: go install golang.org/x/perf/cmd/benchstat@latest
 
-      - name: Run benchmark on main branch
+      - name: Benchmark main branch
+        # We only do this if it's a PR or push to main,
+        # but we want to compare main vs. PR.
         run: |
-          git checkout main
+          # Step 1: Save current HEAD (which might be the PR code or just main code).
+          PR_COMMIT=$(git rev-parse HEAD)
+
+          # Step 2: Checkout main and run benchmark on main
+          git fetch origin main
+          git checkout origin/main
           make bench > /tmp/benchmark-main.txt || touch /tmp/benchmark-main.txt
 
-      - name: Run benchmark on PR branch
+          # Step 3: Checkout back to PR commit (for pull_request_target runs)
+          if [ "${{ github.event_name }}" = "pull_request_target" ]; then
+            git checkout "$PR_COMMIT"
+          fi
+        shell: bash
+
+      - name: Benchmark PR code
+        if: ${{ github.event_name == 'pull_request_target' }}
         run: |
-          git checkout ${{ github.event.pull_request.head.sha }}
           make bench > /tmp/benchmark-pr.txt
 
-      - name: Compare benchmarks and check degradation
+      - name: Benchmark (push to main)
+        if: ${{ github.event_name == 'push' }}
+        run: |
+          # If this is just a push to main (no PR),
+          # we won't have a /tmp/benchmark-pr.txt to compare to.
+          # We'll just do a single bench and store it.
+          make bench > /tmp/benchmark-main.txt
+
+      - name: Compare benchmarks
+        if: ${{ github.event_name == 'pull_request_target' }}
         run: |
           benchstat /tmp/benchmark-main.txt /tmp/benchmark-pr.txt > benchmark-result.txt
-          
-          # Process with awk to check for >5% degradation
-          # Look for lines with △ (indicating change) and extract percentage
+
+          # Optional performance degradation check
           awk '
           function abs(v) {return v < 0 ? -v : v}
           /△/ {
-            # Extract the percentage change from the last column
             match($0, /[+-][0-9]+\.[0-9]+%/)
             if (RLENGTH > 0) {
               percentage = substr($0, RSTART, RLENGTH)
-              # Remove % and convert to number
               gsub(/%/, "", percentage)
               percentage = percentage + 0
               
-              # Check if degradation is more than 5%
               if (percentage > 5) {
                 print "FAIL: Performance degradation of " percentage "% detected in: " $0
                 exit 1
@@ -68,16 +100,16 @@ jobs:
             exit 1
           }
 
-      - name: Comment PR with benchmark results
-        if: github.event_name == 'pull_request' && always()
+      - name: Comment PR with results
+        if: ${{ github.event_name == 'pull_request_target' && always() }}
         uses: actions/github-script@v6
         with:
           script: |
             const fs = require('fs');
             const benchmarkResult = fs.readFileSync('benchmark-result.txt', 'utf8');
-            
-            // Extract the overall performance change (geomean line)
-            const geomeanMatch = benchmarkResult.match(/geomean\s+[\d\.µn]+\s+[\d\.µn]+\s+([+-]\d+\.\d+)%/);
+
+            // Extract a "geomean" line if it exists
+            const geomeanMatch = benchmarkResult.match(/geomean\\s+[\\d\\.µn]+\\s+[\\d\\.µn]+\\s+([+-]\\d+\\.\\d+)%/);
             const changePercent = geomeanMatch ? geomeanMatch[1] : null;
             
             let header;
@@ -85,7 +117,7 @@ jobs:
               const change = parseFloat(changePercent || '0');
               if (change < 0) {
                 header = `### ✅ Benchmark Results (${Math.abs(change).toFixed(2)}% faster)`;
-              } else if (change > 0) {
+              } else if (change > 5) {
                 header = `### ❌ Benchmark Results (${change.toFixed(2)}% slower)`;
               } else {
                 header = '### ℹ️ Benchmark Results (No significant change)';
@@ -96,34 +128,30 @@ jobs:
             
             const comment = `${header}\n\`\`\`\n${benchmarkResult}\n\`\`\``;
             
-            // Get all comments
-            const comments = await github.rest.issues.listComments({
+            // Get existing comments to see if we previously posted a benchmark
+            const { data: existingComments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
             });
             
-            // Find existing benchmark comment
-            const benchmarkComment = comments.data.find(comment => 
-              comment.body.includes('Benchmark Results')
-            );
+            const existing = existingComments.find(c => c.body && c.body.includes('Benchmark Results'));
             
-            if (benchmarkComment) {
-              // Update existing comment
+            if (existing) {
+              // Update the old comment
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                comment_id: benchmarkComment.id,
-                body: comment
+                comment_id: existing.id,
+                body: comment,
               });
             } else {
-              // Create new comment
+              // Create a new comment
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
-                body: comment
+                body: comment,
               });
             }
-        env:
-          PREV_STEP_STATUS: ${{ job.steps.benchmark.outcome }}
+
