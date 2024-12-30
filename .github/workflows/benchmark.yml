@@ -109,7 +109,7 @@ jobs:
             const benchmarkResult = fs.readFileSync('benchmark-result.txt', 'utf8');
 
             // Extract a "geomean" line if it exists
-            const geomeanMatch = benchmarkResult.match(/geomean\\s+[\\d\\.µn]+\\s+[\\d\\.µn]+\\s+([+-]\\d+\\.\\d+)%/);
+            const geomeanMatch = benchmarkResult.match(/geomean\s+[\d\.µn]+\s+[\d\.µn]+\s+([+-]\d+\.\d+)%/);
             const changePercent = geomeanMatch ? geomeanMatch[1] : null;
             
             let header;
@@ -120,10 +120,10 @@ jobs:
               } else if (change > 5) {
                 header = `### ❌ Benchmark Results (${change.toFixed(2)}% slower)`;
               } else {
-                header = '### ℹ️ Benchmark Results (No significant change)';
+                header = `### ℹ️ Benchmark Results (${changePercent})`;
               }
             } else {
-              header = '### ℹ️ Benchmark Results';
+              header = `### ℹ️ Benchmark Results (${changePercent})`;
             }
             
             const comment = `${header}\n\`\`\`\n${benchmarkResult}\n\`\`\``;
