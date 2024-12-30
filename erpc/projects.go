@@ -151,11 +151,11 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 				lg.Info().Msgf("successfully forwarded request for network")
 			}
 		}
-		health.MetricNetworkSuccessfulRequests.WithLabelValues(p.Config.Id, network.NetworkId, method).Inc()
+		health.MetricNetworkSuccessfulRequests.WithLabelValues(p.Config.Id, network.NetworkId, method, strconv.Itoa(resp.Attempts())).Inc()
 		return resp, err
 	} else {
 		lg.Debug().Err(err).Object("request", nq).Msgf("failed to forward request for network")
-		health.MetricNetworkFailedRequests.WithLabelValues(network.ProjectId, network.NetworkId, method, common.ErrorSummary(err)).Inc()
+		health.MetricNetworkFailedRequests.WithLabelValues(network.ProjectId, network.NetworkId, method, strconv.Itoa(resp.Attempts()), common.ErrorSummary(err)).Inc()
 	}
 
 	return nil, err
