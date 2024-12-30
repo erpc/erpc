@@ -22,10 +22,13 @@ const (
 var _ Connector = (*RedisConnector)(nil)
 
 type RedisConnector struct {
-	id     string
-	logger *zerolog.Logger
-	client *redis.Client
-	ttls   map[string]time.Duration
+	id          string
+	logger      *zerolog.Logger
+	client      *redis.Client
+	ttls        map[string]time.Duration
+	initTimeout time.Duration
+	getTimeout  time.Duration
+	setTimeout  time.Duration
 }
 
 func NewRedisConnector(
@@ -38,9 +41,12 @@ func NewRedisConnector(
 	lg.Debug().Interface("config", cfg).Msg("creating RedisConnector")
 
 	connector := &RedisConnector{
-		id:     id,
-		logger: &lg,
-		ttls:   make(map[string]time.Duration),
+		id:          id,
+		logger:      &lg,
+		ttls:        make(map[string]time.Duration),
+		initTimeout: cfg.InitTimeout,
+		getTimeout:  cfg.GetTimeout,
+		setTimeout:  cfg.SetTimeout,
 	}
 
 	// Attempt the actual connecting in background to avoid blocking the main thread.
@@ -68,10 +74,13 @@ func NewRedisConnector(
 
 func (r *RedisConnector) connect(ctx context.Context, cfg *common.RedisConnectorConfig) error {
 	options := &redis.Options{
-		Addr:     cfg.Addr,
-		Password: cfg.Password,
-		DB:       cfg.DB,
-		PoolSize: cfg.ConnPoolSize,
+		Addr:         cfg.Addr,
+		Password:     cfg.Password,
+		DB:           cfg.DB,
+		PoolSize:     cfg.ConnPoolSize,
+		DialTimeout:  r.initTimeout,
+		ReadTimeout:  r.getTimeout,
+		WriteTimeout: r.setTimeout,
 	}
 
 	if cfg.TLS != nil && cfg.TLS.Enabled {
@@ -132,6 +141,9 @@ func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey, value 
 
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
 
+	ctx, cancel := context.WithTimeout(ctx, r.setTimeout)
+	defer cancel()
+
 	// Use the provided TTL if one exists, otherwise set with no expiration
 	duration := time.Duration(0)
 	if ttl != nil {
@@ -151,6 +163,9 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 	var value string
 
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
+
+	ctx, cancel := context.WithTimeout(ctx, r.getTimeout)
+	defer cancel()
 
 	if strings.Contains(key, "*") {
 		keys, err := r.client.Keys(ctx, key).Result()
@@ -173,24 +188,4 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 	}
 
 	return value, nil
-}
-
-func (r *RedisConnector) Delete(ctx context.Context, index, partitionKey, rangeKey string) error {
-	if r.client == nil {
-		return fmt.Errorf("redis client not initialized yet")
-	}
-
-	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
-
-	if strings.Contains(key, "*") {
-		keys, err := r.client.Keys(ctx, key).Result()
-		if err != nil {
-			return err
-		}
-		rs := r.client.Del(ctx, keys...)
-		return rs.Err()
-	} else {
-		rs := r.client.Del(ctx, key)
-		return rs.Err()
-	}
 }
