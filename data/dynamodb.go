@@ -31,6 +31,9 @@ type DynamoDBConnector struct {
 	partitionKeyName string
 	rangeKeyName     string
 	reverseIndexName string
+	initTimeout      time.Duration
+	getTimeout       time.Duration
+	setTimeout       time.Duration
 }
 
 func NewDynamoDBConnector(
@@ -50,6 +53,9 @@ func NewDynamoDBConnector(
 		rangeKeyName:     cfg.RangeKeyName,
 		reverseIndexName: cfg.ReverseIndexName,
 		ttlAttributeName: cfg.TTLAttributeName,
+		initTimeout:      cfg.InitTimeout,
+		getTimeout:       cfg.GetTimeout,
+		setTimeout:       cfg.SetTimeout,
 	}
 
 	// Attempt the actual connecting in background to avoid blocking the main thread.
@@ -84,13 +90,16 @@ func (d *DynamoDBConnector) connect(ctx context.Context, cfg *common.DynamoDBCon
 	d.client = dynamodb.New(sess, &aws.Config{
 		Endpoint: aws.String(cfg.Endpoint),
 		HTTPClient: &http.Client{
-			Timeout: 3 * time.Second,
+			Timeout: d.initTimeout,
 		},
 	})
 
 	if cfg.Table == "" {
 		return fmt.Errorf("missing table name for dynamodb connector")
 	}
+
+	ctx, cancel := context.WithTimeout(ctx, d.initTimeout)
+	defer cancel()
 
 	err = createTableIfNotExists(ctx, d.logger, d.client, cfg)
 	if err != nil {
@@ -115,7 +124,7 @@ func createSession(cfg *common.DynamoDBConnectorConfig) (*session.Session, error
 			Region:   aws.String(cfg.Region),
 			Endpoint: aws.String(cfg.Endpoint),
 			HTTPClient: &http.Client{
-				Timeout: 3 * time.Second,
+				Timeout: cfg.InitTimeout,
 			},
 		})
 	}
@@ -136,7 +145,7 @@ func createSession(cfg *common.DynamoDBConnectorConfig) (*session.Session, error
 		Region:      aws.String(cfg.Region),
 		Credentials: creds,
 		HTTPClient: &http.Client{
-			Timeout: 3 * time.Second,
+			Timeout: cfg.InitTimeout,
 		},
 	})
 }
@@ -304,6 +313,9 @@ func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, val
 		},
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, d.setTimeout)
+	defer cancel()
+
 	// Add TTL if provided
 	if ttl != nil {
 		expirationTime := time.Now().Add(*ttl).Unix()
@@ -360,6 +372,10 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 			ExpressionAttributeNames:  exprAttrNames,
 			ExpressionAttributeValues: exprAttrValues,
 		}
+
+		ctx, cancel := context.WithTimeout(ctx, d.getTimeout)
+		defer cancel()
+
 		d.logger.Debug().Str("index", d.reverseIndexName).Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("getting item from dynamodb")
 		result, err := d.client.QueryWithContext(ctx, qi)
 		if err != nil {
@@ -413,124 +429,4 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 	}
 
 	return value, nil
-}
-
-func (d *DynamoDBConnector) Delete(ctx context.Context, index, partitionKey, rangeKey string) error {
-	if d.client == nil {
-		return fmt.Errorf("DynamoDB client not initialized yet")
-	}
-
-	if strings.HasSuffix(rangeKey, "*") {
-		return d.deleteWithPrefix(ctx, index, partitionKey, rangeKey)
-	} else {
-		return d.deleteSingleItem(ctx, partitionKey, rangeKey)
-	}
-}
-
-func (d *DynamoDBConnector) deleteWithPrefix(ctx context.Context, index, partitionKey, rangeKey string) error {
-	var keyCondition string = "#pkey = :pkey AND begins_with(#rkey, :rkey)"
-	var exprAttrNames = map[string]*string{
-		"#pkey": aws.String(d.partitionKeyName),
-		"#rkey": aws.String(d.rangeKeyName),
-	}
-	var exprAttrValues = map[string]*dynamodb.AttributeValue{
-		":pkey": {
-			S: aws.String(partitionKey),
-		},
-		":rkey": {
-			S: aws.String(strings.TrimSuffix(rangeKey, "*")),
-		},
-	}
-
-	qi := &dynamodb.QueryInput{
-		TableName:                 aws.String(d.table),
-		KeyConditionExpression:    aws.String(keyCondition),
-		ExpressionAttributeNames:  exprAttrNames,
-		ExpressionAttributeValues: exprAttrValues,
-	}
-
-	if index != "" {
-		qi.IndexName = aws.String(index)
-	}
-
-	var lastEvaluatedKey map[string]*dynamodb.AttributeValue
-	for {
-		if lastEvaluatedKey != nil {
-			qi.ExclusiveStartKey = lastEvaluatedKey
-		}
-
-		result, err := d.client.QueryWithContext(ctx, qi)
-		if err != nil {
-			return err
-		}
-
-		if len(result.Items) == 0 {
-			break
-		}
-
-		var keys []map[string]*dynamodb.AttributeValue
-		for _, item := range result.Items {
-			keys = append(keys, map[string]*dynamodb.AttributeValue{
-				d.partitionKeyName: item[d.partitionKeyName],
-				d.rangeKeyName:     item[d.rangeKeyName],
-			})
-
-			if len(keys) == 25 {
-				err = d.deleteKeys(ctx, keys)
-				if err != nil {
-					return err
-				}
-				keys = keys[:0] // reset the keys slice
-			}
-		}
-
-		if len(keys) > 0 {
-			err = d.deleteKeys(ctx, keys)
-			if err != nil {
-				return err
-			}
-		}
-
-		lastEvaluatedKey = result.LastEvaluatedKey
-		if lastEvaluatedKey == nil {
-			break
-		}
-	}
-
-	return nil
-}
-
-func (d *DynamoDBConnector) deleteSingleItem(ctx context.Context, partitionKey, rangeKey string) error {
-	_, err := d.client.DeleteItemWithContext(ctx, &dynamodb.DeleteItemInput{
-		TableName: aws.String(d.table),
-		Key: map[string]*dynamodb.AttributeValue{
-			d.partitionKeyName: {
-				S: aws.String(partitionKey),
-			},
-			d.rangeKeyName: {
-				S: aws.String(rangeKey),
-			},
-		},
-	})
-
-	return err
-}
-
-func (d *DynamoDBConnector) deleteKeys(ctx context.Context, keys []map[string]*dynamodb.AttributeValue) error {
-	var deleteRequests []*dynamodb.WriteRequest
-
-	for _, key := range keys {
-		deleteRequests = append(deleteRequests, &dynamodb.WriteRequest{
-			DeleteRequest: &dynamodb.DeleteRequest{
-				Key: key,
-			},
-		})
-	}
-	_, err := d.client.BatchWriteItemWithContext(ctx, &dynamodb.BatchWriteItemInput{
-		RequestItems: map[string][]*dynamodb.WriteRequest{
-			d.table: deleteRequests,
-		},
-	})
-
-	return err
 }

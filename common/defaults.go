@@ -2,6 +2,7 @@ package common
 
 import (
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/erpc/erpc/common/script"
@@ -427,8 +428,24 @@ func (r *RedisConnectorConfig) SetDefaults() {
 	if r.Addr == "" {
 		r.Addr = "localhost:6379"
 	}
+	if strings.HasPrefix(r.Addr, "rediss://") {
+		r.TLS = &TLSConfig{
+			Enabled: true,
+		}
+	}
+	r.Addr = strings.TrimPrefix(r.Addr, "rediss://")
+	r.Addr = strings.TrimPrefix(r.Addr, "redis://")
 	if r.ConnPoolSize == 0 {
 		r.ConnPoolSize = 128
+	}
+	if r.InitTimeout == 0 {
+		r.InitTimeout = 5 * time.Second
+	}
+	if r.GetTimeout == 0 {
+		r.GetTimeout = 1 * time.Second
+	}
+	if r.SetTimeout == 0 {
+		r.SetTimeout = 2 * time.Second
 	}
 }
 
@@ -441,6 +458,15 @@ func (p *PostgreSQLConnectorConfig) SetDefaults() {
 	}
 	if p.MaxConns == 0 {
 		p.MaxConns = 32
+	}
+	if p.InitTimeout == 0 {
+		p.InitTimeout = 5 * time.Second
+	}
+	if p.GetTimeout == 0 {
+		p.GetTimeout = 1 * time.Second
+	}
+	if p.SetTimeout == 0 {
+		p.SetTimeout = 2 * time.Second
 	}
 }
 
@@ -459,6 +485,15 @@ func (d *DynamoDBConnectorConfig) SetDefaults() {
 	}
 	if d.TTLAttributeName == "" {
 		d.TTLAttributeName = "ttl"
+	}
+	if d.InitTimeout == 0 {
+		d.InitTimeout = 5 * time.Second
+	}
+	if d.GetTimeout == 0 {
+		d.GetTimeout = 1 * time.Second
+	}
+	if d.SetTimeout == 0 {
+		d.SetTimeout = 2 * time.Second
 	}
 }
 
