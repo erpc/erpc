@@ -50,13 +50,11 @@ func main() {
 			cfg, err := LoadConfig(logger, cmd)
 			if err != nil {
 				logger.Error().Msgf("failed to load configuration: %v", err)
-				util.OsExit(util.ExitCodeERPCStartFailed)
+				return err
 			}
 
 			// Analyse the config
-			AnalyseConfig(cfg, logger)
-
-			return nil
+			return AnalyseConfig(cfg, logger)
 		},
 	}
 
@@ -71,20 +69,15 @@ func main() {
 			cfg, err := LoadConfig(logger, cmd)
 			if err != nil {
 				logger.Error().Msgf("failed to load configuration: %v", err)
-				util.OsExit(util.ExitCodeERPCStartFailed)
+				return err
 			}
 
 			// Initialize the eRPC service
-			err = erpc.Init(
+			return erpc.Init(
 				context.Background(),
 				cfg,
 				logger,
 			)
-			if err != nil {
-				logger.Error().Msgf("failed to start eRPC: %v", err)
-				util.OsExit(util.ExitCodeERPCStartFailed)
-			}
-			return nil
 		},
 	}
 
@@ -104,7 +97,7 @@ func main() {
 		},
 	}
 	if err := cmd.Run(context.Background(), os.Args); err != nil {
-		logger.Error().Msgf("failed to execute cmd: %v", err)
+		logger.Error().Msgf("failed to start erpc: %v", err)
 		util.OsExit(util.ExitCodeERPCStartFailed)
 	}
 
