@@ -19,7 +19,8 @@ import (
 
 var mainMutex sync.Mutex
 
-func TestMain_Start_RealConfigFile(t *testing.T) {
+// Test default command with real config file, using config flag arg
+func TestMain_Default_FlagConfigFile(t *testing.T) {
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 
@@ -29,22 +30,89 @@ func TestMain_Start_RealConfigFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	localHost := "localhost"
-	localPort := fmt.Sprint(rand.Intn(1000) + 2000)
-	localBaseUrl := fmt.Sprintf("http://localhost:%s", localPort)
-	f.WriteString(`
-logLevel: DEBUG
-
-server:
-  httpHostV4: "` + localHost + `"
-  listenV4: true
-  httpPort: ` + localPort + `
-
-metrics:
-  enabled: false
-`)
+	localPort := rand.Intn(1000) + 2000
+	localBaseUrl := fmt.Sprintf("http://localhost:%d", localPort)
+	f.WriteString(getWorkingConfig(localPort))
 
 	os.Args = []string{"erpc-test", "--config", f.Name()}
+	go main()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// check if the server is running
+	if _, err := http.Get(localBaseUrl); err != nil {
+		t.Fatalf("expected server to be running, got %v", err)
+	}
+}
+
+// Test default command with real config file, using positional config arg
+func TestMain_Default_PositionalConfigFile(t *testing.T) {
+	mainMutex.Lock()
+	defer mainMutex.Unlock()
+
+	fs := afero.NewOsFs()
+
+	f, err := afero.TempFile(fs, "", "erpc.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	localPort := rand.Intn(1000) + 2000
+	localBaseUrl := fmt.Sprintf("http://localhost:%d", localPort)
+	f.WriteString(getWorkingConfig(localPort))
+
+	os.Args = []string{"erpc-test", f.Name()}
+	go main()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// check if the server is running
+	if _, err := http.Get(localBaseUrl); err != nil {
+		t.Fatalf("expected server to be running, got %v", err)
+	}
+}
+
+// Test start command with real config file, using config flag arg
+func TestMain_Start_FlagConfigFile(t *testing.T) {
+	mainMutex.Lock()
+	defer mainMutex.Unlock()
+
+	fs := afero.NewOsFs()
+
+	f, err := afero.TempFile(fs, "", "erpc.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	localPort := rand.Intn(1000) + 2000
+	localBaseUrl := fmt.Sprintf("http://localhost:%d", localPort)
+	f.WriteString(getWorkingConfig(localPort))
+
+	os.Args = []string{"erpc-test", "start", "--config", f.Name()}
+	go main()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// check if the server is running
+	if _, err := http.Get(localBaseUrl); err != nil {
+		t.Fatalf("expected server to be running, got %v", err)
+	}
+}
+
+// Test start command with real config file, using positional config arg
+func TestMain_Start_PositionalConfigFile(t *testing.T) {
+	mainMutex.Lock()
+	defer mainMutex.Unlock()
+
+	fs := afero.NewOsFs()
+
+	f, err := afero.TempFile(fs, "", "erpc.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	localPort := rand.Intn(1000) + 2000
+	localBaseUrl := fmt.Sprintf("http://localhost:%d", localPort)
+	f.WriteString(getWorkingConfig(localPort))
+
+	os.Args = []string{"erpc-test", "start", f.Name()}
 	go main()
 
 	time.Sleep(100 * time.Millisecond)
@@ -139,17 +207,7 @@ func TestMain_Validate_RealConfigFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.WriteString(`
-logLevel: DEBUG
-
-server:
-  httpHostV4: "localhost"
-  listenV4: true
-  httpPort: 8080
-
-metrics:
-  enabled: false
-`)
+	f.WriteString(getWorkingConfig(8080))
 
 	// Add info log
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
@@ -167,4 +225,23 @@ metrics:
 	if !strings.Contains(logs, expectedMsg) {
 		t.Errorf("expected log message containing %q, got %q", expectedMsg, logs)
 	}
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                   Helpers                                  */
+/* -------------------------------------------------------------------------- */
+
+// Working config file content
+func getWorkingConfig(port int) string {
+	return fmt.Sprintf(`
+logLevel: DEBUG
+
+server:
+  httpHostV4: "localhost"
+  listenV4: true
+  httpPort: %d
+
+metrics:
+  enabled: false
+`, port)
 }

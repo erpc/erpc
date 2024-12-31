@@ -37,7 +37,7 @@ type HttpServer struct {
 }
 
 func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.ServerConfig, admin *common.AdminConfig, erpc *ERPC) *HttpServer {
-	err := error(nil)
+	var err error
 	reqMaxTimeout := 150 * time.Second
 	if cfg.MaxTimeout != nil {
 		reqMaxTimeout, err = time.ParseDuration(*cfg.MaxTimeout)

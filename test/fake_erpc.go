@@ -164,7 +164,7 @@ func executeStressTest(config StressTestConfig) (*StressTestResult, error) {
 	}
 
 	// Initialize eRPC
-	err = initializeERPC(fs, erpcConfig)
+	err = initializeERPC(erpcConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -273,7 +273,7 @@ func prepareERPCConfig(fs afero.Fs, config StressTestConfig) (*common.Config, st
 // 	return upstreamsCfg
 // }
 
-func initializeERPC(fs afero.Fs, cfg *common.Config) error {
+func initializeERPC(cfg *common.Config) error {
 	logger := log.With().Logger()
 	return erpc.Init(context.Background(), cfg, logger)
 }

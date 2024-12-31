@@ -63,14 +63,21 @@ func main() {
 
 	// Define the main command
 	cmd := &cli.Command{
-		Name:    "erpc",
-		Usage:   "eRPC service, if no command is provided, it will start the service",
-		Version: common.ErpcVersion,
+		Name:      "erpc",
+		Usage:     "eRPC service, if no command is provided, it will start the service",
+		ArgsUsage: "[config file]",
+		Version:   common.ErpcVersion,
 		Flags: []cli.Flag{
 			configFileFlag,
 		},
-		// Defaulting to start the erpc server if no command provided
-		DefaultCommand: "start",
+		// Legacy action being the start one directly, to ensure we fetch the potential first arg as config file
+		Action: baseCliAction(logger, func(cfg *common.Config) error {
+			return erpc.Init(
+				context.Background(),
+				cfg,
+				logger,
+			)
+		}),
 		// sub command for start / validation
 		Commands: []*cli.Command{
 			startCmd,
@@ -119,9 +126,13 @@ func getConfig(
 	possibleConfigs := []string{"./erpc.js", "./erpc.ts", "./erpc.yaml", "./erpc.yml"}
 
 	if configFile := cmd.String("config"); len(configFile) > 1 {
+		// Check for the config flag, if present, use that file
 		configPath = configFile
+	} else if len(cmd.Args().Slice()) > 0 {
+		// Check for positional arg, if present, use that file
+		configPath = cmd.Args().First()
 	} else {
-		// Check for erpc.ts or erpc.yaml
+		// Check for defaults config paths
 		for _, path := range possibleConfigs {
 			if _, err := fs.Stat(path); err == nil {
 				configPath = path
