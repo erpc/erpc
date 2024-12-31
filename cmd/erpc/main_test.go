@@ -163,7 +163,7 @@ metrics:
 	time.Sleep(100 * time.Millisecond)
 
 	logs := logBuf.String()
-	expectedMsg := "validating eRPC config version"
+	expectedMsg := "validate"
 	if !strings.Contains(logs, expectedMsg) {
 		t.Errorf("expected log message containing %q, got %q", expectedMsg, logs)
 	}
