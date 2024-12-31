@@ -19,11 +19,11 @@ setup:
 
 .PHONY: run
 run:
-	@go run ./cmd/erpc/main.go ./cmd/erpc/validate.go
+	@go run ./cmd/erpc/main.go
 
 .PHONY: run-pprof
 run-pprof:
-	@go run ./cmd/erpc/main.go ./cmd/erpc/pprof.go ./cmd/erpc/validate.go
+	@go run ./cmd/erpc/main.go ./cmd/erpc/pprof.go
 
 .PHONY: run-fake-rpcs
 run-fake-rpcs:
@@ -35,7 +35,7 @@ run-k6:
 
 .PHONY: build
 build:
-	@CGO_ENABLED=0 go build -ldflags="-w -s" -o ./bin/erpc-server ./cmd/erpc/main.go ./cmd/erpc/validate.go
+	@CGO_ENABLED=0 go build -ldflags="-w -s" -o ./bin/erpc-server ./cmd/erpc/main.go
 	@CGO_ENABLED=0 go build -ldflags="-w -s" -tags pprof -o ./bin/erpc-server-pprof ./cmd/erpc/*.go
 
 .PHONY: test

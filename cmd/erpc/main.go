@@ -44,7 +44,7 @@ func main() {
 		Name:  "validate",
 		Usage: "Validate the eRPC configuration",
 		Action: baseCliAction(logger, func(cfg *common.Config) error {
-			return AnalyseConfig(cfg, logger)
+			return erpc.AnalyseConfig(cfg, logger)
 		}),
 	}
 
