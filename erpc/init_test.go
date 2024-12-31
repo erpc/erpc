@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
@@ -25,7 +26,6 @@ func init() {
 }
 
 func TestInit_AllGood(t *testing.T) {
-	t.Skip("Skipping since KO right now")
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 
@@ -68,6 +68,7 @@ func TestInit_AllGood(t *testing.T) {
 			HttpHostV4: &localHost,
 			ListenV4:   util.BoolPtr(true),
 			HttpPort:   &localPort,
+			MaxTimeout: util.StringPtr("5s"),
 		},
 		Projects: []*common.ProjectConfig{
 			{
@@ -142,7 +143,6 @@ func TestInit_AllGood(t *testing.T) {
 }
 
 func TestInit_InvalidHttpPort(t *testing.T) {
-	t.Skip("Skipping since KO right now")
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 
@@ -152,17 +152,27 @@ func TestInit_InvalidHttpPort(t *testing.T) {
 			HttpHostV4: util.StringPtr("localhost"),
 			ListenV4:   util.BoolPtr(true),
 			HttpPort:   util.IntPtr(-1),
+			MaxTimeout: util.StringPtr("5s"),
 		},
 	}
 
 	logger := log.Logger
-	err := Init(context.Background(), cfg, logger)
-	if err == nil {
-		t.Fatal("expected an error, got nil")
+
+	// Replace exit channel with a buffered channel
+	exitChan := make(chan int, 1)
+	util.OsExit = func(code int) {
+		exitChan <- code
 	}
 
-	if !strings.Contains(err.Error(), "does not exist") {
-		// todo: Get the right error message
-		t.Errorf("unexpected error: %s", err)
+	// Launch init
+	Init(context.Background(), cfg, logger)
+
+	select {
+	case code := <-exitChan:
+		if code != util.ExitCodeHttpServerFailed {
+			t.Errorf("expected exit code %d, got %d", util.ExitCodeHttpServerFailed, code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for Init to return an error")
 	}
 }
