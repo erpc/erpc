@@ -19,11 +19,11 @@ setup:
 
 .PHONY: run
 run:
-	@go run ./cmd/erpc/main.go
+	@go run ./cmd/erpc/main.go ./cmd/erpc/validate.go
 
 .PHONY: run-pprof
 run-pprof:
-	@go run ./cmd/erpc/main.go ./cmd/erpc/pprof.go
+	@go run ./cmd/erpc/main.go ./cmd/erpc/pprof.go ./cmd/erpc/validate.go
 
 .PHONY: run-fake-rpcs
 run-fake-rpcs:

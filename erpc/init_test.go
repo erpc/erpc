@@ -68,7 +68,6 @@ func TestInit_AllGood(t *testing.T) {
 			HttpHostV4: &localHost,
 			ListenV4:   util.BoolPtr(true),
 			HttpPort:   &localPort,
-			MaxTimeout: util.StringPtr("5s"),
 		},
 		Projects: []*common.ProjectConfig{
 			{
@@ -152,7 +151,6 @@ func TestInit_InvalidHttpPort(t *testing.T) {
 			HttpHostV4: util.StringPtr("localhost"),
 			ListenV4:   util.BoolPtr(true),
 			HttpPort:   util.IntPtr(-1),
-			MaxTimeout: util.StringPtr("5s"),
 		},
 	}
 
