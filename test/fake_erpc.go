@@ -19,7 +19,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/afero"
-	"gopkg.in/yaml.v2"
 )
 
 type ServerConfig struct {
@@ -165,7 +164,7 @@ func executeStressTest(config StressTestConfig) (*StressTestResult, error) {
 	}
 
 	// Initialize eRPC
-	err = initializeERPC(fs, erpcConfig)
+	err = initializeERPC(erpcConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -196,7 +195,7 @@ func executeStressTest(config StressTestConfig) (*StressTestResult, error) {
 	return fetchPrometheusMetrics(config.MetricsPort)
 }
 
-func prepareERPCConfig(fs afero.Fs, config StressTestConfig) (string, string, error) {
+func prepareERPCConfig(fs afero.Fs, config StressTestConfig) (*common.Config, string, error) {
 	localBaseUrl := fmt.Sprintf("http://localhost:%d", config.ServicePort)
 
 	upsList := []*common.UpstreamConfig{}
@@ -257,17 +256,7 @@ func prepareERPCConfig(fs afero.Fs, config StressTestConfig) (string, string, er
 		mergedConfig = MergeStructs(mergedConfig, config.AdditionalConfig)
 	}
 
-	cfgYaml, err := yaml.Marshal(mergedConfig)
-	os.Stdout.Write(cfgYaml)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to marshal merged config: %w", err)
-	}
-	cfg, err := createTempFile(fs, "erpc*.yaml", string(cfgYaml))
-	if err != nil {
-		return "", "", err
-	}
-
-	return cfg.Name(), localBaseUrl, nil
+	return mergedConfig, localBaseUrl, nil
 }
 
 // func generateUpstreamConfig(configs []ServerConfig) string {
@@ -284,10 +273,9 @@ func prepareERPCConfig(fs afero.Fs, config StressTestConfig) (string, string, er
 // 	return upstreamsCfg
 // }
 
-func initializeERPC(fs afero.Fs, configPath string) error {
-	args := []string{"erpc-test", configPath}
+func initializeERPC(cfg *common.Config) error {
 	logger := log.With().Logger()
-	return erpc.Init(context.Background(), logger, fs, args)
+	return erpc.Init(context.Background(), cfg, logger)
 }
 
 func runK6StressTest(fs afero.Fs, baseUrl string, config StressTestConfig) error {

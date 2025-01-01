@@ -11,44 +11,16 @@ import (
 	"github.com/erpc/erpc/util"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
-	"github.com/spf13/afero"
 )
 
 func Init(
 	appCtx context.Context,
+	cfg *common.Config,
 	logger zerolog.Logger,
-	fs afero.Fs,
-	args []string,
 ) error {
 	//
-	// 1) Load configuration
+	// 1) Set the right log level depending on the configuration
 	//
-	logger.Info().Msg("loading eRPC configuration")
-	configPath := ""
-	possibleConfigs := []string{"./erpc.js", "./erpc.ts", "./erpc.yaml", "./erpc.yml"}
-
-	if len(args) > 1 {
-		configPath = args[1]
-	} else {
-		// Check for erpc.ts or erpc.yaml
-		for _, path := range possibleConfigs {
-			if _, err := fs.Stat(path); err == nil {
-				configPath = path
-				break
-			}
-		}
-	}
-
-	if configPath == "" {
-		return fmt.Errorf("no valid configuration file found in %v", possibleConfigs)
-	}
-
-	logger.Info().Msgf("resolved configuration file to: %s", configPath)
-	cfg, err := common.LoadConfig(fs, configPath)
-
-	if err != nil {
-		return fmt.Errorf("failed to load configuration from %s: %v", configPath, err)
-	}
 	level, err := zerolog.ParseLevel(cfg.LogLevel)
 	if err != nil {
 		logger.Warn().Msgf("invalid log level '%s', defaulting to 'debug': %s", cfg.LogLevel, err)
