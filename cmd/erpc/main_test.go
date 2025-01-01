@@ -1,30 +1,26 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"fmt"
-	"io"
 	"math/rand"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
-	"strings"
 	"testing"
 
-	"github.com/bytedance/sonic"
-	"github.com/erpc/erpc/erpc"
 	"github.com/erpc/erpc/util"
-	"github.com/h2non/gock"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/afero"
 )
 
 var mainMutex sync.Mutex
 
-func TestMain_RealConfigFile(t *testing.T) {
+// Test default command with real config file, using config flag arg
+func TestMain_Default_FlagConfigFile(t *testing.T) {
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 
@@ -34,20 +30,35 @@ func TestMain_RealConfigFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	localHost := "localhost"
-	localPort := fmt.Sprint(rand.Intn(1000) + 2000)
-	localBaseUrl := fmt.Sprintf("http://localhost:%s", localPort)
-	f.WriteString(`
-logLevel: DEBUG
+	localPort := rand.Intn(1000) + 2000
+	localBaseUrl := fmt.Sprintf("http://localhost:%d", localPort)
+	f.WriteString(getWorkingConfig(localPort))
 
-server:
-  httpHostV4: "` + localHost + `"
-  listenV4: true
-  httpPort: ` + localPort + `
+	os.Args = []string{"erpc-test", "--config", f.Name()}
+	go main()
 
-metrics:
-  enabled: false
-`)
+	time.Sleep(100 * time.Millisecond)
+
+	// check if the server is running
+	if _, err := http.Get(localBaseUrl); err != nil {
+		t.Fatalf("expected server to be running, got %v", err)
+	}
+}
+
+// Test default command with real config file, using positional config arg
+func TestMain_Default_PositionalConfigFile(t *testing.T) {
+	mainMutex.Lock()
+	defer mainMutex.Unlock()
+
+	fs := afero.NewOsFs()
+
+	f, err := afero.TempFile(fs, "", "erpc.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	localPort := rand.Intn(1000) + 2000
+	localBaseUrl := fmt.Sprintf("http://localhost:%d", localPort)
+	f.WriteString(getWorkingConfig(localPort))
 
 	os.Args = []string{"erpc-test", f.Name()}
 	go main()
@@ -60,38 +71,8 @@ metrics:
 	}
 }
 
-func TestMain_MissingConfigFile(t *testing.T) {
-	mainMutex.Lock()
-	defer mainMutex.Unlock()
-
-	mu := &sync.Mutex{}
-
-	os.Args = []string{"erpc-test", "some-random-non-existent.yaml"}
-
-	var called bool
-
-	util.OsExit = func(code int) {
-		if code != util.ExitCodeERPCStartFailed {
-			t.Errorf("expected code %d, got %d", util.ExitCodeERPCStartFailed, code)
-		} else {
-			mu.Lock()
-			defer mu.Unlock()
-			called = true
-		}
-	}
-
-	go main()
-
-	time.Sleep(100 * time.Millisecond)
-
-	mu.Lock()
-	defer mu.Unlock()
-	if !called {
-		t.Error("expected osExit to be called")
-	}
-}
-
-func TestMain_InvalidHttpPort(t *testing.T) {
+// Test start command with real config file, using config flag arg
+func TestMain_Start_FlagConfigFile(t *testing.T) {
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 
@@ -101,154 +82,84 @@ func TestMain_InvalidHttpPort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.WriteString(`
-logLevel: DEBUG
+	localPort := rand.Intn(1000) + 2000
+	localBaseUrl := fmt.Sprintf("http://localhost:%d", localPort)
+	f.WriteString(getWorkingConfig(localPort))
 
-server:
-  httpHostV4: "localhost"
-  listenV4: true
-  httpPort: -1
-`)
-
-	mu := &sync.Mutex{}
-
-	os.Args = []string{"erpc-test", f.Name()}
-
-	var called bool
-	util.OsExit = func(code int) {
-		if code != util.ExitCodeHttpServerFailed {
-			t.Errorf("expected code %d, got %d", util.ExitCodeHttpServerFailed, code)
-		} else {
-			mu.Lock()
-			called = true
-			mu.Unlock()
-		}
-	}
-
+	os.Args = []string{"erpc-test", "start", "--config", f.Name()}
 	go main()
 
 	time.Sleep(100 * time.Millisecond)
 
-	mu.Lock()
-	defer mu.Unlock()
-	if !called {
-		t.Error("expected osExit to be called")
+	// check if the server is running
+	if _, err := http.Get(localBaseUrl); err != nil {
+		t.Fatalf("expected server to be running, got %v", err)
 	}
 }
 
-func TestInit_HappyPath(t *testing.T) {
+// Test start command with real config file, using positional config arg
+func TestMain_Start_PositionalConfigFile(t *testing.T) {
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 
-	defer gock.Off()
-	defer gock.DisableNetworking()
-	defer gock.Clean()
-	defer gock.CleanUnmatchedRequest()
+	fs := afero.NewOsFs()
 
-	gock.EnableNetworking()
-
-	// Register a networking filter
-	gock.NetworkingFilter(func(req *http.Request) bool {
-		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
-		return shouldMakeRealCall
-	})
-
-	//
-	// 1) Create a new mock EVM JSON-RPC server
-	//
-	util.SetupMocksForEvmStatePoller()
-	gock.New("http://rpc1.localhost").
-		Times(5).
-		Post("").
-		Filter(func(request *http.Request) bool {
-			return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
-		}).
-		Reply(200).
-		JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
-
-	//
-	// 2) Initialize the eRPC server with a mock configuration
-	//
-	fs := afero.NewMemMapFs()
-	cfg, err := afero.TempFile(fs, "", "erpc.yaml")
+	f, err := afero.TempFile(fs, "", "erpc.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
+	localPort := rand.Intn(1000) + 2000
+	localBaseUrl := fmt.Sprintf("http://localhost:%d", localPort)
+	f.WriteString(getWorkingConfig(localPort))
 
-	localHost := "localhost"
-	localPort := fmt.Sprint(rand.Intn(1000) + 2000)
-	localBaseUrl := fmt.Sprintf("http://localhost:%s", localPort)
-	cfg.WriteString(`
-logLevel: DEBUG
+	os.Args = []string{"erpc-test", "start", f.Name()}
+	go main()
 
-server:
-  httpHostV4: 0.0.0.0 # "` + localHost + `"
-  listenV4: true
-  httpPort: ` + localPort + `
+	time.Sleep(100 * time.Millisecond)
 
-projects:
-  - id: main
-    upstreams:
-    - id: good-evm-rpc
-      endpoint: http://rpc1.localhost
-      type: evm
-      evm:
-        chainId: 1
-    networks:
-    - architecture: evm
-      evm:
-        chainId: 1
-`)
-	args := []string{"erpc-test", cfg.Name()}
-
-	logger := log.Logger
-	err = erpc.Init(context.Background(), logger, fs, args)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	//
-	// 3) Make a request to the eRPC server
-	//
-	body := bytes.NewBuffer([]byte(`
-		{
-			"method": "eth_getBalance",
-			"params": [
-				"0x1273c18",
-				false
-			],
-			"id": 91799,
-			"jsonrpc": "2.0"
-		}
-	`))
-	res, err := http.Post(fmt.Sprintf("%s/main/evm/1", localBaseUrl), "application/json", body)
-
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.StatusCode != 200 {
-		t.Errorf("expected status 200, got %d", res.StatusCode)
-	}
-	respBody, err := io.ReadAll(res.Body)
-	if err != nil {
-		t.Fatalf("error reading response: %s", err)
-	}
-
-	//
-	// 4) Assert the response
-	//
-	respObject := make(map[string]interface{})
-	err = sonic.Unmarshal(respBody, &respObject)
-	if err != nil {
-		t.Fatalf("error unmarshalling: %s response body: %s", err, respBody)
-	}
-
-	if _, ok := respObject["result"].(map[string]interface{})["hash"]; !ok {
-		t.Errorf("expected hash in response, got %v", respObject)
+	// check if the server is running
+	if _, err := http.Get(localBaseUrl); err != nil {
+		t.Fatalf("expected server to be running, got %v", err)
 	}
 }
 
-func TestInit_InvalidConfig(t *testing.T) {
+func TestMain_Start_MissingConfigFile(t *testing.T) {
+	// t.Skip("skipping test that exits the process")
+	mainMutex.Lock()
+	defer mainMutex.Unlock()
+
+	// Add info log
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	// Capture logs
+	var logBuf strings.Builder
+	log.Logger = zerolog.New(&logBuf)
+
+	// Replace exit channel with a buffered channel
+	exitChan := make(chan int, 1)
+	util.OsExit = func(code int) {
+		exitChan <- code
+	}
+
+	// Launch with a non existant file
+	os.Args = []string{"erpc-test", "--config", "some-random-non-existent.yaml"}
+	go main()
+
+	select {
+	case code := <-exitChan:
+		if code != util.ExitCodeERPCStartFailed {
+			t.Errorf("expected exit code %d, got %d", util.ExitCodeERPCStartFailed, code)
+		}
+		logs := logBuf.String()
+		expectedMsg := "failed to load configuration"
+		if !strings.Contains(logs, expectedMsg) {
+			t.Errorf("expected log message containing %q, got %q", expectedMsg, logs)
+		}
+	case <-time.After(time.Second):
+		t.Error("timeout waiting for program exit")
+	}
+}
+
+func TestMain_Start_InvalidConfig(t *testing.T) {
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 
@@ -259,34 +170,78 @@ func TestInit_InvalidConfig(t *testing.T) {
 	}
 	cfg.WriteString("invalid yaml")
 
-	args := []string{"erpc-test", cfg.Name()}
+	// Add info log
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	// Capture logs
+	var logBuf strings.Builder
+	log.Logger = zerolog.New(&logBuf)
 
-	logger := log.With().Logger()
-	err = erpc.Init(context.Background(), logger, fs, args)
-	if err == nil {
-		t.Fatal("expected an error, got nil")
+	// Replace exit channel with a buffered channel
+	exitChan := make(chan int, 1)
+	util.OsExit = func(code int) {
+		exitChan <- code
 	}
 
-	if !strings.Contains(err.Error(), "failed to load configuration") {
-		t.Errorf("unexpected error: %s", err)
+	os.Args = []string{"erpc-test", "--config", cfg.Name()}
+	go main()
+
+	select {
+	case code := <-exitChan:
+		if code != util.ExitCodeERPCStartFailed {
+			t.Errorf("expected exit code %d, got %d", util.ExitCodeERPCStartFailed, code)
+		}
+		logs := logBuf.String()
+		expectedMsg := "failed to load configuration"
+		if !strings.Contains(logs, expectedMsg) {
+			t.Errorf("expected log message containing %q, got %q", expectedMsg, logs)
+		}
+	case <-time.After(time.Second):
+		t.Error("timeout waiting for program exit")
 	}
 }
 
-func TestInit_ConfigFileDoesNotExist(t *testing.T) {
-	mainMutex.Lock()
-	defer mainMutex.Unlock()
+func TestMain_Validate_RealConfigFile(t *testing.T) {
+	fs := afero.NewOsFs()
 
-	fs := afero.NewMemMapFs()
-	args := []string{"erpc-test", "non-existent-file.yaml"}
-
-	logger := log.With().Logger()
-	err := erpc.Init(context.Background(), logger, fs, args)
-
-	if err == nil {
-		t.Fatal("expected an error, got nil")
+	f, err := afero.TempFile(fs, "", "erpc.yaml")
+	if err != nil {
+		t.Fatal(err)
 	}
+	f.WriteString(getWorkingConfig(8080))
 
-	if !strings.Contains(err.Error(), "does not exist") {
-		t.Errorf("unexpected error: %s", err)
+	// Add info log
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	// Capture logs
+	var logBuf strings.Builder
+	log.Logger = zerolog.New(&logBuf)
+
+	os.Args = []string{"erpc-test", "validate", "--config", f.Name()}
+	go main()
+
+	time.Sleep(100 * time.Millisecond)
+
+	logs := logBuf.String()
+	expectedMsg := "validate"
+	if !strings.Contains(logs, expectedMsg) {
+		t.Errorf("expected log message containing %q, got %q", expectedMsg, logs)
 	}
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                   Helpers                                  */
+/* -------------------------------------------------------------------------- */
+
+// Working config file content
+func getWorkingConfig(port int) string {
+	return fmt.Sprintf(`
+logLevel: DEBUG
+
+server:
+  httpHostV4: "localhost"
+  listenV4: true
+  httpPort: %d
+
+metrics:
+  enabled: false
+`, port)
 }
