@@ -42,7 +42,6 @@ func (p *PreparedProject) Bootstrap(ctx context.Context) error {
 
 	if p.initializer == nil {
 		p.initializer = util.NewInitializer(
-			fmt.Sprintf("project/%s", p.Config.Id),
 			p.Logger,
 			nil,
 		)
