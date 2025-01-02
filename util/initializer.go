@@ -2,22 +2,23 @@ package util
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 type InitializationState int
 
 const (
 	StateUninitialized InitializationState = iota
-	StateRegistered
 	StateInitializing
 	StatePartial
+	StateRetrying
 	StateReady
 	StateFailed
-	StateDestroyed
 )
 
 type TaskState int
@@ -26,16 +27,26 @@ const (
 	TaskPending TaskState = iota
 	TaskRunning
 	TaskSucceeded
+	TaskTimedOut
 	TaskFailed
 )
 
 type BootstrapTask struct {
 	Name        string
 	Fn          func(ctx context.Context) error
-	state       TaskState
-	lastErr     error
-	lastAttempt time.Time
-	attempts    int
+	state       atomic.Int32 // TaskState
+	lastErr     atomic.Value // error
+	lastAttempt atomic.Value // time.Time
+	attempts    atomic.Int32
+	done        chan struct{} // Signals when task reaches terminal state
+}
+
+func NewBootstrapTask(name string, fn func(ctx context.Context) error) *BootstrapTask {
+	return &BootstrapTask{
+		Name: name,
+		Fn:   fn,
+		done: make(chan struct{}),
+	}
 }
 
 type TaskError struct {
@@ -46,317 +57,232 @@ type TaskError struct {
 }
 
 func (t *BootstrapTask) Error() *TaskError {
-	if t.lastErr == nil {
+	if t.lastErr.Load() == nil {
 		return nil
 	}
 	return &TaskError{
 		TaskName:  t.Name,
-		Err:       t.lastErr,
-		Timestamp: t.lastAttempt,
-		Attempt:   t.attempts,
+		Err:       t.lastErr.Load().(error),
+		Timestamp: t.lastAttempt.Load().(time.Time),
+		Attempt:   int(t.attempts.Load()),
 	}
 }
 
 type InitializerConfig struct {
-	RetryFactor      float64
-	RetryMinDelay    time.Duration
-	RetryMaxDelay    time.Duration
-	BootstrapTimeout time.Duration
-	AutoRetry        bool
+	// TaskTimeout is the maximum time to wait for a task to complete before
+	// marking it as failed.
+	TaskTimeout time.Duration
+
+	// AutoRetry is whether to retry failed tasks automatically.
+	// If true, it will retry failed tasks in a loop with exponential backoff
+	// indefinitely in the background.
+	AutoRetry bool
+	// RetryFactor is the factor to multiply the delay by after each retry.
+	RetryFactor float64
+	// RetryMinDelay is the minimum delay between retries.
+	RetryMinDelay time.Duration
+	// RetryMaxDelay is the maximum delay between retries.
+	RetryMaxDelay time.Duration
 }
 
+// Initializer manages lifecycle of initialization for various components.
+// It handles parallel subtasks, retrying failures, and tracking overall state.
 type Initializer struct {
-	name            string
-	state           InitializationState
-	lastErr         error
-	mu              sync.Mutex
-	destroyOnce     sync.Once
-	bootstrapOnce   sync.Once
-	attempts        int
-	bootstrapTasks  []*BootstrapTask
-	autoRetryActive bool
-	autoRetryWg     sync.WaitGroup
-	cancelAutoRetry context.CancelFunc
-	conf            *InitializerConfig
+	name     string
+	logger   *zerolog.Logger
+	attempts atomic.Int32
+	tasks    sync.Map
+	tasksMu  sync.Mutex
+
+	autoRetryActive atomic.Bool
+	cancelAutoRetry atomic.Value // context.CancelFunc
+
+	conf *InitializerConfig
 }
 
-func NewInitializer(name string, conf *InitializerConfig) *Initializer {
+func NewInitializer(name string, logger *zerolog.Logger, conf *InitializerConfig) *Initializer {
 	if conf == nil {
 		conf = &InitializerConfig{
-			RetryMinDelay:    3 * time.Second,
-			RetryFactor:      1.5,
-			RetryMaxDelay:    30 * time.Second,
-			BootstrapTimeout: 0,
-			AutoRetry:        false,
+			TaskTimeout:   60 * time.Second,
+			AutoRetry:     true,
+			RetryMinDelay: 3 * time.Second,
+			RetryFactor:   1.5,
+			RetryMaxDelay: 30 * time.Second,
 		}
 	}
 	return &Initializer{
-		name:  name,
-		state: StateUninitialized,
-		conf:  conf,
+		name:            name,
+		logger:          logger,
+		attempts:        atomic.Int32{},
+		autoRetryActive: atomic.Bool{},
+		conf:            conf,
 	}
 }
 
-func (i *Initializer) Register(registerTasksFn func() []*BootstrapTask) error {
-	i.mu.Lock()
-	defer i.mu.Unlock()
+func (i *Initializer) ExecuteTasks(ctx context.Context, tasks ...*BootstrapTask) error {
+	var tasksToWait []*BootstrapTask
 
-	if i.state == StateDestroyed {
-		return fmt.Errorf("cannot register %s, destroyed", i.name)
+	i.tasksMu.Lock()
+	for _, task := range tasks {
+		// Load existing task or store new one
+		actual, existed := i.tasks.LoadOrStore(task.Name, task)
+		bts := actual.(*BootstrapTask)
+		i.logger.Debug().Bool("existed", existed).Int32("state", bts.state.Load()).Str("task", task.Name).Msg("executing task")
+		tasksToWait = append(tasksToWait, bts)
 	}
-	switch i.state {
-	case StateRegistered, StateInitializing, StateReady, StatePartial, StateFailed:
-		return nil
+	i.tasksMu.Unlock()
+
+	i.ensureAutoRetryIfEnabled(ctx)
+	i.attemptRemainingTasks(ctx)
+
+	return i.waitForTasks(ctx, tasksToWait...)
+}
+
+func (i *Initializer) WaitForTasks(ctx context.Context) error {
+	allTasks := []*BootstrapTask{}
+	i.tasks.Range(func(key, value interface{}) bool {
+		allTasks = append(allTasks, value.(*BootstrapTask))
+		return true
+	})
+	return i.waitForTasks(ctx)
+}
+
+func (i *Initializer) waitForTasks(ctx context.Context, tasks ...*BootstrapTask) error {
+	if len(tasks) == 0 {
+		tasks = []*BootstrapTask{}
+		i.tasks.Range(func(key, value interface{}) bool {
+			tasks = append(tasks, value.(*BootstrapTask))
+			return true
+		})
 	}
-	if i.state == StateUninitialized {
-		tasks := registerTasksFn()
-		for _, t := range tasks {
-			t.state = TaskPending
+
+	errs := []error{}
+	for _, task := range tasks {
+		select {
+		case <-task.done:
+			if TaskState(task.state.Load()) == TaskFailed {
+				errs = append(errs, task.lastErr.Load().(error))
+			}
+		case <-ctx.Done():
+			return ctx.Err()
 		}
-		i.bootstrapTasks = tasks
-		i.state = StateRegistered
-		i.lastErr = nil
 	}
+
+	if len(errs) > 0 {
+		totalTasks := len(tasks)
+		totalErrors := len(errs)
+		i.logger.Warn().Errs("tasks", errs).Msgf("initialization failed: %d/%d tasks failed", totalErrors, totalTasks)
+		return fmt.Errorf("initialization failed: %d/%d tasks failed", totalErrors, totalTasks)
+	}
+
 	return nil
 }
 
-// Bootstrap will attempt to run all tasks. If any tasks fail, it sets partial or failed.
-// It waits up to InitializerConfig.BootstrapTimeout. If it times out, it returns immediately.
-// After that, if AutoRetry is true and tasks are not fully ready, it starts auto-retries in the background.
-func (i *Initializer) Bootstrap(ctx context.Context) error {
-	var err error
+func (i *Initializer) attemptRemainingTasks(ctx context.Context) {
+	i.tasksMu.Lock()
 
-	i.bootstrapOnce.Do(func() {
-		i.mu.Lock()
-		if i.state == StateDestroyed {
-			i.mu.Unlock()
-			err = fmt.Errorf("cannot bootstrap %s, destroyed", i.name)
-			return
-		}
-		if i.state == StateReady {
-			i.mu.Unlock()
-			return
-		}
-		if i.state == StateUninitialized {
-			i.state = StateRegistered
-		}
-		i.state = StateInitializing
-		i.attempts++
-		i.mu.Unlock()
+	var tasksToRun []*BootstrapTask
+	var total int
 
-		var bctx context.Context
-		var cancel context.CancelFunc
-		if i.conf.BootstrapTimeout > 0 {
-			bctx, cancel = context.WithTimeout(ctx, i.conf.BootstrapTimeout)
-		} else {
-			bctx, cancel = context.WithCancel(ctx)
+	i.tasks.Range(func(key, value interface{}) bool {
+		total++
+		t := value.(*BootstrapTask)
+		state := TaskState(t.state.Load())
+		if state == TaskPending || state == TaskFailed || state == TaskTimedOut {
+			t.state.Store(int32(TaskRunning))
+			t.attempts.Add(1)
+			t.lastAttempt.Store(time.Now())
+			tasksToRun = append(tasksToRun, t)
 		}
-		defer cancel()
-
-		i.runBootstrapTasks(bctx)
-
-		i.mu.Lock()
-		if i.state == StateDestroyed {
-			i.mu.Unlock()
-			err = fmt.Errorf("bootstrap canceled, %s destroyed", i.name)
-			return
-		}
-
-		failedCount := 0
-		pendingCount := 0
-		for _, task := range i.bootstrapTasks {
-			if task.state == TaskFailed {
-				failedCount++
-			} else if task.state == TaskPending {
-				pendingCount++
-			}
-		}
-
-		if failedCount > 0 {
-			successCount := len(i.bootstrapTasks) - failedCount - pendingCount
-			if successCount > 0 {
-				i.state = StatePartial
-			} else {
-				i.state = StateFailed
-			}
-			i.lastErr = fmt.Errorf("%d task(s) failed", failedCount)
-			err = i.lastErr
-			if i.conf.AutoRetry {
-				i.startAutoRetryLocked(ctx)
-			}
-			i.mu.Unlock()
-			return
-		}
-
-		if pendingCount > 0 {
-			i.state = StatePartial
-			i.lastErr = fmt.Errorf("%d task(s) still pending or timed out", pendingCount)
-			err = i.lastErr
-			if i.conf.AutoRetry {
-				i.startAutoRetryLocked(ctx)
-			}
-			i.mu.Unlock()
-			return
-		}
-
-		i.state = StateReady
-		i.lastErr = nil
-		i.mu.Unlock()
+		return true
 	})
 
-	return err
-}
+	if len(tasksToRun) == 0 {
+		i.tasksMu.Unlock()
+		return
+	}
 
-// runBootstrapTasks runs tasks sequentially. If the context times out mid-task, subsequent tasks remain pending.
-func (i *Initializer) runBootstrapTasks(ctx context.Context) {
-	i.mu.Lock()
-	defer i.mu.Unlock()
+	// Run tasks in parallel
+	for _, task := range tasksToRun {
+		go func(t *BootstrapTask) {
+			i.logger.Debug().Str("timeout", i.conf.TaskTimeout.String()).Str("task", t.Name).Msg("running task")
 
-	for _, task := range i.bootstrapTasks {
-		if task.state == TaskSucceeded || task.state == TaskFailed {
-			continue
-		}
-		if ctx.Err() != nil {
-			break
-		}
-		task.state = TaskRunning
-		task.attempts++
-		task.lastAttempt = time.Now()
-		i.mu.Unlock()
-		err := task.Fn(ctx)
-		i.mu.Lock()
-		if ctx.Err() != nil {
-			// If context timed out or canceled after the call started,
-			// we just stop running further tasks. This task might have partial side-effects.
-			if err == nil {
-				// If the function didn't error, but context ended, we can mark it partial success or just fail
-				// for simplicity let's fail it.
-				err = ctx.Err()
+			tctx, cancel := context.WithTimeout(ctx, i.conf.TaskTimeout)
+			defer cancel()
+
+			err := t.Fn(tctx)
+			if err == nil && tctx.Err() != nil {
+				err = tctx.Err()
 			}
-		}
-		if err != nil {
-			task.state = TaskFailed
-			task.lastErr = err
-		} else {
-			task.state = TaskSucceeded
-		}
+
+			if err != nil {
+				t.lastErr.Store(err)
+				t.state.Store(int32(TaskFailed))
+				i.logger.Warn().Str("task", t.Name).Err(err).Msg("initialization task failed")
+			} else {
+				t.state.Store(int32(TaskSucceeded))
+				i.logger.Info().Str("task", t.Name).Msg("initialization task succeeded")
+			}
+			close(t.done)
+		}(task)
 	}
+
+	i.tasksMu.Unlock()
+	// return i.waitForTasks(ctx, tasksToRun)
 }
 
-func (i *Initializer) RetryFailedTasks(ctx context.Context) error {
-	i.mu.Lock()
-	switch i.state {
-	case StateReady:
-		i.mu.Unlock()
-		return nil
-	case StateFailed, StatePartial:
-		i.state = StateInitializing
-	default:
-		if i.state == StateDestroyed {
-			i.mu.Unlock()
-			return fmt.Errorf("cannot retry %s, destroyed", i.name)
-		}
-		if i.state == StateInitializing {
-			i.mu.Unlock()
-			return errors.New("already initializing, cannot retry")
-		}
-		if i.state == StateUninitialized || i.state == StateRegistered {
-			i.mu.Unlock()
-			return fmt.Errorf("cannot retry tasks, must bootstrap first")
-		}
-	}
-	i.attempts++
-	i.mu.Unlock()
-
-	i.runBootstrapTasks(ctx)
-
-	i.mu.Lock()
-	defer i.mu.Unlock()
-
-	failedCount := 0
-	pendingCount := 0
-	for _, t := range i.bootstrapTasks {
-		if t.state == TaskFailed {
-			failedCount++
-		} else if t.state == TaskPending {
-			pendingCount++
-		}
-	}
-	if failedCount == 0 && pendingCount == 0 {
-		i.state = StateReady
-		i.lastErr = nil
-		return nil
-	}
-	if failedCount == 0 && pendingCount > 0 {
-		i.state = StatePartial
-		i.lastErr = fmt.Errorf("%d task(s) still pending", pendingCount)
-		return i.lastErr
-	}
-	successCount := len(i.bootstrapTasks) - failedCount - pendingCount
-	if successCount > 0 {
-		i.state = StatePartial
-		i.lastErr = fmt.Errorf("%d task(s) still failed", failedCount)
-	} else {
-		i.state = StateFailed
-		i.lastErr = fmt.Errorf("all tasks failed")
-	}
-	return i.lastErr
-}
-
-// StartAutoRetry can be called manually, but we also call it automatically
-// if AutoRetry is true and the first bootstrap ends in partial/failure.
-func (i *Initializer) StartAutoRetry(ctx context.Context) {
-	i.mu.Lock()
-	i.startAutoRetryLocked(ctx)
-	i.mu.Unlock()
-}
-
-func (i *Initializer) startAutoRetryLocked(ctx context.Context) {
-	if i.autoRetryActive {
+// ensureAutoRetryIfEnabled spins up a goroutine for auto-retry if not already active.
+func (i *Initializer) ensureAutoRetryIfEnabled(ctx context.Context) {
+	if !i.conf.AutoRetry {
 		return
 	}
-	if i.state == StateDestroyed {
+
+	if i.autoRetryActive.Load() {
 		return
 	}
-	i.autoRetryActive = true
 
+	i.autoRetryActive.Store(true)
 	rctx, cancel := context.WithCancel(ctx)
-	i.cancelAutoRetry = cancel
-	i.autoRetryWg.Add(1)
+	i.cancelAutoRetry.Store(cancel)
 
 	go i.autoRetryLoop(rctx)
 }
 
+// autoRetryLoop continuously attempts tasks, with exponential backoff, until they're all successful
+// or the initializer is destroyed.
 func (i *Initializer) autoRetryLoop(ctx context.Context) {
-	defer i.autoRetryWg.Done()
-	defer i.cancelAutoRetry()
+	if cancel := i.cancelAutoRetry.Load(); cancel != nil {
+		defer cancel.(context.CancelFunc)()
+	}
+
+	if i.State() == StateReady {
+		i.autoRetryActive.Store(false)
+		return
+	}
 
 	delay := i.conf.RetryMinDelay
 	for {
-		i.mu.Lock()
-		s := i.state
-		i.mu.Unlock()
-
-		if s == StateDestroyed || s == StateReady {
-			return
-		}
-
-		err := i.RetryFailedTasks(ctx)
+		i.attempts.Add(1)
+		i.attemptRemainingTasks(ctx)
+		err := i.waitForTasks(ctx)
 		if err == nil {
-			i.mu.Lock()
-			if i.state == StateReady || i.state == StateDestroyed {
-				i.mu.Unlock()
+			// If there's no error, it means all tasks have succeeded => state=StateReady
+			if i.State() == StateReady {
+				i.autoRetryActive.Store(false)
 				return
 			}
-			i.mu.Unlock()
 		}
 
+		i.logger.Warn().Err(err).Msgf("initialization auto-retry failed, will retry in %v", delay)
 		select {
 		case <-ctx.Done():
+			i.logger.Debug().Err(ctx.Err()).Msg("initialization auto-retry cancelled")
+			i.autoRetryActive.Store(false)
 			return
 		case <-time.After(delay):
 		}
 
+		// Increase the delay up to the max.
 		delay = time.Duration(float64(delay) * i.conf.RetryFactor)
 		if delay > i.conf.RetryMaxDelay {
 			delay = i.conf.RetryMaxDelay
@@ -364,61 +290,57 @@ func (i *Initializer) autoRetryLoop(ctx context.Context) {
 	}
 }
 
-func (i *Initializer) Destroy(destroyFn func() error) error {
-	var err error
-	i.destroyOnce.Do(func() {
-		i.mu.Lock()
-		if i.state == StateDestroyed {
-			i.mu.Unlock()
-			return
-		}
-		if i.cancelAutoRetry != nil {
-			i.cancelAutoRetry()
-		}
-		i.state = StateDestroyed
-		i.mu.Unlock()
-
-		i.autoRetryWg.Wait()
-
-		if destroyFn != nil {
-			err = destroyFn()
-		}
-	})
-	return err
-}
-
-func (i *Initializer) MarkPartial(err error) {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	if i.state == StateDestroyed {
-		return
-	}
-	i.state = StatePartial
-	i.lastErr = err
-}
-
 func (i *Initializer) State() InitializationState {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	return i.state
+	var total, pending, running, succeeded, failed int
+	i.tasks.Range(func(key, value interface{}) bool {
+		total++
+		t := value.(*BootstrapTask)
+		state := TaskState(t.state.Load())
+		if state == TaskPending {
+			pending++
+		} else if state == TaskRunning {
+			running++
+		} else if state == TaskSucceeded {
+			succeeded++
+		} else if state == TaskFailed {
+			failed++
+		}
+		return true
+	})
+	if total == succeeded {
+		return StateReady
+	}
+	if failed > 0 && pending == 0 && running == 0 && succeeded == 0 {
+		return StateFailed
+	}
+	if i.attempts.Load() > 1 && (pending > 0 || running > 0) {
+		return StateRetrying
+	}
+	return StatePartial
 }
 
-func (i *Initializer) LastError() error {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	return i.lastErr
+// Status returns the overall state and scenario of the initializer and its tasks.
+func (i *Initializer) Status() *InitializerStatus {
+	state := i.State()
+	return &InitializerStatus{
+		State: state,
+		Tasks: i.tasksStatus(),
+	}
 }
 
-func (i *Initializer) Name() string {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	return i.name
-}
+// Stop halts any background retries, marks the initializer destroyed, and executes destroyFn if provided.
+func (i *Initializer) Stop(destroyFn func() error) error {
+	i.tasksMu.Lock()
+	defer i.tasksMu.Unlock()
 
-func (i *Initializer) Attempts() int {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	return i.attempts
+	var err error
+	if cancel := i.cancelAutoRetry.Load(); cancel != nil {
+		cancel.(context.CancelFunc)()
+	}
+	if destroyFn != nil {
+		err = destroyFn()
+	}
+	return err
 }
 
 type TaskStatus struct {
@@ -429,33 +351,25 @@ type TaskStatus struct {
 	Attempts    int
 }
 
-func (i *Initializer) TasksStatus() []TaskStatus {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-
-	res := make([]TaskStatus, 0, len(i.bootstrapTasks))
-	for _, t := range i.bootstrapTasks {
-		res = append(res, TaskStatus{
+// tasksStatus generates a slice of TaskStatus for all known tasks.
+func (i *Initializer) tasksStatus() []TaskStatus {
+	var statuses []TaskStatus
+	i.tasks.Range(func(key, value interface{}) bool {
+		t := value.(*BootstrapTask)
+		statuses = append(statuses, TaskStatus{
 			Name:        t.Name,
-			State:       t.state,
-			Err:         t.lastErr,
-			LastAttempt: t.lastAttempt,
-			Attempts:    t.attempts,
+			State:       TaskState(t.state.Load()),
+			Err:         t.lastErr.Load().(error),
+			LastAttempt: t.lastAttempt.Load().(time.Time),
+			Attempts:    int(t.attempts.Load()),
 		})
-	}
-	return res
+		return true
+	})
+	return statuses
 }
 
 type InitializerStatus struct {
 	State     InitializationState
 	LastError error
 	Tasks     []TaskStatus
-}
-
-func (i *Initializer) Status() *InitializerStatus {
-	return &InitializerStatus{
-		State:     i.State(),
-		LastError: i.LastError(),
-		Tasks:     i.TasksStatus(),
-	}
 }
