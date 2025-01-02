@@ -63,9 +63,9 @@ func (r *ProjectsRegistry) GetProject(projectId string) (project *PreparedProjec
 	}
 	project, exists := r.preparedProjects[projectId]
 	if !exists {
-		project, err = r.loadProject(projectId)
+		return nil, common.NewErrProjectNotFound(projectId)
 	}
-	return
+	return project, nil
 }
 
 func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*PreparedProject, error) {
@@ -141,16 +141,4 @@ func (r *ProjectsRegistry) GetAll() []*PreparedProject {
 		projects = append(projects, project)
 	}
 	return projects
-}
-
-func (r *ProjectsRegistry) loadProject(projectId string) (*PreparedProject, error) {
-	for _, prjCfg := range r.staticProjects {
-		if prjCfg.Id == projectId {
-			return r.RegisterProject(prjCfg)
-		}
-	}
-
-	// TODO implement dynamic project config loading from DB
-
-	return nil, common.NewErrProjectNotFound(projectId)
 }

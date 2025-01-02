@@ -144,8 +144,8 @@ func (e *ERPC) AdminHandleRequest(ctx context.Context, nq *common.NormalizedRequ
 			return nil, err
 		}
 		type configResult struct {
-			Config *common.ProjectConfig     `json:"config"`
-			Health *upstream.UpstreamsHealth `json:"health"`
+			Config *common.ProjectConfig `json:"config"`
+			Health *ProjectHealthInfo    `json:"health"`
 		}
 		if len(jrr.Params) == 0 {
 			return nil, common.NewErrInvalidRequest(fmt.Errorf("project id (params[0]) is required"))
