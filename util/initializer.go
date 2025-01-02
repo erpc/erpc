@@ -88,7 +88,6 @@ type InitializerConfig struct {
 // Initializer manages lifecycle of initialization for various components.
 // It handles parallel subtasks, retrying failures, and tracking overall state.
 type Initializer struct {
-	name     string
 	logger   *zerolog.Logger
 	attempts atomic.Int32
 	tasks    sync.Map
@@ -100,7 +99,7 @@ type Initializer struct {
 	conf *InitializerConfig
 }
 
-func NewInitializer(name string, logger *zerolog.Logger, conf *InitializerConfig) *Initializer {
+func NewInitializer(logger *zerolog.Logger, conf *InitializerConfig) *Initializer {
 	if conf == nil {
 		conf = &InitializerConfig{
 			TaskTimeout:   60 * time.Second,
@@ -111,7 +110,6 @@ func NewInitializer(name string, logger *zerolog.Logger, conf *InitializerConfig
 		}
 	}
 	return &Initializer{
-		name:            name,
 		logger:          logger,
 		attempts:        atomic.Int32{},
 		autoRetryActive: atomic.Bool{},
