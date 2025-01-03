@@ -9,17 +9,15 @@
     "type": "git",
     "url": "git+https://github.com/erpc/erpc.git"
   },
-  "keywords": [
-    "cli",
-    "erpc"
-  ],
+  "keywords": ["cli", "erpc"],
   "author": "erpc",
   "license": "Apache-2.0",
   "scripts": {
     "build": "tsc",
     "preinstall": "npm run build",
     "postinstall": "node dist/install.js",
-    "preuninstall": "rm -rf bin"
+    "preuninstall": "rm -rf bin",
+    "format": "biome format --write"
   },
   "devDependencies": {
     "@types/node": "^22.10.5"
