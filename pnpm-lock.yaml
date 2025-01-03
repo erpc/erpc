@@ -22,6 +22,12 @@ importers:
         specifier: 5.1.6
         version: 5.1.6
 
+  typescript/cli:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.5
+        version: 22.10.5
+
   typescript/config: {}
 
 packages:
@@ -223,6 +229,9 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@types/node@22.10.5':
+    resolution: {integrity: sha512-F8Q+SeGimwOo86fiovQh8qiXfFEh2/ocYv7tU5pJ3EXMSSxk1Joj5wefpFK2fHTf/N6HKGSxIDBT9f3gCxXPkQ==}
+
   esbuild@0.24.0:
     resolution: {integrity: sha512-FuLPevChGDshgSicjisSooU0cemp/sGXR841D5LHMB7mTVOmsEHcAxaH3irL53+8YDIeVNQEySh4DaYU/iuPqQ==}
     engines: {node: '>=18'}
@@ -232,6 +241,9 @@ packages:
     resolution: {integrity: sha512-zaWCozRZ6DLEWAWFrVDz1H6FVXzUSfTy5FUMWsQlU8Ym5JP9eO4xkTIROFCQvhQf61z6O/G6ugw3SgAnvvm+HA==}
     engines: {node: '>=14.17'}
     hasBin: true
+
+  undici-types@6.20.0:
+    resolution: {integrity: sha512-Ny6QZ2Nju20vw1SRHe3d9jVu6gJ+4e3+MMpqu7pqE5HT6WsTSlce++GQmK5UXS8mzV8DSYHrQH+Xrf2jVcuKNg==}
 
 snapshots:
 
@@ -342,6 +354,10 @@ snapshots:
   '@esbuild/win32-x64@0.24.0':
     optional: true
 
+  '@types/node@22.10.5':
+    dependencies:
+      undici-types: 6.20.0
+
   esbuild@0.24.0:
     optionalDependencies:
       '@esbuild/aix-ppc64': 0.24.0
@@ -370,3 +386,5 @@ snapshots:
       '@esbuild/win32-x64': 0.24.0
 
   typescript@5.1.6: {}
+
+  undici-types@6.20.0: {}

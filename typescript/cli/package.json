@@ -1,0 +1,27 @@
+{
+  "name": "@erpc-cloud/cli",
+  "version": "0.0.35",
+  "description": "Library providing the erpc CLI",
+  "bin": {
+    "@erpc-cloud/cli": "dist/bin.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/erpc/erpc.git"
+  },
+  "keywords": [
+    "cli",
+    "erpc"
+  ],
+  "author": "erpc",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "tsc",
+    "preinstall": "npm run build",
+    "postinstall": "node dist/install.js",
+    "preuninstall": "rm -rf bin"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5"
+  }
+}

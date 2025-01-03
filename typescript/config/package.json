@@ -2,6 +2,10 @@
   "name": "@erpc-cloud/config",
   "version": "0.0.11",
   "description": "Library of types for IDE autocompletion of erpc config in Typescript",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/erpc/erpc.git"
+  },
   "main": "index.js",
   "types": "./lib/index.d.ts",
   "typings": "./lib/index.d.ts",
@@ -22,7 +26,7 @@
       "default": "./lib/index.js"
     }
   },
-  "keywords": [],
+  "keywords": ["erpc"],
   "author": "erpc",
   "license": "Apache-2.0"
 }
