@@ -175,7 +175,7 @@ jobs:
         working-directory: typescript/cli
         run: |
           pnpm run build
-          pnpm publish --access public
+          pnpm publish --access public --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -183,7 +183,7 @@ jobs:
         working-directory: typescript/config
         run: |
           pnpm run build
-          pnpm publish --access public
+          pnpm publish --access public --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
