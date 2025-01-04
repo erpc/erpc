@@ -1,5 +1,5 @@
 {
-  "name": "@konfeature/erpc-cli-0",
+  "name": "@erpc-cloud/cli",
   "version": "0.0.35",
   "description": "Library providing the erpc CLI",
   "bin": "./dist/bin.js",

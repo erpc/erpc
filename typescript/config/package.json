@@ -1,5 +1,5 @@
 {
-  "name": "@konfeature/erpc-config",
+  "name": "@erpc-cloud/config",
   "version": "0.0.11",
   "description": "Library of types for IDE autocompletion of erpc config in Typescript",
   "repository": {
