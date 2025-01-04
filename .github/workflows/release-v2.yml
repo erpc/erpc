@@ -9,6 +9,7 @@ on:
   push:
     branches:
       - main
+      - feat/erpc-cli-npmjs
 
 permissions:
   contents: write
@@ -99,7 +100,7 @@ jobs:
             - Generated release files
             - Generated checksums
           branch: "release/${{ github.event.inputs.version_tag }}"
-          base: main
+          base: feat/erpc-cli-npmjs
           labels: release
 
   # Run on release PR merge
@@ -107,7 +108,7 @@ jobs:
     needs: prepare-release
     if: |
       github.event_name == 'push' && 
-      github.ref == 'refs/heads/main' && 
+      github.ref == 'refs/heads/feat/erpc-cli-npmjs' && 
       contains(github.event.head_commit.message, 'chore: prepare release')
     runs-on: large
     steps:
@@ -181,7 +182,7 @@ jobs:
   docker-image:
     runs-on: large
     needs: [prepare-release, release]
-    if: always() && github.ref == 'refs/heads/main'
+    if: always() && github.ref == 'refs/heads/feat/erpc-cli-npmjs'
     steps:
       - uses: actions/checkout@v4
         with:
