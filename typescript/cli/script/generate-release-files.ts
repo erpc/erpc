@@ -100,8 +100,8 @@ export const RELEASE_INFO: ReleaseInfo = {
 };
 `;
 
-  await fs.promises.writeFile("src/checksums.ts", checksumsOutput);
-  await fs.promises.writeFile("src/release.ts", releaseOutput);
+  await fs.promises.writeFile("src/generated/checksums.ts", checksumsOutput);
+  await fs.promises.writeFile("src/generated/release.ts", releaseOutput);
 
   console.log(
     "Successfully generated release files with checksums from goreleaser",
