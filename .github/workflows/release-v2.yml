@@ -1,0 +1,204 @@
+name: release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+  packages: write
+
+jobs:
+  release-pr:
+    runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+      version: ${{ steps.release.outputs.tag_name }}
+      pr_number: ${{ steps.release.outputs.pr }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # First generate the types and release files before release-please
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.x'
+
+      - name: Generate types
+        run: |
+          go install github.com/gzuidhof/tygo@latest
+          tygo generate
+
+      # Run goreleaser in snapshot mode to generate checksums
+      - name: Run GoReleaser Snapshot
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Setup pnpm + node and install dependencies
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+            run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install
+        env:
+          CI: true
+
+      # Generate the release files using the snapshot checksums
+      - name: Generate CLI release files
+        working-directory: typescript/cli
+        run: |
+          # The version will be determined by release-please later
+          export VERSION="0.0.0-snapshot"
+          export COMMIT_SHA=${{ github.sha }}
+          export CHECKSUMS_FILE=../../dist/checksums.txt
+          pnpm run build
+          npx ts-node src/scripts/generate-release-files.ts
+
+      # Now run release-please which will include these files in its PR
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  # Do the npmjs and goreleaser release
+  release-artifacts:
+    needs: release-pr
+    if: ${{ needs.release-pr.outputs.releases_created }}
+    runs-on: large
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.x'
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Setup pnpm + node and install dependencies
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+            run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install
+        env:
+          CI: true
+
+      # The files are already generated and committed in the PR
+      - name: Build and publish CLI package
+        working-directory: typescript/cli
+        run: |
+          pnpm run build
+          pnpm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Build and publish Config package
+        working-directory: typescript/config
+        run: |
+          pnpm run build
+          pnpm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # Update the ghcr.io main and latest image 
+  docker-image:
+    needs: [release-pr, release-artifacts]
+    if: always()
+    runs-on: large
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          buildkitd-flags: --debug
+          driver-opts: network=host
+
+      - name: Set up Docker tags
+        id: tag_param
+        run: |
+          REPO="${{ github.repository }}"
+          echo "repo=${REPO@L}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate short SHA
+        id: short_sha
+        run: echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      # Build main image if no release was created
+      - name: Build and push Docker image for main
+        if: ${{ !needs.release-pr.outputs.releases_created }}
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=main
+            COMMIT_SHA=${{ steps.short_sha.outputs.SHORT_SHA }}
+          tags: |
+            ghcr.io/${{ steps.tag_param.outputs.repo }}:main
+
+      # Build release images if a release was created
+      - name: Build and push Docker image for release
+        if: ${{ needs.release-pr.outputs.releases_created }}
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ needs.release-pr.outputs.version }}
+            COMMIT_SHA=${{ steps.short_sha.outputs.SHORT_SHA }}
+          tags: |
+            ghcr.io/${{ steps.tag_param.outputs.repo }}:${{ needs.release-pr.outputs.version }}
+            ghcr.io/${{ steps.tag_param.outputs.repo }}:latest
