@@ -7,8 +7,6 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
-var FALSE = false
-
 type DrpcVendor struct {
 	common.Vendor
 }
@@ -22,6 +20,9 @@ func (v *DrpcVendor) Name() string {
 }
 
 func (v *DrpcVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
+	// Intentionally not ignore missing method exceptions because dRPC sometimes routes to nodes that don't support the method
+	// but it doesn't mean that method is actually not supported, i.e. on next retry to dRPC it might work.
+	upstream.AutoIgnoreUnsupportedMethods = &common.FALSE
 	return nil
 }
 
@@ -43,21 +44,6 @@ func (v *DrpcVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interf
 				common.NewErrJsonRpcExceptionInternal(
 					code,
 					common.JsonRpcErrorUnauthorized,
-					msg,
-					nil,
-					details,
-				),
-			)
-		} else if strings.Contains(msg, "does not exist/is not available") {
-			// Intentionally consider missing methods as client-side exceptions
-			// because dRPC might give a false error when their underlying nodes
-			// have issues e.g. you might falsely get "eth_blockNumber not supported" errors.
-			// The reason we don't consider this as server-side exceptions is because
-			// we don't want to trigger the circuit breaker in such cases.
-			return common.NewErrEndpointClientSideException(
-				common.NewErrJsonRpcExceptionInternal(
-					code,
-					common.JsonRpcErrorUnsupportedException,
 					msg,
 					nil,
 					details,

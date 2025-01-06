@@ -39,6 +39,24 @@ type ResponseMetadata interface {
 	IsObjectNull() bool
 }
 
+func LookupResponseMetadata(err error) ResponseMetadata {
+	if err == nil {
+		return nil
+	}
+
+	if uer, ok := err.(ResponseMetadata); ok {
+		return uer
+	}
+	
+	if ser, ok := err.(StandardError); ok {
+		if cs := ser.GetCause(); cs != nil {
+			return LookupResponseMetadata(cs)
+		}
+	}
+
+	return nil
+}
+
 func NewNormalizedResponse() *NormalizedResponse {
 	return &NormalizedResponse{}
 }

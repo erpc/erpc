@@ -642,22 +642,16 @@ func setResponseHeaders(res interface{}, w http.ResponseWriter) {
 	rm, ok = res.(common.ResponseMetadata)
 	if !ok {
 		if jrsp, ok := res.(map[string]interface{}); ok {
-			if err, ok := jrsp["cause"].(error); ok {
-				if uer, ok := err.(*common.ErrUpstreamsExhausted); ok {
-					rm = uer
-				} else if uer, ok := err.(*common.ErrUpstreamRequest); ok {
-					rm = uer
+			if err, ok := jrsp["cause"]; ok {
+				if ser, ok := err.(error); ok {
+					rm = common.LookupResponseMetadata(ser)
 				}
 			}
 		} else if hjrsp, ok := res.(*HttpJsonRpcErrorResponse); ok {
-			if err := hjrsp.Cause; err != nil {
-				if uer, ok := err.(*common.ErrUpstreamRequest); ok {
-					rm = uer
-				}
-			}
+			rm = common.LookupResponseMetadata(hjrsp.Cause)
 		}
 	}
-	if ok && rm != nil && !rm.IsObjectNull() {
+	if rm != nil && !rm.IsObjectNull() {
 		if rm.FromCache() {
 			w.Header().Set("X-ERPC-Cache", "HIT")
 		} else {

@@ -580,7 +580,7 @@ var NewErrUpstreamRequest = func(cause error, upsId, networkId, method string, d
 }
 
 func (e *ErrUpstreamRequest) IsObjectNull() bool {
-	return e != nil && e.Code != ""
+	return e == nil || e.Code == ""
 }
 
 func (e *ErrUpstreamRequest) UpstreamId() string {
@@ -688,7 +688,7 @@ var NewErrUpstreamsExhausted = func(
 }
 
 func (e *ErrUpstreamsExhausted) IsObjectNull() bool {
-	return e != nil && e.Code != ""
+	return e == nil || e.Code == ""
 }
 
 func (e *ErrUpstreamsExhausted) ErrorStatusCode() int {
