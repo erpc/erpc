@@ -1,0 +1,615 @@
+global:
+  evaluation_interval: 30s
+  scrape_interval: 30s
+  scrape_timeout: 10s
+  external_labels:
+    __replica__: $(POD_NAME)
+    cluster: eu-central.dch.erpc.cloud
+    prometheus: telemetry/monitoring-kube-prometheus-prometheus
+rule_files:
+- /etc/prometheus/rules/prometheus-monitoring-kube-prometheus-prometheus-rulefiles-0/*.yaml
+scrape_configs:
+- job_name: serviceMonitor/telemetry/monitoring-kube-prometheus-operator/0
+  honor_labels: true
+  kubernetes_sd_configs:
+  - role: endpoints
+    namespaces:
+      names:
+      - telemetry
+  scheme: https
+  tls_config:
+    insecure_skip_verify: false
+    ca_file: /etc/prometheus/certs/secret_telemetry_monitoring-kube-prometheus-admission_ca
+    server_name: monitoring-kube-prometheus-operator
+  relabel_configs:
+  - source_labels:
+    - job
+    target_label: __tmp_prometheus_job_name
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_service_label_app
+    - __meta_kubernetes_service_labelpresent_app
+    regex: (kube-prometheus-stack-operator);true
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_service_label_release
+    - __meta_kubernetes_service_labelpresent_release
+    regex: (monitoring);true
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_endpoint_port_name
+    regex: https
+  - source_labels:
+    - __meta_kubernetes_endpoint_address_target_kind
+    - __meta_kubernetes_endpoint_address_target_name
+    separator: ;
+    regex: Node;(.*)
+    replacement: ${1}
+    target_label: node
+  - source_labels:
+    - __meta_kubernetes_endpoint_address_target_kind
+    - __meta_kubernetes_endpoint_address_target_name
+    separator: ;
+    regex: Pod;(.*)
+    replacement: ${1}
+    target_label: pod
+  - source_labels:
+    - __meta_kubernetes_namespace
+    target_label: namespace
+  - source_labels:
+    - __meta_kubernetes_service_name
+    target_label: service
+  - source_labels:
+    - __meta_kubernetes_pod_name
+    target_label: pod
+  - source_labels:
+    - __meta_kubernetes_pod_container_name
+    target_label: container
+  - action: drop
+    source_labels:
+    - __meta_kubernetes_pod_phase
+    regex: (Failed|Succeeded)
+  - source_labels:
+    - __meta_kubernetes_service_name
+    target_label: job
+    replacement: ${1}
+  - target_label: endpoint
+    replacement: https
+  - source_labels:
+    - __address__
+    target_label: __tmp_hash
+    modulus: 1
+    action: hashmod
+  - source_labels:
+    - __tmp_hash
+    regex: $(SHARD)
+    action: keep
+  metric_relabel_configs: []
+- job_name: serviceMonitor/telemetry/monitoring-kube-prometheus-prometheus/0
+  honor_labels: false
+  kubernetes_sd_configs:
+  - role: endpoints
+    namespaces:
+      names:
+      - telemetry
+  metrics_path: /metrics
+  relabel_configs:
+  - source_labels:
+    - job
+    target_label: __tmp_prometheus_job_name
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_service_label_app
+    - __meta_kubernetes_service_labelpresent_app
+    regex: (kube-prometheus-stack-prometheus);true
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_service_label_release
+    - __meta_kubernetes_service_labelpresent_release
+    regex: (monitoring);true
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_service_label_self_monitor
+    - __meta_kubernetes_service_labelpresent_self_monitor
+    regex: (true);true
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_endpoint_port_name
+    regex: http-web
+  - source_labels:
+    - __meta_kubernetes_endpoint_address_target_kind
+    - __meta_kubernetes_endpoint_address_target_name
+    separator: ;
+    regex: Node;(.*)
+    replacement: ${1}
+    target_label: node
+  - source_labels:
+    - __meta_kubernetes_endpoint_address_target_kind
+    - __meta_kubernetes_endpoint_address_target_name
+    separator: ;
+    regex: Pod;(.*)
+    replacement: ${1}
+    target_label: pod
+  - source_labels:
+    - __meta_kubernetes_namespace
+    target_label: namespace
+  - source_labels:
+    - __meta_kubernetes_service_name
+    target_label: service
+  - source_labels:
+    - __meta_kubernetes_pod_name
+    target_label: pod
+  - source_labels:
+    - __meta_kubernetes_pod_container_name
+    target_label: container
+  - action: drop
+    source_labels:
+    - __meta_kubernetes_pod_phase
+    regex: (Failed|Succeeded)
+  - source_labels:
+    - __meta_kubernetes_service_name
+    target_label: job
+    replacement: ${1}
+  - target_label: endpoint
+    replacement: http-web
+  - source_labels:
+    - __address__
+    target_label: __tmp_hash
+    modulus: 1
+    action: hashmod
+  - source_labels:
+    - __tmp_hash
+    regex: $(SHARD)
+    action: keep
+  metric_relabel_configs: []
+- job_name: serviceMonitor/telemetry/monitoring-kube-prometheus-prometheus/1
+  honor_labels: false
+  kubernetes_sd_configs:
+  - role: endpoints
+    namespaces:
+      names:
+      - telemetry
+  metrics_path: /metrics
+  relabel_configs:
+  - source_labels:
+    - job
+    target_label: __tmp_prometheus_job_name
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_service_label_app
+    - __meta_kubernetes_service_labelpresent_app
+    regex: (kube-prometheus-stack-prometheus);true
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_service_label_release
+    - __meta_kubernetes_service_labelpresent_release
+    regex: (monitoring);true
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_service_label_self_monitor
+    - __meta_kubernetes_service_labelpresent_self_monitor
+    regex: (true);true
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_endpoint_port_name
+    regex: reloader-web
+  - source_labels:
+    - __meta_kubernetes_endpoint_address_target_kind
+    - __meta_kubernetes_endpoint_address_target_name
+    separator: ;
+    regex: Node;(.*)
+    replacement: ${1}
+    target_label: node
+  - source_labels:
+    - __meta_kubernetes_endpoint_address_target_kind
+    - __meta_kubernetes_endpoint_address_target_name
+    separator: ;
+    regex: Pod;(.*)
+    replacement: ${1}
+    target_label: pod
+  - source_labels:
+    - __meta_kubernetes_namespace
+    target_label: namespace
+  - source_labels:
+    - __meta_kubernetes_service_name
+    target_label: service
+  - source_labels:
+    - __meta_kubernetes_pod_name
+    target_label: pod
+  - source_labels:
+    - __meta_kubernetes_pod_container_name
+    target_label: container
+  - action: drop
+    source_labels:
+    - __meta_kubernetes_pod_phase
+    regex: (Failed|Succeeded)
+  - source_labels:
+    - __meta_kubernetes_service_name
+    target_label: job
+    replacement: ${1}
+  - target_label: endpoint
+    replacement: reloader-web
+  - source_labels:
+    - __address__
+    target_label: __tmp_hash
+    modulus: 1
+    action: hashmod
+  - source_labels:
+    - __tmp_hash
+    regex: $(SHARD)
+    action: keep
+  metric_relabel_configs: []
+- job_name: serviceMonitor/telemetry/pushgateway-prometheus-pushgateway/0
+  honor_labels: true
+  kubernetes_sd_configs:
+  - role: endpoints
+    namespaces:
+      names:
+      - telemetry
+  metrics_path: /metrics
+  relabel_configs:
+  - source_labels:
+    - job
+    target_label: __tmp_prometheus_job_name
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_service_label_app_kubernetes_io_instance
+    - __meta_kubernetes_service_labelpresent_app_kubernetes_io_instance
+    regex: (pushgateway);true
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_service_label_app_kubernetes_io_name
+    - __meta_kubernetes_service_labelpresent_app_kubernetes_io_name
+    regex: (prometheus-pushgateway);true
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_endpoint_port_name
+    regex: http
+  - source_labels:
+    - __meta_kubernetes_endpoint_address_target_kind
+    - __meta_kubernetes_endpoint_address_target_name
+    separator: ;
+    regex: Node;(.*)
+    replacement: ${1}
+    target_label: node
+  - source_labels:
+    - __meta_kubernetes_endpoint_address_target_kind
+    - __meta_kubernetes_endpoint_address_target_name
+    separator: ;
+    regex: Pod;(.*)
+    replacement: ${1}
+    target_label: pod
+  - source_labels:
+    - __meta_kubernetes_namespace
+    target_label: namespace
+  - source_labels:
+    - __meta_kubernetes_service_name
+    target_label: service
+  - source_labels:
+    - __meta_kubernetes_pod_name
+    target_label: pod
+  - source_labels:
+    - __meta_kubernetes_pod_container_name
+    target_label: container
+  - action: drop
+    source_labels:
+    - __meta_kubernetes_pod_phase
+    regex: (Failed|Succeeded)
+  - source_labels:
+    - __meta_kubernetes_service_name
+    target_label: job
+    replacement: ${1}
+  - target_label: endpoint
+    replacement: http
+  - source_labels:
+    - __address__
+    target_label: __tmp_hash
+    modulus: 1
+    action: hashmod
+  - source_labels:
+    - __tmp_hash
+    regex: $(SHARD)
+    action: keep
+  metric_relabel_configs: []
+- job_name: podMonitor/backfilling/default/0
+  honor_labels: false
+  kubernetes_sd_configs:
+  - role: pod
+    namespaces:
+      names:
+      - backfilling
+  scrape_interval: 5s
+  scrape_timeout: 5s
+  relabel_configs:
+  - source_labels:
+    - job
+    target_label: __tmp_prometheus_job_name
+  - action: drop
+    source_labels:
+    - __meta_kubernetes_pod_phase
+    regex: (Failed|Succeeded)
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_pod_label_dev_flair_component
+    - __meta_kubernetes_pod_labelpresent_dev_flair_component
+    regex: (backfiller);true
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_pod_container_port_name
+    regex: http
+  - source_labels:
+    - __meta_kubernetes_namespace
+    target_label: namespace
+  - source_labels:
+    - __meta_kubernetes_pod_container_name
+    target_label: container
+  - source_labels:
+    - __meta_kubernetes_pod_name
+    target_label: pod
+  - target_label: job
+    replacement: backfilling/default
+  - target_label: endpoint
+    replacement: http
+  - source_labels:
+    - __address__
+    target_label: __tmp_hash
+    modulus: 1
+    action: hashmod
+  - source_labels:
+    - __tmp_hash
+    regex: $(SHARD)
+    action: keep
+  metric_relabel_configs: []
+- job_name: podMonitor/controlling/default/0
+  honor_labels: false
+  kubernetes_sd_configs:
+  - role: pod
+    namespaces:
+      names:
+      - controlling
+  scrape_interval: 5s
+  scrape_timeout: 5s
+  relabel_configs:
+  - source_labels:
+    - job
+    target_label: __tmp_prometheus_job_name
+  - action: drop
+    source_labels:
+    - __meta_kubernetes_pod_phase
+    regex: (Failed|Succeeded)
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_pod_label_dev_flair_component
+    - __meta_kubernetes_pod_labelpresent_dev_flair_component
+    regex: (controller);true
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_pod_container_port_name
+    regex: http
+  - source_labels:
+    - __meta_kubernetes_namespace
+    target_label: namespace
+  - source_labels:
+    - __meta_kubernetes_pod_container_name
+    target_label: container
+  - source_labels:
+    - __meta_kubernetes_pod_name
+    target_label: pod
+  - target_label: job
+    replacement: controlling/default
+  - target_label: endpoint
+    replacement: http
+  - source_labels:
+    - __address__
+    target_label: __tmp_hash
+    modulus: 1
+    action: hashmod
+  - source_labels:
+    - __tmp_hash
+    regex: $(SHARD)
+    action: keep
+  metric_relabel_configs: []
+- job_name: podMonitor/enriching/default/0
+  honor_labels: false
+  kubernetes_sd_configs:
+  - role: pod
+    namespaces:
+      names:
+      - enriching
+  scrape_interval: 5s
+  scrape_timeout: 5s
+  relabel_configs:
+  - source_labels:
+    - job
+    target_label: __tmp_prometheus_job_name
+  - action: drop
+    source_labels:
+    - __meta_kubernetes_pod_phase
+    regex: (Failed|Succeeded)
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_pod_label_dev_flair_component
+    - __meta_kubernetes_pod_labelpresent_dev_flair_component
+    regex: (enricher);true
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_pod_container_port_name
+    regex: http
+  - source_labels:
+    - __meta_kubernetes_namespace
+    target_label: namespace
+  - source_labels:
+    - __meta_kubernetes_pod_container_name
+    target_label: container
+  - source_labels:
+    - __meta_kubernetes_pod_name
+    target_label: pod
+  - target_label: job
+    replacement: enriching/default
+  - target_label: endpoint
+    replacement: http
+  - source_labels:
+    - __address__
+    target_label: __tmp_hash
+    modulus: 1
+    action: hashmod
+  - source_labels:
+    - __tmp_hash
+    regex: $(SHARD)
+    action: keep
+  metric_relabel_configs: []
+- job_name: podMonitor/erpc/default/0
+  honor_labels: false
+  kubernetes_sd_configs:
+  - role: pod
+    namespaces:
+      names:
+      - erpc
+  scrape_interval: 10s
+  scrape_timeout: 5s
+  relabel_configs:
+  - source_labels:
+    - job
+    target_label: __tmp_prometheus_job_name
+  - action: drop
+    source_labels:
+    - __meta_kubernetes_pod_phase
+    regex: (Failed|Succeeded)
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_pod_label_dev_flair_component
+    - __meta_kubernetes_pod_labelpresent_dev_flair_component
+    regex: (erpc);true
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_pod_container_port_name
+    regex: http
+  - source_labels:
+    - __meta_kubernetes_namespace
+    target_label: namespace
+  - source_labels:
+    - __meta_kubernetes_pod_container_name
+    target_label: container
+  - source_labels:
+    - __meta_kubernetes_pod_name
+    target_label: pod
+  - target_label: job
+    replacement: erpc/default
+  - target_label: endpoint
+    replacement: http
+  - source_labels:
+    - __address__
+    target_label: __tmp_hash
+    modulus: 1
+    action: hashmod
+  - source_labels:
+    - __tmp_hash
+    regex: $(SHARD)
+    action: keep
+  metric_relabel_configs: []
+- job_name: podMonitor/ingestion/default/0
+  honor_labels: false
+  kubernetes_sd_configs:
+  - role: pod
+    namespaces:
+      names:
+      - ingestion
+  scrape_interval: 5s
+  scrape_timeout: 5s
+  relabel_configs:
+  - source_labels:
+    - job
+    target_label: __tmp_prometheus_job_name
+  - action: drop
+    source_labels:
+    - __meta_kubernetes_pod_phase
+    regex: (Failed|Succeeded)
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_pod_label_dev_flair_component
+    - __meta_kubernetes_pod_labelpresent_dev_flair_component
+    regex: (ingestor);true
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_pod_container_port_name
+    regex: http
+  - source_labels:
+    - __meta_kubernetes_namespace
+    target_label: namespace
+  - source_labels:
+    - __meta_kubernetes_pod_container_name
+    target_label: container
+  - source_labels:
+    - __meta_kubernetes_pod_name
+    target_label: pod
+  - target_label: job
+    replacement: ingestion/default
+  - target_label: endpoint
+    replacement: http
+  - source_labels:
+    - __address__
+    target_label: __tmp_hash
+    modulus: 1
+    action: hashmod
+  - source_labels:
+    - __tmp_hash
+    regex: $(SHARD)
+    action: keep
+  metric_relabel_configs: []
+- job_name: podMonitor/processing/default/0
+  honor_labels: false
+  kubernetes_sd_configs:
+  - role: pod
+    namespaces:
+      names:
+      - processing
+  scrape_interval: 5s
+  scrape_timeout: 5s
+  relabel_configs:
+  - source_labels:
+    - job
+    target_label: __tmp_prometheus_job_name
+  - action: drop
+    source_labels:
+    - __meta_kubernetes_pod_phase
+    regex: (Failed|Succeeded)
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_pod_label_dev_flair_component
+    - __meta_kubernetes_pod_labelpresent_dev_flair_component
+    regex: (processor);true
+  - action: keep
+    source_labels:
+    - __meta_kubernetes_pod_container_port_name
+    regex: http
+  - source_labels:
+    - __meta_kubernetes_namespace
+    target_label: namespace
+  - source_labels:
+    - __meta_kubernetes_pod_container_name
+    target_label: container
+  - source_labels:
+    - __meta_kubernetes_pod_name
+    target_label: pod
+  - target_label: job
+    replacement: processing/default
+  - target_label: endpoint
+    replacement: http
+  - source_labels:
+    - __address__
+    target_label: __tmp_hash
+    modulus: 1
+    action: hashmod
+  - source_labels:
+    - __tmp_hash
+    regex: $(SHARD)
+    action: keep
+  metric_relabel_configs: []
+storage:
+  tsdb:
+    out_of_order_time_window: 0s
+remote_write:
+- url: http://mimir-distributor.telemetry.svc.cluster.local:8080/api/v1/push
+  remote_timeout: 30s
+  headers:
+    X-Scope-OrgID: erpc
