@@ -3062,7 +3062,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 		defer shutdown()
 
 		statusCode, _ := sendRequest(`{"jsonrpc":"2.0","method":"trace_transaction","params":[],"id":111}`, nil, nil)
-		assert.Equal(t, http.StatusBadRequest, statusCode)
+		assert.Equal(t, http.StatusUnsupportedMediaType, statusCode)
 	})
 
 	t.Run("ReturnCorrectCORS", func(t *testing.T) {
