@@ -90,8 +90,16 @@ func (d *DynamoDBConnector) connect(ctx context.Context, cfg *common.DynamoDBCon
 	d.client = dynamodb.New(sess, &aws.Config{
 		Endpoint: aws.String(cfg.Endpoint),
 		HTTPClient: &http.Client{
-			Timeout: d.initTimeout,
+			Timeout: d.setTimeout,
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 100,
+				MaxConnsPerHost:     100,
+				IdleConnTimeout:     120 * time.Second,
+			},
 		},
+		MaxRetries: aws.Int(3),
+		Region:     aws.String(cfg.Region),
 	})
 
 	if cfg.Table == "" {
