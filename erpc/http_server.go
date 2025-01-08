@@ -323,7 +323,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					return
 				}
 
-				nw, err := project.GetNetwork(s.appCtx, networkId)
+				nw, err := project.GetNetwork(networkId)
 				if err != nil {
 					responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
 					return

@@ -5091,7 +5091,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rateLimitersRegistry,
 		)
 
-		ntw, err := networksRegistry.RegisterNetwork(
+		ntw, err := networksRegistry.prepareNetwork(
 			&logger,
 			&common.ProjectConfig{Id: projectID},
 			&common.NetworkConfig{
