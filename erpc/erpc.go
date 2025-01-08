@@ -23,7 +23,10 @@ func NewERPC(
 	evmJsonRpcCache *EvmJsonRpcCache,
 	cfg *common.Config,
 ) (*ERPC, error) {
-	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(cfg.RateLimiters, logger)
+	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
+		cfg.RateLimiters,
+		logger,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +99,7 @@ func (e *ERPC) AdminHandleRequest(ctx context.Context, nq *common.NormalizedRequ
 		projects := e.GetProjects()
 		for _, p := range projects {
 			networks := []*taxonomyNetwork{}
-			for _, n := range p.Networks {
+			for _, n := range p.GetNetworks() {
 				ntw := &taxonomyNetwork{
 					Id:        n.NetworkId,
 					Upstreams: []*taxonomyUpstream{},
@@ -188,7 +191,7 @@ func (e *ERPC) GetNetwork(ctx context.Context, projectId string, networkId strin
 		return nil, err
 	}
 
-	return prj.GetNetwork(ctx, networkId)
+	return prj.GetNetwork(networkId)
 }
 
 func (e *ERPC) GetProject(projectId string) (*PreparedProject, error) {

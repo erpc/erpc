@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"strings"
-	"sync"
 
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
@@ -17,19 +15,12 @@ import (
 )
 
 type PreparedProject struct {
-	Config   *common.ProjectConfig
-	Networks map[string]*Network
-	Logger   *zerolog.Logger
-
-	appCtx               context.Context
-	initializer          *util.Initializer
-	projectMu            *sync.RWMutex
-	networkInitializers  *sync.Map
+	Config               *common.ProjectConfig
+	Logger               *zerolog.Logger
 	networksRegistry     *NetworksRegistry
 	consumerAuthRegistry *auth.AuthRegistry
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	upstreamsRegistry    *upstream.UpstreamsRegistry
-	evmJsonRpcCache      *EvmJsonRpcCache
 }
 
 type ProjectHealthInfo struct {
@@ -37,57 +28,34 @@ type ProjectHealthInfo struct {
 	Initialization *util.InitializerStatus `json:"initialization,omitempty"`
 }
 
-func (p *PreparedProject) Bootstrap(ctx context.Context) error {
-	p.projectMu.Lock()
+func (p *PreparedProject) Bootstrap(ctx context.Context) {
+	p.networksRegistry.Bootstrap(ctx)
+}
 
-	if p.initializer == nil {
-		p.initializer = util.NewInitializer(
-			p.Logger,
-			nil,
-		)
-		nl := p.Config.Networks
-		tasks := []*util.BootstrapTask{}
-		for _, nwCfg := range nl {
-			tasks = append(tasks, p.createNetworkBootstrapTask(nwCfg.NetworkId()))
+func (p *PreparedProject) GetNetwork(networkId string) (*Network, error) {
+	return p.networksRegistry.GetNetwork(networkId)
+}
+
+// ExposeNetworkConfig is used to add lazy-loaded network configs to the project
+// so that other components can use them, also is returned via erpc_project admin API.
+func (p *PreparedProject) ExposeNetworkConfig(nwCfg *common.NetworkConfig) {
+	if p.Config.Networks == nil {
+		p.Config.Networks = []*common.NetworkConfig{}
+	}
+	var existing *common.NetworkConfig
+	for _, nw := range p.Config.Networks {
+		if nw.NetworkId() == nwCfg.NetworkId() {
+			existing = nw
+			break
 		}
-		p.projectMu.Unlock()
-		return p.initializer.ExecuteTasks(ctx, tasks...)
 	}
-	p.projectMu.Unlock()
-
-	return p.initializer.WaitForTasks(ctx)
+	if existing == nil {
+		p.Config.Networks = append(p.Config.Networks, nwCfg)
+	}
 }
 
-func (p *PreparedProject) createNetworkBootstrapTask(networkId string) *util.BootstrapTask {
-	return util.NewBootstrapTask(
-		fmt.Sprintf("network/%s", networkId),
-		func(ctx context.Context) error {
-			return p.bootstrapNetwork(ctx, networkId)
-		},
-	)
-}
-
-func (p *PreparedProject) GetNetwork(ctx context.Context, networkId string) (*Network, error) {
-	p.projectMu.RLock()
-	network, ok := p.Networks[networkId]
-	p.projectMu.RUnlock()
-	if ok {
-		return network, nil
-	}
-
-	err := p.initializer.ExecuteTasks(ctx, p.createNetworkBootstrapTask(networkId))
-	if err != nil {
-		return nil, err
-	}
-
-	p.projectMu.RLock()
-	network, ok = p.Networks[networkId]
-	p.projectMu.RUnlock()
-	if !ok {
-		return nil, fmt.Errorf("network %s is not properly initialized", networkId)
-	}
-
-	return network, nil
+func (p *PreparedProject) GetNetworks() []*Network {
+	return p.networksRegistry.GetNetworks()
 }
 
 func (p *PreparedProject) GatherHealthInfo() (*ProjectHealthInfo, error) {
@@ -97,7 +65,7 @@ func (p *PreparedProject) GatherHealthInfo() (*ProjectHealthInfo, error) {
 	}
 	return &ProjectHealthInfo{
 		UpstreamsHealth: *upstreamsHealth,
-		Initialization:  p.initializer.Status(),
+		Initialization:  p.networksRegistry.initializer.Status(),
 	}, nil
 }
 
@@ -113,8 +81,7 @@ func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, nq *common.N
 }
 
 func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-	// We use app context here so that network lazy loading runs within app context not request, as we want it to continue even if current request is cancelled/timed out
-	network, err := p.GetNetwork(p.appCtx, networkId)
+	network, err := p.networksRegistry.GetNetwork(networkId)
 	if err != nil {
 		return nil, err
 	}
@@ -168,82 +135,6 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	}
 
 	return nil, err
-}
-
-func (p *PreparedProject) bootstrapNetwork(ctx context.Context, networkId string) error {
-	p.Logger.Info().Str("networkId", networkId).Msgf("initializing network")
-
-	// 1) Find all upstreams that support this network
-	err := p.upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkId)
-	if err != nil {
-		return err
-	}
-
-	// 2) Find if any network configs defined on project-level
-	nwCfg, err := p.resolveNetworkConfig(networkId)
-	if err != nil {
-		return err
-	}
-
-	// 3) Register and bootstrap the network
-	nw, err := p.networksRegistry.RegisterNetwork(
-		p.Logger,
-		p.Config,
-		nwCfg,
-	)
-	if err != nil {
-		return err
-	}
-
-	err = nw.Bootstrap(ctx)
-	if err != nil {
-		return err
-	}
-
-	p.projectMu.Lock()
-	p.Networks[networkId] = nw
-	p.projectMu.Unlock()
-
-	return nil
-}
-
-func (p *PreparedProject) resolveNetworkConfig(networkId string) (*common.NetworkConfig, error) {
-	var nwCfg *common.NetworkConfig
-	for _, n := range p.Config.Networks {
-		if n.NetworkId() == networkId {
-			nwCfg = n
-			break
-		}
-	}
-
-	if nwCfg == nil {
-		nwCfg = &common.NetworkConfig{}
-		s := strings.Split(networkId, ":")
-		if len(s) != 2 {
-			// TODO use more appropriate error for non-evm
-			return nil, common.NewErrInvalidEvmChainId(networkId)
-		}
-		nwCfg.Architecture = common.NetworkArchitecture(s[0])
-		switch nwCfg.Architecture {
-		case common.ArchitectureEvm:
-			c, e := strconv.Atoi(s[1])
-			if e != nil {
-				return nil, e
-			}
-			nwCfg.Evm = &common.EvmNetworkConfig{
-				ChainId: int64(c),
-			}
-		}
-		nwCfg.SetDefaults(p.Config.Upstreams, p.Config.NetworkDefaults)
-		p.projectMu.Lock()
-		if p.Config.Networks == nil || len(p.Config.Networks) == 0 {
-			p.Config.Networks = []*common.NetworkConfig{}
-		}
-		p.Config.Networks = append(p.Config.Networks, nwCfg)
-		p.projectMu.Unlock()
-	}
-
-	return nwCfg, nil
 }
 
 func (p *PreparedProject) acquireRateLimitPermit(req *common.NormalizedRequest) error {
