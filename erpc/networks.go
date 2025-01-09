@@ -144,10 +144,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		resp, err := n.cacheDal.Get(ctx, req)
 		if err != nil {
 			lg.Debug().Err(err).Msgf("could not find response in cache")
-			health.MetricNetworkCacheMisses.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 		} else if resp != nil && !resp.IsObjectNull() && !resp.IsResultEmptyish() {
 			lg.Info().Msgf("response served from cache")
-			health.MetricNetworkCacheHits.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
 			if mlx != nil {
 				mlx.Close(resp, err)
 			}
