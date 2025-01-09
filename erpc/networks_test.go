@@ -65,8 +65,8 @@ func TestNetwork_Forward(t *testing.T) {
 
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
 			Id:       "test",
+			Type:     common.UpstreamTypeEvm,
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -158,8 +158,8 @@ func TestNetwork_Forward(t *testing.T) {
 
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
 			Id:       "test",
+			Type:     common.UpstreamTypeEvm,
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -249,8 +249,8 @@ func TestNetwork_Forward(t *testing.T) {
 		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
 			Id:       "test",
+			Type:     common.UpstreamTypeEvm,
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -348,8 +348,8 @@ func TestNetwork_Forward(t *testing.T) {
 		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
 			Id:       "test",
+			Type:     common.UpstreamTypeEvm,
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -466,8 +466,8 @@ func TestNetwork_Forward(t *testing.T) {
 		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
+			Type:     common.UpstreamTypeEvm,
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -475,8 +475,8 @@ func TestNetwork_Forward(t *testing.T) {
 			Failsafe: upsFsCfg,
 		}
 		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc2",
+			Type:     common.UpstreamTypeEvm,
 			Endpoint: "http://rpc2.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -605,8 +605,8 @@ func TestNetwork_Forward(t *testing.T) {
 		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
+			Type:     common.UpstreamTypeEvm,
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -614,8 +614,8 @@ func TestNetwork_Forward(t *testing.T) {
 			Failsafe: upsFsCfg,
 		}
 		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc2",
+			Type:     common.UpstreamTypeEvm,
 			Endpoint: "http://rpc2.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -756,16 +756,16 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up upstream configurations
 		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
+			Type:     common.UpstreamTypeEvm,
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
 		}
 		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc2",
+			Type:     common.UpstreamTypeEvm,
 			Endpoint: "http://rpc2.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -935,16 +935,16 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up upstream configurations
 		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
+			Type:     common.UpstreamTypeEvm,
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
 		}
 		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc2",
+			Type:     common.UpstreamTypeEvm,
 			Endpoint: "http://rpc2.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -1106,8 +1106,8 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up upstream configurations
 		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
+			Type:     common.UpstreamTypeEvm,
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -1279,16 +1279,16 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up upstream configurations
 		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
+			Type:     common.UpstreamTypeEvm,
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
 		}
 		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc2",
+			Type:     common.UpstreamTypeEvm,
 			Endpoint: "http://rpc2.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -1465,16 +1465,16 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up upstream configurations
 		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
+			Type:     common.UpstreamTypeEvm,
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
 		}
 		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc2",
+			Type:     common.UpstreamTypeEvm,
 			Endpoint: "http://rpc2.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -1638,16 +1638,16 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up upstream configurations
 		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
+			Type:     common.UpstreamTypeEvm,
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
 		}
 		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc2",
+			Type:     common.UpstreamTypeEvm,
 			Endpoint: "http://rpc2.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -1801,16 +1801,16 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up upstream configurations
 		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
+			Type:     common.UpstreamTypeEvm,
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
 		}
 		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc2",
+			Type:     common.UpstreamTypeEvm,
 			Endpoint: "http://rpc2.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -1978,16 +1978,16 @@ func TestNetwork_Forward(t *testing.T) {
 		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
+			Type:     common.UpstreamTypeEvm,
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
 		}
 		up2 := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc2",
+			Type:     common.UpstreamTypeEvm,
 			Endpoint: "http://rpc2.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
@@ -5062,9 +5062,9 @@ func TestNetwork_Forward(t *testing.T) {
 		assert.NoError(t, err)
 
 		upstreamConfigs := []*common.UpstreamConfig{
-			{Id: "upstream-a", Endpoint: "http://upstream-a.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-			{Id: "upstream-b", Endpoint: "http://upstream-b.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
-			{Id: "upstream-c", Endpoint: "http://upstream-c.localhost", Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Id: "upstream-a", Endpoint: "http://upstream-a.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Id: "upstream-b", Endpoint: "http://upstream-b.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
+			{Id: "upstream-c", Endpoint: "http://upstream-c.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
 		}
 
 		upstreamsRegistry := upstream.NewUpstreamsRegistry(

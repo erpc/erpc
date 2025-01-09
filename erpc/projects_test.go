@@ -64,7 +64,9 @@ func TestProject_Forward(t *testing.T) {
 					},
 					Upstreams: []*common.UpstreamConfig{
 						{
+							Id:       "rpc1",
 							Endpoint: "http://rpc1.localhost",
+							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId: 123,
 							},
