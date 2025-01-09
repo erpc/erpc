@@ -28,6 +28,7 @@ func TestHttpJsonRpcClient_SingleRequests(t *testing.T) {
 
 		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
 				Endpoint: "http://rpc1.localhost:8545",
 			},
 		}, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"})
@@ -54,6 +55,7 @@ func TestHttpJsonRpcClient_SingleRequests(t *testing.T) {
 
 		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
 				Endpoint: "http://rpc1.localhost:8545",
 			},
 		}, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"})
@@ -80,6 +82,7 @@ func TestHttpJsonRpcClient_SingleRequests(t *testing.T) {
 
 		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
 				Endpoint: "http://rpc1.localhost:8545",
 			},
 		}, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"})
@@ -104,6 +107,7 @@ func TestHttpJsonRpcClient_SingleRequests(t *testing.T) {
 
 		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
 				Endpoint: "http://rpc1.localhost:8545",
 			},
 		}, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"})
@@ -173,6 +177,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 
 		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
 				Endpoint: "http://rpc1.localhost:8545",
 				JsonRpc: &common.JsonRpcUpstreamConfig{
 					SupportsBatch: &common.TRUE,
@@ -274,6 +279,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 
 		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
 				Endpoint: "http://rpc1.localhost:8545",
 			},
 		}, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"})
@@ -300,6 +306,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 
 		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
 				Endpoint: "http://rpc1.localhost:8545",
 				JsonRpc: &common.JsonRpcUpstreamConfig{
 					SupportsBatch: &common.TRUE,
@@ -341,6 +348,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 
 		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
 				Endpoint: "http://rpc1.localhost:8545",
 				JsonRpc: &common.JsonRpcUpstreamConfig{
 					SupportsBatch: &common.TRUE,
@@ -382,6 +390,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 
 		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
 				Endpoint: "http://rpc1.localhost:8545",
 				JsonRpc: &common.JsonRpcUpstreamConfig{
 					SupportsBatch: &common.TRUE,
@@ -456,6 +465,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 
 		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
 				Endpoint: "http://rpc1.localhost:8545",
 				JsonRpc: &common.JsonRpcUpstreamConfig{
 					SupportsBatch: &common.TRUE,
@@ -495,6 +505,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 
 		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
 				Endpoint: "http://rpc1.localhost:8545",
 			},
 		}, &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"})
@@ -553,6 +564,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 
 		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
 				Endpoint: "http://rpc1.localhost:8545",
 				JsonRpc: &common.JsonRpcUpstreamConfig{
 					SupportsBatch: &common.TRUE,
@@ -594,6 +606,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 
 		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
 				Endpoint: "http://rpc1.localhost:8545",
 				JsonRpc: &common.JsonRpcUpstreamConfig{
 					SupportsBatch: &[]bool{true}[0],
@@ -640,6 +653,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 
 		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
 			config: &common.UpstreamConfig{
+				Type:     common.UpstreamTypeEvm,
 				Endpoint: "http://rpc1.localhost:8545",
 				JsonRpc: &common.JsonRpcUpstreamConfig{
 					SupportsBatch: &[]bool{true}[0],

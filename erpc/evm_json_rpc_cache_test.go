@@ -51,14 +51,15 @@ func createCacheTestFixtures(upstreamConfigs []upsTestCfg) ([]*data.MockConnecto
 		mockUpstream, err := upstream.NewUpstream(context.Background(), "test", &common.UpstreamConfig{
 			Id:       cfg.id,
 			Endpoint: "http://rpc1.localhost",
+			Type:     common.UpstreamTypeEvm,
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
 		}, clr, nil, vnr, &logger, nil)
-		mockUpstream.SetEvmSyncingState(cfg.syncing)
 		if err != nil {
 			panic(err)
 		}
+		mockUpstream.SetEvmSyncingState(cfg.syncing)
 
 		metricsTracker := health.NewTracker("prjA", 100*time.Second)
 		poller, err := upstream.NewEvmStatePoller(context.Background(), &logger, mockNetwork, mockUpstream, metricsTracker)

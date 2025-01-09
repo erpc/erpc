@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -100,10 +99,6 @@ func NewUpstream(
 		}
 	}
 
-	err = pup.guessUpstreamType()
-	if err != nil {
-		return nil, err
-	}
 	if client, err := cr.GetOrCreateClient(appCtx, pup); err != nil {
 		return nil, err
 	} else {
@@ -627,51 +622,6 @@ func (u *Upstream) shouldHandleMethod(method string) (v bool, err error) {
 	u.Logger.Debug().Bool("allowed", v).Str("method", method).Msg("method support result")
 
 	return v, nil
-}
-
-func (u *Upstream) guessUpstreamType() error {
-	cfg := u.Config()
-
-	if cfg.Type != "" {
-		return nil
-	}
-
-	if strings.HasPrefix(cfg.Endpoint, "alchemy://") || strings.HasPrefix(cfg.Endpoint, "evm+alchemy://") {
-		cfg.Type = common.UpstreamTypeEvmAlchemy
-		return nil
-	}
-	if strings.HasPrefix(cfg.Endpoint, "drpc://") || strings.HasPrefix(cfg.Endpoint, "evm+drpc://") {
-		cfg.Type = common.UpstreamTypeEvmDrpc
-		return nil
-	}
-	if strings.HasPrefix(cfg.Endpoint, "blastapi://") || strings.HasPrefix(cfg.Endpoint, "evm+blastapi://") {
-		cfg.Type = common.UpstreamTypeEvmBlastapi
-		return nil
-	}
-	if strings.HasPrefix(cfg.Endpoint, "thirdweb://") || strings.HasPrefix(cfg.Endpoint, "evm+thirdweb://") {
-		cfg.Type = common.UpstreamTypeEvmThirdweb
-		return nil
-	}
-	if strings.HasPrefix(cfg.Endpoint, "envio://") || strings.HasPrefix(cfg.Endpoint, "evm+envio://") {
-		cfg.Type = common.UpstreamTypeEvmEnvio
-		return nil
-	}
-	if strings.HasPrefix(cfg.Endpoint, "pimlico://") || strings.HasPrefix(cfg.Endpoint, "evm+pimlico://") {
-		cfg.Type = common.UpstreamTypeEvmPimlico
-		return nil
-	}
-	if strings.HasPrefix(cfg.Endpoint, "etherspot://") || strings.HasPrefix(cfg.Endpoint, "evm+etherspot://") {
-		cfg.Type = common.UpstreamTypeEvmEtherspot
-		return nil
-	}
-	if strings.HasPrefix(cfg.Endpoint, "infura://") || strings.HasPrefix(cfg.Endpoint, "evm+infura://") {
-		cfg.Type = common.UpstreamTypeEvmInfura
-		return nil
-	}
-
-	// TODO make actual calls to detect other types (solana, btc, etc)
-	cfg.Type = common.UpstreamTypeEvm
-	return nil
 }
 
 func (u *Upstream) detectFeatures() error {

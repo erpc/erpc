@@ -71,6 +71,7 @@ func (c *EvmJsonRpcCache) WithNetwork(network *Network) *EvmJsonRpcCache {
 }
 
 func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	start := time.Now()
 	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
 		return nil, err
@@ -103,6 +104,14 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 				policy.String(),
 				policy.GetTTL().String(),
 			).Inc()
+			health.MetricCacheGetSuccessHitDuration.WithLabelValues(
+				c.network.ProjectId,
+				req.NetworkId(),
+				rpcReq.Method,
+				connector.Id(),
+				policy.String(),
+				policy.GetTTL().String(),
+			).Observe(time.Since(start).Seconds())
 			break
 		} else if err == nil {
 			health.MetricCacheGetSuccessMissTotal.WithLabelValues(
@@ -113,6 +122,14 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 				policy.String(),
 				policy.GetTTL().String(),
 			).Inc()
+			health.MetricCacheGetSuccessMissDuration.WithLabelValues(
+				c.network.ProjectId,
+				req.NetworkId(),
+				rpcReq.Method,
+				connector.Id(),
+				policy.String(),
+				policy.GetTTL().String(),
+			).Observe(time.Since(start).Seconds())
 		} else {
 			health.MetricCacheGetErrorTotal.WithLabelValues(
 				c.network.ProjectId,
@@ -123,6 +140,15 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 				policy.GetTTL().String(),
 				common.ErrorSummary(err),
 			).Inc()
+			health.MetricCacheGetErrorDuration.WithLabelValues(
+				c.network.ProjectId,
+				req.NetworkId(),
+				rpcReq.Method,
+				connector.Id(),
+				policy.String(),
+				policy.GetTTL().String(),
+				common.ErrorSummary(err),
+			).Observe(time.Since(start).Seconds())
 		}
 		if c.logger.GetLevel() == zerolog.TraceLevel {
 			c.logger.Trace().Interface("policy", policy).Str("connector", connector.Id()).Err(err).Msg("skipping cache policy because it returned nil or error")
@@ -148,6 +174,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 }
 
 func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
+	start := time.Now()
 	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
 		return err
@@ -241,6 +268,15 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 						ttl.String(),
 						common.ErrorSummary(err),
 					).Inc()
+					health.MetricCacheSetErrorDuration.WithLabelValues(
+						c.network.ProjectId,
+						req.NetworkId(),
+						rpcReq.Method,
+						connector.Id(),
+						policy.String(),
+						ttl.String(),
+						common.ErrorSummary(err),
+					).Observe(time.Since(start).Seconds())
 				} else {
 					health.MetricCacheSetSkippedTotal.WithLabelValues(
 						c.network.ProjectId,
@@ -273,6 +309,15 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 					ttl.String(),
 					common.ErrorSummary(err),
 				).Inc()
+				health.MetricCacheSetErrorDuration.WithLabelValues(
+					c.network.ProjectId,
+					req.NetworkId(),
+					rpcReq.Method,
+					connector.Id(),
+					policy.String(),
+					ttl.String(),
+					common.ErrorSummary(err),
+				).Observe(time.Since(start).Seconds())
 			} else {
 				health.MetricCacheSetSuccessTotal.WithLabelValues(
 					c.network.ProjectId,
@@ -282,6 +327,14 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 					policy.String(),
 					ttl.String(),
 				).Inc()
+				health.MetricCacheSetSuccessDuration.WithLabelValues(
+					c.network.ProjectId,
+					req.NetworkId(),
+					rpcReq.Method,
+					connector.Id(),
+					policy.String(),
+					ttl.String(),
+				).Observe(time.Since(start).Seconds())
 			}
 		}(policy)
 	}
