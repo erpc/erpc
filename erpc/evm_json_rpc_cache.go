@@ -92,45 +92,12 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	}
 
 	var jrr *common.JsonRpcResponse
-	for _, policy := range policies {
-		connector := policy.GetConnector()
+	var connector data.Connector
+	var policy *data.CachePolicy
+	for _, policy = range policies {
+		connector = policy.GetConnector()
 		jrr, err = c.doGet(ctx, connector, req, rpcReq)
-		if jrr != nil {
-			health.MetricCacheGetSuccessHitTotal.WithLabelValues(
-				c.network.ProjectId,
-				req.NetworkId(),
-				rpcReq.Method,
-				connector.Id(),
-				policy.String(),
-				policy.GetTTL().String(),
-			).Inc()
-			health.MetricCacheGetSuccessHitDuration.WithLabelValues(
-				c.network.ProjectId,
-				req.NetworkId(),
-				rpcReq.Method,
-				connector.Id(),
-				policy.String(),
-				policy.GetTTL().String(),
-			).Observe(time.Since(start).Seconds())
-			break
-		} else if err == nil {
-			health.MetricCacheGetSuccessMissTotal.WithLabelValues(
-				c.network.ProjectId,
-				req.NetworkId(),
-				rpcReq.Method,
-				connector.Id(),
-				policy.String(),
-				policy.GetTTL().String(),
-			).Inc()
-			health.MetricCacheGetSuccessMissDuration.WithLabelValues(
-				c.network.ProjectId,
-				req.NetworkId(),
-				rpcReq.Method,
-				connector.Id(),
-				policy.String(),
-				policy.GetTTL().String(),
-			).Observe(time.Since(start).Seconds())
-		} else {
+		if err != nil {
 			health.MetricCacheGetErrorTotal.WithLabelValues(
 				c.network.ProjectId,
 				req.NetworkId(),
@@ -155,11 +122,47 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		} else {
 			c.logger.Debug().Str("connector", connector.Id()).Err(err).Msg("skipping cache policy because it returned nil or error")
 		}
+		if jrr != nil {
+			break
+		}
 	}
 
 	if jrr == nil {
+		health.MetricCacheGetSuccessMissTotal.WithLabelValues(
+			c.network.ProjectId,
+			req.NetworkId(),
+			rpcReq.Method,
+			connector.Id(),
+			policy.String(),
+			policy.GetTTL().String(),
+		).Inc()
+		health.MetricCacheGetSuccessMissDuration.WithLabelValues(
+			c.network.ProjectId,
+			req.NetworkId(),
+			rpcReq.Method,
+			connector.Id(),
+			policy.String(),
+			policy.GetTTL().String(),
+		).Observe(time.Since(start).Seconds())
 		return nil, nil
 	}
+
+	health.MetricCacheGetSuccessHitTotal.WithLabelValues(
+		c.network.ProjectId,
+		req.NetworkId(),
+		rpcReq.Method,
+		connector.Id(),
+		policy.String(),
+		policy.GetTTL().String(),
+	).Inc()
+	health.MetricCacheGetSuccessHitDuration.WithLabelValues(
+		c.network.ProjectId,
+		req.NetworkId(),
+		rpcReq.Method,
+		connector.Id(),
+		policy.String(),
+		policy.GetTTL().String(),
+	).Observe(time.Since(start).Seconds())
 
 	if c.logger.GetLevel() <= zerolog.DebugLevel {
 		c.logger.Trace().Str("method", rpcReq.Method).RawJSON("result", jrr.Result).Msg("returning cached response")
