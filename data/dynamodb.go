@@ -325,7 +325,7 @@ func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, val
 	defer cancel()
 
 	// Add TTL if provided
-	if ttl != nil {
+	if ttl != nil && *ttl > 0 {
 		expirationTime := time.Now().Add(*ttl).Unix()
 		item[d.ttlAttributeName] = &dynamodb.AttributeValue{
 			N: aws.String(fmt.Sprintf("%d", expirationTime)),
@@ -394,10 +394,11 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 		}
 
 		// Check if the item has expired
-		if ttl, exists := result.Items[0][d.ttlAttributeName]; exists {
+		if ttl, exists := result.Items[0][d.ttlAttributeName]; exists && ttl.N != nil && *ttl.N != "" && *ttl.N != "0" {
 			expirationTime, err := strconv.ParseInt(*ttl.N, 10, 64)
-			if err == nil && time.Now().Unix() > expirationTime {
-				return "", common.NewErrRecordExpired(partitionKey, rangeKey, DynamoDBDriverName)
+			now := time.Now().Unix()
+			if err == nil && now > expirationTime {
+				return "", common.NewErrRecordExpired(partitionKey, rangeKey, DynamoDBDriverName, now, expirationTime)
 			}
 		}
 
@@ -426,10 +427,11 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 		}
 
 		// Check if the item has expired
-		if ttl, exists := result.Item[d.ttlAttributeName]; exists {
+		if ttl, exists := result.Item[d.ttlAttributeName]; exists && ttl.N != nil && *ttl.N != "" && *ttl.N != "0" {
 			expirationTime, err := strconv.ParseInt(*ttl.N, 10, 64)
-			if err == nil && time.Now().Unix() > expirationTime {
-				return "", common.NewErrRecordExpired(partitionKey, rangeKey, DynamoDBDriverName)
+			now := time.Now().Unix()
+			if err == nil && now > expirationTime {
+				return "", common.NewErrRecordExpired(partitionKey, rangeKey, DynamoDBDriverName, now, expirationTime)
 			}
 		}
 

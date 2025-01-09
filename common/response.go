@@ -47,7 +47,7 @@ func LookupResponseMetadata(err error) ResponseMetadata {
 	if uer, ok := err.(ResponseMetadata); ok {
 		return uer
 	}
-	
+
 	if ser, ok := err.(StandardError); ok {
 		if cs := ser.GetCause(); cs != nil {
 			return LookupResponseMetadata(cs)

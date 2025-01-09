@@ -179,7 +179,7 @@ func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey, v
 	p.logger.Debug().Msgf("writing to PostgreSQL with partition key: %s and range key: %s", partitionKey, rangeKey)
 
 	var expiresAt *time.Time
-	if ttl != nil {
+	if ttl != nil && *ttl > 0 {
 		t := time.Now().UTC().Add(*ttl)
 		expiresAt = &t
 	}
@@ -187,12 +187,22 @@ func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey, v
 	ctx, cancel := context.WithTimeout(ctx, p.setTimeout)
 	defer cancel()
 
-	_, err := p.conn.Exec(ctx, fmt.Sprintf(`
-		INSERT INTO %s (partition_key, range_key, value, expires_at)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (partition_key, range_key) DO UPDATE
-		SET value = $3, expires_at = $4
-	`, p.table), partitionKey, rangeKey, value, expiresAt)
+	var err error
+	if expiresAt != nil {
+		_, err = p.conn.Exec(ctx, fmt.Sprintf(`
+			INSERT INTO %s (partition_key, range_key, value, expires_at)
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT (partition_key, range_key) DO UPDATE
+			SET value = $3, expires_at = $4
+		`, p.table), partitionKey, rangeKey, value, expiresAt)
+	} else {
+		_, err = p.conn.Exec(ctx, fmt.Sprintf(`
+			INSERT INTO %s (partition_key, range_key, value)
+			VALUES ($1, $2, $3)
+			ON CONFLICT (partition_key, range_key) DO UPDATE
+			SET value = $3
+		`, p.table), partitionKey, rangeKey, value)
+	}
 
 	return err
 }
