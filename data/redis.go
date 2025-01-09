@@ -146,7 +146,7 @@ func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey, value 
 
 	// Use the provided TTL if one exists, otherwise set with no expiration
 	duration := time.Duration(0)
-	if ttl != nil {
+	if ttl != nil && *ttl > 0 {
 		duration = *ttl
 	}
 

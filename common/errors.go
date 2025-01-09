@@ -1840,7 +1840,7 @@ type ErrRecordExpired struct{ BaseError }
 
 const ErrCodeRecordExpired = "ErrRecordExpired"
 
-var NewErrRecordExpired = func(pk, rk, driver string) error {
+var NewErrRecordExpired = func(pk, rk, driver string, now, expirationTime int64) error {
 	return &ErrRecordExpired{
 		BaseError{
 			Code:    ErrCodeRecordExpired,
@@ -1849,6 +1849,8 @@ var NewErrRecordExpired = func(pk, rk, driver string) error {
 				"partitionKey": pk,
 				"rangeKey":     rk,
 				"driver":       driver,
+				"now":          now,
+				"expiration":   expirationTime,
 			},
 		},
 	}
