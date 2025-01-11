@@ -39,7 +39,7 @@ const (
 type Upstream interface {
 	Config() *UpstreamConfig
 	Vendor() Vendor
-	SupportsNetwork(ctx context.Context, networkId string) (bool, error)
+	NetworkId() string
 	EvmGetChainId(ctx context.Context) (string, error)
 	EvmSyncingState() EvmSyncingState
 }

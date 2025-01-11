@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"math/rand"
 	"sort"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/util"
 	"github.com/erpc/erpc/vendors"
 	"github.com/rs/zerolog"
 )
@@ -24,6 +26,7 @@ type UpstreamsRegistry struct {
 	vendorsRegistry      *vendors.VendorsRegistry
 	rateLimitersRegistry *RateLimitersRegistry
 	upsCfg               []*common.UpstreamConfig
+	initializer          *util.Initializer
 
 	allUpstreams []*Upstream
 	upstreamsMu  *sync.RWMutex
@@ -67,15 +70,29 @@ func NewUpstreamsRegistry(
 		upstreamScores:       make(map[string]map[string]map[string]float64),
 		upstreamsMu:          &sync.RWMutex{},
 		networkMu:            &sync.Map{},
+		initializer:          util.NewInitializer(logger, nil),
 	}
 }
 
 func (u *UpstreamsRegistry) Bootstrap(ctx context.Context) error {
-	err := u.registerUpstreams()
+	err := u.scheduleScoreCalculationTimers(ctx)
 	if err != nil {
 		return err
 	}
-	return u.scheduleScoreCalculationTimers(ctx)
+	// Register statically defined upstreams
+	wg := sync.WaitGroup{}
+	for _, upsCfg := range u.upsCfg {
+		wg.Add(1)
+		go func(upsCfg *common.UpstreamConfig) {
+			defer wg.Done()
+			err := u.registerUpstream(u.appCtx, upsCfg)
+			if err != nil {
+				u.logger.Error().Err(err).Str("upstreamId", upsCfg.Id).Msg("failed to initialize upstream on first attempt (will retry in the background)")
+			}
+		}(upsCfg)
+	}
+	wg.Wait()
+	return nil
 }
 
 func (u *UpstreamsRegistry) NewUpstream(
@@ -102,78 +119,81 @@ func (u *UpstreamsRegistry) getNetworkMutex(networkId string) *sync.RWMutex {
 }
 
 func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, networkId string) error {
-	networkMu := u.getNetworkMutex(networkId)
-	networkMu.Lock()
-	defer networkMu.Unlock()
+	// TODO refactor so that we ask "providers" for chains they support
+	// NOTE statically defined upstreams are already registered and we expect them to be added to the upstreams
 
-	u.upstreamsMu.RLock()
-	allUpstreams := u.allUpstreams
-	u.upstreamsMu.RUnlock()
+	// networkMu := u.getNetworkMutex(networkId)
+	// networkMu.Lock()
+	// defer networkMu.Unlock()
 
-	var upstreams []*Upstream
-	var ids []string
-	for _, ups := range allUpstreams {
-		if s, e := ups.SupportsNetwork(ctx, networkId); e == nil && s {
-			u.upstreamsMu.Lock()
-			upstreams = append(upstreams, ups)
-			ids = append(ids, ups.Config().Id)
-			u.upstreamsMu.Unlock()
-		} else if e != nil {
-			// TODO add a mechanism to re-check upstreams that failed to respond to initial SupportsNetwork (e.g. temporary network outages)
-			u.logger.Warn().Err(e).
-				Str("upstreamId", ups.Config().Id).
-				Str("networkId", networkId).
-				Msgf("failed to check if upstream supports network")
-		}
-	}
+	// u.upstreamsMu.RLock()
+	// allUpstreams := u.allUpstreams
+	// u.upstreamsMu.RUnlock()
 
-	u.logger.Debug().Str("networkId", networkId).Strs("upstreams", ids).Msgf("preparing upstreams for network")
+	// var upstreams []*Upstream
+	// var ids []string
+	// for _, ups := range allUpstreams {
+	// 	if s, e := ups.SupportsNetwork(ctx, networkId); e == nil && s {
+	// 		u.upstreamsMu.Lock()
+	// 		upstreams = append(upstreams, ups)
+	// 		ids = append(ids, ups.Config().Id)
+	// 		u.upstreamsMu.Unlock()
+	// 	} else if e != nil {
+	// 		// TODO add a mechanism to re-check upstreams that failed to respond to initial SupportsNetwork (e.g. temporary network outages)
+	// 		u.logger.Warn().Err(e).
+	// 			Str("upstreamId", ups.Config().Id).
+	// 			Str("networkId", networkId).
+	// 			Msgf("failed to check if upstream supports network")
+	// 	}
+	// }
 
-	if len(upstreams) == 0 {
-		return common.NewErrNoUpstreamsFound(u.prjId, networkId)
-	}
+	// u.logger.Debug().Str("networkId", networkId).Strs("upstreams", ids).Msgf("preparing upstreams for network")
 
-	u.upstreamsMu.Lock()
-	u.networkUpstreams[networkId] = upstreams
+	// if len(upstreams) == 0 {
+	// 	return common.NewErrNoUpstreamsFound(u.prjId, networkId)
+	// }
 
-	if _, ok := u.sortedUpstreams[networkId]; !ok {
-		u.sortedUpstreams[networkId] = make(map[string][]*Upstream)
-	}
-	if _, ok := u.sortedUpstreams[networkId]["*"]; !ok {
-		cpUps := make([]*Upstream, len(upstreams))
-		copy(cpUps, upstreams)
-		u.sortedUpstreams[networkId]["*"] = cpUps
-	}
-	if _, ok := u.sortedUpstreams["*"]; !ok {
-		u.sortedUpstreams["*"] = make(map[string][]*Upstream)
-	}
-	if _, ok := u.sortedUpstreams["*"]["*"]; !ok {
-		cpUps := make([]*Upstream, len(upstreams))
-		copy(cpUps, upstreams)
-		u.sortedUpstreams["*"]["*"] = cpUps
-	}
+	// u.upstreamsMu.Lock()
+	// u.networkUpstreams[networkId] = upstreams
 
-	// Initialize score for this or any network and any method for each upstream
-	for _, ups := range upstreams {
-		if _, ok := u.upstreamScores[ups.Config().Id]; !ok {
-			u.upstreamScores[ups.Config().Id] = make(map[string]map[string]float64)
-		}
+	// if _, ok := u.sortedUpstreams[networkId]; !ok {
+	// 	u.sortedUpstreams[networkId] = make(map[string][]*Upstream)
+	// }
+	// if _, ok := u.sortedUpstreams[networkId]["*"]; !ok {
+	// 	cpUps := make([]*Upstream, len(upstreams))
+	// 	copy(cpUps, upstreams)
+	// 	u.sortedUpstreams[networkId]["*"] = cpUps
+	// }
+	// if _, ok := u.sortedUpstreams["*"]; !ok {
+	// 	u.sortedUpstreams["*"] = make(map[string][]*Upstream)
+	// }
+	// if _, ok := u.sortedUpstreams["*"]["*"]; !ok {
+	// 	cpUps := make([]*Upstream, len(upstreams))
+	// 	copy(cpUps, upstreams)
+	// 	u.sortedUpstreams["*"]["*"] = cpUps
+	// }
 
-		if _, ok := u.upstreamScores[ups.Config().Id][networkId]; !ok {
-			u.upstreamScores[ups.Config().Id][networkId] = make(map[string]float64)
-		}
-		if _, ok := u.upstreamScores[ups.Config().Id][networkId]["*"]; !ok {
-			u.upstreamScores[ups.Config().Id][networkId]["*"] = 0
-		}
+	// // Initialize score for this or any network and any method for each upstream
+	// for _, ups := range upstreams {
+	// 	if _, ok := u.upstreamScores[ups.Config().Id]; !ok {
+	// 		u.upstreamScores[ups.Config().Id] = make(map[string]map[string]float64)
+	// 	}
 
-		if _, ok := u.upstreamScores[ups.Config().Id]["*"]; !ok {
-			u.upstreamScores[ups.Config().Id]["*"] = make(map[string]float64)
-		}
-		if _, ok := u.upstreamScores[ups.Config().Id]["*"]["*"]; !ok {
-			u.upstreamScores[ups.Config().Id]["*"]["*"] = 0
-		}
-	}
-	u.upstreamsMu.Unlock()
+	// 	if _, ok := u.upstreamScores[ups.Config().Id][networkId]; !ok {
+	// 		u.upstreamScores[ups.Config().Id][networkId] = make(map[string]float64)
+	// 	}
+	// 	if _, ok := u.upstreamScores[ups.Config().Id][networkId]["*"]; !ok {
+	// 		u.upstreamScores[ups.Config().Id][networkId]["*"] = 0
+	// 	}
+
+	// 	if _, ok := u.upstreamScores[ups.Config().Id]["*"]; !ok {
+	// 		u.upstreamScores[ups.Config().Id]["*"] = make(map[string]float64)
+	// 	}
+	// 	if _, ok := u.upstreamScores[ups.Config().Id]["*"]["*"]; !ok {
+	// 		u.upstreamScores[ups.Config().Id]["*"]["*"] = 0
+	// 	}
+	// }
+	// u.upstreamsMu.Unlock()
 
 	return nil
 }
@@ -356,20 +376,132 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 	return nil
 }
 
-func (u *UpstreamsRegistry) registerUpstreams() error {
-	for _, upsCfg := range u.upsCfg {
-		upstream, err := u.NewUpstream(u.prjId, upsCfg, u.logger, u.metricsTracker)
-		if err != nil {
-			return err
+func (u *UpstreamsRegistry) registerUpstream(ctx context.Context, upsCfg *common.UpstreamConfig) error {
+	return u.initializer.ExecuteTasks(ctx, u.buildUpstreamBootstrapTask(upsCfg))
+}
+
+func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamConfig) *util.BootstrapTask {
+	return util.NewBootstrapTask(
+		fmt.Sprintf("upstream/%s", upsCfg.Id),
+		func(ctx context.Context) error {
+			u.logger.Debug().Str("upstreamId", upsCfg.Id).Msg("attempt to bootstrap upstream")
+
+			u.upstreamsMu.RLock()
+			var ups *Upstream
+			for _, up := range u.allUpstreams {
+				if up.Config().Id == upsCfg.Id {
+					ups = up
+					break
+				}
+			}
+			u.upstreamsMu.RUnlock()
+
+			var err error
+			if ups == nil {
+				ups, err = u.NewUpstream(u.prjId, upsCfg, u.logger, u.metricsTracker)
+				if err != nil {
+					return err
+				}
+			}
+
+			err = ups.Bootstrap(ctx)
+			if err != nil {
+				return err
+			}
+			u.doRegisterBootstrappedUpstream(ups)
+
+			u.logger.Debug().Str("upstreamId", upsCfg.Id).Msg("upstream bootstrap completed")
+			return nil
+		},
+	)
+}
+
+func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
+	networkId := ups.NetworkId()
+	cfg := ups.Config()
+
+	u.upstreamsMu.Lock()
+	defer u.upstreamsMu.Unlock()
+
+	u.allUpstreams = append(u.allUpstreams, ups)
+
+	// Initialize the upstream's score maps
+	if _, ok := u.upstreamScores[cfg.Id]; !ok {
+		u.upstreamScores[cfg.Id] = make(map[string]map[string]float64)
+	}
+
+	// Initialize wildcard network scores
+	if _, ok := u.upstreamScores[cfg.Id]["*"]; !ok {
+		u.upstreamScores[cfg.Id]["*"] = make(map[string]float64)
+	}
+	if _, ok := u.upstreamScores[cfg.Id]["*"]["*"]; !ok {
+		u.upstreamScores[cfg.Id]["*"]["*"] = 0
+	}
+
+	// Initialize specific network scores
+	if _, ok := u.upstreamScores[cfg.Id][networkId]; !ok {
+		u.upstreamScores[cfg.Id][networkId] = make(map[string]float64)
+	}
+	if _, ok := u.upstreamScores[cfg.Id][networkId]["*"]; !ok {
+		u.upstreamScores[cfg.Id][networkId]["*"] = 0
+	}
+
+	// Initialize wildcard sorted upstreams
+	if _, ok := u.sortedUpstreams["*"]; !ok {
+		u.sortedUpstreams["*"] = make(map[string][]*Upstream)
+	}
+	if _, ok := u.sortedUpstreams["*"]["*"]; !ok {
+		u.sortedUpstreams["*"]["*"] = []*Upstream{}
+	}
+
+	// Initialize network-specific sorted upstreams
+	if _, ok := u.sortedUpstreams[networkId]; !ok {
+		u.sortedUpstreams[networkId] = make(map[string][]*Upstream)
+	}
+	if _, ok := u.sortedUpstreams[networkId]["*"]; !ok {
+		u.sortedUpstreams[networkId]["*"] = []*Upstream{}
+	}
+
+	// Add to network upstreams map
+	exists := false
+	for _, existingUps := range u.networkUpstreams[networkId] {
+		if existingUps.Config().Id == cfg.Id {
+			exists = true
+			break
 		}
-		u.allUpstreams = append(u.allUpstreams, upstream)
+	}
+	if !exists {
+		u.networkUpstreams[networkId] = append(u.networkUpstreams[networkId], ups)
 	}
 
-	if len(u.allUpstreams) == 0 {
-		return common.NewErrNoUpstreamsDefined(u.prjId)
+	// Add to wildcard sorted upstreams if not already present
+	found := false
+	for _, existingUps := range u.sortedUpstreams["*"]["*"] {
+		if existingUps.Config().Id == cfg.Id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		u.sortedUpstreams["*"]["*"] = append(u.sortedUpstreams["*"]["*"], ups)
 	}
 
-	return nil
+	// Add to network-specific sorted upstreams if not already present
+	found = false
+	for _, existingUps := range u.sortedUpstreams[networkId]["*"] {
+		if existingUps.Config().Id == cfg.Id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		u.sortedUpstreams[networkId]["*"] = append(u.sortedUpstreams[networkId]["*"], ups)
+	}
+
+	u.logger.Debug().
+		Str("upstreamId", cfg.Id).
+		Str("networkId", networkId).
+		Msg("upstream registered and initialized in registry")
 }
 
 func (u *UpstreamsRegistry) scheduleScoreCalculationTimers(ctx context.Context) error {
