@@ -188,6 +188,7 @@ func (i *Initializer) attemptRemainingTasks(ctx context.Context) {
 		state := TaskState(t.state.Load())
 		if state == TaskPending || state == TaskFailed || state == TaskTimedOut {
 			t.state.Store(int32(TaskRunning))
+			t.done = make(chan struct{})
 			t.attempts.Add(1)
 			t.lastAttempt.Store(time.Now())
 			tasksToRun = append(tasksToRun, t)
@@ -226,7 +227,6 @@ func (i *Initializer) attemptRemainingTasks(ctx context.Context) {
 	}
 
 	i.tasksMu.Unlock()
-	// return i.waitForTasks(ctx, tasksToRun)
 }
 
 // ensureAutoRetryIfEnabled spins up a goroutine for auto-retry if not already active.

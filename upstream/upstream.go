@@ -32,10 +32,11 @@ type Upstream struct {
 	rateLimitersRegistry *RateLimitersRegistry
 	rateLimiterAutoTuner *RateLimitAutoTuner
 
-	methodCheckResults    map[string]bool
-	methodCheckResultsMu  sync.RWMutex
-	supportedNetworkIds   map[string]bool
-	supportedNetworkIdsMu sync.RWMutex
+	methodCheckResults   map[string]bool
+	methodCheckResultsMu sync.RWMutex
+	// supportedNetworkIds   map[string]bool
+	// supportedNetworkIdsMu sync.RWMutex
+	networkId string
 
 	// By default "Syncing" is marked as unknown (nil) and that means we will be retrying empty responses
 	// from such upstream, unless we explicitly know that the upstream is fully synced (false).
@@ -84,10 +85,9 @@ func NewUpstream(
 		vendor:               vn,
 		metricsTracker:       mt,
 		timeoutDuration:      timeoutDuration,
-		failsafeExecutor:     failsafe.NewExecutor[*common.NormalizedResponse](policiesArray...),
+		failsafeExecutor:     failsafe.NewExecutor(policiesArray...),
 		rateLimitersRegistry: rlr,
 		methodCheckResults:   map[string]bool{},
-		supportedNetworkIds:  map[string]bool{},
 	}
 
 	pup.initRateLimitAutoTuner()
@@ -105,16 +105,18 @@ func NewUpstream(
 		pup.Client = client
 	}
 
-	go func() {
-		err = pup.detectFeatures()
-		if err != nil {
-			lg.Warn().Err(err).Msgf("skipping auto feature detection for upstream due to error")
-		}
-	}()
-
 	lg.Debug().Msgf("prepared upstream")
 
 	return pup, nil
+}
+
+func (u *Upstream) Bootstrap(ctx context.Context) error {
+	err := u.detectFeatures(ctx)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (u *Upstream) Config() *common.UpstreamConfig {
@@ -187,6 +189,10 @@ func (u *Upstream) prepareRequest(nr *common.NormalizedRequest) error {
 	}
 
 	return nil
+}
+
+func (u *Upstream) NetworkId() string {
+	return u.networkId
 }
 
 func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, byPassMethodExclusion bool) (*common.NormalizedResponse, error) {
@@ -488,25 +494,25 @@ func (u *Upstream) SetEvmSyncingState(state common.EvmSyncingState) {
 	u.evmSyncingMu.Unlock()
 }
 
-func (u *Upstream) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
-	u.supportedNetworkIdsMu.RLock()
-	supports, exists := u.supportedNetworkIds[networkId]
-	u.supportedNetworkIdsMu.RUnlock()
-	if exists && supports {
-		return true, nil
-	}
+// func (u *Upstream) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
+// 	u.supportedNetworkIdsMu.RLock()
+// 	supports, exists := u.supportedNetworkIds[networkId]
+// 	u.supportedNetworkIdsMu.RUnlock()
+// 	if exists && supports {
+// 		return true, nil
+// 	}
 
-	supports, err := u.Client.SupportsNetwork(ctx, networkId)
-	if err != nil {
-		return false, err
-	}
+// 	supports, err := u.Client.SupportsNetwork(ctx, networkId)
+// 	if err != nil {
+// 		return false, err
+// 	}
 
-	u.supportedNetworkIdsMu.Lock()
-	u.supportedNetworkIds[networkId] = supports
-	u.supportedNetworkIdsMu.Unlock()
+// 	u.supportedNetworkIdsMu.Lock()
+// 	u.supportedNetworkIds[networkId] = supports
+// 	u.supportedNetworkIdsMu.Unlock()
 
-	return supports, nil
-}
+// 	return supports, nil
+// }
 
 func (u *Upstream) IgnoreMethod(method string) {
 	ai := u.config.AutoIgnoreUnsupportedMethods
@@ -624,7 +630,7 @@ func (u *Upstream) shouldHandleMethod(method string) (v bool, err error) {
 	return v, nil
 }
 
-func (u *Upstream) detectFeatures() error {
+func (u *Upstream) detectFeatures(ctx context.Context) error {
 	cfg := u.Config()
 
 	if cfg.Type == "" {
@@ -636,7 +642,7 @@ func (u *Upstream) detectFeatures() error {
 			cfg.Evm = &common.EvmUpstreamConfig{}
 		}
 		if cfg.Evm.ChainId == 0 {
-			nid, err := u.EvmGetChainId(u.appCtx)
+			nid, err := u.EvmGetChainId(ctx)
 			if err != nil {
 				return common.NewErrUpstreamClientInitialization(
 					fmt.Errorf("failed to get chain id: %w", err),
@@ -650,10 +656,8 @@ func (u *Upstream) detectFeatures() error {
 					cfg.Id,
 				)
 			}
-			u.supportedNetworkIdsMu.Lock()
-			u.supportedNetworkIds[util.EvmNetworkId(cfg.Evm.ChainId)] = true
-			u.supportedNetworkIdsMu.Unlock()
 		}
+		u.networkId = util.EvmNetworkId(cfg.Evm.ChainId)
 
 		if cfg.Evm.MaxAvailableRecentBlocks == 0 && cfg.Evm.NodeType == common.EvmNodeTypeFull {
 			cfg.Evm.MaxAvailableRecentBlocks = 128
@@ -748,24 +752,26 @@ func (u *Upstream) getScoreMultipliers(networkId, method string) *common.ScoreMu
 
 func (u *Upstream) MarshalJSON() ([]byte, error) {
 	type upstreamPublic struct {
-		Id             string                            `json:"id"`
-		Metrics        map[string]*health.TrackedMetrics `json:"metrics"`
-		ActiveNetworks []string                          `json:"activeNetworks"`
+		Id        string                            `json:"id"`
+		Metrics   map[string]*health.TrackedMetrics `json:"metrics"`
+		NetworkId string                            `json:"networkId"`
+		// ActiveNetworks []string                          `json:"activeNetworks"`
 	}
 
-	var activeNetworks []string
-	u.supportedNetworkIdsMu.RLock()
-	for netId := range u.supportedNetworkIds {
-		activeNetworks = append(activeNetworks, netId)
-	}
-	u.supportedNetworkIdsMu.RUnlock()
+	// var activeNetworks []string
+	// u.supportedNetworkIdsMu.RLock()
+	// for netId := range u.supportedNetworkIds {
+	// 	activeNetworks = append(activeNetworks, netId)
+	// }
+	// u.supportedNetworkIdsMu.RUnlock()
 
 	metrics := u.metricsTracker.GetUpstreamMetrics(u.config.Id)
 
 	uppub := upstreamPublic{
-		Id:             u.config.Id,
-		Metrics:        metrics,
-		ActiveNetworks: activeNetworks,
+		Id:        u.config.Id,
+		Metrics:   metrics,
+		NetworkId: u.NetworkId(),
+		// ActiveNetworks: activeNetworks,
 	}
 
 	return sonic.Marshal(uppub)

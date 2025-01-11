@@ -46,7 +46,7 @@ func NewProjectsRegistry(
 		if err != nil {
 			return nil, err
 		}
-		prj.Bootstrap(appCtx)
+		go prj.Bootstrap(appCtx)
 	}
 
 	return reg, nil
