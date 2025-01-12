@@ -1,7 +1,9 @@
 package thirdparty
 
 import (
+	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -59,7 +61,14 @@ type AlchemySettings struct {
 	ApiKey string `yaml:"apiKey" json:"apiKey"`
 }
 
+func (s *AlchemySettings) IsObjectNull() bool {
+	return s == nil || s.ApiKey == ""
+}
+
 func (s *AlchemySettings) Validate() error {
+	if s == nil || s.ApiKey == "" {
+		return fmt.Errorf("vendor alchemy requires apiKey")
+	}
 	return nil
 }
 
@@ -82,9 +91,36 @@ func (v *AlchemyVendor) SupportsNetwork(networkId string) (bool, error) {
 	return ok, nil
 }
 
-func (v *AlchemyVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
+func (v *AlchemyVendor) OverrideConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
+	}
+
+	if upstream.Endpoint == "" && settings != nil && !settings.IsObjectNull() {
+		if settings, ok := settings.(*AlchemySettings); ok {
+			if settings.ApiKey != "" {
+				if upstream.Evm == nil {
+					return fmt.Errorf("alchemy vendor requires upstream.evm to be defined")
+				}
+				chainID := upstream.Evm.ChainId
+				if chainID == 0 {
+					return fmt.Errorf("alchemy vendor requires upstream.evm.chainId to be defined")
+				}
+				subdomain, ok := alchemyNetworkSubdomains[chainID]
+				if !ok {
+					return fmt.Errorf("unsupported network chain ID for Alchemy: %d", chainID)
+				}
+				alchemyURL := fmt.Sprintf("https://%s.g.alchemy.com/v2/%s", subdomain, settings.ApiKey)
+				parsedURL, err := url.Parse(alchemyURL)
+				if err != nil {
+					return err
+				}
+
+				upstream.Endpoint = parsedURL.String()
+			}
+		} else {
+			return fmt.Errorf("provided settings is not of type *AlchemySettings it is of type %T", settings)
+		}
 	}
 
 	return nil

@@ -1,15 +1,106 @@
 package thirdparty
 
 import (
+	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/erpc/erpc/common"
 )
 
+var blastapiNetworkNames = map[int64]string{
+	1:           "eth-mainnet",
+	10:          "optimism-mainnet",
+	100:         "gnosis-mainnet",
+	10000:       "crynux-testnet",
+	10200:       "gnosis-chiado",
+	1075:        "iota-testnet-evm",
+	1088:        "metis-mainnet",
+	1100:        "dymension-mainnet",
+	1101:        "polygon-zkevm-mainnet",
+	111:         "dymension-testnet",
+	11124:       "abstract-testnet",
+	11155111:    "eth-sepolia",
+	11155420:    "optimism-sepolia",
+	1122:        "nim-mainnet",
+	11297108099: "palm-testnet",
+	11297108109: "palm-mainnet",
+	1231:        "rivalz-testnet",
+	1284:        "moonbeam",
+	1285:        "moonriver",
+	1287:        "moonbase-alpha",
+	137:         "polygon-mainnet",
+	168587773:   "blastl2-sepolia",
+	17000:       "eth-holesky",
+	18071918:    "mande-mainnet",
+	204:         "opbnb-mainnet",
+	2442:        "polygon-zkevm-cardona",
+	250:         "fantom-mainnet",
+	300:         "zksync-sepolia",
+	324:         "zksync-mainnet",
+	336:         "shiden",
+	34443:       "mode-mainnet",
+	4002:        "fantom-testnet",
+	4157:        "crossfi-testnet",
+	420:         "optimism-goerli",
+	42161:       "arbitrum-one",
+	421614:      "arbitrum-sepolia",
+	42170:       "arbitrum-nova",
+	43113:       "ava-testnet",
+	43114:       "ava-mainnet",
+	5:           "eth-goerli",
+	5000:        "mantle-mainnet",
+	5003:        "mantle-sepolia",
+	534351:      "scroll-sepolia",
+	534352:      "scroll-mainnet",
+	56:          "bsc-mainnet",
+	5611:        "opbnb-testnet",
+	59140:       "linea-goerli",
+	59141:       "linea-sepolia",
+	59144:       "linea-mainnet",
+	592:         "astar",
+	60808:       "bob-mainnet",
+	62298:       "citrea-signet",
+	66:          "oktc-mainnet",
+	7000:        "zetachain-mainnet",
+	7001:        "zetachain-testnet",
+	80001:       "polygon-testnet",
+	80002:       "polygon-amoy",
+	80084:       "berachain-bartio",
+	808813:      "bob-sepolia",
+	81:          "shibuya",
+	81457:       "blastl2-mainnet",
+	8453:        "base-mainnet",
+	84531:       "base-goerli",
+	84532:       "base-sepolia",
+	8822:        "iota-mainnet-evm",
+	9001:        "evmos-mainnet",
+	919:         "mode-sepolia",
+	97:          "bsc-testnet",
+}
+
 type BlastApiVendor struct {
 	common.Vendor
 }
+
+type BlastApiSettings struct {
+	ApiKey string `yaml:"apiKey" json:"apiKey"`
+}
+
+func (s *BlastApiSettings) IsObjectNull() bool {
+	return s == nil || s.ApiKey == ""
+}
+
+func (s *BlastApiSettings) Validate() error {
+	if s == nil || s.ApiKey == "" {
+		return fmt.Errorf("vendor blastapi requires apiKey")
+	}
+	return nil
+}
+
+func (s *BlastApiSettings) SetDefaults() {}
 
 func CreateBlastApiVendor() common.Vendor {
 	return &BlastApiVendor{}
@@ -19,9 +110,47 @@ func (v *BlastApiVendor) Name() string {
 	return "blastapi"
 }
 
-func (v *BlastApiVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
+func (v *BlastApiVendor) SupportsNetwork(networkId string) (bool, error) {
+	chainID, err := strconv.ParseInt(networkId, 10, 64)
+	if err != nil {
+		return false, err
+	}
+	_, ok := blastapiNetworkNames[chainID]
+	return ok, nil
+}
+
+func (v *BlastApiVendor) OverrideConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
+	}
+
+	if upstream.Endpoint == "" && settings != nil && !settings.IsObjectNull() {
+		if settings, ok := settings.(*BlastApiSettings); ok {
+			if settings.ApiKey != "" {
+				if upstream.Evm == nil {
+					return fmt.Errorf("blastapi vendor requires upstream.evm to be defined")
+				}
+				chainID := upstream.Evm.ChainId
+				if chainID == 0 {
+					return fmt.Errorf("blastapi vendor requires upstream.evm.chainId to be defined")
+				}
+	            netName, ok := blastapiNetworkNames[chainID]
+				if !ok {
+					return fmt.Errorf("unsupported network chain ID for BlastAPI: %d", chainID)
+				}
+				blastapiURL := fmt.Sprintf("https://%s.blastapi.io/%s", netName, settings.ApiKey)
+				if netName == "ava-mainnet" || netName == "ava-testnet" {
+					// Avalanche endpoints need an extra path `/ext/bc/C/rpc`
+					blastapiURL = fmt.Sprintf("%s/ext/bc/C/rpc", blastapiURL)
+				}
+				parsedURL, err := url.Parse(blastapiURL)
+				if err != nil {
+					return err
+				}
+
+				upstream.Endpoint = parsedURL.String()
+			}
+		}
 	}
 
 	return nil
