@@ -18,9 +18,9 @@ import (
 	"github.com/erpc/erpc/common/script"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
-	"github.com/erpc/erpc/vendors"
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
@@ -80,7 +80,7 @@ func TestNetwork_Forward(t *testing.T) {
 				up1,
 			},
 			rateLimitersRegistry,
-			vendors.NewVendorsRegistry(),
+			thirdparty.NewVendorsRegistry(),
 			mt,
 			1*time.Second,
 		)
@@ -173,7 +173,7 @@ func TestNetwork_Forward(t *testing.T) {
 				up1,
 			},
 			rateLimitersRegistry,
-			vendors.NewVendorsRegistry(),
+			thirdparty.NewVendorsRegistry(),
 			mt,
 			1*time.Second,
 		)
@@ -246,7 +246,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Id:       "test",
@@ -345,7 +345,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Id:       "test",
@@ -463,7 +463,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Id:       "rpc1",
@@ -602,7 +602,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Id:       "rpc1",
@@ -751,7 +751,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 
 		// Set up upstream configurations
@@ -930,7 +930,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 
 		// Set up upstream configurations
@@ -1101,7 +1101,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 
 		// Set up upstream configurations
@@ -1274,7 +1274,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 
 		// Set up upstream configurations
@@ -1460,7 +1460,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 
 		// Set up upstream configurations
@@ -1633,7 +1633,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 
 		// Set up upstream configurations
@@ -1796,7 +1796,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 
 		// Set up upstream configurations
@@ -1975,7 +1975,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Set up test environment
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Id:       "rpc1",
@@ -2138,7 +2138,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 
 		// Set up upstream configurations
@@ -2312,7 +2312,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 
 		// Set up upstream configurations
@@ -2478,7 +2478,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -2585,7 +2585,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -2689,7 +2689,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -2791,7 +2791,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		FALSE := false
 		up1 := &common.UpstreamConfig{
@@ -2915,7 +2915,7 @@ func TestNetwork_Forward(t *testing.T) {
 				},
 			},
 			rateLimitersRegistry,
-			vendors.NewVendorsRegistry(),
+			thirdparty.NewVendorsRegistry(),
 			mt,
 			1*time.Second,
 		)
@@ -2991,7 +2991,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -3101,7 +3101,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -3208,7 +3208,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -3320,7 +3320,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -3429,7 +3429,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -3565,7 +3565,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -3700,7 +3700,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -3841,7 +3841,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("test_cb", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -3953,7 +3953,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("test_cb", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -4072,7 +4072,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("test_cb", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -4189,7 +4189,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -4306,7 +4306,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -4433,7 +4433,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -4538,7 +4538,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -4682,7 +4682,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create rate limiters registry: %v", err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -4781,7 +4781,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		FALSE := false
 		up1 := &common.UpstreamConfig{
@@ -4877,7 +4877,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -4972,7 +4972,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -5073,7 +5073,7 @@ func TestNetwork_Forward(t *testing.T) {
 			projectID,
 			upstreamConfigs,
 			rateLimitersRegistry,
-			vendors.NewVendorsRegistry(),
+			thirdparty.NewVendorsRegistry(),
 			metricsTracker,
 			1*time.Second,
 		)
@@ -5211,7 +5211,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 
 		// First upstream (Envio) with unsupported network
@@ -6256,7 +6256,7 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfig *common.
 		"test",
 		[]*common.UpstreamConfig{upstreamConfig},
 		rateLimitersRegistry,
-		vendors.NewVendorsRegistry(),
+		thirdparty.NewVendorsRegistry(),
 		metricsTracker,
 		1*time.Second,
 	)
@@ -6333,7 +6333,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.C
 		"test",
 		[]*common.UpstreamConfig{up1, up2},
 		rateLimitersRegistry,
-		vendors.NewVendorsRegistry(),
+		thirdparty.NewVendorsRegistry(),
 		metricsTracker,
 		1*time.Second,
 	)

@@ -11,9 +11,9 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/common/script"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
-	"github.com/erpc/erpc/vendors"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1716,7 +1716,7 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 	if err != nil {
 		t.Fatal(err)
 	}
-	vndr := vendors.NewVendorsRegistry()
+	vndr := thirdparty.NewVendorsRegistry()
 	mt := health.NewTracker("prjA", time.Minute)
 
 	upstreamConfigs := []*common.UpstreamConfig{

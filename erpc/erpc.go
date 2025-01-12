@@ -6,8 +6,8 @@ import (
 
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
-	"github.com/erpc/erpc/vendors"
 	"github.com/rs/zerolog"
 )
 
@@ -31,7 +31,7 @@ func NewERPC(
 		return nil, err
 	}
 
-	vendorsRegistry := vendors.NewVendorsRegistry()
+	vendorsRegistry := thirdparty.NewVendorsRegistry()
 	projectRegistry, err := NewProjectsRegistry(
 		ctx,
 		logger,

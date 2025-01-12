@@ -9,7 +9,7 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
-	"github.com/erpc/erpc/vendors"
+	"github.com/erpc/erpc/thirdparty"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
@@ -754,7 +754,7 @@ func createTestRegistry(ctx context.Context, projectID string, logger *zerolog.L
 		projectID,
 		upstreamConfigs,
 		nil, // RateLimitersRegistry not needed for these tests
-		vendors.NewVendorsRegistry(),
+		thirdparty.NewVendorsRegistry(),
 		metricsTracker,
 		1*time.Second,
 	)

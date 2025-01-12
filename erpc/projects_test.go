@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
-	"github.com/erpc/erpc/vendors"
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog/log"
 )
@@ -76,7 +76,7 @@ func TestProject_Forward(t *testing.T) {
 			},
 			nil,
 			rateLimitersRegistry,
-			vendors.NewVendorsRegistry(),
+			thirdparty.NewVendorsRegistry(),
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -168,7 +168,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 			// 	MaxTimeout: util.StringPtr("10s"), // Large server timeout
 			// },
 			rateLimitersRegistry,
-			vendors.NewVendorsRegistry(),
+			thirdparty.NewVendorsRegistry(),
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -263,7 +263,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 			},
 			nil,
 			rateLimitersRegistry,
-			vendors.NewVendorsRegistry(),
+			thirdparty.NewVendorsRegistry(),
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -341,7 +341,7 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 			[]*common.ProjectConfig{prjConfig},
 			nil,          // EvmJsonRpcCache
 			rateLimiters, // RateLimitersRegistry
-			vendors.NewVendorsRegistry(),
+			thirdparty.NewVendorsRegistry(),
 		)
 		if err != nil {
 			t.Fatalf("failed to create ProjectsRegistry: %v", err)

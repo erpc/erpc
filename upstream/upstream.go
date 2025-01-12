@@ -11,8 +11,8 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/util"
-	"github.com/erpc/erpc/vendors"
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/rs/zerolog"
 )
@@ -50,7 +50,7 @@ func NewUpstream(
 	cfg *common.UpstreamConfig,
 	cr *ClientRegistry,
 	rlr *RateLimitersRegistry,
-	vr *vendors.VendorsRegistry,
+	vr *thirdparty.VendorsRegistry,
 	logger *zerolog.Logger,
 	mt *health.Tracker,
 ) (*Upstream, error) {

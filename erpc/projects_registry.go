@@ -7,8 +7,8 @@ import (
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
-	"github.com/erpc/erpc/vendors"
 	"github.com/rs/zerolog"
 )
 
@@ -20,7 +20,7 @@ type ProjectsRegistry struct {
 	evmJsonRpcCache      *EvmJsonRpcCache
 	preparedProjects     map[string]*PreparedProject
 	staticProjects       []*common.ProjectConfig
-	vendorsRegistry      *vendors.VendorsRegistry
+	vendorsRegistry      *thirdparty.VendorsRegistry
 }
 
 func NewProjectsRegistry(
@@ -29,7 +29,7 @@ func NewProjectsRegistry(
 	staticProjects []*common.ProjectConfig,
 	evmJsonRpcCache *EvmJsonRpcCache,
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
-	vendorsRegistry *vendors.VendorsRegistry,
+	vendorsRegistry *thirdparty.VendorsRegistry,
 ) (*ProjectsRegistry, error) {
 	reg := &ProjectsRegistry{
 		appCtx:               appCtx,
@@ -79,6 +79,13 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		return nil, err
 	}
 	metricsTracker := health.NewTracker(prjCfg.Id, wsDuration)
+	providersRegistry, err := thirdparty.NewProvidersRegistry(
+		r.vendorsRegistry,
+		prjCfg.Providers,
+	)
+	if err != nil {
+		return nil, err
+	}
 	upstreamsRegistry := upstream.NewUpstreamsRegistry(
 		r.appCtx,
 		&lg,
@@ -86,6 +93,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		prjCfg.Upstreams,
 		r.rateLimitersRegistry,
 		r.vendorsRegistry,
+		providersRegistry,
 		metricsTracker,
 		1*time.Second,
 	)

@@ -10,9 +10,9 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
-	"github.com/erpc/erpc/vendors"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -42,7 +42,7 @@ func createCacheTestFixtures(upstreamConfigs []upsTestCfg) ([]*data.MockConnecto
 		},
 	}
 
-	vnr := vendors.NewVendorsRegistry()
+	vnr := thirdparty.NewVendorsRegistry()
 	clr := upstream.NewClientRegistry(&logger)
 	mockNetwork.evmStatePollers = make(map[string]*upstream.EvmStatePoller)
 	upstreams := make([]*upstream.Upstream, 0, len(upstreamConfigs))
