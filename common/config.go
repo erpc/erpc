@@ -298,6 +298,7 @@ type CORSConfig struct {
 }
 
 type VendorSettings interface {
+	IsObjectNull() bool
 	SetDefaults()
 	Validate() error
 }
@@ -373,7 +374,7 @@ type JsonRpcUpstreamConfig struct {
 }
 
 type EvmUpstreamConfig struct {
-	ChainId                  int         `yaml:"chainId" json:"chainId"`
+	ChainId                  int64       `yaml:"chainId" json:"chainId"`
 	NodeType                 EvmNodeType `yaml:"nodeType,omitempty" json:"nodeType"`
 	StatePollerInterval      string      `yaml:"statePollerInterval,omitempty" json:"statePollerInterval"`
 	MaxAvailableRecentBlocks int64       `yaml:"maxAvailableRecentBlocks,omitempty" json:"maxAvailableRecentBlocks"`

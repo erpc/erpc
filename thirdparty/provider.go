@@ -36,12 +36,12 @@ func (p *Provider) SupportsNetwork(networkId string) (bool, error) {
 }
 
 func (p *Provider) GenerateUpstreamConfig(networkId string) (*common.UpstreamConfig, error) {
-	cfg := p.buildBaseUpstreamConfig(networkId)
-	err := p.vendor.OverrideConfig(cfg)
+	upsCfg := p.buildBaseUpstreamConfig(networkId)
+	err := p.vendor.OverrideConfig(upsCfg, p.config.Settings)
 	if err != nil {
 		return nil, err
 	}
-	return cfg, nil
+	return upsCfg, nil
 }
 
 // buildBaseUpstreamConfig uses the ProviderConfig's Overrides map to find an

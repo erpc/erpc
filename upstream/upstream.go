@@ -93,7 +93,7 @@ func NewUpstream(
 	pup.initRateLimitAutoTuner()
 
 	if vn != nil {
-		err = vn.OverrideConfig(cfg)
+		err = vn.OverrideConfig(cfg, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -649,7 +649,7 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 					cfg.Id,
 				)
 			}
-			cfg.Evm.ChainId, err = strconv.Atoi(nid)
+			cfg.Evm.ChainId, err = strconv.ParseInt(nid, 10, 64)
 			if err != nil {
 				return common.NewErrUpstreamClientInitialization(
 					fmt.Errorf("failed to parse chain id: %w", err),
