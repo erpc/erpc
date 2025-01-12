@@ -1,4 +1,4 @@
-package vendors
+package thirdparty
 
 import (
 	"net/http"

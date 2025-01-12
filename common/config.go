@@ -303,10 +303,12 @@ type VendorSettings interface {
 }
 
 type ProviderConfig struct {
-	Vendor       string                     `yaml:"vendor" json:"vendor"`
-	Settings     VendorSettings             `yaml:"settings,omitempty" json:"settings"`
-	OnlyNetworks []string                   `yaml:"onlyNetworks,omitempty" json:"onlyNetworks"`
-	Overrides    map[string]*UpstreamConfig `yaml:"overrides,omitempty" json:"overrides"`
+	Id                 string                     `yaml:"id,omitempty" json:"id"`
+	Vendor             string                     `yaml:"vendor" json:"vendor"`
+	Settings           VendorSettings             `yaml:"settings,omitempty" json:"settings"`
+	OnlyNetworks       []string                   `yaml:"onlyNetworks,omitempty" json:"onlyNetworks"`
+	UpstreamIdTemplate string                     `yaml:"upstreamIdTemplate" json:"upstreamIdTemplate"`
+	Overrides          map[string]*UpstreamConfig `yaml:"overrides,omitempty" json:"overrides"`
 }
 
 type UpstreamConfig struct {

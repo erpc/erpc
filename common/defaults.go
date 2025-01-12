@@ -498,6 +498,11 @@ func (d *DynamoDBConnectorConfig) SetDefaults() {
 }
 
 func (p *ProjectConfig) SetDefaults() {
+	if p.Providers != nil {
+		for _, provider := range p.Providers {
+			provider.SetDefaults(p.UpstreamDefaults)
+		}
+	}
 	if p.Upstreams != nil {
 		for _, upstream := range p.Upstreams {
 			if p.UpstreamDefaults != nil {
@@ -535,6 +540,23 @@ func (n *NetworkDefaults) SetDefaults() {
 	}
 	if n.SelectionPolicy != nil {
 		n.SelectionPolicy.SetDefaults()
+	}
+}
+
+func (p *ProviderConfig) SetDefaults(upsDefaults *UpstreamConfig) {
+	if p.Id == "" {
+		p.Id = p.Vendor
+	}
+	if p.UpstreamIdTemplate == "" {
+		p.UpstreamIdTemplate = "<PROVIDER>-<NETWORK>"
+	}
+	if p.Overrides != nil {
+		for _, override := range p.Overrides {
+			override.SetDefaults(upsDefaults)
+		}
+	}
+	if p.Settings != nil {
+		p.Settings.SetDefaults()
 	}
 }
 

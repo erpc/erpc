@@ -1,7 +1,8 @@
-package vendors
+package thirdparty
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/erpc/erpc/common"
@@ -70,6 +71,15 @@ func CreateAlchemyVendor() common.Vendor {
 
 func (v *AlchemyVendor) Name() string {
 	return "alchemy"
+}
+
+func (v *AlchemyVendor) SupportsNetwork(networkId string) (bool, error) {
+	chainID, err := strconv.ParseInt(networkId, 10, 64)
+	if err != nil {
+		return false, err
+	}
+	_, ok := alchemyNetworkSubdomains[chainID]
+	return ok, nil
 }
 
 func (v *AlchemyVendor) OverrideConfig(upstream *common.UpstreamConfig) error {

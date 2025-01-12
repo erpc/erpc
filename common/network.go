@@ -1,6 +1,10 @@
 package common
 
-import "time"
+import (
+	"strconv"
+	"strings"
+	"time"
+)
 
 type NetworkArchitecture string
 
@@ -19,6 +23,18 @@ type Network interface {
 
 func IsValidArchitecture(architecture string) bool {
 	return architecture == string(ArchitectureEvm) // TODO add more architectures when they are supported
+}
+
+func IsValidNetwork(network string) bool {
+	if strings.HasPrefix(network, "evm:") {
+		chainId, err := strconv.ParseInt(strings.TrimPrefix(network, "evm:"), 10, 64)
+		if err != nil {
+			return false
+		}
+		return chainId > 0
+	}
+
+	return false
 }
 
 type QuantileTracker interface {
