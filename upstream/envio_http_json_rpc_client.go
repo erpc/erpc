@@ -13,61 +13,6 @@ import (
 	"github.com/erpc/erpc/util"
 )
 
-var envioKnownSupportedChains = map[int64]struct{}{
-	42161:      {}, // Arbitrum
-	42170:      {}, // Arbitrum Nova
-	421614:     {}, // Arbitrum Sepolia
-	1313161554: {}, // Aurora
-	43114:      {}, // Avalanche
-	8453:       {}, // Base
-	84532:      {}, // Base Sepolia
-	81457:      {}, // Blast
-	168587773:  {}, // Blast Sepolia
-	288:        {}, // Boba
-	56:         {}, // Bsc
-	97:         {}, // Bsc Testnet
-	2001:       {}, // C1 Milkomeda
-	42220:      {}, // Celo
-	44:         {}, // Crab
-	7560:       {}, // Cyber
-	46:         {}, // Darwinia
-	1:          {}, // Ethereum Mainnet
-	250:        {}, // Fantom
-	14:         {}, // Flare
-	43113:      {}, // Fuji
-	100:        {}, // Gnosis
-	10200:      {}, // Gnosis Chiado
-	5:          {}, // Goerli
-	1666600000: {}, // Harmony Shard 0
-	17000:      {}, // Holesky
-	9090:       {}, // Inco Gentry Testnet
-	1802203764: {}, // Kakarot Sepolia
-	255:        {}, // Kroma
-	59144:      {}, // Linea
-	42:         {}, // Lukso
-	169:        {}, // Manta
-	5000:       {}, // Mantle
-	1088:       {}, // Metis
-	17864:      {}, // Mev Commit
-	1284:       {}, // Moonbeam
-	245022934:  {}, // Neon Evm
-	10:         {}, // Optimism
-	11155420:   {}, // Optimism Sepolia
-	137:        {}, // Polygon
-	80002:      {}, // Polygon Amoy
-	1101:       {}, // Polygon zkEVM
-	424:        {}, // Publicgoods
-	30:         {}, // Rsk
-	534352:     {}, // Scroll
-	11155111:   {}, // Sepolia
-	148:        {}, // Shimmer Evm
-	196:        {}, // X Layer
-	195:        {}, // X Layer Testnet
-	7000:       {}, // Zeta
-	324:        {}, // ZKsync
-	7777777:    {}, // Zora
-}
-
 type EnvioHttpJsonRpcClient struct {
 	appCtx     context.Context
 	upstream   *Upstream

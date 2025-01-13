@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/thirdparty"
@@ -22,7 +23,7 @@ type UpstreamsRegistry struct {
 	scoreRefreshInterval time.Duration
 	logger               *zerolog.Logger
 	metricsTracker       *health.Tracker
-	clientRegistry       *ClientRegistry
+	clientRegistry       *clients.ClientRegistry
 	vendorsRegistry      *thirdparty.VendorsRegistry
 	providersRegistry    *thirdparty.ProvidersRegistry
 	rateLimitersRegistry *RateLimitersRegistry
@@ -62,7 +63,7 @@ func NewUpstreamsRegistry(
 		prjId:                prjId,
 		scoreRefreshInterval: scoreRefreshInterval,
 		logger:               logger,
-		clientRegistry:       NewClientRegistry(logger),
+		clientRegistry:       clients.NewClientRegistry(logger, prjId),
 		rateLimitersRegistry: rr,
 		vendorsRegistry:      vr,
 		providersRegistry:    pr,
@@ -375,7 +376,7 @@ func (u *UpstreamsRegistry) buildProviderBootstrapTask(
 			lg := u.logger.With().Str("provider", provider.Id()).Str("networkId", networkId).Logger()
 			lg.Debug().Msg("attempting to create upstream from provider")
 
-			if ok, err := provider.SupportsNetwork(networkId); err != nil || !ok {
+			if ok, err := provider.SupportsNetwork(ctx, networkId); err != nil || !ok {
 				lg.Debug().Msg("provider does not support network; skipping upstream creation")
 				return nil
 			}

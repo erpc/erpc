@@ -1,4 +1,4 @@
-package upstream
+package clients
 
 import (
 	"bytes"
@@ -22,16 +22,16 @@ import (
 
 type HttpJsonRpcClient interface {
 	GetType() ClientType
-	SupportsNetwork(ctx context.Context, networkId string) (bool, error)
 	SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error)
 }
 
 type GenericHttpJsonRpcClient struct {
 	Url *url.URL
 
+	projectId  string
+	upstreamId string
 	appCtx     context.Context
 	logger     *zerolog.Logger
-	upstream   *Upstream
 	httpClient *http.Client
 
 	enableGzip    bool
@@ -52,27 +52,33 @@ type batchRequest struct {
 	err      chan error
 }
 
-func NewGenericHttpJsonRpcClient(appCtx context.Context, logger *zerolog.Logger, pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
+func NewGenericHttpJsonRpcClient(
+	appCtx context.Context,
+	logger *zerolog.Logger,
+	projectId string,
+	upstreamId string,
+	parsedUrl *url.URL,
+	jsonRpcCfg *common.JsonRpcUpstreamConfig,
+) (HttpJsonRpcClient, error) {
 	client := &GenericHttpJsonRpcClient{
-		Url: parsedUrl,
-
-		appCtx:   appCtx,
-		logger:   logger,
-		upstream: pu,
+		Url:        parsedUrl,
+		appCtx:     appCtx,
+		logger:     logger,
+		projectId:  projectId,
+		upstreamId: upstreamId,
 	}
 
-	if pu.config.JsonRpc != nil {
-		jc := pu.config.JsonRpc
-		if jc.SupportsBatch != nil && *jc.SupportsBatch {
+	if jsonRpcCfg != nil {
+		if jsonRpcCfg.SupportsBatch != nil && *jsonRpcCfg.SupportsBatch {
 			client.supportsBatch = true
 
-			if jc.BatchMaxSize > 0 {
-				client.batchMaxSize = jc.BatchMaxSize
+			if jsonRpcCfg.BatchMaxSize > 0 {
+				client.batchMaxSize = jsonRpcCfg.BatchMaxSize
 			} else {
 				client.batchMaxSize = 10
 			}
-			if jc.BatchMaxWait != "" {
-				duration, err := time.ParseDuration(jc.BatchMaxWait)
+			if jsonRpcCfg.BatchMaxWait != "" {
+				duration, err := time.ParseDuration(jsonRpcCfg.BatchMaxWait)
 				if err != nil {
 					return nil, err
 				}
@@ -83,8 +89,8 @@ func NewGenericHttpJsonRpcClient(appCtx context.Context, logger *zerolog.Logger,
 
 			client.batchRequests = make(map[interface{}]*batchRequest)
 		}
-		if jc.EnableGzip != nil {
-			client.enableGzip = *jc.EnableGzip
+		if jsonRpcCfg.EnableGzip != nil {
+			client.enableGzip = *jsonRpcCfg.EnableGzip
 		}
 	}
 
@@ -113,14 +119,6 @@ func (c *GenericHttpJsonRpcClient) GetType() ClientType {
 	return ClientTypeHttpJsonRpc
 }
 
-func (c *GenericHttpJsonRpcClient) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
-	cfg := c.upstream.Config()
-	if cfg.Evm != nil && cfg.Evm.ChainId > 0 {
-		return util.EvmNetworkId(cfg.Evm.ChainId) == networkId, nil
-	}
-	return false, nil
-}
-
 func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	if !c.supportsBatch {
 		return c.sendSingleRequest(ctx, req)
@@ -134,7 +132,7 @@ func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.
 	if err != nil {
 		return nil, common.NewErrUpstreamRequest(
 			err,
-			c.upstream.Config().Id,
+			c.upstreamId,
 			req.NetworkId(),
 			jrReq.Method,
 			0, 0, 0, 0,
@@ -299,7 +297,7 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 		if err != nil {
 			req.err <- common.NewErrUpstreamRequest(
 				err,
-				c.upstream.Config().Id,
+				c.upstreamId,
 				req.request.NetworkId(),
 				jrReq.Method,
 				0, 0, 0, 0,
@@ -340,7 +338,7 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 				Message: fmt.Sprintf("%v", err),
 				Details: map[string]interface{}{
 					"url":        c.Url.String(),
-					"upstreamId": c.upstream.Config().Id,
+					"upstreamId": c.upstreamId,
 					"request":    requestBody,
 				},
 			}
@@ -349,7 +347,7 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("User-Agent", fmt.Sprintf("erpc (%s/%s; Project/%s; Budget/%s)", common.ErpcVersion, common.ErpcCommitSha, c.upstream.ProjectId, c.upstream.config.RateLimitBudget))
+	httpReq.Header.Set("User-Agent", fmt.Sprintf("erpc (%s/%s; Project/%s)", common.ErpcVersion, common.ErpcCommitSha, c.projectId))
 
 	c.logger.Debug().Str("host", c.Url.Host).RawJSON("request", requestBody).Interface("headers", httpReq.Header).Msgf("sending json rpc POST request (batch)")
 
@@ -495,7 +493,7 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 	} else {
 		// Unexpected response type
 		for _, req := range requests {
-			req.err <- common.NewErrUpstreamMalformedResponse(fmt.Errorf("unexpected response type (not array nor object): %s", bodyStr), c.upstream.Config().Id)
+			req.err <- common.NewErrUpstreamMalformedResponse(fmt.Errorf("unexpected response type (not array nor object): %s", bodyStr), c.upstreamId)
 		}
 	}
 }
@@ -544,7 +542,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 	if err != nil {
 		return nil, common.NewErrUpstreamRequest(
 			err,
-			c.upstream.Config().Id,
+			c.upstreamId,
 			req.NetworkId(),
 			jrReq.Method,
 			0,
@@ -575,7 +573,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 			Message: fmt.Sprintf("%v", err),
 			Details: map[string]interface{}{
 				"url":        c.Url.String(),
-				"upstreamId": c.upstream.Config().Id,
+				"upstreamId": c.upstreamId,
 				"request":    requestBody,
 			},
 		}
@@ -652,11 +650,7 @@ func (c *GenericHttpJsonRpcClient) prepareRequest(ctx context.Context, body []by
 
 	httpReq.Header.Set("Accept-Encoding", "gzip")
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("User-Agent", fmt.Sprintf("erpc (%s/%s; Project/%s; Budget/%s)",
-		common.ErpcVersion,
-		common.ErpcCommitSha,
-		c.upstream.ProjectId,
-		c.upstream.config.RateLimitBudget))
+	httpReq.Header.Set("User-Agent", fmt.Sprintf("erpc (%s/%s; Project/%s)", common.ErpcVersion, common.ErpcCommitSha, c.projectId))
 
 	// Add gzip header if compression is enabled
 	if c.enableGzip {
@@ -708,7 +702,7 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 			"could not parse json rpc response from upstream",
 			err,
 			map[string]interface{}{
-				"upstreamId": c.upstream.Config().Id,
+				"upstreamId": c.upstreamId,
 				"statusCode": r.StatusCode,
 				"headers":    r.Header,
 			},
@@ -716,7 +710,7 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 		return e
 	}
 
-	if e := extractJsonRpcError(r, nr, jr); e != nil {
+	if e := extractEvmJsonRpcError(r, nr, jr); e != nil {
 		return e
 	}
 
@@ -730,7 +724,7 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 		"unknown json-rpc error",
 		jr.Error,
 		map[string]interface{}{
-			"upstreamId": c.upstream.Config().Id,
+			"upstreamId": c.upstreamId,
 			"statusCode": r.StatusCode,
 			"headers":    r.Header,
 		},
@@ -739,7 +733,7 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 	return e
 }
 
-func extractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *common.JsonRpcResponse) error {
+func extractEvmJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *common.JsonRpcResponse) error {
 	if jr != nil && jr.Error != nil {
 		err := jr.Error
 
