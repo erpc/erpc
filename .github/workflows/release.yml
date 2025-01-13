@@ -4,51 +4,197 @@ on:
   workflow_dispatch:
     inputs:
       version_tag:
-        description: 'Version tag for the release (e.g., v1.0.0)'
+        description: 'Version tag for the release (e.g., 1.0.0)'
         required: true
-      commit_sha:
-        description: 'Commit SHA (default: last commit of the current branch)'
-        required: false
-        default: ''
   push:
     branches:
       - main
 
 permissions:
   contents: write
+  pull-requests: write
   packages: write
 
 jobs:
-  tag:
-    runs-on: large
-    steps:
-      - name: Checkout
-        if: github.event.inputs.version_tag != ''
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event.inputs.commit_sha || github.ref }}
-
-      - name: Configure Git
-        if: github.event.inputs.version_tag != ''
-        run: |
-          git config user.name github-actions
-          git config user.email github-actions@github.com
-
-      - name: Tag commit and push
-        if: github.event.inputs.version_tag != ''
-        run: |
-          git tag ${{ github.event.inputs.version_tag }} -f
-          git push origin ${{ github.event.inputs.version_tag }} -f
-
-  docker-image:
-    runs-on: large
-    needs: tag
+  # Create Release PR - only on workflow_dispatch
+  prepare-release:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    outputs:
+      version: ${{ github.event.inputs.version_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.inputs.version_tag || 'main' }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.x'
+
+      - name: Generate types
+        run: |
+          go install github.com/gzuidhof/tygo@latest
+          tygo generate
+
+      # Run goreleaser in snapshot mode to generate checksums
+      - name: Run GoReleaser Snapshot
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean
+        env:
+          GORELEASER_CURRENT_TAG: ${{ github.event.inputs.version_tag }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Setup pnpm + node and install dependencies
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install
+        env:
+          CI: true
+
+      # Update version in package.json files
+      - name: Update package versions
+        run: |
+          for pkg in . typescript/cli typescript/config; do
+            cd $pkg
+            npm version ${{ github.event.inputs.version_tag }} --no-git-tag-version
+            cd -
+          done
+
+      # Generate the release files using the snapshot checksums
+      - name: Generate CLI release files
+        working-directory: typescript/cli
+        run: |
+          export VERSION="${{ github.event.inputs.version_tag }}"
+          export COMMIT_SHA=${{ github.sha }}
+          export CHECKSUMS_FILE=../../dist/checksums.txt
+          pnpm run build
+          npx ts-node ./src/script/generate-release-files.ts
+
+      - name: Cleanup generated files 
+        run: |
+          rm -rf dist/
+
+      # Create PR with all changes
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "chore: prepare release ${{ github.event.inputs.version_tag }}"
+          title: "chore: prepare release ${{ github.event.inputs.version_tag }}"
+          body: |
+            🚀 Release preparation for version ${{ github.event.inputs.version_tag }}
+            
+            This PR includes:
+            - Version bumps in package.json files
+            - Generated TypeScript types
+            - Generated release files
+            - Generated checksums
+          branch: "release/${{ github.event.inputs.version_tag }}"
+          base: main
+          labels: release
+
+  # Run on release PR merge
+  release:
+    if: |
+      github.event_name == 'push' && 
+      github.ref == 'refs/heads/main' && 
+      contains(github.event.head_commit.message, 'chore: prepare release')
+    runs-on: large
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Extract version from commit message
+      - name: Extract version
+        id: version
+        run: |
+          VERSION=$(echo "${{ github.event.head_commit.message }}" | grep -oP 'release \K([0-9]+\.[0-9]+\.[0-9]+)')
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.x'
+
+      - name: Configure Git
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+
+      # Create git tag
+      - name: Create tag
+        run: |
+          git tag ${{ steps.version.outputs.VERSION }}
+          git push origin ${{ steps.version.outputs.VERSION }}
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Setup pnpm + node and install dependencies
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install
+        env:
+          CI: true
+
+      # Publish packages
+      - name: Build and publish CLI package
+        working-directory: typescript/cli
+        run: |
+          pnpm run build
+          pnpm publish --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Build and publish Config package
+        working-directory: typescript/config
+        run: |
+          pnpm run build
+          pnpm publish --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # Always run on main push to update docker image
+  docker-image:
+    runs-on: large
+    needs: [prepare-release, release]
+    if: always() && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -76,7 +222,34 @@ jobs:
         id: short_sha
         run: echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
-      - name: Build and push Docker image from main
+      # Setup pnpm + node and install dependencies
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install
+        env:
+          CI: true
+
+      # Extract version from commit message if it's a release
+      - name: Extract version
+        id: version
+        if: "contains(github.event.head_commit.message, 'chore: prepare release')"
+        run: |
+          VERSION=$(echo "${{ github.event.head_commit.message }}" | grep -oP 'release \K([0-9]+\.[0-9]+\.[0-9]+)')
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      # Build main image if this is a regular main push
+      - name: Build and push Docker image for main
         if: github.event.inputs.version_tag == ''
         uses: docker/build-push-action@v5
         with:
@@ -89,43 +262,17 @@ jobs:
           tags: |
             ghcr.io/${{ steps.tag_param.outputs.repo }}:main
 
-      - name: Build and push Docker image with tags
-        if: github.event.inputs.version_tag != ''
+      # Build release images if this is a release commit
+      - name: Build and push Docker image for release
+        if: "contains(github.event.head_commit.message, 'chore: prepare release')"
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
           build-args: |
-            VERSION=${{ github.event.inputs.version_tag }}
+            VERSION=${{ steps.version.outputs.VERSION }}
             COMMIT_SHA=${{ steps.short_sha.outputs.SHORT_SHA }}
           tags: |
-            ghcr.io/${{ steps.tag_param.outputs.repo }}:${{ github.event.inputs.version_tag }}
+            ghcr.io/${{ steps.tag_param.outputs.repo }}:${{ steps.version.outputs.VERSION }}
             ghcr.io/${{ steps.tag_param.outputs.repo }}:latest
-
-  release:
-    runs-on: large
-    needs: docker-image
-    steps:
-      - name: Checkout
-        if: github.event.inputs.version_tag != ''
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event.inputs.commit_sha || github.ref }}
-
-      - name: Set up Go
-        if: github.event.inputs.version_tag != ''
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22.x'
-
-      - name: Run GoReleaser
-        if: github.event.inputs.version_tag != ''
-        uses: goreleaser/goreleaser-action@v6
-        with:
-          distribution: goreleaser
-          version: "~> v2"
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

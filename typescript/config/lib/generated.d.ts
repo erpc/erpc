@@ -1,4 +1,4 @@
-import type { LogLevel, Duration, ByteSize, ConnectorDriverType as TsConnectorDriverType, ConnectorConfig as TsConnectorConfig, UpstreamType as TsUpstreamType, AuthType as TsAuthType, AuthStrategyConfig as TsAuthStrategyConfig, SelectionPolicyEvalFunction } from "./types";
+import type { LogLevel, Duration, ByteSize, ConnectorDriverType as TsConnectorDriverType, ConnectorConfig as TsConnectorConfig, UpstreamType as TsUpstreamType, NetworkArchitecture as TsNetworkArchitecture, AuthType as TsAuthType, AuthStrategyConfig as TsAuthStrategyConfig, SelectionPolicyEvalFunction } from "./types";
 export type CacheDAL = any;
 export interface MockCacheDal {
     mock: any;
@@ -223,6 +223,9 @@ export interface TimeoutPolicyConfig {
 export interface HedgePolicyConfig {
     delay: string;
     maxCount: number;
+    quantile: number;
+    minDelay: Duration;
+    maxDelay: Duration;
 }
 export interface RateLimiterConfig {
     budgets: RateLimitBudgetConfig[];
@@ -241,7 +244,7 @@ export interface HealthCheckConfig {
     scoreMetricsWindowSize: string;
 }
 export interface NetworkConfig {
-    architecture: 'evm';
+    architecture: TsNetworkArchitecture;
     rateLimitBudget?: string;
     failsafe?: FailsafeConfig;
     evm?: EvmNetworkConfig;
@@ -349,6 +352,8 @@ export type EvmStatePoller = any;
 export type NetworkArchitecture = string;
 export declare const ArchitectureEvm: NetworkArchitecture;
 export type Network = any;
+export type QuantileTracker = any;
+export type TrackedMetrics = any;
 export type Scope = string;
 /**
  * Policies must be created with a "network" in mind,
