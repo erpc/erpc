@@ -54,7 +54,7 @@ func NewNetworksRegistry(
 
 func NewNetwork(
 	logger *zerolog.Logger,
-	project *PreparedProject,
+	projectId string,
 	nwCfg *common.NetworkConfig,
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
 	upstreamsRegistry *upstream.UpstreamsRegistry,
@@ -63,7 +63,7 @@ func NewNetwork(
 	lg := logger.With().Str("component", "proxy").Str("networkId", nwCfg.NetworkId()).Logger()
 
 	var policyArray []failsafe.Policy[*common.NormalizedResponse]
-	key := fmt.Sprintf("%s/%s", project.Config.Id, nwCfg.NetworkId())
+	key := fmt.Sprintf("%s/%s", projectId, nwCfg.NetworkId())
 	pls, err := upstream.CreateFailSafePolicies(&lg, common.ScopeNetwork, key, nwCfg.Failsafe)
 	if err != nil {
 		return nil, err
@@ -83,7 +83,7 @@ func NewNetwork(
 	lg.Debug().Interface("config", nwCfg.Failsafe).Msg("creating network")
 
 	network := &Network{
-		ProjectId: project.Config.Id,
+		ProjectId: projectId,
 		NetworkId: nwCfg.NetworkId(),
 		Logger:    &lg,
 
@@ -183,8 +183,8 @@ func (nr *NetworksRegistry) prepareNetwork(nwCfg *common.NetworkConfig) (*Networ
 	}
 
 	network, err := NewNetwork(
-		nr.project.Logger,
-		nr.project,
+		nr.logger,
+		nr.project.Config.Id,
 		nwCfg,
 		nr.rateLimitersRegistry,
 		nr.upstreamsRegistry,

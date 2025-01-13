@@ -1,15 +1,71 @@
 package thirdparty
 
 import (
+	"context"
+	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/erpc/erpc/common"
+	"github.com/rs/zerolog"
 )
+
+var infuraNetworkNames = map[int64]string{
+	42161:       "arbitrum-mainnet",
+	421614:      "arbitrum-sepolia",
+	43114:       "avalanche-mainnet",
+	43113:       "avalanche-fuji",
+	8453:        "base-mainnet",
+	84532:       "base-sepolia",
+	56:          "bsc-mainnet",
+	97:          "bsc-testnet",
+	81457:       "blast-mainnet",
+	168587773:   "blast-sepolia",
+	42220:       "celo-mainnet",
+	44787:       "celo-alfajores",
+	1:           "mainnet",
+	17000:       "holesky",
+	11155111:    "sepolia",
+	59144:       "linea-mainnet",
+	59141:       "linea-sepolia",
+	5000:        "mantle-mainnet",
+	5003:        "mantle-sepolia",
+	204:         "opbnb-mainnet",
+	5611:        "opbnb-testnet",
+	10:          "optimism-mainnet",
+	11155420:    "optimism-sepolia",
+	11297108109: "palm-mainnet",
+	11297108099: "palm-testnet",
+	137:         "polygon-mainnet",
+	80002:       "polygon-amoy",
+	534352:      "scroll-mainnet",
+	534351:      "scroll-sepolia",
+	324:         "zksync-mainnet",
+	300:         "zksync-sepolia",
+}
 
 type InfuraVendor struct {
 	common.Vendor
 }
+
+type InfuraSettings struct {
+	ApiKey string `yaml:"apiKey" json:"apiKey"`
+}
+
+func (s *InfuraSettings) IsObjectNull() bool {
+	return s == nil || s.ApiKey == ""
+}
+
+func (s *InfuraSettings) Validate() error {
+	if s == nil || s.ApiKey == "" {
+		return fmt.Errorf("vendor infura requires apiKey")
+	}
+	return nil
+}
+
+func (s *InfuraSettings) SetDefaults() {}
 
 func CreateInfuraVendor() common.Vendor {
 	return &InfuraVendor{}
@@ -19,7 +75,47 @@ func (v *InfuraVendor) Name() string {
 	return "infura"
 }
 
-func (v *InfuraVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
+func (v *InfuraVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
+	chainId, err := strconv.ParseInt(networkId, 10, 64)
+	if err != nil {
+		return false, err
+	}
+	_, ok := infuraNetworkNames[chainId]
+	return ok, nil
+}
+
+func (v *InfuraVendor) OverrideConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
+	if upstream.JsonRpc == nil {
+		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
+	}
+
+	if upstream.Endpoint == "" && settings != nil && !settings.IsObjectNull() {
+		if stg, ok := settings.(*InfuraSettings); ok {
+			if stg.ApiKey != "" {
+				chainID := upstream.Evm.ChainId
+				if chainID == 0 {
+					return fmt.Errorf("infura vendor requires upstream.evm.chainId to be defined")
+				}
+				netName, ok := infuraNetworkNames[chainID]
+				if !ok {
+					return fmt.Errorf("unsupported network chain ID for Infura: %d", chainID)
+				}
+				infuraURL := fmt.Sprintf("https://%s.infura.io/v3/%s", netName, stg.ApiKey)
+				if netName == "ava-mainnet" || netName == "ava-testnet" {
+					// Avalanche endpoints need an extra path `/ext/bc/C/rpc`
+					infuraURL = fmt.Sprintf("%s/ext/bc/C/rpc", infuraURL)
+				}
+				parsedURL, err := url.Parse(infuraURL)
+				if err != nil {
+					return err
+				}
+
+				upstream.Endpoint = parsedURL.String()
+			}
+		} else {
+			return fmt.Errorf("provided settings is not of type *InfuraSettings it is of type %T", settings)
+		}
+	}
 	return nil
 }
 

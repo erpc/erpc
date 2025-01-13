@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/erpc/erpc/common"
+	"github.com/rs/zerolog"
 )
 
 var drpcNetworkNames = map[int64]string{
@@ -157,12 +158,12 @@ func (v *DrpcVendor) Name() string {
 	return "drpc"
 }
 
-func (v *DrpcVendor) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
-	chainID, err := strconv.ParseInt(networkId, 10, 64)
+func (v *DrpcVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
+	chainId, err := strconv.ParseInt(networkId, 10, 64)
 	if err != nil {
 		return false, err
 	}
-	_, ok := drpcNetworkNames[chainID]
+	_, ok := drpcNetworkNames[chainId]
 	return ok, nil
 }
 

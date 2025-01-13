@@ -1203,7 +1203,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 									Delay:    "100ms",
 								},
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "2000ms",
+									Duration: "1500ms",
 								},
 							},
 						},
@@ -3428,14 +3428,16 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 		{
 			name: "Basic healthcheck",
 			setupServer: func() *HttpServer {
+				pp := &PreparedProject{
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(context.TODO(), &zerolog.Logger{}, "", nil, nil, nil, nil, nil, 0*time.Second),
+				}
+				pp.networksRegistry = NewNetworksRegistry(pp, context.TODO(), pp.upstreamsRegistry, nil, nil, nil, &zerolog.Logger{})
 				return &HttpServer{
 					logger: &zerolog.Logger{},
 					erpc: &ERPC{
 						projectsRegistry: &ProjectsRegistry{
 							preparedProjects: map[string]*PreparedProject{
-								"test": {
-									upstreamsRegistry: upstream.NewUpstreamsRegistry(context.TODO(), &zerolog.Logger{}, "", nil, nil, nil, nil, 0*time.Second),
-								},
+								"test": pp,
 							},
 						},
 					},
@@ -3464,14 +3466,16 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 		{
 			name: "Root healthcheck",
 			setupServer: func() *HttpServer {
+				pp := &PreparedProject{
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(context.TODO(), &zerolog.Logger{}, "", nil, nil, nil, nil, nil, 0*time.Second),
+				}
+				pp.networksRegistry = NewNetworksRegistry(pp, context.TODO(), pp.upstreamsRegistry, nil, nil, nil, &zerolog.Logger{})
 				return &HttpServer{
 					logger: &zerolog.Logger{},
 					erpc: &ERPC{
 						projectsRegistry: &ProjectsRegistry{
 							preparedProjects: map[string]*PreparedProject{
-								"test": {
-									upstreamsRegistry: upstream.NewUpstreamsRegistry(context.TODO(), &zerolog.Logger{}, "", nil, nil, nil, nil, 0*time.Second),
-								},
+								"test": pp,
 							},
 						},
 					},

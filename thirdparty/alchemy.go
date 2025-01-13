@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/erpc/erpc/common"
+	"github.com/rs/zerolog"
 )
 
 var alchemyNetworkSubdomains = map[int64]string{
@@ -83,7 +84,7 @@ func (v *AlchemyVendor) Name() string {
 	return "alchemy"
 }
 
-func (v *AlchemyVendor) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
+func (v *AlchemyVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	chainID, err := strconv.ParseInt(networkId, 10, 64)
 	if err != nil {
 		return false, err
@@ -98,8 +99,8 @@ func (v *AlchemyVendor) OverrideConfig(upstream *common.UpstreamConfig, settings
 	}
 
 	if upstream.Endpoint == "" && settings != nil && !settings.IsObjectNull() {
-		if settings, ok := settings.(*AlchemySettings); ok {
-			if settings.ApiKey != "" {
+		if stg, ok := settings.(*AlchemySettings); ok {
+			if stg.ApiKey != "" {
 				if upstream.Evm == nil {
 					return fmt.Errorf("alchemy vendor requires upstream.evm to be defined")
 				}
@@ -111,7 +112,7 @@ func (v *AlchemyVendor) OverrideConfig(upstream *common.UpstreamConfig, settings
 				if !ok {
 					return fmt.Errorf("unsupported network chain ID for Alchemy: %d", chainID)
 				}
-				alchemyURL := fmt.Sprintf("https://%s.g.alchemy.com/v2/%s", subdomain, settings.ApiKey)
+				alchemyURL := fmt.Sprintf("https://%s.g.alchemy.com/v2/%s", subdomain, stg.ApiKey)
 				parsedURL, err := url.Parse(alchemyURL)
 				if err != nil {
 					return err

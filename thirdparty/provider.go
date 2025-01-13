@@ -36,7 +36,7 @@ func (p *Provider) SupportsNetwork(ctx context.Context, networkId string) (bool,
 		return false, nil
 	}
 
-	return p.vendor.SupportsNetwork(ctx, networkId)
+	return p.vendor.SupportsNetwork(ctx, p.logger, p.config.Settings, networkId)
 }
 
 func (p *Provider) GenerateUpstreamConfig(networkId string) (*common.UpstreamConfig, error) {

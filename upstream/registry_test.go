@@ -748,18 +748,28 @@ func createTestRegistry(ctx context.Context, projectID string, logger *zerolog.L
 		{Id: "upstream-c", Endpoint: "http://upstream-c.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
 	}
 
+	vr := thirdparty.NewVendorsRegistry()
+	pr, err := thirdparty.NewProvidersRegistry(
+		logger,
+		vr,
+		nil,
+	)
+	if err != nil {
+		panic(err)
+	}
 	registry := NewUpstreamsRegistry(
 		ctx,
 		logger,
 		projectID,
 		upstreamConfigs,
 		nil, // RateLimitersRegistry not needed for these tests
-		thirdparty.NewVendorsRegistry(),
+		vr,
+		pr,
 		metricsTracker,
 		1*time.Second,
 	)
 
-	err := registry.Bootstrap(ctx)
+	err = registry.Bootstrap(ctx)
 	if err != nil {
 		panic(err)
 	}
