@@ -1,6 +1,7 @@
 package thirdparty
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -15,11 +16,25 @@ func CreateQuicknodeVendor() common.Vendor {
 	return &QuicknodeVendor{}
 }
 
+type QuicknodeSettings struct{}
+
+func (s *QuicknodeSettings) IsObjectNull() bool {
+	return s == nil
+}
+
+func (s *QuicknodeSettings) Validate() error {
+	return nil
+}
+
 func (v *QuicknodeVendor) Name() string {
 	return "quicknode"
 }
 
-func (v *QuicknodeVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
+func (v *QuicknodeVendor) OverrideConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
+	if upstream.Endpoint == "" && settings != nil && !settings.IsObjectNull() {
+		return fmt.Errorf("quicknode vendor requires upstream.endpoint to be defined")
+	}
+
 	return nil
 }
 

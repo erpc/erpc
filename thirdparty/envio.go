@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
+	"github.com/rs/zerolog"
 )
 
 var envioKnownSupportedChains = map[int64]struct{}{
@@ -79,6 +82,12 @@ func (s *EnvioSettings) IsObjectNull() bool {
 	return s == nil || s.RootDomain == ""
 }
 
+func (s *EnvioSettings) SetDefaults() {
+	if s.RootDomain == "" {
+		s.RootDomain = "rpc.hypersync.xyz"
+	}
+}
+
 func (s *EnvioSettings) Validate() error {
 	return nil
 }
@@ -91,7 +100,7 @@ func (v *EnvioVendor) Name() string {
 	return "envio"
 }
 
-func (v *EnvioVendor) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
+func (v *EnvioVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
 	}
@@ -105,8 +114,18 @@ func (v *EnvioVendor) SupportsNetwork(ctx context.Context, networkId string) (bo
 		return true, nil
 	}
 
+	stg, ok := settings.(*EnvioSettings)
+	if !ok {
+		return false, fmt.Errorf("invalid settings type for envio vendor")
+	}
+
+	parsedURL, err := v.generateUrl(chainId, stg.RootDomain)
+	if err != nil {
+		return false, err
+	}
+
 	// Check against endpoint to see if eth_chainId responds successfully
-	client, err := v.createClient(ctx, chainId)
+	client, err := v.createClient(ctx, logger, parsedURL)
 	if err != nil {
 		return false, err
 	}
@@ -141,7 +160,7 @@ func (v *EnvioVendor) SupportsNetwork(ctx context.Context, networkId string) (bo
 	return cid == chainId, nil
 }
 
-func (v *EnvioVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
+func (v *EnvioVendor) OverrideConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
@@ -168,6 +187,22 @@ func (v *EnvioVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
 		}
 	}
 
+	if upstream.Endpoint == "" && settings != nil && !settings.IsObjectNull() {
+		if stg, ok := settings.(*EnvioSettings); ok {
+			chainID := upstream.Evm.ChainId
+			if chainID == 0 {
+				return fmt.Errorf("envio vendor requires upstream.evm.chainId to be defined")
+			}
+			parsedURL, err := v.generateUrl(chainID, stg.RootDomain)
+			if err != nil {
+				return err
+			}
+			upstream.Endpoint = parsedURL.String()
+		} else {
+			return fmt.Errorf("provided settings is not of type *EnvioSettings it is of type %T", settings)
+		}
+	}
+
 	return nil
 }
 
@@ -182,12 +217,19 @@ func (v *EnvioVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 		strings.Contains(ups.Endpoint, "hypersync.xyz")
 }
 
-func (v *EnvioVendor) createClient(ctx context.Context, logger *zerolog.Logger, chainID int64) (clients.HttpJsonRpcClient, error) {
-	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, c.upstream, parsedURL)
+func (v *EnvioVendor) generateUrl(chainId int64, rootDomain string) (*url.URL, error) {
+	envioURL := fmt.Sprintf("https://%d.%s", chainId, rootDomain)
+	parsedURL, err := url.Parse(envioURL)
 	if err != nil {
 		return nil, err
 	}
+	return parsedURL, nil
+}
 
-	c.clients[chainID] = client
+func (v *EnvioVendor) createClient(ctx context.Context, logger *zerolog.Logger, parsedURL *url.URL) (clients.HttpJsonRpcClient, error) {
+	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", "n/a", parsedURL, nil)
+	if err != nil {
+		return nil, err
+	}
 	return client, nil
 }

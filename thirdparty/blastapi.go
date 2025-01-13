@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/erpc/erpc/common"
+	"github.com/rs/zerolog"
 )
 
 var blastapiNetworkNames = map[int64]string{
@@ -111,12 +112,12 @@ func (v *BlastApiVendor) Name() string {
 	return "blastapi"
 }
 
-func (v *BlastApiVendor) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
-	chainID, err := strconv.ParseInt(networkId, 10, 64)
+func (v *BlastApiVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
+	chainId, err := strconv.ParseInt(networkId, 10, 64)
 	if err != nil {
 		return false, err
 	}
-	_, ok := blastapiNetworkNames[chainID]
+	_, ok := blastapiNetworkNames[chainId]
 	return ok, nil
 }
 

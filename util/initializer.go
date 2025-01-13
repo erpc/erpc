@@ -120,6 +120,10 @@ func NewInitializer(logger *zerolog.Logger, conf *InitializerConfig) *Initialize
 func (i *Initializer) ExecuteTasks(ctx context.Context, tasks ...*BootstrapTask) error {
 	var tasksToWait []*BootstrapTask
 
+	if len(tasks) == 0 {
+		return nil
+	}
+
 	i.tasksMu.Lock()
 	for _, task := range tasks {
 		// Load existing task or store new one
