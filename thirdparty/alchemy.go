@@ -1,6 +1,7 @@
 package thirdparty
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -82,7 +83,7 @@ func (v *AlchemyVendor) Name() string {
 	return "alchemy"
 }
 
-func (v *AlchemyVendor) SupportsNetwork(networkId string) (bool, error) {
+func (v *AlchemyVendor) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
 	chainID, err := strconv.ParseInt(networkId, 10, 64)
 	if err != nil {
 		return false, err

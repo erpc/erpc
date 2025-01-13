@@ -1,4 +1,4 @@
-package upstream
+package clients
 
 import (
 	"bytes"
@@ -26,7 +26,7 @@ func TestHttpJsonRpcClient_SingleRequests(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), dur)
 		defer cancel()
 
-		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, &Upstream{
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", &Upstream{
 			config: &common.UpstreamConfig{
 				Type:     common.UpstreamTypeEvm,
 				Endpoint: "http://rpc1.localhost:8545",

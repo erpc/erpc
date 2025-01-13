@@ -1,6 +1,7 @@
 package thirdparty
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -110,7 +111,7 @@ func (v *BlastApiVendor) Name() string {
 	return "blastapi"
 }
 
-func (v *BlastApiVendor) SupportsNetwork(networkId string) (bool, error) {
+func (v *BlastApiVendor) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
 	chainID, err := strconv.ParseInt(networkId, 10, 64)
 	if err != nil {
 		return false, err
@@ -134,7 +135,7 @@ func (v *BlastApiVendor) OverrideConfig(upstream *common.UpstreamConfig, setting
 				if chainID == 0 {
 					return fmt.Errorf("blastapi vendor requires upstream.evm.chainId to be defined")
 				}
-	            netName, ok := blastapiNetworkNames[chainID]
+				netName, ok := blastapiNetworkNames[chainID]
 				if !ok {
 					return fmt.Errorf("unsupported network chain ID for BlastAPI: %d", chainID)
 				}

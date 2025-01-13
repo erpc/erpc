@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/erpc/erpc/common"
+	"github.com/rs/zerolog"
 )
 
 type ProvidersRegistry struct {
@@ -12,6 +13,7 @@ type ProvidersRegistry struct {
 }
 
 func NewProvidersRegistry(
+	logger *zerolog.Logger,
 	vendorReg *VendorsRegistry,
 	providerCfgs []*common.ProviderConfig,
 ) (*ProvidersRegistry, error) {
@@ -22,7 +24,7 @@ func NewProvidersRegistry(
 			supportedVendors := vendorReg.SupportedVendors()
 			return nil, fmt.Errorf("vendor '%s' not found for provider '%s', supported vendors: %v", cfg.Vendor, cfg.Id, supportedVendors)
 		}
-		providers = append(providers, NewProvider(cfg, vnd))
+		providers = append(providers, NewProvider(logger, cfg, vnd))
 	}
 	return &ProvidersRegistry{
 		vendorReg: vendorReg,

@@ -1,18 +1,22 @@
 package thirdparty
 
 import (
+	"context"
 	"strings"
 
 	"github.com/erpc/erpc/common"
+	"github.com/rs/zerolog"
 )
 
 type Provider struct {
+	logger *zerolog.Logger
 	config *common.ProviderConfig
 	vendor common.Vendor
 }
 
-func NewProvider(cfg *common.ProviderConfig, vendor common.Vendor) *Provider {
+func NewProvider(logger *zerolog.Logger, cfg *common.ProviderConfig, vendor common.Vendor) *Provider {
 	return &Provider{
+		logger: logger,
 		config: cfg,
 		vendor: vendor,
 	}
@@ -22,7 +26,7 @@ func (p *Provider) Id() string {
 	return p.config.Id
 }
 
-func (p *Provider) SupportsNetwork(networkId string) (bool, error) {
+func (p *Provider) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
 	if p.config.OnlyNetworks != nil {
 		for _, n := range p.config.OnlyNetworks {
 			if n == networkId {
@@ -32,7 +36,7 @@ func (p *Provider) SupportsNetwork(networkId string) (bool, error) {
 		return false, nil
 	}
 
-	return p.vendor.SupportsNetwork(networkId)
+	return p.vendor.SupportsNetwork(ctx, networkId)
 }
 
 func (p *Provider) GenerateUpstreamConfig(networkId string) (*common.UpstreamConfig, error) {

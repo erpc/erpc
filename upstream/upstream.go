@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/thirdparty"
@@ -19,7 +20,7 @@ import (
 
 type Upstream struct {
 	ProjectId string
-	Client    ClientInterface
+	Client    clients.ClientInterface
 	Logger    zerolog.Logger
 
 	appCtx context.Context
@@ -48,7 +49,7 @@ func NewUpstream(
 	appCtx context.Context,
 	projectId string,
 	cfg *common.UpstreamConfig,
-	cr *ClientRegistry,
+	cr *clients.ClientRegistry,
 	rlr *RateLimitersRegistry,
 	vr *thirdparty.VendorsRegistry,
 	logger *zerolog.Logger,
@@ -130,15 +131,7 @@ func (u *Upstream) Vendor() common.Vendor {
 func (u *Upstream) prepareRequest(nr *common.NormalizedRequest) error {
 	cfg := u.Config()
 	switch cfg.Type {
-	case common.UpstreamTypeEvm,
-		common.UpstreamTypeEvmAlchemy,
-		common.UpstreamTypeEvmDrpc,
-		common.UpstreamTypeEvmBlastapi,
-		common.UpstreamTypeEvmThirdweb,
-		common.UpstreamTypeEvmEnvio,
-		common.UpstreamTypeEvmEtherspot,
-		common.UpstreamTypeEvmInfura,
-		common.UpstreamTypeEvmPimlico:
+	case common.UpstreamTypeEvm:
 		if u.Client == nil {
 			return common.NewErrJsonRpcExceptionInternal(
 				0,
@@ -149,15 +142,7 @@ func (u *Upstream) prepareRequest(nr *common.NormalizedRequest) error {
 			)
 		}
 
-		if u.Client.GetType() == ClientTypeHttpJsonRpc ||
-			u.Client.GetType() == ClientTypeAlchemyHttpJsonRpc ||
-			u.Client.GetType() == ClientTypeDrpcHttpJsonRpc ||
-			u.Client.GetType() == ClientTypeBlastapiHttpJsonRpc ||
-			u.Client.GetType() == ClientTypeThirdwebHttpJsonRpc ||
-			u.Client.GetType() == ClientTypeEnvioHttpJsonRpc ||
-			u.Client.GetType() == ClientTypePimlicoHttpJsonRpc ||
-			u.Client.GetType() == ClientTypeEtherspotHttpJsonRpc ||
-			u.Client.GetType() == ClientTypeInfuraHttpJsonRpc {
+		if u.Client.GetType() == clients.ClientTypeHttpJsonRpc {
 			jsonRpcReq, err := nr.JsonRpcRequest()
 			if err != nil {
 				return common.NewErrJsonRpcExceptionInternal(
@@ -277,16 +262,8 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 	// Send the request based on client type
 	//
 	switch clientType {
-	case ClientTypeHttpJsonRpc,
-		ClientTypeAlchemyHttpJsonRpc,
-		ClientTypeDrpcHttpJsonRpc,
-		ClientTypeBlastapiHttpJsonRpc,
-		ClientTypeThirdwebHttpJsonRpc,
-		ClientTypeEnvioHttpJsonRpc,
-		ClientTypeEtherspotHttpJsonRpc,
-		ClientTypeInfuraHttpJsonRpc,
-		ClientTypePimlicoHttpJsonRpc:
-		jsonRpcClient, okClient := u.Client.(HttpJsonRpcClient)
+	case clients.ClientTypeHttpJsonRpc:
+		jsonRpcClient, okClient := u.Client.(clients.HttpJsonRpcClient)
 		if !okClient {
 			return nil, common.NewErrJsonRpcExceptionInternal(
 				0,
