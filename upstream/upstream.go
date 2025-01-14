@@ -9,17 +9,18 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/util"
-	"github.com/erpc/erpc/vendors"
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/rs/zerolog"
 )
 
 type Upstream struct {
 	ProjectId string
-	Client    ClientInterface
+	Client    clients.ClientInterface
 	Logger    zerolog.Logger
 
 	appCtx context.Context
@@ -32,10 +33,11 @@ type Upstream struct {
 	rateLimitersRegistry *RateLimitersRegistry
 	rateLimiterAutoTuner *RateLimitAutoTuner
 
-	methodCheckResults    map[string]bool
-	methodCheckResultsMu  sync.RWMutex
-	supportedNetworkIds   map[string]bool
-	supportedNetworkIdsMu sync.RWMutex
+	methodCheckResults   map[string]bool
+	methodCheckResultsMu sync.RWMutex
+	// supportedNetworkIds   map[string]bool
+	// supportedNetworkIdsMu sync.RWMutex
+	networkId string
 
 	// By default "Syncing" is marked as unknown (nil) and that means we will be retrying empty responses
 	// from such upstream, unless we explicitly know that the upstream is fully synced (false).
@@ -47,9 +49,9 @@ func NewUpstream(
 	appCtx context.Context,
 	projectId string,
 	cfg *common.UpstreamConfig,
-	cr *ClientRegistry,
+	cr *clients.ClientRegistry,
 	rlr *RateLimitersRegistry,
-	vr *vendors.VendorsRegistry,
+	vr *thirdparty.VendorsRegistry,
 	logger *zerolog.Logger,
 	mt *health.Tracker,
 ) (*Upstream, error) {
@@ -84,16 +86,15 @@ func NewUpstream(
 		vendor:               vn,
 		metricsTracker:       mt,
 		timeoutDuration:      timeoutDuration,
-		failsafeExecutor:     failsafe.NewExecutor[*common.NormalizedResponse](policiesArray...),
+		failsafeExecutor:     failsafe.NewExecutor(policiesArray...),
 		rateLimitersRegistry: rlr,
 		methodCheckResults:   map[string]bool{},
-		supportedNetworkIds:  map[string]bool{},
 	}
 
 	pup.initRateLimitAutoTuner()
 
 	if vn != nil {
-		err = vn.OverrideConfig(cfg)
+		err = vn.OverrideConfig(cfg, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -105,16 +106,18 @@ func NewUpstream(
 		pup.Client = client
 	}
 
-	go func() {
-		err = pup.detectFeatures()
-		if err != nil {
-			lg.Warn().Err(err).Msgf("skipping auto feature detection for upstream due to error")
-		}
-	}()
-
 	lg.Debug().Msgf("prepared upstream")
 
 	return pup, nil
+}
+
+func (u *Upstream) Bootstrap(ctx context.Context) error {
+	err := u.detectFeatures(ctx)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (u *Upstream) Config() *common.UpstreamConfig {
@@ -128,15 +131,7 @@ func (u *Upstream) Vendor() common.Vendor {
 func (u *Upstream) prepareRequest(nr *common.NormalizedRequest) error {
 	cfg := u.Config()
 	switch cfg.Type {
-	case common.UpstreamTypeEvm,
-		common.UpstreamTypeEvmAlchemy,
-		common.UpstreamTypeEvmDrpc,
-		common.UpstreamTypeEvmBlastapi,
-		common.UpstreamTypeEvmThirdweb,
-		common.UpstreamTypeEvmEnvio,
-		common.UpstreamTypeEvmEtherspot,
-		common.UpstreamTypeEvmInfura,
-		common.UpstreamTypeEvmPimlico:
+	case common.UpstreamTypeEvm:
 		if u.Client == nil {
 			return common.NewErrJsonRpcExceptionInternal(
 				0,
@@ -147,15 +142,7 @@ func (u *Upstream) prepareRequest(nr *common.NormalizedRequest) error {
 			)
 		}
 
-		if u.Client.GetType() == ClientTypeHttpJsonRpc ||
-			u.Client.GetType() == ClientTypeAlchemyHttpJsonRpc ||
-			u.Client.GetType() == ClientTypeDrpcHttpJsonRpc ||
-			u.Client.GetType() == ClientTypeBlastapiHttpJsonRpc ||
-			u.Client.GetType() == ClientTypeThirdwebHttpJsonRpc ||
-			u.Client.GetType() == ClientTypeEnvioHttpJsonRpc ||
-			u.Client.GetType() == ClientTypePimlicoHttpJsonRpc ||
-			u.Client.GetType() == ClientTypeEtherspotHttpJsonRpc ||
-			u.Client.GetType() == ClientTypeInfuraHttpJsonRpc {
+		if u.Client.GetType() == clients.ClientTypeHttpJsonRpc {
 			jsonRpcReq, err := nr.JsonRpcRequest()
 			if err != nil {
 				return common.NewErrJsonRpcExceptionInternal(
@@ -187,6 +174,10 @@ func (u *Upstream) prepareRequest(nr *common.NormalizedRequest) error {
 	}
 
 	return nil
+}
+
+func (u *Upstream) NetworkId() string {
+	return u.networkId
 }
 
 func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, byPassMethodExclusion bool) (*common.NormalizedResponse, error) {
@@ -271,16 +262,8 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 	// Send the request based on client type
 	//
 	switch clientType {
-	case ClientTypeHttpJsonRpc,
-		ClientTypeAlchemyHttpJsonRpc,
-		ClientTypeDrpcHttpJsonRpc,
-		ClientTypeBlastapiHttpJsonRpc,
-		ClientTypeThirdwebHttpJsonRpc,
-		ClientTypeEnvioHttpJsonRpc,
-		ClientTypeEtherspotHttpJsonRpc,
-		ClientTypeInfuraHttpJsonRpc,
-		ClientTypePimlicoHttpJsonRpc:
-		jsonRpcClient, okClient := u.Client.(HttpJsonRpcClient)
+	case clients.ClientTypeHttpJsonRpc:
+		jsonRpcClient, okClient := u.Client.(clients.HttpJsonRpcClient)
 		if !okClient {
 			return nil, common.NewErrJsonRpcExceptionInternal(
 				0,
@@ -488,25 +471,25 @@ func (u *Upstream) SetEvmSyncingState(state common.EvmSyncingState) {
 	u.evmSyncingMu.Unlock()
 }
 
-func (u *Upstream) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
-	u.supportedNetworkIdsMu.RLock()
-	supports, exists := u.supportedNetworkIds[networkId]
-	u.supportedNetworkIdsMu.RUnlock()
-	if exists && supports {
-		return true, nil
-	}
+// func (u *Upstream) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
+// 	u.supportedNetworkIdsMu.RLock()
+// 	supports, exists := u.supportedNetworkIds[networkId]
+// 	u.supportedNetworkIdsMu.RUnlock()
+// 	if exists && supports {
+// 		return true, nil
+// 	}
 
-	supports, err := u.Client.SupportsNetwork(ctx, networkId)
-	if err != nil {
-		return false, err
-	}
+// 	supports, err := u.Client.SupportsNetwork(ctx, networkId)
+// 	if err != nil {
+// 		return false, err
+// 	}
 
-	u.supportedNetworkIdsMu.Lock()
-	u.supportedNetworkIds[networkId] = supports
-	u.supportedNetworkIdsMu.Unlock()
+// 	u.supportedNetworkIdsMu.Lock()
+// 	u.supportedNetworkIds[networkId] = supports
+// 	u.supportedNetworkIdsMu.Unlock()
 
-	return supports, nil
-}
+// 	return supports, nil
+// }
 
 func (u *Upstream) IgnoreMethod(method string) {
 	ai := u.config.AutoIgnoreUnsupportedMethods
@@ -624,7 +607,7 @@ func (u *Upstream) shouldHandleMethod(method string) (v bool, err error) {
 	return v, nil
 }
 
-func (u *Upstream) detectFeatures() error {
+func (u *Upstream) detectFeatures(ctx context.Context) error {
 	cfg := u.Config()
 
 	if cfg.Type == "" {
@@ -636,24 +619,22 @@ func (u *Upstream) detectFeatures() error {
 			cfg.Evm = &common.EvmUpstreamConfig{}
 		}
 		if cfg.Evm.ChainId == 0 {
-			nid, err := u.EvmGetChainId(u.appCtx)
+			nid, err := u.EvmGetChainId(ctx)
 			if err != nil {
 				return common.NewErrUpstreamClientInitialization(
 					fmt.Errorf("failed to get chain id: %w", err),
 					cfg.Id,
 				)
 			}
-			cfg.Evm.ChainId, err = strconv.Atoi(nid)
+			cfg.Evm.ChainId, err = strconv.ParseInt(nid, 10, 64)
 			if err != nil {
 				return common.NewErrUpstreamClientInitialization(
 					fmt.Errorf("failed to parse chain id: %w", err),
 					cfg.Id,
 				)
 			}
-			u.supportedNetworkIdsMu.Lock()
-			u.supportedNetworkIds[util.EvmNetworkId(cfg.Evm.ChainId)] = true
-			u.supportedNetworkIdsMu.Unlock()
 		}
+		u.networkId = util.EvmNetworkId(cfg.Evm.ChainId)
 
 		if cfg.Evm.MaxAvailableRecentBlocks == 0 && cfg.Evm.NodeType == common.EvmNodeTypeFull {
 			cfg.Evm.MaxAvailableRecentBlocks = 128
@@ -748,24 +729,26 @@ func (u *Upstream) getScoreMultipliers(networkId, method string) *common.ScoreMu
 
 func (u *Upstream) MarshalJSON() ([]byte, error) {
 	type upstreamPublic struct {
-		Id             string                            `json:"id"`
-		Metrics        map[string]*health.TrackedMetrics `json:"metrics"`
-		ActiveNetworks []string                          `json:"activeNetworks"`
+		Id        string                            `json:"id"`
+		Metrics   map[string]*health.TrackedMetrics `json:"metrics"`
+		NetworkId string                            `json:"networkId"`
+		// ActiveNetworks []string                          `json:"activeNetworks"`
 	}
 
-	var activeNetworks []string
-	u.supportedNetworkIdsMu.RLock()
-	for netId := range u.supportedNetworkIds {
-		activeNetworks = append(activeNetworks, netId)
-	}
-	u.supportedNetworkIdsMu.RUnlock()
+	// var activeNetworks []string
+	// u.supportedNetworkIdsMu.RLock()
+	// for netId := range u.supportedNetworkIds {
+	// 	activeNetworks = append(activeNetworks, netId)
+	// }
+	// u.supportedNetworkIdsMu.RUnlock()
 
 	metrics := u.metricsTracker.GetUpstreamMetrics(u.config.Id)
 
 	uppub := upstreamPublic{
-		Id:             u.config.Id,
-		Metrics:        metrics,
-		ActiveNetworks: activeNetworks,
+		Id:        u.config.Id,
+		Metrics:   metrics,
+		NetworkId: u.NetworkId(),
+		// ActiveNetworks: activeNetworks,
 	}
 
 	return sonic.Marshal(uppub)

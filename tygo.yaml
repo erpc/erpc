@@ -27,7 +27,7 @@ packages:
       } from "./types"
     exclude_files:
       - "utils.go"
-      - "vendors.go"
+      - "thirdparty.go"
       - "errors.go"
       - "json_rpc.go"
       - "request.go"

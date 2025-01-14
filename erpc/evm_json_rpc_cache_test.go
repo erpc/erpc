@@ -7,12 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
-	"github.com/erpc/erpc/vendors"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -42,8 +43,8 @@ func createCacheTestFixtures(upstreamConfigs []upsTestCfg) ([]*data.MockConnecto
 		},
 	}
 
-	vnr := vendors.NewVendorsRegistry()
-	clr := upstream.NewClientRegistry(&logger)
+	clr := clients.NewClientRegistry(&logger, "prjA")
+	vr := thirdparty.NewVendorsRegistry()
 	mockNetwork.evmStatePollers = make(map[string]*upstream.EvmStatePoller)
 	upstreams := make([]*upstream.Upstream, 0, len(upstreamConfigs))
 
@@ -55,7 +56,7 @@ func createCacheTestFixtures(upstreamConfigs []upsTestCfg) ([]*data.MockConnecto
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
-		}, clr, nil, vnr, &logger, nil)
+		}, clr, nil, vr, &logger, nil)
 		if err != nil {
 			panic(err)
 		}
