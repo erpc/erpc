@@ -17,15 +17,7 @@ const (
 type UpstreamType string
 
 const (
-	UpstreamTypeEvm          UpstreamType = "evm"
-	UpstreamTypeEvmAlchemy   UpstreamType = "evm+alchemy"
-	UpstreamTypeEvmDrpc      UpstreamType = "evm+drpc"
-	UpstreamTypeEvmBlastapi  UpstreamType = "evm+blastapi"
-	UpstreamTypeEvmEnvio     UpstreamType = "evm+envio"
-	UpstreamTypeEvmPimlico   UpstreamType = "evm+pimlico"
-	UpstreamTypeEvmThirdweb  UpstreamType = "evm+thirdweb"
-	UpstreamTypeEvmEtherspot UpstreamType = "evm+etherspot"
-	UpstreamTypeEvmInfura    UpstreamType = "evm+infura"
+	UpstreamTypeEvm UpstreamType = "evm"
 )
 
 type EvmSyncingState int

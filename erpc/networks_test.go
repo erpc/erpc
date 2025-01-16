@@ -120,6 +120,9 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upsReg)
+
 		var lastErr error
 		var lastResp *common.NormalizedResponse
 
@@ -223,6 +226,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upsReg)
 
 		var lastErr error
 
@@ -338,6 +343,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		upstream.ReorderUpstreams(upr)
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -448,6 +454,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		upstream.ReorderUpstreams(upr)
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -604,6 +611,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		upstream.ReorderUpstreams(upr)
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -754,6 +762,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		upstream.ReorderUpstreams(upr)
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -932,6 +941,8 @@ func TestNetwork_Forward(t *testing.T) {
 
 		pup1.SetEvmSyncingState(common.EvmSyncingStateNotSyncing)
 		pup2.SetEvmSyncingState(common.EvmSyncingStateNotSyncing)
+
+		upstream.ReorderUpstreams(upr)
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
@@ -1125,6 +1136,8 @@ func TestNetwork_Forward(t *testing.T) {
 
 		time.Sleep(100 * time.Millisecond)
 
+		upstream.ReorderUpstreams(upr)
+
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
@@ -1276,6 +1289,8 @@ func TestNetwork_Forward(t *testing.T) {
 		poller1.SuggestFinalizedBlock(8)
 
 		time.Sleep(100 * time.Millisecond)
+
+		upstream.ReorderUpstreams(upr)
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
@@ -1492,6 +1507,8 @@ func TestNetwork_Forward(t *testing.T) {
 
 		time.Sleep(100 * time.Millisecond)
 
+		upstream.ReorderUpstreams(upr)
+
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
@@ -1675,6 +1692,8 @@ func TestNetwork_Forward(t *testing.T) {
 		// Bootstrap the network and make the simulated request
 		ntw.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
+
+		upstream.ReorderUpstreams(upr)
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
@@ -1860,6 +1879,8 @@ func TestNetwork_Forward(t *testing.T) {
 		ntw.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
 
+		upstream.ReorderUpstreams(upr)
+
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
@@ -1980,6 +2001,8 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		upstream.ReorderUpstreams(upr)
+
 		// Create and register clients for both upstreams
 		pup1, err := upr.NewUpstream(
 			"prjA",
@@ -2033,6 +2056,8 @@ func TestNetwork_Forward(t *testing.T) {
 		// Bootstrap the network and make the simulated request
 		ntw.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
+
+		upstream.ReorderUpstreams(upr)
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest([]byte(`{
@@ -2210,6 +2235,8 @@ func TestNetwork_Forward(t *testing.T) {
 
 		ntw.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
+
+		upstream.ReorderUpstreams(upr)
 
 		// Create request without explicit directives
 		fakeReq := common.NewNormalizedRequest([]byte(`{
@@ -2394,6 +2421,8 @@ func TestNetwork_Forward(t *testing.T) {
 		ntw.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
 
+		upstream.ReorderUpstreams(upr)
+
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest([]byte(`{
 				"jsonrpc": "2.0",
@@ -2577,6 +2606,8 @@ func TestNetwork_Forward(t *testing.T) {
 		ntw.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
 
+		upstream.ReorderUpstreams(upr)
+
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest([]byte(`{
 				"jsonrpc": "2.0",
@@ -2718,6 +2749,8 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		upstream.ReorderUpstreams(upr)
+
 		// First request (should be cached)
 		fakeReq1 := common.NewNormalizedRequest(requestBytes)
 		resp1, err := ntw.Forward(ctx, fakeReq1)
@@ -2836,6 +2869,9 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
+
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 
 		// First request marks the method as ignored
@@ -2952,6 +2988,9 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
+
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 
 		_, err = ntw.Forward(ctx, fakeReq)
@@ -3068,6 +3107,9 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
+
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -3171,6 +3213,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upsReg)
 
 		var lastErr error
 
@@ -3285,6 +3329,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		upstream.ReorderUpstreams(upr)
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -3406,6 +3451,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		upstream.ReorderUpstreams(upr)
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
@@ -3529,6 +3575,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		upstream.ReorderUpstreams(upr)
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -3648,6 +3695,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		upstream.ReorderUpstreams(upr)
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -3789,6 +3837,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
 
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
@@ -3937,6 +3987,8 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		upstream.ReorderUpstreams(upr)
+
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
@@ -4083,6 +4135,8 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		upstream.ReorderUpstreams(upr)
+
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
@@ -4212,6 +4266,8 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		upstream.ReorderUpstreams(upr)
+
 		var lastErr error
 		for i := 0; i < 10; i++ {
 			fakeReq := common.NewNormalizedRequest(requestBytes)
@@ -4336,6 +4392,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
 
 		var lastErr error
 		var resp *common.NormalizedResponse
@@ -4466,6 +4524,8 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		upstream.ReorderUpstreams(upr)
+
 		var lastErr error
 		for i := 0; i < 4+2; i++ {
 			fakeReq := common.NewNormalizedRequest(requestBytes)
@@ -4594,6 +4654,8 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		upstream.ReorderUpstreams(upr)
+
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -4615,7 +4677,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 	})
 
-	t.Run("ForwardEndpointServerSideExceptionSuccess", func(t *testing.T) {
+	t.Run("ForwardEndpointServerSideExceptionRetrySuccess", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
@@ -4744,6 +4806,8 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		upstream.ReorderUpstreams(upr)
+
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
@@ -4759,10 +4823,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if jrr.Result == nil {
 			t.Fatalf("Expected result, got nil")
 		}
-
-		// Debug logging
-		t.Logf("jrr.Result type: %T", jrr.Result)
-		t.Logf("jrr.Result content: %+v", jrr.Result)
 
 		fromHost, err := jrr.PeekStringByPath("fromHost")
 		if err != nil || fromHost != "rpc2" {
@@ -4859,6 +4919,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
 
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
@@ -4998,6 +5060,8 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		upstream.ReorderUpstreams(upr)
+
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
@@ -5124,6 +5188,8 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Failed to create network: %v", err)
 		}
 
+		upstream.ReorderUpstreams(upr)
+
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
@@ -5231,6 +5297,8 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		upstream.ReorderUpstreams(upr)
+
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
@@ -5337,6 +5405,8 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		upstream.ReorderUpstreams(upr)
+
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
@@ -5442,6 +5512,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
 
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
@@ -5555,6 +5627,8 @@ func TestNetwork_Forward(t *testing.T) {
 				Delay(latency)
 		}
 
+		upstream.ReorderUpstreams(upstreamsRegistry)
+
 		// Upstream A is faster for eth_call, Upstream B is faster for eth_traceTransaction, Upstream C is faster for eth_getLogs
 		mockRequests("eth_getLogs", "upstream-a", 200*time.Millisecond)
 		mockRequests("eth_getLogs", "upstream-b", 100*time.Millisecond)
@@ -5655,9 +5729,9 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// First upstream (Envio) with unsupported network
 		upEnvio := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvmEnvio,
+			Type:     common.UpstreamTypeEvm,
 			Id:       "envio",
-			Endpoint: "envio://rpc.hypersync.xyz",
+			Endpoint: "https://rpc.hypersync.xyz",
 			JsonRpc: &common.JsonRpcUpstreamConfig{
 				SupportsBatch: &common.TRUE,
 			},
@@ -5724,6 +5798,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
 
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
@@ -6756,6 +6832,8 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfig *common.
 		network.evmStatePollers["test"].SuggestFinalizedBlock(h)
 		network.evmStatePollers["test"].SuggestLatestBlock(h)
 	}
+
+	upstream.ReorderUpstreams(upstreamsRegistry)
 
 	return network
 }

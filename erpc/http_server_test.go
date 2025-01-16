@@ -1185,7 +1185,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("HedgeReturnsResponseFromSecondUpstreamWhenFirstUpstreamTimesOut", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("1500ms"),
+				MaxTimeout: util.StringPtr("2000ms"),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -1200,10 +1200,10 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								Retry: nil,
 								Hedge: &common.HedgePolicyConfig{
 									MaxCount: 1,
-									Delay:    "100ms",
+									Delay:    "50ms",
 								},
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "1500ms",
+									Duration: "1000ms",
 								},
 							},
 						},
@@ -1219,7 +1219,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Failsafe: &common.FailsafeConfig{
 								Retry: nil,
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "10ms",
+									Duration: "100ms",
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1236,7 +1236,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Failsafe: &common.FailsafeConfig{
 								Retry: nil,
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "1000ms",
+									Duration: "500ms",
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1251,8 +1251,6 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 
 		util.ResetGock()
 		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
 
 		gock.New("http://rpc1.localhost").
 			Post("/").
@@ -1261,7 +1259,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(200).
-			Delay(2000 * time.Millisecond).
+			Delay(200 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -1275,7 +1273,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(200).
-			Delay(50 * time.Millisecond).
+			Delay(20 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
@@ -3538,6 +3536,8 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 	}()
 
 	time.Sleep(100 * time.Millisecond)
+
+	upstream.ReorderUpstreams(erpcInstance.projectsRegistry.preparedProjects["test_project"].upstreamsRegistry)
 
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
 

@@ -623,26 +623,8 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) {
 		u.Id = util.RedactEndpoint(u.Endpoint)
 	}
 	if u.Type == "" {
-		if strings.HasPrefix(u.Endpoint, "alchemy://") || strings.HasPrefix(u.Endpoint, "evm+alchemy://") {
-			u.Type = UpstreamTypeEvmAlchemy
-		} else if strings.HasPrefix(u.Endpoint, "drpc://") || strings.HasPrefix(u.Endpoint, "evm+drpc://") {
-			u.Type = UpstreamTypeEvmDrpc
-		} else if strings.HasPrefix(u.Endpoint, "blastapi://") || strings.HasPrefix(u.Endpoint, "evm+blastapi://") {
-			u.Type = UpstreamTypeEvmBlastapi
-		} else if strings.HasPrefix(u.Endpoint, "thirdweb://") || strings.HasPrefix(u.Endpoint, "evm+thirdweb://") {
-			u.Type = UpstreamTypeEvmThirdweb
-		} else if strings.HasPrefix(u.Endpoint, "envio://") || strings.HasPrefix(u.Endpoint, "evm+envio://") {
-			u.Type = UpstreamTypeEvmEnvio
-		} else if strings.HasPrefix(u.Endpoint, "pimlico://") || strings.HasPrefix(u.Endpoint, "evm+pimlico://") {
-			u.Type = UpstreamTypeEvmPimlico
-		} else if strings.HasPrefix(u.Endpoint, "etherspot://") || strings.HasPrefix(u.Endpoint, "evm+etherspot://") {
-			u.Type = UpstreamTypeEvmEtherspot
-		} else if strings.HasPrefix(u.Endpoint, "infura://") || strings.HasPrefix(u.Endpoint, "evm+infura://") {
-			u.Type = UpstreamTypeEvmInfura
-		} else {
-			// TODO make actual calls to detect other types (solana, btc, etc)?
-			u.Type = UpstreamTypeEvm
-		}
+		// TODO make actual calls to detect other types (solana, btc, etc)?
+		u.Type = UpstreamTypeEvm
 	}
 
 	if u.Failsafe != nil {

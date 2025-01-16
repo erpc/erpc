@@ -267,15 +267,16 @@ func (i *Initializer) autoRetryLoop(ctx context.Context) {
 		i.attempts.Add(1)
 		i.attemptRemainingTasks(ctx)
 		err := i.waitForTasks(ctx)
+		state := i.State()
 		if err == nil {
 			// If there's no error, it means all tasks have succeeded => state=StateReady
-			if i.State() == StateReady {
+			if state == StateReady {
 				i.autoRetryActive.Store(false)
 				return
 			}
 		}
 
-		i.logger.Warn().Err(err).Msgf("initialization auto-retry failed, will retry in %v", delay)
+		i.logger.Warn().Err(err).Int32("state", int32(state)).Msgf("initialization auto-retry failed, will retry in %v", delay)
 		select {
 		case <-ctx.Done():
 			i.logger.Debug().Err(ctx.Err()).Msg("initialization auto-retry cancelled")
@@ -309,6 +310,7 @@ func (i *Initializer) State() InitializationState {
 		}
 		return true
 	})
+	i.logger.Trace().Int32("attempts", i.attempts.Load()).Int("total", total).Int("pending", pending).Int("running", running).Int("succeeded", succeeded).Int("failed", failed).Msg("calculating initialization state")
 	if total == succeeded {
 		return StateReady
 	}
