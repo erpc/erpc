@@ -458,6 +458,7 @@ func (c *SelectionPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error)
 		EvalFunction     string `yaml:"evalFunction"`
 		ResampleInterval string `yaml:"resampleInterval"`
 		ResampleCount    int    `yaml:"resampleCount"`
+		ResampleExcluded bool   `yaml:"resampleExcluded"`
 	}
 	raw := rawSelectionPolicyConfig{}
 
@@ -510,6 +511,7 @@ func (c *SelectionPolicyConfig) MarshalJSON() ([]byte, error) {
 		"evalFunction":     evf,
 		"resampleInterval": c.ResampleInterval,
 		"resampleCount":    c.ResampleCount,
+		"resampleExcluded": c.ResampleExcluded,
 	})
 }
 
