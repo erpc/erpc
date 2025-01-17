@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime/debug"
 	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/upstream"
+	"github.com/erpc/erpc/util"
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/rs/zerolog"
 )
@@ -24,7 +24,6 @@ type Network struct {
 	appCtx                   context.Context
 	cfg                      *common.NetworkConfig
 	inFlightRequests         *sync.Map
-	evmStatePollers          map[string]*upstream.EvmStatePoller
 	timeoutDuration          *time.Duration
 	failsafeExecutor         failsafe.Executor[*common.NormalizedResponse]
 	rateLimitersRegistry     *upstream.RateLimitersRegistry
@@ -32,72 +31,23 @@ type Network struct {
 	metricsTracker           *health.Tracker
 	upstreamsRegistry        *upstream.UpstreamsRegistry
 	selectionPolicyEvaluator *PolicyEvaluator
+	initializer              *util.Initializer
 }
 
 func (n *Network) Bootstrap(ctx context.Context) error {
-	var err error
-
-	n.bootstrapOnce.Do(func() {
-		n.appCtx = ctx
-		if n.Architecture() == common.ArchitectureEvm {
-			upsList := n.upstreamsRegistry.GetNetworkUpstreams(n.NetworkId)
-			if len(upsList) == 0 {
-				err = fmt.Errorf("no upstreams found for network: %s", n.NetworkId)
-				return
-			}
-			var pollWg sync.WaitGroup
-			n.evmStatePollers = make(map[string]*upstream.EvmStatePoller, len(upsList))
-			for _, u := range upsList {
-				poller, e := upstream.NewEvmStatePoller(ctx, n.Logger, n, u, n.metricsTracker)
-				if e != nil {
-					err = e
-					return
-				}
-				if poller != nil {
-					n.evmStatePollers[u.Config().Id] = poller
-					if poller.Enabled {
-						pollWg.Add(1)
-						go func(poller *upstream.EvmStatePoller) {
-							defer pollWg.Done()
-							poller.Poll(ctx)
-						}(poller)
-					}
-				}
-			}
-
-			// Wait for pollers up to 30s so we have block head of all nodes as much as possible.
-			// This helps policy evaluator to have more accurate data on initialization.
-			done := make(chan struct{})
-			go func() {
-				pollWg.Wait()
-				close(done)
-			}()
-			select {
-			case <-done:
-			case <-time.After(30 * time.Second):
-				n.Logger.Warn().Msg("evm state pollers did not complete within 30 seconds, some upstreams might be down")
-			}
-		} else {
-			err = fmt.Errorf("network architecture not supported: %s", n.Architecture())
-			return
+	// Initialize policy evaluator if configured
+	if n.cfg.SelectionPolicy != nil {
+		evaluator, e := NewPolicyEvaluator(n.NetworkId, n.Logger, n.cfg.SelectionPolicy, n.upstreamsRegistry, n.metricsTracker)
+		if e != nil {
+			return fmt.Errorf("failed to create selection policy evaluator: %w", e)
 		}
-
-		// Initialize policy evaluator if configured
-		if n.cfg.SelectionPolicy != nil {
-			evaluator, e := NewPolicyEvaluator(n.NetworkId, n.Logger, n.cfg.SelectionPolicy, n.upstreamsRegistry, n.metricsTracker)
-			if e != nil {
-				err = fmt.Errorf("failed to create selection policy evaluator: %w", e)
-				return
-			}
-			if e := evaluator.Start(ctx); e != nil {
-				err = fmt.Errorf("failed to start selection policy evaluator: %w", e)
-				return
-			}
-			n.selectionPolicyEvaluator = evaluator
+		if e := evaluator.Start(ctx); e != nil {
+			return fmt.Errorf("failed to start selection policy evaluator: %w", e)
 		}
-	})
+		n.selectionPolicyEvaluator = evaluator
+	}
 
-	return err
+	return nil
 }
 
 func (n *Network) Id() string {
@@ -130,15 +80,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 	if mlx != nil {
 		// If we decided to multiplex, we need to make sure to clean up the multiplexer
-		defer func() {
-			if r := recover(); r != nil {
-				lg.Error().Msgf("panic in multiplexer cleanup: %v stack: %s", r, string(debug.Stack()))
-			}
-			n.cleanupMultiplexer(mlx)
-		}()
+		defer n.cleanupMultiplexer(mlx)
 	}
 
-	// 2) Get from cache if exists
 	if n.cacheDal != nil && !req.SkipCacheRead() {
 		lg.Debug().Msgf("checking cache for request")
 		resp, err := n.cacheDal.Get(ctx, req)
@@ -416,17 +360,10 @@ func (n *Network) GetMethodMetrics(method string) common.TrackedMetrics {
 	return n.metricsTracker.GetNetworkMethodMetrics(n.NetworkId, method)
 }
 
-func (n *Network) EvmStatePollerOf(upstreamId string) common.EvmStatePoller {
-	return n.evmStatePollers[upstreamId]
-}
-
 func (n *Network) EvmIsBlockFinalized(blockNumber int64) (bool, error) {
-	if n == nil || n.evmStatePollers == nil || len(n.evmStatePollers) == 0 {
-		return false, nil
-	}
-
-	for _, poller := range n.evmStatePollers {
-		if fin, err := poller.IsBlockFinalized(blockNumber); err != nil {
+	list := n.upstreamsRegistry.GetNetworkUpstreams(n.NetworkId)
+	for _, ups := range list {
+		if fin, err := ups.EvmIsBlockFinalized(blockNumber); err != nil {
 			if common.HasErrorCode(err, common.ErrCodeFinalizedBlockUnavailable) {
 				continue
 			}
@@ -440,13 +377,6 @@ func (n *Network) EvmIsBlockFinalized(blockNumber int64) (bool, error) {
 
 func (n *Network) Config() *common.NetworkConfig {
 	return n.cfg
-}
-
-func (n *Network) EvmChainId() (int64, error) {
-	if n.cfg == nil || n.cfg.Evm == nil {
-		return 0, common.NewErrUnknownNetworkID(n.Architecture())
-	}
-	return n.cfg.Evm.ChainId, nil
 }
 
 func (n *Network) acquireSelectionPolicyPermit(lg *zerolog.Logger, ups *upstream.Upstream, req *common.NormalizedRequest) error {
@@ -564,15 +494,25 @@ func (n *Network) enrichStatePoller(method string, req *common.NormalizedRequest
 					if err == nil {
 						blockNumber, err := common.HexToInt64(bnh)
 						if err == nil {
-							poller, ok := n.evmStatePollers[resp.Upstream().Config().Id]
-							if ok {
+							if ups := resp.Upstream(); ups != nil {
 								if blkTag == "finalized" {
-									poller.SuggestFinalizedBlock(blockNumber)
+									ups.EvmStatePoller().SuggestFinalizedBlock(blockNumber)
 								} else if blkTag == "latest" {
-									poller.SuggestLatestBlock(blockNumber)
+									ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
 								}
 							}
 						}
+					}
+				}
+			}
+		} else if method == "eth_blockNumber" {
+			jrs, _ := resp.JsonRpcResponse()
+			bnh, err := jrs.PeekStringByPath()
+			if err == nil {
+				blockNumber, err := common.HexToInt64(bnh)
+				if err == nil {
+					if ups := resp.Upstream(); ups != nil {
+						ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
 					}
 				}
 			}

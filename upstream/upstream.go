@@ -25,24 +25,17 @@ type Upstream struct {
 
 	appCtx context.Context
 	config *common.UpstreamConfig
+	cfgMu  sync.RWMutex
 	vendor common.Vendor
 
+	networkId            string
+	supportedMethods     sync.Map
 	metricsTracker       *health.Tracker
 	timeoutDuration      *time.Duration
 	failsafeExecutor     failsafe.Executor[*common.NormalizedResponse]
 	rateLimitersRegistry *RateLimitersRegistry
 	rateLimiterAutoTuner *RateLimitAutoTuner
-
-	methodCheckResults   map[string]bool
-	methodCheckResultsMu sync.RWMutex
-	// supportedNetworkIds   map[string]bool
-	// supportedNetworkIdsMu sync.RWMutex
-	networkId string
-
-	// By default "Syncing" is marked as unknown (nil) and that means we will be retrying empty responses
-	// from such upstream, unless we explicitly know that the upstream is fully synced (false).
-	evmSyncingState common.EvmSyncingState
-	evmSyncingMu    sync.RWMutex
+	evmStatePoller       common.EvmStatePoller
 }
 
 func NewUpstream(
@@ -88,13 +81,13 @@ func NewUpstream(
 		timeoutDuration:      timeoutDuration,
 		failsafeExecutor:     failsafe.NewExecutor(policiesArray...),
 		rateLimitersRegistry: rlr,
-		methodCheckResults:   map[string]bool{},
+		supportedMethods:     sync.Map{},
 	}
 
 	pup.initRateLimitAutoTuner()
 
 	if vn != nil {
-		err = vn.OverrideConfig(cfg, nil)
+		err = vn.PrepareConfig(cfg, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -106,6 +99,10 @@ func NewUpstream(
 		pup.Client = client
 	}
 
+	if pup.config.Type == common.UpstreamTypeEvm {
+		pup.evmStatePoller = NewEvmStatePoller(appCtx, &lg, pup, mt)
+	}
+
 	lg.Debug().Msgf("prepared upstream")
 
 	return pup, nil
@@ -115,6 +112,15 @@ func (u *Upstream) Bootstrap(ctx context.Context) error {
 	err := u.detectFeatures(ctx)
 	if err != nil {
 		return err
+	}
+
+	if u.evmStatePoller != nil {
+		err = u.evmStatePoller.Bootstrap(ctx)
+		if err != nil {
+			// The reason we're not returning error is to allow upstream to still be registered
+			// even if background block polling fails initially.
+			u.Logger.Error().Err(err).Msg("failed on initial bootstrap of evm state poller (will retry in background)")
+		}
 	}
 
 	return nil
@@ -180,6 +186,12 @@ func (u *Upstream) NetworkId() string {
 	return u.networkId
 }
 
+func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
+	if cfg != nil && cfg.Evm != nil && u.evmStatePoller != nil {
+		u.evmStatePoller.SetNetworkConfig(cfg.Evm)
+	}
+}
+
 func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, byPassMethodExclusion bool) (*common.NormalizedResponse, error) {
 	// TODO Should we move byPassMethodExclusion to directives? How do we prevent clients from setting it?
 	startTime := time.Now()
@@ -205,13 +217,12 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 		}
 	}
 
-	netId := req.NetworkId()
 	method, err := req.Method()
 	if err != nil {
 		return nil, common.NewErrUpstreamRequest(
 			err,
 			cfg.Id,
-			netId,
+			u.networkId,
 			method,
 			time.Since(startTime),
 			0,
@@ -220,7 +231,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 		)
 	}
 
-	lg := u.Logger.With().Str("method", method).Str("networkId", netId).Interface("id", req.ID()).Logger()
+	lg := u.Logger.With().Str("method", method).Str("networkId", u.networkId).Interface("id", req.ID()).Logger()
 
 	if limitersBudget != nil {
 		lg.Trace().Str("budget", cfg.RateLimitBudget).Msgf("checking upstream-level rate limiters budget")
@@ -233,7 +244,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				if !rule.Limiter.TryAcquirePermit() {
 					lg.Debug().Str("budget", cfg.RateLimitBudget).Msgf("upstream-level rate limit '%v' exceeded", rule.Config)
 					u.metricsTracker.RecordUpstreamSelfRateLimited(
-						netId,
+						u.networkId,
 						cfg.Id,
 						method,
 					)
@@ -283,11 +294,11 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 		) (*common.NormalizedResponse, error) {
 			u.metricsTracker.RecordUpstreamRequest(
 				cfg.Id,
-				netId,
+				u.networkId,
 				method,
 			)
-			health.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, netId, cfg.Id, method, strconv.Itoa(exec.Attempts())).Inc()
-			timer := u.metricsTracker.RecordUpstreamDurationStart(cfg.Id, netId, method)
+			health.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method, strconv.Itoa(exec.Attempts())).Inc()
+			timer := u.metricsTracker.RecordUpstreamDurationStart(cfg.Id, u.networkId, method)
 			defer timer.ObserveDuration()
 
 			resp, errCall := jsonRpcClient.SendRequest(ctx, req)
@@ -314,12 +325,12 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 			}
 			if errCall != nil {
 				if common.HasErrorCode(errCall, common.ErrCodeUpstreamRequestSkipped) {
-					health.MetricUpstreamSkippedTotal.WithLabelValues(u.ProjectId, cfg.Id, netId, method).Inc()
+					health.MetricUpstreamSkippedTotal.WithLabelValues(u.ProjectId, cfg.Id, u.networkId, method).Inc()
 				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointMissingData) {
-					health.MetricUpstreamMissingDataErrorTotal.WithLabelValues(u.ProjectId, cfg.Id, netId, method).Inc()
+					health.MetricUpstreamMissingDataErrorTotal.WithLabelValues(u.ProjectId, cfg.Id, u.networkId, method).Inc()
 				} else {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
-						u.recordRemoteRateLimit(netId, method)
+						u.recordRemoteRateLimit(u.networkId, method)
 					}
 					severity := common.ClassifySeverity(errCall)
 					if severity == common.SeverityCritical {
@@ -327,18 +338,18 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 						// so that we only penalize upstreams for internal issues (not rate limits, or client-side, or method support issues, etc.)
 						u.metricsTracker.RecordUpstreamFailure(
 							cfg.Id,
-							netId,
+							u.networkId,
 							method,
 						)
 					}
-					health.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, netId, cfg.Id, method, common.ErrorSummary(errCall), string(severity)).Inc()
+					health.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method, common.ErrorSummary(errCall), string(severity)).Inc()
 				}
 
 				if exec != nil {
 					return nil, common.NewErrUpstreamRequest(
 						errCall,
 						cfg.Id,
-						netId,
+						u.networkId,
 						method,
 						time.Since(startTime),
 						exec.Attempts(),
@@ -349,7 +360,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 					return nil, common.NewErrUpstreamRequest(
 						errCall,
 						cfg.Id,
-						netId,
+						u.networkId,
 						method,
 						time.Since(startTime),
 						1,
@@ -359,7 +370,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				}
 			} else {
 				if resp.IsResultEmptyish() {
-					health.MetricUpstreamEmptyResponseTotal.WithLabelValues(u.ProjectId, netId, cfg.Id, method).Inc()
+					health.MetricUpstreamEmptyResponseTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method).Inc()
 				}
 			}
 
@@ -459,37 +470,37 @@ func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 	return strconv.FormatUint(dec, 10), nil
 }
 
+func (u *Upstream) EvmIsBlockFinalized(blockNumber int64) (bool, error) {
+	if u.evmStatePoller == nil {
+		return false, fmt.Errorf("evm state poller not initialized yet")
+	}
+	return u.evmStatePoller.IsBlockFinalized(blockNumber)
+}
+
 func (u *Upstream) EvmSyncingState() common.EvmSyncingState {
-	u.evmSyncingMu.RLock()
-	defer u.evmSyncingMu.RUnlock()
-	return u.evmSyncingState
+	if u.evmStatePoller == nil {
+		return common.EvmSyncingStateUnknown
+	}
+	return u.evmStatePoller.SyncingState()
 }
 
-func (u *Upstream) SetEvmSyncingState(state common.EvmSyncingState) {
-	u.evmSyncingMu.Lock()
-	u.evmSyncingState = state
-	u.evmSyncingMu.Unlock()
+func (u *Upstream) EvmLatestBlock() (int64, error) {
+	if u.evmStatePoller == nil {
+		return 0, fmt.Errorf("evm state poller not initialized yet")
+	}
+	return u.evmStatePoller.LatestBlock(), nil
 }
 
-// func (u *Upstream) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
-// 	u.supportedNetworkIdsMu.RLock()
-// 	supports, exists := u.supportedNetworkIds[networkId]
-// 	u.supportedNetworkIdsMu.RUnlock()
-// 	if exists && supports {
-// 		return true, nil
-// 	}
+func (u *Upstream) EvmFinalizedBlock() (int64, error) {
+	if u.evmStatePoller == nil {
+		return 0, fmt.Errorf("evm state poller not initialized yet")
+	}
+	return u.evmStatePoller.FinalizedBlock(), nil
+}
 
-// 	supports, err := u.Client.SupportsNetwork(ctx, networkId)
-// 	if err != nil {
-// 		return false, err
-// 	}
-
-// 	u.supportedNetworkIdsMu.Lock()
-// 	u.supportedNetworkIds[networkId] = supports
-// 	u.supportedNetworkIdsMu.Unlock()
-
-// 	return supports, nil
-// }
+func (u *Upstream) EvmStatePoller() common.EvmStatePoller {
+	return u.evmStatePoller
+}
 
 func (u *Upstream) IgnoreMethod(method string) {
 	ai := u.config.AutoIgnoreUnsupportedMethods
@@ -497,14 +508,10 @@ func (u *Upstream) IgnoreMethod(method string) {
 		return
 	}
 
-	u.methodCheckResultsMu.Lock()
-	// TODO make this per-network vs global because some upstreams support multiple networks (e.g. alchemy://)
+	u.cfgMu.Lock()
 	u.config.IgnoreMethods = append(u.config.IgnoreMethods, method)
-	if u.methodCheckResults == nil {
-		u.methodCheckResults = map[string]bool{}
-	}
-	delete(u.methodCheckResults, method)
-	u.methodCheckResultsMu.Unlock()
+	u.cfgMu.Unlock()
+	u.supportedMethods.Store(method, false)
 }
 
 // Add this method to the Upstream struct
@@ -554,17 +561,17 @@ func (u *Upstream) recordRemoteRateLimit(netId, method string) {
 
 func (u *Upstream) shouldHandleMethod(method string) (v bool, err error) {
 	cfg := u.Config()
-	u.methodCheckResultsMu.RLock()
-	if s, ok := u.methodCheckResults[method]; ok {
-		u.methodCheckResultsMu.RUnlock()
-		return s, nil
+	if s, ok := u.supportedMethods.Load(method); ok {
+		return s.(bool), nil
 	}
-	u.methodCheckResultsMu.RUnlock()
 
 	v = true
 
 	// First check if method is ignored, and then check if it is explicitly mentioned to be allowed.
 	// This order allows an upstream for example to define "ignore all except eth_getLogs".
+
+	u.cfgMu.RLock()
+	defer u.cfgMu.RUnlock()
 
 	if cfg.IgnoreMethods != nil {
 		for _, m := range cfg.IgnoreMethods {
@@ -592,16 +599,7 @@ func (u *Upstream) shouldHandleMethod(method string) (v bool, err error) {
 		}
 	}
 
-	// TODO if method is one of exclusiveMethods by another upstream (e.g. alchemy_*) skip
-
-	// Cache the result
-	u.methodCheckResultsMu.Lock()
-	if u.methodCheckResults == nil {
-		u.methodCheckResults = map[string]bool{}
-	}
-	u.methodCheckResults[method] = v
-	u.methodCheckResultsMu.Unlock()
-
+	u.supportedMethods.Store(method, v)
 	u.Logger.Debug().Bool("allowed", v).Str("method", method).Msg("method support result")
 
 	return v, nil
@@ -642,6 +640,8 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 
 		// TODO evm: check trace methods availability (by engine? erigon/geth/etc)
 		// TODO evm: detect max eth_getLogs max block range
+	} else {
+		return fmt.Errorf("upstream type not supported: %s", cfg.Type)
 	}
 
 	return nil
@@ -684,17 +684,7 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 				return nil, false
 			}
 
-			ntw := req.Network()
-			if ntw == nil {
-				return nil, false
-			}
-
-			statePoller := ntw.EvmStatePollerOf(u.Config().Id)
-			if statePoller == nil || statePoller.IsObjectNull() {
-				return nil, false
-			}
-
-			if lb := statePoller.LatestBlock(); lb > 0 && bn < lb-u.config.Evm.MaxAvailableRecentBlocks {
+			if lb := u.evmStatePoller.LatestBlock(); lb > 0 && bn < lb-u.config.Evm.MaxAvailableRecentBlocks {
 				// Allow requests for block numbers greater than the latest known block
 				if bn > lb {
 					return nil, false

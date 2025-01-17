@@ -15,6 +15,8 @@ import (
 	"github.com/rs/zerolog"
 )
 
+const DefaultEnvioRootDomain = "rpc.hypersync.xyz"
+
 var envioKnownSupportedChains = map[int64]struct{}{
 	42161:      {}, // Arbitrum
 	42170:      {}, // Arbitrum Nova
@@ -74,24 +76,6 @@ type EnvioVendor struct {
 	common.Vendor
 }
 
-type EnvioSettings struct {
-	RootDomain string `yaml:"rootDomain" json:"rootDomain"`
-}
-
-func (s *EnvioSettings) IsObjectNull() bool {
-	return s == nil || s.RootDomain == ""
-}
-
-func (s *EnvioSettings) SetDefaults() {
-	if s.RootDomain == "" {
-		s.RootDomain = "rpc.hypersync.xyz"
-	}
-}
-
-func (s *EnvioSettings) Validate() error {
-	return nil
-}
-
 func CreateEnvioVendor() common.Vendor {
 	return &EnvioVendor{}
 }
@@ -114,12 +98,12 @@ func (v *EnvioVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logge
 		return true, nil
 	}
 
-	stg, ok := settings.(*EnvioSettings)
-	if !ok {
-		return false, fmt.Errorf("invalid settings type for envio vendor")
+	rootDomain, ok := settings["rootDomain"].(string)
+	if !ok || rootDomain == "" {
+		rootDomain = DefaultEnvioRootDomain
 	}
 
-	parsedURL, err := v.generateUrl(chainId, stg.RootDomain)
+	parsedURL, err := v.generateUrl(chainId, rootDomain)
 	if err != nil {
 		return false, err
 	}
@@ -160,7 +144,7 @@ func (v *EnvioVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logge
 	return cid == chainId, nil
 }
 
-func (v *EnvioVendor) OverrideConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
+func (v *EnvioVendor) PrepareConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
@@ -187,20 +171,20 @@ func (v *EnvioVendor) OverrideConfig(upstream *common.UpstreamConfig, settings c
 		}
 	}
 
-	if upstream.Endpoint == "" && settings != nil && !settings.IsObjectNull() {
-		if stg, ok := settings.(*EnvioSettings); ok {
-			chainID := upstream.Evm.ChainId
-			if chainID == 0 {
-				return fmt.Errorf("envio vendor requires upstream.evm.chainId to be defined")
-			}
-			parsedURL, err := v.generateUrl(chainID, stg.RootDomain)
-			if err != nil {
-				return err
-			}
-			upstream.Endpoint = parsedURL.String()
-		} else {
-			return fmt.Errorf("provided settings is not of type *EnvioSettings it is of type %T", settings)
+	if upstream.Endpoint == "" && settings != nil {
+		rootDomain, ok := settings["rootDomain"].(string)
+		if !ok || rootDomain == "" {
+			rootDomain = DefaultEnvioRootDomain
 		}
+		chainID := upstream.Evm.ChainId
+		if chainID == 0 {
+			return fmt.Errorf("envio vendor requires upstream.evm.chainId to be defined")
+		}
+		parsedURL, err := v.generateUrl(chainID, rootDomain)
+		if err != nil {
+			return err
+		}
+		upstream.Endpoint = parsedURL.String()
 	}
 
 	return nil

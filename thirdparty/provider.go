@@ -41,7 +41,7 @@ func (p *Provider) SupportsNetwork(ctx context.Context, networkId string) (bool,
 
 func (p *Provider) GenerateUpstreamConfig(networkId string) (*common.UpstreamConfig, error) {
 	upsCfg := p.buildBaseUpstreamConfig(networkId)
-	err := p.vendor.OverrideConfig(upsCfg, p.config.Settings)
+	err := p.vendor.PrepareConfig(upsCfg, p.config.Settings)
 	if err != nil {
 		return nil, err
 	}

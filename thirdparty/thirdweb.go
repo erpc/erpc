@@ -19,23 +19,6 @@ type ThirdwebVendor struct {
 	common.Vendor
 }
 
-type ThirdwebSettings struct {
-	ClientId string `yaml:"clientId" json:"clientId"`
-}
-
-func (s *ThirdwebSettings) IsObjectNull() bool {
-	return s == nil || s.ClientId == ""
-}
-
-func (s *ThirdwebSettings) Validate() error {
-	if s == nil || s.ClientId == "" {
-		return fmt.Errorf("thirdweb vendor requires clientId")
-	}
-	return nil
-}
-
-func (s *ThirdwebSettings) SetDefaults() {}
-
 func CreateThirdwebVendor() common.Vendor {
 	return &ThirdwebVendor{}
 }
@@ -54,12 +37,11 @@ func (v *ThirdwebVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Lo
 		return false, err
 	}
 
-	stg, ok := settings.(*ThirdwebSettings)
-	if !ok {
-		return false, fmt.Errorf("invalid settings type for thirdweb vendor")
+	clientId, ok := settings["clientId"].(string)
+	if !ok || clientId == "" {
+		return false, fmt.Errorf("clientId is required in thirdweb settings")
 	}
-
-	parsedURL, err := v.generateUrl(chainId, stg.ClientId)
+	parsedURL, err := v.generateUrl(chainId, clientId)
 	if err != nil {
 		return false, err
 	}
@@ -100,20 +82,20 @@ func (v *ThirdwebVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Lo
 	return cid == chainId, nil
 }
 
-func (v *ThirdwebVendor) OverrideConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
+func (v *ThirdwebVendor) PrepareConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
 
-	if upstream.Endpoint == "" && settings != nil && !settings.IsObjectNull() {
-		if settings, ok := settings.(*ThirdwebSettings); ok {
-			if settings.ClientId != "" {
-				parsedURL, err := v.generateUrl(upstream.Evm.ChainId, settings.ClientId)
-				if err != nil {
-					return err
-				}
-				upstream.Endpoint = parsedURL.String()
+	if upstream.Endpoint == "" && settings != nil {
+		if clientId, ok := settings["clientId"].(string); ok && clientId != "" {
+			parsedURL, err := v.generateUrl(upstream.Evm.ChainId, clientId)
+			if err != nil {
+				return err
 			}
+			upstream.Endpoint = parsedURL.String()
+		} else {
+			return fmt.Errorf("clientId is required in thirdweb settings")
 		}
 	}
 	return nil

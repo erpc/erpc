@@ -33,5 +33,7 @@ type Upstream interface {
 	Vendor() Vendor
 	NetworkId() string
 	EvmGetChainId(ctx context.Context) (string, error)
+	EvmIsBlockFinalized(blockNumber int64) (bool, error)
 	EvmSyncingState() EvmSyncingState
+	EvmStatePoller() EvmStatePoller
 }

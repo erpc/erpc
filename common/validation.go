@@ -521,11 +521,6 @@ func (u *ProviderConfig) Validate(c *Config) error {
 			}
 		}
 	}
-	if u.Settings != nil {
-		if err := u.Settings.Validate(); err != nil {
-			return err
-		}
-	}
 	if u.OnlyNetworks != nil {
 		for _, network := range u.OnlyNetworks {
 			if !IsValidNetwork(network) {

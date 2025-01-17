@@ -50,23 +50,6 @@ type InfuraVendor struct {
 	common.Vendor
 }
 
-type InfuraSettings struct {
-	ApiKey string `yaml:"apiKey" json:"apiKey"`
-}
-
-func (s *InfuraSettings) IsObjectNull() bool {
-	return s == nil || s.ApiKey == ""
-}
-
-func (s *InfuraSettings) Validate() error {
-	if s == nil || s.ApiKey == "" {
-		return fmt.Errorf("vendor infura requires apiKey")
-	}
-	return nil
-}
-
-func (s *InfuraSettings) SetDefaults() {}
-
 func CreateInfuraVendor() common.Vendor {
 	return &InfuraVendor{}
 }
@@ -84,36 +67,34 @@ func (v *InfuraVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logg
 	return ok, nil
 }
 
-func (v *InfuraVendor) OverrideConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
+func (v *InfuraVendor) PrepareConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
 
-	if upstream.Endpoint == "" && settings != nil && !settings.IsObjectNull() {
-		if stg, ok := settings.(*InfuraSettings); ok {
-			if stg.ApiKey != "" {
-				chainID := upstream.Evm.ChainId
-				if chainID == 0 {
-					return fmt.Errorf("infura vendor requires upstream.evm.chainId to be defined")
-				}
-				netName, ok := infuraNetworkNames[chainID]
-				if !ok {
-					return fmt.Errorf("unsupported network chain ID for Infura: %d", chainID)
-				}
-				infuraURL := fmt.Sprintf("https://%s.infura.io/v3/%s", netName, stg.ApiKey)
-				if netName == "ava-mainnet" || netName == "ava-testnet" {
-					// Avalanche endpoints need an extra path `/ext/bc/C/rpc`
-					infuraURL = fmt.Sprintf("%s/ext/bc/C/rpc", infuraURL)
-				}
-				parsedURL, err := url.Parse(infuraURL)
-				if err != nil {
-					return err
-				}
-
-				upstream.Endpoint = parsedURL.String()
+	if upstream.Endpoint == "" && settings != nil {
+		if apiKey, ok := settings["apiKey"].(string); ok && apiKey != "" {
+			chainID := upstream.Evm.ChainId
+			if chainID == 0 {
+				return fmt.Errorf("infura vendor requires upstream.evm.chainId to be defined")
 			}
+			netName, ok := infuraNetworkNames[chainID]
+			if !ok {
+				return fmt.Errorf("unsupported network chain ID for Infura: %d", chainID)
+			}
+			infuraURL := fmt.Sprintf("https://%s.infura.io/v3/%s", netName, apiKey)
+			if netName == "ava-mainnet" || netName == "ava-testnet" {
+				// Avalanche endpoints need an extra path `/ext/bc/C/rpc`
+				infuraURL = fmt.Sprintf("%s/ext/bc/C/rpc", infuraURL)
+			}
+			parsedURL, err := url.Parse(infuraURL)
+			if err != nil {
+				return err
+			}
+
+			upstream.Endpoint = parsedURL.String()
 		} else {
-			return fmt.Errorf("provided settings is not of type *InfuraSettings it is of type %T", settings)
+			return fmt.Errorf("apiKey is required in infura settings")
 		}
 	}
 	return nil

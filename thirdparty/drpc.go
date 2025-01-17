@@ -133,23 +133,6 @@ type DrpcVendor struct {
 	common.Vendor
 }
 
-type DrpcSettings struct {
-	ApiKey string `yaml:"apiKey" json:"apiKey"`
-}
-
-func (s *DrpcSettings) IsObjectNull() bool {
-	return s == nil || s.ApiKey == ""
-}
-
-func (s *DrpcSettings) Validate() error {
-	if s == nil || s.ApiKey == "" {
-		return fmt.Errorf("vendor drpc requires apiKey")
-	}
-	return nil
-}
-
-func (s *DrpcSettings) SetDefaults() {}
-
 func CreateDrpcVendor() common.Vendor {
 	return &DrpcVendor{}
 }
@@ -167,33 +150,32 @@ func (v *DrpcVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger
 	return ok, nil
 }
 
-func (v *DrpcVendor) OverrideConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
+func (v *DrpcVendor) PrepareConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
 	// Intentionally not ignore missing method exceptions because dRPC sometimes routes to nodes that don't support the method
 	// but it doesn't mean that method is actually not supported, i.e. on next retry to dRPC it might work.
 	upstream.AutoIgnoreUnsupportedMethods = &common.FALSE
 
-	if upstream.Endpoint == "" && settings != nil && !settings.IsObjectNull() {
-		if settings, ok := settings.(*DrpcSettings); ok {
-			if settings.ApiKey != "" {
-				if upstream.Evm == nil {
-					return fmt.Errorf("drpc vendor requires upstream.evm to be defined")
-				}
-				chainID := upstream.Evm.ChainId
-				if chainID == 0 {
-					return fmt.Errorf("drpc vendor requires upstream.evm.chainId to be defined")
-				}
-				netName, ok := drpcNetworkNames[chainID]
-				if !ok {
-					return fmt.Errorf("unsupported network chain ID for DRPC: %d", chainID)
-				}
-				drpcURL := fmt.Sprintf("https://lb.drpc.org/ogrpc?network=%s&dkey=%s", netName, settings.ApiKey)
-				parsedURL, err := url.Parse(drpcURL)
-				if err != nil {
-					return err
-				}
-
-				upstream.Endpoint = parsedURL.String()
+	if upstream.Endpoint == "" && settings != nil {
+		if apiKey, ok := settings["apiKey"].(string); ok && apiKey != "" {
+			if upstream.Evm == nil {
+				return fmt.Errorf("drpc vendor requires upstream.evm to be defined")
 			}
+			chainID := upstream.Evm.ChainId
+			if chainID == 0 {
+				return fmt.Errorf("drpc vendor requires upstream.evm.chainId to be defined")
+			}
+			netName, ok := drpcNetworkNames[chainID]
+			if !ok {
+				return fmt.Errorf("unsupported network chain ID for DRPC: %d", chainID)
+			}
+			drpcURL := fmt.Sprintf("https://lb.drpc.org/ogrpc?network=%s&dkey=%s", netName, apiKey)
+			parsedURL, err := url.Parse(drpcURL)
+			if err != nil {
+				return err
+			}
+			upstream.Endpoint = parsedURL.String()
+		} else {
+			return fmt.Errorf("apiKey is required in drpc settings")
 		}
 	}
 

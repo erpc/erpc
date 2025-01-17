@@ -276,7 +276,7 @@ func (i *Initializer) autoRetryLoop(ctx context.Context) {
 			}
 		}
 
-		i.logger.Warn().Err(err).Int32("state", int32(state)).Msgf("initialization auto-retry failed, will retry in %v", delay)
+		i.logger.Warn().Err(err).Int("state", int(state)).Msgf("initialization auto-retry failed, will retry in %v", delay)
 		select {
 		case <-ctx.Done():
 			i.logger.Debug().Err(ctx.Err()).Msg("initialization auto-retry cancelled")
@@ -330,6 +330,21 @@ func (i *Initializer) Status() *InitializerStatus {
 		State: state,
 		Tasks: i.tasksStatus(),
 	}
+}
+
+func (i *Initializer) MarkTaskAsFailed(name string, err error) {
+	i.logger.Warn().Str("task", name).Err(err).Msg("marking task as failed")
+	i.tasks.Range(func(key, value interface{}) bool {
+		t := value.(*BootstrapTask)
+		if t.Name == name {
+			t.lastErr.Store(err)
+			t.state.Store(int32(TaskFailed))
+			return false
+		}
+		return true
+	})
+
+	i.ensureAutoRetryIfEnabled(context.Background())
 }
 
 // Stop halts any background retries, marks the initializer destroyed, and executes destroyFn if provided.

@@ -39,6 +39,8 @@ type UpstreamsRegistry struct {
 	sortedUpstreams map[string]map[string][]*Upstream
 	// map of upstream -> network (or *) -> method (or *) => score
 	upstreamScores map[string]map[string]map[string]float64
+
+	onUpstreamRegistered func(ups *Upstream) error
 }
 
 type UpstreamsHealth struct {
@@ -83,20 +85,12 @@ func (u *UpstreamsRegistry) Bootstrap(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// Register statically defined upstreams
-	wg := sync.WaitGroup{}
-	for _, upsCfg := range u.upsCfg {
-		wg.Add(1)
-		go func(upsCfg *common.UpstreamConfig) {
-			defer wg.Done()
-			err := u.registerUpstream(u.appCtx, upsCfg)
-			if err != nil {
-				u.logger.Error().Err(err).Str("upstreamId", upsCfg.Id).Msg("failed to initialize upstream on first attempt (will retry in the background)")
-			}
-		}(upsCfg)
-	}
-	wg.Wait()
-	return nil
+
+	return u.registerUpstream(u.appCtx, u.upsCfg...)
+}
+
+func (u *UpstreamsRegistry) OnUpstreamRegistered(fn func(ups *Upstream) error) {
+	u.onUpstreamRegistered = fn
 }
 
 func (u *UpstreamsRegistry) NewUpstream(
@@ -122,7 +116,6 @@ func (u *UpstreamsRegistry) getNetworkMutex(networkId string) *sync.RWMutex {
 	return mutex.(*sync.RWMutex)
 }
 
-// Extended PrepareUpstreamsForNetwork with provider-based bootstrapping.
 func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, networkId string) error {
 	networkMu := u.getNetworkMutex(networkId)
 	networkMu.Lock()
@@ -325,8 +318,12 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 	return nil
 }
 
-func (u *UpstreamsRegistry) registerUpstream(ctx context.Context, upsCfg *common.UpstreamConfig) error {
-	return u.initializer.ExecuteTasks(ctx, u.buildUpstreamBootstrapTask(upsCfg))
+func (u *UpstreamsRegistry) registerUpstream(ctx context.Context, upsCfgs ...*common.UpstreamConfig) error {
+	tasks := make([]*util.BootstrapTask, 0)
+	for _, upsCfg := range upsCfgs {
+		tasks = append(tasks, u.buildUpstreamBootstrapTask(upsCfg))
+	}
+	return u.initializer.ExecuteTasks(ctx, tasks...)
 }
 
 func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamConfig) *util.BootstrapTask {
@@ -358,6 +355,13 @@ func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamCo
 				return err
 			}
 			u.doRegisterBootstrappedUpstream(ups)
+
+			if u.onUpstreamRegistered != nil {
+				err = u.onUpstreamRegistered(ups)
+				if err != nil {
+					return err
+				}
+			}
 
 			u.logger.Debug().Str("upstreamId", upsCfg.Id).Msg("upstream bootstrap completed")
 			return nil

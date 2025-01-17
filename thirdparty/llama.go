@@ -24,23 +24,6 @@ type LlamaVendor struct {
 	common.Vendor
 }
 
-type LlamaSettings struct {
-	ApiKey string `yaml:"apiKey" json:"apiKey"`
-}
-
-func (s *LlamaSettings) IsObjectNull() bool {
-	return s == nil || s.ApiKey == ""
-}
-
-func (s *LlamaSettings) Validate() error {
-	if s == nil || s.ApiKey == "" {
-		return fmt.Errorf("vendor llama requires apiKey")
-	}
-	return nil
-}
-
-func (s *LlamaSettings) SetDefaults() {}
-
 func CreateLlamaVendor() common.Vendor {
 	return &LlamaVendor{}
 }
@@ -58,25 +41,23 @@ func (v *LlamaVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logge
 	return ok, nil
 }
 
-func (v *LlamaVendor) OverrideConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
+func (v *LlamaVendor) PrepareConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
-	if upstream.Endpoint == "" && settings != nil && !settings.IsObjectNull() {
-		if stg, ok := settings.(*InfuraSettings); ok {
-			if stg.ApiKey != "" {
-				chainID := upstream.Evm.ChainId
-				if chainID == 0 {
-					return fmt.Errorf("llama vendor requires upstream.evm.chainId to be defined")
-				}
-				netName, ok := llamaNetworkNames[chainID]
-				if !ok {
-					return fmt.Errorf("unsupported network chain ID for Llama: %d", chainID)
-				}
-				upstream.Endpoint = fmt.Sprintf("https://%s.llamarpc.com/%s", netName, stg.ApiKey)
+	if upstream.Endpoint == "" && settings != nil {
+		if apiKey, ok := settings["apiKey"].(string); ok && apiKey != "" {
+			chainID := upstream.Evm.ChainId
+			if chainID == 0 {
+				return fmt.Errorf("llama vendor requires upstream.evm.chainId to be defined")
 			}
+			netName, ok := llamaNetworkNames[chainID]
+			if !ok {
+				return fmt.Errorf("unsupported network chain ID for Llama: %d", chainID)
+			}
+			upstream.Endpoint = fmt.Sprintf("https://%s.llamarpc.com/%s", netName, apiKey)
 		} else {
-			return fmt.Errorf("provided settings is not of type *LlamaSettings it is of type %T", settings)
+			return fmt.Errorf("apiKey is required in llama settings")
 		}
 	}
 

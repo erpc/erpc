@@ -18,7 +18,7 @@ type ERPC struct {
 }
 
 func NewERPC(
-	ctx context.Context,
+	appCtx context.Context,
 	logger *zerolog.Logger,
 	evmJsonRpcCache *EvmJsonRpcCache,
 	cfg *common.Config,
@@ -33,7 +33,7 @@ func NewERPC(
 
 	vendorsRegistry := thirdparty.NewVendorsRegistry()
 	projectRegistry, err := NewProjectsRegistry(
-		ctx,
+		appCtx,
 		logger,
 		cfg.Projects,
 		evmJsonRpcCache,
@@ -51,6 +51,13 @@ func NewERPC(
 			return nil, err
 		}
 	}
+
+	go func() {
+		err := projectRegistry.Bootstrap(appCtx)
+		if err != nil {
+			logger.Error().Err(err).Msg("failed to bootstrap projects on first attempt (will keep retrying in the background)")
+		}
+	}()
 
 	return &ERPC{
 		cfg:               cfg,

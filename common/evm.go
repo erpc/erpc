@@ -1,6 +1,9 @@
 package common
 
-import "strings"
+import (
+	"context"
+	"strings"
+)
 
 type EvmNodeType string
 
@@ -22,11 +25,15 @@ func IsEvmWriteMethod(method string) bool {
 }
 
 type EvmStatePoller interface {
+	Bootstrap(ctx context.Context) error
+	SyncingState() EvmSyncingState
+	SetSyncingState(state EvmSyncingState)
 	LatestBlock() int64
 	FinalizedBlock() int64
 	IsBlockFinalized(blockNumber int64) (bool, error)
 	SuggestFinalizedBlock(blockNumber int64)
 	SuggestLatestBlock(blockNumber int64)
+	SetNetworkConfig(cfg *EvmNetworkConfig)
 	IsObjectNull() bool
 }
 

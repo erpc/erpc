@@ -16,22 +16,16 @@ func CreateQuicknodeVendor() common.Vendor {
 	return &QuicknodeVendor{}
 }
 
-type QuicknodeSettings struct{}
-
-func (s *QuicknodeSettings) IsObjectNull() bool {
-	return s == nil
-}
-
-func (s *QuicknodeSettings) Validate() error {
-	return nil
-}
-
 func (v *QuicknodeVendor) Name() string {
 	return "quicknode"
 }
 
-func (v *QuicknodeVendor) OverrideConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
-	if upstream.Endpoint == "" && settings != nil && !settings.IsObjectNull() {
+func (v *QuicknodeVendor) PrepareConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
+	if upstream.JsonRpc == nil {
+		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
+	}
+
+	if upstream.Endpoint == "" {
 		return fmt.Errorf("quicknode vendor requires upstream.endpoint to be defined")
 	}
 

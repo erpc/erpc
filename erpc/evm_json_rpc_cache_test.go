@@ -11,6 +11,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
@@ -45,31 +46,32 @@ func createCacheTestFixtures(upstreamConfigs []upsTestCfg) ([]*data.MockConnecto
 
 	clr := clients.NewClientRegistry(&logger, "prjA")
 	vr := thirdparty.NewVendorsRegistry()
-	mockNetwork.evmStatePollers = make(map[string]*upstream.EvmStatePoller)
 	upstreams := make([]*upstream.Upstream, 0, len(upstreamConfigs))
 
 	for _, cfg := range upstreamConfigs {
+		mt := health.NewTracker("prjA", 100*time.Second)
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &logger)
+		if err != nil {
+			panic(err)
+		}
 		mockUpstream, err := upstream.NewUpstream(context.Background(), "test", &common.UpstreamConfig{
 			Id:       cfg.id,
 			Endpoint: "http://rpc1.localhost",
 			Type:     common.UpstreamTypeEvm,
 			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
+				ChainId:             123,
+				StatePollerInterval: "1m",
 			},
-		}, clr, nil, vr, &logger, nil)
+		}, clr, rlr, vr, &logger, mt)
 		if err != nil {
 			panic(err)
 		}
-		mockUpstream.SetEvmSyncingState(cfg.syncing)
 
-		metricsTracker := health.NewTracker("prjA", 100*time.Second)
-		poller, err := upstream.NewEvmStatePoller(context.Background(), &logger, mockNetwork, mockUpstream, metricsTracker)
-		if err != nil {
-			panic(err)
-		}
+		poller := mockUpstream.EvmStatePoller()
 		poller.SuggestFinalizedBlock(cfg.finBn)
 		poller.SuggestLatestBlock(cfg.lstBn)
-		mockNetwork.evmStatePollers[cfg.id] = poller
+		poller.SetSyncingState(cfg.syncing)
+
 		upstreams = append(upstreams, mockUpstream)
 	}
 

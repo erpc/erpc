@@ -17,8 +17,6 @@ type Network interface {
 	Architecture() NetworkArchitecture
 	Config() *NetworkConfig
 	GetMethodMetrics(method string) TrackedMetrics
-	EvmChainId() (int64, error)
-	EvmStatePollerOf(upstreamId string) EvmStatePoller
 }
 
 func IsValidArchitecture(architecture string) bool {

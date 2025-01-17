@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -17,9 +18,10 @@ const FullySyncedThreshold = 4
 type EvmStatePoller struct {
 	Enabled bool
 
+	appCtx   context.Context
 	logger   *zerolog.Logger
 	upstream *Upstream
-	network  common.Network
+	cfg      *common.EvmNetworkConfig
 	tracker  *health.Tracker
 
 	// When node is fully synced we don't need to query syncing state anymore.
@@ -32,7 +34,8 @@ type EvmStatePoller struct {
 	//
 	// To save memory, 0 means we haven't checked, 1+ means we have checked but it's still syncing OR
 	// we haven't received enough "synced" responses to assume it's fully synced.
-	synced int8
+	synced       int8
+	syncingState common.EvmSyncingState
 
 	// Certain upstreams do not support calling such method,
 	// therefore we must avoid sending redundant requests.
@@ -49,28 +52,23 @@ type EvmStatePoller struct {
 }
 
 func NewEvmStatePoller(
-	ctx context.Context,
+	appCtx context.Context,
 	logger *zerolog.Logger,
-	ntw common.Network,
 	up *Upstream,
 	tracker *health.Tracker,
-) (*EvmStatePoller, error) {
+) *EvmStatePoller {
 	lg := logger.With().Str("upstreamId", up.config.Id).Logger()
 	e := &EvmStatePoller{
+		appCtx:   appCtx,
 		logger:   &lg,
-		network:  ntw,
 		upstream: up,
 		tracker:  tracker,
 	}
 
-	if err := e.initialize(ctx); err != nil {
-		return nil, err
-	}
-
-	return e, nil
+	return e
 }
 
-func (e *EvmStatePoller) initialize(ctx context.Context) error {
+func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 	cfg := e.upstream.config
 	var intvl string
 	if cfg.Evm != nil && cfg.Evm.StatePollerInterval != "" {
@@ -99,20 +97,34 @@ func (e *EvmStatePoller) initialize(ctx context.Context) error {
 		defer ticker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
-				e.logger.Debug().Msg("shutting down evm state poller due to context cancellation")
+			case <-e.appCtx.Done():
+				e.logger.Debug().Msg("shutting down evm state poller due to app context interruption")
 				return
 			case <-ticker.C:
-				e.Poll(ctx)
+				nctx, cancel := context.WithTimeout(e.appCtx, 10*time.Second)
+				defer cancel()
+				err := e.Poll(nctx)
+				if err != nil {
+					e.logger.Error().Err(err).Msgf("failed to poll evm state for upstream %s", e.upstream.config.Id)
+				}
 			}
 		}
 	})()
 
-	return nil
+	return e.Poll(ctx)
 }
 
-func (e *EvmStatePoller) Poll(ctx context.Context) {
+func (e *EvmStatePoller) SetNetworkConfig(cfg *common.EvmNetworkConfig) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.cfg = cfg
+}
+
+func (e *EvmStatePoller) Poll(ctx context.Context) error {
 	var wg sync.WaitGroup
+	var errs []error
+	ermu := &sync.Mutex{}
+
 	// Fetch latest block
 	wg.Add(1)
 	go func() {
@@ -120,6 +132,9 @@ func (e *EvmStatePoller) Poll(ctx context.Context) {
 		lb, err := e.fetchLatestBlockNumber(ctx)
 		if err != nil {
 			e.logger.Debug().Err(err).Msg("failed to get latest block number in evm state poller")
+			ermu.Lock()
+			errs = append(errs, err)
+			ermu.Unlock()
 			return
 		}
 		e.logger.Debug().Int64("blockNumber", lb).Msg("fetched latest block")
@@ -144,6 +159,9 @@ func (e *EvmStatePoller) Poll(ctx context.Context) {
 			} else {
 				e.logger.Debug().Err(err).Msg("failed to get finalized block number in evm state poller")
 			}
+			ermu.Lock()
+			errs = append(errs, err)
+			ermu.Unlock()
 			return
 		}
 		e.logger.Debug().Int64("blockNumber", fb).Msg("fetched finalized block")
@@ -163,6 +181,9 @@ func (e *EvmStatePoller) Poll(ctx context.Context) {
 		syncing, err := e.fetchSyncingState(ctx)
 		if err != nil {
 			e.logger.Debug().Bool("syncingResult", syncing).Err(err).Msg("failed to get syncing state in evm state poller")
+			ermu.Lock()
+			errs = append(errs, err)
+			ermu.Unlock()
 			return
 		}
 
@@ -182,27 +203,45 @@ func (e *EvmStatePoller) Poll(ctx context.Context) {
 		}
 
 		// By default, we don't know if the node is syncing or not.
-		e.upstream.SetEvmSyncingState(common.EvmSyncingStateUnknown)
+		e.syncingState = common.EvmSyncingStateUnknown
 
 		// if we have received enough consecutive "synced" responses, we can assume it's fully synced.
 		if e.synced >= FullySyncedThreshold {
-			e.upstream.SetEvmSyncingState(common.EvmSyncingStateNotSyncing)
+			e.syncingState = common.EvmSyncingStateNotSyncing
 			e.logger.Info().Bool("syncingResult", syncing).Msg("node is marked as fully synced")
 		} else if e.synced >= 0 && syncing {
-			e.upstream.SetEvmSyncingState(common.EvmSyncingStateSyncing)
+			e.syncingState = common.EvmSyncingStateSyncing
 			// If we have received at least one response (syncing or not-syncing) we explicitly assume it's syncing.
 			e.logger.Debug().Bool("syncingResult", syncing).Msgf("node is marked as still syncing %d out of %d confirmations done so far", e.synced, FullySyncedThreshold)
 		}
 	}()
 
 	wg.Wait()
+
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+
+	return nil
 }
 
 func (e *EvmStatePoller) setLatestBlockNumber(blockNumber int64) {
 	e.mu.Lock()
 	e.latestBlockNumber = blockNumber
 	e.mu.Unlock()
-	e.tracker.SetLatestBlockNumber(e.upstream.config.Id, e.network.Id(), blockNumber)
+	e.tracker.SetLatestBlockNumber(e.upstream.config.Id, e.upstream.NetworkId(), blockNumber)
+}
+
+func (e *EvmStatePoller) SyncingState() common.EvmSyncingState {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.syncingState
+}
+
+func (e *EvmStatePoller) SetSyncingState(state common.EvmSyncingState) {
+	e.mu.Lock()
+	e.syncingState = state
+	e.mu.Unlock()
 }
 
 func (e *EvmStatePoller) LatestBlock() int64 {
@@ -215,7 +254,7 @@ func (e *EvmStatePoller) setFinalizedBlockNumber(blockNumber int64) {
 	e.mu.Lock()
 	e.finalizedBlockNumber = blockNumber
 	e.mu.Unlock()
-	e.tracker.SetFinalizedBlockNumber(e.upstream.config.Id, e.network.Id(), blockNumber)
+	e.tracker.SetFinalizedBlockNumber(e.upstream.config.Id, e.upstream.NetworkId(), blockNumber)
 }
 
 func (e *EvmStatePoller) shouldSkipFinalizedCheck() bool {
@@ -265,11 +304,11 @@ func (e *EvmStatePoller) IsBlockFinalized(blockNumber int64) (bool, error) {
 	}
 
 	var fb int64
-	ntwCfg := e.network.Config()
-
-	if ntwCfg.Evm != nil && ntwCfg.Evm.FallbackFinalityDepth > 0 {
-		if latestBlock > ntwCfg.Evm.FallbackFinalityDepth {
-			fb = latestBlock - ntwCfg.Evm.FallbackFinalityDepth
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.cfg != nil && e.cfg.FallbackFinalityDepth > 0 {
+		if latestBlock > e.cfg.FallbackFinalityDepth {
+			fb = latestBlock - e.cfg.FallbackFinalityDepth
 		} else {
 			fb = 0
 		}
@@ -322,7 +361,6 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), blockTag),
 	))
-	pr.SetNetwork(e.network)
 
 	resp, err := e.upstream.Forward(ctx, pr, true)
 	if err != nil {
@@ -355,7 +393,7 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 
 func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_syncing","params":[]}`, util.RandomID())))
-	pr.SetNetwork(e.network)
+	// pr.SetNetwork(e.network)
 
 	resp, err := e.upstream.Forward(ctx, pr, true)
 	if err != nil {

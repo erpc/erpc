@@ -859,7 +859,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	t.Run("ServerTimeoutNoUpstreamNoNetworkTimeout", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("100ms"),
+				MaxTimeout: util.StringPtr("500ms"),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -913,7 +913,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(200).
-			Delay(200 * time.Millisecond).
+			Delay(1000 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,

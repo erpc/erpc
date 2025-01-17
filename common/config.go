@@ -297,11 +297,7 @@ type CORSConfig struct {
 	MaxAge           int      `yaml:"maxAge" json:"maxAge"`
 }
 
-type VendorSettings interface {
-	IsObjectNull() bool
-	SetDefaults()
-	Validate() error
-}
+type VendorSettings map[string]interface{}
 
 type ProviderConfig struct {
 	Id                 string                     `yaml:"id,omitempty" json:"id"`
@@ -310,6 +306,17 @@ type ProviderConfig struct {
 	OnlyNetworks       []string                   `yaml:"onlyNetworks,omitempty" json:"onlyNetworks"`
 	UpstreamIdTemplate string                     `yaml:"upstreamIdTemplate" json:"upstreamIdTemplate"`
 	Overrides          map[string]*UpstreamConfig `yaml:"overrides,omitempty" json:"overrides"`
+}
+
+func (p *ProviderConfig) MarshalJSON() ([]byte, error) {
+	return sonic.Marshal(map[string]interface{}{
+		"id":                 p.Id,
+		"vendor":             p.Vendor,
+		"settings":           "REDACTED",
+		"onlyNetworks":       p.OnlyNetworks,
+		"upstreamIdTemplate": p.UpstreamIdTemplate,
+		"overrides":          p.Overrides,
+	})
 }
 
 type UpstreamConfig struct {
@@ -623,7 +630,10 @@ func LoadConfig(fs afero.Fs, filename string) (*Config, error) {
 		}
 	}
 
-	cfg.SetDefaults()
+	err = cfg.SetDefaults()
+	if err != nil {
+		return nil, err
+	}
 
 	err = cfg.Validate()
 	if err != nil {

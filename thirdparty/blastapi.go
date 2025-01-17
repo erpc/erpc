@@ -87,23 +87,6 @@ type BlastApiVendor struct {
 	common.Vendor
 }
 
-type BlastApiSettings struct {
-	ApiKey string `yaml:"apiKey" json:"apiKey"`
-}
-
-func (s *BlastApiSettings) IsObjectNull() bool {
-	return s == nil || s.ApiKey == ""
-}
-
-func (s *BlastApiSettings) Validate() error {
-	if s == nil || s.ApiKey == "" {
-		return fmt.Errorf("vendor blastapi requires apiKey")
-	}
-	return nil
-}
-
-func (s *BlastApiSettings) SetDefaults() {}
-
 func CreateBlastApiVendor() common.Vendor {
 	return &BlastApiVendor{}
 }
@@ -121,37 +104,37 @@ func (v *BlastApiVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Lo
 	return ok, nil
 }
 
-func (v *BlastApiVendor) OverrideConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
+func (v *BlastApiVendor) PrepareConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
 
-	if upstream.Endpoint == "" && settings != nil && !settings.IsObjectNull() {
-		if settings, ok := settings.(*BlastApiSettings); ok {
-			if settings.ApiKey != "" {
-				if upstream.Evm == nil {
-					return fmt.Errorf("blastapi vendor requires upstream.evm to be defined")
-				}
-				chainID := upstream.Evm.ChainId
-				if chainID == 0 {
-					return fmt.Errorf("blastapi vendor requires upstream.evm.chainId to be defined")
-				}
-				netName, ok := blastapiNetworkNames[chainID]
-				if !ok {
-					return fmt.Errorf("unsupported network chain ID for BlastAPI: %d", chainID)
-				}
-				blastapiURL := fmt.Sprintf("https://%s.blastapi.io/%s", netName, settings.ApiKey)
-				if netName == "ava-mainnet" || netName == "ava-testnet" {
-					// Avalanche endpoints need an extra path `/ext/bc/C/rpc`
-					blastapiURL = fmt.Sprintf("%s/ext/bc/C/rpc", blastapiURL)
-				}
-				parsedURL, err := url.Parse(blastapiURL)
-				if err != nil {
-					return err
-				}
-
-				upstream.Endpoint = parsedURL.String()
+	if upstream.Endpoint == "" && settings != nil {
+		if apiKey, ok := settings["apiKey"].(string); ok && apiKey != "" {
+			if upstream.Evm == nil {
+				return fmt.Errorf("blastapi vendor requires upstream.evm to be defined")
 			}
+			chainID := upstream.Evm.ChainId
+			if chainID == 0 {
+				return fmt.Errorf("blastapi vendor requires upstream.evm.chainId to be defined")
+			}
+			netName, ok := blastapiNetworkNames[chainID]
+			if !ok {
+				return fmt.Errorf("unsupported network chain ID for BlastAPI: %d", chainID)
+			}
+			blastapiURL := fmt.Sprintf("https://%s.blastapi.io/%s", netName, apiKey)
+			if netName == "ava-mainnet" || netName == "ava-testnet" {
+				// Avalanche endpoints need an extra path `/ext/bc/C/rpc`
+				blastapiURL = fmt.Sprintf("%s/ext/bc/C/rpc", blastapiURL)
+			}
+			parsedURL, err := url.Parse(blastapiURL)
+			if err != nil {
+				return err
+			}
+
+			upstream.Endpoint = parsedURL.String()
+		} else {
+			return fmt.Errorf("apiKey is required in blastapi settings")
 		}
 	}
 

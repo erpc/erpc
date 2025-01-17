@@ -2,6 +2,9 @@ package erpc
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"sync"
 	"time"
 
 	"github.com/erpc/erpc/auth"
@@ -42,14 +45,33 @@ func NewProjectsRegistry(
 	}
 
 	for _, prjCfg := range staticProjects {
-		prj, err := reg.RegisterProject(prjCfg)
+		_, err := reg.RegisterProject(prjCfg)
 		if err != nil {
 			return nil, err
 		}
-		go prj.Bootstrap(appCtx)
 	}
 
 	return reg, nil
+}
+
+func (r *ProjectsRegistry) Bootstrap(ctx context.Context) error {
+	wg := sync.WaitGroup{}
+	wg.Add(len(r.preparedProjects))
+	var errs []error
+	for _, prj := range r.preparedProjects {
+		go func(prj *PreparedProject) {
+			defer wg.Done()
+			err := prj.Bootstrap(ctx)
+			if err != nil {
+				errs = append(errs, err)
+			}
+		}(prj)
+	}
+	wg.Wait()
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
 }
 
 func (r *ProjectsRegistry) GetProject(projectId string) (project *PreparedProject, err error) {
@@ -98,10 +120,6 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		metricsTracker,
 		1*time.Second,
 	)
-	err = upstreamsRegistry.Bootstrap(r.appCtx)
-	if err != nil {
-		return nil, err
-	}
 
 	var consumerAuthRegistry *auth.AuthRegistry
 	if prjCfg.Auth != nil {
@@ -128,6 +146,22 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		&lg,
 	)
 	r.preparedProjects[prjCfg.Id] = pp
+
+	// TODO can we refactor the architecture so this relation is more straightforward?
+	// The main challenge is for some upstreams we are detecting network (chainId) lazily therefore we can't set it before initializing the upstream.
+	// Should we eliminate chainid lazy detection (that would be a bummer and a breaking change :D)?
+	upstreamsRegistry.OnUpstreamRegistered(func(ups *upstream.Upstream) error {
+		ntwId := ups.NetworkId()
+		if ntwId == "" {
+			return fmt.Errorf("upstream %s has no network id set yet", ups.Config().Id)
+		}
+		ntw, err := pp.networksRegistry.GetNetwork(ntwId)
+		if err != nil {
+			return err
+		}
+		ups.SetNetworkConfig(ntw.cfg)
+		return nil
+	})
 
 	r.logger.Info().Msgf("registered project %s", prjCfg.Id)
 

@@ -1,6 +1,8 @@
 package common
 
 import (
+	"fmt"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -10,37 +12,51 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-func (c *Config) SetDefaults() {
+func (c *Config) SetDefaults() error {
 	if c.LogLevel == "" {
 		c.LogLevel = "INFO"
 	}
 	if c.Server == nil {
 		c.Server = &ServerConfig{}
 	}
-	c.Server.SetDefaults()
+	if err := c.Server.SetDefaults(); err != nil {
+		return err
+	}
 
 	if c.Database != nil {
-		c.Database.SetDefaults()
+		if err := c.Database.SetDefaults(); err != nil {
+			return err
+		}
 	}
 
 	if c.Metrics == nil {
 		c.Metrics = &MetricsConfig{}
 	}
-	c.Metrics.SetDefaults()
+	if err := c.Metrics.SetDefaults(); err != nil {
+		return err
+	}
 
 	if c.Admin != nil {
-		c.Admin.SetDefaults()
+		if err := c.Admin.SetDefaults(); err != nil {
+			return err
+		}
 	}
 
 	if c.Projects != nil {
 		for _, project := range c.Projects {
-			project.SetDefaults()
+			if err := project.SetDefaults(); err != nil {
+				return err
+			}
 		}
 	}
 
 	if c.RateLimiters != nil {
-		c.RateLimiters.SetDefaults()
+		if err := c.RateLimiters.SetDefaults(); err != nil {
+			return err
+		}
 	}
+
+	return nil
 }
 
 // These methods return a fixed value that does not change over time
@@ -271,15 +287,19 @@ var DefaultSpecialCacheMethods = map[string]*CacheMethodConfig{
 	},
 }
 
-func (c *CacheConfig) SetDefaults() {
+func (c *CacheConfig) SetDefaults() error {
 	if len(c.Policies) > 0 {
 		for _, policy := range c.Policies {
-			policy.SetDefaults()
+			if err := policy.SetDefaults(); err != nil {
+				return fmt.Errorf("failed to set defaults for cache policy: %w", err)
+			}
 		}
 	}
 	if len(c.Connectors) > 0 {
 		for _, connector := range c.Connectors {
-			connector.SetDefaults()
+			if err := connector.SetDefaults(); err != nil {
+				return fmt.Errorf("failed to set defaults for cache connector: %w", err)
+			}
 		}
 	}
 
@@ -300,18 +320,22 @@ func (c *CacheConfig) SetDefaults() {
 		}
 		c.Methods = mergedMethods
 	}
+
+	return nil
 }
 
-func (c *CachePolicyConfig) SetDefaults() {
+func (c *CachePolicyConfig) SetDefaults() error {
 	if c.Method == "" {
 		c.Method = "*"
 	}
 	if c.Network == "" {
 		c.Network = "*"
 	}
+
+	return nil
 }
 
-func (s *ServerConfig) SetDefaults() {
+func (s *ServerConfig) SetDefaults() error {
 	if s.ListenV4 == nil {
 		if !util.IsTest() {
 			s.ListenV4 = util.BoolPtr(true)
@@ -338,9 +362,11 @@ func (s *ServerConfig) SetDefaults() {
 	if s.EnableGzip == nil {
 		s.EnableGzip = util.BoolPtr(true)
 	}
+
+	return nil
 }
 
-func (m *MetricsConfig) SetDefaults() {
+func (m *MetricsConfig) SetDefaults() error {
 	if m.Enabled == nil && !util.IsTest() {
 		m.Enabled = util.BoolPtr(true)
 	}
@@ -353,11 +379,15 @@ func (m *MetricsConfig) SetDefaults() {
 	if m.Port == nil {
 		m.Port = util.IntPtr(4001)
 	}
+
+	return nil
 }
 
-func (a *AdminConfig) SetDefaults() {
+func (a *AdminConfig) SetDefaults() error {
 	if a.Auth != nil {
-		a.Auth.SetDefaults()
+		if err := a.Auth.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for auth: %w", err)
+		}
 	}
 	if a.CORS == nil {
 		// It is safe to enable CORS of * for admin endpoint since requests are protected by Secret Tokens
@@ -366,18 +396,26 @@ func (a *AdminConfig) SetDefaults() {
 			AllowCredentials: util.BoolPtr(false),
 		}
 	}
-	a.CORS.SetDefaults()
-}
-
-func (d *DatabaseConfig) SetDefaults() {
-	if d.EvmJsonRpcCache != nil {
-		d.EvmJsonRpcCache.SetDefaults()
+	if err := a.CORS.SetDefaults(); err != nil {
+		return err
 	}
+
+	return nil
 }
 
-func (c *ConnectorConfig) SetDefaults() {
+func (d *DatabaseConfig) SetDefaults() error {
+	if d.EvmJsonRpcCache != nil {
+		if err := d.EvmJsonRpcCache.SetDefaults(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (c *ConnectorConfig) SetDefaults() error {
 	if c.Driver == "" {
-		return
+		return nil
 	}
 
 	if c.Memory != nil {
@@ -387,7 +425,9 @@ func (c *ConnectorConfig) SetDefaults() {
 		if c.Memory == nil {
 			c.Memory = &MemoryConnectorConfig{}
 		}
-		c.Memory.SetDefaults()
+		if err := c.Memory.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for memory connector: %w", err)
+		}
 	}
 	if c.Redis != nil {
 		c.Driver = DriverRedis
@@ -396,7 +436,9 @@ func (c *ConnectorConfig) SetDefaults() {
 		if c.Redis == nil {
 			c.Redis = &RedisConnectorConfig{}
 		}
-		c.Redis.SetDefaults()
+		if err := c.Redis.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for redis connector: %w", err)
+		}
 	}
 	if c.PostgreSQL != nil {
 		c.Driver = DriverPostgreSQL
@@ -405,7 +447,9 @@ func (c *ConnectorConfig) SetDefaults() {
 		if c.PostgreSQL == nil {
 			c.PostgreSQL = &PostgreSQLConnectorConfig{}
 		}
-		c.PostgreSQL.SetDefaults()
+		if err := c.PostgreSQL.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for postgres connector: %w", err)
+		}
 	}
 	if c.DynamoDB != nil {
 		c.Driver = DriverDynamoDB
@@ -414,17 +458,23 @@ func (c *ConnectorConfig) SetDefaults() {
 		if c.DynamoDB == nil {
 			c.DynamoDB = &DynamoDBConnectorConfig{}
 		}
-		c.DynamoDB.SetDefaults()
+		if err := c.DynamoDB.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for dynamo db connector: %w", err)
+		}
 	}
+
+	return nil
 }
 
-func (m *MemoryConnectorConfig) SetDefaults() {
+func (m *MemoryConnectorConfig) SetDefaults() error {
 	if m.MaxItems == 0 {
 		m.MaxItems = 100000
 	}
+
+	return nil
 }
 
-func (r *RedisConnectorConfig) SetDefaults() {
+func (r *RedisConnectorConfig) SetDefaults() error {
 	if r.Addr == "" {
 		r.Addr = "localhost:6379"
 	}
@@ -447,9 +497,11 @@ func (r *RedisConnectorConfig) SetDefaults() {
 	if r.SetTimeout == 0 {
 		r.SetTimeout = 2 * time.Second
 	}
+
+	return nil
 }
 
-func (p *PostgreSQLConnectorConfig) SetDefaults() {
+func (p *PostgreSQLConnectorConfig) SetDefaults() error {
 	if p.Table == "" {
 		p.Table = "erpc_json_rpc_cache"
 	}
@@ -468,9 +520,11 @@ func (p *PostgreSQLConnectorConfig) SetDefaults() {
 	if p.SetTimeout == 0 {
 		p.SetTimeout = 2 * time.Second
 	}
+
+	return nil
 }
 
-func (d *DynamoDBConnectorConfig) SetDefaults() {
+func (d *DynamoDBConnectorConfig) SetDefaults() error {
 	if d.Table == "" {
 		d.Table = "erpc_json_rpc_cache"
 	}
@@ -495,55 +549,162 @@ func (d *DynamoDBConnectorConfig) SetDefaults() {
 	if d.SetTimeout == 0 {
 		d.SetTimeout = 2 * time.Second
 	}
+
+	return nil
 }
 
-func (p *ProjectConfig) SetDefaults() {
-	if p.Providers != nil {
-		for _, provider := range p.Providers {
-			provider.SetDefaults(p.UpstreamDefaults)
+func (p *ProjectConfig) SetDefaults() error {
+	if p.Providers == nil {
+		p.Providers = []*ProviderConfig{}
+	}
+	for _, provider := range p.Providers {
+		if err := provider.SetDefaults(p.UpstreamDefaults); err != nil {
+			return fmt.Errorf("failed to set defaults for provider: %w", err)
 		}
 	}
 	if p.Upstreams != nil {
-		for _, upstream := range p.Upstreams {
+		for i := 0; i < len(p.Upstreams); i++ {
+			upstream := p.Upstreams[i]
 			if p.UpstreamDefaults != nil {
 				upstream.ApplyDefaults(p.UpstreamDefaults)
 			}
-			upstream.SetDefaults(p.UpstreamDefaults)
+			if err := upstream.SetDefaults(p.UpstreamDefaults); err != nil {
+				return fmt.Errorf("failed to set defaults for upstream: %w", err)
+			}
+			if provider, err := convertUpstreamToProvider(upstream); err != nil {
+				return fmt.Errorf("failed to convert upstream to provider: %w", err)
+			} else if provider != nil {
+				p.Providers = append(p.Providers, provider)
+				p.Upstreams = append(p.Upstreams[:i], p.Upstreams[i+1:]...)
+				i--
+			}
 		}
 	}
 	if p.Networks != nil {
 		for _, network := range p.Networks {
-			network.SetDefaults(p.Upstreams, p.NetworkDefaults)
+			if err := network.SetDefaults(p.Upstreams, p.NetworkDefaults); err != nil {
+				return fmt.Errorf("failed to set defaults for network: %w", err)
+			}
 		}
 	}
 	if p.NetworkDefaults != nil {
-		p.NetworkDefaults.SetDefaults()
+		if err := p.NetworkDefaults.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for network defaults: %w", err)
+		}
 	}
 	if p.UpstreamDefaults != nil {
-		p.UpstreamDefaults.SetDefaults(nil)
+		if err := p.UpstreamDefaults.SetDefaults(nil); err != nil {
+			return fmt.Errorf("failed to set defaults for upstream defaults: %w", err)
+		}
 	}
 	if p.Auth != nil {
-		p.Auth.SetDefaults()
+		if err := p.Auth.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for auth: %w", err)
+		}
 	}
 	if p.CORS != nil {
-		p.CORS.SetDefaults()
+		if err := p.CORS.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for cors: %w", err)
+		}
 	}
 	if p.HealthCheck == nil {
 		p.HealthCheck = &HealthCheckConfig{}
 	}
-	p.HealthCheck.SetDefaults()
+	if err := p.HealthCheck.SetDefaults(); err != nil {
+		return fmt.Errorf("failed to set defaults for health check: %w", err)
+	}
+
+	return nil
 }
 
-func (n *NetworkDefaults) SetDefaults() {
+func convertUpstreamToProvider(upstream *UpstreamConfig) (*ProviderConfig, error) {
+	if !strings.HasPrefix(upstream.Endpoint, "http://") && !strings.HasPrefix(upstream.Endpoint, "https://") {
+		return nil, nil
+	}
+
+	endpoint, err := url.Parse(upstream.Endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("invalid upstream endpoint while converting to provider: %w", err)
+	}
+
+	vendorName := strings.Replace(endpoint.Scheme, "evm+", "", 1)
+	settings, err := buildProviderSettings(vendorName, endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build provider settings: %w", err)
+	}
+
+	cfg := &ProviderConfig{
+		Id:                 util.RedactEndpoint(upstream.Endpoint),
+		Vendor:             vendorName,
+		Settings:           settings,
+		UpstreamIdTemplate: "<PROVIDER>-<NETWORK>",
+	}
+	if err := cfg.SetDefaults(upstream); err != nil {
+		return nil, fmt.Errorf("failed to set defaults for provider: %w", err)
+	}
+
+	return cfg, nil
+}
+
+func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings, error) {
+	switch vendorName {
+	case "alchemy":
+		return VendorSettings{
+			"apiKey": endpoint.Host,
+		}, nil
+	case "blastapi":
+		return VendorSettings{
+			"apiKey": endpoint.Host,
+		}, nil
+	case "drpc":
+		return VendorSettings{
+			"apiKey": endpoint.Host,
+		}, nil
+	case "envio":
+		return VendorSettings{
+			"rootDomain": endpoint.Host,
+		}, nil
+	case "etherspot":
+		return VendorSettings{
+			"apiKey": endpoint.Host,
+		}, nil
+	case "infura":
+		return VendorSettings{
+			"apiKey": endpoint.Host,
+		}, nil
+	case "llama":
+		return VendorSettings{
+			"apiKey": endpoint.Host,
+		}, nil
+	case "pimlico":
+		return VendorSettings{
+			"apiKey": endpoint.Host,
+		}, nil
+	case "thirdweb":
+		return VendorSettings{
+			"clientId": endpoint.Host,
+		}, nil
+	}
+
+	return nil, fmt.Errorf("unsupported vendor name in vendor.settings: %s", vendorName)
+}
+
+func (n *NetworkDefaults) SetDefaults() error {
 	if n.Failsafe != nil {
-		n.Failsafe.SetDefaults(nil)
+		if err := n.Failsafe.SetDefaults(nil); err != nil {
+			return fmt.Errorf("failed to set defaults for failsafe: %w", err)
+		}
 	}
 	if n.SelectionPolicy != nil {
-		n.SelectionPolicy.SetDefaults()
+		if err := n.SelectionPolicy.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for selection policy: %w", err)
+		}
 	}
+
+	return nil
 }
 
-func (p *ProviderConfig) SetDefaults(upsDefaults *UpstreamConfig) {
+func (p *ProviderConfig) SetDefaults(upsDefaults *UpstreamConfig) error {
 	if p.Id == "" {
 		p.Id = p.Vendor
 	}
@@ -552,12 +713,13 @@ func (p *ProviderConfig) SetDefaults(upsDefaults *UpstreamConfig) {
 	}
 	if p.Overrides != nil {
 		for _, override := range p.Overrides {
-			override.SetDefaults(upsDefaults)
+			if err := override.SetDefaults(upsDefaults); err != nil {
+				return fmt.Errorf("failed to set defaults for override: %w", err)
+			}
 		}
 	}
-	if p.Settings != nil {
-		p.Settings.SetDefaults()
-	}
+
+	return nil
 }
 
 func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) {
@@ -618,7 +780,7 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) {
 	}
 }
 
-func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) {
+func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 	if u.Id == "" {
 		u.Id = util.RedactEndpoint(u.Endpoint)
 	}
@@ -629,16 +791,22 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) {
 
 	if u.Failsafe != nil {
 		if defaults != nil && defaults.Failsafe != nil {
-			u.Failsafe.SetDefaults(defaults.Failsafe)
+			if err := u.Failsafe.SetDefaults(defaults.Failsafe); err != nil {
+				return fmt.Errorf("failed to set defaults for failsafe: %w", err)
+			}
 		} else {
-			u.Failsafe.SetDefaults(nil)
+			if err := u.Failsafe.SetDefaults(nil); err != nil {
+				return fmt.Errorf("failed to set defaults for failsafe: %w", err)
+			}
 		}
 	}
 	if u.RateLimitAutoTune == nil && u.RateLimitBudget != "" {
 		u.RateLimitAutoTune = &RateLimitAutoTuneConfig{}
 	}
 	if u.RateLimitAutoTune != nil {
-		u.RateLimitAutoTune.SetDefaults()
+		if err := u.RateLimitAutoTune.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for rate limit auto tune: %w", err)
+		}
 	}
 
 	if u.Evm == nil {
@@ -647,17 +815,23 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) {
 		}
 	}
 	if u.Evm != nil {
-		u.Evm.SetDefaults()
+		if err := u.Evm.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for evm: %w", err)
+		}
 	}
 
 	if u.JsonRpc == nil {
 		u.JsonRpc = &JsonRpcUpstreamConfig{}
 	}
-	u.JsonRpc.SetDefaults()
+	if err := u.JsonRpc.SetDefaults(); err != nil {
+		return fmt.Errorf("failed to set defaults for json rpc: %w", err)
+	}
 	if u.Routing == nil {
 		u.Routing = &RoutingConfig{}
 	}
-	u.Routing.SetDefaults()
+	if err := u.Routing.SetDefaults(); err != nil {
+		return fmt.Errorf("failed to set defaults for routing: %w", err)
+	}
 
 	// By default if any allowed methods are specified, all other methods are ignored (unless ignoreMethods is explicitly defined by user)
 	// Similar to how common network security policies work.
@@ -666,9 +840,11 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) {
 			u.IgnoreMethods = []string{"*"}
 		}
 	}
+
+	return nil
 }
 
-func (e *EvmUpstreamConfig) SetDefaults() {
+func (e *EvmUpstreamConfig) SetDefaults() error {
 	if e.StatePollerInterval == "" {
 		e.StatePollerInterval = "30s"
 	}
@@ -683,11 +859,15 @@ func (e *EvmUpstreamConfig) SetDefaults() {
 			e.MaxAvailableRecentBlocks = 128
 		}
 	}
+
+	return nil
 }
 
-func (j *JsonRpcUpstreamConfig) SetDefaults() {}
+func (j *JsonRpcUpstreamConfig) SetDefaults() error {
+	return nil
+}
 
-func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *NetworkDefaults) {
+func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *NetworkDefaults) error {
 	sysDefCfg := NewDefaultNetworkConfig(upstreams)
 	if defaults != nil {
 		if n.RateLimitBudget == "" {
@@ -698,7 +878,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 				n.Failsafe = &FailsafeConfig{}
 				*n.Failsafe = *defaults.Failsafe
 			} else {
-				n.Failsafe.SetDefaults(defaults.Failsafe)
+				if err := n.Failsafe.SetDefaults(defaults.Failsafe); err != nil {
+					return fmt.Errorf("failed to set defaults for failsafe: %w", err)
+				}
 			}
 		}
 		if n.SelectionPolicy == nil && defaults.SelectionPolicy != nil {
@@ -710,7 +892,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			*n.DirectiveDefaults = *defaults.DirectiveDefaults
 		}
 	} else if n.Failsafe != nil {
-		n.Failsafe.SetDefaults(sysDefCfg.Failsafe)
+		if err := n.Failsafe.SetDefaults(sysDefCfg.Failsafe); err != nil {
+			return fmt.Errorf("failed to set defaults for failsafe: %w", err)
+		}
 	} else {
 		n.Failsafe = sysDefCfg.Failsafe
 	}
@@ -725,7 +909,9 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 		n.Evm = &EvmNetworkConfig{}
 	}
 	if n.Evm != nil {
-		n.Evm.SetDefaults()
+		if err := n.Evm.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for evm: %w", err)
+		}
 	}
 
 	if len(upstreams) > 0 {
@@ -738,56 +924,82 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 		}
 	}
 	if n.SelectionPolicy != nil {
-		n.SelectionPolicy.SetDefaults()
+		if err := n.SelectionPolicy.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for selection policy: %w", err)
+		}
 	}
+
+	return nil
 }
 
 const DefaultEvmFinalityDepth = 1024
 
-func (e *EvmNetworkConfig) SetDefaults() {
+func (e *EvmNetworkConfig) SetDefaults() error {
 	if e.FallbackFinalityDepth == 0 {
 		e.FallbackFinalityDepth = DefaultEvmFinalityDepth
 	}
+
+	return nil
 }
 
-func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) {
+func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
 	if f.Timeout != nil {
 		if defaults != nil && defaults.Timeout != nil {
-			f.Timeout.SetDefaults(defaults.Timeout)
+			if err := f.Timeout.SetDefaults(defaults.Timeout); err != nil {
+				return fmt.Errorf("failed to set defaults for timeout: %w", err)
+			}
 		} else {
-			f.Timeout.SetDefaults(nil)
+			if err := f.Timeout.SetDefaults(nil); err != nil {
+				return fmt.Errorf("failed to set defaults for timeout: %w", err)
+			}
 		}
 	}
 	if f.Retry != nil {
 		if defaults != nil && defaults.Retry != nil {
-			f.Retry.SetDefaults(defaults.Retry)
+			if err := f.Retry.SetDefaults(defaults.Retry); err != nil {
+				return fmt.Errorf("failed to set defaults for retry: %w", err)
+			}
 		} else {
-			f.Retry.SetDefaults(nil)
+			if err := f.Retry.SetDefaults(nil); err != nil {
+				return fmt.Errorf("failed to set defaults for retry: %w", err)
+			}
 		}
 	}
 	if f.Hedge != nil {
 		if defaults != nil && defaults.Hedge != nil {
-			f.Hedge.SetDefaults(defaults.Hedge)
+			if err := f.Hedge.SetDefaults(defaults.Hedge); err != nil {
+				return fmt.Errorf("failed to set defaults for hedge: %w", err)
+			}
 		} else {
-			f.Hedge.SetDefaults(nil)
+			if err := f.Hedge.SetDefaults(nil); err != nil {
+				return fmt.Errorf("failed to set defaults for hedge: %w", err)
+			}
 		}
 	}
 	if f.CircuitBreaker != nil {
 		if defaults != nil && defaults.CircuitBreaker != nil {
-			f.CircuitBreaker.SetDefaults(defaults.CircuitBreaker)
+			if err := f.CircuitBreaker.SetDefaults(defaults.CircuitBreaker); err != nil {
+				return fmt.Errorf("failed to set defaults for circuit breaker: %w", err)
+			}
 		} else {
-			f.CircuitBreaker.SetDefaults(nil)
+			if err := f.CircuitBreaker.SetDefaults(nil); err != nil {
+				return fmt.Errorf("failed to set defaults for circuit breaker: %w", err)
+			}
 		}
 	}
+
+	return nil
 }
 
-func (t *TimeoutPolicyConfig) SetDefaults(defaults *TimeoutPolicyConfig) {
+func (t *TimeoutPolicyConfig) SetDefaults(defaults *TimeoutPolicyConfig) error {
 	if defaults != nil && t.Duration == "" {
 		t.Duration = defaults.Duration
 	}
+
+	return nil
 }
 
-func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) {
+func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 	if r.MaxAttempts == 0 {
 		if defaults != nil && defaults.MaxAttempts != 0 {
 			r.MaxAttempts = defaults.MaxAttempts
@@ -823,9 +1035,11 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) {
 			r.Jitter = "0ms"
 		}
 	}
+
+	return nil
 }
 
-func (h *HedgePolicyConfig) SetDefaults(defaults *HedgePolicyConfig) {
+func (h *HedgePolicyConfig) SetDefaults(defaults *HedgePolicyConfig) error {
 	if h.Delay == "" {
 		if defaults != nil && defaults.Delay != "" {
 			h.Delay = defaults.Delay
@@ -853,9 +1067,11 @@ func (h *HedgePolicyConfig) SetDefaults(defaults *HedgePolicyConfig) {
 			h.MaxDelay = "999s"
 		}
 	}
+
+	return nil
 }
 
-func (c *CircuitBreakerPolicyConfig) SetDefaults(defaults *CircuitBreakerPolicyConfig) {
+func (c *CircuitBreakerPolicyConfig) SetDefaults(defaults *CircuitBreakerPolicyConfig) error {
 	if c.HalfOpenAfter == "" {
 		if defaults != nil && defaults.HalfOpenAfter != "" {
 			c.HalfOpenAfter = defaults.HalfOpenAfter
@@ -863,9 +1079,11 @@ func (c *CircuitBreakerPolicyConfig) SetDefaults(defaults *CircuitBreakerPolicyC
 			c.HalfOpenAfter = "5m"
 		}
 	}
+
+	return nil
 }
 
-func (r *RateLimitAutoTuneConfig) SetDefaults() {
+func (r *RateLimitAutoTuneConfig) SetDefaults() error {
 	if r.Enabled == nil {
 		r.Enabled = util.BoolPtr(true)
 	}
@@ -884,14 +1102,20 @@ func (r *RateLimitAutoTuneConfig) SetDefaults() {
 	if r.MaxBudget == 0 {
 		r.MaxBudget = 100000
 	}
+
+	return nil
 }
 
-func (r *RoutingConfig) SetDefaults() {
+func (r *RoutingConfig) SetDefaults() error {
 	if r.ScoreMultipliers != nil {
 		for _, multiplier := range r.ScoreMultipliers {
-			multiplier.SetDefaults()
+			if err := multiplier.SetDefaults(); err != nil {
+				return fmt.Errorf("failed to set defaults for score multiplier: %w", err)
+			}
 		}
 	}
+
+	return nil
 }
 
 var DefaultScoreMultiplier = &ScoreMultiplierConfig{
@@ -908,7 +1132,7 @@ var DefaultScoreMultiplier = &ScoreMultiplierConfig{
 	Overall: 1.0,
 }
 
-func (s *ScoreMultiplierConfig) SetDefaults() {
+func (s *ScoreMultiplierConfig) SetDefaults() error {
 	if s.Network == "" {
 		s.Network = DefaultScoreMultiplier.Network
 	}
@@ -936,6 +1160,8 @@ func (s *ScoreMultiplierConfig) SetDefaults() {
 	if s.Overall == 0 {
 		s.Overall = DefaultScoreMultiplier.Overall
 	}
+
+	return nil
 }
 
 const DefaultPolicyFunction = `
@@ -971,7 +1197,7 @@ const DefaultPolicyFunction = `
 	}
 `
 
-func (c *SelectionPolicyConfig) SetDefaults() {
+func (c *SelectionPolicyConfig) SetDefaults() error {
 	if c.EvalInterval == 0 {
 		c.EvalInterval = 1 * time.Minute
 	}
@@ -991,22 +1217,30 @@ func (c *SelectionPolicyConfig) SetDefaults() {
 			c.ResampleCount = 10
 		}
 	}
+
+	return nil
 }
 
-func (a *AuthConfig) SetDefaults() {
+func (a *AuthConfig) SetDefaults() error {
 	if a.Strategies != nil {
 		for _, strategy := range a.Strategies {
-			strategy.SetDefaults()
+			if err := strategy.SetDefaults(); err != nil {
+				return fmt.Errorf("failed to set defaults for auth strategy: %w", err)
+			}
 		}
 	}
+
+	return nil
 }
 
-func (s *AuthStrategyConfig) SetDefaults() {
+func (s *AuthStrategyConfig) SetDefaults() error {
 	if s.Type == AuthTypeNetwork && s.Network == nil {
 		s.Network = &NetworkStrategyConfig{}
 	}
 	if s.Network != nil {
-		s.Network.SetDefaults()
+		if err := s.Network.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for network strategy: %w", err)
+		}
 	}
 
 	if s.Type == AuthTypeSecret && s.Secret == nil {
@@ -1014,7 +1248,9 @@ func (s *AuthStrategyConfig) SetDefaults() {
 	}
 	if s.Secret != nil {
 		s.Type = AuthTypeSecret
-		s.Secret.SetDefaults()
+		if err := s.Secret.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for secret strategy: %w", err)
+		}
 	}
 
 	if s.Type == AuthTypeJwt && s.Jwt == nil {
@@ -1022,7 +1258,9 @@ func (s *AuthStrategyConfig) SetDefaults() {
 	}
 	if s.Jwt != nil {
 		s.Type = AuthTypeJwt
-		s.Jwt.SetDefaults()
+		if err := s.Jwt.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for jwt strategy: %w", err)
+		}
 	}
 
 	if s.Type == AuthTypeSiwe && s.Siwe == nil {
@@ -1030,35 +1268,55 @@ func (s *AuthStrategyConfig) SetDefaults() {
 	}
 	if s.Siwe != nil {
 		s.Type = AuthTypeSiwe
-		s.Siwe.SetDefaults()
+		if err := s.Siwe.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for siwe strategy: %w", err)
+		}
 	}
+
+	return nil
 }
 
-func (s *SecretStrategyConfig) SetDefaults() {}
+func (s *SecretStrategyConfig) SetDefaults() error {
+	return nil
+}
 
-func (j *JwtStrategyConfig) SetDefaults() {}
+func (j *JwtStrategyConfig) SetDefaults() error {
+	return nil
+}
 
-func (s *SiweStrategyConfig) SetDefaults() {}
+func (s *SiweStrategyConfig) SetDefaults() error {
+	return nil
+}
 
-func (n *NetworkStrategyConfig) SetDefaults() {}
+func (n *NetworkStrategyConfig) SetDefaults() error {
+	return nil
+}
 
-func (r *RateLimiterConfig) SetDefaults() {
+func (r *RateLimiterConfig) SetDefaults() error {
 	if len(r.Budgets) > 0 {
 		for _, budget := range r.Budgets {
-			budget.SetDefaults()
+			if err := budget.SetDefaults(); err != nil {
+				return fmt.Errorf("failed to set defaults for rate limit budget: %w", err)
+			}
 		}
 	}
+
+	return nil
 }
 
-func (b *RateLimitBudgetConfig) SetDefaults() {
+func (b *RateLimitBudgetConfig) SetDefaults() error {
 	if len(b.Rules) > 0 {
 		for _, rule := range b.Rules {
-			rule.SetDefaults()
+			if err := rule.SetDefaults(); err != nil {
+				return fmt.Errorf("failed to set defaults for rate limit rule: %w", err)
+			}
 		}
 	}
+
+	return nil
 }
 
-func (r *RateLimitRuleConfig) SetDefaults() {
+func (r *RateLimitRuleConfig) SetDefaults() error {
 	if r.WaitTime == "" {
 		r.WaitTime = "1s"
 	}
@@ -1068,9 +1326,11 @@ func (r *RateLimitRuleConfig) SetDefaults() {
 	if r.Method == "" {
 		r.Method = "*"
 	}
+
+	return nil
 }
 
-func (c *CORSConfig) SetDefaults() {
+func (c *CORSConfig) SetDefaults() error {
 	if c.AllowedOrigins == nil {
 		c.AllowedOrigins = []string{"*"}
 	}
@@ -1090,12 +1350,16 @@ func (c *CORSConfig) SetDefaults() {
 	if c.MaxAge == 0 {
 		c.MaxAge = 3600
 	}
+
+	return nil
 }
 
-func (h *HealthCheckConfig) SetDefaults() {
+func (h *HealthCheckConfig) SetDefaults() error {
 	if h.ScoreMetricsWindowSize == "" {
 		h.ScoreMetricsWindowSize = "30m"
 	}
+
+	return nil
 }
 
 func NewDefaultNetworkConfig(upstreams []*UpstreamConfig) *NetworkConfig {

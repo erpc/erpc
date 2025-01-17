@@ -90,23 +90,6 @@ type PimlicoVendor struct {
 	common.Vendor
 }
 
-type PimlicoSettings struct {
-	ApiKey string `json:"apiKey"`
-}
-
-func (s *PimlicoSettings) IsObjectNull() bool {
-	return s == nil || s.ApiKey == ""
-}
-
-func (s *PimlicoSettings) Validate() error {
-	if s.ApiKey == "" {
-		return fmt.Errorf("apiKey is required")
-	}
-	return nil
-}
-
-func (s *PimlicoSettings) SetDefaults() {}
-
 func CreatePimlicoVendor() common.Vendor {
 	return &PimlicoVendor{}
 }
@@ -161,33 +144,30 @@ func (v *PimlicoVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 	return cid == chainId, nil
 }
 
-func (v *PimlicoVendor) OverrideConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
+func (v *PimlicoVendor) PrepareConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
 
-	if upstream.Endpoint == "" && settings != nil && !settings.IsObjectNull() {
-		if stg, ok := settings.(*PimlicoSettings); ok {
-			if stg.ApiKey != "" {
-				chainID := upstream.Evm.ChainId
-				if chainID == 0 {
-					return fmt.Errorf("pimlico vendor requires upstream.evm.chainId to be defined")
-				}
-				var pimlicoURL string
-				if stg.ApiKey == "public" {
-					pimlicoURL = fmt.Sprintf("https://public.pimlico.io/v2/%d/rpc", chainID)
-				} else {
-					pimlicoURL = fmt.Sprintf("https://api.pimlico.io/v2/%d/rpc?apikey=%s", chainID, stg.ApiKey)
-				}
-				parsedURL, err := url.Parse(pimlicoURL)
-				if err != nil {
-					return err
-				}
-
-				upstream.Endpoint = parsedURL.String()
+	if upstream.Endpoint == "" && settings != nil {
+		if apiKey, ok := settings["apiKey"].(string); ok && apiKey != "" {
+			chainID := upstream.Evm.ChainId
+			if chainID == 0 {
+				return fmt.Errorf("pimlico vendor requires upstream.evm.chainId to be defined")
 			}
+			var pimlicoURL string
+			if apiKey == "public" {
+				pimlicoURL = fmt.Sprintf("https://public.pimlico.io/v2/%d/rpc", chainID)
+			} else {
+				pimlicoURL = fmt.Sprintf("https://api.pimlico.io/v2/%d/rpc?apikey=%s", chainID, apiKey)
+			}
+			parsedURL, err := url.Parse(pimlicoURL)
+			if err != nil {
+				return err
+			}
+			upstream.Endpoint = parsedURL.String()
 		} else {
-			return fmt.Errorf("provided settings is not of type *PimlicoSettings it is of type %T", settings)
+			return fmt.Errorf("apiKey is required in pimlico settings (set to 'public' for public endpoint)")
 		}
 	}
 

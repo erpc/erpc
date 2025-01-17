@@ -48,24 +48,6 @@ type EtherspotVendor struct {
 	common.Vendor
 }
 
-type EtherspotSettings struct {
-	ApiKey string `yaml:"apiKey" json:"apiKey"`
-}
-
-func (s *EtherspotSettings) IsObjectNull() bool {
-	return s == nil || s.ApiKey == ""
-}
-
-func (s *EtherspotSettings) SetDefaults() {
-	if s.ApiKey == "" {
-		s.ApiKey = "public"
-	}
-}
-
-func (s *EtherspotSettings) Validate() error {
-	return nil
-}
-
 func CreateEtherspotVendor() common.Vendor {
 	return &EtherspotVendor{}
 }
@@ -87,7 +69,7 @@ func (v *EtherspotVendor) SupportsNetwork(ctx context.Context, logger *zerolog.L
 	return ok, nil
 }
 
-func (v *EtherspotVendor) OverrideConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
+func (v *EtherspotVendor) PrepareConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
@@ -106,18 +88,20 @@ func (v *EtherspotVendor) OverrideConfig(upstream *common.UpstreamConfig, settin
 		}
 	}
 
-	if upstream.Endpoint == "" && settings != nil && !settings.IsObjectNull() {
-		if settings, ok := settings.(*EtherspotSettings); ok {
+	if upstream.Endpoint == "" && settings != nil {
+		if apiKey, ok := settings["apiKey"].(string); ok && apiKey != "" {
 			chainID := upstream.Evm.ChainId
 			if chainID == 0 {
-				return fmt.Errorf("envio vendor requires upstream.evm.chainId to be defined")
+				return fmt.Errorf("etherspot vendor requires upstream.evm.chainId to be defined")
 			}
-			parsedURL, err := v.generateUrl(chainID, settings.ApiKey)
+			parsedURL, err := v.generateUrl(chainID, apiKey)
 			if err != nil {
 				return err
 			}
 
 			upstream.Endpoint = parsedURL.String()
+		} else {
+			return fmt.Errorf("apiKey is required in etherspot settings")
 		}
 	}
 

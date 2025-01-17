@@ -5,8 +5,9 @@ import (
 )
 
 type FakeUpstream struct {
-	id     string
-	config *UpstreamConfig
+	id      string
+	config  *UpstreamConfig
+	network Network
 }
 
 func NewFakeUpstream(id string) Upstream {
@@ -30,6 +31,14 @@ func (u *FakeUpstream) NetworkId() string {
 	return "evm:123"
 }
 
+func (u *FakeUpstream) SetNetwork(network Network) {
+	u.network = network
+}
+
+func (u *FakeUpstream) Network() Network {
+	return u.network
+}
+
 func (u *FakeUpstream) EvmSyncingState() EvmSyncingState {
 	return EvmSyncingStateUnknown
 }
@@ -40,4 +49,12 @@ func (u *FakeUpstream) Vendor() Vendor {
 
 func (u *FakeUpstream) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
 	return true, nil
+}
+
+func (u *FakeUpstream) EvmIsBlockFinalized(blockNumber int64) (bool, error) {
+	return false, nil
+}
+
+func (u *FakeUpstream) EvmStatePoller() EvmStatePoller {
+	return nil
 }

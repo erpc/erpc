@@ -53,6 +53,7 @@ func NewNetworksRegistry(
 }
 
 func NewNetwork(
+	appCtx context.Context,
 	logger *zerolog.Logger,
 	projectId string,
 	nwCfg *common.NetworkConfig,
@@ -89,6 +90,7 @@ func NewNetwork(
 
 		cfg: nwCfg,
 
+		appCtx:               appCtx,
 		upstreamsRegistry:    upstreamsRegistry,
 		metricsTracker:       metricsTracker,
 		rateLimitersRegistry: rateLimitersRegistry,
@@ -97,6 +99,7 @@ func NewNetwork(
 		inFlightRequests: &sync.Map{},
 		timeoutDuration:  timeoutDuration,
 		failsafeExecutor: failsafe.NewExecutor(policyArray...),
+		initializer:      util.NewInitializer(&lg, nil),
 	}
 
 	if nwCfg.Architecture == "" {
@@ -106,7 +109,7 @@ func NewNetwork(
 	return network, nil
 }
 
-func (nr *NetworksRegistry) Bootstrap(ctx context.Context) {
+func (nr *NetworksRegistry) Bootstrap(ctx context.Context) error {
 	// Auto register statically-defined networks
 	nl := nr.project.Config.Networks
 	tasks := []*util.BootstrapTask{}
@@ -115,8 +118,9 @@ func (nr *NetworksRegistry) Bootstrap(ctx context.Context) {
 	}
 	err := nr.initializer.ExecuteTasks(ctx, tasks...)
 	if err != nil {
-		nr.logger.Error().Err(err).Msg("failed to bootstrap networks on first attempt (will keep retrying in the background)")
+		return err
 	}
+	return nil
 }
 
 func (nr *NetworksRegistry) GetNetwork(networkId string) (*Network, error) {
@@ -183,6 +187,7 @@ func (nr *NetworksRegistry) prepareNetwork(nwCfg *common.NetworkConfig) (*Networ
 	}
 
 	network, err := NewNetwork(
+		nr.appCtx,
 		nr.logger,
 		nr.project.Config.Id,
 		nwCfg,
@@ -233,7 +238,9 @@ func (nr *NetworksRegistry) resolveNetworkConfig(networkId string) (*common.Netw
 			}
 			nwCfg.Evm = &common.EvmNetworkConfig{ChainId: int64(c)}
 		}
-		nwCfg.SetDefaults(prj.Config.Upstreams, prj.Config.NetworkDefaults)
+		if err := nwCfg.SetDefaults(prj.Config.Upstreams, prj.Config.NetworkDefaults); err != nil {
+			return nil, fmt.Errorf("failed to set defaults for network config: %w", err)
+		}
 		prj.ExposeNetworkConfig(nwCfg)
 	}
 	return nwCfg, nil

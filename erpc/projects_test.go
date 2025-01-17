@@ -81,6 +81,10 @@ func TestProject_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		err = prjReg.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		prj, err := prjReg.GetProject("prjA")
 		if err != nil {
@@ -170,6 +174,10 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 			rateLimitersRegistry,
 			thirdparty.NewVendorsRegistry(),
 		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = prjReg.Bootstrap(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -268,6 +276,10 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		err = prjReg.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		// Mock a delay that exceeds the 50ms network timeout
 		gock.New("http://rpc2.localhost").
@@ -345,6 +357,10 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 		)
 		if err != nil {
 			t.Fatalf("failed to create ProjectsRegistry: %v", err)
+		}
+		err = reg.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
 		}
 
 		// Begin mocking an upstream response for a brand new chain "evm:9999"

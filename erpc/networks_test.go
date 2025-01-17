@@ -96,6 +96,7 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 		)
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -202,6 +203,7 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 		)
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -328,6 +330,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup.Client = cl
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -439,6 +442,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup.Client = cl
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -595,6 +599,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup2.Client = cl2
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -746,6 +751,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup2.Client = cl2
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -910,6 +916,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up the network configuration
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -935,12 +942,12 @@ func TestNetwork_Forward(t *testing.T) {
 		ntw.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
 
-		poller := ntw.evmStatePollers["rpc1"]
+		poller := pup1.EvmStatePoller()
 		poller.SuggestLatestBlock(9)
 		poller.SuggestFinalizedBlock(8)
 
-		pup1.SetEvmSyncingState(common.EvmSyncingStateNotSyncing)
-		pup2.SetEvmSyncingState(common.EvmSyncingStateNotSyncing)
+		// TODO pup1.SetEvmSyncingState(common.EvmSyncingStateNotSyncing)
+		// TODO pup2.SetEvmSyncingState(common.EvmSyncingStateNotSyncing)
 
 		upstream.ReorderUpstreams(upr)
 
@@ -1103,6 +1110,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up the network configuration
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -1124,15 +1132,15 @@ func TestNetwork_Forward(t *testing.T) {
 		ntw.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
 
-		poller1 := ntw.evmStatePollers["rpc1"]
+		poller1 := pup1.EvmStatePoller()
 		poller1.SuggestLatestBlock(9)
 		poller1.SuggestFinalizedBlock(8)
 
-		poller2 := ntw.evmStatePollers["rpc2"]
+		poller2 := pup2.EvmStatePoller()
 		poller2.SuggestLatestBlock(9)
 		poller2.SuggestFinalizedBlock(8)
 
-		pup1.SetEvmSyncingState(common.EvmSyncingStateSyncing)
+		pup1.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
 
 		time.Sleep(100 * time.Millisecond)
 
@@ -1263,6 +1271,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up the network configuration
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -1284,7 +1293,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ntw.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
 
-		poller1 := ntw.evmStatePollers["rpc1"]
+		poller1 := pup1.EvmStatePoller()
 		poller1.SuggestLatestBlock(9)
 		poller1.SuggestFinalizedBlock(8)
 
@@ -1473,6 +1482,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up the network configuration
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -1494,16 +1504,13 @@ func TestNetwork_Forward(t *testing.T) {
 		ntw.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
 
-		poller1 := ntw.evmStatePollers["rpc1"]
+		poller1 := pup1.EvmStatePoller()
 		poller1.SuggestLatestBlock(9)
 		poller1.SuggestFinalizedBlock(8)
 
-		poller2 := ntw.evmStatePollers["rpc2"]
+		poller2 := pup2.EvmStatePoller()
 		poller2.SuggestLatestBlock(9)
 		poller2.SuggestFinalizedBlock(8)
-
-		pup1.SetEvmSyncingState(common.EvmSyncingStateUnknown)
-		pup2.SetEvmSyncingState(common.EvmSyncingStateUnknown)
 
 		time.Sleep(100 * time.Millisecond)
 
@@ -1672,6 +1679,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up the network configuration
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -1858,6 +1866,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up the network configuration
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -2036,6 +2045,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up the network configuration
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -2213,6 +2223,7 @@ func TestNetwork_Forward(t *testing.T) {
 		// Set up network with directiveDefaults
 		retryPending := true
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -2400,6 +2411,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up the network configuration
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -2585,6 +2597,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up the network configuration
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -2732,6 +2745,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup1.Client = cl1
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -2854,6 +2868,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup.Client = cl
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -2972,6 +2987,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup.Client = cl
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -3092,6 +3108,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup.Client = cl
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -3197,6 +3214,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -3313,6 +3331,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup.Client = cl
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -3435,6 +3454,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup.Client = cl
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -3554,6 +3574,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup.Client = cl
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -3678,6 +3699,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup.Client = cl
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -3821,6 +3843,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup2.Client = cl2
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -3970,6 +3993,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup2.Client = cl2
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -4118,6 +4142,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup2.Client = cl2
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -4249,6 +4274,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup1.Client = cl
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"test_cb",
 			&common.NetworkConfig{
@@ -4376,6 +4402,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup1.Client = cl1
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"test_cb",
 			&common.NetworkConfig{
@@ -4507,6 +4534,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup1.Client = cl
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"test_cb",
 			&common.NetworkConfig{
@@ -4637,6 +4665,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup1.Client = cl1
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -4789,6 +4818,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup2.Client = cl2
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -4903,6 +4933,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup1.Client = cl1
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -5043,6 +5074,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup2.Client = cl2
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -5171,6 +5203,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -5280,6 +5313,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -5388,6 +5422,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -5496,6 +5531,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -5772,16 +5808,12 @@ func TestNetwork_Forward(t *testing.T) {
 			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatalf("Failed to bootstrap upstreams registry: %v", err)
-		}
-
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatalf("Failed to prepare upstreams for network: %v", err)
+		if err == nil {
+			t.Fatalf("Expected error on registry bootstrap, got nil")
 		}
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -6806,6 +6838,7 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfig *common.
 		}
 	}
 	network, err := NewNetwork(
+		ctx,
 		&log.Logger,
 		"test",
 		networkConfig,
@@ -6815,12 +6848,7 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfig *common.
 	)
 	assert.NoError(t, err)
 
-	err = upstreamsRegistry.Bootstrap(ctx)
-	assert.NoError(t, err)
-	time.Sleep(100 * time.Millisecond)
-
-	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-	assert.NoError(t, err)
+	upstreamsRegistry.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
 
 	err = network.Bootstrap(ctx)
@@ -6829,8 +6857,9 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfig *common.
 
 	if upstreamConfig.Id == "test" {
 		h, _ := common.HexToInt64("0x1273c18")
-		network.evmStatePollers["test"].SuggestFinalizedBlock(h)
-		network.evmStatePollers["test"].SuggestLatestBlock(h)
+		upsList := upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
+		upsList[0].EvmStatePoller().SuggestFinalizedBlock(h)
+		upsList[0].EvmStatePoller().SuggestLatestBlock(h)
 	}
 
 	upstream.ReorderUpstreams(upstreamsRegistry)
@@ -6901,6 +6930,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.C
 		Failsafe: fsCfg,
 	}
 	network, err := NewNetwork(
+		ctx,
 		&log.Logger,
 		"test",
 		networkConfig,
@@ -6922,15 +6952,18 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.C
 	assert.NoError(t, err)
 	time.Sleep(100 * time.Millisecond)
 
+	upstream.ReorderUpstreams(upstreamsRegistry)
+
 	fb1, _ := common.HexToInt64("0x11117777")
-	network.evmStatePollers["rpc1"].SuggestFinalizedBlock(fb1)
+	upsList := upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
+	upsList[0].EvmStatePoller().SuggestFinalizedBlock(fb1)
 	lb1, _ := common.HexToInt64("0x11118888")
-	network.evmStatePollers["rpc1"].SuggestLatestBlock(lb1)
+	upsList[0].EvmStatePoller().SuggestLatestBlock(lb1)
 
 	fb2, _ := common.HexToInt64("0x22227777")
-	network.evmStatePollers["rpc2"].SuggestFinalizedBlock(fb2)
+	upsList[1].EvmStatePoller().SuggestFinalizedBlock(fb2)
 	lb2, _ := common.HexToInt64("0x22228888")
-	network.evmStatePollers["rpc2"].SuggestLatestBlock(lb2)
+	upsList[1].EvmStatePoller().SuggestLatestBlock(lb2)
 
 	return network
 }

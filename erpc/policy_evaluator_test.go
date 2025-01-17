@@ -1828,6 +1828,7 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 		pup3.Client = cl3
 	}
 	ntw, err := NewNetwork(
+		ctx,
 		&log.Logger,
 		"prjA",
 		&common.NetworkConfig{

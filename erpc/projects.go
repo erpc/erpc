@@ -2,8 +2,10 @@ package erpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
@@ -28,8 +30,34 @@ type ProjectHealthInfo struct {
 	Initialization *util.InitializerStatus `json:"initialization,omitempty"`
 }
 
-func (p *PreparedProject) Bootstrap(ctx context.Context) {
-	p.networksRegistry.Bootstrap(ctx)
+func (p *PreparedProject) Bootstrap(ctx context.Context) error {
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+	var errs []error
+	ermu := &sync.Mutex{}
+	go func() {
+		defer wg.Done()
+		err := p.upstreamsRegistry.Bootstrap(ctx)
+		if err != nil {
+			ermu.Lock()
+			errs = append(errs, err)
+			ermu.Unlock()
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		err := p.networksRegistry.Bootstrap(ctx)
+		if err != nil {
+			ermu.Lock()
+			errs = append(errs, err)
+			ermu.Unlock()
+		}
+	}()
+	wg.Wait()
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
 }
 
 func (p *PreparedProject) GetNetwork(networkId string) (*Network, error) {
