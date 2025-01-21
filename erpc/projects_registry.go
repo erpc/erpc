@@ -54,14 +54,14 @@ func NewProjectsRegistry(
 	return reg, nil
 }
 
-func (r *ProjectsRegistry) Bootstrap(ctx context.Context) error {
+func (r *ProjectsRegistry) Bootstrap(appCtx context.Context) error {
 	wg := sync.WaitGroup{}
 	wg.Add(len(r.preparedProjects))
 	var errs []error
 	for _, prj := range r.preparedProjects {
 		go func(prj *PreparedProject) {
 			defer wg.Done()
-			err := prj.Bootstrap(ctx)
+			err := prj.Bootstrap(appCtx)
 			if err != nil {
 				errs = append(errs, err)
 			}
@@ -135,6 +135,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		upstreamsRegistry:    upstreamsRegistry,
 		consumerAuthRegistry: consumerAuthRegistry,
 		rateLimitersRegistry: r.rateLimitersRegistry,
+		cfgMu:                sync.RWMutex{},
 	}
 	pp.networksRegistry = NewNetworksRegistry(
 		pp,

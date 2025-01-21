@@ -11,6 +11,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
@@ -20,7 +21,8 @@ func TestHttpJsonRpcClient_SingleRequests(t *testing.T) {
 	logger := log.Logger
 
 	t.Run("TimeoutError", func(t *testing.T) {
-		defer gock.Off()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		dur := 1 * time.Second
 		ctx, cancel := context.WithTimeout(context.Background(), dur)
@@ -46,7 +48,8 @@ func TestHttpJsonRpcClient_SingleRequests(t *testing.T) {
 	})
 
 	t.Run("ServerNotRespondingEmptyBody", func(t *testing.T) {
-		defer gock.Off()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -71,7 +74,8 @@ func TestHttpJsonRpcClient_SingleRequests(t *testing.T) {
 	})
 
 	t.Run("IncompleteResponse", func(t *testing.T) {
-		defer gock.Off()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -94,7 +98,8 @@ func TestHttpJsonRpcClient_SingleRequests(t *testing.T) {
 	})
 
 	t.Run("TraceExecutionTimeout", func(t *testing.T) {
-		defer gock.Off()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -123,7 +128,8 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	logger := log.Logger
 
 	t.Run("SimpleBatchRequest", func(t *testing.T) {
-		defer gock.Off()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -157,7 +163,8 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	})
 
 	t.Run("ConcurrentRequestsRaceCondition", func(t *testing.T) {
-		defer gock.Off()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -197,7 +204,8 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	})
 
 	t.Run("SeparateBatchRequestsWithSameIDs", func(t *testing.T) {
-		defer gock.Off()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -252,7 +260,8 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	})
 
 	t.Run("RequestEndpointTimeout", func(t *testing.T) {
-		defer gock.Off()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 		defer cancel()
@@ -277,9 +286,10 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	})
 
 	t.Run("RequestContextTimeout", func(t *testing.T) {
-		defer gock.Off()
+		util.ResetGock()
+		defer util.ResetGock()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
 		ups := common.NewFakeUpstream("rpc1")
@@ -308,6 +318,8 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 			go func(id int) {
 				defer wg.Done()
 				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_blockNumber","params":[]}`, id)))
+				ctx, cancel := context.WithTimeout(ctx, 1*time.Second)
+				defer cancel()
 				_, err := client.SendRequest(ctx, req)
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), "remote endpoint request timeout")
@@ -317,7 +329,8 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	})
 
 	t.Run("SingleErrorForBatchRequest", func(t *testing.T) {
-		defer gock.Off()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -357,7 +370,8 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	})
 
 	t.Run("HTMLResponseForBatchRequest", func(t *testing.T) {
-		defer gock.Off()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -393,7 +407,8 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	})
 
 	t.Run("SingleStringResponseForBatchRequest", func(t *testing.T) {
-		defer gock.Off()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -429,7 +444,8 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	})
 
 	t.Run("SingleObjectResponseForBatchRequest", func(t *testing.T) {
-		defer gock.Off()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -466,7 +482,8 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	})
 
 	t.Run("SingleRequestUnauthorized", func(t *testing.T) {
-		defer gock.Off()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -494,7 +511,8 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	})
 
 	t.Run("SingleRequestUnsupported", func(t *testing.T) {
-		defer gock.Off()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -522,7 +540,8 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	})
 
 	t.Run("SingleRequestCapacityExceeded", func(t *testing.T) {
-		defer gock.Off()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -562,7 +581,8 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	})
 
 	t.Run("PartialBatchResponse", func(t *testing.T) {
-		defer gock.Off()
+		util.ResetGock()
+		defer util.ResetGock()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -607,9 +627,10 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	})
 
 	t.Run("BatchRequestTimeout", func(t *testing.T) {
-		defer gock.Off()
+		util.ResetGock()
+		defer util.ResetGock()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
 		ups := common.NewFakeUpstream("rpc1")
@@ -636,6 +657,8 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 				defer wg.Done()
 				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_blockNumber","params":[]}`, id)))
 				start := time.Now()
+				ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
+				defer cancel()
 				_, err := client.SendRequest(ctx, req)
 				dur := time.Since(start)
 				assert.Greater(t, dur, 740*time.Millisecond)

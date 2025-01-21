@@ -109,14 +109,17 @@ func NewNetwork(
 	return network, nil
 }
 
-func (nr *NetworksRegistry) Bootstrap(ctx context.Context) error {
+func (nr *NetworksRegistry) Bootstrap(appCtx context.Context) error {
 	// Auto register statically-defined networks
+	nr.project.cfgMu.RLock()
+	defer nr.project.cfgMu.RUnlock()
+
 	nl := nr.project.Config.Networks
 	tasks := []*util.BootstrapTask{}
 	for _, nwCfg := range nl {
 		tasks = append(tasks, nr.buildNetworkBootstrapTask(nwCfg.NetworkId()))
 	}
-	err := nr.initializer.ExecuteTasks(ctx, tasks...)
+	err := nr.initializer.ExecuteTasks(appCtx, tasks...)
 	if err != nil {
 		return err
 	}

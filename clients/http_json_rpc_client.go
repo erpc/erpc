@@ -163,6 +163,8 @@ func (c *GenericHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.
 			err = common.NewErrEndpointRequestCanceled(err)
 		}
 		return nil, err
+	case <-c.appCtx.Done():
+		return nil, common.NewErrEndpointRequestCanceled(c.appCtx.Err())
 	}
 }
 

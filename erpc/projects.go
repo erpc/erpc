@@ -23,6 +23,7 @@ type PreparedProject struct {
 	consumerAuthRegistry *auth.AuthRegistry
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	upstreamsRegistry    *upstream.UpstreamsRegistry
+	cfgMu                sync.RWMutex
 }
 
 type ProjectHealthInfo struct {
@@ -30,14 +31,14 @@ type ProjectHealthInfo struct {
 	Initialization *util.InitializerStatus `json:"initialization,omitempty"`
 }
 
-func (p *PreparedProject) Bootstrap(ctx context.Context) error {
+func (p *PreparedProject) Bootstrap(appCtx context.Context) error {
 	wg := sync.WaitGroup{}
 	wg.Add(2)
 	var errs []error
 	ermu := &sync.Mutex{}
 	go func() {
 		defer wg.Done()
-		err := p.upstreamsRegistry.Bootstrap(ctx)
+		err := p.upstreamsRegistry.Bootstrap(appCtx)
 		if err != nil {
 			ermu.Lock()
 			errs = append(errs, err)
@@ -46,7 +47,7 @@ func (p *PreparedProject) Bootstrap(ctx context.Context) error {
 	}()
 	go func() {
 		defer wg.Done()
-		err := p.networksRegistry.Bootstrap(ctx)
+		err := p.networksRegistry.Bootstrap(appCtx)
 		if err != nil {
 			ermu.Lock()
 			errs = append(errs, err)
@@ -67,6 +68,9 @@ func (p *PreparedProject) GetNetwork(networkId string) (*Network, error) {
 // ExposeNetworkConfig is used to add lazy-loaded network configs to the project
 // so that other components can use them, also is returned via erpc_project admin API.
 func (p *PreparedProject) ExposeNetworkConfig(nwCfg *common.NetworkConfig) {
+	p.cfgMu.Lock()
+	defer p.cfgMu.Unlock()
+
 	if p.Config.Networks == nil {
 		p.Config.Networks = []*common.NetworkConfig{}
 	}

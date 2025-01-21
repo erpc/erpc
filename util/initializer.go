@@ -247,6 +247,7 @@ func (i *Initializer) attemptRemainingTasks(ctx context.Context) {
 		state := TaskState(t.state.Load())
 		if state == TaskPending || state == TaskFailed || state == TaskTimedOut {
 			// Attempt to swap from [Pending|Failed|Timeout] -> Running
+			// #nosec G115 - We know TaskState is small enough that int->int32 won't overflow
 			if t.state.CompareAndSwap(int32(state), int32(TaskRunning)) {
 				t.beginAttempt()
 				t.lastErr.Store(wrappedError{err: nil})

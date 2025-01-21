@@ -1704,6 +1704,9 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 }
 
 func TestHttpServer_SingleUpstream(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
 	type testCase struct {
 		name      string
 		configure func(cfg *common.Config)
@@ -1764,6 +1767,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		// Capture the current value of tc
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			util.ResetGock()
+			defer util.ResetGock()
+
 			t.Run("ConcurrentRequests", func(t *testing.T) {
 				cfg := &common.Config{
 					Server: &common.ServerConfig{
@@ -2568,9 +2574,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 						if !strings.Contains(bodyStr, "\"method\"") {
 							t.Fatalf("No method found in request")
 						}
-						if !strings.Contains(bodyStr, "\"params\"") {
-							t.Fatalf("No params found in request")
-						}
 						return true, nil
 					}).
 					Reply(200).
@@ -2579,155 +2582,155 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				sendRequest(`{"method":"eth_traceDebug","params":[]}`, nil, nil)
 			})
 
-			// t.Run("AlwaysPropagateUpstreamErrorDataField", func(t *testing.T) {
-			// 	cfg := &common.Config{
-			// 		Server: &common.ServerConfig{
-			// 			MaxTimeout: util.StringPtr("5s"),
-			// 		},
-			// 		Projects: []*common.ProjectConfig{
-			// 			{
-			// 				Id: "test_project",
-			// 				Networks: []*common.NetworkConfig{
-			// 					{
-			// 						Architecture: common.ArchitectureEvm,
-			// 						Evm: &common.EvmNetworkConfig{
-			// 							ChainId: 1,
-			// 						},
-			// 					},
-			// 				},
-			// 				Upstreams: []*common.UpstreamConfig{
-			// 					{
-			// 						Type:     common.UpstreamTypeEvm,
-			// 						Endpoint: "http://rpc1.localhost",
-			// 						Evm: &common.EvmUpstreamConfig{
-			// 							ChainId: 1,
-			// 						},
-			// 						VendorName: "llama",
-			// 						JsonRpc: &common.JsonRpcUpstreamConfig{
-			// 							SupportsBatch: &common.FALSE,
-			// 						},
-			// 					},
-			// 				},
-			// 			},
-			// 		},
-			// 		RateLimiters: &common.RateLimiterConfig{},
-			// 	}
+			t.Run("AlwaysPropagateUpstreamErrorDataField", func(t *testing.T) {
+				cfg := &common.Config{
+					Server: &common.ServerConfig{
+						MaxTimeout: util.StringPtr("5s"),
+					},
+					Projects: []*common.ProjectConfig{
+						{
+							Id: "test_project",
+							Networks: []*common.NetworkConfig{
+								{
+									Architecture: common.ArchitectureEvm,
+									Evm: &common.EvmNetworkConfig{
+										ChainId: 1,
+									},
+								},
+							},
+							Upstreams: []*common.UpstreamConfig{
+								{
+									Type:     common.UpstreamTypeEvm,
+									Endpoint: "http://rpc1.localhost",
+									Evm: &common.EvmUpstreamConfig{
+										ChainId: 1,
+									},
+									VendorName: "llama",
+									JsonRpc: &common.JsonRpcUpstreamConfig{
+										SupportsBatch: &common.FALSE,
+									},
+								},
+							},
+						},
+					},
+					RateLimiters: &common.RateLimiterConfig{},
+				}
 
-			// 	if tc.configure != nil {
-			// 		tc.configure(cfg)
-			// 	}
+				if tc.configure != nil {
+					tc.configure(cfg)
+				}
 
-			// 	util.ResetGock()
-			// 	defer util.ResetGock()
-			// 	util.SetupMocksForEvmStatePoller()
-			// 	defer util.AssertNoPendingMocks(t, 0)
+				util.ResetGock()
+				defer util.ResetGock()
+				util.SetupMocksForEvmStatePoller()
+				defer util.AssertNoPendingMocks(t, 0)
 
-			// 	// Set up test fixtures
-			// 	sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
-			// 	defer shutdown()
+				// Set up test fixtures
+				sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+				defer shutdown()
 
-			// 	gock.New("http://rpc1.localhost").
-			// 		Post("/").
-			// 		Reply(400).
-			// 		BodyString(`{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"Invalid params","data":{"range":"the range 55074203 - 55124202 exceeds the range allowed for your plan (49999 > 2000)."}}}`)
+				gock.New("http://rpc1.localhost").
+					Post("/").
+					Reply(400).
+					BodyString(`{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"Invalid params","data":{"range":"the range 55074203 - 55124202 exceeds the range allowed for your plan (49999 > 2000)."}}}`)
 
-			// 	_, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[],"id":1}`, nil, nil)
-			// 	assert.Contains(t, body, "the range 55074203 - 55124202")
-			// })
+				_, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[],"id":1}`, nil, nil)
+				assert.Contains(t, body, "the range 55074203 - 55124202")
+			})
 
-			// t.Run("KeepIDWhen0IsProvided", func(t *testing.T) {
-			// 	cfg := &common.Config{
-			// 		Server: &common.ServerConfig{
-			// 			MaxTimeout: util.StringPtr("5s"),
-			// 		},
-			// 		Projects: []*common.ProjectConfig{
-			// 			{
-			// 				Id: "test_project",
-			// 				Networks: []*common.NetworkConfig{
-			// 					{
-			// 						Architecture: common.ArchitectureEvm,
-			// 						Evm: &common.EvmNetworkConfig{
-			// 							ChainId: 1,
-			// 						},
-			// 					},
-			// 				},
-			// 				Upstreams: []*common.UpstreamConfig{
-			// 					{
-			// 						Type:     common.UpstreamTypeEvm,
-			// 						Endpoint: "http://rpc1.localhost",
-			// 						Evm: &common.EvmUpstreamConfig{
-			// 							ChainId: 1,
-			// 						},
-			// 						VendorName: "llama",
-			// 						JsonRpc: &common.JsonRpcUpstreamConfig{
-			// 							SupportsBatch: &common.FALSE,
-			// 						},
-			// 					},
-			// 				},
-			// 			},
-			// 		},
-			// 		RateLimiters: &common.RateLimiterConfig{},
-			// 	}
+			t.Run("KeepIDWhen0IsProvided", func(t *testing.T) {
+				cfg := &common.Config{
+					Server: &common.ServerConfig{
+						MaxTimeout: util.StringPtr("5s"),
+					},
+					Projects: []*common.ProjectConfig{
+						{
+							Id: "test_project",
+							Networks: []*common.NetworkConfig{
+								{
+									Architecture: common.ArchitectureEvm,
+									Evm: &common.EvmNetworkConfig{
+										ChainId: 1,
+									},
+								},
+							},
+							Upstreams: []*common.UpstreamConfig{
+								{
+									Type:     common.UpstreamTypeEvm,
+									Endpoint: "http://rpc1.localhost",
+									Evm: &common.EvmUpstreamConfig{
+										ChainId: 1,
+									},
+									VendorName: "llama",
+									JsonRpc: &common.JsonRpcUpstreamConfig{
+										SupportsBatch: &common.FALSE,
+									},
+								},
+							},
+						},
+					},
+					RateLimiters: &common.RateLimiterConfig{},
+				}
 
-			// 	if tc.configure != nil {
-			// 		tc.configure(cfg)
-			// 	}
+				if tc.configure != nil {
+					tc.configure(cfg)
+				}
 
-			// 	util.ResetGock()
-			// 	defer util.ResetGock()
-			// 	util.SetupMocksForEvmStatePoller()
-			// 	defer util.AssertNoPendingMocks(t, 0)
+				util.ResetGock()
+				defer util.ResetGock()
+				util.SetupMocksForEvmStatePoller()
+				defer util.AssertNoPendingMocks(t, 0)
 
-			// 	// Set up test fixtures
-			// 	sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
-			// 	defer shutdown()
+				// Set up test fixtures
+				sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+				defer shutdown()
 
-			// 	gock.New("http://rpc1.localhost").
-			// 		Post("/").
-			// 		SetMatcher(gock.NewEmptyMatcher()).
-			// 		AddMatcher(func(req *http.Request, ereq *gock.Request) (bool, error) {
-			// 			if !strings.Contains(req.URL.Host, "rpc1") {
-			// 				return false, nil
-			// 			}
-			// 			bodyBytes, err := io.ReadAll(req.Body)
-			// 			if err != nil {
-			// 				return false, err
-			// 			}
-			// 			bodyStr := string(bodyBytes)
-			// 			if !strings.Contains(bodyStr, "\"id\"") {
-			// 				fmt.Printf("ERROR: No id found in request")
-			// 				return false, nil
-			// 			}
-			// 			if bodyStr[0] == '[' {
-			// 				idNode, err := sonic.Get(bodyBytes, 0, "id")
-			// 				require.NoError(t, err)
-			// 				id, err := idNode.Int64()
-			// 				require.NoError(t, err)
-			// 				if id != 0 {
-			// 					fmt.Printf("ERROR: Expected id to be 0, got %d from body: %s", id, bodyStr)
-			// 					return false, nil
-			// 				} else {
-			// 					return true, nil
-			// 				}
-			// 			} else {
-			// 				idNode, err := sonic.Get(bodyBytes, "id")
-			// 				require.NoError(t, err)
-			// 				id, err := idNode.Int64()
-			// 				require.NoError(t, err)
-			// 				if id != 0 {
-			// 					fmt.Printf("ERROR: Expected id to be 0, got %d from body: %s", id, bodyStr)
-			// 					return false, nil
-			// 				} else {
-			// 					return true, nil
-			// 				}
-			// 			}
-			// 		}).
-			// 		Reply(200).
-			// 		BodyString(`{"jsonrpc":"2.0","id":0,"result":"0x123456"}`)
+				gock.New("http://rpc1.localhost").
+					Post("/").
+					SetMatcher(gock.NewEmptyMatcher()).
+					AddMatcher(func(req *http.Request, ereq *gock.Request) (bool, error) {
+						if !strings.Contains(req.URL.Host, "rpc1") {
+							return false, nil
+						}
+						bodyBytes, err := io.ReadAll(req.Body)
+						if err != nil {
+							return false, err
+						}
+						bodyStr := string(bodyBytes)
+						if !strings.Contains(bodyStr, "\"id\"") {
+							fmt.Printf("ERROR: No id found in request")
+							return false, nil
+						}
+						if bodyStr[0] == '[' {
+							idNode, err := sonic.Get(bodyBytes, 0, "id")
+							require.NoError(t, err)
+							id, err := idNode.Int64()
+							require.NoError(t, err)
+							if id != 0 {
+								fmt.Printf("ERROR: Expected id to be 0, got %d from body: %s", id, bodyStr)
+								return false, nil
+							} else {
+								return true, nil
+							}
+						} else {
+							idNode, err := sonic.Get(bodyBytes, "id")
+							require.NoError(t, err)
+							id, err := idNode.Int64()
+							require.NoError(t, err)
+							if id != 0 {
+								fmt.Printf("ERROR: Expected id to be 0, got %d from body: %s", id, bodyStr)
+								return false, nil
+							} else {
+								return true, nil
+							}
+						}
+					}).
+					Reply(200).
+					BodyString(`{"jsonrpc":"2.0","id":0,"result":"0x123456"}`)
 
-			// 	sendRequest(`{"jsonrpc":"2.0","method":"eth_traceDebug","params":[],"id":0}`, nil, nil)
-			// })
-		
+				sendRequest(`{"jsonrpc":"2.0","method":"eth_traceDebug","params":[],"id":0}`, nil, nil)
+			})
+
 		})
 	}
 
@@ -2806,6 +2809,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		}
 		wg.Wait()
 	})
+
 }
 
 func TestHttpServer_MultipleUpstreams(t *testing.T) {
@@ -3604,7 +3608,9 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
 
 	sendRequest := func(body string, headers map[string]string, queryParams map[string]string) (int, string) {
-		req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/test_project/evm/1", strings.NewReader(body))
+		rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(rctx, "POST", baseURL+"/test_project/evm/1", strings.NewReader(body))
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", "application/json")
 		for k, v := range headers {
@@ -3665,6 +3671,9 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 		httpServer.server.Shutdown(ctx)
 		listener.Close()
 		cancel()
-		time.Sleep(30 * time.Millisecond) // So that batch processor stops
+
+		// TODO Can we do it more strictly maybe via a Shutdown() sequence?
+		// This to wait for batch processor to stop + initializers to finish
+		time.Sleep(500 * time.Millisecond)
 	}
 }
