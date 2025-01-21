@@ -76,7 +76,7 @@ func NewUpstreamsRegistry(
 		upstreamScores:       make(map[string]map[string]map[string]float64),
 		upstreamsMu:          &sync.RWMutex{},
 		networkMu:            &sync.Map{},
-		initializer:          util.NewInitializer(logger, nil),
+		initializer:          util.NewInitializer(appCtx, logger, nil),
 	}
 }
 

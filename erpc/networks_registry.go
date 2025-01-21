@@ -46,7 +46,7 @@ func NewNetworksRegistry(
 		evmJsonRpcCache:      evmJsonRpcCache,
 		rateLimitersRegistry: rateLimitersRegistry,
 		preparedNetworks:     sync.Map{},
-		initializer:          util.NewInitializer(logger, nil),
+		initializer:          util.NewInitializer(appCtx, logger, nil),
 		logger:               logger,
 	}
 	return r
@@ -99,7 +99,7 @@ func NewNetwork(
 		inFlightRequests: &sync.Map{},
 		timeoutDuration:  timeoutDuration,
 		failsafeExecutor: failsafe.NewExecutor(policyArray...),
-		initializer:      util.NewInitializer(&lg, nil),
+		initializer:      util.NewInitializer(appCtx, &lg, nil),
 	}
 
 	if nwCfg.Architecture == "" {

@@ -35,7 +35,7 @@ type RedisConnector struct {
 }
 
 func NewRedisConnector(
-	ctx context.Context,
+	appCtx context.Context,
 	logger *zerolog.Logger,
 	id string,
 	cfg *common.RedisConnectorConfig,
@@ -54,11 +54,11 @@ func NewRedisConnector(
 	}
 
 	// Create an initializer to manage (re)connecting to Redis.
-	connector.initializer = util.NewInitializer(&lg, nil) // pass config if needed
+	connector.initializer = util.NewInitializer(appCtx, &lg, nil) // pass config if needed
 
 	// Define the redis connection task and let the Initializer handle retries.
 	connectTask := util.NewBootstrapTask(fmt.Sprintf("redis-connect/%s", id), connector.connectTask)
-	if err := connector.initializer.ExecuteTasks(ctx, connectTask); err != nil {
+	if err := connector.initializer.ExecuteTasks(appCtx, connectTask); err != nil {
 		lg.Error().Err(err).Msg("failed to initialize redis connection on first attempt (will keep retrying in the background)")
 		return connector, nil
 	}

@@ -618,7 +618,7 @@ func (p *ProjectConfig) SetDefaults() error {
 }
 
 func convertUpstreamToProvider(upstream *UpstreamConfig) (*ProviderConfig, error) {
-	if !strings.HasPrefix(upstream.Endpoint, "http://") && !strings.HasPrefix(upstream.Endpoint, "https://") {
+	if strings.HasPrefix(upstream.Endpoint, "http://") || strings.HasPrefix(upstream.Endpoint, "https://") {
 		return nil, nil
 	}
 
