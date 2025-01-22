@@ -392,8 +392,9 @@ func (a *AdminConfig) SetDefaults() error {
 	if a.CORS == nil {
 		// It is safe to enable CORS of * for admin endpoint since requests are protected by Secret Tokens
 		a.CORS = &CORSConfig{
-			AllowedOrigins:   []string{"*"},
-			AllowCredentials: util.BoolPtr(false),
+			AllowedOrigins:      []string{"*"},
+			BlockForeignOrigins: util.BoolPtr(true),
+			AllowCredentials:    util.BoolPtr(false),
 		}
 	}
 	if err := a.CORS.SetDefaults(); err != nil {
@@ -1393,6 +1394,9 @@ func (r *RateLimitRuleConfig) SetDefaults() error {
 func (c *CORSConfig) SetDefaults() error {
 	if c.AllowedOrigins == nil {
 		c.AllowedOrigins = []string{"*"}
+	}
+	if c.BlockForeignOrigins == nil {
+		c.BlockForeignOrigins = util.BoolPtr(true)
 	}
 	if c.AllowedMethods == nil {
 		c.AllowedMethods = []string{"GET", "POST", "OPTIONS"}

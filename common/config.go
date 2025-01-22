@@ -289,12 +289,13 @@ type NetworkDefaults struct {
 }
 
 type CORSConfig struct {
-	AllowedOrigins   []string `yaml:"allowedOrigins" json:"allowedOrigins"`
-	AllowedMethods   []string `yaml:"allowedMethods" json:"allowedMethods"`
-	AllowedHeaders   []string `yaml:"allowedHeaders" json:"allowedHeaders"`
-	ExposedHeaders   []string `yaml:"exposedHeaders" json:"exposedHeaders"`
-	AllowCredentials *bool    `yaml:"allowCredentials" json:"allowCredentials"`
-	MaxAge           int      `yaml:"maxAge" json:"maxAge"`
+	AllowedOrigins      []string `yaml:"allowedOrigins" json:"allowedOrigins"`
+	BlockForeignOrigins *bool    `yaml:"blockForeignOrigins" json:"blockForeignOrigins"`
+	AllowedMethods      []string `yaml:"allowedMethods" json:"allowedMethods"`
+	AllowedHeaders      []string `yaml:"allowedHeaders" json:"allowedHeaders"`
+	ExposedHeaders      []string `yaml:"exposedHeaders" json:"exposedHeaders"`
+	AllowCredentials    *bool    `yaml:"allowCredentials" json:"allowCredentials"`
+	MaxAge              int      `yaml:"maxAge" json:"maxAge"`
 }
 
 type VendorSettings map[string]interface{}

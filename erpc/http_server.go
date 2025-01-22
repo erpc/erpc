@@ -602,16 +602,35 @@ func (s *HttpServer) handleCORS(w http.ResponseWriter, r *http.Request, corsConf
 		}
 	}
 
-	if !allowed {
-		s.logger.Debug().Str("origin", origin).Msg("CORS request from disallowed origin")
+	// Optional: If blockForeignOrigins is true, we enforce strict blocking
+	if corsConfig.BlockForeignOrigins != nil && *corsConfig.BlockForeignOrigins && !allowed {
+		s.logger.Debug().Str("origin", origin).Msg("CORS request from disallowed origin, blocking (blockForeignOrigins=true)")
 		health.MetricCORSDisallowedOriginTotal.WithLabelValues(r.URL.Path, origin).Inc()
 
 		if r.Method == http.MethodOptions {
+			// For preflight, return 204 but effectively the request won't proceed
 			w.WriteHeader(http.StatusNoContent)
 		} else {
 			http.Error(w, "CORS request from disallowed origin", http.StatusForbidden)
 		}
 		return false
+	}
+
+	// If not allowed AND not strictly blocking, just do NOT set CORS headers
+	if !allowed {
+		s.logger.Debug().Str("origin", origin).Msg("CORS request from disallowed origin, continuing without CORS headers")
+		health.MetricCORSDisallowedOriginTotal.WithLabelValues(r.URL.Path, origin).Inc()
+
+		// If it's a preflight OPTIONS request, we can send a basic 204 with no CORS.
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return false // we've responded
+		}
+
+		// Otherwise, continue the request without any Access-Control-Allow-* headers.
+		// The browser will block it if it *requires* CORS, but non-browser clients or
+		// extensions can still proceed.
+		return true
 	}
 
 	w.Header().Set("Access-Control-Allow-Origin", origin)
@@ -627,12 +646,14 @@ func (s *HttpServer) handleCORS(w http.ResponseWriter, r *http.Request, corsConf
 		w.Header().Set("Access-Control-Max-Age", fmt.Sprintf("%d", corsConfig.MaxAge))
 	}
 
+	// If it's a preflight request, return a 204 and don't continue to main handler.
 	if r.Method == http.MethodOptions {
 		health.MetricCORSPreflightRequestsTotal.WithLabelValues(r.URL.Path, origin).Inc()
 		w.WriteHeader(http.StatusNoContent)
 		return false
 	}
 
+	// Otherwise, allow the request to proceed
 	return true
 }
 
