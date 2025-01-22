@@ -602,9 +602,9 @@ func (s *HttpServer) handleCORS(w http.ResponseWriter, r *http.Request, corsConf
 		}
 	}
 
-	// Optional: If blockForeignOrigins is true, we enforce strict blocking
-	if corsConfig.BlockForeignOrigins != nil && *corsConfig.BlockForeignOrigins && !allowed {
-		s.logger.Debug().Str("origin", origin).Msg("CORS request from disallowed origin, blocking (blockForeignOrigins=true)")
+	// Optional: If noHeadersForUnknownOrigins is true, we enforce strict blocking
+	if corsConfig.NoHeadersForUnknownOrigins != nil && *corsConfig.NoHeadersForUnknownOrigins && !allowed {
+		s.logger.Debug().Str("origin", origin).Msg("CORS request from disallowed origin, blocking (noHeadersForUnknownOrigins=true)")
 		health.MetricCORSDisallowedOriginTotal.WithLabelValues(r.URL.Path, origin).Inc()
 
 		if r.Method == http.MethodOptions {

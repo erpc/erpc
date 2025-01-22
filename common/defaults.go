@@ -1394,8 +1394,8 @@ func (c *CORSConfig) SetDefaults() error {
 	if c.AllowedOrigins == nil {
 		c.AllowedOrigins = []string{}
 	}
-	if c.BlockForeignOrigins == nil {
-		c.BlockForeignOrigins = util.BoolPtr(false)
+	if c.NoHeadersForUnknownOrigins == nil {
+		c.NoHeadersForUnknownOrigins = util.BoolPtr(false)
 	}
 	if c.AllowedMethods == nil {
 		c.AllowedMethods = []string{"GET", "POST", "OPTIONS"}
