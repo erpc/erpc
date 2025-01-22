@@ -3939,7 +3939,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 							Settings: map[string]interface{}{
 								"apiKey": "test-key",
 							},
-							UpstreamOverrides: map[string]*common.UpstreamConfig{
+							Overrides: map[string]*common.UpstreamConfig{
 								"evm:1": {
 									Failsafe: &common.FailsafeConfig{
 										Retry: &common.RetryPolicyConfig{

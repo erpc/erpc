@@ -62,7 +62,7 @@ func (p *Provider) buildBaseUpstreamConfig(networkId string) (*common.UpstreamCo
 	var baseCfg *common.UpstreamConfig
 
 	// Look for a matching override in the ProviderConfig.Overrides using wildcard match.
-	for pattern, override := range p.config.UpstreamOverrides {
+	for pattern, override := range p.config.Overrides {
 		matches, err := common.WildcardMatch(pattern, networkId)
 		if err != nil {
 			// If there's an error in matching logic, log or handle as you see fit; skip in this example.

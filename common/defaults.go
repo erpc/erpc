@@ -711,8 +711,8 @@ func (p *ProviderConfig) SetDefaults(upsDefaults *UpstreamConfig) error {
 	if p.UpstreamIdTemplate == "" {
 		p.UpstreamIdTemplate = "<PROVIDER>-<NETWORK>"
 	}
-	if p.UpstreamOverrides != nil {
-		for _, override := range p.UpstreamOverrides {
+	if p.Overrides != nil {
+		for _, override := range p.Overrides {
 			if err := override.SetDefaults(upsDefaults); err != nil {
 				return fmt.Errorf("failed to set defaults for override: %w", err)
 			}
