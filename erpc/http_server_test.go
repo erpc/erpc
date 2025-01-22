@@ -483,7 +483,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 			})
 
 		// Set up test fixtures
-		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
@@ -561,7 +561,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 			})
 
 		// Set up test fixtures
-		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
@@ -638,7 +638,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 			})
 
 		// Set up test fixtures
-		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
@@ -711,7 +711,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 			})
 
 		// Set up test fixtures
-		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
@@ -788,7 +788,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 			})
 
 		// Set up test fixtures
-		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
@@ -847,7 +847,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		defer util.AssertNoPendingMocks(t, 0)
 
 		// Set up test fixtures
-		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
@@ -921,7 +921,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 			})
 
 		// Set up test fixtures
-		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
@@ -998,7 +998,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 			})
 
 		// Set up test fixtures
-		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
@@ -1082,7 +1082,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			})
 
 		// Set up test fixtures
-		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
@@ -1173,7 +1173,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			}})
 
 		// Set up test fixtures
-		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":111}`, nil, nil)
@@ -1281,7 +1281,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			})
 
 		// Set up test fixtures
-		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
@@ -1394,7 +1394,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			})
 
 		// Set up test fixtures
-		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
@@ -1507,7 +1507,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			})
 
 		// Set up test fixtures
-		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
@@ -1592,7 +1592,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			})
 
 		// Launch the test server with above config
-		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
 		// We'll ask for a single "eth_getBalance" call but pass distinct markers SLOW/FAST to
@@ -1685,7 +1685,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 			})
 
 		// Launch the test server with above config
-		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
 		// We'll ask for a single "eth_getBalance" call but pass distinct markers SLOW/FAST to
@@ -1902,7 +1902,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				}
 
 				// Set up test fixtures
-				sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+				sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 				defer shutdown()
 
 				for i := 0; i < concurrentRequests; i++ {
@@ -1970,7 +1970,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				defer util.AssertNoPendingMocks(t, 0)
 
 				// Set up test fixtures
-				sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+				sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 				defer shutdown()
 
 				statusCode, body := sendRequest(`{"invalid json`, nil, nil)
@@ -2033,7 +2033,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				cfg.Projects[0].Upstreams[0].IgnoreMethods = []string{}
 
 				// Set up test fixtures
-				sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+				sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 				defer shutdown()
 
 				gock.New("http://rpc1.localhost").
@@ -2106,7 +2106,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				cfg.Projects[0].Upstreams[0].IgnoreMethods = []string{"ignored_method"}
 
 				// Set up test fixtures
-				sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+				sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 				defer shutdown()
 
 				gock.New("http://rpc1.localhost").
@@ -2177,7 +2177,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				defer util.AssertNoPendingMocks(t, 0)
 
 				// Set up test fixtures
-				_, _, baseURL, shutdown := createServerTestFixtures(cfg, t)
+				_, _, baseURL, shutdown, _ := createServerTestFixtures(cfg, t)
 				defer shutdown()
 
 				req, err := http.NewRequest("POST", baseURL+"/invalid_project/evm/1", strings.NewReader(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`))
@@ -2249,7 +2249,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				defer util.AssertNoPendingMocks(t, 0)
 
 				// Set up test fixtures
-				sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+				sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 				defer shutdown()
 
 				gock.New("http://rpc1.localhost").
@@ -2320,7 +2320,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				defer util.AssertNoPendingMocks(t, 0)
 
 				// Set up test fixtures
-				sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+				sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 				defer shutdown()
 
 				gock.New("http://rpc1.localhost").
@@ -2379,7 +2379,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				defer util.AssertNoPendingMocks(t, 0)
 
 				// Set up test fixtures
-				sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+				sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 				defer shutdown()
 
 				gock.New("http://rpc1.localhost").
@@ -2439,7 +2439,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				defer util.AssertNoPendingMocks(t, 0)
 
 				// Set up test fixtures
-				sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+				sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 				defer shutdown()
 
 				var id interface{}
@@ -2549,7 +2549,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				defer util.AssertNoPendingMocks(t, 0)
 
 				// Set up test fixtures
-				sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+				sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 				defer shutdown()
 
 				gock.New("http://rpc1.localhost").
@@ -2626,7 +2626,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				defer util.AssertNoPendingMocks(t, 0)
 
 				// Set up test fixtures
-				sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+				sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 				defer shutdown()
 
 				gock.New("http://rpc1.localhost").
@@ -2682,7 +2682,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				defer util.AssertNoPendingMocks(t, 0)
 
 				// Set up test fixtures
-				sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+				sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 				defer shutdown()
 
 				gock.New("http://rpc1.localhost").
@@ -2730,7 +2730,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 
 				sendRequest(`{"jsonrpc":"2.0","method":"eth_traceDebug","params":[],"id":0}`, nil, nil)
 			})
-
 		})
 	}
 
@@ -2794,7 +2793,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 				"result":  "0x123456",
 			})
 
-		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
 		wg := &sync.WaitGroup{}
@@ -2809,7 +2808,6 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		}
 		wg.Wait()
 	})
-
 }
 
 func TestHttpServer_MultipleUpstreams(t *testing.T) {
@@ -2892,7 +2890,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 				"result":  "0x2222222",
 			})
 
-		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
 		statusCode2, body2 := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`, map[string]string{
@@ -2987,7 +2985,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 				"result":  "0x2222222",
 			})
 
-		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
 		statusCode2, body2 := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBlockNumber","params":[],"id":1}`, nil, map[string]string{
@@ -3058,7 +3056,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 				"result":  "0x1111111",
 			})
 
-		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"trace_transaction","id":111}`, nil, nil)
@@ -3122,7 +3120,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 				},
 			})
 
-		sendRequest, _, _, shutdown := createServerTestFixtures(cfg, t)
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
 		statusCode, _ := sendRequest(`{"jsonrpc":"2.0","method":"trace_transaction","params":[],"id":111}`, nil, nil)
@@ -3167,7 +3165,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 
-		_, sendOptionsRequest, _, shutdown := createServerTestFixtures(cfg, t)
+		_, sendOptionsRequest, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
 		statusCode, headers, _ := sendOptionsRequest("https://erpc.cloud")
@@ -3576,11 +3574,514 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 	}
 }
 
+func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
+	t.Run("SimpleCallExistingNetwork", func(t *testing.T) {
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("5s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+						},
+					},
+					Providers: []*common.ProviderConfig{
+						{
+							Id:     "alchemy-prod",
+							Vendor: "alchemy",
+							Settings: map[string]interface{}{
+								"apiKey": "test-key",
+							},
+							UpstreamIdTemplate: "<PROVIDER>-<NETWORK>",
+						},
+					},
+				},
+			},
+		}
+
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		gock.New("https://eth-mainnet.g.alchemy.com").
+			Post("/v2/test-key").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x123456",
+			})
+
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":1234}`, nil, nil)
+		assert.Equal(t, http.StatusOK, statusCode)
+		assert.Contains(t, body, "0x123456")
+	})
+
+	t.Run("SimpleCallLazyLoadedNetwork", func(t *testing.T) {
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("5s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Providers: []*common.ProviderConfig{
+						{
+							Id:     "alchemy-prod",
+							Vendor: "alchemy",
+							Settings: map[string]interface{}{
+								"apiKey": "test-key",
+							},
+							UpstreamIdTemplate: "<PROVIDER>-<NETWORK>",
+						},
+					},
+				},
+			},
+		}
+
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		gock.New("https://eth-mainnet.g.alchemy.com").
+			Post("/v2/test-key").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x123456",
+			})
+
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":1234}`, nil, nil)
+		assert.Equal(t, http.StatusOK, statusCode)
+		assert.Contains(t, body, "0x123456")
+	})
+
+	t.Run("RespectsOnlyNetworksWhenNoMatch", func(t *testing.T) {
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("5s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Providers: []*common.ProviderConfig{
+						{
+							Id:     "alchemy-prod",
+							Vendor: "alchemy",
+							Settings: map[string]interface{}{
+								"apiKey": "test-key",
+							},
+							OnlyNetworks:       []string{"evm:5", "evm:10"},
+							UpstreamIdTemplate: "<PROVIDER>-<NETWORK>",
+						},
+					},
+				},
+			},
+		}
+
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		// This request calls evm:1, which is not in the OnlyNetworks list
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":1234}`, nil, nil)
+		assert.Equal(t, http.StatusNotFound, statusCode)
+		assert.Contains(t, body, "no upstreams found",
+			"expected network evm:1 to not be recognized because only evm:5 and evm:10 are allowed")
+	})
+
+	t.Run("RespectsOnlyNetworksWhenMatch", func(t *testing.T) {
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("5s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Providers: []*common.ProviderConfig{
+						{
+							Id:     "alchemy-prod",
+							Vendor: "alchemy",
+							Settings: map[string]interface{}{
+								"apiKey": "test-key",
+							},
+							OnlyNetworks:       []string{"evm:1", "evm:10"},
+							UpstreamIdTemplate: "<PROVIDER>-<NETWORK>",
+						},
+					},
+				},
+			},
+		}
+
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		gock.New("https://eth-mainnet.g.alchemy.com").
+			Post("/v2/test-key").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x123456",
+			})
+
+		// This request calls evm:1, which is not in the OnlyNetworks list
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":1234}`, nil, nil)
+		assert.Equal(t, http.StatusOK, statusCode)
+		assert.Contains(t, body, "0x123456")
+	})
+
+	t.Run("EventuallyAddsUpstreamWhenSupportsNetworkFailsInitially", func(t *testing.T) {
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("5s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Providers: []*common.ProviderConfig{
+						{
+							Id:                 "envio-prod",
+							Vendor:             "envio",
+							UpstreamIdTemplate: "<PROVIDER>-<NETWORK>",
+						},
+					},
+				},
+			},
+		}
+
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		gock.New("https://12340001234.rpc.hypersync.xyz").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+			}).
+			Reply(500).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"error": map[string]interface{}{
+					"code":    -32000,
+					"message": "Internal bummer error",
+				},
+			})
+
+		gock.New("https://12340001234.rpc.hypersync.xyz").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x2DF8579D2",
+			})
+
+		gock.New("https://12340001234.rpc.hypersync.xyz").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x123456",
+			})
+
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[],"id":1234}`, nil, map[string]string{"chainId": "12340001234"})
+		assert.Equal(t, http.StatusInternalServerError, statusCode)
+		assert.Contains(t, body, "Internal bummer error")
+
+		time.Sleep((3 * time.Second) + (100 * time.Millisecond))
+
+		statusCode, body = sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[],"id":1234}`, nil, map[string]string{"chainId": "12340001234"})
+		assert.Equal(t, http.StatusOK, statusCode)
+		assert.Contains(t, body, "0x123456")
+	})
+
+	t.Run("InheritUpstreamDefaultsConfig", func(t *testing.T) {
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("5s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					UpstreamDefaults: &common.UpstreamConfig{
+						Failsafe: &common.FailsafeConfig{
+							Hedge: &common.HedgePolicyConfig{
+								Delay:    "10ms",
+								MaxCount: 267,
+							},
+						},
+					},
+					Providers: []*common.ProviderConfig{
+						{
+							Id:                 "alchemy-prod",
+							Vendor:             "alchemy",
+							UpstreamIdTemplate: "<PROVIDER>-<NETWORK>",
+							Settings: map[string]interface{}{
+								"apiKey": "test-key",
+							},
+						},
+					},
+				},
+			},
+		}
+
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		gock.New("https://eth-mainnet.g.alchemy.com").
+			Post("/v2/test-key").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x1",
+			})
+
+		gock.New("https://eth-mainnet.g.alchemy.com").
+			Post("/v2/test-key").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x123456",
+			})
+
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[],"id":1234}`, nil, nil)
+		assert.Equal(t, http.StatusOK, statusCode)
+		assert.Contains(t, body, "0x123456")
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+
+		upstreams := prj.upstreamsRegistry.GetNetworkUpstreams("evm:1")
+		require.NotNil(t, upstreams)
+		require.Equal(t, len(upstreams), 1)
+		upsCfg := upstreams[0].Config()
+
+		assert.Equalf(t, upsCfg.Failsafe.Hedge.MaxCount, 267, "Hedge policy maxCount should be set")
+		assert.Equalf(t, upsCfg.Failsafe.Hedge.Delay, "10ms", "Hedge policy delay should be set")
+	})
+
+	t.Run("InheritUpstreamsOverridesAfterUpstreamDefaultsConfig", func(t *testing.T) {
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("5s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					UpstreamDefaults: &common.UpstreamConfig{
+						Failsafe: &common.FailsafeConfig{
+							Hedge: &common.HedgePolicyConfig{
+								Delay:    "10ms",
+								MaxCount: 267,
+							},
+						},
+					},
+					Providers: []*common.ProviderConfig{
+						{
+							Id:                 "alchemy-prod",
+							Vendor:             "alchemy",
+							UpstreamIdTemplate: "<PROVIDER>-<NETWORK>",
+							Settings: map[string]interface{}{
+								"apiKey": "test-key",
+							},
+							UpstreamOverrides: map[string]*common.UpstreamConfig{
+								"evm:1": {
+									Failsafe: &common.FailsafeConfig{
+										Retry: &common.RetryPolicyConfig{
+											MaxAttempts: 123,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+
+		gock.New("https://eth-mainnet.g.alchemy.com").
+			Post("/v2/test-key").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_chainId")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x1",
+			})
+
+		gock.New("https://eth-mainnet.g.alchemy.com").
+			Post("/v2/test-key").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getLogs")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x123456",
+			})
+
+		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[],"id":1234}`, nil, nil)
+		assert.Equal(t, http.StatusOK, statusCode)
+		assert.Contains(t, body, "0x123456")
+
+		prj, err := erpcInstance.GetProject("test_project")
+		require.NoError(t, err)
+
+		upstreams := prj.upstreamsRegistry.GetNetworkUpstreams("evm:1")
+		require.NotNil(t, upstreams)
+		require.Equal(t, len(upstreams), 1)
+		upsCfg := upstreams[0].Config()
+
+		assert.Equalf(t, upsCfg.Failsafe.Retry.MaxAttempts, 123, "Retry policy should be set")
+		assert.Nilf(t, upsCfg.Failsafe.Hedge, "Hedge policy should not be set")
+	})
+
+	t.Run("HappyPath - Override match with wildcard pattern", func(t *testing.T) {
+		// Scenario:
+		//  - ProviderConfig.Overrides has key = "evm:*" that matches "evm:1",
+		//  - ensures the override is applied,
+		//  - expecting the returned config to be a shallow copy of the override,
+		//    with the correct ID from UpstreamIdTemplate, etc.
+	})
+
+	t.Run("UnhappyPath - Vendor PrepareConfig fails", func(t *testing.T) {
+		// Scenario:
+		//  - The vendor's PrepareConfig method returns an error (e.g. missing apiKey),
+		//  - expecting that error to propagate out of GenerateUpstreamConfig.
+	})
+
+	t.Run("UnhappyPath - 'evm:' prefix but chain ID parse fails in buildBaseUpstreamConfig", func(t *testing.T) {
+		// Scenario:
+		//  - networkId = "evm:not-a-number",
+		//  - expecting an error from strconv.ParseInt,
+		//  - ensuring GenerateUpstreamConfig returns the parse error.
+	})
+
+	t.Run("HappyPath - No override found, creates new base config with defaults", func(t *testing.T) {
+		// Scenario:
+		//  - ProviderConfig.Overrides is empty or has no wildcard match,
+		//  - upsteamDefaults is provided,
+		//  - ensures new UpstreamConfig is created and defaults are set.
+	})
+
+	t.Run("Override Found - wildcards partially match the networkId", func(t *testing.T) {
+		// Scenario:
+		//  - ProviderConfig.Overrides has key = "evm:1*",
+		//  - networkId = "evm:1234",
+		//  - ensures the override is used if that wildcard logic returns a match.
+	})
+
+	t.Run("UnhappyPath - Wildcard matching function returns internal error", func(t *testing.T) {
+		// Scenario:
+		//  - Suppose the wildcard matching function (common.WildcardMatch) can return an error,
+		//  - expecting the error to be logged or handled gracefully.
+	})
+
+	t.Run("Check UpstreamIdTemplate placeholders are replaced properly", func(t *testing.T) {
+		// Scenario:
+		//  - UpstreamIdTemplate = "<VENDOR>-<PROVIDER>-<NETWORK>-<EVM_CHAIN_ID>",
+		//  - networkId = "evm:56",
+		//  - expects the final UpstreamConfig.Id to be "alchemy-alchemy-prod-evm:56-56" (example).
+	})
+
+	t.Run("HappyPath - All placeholders replaced in EVM scenario", func(t *testing.T) {
+		// Scenario:
+		//  - template = "<VENDOR>_<PROVIDER>_<NETWORK>_<EVM_CHAIN_ID>",
+		//  - vendorName = "alchemy", providerId = "alchemy-prod", networkId = "evm:1",
+		//  - expecting "alchemy_alchemy-prod_evm:1_1".
+	})
+
+	t.Run("HappyPath - Non-EVM network, <EVM_CHAIN_ID> replaced with 'N/A'", func(t *testing.T) {
+		// Scenario:
+		//  - template = "<VENDOR>_<PROVIDER>_<NETWORK>_<EVM_CHAIN_ID>",
+		//  - networkId does not start with "evm:",
+		//  - expecting the <EVM_CHAIN_ID> placeholder to become "N/A".
+	})
+
+	t.Run("Non-Existent Placeholders - template has some random placeholders", func(t *testing.T) {
+		// Scenario:
+		//  - template = "<VENDOR>_<PROVIDER>_<NETWORK>_<SOME_RANDOM>",
+		//  - <SOME_RANDOM> won't be replaced. Implementation might leave it as is or skip.
+	})
+
+	t.Run("EmptyTemplate - returns empty string", func(t *testing.T) {
+		// Scenario:
+		//  - template = "",
+		//  - expecting final result is an empty string regardless of placeholders.
+	})
+}
+
 func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 	func(body string, headers map[string]string, queryParams map[string]string) (int, string),
 	func(host string) (int, map[string]string, string),
 	string,
 	func(),
+	*ERPC,
 ) {
 	logger := log.Logger
 	ctx, cancel := context.WithCancel(context.Background())
@@ -3610,7 +4111,11 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 	sendRequest := func(body string, headers map[string]string, queryParams map[string]string) (int, string) {
 		rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		req, err := http.NewRequestWithContext(rctx, "POST", baseURL+"/test_project/evm/1", strings.NewReader(body))
+		chainId := "1"
+		if queryParams["chainId"] != "" {
+			chainId = queryParams["chainId"]
+		}
+		req, err := http.NewRequestWithContext(rctx, "POST", baseURL+"/test_project/evm/"+chainId, strings.NewReader(body))
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", "application/json")
 		for k, v := range headers {
@@ -3675,5 +4180,5 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 		// TODO Can we do it more strictly maybe via a Shutdown() sequence?
 		// This to wait for batch processor to stop + initializers to finish
 		time.Sleep(500 * time.Millisecond)
-	}
+	}, erpcInstance
 }

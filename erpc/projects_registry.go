@@ -105,6 +105,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		&lg,
 		r.vendorsRegistry,
 		prjCfg.Providers,
+		prjCfg.UpstreamDefaults,
 	)
 	if err != nil {
 		return nil, err

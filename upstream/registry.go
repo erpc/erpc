@@ -357,10 +357,14 @@ func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamCo
 			u.doRegisterBootstrappedUpstream(ups)
 
 			if u.onUpstreamRegistered != nil {
-				err = u.onUpstreamRegistered(ups)
-				if err != nil {
-					return err
-				}
+				// TODO Refactor the upstream<->network relationship to avoid circular dependency. Then we can remove this goroutine.
+				// We need this now at the moment so that lazy-loaded networks and lazy-loaded upstreams (from Providers) can work together.
+				go func() {
+					err = u.onUpstreamRegistered(ups)
+					if err != nil {
+						u.logger.Error().Err(err).Str("upstreamId", upsCfg.Id).Msg("failed to call onUpstreamRegistered")
+					}
+				}()
 			}
 
 			u.logger.Debug().Str("upstreamId", upsCfg.Id).Msg("upstream bootstrap completed")
@@ -380,9 +384,11 @@ func (u *UpstreamsRegistry) buildProviderBootstrapTask(
 			lg := u.logger.With().Str("provider", provider.Id()).Str("networkId", networkId).Logger()
 			lg.Debug().Msg("attempting to create upstream from provider")
 
-			if ok, err := provider.SupportsNetwork(ctx, networkId); err != nil || !ok {
+			if ok, err := provider.SupportsNetwork(ctx, networkId); err == nil && !ok {
 				lg.Debug().Msg("provider does not support network; skipping upstream creation")
 				return nil
+			} else if err != nil {
+				return err
 			}
 
 			lg.Debug().Msg("attempting to create upstream from provider")

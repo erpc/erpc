@@ -89,7 +89,7 @@ func (v *EnvioVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logge
 		return false, nil
 	}
 
-	chainId, err := strconv.ParseInt(networkId[4:], 10, 64)
+	chainId, err := strconv.ParseInt(strings.TrimPrefix(networkId, "evm:"), 10, 64)
 	if err != nil {
 		return false, err
 	}
@@ -171,7 +171,7 @@ func (v *EnvioVendor) PrepareConfig(upstream *common.UpstreamConfig, settings co
 		}
 	}
 
-	if upstream.Endpoint == "" && settings != nil {
+	if upstream.Endpoint == "" {
 		rootDomain, ok := settings["rootDomain"].(string)
 		if !ok || rootDomain == "" {
 			rootDomain = DefaultEnvioRootDomain
@@ -185,6 +185,7 @@ func (v *EnvioVendor) PrepareConfig(upstream *common.UpstreamConfig, settings co
 			return err
 		}
 		upstream.Endpoint = parsedURL.String()
+		upstream.Type = common.UpstreamTypeEvm
 	}
 
 	return nil

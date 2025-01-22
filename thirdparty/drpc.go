@@ -142,7 +142,11 @@ func (v *DrpcVendor) Name() string {
 }
 
 func (v *DrpcVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
-	chainId, err := strconv.ParseInt(networkId, 10, 64)
+	if !strings.HasPrefix(networkId, "evm:") {
+		return false, nil
+	}
+
+	chainId, err := strconv.ParseInt(strings.TrimPrefix(networkId, "evm:"), 10, 64)
 	if err != nil {
 		return false, err
 	}
@@ -155,7 +159,7 @@ func (v *DrpcVendor) PrepareConfig(upstream *common.UpstreamConfig, settings com
 	// but it doesn't mean that method is actually not supported, i.e. on next retry to dRPC it might work.
 	upstream.AutoIgnoreUnsupportedMethods = &common.FALSE
 
-	if upstream.Endpoint == "" && settings != nil {
+	if upstream.Endpoint == "" {
 		if apiKey, ok := settings["apiKey"].(string); ok && apiKey != "" {
 			if upstream.Evm == nil {
 				return fmt.Errorf("drpc vendor requires upstream.evm to be defined")
@@ -174,6 +178,7 @@ func (v *DrpcVendor) PrepareConfig(upstream *common.UpstreamConfig, settings com
 				return err
 			}
 			upstream.Endpoint = parsedURL.String()
+			upstream.Type = common.UpstreamTypeEvm
 		} else {
 			return fmt.Errorf("apiKey is required in drpc settings")
 		}

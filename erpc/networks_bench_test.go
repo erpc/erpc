@@ -50,7 +50,7 @@ func BenchmarkNetworkForward_SimpleSuccess(b *testing.B) {
 	}
 
 	vr := thirdparty.NewVendorsRegistry()
-	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{})
+	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func BenchmarkNetworkForward_MethodIgnoreCase(b *testing.B) {
 	}
 
 	vr := thirdparty.NewVendorsRegistry()
-	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{})
+	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func BenchmarkNetworkForward_RetryFailures(b *testing.B) {
 	}
 
 	vr := thirdparty.NewVendorsRegistry()
-	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{})
+	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
 	if err != nil {
 		b.Fatal(err)
 	}

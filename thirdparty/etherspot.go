@@ -57,7 +57,11 @@ func (v *EtherspotVendor) Name() string {
 }
 
 func (v *EtherspotVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
-	chainID, err := strconv.ParseInt(networkId, 10, 64)
+	if !strings.HasPrefix(networkId, "evm:") {
+		return false, nil
+	}
+
+	chainID, err := strconv.ParseInt(strings.TrimPrefix(networkId, "evm:"), 10, 64)
 	if err != nil {
 		return false, err
 	}
@@ -88,7 +92,7 @@ func (v *EtherspotVendor) PrepareConfig(upstream *common.UpstreamConfig, setting
 		}
 	}
 
-	if upstream.Endpoint == "" && settings != nil {
+	if upstream.Endpoint == "" {
 		if apiKey, ok := settings["apiKey"].(string); ok && apiKey != "" {
 			chainID := upstream.Evm.ChainId
 			if chainID == 0 {
@@ -100,6 +104,7 @@ func (v *EtherspotVendor) PrepareConfig(upstream *common.UpstreamConfig, setting
 			}
 
 			upstream.Endpoint = parsedURL.String()
+			upstream.Type = common.UpstreamTypeEvm
 		} else {
 			return fmt.Errorf("apiKey is required in etherspot settings")
 		}

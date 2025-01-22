@@ -87,13 +87,14 @@ func (v *ThirdwebVendor) PrepareConfig(upstream *common.UpstreamConfig, settings
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
 
-	if upstream.Endpoint == "" && settings != nil {
+	if upstream.Endpoint == "" {
 		if clientId, ok := settings["clientId"].(string); ok && clientId != "" {
 			parsedURL, err := v.generateUrl(upstream.Evm.ChainId, clientId)
 			if err != nil {
 				return err
 			}
 			upstream.Endpoint = parsedURL.String()
+			upstream.Type = common.UpstreamTypeEvm
 		} else {
 			return fmt.Errorf("clientId is required in thirdweb settings")
 		}

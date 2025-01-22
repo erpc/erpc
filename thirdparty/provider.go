@@ -2,6 +2,7 @@ package thirdparty
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
 	"github.com/erpc/erpc/common"
@@ -9,16 +10,18 @@ import (
 )
 
 type Provider struct {
-	logger *zerolog.Logger
-	config *common.ProviderConfig
-	vendor common.Vendor
+	logger           *zerolog.Logger
+	config           *common.ProviderConfig
+	vendor           common.Vendor
+	upstreamDefaults *common.UpstreamConfig
 }
 
-func NewProvider(logger *zerolog.Logger, cfg *common.ProviderConfig, vendor common.Vendor) *Provider {
+func NewProvider(logger *zerolog.Logger, cfg *common.ProviderConfig, vendor common.Vendor, upstreamDefaults *common.UpstreamConfig) *Provider {
 	return &Provider{
-		logger: logger,
-		config: cfg,
-		vendor: vendor,
+		logger:           logger,
+		config:           cfg,
+		vendor:           vendor,
+		upstreamDefaults: upstreamDefaults,
 	}
 }
 
@@ -40,8 +43,11 @@ func (p *Provider) SupportsNetwork(ctx context.Context, networkId string) (bool,
 }
 
 func (p *Provider) GenerateUpstreamConfig(networkId string) (*common.UpstreamConfig, error) {
-	upsCfg := p.buildBaseUpstreamConfig(networkId)
-	err := p.vendor.PrepareConfig(upsCfg, p.config.Settings)
+	upsCfg, err := p.buildBaseUpstreamConfig(networkId)
+	if err != nil {
+		return nil, err
+	}
+	err = p.vendor.PrepareConfig(upsCfg, p.config.Settings)
 	if err != nil {
 		return nil, err
 	}
@@ -52,11 +58,11 @@ func (p *Provider) GenerateUpstreamConfig(networkId string) (*common.UpstreamCon
 // upstream override whose key can wildcard-match the given networkId. If it finds
 // a match, it copies that UpstreamConfig. Otherwise, it creates an empty base
 // config. Then it applies the UpstreamIdTemplate to generate the new upstream ID.
-func (p *Provider) buildBaseUpstreamConfig(networkId string) *common.UpstreamConfig {
+func (p *Provider) buildBaseUpstreamConfig(networkId string) (*common.UpstreamConfig, error) {
 	var baseCfg *common.UpstreamConfig
 
-	// 1) Look for a matching override in the ProviderConfig.Overrides using wildcard match.
-	for pattern, override := range p.config.Overrides {
+	// Look for a matching override in the ProviderConfig.Overrides using wildcard match.
+	for pattern, override := range p.config.UpstreamOverrides {
 		matches, err := common.WildcardMatch(pattern, networkId)
 		if err != nil {
 			// If there's an error in matching logic, log or handle as you see fit; skip in this example.
@@ -73,9 +79,14 @@ func (p *Provider) buildBaseUpstreamConfig(networkId string) *common.UpstreamCon
 	// If no override matched, create a fresh UpstreamConfig as a baseline.
 	if baseCfg == nil {
 		baseCfg = &common.UpstreamConfig{}
+		err := baseCfg.SetDefaults(p.upstreamDefaults)
+		if err != nil {
+			return nil, err
+		}
 	}
+	baseCfg.VendorName = p.config.Vendor
 
-	// 2) Substitute into the UpstreamIdTemplate. We replace:
+	// Substitute into the UpstreamIdTemplate. We replace:
 	//    <VENDOR>    with the provider's Vendor name (p.config.Vendor)
 	//    <PROVIDER>  with the provider ID from config (p.config.Id)
 	//    <NETWORK>   with the entire networkId string
@@ -87,7 +98,22 @@ func (p *Provider) buildBaseUpstreamConfig(networkId string) *common.UpstreamCon
 		networkId,
 	)
 
-	return baseCfg
+	if strings.HasPrefix(networkId, "evm:") {
+		baseCfg.Type = common.UpstreamTypeEvm
+		chainId, err := strconv.ParseInt(strings.TrimPrefix(networkId, "evm:"), 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		baseCfg.Evm = &common.EvmUpstreamConfig{
+			ChainId: chainId,
+		}
+		err = baseCfg.Evm.SetDefaults()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return baseCfg, nil
 }
 
 // applyUpstreamIDTemplate handles the keyword replacements in the UpstreamIdTemplate string.

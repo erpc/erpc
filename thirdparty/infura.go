@@ -59,7 +59,11 @@ func (v *InfuraVendor) Name() string {
 }
 
 func (v *InfuraVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
-	chainId, err := strconv.ParseInt(networkId, 10, 64)
+	if !strings.HasPrefix(networkId, "evm:") {
+		return false, nil
+	}
+
+	chainId, err := strconv.ParseInt(strings.TrimPrefix(networkId, "evm:"), 10, 64)
 	if err != nil {
 		return false, err
 	}
@@ -72,7 +76,7 @@ func (v *InfuraVendor) PrepareConfig(upstream *common.UpstreamConfig, settings c
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
 
-	if upstream.Endpoint == "" && settings != nil {
+	if upstream.Endpoint == "" {
 		if apiKey, ok := settings["apiKey"].(string); ok && apiKey != "" {
 			chainID := upstream.Evm.ChainId
 			if chainID == 0 {
@@ -93,6 +97,7 @@ func (v *InfuraVendor) PrepareConfig(upstream *common.UpstreamConfig, settings c
 			}
 
 			upstream.Endpoint = parsedURL.String()
+			upstream.Type = common.UpstreamTypeEvm
 		} else {
 			return fmt.Errorf("apiKey is required in infura settings")
 		}

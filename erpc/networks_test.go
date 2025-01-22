@@ -78,6 +78,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -185,6 +186,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -290,6 +292,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -392,6 +395,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vndr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -523,6 +527,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vndr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -675,6 +680,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vndr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -859,6 +865,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -1053,6 +1060,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -1217,6 +1225,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -1392,6 +1401,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -1589,6 +1599,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -1776,6 +1787,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -1953,6 +1965,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -2144,6 +2157,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -2321,6 +2335,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -2507,6 +2522,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -2689,6 +2705,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -2810,6 +2827,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -2924,6 +2942,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3041,6 +3060,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3178,6 +3198,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3269,6 +3290,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3393,6 +3415,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3519,6 +3542,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3638,6 +3662,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3759,6 +3784,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3909,6 +3935,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -4058,6 +4085,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -4211,6 +4239,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -4332,6 +4361,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -4471,6 +4501,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -4607,6 +4638,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -4734,6 +4766,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -4871,6 +4904,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -4991,6 +5025,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -5161,6 +5196,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -5274,6 +5310,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -5384,6 +5421,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -5493,6 +5531,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -5602,6 +5641,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -5792,6 +5832,7 @@ func TestNetwork_Forward(t *testing.T) {
 			&log.Logger,
 			vr,
 			[]*common.ProviderConfig{},
+			nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -6814,6 +6855,7 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfig *common.
 		&log.Logger,
 		vr,
 		[]*common.ProviderConfig{},
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -6900,6 +6942,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.C
 		&log.Logger,
 		vr,
 		[]*common.ProviderConfig{},
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)

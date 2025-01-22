@@ -106,7 +106,6 @@ func (t *BootstrapTask) Wait(ctx context.Context) error {
 			// We'll just do a short sleep or yield.
 			select {
 			case <-ctx.Done():
-				fmt.Printf("task.Wait ctx.Done() AAAA\n")
 				return ctx.Err()
 			case <-time.After(10 * time.Millisecond):
 				// keep looping until the task actually starts
@@ -116,7 +115,6 @@ func (t *BootstrapTask) Wait(ctx context.Context) error {
 			// We have a valid channel. Wait on it or until context is canceled.
 			select {
 			case <-ctx.Done():
-				fmt.Printf("task.Wait ctx.Done() BBBB\n")
 				return ctx.Err()
 			case <-ch.(chan struct{}):
 				// The attempt ended. Check if we failed.
@@ -164,7 +162,7 @@ type Initializer struct {
 func NewInitializer(appCtx context.Context, logger *zerolog.Logger, conf *InitializerConfig) *Initializer {
 	if conf == nil {
 		conf = &InitializerConfig{
-			TaskTimeout:   60 * time.Second,
+			TaskTimeout:   120 * time.Second,
 			AutoRetry:     true,
 			RetryFactor:   1.5,
 			RetryMinDelay: 3 * time.Second,

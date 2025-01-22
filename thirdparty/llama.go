@@ -33,7 +33,11 @@ func (v *LlamaVendor) Name() string {
 }
 
 func (v *LlamaVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
-	chainId, err := strconv.ParseInt(networkId, 10, 64)
+	if !strings.HasPrefix(networkId, "evm:") {
+		return false, nil
+	}
+
+	chainId, err := strconv.ParseInt(strings.TrimPrefix(networkId, "evm:"), 10, 64)
 	if err != nil {
 		return false, err
 	}
@@ -45,7 +49,7 @@ func (v *LlamaVendor) PrepareConfig(upstream *common.UpstreamConfig, settings co
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
-	if upstream.Endpoint == "" && settings != nil {
+	if upstream.Endpoint == "" {
 		if apiKey, ok := settings["apiKey"].(string); ok && apiKey != "" {
 			chainID := upstream.Evm.ChainId
 			if chainID == 0 {
@@ -56,6 +60,7 @@ func (v *LlamaVendor) PrepareConfig(upstream *common.UpstreamConfig, settings co
 				return fmt.Errorf("unsupported network chain ID for Llama: %d", chainID)
 			}
 			upstream.Endpoint = fmt.Sprintf("https://%s.llamarpc.com/%s", netName, apiKey)
+			upstream.Type = common.UpstreamTypeEvm
 		} else {
 			return fmt.Errorf("apiKey is required in llama settings")
 		}

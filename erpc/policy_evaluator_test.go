@@ -1722,6 +1722,7 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 		&log.Logger,
 		vndr,
 		[]*common.ProviderConfig{},
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)

@@ -514,8 +514,8 @@ func (u *ProviderConfig) Validate(c *Config) error {
 	if u.UpstreamIdTemplate == "" {
 		return fmt.Errorf("project.*.providers.*.upstreamIdTemplate is required")
 	}
-	if u.Overrides != nil {
-		for _, override := range u.Overrides {
+	if u.UpstreamOverrides != nil {
+		for _, override := range u.UpstreamOverrides {
 			if err := override.Validate(c); err != nil {
 				return err
 			}

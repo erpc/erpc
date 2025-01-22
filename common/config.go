@@ -305,7 +305,7 @@ type ProviderConfig struct {
 	Settings           VendorSettings             `yaml:"settings,omitempty" json:"settings"`
 	OnlyNetworks       []string                   `yaml:"onlyNetworks,omitempty" json:"onlyNetworks"`
 	UpstreamIdTemplate string                     `yaml:"upstreamIdTemplate" json:"upstreamIdTemplate"`
-	Overrides          map[string]*UpstreamConfig `yaml:"overrides,omitempty" json:"overrides"`
+	UpstreamOverrides  map[string]*UpstreamConfig `yaml:"upstreamOverrides,omitempty" json:"upstreamOverrides"`
 }
 
 func (p *ProviderConfig) MarshalJSON() ([]byte, error) {
@@ -315,7 +315,7 @@ func (p *ProviderConfig) MarshalJSON() ([]byte, error) {
 		"settings":           "REDACTED",
 		"onlyNetworks":       p.OnlyNetworks,
 		"upstreamIdTemplate": p.UpstreamIdTemplate,
-		"overrides":          p.Overrides,
+		"upstreamOverrides":  p.UpstreamOverrides,
 	})
 }
 

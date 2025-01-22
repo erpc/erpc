@@ -16,6 +16,7 @@ func NewProvidersRegistry(
 	logger *zerolog.Logger,
 	vendorReg *VendorsRegistry,
 	providerCfgs []*common.ProviderConfig,
+	upstreamDefaults *common.UpstreamConfig,
 ) (*ProvidersRegistry, error) {
 	var providers []*Provider
 	for _, cfg := range providerCfgs {
@@ -24,7 +25,7 @@ func NewProvidersRegistry(
 			supportedVendors := vendorReg.SupportedVendors()
 			return nil, fmt.Errorf("vendor '%s' not found for provider '%s', supported vendors: %v", cfg.Vendor, cfg.Id, supportedVendors)
 		}
-		providers = append(providers, NewProvider(logger, cfg, vnd))
+		providers = append(providers, NewProvider(logger, cfg, vnd, upstreamDefaults))
 	}
 	return &ProvidersRegistry{
 		vendorReg: vendorReg,

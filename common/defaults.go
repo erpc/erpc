@@ -711,8 +711,8 @@ func (p *ProviderConfig) SetDefaults(upsDefaults *UpstreamConfig) error {
 	if p.UpstreamIdTemplate == "" {
 		p.UpstreamIdTemplate = "<PROVIDER>-<NETWORK>"
 	}
-	if p.Overrides != nil {
-		for _, override := range p.Overrides {
+	if p.UpstreamOverrides != nil {
+		for _, override := range p.UpstreamOverrides {
 			if err := override.SetDefaults(upsDefaults); err != nil {
 				return fmt.Errorf("failed to set defaults for override: %w", err)
 			}
@@ -798,6 +798,11 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 			if err := u.Failsafe.SetDefaults(nil); err != nil {
 				return fmt.Errorf("failed to set defaults for failsafe: %w", err)
 			}
+		}
+	} else if defaults != nil && defaults.Failsafe != nil {
+		u.Failsafe = &FailsafeConfig{}
+		if err := u.Failsafe.SetDefaults(defaults.Failsafe); err != nil {
+			return fmt.Errorf("failed to set defaults for failsafe: %w", err)
 		}
 	}
 	if u.RateLimitAutoTune == nil && u.RateLimitBudget != "" {
@@ -953,6 +958,11 @@ func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
 				return fmt.Errorf("failed to set defaults for timeout: %w", err)
 			}
 		}
+	} else if defaults != nil && defaults.Timeout != nil {
+		f.Timeout = &TimeoutPolicyConfig{}
+		if err := f.Timeout.SetDefaults(defaults.Timeout); err != nil {
+			return fmt.Errorf("failed to set defaults for timeout: %w", err)
+		}
 	}
 	if f.Retry != nil {
 		if defaults != nil && defaults.Retry != nil {
@@ -963,6 +973,11 @@ func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
 			if err := f.Retry.SetDefaults(nil); err != nil {
 				return fmt.Errorf("failed to set defaults for retry: %w", err)
 			}
+		}
+	} else if defaults != nil && defaults.Retry != nil {
+		f.Retry = &RetryPolicyConfig{}
+		if err := f.Retry.SetDefaults(defaults.Retry); err != nil {
+			return fmt.Errorf("failed to set defaults for retry: %w", err)
 		}
 	}
 	if f.Hedge != nil {
@@ -975,6 +990,11 @@ func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
 				return fmt.Errorf("failed to set defaults for hedge: %w", err)
 			}
 		}
+	} else if defaults != nil && defaults.Hedge != nil {
+		f.Hedge = &HedgePolicyConfig{}
+		if err := f.Hedge.SetDefaults(defaults.Hedge); err != nil {
+			return fmt.Errorf("failed to set defaults for hedge: %w", err)
+		}
 	}
 	if f.CircuitBreaker != nil {
 		if defaults != nil && defaults.CircuitBreaker != nil {
@@ -985,6 +1005,11 @@ func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
 			if err := f.CircuitBreaker.SetDefaults(nil); err != nil {
 				return fmt.Errorf("failed to set defaults for circuit breaker: %w", err)
 			}
+		}
+	} else if defaults != nil && defaults.CircuitBreaker != nil {
+		f.CircuitBreaker = &CircuitBreakerPolicyConfig{}
+		if err := f.CircuitBreaker.SetDefaults(defaults.CircuitBreaker); err != nil {
+			return fmt.Errorf("failed to set defaults for circuit breaker: %w", err)
 		}
 	}
 
@@ -1067,16 +1092,51 @@ func (h *HedgePolicyConfig) SetDefaults(defaults *HedgePolicyConfig) error {
 			h.MaxDelay = "999s"
 		}
 	}
+	if h.MaxCount == 0 {
+		if defaults != nil && defaults.MaxCount != 0 {
+			h.MaxCount = defaults.MaxCount
+		} else {
+			h.MaxCount = 1
+		}
+	}
 
 	return nil
 }
 
 func (c *CircuitBreakerPolicyConfig) SetDefaults(defaults *CircuitBreakerPolicyConfig) error {
+	if c.FailureThresholdCapacity == 0 {
+		if defaults != nil && defaults.FailureThresholdCapacity != 0 {
+			c.FailureThresholdCapacity = defaults.FailureThresholdCapacity
+		} else {
+			c.FailureThresholdCapacity = 80
+		}
+	}
+	if c.SuccessThresholdCapacity == 0 {
+		if defaults != nil && defaults.SuccessThresholdCapacity != 0 {
+			c.SuccessThresholdCapacity = defaults.SuccessThresholdCapacity
+		} else {
+			c.SuccessThresholdCapacity = 200
+		}
+	}
 	if c.HalfOpenAfter == "" {
 		if defaults != nil && defaults.HalfOpenAfter != "" {
 			c.HalfOpenAfter = defaults.HalfOpenAfter
 		} else {
 			c.HalfOpenAfter = "5m"
+		}
+	}
+	if c.SuccessThresholdCount == 0 {
+		if defaults != nil && defaults.SuccessThresholdCount != 0 {
+			c.SuccessThresholdCount = defaults.SuccessThresholdCount
+		} else {
+			c.SuccessThresholdCount = 8
+		}
+	}
+	if c.SuccessThresholdCapacity == 0 {
+		if defaults != nil && defaults.SuccessThresholdCapacity != 0 {
+			c.SuccessThresholdCapacity = defaults.SuccessThresholdCapacity
+		} else {
+			c.SuccessThresholdCapacity = 10
 		}
 	}
 

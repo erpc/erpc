@@ -753,6 +753,7 @@ func createTestRegistry(ctx context.Context, projectID string, logger *zerolog.L
 		logger,
 		vr,
 		nil,
+		nil,
 	)
 	if err != nil {
 		panic(err)
