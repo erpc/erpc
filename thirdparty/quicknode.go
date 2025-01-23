@@ -1,6 +1,7 @@
-package vendors
+package thirdparty
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -19,7 +20,15 @@ func (v *QuicknodeVendor) Name() string {
 	return "quicknode"
 }
 
-func (v *QuicknodeVendor) OverrideConfig(upstream *common.UpstreamConfig) error {
+func (v *QuicknodeVendor) PrepareConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
+	if upstream.JsonRpc == nil {
+		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
+	}
+
+	if upstream.Endpoint == "" {
+		return fmt.Errorf("quicknode vendor requires upstream.endpoint to be defined")
+	}
+
 	return nil
 }
 

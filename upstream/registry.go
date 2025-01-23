@@ -2,15 +2,18 @@ package upstream
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"math/rand"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
-	"github.com/erpc/erpc/vendors"
+	"github.com/erpc/erpc/thirdparty"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
 
@@ -20,10 +23,12 @@ type UpstreamsRegistry struct {
 	scoreRefreshInterval time.Duration
 	logger               *zerolog.Logger
 	metricsTracker       *health.Tracker
-	clientRegistry       *ClientRegistry
-	vendorsRegistry      *vendors.VendorsRegistry
+	clientRegistry       *clients.ClientRegistry
+	vendorsRegistry      *thirdparty.VendorsRegistry
+	providersRegistry    *thirdparty.ProvidersRegistry
 	rateLimitersRegistry *RateLimitersRegistry
 	upsCfg               []*common.UpstreamConfig
+	initializer          *util.Initializer
 
 	allUpstreams []*Upstream
 	upstreamsMu  *sync.RWMutex
@@ -34,6 +39,8 @@ type UpstreamsRegistry struct {
 	sortedUpstreams map[string]map[string][]*Upstream
 	// map of upstream -> network (or *) -> method (or *) => score
 	upstreamScores map[string]map[string]map[string]float64
+
+	onUpstreamRegistered func(ups *Upstream) error
 }
 
 type UpstreamsHealth struct {
@@ -47,8 +54,9 @@ func NewUpstreamsRegistry(
 	logger *zerolog.Logger,
 	prjId string,
 	upsCfg []*common.UpstreamConfig,
-	rlr *RateLimitersRegistry,
-	vr *vendors.VendorsRegistry,
+	rr *RateLimitersRegistry,
+	vr *thirdparty.VendorsRegistry,
+	pr *thirdparty.ProvidersRegistry,
 	mt *health.Tracker,
 	scoreRefreshInterval time.Duration,
 ) *UpstreamsRegistry {
@@ -57,9 +65,10 @@ func NewUpstreamsRegistry(
 		prjId:                prjId,
 		scoreRefreshInterval: scoreRefreshInterval,
 		logger:               logger,
-		clientRegistry:       NewClientRegistry(logger),
-		rateLimitersRegistry: rlr,
+		clientRegistry:       clients.NewClientRegistry(logger, prjId),
+		rateLimitersRegistry: rr,
 		vendorsRegistry:      vr,
+		providersRegistry:    pr,
 		metricsTracker:       mt,
 		upsCfg:               upsCfg,
 		networkUpstreams:     make(map[string][]*Upstream),
@@ -67,15 +76,21 @@ func NewUpstreamsRegistry(
 		upstreamScores:       make(map[string]map[string]map[string]float64),
 		upstreamsMu:          &sync.RWMutex{},
 		networkMu:            &sync.Map{},
+		initializer:          util.NewInitializer(appCtx, logger, nil),
 	}
 }
 
 func (u *UpstreamsRegistry) Bootstrap(ctx context.Context) error {
-	err := u.registerUpstreams()
+	err := u.scheduleScoreCalculationTimers(ctx)
 	if err != nil {
 		return err
 	}
-	return u.scheduleScoreCalculationTimers(ctx)
+
+	return u.registerUpstream(u.appCtx, u.upsCfg...)
+}
+
+func (u *UpstreamsRegistry) OnUpstreamRegistered(fn func(ups *Upstream) error) {
+	u.onUpstreamRegistered = fn
 }
 
 func (u *UpstreamsRegistry) NewUpstream(
@@ -106,74 +121,21 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 	networkMu.Lock()
 	defer networkMu.Unlock()
 
-	u.upstreamsMu.RLock()
-	allUpstreams := u.allUpstreams
-	u.upstreamsMu.RUnlock()
+	allProviders := u.providersRegistry.GetAllProviders()
 
-	var upstreams []*Upstream
-	var ids []string
-	for _, ups := range allUpstreams {
-		if s, e := ups.SupportsNetwork(ctx, networkId); e == nil && s {
-			u.upstreamsMu.Lock()
-			upstreams = append(upstreams, ups)
-			ids = append(ids, ups.Config().Id)
-			u.upstreamsMu.Unlock()
-		} else if e != nil {
-			// TODO add a mechanism to re-check upstreams that failed to respond to initial SupportsNetwork (e.g. temporary network outages)
-			u.logger.Warn().Err(e).
-				Str("upstreamId", ups.Config().Id).
-				Str("networkId", networkId).
-				Msgf("failed to check if upstream supports network")
-		}
+	var tasks []*util.BootstrapTask
+	for _, p := range allProviders {
+		t := u.buildProviderBootstrapTask(p, networkId)
+		tasks = append(tasks, t)
 	}
 
-	u.logger.Debug().Str("networkId", networkId).Strs("upstreams", ids).Msgf("preparing upstreams for network")
-
-	if len(upstreams) == 0 {
-		return common.NewErrNoUpstreamsFound(u.prjId, networkId)
+	if err := u.initializer.ExecuteTasks(ctx, tasks...); err != nil {
+		u.logger.Error().
+			Err(err).
+			Str("networkId", networkId).
+			Msg("failed to execute provider bootstrap tasks")
+		return err
 	}
-
-	u.upstreamsMu.Lock()
-	u.networkUpstreams[networkId] = upstreams
-
-	if _, ok := u.sortedUpstreams[networkId]; !ok {
-		u.sortedUpstreams[networkId] = make(map[string][]*Upstream)
-	}
-	if _, ok := u.sortedUpstreams[networkId]["*"]; !ok {
-		cpUps := make([]*Upstream, len(upstreams))
-		copy(cpUps, upstreams)
-		u.sortedUpstreams[networkId]["*"] = cpUps
-	}
-	if _, ok := u.sortedUpstreams["*"]; !ok {
-		u.sortedUpstreams["*"] = make(map[string][]*Upstream)
-	}
-	if _, ok := u.sortedUpstreams["*"]["*"]; !ok {
-		cpUps := make([]*Upstream, len(upstreams))
-		copy(cpUps, upstreams)
-		u.sortedUpstreams["*"]["*"] = cpUps
-	}
-
-	// Initialize score for this or any network and any method for each upstream
-	for _, ups := range upstreams {
-		if _, ok := u.upstreamScores[ups.Config().Id]; !ok {
-			u.upstreamScores[ups.Config().Id] = make(map[string]map[string]float64)
-		}
-
-		if _, ok := u.upstreamScores[ups.Config().Id][networkId]; !ok {
-			u.upstreamScores[ups.Config().Id][networkId] = make(map[string]float64)
-		}
-		if _, ok := u.upstreamScores[ups.Config().Id][networkId]["*"]; !ok {
-			u.upstreamScores[ups.Config().Id][networkId]["*"] = 0
-		}
-
-		if _, ok := u.upstreamScores[ups.Config().Id]["*"]; !ok {
-			u.upstreamScores[ups.Config().Id]["*"] = make(map[string]float64)
-		}
-		if _, ok := u.upstreamScores[ups.Config().Id]["*"]["*"]; !ok {
-			u.upstreamScores[ups.Config().Id]["*"]["*"] = 0
-		}
-	}
-	u.upstreamsMu.Unlock()
 
 	return nil
 }
@@ -356,20 +318,209 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 	return nil
 }
 
-func (u *UpstreamsRegistry) registerUpstreams() error {
-	for _, upsCfg := range u.upsCfg {
-		upstream, err := u.NewUpstream(u.prjId, upsCfg, u.logger, u.metricsTracker)
-		if err != nil {
-			return err
+func (u *UpstreamsRegistry) registerUpstream(ctx context.Context, upsCfgs ...*common.UpstreamConfig) error {
+	tasks := make([]*util.BootstrapTask, 0)
+	for _, upsCfg := range upsCfgs {
+		tasks = append(tasks, u.buildUpstreamBootstrapTask(upsCfg))
+	}
+	return u.initializer.ExecuteTasks(ctx, tasks...)
+}
+
+func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamConfig) *util.BootstrapTask {
+	return util.NewBootstrapTask(
+		fmt.Sprintf("upstream/%s", upsCfg.Id),
+		func(ctx context.Context) error {
+			u.logger.Debug().Str("upstreamId", upsCfg.Id).Msg("attempt to bootstrap upstream")
+
+			u.upstreamsMu.RLock()
+			var ups *Upstream
+			for _, up := range u.allUpstreams {
+				if up.Config().Id == upsCfg.Id {
+					ups = up
+					break
+				}
+			}
+			u.upstreamsMu.RUnlock()
+
+			var err error
+			if ups == nil {
+				ups, err = u.NewUpstream(u.prjId, upsCfg, u.logger, u.metricsTracker)
+				if err != nil {
+					return err
+				}
+			}
+
+			err = ups.Bootstrap(ctx)
+			if err != nil {
+				return err
+			}
+			u.doRegisterBootstrappedUpstream(ups)
+
+			if u.onUpstreamRegistered != nil {
+				// TODO Refactor the upstream<->network relationship to avoid circular dependency. Then we can remove this goroutine.
+				// We need this now at the moment so that lazy-loaded networks and lazy-loaded upstreams (from Providers) can work together.
+				go func() {
+					err = u.onUpstreamRegistered(ups)
+					if err != nil {
+						u.logger.Error().Err(err).Str("upstreamId", upsCfg.Id).Msg("failed to call onUpstreamRegistered")
+					}
+				}()
+			}
+
+			u.logger.Debug().Str("upstreamId", upsCfg.Id).Msg("upstream bootstrap completed")
+			return nil
+		},
+	)
+}
+
+func (u *UpstreamsRegistry) buildProviderBootstrapTask(
+	provider *thirdparty.Provider,
+	networkId string,
+) *util.BootstrapTask {
+	taskName := fmt.Sprintf("provider/%s/network/%s", provider.Id(), networkId)
+	return util.NewBootstrapTask(
+		taskName,
+		func(ctx context.Context) error {
+			lg := u.logger.With().Str("provider", provider.Id()).Str("networkId", networkId).Logger()
+			lg.Debug().Msg("attempting to create upstream from provider")
+
+			if ok, err := provider.SupportsNetwork(ctx, networkId); err == nil && !ok {
+				lg.Debug().Msg("provider does not support network; skipping upstream creation")
+				return nil
+			} else if err != nil {
+				return err
+			}
+
+			lg.Debug().Msg("attempting to create upstream from provider")
+
+			upsCfg, err := provider.GenerateUpstreamConfig(networkId)
+			if err != nil {
+				return err
+			}
+
+			err = u.registerUpstream(ctx, upsCfg)
+			if err != nil {
+				lg.Error().Err(err).Msg("failed to bootstrap upstream from provider")
+				return err
+			}
+
+			return nil
+		},
+	)
+}
+
+func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
+	networkId := ups.NetworkId()
+	cfg := ups.Config()
+
+	u.upstreamsMu.Lock()
+	defer u.upstreamsMu.Unlock()
+
+	u.allUpstreams = append(u.allUpstreams, ups)
+
+	// Initialize the upstream's score maps
+	if _, ok := u.upstreamScores[cfg.Id]; !ok {
+		u.upstreamScores[cfg.Id] = make(map[string]map[string]float64)
+	}
+
+	// Initialize wildcard network scores
+	if _, ok := u.upstreamScores[cfg.Id]["*"]; !ok {
+		u.upstreamScores[cfg.Id]["*"] = make(map[string]float64)
+	}
+	if _, ok := u.upstreamScores[cfg.Id]["*"]["*"]; !ok {
+		u.upstreamScores[cfg.Id]["*"]["*"] = 0
+	}
+
+	// Initialize specific network scores
+	if _, ok := u.upstreamScores[cfg.Id][networkId]; !ok {
+		u.upstreamScores[cfg.Id][networkId] = make(map[string]float64)
+	}
+	if _, ok := u.upstreamScores[cfg.Id][networkId]["*"]; !ok {
+		u.upstreamScores[cfg.Id][networkId]["*"] = 0
+	}
+
+	// Initialize wildcard sorted upstreams
+	if _, ok := u.sortedUpstreams["*"]; !ok {
+		u.sortedUpstreams["*"] = make(map[string][]*Upstream)
+	}
+	if _, ok := u.sortedUpstreams["*"]["*"]; !ok {
+		u.sortedUpstreams["*"]["*"] = []*Upstream{}
+	}
+
+	// Initialize network-specific sorted upstreams
+	if _, ok := u.sortedUpstreams[networkId]; !ok {
+		u.sortedUpstreams[networkId] = make(map[string][]*Upstream)
+	}
+	if _, ok := u.sortedUpstreams[networkId]["*"]; !ok {
+		u.sortedUpstreams[networkId]["*"] = []*Upstream{}
+	}
+
+	// Add to network upstreams map
+	exists := false
+	for _, existingUps := range u.networkUpstreams[networkId] {
+		if existingUps.Config().Id == cfg.Id {
+			exists = true
+			break
 		}
-		u.allUpstreams = append(u.allUpstreams, upstream)
+	}
+	if !exists {
+		u.networkUpstreams[networkId] = append(u.networkUpstreams[networkId], ups)
 	}
 
-	if len(u.allUpstreams) == 0 {
-		return common.NewErrNoUpstreamsDefined(u.prjId)
+	// Add to wildcard sorted upstreams if not already present
+	found := false
+	for _, existingUps := range u.sortedUpstreams["*"]["*"] {
+		if existingUps.Config().Id == cfg.Id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		u.sortedUpstreams["*"]["*"] = append(u.sortedUpstreams["*"]["*"], ups)
 	}
 
-	return nil
+	for method, netUps := range u.sortedUpstreams["*"] {
+		methodUpsFound := false
+		for _, existingUps := range netUps {
+			if existingUps.Config().Id == cfg.Id {
+				methodUpsFound = true
+				break
+			}
+		}
+		if !methodUpsFound {
+			u.sortedUpstreams["*"][method] = append(u.sortedUpstreams["*"][method], ups)
+		}
+	}
+
+	// Add to network-specific sorted upstreams if not already present
+	found = false
+	for _, existingUps := range u.sortedUpstreams[networkId]["*"] {
+		if existingUps.Config().Id == cfg.Id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		u.sortedUpstreams[networkId]["*"] = append(u.sortedUpstreams[networkId]["*"], ups)
+	} else {
+		for method, netUps := range u.sortedUpstreams[networkId] {
+			methodUpsFound := false
+			for _, existingUps := range netUps {
+				if existingUps.Config().Id == cfg.Id {
+					methodUpsFound = true
+					break
+				}
+			}
+			if !methodUpsFound {
+				u.sortedUpstreams[networkId][method] = append(u.sortedUpstreams[networkId][method], ups)
+			}
+		}
+	}
+
+	u.logger.Debug().
+		Str("upstreamId", cfg.Id).
+		Str("networkId", networkId).
+		Msg("upstream registered and initialized in registry")
 }
 
 func (u *UpstreamsRegistry) scheduleScoreCalculationTimers(ctx context.Context) error {

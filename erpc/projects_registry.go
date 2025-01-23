@@ -2,14 +2,16 @@ package erpc
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
-	"github.com/erpc/erpc/vendors"
 	"github.com/rs/zerolog"
 )
 
@@ -21,7 +23,7 @@ type ProjectsRegistry struct {
 	evmJsonRpcCache      *EvmJsonRpcCache
 	preparedProjects     map[string]*PreparedProject
 	staticProjects       []*common.ProjectConfig
-	vendorsRegistry      *vendors.VendorsRegistry
+	vendorsRegistry      *thirdparty.VendorsRegistry
 }
 
 func NewProjectsRegistry(
@@ -30,7 +32,7 @@ func NewProjectsRegistry(
 	staticProjects []*common.ProjectConfig,
 	evmJsonRpcCache *EvmJsonRpcCache,
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
-	vendorsRegistry *vendors.VendorsRegistry,
+	vendorsRegistry *thirdparty.VendorsRegistry,
 ) (*ProjectsRegistry, error) {
 	reg := &ProjectsRegistry{
 		appCtx:               appCtx,
@@ -43,12 +45,7 @@ func NewProjectsRegistry(
 	}
 
 	for _, prjCfg := range staticProjects {
-		prj, err := reg.RegisterProject(prjCfg)
-		if err != nil {
-			return nil, err
-		}
-
-		err = prj.Bootstrap(appCtx)
+		_, err := reg.RegisterProject(prjCfg)
 		if err != nil {
 			return nil, err
 		}
@@ -57,15 +54,35 @@ func NewProjectsRegistry(
 	return reg, nil
 }
 
+func (r *ProjectsRegistry) Bootstrap(appCtx context.Context) error {
+	wg := sync.WaitGroup{}
+	wg.Add(len(r.preparedProjects))
+	var errs []error
+	for _, prj := range r.preparedProjects {
+		go func(prj *PreparedProject) {
+			defer wg.Done()
+			err := prj.Bootstrap(appCtx)
+			if err != nil {
+				errs = append(errs, err)
+			}
+		}(prj)
+	}
+	wg.Wait()
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
 func (r *ProjectsRegistry) GetProject(projectId string) (project *PreparedProject, err error) {
 	if projectId == "" {
 		return nil, nil
 	}
 	project, exists := r.preparedProjects[projectId]
 	if !exists {
-		project, err = r.loadProject(projectId)
+		return nil, common.NewErrProjectNotFound(projectId)
 	}
-	return
+	return project, nil
 }
 
 func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*PreparedProject, error) {
@@ -84,6 +101,15 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		return nil, err
 	}
 	metricsTracker := health.NewTracker(prjCfg.Id, wsDuration)
+	providersRegistry, err := thirdparty.NewProvidersRegistry(
+		&lg,
+		r.vendorsRegistry,
+		prjCfg.Providers,
+		prjCfg.UpstreamDefaults,
+	)
+	if err != nil {
+		return nil, err
+	}
 	upstreamsRegistry := upstream.NewUpstreamsRegistry(
 		r.appCtx,
 		&lg,
@@ -91,18 +117,9 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		prjCfg.Upstreams,
 		r.rateLimitersRegistry,
 		r.vendorsRegistry,
+		providersRegistry,
 		metricsTracker,
 		1*time.Second,
-	)
-	err = upstreamsRegistry.Bootstrap(r.appCtx)
-	if err != nil {
-		return nil, err
-	}
-	networksRegistry := NewNetworksRegistry(
-		upstreamsRegistry,
-		metricsTracker,
-		r.evmJsonRpcCache,
-		r.rateLimitersRegistry,
 	)
 
 	var consumerAuthRegistry *auth.AuthRegistry
@@ -114,21 +131,39 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 	}
 
 	pp := &PreparedProject{
-		Config: prjCfg,
-		Logger: &lg,
-
-		appCtx:               r.appCtx,
-		projectMu:            &sync.RWMutex{},
-		networkInitializers:  &sync.Map{},
-		consumerAuthRegistry: consumerAuthRegistry,
-		networksRegistry:     networksRegistry,
+		Config:               prjCfg,
+		Logger:               &lg,
 		upstreamsRegistry:    upstreamsRegistry,
+		consumerAuthRegistry: consumerAuthRegistry,
 		rateLimitersRegistry: r.rateLimitersRegistry,
-		evmJsonRpcCache:      r.evmJsonRpcCache,
+		cfgMu:                sync.RWMutex{},
 	}
-	pp.Networks = make(map[string]*Network)
-
+	pp.networksRegistry = NewNetworksRegistry(
+		pp,
+		r.appCtx,
+		upstreamsRegistry,
+		metricsTracker,
+		r.evmJsonRpcCache,
+		r.rateLimitersRegistry,
+		&lg,
+	)
 	r.preparedProjects[prjCfg.Id] = pp
+
+	// TODO can we refactor the architecture so this relation is more straightforward?
+	// The main challenge is for some upstreams we are detecting network (chainId) lazily therefore we can't set it before initializing the upstream.
+	// Should we eliminate chainid lazy detection (that would be a bummer and a breaking change :D)?
+	upstreamsRegistry.OnUpstreamRegistered(func(ups *upstream.Upstream) error {
+		ntwId := ups.NetworkId()
+		if ntwId == "" {
+			return fmt.Errorf("upstream %s has no network id set yet", ups.Config().Id)
+		}
+		ntw, err := pp.networksRegistry.GetNetwork(ntwId)
+		if err != nil {
+			return err
+		}
+		ups.SetNetworkConfig(ntw.cfg)
+		return nil
+	})
 
 	r.logger.Info().Msgf("registered project %s", prjCfg.Id)
 
@@ -141,16 +176,4 @@ func (r *ProjectsRegistry) GetAll() []*PreparedProject {
 		projects = append(projects, project)
 	}
 	return projects
-}
-
-func (r *ProjectsRegistry) loadProject(projectId string) (*PreparedProject, error) {
-	for _, prjCfg := range r.staticProjects {
-		if prjCfg.Id == projectId {
-			return r.RegisterProject(prjCfg)
-		}
-	}
-
-	// TODO implement dynamic project config loading from DB
-
-	return nil, common.NewErrProjectNotFound(projectId)
 }

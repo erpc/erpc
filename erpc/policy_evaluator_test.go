@@ -8,12 +8,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/common/script"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
-	"github.com/erpc/erpc/vendors"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1709,14 +1710,23 @@ func TestPolicyEvaluator(t *testing.T) {
 }
 
 func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.Upstream, *upstream.Upstream, *upstream.Upstream) {
-	clr := upstream.NewClientRegistry(&log.Logger)
+	clr := clients.NewClientRegistry(&log.Logger, "prjA")
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 		Budgets: []*common.RateLimitBudgetConfig{},
 	}, &log.Logger)
 	if err != nil {
 		t.Fatal(err)
 	}
-	vndr := vendors.NewVendorsRegistry()
+	vndr := thirdparty.NewVendorsRegistry()
+	pr, err := thirdparty.NewProvidersRegistry(
+		&log.Logger,
+		vndr,
+		[]*common.ProviderConfig{},
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	mt := health.NewTracker("prjA", time.Minute)
 
 	upstreamConfigs := []*common.UpstreamConfig{
@@ -1753,7 +1763,10 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 		"prjA",
 		upstreamConfigs,
 		rlr,
-		vndr, mt, 1*time.Second,
+		vndr,
+		pr,
+		mt,
+		1*time.Second,
 	)
 	err = upr.Bootstrap(ctx)
 	if err != nil {
@@ -1815,8 +1828,8 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 		}
 		pup3.Client = cl3
 	}
-
 	ntw, err := NewNetwork(
+		ctx,
 		&log.Logger,
 		"prjA",
 		&common.NetworkConfig{

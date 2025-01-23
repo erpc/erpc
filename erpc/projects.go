@@ -2,94 +2,103 @@ package erpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 	"sync"
 
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/upstream"
+	"github.com/erpc/erpc/util"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 )
 
 type PreparedProject struct {
-	Config   *common.ProjectConfig
-	Networks map[string]*Network
-	Logger   *zerolog.Logger
-
-	appCtx               context.Context
-	projectMu            *sync.RWMutex
-	networkInitializers  *sync.Map
+	Config               *common.ProjectConfig
+	Logger               *zerolog.Logger
 	networksRegistry     *NetworksRegistry
 	consumerAuthRegistry *auth.AuthRegistry
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	upstreamsRegistry    *upstream.UpstreamsRegistry
-	evmJsonRpcCache      *EvmJsonRpcCache
+	cfgMu                sync.RWMutex
 }
 
-type initOnce struct {
-	once sync.Once
-	err  error
+type ProjectHealthInfo struct {
+	upstream.UpstreamsHealth
+	Initialization *util.InitializerStatus `json:"initialization,omitempty"`
 }
 
-func (p *PreparedProject) Bootstrap(ctx context.Context) error {
-	p.Logger.Debug().Msgf("initializing all staticly-defined networks")
-
+func (p *PreparedProject) Bootstrap(appCtx context.Context) error {
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+	var errs []error
+	ermu := &sync.Mutex{}
 	go func() {
-		p.projectMu.RLock()
-		nl := p.Config.Networks
-		p.projectMu.RUnlock()
-		for _, nwCfg := range nl {
-			_, err := p.initializeNetwork(ctx, nwCfg.NetworkId())
-			if err != nil {
-				p.Logger.Error().Err(err).Msgf("failed to initialize network %s", nwCfg.NetworkId())
-			}
+		defer wg.Done()
+		err := p.upstreamsRegistry.Bootstrap(appCtx)
+		if err != nil {
+			ermu.Lock()
+			errs = append(errs, err)
+			ermu.Unlock()
 		}
 	}()
-
+	go func() {
+		defer wg.Done()
+		err := p.networksRegistry.Bootstrap(appCtx)
+		if err != nil {
+			ermu.Lock()
+			errs = append(errs, err)
+			ermu.Unlock()
+		}
+	}()
+	wg.Wait()
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
 	return nil
 }
 
-func (p *PreparedProject) GetNetwork(ctx context.Context, networkId string) (*Network, error) {
-	p.projectMu.RLock()
-	network, ok := p.Networks[networkId]
-	p.projectMu.RUnlock()
-	if ok {
-		return network, nil
-	}
-
-	value, _ := p.networkInitializers.LoadOrStore(networkId, &initOnce{})
-	initializer := value.(*initOnce)
-
-	initializer.once.Do(func() {
-		var err error
-		network, err := p.initializeNetwork(ctx, networkId)
-		if err != nil {
-			initializer.err = err
-			return
-		}
-
-		p.projectMu.Lock()
-		p.Networks[networkId] = network
-		p.projectMu.Unlock()
-	})
-
-	if initializer.err != nil {
-		return nil, initializer.err
-	}
-
-	p.projectMu.RLock()
-	network = p.Networks[networkId]
-	p.projectMu.RUnlock()
-
-	return network, nil
+func (p *PreparedProject) GetNetwork(networkId string) (*Network, error) {
+	return p.networksRegistry.GetNetwork(networkId)
 }
 
-func (p *PreparedProject) GatherHealthInfo() (*upstream.UpstreamsHealth, error) {
-	return p.upstreamsRegistry.GetUpstreamsHealth()
+// ExposeNetworkConfig is used to add lazy-loaded network configs to the project
+// so that other components can use them, also is returned via erpc_project admin API.
+func (p *PreparedProject) ExposeNetworkConfig(nwCfg *common.NetworkConfig) {
+	p.cfgMu.Lock()
+	defer p.cfgMu.Unlock()
+
+	if p.Config.Networks == nil {
+		p.Config.Networks = []*common.NetworkConfig{}
+	}
+	var existing *common.NetworkConfig
+	for _, nw := range p.Config.Networks {
+		if nw.NetworkId() == nwCfg.NetworkId() {
+			existing = nw
+			break
+		}
+	}
+	if existing == nil {
+		p.Config.Networks = append(p.Config.Networks, nwCfg)
+	}
+}
+
+func (p *PreparedProject) GetNetworks() []*Network {
+	return p.networksRegistry.GetNetworks()
+}
+
+func (p *PreparedProject) GatherHealthInfo() (*ProjectHealthInfo, error) {
+	upstreamsHealth, err := p.upstreamsRegistry.GetUpstreamsHealth()
+	if err != nil {
+		return nil, err
+	}
+	return &ProjectHealthInfo{
+		UpstreamsHealth: *upstreamsHealth,
+		Initialization:  p.networksRegistry.initializer.Status(),
+	}, nil
 }
 
 func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, nq *common.NormalizedRequest, ap *auth.AuthPayload) error {
@@ -104,8 +113,7 @@ func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, nq *common.N
 }
 
 func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-	// We use app context here so that network lazy loading runs within app context not request, as we want it to continue even if current request is cancelled/timed out
-	network, err := p.GetNetwork(p.appCtx, networkId)
+	network, err := p.networksRegistry.GetNetwork(networkId)
 	if err != nil {
 		return nil, err
 	}
@@ -159,69 +167,6 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	}
 
 	return nil, err
-}
-
-func (p *PreparedProject) initializeNetwork(ctx context.Context, networkId string) (*Network, error) {
-	p.Logger.Info().Str("networkId", networkId).Msgf("initializing network")
-
-	// 1) Find all upstreams that support this network
-	err := p.upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkId)
-	if err != nil {
-		return nil, err
-	}
-
-	// 2) Find if any network configs defined on project-level
-	var nwCfg *common.NetworkConfig
-	for _, n := range p.Config.Networks {
-		if n.NetworkId() == networkId {
-			nwCfg = n
-			break
-		}
-	}
-
-	if nwCfg == nil {
-		nwCfg = &common.NetworkConfig{}
-		s := strings.Split(networkId, ":")
-		if len(s) != 2 {
-			// TODO use more appropriate error for non-evm
-			return nil, common.NewErrInvalidEvmChainId(networkId)
-		}
-		nwCfg.Architecture = common.NetworkArchitecture(s[0])
-		switch nwCfg.Architecture {
-		case common.ArchitectureEvm:
-			c, e := strconv.Atoi(s[1])
-			if e != nil {
-				return nil, e
-			}
-			nwCfg.Evm = &common.EvmNetworkConfig{
-				ChainId: int64(c),
-			}
-		}
-		nwCfg.SetDefaults(p.Config.Upstreams, p.Config.NetworkDefaults)
-		p.projectMu.Lock()
-		if p.Config.Networks == nil || len(p.Config.Networks) == 0 {
-			p.Config.Networks = []*common.NetworkConfig{}
-		}
-		p.Config.Networks = append(p.Config.Networks, nwCfg)
-		p.projectMu.Unlock()
-	}
-
-	// 3) Register and prepare the network in registry
-	nw, err := p.networksRegistry.RegisterNetwork(
-		p.Logger,
-		p.Config,
-		nwCfg,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	err = nw.Bootstrap(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return nw, nil
 }
 
 func (p *PreparedProject) acquireRateLimitPermit(req *common.NormalizedRequest) error {

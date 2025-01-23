@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog"
@@ -109,6 +110,8 @@ func ResetGock() {
 		shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
 		return shouldMakeRealCall
 	})
+
+	time.Sleep(100 * time.Millisecond)
 }
 
 func SafeReadBody(request *http.Request) string {

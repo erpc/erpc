@@ -21,6 +21,7 @@ require (
 	github.com/spf13/afero v1.11.0
 	github.com/spruceid/siwe-go v0.2.1
 	github.com/stretchr/testify v1.9.0
+	github.com/urfave/cli/v3 v3.0.0-beta1
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -62,7 +63,6 @@ require (
 	github.com/relvacode/iso8601 v1.5.0 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
-	github.com/urfave/cli/v3 v3.0.0-beta1 // indirect
 	golang.org/x/arch v0.0.0-20210923205945-b76863e36670 // indirect
 	golang.org/x/crypto v0.31.0 // indirect
 	golang.org/x/text v0.21.0 // indirect

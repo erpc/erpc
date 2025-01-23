@@ -5,6 +5,9 @@ module.exports = {
 	upstreams: {
 		title: "Upstreams",
 	},
+	providers: {
+		title: "Providers",
+	},
 	"selection-policies": {
 		title: "Selection policies",
 	},

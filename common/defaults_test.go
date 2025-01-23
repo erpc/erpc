@@ -121,3 +121,36 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 		assert.Nil(t, network.Failsafe.Retry)
 	})
 }
+
+func TestSetDefaults_UpstreamConfig(t *testing.T) {
+	t.Run("SchemeBasedUpstreamConfigConversionToProvider", func(t *testing.T) {
+		cfg := &Config{
+			Projects: []*ProjectConfig{
+				{
+					Id: "test1",
+					Upstreams: []*UpstreamConfig{
+						{
+							Endpoint: "http://rpc1.localhost",
+						},
+						{
+							Endpoint: "alchemy://some_test_api",
+						},
+						{
+							Endpoint: "http://rpc3.localhost",
+						},
+					},
+				},
+			},
+		}
+		err := cfg.SetDefaults()
+		assert.Nil(t, err)
+		assert.Len(t, cfg.Projects[0].Upstreams, 2)
+		assert.Len(t, cfg.Projects[0].Providers, 1)
+		assert.EqualValues(t, "alchemy", cfg.Projects[0].Providers[0].Vendor)
+		assert.ObjectsAreEqual(map[string]string{
+			"apiKey": "some_test_api",
+		}, cfg.Projects[0].Providers[0].Settings)
+		assert.EqualValues(t, "http://rpc1.localhost", cfg.Projects[0].Upstreams[0].Endpoint)
+		assert.EqualValues(t, "http://rpc3.localhost", cfg.Projects[0].Upstreams[1].Endpoint)
+	})
+}

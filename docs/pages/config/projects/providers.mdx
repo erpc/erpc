@@ -1,0 +1,487 @@
+---
+description: Providers make it easy to add well-known third-parties RPC endpoints quickly...
+---
+
+import { Callout, Tabs, Tab } from "nextra/components";
+
+## Providers
+
+Providers make it easy to add well-known third-parties RPC endpoints quickly. Here are the supported providers:
+
+- [`alchemy`](#alchemy-json-rpc) Accepts alchemy.com api key and automatically adds all their EVM chains.
+- [`drpc`](#drpc-json-rpc) Accepts drpc.org api key and automatically adds all their EVM chains.
+- [`blastapi`](#blastapi-json-rpc) Accepts blastapi.io api key and automatically adds all their EVM chains.
+- [`thirdweb`](#thirdweb-json-rpc) Accepts thirdweb.com client-id and automatically adds all their EVM chains.
+- [`envio`](#envio-json-rpc) Accepts envio.dev rpc endpoint and automatically adds all chains by HyperRPC.
+- [`pimlico`](#pimlico-json-rpc) Accepts pimlico.io rpc endpoint for account-abstraction (ERC-4337) support.
+- [`etherspot`](#etherspot-json-rpc) Accepts etherspot.io rpc endpoint for account-abstraction (ERC-4337) support.
+- [`infura`](#infura-json-rpc) Accepts infura.io api key and automatically adds all their EVM chains.
+
+
+<Callout type='info'>
+  eRPC supports **any EVM-compatible** JSON-RPC endpoint when using [`evm` type](/config/projects/upstreams). 
+</Callout>
+
+## Simple endpoints
+
+#### `alchemy`
+
+Built for [Alchemy](https://alchemy.com) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - id: my-alchemy
+        endpoint: alchemy://YOUR_ALCHEMY_API_KEY
+        # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          id: "my-alchemy",
+          endpoint: "alchemy://YOUR_ALCHEMY_API_KEY",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+#### `drpc`
+
+Built for [dRPC](https://drpc.org) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>  
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - id: my-drpc
+        endpoint: drpc://YOUR_DRPC_API_KEY
+        # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          id: "my-drpc",
+          endpoint: "drpc://YOUR_DRPC_API_KEY",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+#### `blastapi`
+
+Built for [BlastAPI](https://blastapi.io) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - id: my-blastapi
+        endpoint: blastapi://YOUR_BLASTAPI_API_KEY
+        # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          id: "my-blastapi",
+          endpoint: "blastapi://YOUR_BLASTAPI_API_KEY",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+#### `infura`
+
+Built for [Infura](https://www.infura.io/) 3rd-party provider to make it easier to import "all supported evm chains" with just an API-KEY.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - id: my-infura
+        endpoint: infura://YOUR_INFURA_API_KEY
+        # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          id: "my-infura",
+          endpoint: "infura://YOUR_INFURA_API_KEY",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+#### `thirdweb`
+
+Built for [Thirdweb](https://thirdweb.com/chainlist) 3rd-party provider to make it easier to import "all supported evm chains" with just a CLIENT-ID.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - id: my-thirdweb
+        endpoint: thirdweb://YOUR_THIRDWEB_CLIENT_ID
+        # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          id: "my-thirdweb",
+          endpoint: "thirdweb://YOUR_THIRDWEB_CLIENT_ID",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+For production traffic consult with Thirdweb team about the chains you are goin to use and amount of traffic you expect to handle.
+
+#### `envio`
+
+Envio [HyperRPC](https://docs.envio.dev/docs/HyperSync/hyperrpc-supported-networks) service provides a higher-performance alternative for certain read methods. When handling requests if a [method is supported by HyperRPC](https://docs.envio.dev/docs/HyperSync/overview-hyperrpc), then this upstream may be used.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - id: envio-public
+        endpoint: envio://rpc.hypersync.xyz
+        # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          id: "envio-public",
+          endpoint: "envio://rpc.hypersync.xyz",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+<Callout type='info'>
+  For indexing use-cases it is recommended to this upstream. This will automatically add all supported EVM chains by HyperRPC.
+</Callout>
+
+#### `pimlico`
+
+[Pimlico](https://pimlico.io) adds account-abstraction (ERC-4337) support to your eRPC instance. With this upstream added when a AA-related request arrives it'll be forwarded to Pimlico, which allows you to use the same RPC endpoint for both usual eth_* methods along with ERC-4337 methods.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - id: pimlico-public
+        endpoint: pimlico://public
+        # Or provide your API-KEY as:
+        # endpoint: pimlico://xxxxxmy-api-key
+        # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          id: "pimlico-public",
+          endpoint: "pimlico://public",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+#### `etherspot`
+
+[Etherspot](https://etherspot.io/) adds account-abstraction (ERC-4337) support to your eRPC instance. With this upstream added when a AA-related request arrives it'll be forwarded to Etherspot, which allows you to use the same RPC endpoint for both usual eth_* methods along with ERC-4337 methods.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - id: etherspot-public
+        endpoint: etherspot://public
+        # Or provide your API-KEY as:
+        # endpoint: etherspot://xxxxxmy-api-key
+        # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          id: "etherspot-public",
+          endpoint: "etherspot://public",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+## Advanced config
+
+You can use dedicated `providers:` config to customize per-network configurations (e.g. different config for Alchemy eth-mainnet vs Alchemy polygon) as follows:
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    providers:
+      - id: alchemy-prod # (optional) Unique ID that will be prefixed to the dynamically generated upstream ID
+        vendor: alchemy  # (REQUIRED) Defines the provider type
+        settings:        # (optional) Provider-specific settings
+          apiKey: xxxxx
+        onlyNetworks:    # (optional) If you want to limit the lazy-loaded networks (instead of loading all supported chains)
+          - evm:1
+          - evm:137
+        # (optional) If you want to customize the dynamically generated upstream ID
+        upstreamIdTemplate: "<PROVIDER>-<NETWORK>"
+        # (optional) Customize upstream configs for specific networks:
+        #   - The key must be a networkId, and it supports matcher syntax (https://docs.erpc.cloud/config/matcher).
+        #   - The value is a typical upstream config (https://docs.erpc.cloud/config/projects/upstreams#config).
+        overrides:
+          "evm:1":
+            rateLimitBudget: # ...
+            jsonRpc: # ...
+            ignoreMethods: # ...
+            allowMethods: # ...
+            failsafe: # ...
+          "evm:*":
+            failsafe: # ...
+          "evm:123|evm:10":
+            failsafe: # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      providers: [
+        {
+          // (optional) Unique ID that will be prefixed to the dynamically generated upstream ID:
+          id: "alchemy-prod",
+
+          // (REQUIRED) Defines the provider type:
+          vendor: "alchemy",
+          
+          // (optional) Provider-specific settings:
+          settings: {
+            apiKey: "xxxx",
+          },
+
+          // (optional) If you want to limit the lazy-loaded networks (instead of loading all supported chains):
+          onlyNetworks: [
+            "evm:1",
+            "evm:137",
+          ],
+
+          // (optional) If you want to customize the dynamically generated upstream ID:
+          upstreamIdTemplate: "<PROVIDER>-<NETWORK>",
+
+          // (optional) Customize upstream configs for specific networks:
+          overrides: {
+            "evm:1": {
+              rateLimitBudget: "...",
+              jsonRpc: {
+                // ...
+              },
+              ignoreMethods: ["..."],
+              allowMethods: ["..."],
+              failsafe: {
+                // ...
+              },
+            },
+            "evm:*": {
+              // ...
+            },
+            "evm:123|evm:10": {
+              // ...
+            },
+          },
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+#### Vendor settings reference
+
+Here is a reference of all the settings you can use for each vendor:
+```yaml filename="erpc.yaml"
+# ...
+providers:
+  - vendor: alchemy
+    settings:
+      apiKey: xxxxx
+  - vendor: blastapi
+    settings:
+      apiKey: xxxxx
+  - vendor: drpc
+    settings:
+      apiKey: xxxxx
+  - vendor: envio
+    settings:
+      rootDomain: xxxxx # (optional) default: rpc.hypersync.xyz
+  - vendor: etherspot
+    settings:
+      apiKey: xxxxx
+  - vendor: infura
+    settings:
+      apiKey: xxxxx
+  - vendor: llama
+    settings:
+      apiKey: xxxxx
+  - vendor: pimlico
+    settings:
+      apiKey: xxxxx # can be "public" or your API-KEY
+  - vendor: thirdweb
+    settings:
+      clientId: xxxxx
+```
