@@ -54,10 +54,7 @@ func NewUpstream(
 	if err != nil {
 		return nil, err
 	}
-	policiesArray := []failsafe.Policy[*common.NormalizedResponse]{}
-	for _, policy := range policiesMap {
-		policiesArray = append(policiesArray, policy)
-	}
+	policiesArray := ToPolicyArray(policiesMap, "retry", "circuitBreaker", "hedge", "timeout")
 
 	var timeoutDuration *time.Duration
 	if cfg.Failsafe != nil && cfg.Failsafe.Timeout != nil {

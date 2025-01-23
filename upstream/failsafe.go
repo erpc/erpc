@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/consensus"
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/failsafe-go/failsafe-go/circuitbreaker"
 	"github.com/failsafe-go/failsafe-go/hedgepolicy"
@@ -24,8 +25,7 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity s
 
 	lg := logger.With().Str("scope", string(scope)).Str("entity", entity).Logger()
 
-	// For network-level we want the timeout to apply to the overall lifecycle
-	if fsCfg.Timeout != nil && scope == common.ScopeNetwork {
+	if fsCfg.Timeout != nil {
 		var err error
 		p, err := createTimeoutPolicy(&lg, entity, fsCfg.Timeout)
 		if err != nil {
@@ -43,15 +43,22 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity s
 		policies["retry"] = p
 	}
 
-	// CircuitBreaker does not make sense for network-level requests
-	if scope == common.ScopeUpstream {
-		if fsCfg.CircuitBreaker != nil {
-			p, err := createCircuitBreakerPolicy(&lg, entity, fsCfg.CircuitBreaker)
-			if err != nil {
-				return nil, err
-			}
-			policies["cb"] = p
+	if fsCfg.CircuitBreaker != nil {
+		// CircuitBreaker does not make sense for network-level requests
+		if scope != common.ScopeUpstream {
+			return nil, common.NewErrFailsafeConfiguration(
+				errors.New("circuit breaker does not make sense for network-level requests"),
+				map[string]interface{}{
+					"entity": entity,
+					"policy": fsCfg.CircuitBreaker,
+				},
+			)
 		}
+		p, err := createCircuitBreakerPolicy(&lg, entity, fsCfg.CircuitBreaker)
+		if err != nil {
+			return nil, err
+		}
+		policies["circuitBreaker"] = p
 	}
 
 	if fsCfg.Hedge != nil {
@@ -62,18 +69,40 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity s
 		policies["hedge"] = p
 	}
 
-	// For upstream-level we want the timeout to apply to each individual request towards upstream
-	if fsCfg.Timeout != nil && scope == common.ScopeUpstream {
-		var err error
-		p, err := createTimeoutPolicy(&lg, entity, fsCfg.Timeout)
+	if fsCfg.Consensus != nil {
+		if scope != common.ScopeNetwork {
+			return nil, common.NewErrFailsafeConfiguration(
+				errors.New("consensus does not make sense for upstream-level requests"),
+				map[string]interface{}{
+					"entity": entity,
+					"policy": fsCfg.Consensus,
+				},
+			)
+		}
+		p, err := createConsensusPolicy(&lg, entity, fsCfg.Consensus)
 		if err != nil {
 			return nil, err
 		}
-
-		policies["timeout"] = p
+		policies["consensus"] = p
 	}
 
 	return policies, nil
+}
+
+func ToPolicyArray(policies map[string]failsafe.Policy[*common.NormalizedResponse], preferredOrder ...string) []failsafe.Policy[*common.NormalizedResponse] {
+	pls := make([]failsafe.Policy[*common.NormalizedResponse], 0, len(policies))
+
+	for _, policy := range preferredOrder {
+		if p, ok := policies[policy]; ok {
+			pls = append(pls, p)
+		}
+	}
+
+	for _, p := range policies {
+		pls = append(pls, p)
+	}
+
+	return pls
 }
 
 func createCircuitBreakerPolicy(logger *zerolog.Logger, entity string, cfg *common.CircuitBreakerPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
@@ -445,6 +474,30 @@ func createTimeoutPolicy(logger *zerolog.Logger, entity string, cfg *common.Time
 	}
 
 	return builder.Build(), nil
+}
+
+func createConsensusPolicy(logger *zerolog.Logger, entity string, cfg *common.ConsensusPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+	if cfg == nil {
+		// No consensus config given, so no policy
+		return nil, nil
+	}
+
+	builder := consensus.NewConsensusPolicyBuilder[*common.NormalizedResponse]()
+	builder = builder.WithRequiredParticipants(cfg.RequiredParticipants)
+	builder = builder.WithAgreementThreshold(cfg.AgreementThreshold)
+	builder = builder.WithDisputeBehavior(cfg.DisputeBehavior)
+	builder = builder.WithPunishMisbehavior(cfg.PunishMisbehavior)
+	builder = builder.WithFailureBehavior(cfg.FailureBehavior)
+	builder = builder.WithLowParticipantsBehavior(cfg.LowParticipantsBehavior)
+
+	builder.OnAgreement(func(event failsafe.ExecutionEvent[*common.NormalizedResponse]) {
+		logger.Debug().
+			Str("entity", entity).
+			Msg("spawning additional consensus request")
+	})
+
+	p := builder.Build()
+	return p, nil
 }
 
 func TranslateFailsafeError(scope common.Scope, upstreamId string, method string, execErr error, startTime *time.Time) error {

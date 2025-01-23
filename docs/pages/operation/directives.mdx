@@ -49,6 +49,26 @@ curl --location 'http://localhost:4000/main/evm/42161?retry-empty=false'
 # ...
 ```
 
+You can set this directive on network-wide configuration so that it applies to all requests:
+
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    
+    # To apply to all networks in this project:
+    networkDefaults:
+      directiveDefaults:
+        retryEmpty: false # (default: true)
+    
+    # For a specific network:
+    networks:
+      - type: evm
+        evm:
+          chainId: 137
+        directiveDefaults:
+          retryEmpty: false # (default: true)
+```
+
 ## Retry pending transactions
 
 By default requests towards pending transactions will be retried until tx is included (blockNumber is not `null`), and fail if even after all retries blockNumber is still null.
@@ -85,6 +105,26 @@ curl --location 'http://localhost:4000/main/evm/42161?retry-pending=false'
 <Callout type="info">
     Pending transactions (with blockNumber of `null`) are not stored in [cache](/config/database#evmjsonrpccache) because they are not guaranteed to be included in any block.
 </Callout>
+
+You can set this directive on network-wide configuration so that it applies to all requests:
+
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    # To apply to all networks in this project:
+    networkDefaults:
+      directiveDefaults:
+        retryPending: false # (default: true)
+    
+    # For a specific network:
+    networks:
+      - type: evm
+        evm:
+          chainId: 137
+        directiveDefaults:
+          retryPending: false # (default: true)
+
+```
 
 ## Skip cache read
 
