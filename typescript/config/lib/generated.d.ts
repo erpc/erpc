@@ -96,6 +96,9 @@ export interface RedisConnectorConfig {
     db: number;
     tls?: TLSConfig;
     connPoolSize: number;
+    initTimeout?: number;
+    getTimeout?: number;
+    setTimeout?: number;
 }
 export interface DynamoDBConnectorConfig {
     table: string;
@@ -106,12 +109,18 @@ export interface DynamoDBConnectorConfig {
     rangeKeyName: string;
     reverseIndexName: string;
     ttlAttributeName: string;
+    initTimeout?: number;
+    getTimeout?: number;
+    setTimeout?: number;
 }
 export interface PostgreSQLConnectorConfig {
     connectionUri: string;
     table: string;
     minConns?: number;
     maxConns?: number;
+    initTimeout?: number;
+    getTimeout?: number;
+    setTimeout?: number;
 }
 export interface AwsAuthConfig {
     mode: 'file' | 'env' | 'secret';
@@ -124,6 +133,7 @@ export interface ProjectConfig {
     id: string;
     auth?: AuthConfig;
     cors?: CORSConfig;
+    providers: (ProviderConfig | undefined)[];
     upstreamDefaults?: UpstreamConfig;
     upstreams: (UpstreamConfig | undefined)[];
     networkDefaults?: NetworkDefaults;
@@ -144,6 +154,19 @@ export interface CORSConfig {
     exposedHeaders: string[];
     allowCredentials?: boolean;
     maxAge: number;
+}
+export type VendorSettings = {
+    [key: string]: any;
+};
+export interface ProviderConfig {
+    id?: string;
+    vendor: string;
+    settings?: VendorSettings;
+    onlyNetworks?: string[];
+    upstreamIdTemplate?: string;
+    overrides?: {
+        [key: string]: UpstreamConfig | undefined;
+    };
 }
 export interface UpstreamConfig {
     id?: string;
@@ -367,17 +390,12 @@ export declare const ScopeNetwork: Scope;
 export declare const ScopeUpstream: Scope;
 export type UpstreamType = string;
 export declare const UpstreamTypeEvm: UpstreamType;
-export declare const UpstreamTypeEvmAlchemy: UpstreamType;
-export declare const UpstreamTypeEvmDrpc: UpstreamType;
-export declare const UpstreamTypeEvmBlastapi: UpstreamType;
-export declare const UpstreamTypeEvmEnvio: UpstreamType;
-export declare const UpstreamTypeEvmPimlico: UpstreamType;
-export declare const UpstreamTypeEvmThirdweb: UpstreamType;
-export declare const UpstreamTypeEvmEtherspot: UpstreamType;
-export declare const UpstreamTypeEvmInfura: UpstreamType;
 export type EvmSyncingState = number;
 export declare const EvmSyncingStateUnknown: EvmSyncingState;
 export declare const EvmSyncingStateSyncing: EvmSyncingState;
 export declare const EvmSyncingStateNotSyncing: EvmSyncingState;
 export type Upstream = any;
+export interface FakeUpstream {
+}
+export type Vendor = any;
 //# sourceMappingURL=generated.d.ts.map

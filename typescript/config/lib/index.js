@@ -38,14 +38,6 @@ __export(src_exports, {
   ScopeNetwork: () => ScopeNetwork,
   ScopeUpstream: () => ScopeUpstream,
   UpstreamTypeEvm: () => UpstreamTypeEvm,
-  UpstreamTypeEvmAlchemy: () => UpstreamTypeEvmAlchemy,
-  UpstreamTypeEvmBlastapi: () => UpstreamTypeEvmBlastapi,
-  UpstreamTypeEvmDrpc: () => UpstreamTypeEvmDrpc,
-  UpstreamTypeEvmEnvio: () => UpstreamTypeEvmEnvio,
-  UpstreamTypeEvmEtherspot: () => UpstreamTypeEvmEtherspot,
-  UpstreamTypeEvmInfura: () => UpstreamTypeEvmInfura,
-  UpstreamTypeEvmPimlico: () => UpstreamTypeEvmPimlico,
-  UpstreamTypeEvmThirdweb: () => UpstreamTypeEvmThirdweb,
   createConfig: () => createConfig
 });
 module.exports = __toCommonJS(src_exports);
@@ -69,14 +61,6 @@ var ArchitectureEvm = "evm";
 var ScopeNetwork = "network";
 var ScopeUpstream = "upstream";
 var UpstreamTypeEvm = "evm";
-var UpstreamTypeEvmAlchemy = "evm+alchemy";
-var UpstreamTypeEvmDrpc = "evm+drpc";
-var UpstreamTypeEvmBlastapi = "evm+blastapi";
-var UpstreamTypeEvmEnvio = "evm+envio";
-var UpstreamTypeEvmPimlico = "evm+pimlico";
-var UpstreamTypeEvmThirdweb = "evm+thirdweb";
-var UpstreamTypeEvmEtherspot = "evm+etherspot";
-var UpstreamTypeEvmInfura = "evm+infura";
 
 // src/index.ts
 var createConfig = (cfg) => {
@@ -102,14 +86,6 @@ var createConfig = (cfg) => {
   ScopeNetwork,
   ScopeUpstream,
   UpstreamTypeEvm,
-  UpstreamTypeEvmAlchemy,
-  UpstreamTypeEvmBlastapi,
-  UpstreamTypeEvmDrpc,
-  UpstreamTypeEvmEnvio,
-  UpstreamTypeEvmEtherspot,
-  UpstreamTypeEvmInfura,
-  UpstreamTypeEvmPimlico,
-  UpstreamTypeEvmThirdweb,
   createConfig
 });
 //# sourceMappingURL=index.js.map

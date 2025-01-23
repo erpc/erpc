@@ -33,14 +33,6 @@ export {
   ArchitectureEvm,
   // Upstream types const exprots
   UpstreamTypeEvm,
-  UpstreamTypeEvmAlchemy,
-  UpstreamTypeEvmDrpc,
-  UpstreamTypeEvmBlastapi,
-  UpstreamTypeEvmEnvio,
-  UpstreamTypeEvmPimlico,
-  UpstreamTypeEvmThirdweb,
-  UpstreamTypeEvmEtherspot,
-  UpstreamTypeEvmInfura,
   // Auth types
   AuthTypeSecret,
   AuthTypeJwt,
