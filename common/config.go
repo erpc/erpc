@@ -395,6 +395,7 @@ type FailsafeConfig struct {
 	CircuitBreaker *CircuitBreakerPolicyConfig `yaml:"circuitBreaker" json:"circuitBreaker"`
 	Timeout        *TimeoutPolicyConfig        `yaml:"timeout" json:"timeout"`
 	Hedge          *HedgePolicyConfig          `yaml:"hedge" json:"hedge"`
+	Consensus      *ConsensusPolicyConfig      `yaml:"consensus" json:"consensus"`
 }
 
 type RetryPolicyConfig struct {
@@ -423,6 +424,47 @@ type HedgePolicyConfig struct {
 	Quantile float64 `yaml:"quantile" json:"quantile"`
 	MinDelay string  `yaml:"minDelay" json:"minDelay" tstype:"Duration"`
 	MaxDelay string  `yaml:"maxDelay" json:"maxDelay" tstype:"Duration"`
+}
+
+type ConsensusFailureBehavior string
+
+const (
+	ConsensusFailureBehaviorReturnError           ConsensusFailureBehavior = "returnError"
+	ConsensusFailureBehaviorAcceptAnyValidResult  ConsensusFailureBehavior = "acceptAnyValidResult"
+	ConsensusFailureBehaviorPreferBlockHeadLeader ConsensusFailureBehavior = "preferBlockHeadLeader"
+	ConsensusFailureBehaviorOnlyBlockHeadLeader   ConsensusFailureBehavior = "onlyBlockHeadLeader"
+)
+
+type ConsensusLowParticipantsBehavior string
+
+const (
+	ConsensusLowParticipantsBehaviorReturnError           ConsensusLowParticipantsBehavior = "returnError"
+	ConsensusLowParticipantsBehaviorAcceptAnyValidResult  ConsensusLowParticipantsBehavior = "acceptAnyValidResult"
+	ConsensusLowParticipantsBehaviorPreferBlockHeadLeader ConsensusLowParticipantsBehavior = "preferBlockHeadLeader"
+	ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader   ConsensusLowParticipantsBehavior = "onlyBlockHeadLeader"
+)
+
+type ConsensusDisputeBehavior string
+
+const (
+	ConsensusDisputeBehaviorReturnError           ConsensusDisputeBehavior = "returnError"
+	ConsensusDisputeBehaviorAcceptAnyValidResult  ConsensusDisputeBehavior = "acceptAnyValidResult"
+	ConsensusDisputeBehaviorPreferBlockHeadLeader ConsensusDisputeBehavior = "preferBlockHeadLeader"
+	ConsensusDisputeBehaviorOnlyBlockHeadLeader   ConsensusDisputeBehavior = "onlyBlockHeadLeader"
+)
+
+type ConsensusPolicyConfig struct {
+	RequiredParticipants    int                              `yaml:"requiredParticipants" json:"requiredParticipants"`
+	AgreementThreshold      int                              `yaml:"agreementThreshold,omitempty" json:"agreementThreshold"`
+	FailureBehavior         ConsensusFailureBehavior         `yaml:"failureBehavior,omitempty" json:"failureBehavior"`
+	DisputeBehavior         ConsensusDisputeBehavior         `yaml:"disputeBehavior,omitempty" json:"disputeBehavior"`
+	LowParticipantsBehavior ConsensusLowParticipantsBehavior `yaml:"lowParticipantsBehavior,omitempty" json:"lowParticipantsBehavior"`
+	PunishMisbehavior       *PunishMisbehaviorConfig         `yaml:"punishMisbehavior,omitempty" json:"punishMisbehavior"`
+}
+
+type PunishMisbehaviorConfig struct {
+	DisputeThreshold int    `yaml:"disputeThreshold" json:"disputeThreshold"`
+	SitOutPenalty    string `yaml:"sitOutPenalty,omitempty" json:"sitOutPenalty"`
 }
 
 type RateLimiterConfig struct {
