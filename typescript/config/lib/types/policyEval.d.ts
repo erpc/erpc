@@ -7,11 +7,14 @@ export type PolicyEvalUpstreamMetrics = {
     errorsTotal: number;
     requestsTotal: number;
     throttledRate: number;
+    p90ResponseSeconds: number;
+    p95ResponseSeconds: number;
+    p99ResponseSeconds: number;
+    blockHeadLag: number;
+    finalizationLag: number;
     p90LatencySecs: number;
     p95LatencySecs: number;
     p99LatencySecs: number;
-    blockHeadLag: number;
-    finalizationLag: number;
 };
 /**
  * Upstream that will be passed to the selection policy evaluation function

@@ -39,11 +39,11 @@ RUN npm install -g pnpm
 
 # Stage where we will install dev dependencies + compile sdk
 FROM ts-core AS ts-dev
-RUN mkdir -p /temp/dev
+RUN mkdir -p /temp/dev/typescript
 RUN npm install -g pnpm
 
 # Copy only the TypeScript package files
-COPY typescript /temp/dev/typescript
+COPY typescript/config /temp/dev/typescript/config
 COPY pnpm* /temp/dev/
 COPY package.json /temp/dev/package.json
 
@@ -53,9 +53,9 @@ RUN cd /temp/dev && pnpm build
 
 # Stage where we will install prod dependencies only
 FROM ts-core AS ts-prod
-RUN mkdir -p /temp/prod
+RUN mkdir -p /temp/prod/typescript
 
-COPY typescript /temp/prod/typescript
+COPY typescript/config /temp/prod/typescript/config
 COPY pnpm* /temp/prod/
 COPY package.json /temp/prod/package.json
 
