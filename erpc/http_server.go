@@ -602,7 +602,7 @@ func (s *HttpServer) handleCORS(w http.ResponseWriter, r *http.Request, corsConf
 		}
 	}
 
-	// Optional: If noHeadersForUnknownOrigins is true, we enforce strict blocking
+	// If noHeadersForUnknownOrigins is true, we enforce strict blocking
 	if corsConfig.NoHeadersForUnknownOrigins != nil && *corsConfig.NoHeadersForUnknownOrigins && !allowed {
 		s.logger.Debug().Str("origin", origin).Msg("CORS request from disallowed origin, blocking (noHeadersForUnknownOrigins=true)")
 		health.MetricCORSDisallowedOriginTotal.WithLabelValues(r.URL.Path, origin).Inc()
@@ -624,7 +624,7 @@ func (s *HttpServer) handleCORS(w http.ResponseWriter, r *http.Request, corsConf
 		// If it's a preflight OPTIONS request, we can send a basic 204 with no CORS.
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
-			return false // we've responded
+			return false
 		}
 
 		// Otherwise, continue the request without any Access-Control-Allow-* headers.
@@ -633,6 +633,7 @@ func (s *HttpServer) handleCORS(w http.ResponseWriter, r *http.Request, corsConf
 		return true
 	}
 
+	// Set CORS headers
 	w.Header().Set("Access-Control-Allow-Origin", origin)
 	w.Header().Set("Access-Control-Allow-Methods", strings.Join(corsConfig.AllowedMethods, ", "))
 	w.Header().Set("Access-Control-Allow-Headers", strings.Join(corsConfig.AllowedHeaders, ", "))
