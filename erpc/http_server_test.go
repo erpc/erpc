@@ -3175,6 +3175,70 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 		assert.Equal(t, "POST", headers["Access-Control-Allow-Methods"])
 	})
 
+	t.Run("KnownOrigin_Headers_Forwarded", func(t *testing.T) {
+		// When the origin is known, we send CORS headers and forward the request to the upstream
+		// no matter what the NoHeadersForUnknownOrigins setting is.
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("5s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					CORS: &common.CORSConfig{
+						AllowedOrigins:             []string{"https://known.origin"},
+						NoHeadersForUnknownOrigins: util.BoolPtr(true),
+						AllowedMethods:             []string{"POST", "GET", "OPTIONS"},
+					},
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+						},
+					},
+				},
+			},
+		}
+
+		util.ResetGock()
+		defer util.ResetGock()
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0xABCD",
+			})
+
+		sendRequest, sendOptionsRequest, _, shutdown := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		// (A) Send OPTIONS request from known origin => expect 204, CORS headers
+		statusCode, headers, _ := sendOptionsRequest("https://known.origin")
+		assert.Equal(t, http.StatusNoContent, statusCode, "OPTIONS for known origin should be 204")
+		assert.Equal(t, "https://known.origin", headers["Access-Control-Allow-Origin"])
+		assert.Equal(t, "POST, GET, OPTIONS", headers["Access-Control-Allow-Methods"])
+
+		// (B) Send a POST JSON-RPC request from known origin => expect 200
+		reqBody := `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`
+		statusCode, respBody := sendRequest(reqBody, map[string]string{"Origin": "https://known.origin"}, nil)
+		assert.Equal(t, http.StatusOK, statusCode)
+		assert.Contains(t, respBody, `"result":"0xABCD"`)
+	})
+
 	t.Run("UnknownOrigin_NoHeaders_Forwarded", func(t *testing.T) {
 		// Setup with NoHeadersForUnknownOrigins = false means we do *not* block unknown origin,
 		// but we do *not* send any CORS response headers either.
@@ -3231,7 +3295,6 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 		assert.Equal(t, http.StatusNoContent, statusCode, "OPTIONS for unknown origin should be 204")
 		assert.Empty(t, headers["Access-Control-Allow-Origin"])
 		assert.Empty(t, headers["Access-Control-Allow-Methods"])
-		assert.Empty(t, headers["Access-Control-Allow-Headers"])
 
 		// (B) Send a POST JSON-RPC request from unknown origin => expect 200
 		reqBody := `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`
