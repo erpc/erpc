@@ -304,7 +304,7 @@ type ProviderConfig struct {
 	Vendor             string                     `yaml:"vendor" json:"vendor"`
 	Settings           VendorSettings             `yaml:"settings,omitempty" json:"settings"`
 	OnlyNetworks       []string                   `yaml:"onlyNetworks,omitempty" json:"onlyNetworks"`
-	UpstreamIdTemplate string                     `yaml:"upstreamIdTemplate" json:"upstreamIdTemplate"`
+	UpstreamIdTemplate string                     `yaml:"upstreamIdTemplate,omitempty" json:"upstreamIdTemplate"`
 	Overrides          map[string]*UpstreamConfig `yaml:"overrides,omitempty" json:"overrides"`
 }
 

@@ -648,39 +648,39 @@ func convertUpstreamToProvider(upstream *UpstreamConfig) (*ProviderConfig, error
 
 func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings, error) {
 	switch vendorName {
-	case "alchemy":
+	case "alchemy", "evm+alchemy":
 		return VendorSettings{
 			"apiKey": endpoint.Host,
 		}, nil
-	case "blastapi":
+	case "blastapi", "evm+blastapi":
 		return VendorSettings{
 			"apiKey": endpoint.Host,
 		}, nil
-	case "drpc":
+	case "drpc", "evm+drpc":
 		return VendorSettings{
 			"apiKey": endpoint.Host,
 		}, nil
-	case "envio":
+	case "envio", "evm+envio":
 		return VendorSettings{
 			"rootDomain": endpoint.Host,
 		}, nil
-	case "etherspot":
+	case "etherspot", "evm+etherspot":
 		return VendorSettings{
 			"apiKey": endpoint.Host,
 		}, nil
-	case "infura":
+	case "infura", "evm+infura":
 		return VendorSettings{
 			"apiKey": endpoint.Host,
 		}, nil
-	case "llama":
+	case "llama", "evm+llama":
 		return VendorSettings{
 			"apiKey": endpoint.Host,
 		}, nil
-	case "pimlico":
+	case "pimlico", "evm+pimlico":
 		return VendorSettings{
 			"apiKey": endpoint.Host,
 		}, nil
-	case "thirdweb":
+	case "thirdweb", "evm+thirdweb":
 		return VendorSettings{
 			"clientId": endpoint.Host,
 		}, nil
