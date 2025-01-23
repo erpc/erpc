@@ -153,9 +153,9 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 
 		fb, err := e.fetchFinalizedBlockNumber(ctx)
 		if err != nil {
-			if !common.IsRetryableTowardsUpstream(err) || common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+			if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
 				e.setSkipFinalizedCheck(true)
-				e.logger.Warn().Err(err).Msg("cannot fetch finalized block number in evm state poller")
+				e.logger.Warn().Err(err).Msg("upstream does not support fetching finalized block number in evm state poller")
 			} else {
 				e.logger.Debug().Err(err).Msg("failed to get finalized block number in evm state poller")
 			}
@@ -184,6 +184,9 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 			ermu.Lock()
 			errs = append(errs, err)
 			ermu.Unlock()
+			if common.IsClientError(err) {
+				e.skipSyncingCheck = true
+			}
 			return
 		}
 
@@ -417,17 +420,36 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 		return false, jrr.Error
 	}
 
-	var syncing bool
+	var syncing interface{}
 	err = common.SonicCfg.Unmarshal(jrr.Result, &syncing)
 	if err != nil {
 		return false, &common.BaseError{
 			Code:    "ErrEvmStatePoller",
-			Message: "cannot get syncing state result type (must be boolean)",
+			Message: "cannot parse syncing state result (must be boolean or object)",
 			Details: map[string]interface{}{
 				"result": util.Mem2Str(jrr.Result),
 			},
 		}
 	}
 
-	return syncing, nil
+	if s, ok := syncing.(bool); ok {
+		return s, nil
+	}
+
+	if s, ok := syncing.(map[string]interface{}); ok {
+		// For chains such as Arbitrum L2, the syncing state is returned as an object with a "msgCount" field
+		// And any value for "msgCount" means the node is syncing.
+		// Ref. https://docs.arbitrum.io/build-decentralized-apps/arbitrum-vs-ethereum/rpc-methods#eth_syncing
+		if _, ok := s["msgCount"]; ok {
+			return true, nil
+		}
+	}
+
+	return false, &common.BaseError{
+		Code:    "ErrEvmStatePoller",
+		Message: "cannot parse syncing state result (must be boolean or object)",
+		Details: map[string]interface{}{
+			"result": util.Mem2Str(jrr.Result),
+		},
+	}
 }

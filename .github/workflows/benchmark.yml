@@ -110,9 +110,9 @@ jobs:
             let header;
             if (changePercent) {
               const change = parseFloat(changePercent || '0');
-              if (change < 10) {
+              if (change < 20) {
                 header = `### ✅ Benchmark Results (${Math.abs(change).toFixed(2)}% faster)`;
-              } else if (change > 10) {
+              } else if (change > 20) {
                 header = `### ❌ Benchmark Results (${change.toFixed(2)}% slower)`;
               } else {
                 header = `### ℹ️ Benchmark Results (${changePercent})`;
