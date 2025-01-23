@@ -118,9 +118,9 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 			).Observe(time.Since(start).Seconds())
 		}
 		if c.logger.GetLevel() == zerolog.TraceLevel {
-			c.logger.Trace().Interface("policy", policy).Str("connector", connector.Id()).Err(err).Msg("skipping cache policy because it returned nil or error")
+			c.logger.Trace().Interface("policy", policy).Str("connector", connector.Id()).Err(err).Msg("skipping cache policy during GET because it returned nil or error")
 		} else {
-			c.logger.Debug().Str("connector", connector.Id()).Err(err).Msg("skipping cache policy because it returned nil or error")
+			c.logger.Debug().Str("connector", connector.Id()).Err(err).Msg("skipping cache policy during GET because it returned nil or error")
 		}
 		if jrr != nil {
 			break
@@ -485,24 +485,16 @@ func (c *EvmJsonRpcCache) getFinalityState(r *common.NormalizedResponse) (finali
 		}
 	}
 
-	ntw := req.Network()
-	if ntw == nil {
-		return
-	}
-
 	_, blockNumber, _ := req.EvmBlockRefAndNumber()
 
 	if blockNumber > 0 {
 		upstream := r.Upstream()
 		if upstream != nil {
-			stp := ntw.EvmStatePollerOf(upstream.Config().Id)
-			if stp != nil && !stp.IsObjectNull() {
-				if isFinalized, err := stp.IsBlockFinalized(blockNumber); err == nil {
-					if isFinalized {
-						finality = common.DataFinalityStateFinalized
-					} else {
-						finality = common.DataFinalityStateUnfinalized
-					}
+			if isFinalized, err := upstream.EvmIsBlockFinalized(blockNumber); err == nil {
+				if isFinalized {
+					finality = common.DataFinalityStateFinalized
+				} else {
+					finality = common.DataFinalityStateUnfinalized
 				}
 			}
 		}

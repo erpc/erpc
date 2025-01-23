@@ -22,7 +22,9 @@ func (m *MockCacheDal) Set(ctx context.Context, nrq *NormalizedRequest, nrs *Nor
 
 func (m *MockCacheDal) MethodConfig(method string) *CacheMethodConfig {
 	cfg := CacheConfig{}
-	cfg.SetDefaults()
+	if err := cfg.SetDefaults(); err != nil {
+		return nil
+	}
 	return cfg.Methods[method]
 }
 

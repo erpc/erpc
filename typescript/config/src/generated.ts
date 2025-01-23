@@ -118,6 +118,9 @@ export interface RedisConnectorConfig {
   db: number /* int */;
   tls?: TLSConfig;
   connPoolSize: number /* int */;
+  initTimeout?: number /* time in nanoseconds (time.Duration) */;
+  getTimeout?: number /* time in nanoseconds (time.Duration) */;
+  setTimeout?: number /* time in nanoseconds (time.Duration) */;
 }
 export interface DynamoDBConnectorConfig {
   table: string;
@@ -128,12 +131,18 @@ export interface DynamoDBConnectorConfig {
   rangeKeyName: string;
   reverseIndexName: string;
   ttlAttributeName: string;
+  initTimeout?: number /* time in nanoseconds (time.Duration) */;
+  getTimeout?: number /* time in nanoseconds (time.Duration) */;
+  setTimeout?: number /* time in nanoseconds (time.Duration) */;
 }
 export interface PostgreSQLConnectorConfig {
   connectionUri: string;
   table: string;
   minConns?: number /* int32 */;
   maxConns?: number /* int32 */;
+  initTimeout?: number /* time in nanoseconds (time.Duration) */;
+  getTimeout?: number /* time in nanoseconds (time.Duration) */;
+  setTimeout?: number /* time in nanoseconds (time.Duration) */;
 }
 export interface AwsAuthConfig {
   mode: 'file' | 'env' | 'secret'; // "file", "env", "secret"
@@ -146,6 +155,7 @@ export interface ProjectConfig {
   id: string;
   auth?: AuthConfig;
   cors?: CORSConfig;
+  providers: (ProviderConfig | undefined)[];
   upstreamDefaults?: UpstreamConfig;
   upstreams: (UpstreamConfig | undefined)[];
   networkDefaults?: NetworkDefaults;
@@ -166,6 +176,15 @@ export interface CORSConfig {
   exposedHeaders: string[];
   allowCredentials?: boolean;
   maxAge: number /* int */;
+}
+export type VendorSettings = { [key: string]: any};
+export interface ProviderConfig {
+  id?: string;
+  vendor: string;
+  settings?: VendorSettings;
+  onlyNetworks?: string[];
+  upstreamIdTemplate?: string;
+  overrides?: { [key: string]: UpstreamConfig | undefined};
 }
 export interface UpstreamConfig {
   id?: string;
@@ -214,7 +233,7 @@ export interface JsonRpcUpstreamConfig {
   enableGzip?: boolean;
 }
 export interface EvmUpstreamConfig {
-  chainId: number /* int */;
+  chainId: number /* int64 */;
   nodeType?: EvmNodeType;
   statePollerInterval?: string;
   maxAvailableRecentBlocks?: number /* int64 */;
@@ -442,16 +461,19 @@ export const ScopeNetwork: Scope = "network";
 export const ScopeUpstream: Scope = "upstream";
 export type UpstreamType = string;
 export const UpstreamTypeEvm: UpstreamType = "evm";
-export const UpstreamTypeEvmAlchemy: UpstreamType = "evm+alchemy";
-export const UpstreamTypeEvmDrpc: UpstreamType = "evm+drpc";
-export const UpstreamTypeEvmBlastapi: UpstreamType = "evm+blastapi";
-export const UpstreamTypeEvmEnvio: UpstreamType = "evm+envio";
-export const UpstreamTypeEvmPimlico: UpstreamType = "evm+pimlico";
-export const UpstreamTypeEvmThirdweb: UpstreamType = "evm+thirdweb";
-export const UpstreamTypeEvmEtherspot: UpstreamType = "evm+etherspot";
-export const UpstreamTypeEvmInfura: UpstreamType = "evm+infura";
 export type EvmSyncingState = number /* int */;
 export const EvmSyncingStateUnknown: EvmSyncingState = 0;
 export const EvmSyncingStateSyncing: EvmSyncingState = 1;
 export const EvmSyncingStateNotSyncing: EvmSyncingState = 2;
 export type Upstream = any;
+
+//////////
+// source: upstream_fake.go
+
+export interface FakeUpstream {
+}
+
+//////////
+// source: vendors.go
+
+export type Vendor = any;

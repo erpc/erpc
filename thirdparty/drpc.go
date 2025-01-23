@@ -1,14 +1,15 @@
-package upstream
+package thirdparty
 
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/erpc/erpc/common"
+	"github.com/rs/zerolog"
 )
 
 var drpcNetworkNames = map[int64]string{
@@ -128,107 +129,98 @@ var drpcNetworkNames = map[int64]string{
 	999999999:   "zora-sepolia",
 }
 
-type DrpcHttpJsonRpcClient struct {
-	appCtx   context.Context
-	upstream *Upstream
-	apiKey   string
-	clients  map[string]HttpJsonRpcClient
-	mu       sync.RWMutex
+type DrpcVendor struct {
+	common.Vendor
 }
 
-func NewDrpcHttpJsonRpcClient(appCtx context.Context, pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
-	if !strings.HasSuffix(parsedUrl.Scheme, "drpc") {
-		return nil, fmt.Errorf("invalid DRPC URL scheme: %s", parsedUrl.Scheme)
-	}
-
-	apiKey := parsedUrl.Host
-	if apiKey == "" {
-		return nil, fmt.Errorf("missing DRPC API key in URL")
-	}
-
-	return &DrpcHttpJsonRpcClient{
-		appCtx:   appCtx,
-		upstream: pu,
-		apiKey:   apiKey,
-		clients:  make(map[string]HttpJsonRpcClient),
-	}, nil
+func CreateDrpcVendor() common.Vendor {
+	return &DrpcVendor{}
 }
 
-func (c *DrpcHttpJsonRpcClient) GetType() ClientType {
-	return ClientTypeDrpcHttpJsonRpc
+func (v *DrpcVendor) Name() string {
+	return "drpc"
 }
 
-func (c *DrpcHttpJsonRpcClient) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
+func (v *DrpcVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
 	}
 
-	chainId, err := strconv.ParseInt(networkId[4:], 10, 64)
+	chainId, err := strconv.ParseInt(strings.TrimPrefix(networkId, "evm:"), 10, 64)
 	if err != nil {
 		return false, err
 	}
-
 	_, ok := drpcNetworkNames[chainId]
 	return ok, nil
 }
 
-func (c *DrpcHttpJsonRpcClient) getOrCreateClient(network common.Network) (HttpJsonRpcClient, error) {
-	networkID := network.Id()
-	c.mu.RLock()
-	client, exists := c.clients[networkID]
-	c.mu.RUnlock()
+func (v *DrpcVendor) PrepareConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
+	// Intentionally not ignore missing method exceptions because dRPC sometimes routes to nodes that don't support the method
+	// but it doesn't mean that method is actually not supported, i.e. on next retry to dRPC it might work.
+	upstream.AutoIgnoreUnsupportedMethods = &common.FALSE
 
-	if exists {
-		return client, nil
+	if upstream.Endpoint == "" {
+		if apiKey, ok := settings["apiKey"].(string); ok && apiKey != "" {
+			if upstream.Evm == nil {
+				return fmt.Errorf("drpc vendor requires upstream.evm to be defined")
+			}
+			chainID := upstream.Evm.ChainId
+			if chainID == 0 {
+				return fmt.Errorf("drpc vendor requires upstream.evm.chainId to be defined")
+			}
+			netName, ok := drpcNetworkNames[chainID]
+			if !ok {
+				return fmt.Errorf("unsupported network chain ID for DRPC: %d", chainID)
+			}
+			drpcURL := fmt.Sprintf("https://lb.drpc.org/ogrpc?network=%s&dkey=%s", netName, apiKey)
+			parsedURL, err := url.Parse(drpcURL)
+			if err != nil {
+				return err
+			}
+			upstream.Endpoint = parsedURL.String()
+			upstream.Type = common.UpstreamTypeEvm
+		} else {
+			return fmt.Errorf("apiKey is required in drpc settings")
+		}
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Double-check to ensure another goroutine hasn't created the client
-	if client, exists := c.clients[networkID]; exists {
-		return client, nil
-	}
-
-	if network.Architecture() != common.ArchitectureEvm {
-		return nil, fmt.Errorf("unsupported network architecture for DRPC client: %s", network.Architecture())
-	}
-
-	chainID, err := network.EvmChainId()
-	if err != nil {
-		return nil, err
-	}
-
-	netName, ok := drpcNetworkNames[chainID]
-	if !ok {
-		return nil, fmt.Errorf("unsupported network chain ID for DRPC: %d", chainID)
-	}
-
-	drpcURL := fmt.Sprintf("https://lb.drpc.org/ogrpc?network=%s&dkey=%s", netName, c.apiKey)
-	parsedURL, err := url.Parse(drpcURL)
-	if err != nil {
-		return nil, err
-	}
-
-	client, err = NewGenericHttpJsonRpcClient(c.appCtx, &c.upstream.Logger, c.upstream, parsedURL)
-	if err != nil {
-		return nil, err
-	}
-
-	c.clients[networkID] = client
-	return client, nil
+	return nil
 }
 
-func (c *DrpcHttpJsonRpcClient) SendRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-	network := req.Network()
-	if network == nil {
-		return nil, fmt.Errorf("network information is missing in the request")
+func (v *DrpcVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {
+	bodyMap, ok := jrr.(*common.JsonRpcResponse)
+	if !ok {
+		return nil
 	}
 
-	client, err := c.getOrCreateClient(network)
-	if err != nil {
-		return nil, err
+	err := bodyMap.Error
+	if code := err.Code; code != 0 {
+		msg := err.Message
+		if err.Data != "" {
+			details["data"] = err.Data
+		}
+
+		if strings.Contains(msg, "token is invalid") {
+			return common.NewErrEndpointUnauthorized(
+				common.NewErrJsonRpcExceptionInternal(
+					code,
+					common.JsonRpcErrorUnauthorized,
+					msg,
+					nil,
+					details,
+				),
+			)
+		}
 	}
 
-	return client.SendRequest(ctx, req)
+	// Other errors can be properly handled by generic error handling
+	return nil
+}
+
+func (v *DrpcVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
+	if strings.HasPrefix(ups.Endpoint, "drpc://") || strings.HasPrefix(ups.Endpoint, "evm+drpc://") {
+		return true
+	}
+
+	return strings.Contains(ups.Endpoint, ".drpc.org")
 }

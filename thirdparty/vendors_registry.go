@@ -1,9 +1,9 @@
-package vendors
+package thirdparty
 
 import "github.com/erpc/erpc/common"
 
 type VendorsRegistry struct {
-	vendors []common.Vendor
+	thirdparty []common.Vendor
 }
 
 func NewVendorsRegistry() *VendorsRegistry {
@@ -23,16 +23,33 @@ func NewVendorsRegistry() *VendorsRegistry {
 	return r
 }
 
+func (r *VendorsRegistry) SupportedVendors() []string {
+	vendors := []string{}
+	for _, vendor := range r.thirdparty {
+		vendors = append(vendors, vendor.Name())
+	}
+	return vendors
+}
+
+func (r *VendorsRegistry) LookupByName(name string) common.Vendor {
+	for _, vendor := range r.thirdparty {
+		if vendor.Name() == name {
+			return vendor
+		}
+	}
+	return nil
+}
+
 func (r *VendorsRegistry) LookupByUpstream(ups *common.UpstreamConfig) common.Vendor {
 	if ups.VendorName != "" {
-		for _, vendor := range r.vendors {
+		for _, vendor := range r.thirdparty {
 			if vendor.Name() == ups.VendorName {
 				return vendor
 			}
 		}
 		return nil
 	} else {
-		for _, vendor := range r.vendors {
+		for _, vendor := range r.thirdparty {
 			if vendor.OwnsUpstream(ups) {
 				return vendor
 			}
@@ -43,5 +60,5 @@ func (r *VendorsRegistry) LookupByUpstream(ups *common.UpstreamConfig) common.Ve
 }
 
 func (r *VendorsRegistry) Register(vendor common.Vendor) {
-	r.vendors = append(r.vendors, vendor)
+	r.thirdparty = append(r.thirdparty, vendor)
 }

@@ -1,45 +1,61 @@
 package erpc
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/upstream"
+	"github.com/erpc/erpc/util"
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/rs/zerolog"
 )
 
 type NetworksRegistry struct {
+	project              *PreparedProject
+	appCtx               context.Context
 	upstreamsRegistry    *upstream.UpstreamsRegistry
 	metricsTracker       *health.Tracker
 	evmJsonRpcCache      *EvmJsonRpcCache
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	preparedNetworks     sync.Map // map[string]*Network
+	initializer          *util.Initializer
+	logger               *zerolog.Logger
 }
 
 func NewNetworksRegistry(
+	project *PreparedProject,
+	appCtx context.Context,
 	upstreamsRegistry *upstream.UpstreamsRegistry,
 	metricsTracker *health.Tracker,
 	evmJsonRpcCache *EvmJsonRpcCache,
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
+	logger *zerolog.Logger,
 ) *NetworksRegistry {
 	r := &NetworksRegistry{
+		project:              project,
+		appCtx:               appCtx,
 		upstreamsRegistry:    upstreamsRegistry,
 		metricsTracker:       metricsTracker,
 		evmJsonRpcCache:      evmJsonRpcCache,
 		rateLimitersRegistry: rateLimitersRegistry,
 		preparedNetworks:     sync.Map{},
+		initializer:          util.NewInitializer(appCtx, logger, nil),
+		logger:               logger,
 	}
 	return r
 }
 
 func NewNetwork(
+	appCtx context.Context,
 	logger *zerolog.Logger,
-	prjId string,
+	projectId string,
 	nwCfg *common.NetworkConfig,
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
 	upstreamsRegistry *upstream.UpstreamsRegistry,
@@ -48,7 +64,7 @@ func NewNetwork(
 	lg := logger.With().Str("component", "proxy").Str("networkId", nwCfg.NetworkId()).Logger()
 
 	var policyArray []failsafe.Policy[*common.NormalizedResponse]
-	key := fmt.Sprintf("%s/%s", prjId, nwCfg.NetworkId())
+	key := fmt.Sprintf("%s/%s", projectId, nwCfg.NetworkId())
 	pls, err := upstream.CreateFailSafePolicies(&lg, common.ScopeNetwork, key, nwCfg.Failsafe)
 	if err != nil {
 		return nil, err
@@ -65,15 +81,16 @@ func NewNetwork(
 		}
 	}
 
-	lg.Debug().Interface("config", nwCfg.Failsafe).Interface("policies", pls).Msg("creating network")
+	lg.Debug().Interface("config", nwCfg.Failsafe).Msg("creating network")
 
 	network := &Network{
-		ProjectId: prjId,
+		ProjectId: projectId,
 		NetworkId: nwCfg.NetworkId(),
 		Logger:    &lg,
 
 		cfg: nwCfg,
 
+		appCtx:               appCtx,
 		upstreamsRegistry:    upstreamsRegistry,
 		metricsTracker:       metricsTracker,
 		rateLimitersRegistry: rateLimitersRegistry,
@@ -82,6 +99,7 @@ func NewNetwork(
 		inFlightRequests: &sync.Map{},
 		timeoutDuration:  timeoutDuration,
 		failsafeExecutor: failsafe.NewExecutor(policyArray...),
+		initializer:      util.NewInitializer(appCtx, &lg, nil),
 	}
 
 	if nwCfg.Architecture == "" {
@@ -91,24 +109,94 @@ func NewNetwork(
 	return network, nil
 }
 
-func (r *NetworksRegistry) RegisterNetwork(
-	logger *zerolog.Logger,
-	prjCfg *common.ProjectConfig,
-	nwCfg *common.NetworkConfig,
-) (*Network, error) {
-	var key = fmt.Sprintf("%s-%s", prjCfg.Id, nwCfg.NetworkId())
+func (nr *NetworksRegistry) Bootstrap(appCtx context.Context) error {
+	// Auto register statically-defined networks
+	nr.project.cfgMu.RLock()
+	defer nr.project.cfgMu.RUnlock()
 
-	if pn, ok := r.preparedNetworks.Load(key); ok {
+	nl := nr.project.Config.Networks
+	tasks := []*util.BootstrapTask{}
+	for _, nwCfg := range nl {
+		tasks = append(tasks, nr.buildNetworkBootstrapTask(nwCfg.NetworkId()))
+	}
+	err := nr.initializer.ExecuteTasks(appCtx, tasks...)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (nr *NetworksRegistry) GetNetwork(networkId string) (*Network, error) {
+	// If network already prepared, return it
+	if pn, ok := nr.preparedNetworks.Load(networkId); ok {
+		return pn.(*Network), nil
+	}
+
+	// Use appCtx because even if current request times out we still want to keep bootstrapping the network
+	err := nr.initializer.ExecuteTasks(nr.appCtx, nr.buildNetworkBootstrapTask(networkId))
+	if err != nil {
+		return nil, err
+	}
+
+	// If during first attempt of initialization it fails we must return err so user retries
+	ntw, ok := nr.preparedNetworks.Load(networkId)
+	if !ok {
+		return nil, fmt.Errorf("network %s is not properly initialized yet", networkId)
+	}
+
+	return ntw.(*Network), nil
+}
+
+func (nr *NetworksRegistry) GetNetworks() []*Network {
+	networks := []*Network{}
+	nr.preparedNetworks.Range(func(key, value any) bool {
+		networks = append(networks, value.(*Network))
+		return true
+	})
+	return networks
+}
+
+func (nr *NetworksRegistry) buildNetworkBootstrapTask(networkId string) *util.BootstrapTask {
+	return util.NewBootstrapTask(
+		fmt.Sprintf("network/%s", networkId),
+		func(ctx context.Context) error {
+			nr.logger.Debug().Str("networkId", networkId).Msg("attempt to bootstrap network")
+			nwCfg, err := nr.resolveNetworkConfig(networkId)
+			if err != nil {
+				return err
+			}
+			err = nr.upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkId)
+			if err != nil {
+				return err
+			}
+			network, err := nr.prepareNetwork(nwCfg)
+			if err != nil {
+				return err
+			}
+			nr.preparedNetworks.Store(networkId, network)
+			err = network.Bootstrap(ctx)
+			if err != nil {
+				return err
+			}
+			nr.logger.Debug().Str("networkId", networkId).Msg("network bootstrap completed")
+			return nil
+		},
+	)
+}
+
+func (nr *NetworksRegistry) prepareNetwork(nwCfg *common.NetworkConfig) (*Network, error) {
+	if pn, ok := nr.preparedNetworks.Load(nwCfg.NetworkId()); ok {
 		return pn.(*Network), nil
 	}
 
 	network, err := NewNetwork(
-		logger,
-		prjCfg.Id,
+		nr.appCtx,
+		nr.logger,
+		nr.project.Config.Id,
 		nwCfg,
-		r.rateLimitersRegistry,
-		r.upstreamsRegistry,
-		r.metricsTracker,
+		nr.rateLimitersRegistry,
+		nr.upstreamsRegistry,
+		nr.metricsTracker,
 	)
 	if err != nil {
 		return nil, err
@@ -116,20 +204,47 @@ func (r *NetworksRegistry) RegisterNetwork(
 
 	switch nwCfg.Architecture {
 	case "evm":
-		if r.evmJsonRpcCache != nil {
-			network.cacheDal = r.evmJsonRpcCache.WithNetwork(network)
+		if nr.evmJsonRpcCache != nil {
+			network.cacheDal = nr.evmJsonRpcCache.WithNetwork(network)
 		}
 	default:
 		return nil, errors.New("unknown network architecture")
 	}
 
-	r.preparedNetworks.Store(key, network)
 	return network, nil
 }
 
-func (nr *NetworksRegistry) GetNetwork(projectId, networkId string) *Network {
-	if pn, ok := nr.preparedNetworks.Load(fmt.Sprintf("%s-%s", projectId, networkId)); ok {
-		return pn.(*Network)
+func (nr *NetworksRegistry) resolveNetworkConfig(networkId string) (*common.NetworkConfig, error) {
+	prj := nr.project
+
+	// Try to find config
+	var nwCfg *common.NetworkConfig
+	for _, cfg := range prj.Config.Networks {
+		if cfg.NetworkId() == networkId {
+			nwCfg = cfg
+			break
+		}
 	}
-	return nil
+	if nwCfg == nil {
+		// Create a new config if none was found
+		nwCfg = &common.NetworkConfig{}
+		s := strings.Split(networkId, ":")
+		if len(s) != 2 {
+			return nil, common.NewErrInvalidEvmChainId(networkId)
+		}
+		nwCfg.Architecture = common.NetworkArchitecture(s[0])
+		switch nwCfg.Architecture {
+		case common.ArchitectureEvm:
+			c, e := strconv.Atoi(s[1])
+			if e != nil {
+				return nil, e
+			}
+			nwCfg.Evm = &common.EvmNetworkConfig{ChainId: int64(c)}
+		}
+		if err := nwCfg.SetDefaults(prj.Config.Upstreams, prj.Config.NetworkDefaults); err != nil {
+			return nil, fmt.Errorf("failed to set defaults for network config: %w", err)
+		}
+		prj.ExposeNetworkConfig(nwCfg)
+	}
+	return nwCfg, nil
 }

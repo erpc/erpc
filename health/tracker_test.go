@@ -23,8 +23,8 @@ func TestTracker(t *testing.T) {
 		defer cancel()
 		tracker.Bootstrap(ctx)
 
-		ups1 := newFakeUpstream("a")
-		ups2 := newFakeUpstream("b")
+		ups1 := common.NewFakeUpstream("a")
+		ups2 := common.NewFakeUpstream("b")
 
 		// Simulate requests
 		simulateRequestMetrics(tracker, networkID, ups1.Config().Id, "method1", 100, 10)
@@ -47,7 +47,7 @@ func TestTracker(t *testing.T) {
 		defer cancel()
 		tracker.Bootstrap(ctx)
 
-		ups := newFakeUpstream("a")
+		ups := common.NewFakeUpstream("a")
 
 		// First window
 		simulateRequestMetrics(tracker, networkID, ups.Config().Id, "method1", 100, 10)
@@ -73,7 +73,7 @@ func TestTracker(t *testing.T) {
 		defer cancel()
 		tracker.Bootstrap(ctx)
 
-		ups := newFakeUpstream("a")
+		ups := common.NewFakeUpstream("a")
 
 		simulateRateLimitedRequestMetrics(tracker, networkID, ups.Config().Id, "method1", 100, 20, 10)
 
@@ -91,7 +91,7 @@ func TestTracker(t *testing.T) {
 		defer cancel()
 		tracker.Bootstrap(ctx)
 
-		ups := newFakeUpstream("a")
+		ups := common.NewFakeUpstream("a")
 
 		simulateRequestMetricsWithLatency(tracker, networkID, ups.Config().Id, "method1", 10, 0.05)
 
@@ -107,9 +107,9 @@ func TestTracker(t *testing.T) {
 		defer cancel()
 		tracker.Bootstrap(ctx)
 
-		ups1 := newFakeUpstream("a")
-		ups2 := newFakeUpstream("b")
-		ups3 := newFakeUpstream("c")
+		ups1 := common.NewFakeUpstream("a")
+		ups2 := common.NewFakeUpstream("b")
+		ups3 := common.NewFakeUpstream("c")
 
 		simulateRequestMetrics(tracker, networkID, ups1.Config().Id, "method1", 100, 10)
 		simulateRequestMetrics(tracker, networkID, ups2.Config().Id, "method1", 80, 5)
@@ -139,7 +139,7 @@ func TestTracker(t *testing.T) {
 		defer cancel()
 		tracker.Bootstrap(ctx)
 
-		ups := newFakeUpstream("a")
+		ups := common.NewFakeUpstream("a")
 
 		simulateRequestMetrics(tracker, networkID, ups.Config().Id, "method1", 100, 10)
 
@@ -165,7 +165,7 @@ func TestTracker(t *testing.T) {
 		defer cancel()
 		tracker.Bootstrap(ctx)
 
-		ups := newFakeUpstream("a")
+		ups := common.NewFakeUpstream("a")
 
 		simulateRequestMetrics(tracker, networkID, ups.Config().Id, "method1", 100, 10)
 		simulateRequestMetrics(tracker, networkID, ups.Config().Id, "method2", 50, 5)
@@ -185,7 +185,7 @@ func TestTracker(t *testing.T) {
 		defer cancel()
 		tracker.Bootstrap(ctx)
 
-		ups := newFakeUpstream("a")
+		ups := common.NewFakeUpstream("a")
 
 		for i := 0; i < 5; i++ {
 			simulateRequestMetrics(tracker, networkID, ups.Config().Id, "method1", 20, 2)
@@ -205,7 +205,7 @@ func TestTracker(t *testing.T) {
 		defer cancel()
 		tracker.Bootstrap(ctx)
 
-		ups := newFakeUpstream("a")
+		ups := common.NewFakeUpstream("a")
 
 		for i := 0; i < 5; i++ {
 			simulateRequestMetrics(tracker, networkID, ups.Config().Id, "method1", 20, 2)
@@ -224,7 +224,7 @@ func TestTracker(t *testing.T) {
 		defer cancel()
 		tracker.Bootstrap(ctx)
 
-		ups := newFakeUpstream("a")
+		ups := common.NewFakeUpstream("a")
 		simulateRequestMetrics(tracker, networkID, ups.Config().Id, "method1", 100, 10)
 		simulateRequestMetrics(tracker, networkID, ups.Config().Id, "method2", 50, 5)
 
@@ -239,7 +239,7 @@ func TestTracker(t *testing.T) {
 		defer cancel()
 		tracker.Bootstrap(ctx)
 
-		ups := newFakeUpstream("a")
+		ups := common.NewFakeUpstream("a")
 		simulateRequestMetrics(tracker, networkID, ups.Config().Id, "method1", 100, 10)
 		simulateRequestMetrics(tracker, networkID, ups.Config().Id, "method2", 50, 5)
 
@@ -254,7 +254,7 @@ func TestTracker(t *testing.T) {
 		defer cancel()
 		tracker.Bootstrap(ctx)
 
-		ups := newFakeUpstream("a")
+		ups := common.NewFakeUpstream("a")
 		simulateRequestMetricsWithLatency(tracker, networkID, ups.Config().Id, "method1", 10, 0.06)
 		simulateRequestMetricsWithLatency(tracker, networkID, ups.Config().Id, "method2", 90, 0.02)
 
@@ -270,7 +270,7 @@ func TestTracker(t *testing.T) {
 		defer cancel()
 		tracker.Bootstrap(ctx)
 
-		ups := newFakeUpstream("a")
+		ups := common.NewFakeUpstream("a")
 		simulateRequestMetricsWithLatency(tracker, networkID, ups.Config().Id, "method1", 10, 0.06)
 		simulateRequestMetricsWithLatency(tracker, networkID, ups.Config().Id, "method1", 90, 0.02)
 
@@ -278,38 +278,6 @@ func TestTracker(t *testing.T) {
 		assert.GreaterOrEqual(t, metrics1.ResponseQuantiles.GetQuantile(0.90).Seconds(), 0.02)
 		assert.LessOrEqual(t, metrics1.ResponseQuantiles.GetQuantile(0.90).Seconds(), 0.03)
 	})
-}
-
-type fakeUpstream struct {
-	id string
-}
-
-func newFakeUpstream(id string) common.Upstream {
-	return &fakeUpstream{
-		id: id,
-	}
-}
-
-func (u *fakeUpstream) Config() *common.UpstreamConfig {
-	return &common.UpstreamConfig{
-		Id: u.id,
-	}
-}
-
-func (u *fakeUpstream) EvmGetChainId(context.Context) (string, error) {
-	return "123", nil
-}
-
-func (u *fakeUpstream) EvmSyncingState() common.EvmSyncingState {
-	return common.EvmSyncingStateUnknown
-}
-
-func (u *fakeUpstream) Vendor() common.Vendor {
-	return nil
-}
-
-func (u *fakeUpstream) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
-	return true, nil
 }
 
 func simulateRequestMetrics(tracker *Tracker, network, upstream, method string, total, errors int) {

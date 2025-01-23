@@ -14,13 +14,14 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/common/script"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
-	"github.com/erpc/erpc/vendors"
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
@@ -72,6 +73,16 @@ func TestNetwork_Forward(t *testing.T) {
 				ChainId: 123,
 			},
 		}
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
 		upsReg := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
@@ -80,11 +91,13 @@ func TestNetwork_Forward(t *testing.T) {
 				up1,
 			},
 			rateLimitersRegistry,
-			vendors.NewVendorsRegistry(),
+			vr,
+			pr,
 			mt,
 			1*time.Second,
 		)
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -109,6 +122,9 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upsReg)
+
 		var lastErr error
 		var lastResp *common.NormalizedResponse
 
@@ -165,6 +181,16 @@ func TestNetwork_Forward(t *testing.T) {
 				ChainId: 123,
 			},
 		}
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
 		upsReg := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
@@ -173,11 +199,13 @@ func TestNetwork_Forward(t *testing.T) {
 				up1,
 			},
 			rateLimitersRegistry,
-			vendors.NewVendorsRegistry(),
+			vr,
+			pr,
 			mt,
 			1*time.Second,
 		)
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -202,6 +230,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upsReg)
 
 		var lastErr error
 
@@ -233,7 +263,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry(&log.Logger)
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -246,7 +276,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Id:       "test",
@@ -257,6 +287,16 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 			Failsafe: fsCfg,
 		}
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
@@ -265,7 +305,10 @@ func TestNetwork_Forward(t *testing.T) {
 				up1,
 			},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vndr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -290,6 +333,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup.Client = cl
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -305,6 +349,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		upstream.ReorderUpstreams(upr)
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -332,7 +377,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry(&log.Logger)
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -345,7 +390,16 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vndr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Id:       "test",
@@ -364,7 +418,10 @@ func TestNetwork_Forward(t *testing.T) {
 				up1,
 			},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vndr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -389,6 +446,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup.Client = cl
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -399,11 +457,12 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 			rlr,
 			upr,
-			health.NewTracker("prjA", 2*time.Second),
+			mt,
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
+		upstream.ReorderUpstreams(upr)
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -445,7 +504,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry(&log.Logger)
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 
 		upsFsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -463,7 +522,16 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vndr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Id:       "rpc1",
@@ -492,7 +560,10 @@ func TestNetwork_Forward(t *testing.T) {
 				up2,
 			},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vndr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -533,6 +604,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup2.Client = cl2
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -549,6 +621,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		upstream.ReorderUpstreams(upr)
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -584,7 +657,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry(&log.Logger)
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 
 		upsFsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -602,7 +675,16 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vndr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Id:       "rpc1",
@@ -631,7 +713,10 @@ func TestNetwork_Forward(t *testing.T) {
 				up2,
 			},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vndr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -672,6 +757,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup2.Client = cl2
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -688,6 +774,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		upstream.ReorderUpstreams(upr)
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -744,14 +831,14 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		// Initialize various components for the test environment
-		clr := upstream.NewClientRegistry(&log.Logger)
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 
 		// Set up upstream configurations
@@ -773,13 +860,26 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Initialize the upstreams registry
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vndr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -823,6 +923,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up the network configuration
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -848,12 +949,14 @@ func TestNetwork_Forward(t *testing.T) {
 		ntw.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
 
-		poller := ntw.evmStatePollers["rpc1"]
+		poller := pup1.EvmStatePoller()
 		poller.SuggestLatestBlock(9)
 		poller.SuggestFinalizedBlock(8)
 
-		pup1.SetEvmSyncingState(common.EvmSyncingStateNotSyncing)
-		pup2.SetEvmSyncingState(common.EvmSyncingStateNotSyncing)
+		// TODO pup1.SetEvmSyncingState(common.EvmSyncingStateNotSyncing)
+		// TODO pup2.SetEvmSyncingState(common.EvmSyncingStateNotSyncing)
+
+		upstream.ReorderUpstreams(upr)
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
@@ -916,7 +1019,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		// Initialize various components for the test environment
-		clr := upstream.NewClientRegistry(&log.Logger)
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 		fsCfg := &common.FailsafeConfig{
 			Hedge:   nil,
 			Timeout: nil,
@@ -930,7 +1033,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 
 		// Set up upstream configurations
@@ -952,13 +1055,26 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Initialize the upstreams registry
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vndr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -1002,6 +1118,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up the network configuration
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -1023,17 +1140,19 @@ func TestNetwork_Forward(t *testing.T) {
 		ntw.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
 
-		poller1 := ntw.evmStatePollers["rpc1"]
+		poller1 := pup1.EvmStatePoller()
 		poller1.SuggestLatestBlock(9)
 		poller1.SuggestFinalizedBlock(8)
 
-		poller2 := ntw.evmStatePollers["rpc2"]
+		poller2 := pup2.EvmStatePoller()
 		poller2.SuggestLatestBlock(9)
 		poller2.SuggestFinalizedBlock(8)
 
-		pup1.SetEvmSyncingState(common.EvmSyncingStateSyncing)
+		pup1.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
 
 		time.Sleep(100 * time.Millisecond)
+
+		upstream.ReorderUpstreams(upr)
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
@@ -1093,7 +1212,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		// Initialize various components for the test environment
-		clr := upstream.NewClientRegistry(&log.Logger)
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 		fsCfg := &common.FailsafeConfig{}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
@@ -1101,7 +1220,16 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
 		mt := health.NewTracker("prjA", 2*time.Second)
 
 		// Set up upstream configurations
@@ -1120,7 +1248,10 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -1149,6 +1280,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up the network configuration
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -1170,11 +1302,13 @@ func TestNetwork_Forward(t *testing.T) {
 		ntw.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
 
-		poller1 := ntw.evmStatePollers["rpc1"]
+		poller1 := pup1.EvmStatePoller()
 		poller1.SuggestLatestBlock(9)
 		poller1.SuggestFinalizedBlock(8)
 
 		time.Sleep(100 * time.Millisecond)
+
+		upstream.ReorderUpstreams(upr)
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
@@ -1262,7 +1396,17 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		// Initialize various components for the test environment
-		clr := upstream.NewClientRegistry(&log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
@@ -1274,7 +1418,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 
 		// Set up upstream configurations
@@ -1302,7 +1445,10 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -1346,6 +1492,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up the network configuration
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -1367,18 +1514,17 @@ func TestNetwork_Forward(t *testing.T) {
 		ntw.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
 
-		poller1 := ntw.evmStatePollers["rpc1"]
+		poller1 := pup1.EvmStatePoller()
 		poller1.SuggestLatestBlock(9)
 		poller1.SuggestFinalizedBlock(8)
 
-		poller2 := ntw.evmStatePollers["rpc2"]
+		poller2 := pup2.EvmStatePoller()
 		poller2.SuggestLatestBlock(9)
 		poller2.SuggestFinalizedBlock(8)
 
-		pup1.SetEvmSyncingState(common.EvmSyncingStateUnknown)
-		pup2.SetEvmSyncingState(common.EvmSyncingStateUnknown)
-
 		time.Sleep(100 * time.Millisecond)
+
+		upstream.ReorderUpstreams(upr)
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
@@ -1448,7 +1594,17 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		// Initialize various components for the test environment
-		clr := upstream.NewClientRegistry(&log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
@@ -1460,7 +1616,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 
 		// Set up upstream configurations
@@ -1488,7 +1643,10 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -1532,6 +1690,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up the network configuration
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -1552,6 +1711,8 @@ func TestNetwork_Forward(t *testing.T) {
 		// Bootstrap the network and make the simulated request
 		ntw.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
+
+		upstream.ReorderUpstreams(upr)
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
@@ -1621,7 +1782,17 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		// Initialize various components for the test environment
-		clr := upstream.NewClientRegistry(&log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
@@ -1633,7 +1804,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 
 		// Set up upstream configurations
@@ -1661,7 +1831,10 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -1705,6 +1878,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up the network configuration
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -1725,6 +1899,8 @@ func TestNetwork_Forward(t *testing.T) {
 		// Bootstrap the network and make the simulated request
 		ntw.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
+
+		upstream.ReorderUpstreams(upr)
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
@@ -1784,7 +1960,17 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		// Initialize various components for the test environment
-		clr := upstream.NewClientRegistry(&log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
@@ -1796,7 +1982,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 
 		// Set up upstream configurations
@@ -1824,7 +2009,8 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
 			rlr,
-			vndr,
+			vr,
+			pr,
 			mt,
 			0,
 		)
@@ -1836,6 +2022,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
 
 		// Create and register clients for both upstreams
 		pup1, err := upr.NewUpstream(
@@ -1870,6 +2058,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up the network configuration
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -1890,6 +2079,8 @@ func TestNetwork_Forward(t *testing.T) {
 		// Bootstrap the network and make the simulated request
 		ntw.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
+
+		upstream.ReorderUpstreams(upr)
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest([]byte(`{
@@ -1961,7 +2152,17 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		// Initialize test components
-		clr := upstream.NewClientRegistry(&log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
@@ -1975,7 +2176,6 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Set up test environment
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Id:       "rpc1",
@@ -2001,7 +2201,8 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
 			rlr,
-			vndr,
+			vr,
+			pr,
 			mt,
 			0,
 		)
@@ -2036,6 +2237,7 @@ func TestNetwork_Forward(t *testing.T) {
 		// Set up network with directiveDefaults
 		retryPending := true
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -2058,6 +2260,8 @@ func TestNetwork_Forward(t *testing.T) {
 
 		ntw.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
+
+		upstream.ReorderUpstreams(upr)
 
 		// Create request without explicit directives
 		fakeReq := common.NewNormalizedRequest([]byte(`{
@@ -2126,7 +2330,17 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		// Initialize various components for the test environment
-		clr := upstream.NewClientRegistry(&log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3, // Allow up to 3 retry attempts
@@ -2138,7 +2352,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 
 		// Set up upstream configurations
@@ -2166,7 +2379,8 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
 			rlr,
-			vndr,
+			vr,
+			pr,
 			mt,
 			0,
 		)
@@ -2212,6 +2426,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up the network configuration
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -2232,6 +2447,8 @@ func TestNetwork_Forward(t *testing.T) {
 		// Bootstrap the network and make the simulated request
 		ntw.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
+
+		upstream.ReorderUpstreams(upr)
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest([]byte(`{
@@ -2300,7 +2517,17 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		// Initialize various components for the test environment
-		clr := upstream.NewClientRegistry(&log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
@@ -2312,7 +2539,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 
 		// Set up upstream configurations
@@ -2340,7 +2566,8 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
 			rlr,
-			vndr,
+			vr,
+			pr,
 			mt,
 			0,
 		)
@@ -2386,6 +2613,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Set up the network configuration
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -2406,6 +2634,8 @@ func TestNetwork_Forward(t *testing.T) {
 		// Bootstrap the network and make the simulated request
 		ntw.Bootstrap(ctx)
 		time.Sleep(100 * time.Millisecond)
+
+		upstream.ReorderUpstreams(upr)
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest([]byte(`{
@@ -2470,7 +2700,17 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry(&log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 		fsCfg := &common.FailsafeConfig{}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
@@ -2478,7 +2718,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -2494,7 +2733,10 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -2520,6 +2762,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup1.Client = cl1
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -2536,6 +2779,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
 
 		// First request (should be cached)
 		fakeReq1 := common.NewNormalizedRequest(requestBytes)
@@ -2577,7 +2822,17 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry(&log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
@@ -2585,7 +2840,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -2604,7 +2858,10 @@ func TestNetwork_Forward(t *testing.T) {
 				up1,
 			},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -2629,6 +2886,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup.Client = cl
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -2644,6 +2902,9 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
+
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 
 		// First request marks the method as ignored
@@ -2676,7 +2937,17 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry(&log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -2689,7 +2960,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -2708,7 +2978,10 @@ func TestNetwork_Forward(t *testing.T) {
 				up1,
 			},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -2733,6 +3006,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup.Client = cl
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -2749,6 +3023,9 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
+
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 
 		_, err = ntw.Forward(ctx, fakeReq)
@@ -2778,7 +3055,17 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry(&log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -2791,7 +3078,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		FALSE := false
 		up1 := &common.UpstreamConfig{
@@ -2814,7 +3100,10 @@ func TestNetwork_Forward(t *testing.T) {
 				up1,
 			},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -2839,6 +3128,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup.Client = cl
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -2854,6 +3144,9 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
+
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -2900,6 +3193,16 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		mt := health.NewTracker("prjA", 2*time.Second)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
 		upsReg := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
@@ -2915,7 +3218,8 @@ func TestNetwork_Forward(t *testing.T) {
 				},
 			},
 			rateLimitersRegistry,
-			vendors.NewVendorsRegistry(),
+			vr,
+			pr,
 			mt,
 			1*time.Second,
 		)
@@ -2931,6 +3235,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -2947,6 +3252,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upsReg)
 
 		var lastErr error
 
@@ -2978,7 +3285,17 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry(&log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -2991,7 +3308,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -3009,7 +3325,10 @@ func TestNetwork_Forward(t *testing.T) {
 				up1,
 			},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -3034,6 +3353,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup.Client = cl
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -3050,6 +3370,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		upstream.ReorderUpstreams(upr)
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -3089,7 +3410,17 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry(&log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 4,
@@ -3101,7 +3432,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -3119,7 +3449,10 @@ func TestNetwork_Forward(t *testing.T) {
 				up1,
 			},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -3144,6 +3477,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup.Client = cl
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -3160,6 +3494,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		upstream.ReorderUpstreams(upr)
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
@@ -3201,14 +3536,23 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry(&log.Logger)
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -3226,7 +3570,10 @@ func TestNetwork_Forward(t *testing.T) {
 				up1,
 			},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -3251,6 +3598,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup.Client = cl
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -3272,6 +3620,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		upstream.ReorderUpstreams(upr)
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -3308,7 +3657,17 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry(&log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 		fsCfg := &common.FailsafeConfig{
 			Timeout: &common.TimeoutPolicyConfig{
 				Duration: "1s",
@@ -3320,7 +3679,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -3338,7 +3696,10 @@ func TestNetwork_Forward(t *testing.T) {
 				up1,
 			},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -3363,6 +3724,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup.Client = cl
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -3380,6 +3742,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		upstream.ReorderUpstreams(upr)
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
 
@@ -3416,7 +3779,17 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry(&log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 		fsCfg := &common.FailsafeConfig{
 			Hedge: &common.HedgePolicyConfig{
 				Delay:    "200ms",
@@ -3429,7 +3802,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -3453,7 +3825,10 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -3494,6 +3869,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup2.Client = cl2
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -3510,6 +3886,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
 
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
@@ -3552,7 +3930,17 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry(&log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 		fsCfg := &common.FailsafeConfig{
 			Hedge: &common.HedgePolicyConfig{
 				Delay:    "100ms",
@@ -3565,7 +3953,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -3589,7 +3976,10 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -3630,6 +4020,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup2.Client = cl2
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -3646,6 +4037,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
 
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
@@ -3687,7 +4080,17 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry(&log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 		fsCfg := &common.FailsafeConfig{
 			Hedge: &common.HedgePolicyConfig{
 				Delay:    "100ms",
@@ -3700,7 +4103,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -3724,7 +4126,10 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -3765,6 +4170,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup2.Client = cl2
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -3781,6 +4187,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
 
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
@@ -3826,7 +4234,17 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry(&log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 		fsCfg := &common.FailsafeConfig{
 			CircuitBreaker: &common.CircuitBreakerPolicyConfig{
 				FailureThresholdCount:    2,
@@ -3841,7 +4259,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("test_cb", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -3858,7 +4275,10 @@ func TestNetwork_Forward(t *testing.T) {
 			"test_cb",
 			[]*common.UpstreamConfig{up1},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -3883,6 +4303,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup1.Client = cl
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"test_cb",
 			&common.NetworkConfig{
@@ -3899,6 +4320,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
 
 		var lastErr error
 		for i := 0; i < 10; i++ {
@@ -3933,7 +4356,17 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry(&log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 		fsCfgNetwork := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 1,
@@ -3953,7 +4386,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("test_cb", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -3970,7 +4402,10 @@ func TestNetwork_Forward(t *testing.T) {
 			"test_cb",
 			[]*common.UpstreamConfig{up1},
 			rlr,
-			vndr, mt, 1*time.Hour,
+			vr,
+			pr,
+			mt,
+			1*time.Hour,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -3997,6 +4432,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup1.Client = cl1
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"test_cb",
 			&common.NetworkConfig{
@@ -4013,6 +4449,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
 
 		var lastErr error
 		var resp *common.NormalizedResponse
@@ -4058,7 +4496,17 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry(&log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 		fsCfg := &common.FailsafeConfig{
 			CircuitBreaker: &common.CircuitBreakerPolicyConfig{
 				FailureThresholdCount:    2,
@@ -4072,7 +4520,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("test_cb", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -4088,7 +4535,10 @@ func TestNetwork_Forward(t *testing.T) {
 			"test_cb",
 			[]*common.UpstreamConfig{up1},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -4115,6 +4565,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup1.Client = cl
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"test_cb",
 			&common.NetworkConfig{
@@ -4131,6 +4582,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
 
 		var lastErr error
 		for i := 0; i < 4+2; i++ {
@@ -4180,7 +4633,17 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry(&log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 		fsCfg := &common.FailsafeConfig{}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
@@ -4189,7 +4652,6 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -4206,7 +4668,10 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -4232,6 +4697,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup1.Client = cl1
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -4248,6 +4714,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
 
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
@@ -4270,7 +4738,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 	})
 
-	t.Run("ForwardEndpointServerSideExceptionSuccess", func(t *testing.T) {
+	t.Run("ForwardEndpointServerSideExceptionRetrySuccess", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
@@ -4293,7 +4761,17 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry(&log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
@@ -4306,7 +4784,6 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -4330,7 +4807,10 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -4371,6 +4851,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup2.Client = cl2
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -4388,6 +4869,8 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		upstream.ReorderUpstreams(upr)
+
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
@@ -4404,10 +4887,6 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected result, got nil")
 		}
 
-		// Debug logging
-		t.Logf("jrr.Result type: %T", jrr.Result)
-		t.Logf("jrr.Result content: %+v", jrr.Result)
-
 		fromHost, err := jrr.PeekStringByPath("fromHost")
 		if err != nil || fromHost != "rpc2" {
 			t.Errorf("Expected fromHost to be %v, got %v", "rpc2", fromHost)
@@ -4420,7 +4899,17 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry(&log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
@@ -4433,7 +4922,6 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -4450,7 +4938,10 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -4476,6 +4967,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup1.Client = cl1
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -4492,6 +4984,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
 
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		_, err = ntw.Forward(ctx, fakeReq)
@@ -4526,7 +5020,17 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := upstream.NewClientRegistry(&log.Logger)
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA")
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
@@ -4538,7 +5042,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -4562,7 +5065,10 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -4603,6 +5109,7 @@ func TestNetwork_Forward(t *testing.T) {
 		pup2.Client = cl2
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -4619,6 +5126,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
 
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
@@ -4682,7 +5191,16 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create rate limiters registry: %v", err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -4706,7 +5224,10 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -4718,6 +5239,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -4734,6 +5256,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create network: %v", err)
 		}
+
+		upstream.ReorderUpstreams(upr)
 
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
@@ -4781,7 +5305,16 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
 		mt := health.NewTracker("prjA", 2*time.Second)
 		FALSE := false
 		up1 := &common.UpstreamConfig{
@@ -4802,7 +5335,10 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -4814,6 +5350,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -4830,6 +5367,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
 
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
@@ -4877,7 +5416,16 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -4897,7 +5445,10 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -4909,6 +5460,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -4925,6 +5477,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
 
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
@@ -4972,7 +5526,16 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -4992,7 +5555,10 @@ func TestNetwork_Forward(t *testing.T) {
 			"prjA",
 			[]*common.UpstreamConfig{up1},
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
 		if err != nil {
@@ -5004,6 +5570,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -5020,6 +5587,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
 
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
@@ -5067,13 +5636,24 @@ func TestNetwork_Forward(t *testing.T) {
 			{Id: "upstream-c", Endpoint: "http://upstream-c.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
 		}
 
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
 		upstreamsRegistry := upstream.NewUpstreamsRegistry(
 			ctx,
 			&logger,
 			projectID,
 			upstreamConfigs,
 			rateLimitersRegistry,
-			vendors.NewVendorsRegistry(),
+			vr,
+			pr,
 			metricsTracker,
 			1*time.Second,
 		)
@@ -5084,16 +5664,24 @@ func TestNetwork_Forward(t *testing.T) {
 		err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkID)
 		assert.NoError(t, err)
 
+		prj := &PreparedProject{
+			Config: &common.ProjectConfig{
+				Id:       projectID,
+				Networks: []*common.NetworkConfig{},
+			},
+			Logger: &logger,
+		}
 		networksRegistry := NewNetworksRegistry(
+			prj,
+			ctx,
 			upstreamsRegistry,
 			metricsTracker,
 			nil,
 			rateLimitersRegistry,
+			&logger,
 		)
 
-		ntw, err := networksRegistry.RegisterNetwork(
-			&logger,
-			&common.ProjectConfig{Id: projectID},
+		ntw, err := networksRegistry.prepareNetwork(
 			&common.NetworkConfig{
 				Architecture: common.ArchitectureEvm,
 				Evm:          &common.EvmNetworkConfig{ChainId: 123},
@@ -5114,6 +5702,8 @@ func TestNetwork_Forward(t *testing.T) {
 				BodyString(`{"jsonrpc":"2.0","id":1,"result":"0x1","method":"` + method + `","upstreamId":"` + upstreamId + `","latency":` + fmt.Sprintf("%d", latency.Milliseconds()) + `}`).
 				Delay(latency)
 		}
+
+		upstream.ReorderUpstreams(upstreamsRegistry)
 
 		// Upstream A is faster for eth_call, Upstream B is faster for eth_traceTransaction, Upstream C is faster for eth_getLogs
 		mockRequests("eth_getLogs", "upstream-a", 200*time.Millisecond)
@@ -5211,14 +5801,13 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := vendors.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 
 		// First upstream (Envio) with unsupported network
 		upEnvio := &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvmEnvio,
+			Type:     common.UpstreamTypeEvm,
 			Id:       "envio",
-			Endpoint: "envio://rpc.hypersync.xyz",
+			Endpoint: "https://rpc.hypersync.xyz",
 			JsonRpc: &common.JsonRpcUpstreamConfig{
 				SupportsBatch: &common.TRUE,
 			},
@@ -5238,25 +5827,34 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{upEnvio, upRpc1}, // Both upstreams
 			rlr,
-			vndr, mt, 1*time.Second,
+			vr,
+			pr,
+			mt,
+			1*time.Second,
 		)
 		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatalf("Failed to bootstrap upstreams registry: %v", err)
-		}
-
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatalf("Failed to prepare upstreams for network: %v", err)
+		if err == nil {
+			t.Fatalf("Expected error on registry bootstrap, got nil")
 		}
 
 		ntw, err := NewNetwork(
+			ctx,
 			&log.Logger,
 			"prjA",
 			&common.NetworkConfig{
@@ -5273,6 +5871,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+
+		upstream.ReorderUpstreams(upr)
 
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
@@ -6250,13 +6850,24 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfig *common.
 			},
 		}
 	}
+	vr := thirdparty.NewVendorsRegistry()
+	pr, err := thirdparty.NewProvidersRegistry(
+		&log.Logger,
+		vr,
+		[]*common.ProviderConfig{},
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	upstreamsRegistry := upstream.NewUpstreamsRegistry(
 		ctx,
 		&log.Logger,
 		"test",
 		[]*common.UpstreamConfig{upstreamConfig},
 		rateLimitersRegistry,
-		vendors.NewVendorsRegistry(),
+		vr,
+		pr,
 		metricsTracker,
 		1*time.Second,
 	)
@@ -6269,6 +6880,7 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfig *common.
 		}
 	}
 	network, err := NewNetwork(
+		ctx,
 		&log.Logger,
 		"test",
 		networkConfig,
@@ -6278,12 +6890,7 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfig *common.
 	)
 	assert.NoError(t, err)
 
-	err = upstreamsRegistry.Bootstrap(ctx)
-	assert.NoError(t, err)
-	time.Sleep(100 * time.Millisecond)
-
-	err = upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-	assert.NoError(t, err)
+	upstreamsRegistry.Bootstrap(ctx)
 	time.Sleep(100 * time.Millisecond)
 
 	err = network.Bootstrap(ctx)
@@ -6292,9 +6899,12 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfig *common.
 
 	if upstreamConfig.Id == "test" {
 		h, _ := common.HexToInt64("0x1273c18")
-		network.evmStatePollers["test"].SuggestFinalizedBlock(h)
-		network.evmStatePollers["test"].SuggestLatestBlock(h)
+		upsList := upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
+		upsList[0].EvmStatePoller().SuggestFinalizedBlock(h)
+		upsList[0].EvmStatePoller().SuggestLatestBlock(h)
 	}
+
+	upstream.ReorderUpstreams(upstreamsRegistry)
 
 	return network
 }
@@ -6327,13 +6937,24 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.C
 		},
 	}
 
+	vr := thirdparty.NewVendorsRegistry()
+	pr, err := thirdparty.NewProvidersRegistry(
+		&log.Logger,
+		vr,
+		[]*common.ProviderConfig{},
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	upstreamsRegistry := upstream.NewUpstreamsRegistry(
 		ctx,
 		&log.Logger,
 		"test",
 		[]*common.UpstreamConfig{up1, up2},
 		rateLimitersRegistry,
-		vendors.NewVendorsRegistry(),
+		vr,
+		pr,
 		metricsTracker,
 		1*time.Second,
 	)
@@ -6352,6 +6973,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.C
 		Failsafe: fsCfg,
 	}
 	network, err := NewNetwork(
+		ctx,
 		&log.Logger,
 		"test",
 		networkConfig,
@@ -6373,15 +6995,18 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.C
 	assert.NoError(t, err)
 	time.Sleep(100 * time.Millisecond)
 
+	upstream.ReorderUpstreams(upstreamsRegistry)
+
 	fb1, _ := common.HexToInt64("0x11117777")
-	network.evmStatePollers["rpc1"].SuggestFinalizedBlock(fb1)
+	upsList := upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
+	upsList[0].EvmStatePoller().SuggestFinalizedBlock(fb1)
 	lb1, _ := common.HexToInt64("0x11118888")
-	network.evmStatePollers["rpc1"].SuggestLatestBlock(lb1)
+	upsList[0].EvmStatePoller().SuggestLatestBlock(lb1)
 
 	fb2, _ := common.HexToInt64("0x22227777")
-	network.evmStatePollers["rpc2"].SuggestFinalizedBlock(fb2)
+	upsList[1].EvmStatePoller().SuggestFinalizedBlock(fb2)
 	lb2, _ := common.HexToInt64("0x22228888")
-	network.evmStatePollers["rpc2"].SuggestLatestBlock(lb2)
+	upsList[1].EvmStatePoller().SuggestLatestBlock(lb2)
 
 	return network
 }

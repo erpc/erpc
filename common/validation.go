@@ -355,6 +355,13 @@ func (p *ProjectConfig) Validate(c *Config) error {
 	if p.Id == "" {
 		return fmt.Errorf("project id is required")
 	}
+	if p.Providers != nil && len(p.Providers) > 0 {
+		for _, provider := range p.Providers {
+			if err := provider.Validate(c); err != nil {
+				return err
+			}
+		}
+	}
 	if p.Upstreams != nil && len(p.Upstreams) > 0 {
 		existingIds := make(map[string]bool)
 		for _, upstream := range p.Upstreams {
@@ -493,6 +500,33 @@ func (c *CORSConfig) Validate() error {
 func (h *HealthCheckConfig) Validate() error {
 	if h.ScoreMetricsWindowSize == "" {
 		return fmt.Errorf("project.*.healthCheck.scoreMetricsWindowSize is required")
+	}
+	return nil
+}
+
+func (u *ProviderConfig) Validate(c *Config) error {
+	if u.Id == "" {
+		return fmt.Errorf("project.*.providers.*.id is required")
+	}
+	if u.Vendor == "" {
+		return fmt.Errorf("project.*.providers.*.vendor is required")
+	}
+	if u.UpstreamIdTemplate == "" {
+		return fmt.Errorf("project.*.providers.*.upstreamIdTemplate is required")
+	}
+	if u.Overrides != nil {
+		for _, override := range u.Overrides {
+			if err := override.Validate(c); err != nil {
+				return err
+			}
+		}
+	}
+	if u.OnlyNetworks != nil {
+		for _, network := range u.OnlyNetworks {
+			if !IsValidNetwork(network) {
+				return fmt.Errorf("project.*.providers.*.onlyNetworks.* '%s' is invalid must be like evm:1", network)
+			}
+		}
 	}
 	return nil
 }

@@ -6,8 +6,8 @@ import (
 
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
-	"github.com/erpc/erpc/vendors"
 	"github.com/rs/zerolog"
 )
 
@@ -18,19 +18,22 @@ type ERPC struct {
 }
 
 func NewERPC(
-	ctx context.Context,
+	appCtx context.Context,
 	logger *zerolog.Logger,
 	evmJsonRpcCache *EvmJsonRpcCache,
 	cfg *common.Config,
 ) (*ERPC, error) {
-	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(cfg.RateLimiters, logger)
+	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
+		cfg.RateLimiters,
+		logger,
+	)
 	if err != nil {
 		return nil, err
 	}
 
-	vendorsRegistry := vendors.NewVendorsRegistry()
+	vendorsRegistry := thirdparty.NewVendorsRegistry()
 	projectRegistry, err := NewProjectsRegistry(
-		ctx,
+		appCtx,
 		logger,
 		cfg.Projects,
 		evmJsonRpcCache,
@@ -48,6 +51,13 @@ func NewERPC(
 			return nil, err
 		}
 	}
+
+	go func() {
+		err := projectRegistry.Bootstrap(appCtx)
+		if err != nil {
+			logger.Error().Err(err).Msg("failed to bootstrap projects on first attempt (will keep retrying in the background)")
+		}
+	}()
 
 	return &ERPC{
 		cfg:               cfg,
@@ -96,7 +106,7 @@ func (e *ERPC) AdminHandleRequest(ctx context.Context, nq *common.NormalizedRequ
 		projects := e.GetProjects()
 		for _, p := range projects {
 			networks := []*taxonomyNetwork{}
-			for _, n := range p.Networks {
+			for _, n := range p.GetNetworks() {
 				ntw := &taxonomyNetwork{
 					Id:        n.NetworkId,
 					Upstreams: []*taxonomyUpstream{},
@@ -144,8 +154,8 @@ func (e *ERPC) AdminHandleRequest(ctx context.Context, nq *common.NormalizedRequ
 			return nil, err
 		}
 		type configResult struct {
-			Config *common.ProjectConfig     `json:"config"`
-			Health *upstream.UpstreamsHealth `json:"health"`
+			Config *common.ProjectConfig `json:"config"`
+			Health *ProjectHealthInfo    `json:"health"`
 		}
 		if len(jrr.Params) == 0 {
 			return nil, common.NewErrInvalidRequest(fmt.Errorf("project id (params[0]) is required"))
@@ -188,7 +198,7 @@ func (e *ERPC) GetNetwork(ctx context.Context, projectId string, networkId strin
 		return nil, err
 	}
 
-	return prj.GetNetwork(ctx, networkId)
+	return prj.GetNetwork(networkId)
 }
 
 func (e *ERPC) GetProject(projectId string) (*PreparedProject, error) {

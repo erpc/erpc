@@ -1,17 +1,19 @@
-package upstream
+package thirdparty
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
+	"github.com/rs/zerolog"
 )
 
 var pimlicoSupportedChains = map[int64]struct{}{
@@ -84,55 +86,37 @@ var pimlicoSupportedChains = map[int64]struct{}{
 	31:          {}, // rootstock-testnet
 }
 
-type PimlicoHttpJsonRpcClient struct {
-	appCtx   context.Context
-	upstream *Upstream
-	apiKey   string
-	clients  map[int64]HttpJsonRpcClient
-	mu       sync.RWMutex
+type PimlicoVendor struct {
+	common.Vendor
 }
 
-func NewPimlicoHttpJsonRpcClient(appCtx context.Context, pu *Upstream, parsedUrl *url.URL) (HttpJsonRpcClient, error) {
-	if !strings.HasSuffix(parsedUrl.Scheme, "pimlico") {
-		return nil, fmt.Errorf("invalid Pimlico URL scheme: %s", parsedUrl.Scheme)
-	}
-
-	apiKey := parsedUrl.Host
-	if apiKey == "" {
-		return nil, fmt.Errorf("missing Pimlico API key in URL")
-	}
-
-	return &PimlicoHttpJsonRpcClient{
-		appCtx:   appCtx,
-		upstream: pu,
-		apiKey:   apiKey,
-		clients:  make(map[int64]HttpJsonRpcClient),
-	}, nil
+func CreatePimlicoVendor() common.Vendor {
+	return &PimlicoVendor{}
 }
 
-func (c *PimlicoHttpJsonRpcClient) GetType() ClientType {
-	return ClientTypePimlicoHttpJsonRpc
+func (v *PimlicoVendor) Name() string {
+	return "pimlico"
 }
 
-func (c *PimlicoHttpJsonRpcClient) SupportsNetwork(ctx context.Context, networkId string) (bool, error) {
+func (v *PimlicoVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
 	if !strings.HasPrefix(networkId, "evm:") {
 		return false, nil
 	}
 
-	chainId, err := strconv.ParseInt(networkId[4:], 10, 64)
+	chainId, err := strconv.ParseInt(strings.TrimPrefix(networkId, "evm:"), 10, 64)
 	if err != nil {
 		return false, err
 	}
-
-	if _, ok := pimlicoSupportedChains[chainId]; ok {
+	_, ok := pimlicoSupportedChains[chainId]
+	if ok {
 		return true, nil
 	}
 
-	// Check against endpoint to see if eth_chainId responds successfully
-	client, err := c.createClient(chainId)
+	client, err := v.createClient(ctx, logger, nil)
 	if err != nil {
 		return false, err
 	}
+
 	ctx, cancel := context.WithTimeoutCause(ctx, 10*time.Second, errors.New("pimlico client timeout during eth_chainId"))
 	defer cancel()
 	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, util.RandomID())))
@@ -164,66 +148,70 @@ func (c *PimlicoHttpJsonRpcClient) SupportsNetwork(ctx context.Context, networkI
 	return cid == chainId, nil
 }
 
-func (c *PimlicoHttpJsonRpcClient) getOrCreateClient(network common.Network) (HttpJsonRpcClient, error) {
-	if network.Architecture() != common.ArchitectureEvm {
-		return nil, fmt.Errorf("unsupported network architecture for Pimlico client: %s", network.Architecture())
+func (v *PimlicoVendor) PrepareConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
+	if upstream.JsonRpc == nil {
+		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
 
-	chainID, err := network.EvmChainId()
-	if err != nil {
-		return nil, err
+	if upstream.Endpoint == "" {
+		if apiKey, ok := settings["apiKey"].(string); ok && apiKey != "" {
+			chainID := upstream.Evm.ChainId
+			if chainID == 0 {
+				return fmt.Errorf("pimlico vendor requires upstream.evm.chainId to be defined")
+			}
+			var pimlicoURL string
+			if apiKey == "public" {
+				pimlicoURL = fmt.Sprintf("https://public.pimlico.io/v2/%d/rpc", chainID)
+			} else {
+				pimlicoURL = fmt.Sprintf("https://api.pimlico.io/v2/%d/rpc?apikey=%s", chainID, apiKey)
+			}
+			parsedURL, err := url.Parse(pimlicoURL)
+			if err != nil {
+				return err
+			}
+			upstream.Endpoint = parsedURL.String()
+			upstream.Type = common.UpstreamTypeEvm
+		} else {
+			return fmt.Errorf("apiKey is required in pimlico settings (set to 'public' for public endpoint)")
+		}
 	}
 
-	return c.createClient(chainID)
+	if upstream.IgnoreMethods == nil {
+		upstream.IgnoreMethods = []string{"*"}
+	}
+	if upstream.AllowMethods == nil {
+		upstream.AllowMethods = []string{
+			"eth_sendUserOperation",
+			"eth_estimateUserOperationGas",
+			"eth_getUserOperationReceipt",
+			"eth_getUserOperationByHash",
+			"eth_supportedEntryPoints",
+			"pimlico_sendCompressedUserOperation",
+			"pimlico_getUserOperationGasPrice",
+			"pimlico_getUserOperationStatus",
+			"pm_sponsorUserOperation",
+			"pm_getPaymasterData",
+			"pm_getPaymasterStubData",
+		}
+	}
+
+	return nil
 }
 
-func (c *PimlicoHttpJsonRpcClient) createClient(chainID int64) (HttpJsonRpcClient, error) {
-	c.mu.RLock()
-	client, exists := c.clients[chainID]
-	c.mu.RUnlock()
+func (v *PimlicoVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {
+	return nil
+}
 
-	if exists {
-		return client, nil
-	}
+func (v *PimlicoVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
+	return strings.HasPrefix(ups.Endpoint, "pimlico") ||
+		strings.HasPrefix(ups.Endpoint, "evm+pimlico") ||
+		strings.Contains(ups.Endpoint, "pimlico.io")
+}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Double-check to ensure another goroutine hasn't created the client
-	if client, exists := c.clients[chainID]; exists {
-		return client, nil
-	}
-
-	var pimlicoURL string
-	if c.apiKey == "public" {
-		pimlicoURL = fmt.Sprintf("https://public.pimlico.io/v2/%d/rpc", chainID)
-	} else {
-		pimlicoURL = fmt.Sprintf("https://api.pimlico.io/v2/%d/rpc?apikey=%s", chainID, c.apiKey)
-	}
-	parsedURL, err := url.Parse(pimlicoURL)
+func (v *PimlicoVendor) createClient(ctx context.Context, logger *zerolog.Logger, parsedURL *url.URL) (clients.HttpJsonRpcClient, error) {
+	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", "n/a", parsedURL, nil)
 	if err != nil {
 		return nil, err
 	}
-
-	client, err = NewGenericHttpJsonRpcClient(c.appCtx, &c.upstream.Logger, c.upstream, parsedURL)
-	if err != nil {
-		return nil, err
-	}
-
-	c.clients[chainID] = client
 	return client, nil
-}
-
-func (c *PimlicoHttpJsonRpcClient) SendRequest(reqCtx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-	network := req.Network()
-	if network == nil {
-		return nil, fmt.Errorf("network information is missing in the request")
-	}
-
-	client, err := c.getOrCreateClient(network)
-	if err != nil {
-		return nil, err
-	}
-
-	return client.SendRequest(reqCtx, req)
 }
