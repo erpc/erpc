@@ -494,14 +494,6 @@ func (c *CORSConfig) Validate() error {
 	if c.AllowedOrigins == nil || len(c.AllowedOrigins) == 0 {
 		return fmt.Errorf("*.cors.allowedOrigins is required, add at least one allowed origin")
 	}
-	for _, origin := range c.AllowedOrigins {
-		// 1) Disallow literal "*"
-		// 2) Disallow "null"
-		// 3) Disallow partial wildcards (e.g., "*.example.com")
-		if origin == "*" || origin == "null" || strings.Contains(origin, "*") {
-			return fmt.Errorf("*.cors.allowedOrigins cannot contain wildcard or 'null' origin")
-		}
-	}
 	return nil
 }
 

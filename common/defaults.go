@@ -1392,10 +1392,7 @@ func (r *RateLimitRuleConfig) SetDefaults() error {
 
 func (c *CORSConfig) SetDefaults() error {
 	if c.AllowedOrigins == nil {
-		c.AllowedOrigins = []string{}
-	}
-	if c.NoHeadersForUnknownOrigins == nil {
-		c.NoHeadersForUnknownOrigins = util.BoolPtr(false)
+		c.AllowedOrigins = []string{"*"}
 	}
 	if c.AllowedMethods == nil {
 		c.AllowedMethods = []string{"GET", "POST", "OPTIONS"}
