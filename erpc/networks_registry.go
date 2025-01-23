@@ -63,15 +63,12 @@ func NewNetwork(
 ) (*Network, error) {
 	lg := logger.With().Str("component", "proxy").Str("networkId", nwCfg.NetworkId()).Logger()
 
-	var policyArray []failsafe.Policy[*common.NormalizedResponse]
 	key := fmt.Sprintf("%s/%s", projectId, nwCfg.NetworkId())
 	pls, err := upstream.CreateFailSafePolicies(&lg, common.ScopeNetwork, key, nwCfg.Failsafe)
 	if err != nil {
 		return nil, err
 	}
-	for _, policy := range pls {
-		policyArray = append(policyArray, policy)
-	}
+	policyArray := upstream.ToPolicyArray(pls, "timeout", "retry", "hedge", "consensus")
 	var timeoutDuration *time.Duration
 	if nwCfg.Failsafe != nil && nwCfg.Failsafe.Timeout != nil {
 		d, err := time.ParseDuration(nwCfg.Failsafe.Timeout.Duration)
