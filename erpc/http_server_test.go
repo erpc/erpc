@@ -3210,17 +3210,6 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 			},
 		}
 
-		util.ResetGock()
-		defer util.ResetGock()
-		gock.New("http://rpc1.localhost").
-			Post("/").
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0xABCD",
-			})
-
 		_, sendOptionsRequest, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
@@ -3265,17 +3254,6 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 				},
 			},
 		}
-
-		util.ResetGock()
-		defer util.ResetGock()
-		gock.New("http://rpc1.localhost").
-			Post("/").
-			Reply(200).
-			JSON(map[string]interface{}{
-				"jsonrpc": "2.0",
-				"id":      1,
-				"result":  "0xABCD",
-			})
 
 		_, sendOptionsRequest, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
