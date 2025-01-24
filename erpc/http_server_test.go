@@ -1530,7 +1530,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Architecture: common.ArchitectureEvm,
 							Evm:          &common.EvmNetworkConfig{ChainId: 1},
 							Failsafe: &common.FailsafeConfig{
-								// We allow a 2-attempt hedge: the “original” plus 1 “hedge”.
+								// We allow a 2-attempt hedge: the "original" plus 1 "hedge".
 								Hedge: &common.HedgePolicyConfig{
 									MaxCount: 1,
 									Delay:    "10ms",
@@ -1623,7 +1623,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Architecture: common.ArchitectureEvm,
 							Evm:          &common.EvmNetworkConfig{ChainId: 1},
 							Failsafe: &common.FailsafeConfig{
-								// We allow a 2-attempt hedge: the “original” plus 1 “hedge”.
+								// We allow a 2-attempt hedge: the "original" plus 1 "hedge".
 								Hedge: &common.HedgePolicyConfig{
 									MaxCount: 1,
 									Delay:    "10ms",
@@ -3173,6 +3173,96 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 		assert.Equal(t, http.StatusNoContent, statusCode)
 		assert.Equal(t, "https://erpc.cloud", headers["Access-Control-Allow-Origin"])
 		assert.Equal(t, "POST", headers["Access-Control-Allow-Methods"])
+	})
+
+	t.Run("SetCORSHeaders_AllowedOrigin", func(t *testing.T) {
+		// When the origin is allowed, we send CORS headers
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("5s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					CORS: &common.CORSConfig{
+						AllowedOrigins: []string{"https://allowed.origin"},
+						AllowedMethods: []string{"POST", "GET", "OPTIONS"},
+					},
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+						},
+					},
+				},
+			},
+		}
+
+		_, sendOptionsRequest, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		// Send OPTIONS request from allowed origin => not expect CORS headers
+		statusCode, headers, _ := sendOptionsRequest("https://allowed.origin")
+		assert.Equal(t, http.StatusNoContent, statusCode, "OPTIONS for allowed origin should be 204")
+		assert.Equal(t, "https://allowed.origin", headers["Access-Control-Allow-Origin"])
+		assert.Equal(t, "POST, GET, OPTIONS", headers["Access-Control-Allow-Methods"])
+	})
+
+	t.Run("NotSetCORSHeaders_DisallowedOrigin", func(t *testing.T) {
+		// When the origin is disallowed, we don't send CORS headers
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("5s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					CORS: &common.CORSConfig{
+						AllowedOrigins: []string{"https://allowed.origin"},
+						AllowedMethods: []string{"POST", "GET", "OPTIONS"},
+					},
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+						},
+					},
+				},
+			},
+		}
+
+		_, sendOptionsRequest, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		// Send OPTIONS request from disallowed origin => expect CORS headers
+		statusCode, headers, _ := sendOptionsRequest("https://disallowed.origin")
+		assert.Equal(t, http.StatusNoContent, statusCode, "OPTIONS for disallowed origin should be 204")
+		assert.Empty(t, headers["Access-Control-Allow-Origin"])
+		assert.Empty(t, headers["Access-Control-Allow-Methods"])
 	})
 }
 
