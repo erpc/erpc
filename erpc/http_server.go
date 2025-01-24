@@ -602,18 +602,24 @@ func (s *HttpServer) handleCORS(w http.ResponseWriter, r *http.Request, corsConf
 		}
 	}
 
+	// If disallowed origin, we can continue without CORS headers
 	if !allowed {
-		s.logger.Debug().Str("origin", origin).Msg("CORS request from disallowed origin")
+		s.logger.Debug().Str("origin", origin).Msg("CORS request from disallowed origin, continuing without CORS headers")
 		health.MetricCORSDisallowedOriginTotal.WithLabelValues(r.URL.Path, origin).Inc()
 
+		// If it's a preflight OPTIONS request, we can send a basic 204 with no CORS.
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
-		} else {
-			http.Error(w, "CORS request from disallowed origin", http.StatusForbidden)
+			return false
 		}
-		return false
+
+		// Otherwise, continue the request without any Access-Control-Allow-* headers.
+		// The browser will block it if it *requires* CORS, but non-browser clients or
+		// extensions can still proceed.
+		return true
 	}
 
+	// We get here if the origin is allowed, so we can set CORS headers
 	w.Header().Set("Access-Control-Allow-Origin", origin)
 	w.Header().Set("Access-Control-Allow-Methods", strings.Join(corsConfig.AllowedMethods, ", "))
 	w.Header().Set("Access-Control-Allow-Headers", strings.Join(corsConfig.AllowedHeaders, ", "))
@@ -627,12 +633,14 @@ func (s *HttpServer) handleCORS(w http.ResponseWriter, r *http.Request, corsConf
 		w.Header().Set("Access-Control-Max-Age", fmt.Sprintf("%d", corsConfig.MaxAge))
 	}
 
+	// If it's a preflight request, return a 204 and don't continue to main handler.
 	if r.Method == http.MethodOptions {
 		health.MetricCORSPreflightRequestsTotal.WithLabelValues(r.URL.Path, origin).Inc()
 		w.WriteHeader(http.StatusNoContent)
 		return false
 	}
 
+	// Otherwise, allow the request to proceed
 	return true
 }
 

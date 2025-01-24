@@ -60,8 +60,7 @@ jobs:
         run: go install golang.org/x/perf/cmd/benchstat@latest
 
       - name: Benchmark main branch
-        # We only do this if it's a PR or push to main,
-        # but we want to compare main vs. PR.
+        if: ${{ github.event_name == 'pull_request_target' }}
         run: |
           # Step 1: Save current HEAD (which might be the PR code or just main code).
           PR_COMMIT=$(git rev-parse HEAD)
@@ -71,24 +70,14 @@ jobs:
           git checkout origin/main
           make bench > /tmp/benchmark-main.txt || touch /tmp/benchmark-main.txt
 
-          # Step 3: Checkout back to PR commit (for pull_request_target runs)
-          if [ "${{ github.event_name }}" = "pull_request_target" ]; then
-            git checkout "$PR_COMMIT"
-          fi
+          # Step 3: Checkout back to PR commit
+          git checkout "$PR_COMMIT"
         shell: bash
 
       - name: Benchmark PR code
         if: ${{ github.event_name == 'pull_request_target' }}
         run: |
           make bench > /tmp/benchmark-pr.txt
-
-      - name: Benchmark (push to main)
-        if: ${{ github.event_name == 'push' }}
-        run: |
-          # If this is just a push to main (no PR),
-          # we won't have a /tmp/benchmark-pr.txt to compare to.
-          # We'll just do a single bench and store it.
-          make bench > /tmp/benchmark-main.txt
 
       - name: Compare benchmarks
         if: ${{ github.event_name == 'pull_request_target' }}

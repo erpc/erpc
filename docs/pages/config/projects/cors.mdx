@@ -2,7 +2,7 @@
 description: When using eRPC directly from the browser (i.e., frontend), you might need to enable Cross-Origin Resource Sharing (CORS)...
 ---
 
-import { Tabs, Tab } from 'nextra/components'
+import { Callout, Tabs, Tab } from 'nextra/components'
 
 # Cross-Origin Resource Sharing (CORS)
 
@@ -121,6 +121,18 @@ export default createConfig({
 - Type: integer
 - Description: Indicates how long (in seconds) the results of a preflight request can be cached.
 - Example: `3600` (1 hour)
+
+## Behavior for Disallowed Origins
+
+eRPC handles disallowed origins in a standards-compliant way:
+
+- eRPC does not forcibly block requests from origins that are not in your `allowedOrigins`. Instead, it simply omits the CORS headers in those cases.
+- **Browser-based clients** that strictly enforce CORS will automatically block these requests (due to missing CORS headers)
+- **Non-browser clients** (like curl, Postman, or certain Chrome extensions) typically don't enforce CORS and can still receive valid responses even without CORS headers
+
+<Callout type='info'>
+  This approach follows the [W3C CORS recommendation](https://www.w3.org/TR/cors/#cross-origin-requests), which treats the server's CORS headers as an "opt-in" rather than a hard firewall. Since the Origin header is easily spoofed, relying on it for strict blocking is not recommended.
+</Callout>
 
 ## Examples
 
