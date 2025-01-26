@@ -37,7 +37,7 @@ func ExtractBlockReferenceFromRequest(r *common.NormalizedRequest) (string, int6
 		return blockRef, blockNumber, err
 	}
 
-	br, bn, err := extractEvmBlockReferenceFromJsonRpcRequest(r.CacheDal(), rpcReq)
+	br, bn, err := extractRefFromJsonRpcRequest(r.CacheDal(), rpcReq)
 	if br != "" {
 		blockRef = br
 	}
@@ -118,7 +118,7 @@ func ExtractBlockReferenceFromResponse(r *common.NormalizedResponse) (string, in
 	if err != nil {
 		return blockRef, blockNumber, err
 	}
-	br, bn, err := extractEvmBlockReferenceFromJsonRpcResponse(nreq.CacheDal(), rq, jrr)
+	br, bn, err := extractRefFromJsonRpcResponse(nreq.CacheDal(), rq, jrr)
 	if br != "" {
 		blockRef = br
 	}
@@ -140,7 +140,7 @@ func ExtractBlockReferenceFromResponse(r *common.NormalizedResponse) (string, in
 	return blockRef, blockNumber, nil
 }
 
-func extractEvmBlockReferenceFromJsonRpcRequest(cacheDal common.CacheDAL, r *common.JsonRpcRequest) (string, int64, error) {
+func extractRefFromJsonRpcRequest(cacheDal common.CacheDAL, r *common.JsonRpcRequest) (string, int64, error) {
 	if r == nil {
 		return "", 0, errors.New("cannot extract block reference when json-rpc request is nil")
 	}
@@ -204,7 +204,7 @@ func extractEvmBlockReferenceFromJsonRpcRequest(cacheDal common.CacheDAL, r *com
 	return blockRef, blockNumber, nil
 }
 
-func extractEvmBlockReferenceFromJsonRpcResponse(cacheDal common.CacheDAL, rpcReq *common.JsonRpcRequest, rpcResp *common.JsonRpcResponse) (string, int64, error) {
+func extractRefFromJsonRpcResponse(cacheDal common.CacheDAL, rpcReq *common.JsonRpcRequest, rpcResp *common.JsonRpcResponse) (string, int64, error) {
 	if rpcReq == nil {
 		return "", 0, errors.New("cannot extract block reference when json-rpc request is nil")
 	}

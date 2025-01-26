@@ -18,7 +18,7 @@ type EvmJsonRpcCache struct {
 	projectId string
 	policies  []*data.CachePolicy
 	methods   map[string]*common.CacheMethodConfig
-	logger *zerolog.Logger
+	logger    *zerolog.Logger
 }
 
 const (
@@ -54,9 +54,9 @@ func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 	}
 
 	return &EvmJsonRpcCache{
-		policies:  policies,
-		methods:   cfg.Methods,
-		logger:    logger,
+		policies: policies,
+		methods:  cfg.Methods,
+		logger:   logger,
 	}, nil
 }
 
@@ -64,9 +64,9 @@ func (c *EvmJsonRpcCache) WithProjectId(projectId string) *EvmJsonRpcCache {
 	lg := c.logger.With().Str("projectId", projectId).Logger()
 	lg.Debug().Msgf("cloning EvmJsonRpcCache for project")
 	return &EvmJsonRpcCache{
-		logger:   &lg,
-		policies: c.policies,
-		methods:  c.methods,
+		logger:    &lg,
+		policies:  c.policies,
+		methods:   c.methods,
 		projectId: projectId,
 	}
 }
@@ -491,11 +491,13 @@ func (c *EvmJsonRpcCache) getFinalityState(r *common.NormalizedResponse) (finali
 	if blockNumber > 0 {
 		upstream := r.Upstream()
 		if upstream != nil {
-			if isFinalized, err := upstream.EvmIsBlockFinalized(blockNumber); err == nil {
-				if isFinalized {
-					finality = common.DataFinalityStateFinalized
-				} else {
-					finality = common.DataFinalityStateUnfinalized
+			if ups, ok := upstream.(common.EvmUpstream); ok {
+				if isFinalized, err := ups.EvmIsBlockFinalized(blockNumber); err == nil {
+					if isFinalized {
+						finality = common.DataFinalityStateFinalized
+					} else {
+						finality = common.DataFinalityStateUnfinalized
+					}
 				}
 			}
 		}

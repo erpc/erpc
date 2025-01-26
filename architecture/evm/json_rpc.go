@@ -7,7 +7,7 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
-func NormalizeEvmHttpJsonRpc(nrq *common.NormalizedRequest, jrq *common.JsonRpcRequest) {
+func NormalizeHttpJsonRpc(nrq *common.NormalizedRequest, jrq *common.JsonRpcRequest) {
 	jrq.Lock()
 	defer jrq.Unlock()
 
