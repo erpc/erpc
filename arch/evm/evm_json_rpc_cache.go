@@ -1,4 +1,4 @@
-package erpc
+package evm
 
 import (
 	"context"
@@ -15,10 +15,10 @@ import (
 )
 
 type EvmJsonRpcCache struct {
-	policies []*data.CachePolicy
-	methods  map[string]*common.CacheMethodConfig
-	network  *Network
-	logger   *zerolog.Logger
+	projectId string
+	policies  []*data.CachePolicy
+	methods   map[string]*common.CacheMethodConfig
+	logger *zerolog.Logger
 }
 
 const (
@@ -54,19 +54,20 @@ func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 	}
 
 	return &EvmJsonRpcCache{
-		policies: policies,
-		methods:  cfg.Methods,
-		logger:   logger,
+		policies:  policies,
+		methods:   cfg.Methods,
+		logger:    logger,
 	}, nil
 }
 
-func (c *EvmJsonRpcCache) WithNetwork(network *Network) *EvmJsonRpcCache {
-	network.Logger.Debug().Msgf("creating EvmJsonRpcCache")
+func (c *EvmJsonRpcCache) WithProjectId(projectId string) *EvmJsonRpcCache {
+	lg := c.logger.With().Str("projectId", projectId).Logger()
+	lg.Debug().Msgf("cloning EvmJsonRpcCache for project")
 	return &EvmJsonRpcCache{
-		logger:   c.logger,
+		logger:   &lg,
 		policies: c.policies,
 		methods:  c.methods,
-		network:  network,
+		projectId: projectId,
 	}
 }
 
@@ -84,7 +85,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	}
 	if len(policies) == 0 {
 		health.MetricCacheGetSkippedTotal.WithLabelValues(
-			c.network.ProjectId,
+			c.projectId,
 			req.NetworkId(),
 			rpcReq.Method,
 		).Inc()
@@ -99,7 +100,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		jrr, err = c.doGet(ctx, connector, req, rpcReq)
 		if err != nil {
 			health.MetricCacheGetErrorTotal.WithLabelValues(
-				c.network.ProjectId,
+				c.projectId,
 				req.NetworkId(),
 				rpcReq.Method,
 				connector.Id(),
@@ -108,7 +109,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 				common.ErrorSummary(err),
 			).Inc()
 			health.MetricCacheGetErrorDuration.WithLabelValues(
-				c.network.ProjectId,
+				c.projectId,
 				req.NetworkId(),
 				rpcReq.Method,
 				connector.Id(),
@@ -129,7 +130,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 
 	if jrr == nil {
 		health.MetricCacheGetSuccessMissTotal.WithLabelValues(
-			c.network.ProjectId,
+			c.projectId,
 			req.NetworkId(),
 			rpcReq.Method,
 			connector.Id(),
@@ -137,7 +138,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 			policy.GetTTL().String(),
 		).Inc()
 		health.MetricCacheGetSuccessMissDuration.WithLabelValues(
-			c.network.ProjectId,
+			c.projectId,
 			req.NetworkId(),
 			rpcReq.Method,
 			connector.Id(),
@@ -148,7 +149,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	}
 
 	health.MetricCacheGetSuccessHitTotal.WithLabelValues(
-		c.network.ProjectId,
+		c.projectId,
 		req.NetworkId(),
 		rpcReq.Method,
 		connector.Id(),
@@ -156,7 +157,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		policy.GetTTL().String(),
 	).Inc()
 	health.MetricCacheGetSuccessHitDuration.WithLabelValues(
-		c.network.ProjectId,
+		c.projectId,
 		req.NetworkId(),
 		rpcReq.Method,
 		connector.Id(),
@@ -191,7 +192,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 	ntwId := req.NetworkId()
 	lg := c.logger.With().Str("networkId", ntwId).Str("method", rpcReq.Method).Logger()
 
-	blockRef, blockNumber, err := req.EvmBlockRefAndNumber()
+	blockRef, blockNumber, err := ExtractBlockReferenceFromRequest(req)
 	if err != nil {
 		return err
 	}
@@ -263,7 +264,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 			if !shouldCache {
 				if err != nil {
 					health.MetricCacheSetErrorTotal.WithLabelValues(
-						c.network.ProjectId,
+						c.projectId,
 						req.NetworkId(),
 						rpcReq.Method,
 						connector.Id(),
@@ -272,7 +273,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 						common.ErrorSummary(err),
 					).Inc()
 					health.MetricCacheSetErrorDuration.WithLabelValues(
-						c.network.ProjectId,
+						c.projectId,
 						req.NetworkId(),
 						rpcReq.Method,
 						connector.Id(),
@@ -282,7 +283,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 					).Observe(time.Since(start).Seconds())
 				} else {
 					health.MetricCacheSetSkippedTotal.WithLabelValues(
-						c.network.ProjectId,
+						c.projectId,
 						req.NetworkId(),
 						rpcReq.Method,
 						connector.Id(),
@@ -304,7 +305,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 				errs = append(errs, err)
 				errsMu.Unlock()
 				health.MetricCacheSetErrorTotal.WithLabelValues(
-					c.network.ProjectId,
+					c.projectId,
 					req.NetworkId(),
 					rpcReq.Method,
 					connector.Id(),
@@ -313,7 +314,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 					common.ErrorSummary(err),
 				).Inc()
 				health.MetricCacheSetErrorDuration.WithLabelValues(
-					c.network.ProjectId,
+					c.projectId,
 					req.NetworkId(),
 					rpcReq.Method,
 					connector.Id(),
@@ -323,7 +324,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 				).Observe(time.Since(start).Seconds())
 			} else {
 				health.MetricCacheSetSuccessTotal.WithLabelValues(
-					c.network.ProjectId,
+					c.projectId,
 					req.NetworkId(),
 					rpcReq.Method,
 					connector.Id(),
@@ -331,7 +332,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 					ttl.String(),
 				).Inc()
 				health.MetricCacheSetSuccessDuration.WithLabelValues(
-					c.network.ProjectId,
+					c.projectId,
 					req.NetworkId(),
 					rpcReq.Method,
 					connector.Id(),
@@ -361,7 +362,7 @@ func (c *EvmJsonRpcCache) MethodConfig(method string) *common.CacheMethodConfig 
 }
 
 func (c *EvmJsonRpcCache) IsObjectNull() bool {
-	return c == nil || c.network == nil
+	return c == nil || c.logger == nil
 }
 
 func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState) ([]*data.CachePolicy, error) {
@@ -417,7 +418,7 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 	rpcReq.RLock()
 	defer rpcReq.RUnlock()
 
-	blockRef, _, err := req.EvmBlockRefAndNumber()
+	blockRef, _, err := ExtractBlockReferenceFromRequest(req)
 	if err != nil {
 		return nil, err
 	}
@@ -485,7 +486,7 @@ func (c *EvmJsonRpcCache) getFinalityState(r *common.NormalizedResponse) (finali
 		}
 	}
 
-	_, blockNumber, _ := req.EvmBlockRefAndNumber()
+	_, blockNumber, _ := ExtractBlockReferenceFromResponse(r)
 
 	if blockNumber > 0 {
 		upstream := r.Upstream()

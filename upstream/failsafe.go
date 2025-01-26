@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/erpc/erpc/arch/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/consensus"
 	"github.com/failsafe-go/failsafe-go"
@@ -398,7 +399,7 @@ func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolic
 					if err == nil && rds.RetryEmpty && isEmpty {
 						if ups.Config().Type == common.UpstreamTypeEvm {
 							if ups.EvmSyncingState() == common.EvmSyncingStateNotSyncing {
-								_, bn, ebn := req.EvmBlockRefAndNumber()
+								_, bn, ebn := evm.ExtractBlockReferenceFromRequest(req)
 								if ebn == nil && bn > 0 {
 									if isFinalized, err := ups.EvmIsBlockFinalized(bn); err == nil && isFinalized {
 										return false
@@ -422,7 +423,7 @@ func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolic
 						"eth_getTransactionByHash",
 						"eth_getTransactionByBlockHashAndIndex",
 						"eth_getTransactionByBlockNumberAndIndex":
-						_, blkNum, err := req.EvmBlockRefAndNumber()
+						_, blkNum, err := evm.ExtractBlockReferenceFromRequest(req)
 						if err == nil {
 							if blkNum == 0 {
 								return true

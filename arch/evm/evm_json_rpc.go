@@ -1,11 +1,13 @@
-package common
+package evm
 
 import (
 	"fmt"
 	"strings"
+
+	"github.com/erpc/erpc/common"
 )
 
-func NormalizeEvmHttpJsonRpc(nrq *NormalizedRequest, jrq *JsonRpcRequest) {
+func NormalizeEvmHttpJsonRpc(nrq *common.NormalizedRequest, jrq *common.JsonRpcRequest) {
 	jrq.Lock()
 	defer jrq.Unlock()
 
@@ -22,14 +24,14 @@ func NormalizeEvmHttpJsonRpc(nrq *NormalizedRequest, jrq *JsonRpcRequest) {
 				bkf, ok := jrq.Params[0].(float64)
 				if ok {
 					bks = fmt.Sprintf("%f", bkf)
-					b, err := NormalizeHex(bks)
+					b, err := common.NormalizeHex(bks)
 					if err == nil {
 						jrq.Params[0] = b
 					}
 				}
 			}
 			if strings.HasPrefix(bks, "0x") {
-				b, err := NormalizeHex(bks)
+				b, err := common.NormalizeHex(bks)
 				if err == nil {
 					jrq.Params[0] = b
 				}
@@ -44,14 +46,14 @@ func NormalizeEvmHttpJsonRpc(nrq *NormalizedRequest, jrq *JsonRpcRequest) {
 		if len(jrq.Params) > 1 {
 			if strValue, ok := jrq.Params[1].(string); ok {
 				if strings.HasPrefix(strValue, "0x") {
-					b, err := NormalizeHex(strValue)
+					b, err := common.NormalizeHex(strValue)
 					if err == nil {
 						jrq.Params[1] = b
 					}
 				}
 			} else if mapValue, ok := jrq.Params[1].(map[string]interface{}); ok {
 				if blockNumber, ok := mapValue["blockNumber"]; ok {
-					b, err := NormalizeHex(blockNumber)
+					b, err := common.NormalizeHex(blockNumber)
 					if err == nil {
 						mapValue["blockNumber"] = b
 					}
@@ -62,14 +64,14 @@ func NormalizeEvmHttpJsonRpc(nrq *NormalizedRequest, jrq *JsonRpcRequest) {
 		if len(jrq.Params) > 2 {
 			if strValue, ok := jrq.Params[2].(string); ok {
 				if strings.HasPrefix(strValue, "0x") {
-					b, err := NormalizeHex(strValue)
+					b, err := common.NormalizeHex(strValue)
 					if err == nil {
 						jrq.Params[2] = b
 					}
 				}
 			} else if mapValue, ok := jrq.Params[2].(map[string]interface{}); ok {
 				if blockNumber, ok := mapValue["blockNumber"]; ok {
-					b, err := NormalizeHex(blockNumber)
+					b, err := common.NormalizeHex(blockNumber)
 					if err == nil {
 						mapValue["blockNumber"] = b
 					}
@@ -80,13 +82,13 @@ func NormalizeEvmHttpJsonRpc(nrq *NormalizedRequest, jrq *JsonRpcRequest) {
 		if len(jrq.Params) > 0 {
 			if paramsMap, ok := jrq.Params[0].(map[string]interface{}); ok {
 				if fromBlock, ok := paramsMap["fromBlock"]; ok {
-					b, err := NormalizeHex(fromBlock)
+					b, err := common.NormalizeHex(fromBlock)
 					if err == nil {
 						paramsMap["fromBlock"] = b
 					}
 				}
 				if toBlock, ok := paramsMap["toBlock"]; ok {
-					b, err := NormalizeHex(toBlock)
+					b, err := common.NormalizeHex(toBlock)
 					if err == nil {
 						paramsMap["toBlock"] = b
 					}
