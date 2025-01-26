@@ -503,7 +503,7 @@ func (i *Initializer) autoRetryLoop(ctx context.Context) {
 			i.logger.Warn().
 				Err(err).
 				Int("state", int(state)).
-				Msgf("initialization auto-retry failed with this error: %v, will retry in %v", err, delay)
+				Msgf("initialization auto-retry failed, will retry in %v", delay)
 		}
 
 		select {
