@@ -1,12 +1,146 @@
-package common
+package evm
 
 import (
 	"errors"
 	"strconv"
 	"strings"
+
+	"github.com/erpc/erpc/common"
 )
 
-func ExtractEvmBlockReferenceFromRequest(cacheDal CacheDAL, r *JsonRpcRequest) (string, int64, error) {
+// ExtractBlockReferenceFromRequest extracts any possible block reference and number from the request and from response if it exists.
+// This method is more 'complete' than ExtractBlockReferenceFromResponse() because we might not even have a response
+// in certain situations (for example, when we are using failsafe retries).
+func ExtractBlockReferenceFromRequest(r *common.NormalizedRequest) (string, int64, error) {
+	if r == nil {
+		return "", 0, nil
+	}
+
+	var blockNumber int64
+	var blockRef string
+
+	// Try to load from local cache
+	if bn := r.EvmBlockNumber(); bn != nil {
+		blockNumber = bn.(int64)
+	}
+	if br := r.EvmBlockRef(); br != nil {
+		blockRef = br.(string)
+	}
+
+	if blockRef != "" && blockNumber != 0 {
+		return blockRef, blockNumber, nil
+	}
+
+	// Try to load from JSON-RPC request
+	rpcReq, err := r.JsonRpcRequest()
+	if err != nil {
+		return blockRef, blockNumber, err
+	}
+
+	br, bn, err := extractEvmBlockReferenceFromJsonRpcRequest(r.CacheDal(), rpcReq)
+	if br != "" {
+		blockRef = br
+	}
+	if bn > 0 {
+		blockNumber = bn
+	}
+	if err != nil {
+		return blockRef, blockNumber, err
+	}
+
+	// Try to load from last valid response
+	if blockRef == "" || blockNumber == 0 {
+		lvr := r.LastValidResponse()
+		if lvr != nil {
+			br, bn, err = ExtractBlockReferenceFromResponse(lvr)
+			if br != "" && (blockRef == "" || blockRef == "*") {
+				// The condition (blockRef == ""|"*") makes sure if request already has a ref we won't override it from response.
+				// For example eth_getBlockByNumber(latest) will have a "latest" ref, so it'll be cached under "latest" ref,
+				// and we don't want it to be stored as the actual blockHash returned in the response, so that we can have a cache hit.
+				// In case of "*" since it means any block, we can still augment it from response ref, because during cache.Get()
+				// we'll be using reverse index (i.e. ignoring ref), but after reorg invalidation is added a specific block ref is useful.
+				//
+				// TODO An ideal version stores the data for all eth_getBlockByNumber(latest) and eth_getBlockByNumber(blockNumber),
+				// and eth_getBlockByNumber(blockHash) where blockNumber/blockHash are the actual values returned in the response.
+				// So that if user gets the latest block, then cache is populated for when they provide that specific block as well.
+				// When implementing that feature remember that CacheHash() must be calculated separately for each number/hash combo.
+				blockRef = br
+			}
+			if bn > 0 {
+				blockNumber = bn
+			}
+			if err != nil {
+				return blockRef, blockNumber, err
+			}
+		}
+	}
+
+	// Store to local cache
+	if blockNumber > 0 {
+		r.SetEvmBlockNumber(blockNumber)
+	}
+	if blockRef != "" {
+		r.SetEvmBlockRef(blockRef)
+	}
+
+	return blockRef, blockNumber, nil
+}
+
+func ExtractBlockReferenceFromResponse(r *common.NormalizedResponse) (string, int64, error) {
+	if r == nil {
+		return "", 0, nil
+	}
+
+	var blockNumber int64
+	var blockRef string
+
+	// Try to load from local cache
+	if n := r.EvmBlockNumber(); n != nil {
+		blockNumber = n.(int64)
+	}
+	if br := r.EvmBlockRef(); br != nil {
+		blockRef = br.(string)
+	}
+	if blockRef != "" && blockNumber != 0 {
+		return blockRef, blockNumber, nil
+	}
+
+	// Try to load from response (enriched with request context)
+	nreq := r.Request()
+	if nreq == nil {
+		return blockRef, blockNumber, nil
+	}
+	jrr, err := r.JsonRpcResponse()
+	if jrr == nil || err != nil {
+		return blockRef, blockNumber, err
+	}
+	rq, err := nreq.JsonRpcRequest()
+	if err != nil {
+		return blockRef, blockNumber, err
+	}
+	br, bn, err := extractEvmBlockReferenceFromJsonRpcResponse(nreq.CacheDal(), rq, jrr)
+	if br != "" {
+		blockRef = br
+	}
+	if bn != 0 {
+		blockNumber = bn
+	}
+	if err != nil {
+		return blockRef, blockNumber, err
+	}
+
+	// Store to local cache
+	if blockNumber != 0 {
+		r.SetEvmBlockNumber(blockNumber)
+	}
+	if blockRef != "" {
+		r.SetEvmBlockRef(blockRef)
+	}
+
+	return blockRef, blockNumber, nil
+}
+
+func extractEvmBlockReferenceFromJsonRpcRequest(cacheDal common.CacheDAL, r *common.JsonRpcRequest) (string, int64, error) {
 	if r == nil {
 		return "", 0, errors.New("cannot extract block reference when json-rpc request is nil")
 	}
@@ -70,7 +204,7 @@ func ExtractEvmBlockReferenceFromRequest(cacheDal CacheDAL, r *JsonRpcRequest) (
 	return blockRef, blockNumber, nil
 }
 
-func ExtractEvmBlockReferenceFromResponse(cacheDal CacheDAL, rpcReq *JsonRpcRequest, rpcResp *JsonRpcResponse) (string, int64, error) {
+func extractEvmBlockReferenceFromJsonRpcResponse(cacheDal common.CacheDAL, rpcReq *common.JsonRpcRequest, rpcResp *common.JsonRpcResponse) (string, int64, error) {
 	if rpcReq == nil {
 		return "", 0, errors.New("cannot extract block reference when json-rpc request is nil")
 	}
@@ -113,7 +247,7 @@ func ExtractEvmBlockReferenceFromResponse(cacheDal CacheDAL, rpcReq *JsonRpcRequ
 	return "", 0, nil
 }
 
-func getMethodConfig(cacheDal CacheDAL, method string) (cfg *CacheMethodConfig) {
+func getMethodConfig(cacheDal common.CacheDAL, method string) (cfg *common.CacheMethodConfig) {
 	if cacheDal != nil && !cacheDal.IsObjectNull() {
 		// First lookup the method in configured cache methods
 		cfg = cacheDal.MethodConfig(method)
@@ -122,9 +256,9 @@ func getMethodConfig(cacheDal CacheDAL, method string) (cfg *CacheMethodConfig) 
 	if cfg == nil {
 		// If cacheDal is nil or empty or missing the method, we should get the method config from the default set of known methods.
 		// This is necessary so that usual blockNumber detection used in various flows still resolves correctly.
-		cfg = DefaultWithBlockCacheMethods[method]
+		cfg = common.DefaultWithBlockCacheMethods[method]
 		if cfg == nil {
-			cfg = DefaultSpecialCacheMethods[method]
+			cfg = common.DefaultSpecialCacheMethods[method]
 		}
 	}
 
@@ -142,7 +276,7 @@ func parseCompositeBlockParam(param interface{}) (string, int64, error) {
 				blockRef = v
 			} else {
 				// Could be block number in hex
-				bni, err := HexToInt64(v)
+				bni, err := common.HexToInt64(v)
 				if err != nil {
 					return blockRef, blockNumber, err
 				}
@@ -162,7 +296,7 @@ func parseCompositeBlockParam(param interface{}) (string, int64, error) {
 		// Extract blockNumber if present
 		if blockNumberValue, exists := v["blockNumber"]; exists {
 			if bns, ok := blockNumberValue.(string); ok {
-				bni, err := HexToInt64(bns)
+				bni, err := common.HexToInt64(bns)
 				if err != nil {
 					return blockRef, blockNumber, err
 				}

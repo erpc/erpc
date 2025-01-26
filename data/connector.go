@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
 
@@ -33,6 +34,12 @@ func NewConnector(
 		return NewDynamoDBConnector(ctx, logger, cfg.Id, cfg.DynamoDB)
 	case common.DriverPostgreSQL:
 		return NewPostgreSQLConnector(ctx, logger, cfg.Id, cfg.PostgreSQL)
+	}
+
+	if util.IsTest() && cfg.Driver == "mock" {
+		return NewMockMemoryConnector(ctx, logger, "mock", &common.MemoryConnectorConfig{
+			MaxItems: 1000,
+		}, 100*time.Millisecond)
 	}
 
 	return nil, common.NewErrInvalidConnectorDriver(cfg.Driver)

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/erpc/erpc/arch/evm"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
@@ -156,7 +157,7 @@ func (u *Upstream) prepareRequest(nr *common.NormalizedRequest) error {
 					nil,
 				)
 			}
-			common.NormalizeEvmHttpJsonRpc(nr, jsonRpcReq)
+			evm.NormalizeEvmHttpJsonRpc(nr, jsonRpcReq)
 		} else {
 			return common.NewErrJsonRpcExceptionInternal(
 				0,
@@ -676,7 +677,7 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 	// if block can be determined from request and upstream is only full-node and block is historical skip
 	if u.config.Evm != nil && u.config.Evm.MaxAvailableRecentBlocks > 0 {
 		if u.config.Evm.NodeType == common.EvmNodeTypeFull {
-			_, bn, ebn := req.EvmBlockRefAndNumber()
+			_, bn, ebn := evm.ExtractBlockReferenceFromRequest(req)
 			if ebn != nil || bn <= 0 {
 				return nil, false
 			}

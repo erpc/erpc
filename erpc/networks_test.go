@@ -14,10 +14,10 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/erpc/erpc/arch/evm"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/common/script"
-	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
@@ -5944,7 +5944,22 @@ func TestNetwork_Forward(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		cacheCfg := &common.CacheConfig{}
+		cacheCfg := &common.CacheConfig{
+			Connectors: []*common.ConnectorConfig{
+				{
+					Id: "mock",
+					Driver: "mock",
+				},
+			},
+			Policies: []*common.CachePolicyConfig{
+				{
+					Network:   "*",
+					Method:    "*",
+					TTL:       5 * time.Minute,
+					Connector: "mock",
+				},
+			},
+		}
 		cacheCfg.SetDefaults()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -5982,31 +5997,11 @@ func TestNetwork_Forward(t *testing.T) {
 				"id":      22222,
 				"result":  "0x22222222222222",
 			})
-
-		// Create a slow cache to increase the chance of a race condition
-		conn, errc := data.NewMockMemoryConnector(ctx, &log.Logger, "mock", &common.MemoryConnectorConfig{
-			MaxItems: 1000,
-		}, 100*time.Millisecond)
-		if errc != nil {
-			t.Fatalf("Failed to create mock memory connector: %v", errc)
+		slowCache, err := evm.NewEvmJsonRpcCache(ctx, &log.Logger, cacheCfg)
+		if err != nil {
+			t.Fatalf("Failed to create evm json rpc cache: %v", err)
 		}
-		policy, errp := data.NewCachePolicy(&common.CachePolicyConfig{
-			Network:   "*",
-			Method:    "*",
-			TTL:       5 * time.Minute,
-			Connector: "mock",
-		}, conn)
-		if errp != nil {
-			t.Fatalf("Failed to create cache policy: %v", errp)
-		}
-		slowCache := (&EvmJsonRpcCache{
-			policies: []*data.CachePolicy{
-				policy,
-			},
-			methods: cacheCfg.Methods,
-			logger:  &log.Logger,
-		}).WithNetwork(network)
-		network.cacheDal = slowCache
+		network.cacheDal = slowCache.WithProjectId("prjA")
 
 		// Make the request
 		req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x11", "0x11"],"id":11111}`))

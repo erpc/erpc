@@ -73,6 +73,34 @@ func (r *NormalizedResponse) SetFromCache(fromCache bool) *NormalizedResponse {
 	return r
 }
 
+func (r *NormalizedResponse) EvmBlockRef() interface{} {
+	if r == nil {
+		return nil
+	}
+	return r.evmBlockRef.Load()
+}
+
+func (r *NormalizedResponse) SetEvmBlockRef(blockRef interface{}) {
+	if r == nil {
+		return
+	}
+	r.evmBlockRef.Store(blockRef)
+}
+
+func (r *NormalizedResponse) EvmBlockNumber() interface{} {
+	if r == nil {
+		return nil
+	}
+	return r.evmBlockNumber.Load()
+}
+
+func (r *NormalizedResponse) SetEvmBlockNumber(blockNumber interface{}) {
+	if r == nil {
+		return
+	}
+	r.evmBlockNumber.Store(blockNumber)
+}
+
 func (r *NormalizedResponse) Attempts() int {
 	if r == nil {
 		return 0
@@ -248,59 +276,6 @@ func (r *NormalizedResponse) IsObjectNull() bool {
 	}
 
 	return false
-}
-
-func (r *NormalizedResponse) EvmBlockRefAndNumber() (string, int64, error) {
-	if r == nil {
-		return "", 0, nil
-	}
-
-	var blockNumber int64
-	var blockRef string
-
-	// Try to load from local cache
-	if n := r.evmBlockNumber.Load(); n != nil {
-		blockNumber = n.(int64)
-	}
-	if br := r.evmBlockRef.Load(); br != nil {
-		blockRef = br.(string)
-	}
-	if blockRef != "" && blockNumber != 0 {
-		return blockRef, blockNumber, nil
-	}
-
-	// Try to load from response (enriched with request context)
-	if r.request == nil {
-		return blockRef, blockNumber, nil
-	}
-	jrr := r.jsonRpcResponse.Load()
-	if jrr == nil {
-		return blockRef, blockNumber, nil
-	}
-	rq, err := r.request.JsonRpcRequest()
-	if err != nil {
-		return blockRef, blockNumber, err
-	}
-	br, bn, err := ExtractEvmBlockReferenceFromResponse(r.request.cacheDal, rq, jrr)
-	if br != "" {
-		blockRef = br
-	}
-	if bn != 0 {
-		blockNumber = bn
-	}
-	if err != nil {
-		return blockRef, blockNumber, err
-	}
-
-	// Store to local cache
-	if blockNumber != 0 {
-		r.evmBlockNumber.Store(blockNumber)
-	}
-	if blockRef != "" {
-		r.evmBlockRef.Store(blockRef)
-	}
-
-	return blockRef, blockNumber, nil
 }
 
 func (r *NormalizedResponse) MarshalJSON() ([]byte, error) {
