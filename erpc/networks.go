@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/erpc/erpc/arch/evm"
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/upstream"
@@ -291,6 +291,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					// because cache layer already is not caching unfinalized data.
 					resp = lvr
 				} else if n.Architecture() == common.ArchitectureEvm {
+					// TODO Move the logic to evm package as a post-forward hook?
 					_, evmBlkNum, err := evm.ExtractBlockReferenceFromRequest(req)
 					if err == nil && evmBlkNum == 0 {
 						// For pending txs we can accept the response, if after retries it is still pending.
@@ -359,21 +360,6 @@ func (n *Network) GetMethodMetrics(method string) common.TrackedMetrics {
 	}
 
 	return n.metricsTracker.GetNetworkMethodMetrics(n.NetworkId, method)
-}
-
-func (n *Network) EvmIsBlockFinalized(blockNumber int64) (bool, error) {
-	list := n.upstreamsRegistry.GetNetworkUpstreams(n.NetworkId)
-	for _, ups := range list {
-		if fin, err := ups.EvmIsBlockFinalized(blockNumber); err != nil {
-			if common.HasErrorCode(err, common.ErrCodeFinalizedBlockUnavailable) {
-				continue
-			}
-			return false, err
-		} else if fin {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 func (n *Network) Config() *common.NetworkConfig {
@@ -469,6 +455,7 @@ func (n *Network) cleanupMultiplexer(mlx *Multiplexer) {
 }
 
 func (n *Network) shouldHandleMethod(method string, upsList []*upstream.Upstream) error {
+	// TODO Move the logic to evm package?
 	if method == "eth_newFilter" ||
 		method == "eth_newBlockFilter" ||
 		method == "eth_newPendingTransactionFilter" {
@@ -486,6 +473,7 @@ func (n *Network) shouldHandleMethod(method string, upsList []*upstream.Upstream
 func (n *Network) enrichStatePoller(method string, req *common.NormalizedRequest, resp *common.NormalizedResponse) {
 	switch n.Architecture() {
 	case common.ArchitectureEvm:
+		// TODO Move the logic to evm package as a post-forward hook?
 		if method == "eth_getBlockByNumber" {
 			jrq, _ := req.JsonRpcRequest()
 			if blkTag, ok := jrq.Params[0].(string); ok {
@@ -496,10 +484,12 @@ func (n *Network) enrichStatePoller(method string, req *common.NormalizedRequest
 						blockNumber, err := common.HexToInt64(bnh)
 						if err == nil {
 							if ups := resp.Upstream(); ups != nil {
-								if blkTag == "finalized" {
-									ups.EvmStatePoller().SuggestFinalizedBlock(blockNumber)
-								} else if blkTag == "latest" {
-									ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
+								if ups, ok := ups.(common.EvmUpstream); ok {
+									if blkTag == "finalized" {
+										ups.EvmStatePoller().SuggestFinalizedBlock(blockNumber)
+									} else if blkTag == "latest" {
+										ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
+									}
 								}
 							}
 						}
@@ -513,7 +503,9 @@ func (n *Network) enrichStatePoller(method string, req *common.NormalizedRequest
 				blockNumber, err := common.HexToInt64(bnh)
 				if err == nil {
 					if ups := resp.Upstream(); ups != nil {
-						ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
+						if ups, ok := ups.(common.EvmUpstream); ok {
+							ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
+						}
 					}
 				}
 			}

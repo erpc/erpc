@@ -1,7 +1,5 @@
 package common
 
-import "context"
-
 type Scope string
 
 const (
@@ -16,24 +14,8 @@ const (
 
 type UpstreamType string
 
-const (
-	UpstreamTypeEvm UpstreamType = "evm"
-)
-
-type EvmSyncingState int
-
-const (
-	EvmSyncingStateUnknown EvmSyncingState = iota
-	EvmSyncingStateSyncing
-	EvmSyncingStateNotSyncing
-)
-
 type Upstream interface {
 	Config() *UpstreamConfig
 	Vendor() Vendor
 	NetworkId() string
-	EvmGetChainId(ctx context.Context) (string, error)
-	EvmIsBlockFinalized(blockNumber int64) (bool, error)
-	EvmSyncingState() EvmSyncingState
-	EvmStatePoller() EvmStatePoller
 }

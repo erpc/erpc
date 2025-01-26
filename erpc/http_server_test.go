@@ -1613,7 +1613,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				// Enough total server time to let hedged calls finish.
-				MaxTimeout: util.StringPtr("2s"),
+				MaxTimeout: util.StringPtr("1s"),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -1654,27 +1654,27 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
-		// Mock #1 (faster) – "hedge request"
+		// Mock #1 (faster) – "original request"
 		gock.New("http://rpc1.localhost").
 			Post("/").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance") && strings.Contains(string(body), "FAST")
+				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(200).
-			Delay(300 * time.Millisecond). // This will be canceled if the hedge wins
+			Delay(300 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      99,
 				"result":  "0xFAST",
 			})
 
-		// Mock #2 (slower) – "original request"
+		// Mock #2 (slower) – "hedge request"
 		gock.New("http://rpc1.localhost").
 			Post("/").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
-				return strings.Contains(string(body), "eth_getBalance") && strings.Contains(string(body), "SLOW")
+				return strings.Contains(string(body), "eth_getBalance")
 			}).
 			Reply(200).
 			Delay(5000 * time.Millisecond).
@@ -1688,11 +1688,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
-		// We'll ask for a single "eth_getBalance" call but pass distinct markers SLOW/FAST to
-		// ensure that Gock can differentiate which is the "original" vs. "hedge" request body.
-		// In real usage, hedged calls have identical payloads. Here we just need to disambiguate
-		// the two mocks so we can see which is canceled, which returns successfully, etc.
-		jsonBody := `{"jsonrpc":"2.0","id":99,"method":"eth_getBalance","params":["0xSLOW","true","0xFAST","true"]}`
+		jsonBody := `{"jsonrpc":"2.0","id":99,"method":"eth_getBalance","params":["0x1234"]}`
 
 		statusCode, body := sendRequest(jsonBody, nil, nil)
 

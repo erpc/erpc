@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
-	"github.com/erpc/erpc/arch/evm"
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/common/script"
@@ -4340,7 +4340,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: nil,
 			},
 			rlr,
 			upr,
@@ -4507,21 +4507,21 @@ func TestNetwork_Forward(t *testing.T) {
 
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Times(3).
+			Times(2).
 			Reply(200).
-			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
+			JSON([]byte(`{"result":{"hash":"0x111340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
 
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Times(3).
+			Times(2).
 			Reply(503).
 			JSON([]byte(`{"error":{"message":"some random provider issue"}}`))
 
 		gock.New("http://rpc1.localhost").
 			Post("").
-			Times(3).
+			Times(2).
 			Reply(200).
-			JSON([]byte(`{"result":{"hash":"0x64d340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
+			JSON([]byte(`{"result":{"hash":"0x222340d2470d2ed0ec979b72d79af9cd09fc4eb2b89ae98728d5fb07fd89baf9"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -4537,13 +4537,6 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
-		fsCfg := &common.FailsafeConfig{
-			CircuitBreaker: &common.CircuitBreakerPolicyConfig{
-				FailureThresholdCount:    2,
-				FailureThresholdCapacity: 4,
-				HalfOpenAfter:            "2s",
-			},
-		}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
@@ -4557,6 +4550,15 @@ func TestNetwork_Forward(t *testing.T) {
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
+			},
+			Failsafe: &common.FailsafeConfig{
+				CircuitBreaker: &common.CircuitBreakerPolicyConfig{
+					FailureThresholdCount:    2,
+					FailureThresholdCapacity: 4,
+					HalfOpenAfter:            "500ms",
+					SuccessThresholdCount: 2,
+					SuccessThresholdCapacity: 2,
+				},
 			},
 		}
 		upr := upstream.NewUpstreamsRegistry(
@@ -4604,7 +4606,7 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: nil,
 			},
 			rlr,
 			upr,
@@ -4616,20 +4618,26 @@ func TestNetwork_Forward(t *testing.T) {
 
 		upstream.ReorderUpstreams(upr)
 
-		var lastErr error
-		for i := 0; i < 4+2; i++ {
-			fakeReq := common.NewNormalizedRequest(requestBytes)
-			_, lastErr = ntw.Forward(ctx, fakeReq)
+		r1, e1 := ntw.Forward(ctx, common.NewNormalizedRequest(requestBytes))
+		r2, e2 := ntw.Forward(ctx, common.NewNormalizedRequest(requestBytes))
+		_, e3 := ntw.Forward(ctx, common.NewNormalizedRequest(requestBytes))
+		_, e4 := ntw.Forward(ctx, common.NewNormalizedRequest(requestBytes))
+
+		if r1 == nil || r2 == nil {
+			t.Fatalf("Expected a response on first two attempts, got %v, %v", r1, r2)
+		}
+		if e1 != nil || e2 != nil {
+			t.Fatalf("Did not expect an error on first two attempts, got %v, %v", e1, e2)
+		}
+		if e3 == nil || e4 == nil {
+			t.Fatalf("Expected an error on last two attempts, got %v, %v", e3, e4)
 		}
 
-		if lastErr == nil {
-			t.Fatalf("Expected an error, got nil")
-		}
-
-		time.Sleep(2 * time.Second)
+		time.Sleep(500 * time.Millisecond)
 
 		var resp *common.NormalizedResponse
-		for i := 0; i < 3; i++ {
+		var lastErr error
+		for i := 0; i < 2; i++ {
 			fakeReq := common.NewNormalizedRequest(requestBytes)
 			resp, lastErr = ntw.Forward(ctx, fakeReq)
 		}
@@ -5947,7 +5955,7 @@ func TestNetwork_Forward(t *testing.T) {
 		cacheCfg := &common.CacheConfig{
 			Connectors: []*common.ConnectorConfig{
 				{
-					Id: "mock",
+					Id:     "mock",
 					Driver: "mock",
 				},
 			},

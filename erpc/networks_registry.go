@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/erpc/erpc/arch/evm"
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/upstream"
