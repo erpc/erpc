@@ -500,8 +500,12 @@ func (i *Initializer) autoRetryLoop(ctx context.Context) {
 			return
 		}
 		if err != nil {
-			i.logger.Warn().Err(err).Int("state", int(state)).Msgf("initialization auto-retry failed, will retry in %v", delay)
+			i.logger.Warn().
+				Err(err).
+				Int("state", int(state)).
+				Msgf("initialization auto-retry failed with this error: %v, will retry in %v", err, delay)
 		}
+
 		select {
 		case <-ctx.Done():
 			i.logger.Debug().Err(ctx.Err()).Msg("initialization auto-retry cancelled")
