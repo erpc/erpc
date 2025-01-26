@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/erpc/erpc/arch/evm"
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/consensus"
 	"github.com/failsafe-go/failsafe-go"
@@ -62,7 +62,7 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity s
 		policies["circuitBreaker"] = p
 	}
 
-	if fsCfg.Hedge != nil {
+	if fsCfg.Hedge != nil && fsCfg.Hedge.MaxCount > 0 {
 		p, err := createHedgePolicy(&lg, entity, fsCfg.Hedge)
 		if err != nil {
 			return nil, err
@@ -97,10 +97,6 @@ func ToPolicyArray(policies map[string]failsafe.Policy[*common.NormalizedRespons
 		if p, ok := policies[policy]; ok {
 			pls = append(pls, p)
 		}
-	}
-
-	for _, p := range policies {
-		pls = append(pls, p)
 	}
 
 	return pls
@@ -161,7 +157,9 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, entity string, cfg *comm
 						lg = lg.Str("upstreamId", up.Config().Id)
 						cfg := up.Config()
 						if cfg.Evm != nil {
-							lg = lg.Interface("upstreamSyncingState", up.EvmSyncingState())
+							if ups, ok := up.(common.EvmUpstream); ok {
+								lg = lg.Interface("upstreamSyncingState", ups.EvmSyncingState())
+							}
 						}
 					}
 				}
@@ -187,13 +185,14 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, entity string, cfg *comm
 			return true
 		}
 
+		// if "syncing" and null/empty response -> open the circuit
 		if result != nil && result.Request() != nil {
 			up := result.Request().LastUpstream()
-
-			// if "syncing" and null/empty response -> open the circuit
-			if up.EvmSyncingState() == common.EvmSyncingStateSyncing {
-				if result.IsResultEmptyish() {
-					return true
+			if ups, ok := up.(common.EvmUpstream); ok {
+				if ups.EvmSyncingState() == common.EvmSyncingStateSyncing {
+					if result.IsResultEmptyish() {
+						return true
+					}
 				}
 			}
 		}
@@ -281,7 +280,7 @@ func createHedgePolicy(logger *zerolog.Logger, entity string, cfg *common.HedgeP
 			req, ok = r.(*common.NormalizedRequest)
 			if ok && req != nil {
 				method, _ = req.Method()
-				if method != "" && common.IsEvmWriteMethod(method) {
+				if method != "" && evm.IsWriteMethod(method) {
 					logger.Debug().Str("method", method).Interface("id", req.ID()).Msgf("ignoring hedge for write request")
 					return false
 				}
@@ -398,11 +397,13 @@ func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolic
 					// has Retry-Empty directive + "empty" response + node is synced + block is finalized -> No Retry
 					if err == nil && rds.RetryEmpty && isEmpty {
 						if ups.Config().Type == common.UpstreamTypeEvm {
-							if ups.EvmSyncingState() == common.EvmSyncingStateNotSyncing {
-								_, bn, ebn := evm.ExtractBlockReferenceFromRequest(req)
-								if ebn == nil && bn > 0 {
-									if isFinalized, err := ups.EvmIsBlockFinalized(bn); err == nil && isFinalized {
-										return false
+							if ups, ok := ups.(common.EvmUpstream); ok {
+								if ups.EvmSyncingState() == common.EvmSyncingStateNotSyncing {
+									_, bn, ebn := evm.ExtractBlockReferenceFromRequest(req)
+									if ebn == nil && bn > 0 {
+										if isFinalized, err := ups.EvmIsBlockFinalized(bn); err == nil && isFinalized {
+											return false
+										}
 									}
 								}
 							}
@@ -437,7 +438,7 @@ func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolic
 		// Must not retry any 'write' methods
 		if result != nil {
 			if req := result.Request(); req != nil {
-				if method, _ := req.Method(); method != "" && common.IsEvmWriteMethod(method) {
+				if method, _ := req.Method(); method != "" && evm.IsWriteMethod(method) {
 					return false
 				}
 			}

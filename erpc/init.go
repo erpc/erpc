@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/erpc/erpc/arch/evm"
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/prometheus/client_golang/prometheus/promhttp"

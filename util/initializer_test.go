@@ -149,8 +149,62 @@ func TestInitializer_MultipleTasksMixedResultsNoRetry(t *testing.T) {
 
 	err := init.ExecuteTasks(appCtx, tasks...)
 	require.Error(t, err)
-	assert.Equal(t, StatePartial, init.State())
 	assert.Equal(t, TaskFailed, TaskState(failingTask.state.Load()))
+	assert.Equal(t, StatePartial, init.State())
+}
+
+func TestInitializer_MultipleTasksMixedResultsInitializing(t *testing.T) {
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	init := setupInitializer(t, appCtx, &InitializerConfig{
+		TaskTimeout:   time.Second,
+		AutoRetry:     true,
+		RetryMinDelay: time.Millisecond * 250,
+		RetryMaxDelay: time.Millisecond * 250,
+	})
+
+	// We'll define three tasks:
+	// 1) A task that takes time (so the initializer stays "Initializing" briefly).
+	// 2) A task that fails on the first run.
+	// 3) A task that succeeds immediately.
+	longRunningTask := NewBootstrapTask("long-running", func(ctx context.Context) error {
+		time.Sleep(50 * time.Millisecond)
+		return nil
+	})
+
+	attempts := 0
+	failingTaskFirst := NewBootstrapTask("fail-first-attempt", func(ctx context.Context) error {
+		time.Sleep(10 * time.Millisecond)
+		attempts++
+		if attempts <= 1 {
+			return errors.New("failing on first attempt")
+		}
+		return nil
+	})
+
+	immediateSuccess := NewBootstrapTask("immediate-success", func(ctx context.Context) error {
+		return nil
+	})
+
+	// Start them in a goroutine so we can check state mid-run:
+	go func() {
+		_ = init.ExecuteTasks(appCtx, longRunningTask, failingTaskFirst, immediateSuccess)
+	}()
+
+	// Give an instant for tasks to start so we can observe StateInitializing.
+	time.Sleep(5 * time.Millisecond)
+	assert.Equal(t, StateInitializing, init.State(), "one or more tasks should still be running")
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, StatePartial, init.State(), "one task must be failed")
+
+	// Wait again for the retry attempt to finish
+	time.Sleep(250 * time.Millisecond)
+	err := init.WaitForTasks(appCtx)
+	require.NoError(t, err, "the second attempt should succeed, no further errors expected")
+
+	// Now that the failed task has succeeded, the overall state should be Ready.
+	assert.Equal(t, StateReady, init.State(), "once all tasks succeed, the initializer should be Ready")
 }
 
 func TestInitializer_LongRunningTask(t *testing.T) {

@@ -1,19 +1,10 @@
-package common
+package evm
 
 import (
-	"context"
 	"strings"
 )
 
-type EvmNodeType string
-
-const (
-	EvmNodeTypeFull    EvmNodeType = "full"
-	EvmNodeTypeArchive EvmNodeType = "archive"
-	EvmNodeTypeLight   EvmNodeType = "light"
-)
-
-func IsEvmWriteMethod(method string) bool {
+func IsWriteMethod(method string) bool {
 	return method == "eth_sendRawTransaction" ||
 		method == "eth_sendTransaction" ||
 		method == "eth_createAccessList" ||
@@ -24,20 +15,7 @@ func IsEvmWriteMethod(method string) bool {
 		method == "eth_newPendingTransactionFilter"
 }
 
-type EvmStatePoller interface {
-	Bootstrap(ctx context.Context) error
-	SyncingState() EvmSyncingState
-	SetSyncingState(state EvmSyncingState)
-	LatestBlock() int64
-	FinalizedBlock() int64
-	IsBlockFinalized(blockNumber int64) (bool, error)
-	SuggestFinalizedBlock(blockNumber int64)
-	SuggestLatestBlock(blockNumber int64)
-	SetNetworkConfig(cfg *EvmNetworkConfig)
-	IsObjectNull() bool
-}
-
-func EvmIsMissingDataError(err error) bool {
+func IsMissingDataError(err error) bool {
 	txt := err.Error()
 	return strings.Contains(txt, "missing trie node") ||
 		strings.Contains(txt, "header not found") ||

@@ -398,7 +398,7 @@ package evm
 // 			var err error
 
 // 			if tt.response == nil {
-// 				blkRef, blkNum, err = extractEvmBlockReferenceFromJsonRpcRequest(cacheDal, tt.request)
+// 				blkRef, blkNum, err = extractRefFromJsonRpcRequest(cacheDal, tt.request)
 // 			} else {
 // 				nrq := &common.NormalizedRequest{}
 // 				nrq.jsonRpcRequest = tt.request

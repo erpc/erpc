@@ -219,7 +219,8 @@ func (i *Initializer) waitForTasks(ctx context.Context, tasks ...*BootstrapTask)
 			return err
 		}
 		// If task is failed, record that error
-		if TaskState(task.state.Load()) == TaskFailed && task.Error() != nil {
+		state := TaskState(task.state.Load())
+		if state == TaskFailed && task.Error() != nil {
 			errs = append(errs, task.Error().Err)
 		}
 	}
@@ -331,11 +332,14 @@ func (i *Initializer) State() InitializationState {
 		return StateFailed
 	}
 	// If we've tried multiple times but still have tasks not succeeded
-	if i.attempts.Load() > 1 && (pending > 0 || running > 0) {
+	atp := i.attempts.Load()
+	if atp > 1 && (pending > 0 || running > 0) {
 		return StateRetrying
 	}
-	// Otherwise, partial or indeterminate
-	return StatePartial
+	if failed > 0 {
+		return StatePartial
+	}
+	return StateInitializing
 }
 
 func (i *Initializer) Status() *InitializerStatus {
@@ -466,6 +470,8 @@ func (i *Initializer) autoRetryLoop(ctx context.Context) {
 	}
 
 	delay := i.conf.RetryMinDelay
+	// Wait for the first delay before doing the first retry
+	<-time.After(delay)
 	for {
 		if ctx.Err() != nil {
 			i.logger.Debug().Err(ctx.Err()).Msg("initialization auto-retry interrupted")
@@ -474,13 +480,15 @@ func (i *Initializer) autoRetryLoop(ctx context.Context) {
 		}
 		i.attempts.Add(1)
 		i.attemptRemainingTasks(ctx)
-		err := i.waitForTasks(ctx)
+		err := i.WaitForTasks(ctx)
 		state := i.State()
 		if err == nil && state == StateReady {
 			i.autoRetryActive.Store(false)
 			return
 		}
-		i.logger.Warn().Err(err).Int("state", int(state)).Msgf("initialization auto-retry failed, will retry in %v", delay)
+		if err != nil {
+			i.logger.Warn().Err(err).Int("state", int(state)).Msgf("initialization auto-retry failed, will retry in %v", delay)
+		}
 		select {
 		case <-ctx.Done():
 			i.logger.Debug().Err(ctx.Err()).Msg("initialization auto-retry cancelled")

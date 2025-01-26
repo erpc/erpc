@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/erpc/erpc/arch/evm"
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"

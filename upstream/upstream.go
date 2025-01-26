@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
-	"github.com/erpc/erpc/arch/evm"
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
@@ -136,6 +136,7 @@ func (u *Upstream) prepareRequest(nr *common.NormalizedRequest) error {
 	cfg := u.Config()
 	switch cfg.Type {
 	case common.UpstreamTypeEvm:
+		// TODO Move the logic to evm package as a pre-request hook?
 		if u.Client == nil {
 			return common.NewErrJsonRpcExceptionInternal(
 				0,
@@ -157,7 +158,7 @@ func (u *Upstream) prepareRequest(nr *common.NormalizedRequest) error {
 					nil,
 				)
 			}
-			evm.NormalizeEvmHttpJsonRpc(nr, jsonRpcReq)
+			evm.NormalizeHttpJsonRpc(nr, jsonRpcReq)
 		} else {
 			return common.NewErrJsonRpcExceptionInternal(
 				0,
@@ -185,6 +186,7 @@ func (u *Upstream) NetworkId() string {
 }
 
 func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
+	// TODO Can we eliminate this circular dependency of upstream state poller <> network? e.g. by requiring network ID everywhere?
 	if cfg != nil && cfg.Evm != nil && u.evmStatePoller != nil {
 		u.evmStatePoller.SetNetworkConfig(cfg.Evm)
 	}
@@ -611,6 +613,7 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 	}
 
 	if cfg.Type == common.UpstreamTypeEvm {
+		// TODO Move the logic to evm package as a upstream-init hook?
 		if cfg.Evm == nil {
 			cfg.Evm = &common.EvmUpstreamConfig{}
 		}
