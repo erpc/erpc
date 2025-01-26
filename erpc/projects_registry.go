@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/erpc/erpc/arch/evm"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
@@ -21,7 +22,7 @@ type ProjectsRegistry struct {
 	appCtx context.Context
 
 	rateLimitersRegistry *upstream.RateLimitersRegistry
-	evmJsonRpcCache      *EvmJsonRpcCache
+	evmJsonRpcCache      *evm.EvmJsonRpcCache
 	preparedProjects     map[string]*PreparedProject
 	staticProjects       []*common.ProjectConfig
 	vendorsRegistry      *thirdparty.VendorsRegistry
@@ -32,7 +33,7 @@ func NewProjectsRegistry(
 	appCtx context.Context,
 	logger *zerolog.Logger,
 	staticProjects []*common.ProjectConfig,
-	evmJsonRpcCache *EvmJsonRpcCache,
+	evmJsonRpcCache *evm.EvmJsonRpcCache,
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
 	vendorsRegistry *thirdparty.VendorsRegistry,
 	proxyPoolRegistry *clients.ProxyPoolRegistry,

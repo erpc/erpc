@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/erpc/erpc/arch/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/upstream"
@@ -22,7 +23,7 @@ type NetworksRegistry struct {
 	appCtx               context.Context
 	upstreamsRegistry    *upstream.UpstreamsRegistry
 	metricsTracker       *health.Tracker
-	evmJsonRpcCache      *EvmJsonRpcCache
+	evmJsonRpcCache      *evm.EvmJsonRpcCache
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	preparedNetworks     sync.Map // map[string]*Network
 	initializer          *util.Initializer
@@ -34,7 +35,7 @@ func NewNetworksRegistry(
 	appCtx context.Context,
 	upstreamsRegistry *upstream.UpstreamsRegistry,
 	metricsTracker *health.Tracker,
-	evmJsonRpcCache *EvmJsonRpcCache,
+	evmJsonRpcCache *evm.EvmJsonRpcCache,
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
 	logger *zerolog.Logger,
 ) *NetworksRegistry {
@@ -202,7 +203,7 @@ func (nr *NetworksRegistry) prepareNetwork(nwCfg *common.NetworkConfig) (*Networ
 	switch nwCfg.Architecture {
 	case "evm":
 		if nr.evmJsonRpcCache != nil {
-			network.cacheDal = nr.evmJsonRpcCache.WithNetwork(network)
+			network.cacheDal = nr.evmJsonRpcCache.WithProjectId(nr.project.Config.Id)
 		}
 	default:
 		return nil, errors.New("unknown network architecture")

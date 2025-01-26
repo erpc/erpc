@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/erpc/erpc/arch/evm"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
@@ -21,7 +22,7 @@ type ERPC struct {
 func NewERPC(
 	appCtx context.Context,
 	logger *zerolog.Logger,
-	evmJsonRpcCache *EvmJsonRpcCache,
+	evmJsonRpcCache *evm.EvmJsonRpcCache,
 	cfg *common.Config,
 ) (*ERPC, error) {
 	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(

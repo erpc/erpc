@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/erpc/erpc/arch/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/upstream"
@@ -290,7 +291,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					// because cache layer already is not caching unfinalized data.
 					resp = lvr
 				} else if n.Architecture() == common.ArchitectureEvm {
-					_, evmBlkNum, err := req.EvmBlockRefAndNumber()
+					_, evmBlkNum, err := evm.ExtractBlockReferenceFromRequest(req)
 					if err == nil && evmBlkNum == 0 {
 						// For pending txs we can accept the response, if after retries it is still pending.
 						// This avoids failing with "retry" error, when we actually do have a response but blockNumber is null since tx is pending.

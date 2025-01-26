@@ -134,6 +134,13 @@ func (r *NormalizedRequest) SetCacheDal(cacheDal CacheDAL) {
 	r.cacheDal = cacheDal
 }
 
+func (r *NormalizedRequest) CacheDal() CacheDAL {
+	if r == nil {
+		return nil
+	}
+	return r.cacheDal
+}
+
 func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveDefaultsConfig) {
 	if directiveDefaults == nil {
 		return
@@ -283,82 +290,33 @@ func (r *NormalizedRequest) MarshalZerologObject(e *zerolog.Event) {
 	}
 }
 
-// EvmBlockRefAndNumber extracts any possible block reference and number from the request and from response if it exists.
-// This method is more 'complete' than NormalizedResponse.EvmBlockRefAndNumber() because we might not even have a response
-// in certain situations (for example, when we are using failsafe retries).
-func (r *NormalizedRequest) EvmBlockRefAndNumber() (string, int64, error) {
+// TODO Move evm specific data to RequestMetadata struct so we can have multiple architectures besides evm
+func (r *NormalizedRequest) EvmBlockRef() interface{} {
 	if r == nil {
-		return "", 0, nil
+		return nil
 	}
+	return r.evmBlockRef.Load()
+}
 
-	var blockNumber int64
-	var blockRef string
+func (r *NormalizedRequest) SetEvmBlockRef(blockRef interface{}) {
+	if r == nil {
+		return
+	}
+	r.evmBlockRef.Store(blockRef)
+}
 
-	// Try to load from local cache
-	if bn := r.evmBlockNumber.Load(); bn != nil {
-		blockNumber = bn.(int64)
+func (r *NormalizedRequest) EvmBlockNumber() interface{} {
+	if r == nil {
+		return nil
 	}
-	if br := r.evmBlockRef.Load(); br != nil {
-		blockRef = br.(string)
-	}
+	return r.evmBlockNumber.Load()
+}
 
-	if blockRef != "" && blockNumber != 0 {
-		return blockRef, blockNumber, nil
+func (r *NormalizedRequest) SetEvmBlockNumber(blockNumber interface{}) {
+	if r == nil {
+		return
 	}
-
-	// Try to load from JSON-RPC request
-	rpcReq, err := r.JsonRpcRequest()
-	if err != nil {
-		return blockRef, blockNumber, err
-	}
-
-	br, bn, err := ExtractEvmBlockReferenceFromRequest(r.cacheDal, rpcReq)
-	if br != "" {
-		blockRef = br
-	}
-	if bn > 0 {
-		blockNumber = bn
-	}
-	if err != nil {
-		return blockRef, blockNumber, err
-	}
-
-	// Try to load from last valid response
-	if blockRef == "" || blockNumber == 0 {
-		lvr := r.lastValidResponse.Load()
-		if lvr != nil {
-			br, bn, err = lvr.EvmBlockRefAndNumber()
-			if br != "" && (blockRef == "" || blockRef == "*") {
-				// The condition (blockRef == ""|"*") makes sure if request already has a ref we won't override it from response.
-				// For example eth_getBlockByNumber(latest) will have a "latest" ref, so it'll be cached under "latest" ref,
-				// and we don't want it to be stored as the actual blockHash returned in the response, so that we can have a cache hit.
-				// In case of "*" since it means any block, we can still augment it from response ref, because during cache.Get()
-				// we'll be using reverse index (i.e. ignoring ref), but after reorg invalidation is added a specific block ref is useful.
-				//
-				// TODO An ideal version stores the data for all eth_getBlockByNumber(latest) and eth_getBlockByNumber(blockNumber),
-				// and eth_getBlockByNumber(blockHash) where blockNumber/blockHash are the actual values returned in the response.
-				// So that if user gets the latest block, then cache is populated for when they provide that specific block as well.
-				// When implementing that feature remember that CacheHash() must be calculated separately for each number/hash combo.
-				blockRef = br
-			}
-			if bn > 0 {
-				blockNumber = bn
-			}
-			if err != nil {
-				return blockRef, blockNumber, err
-			}
-		}
-	}
-
-	// Store to local cache
-	if blockNumber > 0 {
-		r.evmBlockNumber.Store(blockNumber)
-	}
-	if blockRef != "" {
-		r.evmBlockRef.Store(blockRef)
-	}
-
-	return blockRef, blockNumber, nil
+	r.evmBlockNumber.Store(blockNumber)
 }
 
 func (r *NormalizedRequest) MarshalJSON() ([]byte, error) {

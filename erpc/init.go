@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/erpc/erpc/arch/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -42,10 +43,10 @@ func Init(
 	// 2) Initialize eRPC
 	//
 	logger.Info().Msg("initializing eRPC core")
-	var evmJsonRpcCache *EvmJsonRpcCache
+	var evmJsonRpcCache *evm.EvmJsonRpcCache
 	if cfg.Database != nil {
 		if cfg.Database.EvmJsonRpcCache != nil {
-			evmJsonRpcCache, err = NewEvmJsonRpcCache(appCtx, &logger, cfg.Database.EvmJsonRpcCache)
+			evmJsonRpcCache, err = evm.NewEvmJsonRpcCache(appCtx, &logger, cfg.Database.EvmJsonRpcCache)
 			if err != nil {
 				logger.Warn().Msgf("failed to initialize evm json rpc cache: %v", err)
 			}
