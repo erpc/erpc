@@ -188,4 +188,78 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 		err = project.Validate(cfg)
 		assert.Nil(t, err, "Validate should pass when only a provider is present")
 	})
+
+	t.Run("Projects with individual and global upstream defaults should be applied and validated successfully", func(t *testing.T) {
+		cfg := &Config{
+			Projects: []*ProjectConfig{
+				{
+					Id: "test",
+					Upstreams: []*UpstreamConfig{
+						{
+							Endpoint: "http://rpc1.localhost",
+							// Individual upstream failsafe
+							Failsafe: &FailsafeConfig{
+								Retry: &RetryPolicyConfig{
+									BackoffMaxDelay: "10s",
+									Delay:           "1000ms",
+									Jitter:          "500ms",
+									MaxAttempts:     2,
+									BackoffFactor:   1.2,
+								},
+							},
+						},
+						{
+							Endpoint: "http://rpc2.localhost",
+						},
+					},
+					// Global upstream failsafe defaults
+					UpstreamDefaults: &UpstreamConfig{
+						AllowMethods: []string{"eth_getLogs"},
+						Failsafe: &FailsafeConfig{
+							CircuitBreaker: &CircuitBreakerPolicyConfig{
+								FailureThresholdCapacity: 200,
+								FailureThresholdCount:    1,
+								HalfOpenAfter:            "5m",
+								SuccessThresholdCapacity: 3,
+								SuccessThresholdCount:    3,
+							},
+						},
+					},
+				},
+			},
+		}
+
+		// Apply defaults
+		err := cfg.SetDefaults()
+		assert.Nil(t, err, "SetDefaults should not return an error")
+
+		// Verify failsafe retry is only applied to the first upstream
+		retry := cfg.Projects[0].Upstreams[0].Failsafe.Retry
+		assert.EqualValues(t, &RetryPolicyConfig{
+			MaxAttempts:     2,
+			BackoffMaxDelay: "10s",
+			Delay:           "1000ms",
+			Jitter:          "500ms",
+			BackoffFactor:   1.2,
+		}, retry, "Retry policy should match expected values")
+
+		// Verify that upstreamDefaults circuit breaker failsafe is applied to all upstreams
+		for _, upstream := range cfg.Projects[0].Upstreams {
+			assert.Equal(t, []string{"eth_getLogs"}, upstream.AllowMethods)
+			assert.NotNil(t, upstream.Failsafe)
+
+			expectedCircuitBreaker := &CircuitBreakerPolicyConfig{
+				FailureThresholdCapacity: 200,
+				FailureThresholdCount:    1,
+				HalfOpenAfter:            "5m",
+				SuccessThresholdCapacity: 3,
+				SuccessThresholdCount:    3,
+			}
+			assert.Equal(t, expectedCircuitBreaker, upstream.Failsafe.CircuitBreaker)
+		}
+
+		// Validate the project configuration
+		err = cfg.Validate()
+		assert.Nil(t, err, "Validate should pass when providers and upstreams with defaults are present")
+	})
 }
