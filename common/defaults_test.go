@@ -153,4 +153,39 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 		assert.EqualValues(t, "http://rpc1.localhost", cfg.Projects[0].Upstreams[0].Endpoint)
 		assert.EqualValues(t, "http://rpc3.localhost", cfg.Projects[0].Upstreams[1].Endpoint)
 	})
+
+	t.Run("Project with only provider as upstream should validate successfully", func(t *testing.T) {
+		cfg := &Config{
+			Projects: []*ProjectConfig{
+				{
+					Id: "test-alchemy-only",
+					Upstreams: []*UpstreamConfig{
+						{
+							Endpoint: "alchemy://some_test_api_key",
+						},
+					},
+				},
+			},
+		}
+
+		err := cfg.SetDefaults()
+		assert.Nil(t, err, "SetDefaults should not return an error")
+
+		// Verify that the alchemy upstream has been converted to a provider
+		project := cfg.Projects[0]
+		assert.Len(t, project.Upstreams, 0, "Upstreams should be empty after converting alchemy upstream to provider")
+		assert.Len(t, project.Providers, 1, "Providers should contain one provider after conversion")
+
+		// Verify the provider's details
+		provider := project.Providers[0]
+		assert.Equal(t, "alchemy", provider.Vendor, "Provider vendor should be 'alchemy'")
+		expectedSettings := VendorSettings{
+			"apiKey": "some_test_api_key",
+		}
+		assert.Equal(t, expectedSettings, provider.Settings, "Provider settings should match expected values")
+
+		// Validate the configuration
+		err = project.Validate(cfg)
+		assert.Nil(t, err, "Validate should pass when only a provider is present")
+	})
 }
