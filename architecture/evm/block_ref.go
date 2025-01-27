@@ -260,6 +260,12 @@ func getMethodConfig(cacheDal common.CacheDAL, method string) (cfg *common.Cache
 		if cfg == nil {
 			cfg = common.DefaultSpecialCacheMethods[method]
 		}
+		if cfg == nil {
+			cfg = common.DefaultRealtimeCacheMethods[method]
+		}
+		if cfg == nil {
+			cfg = common.DefaultStaticCacheMethods[method]
+		}
 	}
 
 	return

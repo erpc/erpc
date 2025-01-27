@@ -19,8 +19,8 @@ import (
 type Network struct {
 	NetworkId string
 	ProjectId string
-	Logger    *zerolog.Logger
 
+	logger                   *zerolog.Logger
 	bootstrapOnce            sync.Once
 	appCtx                   context.Context
 	cfg                      *common.NetworkConfig
@@ -38,7 +38,7 @@ type Network struct {
 func (n *Network) Bootstrap(ctx context.Context) error {
 	// Initialize policy evaluator if configured
 	if n.cfg.SelectionPolicy != nil {
-		evaluator, e := NewPolicyEvaluator(n.NetworkId, n.Logger, n.cfg.SelectionPolicy, n.upstreamsRegistry, n.metricsTracker)
+		evaluator, e := NewPolicyEvaluator(n.NetworkId, n.logger, n.cfg.SelectionPolicy, n.upstreamsRegistry, n.metricsTracker)
 		if e != nil {
 			return fmt.Errorf("failed to create selection policy evaluator: %w", e)
 		}
@@ -65,6 +65,42 @@ func (n *Network) Architecture() common.NetworkArchitecture {
 	return n.cfg.Architecture
 }
 
+func (n *Network) Logger() *zerolog.Logger {
+	return n.logger
+}
+
+func (n *Network) EvmHighestLatestBlockNumber() int64 {
+	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(n.NetworkId)
+	var maxBlock int64 = 0
+	for _, u := range upstreams {
+		statePoller := u.EvmStatePoller()
+		if statePoller == nil {
+			continue
+		}
+		upBlock := statePoller.LatestBlock()
+		if upBlock > maxBlock {
+			maxBlock = upBlock
+		}
+	}
+	return maxBlock
+}
+
+func (n *Network) EvmHighestFinalizedBlockNumber() int64 {
+	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(n.NetworkId)
+	var maxBlock int64 = 0
+	for _, u := range upstreams {
+		statePoller := u.EvmStatePoller()
+		if statePoller == nil {
+			continue
+		}
+		upBlock := statePoller.FinalizedBlock()
+		if upBlock > maxBlock {
+			maxBlock = upBlock
+		}
+	}
+	return maxBlock
+}
+
 func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	startTime := time.Now()
 	req.SetNetwork(n)
@@ -72,7 +108,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	req.ApplyDirectiveDefaults(n.cfg.DirectiveDefaults)
 
 	method, _ := req.Method()
-	lg := n.Logger.With().Str("method", method).Interface("id", req.ID()).Str("ptr", fmt.Sprintf("%p", req)).Logger()
+	lg := n.logger.With().Str("method", method).Interface("id", req.ID()).Str("ptr", fmt.Sprintf("%p", req)).Logger()
 
 	mlx, resp, err := n.handleMultiplexing(ctx, &lg, req, startTime)
 	if err != nil || resp != nil {
@@ -552,7 +588,7 @@ func (n *Network) acquireRateLimitPermit(req *common.NormalizedRequest) error {
 	if errMethod != nil {
 		return errMethod
 	}
-	lg := n.Logger.With().Str("method", method).Logger()
+	lg := n.logger.With().Str("method", method).Logger()
 
 	rules, errRules := rlb.GetRulesByMethod(method)
 	if errRules != nil {
