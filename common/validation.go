@@ -373,8 +373,8 @@ func (p *ProjectConfig) Validate(c *Config) error {
 			}
 			existingIds[upstream.Id] = true
 		}
-	} else {
-		return fmt.Errorf("project.*.upstreams is required, add at least one upstream")
+	} else if p.Providers == nil || len(p.Providers) == 0 {
+		return fmt.Errorf("project.*.upstreams or project.*.providers is required, add at least one of them")
 	}
 	if p.Networks != nil {
 		existingIds := make(map[string]bool)
