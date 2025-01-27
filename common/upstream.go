@@ -1,5 +1,7 @@
 package common
 
+import "context"
+
 type Scope string
 
 const (
@@ -18,4 +20,5 @@ type Upstream interface {
 	Config() *UpstreamConfig
 	Vendor() Vendor
 	NetworkId() string
+	Forward(ctx context.Context, nq *NormalizedRequest, skipSyncingCheck bool) (*NormalizedResponse, error)
 }

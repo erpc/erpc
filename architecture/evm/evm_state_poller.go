@@ -1,4 +1,4 @@
-package upstream
+package evm
 
 import (
 	"context"
@@ -20,7 +20,7 @@ type EvmStatePoller struct {
 
 	appCtx   context.Context
 	logger   *zerolog.Logger
-	upstream *Upstream
+	upstream common.Upstream
 	cfg      *common.EvmNetworkConfig
 	tracker  *health.Tracker
 
@@ -54,10 +54,10 @@ type EvmStatePoller struct {
 func NewEvmStatePoller(
 	appCtx context.Context,
 	logger *zerolog.Logger,
-	up *Upstream,
+	up common.Upstream,
 	tracker *health.Tracker,
 ) *EvmStatePoller {
-	lg := logger.With().Str("upstreamId", up.config.Id).Logger()
+	lg := logger.With().Str("upstreamId", up.Config().Id).Logger()
 	e := &EvmStatePoller{
 		appCtx:   appCtx,
 		logger:   &lg,
@@ -69,7 +69,7 @@ func NewEvmStatePoller(
 }
 
 func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
-	cfg := e.upstream.config
+	cfg := e.upstream.Config()
 	var intvl string
 	if cfg.Evm != nil && cfg.Evm.StatePollerInterval != "" {
 		intvl = cfg.Evm.StatePollerInterval
@@ -105,7 +105,7 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 				defer cancel()
 				err := e.Poll(nctx)
 				if err != nil {
-					e.logger.Error().Err(err).Msgf("failed to poll evm state for upstream %s", e.upstream.config.Id)
+					e.logger.Error().Err(err).Msgf("failed to poll evm state for upstream %s", e.upstream.Config().Id)
 				}
 			}
 		}
@@ -200,7 +200,7 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 			e.synced++
 		}
 
-		upsCfg := e.upstream.config
+		upsCfg := e.upstream.Config()
 		if upsCfg.Evm == nil {
 			upsCfg.Evm = &common.EvmUpstreamConfig{}
 		}
@@ -232,7 +232,7 @@ func (e *EvmStatePoller) setLatestBlockNumber(blockNumber int64) {
 	e.mu.Lock()
 	e.latestBlockNumber = blockNumber
 	e.mu.Unlock()
-	e.tracker.SetLatestBlockNumber(e.upstream.config.Id, e.upstream.NetworkId(), blockNumber)
+	e.tracker.SetLatestBlockNumber(e.upstream.Config().Id, e.upstream.NetworkId(), blockNumber)
 }
 
 func (e *EvmStatePoller) SyncingState() common.EvmSyncingState {
@@ -257,7 +257,7 @@ func (e *EvmStatePoller) setFinalizedBlockNumber(blockNumber int64) {
 	e.mu.Lock()
 	e.finalizedBlockNumber = blockNumber
 	e.mu.Unlock()
-	e.tracker.SetFinalizedBlockNumber(e.upstream.config.Id, e.upstream.NetworkId(), blockNumber)
+	e.tracker.SetFinalizedBlockNumber(e.upstream.Config().Id, e.upstream.NetworkId(), blockNumber)
 }
 
 func (e *EvmStatePoller) shouldSkipFinalizedCheck() bool {

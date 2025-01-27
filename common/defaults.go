@@ -94,9 +94,15 @@ var DefaultRealtimeCacheMethods = map[string]*CacheMethodConfig{
 	},
 	"eth_blockNumber": {
 		Realtime: true,
+		RespRefs: [][]interface{}{
+			{}, // Means response is a direct hex string for block number
+		},
 	},
 	"erigon_blockNumber": {
 		Realtime: true,
+		RespRefs: [][]interface{}{
+			{}, // Means response is a direct hex string for block number
+		},
 	},
 }
 

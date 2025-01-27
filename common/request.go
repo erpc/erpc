@@ -67,6 +67,15 @@ func NewNormalizedRequest(body []byte) *NormalizedRequest {
 	}
 }
 
+func NewNormalizedRequestFromJsonRpcRequest(jsonRpcRequest *JsonRpcRequest) *NormalizedRequest {
+	return &NormalizedRequest{
+		jsonRpcRequest: jsonRpcRequest,
+		directives: &RequestDirectives{
+			RetryEmpty: true,
+		},
+	}
+}
+
 func (r *NormalizedRequest) SetLastUpstream(upstream Upstream) *NormalizedRequest {
 	if r == nil {
 		return r
@@ -139,6 +148,13 @@ func (r *NormalizedRequest) CacheDal() CacheDAL {
 		return nil
 	}
 	return r.cacheDal
+}
+
+func (r *NormalizedRequest) SetDirectives(directives *RequestDirectives) {
+	if r == nil {
+		return
+	}
+	r.directives = directives
 }
 
 func (r *NormalizedRequest) ApplyDirectiveDefaults(directiveDefaults *DirectiveDefaultsConfig) {

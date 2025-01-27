@@ -1,9 +1,12 @@
 package common
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 type NetworkArchitecture string
@@ -16,7 +19,13 @@ type Network interface {
 	Id() string
 	Architecture() NetworkArchitecture
 	Config() *NetworkConfig
+	Logger() *zerolog.Logger
 	GetMethodMetrics(method string) TrackedMetrics
+	Forward(ctx context.Context, nq *NormalizedRequest) (*NormalizedResponse, error)
+
+	// TODO Move to EvmNetwork interface?
+	EvmHighestLatestBlockNumber() int64
+	EvmHighestFinalizedBlockNumber() int64
 }
 
 func IsValidArchitecture(architecture string) bool {

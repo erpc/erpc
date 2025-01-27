@@ -58,3 +58,7 @@ func (u *FakeUpstream) EvmIsBlockFinalized(blockNumber int64) (bool, error) {
 func (u *FakeUpstream) EvmStatePoller() EvmStatePoller {
 	return nil
 }
+
+func (u *FakeUpstream) Forward(ctx context.Context, nq *NormalizedRequest, skipSyncingCheck bool) (*NormalizedResponse, error) {
+	return nil, nil
+}

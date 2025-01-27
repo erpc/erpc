@@ -436,6 +436,22 @@ type JsonRpcRequest struct {
 	Params  []interface{} `json:"params,omitempty"`
 }
 
+func NewJsonRpcRequest(method string, params []interface{}) *JsonRpcRequest {
+	return &JsonRpcRequest{
+		JSONRPC: "2.0",
+		Method:  method,
+		Params:  params,
+	}
+}
+
+func (r *JsonRpcRequest) SetID(id interface{}) error {
+	r.Lock()
+	defer r.Unlock()
+
+	r.ID = id
+	return nil
+}
+
 func (r *JsonRpcRequest) UnmarshalJSON(data []byte) error {
 	type Alias JsonRpcRequest
 	aux := &struct {
