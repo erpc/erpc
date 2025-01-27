@@ -84,9 +84,9 @@ func NewNetwork(
 	network := &Network{
 		ProjectId: projectId,
 		NetworkId: nwCfg.NetworkId(),
-		Logger:    &lg,
 
-		cfg: nwCfg,
+		cfg:    nwCfg,
+		logger: &lg,
 
 		appCtx:               appCtx,
 		upstreamsRegistry:    upstreamsRegistry,

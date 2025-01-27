@@ -98,7 +98,7 @@ func NewUpstream(
 	}
 
 	if pup.config.Type == common.UpstreamTypeEvm {
-		pup.evmStatePoller = NewEvmStatePoller(appCtx, &lg, pup, mt)
+		pup.evmStatePoller = evm.NewEvmStatePoller(appCtx, &lg, pup, mt)
 	}
 
 	lg.Debug().Msgf("prepared upstream")
@@ -438,6 +438,7 @@ func (u *Upstream) Executor() failsafe.Executor[*common.NormalizedResponse] {
 	return u.failsafeExecutor
 }
 
+// TODO move to evm package
 func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 	pr := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":75412,"method":"eth_chainId","params":[]}`))
 
@@ -470,6 +471,7 @@ func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 	return strconv.FormatUint(dec, 10), nil
 }
 
+// TODO move to evm package
 func (u *Upstream) EvmIsBlockFinalized(blockNumber int64) (bool, error) {
 	if u.evmStatePoller == nil {
 		return false, fmt.Errorf("evm state poller not initialized yet")
@@ -477,6 +479,7 @@ func (u *Upstream) EvmIsBlockFinalized(blockNumber int64) (bool, error) {
 	return u.evmStatePoller.IsBlockFinalized(blockNumber)
 }
 
+// TODO move to evm package?
 func (u *Upstream) EvmSyncingState() common.EvmSyncingState {
 	if u.evmStatePoller == nil {
 		return common.EvmSyncingStateUnknown
@@ -484,6 +487,7 @@ func (u *Upstream) EvmSyncingState() common.EvmSyncingState {
 	return u.evmStatePoller.SyncingState()
 }
 
+// TODO move to evm package?
 func (u *Upstream) EvmLatestBlock() (int64, error) {
 	if u.evmStatePoller == nil {
 		return 0, fmt.Errorf("evm state poller not initialized yet")
@@ -491,6 +495,7 @@ func (u *Upstream) EvmLatestBlock() (int64, error) {
 	return u.evmStatePoller.LatestBlock(), nil
 }
 
+// TODO move to evm package?
 func (u *Upstream) EvmFinalizedBlock() (int64, error) {
 	if u.evmStatePoller == nil {
 		return 0, fmt.Errorf("evm state poller not initialized yet")
@@ -498,6 +503,7 @@ func (u *Upstream) EvmFinalizedBlock() (int64, error) {
 	return u.evmStatePoller.FinalizedBlock(), nil
 }
 
+// TODO move to evm package?
 func (u *Upstream) EvmStatePoller() common.EvmStatePoller {
 	return u.evmStatePoller
 }

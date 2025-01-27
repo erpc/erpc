@@ -4556,7 +4556,7 @@ func TestNetwork_Forward(t *testing.T) {
 					FailureThresholdCount:    2,
 					FailureThresholdCapacity: 4,
 					HalfOpenAfter:            "500ms",
-					SuccessThresholdCount: 2,
+					SuccessThresholdCount:    2,
 					SuccessThresholdCapacity: 2,
 				},
 			},

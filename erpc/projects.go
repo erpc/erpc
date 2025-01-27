@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
@@ -147,7 +148,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	} else {
 		lg.Debug().Msgf("forwarding request for network")
 	}
-	resp, err := network.Forward(ctx, nq)
+	resp, err := p.doForward(ctx, network, nq)
 
 	if err == nil || common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
 		if err != nil {
@@ -167,6 +168,24 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	}
 
 	return nil, err
+}
+
+func (p *PreparedProject) doForward(ctx context.Context, network *Network, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	switch network.cfg.Architecture {
+	case common.ArchitectureEvm:
+		if handled, resp, err := evm.HandlePreForward(ctx, network, nq); err != nil {
+			return nil, err
+		} else if handled {
+			return evm.HandlePostForward(ctx, network, nq, resp)
+		}
+	}
+
+	// If not handled, then fallback to the normal forward
+	resp, err := network.Forward(ctx, nq)
+	if err != nil {
+		return nil, err
+	}
+	return evm.HandlePostForward(ctx, network, nq, resp)
 }
 
 func (p *PreparedProject) acquireRateLimitPermit(req *common.NormalizedRequest) error {
