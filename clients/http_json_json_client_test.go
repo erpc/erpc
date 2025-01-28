@@ -13,6 +13,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 )
@@ -668,5 +669,72 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 			}(i + 1)
 		}
 		wg.Wait()
+	})
+	t.Run("CustomHeaders", func(t *testing.T) {
+		defer gock.Off()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		logger := zerolog.Nop()
+
+		// Define custom headers
+		customHeaders := map[string]string{
+			"Authorization":    "Bearer TEST_TOKEN_123",
+			"X-Custom-Header":  "CustomValue",
+			"X-Another-Header": "AnotherValue",
+		}
+
+		// Create a fake upstream config with the headers
+		ups := common.NewFakeUpstream("rpc1")
+		ups.Config().Type = common.UpstreamTypeEvm
+		ups.Config().Endpoint = "http://rpc1.localhost:8545"
+		ups.Config().JsonRpc = &common.JsonRpcUpstreamConfig{
+			SupportsBatch: &common.TRUE,
+			BatchMaxSize:  3,
+			BatchMaxWait:  "10ms",
+			Headers:       customHeaders,
+		}
+
+		// Initialize the JSON-RPC client
+		client, err := NewGenericHttpJsonRpcClient(
+			ctx,
+			&logger,
+			"prj1",
+			"rpc1",
+			&url.URL{Scheme: "http", Host: "rpc1.localhost:8545"},
+			ups.Config().JsonRpc,
+		)
+		assert.NoError(t, err)
+
+		// Use Gock to intercept the outbound HTTP request, checking headers
+		gock.New("http://rpc1.localhost:8545").
+			Post("/").
+			MatchHeader("Authorization", "Bearer TEST_TOKEN_123").
+			MatchHeader("X-Custom-Header", "CustomValue").
+			MatchHeader("X-Another-Header", "AnotherValue").
+			Reply(200).
+			BodyString(`[{"jsonrpc":"2.0","id":1,"result":"0x1"}]`)
+
+		// Create a NormalizedRequest for JSON-RPC
+		req := common.NewNormalizedRequest([]byte(`{
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "eth_blockNumber",
+            "params": []
+        }`))
+
+		// Send the request
+		resp, err := client.SendRequest(ctx, req)
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+
+		// Extract the JsonRpcResponse fields
+		jr, err := resp.JsonRpcResponse()
+		assert.NoError(t, err)
+		assert.NotNil(t, jr, "Expected a valid JSON-RPC response object")
+
+		// Confirm all Gock interceptors were called and matched
+		assert.True(t, gock.IsDone(), "Expected Gock to intercept and match the outbound request")
 	})
 }
