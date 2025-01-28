@@ -94,6 +94,10 @@ projects:
           headers:
             Authorization: "Bearer 1234567890"
 
+          # (OPTIONAL) Route all outbound requests to this upstream
+          # through the provided HTTP proxy
+          proxyUrl: http://proxy.myorg.local:3128
+
         # (OPTIONAL) Which methods must never be sent to this upstream.
         # For example this can be used to avoid archive calls (traces) to full nodes
         ignoreMethods:
@@ -230,6 +234,10 @@ export default createConfig({
             headers: {
               Authorization: "Bearer 1234567890",
             },
+
+            // (OPTIONAL) Route all outbound requests to this upstream
+            // through the provided HTTP proxy
+            proxyUrl: "http://proxy.myorg.local:3128",
           },
 
           // (OPTIONAL) Which methods must never be sent to this upstream.
@@ -710,6 +718,44 @@ export default createConfig({
 ```
 </Tab>
 </Tabs>
+
+## Proxies
+
+For use cases where you need to route traffic through a specific HTTP proxy, you can set a `proxyUrl` field under `jsonRpc`. When defined, eRPC will configure the HTTP client for that upstream to use the proxy.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+upstreams:
+  - id: my-public-rpc
+    endpoint: https://public-rpc.io
+    jsonRpc:
+      # (OPTIONAL) Route all outbound requests to this upstream
+      # through the provided HTTP proxy
+      proxyUrl: http://proxy.myorg.local:3128
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  upstreams: [
+    {
+      id: "my-public-rpc",
+      endpoint: "https://public-rpc.io",
+      jsonRpc: {
+        // (OPTIONAL) Route all outbound requests through this HTTP proxy
+        proxyUrl: "http://proxy.myorg.local:3128",
+      },
+    },
+  ],
+});
+```
+  </Tabs.Tab>
+</Tabs>
+
+When proxyUrl is set, eRPC configures an internal HTTP transport so that all outbound calls for that upstream go via the specified proxy server (e.g. http://proxy.myorg.local:3128). If proxyUrl is absent or empty, no proxy is used. This is helpful for scenarios requiring IP-based filtering, private traffic routing, or custom load balancing.
 
 #### Roadmap
 
