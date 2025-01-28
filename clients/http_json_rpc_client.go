@@ -28,7 +28,8 @@ type HttpJsonRpcClient interface {
 type GenericHttpJsonRpcClient struct {
 	Url *url.URL
 
-	headers map[string]string
+	headers  map[string]string
+	proxyUrl string
 
 	projectId  string
 	upstreamId string
@@ -91,24 +92,41 @@ func NewGenericHttpJsonRpcClient(
 
 			client.batchRequests = make(map[interface{}]*batchRequest)
 		}
+
 		if jsonRpcCfg.EnableGzip != nil {
 			client.enableGzip = *jsonRpcCfg.EnableGzip
 		}
+
 		if jsonRpcCfg.Headers != nil {
 			client.headers = jsonRpcCfg.Headers
 		}
-	}
 
-	if util.IsTest() {
-		client.httpClient = &http.Client{}
-	} else {
-		client.httpClient = &http.Client{
-			Timeout: 60 * time.Second,
-			Transport: &http.Transport{
-				MaxIdleConns:        1024,
-				MaxIdleConnsPerHost: 256,
-				IdleConnTimeout:     90 * time.Second,
-			},
+		if jsonRpcCfg.ProxyUrl != "" {
+			client.proxyUrl = jsonRpcCfg.ProxyUrl
+		}
+
+		transport := &http.Transport{
+			MaxIdleConns:        1024,
+			MaxIdleConnsPerHost: 256,
+			IdleConnTimeout:     90 * time.Second,
+		}
+
+		// If ProxyUrl is set, parse and attach it to the transport
+		if jsonRpcCfg.ProxyUrl != "" {
+			proxyURL, err := url.Parse(jsonRpcCfg.ProxyUrl)
+			if err != nil {
+				return nil, fmt.Errorf("invalid proxy URL: %w", err)
+			}
+			transport.Proxy = http.ProxyURL(proxyURL)
+		}
+
+		if util.IsTest() {
+			client.httpClient = &http.Client{}
+		} else {
+			client.httpClient = &http.Client{
+				Timeout:   60 * time.Second,
+				Transport: transport,
+			}
 		}
 	}
 
@@ -514,7 +532,7 @@ func getJsonRpcResponseFromNode(rootNode ast.Node) (*common.JsonRpcResponse, err
 	rawError, rawErrorErr := errorNode.Raw()
 
 	if rawResultErr != nil && rawErrorErr != nil {
-		var jrResp *common.JsonRpcResponse
+		jrResp := &common.JsonRpcResponse{}
 
 		if rawID != "" {
 			err := jrResp.SetIDBytes(util.Str2Mem(rawID))
@@ -524,14 +542,11 @@ func getJsonRpcResponseFromNode(rootNode ast.Node) (*common.JsonRpcResponse, err
 		}
 
 		cause := fmt.Sprintf("cannot parse json rpc response from upstream, for result: %s, for error: %s", rawResult, rawError)
-		jrResp = &common.JsonRpcResponse{
-			Result: util.Str2Mem(rawResult),
-			Error: common.NewErrJsonRpcExceptionExternal(
-				int(common.JsonRpcErrorParseException),
-				cause,
-				"",
-			),
-		}
+		jrResp.Error = common.NewErrJsonRpcExceptionExternal(
+			int(common.JsonRpcErrorParseException),
+			cause,
+			"",
+		)
 
 		return jrResp, nil
 	}

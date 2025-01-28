@@ -379,6 +379,7 @@ type JsonRpcUpstreamConfig struct {
 	BatchMaxWait  string            `yaml:"batchMaxWait,omitempty" json:"batchMaxWait"`
 	EnableGzip    *bool             `yaml:"enableGzip,omitempty" json:"enableGzip"`
 	Headers       map[string]string `yaml:"headers,omitempty" json:"headers"`
+	ProxyUrl      string            `yaml:"proxyUrl,omitempty" json:"proxyUrl"`
 }
 
 type EvmUpstreamConfig struct {
