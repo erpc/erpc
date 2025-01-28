@@ -81,13 +81,18 @@ projects:
           minBudget: 0
           maxBudget: 10_000
 
-        # (OPTIONAL) To allow auto-batching requests towards the upstream.
-        # Remember even if "supportsBatch" is false, you still can send batch requests to eRPC
-        # but they will be sent to upstream as individual requests.
         jsonRpc:
+          # (OPTIONAL) To allow auto-batching requests towards the upstream.
+          # Remember even if "supportsBatch" is false, you still can send batch requests to eRPC
+          # but they will be sent to upstream as individual requests.
           supportsBatch: true
           batchMaxSize: 10
           batchMaxWait: 50ms
+
+          # (OPTIONAL) Headers to send along with every outbound JSON-RPC request.
+          # This is especially useful for upstreams that require a static Bearer token for authentication.
+          headers:
+            Authorization: "Bearer 1234567890"
 
         # (OPTIONAL) Which methods must never be sent to this upstream.
         # For example this can be used to avoid archive calls (traces) to full nodes
@@ -208,15 +213,23 @@ export default createConfig({
             maxBudget: 10_000,
           },
 
-          /*
-          * (OPTIONAL) To allow auto-batching requests towards the upstream.
-          * Remember even if "supportsBatch" is false, you still can send batch requests to eRPC
-          * but they will be sent to upstream as individual requests.
-          */
           jsonRpc: {
+            /*
+            * (OPTIONAL) To allow auto-batching requests towards the upstream.
+            * Remember even if "supportsBatch" is false, you still can send batch requests to eRPC
+            * but they will be sent to upstream as individual requests.
+            */
             supportsBatch: true,
             batchMaxSize: 10,
             batchMaxWait: "50ms",
+
+            /**
+             * (OPTIONAL) Headers to send along with every outbound JSON-RPC request.
+             * This is especially useful for upstreams that require a static Bearer token for authentication.
+             */
+            headers: {
+              Authorization: "Bearer 1234567890",
+            },
           },
 
           // (OPTIONAL) Which methods must never be sent to this upstream.
@@ -656,6 +669,47 @@ export default createConfig({
 <Callout type='info'>
   Using gzip can reduce ingress/egress bandwidth costs, and in certain cases (e.g. large RPC requests) it can improve performance.
 </Callout>
+
+## Custom HTTP Headers
+
+You can send additional headers (e.g. `Authorization`) along with every outbound JSON-RPC request to an upstream by specifying `jsonRpc.headers` in the config. This is especially useful for upstreams that require a static Bearer token for authentication.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tab>
+```yaml filename="erpc.yaml"
+upstreams:
+  - id: my-private-upstream
+    endpoint: https://private-provider.io/v1
+    jsonRpc:
+      # (OPTIONAL) Send additional headers to this upstream on every request
+      # e.g. Authorization bearer token, custom X-Header, etc.
+      headers:
+        Authorization: "Bearer SECRET_VALUE_123"
+        X-Custom-Header: "HelloWorld"
+```
+  </Tab>
+  <Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  upstreams: [
+    {
+      id: "my-private-upstream",
+      endpoint: "https://private-provider.io/v1",
+      jsonRpc: {
+        // (OPTIONAL) Send additional headers to this upstream on every request
+        headers: {
+          "Authorization": "Bearer SECRET_VALUE_123",
+          "X-Custom-Header": "HelloWorld",
+        },
+      },
+    },
+  ],
+});
+```
+</Tab>
+</Tabs>
 
 #### Roadmap
 
