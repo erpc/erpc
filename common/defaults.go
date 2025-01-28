@@ -1104,6 +1104,13 @@ func (h *HedgePolicyConfig) SetDefaults(defaults *HedgePolicyConfig) error {
 }
 
 func (c *CircuitBreakerPolicyConfig) SetDefaults(defaults *CircuitBreakerPolicyConfig) error {
+	if c.FailureThresholdCount == 0 {
+		if defaults != nil && defaults.FailureThresholdCount != 0 {
+			c.FailureThresholdCount = defaults.FailureThresholdCount
+		} else {
+			c.FailureThresholdCount = 20
+		}
+	}
 	if c.FailureThresholdCapacity == 0 {
 		if defaults != nil && defaults.FailureThresholdCapacity != 0 {
 			c.FailureThresholdCapacity = defaults.FailureThresholdCapacity
