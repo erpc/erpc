@@ -28,6 +28,8 @@ type HttpJsonRpcClient interface {
 type GenericHttpJsonRpcClient struct {
 	Url *url.URL
 
+	headers map[string]string
+
 	projectId  string
 	upstreamId string
 	appCtx     context.Context
@@ -91,6 +93,9 @@ func NewGenericHttpJsonRpcClient(
 		}
 		if jsonRpcCfg.EnableGzip != nil {
 			client.enableGzip = *jsonRpcCfg.EnableGzip
+		}
+		if jsonRpcCfg.Headers != nil {
+			client.headers = jsonRpcCfg.Headers
 		}
 	}
 
@@ -657,6 +662,11 @@ func (c *GenericHttpJsonRpcClient) prepareRequest(ctx context.Context, body []by
 	// Add gzip header if compression is enabled
 	if c.enableGzip {
 		httpReq.Header.Set("Content-Encoding", "gzip")
+	}
+
+	// Add custom headers if provided
+	for k, v := range c.headers {
+		httpReq.Header.Set(k, v)
 	}
 
 	return httpReq, nil
