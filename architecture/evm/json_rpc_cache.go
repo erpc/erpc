@@ -71,6 +71,10 @@ func (c *EvmJsonRpcCache) WithProjectId(projectId string) *EvmJsonRpcCache {
 	}
 }
 
+func (c *EvmJsonRpcCache) SetPolicies(policies []*data.CachePolicy) {
+	c.policies = policies
+}
+
 func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	start := time.Now()
 	rpcReq, err := req.JsonRpcRequest()
@@ -119,9 +123,9 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 			).Observe(time.Since(start).Seconds())
 		}
 		if c.logger.GetLevel() == zerolog.TraceLevel {
-			c.logger.Trace().Interface("policy", policy).Str("connector", connector.Id()).Err(err).Msg("skipping cache policy during GET because it returned nil or error")
+			c.logger.Trace().Interface("policy", policy).Str("connector", connector.Id()).Interface("id", req.ID()).Err(err).Msg("skipping cache policy during GET because it returned nil or error")
 		} else {
-			c.logger.Debug().Str("connector", connector.Id()).Err(err).Msg("skipping cache policy during GET because it returned nil or error")
+			c.logger.Debug().Str("connector", connector.Id()).Interface("id", req.ID()).Err(err).Msg("skipping cache policy during GET because it returned nil or error")
 		}
 		if jrr != nil {
 			break
@@ -166,9 +170,9 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	).Observe(time.Since(start).Seconds())
 
 	if c.logger.GetLevel() <= zerolog.DebugLevel {
-		c.logger.Trace().Str("method", rpcReq.Method).RawJSON("result", jrr.Result).Msg("returning cached response")
+		c.logger.Trace().Str("method", rpcReq.Method).Interface("id", req.ID()).RawJSON("result", jrr.Result).Msg("returning cached response")
 	} else {
-		c.logger.Debug().Str("method", rpcReq.Method).Msg("returning cached response")
+		c.logger.Debug().Str("method", rpcReq.Method).Interface("id", req.ID()).Msg("returning cached response")
 	}
 
 	return common.NewNormalizedResponse().
@@ -178,6 +182,8 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 }
 
 func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
+	// TODO after subscription epic this method can be called for every new block data to pre-populate the cache,
+	// based on the evmJsonRpcCache.hyrdation.filters which is only the data (logs, txs) that user cares about.
 	start := time.Now()
 	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
@@ -190,7 +196,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 	}
 
 	ntwId := req.NetworkId()
-	lg := c.logger.With().Str("networkId", ntwId).Str("method", rpcReq.Method).Logger()
+	lg := c.logger.With().Str("networkId", ntwId).Str("method", rpcReq.Method).Interface("id", req.ID()).Logger()
 
 	blockRef, blockNumber, err := ExtractBlockReferenceFromRequest(req)
 	if err != nil {
@@ -199,6 +205,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 
 	finState := c.getFinalityState(resp)
 	policies, err := c.findSetPolicies(ntwId, rpcReq.Method, rpcReq.Params, finState)
+	lg.Trace().Err(err).Interface("policies", policies).Str("finality", finState.String()).Msg("result of finding cache policy during SET")
 	if err != nil {
 		return err
 	}
@@ -208,8 +215,8 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 
 	if blockRef == "" {
 		// Do not cache if we can't resolve a block reference (e.g. unknown methods)
-		if c.logger.GetLevel() <= zerolog.TraceLevel {
-			c.logger.Trace().
+		if lg.GetLevel() <= zerolog.TraceLevel {
+			lg.Trace().
 				Object("request", req).
 				Str("blockRef", blockRef).
 				Int64("blockNumber", blockNumber).
@@ -486,7 +493,7 @@ func (c *EvmJsonRpcCache) getFinalityState(r *common.NormalizedResponse) (finali
 		}
 	}
 
-	_, blockNumber, _ := ExtractBlockReferenceFromResponse(r)
+	_, blockNumber, _ := ExtractBlockReferenceFromRequest(req)
 
 	if blockNumber > 0 {
 		upstream := r.Upstream()

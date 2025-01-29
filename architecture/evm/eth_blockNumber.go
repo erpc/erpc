@@ -4,11 +4,12 @@ import (
 	"context"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/health"
 )
 
-// preForward_eth_blockNumber calls the normal forward, then compares the returned block number,
+// networkPreForward_eth_blockNumber calls the normal forward, then compares the returned block number,
 // to all EVM upstreams' StatePoller for this network and returns the highest block number across them.
-func preForward_eth_blockNumber(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
+func networkPreForward_eth_blockNumber(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
 	// Step 1: forward the request normally
 	resp, err = network.Forward(ctx, nq)
 	if err != nil {
@@ -26,6 +27,11 @@ func preForward_eth_blockNumber(ctx context.Context, network common.Network, nq 
 
 	// Step 4: if maxBlock is larger than forwardBlock, write that in the response
 	if highestBlock > blockNumber {
+		health.MetricUpstreamStaleLatestBlock.WithLabelValues(
+			network.ProjectId(),
+			network.Id(),
+			resp.UpstreamId(),
+		).Inc()
 		network.Logger().Debug().
 			Str("method", "eth_blockNumber").
 			Int64("knownHighestBlock", highestBlock).

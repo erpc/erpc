@@ -22,9 +22,9 @@ import (
 type Upstream struct {
 	ProjectId string
 	Client    clients.ClientInterface
-	Logger    zerolog.Logger
 
 	appCtx context.Context
+	logger *zerolog.Logger
 	config *common.UpstreamConfig
 	cfgMu  sync.RWMutex
 	vendor common.Vendor
@@ -70,8 +70,8 @@ func NewUpstream(
 
 	pup := &Upstream{
 		ProjectId: projectId,
-		Logger:    lg,
 
+		logger:               &lg,
 		appCtx:               appCtx,
 		config:               cfg,
 		vendor:               vn,
@@ -98,7 +98,7 @@ func NewUpstream(
 	}
 
 	if pup.config.Type == common.UpstreamTypeEvm {
-		pup.evmStatePoller = evm.NewEvmStatePoller(appCtx, &lg, pup, mt)
+		pup.evmStatePoller = evm.NewEvmStatePoller(projectId, appCtx, &lg, pup, mt)
 	}
 
 	lg.Debug().Msgf("prepared upstream")
@@ -117,7 +117,7 @@ func (u *Upstream) Bootstrap(ctx context.Context) error {
 		if err != nil {
 			// The reason we're not returning error is to allow upstream to still be registered
 			// even if background block polling fails initially.
-			u.Logger.Error().Err(err).Msg("failed on initial bootstrap of evm state poller (will retry in background)")
+			u.logger.Error().Err(err).Msg("failed on initial bootstrap of evm state poller (will retry in background)")
 		}
 	}
 
@@ -128,57 +128,12 @@ func (u *Upstream) Config() *common.UpstreamConfig {
 	return u.config
 }
 
-func (u *Upstream) Vendor() common.Vendor {
-	return u.vendor
+func (u *Upstream) Logger() *zerolog.Logger {
+	return u.logger
 }
 
-func (u *Upstream) prepareRequest(nr *common.NormalizedRequest) error {
-	cfg := u.Config()
-	switch cfg.Type {
-	case common.UpstreamTypeEvm:
-		// TODO Move the logic to evm package as a pre-request hook?
-		if u.Client == nil {
-			return common.NewErrJsonRpcExceptionInternal(
-				0,
-				common.JsonRpcErrorServerSideException,
-				fmt.Sprintf("client not initialized for evm upstream: %s", cfg.Id),
-				nil,
-				nil,
-			)
-		}
-
-		if u.Client.GetType() == clients.ClientTypeHttpJsonRpc {
-			jsonRpcReq, err := nr.JsonRpcRequest()
-			if err != nil {
-				return common.NewErrJsonRpcExceptionInternal(
-					0,
-					common.JsonRpcErrorParseException,
-					"failed to unmarshal json-rpc request",
-					err,
-					nil,
-				)
-			}
-			evm.NormalizeHttpJsonRpc(nr, jsonRpcReq)
-		} else {
-			return common.NewErrJsonRpcExceptionInternal(
-				0,
-				common.JsonRpcErrorServerSideException,
-				fmt.Sprintf("unsupported evm client type: %s upstream: %s", u.Client.GetType(), cfg.Id),
-				nil,
-				nil,
-			)
-		}
-	default:
-		return common.NewErrJsonRpcExceptionInternal(
-			0,
-			common.JsonRpcErrorServerSideException,
-			fmt.Sprintf("unsupported architecture: %s for upstream: %s", cfg.Type, cfg.Id),
-			nil,
-			nil,
-		)
-	}
-
-	return nil
+func (u *Upstream) Vendor() common.Vendor {
+	return u.vendor
 }
 
 func (u *Upstream) NetworkId() string {
@@ -231,7 +186,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 		)
 	}
 
-	lg := u.Logger.With().Str("method", method).Str("networkId", u.networkId).Interface("id", req.ID()).Logger()
+	lg := u.logger.With().Str("method", method).Str("networkId", u.networkId).Interface("id", req.ID()).Logger()
 
 	if limitersBudget != nil {
 		lg.Trace().Str("budget", cfg.RateLimitBudget).Msgf("checking upstream-level rate limiters budget")
@@ -520,7 +475,55 @@ func (u *Upstream) IgnoreMethod(method string) {
 	u.supportedMethods.Store(method, false)
 }
 
-// Add this method to the Upstream struct
+func (u *Upstream) prepareRequest(nr *common.NormalizedRequest) error {
+	cfg := u.Config()
+	switch cfg.Type {
+	case common.UpstreamTypeEvm:
+		// TODO Move the logic to evm package as a pre-request hook?
+		if u.Client == nil {
+			return common.NewErrJsonRpcExceptionInternal(
+				0,
+				common.JsonRpcErrorServerSideException,
+				fmt.Sprintf("client not initialized for evm upstream: %s", cfg.Id),
+				nil,
+				nil,
+			)
+		}
+
+		if u.Client.GetType() == clients.ClientTypeHttpJsonRpc {
+			jsonRpcReq, err := nr.JsonRpcRequest()
+			if err != nil {
+				return common.NewErrJsonRpcExceptionInternal(
+					0,
+					common.JsonRpcErrorParseException,
+					"failed to unmarshal json-rpc request",
+					err,
+					nil,
+				)
+			}
+			evm.NormalizeHttpJsonRpc(nr, jsonRpcReq)
+		} else {
+			return common.NewErrJsonRpcExceptionInternal(
+				0,
+				common.JsonRpcErrorServerSideException,
+				fmt.Sprintf("unsupported evm client type: %s upstream: %s", u.Client.GetType(), cfg.Id),
+				nil,
+				nil,
+			)
+		}
+	default:
+		return common.NewErrJsonRpcExceptionInternal(
+			0,
+			common.JsonRpcErrorServerSideException,
+			fmt.Sprintf("unsupported architecture: %s for upstream: %s", cfg.Type, cfg.Id),
+			nil,
+			nil,
+		)
+	}
+
+	return nil
+}
+
 func (u *Upstream) initRateLimitAutoTuner() {
 	if u.config.RateLimitBudget != "" && u.config.RateLimitAutoTune != nil {
 		cfg := u.config.RateLimitAutoTune
@@ -529,11 +532,11 @@ func (u *Upstream) initRateLimitAutoTuner() {
 			if err == nil {
 				dur, err := time.ParseDuration(cfg.AdjustmentPeriod)
 				if err != nil {
-					u.Logger.Error().Err(err).Msgf("failed to parse rate limit auto-tune adjustment period: %s", cfg.AdjustmentPeriod)
+					u.logger.Error().Err(err).Msgf("failed to parse rate limit auto-tune adjustment period: %s", cfg.AdjustmentPeriod)
 					return
 				}
 				u.rateLimiterAutoTuner = NewRateLimitAutoTuner(
-					&u.Logger,
+					u.logger,
 					budget,
 					dur,
 					cfg.ErrorRateThreshold,
@@ -606,7 +609,7 @@ func (u *Upstream) shouldHandleMethod(method string) (v bool, err error) {
 	}
 
 	u.supportedMethods.Store(method, v)
-	u.Logger.Debug().Bool("allowed", v).Str("method", method).Msg("method support result")
+	u.logger.Debug().Bool("allowed", v).Str("method", method).Msg("method support result")
 
 	return v, nil
 }
@@ -668,7 +671,7 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 		return err, true
 	}
 	if !allowed {
-		u.Logger.Debug().Str("method", method).Msg("method not allowed or ignored by upstread")
+		u.logger.Debug().Str("method", method).Msg("method not allowed or ignored by upstread")
 		return common.NewErrUpstreamMethodIgnored(method, u.config.Id), true
 	}
 

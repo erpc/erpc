@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/health"
 )
 
 func BuildGetBlockByNumberRequest(blockNumberOrTag interface{}, includeTransactions bool) (*common.JsonRpcRequest, error) {
@@ -35,26 +36,27 @@ func BuildGetBlockByNumberRequest(blockNumberOrTag interface{}, includeTransacti
 	return common.NewJsonRpcRequest("eth_getBlockByNumber", []interface{}{bkt, includeTransactions}), nil
 }
 
-// postForward_eth_getBlockByNumber is a customized logic for the eth_getBlockByNumber method where it checks with upstream EvmStatePoller
+// networkPostForward_eth_getBlockByNumber is a customized logic for the eth_getBlockByNumber method where it checks with upstream EvmStatePoller
 // and returns the highest value (including making the call)
 // - Should this actually prefer calling highest blockhead upstream?
-func postForward_eth_getBlockByNumber(ctx context.Context, network common.Network, nq *common.NormalizedRequest, nr *common.NormalizedResponse) (*common.NormalizedResponse, error) {
+func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common.Network, nq *common.NormalizedRequest, nr *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
+	if re != nil {
+		return nr, re
+	}
+
 	rqj, err := nq.JsonRpcRequest()
 	if err != nil {
 		return nil, err
 	}
-
 	if len(rqj.Params) < 1 {
-		return nil, nil
+		return nr, re
 	}
-
 	bnp, ok := rqj.Params[0].(string)
 	if !ok {
-		return nil, nil
+		return nr, re
 	}
-
 	if bnp != "latest" && bnp != "finalized" {
-		return nil, nil
+		return nr, re
 	}
 
 	switch bnp {
@@ -65,6 +67,11 @@ func postForward_eth_getBlockByNumber(ctx context.Context, network common.Networ
 			return nil, err
 		}
 		if highestBlockNumber > respBlockNumber {
+			health.MetricUpstreamStaleLatestBlock.WithLabelValues(
+				network.ProjectId(),
+				network.Id(),
+				nr.UpstreamId(),
+			).Inc()
 			var itx bool
 			if len(rqj.Params) > 1 {
 				itx, _ = rqj.Params[1].(bool)
@@ -73,13 +80,16 @@ func postForward_eth_getBlockByNumber(ctx context.Context, network common.Networ
 			if err != nil {
 				return nil, err
 			}
-			request.SetID(nq.ID())
+			err = request.SetID(nq.ID())
+			if err != nil {
+				return nil, err
+			}
 			nq := common.NewNormalizedRequestFromJsonRpcRequest(request)
 			nq.SetDirectives(nq.Directives())
 			nq.SetNetwork(network)
 			return network.Forward(ctx, nq)
 		} else {
-			return nr, nil
+			return nr, re
 		}
 	case "finalized":
 		highestBlockNumber := network.EvmHighestFinalizedBlockNumber()
@@ -88,19 +98,27 @@ func postForward_eth_getBlockByNumber(ctx context.Context, network common.Networ
 			return nil, err
 		}
 		if highestBlockNumber > respBlockNumber {
+			health.MetricUpstreamStaleFinalizedBlock.WithLabelValues(
+				network.ProjectId(),
+				network.Id(),
+				nr.UpstreamId(),
+			).Inc()
 			request, err := BuildGetBlockByNumberRequest(highestBlockNumber, true)
 			if err != nil {
 				return nil, err
 			}
-			request.SetID(nq.ID())
+			err = request.SetID(nq.ID())
+			if err != nil {
+				return nil, err
+			}
 			nq := common.NewNormalizedRequestFromJsonRpcRequest(request)
 			nq.SetDirectives(nq.Directives())
 			nq.SetNetwork(network)
 			return network.Forward(ctx, nq)
 		} else {
-			return nr, nil
+			return nr, re
 		}
 	default:
-		return nr, nil
+		return nr, re
 	}
 }

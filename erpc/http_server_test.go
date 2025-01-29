@@ -4086,79 +4086,424 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		assert.Equalf(t, upsCfg.Failsafe.Retry.MaxAttempts, 123, "Retry policy should be set")
 		assert.Nilf(t, upsCfg.Failsafe.Hedge, "Hedge policy should not be set")
 	})
+}
 
-	t.Run("HappyPath - Override match with wildcard pattern", func(t *testing.T) {
-		// Scenario:
-		//  - ProviderConfig.Overrides has key = "evm:*" that matches "evm:1",
-		//  - ensures the override is applied,
-		//  - expecting the returned config to be a shallow copy of the override,
-		//    with the correct ID from UpstreamIdTemplate, etc.
+func TestHttpServer_EvmGetLogs(t *testing.T) {
+	t.Run("SuccessfulSplitIfOneOfSubRequestsNeedsRetries", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("5s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: "evm",
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+								Integrity: &common.EvmIntegrityConfig{
+									EnforceGetLogsBlockRange: util.BoolPtr(true),
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Endpoint: "http://rpc1.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:              1,
+								GetLogsMaxBlockRange: 0x100,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Retry: &common.RetryPolicyConfig{
+									MaxAttempts: 2,
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		// Create the full request that will be split into three parts
+		fullRangeRequest := `{
+			"jsonrpc": "2.0",
+			"method": "eth_getLogs",
+			"params": [{
+				"fromBlock": "0x11118000",
+				"toBlock": "0x11118300",
+				"address": "0x0000000000000000000000000000000000000000",
+				"topics": ["0x1234567890123456789012345678901234567890123456789012345678901234"]
+			}]
+		}`
+
+		// Mock successful response for first range
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs") &&
+					strings.Contains(body, `"fromBlock":"0x11118000"`) &&
+					strings.Contains(body, `"toBlock":"0x111180ff"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": []map[string]interface{}{
+					{"logIndex": "0x1", "blockNumber": "0x11118050", "data": "0x1"},
+				},
+			})
+
+		// Mock failing response for second range (first attempt)
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs") &&
+					strings.Contains(body, `"fromBlock":"0x11118100"`) &&
+					strings.Contains(body, `"toBlock":"0x111181ff"`)
+			}).
+			Reply(503).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      2,
+				"error": map[string]interface{}{
+					"code":    -32000,
+					"message": "Server error",
+				},
+			})
+
+		// Mock successful response for second range (second attempt)
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs") &&
+					strings.Contains(body, `"fromBlock":"0x11118100"`) &&
+					strings.Contains(body, `"toBlock":"0x111181ff"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      2,
+				"result": []map[string]interface{}{
+					{"logIndex": "0x2", "blockNumber": "0x11118150", "data": "0x2"},
+				},
+			})
+
+		// Mock successful response for third range
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs") &&
+					strings.Contains(body, `"fromBlock":"0x11118200"`) &&
+					strings.Contains(body, `"toBlock":"0x111182ff"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      3,
+				"result": []map[string]interface{}{
+					{"logIndex": "0x3", "blockNumber": "0x11118250", "data": "0x3"},
+				},
+			})
+
+		// Mock successful response for last range
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs") &&
+					strings.Contains(body, `"fromBlock":"0x11118300"`) &&
+					strings.Contains(body, `"toBlock":"0x11118300"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      3,
+				"result": []map[string]interface{}{
+					{"logIndex": "0x4", "blockNumber": "0x11118300", "data": "0x4"},
+				},
+			})
+
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		statusCode, body := sendRequest(fullRangeRequest, nil, nil)
+		assert.Equal(t, http.StatusOK, statusCode)
+
+		// Parse and verify the response contains logs from all three ranges
+		var respObject map[string]interface{}
+		err := sonic.UnmarshalString(body, &respObject)
+		assert.NoError(t, err)
+
+		logs := respObject["result"].([]interface{})
+		assert.Equal(t, 4, len(logs), "Expected exactly 4 logs (one from each range)")
+
+		// Verify log block numbers and data
+		blockNumbers := make([]string, len(logs))
+		data := make([]string, len(logs))
+		for i, l := range logs {
+			log := l.(map[string]interface{})
+			blockNumbers[i] = log["blockNumber"].(string)
+			data[i] = log["data"].(string)
+		}
+
+		// Verify we got logs from all three ranges
+		assert.Contains(t, blockNumbers, "0x11118050", "Missing log from first range")
+		assert.Contains(t, blockNumbers, "0x11118150", "Missing log from retried middle range")
+		assert.Contains(t, blockNumbers, "0x11118250", "Missing log from third range")
+
+		// Verify data values
+		assert.Contains(t, data, "0x1", "Missing data from first range")
+		assert.Contains(t, data, "0x2", "Missing data from retried middle range")
+		assert.Contains(t, data, "0x3", "Missing data from third range")
 	})
 
-	t.Run("UnhappyPath - Vendor PrepareConfig fails", func(t *testing.T) {
-		// Scenario:
-		//  - The vendor's PrepareConfig method returns an error (e.g. missing apiKey),
-		//  - expecting that error to propagate out of GenerateUpstreamConfig.
+	t.Run("FailSplitIfOneOfSubRequestsFailsServerSide", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("5s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: "evm",
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+								Integrity: &common.EvmIntegrityConfig{
+									EnforceGetLogsBlockRange: util.BoolPtr(true),
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Endpoint: "http://rpc1.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:              1,
+								GetLogsMaxBlockRange: 0x100,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Retry: &common.RetryPolicyConfig{
+									MaxAttempts: 2,
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		// Create the request that will be split into multiple parts
+		fullRangeRequest := `{
+			"jsonrpc": "2.0",
+			"method": "eth_getLogs",
+			"params": [{
+				"fromBlock": "0x11118000",
+				"toBlock": "0x11118300",
+				"address": "0x0000000000000000000000000000000000000000",
+				"topics": ["0x1234567890123456789012345678901234567890123456789012345678901234"]
+			}]
+		}`
+
+		// Mock successful response for first range
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs") &&
+					strings.Contains(body, `"fromBlock":"0x11118000"`) &&
+					strings.Contains(body, `"toBlock":"0x111180ff"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": []map[string]interface{}{
+					{"logIndex": "0x1", "blockNumber": "0x11118050", "data": "0x1"},
+				},
+			})
+
+		// Mock failing responses for second range (both attempts)
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Times(2). // Will be called twice due to retry
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs") &&
+					strings.Contains(body, `"fromBlock":"0x11118100"`) &&
+					strings.Contains(body, `"toBlock":"0x111181ff"`)
+			}).
+			Reply(503).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      2,
+				"error": map[string]interface{}{
+					"code":    -32000,
+					"message": "Server error",
+				},
+			})
+
+		// We don't need to mock the third range because the request should fail after
+		// the second range fails all retry attempts
+
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		// Make the request and verify it fails
+		statusCode, body := sendRequest(fullRangeRequest, nil, nil)
+
+		// Verify response indicates failure
+		assert.Equal(t, http.StatusServiceUnavailable, statusCode)
+
+		// Parse the error response
+		var respObject map[string]interface{}
+		err := sonic.UnmarshalString(body, &respObject)
+		assert.NoError(t, err)
+
+		// Verify error structure
+		assert.Contains(t, respObject, "error")
+		errorObj := respObject["error"].(map[string]interface{})
+		assert.Equal(t, float64(-32603), errorObj["code"].(float64))
+		assert.Contains(t, errorObj["message"].(string), "server error")
 	})
 
-	t.Run("UnhappyPath - 'evm:' prefix but chain ID parse fails in buildBaseUpstreamConfig", func(t *testing.T) {
-		// Scenario:
-		//  - networkId = "evm:not-a-number",
-		//  - expecting an error from strconv.ParseInt,
-		//  - ensuring GenerateUpstreamConfig returns the parse error.
-	})
+	t.Run("FailSplitIfOneOfSubRequestsFailsMissingData", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
-	t.Run("HappyPath - No override found, creates new base config with defaults", func(t *testing.T) {
-		// Scenario:
-		//  - ProviderConfig.Overrides is empty or has no wildcard match,
-		//  - upsteamDefaults is provided,
-		//  - ensures new UpstreamConfig is created and defaults are set.
-	})
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("5s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: "evm",
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+								Integrity: &common.EvmIntegrityConfig{
+									EnforceGetLogsBlockRange: util.BoolPtr(true),
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Endpoint: "http://rpc1.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:              1,
+								GetLogsMaxBlockRange: 0x100,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Retry: &common.RetryPolicyConfig{
+									MaxAttempts: 2,
+								},
+							},
+						},
+					},
+				},
+			},
+		}
 
-	t.Run("Override Found - wildcards partially match the networkId", func(t *testing.T) {
-		// Scenario:
-		//  - ProviderConfig.Overrides has key = "evm:1*",
-		//  - networkId = "evm:1234",
-		//  - ensures the override is used if that wildcard logic returns a match.
-	})
+		// Create the request that will be split into multiple parts
+		fullRangeRequest := `{
+			"jsonrpc": "2.0",
+			"method": "eth_getLogs",
+			"params": [{
+				"fromBlock": "0x11118000",
+				"toBlock": "0x11118300",
+				"address": "0x0000000000000000000000000000000000000000",
+				"topics": ["0x1234567890123456789012345678901234567890123456789012345678901234"]
+			}]
+		}`
 
-	t.Run("UnhappyPath - Wildcard matching function returns internal error", func(t *testing.T) {
-		// Scenario:
-		//  - Suppose the wildcard matching function (common.WildcardMatch) can return an error,
-		//  - expecting the error to be logged or handled gracefully.
-	})
+		// Mock successful response for first range
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs") &&
+					strings.Contains(body, `"fromBlock":"0x11118000"`) &&
+					strings.Contains(body, `"toBlock":"0x111180ff"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": []map[string]interface{}{
+					{"logIndex": "0x1", "blockNumber": "0x11118050", "data": "0x1"},
+				},
+			})
 
-	t.Run("Check UpstreamIdTemplate placeholders are replaced properly", func(t *testing.T) {
-		// Scenario:
-		//  - UpstreamIdTemplate = "<VENDOR>-<PROVIDER>-<NETWORK>-<EVM_CHAIN_ID>",
-		//  - networkId = "evm:56",
-		//  - expects the final UpstreamConfig.Id to be "alchemy-alchemy-prod-evm:56-56" (example).
-	})
+		// Mock failing responses for second range (both attempts)
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Times(2). // Will be called twice due to retry
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs") &&
+					strings.Contains(body, `"fromBlock":"0x11118100"`) &&
+					strings.Contains(body, `"toBlock":"0x111181ff"`)
+			}).
+			Reply(503).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      2,
+				"error": map[string]interface{}{
+					"code":    -32602,
+					"message": "missing trie node",
+				},
+			})
 
-	t.Run("HappyPath - All placeholders replaced in EVM scenario", func(t *testing.T) {
-		// Scenario:
-		//  - template = "<VENDOR>_<PROVIDER>_<NETWORK>_<EVM_CHAIN_ID>",
-		//  - vendorName = "alchemy", providerId = "alchemy-prod", networkId = "evm:1",
-		//  - expecting "alchemy_alchemy-prod_evm:1_1".
-	})
+		// We don't need to mock the third range because the request should fail after
+		// the second range fails all retry attempts
 
-	t.Run("HappyPath - Non-EVM network, <EVM_CHAIN_ID> replaced with 'N/A'", func(t *testing.T) {
-		// Scenario:
-		//  - template = "<VENDOR>_<PROVIDER>_<NETWORK>_<EVM_CHAIN_ID>",
-		//  - networkId does not start with "evm:",
-		//  - expecting the <EVM_CHAIN_ID> placeholder to become "N/A".
-	})
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
 
-	t.Run("Non-Existent Placeholders - template has some random placeholders", func(t *testing.T) {
-		// Scenario:
-		//  - template = "<VENDOR>_<PROVIDER>_<NETWORK>_<SOME_RANDOM>",
-		//  - <SOME_RANDOM> won't be replaced. Implementation might leave it as is or skip.
-	})
+		// Make the request and verify it fails
+		statusCode, body := sendRequest(fullRangeRequest, nil, nil)
 
-	t.Run("EmptyTemplate - returns empty string", func(t *testing.T) {
-		// Scenario:
-		//  - template = "",
-		//  - expecting final result is an empty string regardless of placeholders.
+		// Verify response indicates failure
+		assert.Equal(t, http.StatusServiceUnavailable, statusCode)
+
+		// Parse the error response
+		var respObject map[string]interface{}
+		err := sonic.UnmarshalString(body, &respObject)
+		assert.NoError(t, err)
+
+		// Verify error structure
+		assert.Contains(t, respObject, "error")
+		errorObj := respObject["error"].(map[string]interface{})
+		assert.Equal(t, float64(-32603), errorObj["code"].(float64))
+		assert.Contains(t, errorObj["message"].(string), "missing data")
 	})
 }
 

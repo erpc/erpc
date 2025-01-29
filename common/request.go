@@ -41,6 +41,16 @@ type RequestDirectives struct {
 	ByPassMethodExclusion bool `json:"byPassMethodExclusion"`
 }
 
+func (d *RequestDirectives) Clone() *RequestDirectives {
+	return &RequestDirectives{
+		RetryEmpty:            d.RetryEmpty,
+		RetryPending:          d.RetryPending,
+		SkipCacheRead:         d.SkipCacheRead,
+		UseUpstream:           d.UseUpstream,
+		ByPassMethodExclusion: d.ByPassMethodExclusion,
+	}
+}
+
 type NormalizedRequest struct {
 	sync.RWMutex
 
