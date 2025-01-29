@@ -29,7 +29,8 @@ type GenericHttpJsonRpcClient struct {
 	Url     *url.URL
 	headers map[string]string
 
-	proxyPool string
+	proxyPool         string
+	proxyPoolRegistry *ProxyPoolRegistry
 
 	projectId  string
 	upstreamId string
@@ -62,13 +63,15 @@ func NewGenericHttpJsonRpcClient(
 	upstreamId string,
 	parsedUrl *url.URL,
 	jsonRpcCfg *common.JsonRpcUpstreamConfig,
+	proxyPoolRegistry *ProxyPoolRegistry,
 ) (HttpJsonRpcClient, error) {
 	client := &GenericHttpJsonRpcClient{
-		Url:        parsedUrl,
-		appCtx:     appCtx,
-		logger:     logger,
-		projectId:  projectId,
-		upstreamId: upstreamId,
+		Url:               parsedUrl,
+		appCtx:            appCtx,
+		logger:            logger,
+		projectId:         projectId,
+		upstreamId:        upstreamId,
+		proxyPoolRegistry: proxyPoolRegistry,
 	}
 
 	// Default fallback transport (no proxy)
@@ -192,15 +195,8 @@ func (c *GenericHttpJsonRpcClient) shutdown() {
 }
 
 func (c *GenericHttpJsonRpcClient) getHttpClient() *http.Client {
-	proxyPoolRegistry, err := NewProxyPoolRegistry(common.GetConfig().ProxyPools, c.logger)
-	if err != nil {
-		c.logger.Warn().Str("pool", c.proxyPool).
-			Err(err).Msg("could not create proxy pool registry; using fallback httpClient")
-		return c.httpClient
-	}
-
-	if c.proxyPool != "" && proxyPoolRegistry != nil {
-		pool, err := proxyPoolRegistry.GetPool(c.proxyPool)
+	if c.proxyPool != "" && c.proxyPoolRegistry != nil {
+		pool, err := c.proxyPoolRegistry.GetPool(c.proxyPool)
 		if err != nil {
 			// If the pool does not exist, fallback
 			c.logger.Warn().Str("pool", c.proxyPool).

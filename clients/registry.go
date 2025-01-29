@@ -1,3 +1,5 @@
+// clients/client_registry.go
+
 package clients
 
 import (
@@ -31,7 +33,10 @@ type ClientRegistry struct {
 }
 
 func NewClientRegistry(logger *zerolog.Logger, projectId string) *ClientRegistry {
-	return &ClientRegistry{logger: logger, projectId: projectId}
+	return &ClientRegistry{
+		logger:    logger,
+		projectId: projectId,
+	}
 }
 
 func (manager *ClientRegistry) GetOrCreateClient(appCtx context.Context, ups common.Upstream) (ClientInterface, error) {
@@ -48,7 +53,17 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 	var clientErr error
 
 	cfg := ups.Config()
+
 	parsedUrl, err := url.Parse(cfg.Endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse URL for upstream: %v", cfg.Id)
+	}
+
+	proxyPoolRegistry, err := NewProxyPoolRegistry(common.GetConfig().ProxyPools, manager.logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create proxy pool registry: %v. will use fallback http client", err)
+	}
+
 	if err != nil {
 		clientErr = fmt.Errorf("failed to parse URL for upstream: %v", cfg.Id)
 	} else {
@@ -64,6 +79,7 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 						cfg.Id,
 						parsedUrl,
 						cfg.JsonRpc,
+						proxyPoolRegistry,
 					)
 					if err != nil {
 						clientErr = fmt.Errorf("failed to create HTTP client for upstream: %v", cfg.Id)

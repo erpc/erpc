@@ -212,7 +212,12 @@ func (v *EnvioVendor) generateUrl(chainId int64, rootDomain string) (*url.URL, e
 }
 
 func (v *EnvioVendor) createClient(ctx context.Context, logger *zerolog.Logger, parsedURL *url.URL) (clients.HttpJsonRpcClient, error) {
-	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", "n/a", parsedURL, nil)
+	proxyPoolRegistry, err := clients.NewProxyPoolRegistry(common.GetConfig().ProxyPools, logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create proxy pool registry: %v. will use fallback http client", err)
+	}
+
+	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", "n/a", parsedURL, nil, proxyPoolRegistry)
 	if err != nil {
 		return nil, err
 	}
