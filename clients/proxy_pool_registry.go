@@ -1,4 +1,4 @@
-package upstream
+package clients
 
 import (
 	"fmt"
@@ -12,14 +12,14 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// ProxyPool contains a set of http.Clients (each configured with a different proxy).
+// contains a set of http.Clients (each configured with a different proxy).
 type ProxyPool struct {
 	ID      string
 	clients []*http.Client
 	counter uint64 // Add atomic counter for round-robin
 }
 
-// GetClient returns a round-robin client from the pool.
+// returns a round-robin client from the pool.
 func (p *ProxyPool) GetClient() *http.Client {
 	if len(p.clients) == 0 {
 		// Fallback: if for some reason the pool has zero clients
@@ -30,29 +30,29 @@ func (p *ProxyPool) GetClient() *http.Client {
 	return p.clients[idx]
 }
 
-// ProxyPoolRegistry holds all pools
+// holds all pools
 type ProxyPoolRegistry struct {
 	logger *zerolog.Logger
-	cfg    *common.ProxyPoolsConfig
+	cfg    []common.ProxyPoolConfig
 	pools  sync.Map
 }
 
-// NewProxyPoolRegistry creates a new registry and initializes each pool
+// creates a new registry and initializes each pool
 func NewProxyPoolRegistry(
-	cfg *common.ProxyPoolsConfig,
+	cfg []common.ProxyPoolConfig,
 	logger *zerolog.Logger,
 ) (*ProxyPoolRegistry, error) {
 	r := &ProxyPoolRegistry{
 		logger: logger,
 		cfg:    cfg,
 	}
-	if cfg == nil || len(cfg.Pools) == 0 {
+	if len(cfg) == 0 {
 		r.logger.Warn().Msg("no proxy pools defined; all requests will go direct")
 		return r, nil
 	}
 
-	// Bootstrap each proxy pool
-	for _, poolCfg := range cfg.Pools {
+	// Initialize each proxy pool
+	for _, poolCfg := range cfg {
 		pool, err := createProxyPool(poolCfg)
 		if err != nil {
 			return nil, err
@@ -67,7 +67,7 @@ func NewProxyPoolRegistry(
 	return r, nil
 }
 
-// createProxyPool creates a ProxyPool from a given config, building an http.Client for each URL
+// creates a ProxyPool from a given config, building an http.Client for each URL
 func createProxyPool(poolCfg common.ProxyPoolConfig) (*ProxyPool, error) {
 	if len(poolCfg.Urls) == 0 {
 		return &ProxyPool{ID: poolCfg.ID}, nil
@@ -100,7 +100,7 @@ func createProxyPool(poolCfg common.ProxyPoolConfig) (*ProxyPool, error) {
 	}, nil
 }
 
-// GetPool returns the ProxyPool for the given pool ID, or an error if not found.
+// returns the ProxyPool for the given pool ID, or an error if not found.
 func (r *ProxyPoolRegistry) GetPool(poolID string) (*ProxyPool, error) {
 	if poolID == "" {
 		// If no proxy is configured, return nil to indicate direct requests.

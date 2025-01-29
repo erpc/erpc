@@ -33,6 +33,7 @@ type Config struct {
 	Projects     []*ProjectConfig   `yaml:"projects" json:"projects"`
 	RateLimiters *RateLimiterConfig `yaml:"rateLimiters" json:"rateLimiters"`
 	Metrics      *MetricsConfig     `yaml:"metrics" json:"metrics"`
+	ProxyPools   []ProxyPoolConfig  `yaml:"proxyPools" json:"proxyPools"`
 }
 
 func (c *Config) HasRateLimiterBudget(id string) bool {
@@ -443,10 +444,6 @@ type RateLimitRuleConfig struct {
 type ProxyPoolConfig struct {
 	ID   string   `yaml:"id" json:"id"`
 	Urls []string `yaml:"urls" json:"urls"`
-}
-
-type ProxyPoolsConfig struct {
-	Pools []ProxyPoolConfig `yaml:"proxyPools" json:"proxyPools"`
 }
 
 type HealthCheckConfig struct {

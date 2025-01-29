@@ -26,10 +26,10 @@ type HttpJsonRpcClient interface {
 }
 
 type GenericHttpJsonRpcClient struct {
-	Url *url.URL
+	Url     *url.URL
+	headers map[string]string
 
-	headers  map[string]string
-	proxyUrl string
+	proxyPool string
 
 	projectId  string
 	upstreamId string
@@ -71,6 +71,22 @@ func NewGenericHttpJsonRpcClient(
 		upstreamId: upstreamId,
 	}
 
+	// Default fallback transport (no proxy)
+	transport := &http.Transport{
+		MaxIdleConns:        1024,
+		MaxIdleConnsPerHost: 256,
+		IdleConnTimeout:     90 * time.Second,
+	}
+
+	if util.IsTest() {
+		client.httpClient = &http.Client{}
+	} else {
+		client.httpClient = &http.Client{
+			Timeout:   60 * time.Second,
+			Transport: transport,
+		}
+	}
+
 	if jsonRpcCfg != nil {
 		if jsonRpcCfg.SupportsBatch != nil && *jsonRpcCfg.SupportsBatch {
 			client.supportsBatch = true
@@ -102,31 +118,7 @@ func NewGenericHttpJsonRpcClient(
 		}
 
 		if jsonRpcCfg.ProxyPool != "" {
-			client.proxyUrl = jsonRpcCfg.ProxyPool
-		}
-
-		transport := &http.Transport{
-			MaxIdleConns:        1024,
-			MaxIdleConnsPerHost: 256,
-			IdleConnTimeout:     90 * time.Second,
-		}
-
-		// If ProxyUrl is set, parse and attach it to the transport
-		if jsonRpcCfg.ProxyPool != "" {
-			proxyURL, err := url.Parse(jsonRpcCfg.ProxyPool)
-			if err != nil {
-				return nil, fmt.Errorf("invalid proxy URL: %w", err)
-			}
-			transport.Proxy = http.ProxyURL(proxyURL)
-		}
-
-		if util.IsTest() {
-			client.httpClient = &http.Client{}
-		} else {
-			client.httpClient = &http.Client{
-				Timeout:   60 * time.Second,
-				Transport: transport,
-			}
+			client.proxyPool = jsonRpcCfg.ProxyPool
 		}
 	}
 
@@ -197,6 +189,28 @@ func (c *GenericHttpJsonRpcClient) shutdown() {
 		c.batchTimer.Stop()
 	}
 	c.processBatch(true)
+}
+
+func (c *GenericHttpJsonRpcClient) getHttpClient() *http.Client {
+	proxyPoolRegistry, err := NewProxyPoolRegistry(common.GetConfig().ProxyPools, c.logger)
+	if err != nil {
+		c.logger.Warn().Str("pool", c.proxyPool).
+			Err(err).Msg("could not create proxy pool registry; using fallback httpClient")
+		return c.httpClient
+	}
+
+	if c.proxyPool != "" && proxyPoolRegistry != nil {
+		pool, err := proxyPoolRegistry.GetPool(c.proxyPool)
+		if err != nil {
+			// If the pool does not exist, fallback
+			c.logger.Warn().Str("pool", c.proxyPool).
+				Err(err).Msg("could not find proxy pool in registry; using fallback httpClient")
+			return c.httpClient
+		}
+		return pool.GetClient()
+	}
+
+	return c.httpClient
 }
 
 func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchRequest) {
@@ -376,8 +390,9 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 
 	c.logger.Debug().Str("host", c.Url.Host).RawJSON("request", requestBody).Interface("headers", httpReq.Header).Msgf("sending json rpc POST request (batch)")
 
-	// Make the HTTP request
-	resp, err := c.httpClient.Do(httpReq)
+	// pick the client from the proxy pool registry (if configured) or fallback
+	actualClient := c.getHttpClient()
+	resp, err := actualClient.Do(httpReq)
 	if err != nil {
 		cause := context.Cause(batchCtx)
 		if cause == nil {
@@ -602,7 +617,9 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 	}
 	c.logger.Debug().Str("host", c.Url.Host).RawJSON("request", requestBody).Interface("headers", httpReq.Header).Msg("sending json rpc POST request (single)")
 
-	resp, err := c.httpClient.Do(httpReq)
+	// pick the client from the proxy pool registry (if configured) or fallback
+	actualClient := c.getHttpClient()
+	resp, err := actualClient.Do(httpReq)
 	if err != nil {
 		cause := context.Cause(ctx)
 		if cause == nil {
