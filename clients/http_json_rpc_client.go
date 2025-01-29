@@ -196,14 +196,9 @@ func (c *GenericHttpJsonRpcClient) shutdown() {
 
 func (c *GenericHttpJsonRpcClient) getHttpClient() *http.Client {
 	if c.proxyPool != "" && c.proxyPoolRegistry != nil {
-		pool, err := c.proxyPoolRegistry.GetPool(c.proxyPool)
-		if err != nil {
-			// If the pool does not exist, fallback
-			c.logger.Warn().Str("pool", c.proxyPool).
-				Err(err).Msg("could not find proxy pool in registry; using fallback httpClient")
-			return c.httpClient
+		if pool, _ := c.proxyPoolRegistry.GetPool(c.proxyPool); pool != nil {
+			return pool.GetClient()
 		}
-		return pool.GetClient()
 	}
 
 	return c.httpClient
