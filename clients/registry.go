@@ -57,9 +57,10 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 		return nil, fmt.Errorf("failed to parse URL for upstream: %v", cfg.Id)
 	}
 
-	var proxyPoolRegistry *ProxyPoolRegistry
+	var fetchedProxyPool *ProxyPool
 	if cfg.JsonRpc != nil && cfg.JsonRpc.ProxyPool != "" {
-		proxyPoolRegistry, _ = NewProxyPoolRegistry(common.GetConfig().ProxyPools, manager.logger)
+		proxyPoolRegistry, _ := NewProxyPoolRegistry(common.GetConfig().ProxyPools, manager.logger)
+		fetchedProxyPool, _ = proxyPoolRegistry.GetPool(cfg.JsonRpc.ProxyPool)
 	}
 
 	if err != nil {
@@ -77,7 +78,7 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 						cfg.Id,
 						parsedUrl,
 						cfg.JsonRpc,
-						proxyPoolRegistry,
+						fetchedProxyPool,
 					)
 					if err != nil {
 						clientErr = fmt.Errorf("failed to create HTTP client for upstream: %v", cfg.Id)

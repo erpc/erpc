@@ -215,9 +215,17 @@ func (v *EnvioVendor) generateUrl(chainId int64, rootDomain string) (*url.URL, e
 }
 
 func (v *EnvioVendor) createClient(ctx context.Context, logger *zerolog.Logger, parsedURL *url.URL) (clients.HttpJsonRpcClient, error) {
-	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", "n/a", parsedURL, nil, v.proxyPoolRegistry)
-	if err != nil {
-		return nil, err
+	if v.proxyPoolRegistry != nil {
+		proxyPool, err := v.proxyPoolRegistry.GetPool(parsedURL.Host)
+		if err != nil {
+			return nil, err
+		}
+		client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", "n/a", parsedURL, nil, proxyPool)
+		if err != nil {
+			return nil, err
+		}
+		return client, nil
 	}
-	return client, nil
+
+	return clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", "n/a", parsedURL, nil, nil)
 }

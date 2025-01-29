@@ -29,8 +29,8 @@ type GenericHttpJsonRpcClient struct {
 	Url     *url.URL
 	headers map[string]string
 
-	proxyPool         string
-	proxyPoolRegistry *ProxyPoolRegistry
+	proxyPool        string
+	fetchedProxyPool *ProxyPool
 
 	projectId  string
 	upstreamId string
@@ -63,15 +63,15 @@ func NewGenericHttpJsonRpcClient(
 	upstreamId string,
 	parsedUrl *url.URL,
 	jsonRpcCfg *common.JsonRpcUpstreamConfig,
-	proxyPoolRegistry *ProxyPoolRegistry,
+	fetchedProxyPool *ProxyPool,
 ) (HttpJsonRpcClient, error) {
 	client := &GenericHttpJsonRpcClient{
-		Url:               parsedUrl,
-		appCtx:            appCtx,
-		logger:            logger,
-		projectId:         projectId,
-		upstreamId:        upstreamId,
-		proxyPoolRegistry: proxyPoolRegistry,
+		Url:              parsedUrl,
+		appCtx:           appCtx,
+		logger:           logger,
+		projectId:        projectId,
+		upstreamId:       upstreamId,
+		fetchedProxyPool: fetchedProxyPool,
 	}
 
 	// Default fallback transport (no proxy)
@@ -122,6 +122,10 @@ func NewGenericHttpJsonRpcClient(
 
 		if jsonRpcCfg.ProxyPool != "" {
 			client.proxyPool = jsonRpcCfg.ProxyPool
+		}
+
+		if fetchedProxyPool != nil {
+			client.fetchedProxyPool = fetchedProxyPool
 		}
 	}
 
@@ -195,10 +199,8 @@ func (c *GenericHttpJsonRpcClient) shutdown() {
 }
 
 func (c *GenericHttpJsonRpcClient) getHttpClient() *http.Client {
-	if c.proxyPool != "" && c.proxyPoolRegistry != nil {
-		if pool, _ := c.proxyPoolRegistry.GetPool(c.proxyPool); pool != nil {
-			return pool.GetClient()
-		}
+	if c.proxyPool != "" && c.fetchedProxyPool != nil {
+		return c.fetchedProxyPool.GetClient()
 	}
 
 	return c.httpClient
