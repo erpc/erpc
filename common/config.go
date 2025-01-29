@@ -379,7 +379,7 @@ type JsonRpcUpstreamConfig struct {
 	BatchMaxWait  string            `yaml:"batchMaxWait,omitempty" json:"batchMaxWait"`
 	EnableGzip    *bool             `yaml:"enableGzip,omitempty" json:"enableGzip"`
 	Headers       map[string]string `yaml:"headers,omitempty" json:"headers"`
-	ProxyUrl      string            `yaml:"proxyUrl,omitempty" json:"proxyUrl"`
+	ProxyPool     string            `yaml:"proxyPool,omitempty" json:"proxyPool"`
 }
 
 type EvmUpstreamConfig struct {
@@ -438,6 +438,11 @@ type RateLimitRuleConfig struct {
 	MaxCount uint   `yaml:"maxCount" json:"maxCount"`
 	Period   string `yaml:"period" json:"period" tstype:"Duration"`
 	WaitTime string `yaml:"waitTime" json:"waitTime" tstype:"Duration"`
+}
+
+type ProxyPoolsConfig struct {
+	ID   string   `yaml:"id" json:"id"`
+	URLs []string `yaml:"urls" json:"urls"`
 }
 
 type HealthCheckConfig struct {
