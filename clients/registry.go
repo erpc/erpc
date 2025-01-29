@@ -1,5 +1,3 @@
-// clients/client_registry.go
-
 package clients
 
 import (

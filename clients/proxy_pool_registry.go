@@ -33,18 +33,18 @@ func (p *ProxyPool) GetClient() *http.Client {
 // holds all pools
 type ProxyPoolRegistry struct {
 	logger *zerolog.Logger
-	cfg    []common.ProxyPoolConfig
-	pools  sync.Map
+	mu     sync.RWMutex
+	pools  map[string]*ProxyPool
 }
 
-// creates a new registry and initializes each pool
+// NewProxyPoolRegistry creates a new registry and initializes each pool.
 func NewProxyPoolRegistry(
 	cfg []common.ProxyPoolConfig,
 	logger *zerolog.Logger,
 ) (*ProxyPoolRegistry, error) {
 	r := &ProxyPoolRegistry{
 		logger: logger,
-		cfg:    cfg,
+		pools:  make(map[string]*ProxyPool),
 	}
 	if len(cfg) == 0 {
 		r.logger.Warn().Msg("no proxy pools defined; all requests will go direct")
@@ -57,7 +57,9 @@ func NewProxyPoolRegistry(
 		if err != nil {
 			return nil, err
 		}
-		r.pools.Store(poolCfg.ID, pool)
+		r.mu.Lock()
+		r.pools[poolCfg.ID] = pool
+		r.mu.Unlock()
 		logger.Debug().
 			Str("poolId", poolCfg.ID).
 			Int("clientCount", len(pool.clients)).
@@ -107,8 +109,11 @@ func (r *ProxyPoolRegistry) GetPool(poolID string) (*ProxyPool, error) {
 		return nil, nil
 	}
 
-	if val, ok := r.pools.Load(poolID); ok {
-		return val.(*ProxyPool), nil
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if pool, exists := r.pools[poolID]; exists {
+		return pool, nil
 	}
 	return nil, fmt.Errorf("no proxy pool found with ID '%s'", poolID)
 }
