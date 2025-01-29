@@ -57,7 +57,10 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 		return nil, fmt.Errorf("failed to parse URL for upstream: %v", cfg.Id)
 	}
 
-	proxyPoolRegistry, _ := NewProxyPoolRegistry(common.GetConfig().ProxyPools, manager.logger)
+	var proxyPoolRegistry *ProxyPoolRegistry
+	if cfg.JsonRpc != nil && cfg.JsonRpc.ProxyPool != "" {
+		proxyPoolRegistry, _ = NewProxyPoolRegistry(common.GetConfig().ProxyPools, manager.logger)
+	}
 
 	if err != nil {
 		clientErr = fmt.Errorf("failed to parse URL for upstream: %v", cfg.Id)
