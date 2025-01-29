@@ -387,7 +387,9 @@ type EvmUpstreamConfig struct {
 	ChainId                  int64       `yaml:"chainId" json:"chainId"`
 	NodeType                 EvmNodeType `yaml:"nodeType,omitempty" json:"nodeType"`
 	StatePollerInterval      string      `yaml:"statePollerInterval,omitempty" json:"statePollerInterval"`
+	StatePollerDebounce      string      `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce"`
 	MaxAvailableRecentBlocks int64       `yaml:"maxAvailableRecentBlocks,omitempty" json:"maxAvailableRecentBlocks"`
+	GetLogsMaxBlockRange     int64       `yaml:"getLogsMaxBlockRange,omitempty" json:"getLogsMaxBlockRange"`
 }
 
 type FailsafeConfig struct {
@@ -509,8 +511,15 @@ type DirectiveDefaultsConfig struct {
 }
 
 type EvmNetworkConfig struct {
-	ChainId               int64 `yaml:"chainId" json:"chainId"`
-	FallbackFinalityDepth int64 `yaml:"fallbackFinalityDepth,omitempty" json:"fallbackFinalityDepth"`
+	ChainId                     int64               `yaml:"chainId" json:"chainId"`
+	FallbackFinalityDepth       int64               `yaml:"fallbackFinalityDepth,omitempty" json:"fallbackFinalityDepth"`
+	FallbackStatePollerDebounce string              `yaml:"fallbackStatePollerDebounce,omitempty" json:"fallbackStatePollerDebounce"`
+	Integrity                   *EvmIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
+}
+
+type EvmIntegrityConfig struct {
+	EnforceHighestBlock      *bool `yaml:"enforceHighestBlock,omitempty" json:"enforceHighestBlock"`
+	EnforceGetLogsBlockRange *bool `yaml:"enforceGetLogsBlockRange,omitempty" json:"enforceGetLogsBlockRange"`
 }
 
 type SelectionPolicyConfig struct {

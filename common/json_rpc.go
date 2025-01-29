@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -37,9 +38,10 @@ type JsonRpcResponse struct {
 	// Result is the raw bytes of the result from the response, and is used when writing responses.
 	// Ideally we don't need to parse these bytes. In cases where we need a specific field (e.g. blockNumber)
 	// we use Sonic library to traverse directly to target such field (vs marshalling the whole result in memory).
-	Result     []byte
-	resultMu   sync.RWMutex
-	cachedNode *ast.Node
+	Result       []byte
+	resultWriter util.ByteWriter
+	resultMu     sync.RWMutex
+	cachedNode   *ast.Node
 }
 
 func NewJsonRpcResponse(id interface{}, result interface{}, rpcError *ErrJsonRpcExceptionExternal) (*JsonRpcResponse, error) {
@@ -199,6 +201,12 @@ func (r *JsonRpcResponse) ParseFromStream(reader io.Reader, expectedSize int) er
 	return nil
 }
 
+func (r *JsonRpcResponse) SetResultWriter(w util.ByteWriter) {
+	r.resultMu.Lock()
+	defer r.resultMu.Unlock()
+	r.resultWriter = w
+}
+
 func (r *JsonRpcResponse) ParseError(raw string) error {
 	r.errMu.Lock()
 	defer r.errMu.Unlock()
@@ -283,6 +291,14 @@ func (r *JsonRpcResponse) PeekStringByPath(path ...interface{}) (string, error) 
 	}
 
 	return n.String()
+}
+
+func (r *JsonRpcResponse) PeekInt64ByPath(path ...interface{}) (int64, error) {
+	s, err := r.PeekStringByPath(path...)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseInt(s, 0, 64)
 }
 
 func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
@@ -400,6 +416,19 @@ func (r *JsonRpcResponse) WriteTo(w io.Writer) (n int64, err error) {
 			return n + int64(nn), err
 		}
 		n += int64(nn)
+	} else if r.resultWriter != nil {
+		// Write result field
+		nn, err = w.Write([]byte(`,"result":`))
+		if err != nil {
+			return n + int64(nn), err
+		}
+		n += int64(nn)
+
+		nw, err := r.resultWriter.WriteTo(w)
+		if err != nil {
+			return n + nw, err
+		}
+		n += nw
 	}
 
 	// Write closing brace
@@ -607,6 +636,9 @@ func hashValue(h io.Writer, v interface{}) error {
 			}
 		}
 		return nil
+	case nil:
+		_, err := h.Write([]byte("null"))
+		return err
 	default:
 		return fmt.Errorf("unsupported type for value during hash: %+v", v)
 	}

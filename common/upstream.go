@@ -1,6 +1,10 @@
 package common
 
-import "context"
+import (
+	"context"
+
+	"github.com/rs/zerolog"
+)
 
 type Scope string
 
@@ -18,7 +22,8 @@ type UpstreamType string
 
 type Upstream interface {
 	Config() *UpstreamConfig
+	Logger() *zerolog.Logger
 	Vendor() Vendor
 	NetworkId() string
-	Forward(ctx context.Context, nq *NormalizedRequest, skipSyncingCheck bool) (*NormalizedResponse, error)
+	Forward(ctx context.Context, nq *NormalizedRequest, byPassMethodExclusion bool) (*NormalizedResponse, error)
 }

@@ -1,6 +1,7 @@
 package erpc
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -5972,7 +5973,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		network := setupTestNetwork(t, ctx, nil, nil)
+		network := setupTestNetworkSimple(t, ctx, nil, nil)
 		gock.New("http://rpc1.localhost").
 			Post("/").
 			MatchType("json").
@@ -6106,7 +6107,7 @@ func TestNetwork_Forward(t *testing.T) {
 		// Set up the test environment
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		network := setupTestNetwork(t, ctx, &common.UpstreamConfig{
+		network := setupTestNetworkSimple(t, ctx, &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "test",
 			Endpoint: "http://rpc1.localhost",
@@ -6249,7 +6250,7 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 		// Create network with default selection policy and disabled resampling
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		network := setupTestNetwork(t, ctx, &common.UpstreamConfig{
+		network := setupTestNetworkSimple(t, ctx, &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
 			Endpoint: "http://rpc1.localhost",
@@ -6314,7 +6315,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		network := setupTestNetwork(t, ctx, nil, nil)
+		network := setupTestNetworkSimple(t, ctx, nil, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 
 		gock.New("http://rpc1.localhost").
@@ -6351,7 +6352,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		network := setupTestNetwork(t, ctx, nil, nil)
+		network := setupTestNetworkSimple(t, ctx, nil, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 
 		gock.New("http://rpc1.localhost").
@@ -6388,7 +6389,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		network := setupTestNetwork(t, ctx, &common.UpstreamConfig{
+		network := setupTestNetworkSimple(t, ctx, &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "test",
 			Endpoint: "http://rpc1.localhost",
@@ -6445,7 +6446,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		network := setupTestNetwork(t, ctx, nil, nil)
+		network := setupTestNetworkSimple(t, ctx, nil, nil)
 		successRequestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 		failureRequestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"]}`)
 
@@ -6501,7 +6502,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		network := setupTestNetwork(t, ctx, nil, nil)
+		network := setupTestNetworkSimple(t, ctx, nil, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 
 		gock.New("http://rpc1.localhost").
@@ -6537,7 +6538,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		network := setupTestNetwork(t, ctx, nil, nil)
+		network := setupTestNetworkSimple(t, ctx, nil, nil)
 
 		// Mock the response from the upstream
 		gock.New("http://rpc1.localhost").
@@ -6594,7 +6595,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		network := setupTestNetwork(t, ctx, nil, nil)
+		network := setupTestNetworkSimple(t, ctx, nil, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 
 		gock.New("http://rpc1.localhost").
@@ -6645,7 +6646,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		network := setupTestNetwork(t, ctx, nil, nil)
+		network := setupTestNetworkSimple(t, ctx, nil, nil)
 		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[]}`)
 
 		gock.New("http://rpc1.localhost").
@@ -6878,7 +6879,968 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 	})
 }
 
-func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfig *common.UpstreamConfig, networkConfig *common.NetworkConfig) *Network {
+func TestNetwork_EvmGetLogs(t *testing.T) {
+	t.Run("EnforceLatestBlockUpdateWhenRangeEndIsHigherThanLatestBlock", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// Mock eth_getLogs request with toBlock higher than latest block
+		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x11118899","address":"0x0000000000000000000000000000000000000000"}]}`)
+
+		// Mock the eth_getBlockByNumber response for latest block force update
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]interface{}{
+					"number": "0x11119999", // Now higher than end range
+				},
+			})
+
+		// Mock the eth_getLogs response
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":[{"value":0x1,"fromHost":"rpc1"}]}`))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128)
+
+		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
+			EnforceGetLogsBlockRange: util.BoolPtr(true),
+		}
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+
+		// Convert the raw response to a map to access custom fields like fromHost
+		jrr, err := resp.JsonRpcResponse()
+		if err != nil {
+			t.Fatalf("Failed to get JSON-RPC response: %v", err)
+		}
+
+		if jrr.Result == nil {
+			t.Fatalf("Expected non-nil result")
+		}
+
+		fromHost, err := jrr.PeekStringByPath(0, "fromHost")
+		if err != nil {
+			t.Fatalf("Failed to get fromHost from result: %v", err)
+		}
+		if fromHost != "rpc1" {
+			t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
+		}
+
+		assert.True(t, len(gock.Pending()) == 0, "Expected no pending mocks")
+	})
+
+	t.Run("FailEvenAfterEnforceLatestBlockUpdateWhenRangeEndIsHigherThanLatestBlock", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// Mock eth_getLogs request with toBlock higher than latest block
+		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x11118899","address":"0x0000000000000000000000000000000000000000"}]}`)
+
+		// Mock the eth_getBlockByNumber response for latest block force update
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]interface{}{
+					"number": "0x11118889", // Still lower than end range
+				},
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128)
+
+		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
+			EnforceGetLogsBlockRange: util.BoolPtr(true),
+		}
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+		assert.Error(t, err)
+		assert.Nil(t, resp)
+
+		assert.Contains(t, err.Error(), "less than toBlock")
+	})
+
+	t.Run("AvoidLatestBlockUpdateWhenRangeEndIsLowerThanLatestBlock", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// Mock eth_getLogs request with toBlock lower than latest block
+		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0x100","address":"0x0000000000000000000000000000000000000000"}]}`)
+
+		// Mock the eth_getLogs response
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":[{"value":0x1,"fromHost":"rpc1"}]}`))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128)
+
+		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
+			EnforceGetLogsBlockRange: util.BoolPtr(true),
+		}
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+
+		// Convert the raw response to a map to access custom fields like fromHost
+		jrr, err := resp.JsonRpcResponse()
+		if err != nil {
+			t.Fatalf("Failed to get JSON-RPC response: %v", err)
+		}
+
+		if jrr.Result == nil {
+			t.Fatalf("Expected non-nil result")
+		}
+
+		fromHost, err := jrr.PeekStringByPath(0, "fromHost")
+		if err != nil {
+			t.Fatalf("Failed to get fromHost from result: %v", err)
+		}
+		if fromHost != "rpc1" {
+			t.Errorf("Expected fromHost to be %q, got %q", "rpc1", fromHost)
+		}
+
+		assert.True(t, len(gock.Pending()) == 0, "Expected no pending mocks")
+	})
+
+	t.Run("SkipToUpstreamWithCorrectLatestBlockToCoverBlockRangeEnd", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// Mock eth_getLogs request with a block range
+		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x22228880","toBlock":"0x22228887","address":"0x0000000000000000000000000000000000000000"}]}`)
+
+		// Mock the eth_getLogs response for rpc2 (should be used since the range is within its bounds)
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":[{"value":0x1,"fromHost":"rpc2"}]}`))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Setup network with two upstreams:
+		// - rpc1: Archive node with latest block 0x11119999 but only 128 blocks available
+		// - rpc2: Full node with latest block 0x11118888 but 1000 blocks available
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(
+			t,
+			ctx,
+			common.EvmNodeTypeArchive, // rpc1 type
+			128,                       // rpc1 max recent blocks
+			common.EvmNodeTypeFull,    // rpc2 type
+			1000,                      // rpc2 max recent blocks
+		)
+
+		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
+			EnforceGetLogsBlockRange: util.BoolPtr(true),
+		}
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+
+		// Convert the raw response to a map to access custom fields like fromHost
+		jrr, err := resp.JsonRpcResponse()
+		if err != nil {
+			t.Fatalf("Failed to get JSON-RPC response: %v", err)
+		}
+
+		if jrr.Result == nil {
+			t.Fatalf("Expected non-nil result")
+		}
+
+		fromHost, err := jrr.PeekStringByPath(0, "fromHost")
+		if err != nil {
+			t.Fatalf("Failed to get fromHost from result: %v", err)
+		}
+		if fromHost != "rpc2" {
+			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
+		}
+
+		assert.True(t, len(gock.Pending()) == 0, "Expected no pending mocks")
+	})
+
+	t.Run("SkipDueToMaxAvailableRecentBlocksWhenLowerEndTooEarly", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// Mock eth_getLogs request with fromBlock that's too early compared to maxAvailableRecentBlocks
+		// Latest block is 0x11118888, with 128 max recent blocks, so anything before 0x11118888-128 is too early
+		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x11117000","toBlock":"0x11118800","address":"0x0000000000000000000000000000000000000000"}]}`)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Setup network with a Full node that has limited block history (128 blocks)
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128)
+
+		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
+			EnforceGetLogsBlockRange: util.BoolPtr(true),
+		}
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+
+		// Verify that the request was skipped with appropriate error
+		assert.Error(t, err)
+		assert.Nil(t, resp)
+		assert.Contains(t, err.Error(), "is < than upstream latest block")
+
+		assert.True(t, len(gock.Pending()) == 0, "Expected no pending mocks")
+	})
+
+	t.Run("BypassMaxAvailableRecentBlocksIfLowerEndStillInRange", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// Mock eth_getLogs request with fromBlock that's within the maxAvailableRecentBlocks range
+		// Latest block is 0x11118888, with 128 max recent blocks, so anything after 0x11118888-128 is fine
+		requestBytes := []byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x11118800","toBlock":"0x11118850","address":"0x0000000000000000000000000000000000000000"}]}`)
+
+		// Mock the eth_getLogs response since we expect the request to succeed
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":[{"value":0x1,"fromHost":"rpc1"}]}`))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Setup network with a Full node that has limited block history (128 blocks)
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 128)
+
+		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
+			EnforceGetLogsBlockRange: util.BoolPtr(true),
+		}
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+
+		// Verify that the request succeeded
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+
+		// Convert the raw response to a map to access custom fields like fromHost
+		jrr, err := resp.JsonRpcResponse()
+		assert.NoError(t, err)
+		assert.NotNil(t, jrr.Result)
+
+		fromHost, err := jrr.PeekStringByPath(0, "fromHost")
+		assert.NoError(t, err)
+		assert.Equal(t, "rpc1", fromHost)
+
+		assert.True(t, len(gock.Pending()) == 0, "Expected no pending mocks")
+	})
+
+	t.Run("SplitIntoSubRequestsIfRangeTooBig", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// Mock eth_getLogs request with a large block range
+		requestBytes := []byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getLogs",
+			"params": [{
+				"fromBlock": "0x11118000",
+				"toBlock": "0x11118500",
+				"address": "0x0000000000000000000000000000000000000000",
+				"topics": ["0x1234567890123456789012345678901234567890123456789012345678901234"]
+			}]
+		}`)
+
+		// Mock responses for the sub-requests
+		// First sub-request
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs") &&
+					strings.Contains(body, "0x11118000") &&
+					strings.Contains(body, "0x111180ff")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": []map[string]interface{}{
+					{"logIndex": "0x1", "blockNumber": "0x11118001"},
+				},
+			})
+
+		// Second sub-request
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs") &&
+					strings.Contains(body, "0x11118100") &&
+					strings.Contains(body, "0x111181ff")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      2,
+				"result": []map[string]interface{}{
+					{"logIndex": "0x2", "blockNumber": "0x11118102"},
+				},
+			})
+
+		// Third sub-request
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs") &&
+					strings.Contains(body, "0x11118200") &&
+					strings.Contains(body, "0x111182ff")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      3,
+				"result": []map[string]interface{}{
+					{"logIndex": "0x3", "blockNumber": "0x11118203"},
+				},
+			})
+
+		// Fourth sub-request
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs") &&
+					strings.Contains(body, "0x11118300") &&
+					strings.Contains(body, "0x111183ff")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      4,
+				"result": []map[string]interface{}{
+					{"logIndex": "0x4", "blockNumber": "0x11118304"},
+				},
+			})
+
+		// Fifth sub-request
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs") &&
+					strings.Contains(body, "0x11118400") &&
+					strings.Contains(body, "0x111184ff")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      5,
+				"result": []map[string]interface{}{
+					{"logIndex": "0x5", "blockNumber": "0x11118405"},
+				},
+			})
+
+		// Last sub-request
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs") &&
+					strings.Contains(body, "0x11118500") &&
+					strings.Contains(body, "0x11118500")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      5,
+				"result": []map[string]interface{}{
+					{"logIndex": "0x6", "blockNumber": "0x11118506"},
+				},
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Setup network with a node that has a small GetLogsMaxBlockRange
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000)
+
+		// Configure a small GetLogsMaxBlockRange to force splitting
+		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
+			EnforceGetLogsBlockRange: util.BoolPtr(true),
+		}
+		upsList := network.upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
+		upsList[0].Config().Evm.GetLogsMaxBlockRange = 0x100 // Small range to force splitting
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+
+		// Verify the merged response
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+
+		jrr, err := resp.JsonRpcResponse()
+		assert.NoError(t, err)
+		w := bytes.NewBuffer(nil)
+		jrr.WriteTo(w)
+		result := w.Bytes()
+		t.Logf("merged response: %s", result)
+
+		// Parse the result to verify all logs from sub-requests are present
+		var respObject map[string]interface{}
+		err = sonic.Unmarshal(result, &respObject)
+		if err != nil {
+			t.Fatalf("Cannot parse response err: %s: %s", err, string(result))
+		}
+
+		// Verify we got all logs from all sub-requests
+		logs := respObject["result"].([]interface{})
+		assert.Equal(t, 6, len(logs))
+
+		// Verify logs are from different blocks as expected
+		blockNumbers := make([]string, len(logs))
+		for i, l := range logs {
+			log := l.(map[string]interface{})
+			blockNumbers[i] = log["blockNumber"].(string)
+		}
+		assert.Contains(t, blockNumbers, "0x11118001")
+		assert.Contains(t, blockNumbers, "0x11118102")
+		assert.Contains(t, blockNumbers, "0x11118203")
+		assert.Contains(t, blockNumbers, "0x11118304")
+		assert.Contains(t, blockNumbers, "0x11118405")
+		assert.Contains(t, blockNumbers, "0x11118506")
+		assert.True(t, len(gock.Pending()) == 0, "Expected no pending mocks")
+	})
+
+	t.Run("SplitCorrectlyWhenMaxRangeIsOne", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// Mock eth_getLogs request with a small block range
+		requestBytes := []byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getLogs",
+			"params": [{
+				"fromBlock": "0x11118000",
+				"toBlock": "0x11118002",
+				"address": "0x0000000000000000000000000000000000000000",
+				"topics": ["0x1234567890123456789012345678901234567890123456789012345678901234"]
+			}]
+		}`)
+
+		// Mock responses for each individual block
+		// First block (0x11118000)
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs") &&
+					strings.Contains(body, `"fromBlock":"0x11118000"`) &&
+					strings.Contains(body, `"toBlock":"0x11118000"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": []map[string]interface{}{
+					{"logIndex": "0x1", "blockNumber": "0x11118000", "data": "0x1"},
+				},
+			})
+
+		// Second block (0x11118001)
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs") &&
+					strings.Contains(body, `"fromBlock":"0x11118001"`) &&
+					strings.Contains(body, `"toBlock":"0x11118001"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      2,
+				"result": []map[string]interface{}{
+					{"logIndex": "0x2", "blockNumber": "0x11118001", "data": "0x2"},
+				},
+			})
+
+		// Third block (0x11118002)
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs") &&
+					strings.Contains(body, `"fromBlock":"0x11118002"`) &&
+					strings.Contains(body, `"toBlock":"0x11118002"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      3,
+				"result": []map[string]interface{}{
+					{"logIndex": "0x3", "blockNumber": "0x11118002", "data": "0x3"},
+				},
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Setup network with a node that has GetLogsMaxBlockRange = 1
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 120)
+
+		// Configure GetLogsMaxBlockRange = 1 to force splitting into individual blocks
+		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
+			EnforceGetLogsBlockRange: util.BoolPtr(true),
+		}
+		upsList := network.upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
+		upsList[0].Config().Evm.GetLogsMaxBlockRange = 1 // Force splitting into individual blocks
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+
+		// Verify the merged response
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+
+		jrr, err := resp.JsonRpcResponse()
+		assert.NoError(t, err)
+		w := bytes.NewBuffer(nil)
+		jrr.WriteTo(w)
+		result := w.Bytes()
+		t.Logf("merged response: %s", result)
+
+		// Parse the result to verify all logs from individual blocks are present
+		var respObject map[string]interface{}
+		err = sonic.Unmarshal(result, &respObject)
+		assert.NoError(t, err, "Failed to unmarshal response: %v", err)
+
+		// Verify we got all logs from all blocks
+		logs := respObject["result"].([]interface{})
+		assert.Equal(t, 3, len(logs), "Expected exactly 3 logs (one from each block)")
+
+		// Verify logs are from different blocks and in correct order
+		blockNumbers := make([]string, len(logs))
+		data := make([]string, len(logs))
+		for i, l := range logs {
+			log := l.(map[string]interface{})
+			blockNumbers[i] = log["blockNumber"].(string)
+			data[i] = log["data"].(string)
+		}
+
+		// Verify block numbers are in sequence
+		assert.Contains(t, blockNumbers, "0x11118000", "First log should be from block 0x11118000")
+		assert.Contains(t, blockNumbers, "0x11118001", "Second log should be from block 0x11118001")
+		assert.Contains(t, blockNumbers, "0x11118002", "Third log should be from block 0x11118002")
+
+		// Verify data values are in sequence
+		assert.Contains(t, data, "0x1", "First log should have data 0x1")
+		assert.Contains(t, data, "0x2", "Second log should have data 0x2")
+		assert.Contains(t, data, "0x3", "Third log should have data 0x3")
+
+		assert.True(t, len(gock.Pending()) == 0, "Expected no pending mocks")
+	})
+
+	t.Run("SkipSplitWhenRangeIsWithinBounds", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// Mock eth_getLogs request with a range smaller than max range
+		requestBytes := []byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getLogs",
+			"params": [{
+				"fromBlock": "0x11118000",
+				"toBlock": "0x11118050",
+				"address": "0x0000000000000000000000000000000000000000",
+				"topics": ["0x1234567890123456789012345678901234567890123456789012345678901234"]
+			}]
+		}`)
+
+		// Mock single response since we expect no splitting
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs") &&
+					strings.Contains(body, `"fromBlock":"0x11118000"`) &&
+					strings.Contains(body, `"toBlock":"0x11118050"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": []map[string]interface{}{
+					{"logIndex": "0x1", "blockNumber": "0x11118025", "data": "0x1"},
+					{"logIndex": "0x2", "blockNumber": "0x11118035", "data": "0x2"},
+				},
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Setup network with GetLogsMaxBlockRange = 0x100
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000)
+
+		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
+			EnforceGetLogsBlockRange: util.BoolPtr(true),
+		}
+		upsList := network.upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
+		upsList[0].Config().Evm.GetLogsMaxBlockRange = 0x100 // Range that's larger than our test range
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+
+		// Verify the response
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+
+		jrr, err := resp.JsonRpcResponse()
+		assert.NoError(t, err)
+		w := bytes.NewBuffer(nil)
+		jrr.WriteTo(w)
+		result := w.Bytes()
+
+		// Parse and verify the response
+		var respObject map[string]interface{}
+		err = sonic.Unmarshal(result, &respObject)
+		assert.NoError(t, err)
+
+		logs := respObject["result"].([]interface{})
+		assert.Equal(t, 2, len(logs), "Expected exactly 2 logs")
+
+		// Verify log block numbers
+		blockNumbers := make([]string, len(logs))
+		for i, l := range logs {
+			log := l.(map[string]interface{})
+			blockNumbers[i] = log["blockNumber"].(string)
+		}
+		assert.Contains(t, blockNumbers, "0x11118025")
+		assert.Contains(t, blockNumbers, "0x11118035")
+
+		// Verify only one request was made (no splitting)
+		assert.True(t, len(gock.Pending()) == 0, "Expected no pending mocks")
+	})
+
+	t.Run("SkipSplitWhenRangeIsExactlyEqualToMaxRange", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// Mock eth_getLogs request with range exactly equal to max range (0x100)
+		requestBytes := []byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getLogs",
+			"params": [{
+				"fromBlock": "0x11118000",
+				"toBlock": "0x111180ff",
+				"address": "0x0000000000000000000000000000000000000000",
+				"topics": ["0x1234567890123456789012345678901234567890123456789012345678901234"]
+			}]
+		}`)
+
+		// Mock single response since we expect no splitting
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs") &&
+					strings.Contains(body, `"fromBlock":"0x11118000"`) &&
+					strings.Contains(body, `"toBlock":"0x111180ff"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": []map[string]interface{}{
+					{"logIndex": "0x1", "blockNumber": "0x11118050", "data": "0x1"},
+					{"logIndex": "0x2", "blockNumber": "0x11118080", "data": "0x2"},
+					{"logIndex": "0x3", "blockNumber": "0x111180f0", "data": "0x3"},
+				},
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Setup network with GetLogsMaxBlockRange = 0x100
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000)
+
+		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
+			EnforceGetLogsBlockRange: util.BoolPtr(true),
+		}
+		upsList := network.upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
+		upsList[0].Config().Evm.GetLogsMaxBlockRange = 0x100 // Range exactly equal to our test range
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+
+		// Verify the response
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+
+		jrr, err := resp.JsonRpcResponse()
+		assert.NoError(t, err)
+		w := bytes.NewBuffer(nil)
+		jrr.WriteTo(w)
+		result := w.Bytes()
+
+		// Parse and verify the response
+		var respObject map[string]interface{}
+		err = sonic.Unmarshal(result, &respObject)
+		assert.NoError(t, err)
+
+		logs := respObject["result"].([]interface{})
+		assert.Equal(t, 3, len(logs), "Expected exactly 3 logs")
+
+		// Verify log block numbers
+		blockNumbers := make([]string, len(logs))
+		for i, l := range logs {
+			log := l.(map[string]interface{})
+			blockNumbers[i] = log["blockNumber"].(string)
+		}
+		assert.Contains(t, blockNumbers, "0x11118050")
+		assert.Contains(t, blockNumbers, "0x11118080")
+		assert.Contains(t, blockNumbers, "0x111180f0")
+
+		// Verify only one request was made (no splitting)
+		assert.True(t, len(gock.Pending()) == 0, "Expected no pending mocks")
+	})
+
+	t.Run("UseCacheWhenOneOfSubRequestsIsAlreadyCached", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// Setup cache configuration
+		cacheCfg := &common.CacheConfig{
+			Connectors: []*common.ConnectorConfig{
+				{
+					Id:     "mock",
+					Driver: "mock",
+				},
+			},
+			Policies: []*common.CachePolicyConfig{
+				{
+					Network:   "*",
+					Method:    "*",
+					TTL:       5 * time.Minute,
+					Connector: "mock",
+					Finality:  common.DataFinalityStateUnfinalized,
+				},
+			},
+		}
+		cacheCfg.SetDefaults()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000)
+
+		// Configure network for splitting
+		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
+			EnforceGetLogsBlockRange: util.BoolPtr(true),
+		}
+		upsList := network.upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
+		upsList[0].Config().Evm.GetLogsMaxBlockRange = 0x100 // Force splitting into ranges of 256 blocks
+
+		// Create and set cache
+		slowCache, err := evm.NewEvmJsonRpcCache(ctx, &log.Logger, cacheCfg)
+		if err != nil {
+			t.Fatalf("Failed to create evm json rpc cache: %v", err)
+		}
+		network.cacheDal = slowCache.WithProjectId("prjA")
+
+		// First, make a request that will be cached for the middle range
+		middleRangeRequest := common.NewNormalizedRequest([]byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getLogs",
+			"params": [{
+				"fromBlock": "0x11118100",
+				"toBlock": "0x111181ff",
+				"address": "0x0000000000000000000000000000000000000000",
+				"topics": ["0x1234567890123456789012345678901234567890123456789012345678901234"]
+			}]
+		}`))
+		middleRangeRequest.SetCacheDal(slowCache)
+		middleRangeRequest.SetNetwork(network)
+
+		// Mock response for the middle range that will be cached
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs") &&
+					strings.Contains(body, `"fromBlock":"0x11118100"`) &&
+					strings.Contains(body, `"toBlock":"0x111181ff"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": []map[string]interface{}{
+					{"logIndex": "0x2", "blockNumber": "0x11118150", "data": "0x2"},
+				},
+			})
+
+		// Make the request to cache the middle range
+		resp, err := network.Forward(ctx, middleRangeRequest)
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+		resp.Release()
+
+		// Now make the full request that should be split into three parts
+		fullRangeRequest := common.NewNormalizedRequest([]byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getLogs",
+			"params": [{
+				"fromBlock": "0x11118000",
+				"toBlock": "0x11118300",
+				"address": "0x0000000000000000000000000000000000000000",
+				"topics": ["0x1234567890123456789012345678901234567890123456789012345678901234"]
+			}]
+		}`))
+		fullRangeRequest.SetCacheDal(slowCache)
+		fullRangeRequest.SetNetwork(network)
+
+		// Mock responses for the first and last ranges
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs") &&
+					strings.Contains(body, `"fromBlock":"0x11118000"`) &&
+					strings.Contains(body, `"toBlock":"0x111180ff"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      2,
+				"result": []map[string]interface{}{
+					{"logIndex": "0x1", "blockNumber": "0x11118050", "data": "0x1"},
+				},
+			})
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs") &&
+					strings.Contains(body, `"fromBlock":"0x11118200"`) &&
+					strings.Contains(body, `"toBlock":"0x111182ff"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      3,
+				"result": []map[string]interface{}{
+					{"logIndex": "0x3", "blockNumber": "0x11118250", "data": "0x3"},
+				},
+			})
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getLogs") &&
+					strings.Contains(body, `"fromBlock":"0x11118300"`) &&
+					strings.Contains(body, `"toBlock":"0x11118300"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      3,
+				"result": []map[string]interface{}{
+					{"logIndex": "0x4", "blockNumber": "0x11118300", "data": "0x4"},
+				},
+			})
+
+		// Make the full request
+		resp, err = network.Forward(ctx, fullRangeRequest)
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+
+		// Verify the merged response
+		jrr, err := resp.JsonRpcResponse()
+		assert.NoError(t, err)
+		w := bytes.NewBuffer(nil)
+		jrr.WriteTo(w)
+		result := w.Bytes()
+
+		// Parse and verify the response contains logs from all three ranges
+		var respObject map[string]interface{}
+		err = sonic.Unmarshal(result, &respObject)
+		assert.NoError(t, err)
+
+		logs := respObject["result"].([]interface{})
+		assert.Equal(t, 4, len(logs), "Expected exactly 4 logs (one from each range)")
+
+		// Verify log block numbers and data
+		blockNumbers := make([]string, len(logs))
+		data := make([]string, len(logs))
+		for i, l := range logs {
+			log := l.(map[string]interface{})
+			blockNumbers[i] = log["blockNumber"].(string)
+			data[i] = log["data"].(string)
+		}
+
+		// Verify we got logs from all three ranges
+		assert.Contains(t, blockNumbers, "0x11118050", "Missing log from first range")
+		assert.Contains(t, blockNumbers, "0x11118150", "Missing log from cached middle range")
+		assert.Contains(t, blockNumbers, "0x11118250", "Missing log from third range")
+		assert.Contains(t, blockNumbers, "0x11118300", "Missing log from last range")
+
+		// Verify data values
+		assert.Contains(t, data, "0x1", "Missing data from first range")
+		assert.Contains(t, data, "0x2", "Missing data from cached middle range")
+		assert.Contains(t, data, "0x3", "Missing data from third range")
+		assert.Contains(t, data, "0x4", "Missing data from last range")
+
+		// Verify only two requests were made (first and last ranges)
+		// The middle range should have come from cache
+		pendings := gock.Pending()
+		assert.True(t, len(pendings) == 0, "Expected no pending mocks")
+	})
+}
+
+func setupTestNetworkSimple(t *testing.T, ctx context.Context, upstreamConfig *common.UpstreamConfig, networkConfig *common.NetworkConfig) *Network {
 	t.Helper()
 
 	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)

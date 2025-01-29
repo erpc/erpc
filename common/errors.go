@@ -705,6 +705,15 @@ func (e *ErrUpstreamsExhausted) ErrorStatusCode() int {
 					if sc != 503 {
 						fsc = sc
 					}
+				} else if nje, ok := e.(interface{ Unwrap() []error }); ok {
+					for _, e := range nje.Unwrap() {
+						if be, ok := e.(StandardError); ok {
+							sc := be.ErrorStatusCode()
+							if sc != 503 {
+								fsc = sc
+							}
+						}
+					}
 				}
 			}
 			return fsc
@@ -1868,6 +1877,14 @@ func HasErrorCode(err error, codes ...ErrorCode) bool {
 	if be, ok := err.(*BaseError); ok {
 		for _, code := range codes {
 			if be.Code == code {
+				return true
+			}
+		}
+	}
+
+	if arr, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, e := range arr.Unwrap() {
+			if HasErrorCode(e, codes...) {
 				return true
 			}
 		}

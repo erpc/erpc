@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/erpc/erpc/common"
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -14,6 +15,7 @@ func TestUpstream_SkipLogic(t *testing.T) {
 				Id:            "test",
 				IgnoreMethods: []string{"eth_getBalance"},
 			},
+			logger: &zerolog.Logger{},
 		}
 
 		reason, skip := upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
@@ -31,6 +33,7 @@ func TestUpstream_SkipLogic(t *testing.T) {
 				Id:            "test",
 				IgnoreMethods: []string{"eth_*"},
 			},
+			logger: &zerolog.Logger{},
 		}
 
 		reason, skip := upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
@@ -48,6 +51,7 @@ func TestUpstream_SkipLogic(t *testing.T) {
 				Id:            "test",
 				IgnoreMethods: []string{"eth_getBalance", "eth_getBlockByNumber"},
 			},
+			logger: &zerolog.Logger{},
 		}
 
 		reason, skip := upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
@@ -69,6 +73,7 @@ func TestUpstream_SkipLogic(t *testing.T) {
 				Id:            "test",
 				IgnoreMethods: []string{"eth_*", "net_version"},
 			},
+			logger: &zerolog.Logger{},
 		}
 
 		reason, skip := upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
@@ -90,11 +95,13 @@ func TestUpstream_SkipLogic(t *testing.T) {
 				Id:            "test1",
 				IgnoreMethods: []string{"eth_getBalance"},
 			},
+			logger: &zerolog.Logger{},
 		}
 		upstream2 := &Upstream{
 			config: &common.UpstreamConfig{
 				Id: "test2",
 			},
+			logger: &zerolog.Logger{},
 		}
 
 		reason, skip := upstream1.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
@@ -112,12 +119,14 @@ func TestUpstream_SkipLogic(t *testing.T) {
 				Id:            "test1",
 				IgnoreMethods: []string{"eth_getBalance"},
 			},
+			logger: &zerolog.Logger{},
 		}
 		upstream2 := &Upstream{
 			config: &common.UpstreamConfig{
 				Id:            "test2",
 				IgnoreMethods: []string{"eth_getBlockByNumber"},
 			},
+			logger: &zerolog.Logger{},
 		}
 
 		reason, skip := upstream1.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
@@ -143,12 +152,14 @@ func TestUpstream_SkipLogic(t *testing.T) {
 				Id:            "test1",
 				IgnoreMethods: []string{"eth_getBalance"},
 			},
+			logger: &zerolog.Logger{},
 		}
 		upstream2 := &Upstream{
 			config: &common.UpstreamConfig{
 				Id:            "test2",
 				IgnoreMethods: []string{"eth_*"},
 			},
+			logger: &zerolog.Logger{},
 		}
 
 		reason, skip := upstream1.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
@@ -165,6 +176,7 @@ func TestUpstream_SkipLogic(t *testing.T) {
 			config: &common.UpstreamConfig{
 				Id: "test",
 			},
+			logger: &zerolog.Logger{},
 		}
 
 		reason, skip := upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
@@ -181,11 +193,13 @@ func TestUpstream_SkipLogic(t *testing.T) {
 			config: &common.UpstreamConfig{
 				Id: "test1",
 			},
+			logger: &zerolog.Logger{},
 		}
 		upstream2 := &Upstream{
 			config: &common.UpstreamConfig{
 				Id: "test2",
 			},
+			logger: &zerolog.Logger{},
 		}
 
 		reason, skip := upstream1.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
@@ -211,6 +225,7 @@ func TestUpstream_SkipLogic(t *testing.T) {
 				Id:            "test",
 				IgnoreMethods: []string{"eth_*", "net_version", "web3_clientVersion"},
 			},
+			logger: &zerolog.Logger{},
 		}
 
 		reason, skip := upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
@@ -236,6 +251,7 @@ func TestUpstream_SkipLogic(t *testing.T) {
 				Id:            "test",
 				IgnoreMethods: []string{"eth_*_*"},
 			},
+			logger: &zerolog.Logger{},
 		}
 
 		reason, skip := upstream.shouldSkip(common.NewNormalizedRequest([]byte(`{"method":"eth_get_balance"}`)))

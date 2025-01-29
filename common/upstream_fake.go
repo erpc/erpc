@@ -2,6 +2,8 @@ package common
 
 import (
 	"context"
+
+	"github.com/rs/zerolog"
 )
 
 type FakeUpstream struct {
@@ -21,6 +23,10 @@ func NewFakeUpstream(id string) Upstream {
 
 func (u *FakeUpstream) Config() *UpstreamConfig {
 	return u.config
+}
+
+func (u *FakeUpstream) Logger() *zerolog.Logger {
+	return &zerolog.Logger{}
 }
 
 func (u *FakeUpstream) EvmGetChainId(context.Context) (string, error) {
