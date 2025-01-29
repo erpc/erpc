@@ -1,0 +1,130 @@
+---
+description: Learn how to configure and utilize Proxy Pools in eRPC for efficient and reliable request routing.
+---
+
+import { Callout, Tabs, Tab } from "nextra/components";
+
+# Proxy Pools
+
+Proxy Pools in eRPC enable centralized management of http(s)/socks5 proxies and round robin load balancing used by multiple upstreams. By leveraging them, you can efficiently distribute traffic, enhance reliability, and simplify proxy configuration across your projects.
+
+<Callout type="info">
+  Proxy Pools are particularly useful when you need to route requests through different proxy servers based on geographic location or specific requirements. (e.g public vs private RPC endpoints)
+</Callout>
+
+
+## Configuration
+
+Configure Proxy Pools in your `erpc.yaml` or TypeScript configuration file. Define your proxy pools with a unique name and a list of proxy URLs.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0}>
+  <Tab>
+```yaml filename="erpc.yaml"
+proxyPools:
+  - id: eu-dc1-pool
+    proxies:
+      - http://proxy111.myorg.local:3128
+      - https://proxy222.myorg.local:3129
+
+  - id: us-dc1-pool
+    proxies:
+      - http://proxy111.myorg.local:3128
+      - socks5://proxy222.myorg.local:3129
+```
+  </Tab>
+  <Tab>
+```typescript filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  proxyPools: {
+    "eu-dc1-pool": {
+      proxies: [
+        "http://proxy111.myorg.local:3128",
+        "https://proxy222.myorg.local:3129",
+      ],
+    },
+    "us-dc1-pool": {
+      proxies: [
+        "http://proxy111.myorg.local:3128",
+        "socks5://proxy222.myorg.local:3129",
+      ],
+    },
+  },
+});
+```
+  </Tab>
+</Tabs>
+
+## Assigning Proxy Pools to Upstreams
+
+After defining your Proxy Pools, assign them to specific upstreams within your project configurations:
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0}>
+  <Tab>
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    upstreams:
+      - id: public-rpc-1
+        endpoint: https://public-rpc-1.example.com
+        jsonRpc:
+          proxyPool: eu-dc1-pool
+
+      - id: public-rpc-2
+        endpoint: https://public-rpc-2.example.com
+        jsonRpc:
+          proxyPool: eu-dc1-pool
+
+    - id: public-rpc-3
+      endpoint: https://public-rpc-3.example.com
+      jsonRpc:
+        proxyPool: eu-dc1-pool
+
+    - id: private-rpc-1
+      endpoint: https://private-rpc-1.example.com
+```
+  </Tab>
+  <Tab>
+```typescript filename="erpc.ts"
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      upstreams: [
+        {
+          id: "public-rpc-1",
+          endpoint: "https://public-rpc-1.example.com",
+          jsonRpc: {
+            proxyPool: "eu-dc1-pool",
+          },
+        },
+        {
+          id: "public-rpc-2",
+          endpoint: "https://public-rpc-2.example.com",
+          jsonRpc: {
+            proxyPool: "eu-dc1-pool",
+          },
+        },
+        {
+          id: "public-rpc-3",
+          endpoint: "https://public-rpc-3.example.com",
+          jsonRpc: {
+            proxyPool: "eu-dc1-pool",
+          },
+        },
+        {
+          id: "private-rpc-1",
+          endpoint: "https://private-rpc-1.example.com",
+        },
+      ],
+    },
+  ],
+});
+```
+  </Tab>
+</Tabs>
+
+<Callout type="info">
+  In this setup, `public-rpc-1`, `public-rpc-2` and `public-rpc-3` routes all requests through the `eu-dc1-pool` proxy pool, which internally round robin requests between the configured proxies; while `private-rpc-1` does not use any proxy pool and sends requests directly to the endpoint.
+</Callout>
