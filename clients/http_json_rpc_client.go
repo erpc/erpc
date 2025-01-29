@@ -101,8 +101,8 @@ func NewGenericHttpJsonRpcClient(
 			client.headers = jsonRpcCfg.Headers
 		}
 
-		if jsonRpcCfg.ProxyUrl != "" {
-			client.proxyUrl = jsonRpcCfg.ProxyUrl
+		if jsonRpcCfg.ProxyPool != "" {
+			client.proxyUrl = jsonRpcCfg.ProxyPool
 		}
 
 		transport := &http.Transport{
@@ -112,8 +112,8 @@ func NewGenericHttpJsonRpcClient(
 		}
 
 		// If ProxyUrl is set, parse and attach it to the transport
-		if jsonRpcCfg.ProxyUrl != "" {
-			proxyURL, err := url.Parse(jsonRpcCfg.ProxyUrl)
+		if jsonRpcCfg.ProxyPool != "" {
+			proxyURL, err := url.Parse(jsonRpcCfg.ProxyPool)
 			if err != nil {
 				return nil, fmt.Errorf("invalid proxy URL: %w", err)
 			}

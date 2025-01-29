@@ -440,9 +440,13 @@ type RateLimitRuleConfig struct {
 	WaitTime string `yaml:"waitTime" json:"waitTime" tstype:"Duration"`
 }
 
-type ProxyPoolsConfig struct {
+type ProxyPoolConfig struct {
 	ID   string   `yaml:"id" json:"id"`
-	URLs []string `yaml:"urls" json:"urls"`
+	Urls []string `yaml:"urls" json:"urls"`
+}
+
+type ProxyPoolsConfig struct {
+	Pools []ProxyPoolConfig `yaml:"proxyPools" json:"proxyPools"`
 }
 
 type HealthCheckConfig struct {
