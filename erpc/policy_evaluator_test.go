@@ -1717,10 +1717,10 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 	if err != nil {
 		t.Fatal(err)
 	}
-	vndr := thirdparty.NewVendorsRegistry()
+	vr := thirdparty.NewVendorsRegistry(nil)
 	pr, err := thirdparty.NewProvidersRegistry(
 		&log.Logger,
-		vndr,
+		vr,
 		[]*common.ProviderConfig{},
 		nil,
 	)
@@ -1763,7 +1763,7 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 		"prjA",
 		upstreamConfigs,
 		rlr,
-		vndr,
+		vr,
 		pr,
 		mt,
 		1*time.Second,

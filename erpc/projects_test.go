@@ -76,7 +76,7 @@ func TestProject_Forward(t *testing.T) {
 			},
 			nil,
 			rateLimitersRegistry,
-			thirdparty.NewVendorsRegistry(),
+			thirdparty.NewVendorsRegistry(nil),
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -172,7 +172,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 			// 	MaxTimeout: util.StringPtr("10s"), // Large server timeout
 			// },
 			rateLimitersRegistry,
-			thirdparty.NewVendorsRegistry(),
+			thirdparty.NewVendorsRegistry(nil),
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -271,7 +271,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 			},
 			nil,
 			rateLimitersRegistry,
-			thirdparty.NewVendorsRegistry(),
+			thirdparty.NewVendorsRegistry(nil),
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -353,7 +353,7 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 			[]*common.ProjectConfig{prjConfig},
 			nil,          // EvmJsonRpcCache
 			rateLimiters, // RateLimitersRegistry
-			thirdparty.NewVendorsRegistry(),
+			thirdparty.NewVendorsRegistry(nil),
 		)
 		if err != nil {
 			t.Fatalf("failed to create ProjectsRegistry: %v", err)

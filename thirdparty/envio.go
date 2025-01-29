@@ -74,10 +74,13 @@ var envioKnownSupportedChains = map[int64]struct{}{
 
 type EnvioVendor struct {
 	common.Vendor
+	proxyPoolRegistry *clients.ProxyPoolRegistry
 }
 
-func CreateEnvioVendor() common.Vendor {
-	return &EnvioVendor{}
+func CreateEnvioVendor(proxyPoolRegistry *clients.ProxyPoolRegistry) common.Vendor {
+	return &EnvioVendor{
+		proxyPoolRegistry: proxyPoolRegistry,
+	}
 }
 
 func (v *EnvioVendor) Name() string {
@@ -212,12 +215,7 @@ func (v *EnvioVendor) generateUrl(chainId int64, rootDomain string) (*url.URL, e
 }
 
 func (v *EnvioVendor) createClient(ctx context.Context, logger *zerolog.Logger, parsedURL *url.URL) (clients.HttpJsonRpcClient, error) {
-	proxyPoolRegistry, err := clients.NewProxyPoolRegistry(common.GetConfig().ProxyPools, logger)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create proxy pool registry: %v. will use fallback http client", err)
-	}
-
-	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", "n/a", parsedURL, nil, proxyPoolRegistry)
+	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", "n/a", parsedURL, nil, v.proxyPoolRegistry)
 	if err != nil {
 		return nil, err
 	}

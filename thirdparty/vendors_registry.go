@@ -1,24 +1,27 @@
 package thirdparty
 
-import "github.com/erpc/erpc/common"
+import (
+	"github.com/erpc/erpc/clients"
+	"github.com/erpc/erpc/common"
+)
 
 type VendorsRegistry struct {
 	thirdparty []common.Vendor
 }
 
-func NewVendorsRegistry() *VendorsRegistry {
+func NewVendorsRegistry(proxyPoolRegistry *clients.ProxyPoolRegistry) *VendorsRegistry {
 	r := &VendorsRegistry{}
 
 	r.Register(CreateAlchemyVendor())
 	r.Register(CreateBlastApiVendor())
 	r.Register(CreateDrpcVendor())
-	r.Register(CreateEnvioVendor())
+	r.Register(CreateEnvioVendor(proxyPoolRegistry))
 	r.Register(CreateEtherspotVendor())
 	r.Register(CreateInfuraVendor())
-	r.Register(CreatePimlicoVendor())
+	r.Register(CreatePimlicoVendor(proxyPoolRegistry))
 	r.Register(CreateQuicknodeVendor())
 	r.Register(CreateLlamaVendor())
-	r.Register(CreateThirdwebVendor())
+	r.Register(CreateThirdwebVendor(proxyPoolRegistry))
 
 	return r
 }

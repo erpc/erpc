@@ -748,7 +748,7 @@ func createTestRegistry(ctx context.Context, projectID string, logger *zerolog.L
 		{Id: "upstream-c", Endpoint: "http://upstream-c.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
 	}
 
-	vr := thirdparty.NewVendorsRegistry()
+	vr := thirdparty.NewVendorsRegistry(nil)
 	pr, err := thirdparty.NewProvidersRegistry(
 		logger,
 		vr,
