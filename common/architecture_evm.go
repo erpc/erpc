@@ -34,6 +34,9 @@ const (
 
 type EvmStatePoller interface {
 	Bootstrap(ctx context.Context) error
+	Poll(ctx context.Context) error
+	PollLatestBlockNumber(ctx context.Context) (int64, error)
+	PollFinalizedBlockNumber(ctx context.Context) (int64, error)
 	SyncingState() EvmSyncingState
 	SetSyncingState(state EvmSyncingState)
 	LatestBlock() int64

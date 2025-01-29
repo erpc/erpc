@@ -761,6 +761,7 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) {
 			ChainId:                  defaults.Evm.ChainId,
 			NodeType:                 defaults.Evm.NodeType,
 			StatePollerInterval:      defaults.Evm.StatePollerInterval,
+			StatePollerDebounce:      defaults.Evm.StatePollerDebounce,
 			MaxAvailableRecentBlocks: defaults.Evm.MaxAvailableRecentBlocks,
 		}
 	}
@@ -921,7 +922,7 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 	}
 	if n.Evm != nil {
 		if err := n.Evm.SetDefaults(); err != nil {
-			return fmt.Errorf("failed to set defaults for evm: %w", err)
+			return fmt.Errorf("failed to set defaults for network evm config: %w", err)
 		}
 	}
 
@@ -944,12 +945,32 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 }
 
 const DefaultEvmFinalityDepth = 1024
+const DefaultEvmStatePollerDebounce = "5s"
 
 func (e *EvmNetworkConfig) SetDefaults() error {
 	if e.FallbackFinalityDepth == 0 {
 		e.FallbackFinalityDepth = DefaultEvmFinalityDepth
 	}
+	if e.FallbackStatePollerDebounce == "" {
+		e.FallbackStatePollerDebounce = DefaultEvmStatePollerDebounce
+	}
+	if e.Integrity == nil {
+		e.Integrity = &EvmIntegrityConfig{}
+	}
+	if err := e.Integrity.SetDefaults(); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+func (i *EvmIntegrityConfig) SetDefaults() error {
+	if i.EnforceHighestBlock == nil {
+		i.EnforceHighestBlock = util.BoolPtr(true)
+	}
+	if i.EnforceGetLogsBlockRange == nil {
+		i.EnforceGetLogsBlockRange = util.BoolPtr(true)
+	}
 	return nil
 }
 
@@ -957,11 +978,11 @@ func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
 	if f.Timeout != nil {
 		if defaults != nil && defaults.Timeout != nil {
 			if err := f.Timeout.SetDefaults(defaults.Timeout); err != nil {
-				return fmt.Errorf("failed to set defaults for timeout: %w", err)
+				return err
 			}
 		} else {
 			if err := f.Timeout.SetDefaults(nil); err != nil {
-				return fmt.Errorf("failed to set defaults for timeout: %w", err)
+				return err
 			}
 		}
 	} else if defaults != nil && defaults.Timeout != nil {

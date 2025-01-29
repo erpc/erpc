@@ -106,6 +106,60 @@ var (
 		Help:      "Whether upstream is un/cordoned (excluded from routing by selection policy).",
 	}, []string{"project", "network", "upstream", "category"})
 
+	MetricUpstreamStaleLatestBlock = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_stale_latest_block_total",
+		Help:      "Total number of times an upstream returned a stale (vs others) latest block number.",
+	}, []string{"project", "network", "upstream"})
+
+	MetricUpstreamStaleFinalizedBlock = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_stale_finalized_block_total",
+		Help:      "Total number of times an upstream returned a stale (vs others) finalized block number.",
+	}, []string{"project", "network", "upstream"})
+
+	MetricUpstreamEvmGetLogsStaleUpperBound = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_evm_get_logs_stale_upper_bound_total",
+		Help:      "Total number of times eth_getLogs was skipped due to upstream latest block being less than requested toBlock.",
+	}, []string{"project", "network", "upstream"})
+
+	MetricUpstreamEvmGetLogsStaleLowerBound = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_evm_get_logs_stale_lower_bound_total",
+		Help:      "Total number of times eth_getLogs was skipped due to fromBlock being less than upstream's available block range.",
+	}, []string{"project", "network", "upstream"})
+
+	MetricUpstreamEvmGetLogsRangeExceeded = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_evm_get_logs_range_exceeded_total",
+		Help:      "Total number of times eth_getLogs request exceeded the maximum allowed block range and needed splitting.",
+	}, []string{"project", "network", "upstream"})
+
+	MetricUpstreamEvmGetLogsSplitSuccess = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_evm_get_logs_split_success_total",
+		Help:      "Total number of successful split eth_getLogs sub-requests.",
+	}, []string{"project", "network", "upstream"})
+
+	MetricUpstreamEvmGetLogsSplitFailure = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_evm_get_logs_split_failure_total",
+		Help:      "Total number of failed split eth_getLogs sub-requests.",
+	}, []string{"project", "network", "upstream"})
+
+	MetricUpstreamLatestBlockPolled = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_latest_block_polled_total",
+		Help:      "Total number of times the latest block was pro-actively polled from an upstream.",
+	}, []string{"project", "network", "upstream"})
+
+	MetricUpstreamFinalizedBlockPolled = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_finalized_block_polled_total",
+		Help:      "Total number of times the finalized block was pro-actively polled from an upstream.",
+	}, []string{"project", "network", "upstream"})
+
 	MetricNetworkRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_request_self_rate_limited_total",

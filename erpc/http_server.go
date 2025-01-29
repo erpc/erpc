@@ -684,6 +684,10 @@ func setResponseStatusCode(respOrErr interface{}, w http.ResponseWriter) {
 		}
 	} else if hjrsp, ok := respOrErr.(*HttpJsonRpcErrorResponse); ok {
 		statusCode = decideErrorStatusCode(hjrsp.Cause)
+	} else if resp, ok := respOrErr.(*common.NormalizedResponse); ok && resp.IsObjectNull() {
+		statusCode = http.StatusInternalServerError
+	} else if respOrErr == nil {
+		statusCode = http.StatusInternalServerError
 	}
 	w.WriteHeader(statusCode)
 }

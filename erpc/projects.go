@@ -127,17 +127,17 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	timer := prometheus.NewTimer(prometheus.ObserverFunc(func(v float64) {
 		health.MetricNetworkRequestDuration.WithLabelValues(
 			p.Config.Id,
-			network.NetworkId,
+			network.networkId,
 			method,
 		).Observe(v)
 	}))
 	defer timer.ObserveDuration()
 
-	health.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.NetworkId, method).Inc()
+	health.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.networkId, method).Inc()
 	lg := p.Logger.With().
 		Str("component", "proxy").
 		Str("projectId", p.Config.Id).
-		Str("networkId", network.NetworkId).
+		Str("networkId", network.networkId).
 		Str("method", method).
 		Interface("id", nq.ID()).
 		Str("ptr", fmt.Sprintf("%p", nq)).
@@ -160,11 +160,11 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 				lg.Info().Msgf("successfully forwarded request for network")
 			}
 		}
-		health.MetricNetworkSuccessfulRequests.WithLabelValues(p.Config.Id, network.NetworkId, method, strconv.Itoa(resp.Attempts())).Inc()
+		health.MetricNetworkSuccessfulRequests.WithLabelValues(p.Config.Id, network.networkId, method, strconv.Itoa(resp.Attempts())).Inc()
 		return resp, err
 	} else {
 		lg.Debug().Err(err).Object("request", nq).Msgf("failed to forward request for network")
-		health.MetricNetworkFailedRequests.WithLabelValues(network.ProjectId, network.NetworkId, method, strconv.Itoa(resp.Attempts()), common.ErrorSummary(err)).Inc()
+		health.MetricNetworkFailedRequests.WithLabelValues(network.projectId, network.networkId, method, strconv.Itoa(resp.Attempts()), common.ErrorSummary(err)).Inc()
 	}
 
 	return nil, err
@@ -173,19 +173,14 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 func (p *PreparedProject) doForward(ctx context.Context, network *Network, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
 	switch network.cfg.Architecture {
 	case common.ArchitectureEvm:
-		if handled, resp, err := evm.HandlePreForward(ctx, network, nq); err != nil {
-			return nil, err
-		} else if handled {
-			return evm.HandlePostForward(ctx, network, nq, resp)
+		if handled, resp, err := evm.HandleNetworkPreForward(ctx, network, nq); handled {
+			return evm.HandleNetworkPostForward(ctx, network, nq, resp, err)
 		}
 	}
 
 	// If not handled, then fallback to the normal forward
 	resp, err := network.Forward(ctx, nq)
-	if err != nil {
-		return nil, err
-	}
-	return evm.HandlePostForward(ctx, network, nq, resp)
+	return evm.HandleNetworkPostForward(ctx, network, nq, resp, err)
 }
 
 func (p *PreparedProject) acquireRateLimitPermit(req *common.NormalizedRequest) error {

@@ -15,14 +15,17 @@ import (
 
 const FullySyncedThreshold = 4
 
+var _ common.EvmStatePoller = &EvmStatePoller{}
+
 type EvmStatePoller struct {
 	Enabled bool
 
-	appCtx   context.Context
-	logger   *zerolog.Logger
-	upstream common.Upstream
-	cfg      *common.EvmNetworkConfig
-	tracker  *health.Tracker
+	projectId string
+	appCtx    context.Context
+	logger    *zerolog.Logger
+	upstream  common.Upstream
+	cfg       *common.EvmNetworkConfig
+	tracker   *health.Tracker
 
 	// When node is fully synced we don't need to query syncing state anymore.
 	// A number is used so that at least X times the upstream tells us it's synced.
@@ -37,21 +40,30 @@ type EvmStatePoller struct {
 	synced       int8
 	syncingState common.EvmSyncingState
 
-	// Certain upstreams do not support calling such method,
-	// therefore we must avoid sending redundant requests.
+	// Certain upstreams do not support calling such method, therefore we must avoid sending redundant requests.
 	// We will return "nil" as status for syncing which means we don't know for certain.
 	skipSyncingCheck bool
 
+	// Avoid making redundant calls based on a networks block time
+	// i.e. latest/finalized block is not going to change within the debounce interval
+	debounceInterval time.Duration
+
 	// Certain networks and nodes do not support "finalized" tag,
 	// therefore we must avoid sending redundant requests.
-	skipFinalizedCheck   bool
+	skipFinalizedCheck      bool
+	finalizedBlockUpdatedAt time.Time
+	finalizedBlockNumber    int64
+
+	// The reason to not use latestBlockTimestamp is to avoid thundering herd,
+	// when a node is actively syncing and timestamp is always way in the past.
+	latestBlockUpdatedAt time.Time
 	latestBlockNumber    int64
-	finalizedBlockNumber int64
 
 	mu sync.RWMutex
 }
 
 func NewEvmStatePoller(
+	projectId string,
 	appCtx context.Context,
 	logger *zerolog.Logger,
 	up common.Upstream,
@@ -59,10 +71,11 @@ func NewEvmStatePoller(
 ) *EvmStatePoller {
 	lg := logger.With().Str("upstreamId", up.Config().Id).Logger()
 	e := &EvmStatePoller{
-		appCtx:   appCtx,
-		logger:   &lg,
-		upstream: up,
-		tracker:  tracker,
+		projectId: projectId,
+		appCtx:    appCtx,
+		logger:    &lg,
+		upstream:  up,
+		tracker:   tracker,
 	}
 
 	return e
@@ -86,10 +99,20 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 	if interval == 0 {
 		e.logger.Debug().Msg("skipping evm state poller for upstream as interval is 0")
 		return nil
-	} else {
-		e.logger.Info().Msgf("bootstraped evm state poller to track upstream latest, finalized blocks and syncing states")
 	}
 
+	if cfg.Evm != nil {
+		if cfg.Evm.StatePollerDebounce != "" {
+			if d, derr := time.ParseDuration(cfg.Evm.StatePollerDebounce); derr == nil {
+				e.debounceInterval = d
+			}
+		}
+		if e.debounceInterval == 0 && cfg.Evm.ChainId > 0 {
+			e.inferDebounceIntervalFromBlockTime(cfg.Evm.ChainId)
+		}
+	}
+
+	e.logger.Info().Msgf("bootstraped evm state poller to track upstream latest, finalized blocks and syncing states")
 	e.Enabled = true
 
 	go (func() {
@@ -118,6 +141,19 @@ func (e *EvmStatePoller) SetNetworkConfig(cfg *common.EvmNetworkConfig) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.cfg = cfg
+
+	if e.debounceInterval == 0 {
+		if cfg.FallbackStatePollerDebounce != "" {
+			if d, err := time.ParseDuration(cfg.FallbackStatePollerDebounce); err == nil {
+				e.debounceInterval = d
+			}
+		}
+	}
+	if e.debounceInterval == 0 {
+		if cfg.ChainId > 0 {
+			e.inferDebounceIntervalFromBlockTime(cfg.ChainId)
+		}
+	}
 }
 
 func (e *EvmStatePoller) Poll(ctx context.Context) error {
@@ -125,11 +161,11 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 	var errs []error
 	ermu := &sync.Mutex{}
 
-	// Fetch latest block
+	// Fetch latest block number
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		lb, err := e.fetchLatestBlockNumber(ctx)
+		_, err := e.PollLatestBlockNumber(ctx)
 		if err != nil {
 			e.logger.Debug().Err(err).Msg("failed to get latest block number in evm state poller")
 			ermu.Lock()
@@ -137,36 +173,18 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 			ermu.Unlock()
 			return
 		}
-		e.logger.Debug().Int64("blockNumber", lb).Msg("fetched latest block")
-		if lb > 0 {
-			e.setLatestBlockNumber(lb)
-		}
 	}()
 
 	// Fetch finalized block (if upstream supports)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if e.shouldSkipFinalizedCheck() {
-			return
-		}
-
-		fb, err := e.fetchFinalizedBlockNumber(ctx)
+		_, err := e.PollFinalizedBlockNumber(ctx)
 		if err != nil {
-			if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
-				e.setSkipFinalizedCheck(true)
-				e.logger.Warn().Err(err).Msg("upstream does not support fetching finalized block number in evm state poller")
-			} else {
-				e.logger.Debug().Err(err).Msg("failed to get finalized block number in evm state poller")
-			}
+			e.logger.Debug().Err(err).Msg("failed to get finalized block number in evm state poller")
 			ermu.Lock()
 			errs = append(errs, err)
 			ermu.Unlock()
-			return
-		}
-		e.logger.Debug().Int64("blockNumber", fb).Msg("fetched finalized block")
-		if fb > 0 {
-			e.setFinalizedBlockNumber(fb)
 		}
 	}()
 
@@ -226,6 +244,98 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// PollLatestBlockNumber fetches the latest block number in a blocking manner.
+// Respects the debounce interval if configured (if the last poll happened too recently, it reuses the cached value).
+func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, error) {
+	// Lock to check last poll time
+	e.mu.Lock()
+	if e.debounceInterval > 0 && time.Since(e.latestBlockUpdatedAt) < e.debounceInterval {
+		// Skip the call and return cached
+		blockNum := e.latestBlockNumber
+		e.mu.Unlock()
+		e.logger.Debug().
+			Int64("blockNumber", blockNum).
+			Msg("skipping poll for latest block due to debounce interval and use existing values")
+		return blockNum, nil
+	}
+	e.mu.Unlock()
+
+	health.MetricUpstreamLatestBlockPolled.WithLabelValues(
+		e.projectId,
+		e.upstream.NetworkId(),
+		e.upstream.Config().Id,
+	).Inc()
+
+	// Actually fetch from upstream
+	blockNum, err := e.fetchBlock(ctx, "latest")
+	if err != nil {
+		return 0, err
+	}
+
+	// Update internal state
+	e.setLatestBlockNumber(blockNum)
+
+	e.mu.Lock()
+	e.latestBlockUpdatedAt = time.Now()
+	e.mu.Unlock()
+
+	e.logger.Debug().
+		Int64("blockNumber", blockNum).
+		Msg("fetched latest block")
+
+	return blockNum, nil
+}
+
+func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, error) {
+	if e.shouldSkipFinalizedCheck() {
+		return 0, nil
+	}
+
+	// Lock to check last poll time
+	e.mu.Lock()
+	if e.debounceInterval > 0 && time.Since(e.finalizedBlockUpdatedAt) < e.debounceInterval {
+		// Skip the call and return cached
+		blockNum := e.finalizedBlockNumber
+		e.mu.Unlock()
+		e.logger.Debug().
+			Int64("blockNumber", blockNum).
+			Msg("skipping poll for finalized block due to debounce interval and use existing values")
+		return blockNum, nil
+	}
+	e.mu.Unlock()
+
+	health.MetricUpstreamFinalizedBlockPolled.WithLabelValues(
+		e.projectId,
+		e.upstream.NetworkId(),
+		e.upstream.Config().Id,
+	).Inc()
+
+	// Actually fetch from upstream
+	blockNum, err := e.fetchBlock(ctx, "finalized")
+	if err != nil {
+		if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+			e.setSkipFinalizedCheck(true)
+			e.logger.Warn().Err(err).Msg("upstream does not support fetching finalized block number in evm state poller")
+		} else {
+			e.logger.Debug().Err(err).Msg("failed to get finalized block number in evm state poller")
+		}
+		return 0, err
+	}
+
+	// Update internal state
+	e.setFinalizedBlockNumber(blockNum)
+
+	e.mu.Lock()
+	e.latestBlockUpdatedAt = time.Now()
+	e.mu.Unlock()
+
+	e.logger.Debug().
+		Int64("blockNumber", blockNum).
+		Msg("fetched finalized block")
+
+	return blockNum, nil
 }
 
 func (e *EvmStatePoller) setLatestBlockNumber(blockNumber int64) {
@@ -332,19 +442,22 @@ func (e *EvmStatePoller) IsBlockFinalized(blockNumber int64) (bool, error) {
 	return blockNumber <= fb, nil
 }
 
+func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
+	// TODO after subscription epic this method should be called for every new block received from this upstream
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if blockNumber > e.latestBlockNumber {
+		e.latestBlockNumber = blockNumber
+		e.latestBlockUpdatedAt = time.Now()
+	}
+}
+
 func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if blockNumber > e.finalizedBlockNumber {
 		e.finalizedBlockNumber = blockNumber
-	}
-}
-
-func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if blockNumber > e.latestBlockNumber {
-		e.latestBlockNumber = blockNumber
+		e.finalizedBlockUpdatedAt = time.Now()
 	}
 }
 
@@ -352,29 +465,18 @@ func (e *EvmStatePoller) IsObjectNull() bool {
 	return e == nil || e.upstream == nil
 }
 
-func (e *EvmStatePoller) fetchLatestBlockNumber(ctx context.Context) (int64, error) {
-	return e.fetchBlock(ctx, "latest")
-}
-
-func (e *EvmStatePoller) fetchFinalizedBlockNumber(ctx context.Context) (int64, error) {
-	return e.fetchBlock(ctx, "finalized")
-}
-
 func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64, error) {
 	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), blockTag),
 	))
-
 	resp, err := e.upstream.Forward(ctx, pr, true)
 	if err != nil {
 		return 0, err
 	}
-
 	jrr, err := resp.JsonRpcResponse()
 	if err != nil {
 		return 0, err
 	}
-
 	if jrr == nil || jrr.Error != nil {
 		return 0, jrr.Error
 	}
@@ -390,8 +492,12 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 			},
 		}
 	}
+	blockNum, err := common.HexToInt64(numberStr)
+	if err != nil {
+		return 0, err
+	}
 
-	return common.HexToInt64(numberStr)
+	return blockNum, nil
 }
 
 func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
@@ -451,5 +557,18 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 		Details: map[string]interface{}{
 			"result": util.Mem2Str(jrr.Result),
 		},
+	}
+}
+
+func (e *EvmStatePoller) inferDebounceIntervalFromBlockTime(chainId int64) {
+	if d, ok := KnownBlockTimes[chainId]; ok {
+		// Anything lower than 1 second has a chance of causing a thundering herd (e.g. a high RPS for a method like getLogs).
+		// If users truly want to have a smaller value they can directly set the debounce interval
+		// either on network config or upstream config.
+		if d < 1*time.Second {
+			e.debounceInterval = 1 * time.Second
+		} else {
+			e.debounceInterval = d
+		}
 	}
 }

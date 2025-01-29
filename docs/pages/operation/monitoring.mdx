@@ -52,43 +52,52 @@ To get full list of available metrics check the source code of [erpc/health/metr
 
 Here is a list of some of the most important metrics:
 
-| Metric                                          | Type      | Description                                                                                 |
-| ----------------------------------------------- | --------- | ------------------------------------------------------------------------------------------- |
-| erpc_upstream_request_total                     | Counter   | Total number of actual requests to upstreams.                                               |
-| erpc_upstream_request_duration_seconds          | Histogram | Duration of requests to upstreams.                                                          |
-| erpc_upstream_request_errors_total              | Counter   | Total number of errors for requests to upstreams.                                           |
-| erpc_upstream_request_self_rate_limited_total   | Counter   | Total number of self-imposed rate limited requests before sending to upstreams.             |
-| erpc_upstream_request_remote_rate_limited_total | Counter   | Total number of remote rate limited requests by upstreams.                                  |
-| erpc_upstream_request_skipped_total             | Counter   | Total number of requests skipped by upstreams.                                              |
-| erpc_upstream_request_missing_data_error_total  | Counter   | Total number of requests where upstream is missing data or not synced yet.                  |
-| erpc_upstream_request_empty_response_total      | Counter   | Total number of empty responses from upstreams.                                             |
-| erpc_upstream_block_head_lag                    | Gauge     | Total number of blocks (head) behind the most up-to-date upstream.                          |
-| erpc_upstream_finalization_lag                  | Gauge     | Total number of finalized blocks behind the most up-to-date upstream.                       |
-| erpc_upstream_score_overall                     | Gauge     | Overall score of upstreams.                                                                 |
-| erpc_upstream_latest_block_number               | Gauge     | Latest block number of upstreams.                                                           |
-| erpc_upstream_finalized_block_number            | Gauge     | Finalized block number of upstreams.                                                        |
-| erpc_upstream_cordoned                          | Gauge     | Whether upstream is excluded from routing by selection policy. (0=uncordoned or 1=cordoned) |
-| erpc_network_request_received_total             | Counter   | Total number of requests received by the network.                                           |
-| erpc_network_multiplexed_request_total          | Counter   | Total number of multiplexed requests received by the network.                               |
-| erpc_network_failed_request_total               | Counter   | Total number of failed requests received by the network.                                    |
-| erpc_network_request_self_rate_limited_total    | Counter   | Total number of self-imposed rate limited requests before sending to upstreams.             |
-| erpc_network_successful_request_total           | Counter   | Total number of successful requests received by the network.                                |
-| erpc_network_cache_hits_total                   | Counter   | Total number of cache hits for requests received by the network.                            |
-| erpc_network_cache_misses_total                 | Counter   | Total number of cache misses for requests received by the network.                          |
-| erpc_network_request_duration_seconds           | Histogram | Duration of requests received by the network.                                               |
-| erpc_project_request_self_rate_limited_total    | Counter   | Total number of self-imposed rate limited requests towards the project.                     |
-| erpc_rate_limiter_budget_max_count              | Gauge     | Maximum number of requests allowed per second for a rate limiter budget                     |
-| erpc_auth_request_self_rate_limited_total       | Counter   | Total number of self-imposed rate limited requests due to auth config for a project.        |
-| erpc_cache_set_success_total                    | Counter   | Total number of cache set operations.                                                       |
-| erpc_cache_set_error_total                      | Counter   | Total number of cache set errors.                                                           |
-| erpc_cache_set_skipped_total                    | Counter   | Total number of cache set skips.                                                            |
-| erpc_cache_get_success_hit_total                | Counter   | Total number of cache get hits.                                                             |
-| erpc_cache_get_success_miss_total               | Counter   | Total number of cache get misses.                                                           |
-| erpc_cache_get_error_total                      | Counter   | Total number of cache get errors.                                                           |
-| erpc_cache_get_skipped_total                    | Counter   | Total number of cache get skips (i.e. no matching policy found).                            |
-| erpc_cors_requests_total                        | Counter   | Total number of CORS requests received.                                                     |
-| erpc_cors_preflight_requests_total              | Counter   | Total number of CORS preflight requests received.                                           |
-| erpc_cors_disallowed_origin_total               | Counter   | Total number of CORS requests from disallowed origins.                                      |
+| Metric                                             | Type      | Description                                                                                                      |
+| -------------------------------------------------- | --------- | ---------------------------------------------------------------------------------------------------------------- |
+| erpc_upstream_request_total                        | Counter   | Total number of actual requests to upstreams.                                                                    |
+| erpc_upstream_request_duration_seconds             | Histogram | Duration of requests to upstreams.                                                                               |
+| erpc_upstream_request_errors_total                 | Counter   | Total number of errors for requests to upstreams.                                                                |
+| erpc_upstream_request_self_rate_limited_total      | Counter   | Total number of self-imposed rate limited requests before sending to upstreams.                                  |
+| erpc_upstream_request_remote_rate_limited_total    | Counter   | Total number of remote rate limited requests by upstreams.                                                       |
+| erpc_upstream_request_skipped_total                | Counter   | Total number of requests skipped by upstreams.                                                                   |
+| erpc_upstream_request_missing_data_error_total     | Counter   | Total number of requests where upstream is missing data or not synced yet.                                       |
+| erpc_upstream_request_empty_response_total         | Counter   | Total number of empty responses from upstreams.                                                                  |
+| erpc_upstream_block_head_lag                       | Gauge     | Total number of blocks (head) behind the most up-to-date upstream.                                               |
+| erpc_upstream_finalization_lag                     | Gauge     | Total number of finalized blocks behind the most up-to-date upstream.                                            |
+| erpc_upstream_score_overall                        | Gauge     | Overall score of upstreams.                                                                                      |
+| erpc_upstream_latest_block_number                  | Gauge     | Latest block number of upstreams.                                                                                |
+| erpc_upstream_finalized_block_number               | Gauge     | Finalized block number of upstreams.                                                                             |
+| erpc_upstream_cordoned                             | Gauge     | Whether upstream is excluded from routing by selection policy. (0=uncordoned or 1=cordoned)                      |
+| erpc_upstream_stale_latest_block_total             | Counter   | Total number of times an upstream returned a stale latest block number (vs others).                              |
+| erpc_upstream_stale_finalized_block_total          | Counter   | Total number of times an upstream returned a stale finalized block number (vs others).                           |
+| erpc_upstream_evm_get_logs_stale_upper_bound_total | Counter   | Total number of times eth_getLogs was skipped due to upstream latest block being less than requested toBlock.    |
+| erpc_upstream_evm_get_logs_stale_lower_bound_total | Counter   | Total number of times eth_getLogs was skipped due to fromBlock being less than upstream's available block range. |
+| erpc_upstream_evm_get_logs_range_exceeded_total    | Counter   | Total number of times eth_getLogs request exceeded the maximum allowed block range and needed splitting.         |
+| erpc_upstream_evm_get_logs_split_success_total     | Counter   | Total number of successful split eth_getLogs sub-requests.                                                       |
+| erpc_upstream_evm_get_logs_split_failure_total     | Counter   | Total number of failed split eth_getLogs sub-requests.                                                           |
+| erpc_upstream_latest_block_polled_total            | Counter   | Total number of times the latest block was pro-actively polled from an upstream.                                 |
+| erpc_upstream_finalized_block_polled_total         | Counter   | Total number of times the finalized block was pro-actively polled from an upstream.                              |
+| erpc_network_request_received_total                | Counter   | Total number of requests received by the network.                                                                |
+| erpc_network_multiplexed_request_total             | Counter   | Total number of multiplexed requests received by the network.                                                    |
+| erpc_network_failed_request_total                  | Counter   | Total number of failed requests received by the network.                                                         |
+| erpc_network_request_self_rate_limited_total       | Counter   | Total number of self-imposed rate limited requests before sending to upstreams.                                  |
+| erpc_network_successful_request_total              | Counter   | Total number of successful requests received by the network.                                                     |
+| erpc_network_cache_hits_total                      | Counter   | Total number of cache hits for requests received by the network.                                                 |
+| erpc_network_cache_misses_total                    | Counter   | Total number of cache misses for requests received by the network.                                               |
+| erpc_network_request_duration_seconds              | Histogram | Duration of requests received by the network.                                                                    |
+| erpc_project_request_self_rate_limited_total       | Counter   | Total number of self-imposed rate limited requests towards the project.                                          |
+| erpc_rate_limiter_budget_max_count                 | Gauge     | Maximum number of requests allowed per second for a rate limiter budget                                          |
+| erpc_auth_request_self_rate_limited_total          | Counter   | Total number of self-imposed rate limited requests due to auth config for a project.                             |
+| erpc_cache_set_success_total                       | Counter   | Total number of cache set operations.                                                                            |
+| erpc_cache_set_error_total                         | Counter   | Total number of cache set errors.                                                                                |
+| erpc_cache_set_skipped_total                       | Counter   | Total number of cache set skips.                                                                                 |
+| erpc_cache_get_success_hit_total                   | Counter   | Total number of cache get hits.                                                                                  |
+| erpc_cache_get_success_miss_total                  | Counter   | Total number of cache get misses.                                                                                |
+| erpc_cache_get_error_total                         | Counter   | Total number of cache get errors.                                                                                |
+| erpc_cache_get_skipped_total                       | Counter   | Total number of cache get skips (i.e. no matching policy found).                                                 |
+| erpc_cors_requests_total                           | Counter   | Total number of CORS requests received.                                                                          |
+| erpc_cors_preflight_requests_total                 | Counter   | Total number of CORS preflight requests received.                                                                |
+| erpc_cors_disallowed_origin_total                  | Counter   | Total number of CORS requests from disallowed origins.                                                           |
 
 #### PromQL examples
 

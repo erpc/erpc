@@ -82,11 +82,10 @@ func NewNetwork(
 	lg.Debug().Interface("config", nwCfg.Failsafe).Msg("creating network")
 
 	network := &Network{
-		ProjectId: projectId,
-		NetworkId: nwCfg.NetworkId(),
-
-		cfg:    nwCfg,
-		logger: &lg,
+		cfg:       nwCfg,
+		logger:    &lg,
+		projectId: projectId,
+		networkId: nwCfg.NetworkId(),
 
 		appCtx:               appCtx,
 		upstreamsRegistry:    upstreamsRegistry,

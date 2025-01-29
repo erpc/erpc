@@ -17,9 +17,8 @@ import (
 )
 
 type Network struct {
-	NetworkId string
-	ProjectId string
-
+	networkId                string
+	projectId                string
 	logger                   *zerolog.Logger
 	bootstrapOnce            sync.Once
 	appCtx                   context.Context
@@ -38,7 +37,7 @@ type Network struct {
 func (n *Network) Bootstrap(ctx context.Context) error {
 	// Initialize policy evaluator if configured
 	if n.cfg.SelectionPolicy != nil {
-		evaluator, e := NewPolicyEvaluator(n.NetworkId, n.logger, n.cfg.SelectionPolicy, n.upstreamsRegistry, n.metricsTracker)
+		evaluator, e := NewPolicyEvaluator(n.networkId, n.logger, n.cfg.SelectionPolicy, n.upstreamsRegistry, n.metricsTracker)
 		if e != nil {
 			return fmt.Errorf("failed to create selection policy evaluator: %w", e)
 		}
@@ -52,7 +51,11 @@ func (n *Network) Bootstrap(ctx context.Context) error {
 }
 
 func (n *Network) Id() string {
-	return n.NetworkId
+	return n.networkId
+}
+
+func (n *Network) ProjectId() string {
+	return n.projectId
 }
 
 func (n *Network) Architecture() common.NetworkArchitecture {
@@ -70,7 +73,7 @@ func (n *Network) Logger() *zerolog.Logger {
 }
 
 func (n *Network) EvmHighestLatestBlockNumber() int64 {
-	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(n.NetworkId)
+	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(n.networkId)
 	var maxBlock int64 = 0
 	for _, u := range upstreams {
 		statePoller := u.EvmStatePoller()
@@ -86,7 +89,7 @@ func (n *Network) EvmHighestLatestBlockNumber() int64 {
 }
 
 func (n *Network) EvmHighestFinalizedBlockNumber() int64 {
-	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(n.NetworkId)
+	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(n.networkId)
 	var maxBlock int64 = 0
 	for _, u := range upstreams {
 		statePoller := u.EvmStatePoller()
@@ -134,7 +137,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 	}
 
-	upsList, err := n.upstreamsRegistry.GetSortedUpstreams(n.NetworkId, method)
+	upsList, err := n.upstreamsRegistry.GetSortedUpstreams(n.networkId, method)
 	if err != nil {
 		if mlx != nil {
 			mlx.Close(nil, err)
@@ -170,7 +173,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			return nil, err
 		}
 
-		resp, err = u.Forward(ctx, req, false)
+		resp, err = n.doForward(ctx, u, req, false)
 
 		if !common.IsNull(err) {
 			// If upstream complains that the method is not supported let's dynamically add it ignoreMethods config
@@ -268,7 +271,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				hedges := exec.Hedges()
 				attempts := exec.Attempts()
 				if hedges > 0 {
-					health.MetricNetworkHedgedRequestTotal.WithLabelValues(n.ProjectId, n.NetworkId, u.Config().Id, method, fmt.Sprintf("%d", exec.Hedges())).Inc()
+					health.MetricNetworkHedgedRequestTotal.WithLabelValues(n.projectId, n.networkId, u.Config().Id, method, fmt.Sprintf("%d", exec.Hedges())).Inc()
 				}
 
 				var r *common.NormalizedResponse
@@ -282,7 +285,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				if hedges > 0 {
 					if err != nil && common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled) {
 						ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
-						health.MetricNetworkHedgeDiscardsTotal.WithLabelValues(n.ProjectId, n.NetworkId, u.Config().Id, method, fmt.Sprintf("%d", attempts), fmt.Sprintf("%d", hedges)).Inc()
+						health.MetricNetworkHedgeDiscardsTotal.WithLabelValues(n.projectId, n.networkId, u.Config().Id, method, fmt.Sprintf("%d", attempts), fmt.Sprintf("%d", hedges)).Inc()
 						return nil, common.NewErrUpstreamHedgeCancelled(u.Config().Id, err)
 					}
 				}
@@ -304,8 +307,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			return nil, common.NewErrUpstreamsExhausted(
 				req,
 				errorsByUpstream,
-				n.ProjectId,
-				n.NetworkId,
+				n.projectId,
+				n.networkId,
 				method,
 				time.Since(startTime),
 				exec.Attempts(),
@@ -339,8 +342,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				err = common.NewErrUpstreamsExhausted(
 					req,
 					errorsByUpstream,
-					n.ProjectId,
-					n.NetworkId,
+					n.projectId,
+					n.networkId,
 					method,
 					time.Since(startTime),
 					execution.Attempts(),
@@ -395,11 +398,24 @@ func (n *Network) GetMethodMetrics(method string) common.TrackedMetrics {
 		return nil
 	}
 
-	return n.metricsTracker.GetNetworkMethodMetrics(n.NetworkId, method)
+	return n.metricsTracker.GetNetworkMethodMetrics(n.networkId, method)
 }
 
 func (n *Network) Config() *common.NetworkConfig {
 	return n.cfg
+}
+
+func (n *Network) doForward(ctx context.Context, u *upstream.Upstream, req *common.NormalizedRequest, skipCacheRead bool) (*common.NormalizedResponse, error) {
+	switch n.cfg.Architecture {
+	case common.ArchitectureEvm:
+		if handled, resp, err := evm.HandleUpstreamPreForward(ctx, n, u, req, skipCacheRead); handled {
+			return evm.HandleUpstreamPostForward(ctx, n, u, req, resp, err, skipCacheRead)
+		}
+	}
+
+	// If not handled, then fallback to the normal forward
+	resp, err := u.Forward(ctx, req, false)
+	return evm.HandleUpstreamPostForward(ctx, n, u, req, resp, err, skipCacheRead)
 }
 
 func (n *Network) acquireSelectionPolicyPermit(lg *zerolog.Logger, ups *upstream.Upstream, req *common.NormalizedRequest) error {
@@ -424,6 +440,7 @@ func (n *Network) acquireSelectionPolicyPermit(lg *zerolog.Logger, ups *upstream
 
 func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, req *common.NormalizedRequest, startTime time.Time) (*Multiplexer, *common.NormalizedResponse, error) {
 	mlxHash, err := req.CacheHash()
+	lg.Debug().Str("hash", mlxHash).Object("request", req).Msgf("checking if multiplexing is possible")
 	if err != nil || mlxHash == "" {
 		lg.Debug().Str("hash", mlxHash).Err(err).Object("request", req).Msgf("could not get multiplexing hash for request")
 		return nil, nil, nil
@@ -433,7 +450,7 @@ func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, re
 	if vinf, exists := n.inFlightRequests.Load(mlxHash); exists {
 		inf := vinf.(*Multiplexer)
 		method, _ := req.Method()
-		health.MetricNetworkMultiplexedRequests.WithLabelValues(n.ProjectId, n.NetworkId, method).Inc()
+		health.MetricNetworkMultiplexedRequests.WithLabelValues(n.projectId, n.networkId, method).Inc()
 
 		lg.Debug().Str("hash", mlxHash).Msgf("found identical request initiating multiplexer")
 
@@ -601,13 +618,13 @@ func (n *Network) acquireRateLimitPermit(req *common.NormalizedRequest) error {
 			permit := rule.Limiter.TryAcquirePermit()
 			if !permit {
 				health.MetricNetworkRequestSelfRateLimited.WithLabelValues(
-					n.ProjectId,
-					n.NetworkId,
+					n.projectId,
+					n.networkId,
 					method,
 				).Inc()
 				return common.NewErrNetworkRateLimitRuleExceeded(
-					n.ProjectId,
-					n.NetworkId,
+					n.projectId,
+					n.networkId,
 					n.cfg.RateLimitBudget,
 					fmt.Sprintf("%+v", rule.Config),
 				)

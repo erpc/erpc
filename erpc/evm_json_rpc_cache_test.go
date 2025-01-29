@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
@@ -28,14 +29,14 @@ type upsTestCfg struct {
 	lstBn   int64
 }
 
-func createCacheTestFixtures(upstreamConfigs []upsTestCfg) ([]*data.MockConnector, *Network, []*upstream.Upstream, *EvmJsonRpcCache) {
+func createCacheTestFixtures(upstreamConfigs []upsTestCfg) ([]*data.MockConnector, *Network, []*upstream.Upstream, *evm.EvmJsonRpcCache) {
 	logger := log.Logger
 
 	mockConnector1 := data.NewMockConnector("mock1")
 	mockConnector2 := data.NewMockConnector("mock2")
 	mockNetwork := &Network{
-		NetworkId: "evm:123",
-		Logger:    &logger,
+		networkId: "evm:123",
+		logger:    &logger,
 		cfg: &common.NetworkConfig{
 			Architecture: common.ArchitectureEvm,
 			Evm: &common.EvmNetworkConfig{
@@ -77,11 +78,10 @@ func createCacheTestFixtures(upstreamConfigs []upsTestCfg) ([]*data.MockConnecto
 
 	cacheCfg := &common.CacheConfig{}
 	cacheCfg.SetDefaults()
-	cache, err := NewEvmJsonRpcCache(context.Background(), &logger, cacheCfg)
+	cache, err := evm.NewEvmJsonRpcCache(context.Background(), &logger, cacheCfg)
 	if err != nil {
 		panic(err)
 	}
-	cache.network = mockNetwork
 
 	return []*data.MockConnector{mockConnector1, mockConnector2}, mockNetwork, upstreams, cache
 }
@@ -119,9 +119,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			Finality: common.DataFinalityStateFinalized,
 		}, mockConnectors[0])
 		require.NoError(t, err)
-		cache.policies = []*data.CachePolicy{
+		cache.SetPolicies([]*data.CachePolicy{
 			policy,
-		}
+		})
 
 		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
@@ -146,9 +146,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			Method:  "eth_getBlockByNumber",
 		}, mockConnectors[0])
 		require.NoError(t, err)
-		cache.policies = []*data.CachePolicy{
+		cache.SetPolicies([]*data.CachePolicy{
 			policy,
-		}
+		})
 
 		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
@@ -218,9 +218,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 					Finality: tc.finality,
 				}, mockConnectors[0])
 				require.NoError(t, err)
-				cache.policies = []*data.CachePolicy{
+				cache.SetPolicies([]*data.CachePolicy{
 					policy,
-				}
+				})
 
 				mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
 
@@ -249,9 +249,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			Method:  "eth_getBlockByNumber",
 		}, mockConnectors[0])
 		require.NoError(t, err)
-		cache.policies = []*data.CachePolicy{
+		cache.SetPolicies([]*data.CachePolicy{
 			policy,
-		}
+		})
 
 		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
@@ -356,9 +356,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			Method:  "eth_getBalance",
 		}, mockConnectors[0])
 		require.NoError(t, err)
-		cache.policies = []*data.CachePolicy{
+		cache.SetPolicies([]*data.CachePolicy{
 			policy,
-		}
+		})
 
 		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
@@ -397,7 +397,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		}, mockConnectors[1])
 		require.NoError(t, err)
 
-		cache.policies = []*data.CachePolicy{policy1, policy2}
+		cache.SetPolicies([]*data.CachePolicy{policy1, policy2})
 
 		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 		mockConnectors[1].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
@@ -438,7 +438,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		}, mockConnectors[1])
 		require.NoError(t, err)
 
-		cache.policies = []*data.CachePolicy{policy1, policy2}
+		cache.SetPolicies([]*data.CachePolicy{policy1, policy2})
 
 		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 		mockConnectors[1].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
@@ -485,7 +485,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		}, mockConnectors[0])
 		require.NoError(t, err)
 
-		cache.policies = []*data.CachePolicy{finalizedPolicy, unknownPolicy, unfinalizedPolicy}
+		cache.SetPolicies([]*data.CachePolicy{finalizedPolicy, unknownPolicy, unfinalizedPolicy})
 
 		testCases := []struct {
 			name           string
@@ -566,7 +566,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			Finality: common.DataFinalityStateUnfinalized,
 		}, mockConnectors[0])
 		require.NoError(t, err)
-		cache.policies = []*data.CachePolicy{latestBlockPolicy}
+		cache.SetPolicies([]*data.CachePolicy{latestBlockPolicy})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":1}`))
 		req.SetNetwork(mockNetwork)
@@ -598,9 +598,9 @@ func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 			TTL:     ttl,
 		}, mockConnectors[0])
 		require.NoError(t, err)
-		cache.policies = []*data.CachePolicy{
+		cache.SetPolicies([]*data.CachePolicy{
 			policy,
-		}
+		})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
 		req.SetNetwork(mockNetwork)
@@ -651,10 +651,10 @@ func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 		}, mockConnectors[1])
 		require.NoError(t, err1)
 
-		cache.policies = []*data.CachePolicy{
+		cache.SetPolicies([]*data.CachePolicy{
 			policy0,
 			policy1,
-		}
+		})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
 		req.SetNetwork(mockNetwork)
@@ -687,9 +687,9 @@ func TestEvmJsonRpcCache_Get(t *testing.T) {
 			Method:  "eth_getBlockByNumber",
 		}, mockConnectors[0])
 		require.NoError(t, err)
-		cache.policies = []*data.CachePolicy{
+		cache.SetPolicies([]*data.CachePolicy{
 			policy,
-		}
+		})
 
 		cachedResponse := `{"number":"0x1","hash":"0xabc"}`
 		mockConnectors[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).Return(cachedResponse, nil)
@@ -741,7 +741,7 @@ func TestEvmJsonRpcCache_Get(t *testing.T) {
 		}, mockConnectors[1])
 		require.NoError(t, err)
 
-		cache.policies = []*data.CachePolicy{policy1, policy2}
+		cache.SetPolicies([]*data.CachePolicy{policy1, policy2})
 
 		// First connector returns nil
 		mockConnectors[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).Return("", common.NewErrRecordNotFound("evm:123:1", "some-key", "mock1"))
@@ -825,9 +825,9 @@ func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
 			Empty:   common.CacheEmptyBehaviorAllow,
 		}, mockConnectors[0])
 		require.NoError(t, err)
-		cache.policies = []*data.CachePolicy{
+		cache.SetPolicies([]*data.CachePolicy{
 			policy,
-		}
+		})
 
 		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 
@@ -1164,7 +1164,7 @@ func TestEvmJsonRpcCache_EmptyStates(t *testing.T) {
 					Finality: common.DataFinalityStateFinalized,
 				}, mockConnectors[0])
 				require.NoError(t, err)
-				cache.policies = []*data.CachePolicy{policy}
+				cache.SetPolicies([]*data.CachePolicy{policy})
 
 				// Create request and response
 				req := common.NewNormalizedRequest([]byte(`{
@@ -1279,7 +1279,7 @@ func TestEvmJsonRpcCache_ItemSizeLimits(t *testing.T) {
 			}
 
 			require.NoError(t, err)
-			cache.policies = []*data.CachePolicy{policy}
+			cache.SetPolicies([]*data.CachePolicy{policy})
 
 			// Create response with specific size
 			responseBody := strings.Repeat("x", tc.responseSize)

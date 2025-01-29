@@ -609,6 +609,12 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 	if err != nil {
 		return fmt.Errorf("upstream.*.evm.statePollerInterval is invalid (must be like 10s, 5m, etc): %w", err)
 	}
+	if e.StatePollerDebounce != "" {
+		_, err = time.ParseDuration(e.StatePollerDebounce)
+		if err != nil {
+			return fmt.Errorf("upstream.*.evm.statePollerDebounce is invalid (must be like 100ms, 10s, 1m, etc): %w", err)
+		}
+	}
 	if e.NodeType != "" {
 		allowed := []EvmNodeType{
 			EvmNodeTypeArchive,
@@ -823,6 +829,16 @@ func (n *NetworkConfig) Validate(c *Config) error {
 }
 
 func (e *EvmNetworkConfig) Validate() error {
+	if e.FallbackFinalityDepth == 0 {
+		return fmt.Errorf("network.*.evm.fallbackFinalityDepth must be greater than 0")
+	}
+	if e.FallbackStatePollerDebounce == "" {
+		return fmt.Errorf("network.*.evm.fallbackStatePollerDebounce is required")
+	}
+	_, err := time.ParseDuration(e.FallbackStatePollerDebounce)
+	if err != nil {
+		return fmt.Errorf("network.*.evm.fallbackStatePollerDebounce is invalid (must be like 100ms, 10s, 1m, etc): %w", err)
+	}
 	return nil
 }
 
