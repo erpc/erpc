@@ -33,7 +33,7 @@ type Config struct {
 	Projects     []*ProjectConfig   `yaml:"projects" json:"projects"`
 	RateLimiters *RateLimiterConfig `yaml:"rateLimiters" json:"rateLimiters"`
 	Metrics      *MetricsConfig     `yaml:"metrics" json:"metrics"`
-	ProxyPools   []ProxyPoolConfig  `yaml:"proxyPools" json:"proxyPools"`
+	ProxyPools   []*ProxyPoolConfig  `yaml:"proxyPools" json:"proxyPools"`
 }
 
 func (c *Config) HasRateLimiterBudget(id string) bool {
