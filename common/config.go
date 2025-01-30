@@ -287,6 +287,7 @@ type NetworkDefaults struct {
 	Failsafe          *FailsafeConfig          `yaml:"failsafe,omitempty" json:"failsafe"`
 	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
+	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm"`
 }
 
 type CORSConfig struct {

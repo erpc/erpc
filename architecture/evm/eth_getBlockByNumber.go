@@ -112,7 +112,10 @@ func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common
 				return nil, err
 			}
 			nq := common.NewNormalizedRequestFromJsonRpcRequest(request)
-			nq.SetDirectives(nq.Directives())
+			dr := nq.Directives().Clone()
+			// Exclude the current upstream from the request (as high likely it doesn't have this block)
+			dr.UseUpstream = fmt.Sprintf("!%s", nr.UpstreamId())
+			nq.SetDirectives(dr)
 			nq.SetNetwork(network)
 			return network.Forward(ctx, nq)
 		} else {
