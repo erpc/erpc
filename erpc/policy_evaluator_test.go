@@ -1710,7 +1710,7 @@ func TestPolicyEvaluator(t *testing.T) {
 }
 
 func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.Upstream, *upstream.Upstream, *upstream.Upstream) {
-	clr := clients.NewClientRegistry(&log.Logger, "prjA")
+	clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 		Budgets: []*common.RateLimitBudgetConfig{},
 	}, &log.Logger)

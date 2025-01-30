@@ -265,7 +265,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -380,7 +380,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -508,7 +508,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		upsFsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -662,7 +662,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		upsFsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -837,7 +837,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		// Initialize various components for the test environment
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
@@ -1026,7 +1026,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		// Initialize various components for the test environment
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Hedge:   nil,
 			Timeout: nil,
@@ -1220,7 +1220,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		// Initialize various components for the test environment
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
@@ -1415,7 +1415,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
@@ -1614,7 +1614,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
@@ -1803,7 +1803,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
@@ -1982,7 +1982,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
@@ -2175,7 +2175,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
@@ -2354,7 +2354,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 3, // Allow up to 3 retry attempts
@@ -2542,7 +2542,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2, // Allow up to 2 retry attempts
@@ -2726,7 +2726,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
@@ -2849,7 +2849,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
@@ -2965,7 +2965,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -3084,7 +3084,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -3316,7 +3316,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -3442,7 +3442,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 4,
@@ -3559,7 +3559,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
@@ -3691,7 +3691,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Timeout: &common.TimeoutPolicyConfig{
 				Duration: "1s",
@@ -3814,7 +3814,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Hedge: &common.HedgePolicyConfig{
 				Delay:    "200ms",
@@ -3966,7 +3966,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Hedge: &common.HedgePolicyConfig{
 				Delay:    "100ms",
@@ -4117,7 +4117,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Hedge: &common.HedgePolicyConfig{
 				Delay:    "100ms",
@@ -4272,7 +4272,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			CircuitBreaker: &common.CircuitBreakerPolicyConfig{
 				FailureThresholdCount:    2,
@@ -4395,7 +4395,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfgNetwork := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 1,
@@ -4536,7 +4536,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			CircuitBreaker: &common.CircuitBreakerPolicyConfig{
 				FailureThresholdCount:    2,
@@ -4674,7 +4674,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
@@ -4803,7 +4803,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
@@ -4942,7 +4942,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
@@ -5064,7 +5064,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		clr := clients.NewClientRegistry(&log.Logger, "prjA")
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
 				MaxAttempts: 2,
