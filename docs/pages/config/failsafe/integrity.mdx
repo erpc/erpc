@@ -24,7 +24,7 @@ There are various mechanisms that aim to keep the data integrity as high as poss
 
 # Config
 
-In this page we focus on the (2.) `integrity` module and its configuration options. For other integrity-related features use the links in list above.
+In this page we focus on the (2.) `integrity` module and its configuration options:
 
 ```yaml
 projects:
@@ -57,7 +57,7 @@ projects:
 
 #### How highest-known block number is tracked?
 
-For every upstream, eRPC has a running state poller running in the background to fetch the latest/finalized block number regularly. This interval can be configured with:
+For every upstream, eRPC has a running state poller running in the background to fetch the latest/finalized block number regularly (plus ad-hoc scenarios explained below). The state poller interval can be configured with:
 ```yaml
 projects:
   - id: main
@@ -77,7 +77,7 @@ projects:
           statePollerDebounce: 5s
 ```
 
-Additionally these are the adhoc scenarios where highest-known block number is updated:
+Additionally these are the ad-hoc scenarios where highest-known block number is updated:
 - When a call to `eth_blockNumber` is made, the result will be checked against existing highest-known block number.
 - When a call to `eth_getBlockByNumber(latest)` is made, the result will be checked against existing highest-known block number.
 - When a call to `eth_getLogs` is made and range-end is a block higher than chosen upstream's latest block, a pro-active poll happens on state poller (respecting the debouncing interval) to update the highest-known block number. If still upstream is behind the requested range-end then it will be skipped.
@@ -111,9 +111,9 @@ Relevant Prometheus metrics:
 ### `eth_getLogs` behavior
 
 This method is intercepted by the integrity module to ensure `fromBlock` and `toBlock` parameters are within the available block range of the chosen upstream.
-1. We check the `toBlock` against the chosen upstream's latest block number. If latest block is updated older than statePollerDebounce then we force a poll to update the latest block number.
+1. We check the `toBlock` against the chosen upstream's latest block number. If latest block is stale (previously updated < statePollerDebounce) then we force a poll to update the latest block number.
 2. If the `toBlock` is still higher than the latest block number, then we skip to the next upstream.
-3. We check the `fromBlock` is within the range of the chosen upstream relative to its `maxAvailableRecentBlocks` if configured, otherwise we skip to the next upstream.
+3. We check the `fromBlock` is within the range of the chosen upstream relative to its "maxAvailableRecentBlocks" if configured, otherwise we skip to the next upstream.
 4. If both `fromBlock` and `toBlock` are within the range of the chosen upstream, then request is sent to the chosen upstream.
 
 Relevant Prometheus metrics:

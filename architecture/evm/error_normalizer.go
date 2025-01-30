@@ -22,6 +22,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		code := common.JsonRpcErrorNumber(err.Code)
+		msg := err.Message
 
 		switch err.Data.(type) {
 		case string:
@@ -34,6 +35,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				} else {
 					details["data"] = s
 				}
+				msg += " Data: " + s
 			}
 		default:
 			// passthrough error data as is
@@ -52,12 +54,12 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				),
 			)
 		} else if r.StatusCode == 429 ||
-			strings.Contains(err.Message, "requests limited to") ||
-			strings.Contains(err.Message, "has exceeded") ||
-			strings.Contains(err.Message, "Exceeded the quota") ||
-			strings.Contains(err.Message, "Too many requests") ||
-			strings.Contains(err.Message, "Too Many Requests") ||
-			strings.Contains(err.Message, "under too much load") {
+			strings.Contains(msg, "requests limited to") ||
+			strings.Contains(msg, "has exceeded") ||
+			strings.Contains(msg, "Exceeded the quota") ||
+			strings.Contains(msg, "Too many requests") ||
+			strings.Contains(msg, "Too Many Requests") ||
+			strings.Contains(msg, "under too much load") {
 			return common.NewErrEndpointCapacityExceeded(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -67,28 +69,28 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if strings.Contains(err.Message, "block range") ||
-			strings.Contains(err.Message, "exceeds the range") ||
-			strings.Contains(err.Message, "Max range") ||
-			strings.Contains(err.Message, "limited to") ||
-			strings.Contains(err.Message, "response size should not") ||
-			strings.Contains(err.Message, "returned more than") ||
-			strings.Contains(err.Message, "exceeds max results") ||
-			strings.Contains(err.Message, "response too large") ||
-			strings.Contains(err.Message, "query exceeds limit") ||
-			strings.Contains(err.Message, "exceeds the range") ||
-			strings.Contains(err.Message, "range limit exceeded") {
+		} else if strings.Contains(msg, "block range") ||
+			strings.Contains(msg, "exceeds the range") ||
+			strings.Contains(msg, "Max range") ||
+			strings.Contains(msg, "limited to") ||
+			strings.Contains(msg, "response size should not") ||
+			strings.Contains(msg, "returned more than") ||
+			strings.Contains(msg, "exceeds max results") ||
+			strings.Contains(msg, "response too large") ||
+			strings.Contains(msg, "query exceeds limit") ||
+			strings.Contains(msg, "exceeds the range") ||
+			strings.Contains(msg, "range limit exceeded") {
 			return common.NewErrEndpointRequestTooLarge(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
-					common.JsonRpcErrorCapacityExceeded,
+					common.JsonRpcErrorEvmLargeRange,
 					err.Message,
 					nil,
 					details,
 				),
 				common.EvmBlockRangeTooLarge,
 			)
-		} else if strings.Contains(err.Message, "specify less number of address") {
+		} else if strings.Contains(msg, "specify less number of address") {
 			return common.NewErrEndpointRequestTooLarge(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -99,8 +101,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				),
 				common.EvmAddressesTooLarge,
 			)
-		} else if strings.Contains(err.Message, "reached the free tier") ||
-			strings.Contains(err.Message, "Monthly capacity limit") {
+		} else if strings.Contains(msg, "reached the free tier") ||
+			strings.Contains(msg, "Monthly capacity limit") {
 			return common.NewErrEndpointBillingIssue(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -110,13 +112,13 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if strings.HasPrefix(err.Message, "pending block is not available") ||
-			strings.HasPrefix(err.Message, "pending block not found") ||
-			strings.HasPrefix(err.Message, "Pending block not found") ||
-			strings.HasPrefix(err.Message, "safe block not found") ||
-			strings.HasPrefix(err.Message, "Safe block not found") ||
-			strings.HasPrefix(err.Message, "finalized block not found") ||
-			strings.HasPrefix(err.Message, "Finalized block not found") {
+		} else if strings.HasPrefix(msg, "pending block is not available") ||
+			strings.HasPrefix(msg, "pending block not found") ||
+			strings.HasPrefix(msg, "Pending block not found") ||
+			strings.HasPrefix(msg, "safe block not found") ||
+			strings.HasPrefix(msg, "Safe block not found") ||
+			strings.HasPrefix(msg, "finalized block not found") ||
+			strings.HasPrefix(msg, "Finalized block not found") {
 			// This error means node does not support "finalized/safe/pending" blocks.
 			// ref https://github.com/ethereum/go-ethereum/blob/368e16f39d6c7e5cce72a92ec289adbfbaed4854/eth/api_backend.go#L67-L95
 			details["blockTag"] = strings.ToLower(strings.SplitN(err.Message, " ", 2)[0])
@@ -149,7 +151,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if strings.Contains(err.Message, "execution timeout") {
+		} else if strings.Contains(msg, "execution timeout") {
 			return common.NewErrEndpointServerSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -160,10 +162,10 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				),
 				nil,
 			)
-		} else if strings.Contains(err.Message, "reverted") ||
-			strings.Contains(err.Message, "VM execution error") ||
-			strings.Contains(err.Message, "transaction: revert") ||
-			strings.Contains(err.Message, "VM Exception") {
+		} else if strings.Contains(msg, "reverted") ||
+			strings.Contains(msg, "VM execution error") ||
+			strings.Contains(msg, "transaction: revert") ||
+			strings.Contains(msg, "VM Exception") {
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -173,11 +175,11 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if strings.Contains(err.Message, "insufficient funds") ||
-			strings.Contains(err.Message, "insufficient balance") ||
-			strings.Contains(err.Message, "out of gas") ||
-			strings.Contains(err.Message, "gas too low") ||
-			strings.Contains(err.Message, "IntrinsicGas") {
+		} else if strings.Contains(msg, "insufficient funds") ||
+			strings.Contains(msg, "insufficient balance") ||
+			strings.Contains(msg, "out of gas") ||
+			strings.Contains(msg, "gas too low") ||
+			strings.Contains(msg, "IntrinsicGas") {
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -187,14 +189,14 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if strings.Contains(err.Message, "not found") ||
-			strings.Contains(err.Message, "does not exist") ||
-			strings.Contains(err.Message, "is not available") ||
-			strings.Contains(err.Message, "is disabled") {
-			if strings.Contains(err.Message, "Method") ||
-				strings.Contains(err.Message, "method") ||
-				strings.Contains(err.Message, "Module") ||
-				strings.Contains(err.Message, "module") {
+		} else if strings.Contains(msg, "not found") ||
+			strings.Contains(msg, "does not exist") ||
+			strings.Contains(msg, "is not available") ||
+			strings.Contains(msg, "is disabled") {
+			if strings.Contains(msg, "Method") ||
+				strings.Contains(msg, "method") ||
+				strings.Contains(msg, "Module") ||
+				strings.Contains(msg, "module") {
 				return common.NewErrEndpointUnsupported(
 					common.NewErrJsonRpcExceptionInternal(
 						int(code),
@@ -204,12 +206,12 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 						details,
 					),
 				)
-			} else if strings.Contains(err.Message, "header") ||
-				strings.Contains(err.Message, "block") ||
-				strings.Contains(err.Message, "Header") ||
-				strings.Contains(err.Message, "Block") ||
-				strings.Contains(err.Message, "transaction") ||
-				strings.Contains(err.Message, "Transaction") {
+			} else if strings.Contains(msg, "header") ||
+				strings.Contains(msg, "block") ||
+				strings.Contains(msg, "Header") ||
+				strings.Contains(msg, "Block") ||
+				strings.Contains(msg, "transaction") ||
+				strings.Contains(msg, "Transaction") {
 				return common.NewErrEndpointMissingData(
 					common.NewErrJsonRpcExceptionInternal(
 						int(code),
@@ -230,10 +232,10 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					),
 				)
 			}
-		} else if strings.Contains(err.Message, "Unsupported method") ||
-			strings.Contains(err.Message, "not supported") ||
-			strings.Contains(err.Message, "method is not whitelisted") ||
-			strings.Contains(err.Message, "is not included in your current plan") {
+		} else if strings.Contains(msg, "Unsupported method") ||
+			strings.Contains(msg, "not supported") ||
+			strings.Contains(msg, "method is not whitelisted") ||
+			strings.Contains(msg, "is not included in your current plan") {
 			return common.NewErrEndpointUnsupported(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -272,7 +274,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if r.StatusCode == 401 || r.StatusCode == 403 || strings.Contains(err.Message, "not allowed to access") {
+		} else if r.StatusCode == 401 || r.StatusCode == 403 || strings.Contains(msg, "not allowed to access") {
 			return common.NewErrEndpointUnauthorized(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -283,11 +285,12 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				),
 			)
 		} else if code == -32602 ||
-			strings.Contains(err.Message, "param is required") ||
-			strings.Contains(err.Message, "Invalid Request") ||
-			strings.Contains(err.Message, "validation errors") ||
-			strings.Contains(err.Message, "invalid argument") {
-			if strings.Contains(err.Message, "tx of type") {
+			strings.Contains(msg, "param is required") ||
+			strings.Contains(msg, "Invalid Request") ||
+			strings.Contains(msg, "validation errors") ||
+			strings.Contains(msg, "invalid argument") ||
+			strings.Contains(msg, "invalid params") {
+			if strings.Contains(msg, "tx of type") {
 				// TODO For now we're returning a server-side exception for this error
 				// so that the request is retried on a different upstream which supports the requested TX type.
 				// This must be properly handled when "Upstream Features" is implemented which allows for feature-based routing.

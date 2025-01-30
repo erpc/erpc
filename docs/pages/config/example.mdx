@@ -328,6 +328,7 @@ rateLimiters:
         - method: "*"
           maxCount: 10000
           period: 1s
+          waitTime: 100ms # Allow waiting up to 100ms for capacity to free up (Default is 0 meaning immediate error)
     - id: global-blast
       rules:
         - method: "*"

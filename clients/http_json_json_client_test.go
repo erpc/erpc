@@ -785,7 +785,7 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 		assert.True(t, ok, "expected client to be *GenericHttpJsonRpcClient")
 
 		// inspect the transport's proxy
-		httpClient := actual.UnderlyingHttpClient()
+		httpClient := actual.getHttpClient()
 		assert.NotNil(t, httpClient, "expected a valid *http.Client from UnderlyingHttpClient")
 
 		transport, ok := httpClient.Transport.(*http.Transport)
