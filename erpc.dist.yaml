@@ -1,12 +1,18 @@
 logLevel: warn
 database:
   evmJsonRpcCache:
-    driver: memory
-    # driver: postgresql
-    # postgresql:
-    #   connectionUri: >-
-    #     postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name
-    #   table: rpc_cache
+    connectors: 
+      - id: memory
+        driver: memory
+    policies:
+      - network: "*"
+        method: "*"
+        finality: finalized
+        empty: allow
+        connector: memory
+        ttl: 0
+  #  Cache is disabled by default. You can also disable it by uncommenting the following line
+  #  evmJsonRpcCache: ~ 
 server:
   httpHostV4: 0.0.0.0
   httpPort: 4000

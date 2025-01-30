@@ -56,10 +56,17 @@ data:
     logLevel: DEBUG
     database:
       evmJsonRpcCache:
-        driver: postgresql
-        postgresql:
-          connectionUri: postgres://postgres:xxxxxxxxxxxxxxxxxxxx@erpc-pg.erpc.svc.cluster.local:5432/erpc
-          table: rpc_cache
+        connectors:
+          - id: postgres-cache
+            driver: postgresql
+            postgresql:
+              connectionUri: postgres://postgres:xxxxxxxxxxxxxxxxxxxx@erpc-pg.erpc.svc.cluster.local:5432/erpc
+              table: rpc_cache
+        policies:
+          - network: "*"
+            method: "*"
+            finality: finalized
+            connector: postgres-cache
     server:
       httpHostV4: 0.0.0.0
       httpPort: 4000
