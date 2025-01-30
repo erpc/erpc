@@ -46,15 +46,20 @@ projects:
           # (OPTIONAL) statePollerInterval used to periodically fetch the latest/finalized/sync states.
           # DEFAULT: 30s.
           statePollerInterval: 30s
+          # (OPTIONAL) statePollerDebounce prevents too many Polls for latest/finalized block numbers during integrity checks.
+          # This ideally must be close (or lower than) the block time of the chain, but not too low to avoid thundering herd (e.g <1s is too low).
+          # DEFAULT: 5s (or equal to block time if the chainId is a known chain)
+          statePollerDebounce: 5s
           # (OPTIONAL) nodeType is optional and you can manually set it to "full" or "archive".
           # DEFAULT: archive
           nodeType: full
           # (OPTIONAL) maxAvailableRecentBlocks limits the maximum number of recent blocks to be served by this upstream.
           # DEFAULT: 128 (for "full" nodes).
           maxAvailableRecentBlocks: 128
-          # (OPTIONAL) fallbackFinalityDepth is optional and allows to manually set the finality depth.
-          # DEFAULT: <none> - eRPC will auto-detect via eth_getBlockByNumber(finalized).
-          fallbackFinalityDepth: 1024
+          # (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
+          # This is used to automatically split the request into smaller sub-requests if the range is too high.
+          # DEFAULT: 500 (500 blocks)
+          getLogsMaxBlockRange: 500
 
         # (OPTIONAL) Defines which budget to use when hadnling requests of this upstream (e.g. to limit total RPS)
         # Since budgets can be applied to multiple upstreams they all consume from the same budget.
@@ -169,15 +174,20 @@ export default createConfig({
             // (OPTIONAL) statePollerInterval used to periodically fetch the latest/finalized/sync states.
             // DEFAULT: 30s.
             statePollerInterval: "30s",
+            // (OPTIONAL) statePollerDebounce prevents too many Polls for latest/finalized block numbers during integrity checks.
+            // This ideally must be close (or lower than) the block time of the chain, but not too low to avoid thundering herd (e.g <1s is too low).
+            // DEFAULT: 5s (or equal to block time if the chainId is a known chain)
+            statePollerDebounce: "5s",
             // (OPTIONAL) nodeType is optional and you can manually set it to "full" or "archive".
             // DEFAULT: archive
             nodeType: "full",
             // (OPTIONAL) maxAvailableRecentBlocks limits the maximum number of recent blocks to be served by this upstream.
             // DEFAULT: 128 (for "full" nodes).
             maxAvailableRecentBlocks: 128,
-            // (OPTIONAL) fallbackFinalityDepth is optional and allows to manually set the finality depth.
-            // DEFAULT: <none> - eRPC will auto-detect via eth_getBlockByNumber(finalized).
-            fallbackFinalityDepth: 1024,
+            // (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
+            // This is used to automatically split the request into smaller sub-requests if the range is too high.
+            // DEFAULT: 500 (500 blocks)
+            getLogsMaxBlockRange: 500,
           },
 
           /**
@@ -547,12 +557,20 @@ projects:
           # The consequence of this is all data will be considered "unfinalized" or "unknown" despite their block numbers (and where if theye're actually finalized or not).
           # DEFAULT: 30s.
           statePollerInterval: 30s
+          # (OPTIONAL) statePollerDebounce prevents too many Polls for latest/finalized block numbers during integrity checks.
+          # This ideally must be close (or lower than) the block time of the chain, but not too low to avoid thundering herd (e.g <1s is too low).
+          # DEFAULT: 5s (or equal to block time if the chainId is a known chain)
+          statePollerDebounce: 5s
           # (OPTIONAL) nodeType is optional and you can manually set it to "full" or "archive".
           # DEFAULT: archive
           nodeType: full
           # (OPTIONAL) maxAvailableRecentBlocks limits the maximum number of recent blocks to be served by this upstream.
           # DEFAULT: 128 (for "full" nodes).
           maxAvailableRecentBlocks: 128
+          # (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
+          # This is used to automatically split the request into smaller sub-requests if the range is too high.
+          # DEFAULT: 500 (500 blocks)
+          getLogsMaxBlockRange: 500
         # ...
 ```
 </Tabs.Tab>
@@ -580,12 +598,20 @@ export default createConfig({
             // (OPTIONAL) statePollerInterval used to periodically fetch the latest/finalized/sync states.
             // DEFAULT: 30s.
             statePollerInterval: "30s",
+            // (OPTIONAL) statePollerDebounce prevents too many Polls for latest/finalized block numbers during integrity checks.
+            // This ideally must be close (or lower than) the block time of the chain, but not too low to avoid thundering herd (e.g <1s is too low).
+            // DEFAULT: 5s (or equal to block time if the chainId is a known chain)
+            statePollerDebounce: "5s",
             // (OPTIONAL) nodeType is optional and you can manually set it to "full" or "archive".
             // DEFAULT: archive
             nodeType: "full",
             // (OPTIONAL) maxAvailableRecentBlocks limits the maximum number of recent blocks to be served by this upstream.
             // DEFAULT: 128 (for "full" nodes").
             maxAvailableRecentBlocks: 128,
+            // (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
+            // This is used to automatically split the request into smaller sub-requests if the range is too high.
+            // DEFAULT: 500 (500 blocks)
+            getLogsMaxBlockRange: 500,
           },
           // ...
         },
@@ -597,6 +623,47 @@ export default createConfig({
 ```
 </Tabs.Tab>
 </Tabs>
+
+#### `eth_getLogs` max range automatic splitting
+
+Certain providers have a limit on the maximum block range for `eth_getLogs` requests. If the range is too high, eRPC will automatically split the request into smaller sub-requests.
+
+To enable this feature, set the `getLogsMaxBlockRange` in the upstream config:
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+upstreams:
+  - id: my-infura
+    evm:
+      # (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
+      # This is used to automatically split the request into smaller sub-requests if the range is too high.
+      # DEFAULT: 500 (500 blocks)
+      getLogsMaxBlockRange: 500
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  upstreams: [
+    {
+      id: "my-infura",
+      evm: {
+        // (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
+        // This is used to automatically split the request into smaller sub-requests if the range is too high.
+        // DEFAULT: 500 (500 blocks)
+        getLogsMaxBlockRange: 500,
+      },
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+Additionally eRPC has integrity checks for eth_getLogs you can read more about in the [Integrity](/config/failsafe/integrity#eth_getLogs-behavior) section.
 
 ## Compression
 
@@ -710,10 +777,3 @@ export default createConfig({
 ```
 </Tab>
 </Tabs>
-
-#### Roadmap
-
-On some doc pages we like to share our ideas for related future implementations, feel free to open a PR if you're up for a challenge:
-
-<br />
-- [ ] Implement the logic for "getLogsMaxBlockRange" to split multiple requests when the block range is too high.
