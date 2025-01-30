@@ -13,6 +13,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/util"
+	"github.com/rs/zerolog/log"
 )
 
 // LowerBoundBlocksSafetyMargin is the number of blocks to subtract from the last available block to be on the safe side,
@@ -50,6 +51,7 @@ func BuildGetLogsRequest(fromBlock, toBlock int64, address interface{}, topics i
 func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u common.Upstream, r *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
 	up, ok := u.(common.EvmUpstream)
 	if !ok {
+		log.Warn().Interface("upstream", u).Object("request", r).Msg("passed upstream is not a common.EvmUpstream")
 		return false, nil, nil
 	}
 
@@ -155,89 +157,31 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 				up.NetworkId(),
 				up.Config().Id,
 			).Inc()
-			logger.Debug().
-				Int64("fromBlock", fromBlock).
-				Int64("toBlock", toBlock).
-				Int64("requestRange", requestRange).
-				Int64("maxRange", cfg.Evm.GetLogsMaxBlockRange).Msg("splitting eth_getLogs request into smaller sub-requests")
 
-			wg := sync.WaitGroup{}
-			results := make([][]byte, 0)
-			errs := make([]error, 0)
-			mu := sync.Mutex{}
+			var subRequests []ethGetLogsSubRequest
 			sb := fromBlock
 			for sb <= toBlock {
-				wg.Add(1)
 				eb := sb + cfg.Evm.GetLogsMaxBlockRange - 1
 				if eb > toBlock {
 					eb = toBlock
 				}
-				go func(startBlock, endBlock int64) {
-					defer wg.Done()
-					srq, err := BuildGetLogsRequest(startBlock, endBlock, filter["address"], filter["topics"])
-					logger.Debug().Int64("fromBlock", startBlock).Int64("toBlock", endBlock).Object("request", srq).Msg("building eth_getLogs sub-request")
-					if err != nil {
-						mu.Lock()
-						errs = append(errs, err)
-						mu.Unlock()
-						return
-					}
-					sbnrq := common.NewNormalizedRequestFromJsonRpcRequest(srq)
-					dr := r.Directives().Clone()
-					dr.UseUpstream = u.Config().Id
-					sbnrq.SetDirectives(dr)
-					sbnrq.SetNetwork(n)
-					// The reason we use Network.Forward instead of Upstream.Forward is to take advantage of cache
-					// and multiplexing. We use directives to instruct to use the current upstream for this request.
-					rs, re := n.Forward(ctx, sbnrq)
-					if re != nil {
-						mu.Lock()
-						errs = append(errs, re)
-						mu.Unlock()
-						return
-					}
-					jrr, err := rs.JsonRpcResponse()
-					if err != nil {
-						mu.Lock()
-						errs = append(errs, err)
-						mu.Unlock()
-						return
-					}
-					mu.Lock()
-					results = append(results, jrr.Result)
-					mu.Unlock()
-				}(sb, eb)
+				subRequests = append(subRequests, ethGetLogsSubRequest{
+					fromBlock: sb,
+					toBlock:   eb,
+					address:   filter["address"],
+					topics:    filter["topics"],
+				})
 				sb = eb + 1
 			}
-			wg.Wait()
 
-			health.MetricUpstreamEvmGetLogsSplitSuccess.WithLabelValues(
-				n.ProjectId(),
-				up.NetworkId(),
-				up.Config().Id,
-			).Add(float64(len(results)))
-			health.MetricUpstreamEvmGetLogsSplitFailure.WithLabelValues(
-				n.ProjectId(),
-				up.NetworkId(),
-				up.Config().Id,
-			).Add(float64(len(errs)))
-
-			if len(errs) > 0 {
-				return true, nil, errors.Join(errs...)
-			}
-
-			logger.Trace().Interface("results", results).Msg("merging eth_getLogs results")
-			mergedResponse := mergeEthGetLogsResults(results, errs)
-			err = mergedResponse.SetID(jrq.ID)
+			mergedResponse, err := executeGetLogsSubRequests(ctx, n, u, r, subRequests, r.Directives().SkipCacheRead)
 			if err != nil {
 				return true, nil, err
 			}
+
 			return true, common.NewNormalizedResponse().
 				WithRequest(r).
 				WithJsonRpcResponse(mergedResponse), nil
-		} else {
-			// Continue with the original forward flow
-			return false, nil, nil
 		}
 	}
 
@@ -246,7 +190,22 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 }
 
 func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u common.Upstream, rq *common.NormalizedRequest, rs *common.NormalizedResponse, re error, skipCacheRead bool) (*common.NormalizedResponse, error) {
-	// TODO If error is about range, update the evmGetLogsMaxRange accordingly, and then retry the request?
+	if re != nil && common.HasErrorCode(re, common.ErrCodeEndpointRequestTooLarge) {
+		// TODO Update the evmGetLogsMaxRange accordingly?
+		// Split the request in half, first on block range, if 1 block then on addresses, if 1 address then on topics
+		subRequests, err := splitEthGetLogsRequest(rq)
+		if err != nil {
+			return nil, err
+		}
+		mergedResponse, err := executeGetLogsSubRequests(ctx, n, u, rq, subRequests, skipCacheRead)
+		if err != nil {
+			return nil, err
+		}
+
+		return common.NewNormalizedResponse().
+			WithRequest(rq).
+			WithJsonRpcResponse(mergedResponse), nil
+	}
 	return rs, re
 }
 
@@ -297,7 +256,157 @@ func (g *GetLogsMultiResponseWriter) WriteTo(w io.Writer) (n int64, err error) {
 	return n + int64(nn), err
 }
 
-func mergeEthGetLogsResults(results [][]byte, errs []error) *common.JsonRpcResponse {
+type ethGetLogsSubRequest struct {
+	fromBlock int64
+	toBlock   int64
+	address   interface{}
+	topics    interface{}
+}
+
+func splitEthGetLogsRequest(r *common.NormalizedRequest) ([]ethGetLogsSubRequest, error) {
+	jrq, err := r.JsonRpcRequest()
+	if err != nil {
+		return nil, err
+	}
+	if len(jrq.Params) < 1 {
+		return nil, fmt.Errorf("invalid params length")
+	}
+
+	filter, ok := jrq.Params[0].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid filter format")
+	}
+
+	fb, tb, err := extractBlockRange(filter)
+	if err != nil {
+		return nil, err
+	}
+
+	// First try splitting by block range
+	blockRange := tb - fb + 1
+	if blockRange > 1 {
+		mid := fb + (blockRange / 2)
+		return []ethGetLogsSubRequest{
+			{fromBlock: fb, toBlock: mid - 1, address: filter["address"], topics: filter["topics"]},
+			{fromBlock: mid, toBlock: tb, address: filter["address"], topics: filter["topics"]},
+		}, nil
+	}
+
+	// If single block, try splitting by address
+	addresses, ok := filter["address"].([]interface{})
+	if ok && len(addresses) > 1 {
+		mid := len(addresses) / 2
+		return []ethGetLogsSubRequest{
+			{fromBlock: fb, toBlock: tb, address: addresses[:mid], topics: filter["topics"]},
+			{fromBlock: fb, toBlock: tb, address: addresses[mid:], topics: filter["topics"]},
+		}, nil
+	}
+
+	// If single address or no address, try splitting by topics
+	topics, ok := filter["topics"].([]interface{})
+	if ok && len(topics) > 1 {
+		mid := len(topics) / 2
+		return []ethGetLogsSubRequest{
+			{fromBlock: fb, toBlock: tb, address: filter["address"], topics: topics[:mid]},
+			{fromBlock: fb, toBlock: tb, address: filter["address"], topics: topics[mid:]},
+		}, nil
+	}
+
+	return nil, fmt.Errorf("request cannot be split further")
+}
+
+func extractBlockRange(filter map[string]interface{}) (fromBlock, toBlock int64, err error) {
+	fb, ok := filter["fromBlock"].(string)
+	if !ok || !strings.HasPrefix(fb, "0x") {
+		return 0, 0, fmt.Errorf("invalid fromBlock")
+	}
+	fromBlock, err = strconv.ParseInt(fb, 0, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	tb, ok := filter["toBlock"].(string)
+	if !ok || !strings.HasPrefix(tb, "0x") {
+		return 0, 0, fmt.Errorf("invalid toBlock")
+	}
+	toBlock, err = strconv.ParseInt(tb, 0, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return fromBlock, toBlock, nil
+}
+
+func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.Upstream, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead bool) (*common.JsonRpcResponse, error) {
+	logger := u.(common.EvmUpstream).Logger().With().Str("method", "eth_getLogs").Interface("id", r.ID()).Logger()
+
+	wg := sync.WaitGroup{}
+	results := make([][]byte, 0)
+	errs := make([]error, 0)
+	mu := sync.Mutex{}
+
+	for _, sr := range subRequests {
+		wg.Add(1)
+		go func(req ethGetLogsSubRequest) {
+			defer wg.Done()
+
+			srq, err := BuildGetLogsRequest(req.fromBlock, req.toBlock, req.address, req.topics)
+			logger.Debug().
+				Object("request", srq).
+				Msg("executing eth_getLogs sub-request")
+
+			if err != nil {
+				mu.Lock()
+				errs = append(errs, err)
+				mu.Unlock()
+				return
+			}
+
+			sbnrq := common.NewNormalizedRequestFromJsonRpcRequest(srq)
+			dr := r.Directives().Clone()
+			dr.SkipCacheRead = skipCacheRead
+			// TODO dr.UseUpstream = u.Config().Id should we force this (or opposite of it)?
+			sbnrq.SetDirectives(dr)
+			sbnrq.SetNetwork(n)
+
+			rs, re := n.Forward(ctx, sbnrq)
+			if re != nil {
+				mu.Lock()
+				errs = append(errs, re)
+				mu.Unlock()
+				return
+			}
+
+			jrr, err := rs.JsonRpcResponse()
+			if err != nil {
+				mu.Lock()
+				errs = append(errs, err)
+				mu.Unlock()
+				return
+			}
+
+			mu.Lock()
+			results = append(results, jrr.Result)
+			mu.Unlock()
+		}(sr)
+	}
+	wg.Wait()
+
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+
+	mergedResponse := mergeEthGetLogsResults(results)
+	jrq, _ := r.JsonRpcRequest()
+	err := mergedResponse.SetID(jrq.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	return mergedResponse, nil
+}
+
+func mergeEthGetLogsResults(results [][]byte) *common.JsonRpcResponse {
 	writer := NewGetLogsMultiResponseWriter(results)
 	jrr := &common.JsonRpcResponse{}
 	jrr.SetResultWriter(writer)
