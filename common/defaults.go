@@ -572,7 +572,10 @@ func (p *ProjectConfig) SetDefaults() error {
 		for i := 0; i < len(p.Upstreams); i++ {
 			upstream := p.Upstreams[i]
 			if p.UpstreamDefaults != nil {
-				upstream.ApplyDefaults(p.UpstreamDefaults)
+				err := upstream.ApplyDefaults(p.UpstreamDefaults)
+				if err != nil {
+					return fmt.Errorf("failed to apply defaults for upstream: %w", err)
+				}
 			}
 			if err := upstream.SetDefaults(p.UpstreamDefaults); err != nil {
 				return fmt.Errorf("failed to set defaults for upstream: %w", err)
@@ -902,6 +905,10 @@ func (e *EvmUpstreamConfig) SetDefaults() error {
 		case EvmNodeTypeFull:
 			e.MaxAvailableRecentBlocks = 128
 		}
+	}
+
+	if e.GetLogsMaxBlockRange == 0 {
+		e.GetLogsMaxBlockRange = 500
 	}
 
 	return nil

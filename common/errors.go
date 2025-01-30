@@ -1703,11 +1703,11 @@ const (
 	JsonRpcErrorEvmReverted JsonRpcErrorNumber = 3
 
 	// Normalized blockchain-specific codes by eRPC
-	JsonRpcErrorCapacityExceeded  JsonRpcErrorNumber = -32005
-	JsonRpcErrorEvmLogsLargeRange JsonRpcErrorNumber = -32012
-	JsonRpcErrorMissingData       JsonRpcErrorNumber = -32014
-	JsonRpcErrorNodeTimeout       JsonRpcErrorNumber = -32015
-	JsonRpcErrorUnauthorized      JsonRpcErrorNumber = -32016
+	JsonRpcErrorCapacityExceeded JsonRpcErrorNumber = -32005
+	JsonRpcErrorEvmLargeRange    JsonRpcErrorNumber = -32012
+	JsonRpcErrorMissingData      JsonRpcErrorNumber = -32014
+	JsonRpcErrorNodeTimeout      JsonRpcErrorNumber = -32015
+	JsonRpcErrorUnauthorized     JsonRpcErrorNumber = -32016
 )
 
 // This struct represents an json-rpc error with erpc structure (i.e. code is string)
