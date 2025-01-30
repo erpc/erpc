@@ -73,7 +73,7 @@ func TestNetwork_Forward(t *testing.T) {
 				ChainId: 123,
 			},
 		}
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -181,7 +181,7 @@ func TestNetwork_Forward(t *testing.T) {
 				ChainId: 123,
 			},
 		}
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -276,7 +276,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vndr := thirdparty.NewVendorsRegistry(nil)
+		vndr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Id:       "test",
@@ -287,7 +287,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 			Failsafe: fsCfg,
 		}
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -390,7 +390,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -522,7 +522,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -675,7 +675,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -838,7 +838,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 
 		// Set up upstream configurations
@@ -860,7 +860,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Initialize the upstreams registry
-		vr = thirdparty.NewVendorsRegistry(nil)
+		vr = thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -1033,7 +1033,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 
 		// Set up upstream configurations
@@ -1055,7 +1055,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Initialize the upstreams registry
-		vr = thirdparty.NewVendorsRegistry(nil)
+		vr = thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -1220,7 +1220,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -1396,7 +1396,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		// Initialize various components for the test environment
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -1594,7 +1594,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		// Initialize various components for the test environment
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -1782,7 +1782,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		// Initialize various components for the test environment
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -1960,7 +1960,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		// Initialize various components for the test environment
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -2152,7 +2152,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		// Initialize test components
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -2330,7 +2330,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		// Initialize various components for the test environment
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -2517,7 +2517,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		// Initialize various components for the test environment
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -2700,7 +2700,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -2822,7 +2822,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -2937,7 +2937,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -3055,7 +3055,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -3193,7 +3193,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		mt := health.NewTracker("prjA", 2*time.Second)
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -3285,7 +3285,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -3410,7 +3410,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -3537,7 +3537,7 @@ func TestNetwork_Forward(t *testing.T) {
 		defer cancel()
 
 		clr := clients.NewClientRegistry(&log.Logger, "prjA")
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -3657,7 +3657,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -3779,7 +3779,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -3930,7 +3930,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -4080,7 +4080,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -4234,7 +4234,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -4356,7 +4356,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -4496,7 +4496,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -4633,7 +4633,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -4761,7 +4761,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -4899,7 +4899,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -5020,7 +5020,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -5191,7 +5191,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create rate limiters registry: %v", err)
 		}
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -5305,7 +5305,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -5416,7 +5416,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -5526,7 +5526,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -5636,7 +5636,7 @@ func TestNetwork_Forward(t *testing.T) {
 			{Id: "upstream-c", Endpoint: "http://upstream-c.localhost", Type: common.UpstreamTypeEvm, Evm: &common.EvmUpstreamConfig{ChainId: 123}},
 		}
 
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&logger,
 			vr,
@@ -5827,7 +5827,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 
-		vr := thirdparty.NewVendorsRegistry(nil)
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -6850,7 +6850,7 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfig *common.
 			},
 		}
 	}
-	vr := thirdparty.NewVendorsRegistry(nil)
+	vr := thirdparty.NewVendorsRegistry()
 	pr, err := thirdparty.NewProvidersRegistry(
 		&log.Logger,
 		vr,
@@ -6937,7 +6937,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.C
 		},
 	}
 
-	vr := thirdparty.NewVendorsRegistry(nil)
+	vr := thirdparty.NewVendorsRegistry()
 	pr, err := thirdparty.NewProvidersRegistry(
 		&log.Logger,
 		vr,

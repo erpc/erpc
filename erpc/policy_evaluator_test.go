@@ -1717,7 +1717,7 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 	if err != nil {
 		t.Fatal(err)
 	}
-	vr := thirdparty.NewVendorsRegistry(nil)
+	vr := thirdparty.NewVendorsRegistry()
 	pr, err := thirdparty.NewProvidersRegistry(
 		&log.Logger,
 		vr,
