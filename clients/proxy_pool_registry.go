@@ -19,13 +19,13 @@ type ProxyPool struct {
 }
 
 // returns a round-robin client from the pool.
-func (p *ProxyPool) GetClient() *http.Client {
+func (p *ProxyPool) GetClient() (*http.Client, error) {
 	if len(p.clients) == 0 {
-		panic(fmt.Sprintf("ProxyPool '%s' has no clients registered", p.ID))
+		return nil, fmt.Errorf("ProxyPool '%s' has no clients registered", p.ID)
 	}
 	// Round-robin client selection
 	idx := atomic.AddUint64(&p.counter, 1) % uint64(len(p.clients))
-	return p.clients[idx]
+	return p.clients[idx], nil
 }
 
 // holds all pools

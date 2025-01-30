@@ -119,9 +119,7 @@ func NewGenericHttpJsonRpcClient(
 			client.headers = jsonRpcCfg.Headers
 		}
 
-		if jsonRpcCfg.ProxyPool != "" {
-			client.proxyPool = proxyPool
-		}
+		client.proxyPool = proxyPool
 	}
 
 	go func() {
@@ -194,8 +192,13 @@ func (c *GenericHttpJsonRpcClient) shutdown() {
 }
 
 func (c *GenericHttpJsonRpcClient) getHttpClient() *http.Client {
-	if c.proxyPool != nil && len(c.proxyPool.clients) > 0 {
-		return c.proxyPool.GetClient()
+	if c.proxyPool != nil {
+		client, err := c.proxyPool.GetClient()
+		if err != nil {
+			c.logger.Error().Err(err).Msgf("failed to get client from proxy pool")
+			return c.httpClient
+		}
+		return client
 	}
 
 	return c.httpClient
