@@ -154,7 +154,7 @@ database:
         finality: finalized
         empty: ignore
         connector: postgres-cache
-        ttl: 1d
+        ttl: 86400s
 ```
 </Tab>
 <Tab>
@@ -244,7 +244,7 @@ export default createConfig({
           finality: "finalized",
           empty: "ignore",
           connector: "postgres-cache",
-          ttl: "1d"
+          ttl: "86400s"
         }
       ]
     }
@@ -279,7 +279,7 @@ policies:
     minItemSize: 10b
     maxItemSize: 100mb
     connector: postgres-cache
-    ttl: 1d
+    ttl: 86400s
 
   #
   # The `params` field allows you to define matching rules for RPC method parameters. This is useful for creating granular caching policies based on specific parameter values:
@@ -293,7 +293,7 @@ policies:
         toBlock: "<=0x200"
     finality: finalized
     connector: postgres-cache
-    ttl: 1d
+    ttl: 86400s
   
   # Cache eth_getBlockByNumber for specific blocks
   - network: "*"

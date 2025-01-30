@@ -26,9 +26,10 @@ type HttpJsonRpcClient interface {
 }
 
 type GenericHttpJsonRpcClient struct {
-	Url *url.URL
-
+	Url     *url.URL
 	headers map[string]string
+
+	proxyPool *ProxyPool
 
 	projectId  string
 	upstreamId string
@@ -61,6 +62,7 @@ func NewGenericHttpJsonRpcClient(
 	upstreamId string,
 	parsedUrl *url.URL,
 	jsonRpcCfg *common.JsonRpcUpstreamConfig,
+	proxyPool *ProxyPool,
 ) (HttpJsonRpcClient, error) {
 	client := &GenericHttpJsonRpcClient{
 		Url:        parsedUrl,
@@ -68,6 +70,23 @@ func NewGenericHttpJsonRpcClient(
 		logger:     logger,
 		projectId:  projectId,
 		upstreamId: upstreamId,
+		proxyPool:  proxyPool,
+	}
+
+	// Default fallback transport (no proxy)
+	transport := &http.Transport{
+		MaxIdleConns:        1024,
+		MaxIdleConnsPerHost: 256,
+		IdleConnTimeout:     90 * time.Second,
+	}
+
+	if util.IsTest() {
+		client.httpClient = &http.Client{}
+	} else {
+		client.httpClient = &http.Client{
+			Timeout:   60 * time.Second,
+			Transport: transport,
+		}
 	}
 
 	if jsonRpcCfg != nil {
@@ -91,25 +110,16 @@ func NewGenericHttpJsonRpcClient(
 
 			client.batchRequests = make(map[interface{}]*batchRequest)
 		}
+
 		if jsonRpcCfg.EnableGzip != nil {
 			client.enableGzip = *jsonRpcCfg.EnableGzip
 		}
+
 		if jsonRpcCfg.Headers != nil {
 			client.headers = jsonRpcCfg.Headers
 		}
-	}
 
-	if util.IsTest() {
-		client.httpClient = &http.Client{}
-	} else {
-		client.httpClient = &http.Client{
-			Timeout: 60 * time.Second,
-			Transport: &http.Transport{
-				MaxIdleConns:        1024,
-				MaxIdleConnsPerHost: 256,
-				IdleConnTimeout:     90 * time.Second,
-			},
-		}
+		client.proxyPool = proxyPool
 	}
 
 	go func() {
@@ -179,6 +189,19 @@ func (c *GenericHttpJsonRpcClient) shutdown() {
 		c.batchTimer.Stop()
 	}
 	c.processBatch(true)
+}
+
+func (c *GenericHttpJsonRpcClient) getHttpClient() *http.Client {
+	if c.proxyPool != nil {
+		client, err := c.proxyPool.GetClient()
+		if err != nil {
+			c.logger.Error().Err(err).Msgf("failed to get client from proxy pool")
+			return c.httpClient
+		}
+		return client
+	}
+
+	return c.httpClient
 }
 
 func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchRequest) {
@@ -358,8 +381,8 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 
 	c.logger.Debug().Str("host", c.Url.Host).RawJSON("request", requestBody).Interface("headers", httpReq.Header).Msgf("sending json rpc POST request (batch)")
 
-	// Make the HTTP request
-	resp, err := c.httpClient.Do(httpReq)
+	// pick the client from the proxy pool registry (if configured) or fallback
+	resp, err := c.getHttpClient().Do(httpReq)
 	if err != nil {
 		cause := context.Cause(batchCtx)
 		if cause == nil {
@@ -514,7 +537,7 @@ func getJsonRpcResponseFromNode(rootNode ast.Node) (*common.JsonRpcResponse, err
 	rawError, rawErrorErr := errorNode.Raw()
 
 	if rawResultErr != nil && rawErrorErr != nil {
-		var jrResp *common.JsonRpcResponse
+		jrResp := &common.JsonRpcResponse{}
 
 		if rawID != "" {
 			err := jrResp.SetIDBytes(util.Str2Mem(rawID))
@@ -524,14 +547,11 @@ func getJsonRpcResponseFromNode(rootNode ast.Node) (*common.JsonRpcResponse, err
 		}
 
 		cause := fmt.Sprintf("cannot parse json rpc response from upstream, for result: %s, for error: %s", rawResult, rawError)
-		jrResp = &common.JsonRpcResponse{
-			Result: util.Str2Mem(rawResult),
-			Error: common.NewErrJsonRpcExceptionExternal(
-				int(common.JsonRpcErrorParseException),
-				cause,
-				"",
-			),
-		}
+		jrResp.Error = common.NewErrJsonRpcExceptionExternal(
+			int(common.JsonRpcErrorParseException),
+			cause,
+			"",
+		)
 
 		return jrResp, nil
 	}
@@ -587,7 +607,8 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 	}
 	c.logger.Debug().Str("host", c.Url.Host).RawJSON("request", requestBody).Interface("headers", httpReq.Header).Msg("sending json rpc POST request (single)")
 
-	resp, err := c.httpClient.Do(httpReq)
+	// pick the client from the proxy pool registry (if configured) or fallback
+	resp, err := c.getHttpClient().Do(httpReq)
 	if err != nil {
 		cause := context.Cause(ctx)
 		if cause == nil {
@@ -1133,4 +1154,8 @@ func getVendorSpecificErrorIfAny(
 	}
 
 	return vn.GetVendorSpecificErrorIfAny(rp, jr, details)
+}
+
+func (c *GenericHttpJsonRpcClient) UnderlyingHttpClient() *http.Client {
+	return c.getHttpClient()
 }

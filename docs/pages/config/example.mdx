@@ -179,7 +179,7 @@ database:
         method: "arbtrace_*" # supports * as wildcard and | as OR operator
         finality: finalized
         connector: postgres-cache
-        ttl: 1d
+        ttl: 86400s
 
 # Each project is a collection of networks and upstreams.
 # For example "backend", "indexer", "frontend", and you want to use only 1 project you can name it "main"
