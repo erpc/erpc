@@ -706,7 +706,21 @@ func (n *NetworkDefaults) SetDefaults() error {
 			return fmt.Errorf("failed to set defaults for selection policy: %w", err)
 		}
 	}
+	if n.Evm != nil {
+		if err := n.Evm.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for evm: %w", err)
+		}
+	}
+	if n.DirectiveDefaults != nil {
+		if err := n.DirectiveDefaults.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for directive defaults: %w", err)
+		}
+	}
 
+	return nil
+}
+
+func (d *DirectiveDefaultsConfig) SetDefaults() error {
 	return nil
 }
 
@@ -728,9 +742,9 @@ func (p *ProviderConfig) SetDefaults(upsDefaults *UpstreamConfig) error {
 	return nil
 }
 
-func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) {
+func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 	if defaults == nil {
-		return
+		return nil
 	}
 
 	if u.Endpoint == "" {
@@ -764,6 +778,22 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) {
 			StatePollerDebounce:      defaults.Evm.StatePollerDebounce,
 			MaxAvailableRecentBlocks: defaults.Evm.MaxAvailableRecentBlocks,
 		}
+		if err := u.Evm.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for evm upstream: %w", err)
+		}
+	} else if u.Evm != nil && defaults.Evm != nil {
+		if u.Evm.StatePollerInterval == "" && defaults.Evm.StatePollerInterval != "" {
+			u.Evm.StatePollerInterval = defaults.Evm.StatePollerInterval
+		}
+		if u.Evm.StatePollerDebounce == "" && defaults.Evm.StatePollerDebounce != "" {
+			u.Evm.StatePollerDebounce = defaults.Evm.StatePollerDebounce
+		}
+		if u.Evm.MaxAvailableRecentBlocks == 0 && defaults.Evm.MaxAvailableRecentBlocks != 0 {
+			u.Evm.MaxAvailableRecentBlocks = defaults.Evm.MaxAvailableRecentBlocks
+		}
+		if u.Evm.GetLogsMaxBlockRange == 0 && defaults.Evm.GetLogsMaxBlockRange != 0 {
+			u.Evm.GetLogsMaxBlockRange = defaults.Evm.GetLogsMaxBlockRange
+		}
 	}
 	if u.JsonRpc == nil && defaults.JsonRpc != nil {
 		u.JsonRpc = &JsonRpcUpstreamConfig{
@@ -785,6 +815,8 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) {
 	if u.AutoIgnoreUnsupportedMethods == nil && defaults.AutoIgnoreUnsupportedMethods != nil {
 		u.AutoIgnoreUnsupportedMethods = defaults.AutoIgnoreUnsupportedMethods
 	}
+
+	return nil
 }
 
 func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
