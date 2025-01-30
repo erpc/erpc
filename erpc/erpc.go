@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/erpc/erpc/auth"
+	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
@@ -31,6 +32,11 @@ func NewERPC(
 		return nil, err
 	}
 
+	proxyPoolRegistry, err := clients.NewProxyPoolRegistry(cfg.ProxyPools, logger)
+	if err != nil {
+		return nil, err
+	}
+
 	vendorsRegistry := thirdparty.NewVendorsRegistry()
 	projectRegistry, err := NewProjectsRegistry(
 		appCtx,
@@ -39,6 +45,7 @@ func NewERPC(
 		evmJsonRpcCache,
 		rateLimitersRegistry,
 		vendorsRegistry,
+		proxyPoolRegistry,
 	)
 	if err != nil {
 		return nil, err

@@ -766,6 +766,7 @@ func createTestRegistry(ctx context.Context, projectID string, logger *zerolog.L
 		nil, // RateLimitersRegistry not needed for these tests
 		vr,
 		pr,
+		nil, // ProxyPoolRegistry
 		metricsTracker,
 		1*time.Second,
 	)

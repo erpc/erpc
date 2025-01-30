@@ -38,6 +38,7 @@ export interface Config {
   projects: (ProjectConfig | undefined)[];
   rateLimiters?: RateLimiterConfig;
   metrics?: MetricsConfig;
+  proxyPools: (ProxyPoolConfig | undefined)[];
 }
 export interface ServerConfig {
   listenV4?: boolean;
@@ -231,6 +232,8 @@ export interface JsonRpcUpstreamConfig {
   batchMaxSize?: number /* int */;
   batchMaxWait?: string;
   enableGzip?: boolean;
+  headers?: { [key: string]: string};
+  proxyPool?: string;
 }
 export interface EvmUpstreamConfig {
   chainId: number /* int64 */;
@@ -280,6 +283,10 @@ export interface RateLimitRuleConfig {
   maxCount: number /* uint */;
   period: Duration;
   waitTime: Duration;
+}
+export interface ProxyPoolConfig {
+  id: string;
+  urls: string[];
 }
 export interface HealthCheckConfig {
   scoreMetricsWindowSize: string;

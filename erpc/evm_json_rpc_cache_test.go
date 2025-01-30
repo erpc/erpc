@@ -44,7 +44,7 @@ func createCacheTestFixtures(upstreamConfigs []upsTestCfg) ([]*data.MockConnecto
 		},
 	}
 
-	clr := clients.NewClientRegistry(&logger, "prjA")
+	clr := clients.NewClientRegistry(&logger, "prjA", nil)
 	vr := thirdparty.NewVendorsRegistry()
 	upstreams := make([]*upstream.Upstream, 0, len(upstreamConfigs))
 

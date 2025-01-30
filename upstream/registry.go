@@ -57,6 +57,7 @@ func NewUpstreamsRegistry(
 	rr *RateLimitersRegistry,
 	vr *thirdparty.VendorsRegistry,
 	pr *thirdparty.ProvidersRegistry,
+	proxyPoolRegistry *clients.ProxyPoolRegistry,
 	mt *health.Tracker,
 	scoreRefreshInterval time.Duration,
 ) *UpstreamsRegistry {
@@ -65,7 +66,7 @@ func NewUpstreamsRegistry(
 		prjId:                prjId,
 		scoreRefreshInterval: scoreRefreshInterval,
 		logger:               logger,
-		clientRegistry:       clients.NewClientRegistry(logger, prjId),
+		clientRegistry:       clients.NewClientRegistry(logger, prjId, proxyPoolRegistry),
 		rateLimitersRegistry: rr,
 		vendorsRegistry:      vr,
 		providersRegistry:    pr,

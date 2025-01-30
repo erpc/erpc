@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/auth"
+	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/thirdparty"
@@ -24,6 +25,7 @@ type ProjectsRegistry struct {
 	preparedProjects     map[string]*PreparedProject
 	staticProjects       []*common.ProjectConfig
 	vendorsRegistry      *thirdparty.VendorsRegistry
+	proxyPoolRegistry    *clients.ProxyPoolRegistry
 }
 
 func NewProjectsRegistry(
@@ -33,6 +35,7 @@ func NewProjectsRegistry(
 	evmJsonRpcCache *EvmJsonRpcCache,
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
 	vendorsRegistry *thirdparty.VendorsRegistry,
+	proxyPoolRegistry *clients.ProxyPoolRegistry,
 ) (*ProjectsRegistry, error) {
 	reg := &ProjectsRegistry{
 		appCtx:               appCtx,
@@ -42,6 +45,7 @@ func NewProjectsRegistry(
 		rateLimitersRegistry: rateLimitersRegistry,
 		evmJsonRpcCache:      evmJsonRpcCache,
 		vendorsRegistry:      vendorsRegistry,
+		proxyPoolRegistry:    proxyPoolRegistry,
 	}
 
 	for _, prjCfg := range staticProjects {
@@ -118,6 +122,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		r.rateLimitersRegistry,
 		r.vendorsRegistry,
 		providersRegistry,
+		r.proxyPoolRegistry,
 		metricsTracker,
 		1*time.Second,
 	)

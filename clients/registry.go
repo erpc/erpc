@@ -25,13 +25,18 @@ type Client struct {
 }
 
 type ClientRegistry struct {
-	logger    *zerolog.Logger
-	projectId string
-	clients   sync.Map
+	logger            *zerolog.Logger
+	projectId         string
+	clients           sync.Map
+	proxyPoolRegistry *ProxyPoolRegistry
 }
 
-func NewClientRegistry(logger *zerolog.Logger, projectId string) *ClientRegistry {
-	return &ClientRegistry{logger: logger, projectId: projectId}
+func NewClientRegistry(logger *zerolog.Logger, projectId string, proxyPoolRegistry *ProxyPoolRegistry) *ClientRegistry {
+	return &ClientRegistry{
+		logger:            logger,
+		projectId:         projectId,
+		proxyPoolRegistry: proxyPoolRegistry,
+	}
 }
 
 func (manager *ClientRegistry) GetOrCreateClient(appCtx context.Context, ups common.Upstream) (ClientInterface, error) {
@@ -48,7 +53,20 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 	var clientErr error
 
 	cfg := ups.Config()
+
 	parsedUrl, err := url.Parse(cfg.Endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse URL for upstream: %v", cfg.Id)
+	}
+
+	var proxyPool *ProxyPool
+	if cfg.JsonRpc != nil && cfg.JsonRpc.ProxyPool != "" {
+		proxyPool, err = manager.proxyPoolRegistry.GetPool(cfg.JsonRpc.ProxyPool)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get proxy pool: %v", cfg.Id)
+		}
+	}
+
 	if err != nil {
 		clientErr = fmt.Errorf("failed to parse URL for upstream: %v", cfg.Id)
 	} else {
@@ -64,6 +82,7 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 						cfg.Id,
 						parsedUrl,
 						cfg.JsonRpc,
+						proxyPool,
 					)
 					if err != nil {
 						clientErr = fmt.Errorf("failed to create HTTP client for upstream: %v", cfg.Id)

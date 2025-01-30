@@ -42,6 +42,14 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
+
+	if c.ProxyPools != nil {
+		for _, pool := range c.ProxyPools {
+			if err := pool.Validate(); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -135,6 +143,25 @@ func (r *RateLimitRuleConfig) Validate() error {
 		_, err := time.ParseDuration(r.WaitTime)
 		if err != nil {
 			return fmt.Errorf("rateLimiter.*.budget.rules.*.waitTime is invalid: %w", err)
+		}
+	}
+	return nil
+}
+
+func (p *ProxyPoolConfig) Validate() error {
+	if p.ID == "" {
+		return fmt.Errorf("proxyPool.*.id is required under proxyPools")
+	}
+	if len(p.Urls) == 0 {
+		return fmt.Errorf("proxyPool.*.urls is required under proxyPool.*.id '%s', add at least one URL", p.ID)
+	}
+
+	for _, url := range p.Urls {
+		urlLower := strings.ToLower(url)
+		if !strings.HasPrefix(urlLower, "http://") &&
+			!strings.HasPrefix(urlLower, "https://") &&
+			!strings.HasPrefix(urlLower, "socks5://") {
+			return fmt.Errorf("proxyPool.*.urls under proxyPool.*.id '%s' must be valid HTTP, HTTPS, or SOCKS5 URLs, got: %s", p.ID, url)
 		}
 	}
 	return nil
@@ -546,7 +573,7 @@ func (u *UpstreamConfig) Validate(c *Config) error {
 		}
 	}
 	if u.JsonRpc != nil {
-		if err := u.JsonRpc.Validate(); err != nil {
+		if err := u.JsonRpc.Validate(c); err != nil {
 			return err
 		}
 	}
@@ -697,19 +724,30 @@ func (c *CircuitBreakerPolicyConfig) Validate() error {
 	return nil
 }
 
-func (j *JsonRpcUpstreamConfig) Validate() error {
-	if j.SupportsBatch == nil || !*j.SupportsBatch {
-		return nil
+func (j *JsonRpcUpstreamConfig) Validate(c *Config) error {
+	if j.SupportsBatch != nil && !*j.SupportsBatch {
+		if j.BatchMaxWait == "" {
+			return fmt.Errorf("upstream.*.jsonRpc.batchMaxWait is required")
+		}
+		_, err := time.ParseDuration(j.BatchMaxWait)
+		if err != nil {
+			return fmt.Errorf("upstream.*.jsonRpc.batchMaxWait is invalid (must be like 500ms, 2s, etc): %w", err)
+		}
+		if j.BatchMaxSize <= 0 {
+			return fmt.Errorf("upstream.*.jsonRpc.batchMaxSize must be greater than 0")
+		}
 	}
-	if j.BatchMaxWait == "" {
-		return fmt.Errorf("upstream.*.jsonRpc.batchMaxWait is required")
-	}
-	_, err := time.ParseDuration(j.BatchMaxWait)
-	if err != nil {
-		return fmt.Errorf("upstream.*.jsonRpc.batchMaxWait is invalid (must be like 500ms, 2s, etc): %w", err)
-	}
-	if j.BatchMaxSize <= 0 {
-		return fmt.Errorf("upstream.*.jsonRpc.batchMaxSize must be greater than 0")
+	if j.ProxyPool != "" {
+		found := false
+		for _, pool := range c.ProxyPools {
+			if pool.ID == j.ProxyPool {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("upstream.*.jsonRpc.proxyPool '%s' does not exist in config.proxyPools", j.ProxyPool)
+		}
 	}
 	return nil
 }
