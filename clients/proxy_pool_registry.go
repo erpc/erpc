@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -33,7 +32,6 @@ func (p *ProxyPool) GetClient() *http.Client {
 // holds all pools
 type ProxyPoolRegistry struct {
 	logger *zerolog.Logger
-	mu     sync.RWMutex
 	pools  map[string]*ProxyPool
 }
 
@@ -57,9 +55,7 @@ func NewProxyPoolRegistry(
 		if err != nil {
 			return nil, err
 		}
-		r.mu.Lock()
 		r.pools[poolCfg.ID] = pool
-		r.mu.Unlock()
 		logger.Debug().
 			Str("poolId", poolCfg.ID).
 			Int("clientCount", len(pool.clients)).
@@ -108,9 +104,6 @@ func (r *ProxyPoolRegistry) GetPool(poolID string) (*ProxyPool, error) {
 		// If no proxy is configured, return nil to indicate direct requests.
 		return nil, nil
 	}
-
-	r.mu.RLock()
-	defer r.mu.RUnlock()
 
 	if pool, exists := r.pools[poolID]; exists {
 		return pool, nil
