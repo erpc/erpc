@@ -150,10 +150,10 @@ func (r *RateLimitRuleConfig) Validate() error {
 
 func (p *ProxyPoolConfig) Validate() error {
 	if p.ID == "" {
-		return fmt.Errorf("proxyPools.*.id is required")
+		return fmt.Errorf("proxyPool.*.id is required under proxyPools")
 	}
 	if len(p.Urls) == 0 {
-		return fmt.Errorf("proxyPools.*.urls is required, add at least one URL")
+		return fmt.Errorf("proxyPool.*.urls is required under proxyPool.*.id '%s', add at least one URL", p.ID)
 	}
 
 	for _, url := range p.Urls {
@@ -161,7 +161,7 @@ func (p *ProxyPoolConfig) Validate() error {
 		if !strings.HasPrefix(urlLower, "http://") &&
 			!strings.HasPrefix(urlLower, "https://") &&
 			!strings.HasPrefix(urlLower, "socks5://") {
-			return fmt.Errorf("proxyPools.*.urls must be valid HTTP, HTTPS, or SOCKS5 URLs, got: %s", url)
+			return fmt.Errorf("proxyPool.*.urls under proxyPool.*.id '%s' must be valid HTTP, HTTPS, or SOCKS5 URLs, got: %s", p.ID, url)
 		}
 	}
 	return nil

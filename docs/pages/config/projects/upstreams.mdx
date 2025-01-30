@@ -94,10 +94,6 @@ projects:
           headers:
             Authorization: "Bearer 1234567890"
 
-          # (OPTIONAL) Route all outbound requests to this upstream
-          # through the provided HTTP proxy
-          proxyUrl: http://proxy.myorg.local:3128
-
         # (OPTIONAL) Which methods must never be sent to this upstream.
         # For example this can be used to avoid archive calls (traces) to full nodes
         ignoreMethods:
@@ -234,10 +230,6 @@ export default createConfig({
             headers: {
               Authorization: "Bearer 1234567890",
             },
-
-            // (OPTIONAL) Route all outbound requests to this upstream
-            // through the provided HTTP proxy
-            proxyUrl: "http://proxy.myorg.local:3128",
           },
 
           // (OPTIONAL) Which methods must never be sent to this upstream.

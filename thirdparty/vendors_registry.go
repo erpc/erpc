@@ -1,8 +1,6 @@
 package thirdparty
 
-import (
-	"github.com/erpc/erpc/common"
-)
+import "github.com/erpc/erpc/common"
 
 type VendorsRegistry struct {
 	thirdparty []common.Vendor

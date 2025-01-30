@@ -34,7 +34,7 @@ type ProxyPoolRegistry struct {
 	pools  map[string]*ProxyPool
 }
 
-// NewProxyPoolRegistry creates a new registry and initializes each pool.
+// creates a new registry and initializes each pool.
 func NewProxyPoolRegistry(
 	cfg []common.ProxyPoolConfig,
 	logger *zerolog.Logger,
