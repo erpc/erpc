@@ -1155,3 +1155,7 @@ func getVendorSpecificErrorIfAny(
 
 	return vn.GetVendorSpecificErrorIfAny(rp, jr, details)
 }
+
+func (c *GenericHttpJsonRpcClient) UnderlyingHttpClient() *http.Client {
+	return c.getHttpClient()
+}

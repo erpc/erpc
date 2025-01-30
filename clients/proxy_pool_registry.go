@@ -67,7 +67,7 @@ func NewProxyPoolRegistry(
 // creates a ProxyPool from a given config, building an http.Client for each URL
 func createProxyPool(poolCfg common.ProxyPoolConfig) (*ProxyPool, error) {
 	if len(poolCfg.Urls) == 0 {
-		return &ProxyPool{ID: poolCfg.ID}, nil
+		return &ProxyPool{ID: poolCfg.ID}, fmt.Errorf("no proxy URLs defined for pool '%s'. at least one proxy URL is required", poolCfg.ID)
 	}
 
 	clients := make([]*http.Client, 0, len(poolCfg.Urls))
