@@ -11,7 +11,7 @@ database:
         empty: allow
         connector: memory
         ttl: 0
-  #  Cache is disabled by default. You can enable it by uncommenting the following line
+  #  Cache is disabled by default. You can also disable it by uncommenting the following line
   #  evmJsonRpcCache: ~ 
 server:
   httpHostV4: 0.0.0.0
