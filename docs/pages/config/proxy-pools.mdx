@@ -22,12 +22,12 @@ Configure Proxy Pools in your `erpc.yaml` or TypeScript configuration file. Defi
 ```yaml filename="erpc.yaml"
 proxyPools:
   - id: eu-dc1-pool
-    proxies:
+    urls:
       - http://proxy111.myorg.local:3128
       - https://proxy222.myorg.local:3129
 
   - id: us-dc1-pool
-    proxies:
+    urls:
       - http://proxy111.myorg.local:3128
       - socks5://proxy222.myorg.local:3129
 ```
@@ -39,13 +39,13 @@ import { createConfig } from "@erpc-cloud/config";
 export default createConfig({
   proxyPools: {
     "eu-dc1-pool": {
-      proxies: [
+      urls: [
         "http://proxy111.myorg.local:3128",
         "https://proxy222.myorg.local:3129",
       ],
     },
     "us-dc1-pool": {
-      proxies: [
+      urls: [
         "http://proxy111.myorg.local:3128",
         "socks5://proxy222.myorg.local:3129",
       ],
