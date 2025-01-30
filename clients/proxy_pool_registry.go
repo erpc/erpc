@@ -36,7 +36,7 @@ type ProxyPoolRegistry struct {
 
 // creates a new registry and initializes each pool.
 func NewProxyPoolRegistry(
-	cfg []common.ProxyPoolConfig,
+	cfg []*common.ProxyPoolConfig,
 	logger *zerolog.Logger,
 ) (*ProxyPoolRegistry, error) {
 	r := &ProxyPoolRegistry{
@@ -50,7 +50,7 @@ func NewProxyPoolRegistry(
 
 	// Initialize each proxy pool
 	for _, poolCfg := range cfg {
-		pool, err := createProxyPool(poolCfg)
+		pool, err := createProxyPool(*poolCfg)
 		if err != nil {
 			return nil, err
 		}
