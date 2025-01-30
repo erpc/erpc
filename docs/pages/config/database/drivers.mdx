@@ -22,6 +22,11 @@ database:
         driver: memory
         memory:
           maxItems: 10000
+    policies:
+      - network: "*"
+        method: "*"
+        finality: finalized
+        connector: memory-cache
 ```
 </Tab>
 <Tab>
@@ -38,6 +43,14 @@ export default createConfig({
           memory: {
             maxItems: 10000
           }
+        }
+      ],
+      policies: [
+        {
+          network: "*",
+          method: "*",
+          finality: "finalized",
+          connector: "memory-cache"
         }
       ]
     }
@@ -72,6 +85,11 @@ database:
           initTimeout: 5s
           getTimeout: 1s
           setTimeout: 2s
+    policies:
+      - network: "*"
+        method: "*"
+        finality: finalized
+        connector: redis-cache
 ```
 </Tab>
 <Tab>
@@ -100,6 +118,14 @@ export default createConfig({
             getTimeout: "1s",
             setTimeout: "2s"
           }
+        }
+      ],
+      policies: [
+        {
+          network: "*",
+          method: "*",
+          finality: "finalized",
+          connector: "redis-cache"
         }
       ]
     }
@@ -138,6 +164,11 @@ database:
           initTimeout: 5s
           getTimeout: 1s
           setTimeout: 2s
+    policies:
+      - network: "*"
+        method: "*"
+        finality: finalized
+        connector: postgres-cache
 ```
 </Tab>
 <Tab>
@@ -158,6 +189,14 @@ export default createConfig({
             getTimeout: "1s",
             setTimeout: "2s"
           }
+        }
+      ],
+      policies: [
+        {
+          network: "*",
+          method: "*",
+          finality: "finalized",
+          connector: "postgres-cache"
         }
       ]
     }
@@ -192,6 +231,11 @@ database:
             secretAccessKey: YOUR_SECRET_ACCESS_KEY # Only if mode is secret
             profile: xxxxx # Only if mode is file
             credentialsFile: xxxx # Only if mode is file
+    policies:
+      - network: "*"
+        method: "*"
+        finality: finalized
+        connector: dynamodb-cache
 ```
 </Tab>
 <Tab>
@@ -221,6 +265,14 @@ export default createConfig({
               credentialsFile: process.env.DYNAMODB_CREDENTIALS_FILE // Only if mode is file
             }
           }
+        }
+      ],
+      policies: [
+        {
+          network: "*",
+          method: "*",
+          finality: "finalized",
+          connector: "dynamodb-cache"
         }
       ]
     }
