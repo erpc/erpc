@@ -1765,6 +1765,7 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 		rlr,
 		vr,
 		pr,
+		nil,
 		mt,
 		1*time.Second,
 	)

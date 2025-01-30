@@ -93,6 +93,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rateLimitersRegistry,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -201,6 +202,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rateLimitersRegistry,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -307,6 +309,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vndr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -420,6 +423,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -562,6 +566,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -715,6 +720,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -878,6 +884,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -1073,6 +1080,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -1250,6 +1258,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -1447,6 +1456,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -1645,6 +1655,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -1833,6 +1844,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -2011,6 +2023,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			0,
 		)
@@ -2203,6 +2216,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			0,
 		)
@@ -2381,6 +2395,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			0,
 		)
@@ -2568,6 +2583,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			0,
 		)
@@ -2735,6 +2751,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -2860,6 +2877,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -2980,6 +2998,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -3102,6 +3121,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -3220,6 +3240,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rateLimitersRegistry,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -3327,6 +3348,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -3451,6 +3473,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -3572,6 +3595,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -3698,6 +3722,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -3827,6 +3852,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -3978,6 +4004,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -4128,6 +4155,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -4277,6 +4305,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -4404,6 +4433,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Hour,
 		)
@@ -4537,6 +4567,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -4670,6 +4701,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -4809,6 +4841,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -4940,6 +4973,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -5067,6 +5101,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -5226,6 +5261,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -5337,6 +5373,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -5447,6 +5484,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -5557,6 +5595,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -5654,6 +5693,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rateLimitersRegistry,
 			vr,
 			pr,
+			nil,
 			metricsTracker,
 			1*time.Second,
 		)
@@ -5845,6 +5885,7 @@ func TestNetwork_Forward(t *testing.T) {
 			rlr,
 			vr,
 			pr,
+			nil,
 			mt,
 			1*time.Second,
 		)
@@ -6868,6 +6909,7 @@ func setupTestNetwork(t *testing.T, ctx context.Context, upstreamConfig *common.
 		rateLimitersRegistry,
 		vr,
 		pr,
+		nil,
 		metricsTracker,
 		1*time.Second,
 	)
@@ -6955,6 +6997,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.C
 		rateLimitersRegistry,
 		vr,
 		pr,
+		nil,
 		metricsTracker,
 		1*time.Second,
 	)

@@ -62,6 +62,7 @@ func BenchmarkNetworkForward_SimpleSuccess(b *testing.B) {
 		rlr,
 		vr,
 		pr,
+		nil,
 		mt,
 		1*time.Second,
 	)
@@ -154,6 +155,7 @@ func BenchmarkNetworkForward_MethodIgnoreCase(b *testing.B) {
 		rlr,
 		vr,
 		pr,
+		nil,
 		mt,
 		1*time.Second,
 	)
@@ -253,6 +255,7 @@ func BenchmarkNetworkForward_RetryFailures(b *testing.B) {
 		rlr,
 		vr,
 		pr,
+		nil,
 		mt,
 		1*time.Second,
 	)

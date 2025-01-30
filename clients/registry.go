@@ -25,15 +25,17 @@ type Client struct {
 }
 
 type ClientRegistry struct {
-	logger    *zerolog.Logger
-	projectId string
-	clients   sync.Map
+	logger            *zerolog.Logger
+	projectId         string
+	clients           sync.Map
+	proxyPoolRegistry *ProxyPoolRegistry
 }
 
-func NewClientRegistry(logger *zerolog.Logger, projectId string) *ClientRegistry {
+func NewClientRegistry(logger *zerolog.Logger, projectId string, proxyPoolRegistry *ProxyPoolRegistry) *ClientRegistry {
 	return &ClientRegistry{
-		logger:    logger,
-		projectId: projectId,
+		logger:            logger,
+		projectId:         projectId,
+		proxyPoolRegistry: proxyPoolRegistry,
 	}
 }
 
@@ -59,8 +61,10 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 
 	var proxyPool *ProxyPool
 	if cfg.JsonRpc != nil && cfg.JsonRpc.ProxyPool != "" {
-		proxyPoolRegistry, _ := NewProxyPoolRegistry(common.GetConfig().ProxyPools, manager.logger)
-		proxyPool, _ = proxyPoolRegistry.GetPool(cfg.JsonRpc.ProxyPool)
+		proxyPool, err = manager.proxyPoolRegistry.GetPool(cfg.JsonRpc.ProxyPool)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get proxy pool: %v", cfg.Id)
+		}
 	}
 
 	if err != nil {
