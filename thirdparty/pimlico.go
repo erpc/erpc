@@ -88,13 +88,10 @@ var pimlicoSupportedChains = map[int64]struct{}{
 
 type PimlicoVendor struct {
 	common.Vendor
-	proxyPoolRegistry *clients.ProxyPoolRegistry
 }
 
-func CreatePimlicoVendor(proxyPoolRegistry *clients.ProxyPoolRegistry) common.Vendor {
-	return &PimlicoVendor{
-		proxyPoolRegistry: proxyPoolRegistry,
-	}
+func CreatePimlicoVendor() common.Vendor {
+	return &PimlicoVendor{}
 }
 
 func (v *PimlicoVendor) Name() string {
@@ -212,17 +209,9 @@ func (v *PimlicoVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 }
 
 func (v *PimlicoVendor) createClient(ctx context.Context, logger *zerolog.Logger, parsedURL *url.URL) (clients.HttpJsonRpcClient, error) {
-	if v.proxyPoolRegistry != nil {
-		proxyPool, err := v.proxyPoolRegistry.GetPool(parsedURL.Host)
-		if err != nil {
-			return nil, err
-		}
-		client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", "n/a", parsedURL, nil, proxyPool)
-		if err != nil {
-			return nil, err
-		}
-		return client, nil
+	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", "n/a", parsedURL, nil, nil)
+	if err != nil {
+		return nil, err
 	}
-
-	return clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", "n/a", parsedURL, nil, nil)
+	return client, nil
 }

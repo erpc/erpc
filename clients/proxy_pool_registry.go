@@ -16,7 +16,7 @@ import (
 type ProxyPool struct {
 	ID      string
 	clients []*http.Client
-	counter uint64 // Add atomic counter for round-robin
+	counter uint64
 }
 
 // returns a round-robin client from the pool.

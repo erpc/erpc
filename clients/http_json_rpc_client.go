@@ -29,8 +29,7 @@ type GenericHttpJsonRpcClient struct {
 	Url     *url.URL
 	headers map[string]string
 
-	proxyPool        string
-	fetchedProxyPool *ProxyPool
+	proxyPool *ProxyPool
 
 	projectId  string
 	upstreamId string
@@ -63,15 +62,15 @@ func NewGenericHttpJsonRpcClient(
 	upstreamId string,
 	parsedUrl *url.URL,
 	jsonRpcCfg *common.JsonRpcUpstreamConfig,
-	fetchedProxyPool *ProxyPool,
+	proxyPool *ProxyPool,
 ) (HttpJsonRpcClient, error) {
 	client := &GenericHttpJsonRpcClient{
-		Url:              parsedUrl,
-		appCtx:           appCtx,
-		logger:           logger,
-		projectId:        projectId,
-		upstreamId:       upstreamId,
-		fetchedProxyPool: fetchedProxyPool,
+		Url:        parsedUrl,
+		appCtx:     appCtx,
+		logger:     logger,
+		projectId:  projectId,
+		upstreamId: upstreamId,
+		proxyPool:  proxyPool,
 	}
 
 	// Default fallback transport (no proxy)
@@ -121,11 +120,7 @@ func NewGenericHttpJsonRpcClient(
 		}
 
 		if jsonRpcCfg.ProxyPool != "" {
-			client.proxyPool = jsonRpcCfg.ProxyPool
-		}
-
-		if fetchedProxyPool != nil {
-			client.fetchedProxyPool = fetchedProxyPool
+			client.proxyPool = proxyPool
 		}
 	}
 
@@ -199,8 +194,8 @@ func (c *GenericHttpJsonRpcClient) shutdown() {
 }
 
 func (c *GenericHttpJsonRpcClient) getHttpClient() *http.Client {
-	if c.proxyPool != "" && c.fetchedProxyPool != nil {
-		return c.fetchedProxyPool.GetClient()
+	if c.proxyPool != nil && len(c.proxyPool.clients) > 0 {
+		return c.proxyPool.GetClient()
 	}
 
 	return c.httpClient
@@ -384,8 +379,7 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 	c.logger.Debug().Str("host", c.Url.Host).RawJSON("request", requestBody).Interface("headers", httpReq.Header).Msgf("sending json rpc POST request (batch)")
 
 	// pick the client from the proxy pool registry (if configured) or fallback
-	actualClient := c.getHttpClient()
-	resp, err := actualClient.Do(httpReq)
+	resp, err := c.getHttpClient().Do(httpReq)
 	if err != nil {
 		cause := context.Cause(batchCtx)
 		if cause == nil {
@@ -611,8 +605,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 	c.logger.Debug().Str("host", c.Url.Host).RawJSON("request", requestBody).Interface("headers", httpReq.Header).Msg("sending json rpc POST request (single)")
 
 	// pick the client from the proxy pool registry (if configured) or fallback
-	actualClient := c.getHttpClient()
-	resp, err := actualClient.Do(httpReq)
+	resp, err := c.getHttpClient().Do(httpReq)
 	if err != nil {
 		cause := context.Cause(ctx)
 		if cause == nil {

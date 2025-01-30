@@ -17,13 +17,10 @@ import (
 
 type ThirdwebVendor struct {
 	common.Vendor
-	proxyPoolRegistry *clients.ProxyPoolRegistry
 }
 
-func CreateThirdwebVendor(proxyPoolRegistry *clients.ProxyPoolRegistry) common.Vendor {
-	return &ThirdwebVendor{
-		proxyPoolRegistry: proxyPoolRegistry,
-	}
+func CreateThirdwebVendor() common.Vendor {
+	return &ThirdwebVendor{}
 }
 
 func (v *ThirdwebVendor) Name() string {
@@ -127,17 +124,9 @@ func (v *ThirdwebVendor) generateUrl(chainId int64, clientId string) (*url.URL, 
 }
 
 func (v *ThirdwebVendor) createClient(ctx context.Context, logger *zerolog.Logger, parsedURL *url.URL) (clients.HttpJsonRpcClient, error) {
-	if v.proxyPoolRegistry != nil {
-		proxyPool, err := v.proxyPoolRegistry.GetPool(parsedURL.Host)
-		if err != nil {
-			return nil, err
-		}
-		client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", "n/a", parsedURL, nil, proxyPool)
-		if err != nil {
-			return nil, err
-		}
-		return client, nil
+	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", "n/a", parsedURL, nil, nil)
+	if err != nil {
+		return nil, err
 	}
-
-	return clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", "n/a", parsedURL, nil, nil)
+	return client, nil
 }
