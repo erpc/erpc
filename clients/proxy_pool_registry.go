@@ -21,8 +21,7 @@ type ProxyPool struct {
 // returns a round-robin client from the pool.
 func (p *ProxyPool) GetClient() *http.Client {
 	if len(p.clients) == 0 {
-		// Fallback: if for some reason the pool has zero clients
-		return &http.Client{Timeout: 60 * time.Second}
+		panic(fmt.Sprintf("ProxyPool '%s' has no clients registered", p.ID))
 	}
 	// Round-robin client selection
 	idx := atomic.AddUint64(&p.counter, 1) % uint64(len(p.clients))
