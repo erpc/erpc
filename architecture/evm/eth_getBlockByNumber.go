@@ -44,6 +44,16 @@ func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common
 		return nr, re
 	}
 
+	ncfg := network.Config()
+	if ncfg == nil ||
+		ncfg.Evm == nil ||
+		ncfg.Evm.Integrity == nil ||
+		ncfg.Evm.Integrity.EnforceHighestBlock == nil ||
+		!*ncfg.Evm.Integrity.EnforceHighestBlock {
+		// If integrity check for highest block is disabled, skip this hook.
+		return nr, re
+	}
+
 	rqj, err := nq.JsonRpcRequest()
 	if err != nil {
 		return nil, err
@@ -85,7 +95,10 @@ func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common
 				return nil, err
 			}
 			nq := common.NewNormalizedRequestFromJsonRpcRequest(request)
-			nq.SetDirectives(nq.Directives())
+			dr := nq.Directives().Clone()
+			// Exclude the current upstream from the request (as high likely it doesn't have this block)
+			dr.UseUpstream = fmt.Sprintf("!%s", nr.UpstreamId())
+			nq.SetDirectives(dr)
 			nq.SetNetwork(network)
 			return network.Forward(ctx, nq)
 		} else {

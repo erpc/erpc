@@ -845,7 +845,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 
 		// Set up upstream configurations
@@ -867,7 +866,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Initialize the upstreams registry
-		vr = thirdparty.NewVendorsRegistry()
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,
@@ -1041,7 +1040,6 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		vr := thirdparty.NewVendorsRegistry()
 		mt := health.NewTracker("prjA", 2*time.Second)
 
 		// Set up upstream configurations
@@ -1063,7 +1061,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Initialize the upstreams registry
-		vr = thirdparty.NewVendorsRegistry()
+		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
 			vr,

@@ -55,8 +55,6 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		return false, nil, nil
 	}
 
-	logger := up.Logger().With().Str("method", "eth_getLogs").Interface("id", r.ID()).Logger()
-
 	ncfg := n.Config()
 	if ncfg == nil ||
 		ncfg.Evm == nil ||
@@ -66,6 +64,8 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		// If integrity check for eth_getLogs block range is disabled, skip this hook.
 		return false, nil, nil
 	}
+
+	logger := up.Logger().With().Str("method", "eth_getLogs").Interface("id", r.ID()).Logger()
 
 	jrq, err := r.JsonRpcRequest()
 	if err != nil {

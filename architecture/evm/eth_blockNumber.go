@@ -10,6 +10,16 @@ import (
 // networkPreForward_eth_blockNumber calls the normal forward, then compares the returned block number,
 // to all EVM upstreams' StatePoller for this network and returns the highest block number across them.
 func networkPreForward_eth_blockNumber(ctx context.Context, network common.Network, nq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
+	ncfg := network.Config()
+	if ncfg == nil ||
+		ncfg.Evm == nil ||
+		ncfg.Evm.Integrity == nil ||
+		ncfg.Evm.Integrity.EnforceHighestBlock == nil ||
+		!*ncfg.Evm.Integrity.EnforceHighestBlock {
+		// If integrity check for highest block is disabled, skip this hook.
+		return false, nil, nil
+	}
+
 	// Step 1: forward the request normally
 	resp, err = network.Forward(ctx, nq)
 	if err != nil {
