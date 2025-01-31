@@ -29,6 +29,10 @@ export {
   EvmNodeTypeFull,
   EvmNodeTypeArchive,
   EvmNodeTypeLight,
+  // Evm syncing type
+  EvmSyncingStateUnknown,
+  EvmSyncingStateSyncing,
+  EvmSyncingStateNotSyncing,
   // Architecture export
   ArchitectureEvm,
   // Upstream types const exprots
@@ -38,45 +42,79 @@ export {
   AuthTypeJwt,
   AuthTypeSiwe,
   AuthTypeNetwork,
+  // Consensus related
+  ConsensusFailureBehaviorReturnError,
+  ConsensusFailureBehaviorAcceptAnyValidResult,
+  ConsensusFailureBehaviorPreferBlockHeadLeader,
+  ConsensusFailureBehaviorOnlyBlockHeadLeader,
+  ConsensusLowParticipantsBehaviorReturnError,
+  ConsensusLowParticipantsBehaviorAcceptAnyValidResult,
+  ConsensusLowParticipantsBehaviorPreferBlockHeadLeader,
+  ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader,
+  ConsensusDisputeBehaviorReturnError,
+  ConsensusDisputeBehaviorAcceptAnyValidResult,
+  ConsensusDisputeBehaviorPreferBlockHeadLeader,
+  ConsensusDisputeBehaviorOnlyBlockHeadLeader,
 } from "./generated";
 export type {
   Config,
-  ServerConfig,
-  AdminConfig,
-  DatabaseConfig,
-  CacheConfig,
-  CachePolicyConfig,
-  MemoryConnectorConfig,
-  RedisConnectorConfig,
-  DynamoDBConnectorConfig,
-  PostgreSQLConnectorConfig,
-  AwsAuthConfig,
   ProjectConfig,
-  CORSConfig,
+  HealthCheckConfig,
+  // Provider related
+  ProviderConfig,
+  VendorSettings,
+  // Upstream related
   UpstreamConfig,
+  EvmUpstreamConfig,
   RoutingConfig,
   ScoreMultiplierConfig,
   RateLimitAutoTuneConfig,
   JsonRpcUpstreamConfig,
-  EvmUpstreamConfig,
+  // Failsafe related
   FailsafeConfig,
   RetryPolicyConfig,
   CircuitBreakerPolicyConfig,
-  TimeoutPolicyConfig,
   HedgePolicyConfig,
-  RateLimiterConfig,
-  RateLimitBudgetConfig,
-  RateLimitRuleConfig,
-  HealthCheckConfig,
+  TimeoutPolicyConfig,
+  ConsensusPolicyConfig,
+  // Network related
   NetworkConfig,
   EvmNetworkConfig,
+  EvmIntegrityConfig,
   SelectionPolicyConfig,
+  DirectiveDefaultsConfig,
+  // DB related
+  DatabaseConfig,
+  CacheConfig,
+  DataFinalityState,
+  CacheEmptyBehavior,
+  CachePolicyConfig,
+  MemoryConnectorConfig,
+  RedisConnectorConfig,
+  DynamoDBConnectorConfig,
+  AwsAuthConfig,
+  PostgreSQLConnectorConfig,
+  // Auth related
   AuthStrategyConfig,
   SecretStrategyConfig,
   JwtStrategyConfig,
   SiweStrategyConfig,
   NetworkStrategyConfig,
+  // Rate limits related
+  RateLimiterConfig,
+  RateLimitBudgetConfig,
+  RateLimitRuleConfig,
+  // Server config related
+  ServerConfig,
+  CORSConfig,
   MetricsConfig,
+  AdminConfig,
+  AliasingConfig,
+  AliasingRuleConfig,
+  TLSConfig,
+  // Proxy pools related
+  ProxyPoolConfig,
+
 } from "./generated";
 
 import type { Config } from './generated'

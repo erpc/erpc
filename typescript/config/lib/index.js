@@ -28,6 +28,18 @@ __export(src_exports, {
   CacheEmptyBehaviorAllow: () => CacheEmptyBehaviorAllow,
   CacheEmptyBehaviorIgnore: () => CacheEmptyBehaviorIgnore,
   CacheEmptyBehaviorOnly: () => CacheEmptyBehaviorOnly,
+  ConsensusDisputeBehaviorAcceptAnyValidResult: () => ConsensusDisputeBehaviorAcceptAnyValidResult,
+  ConsensusDisputeBehaviorOnlyBlockHeadLeader: () => ConsensusDisputeBehaviorOnlyBlockHeadLeader,
+  ConsensusDisputeBehaviorPreferBlockHeadLeader: () => ConsensusDisputeBehaviorPreferBlockHeadLeader,
+  ConsensusDisputeBehaviorReturnError: () => ConsensusDisputeBehaviorReturnError,
+  ConsensusFailureBehaviorAcceptAnyValidResult: () => ConsensusFailureBehaviorAcceptAnyValidResult,
+  ConsensusFailureBehaviorOnlyBlockHeadLeader: () => ConsensusFailureBehaviorOnlyBlockHeadLeader,
+  ConsensusFailureBehaviorPreferBlockHeadLeader: () => ConsensusFailureBehaviorPreferBlockHeadLeader,
+  ConsensusFailureBehaviorReturnError: () => ConsensusFailureBehaviorReturnError,
+  ConsensusLowParticipantsBehaviorAcceptAnyValidResult: () => ConsensusLowParticipantsBehaviorAcceptAnyValidResult,
+  ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader: () => ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader,
+  ConsensusLowParticipantsBehaviorPreferBlockHeadLeader: () => ConsensusLowParticipantsBehaviorPreferBlockHeadLeader,
+  ConsensusLowParticipantsBehaviorReturnError: () => ConsensusLowParticipantsBehaviorReturnError,
   DataFinalityStateFinalized: () => DataFinalityStateFinalized,
   DataFinalityStateRealtime: () => DataFinalityStateRealtime,
   DataFinalityStateUnfinalized: () => DataFinalityStateUnfinalized,
@@ -35,6 +47,9 @@ __export(src_exports, {
   EvmNodeTypeArchive: () => EvmNodeTypeArchive,
   EvmNodeTypeFull: () => EvmNodeTypeFull,
   EvmNodeTypeLight: () => EvmNodeTypeLight,
+  EvmSyncingStateNotSyncing: () => EvmSyncingStateNotSyncing,
+  EvmSyncingStateSyncing: () => EvmSyncingStateSyncing,
+  EvmSyncingStateUnknown: () => EvmSyncingStateUnknown,
   ScopeNetwork: () => ScopeNetwork,
   ScopeUpstream: () => ScopeUpstream,
   UpstreamTypeEvm: () => UpstreamTypeEvm,
@@ -43,6 +58,25 @@ __export(src_exports, {
 module.exports = __toCommonJS(src_exports);
 
 // src/generated.ts
+var UpstreamTypeEvm = "evm";
+var EvmNodeTypeFull = "full";
+var EvmNodeTypeArchive = "archive";
+var EvmNodeTypeLight = "light";
+var EvmSyncingStateUnknown = 0;
+var EvmSyncingStateSyncing = 1;
+var EvmSyncingStateNotSyncing = 2;
+var ConsensusFailureBehaviorReturnError = "returnError";
+var ConsensusFailureBehaviorAcceptAnyValidResult = "acceptAnyValidResult";
+var ConsensusFailureBehaviorPreferBlockHeadLeader = "preferBlockHeadLeader";
+var ConsensusFailureBehaviorOnlyBlockHeadLeader = "onlyBlockHeadLeader";
+var ConsensusLowParticipantsBehaviorReturnError = "returnError";
+var ConsensusLowParticipantsBehaviorAcceptAnyValidResult = "acceptAnyValidResult";
+var ConsensusLowParticipantsBehaviorPreferBlockHeadLeader = "preferBlockHeadLeader";
+var ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader = "onlyBlockHeadLeader";
+var ConsensusDisputeBehaviorReturnError = "returnError";
+var ConsensusDisputeBehaviorAcceptAnyValidResult = "acceptAnyValidResult";
+var ConsensusDisputeBehaviorPreferBlockHeadLeader = "preferBlockHeadLeader";
+var ConsensusDisputeBehaviorOnlyBlockHeadLeader = "onlyBlockHeadLeader";
 var AuthTypeSecret = "secret";
 var AuthTypeJwt = "jwt";
 var AuthTypeSiwe = "siwe";
@@ -54,13 +88,9 @@ var DataFinalityStateUnknown = 3;
 var CacheEmptyBehaviorIgnore = 0;
 var CacheEmptyBehaviorAllow = 1;
 var CacheEmptyBehaviorOnly = 2;
-var EvmNodeTypeFull = "full";
-var EvmNodeTypeArchive = "archive";
-var EvmNodeTypeLight = "light";
 var ArchitectureEvm = "evm";
 var ScopeNetwork = "network";
 var ScopeUpstream = "upstream";
-var UpstreamTypeEvm = "evm";
 
 // src/index.ts
 var createConfig = (cfg) => {
@@ -76,6 +106,18 @@ var createConfig = (cfg) => {
   CacheEmptyBehaviorAllow,
   CacheEmptyBehaviorIgnore,
   CacheEmptyBehaviorOnly,
+  ConsensusDisputeBehaviorAcceptAnyValidResult,
+  ConsensusDisputeBehaviorOnlyBlockHeadLeader,
+  ConsensusDisputeBehaviorPreferBlockHeadLeader,
+  ConsensusDisputeBehaviorReturnError,
+  ConsensusFailureBehaviorAcceptAnyValidResult,
+  ConsensusFailureBehaviorOnlyBlockHeadLeader,
+  ConsensusFailureBehaviorPreferBlockHeadLeader,
+  ConsensusFailureBehaviorReturnError,
+  ConsensusLowParticipantsBehaviorAcceptAnyValidResult,
+  ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader,
+  ConsensusLowParticipantsBehaviorPreferBlockHeadLeader,
+  ConsensusLowParticipantsBehaviorReturnError,
   DataFinalityStateFinalized,
   DataFinalityStateRealtime,
   DataFinalityStateUnfinalized,
@@ -83,6 +125,9 @@ var createConfig = (cfg) => {
   EvmNodeTypeArchive,
   EvmNodeTypeFull,
   EvmNodeTypeLight,
+  EvmSyncingStateNotSyncing,
+  EvmSyncingStateSyncing,
+  EvmSyncingStateUnknown,
   ScopeNetwork,
   ScopeUpstream,
   UpstreamTypeEvm,

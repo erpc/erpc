@@ -1,4 +1,15 @@
 import type { LogLevel, Duration, ByteSize, ConnectorDriverType as TsConnectorDriverType, ConnectorConfig as TsConnectorConfig, UpstreamType as TsUpstreamType, NetworkArchitecture as TsNetworkArchitecture, AuthType as TsAuthType, AuthStrategyConfig as TsAuthStrategyConfig, SelectionPolicyEvalFunction } from "./types";
+export declare const UpstreamTypeEvm: UpstreamType;
+export type EvmUpstream = Upstream;
+export type EvmNodeType = string;
+export declare const EvmNodeTypeFull: EvmNodeType;
+export declare const EvmNodeTypeArchive: EvmNodeType;
+export declare const EvmNodeTypeLight: EvmNodeType;
+export type EvmSyncingState = number;
+export declare const EvmSyncingStateUnknown: EvmSyncingState;
+export declare const EvmSyncingStateSyncing: EvmSyncingState;
+export declare const EvmSyncingStateNotSyncing: EvmSyncingState;
+export type EvmStatePoller = any;
 export type CacheDAL = any;
 export interface MockCacheDal {
     mock: any;
@@ -147,6 +158,7 @@ export interface NetworkDefaults {
     failsafe?: FailsafeConfig;
     selectionPolicy?: SelectionPolicyConfig;
     directiveDefaults?: DirectiveDefaultsConfig;
+    evm?: EvmNetworkConfig;
 }
 export interface CORSConfig {
     allowedOrigins: string[];
@@ -223,13 +235,16 @@ export interface EvmUpstreamConfig {
     chainId: number;
     nodeType?: EvmNodeType;
     statePollerInterval?: string;
+    statePollerDebounce?: string;
     maxAvailableRecentBlocks?: number;
+    getLogsMaxBlockRange?: number;
 }
 export interface FailsafeConfig {
     retry?: RetryPolicyConfig;
     circuitBreaker?: CircuitBreakerPolicyConfig;
     timeout?: TimeoutPolicyConfig;
     hedge?: HedgePolicyConfig;
+    consensus?: ConsensusPolicyConfig;
 }
 export interface RetryPolicyConfig {
     maxAttempts: number;
@@ -254,6 +269,33 @@ export interface HedgePolicyConfig {
     quantile: number;
     minDelay: Duration;
     maxDelay: Duration;
+}
+export type ConsensusFailureBehavior = string;
+export declare const ConsensusFailureBehaviorReturnError: ConsensusFailureBehavior;
+export declare const ConsensusFailureBehaviorAcceptAnyValidResult: ConsensusFailureBehavior;
+export declare const ConsensusFailureBehaviorPreferBlockHeadLeader: ConsensusFailureBehavior;
+export declare const ConsensusFailureBehaviorOnlyBlockHeadLeader: ConsensusFailureBehavior;
+export type ConsensusLowParticipantsBehavior = string;
+export declare const ConsensusLowParticipantsBehaviorReturnError: ConsensusLowParticipantsBehavior;
+export declare const ConsensusLowParticipantsBehaviorAcceptAnyValidResult: ConsensusLowParticipantsBehavior;
+export declare const ConsensusLowParticipantsBehaviorPreferBlockHeadLeader: ConsensusLowParticipantsBehavior;
+export declare const ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader: ConsensusLowParticipantsBehavior;
+export type ConsensusDisputeBehavior = string;
+export declare const ConsensusDisputeBehaviorReturnError: ConsensusDisputeBehavior;
+export declare const ConsensusDisputeBehaviorAcceptAnyValidResult: ConsensusDisputeBehavior;
+export declare const ConsensusDisputeBehaviorPreferBlockHeadLeader: ConsensusDisputeBehavior;
+export declare const ConsensusDisputeBehaviorOnlyBlockHeadLeader: ConsensusDisputeBehavior;
+export interface ConsensusPolicyConfig {
+    requiredParticipants: number;
+    agreementThreshold?: number;
+    failureBehavior?: ConsensusFailureBehavior;
+    disputeBehavior?: ConsensusDisputeBehavior;
+    lowParticipantsBehavior?: ConsensusLowParticipantsBehavior;
+    punishMisbehavior?: PunishMisbehaviorConfig;
+}
+export interface PunishMisbehaviorConfig {
+    disputeThreshold: number;
+    sitOutPenalty?: string;
 }
 export interface RateLimiterConfig {
     budgets: RateLimitBudgetConfig[];
@@ -292,6 +334,12 @@ export interface DirectiveDefaultsConfig {
 export interface EvmNetworkConfig {
     chainId: number;
     fallbackFinalityDepth?: number;
+    fallbackStatePollerDebounce?: string;
+    integrity?: EvmIntegrityConfig;
+}
+export interface EvmIntegrityConfig {
+    enforceHighestBlock?: boolean;
+    enforceGetLogsBlockRange?: boolean;
 }
 export interface SelectionPolicyConfig {
     evalInterval?: number;
@@ -375,12 +423,8 @@ export declare const CacheEmptyBehaviorIgnore: CacheEmptyBehavior;
 export declare const CacheEmptyBehaviorAllow: CacheEmptyBehavior;
 export declare const CacheEmptyBehaviorOnly: CacheEmptyBehavior;
 export declare const DefaultEvmFinalityDepth = 1024;
+export declare const DefaultEvmStatePollerDebounce = "5s";
 export declare const DefaultPolicyFunction = "\n\t(upstreams, method) => {\n\t\tconst defaults = upstreams.filter(u => u.config.group !== 'fallback')\n\t\tconst fallbacks = upstreams.filter(u => u.config.group === 'fallback')\n\t\t\n\t\tconst maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7')\n\t\tconst maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10')\n\t\tconst minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1')\n\t\t\n\t\tconst healthyOnes = defaults.filter(\n\t\t\tu => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag\n\t\t)\n\t\t\n\t\tif (healthyOnes.length >= minHealthyThreshold) {\n\t\t\treturn healthyOnes\n\t\t}\n\n\t\tif (fallbacks.length > 0) {\n\t\t\tlet healthyFallbacks = fallbacks.filter(\n\t\t\t\tu => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag\n\t\t\t)\n\t\t\t\n\t\t\tif (healthyFallbacks.length > 0) {\n\t\t\t\treturn healthyFallbacks\n\t\t\t}\n\t\t}\n\n\t\t// The reason all upstreams are returned is to be less harsh and still consider default nodes (in case they have intermittent issues)\n\t\t// Order of upstreams does not matter as that will be decided by the upstream scoring mechanism\n\t\treturn upstreams\n\t}\n";
-export type EvmNodeType = string;
-export declare const EvmNodeTypeFull: EvmNodeType;
-export declare const EvmNodeTypeArchive: EvmNodeType;
-export declare const EvmNodeTypeLight: EvmNodeType;
-export type EvmStatePoller = any;
 export type NetworkArchitecture = string;
 export declare const ArchitectureEvm: NetworkArchitecture;
 export type Network = any;
@@ -398,11 +442,6 @@ export declare const ScopeNetwork: Scope;
  */
 export declare const ScopeUpstream: Scope;
 export type UpstreamType = string;
-export declare const UpstreamTypeEvm: UpstreamType;
-export type EvmSyncingState = number;
-export declare const EvmSyncingStateUnknown: EvmSyncingState;
-export declare const EvmSyncingStateSyncing: EvmSyncingState;
-export declare const EvmSyncingStateNotSyncing: EvmSyncingState;
 export type Upstream = any;
 export interface FakeUpstream {
 }
