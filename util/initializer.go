@@ -260,6 +260,13 @@ func (i *Initializer) attemptRemainingTasks(ctx context.Context) {
 					// The CompareAndSwap will ensure we always and only close the channel once for each attempt
 					defer close(doneCh)
 
+					if ctx.Err() != nil {
+						bt.lastErr.Store(wrappedError{err: ctx.Err()})
+						bt.state.Store(int32(TaskFailed))
+						i.logger.Warn().Str("task", bt.Name).Err(ctx.Err()).Msg("initialization task context error")
+						return
+					}
+
 					tctx, cancel := context.WithTimeout(ctx, i.conf.TaskTimeout)
 					defer cancel()
 
@@ -274,7 +281,12 @@ func (i *Initializer) attemptRemainingTasks(ctx context.Context) {
 					if err != nil {
 						// If context is cancelled there will be a reason already set for it on lastErr
 						if !errors.Is(err, context.Canceled) {
+							if cause := context.Cause(tctx); cause != nil {
+								err = cause
+							}
 							bt.lastErr.Store(wrappedError{err: err})
+						} else {
+							bt.lastErr.CompareAndSwap(nil, wrappedError{err: err})
 						}
 						bt.state.Store(int32(TaskFailed))
 						i.logger.Warn().Str("task", bt.Name).Err(err).Msg("initialization task failed")

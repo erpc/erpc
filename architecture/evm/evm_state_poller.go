@@ -56,6 +56,7 @@ type EvmStatePoller struct {
 
 	// The reason to not use latestBlockTimestamp is to avoid thundering herd,
 	// when a node is actively syncing and timestamp is always way in the past.
+	skipLatestBlockCheck bool
 	latestBlockUpdatedAt time.Time
 	latestBlockNumber    int64
 
@@ -112,7 +113,7 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 		}
 	}
 
-	e.logger.Info().Msgf("bootstraped evm state poller to track upstream latest, finalized blocks and syncing states")
+	e.logger.Debug().Msgf("bootstrapping evm state poller to track upstream latest/finalized blocks and syncing states")
 	e.Enabled = true
 
 	go (func() {
@@ -134,7 +135,12 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 		}
 	})()
 
-	return e.Poll(ctx)
+	err = e.Poll(ctx)
+	if err == nil {
+		e.logger.Info().Msgf("bootstrapped evm state poller to track upstream latest/finalized blocks and syncing states")
+	}
+
+	return err
 }
 
 func (e *EvmStatePoller) SetNetworkConfig(cfg *common.EvmNetworkConfig) {
@@ -198,12 +204,13 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 
 		syncing, err := e.fetchSyncingState(ctx)
 		if err != nil {
-			e.logger.Debug().Bool("syncingResult", syncing).Err(err).Msg("failed to get syncing state in evm state poller")
-			ermu.Lock()
-			errs = append(errs, err)
-			ermu.Unlock()
-			if common.IsClientError(err) {
-				e.skipSyncingCheck = true
+			if !e.skipSyncingCheck {
+				e.logger.Warn().Bool("syncingResult", syncing).Err(err).Msg("failed to get syncing state in evm state poller")
+				ermu.Lock()
+				errs = append(errs, err)
+				ermu.Unlock()
+			} else {
+				e.logger.Info().Bool("syncingResult", syncing).Err(err).Msg("upstream does not support eth_syncing method for evm state poller, will skip")
 			}
 			return
 		}
@@ -249,6 +256,10 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 // PollLatestBlockNumber fetches the latest block number in a blocking manner.
 // Respects the debounce interval if configured (if the last poll happened too recently, it reuses the cached value).
 func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, error) {
+	if e.shouldSkipLatestBlockCheck() {
+		return 0, nil
+	}
+
 	// Lock to check last poll time
 	e.mu.Lock()
 	if e.debounceInterval > 0 && time.Since(e.latestBlockUpdatedAt) < e.debounceInterval {
@@ -271,7 +282,19 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 	// Actually fetch from upstream
 	blockNum, err := e.fetchBlock(ctx, "latest")
 	if err != nil {
-		return 0, err
+		if common.HasErrorCode(err,
+			common.ErrCodeUpstreamRequestSkipped,
+			common.ErrCodeUpstreamMethodIgnored,
+			common.ErrCodeEndpointUnsupported,
+			common.ErrCodeEndpointMissingData,
+		) || common.IsClientError(err) {
+			e.setSkipLatestBlockCheck(true)
+			e.logger.Info().Err(err).Msg("upstream does not support fetching latest block number in evm state poller, will skip")
+			return 0, nil
+		} else {
+			e.logger.Warn().Err(err).Msg("failed to get latest block number in evm state poller")
+			return 0, err
+		}
 	}
 
 	// Update internal state
@@ -286,6 +309,22 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		Msg("fetched latest block")
 
 	return blockNum, nil
+}
+
+func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
+	// TODO after subscription epic this method should be called for every new block received from this upstream
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if blockNumber > e.latestBlockNumber {
+		e.latestBlockNumber = blockNumber
+		e.latestBlockUpdatedAt = time.Now()
+	}
+}
+
+func (e *EvmStatePoller) LatestBlock() int64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return int64(e.latestBlockNumber)
 }
 
 func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, error) {
@@ -315,13 +354,19 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 	// Actually fetch from upstream
 	blockNum, err := e.fetchBlock(ctx, "finalized")
 	if err != nil {
-		if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
+		if common.HasErrorCode(err,
+			common.ErrCodeUpstreamRequestSkipped,
+			common.ErrCodeUpstreamMethodIgnored,
+			common.ErrCodeEndpointUnsupported,
+			common.ErrCodeEndpointMissingData,
+		) || common.IsClientError(err) {
 			e.setSkipFinalizedCheck(true)
-			e.logger.Warn().Err(err).Msg("upstream does not support fetching finalized block number in evm state poller")
+			e.logger.Info().Err(err).Msg("upstream does not support fetching finalized block number in evm state poller, will skip")
+			return 0, nil
 		} else {
-			e.logger.Debug().Err(err).Msg("failed to get finalized block number in evm state poller")
+			e.logger.Warn().Err(err).Msg("failed to get finalized block number in evm state poller")
+			return 0, err
 		}
-		return 0, err
 	}
 
 	// Update internal state
@@ -338,50 +383,13 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 	return blockNum, nil
 }
 
-func (e *EvmStatePoller) setLatestBlockNumber(blockNumber int64) {
-	e.mu.Lock()
-	e.latestBlockNumber = blockNumber
-	e.mu.Unlock()
-	e.tracker.SetLatestBlockNumber(e.upstream.Config().Id, e.upstream.NetworkId(), blockNumber)
-}
-
-func (e *EvmStatePoller) SyncingState() common.EvmSyncingState {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.syncingState
-}
-
-func (e *EvmStatePoller) SetSyncingState(state common.EvmSyncingState) {
-	e.mu.Lock()
-	e.syncingState = state
-	e.mu.Unlock()
-}
-
-func (e *EvmStatePoller) LatestBlock() int64 {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return int64(e.latestBlockNumber)
-}
-
-func (e *EvmStatePoller) setFinalizedBlockNumber(blockNumber int64) {
-	e.mu.Lock()
-	e.finalizedBlockNumber = blockNumber
-	e.mu.Unlock()
-	e.tracker.SetFinalizedBlockNumber(e.upstream.Config().Id, e.upstream.NetworkId(), blockNumber)
-}
-
-func (e *EvmStatePoller) shouldSkipFinalizedCheck() bool {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-
-	return e.skipFinalizedCheck
-}
-
-func (e *EvmStatePoller) setSkipFinalizedCheck(skip bool) {
+func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-
-	e.skipFinalizedCheck = skip
+	if blockNumber > e.finalizedBlockNumber {
+		e.finalizedBlockNumber = blockNumber
+		e.finalizedBlockUpdatedAt = time.Now()
+	}
 }
 
 func (e *EvmStatePoller) FinalizedBlock() int64 {
@@ -442,27 +450,60 @@ func (e *EvmStatePoller) IsBlockFinalized(blockNumber int64) (bool, error) {
 	return blockNumber <= fb, nil
 }
 
-func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
-	// TODO after subscription epic this method should be called for every new block received from this upstream
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if blockNumber > e.latestBlockNumber {
-		e.latestBlockNumber = blockNumber
-		e.latestBlockUpdatedAt = time.Now()
-	}
+func (e *EvmStatePoller) SyncingState() common.EvmSyncingState {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.syncingState
 }
 
-func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {
+func (e *EvmStatePoller) SetSyncingState(state common.EvmSyncingState) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	if blockNumber > e.finalizedBlockNumber {
-		e.finalizedBlockNumber = blockNumber
-		e.finalizedBlockUpdatedAt = time.Now()
-	}
+	e.syncingState = state
+	e.mu.Unlock()
 }
 
 func (e *EvmStatePoller) IsObjectNull() bool {
 	return e == nil || e.upstream == nil
+}
+
+func (e *EvmStatePoller) setLatestBlockNumber(blockNumber int64) {
+	e.mu.Lock()
+	e.latestBlockNumber = blockNumber
+	e.mu.Unlock()
+	e.tracker.SetLatestBlockNumber(e.upstream.Config().Id, e.upstream.NetworkId(), blockNumber)
+}
+
+func (e *EvmStatePoller) shouldSkipLatestBlockCheck() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.skipLatestBlockCheck
+}
+
+func (e *EvmStatePoller) setSkipLatestBlockCheck(skip bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.skipLatestBlockCheck = skip
+}
+
+func (e *EvmStatePoller) setFinalizedBlockNumber(blockNumber int64) {
+	e.mu.Lock()
+	e.finalizedBlockNumber = blockNumber
+	e.mu.Unlock()
+	e.tracker.SetFinalizedBlockNumber(e.upstream.Config().Id, e.upstream.NetworkId(), blockNumber)
+}
+
+func (e *EvmStatePoller) shouldSkipFinalizedCheck() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	return e.skipFinalizedCheck
+}
+
+func (e *EvmStatePoller) setSkipFinalizedCheck(skip bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.skipFinalizedCheck = skip
 }
 
 func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64, error) {
@@ -507,11 +548,10 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 	resp, err := e.upstream.Forward(ctx, pr, true)
 	if err != nil {
 		if common.HasErrorCode(err,
-			common.ErrCodeEndpointClientSideException,
 			common.ErrCodeUpstreamRequestSkipped,
 			common.ErrCodeUpstreamMethodIgnored,
 			common.ErrCodeEndpointUnsupported,
-		) {
+		) || common.IsClientError(err) {
 			e.skipSyncingCheck = true
 		}
 		return false, err
