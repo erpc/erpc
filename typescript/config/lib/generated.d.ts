@@ -14,6 +14,7 @@ export interface Config {
     projects: (ProjectConfig | undefined)[];
     rateLimiters?: RateLimiterConfig;
     metrics?: MetricsConfig;
+    proxyPools?: (ProxyPoolConfig | undefined)[];
 }
 export interface ServerConfig {
     listenV4?: boolean;
@@ -133,9 +134,9 @@ export interface ProjectConfig {
     id: string;
     auth?: AuthConfig;
     cors?: CORSConfig;
-    providers: (ProviderConfig | undefined)[];
+    providers?: (ProviderConfig | undefined)[];
     upstreamDefaults?: UpstreamConfig;
-    upstreams: (UpstreamConfig | undefined)[];
+    upstreams?: (UpstreamConfig | undefined)[];
     networkDefaults?: NetworkDefaults;
     networks?: (NetworkConfig | undefined)[];
     rateLimitBudget?: string;
@@ -213,6 +214,10 @@ export interface JsonRpcUpstreamConfig {
     batchMaxSize?: number;
     batchMaxWait?: string;
     enableGzip?: boolean;
+    headers?: {
+        [key: string]: string;
+    };
+    proxyPool?: string;
 }
 export interface EvmUpstreamConfig {
     chainId: number;
@@ -262,6 +267,10 @@ export interface RateLimitRuleConfig {
     maxCount: number;
     period: Duration;
     waitTime: Duration;
+}
+export interface ProxyPoolConfig {
+    id: string;
+    urls: string[];
 }
 export interface HealthCheckConfig {
     scoreMetricsWindowSize: string;

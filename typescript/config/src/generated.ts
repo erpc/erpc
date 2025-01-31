@@ -38,7 +38,7 @@ export interface Config {
   projects: (ProjectConfig | undefined)[];
   rateLimiters?: RateLimiterConfig;
   metrics?: MetricsConfig;
-  proxyPools: (ProxyPoolConfig | undefined)[];
+  proxyPools?: (ProxyPoolConfig | undefined)[];
 }
 export interface ServerConfig {
   listenV4?: boolean;
@@ -156,9 +156,9 @@ export interface ProjectConfig {
   id: string;
   auth?: AuthConfig;
   cors?: CORSConfig;
-  providers: (ProviderConfig | undefined)[];
+  providers?: (ProviderConfig | undefined)[];
   upstreamDefaults?: UpstreamConfig;
-  upstreams: (UpstreamConfig | undefined)[];
+  upstreams?: (UpstreamConfig | undefined)[];
   networkDefaults?: NetworkDefaults;
   networks?: (NetworkConfig | undefined)[];
   rateLimitBudget?: string;

@@ -25,7 +25,9 @@ export async function verifyChecksum(
   const actualChecksum = hash.digest("hex");
 
   if (actualChecksum !== expectedChecksum) {
-    throw new Error("ChecksumVerificationError: Checksum verification failed");
+    throw new Error(
+      `ChecksumVerificationError: actualChecksum=${actualChecksum} expectedChecksum=${expectedChecksum}`,
+    );
   }
 
   console.log(
