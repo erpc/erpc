@@ -942,6 +942,26 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 			n.DirectiveDefaults = &DirectiveDefaultsConfig{}
 			*n.DirectiveDefaults = *defaults.DirectiveDefaults
 		}
+		if n.Evm != nil && defaults.Evm != nil {
+			if n.Evm.Integrity == nil && defaults.Evm.Integrity != nil {
+				n.Evm.Integrity = &EvmIntegrityConfig{}
+				*n.Evm.Integrity = *defaults.Evm.Integrity
+			}
+			if n.Evm.FallbackStatePollerDebounce == "" && defaults.Evm.FallbackStatePollerDebounce != "" {
+				n.Evm.FallbackStatePollerDebounce = defaults.Evm.FallbackStatePollerDebounce
+			}
+			if n.Evm.FallbackFinalityDepth == 0 && defaults.Evm.FallbackFinalityDepth != 0 {
+				n.Evm.FallbackFinalityDepth = defaults.Evm.FallbackFinalityDepth
+			}
+		} else if n.Evm == nil && defaults.Evm != nil {
+			n.Evm = &EvmNetworkConfig{}
+			*n.Evm = *defaults.Evm
+		}
+		if n.Evm != nil {
+			if err := n.Evm.SetDefaults(); err != nil {
+				return fmt.Errorf("failed to set defaults for evm network config: %w", err)
+			}
+		}
 	} else if n.Failsafe != nil {
 		if err := n.Failsafe.SetDefaults(sysDefCfg.Failsafe); err != nil {
 			return fmt.Errorf("failed to set defaults for failsafe: %w", err)
@@ -1004,11 +1024,12 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 }
 
 func (i *EvmIntegrityConfig) SetDefaults() error {
+	// TODO After testing for a while, we can set these to true by default
 	if i.EnforceHighestBlock == nil {
-		i.EnforceHighestBlock = util.BoolPtr(true)
+		i.EnforceHighestBlock = util.BoolPtr(false)
 	}
 	if i.EnforceGetLogsBlockRange == nil {
-		i.EnforceGetLogsBlockRange = util.BoolPtr(true)
+		i.EnforceGetLogsBlockRange = util.BoolPtr(false)
 	}
 	return nil
 }

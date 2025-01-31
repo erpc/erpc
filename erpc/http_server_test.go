@@ -4507,6 +4507,1215 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 	})
 }
 
+func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	t.Run("FallbackToHighestBlockIfUpstreamReturnsOlderBlock", func(t *testing.T) {
+		// 1. Reset gock, set up poller mocks, etc.
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// 2. Create a config with 2 upstreams and enforce highest block
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("5s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: "evm",
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+								Integrity: &common.EvmIntegrityConfig{
+									EnforceHighestBlock: util.BoolPtr(true),
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Endpoint: "http://rpc1.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             1,
+								StatePollerInterval: "10s",
+							},
+						},
+						{
+							Id:       "rpc2",
+							Endpoint: "http://rpc2.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             1,
+								StatePollerInterval: "10s",
+							},
+						},
+					},
+				},
+			},
+		}
+
+		// 3. Request: eth_getBlockByNumber("latest", true)
+		requestBody := `{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  "eth_getBlockByNumber",
+			"params": ["latest", true]
+		}`
+
+		// 4. Mock latest block and eth_syncing for state poller
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_syncing")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":false}`))
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_syncing")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":false}`))
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x111"}}`))
+
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x222"}}`))
+
+		// 5. Mock "rpc1" response for user's call
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]interface{}{
+					"number": "0x113",
+				},
+			})
+
+		// 6. Mock “rpc2” returning the newer block
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(req *http.Request) bool {
+				// The code will exclude the failing upstream using the directive "!rpc1"
+				// and request 0x222 specifically
+				body := util.SafeReadBody(req)
+				return strings.Contains(body, "eth_getBlockByNumber") &&
+					strings.Contains(body, `"0x222"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]interface{}{
+					"number": "0x222",
+					"hash":   "0x123",
+				},
+			})
+
+		// 7. Spin up the test server, make the request, and check the final result
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		statusCode, body := sendRequest(requestBody, nil, nil)
+
+		assert.Equal(t, http.StatusOK, statusCode)
+
+		var respObject map[string]interface{}
+		err := sonic.UnmarshalString(body, &respObject)
+		assert.NoError(t, err, "should parse response body")
+
+		// 8. Confirm "result.hash" is 0x123, the newer block
+		result, hasResult := respObject["result"].(map[string]interface{})
+		assert.True(t, hasResult, "response should have a 'result' field")
+		assert.Equal(t, "0x123", result["hash"], "should fallback to the highest known block")
+
+		assert.Equal(t, 2, len(gock.Pending()), "unexpected pending requests")
+	})
+
+	t.Run("ReturnBlockIfUpstreamReturnsNewerBlock", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// Create a config with 1 upstream and enforce highest block.
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("5s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: "evm",
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+								Integrity: &common.EvmIntegrityConfig{
+									EnforceHighestBlock: util.BoolPtr(true),
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Endpoint: "http://rpc1.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             1,
+								StatePollerInterval: "10s",
+							},
+						},
+					},
+				},
+			},
+		}
+
+		requestBody := `{
+			"jsonrpc": "2.0",
+			"id":      999,
+			"method":  "eth_getBlockByNumber",
+			"params": ["latest", false]
+		}`
+
+		// Mock poller calls for "rpc1" => we say "eth_syncing" = false, and eth_getBlockByNumber("latest") = 0x100
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_syncing")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":false}`))
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x100"}}`))
+
+		// Mock "rpc1" returning the user's newer block 0x123 in response to the request
+		// for the method "eth_getBlockByNumber('latest')".
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      999,
+				"result": map[string]interface{}{
+					"number": "0x123",
+					"hash":   "0xabcdef12345",
+				},
+			})
+
+		// Spin up the test server, make the request, and check final result.
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		statusCode, body := sendRequest(requestBody, nil, nil)
+
+		assert.Equal(t, http.StatusOK, statusCode)
+
+		var respObject map[string]interface{}
+		err := sonic.UnmarshalString(body, &respObject)
+		assert.NoError(t, err, "should parse response body successfully")
+
+		// Confirm result.number is "0x123" — the upstream's newer block
+		result, hasResult := respObject["result"].(map[string]interface{})
+		assert.True(t, hasResult, "response should have a 'result' field")
+		assert.Equal(t, "0x123", result["number"], "upstream's newer block should be returned as-is")
+
+		assert.Equal(t, 1, len(gock.Pending()), "unexpected pending requests")
+	})
+
+	t.Run("ShouldSkipHookIfHighestBlockCheckDisabled", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// Provide a config where Evm.Integrity.EnforceHighestBlock = false
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("5s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: "evm",
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+								Integrity: &common.EvmIntegrityConfig{
+									EnforceHighestBlock: util.BoolPtr(false),
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Endpoint: "http://rpc1.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             1,
+								StatePollerInterval: "10s",
+							},
+						},
+					},
+				},
+			},
+		}
+
+		// We'll request the latest block from upstream, but the poller will internally store a higher block.
+		// Because enforceHighestBlock = false, we expect no override logic (the server should just return the direct result).
+		requestBody := `{
+			"jsonrpc": "2.0",
+			"id":      999,
+			"method":  "eth_getBlockByNumber",
+			"params": ["latest", false]
+		}`
+
+		// Mock poller calls: "eth_syncing" => false, then a poller sees "latest" = 0x300
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_syncing")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":false}`))
+
+		// Poller viewpoint for "latest" => block 0x300
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x300"}}`))
+
+		// Mock the user call: it will also request "eth_getBlockByNumber" "latest" => upstream actually returns 0x200
+		// Because HighestBlockCheck is disabled, the server should NOT override it with 0x300.
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				// This filter picks up the user's actual request (ID=999).
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, `"id":999`) && strings.Contains(body, `"eth_getBlockByNumber"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      999,
+				"result": map[string]interface{}{
+					"number": "0x200",
+					"hash":   "0xabc_no_override",
+				},
+			})
+
+		// Spin up the test server and send the request
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		statusCode, body := sendRequest(requestBody, nil, nil)
+		assert.Equal(t, http.StatusOK, statusCode)
+
+		var respObject map[string]interface{}
+		err := sonic.UnmarshalString(body, &respObject)
+		assert.NoError(t, err, "should parse response body")
+
+		// We expect the server to return block number "0x200" exactly as the upstream did,
+		// ignoring the poller's knowledge of 0x300, since enforceHighestBlock is false.
+		result, hasResult := respObject["result"].(map[string]interface{})
+		assert.True(t, hasResult, "response should have a 'result' field")
+		assert.Equal(t, "0x200", result["number"], "server should skip highest-block override when disabled")
+
+		assert.Equal(t, 1, len(gock.Pending()), "unexpected pending requests")
+	})
+
+	t.Run("ShouldReturnForwardErrorIfUpstreamFails", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// Provide a config with Evm.Integrity.EnforceHighestBlock = true
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("5s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: "evm",
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+								Integrity: &common.EvmIntegrityConfig{
+									EnforceHighestBlock: util.BoolPtr(true),
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Endpoint: "http://rpc1.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             1,
+								StatePollerInterval: "10s",
+							},
+						},
+					},
+				},
+			},
+		}
+
+		// We'll request the latest block from upstream to trigger the forward call
+		requestBody := `{
+			"jsonrpc": "2.0",
+			"id":      777,
+			"method":  "eth_getBlockByNumber",
+			"params": ["latest", true]
+		}`
+
+		// Mock poller calls: "eth_syncing" => false, then "eth_getBlockByNumber(latest)" => 0x100 so that
+		// the poller thinks the chain is at block 0x100
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_syncing")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":false}`))
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]interface{}{
+					"number": "0x100",
+				},
+			})
+
+		// When the user actually calls "eth_getBlockByNumber('latest')", the forward call fails with a 503 error.
+		// The post-forward hook should just return the error as-is, without overriding or fallback logic.
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, `"id":777`) && strings.Contains(body, `"eth_getBlockByNumber"`)
+			}).
+			Reply(503).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      777,
+				"error": map[string]interface{}{
+					"code":    -32000,
+					"message": "Upstream error",
+				},
+			})
+
+		// Spin up the test server and make the request
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		statusCode, respBody := sendRequest(requestBody, nil, nil)
+		assert.Equal(t, http.StatusInternalServerError, statusCode, "should reflect upstream's 500 error")
+
+		// Verify the server forwards the original error info
+		var respObject map[string]interface{}
+		err := sonic.UnmarshalString(respBody, &respObject)
+		assert.NoError(t, err, "should parse error response body")
+		assert.Contains(t, respObject, "error", "should contain error field")
+
+		errorObj := respObject["error"].(map[string]interface{})
+		assert.Equal(t, float64(-32603), errorObj["code"].(float64), "error code should match upstream error")
+		assert.Contains(t, errorObj["message"].(string), "Upstream error", "error message should match upstream message")
+
+		assert.Equal(t, 1, len(gock.Pending()), "unexpected pending requests")
+	})
+
+	t.Run("ShouldNoopIfParamIsDirectHex", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// Provide a config with EnforceHighestBlock = true, so we can confirm
+		// that the hook is skipped if the param is a direct hex number.
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("5s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: "evm",
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+								Integrity: &common.EvmIntegrityConfig{
+									EnforceHighestBlock: util.BoolPtr(true),
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Endpoint: "http://rpc1.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             1,
+								StatePollerInterval: "10s",
+							},
+						},
+					},
+				},
+			},
+		}
+
+		// Mock poller calls: "eth_syncing" => false, "latest" => 0x300
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_syncing")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"result": false})
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBlockByNumber") &&
+					strings.Contains(util.SafeReadBody(r), `"latest"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"result": map[string]interface{}{
+					"number": "0x300",
+				},
+			})
+
+		// Mock the user request for eth_getBlockByNumber("0x12345", false)
+		// Because it's a direct hex, we expect the hook to NOT override this.
+		userRequestBody := `{
+			"jsonrpc": "2.0",
+			"id":      9999,
+			"method":  "eth_getBlockByNumber",
+			"params": ["0x12345", false]
+		}`
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `"id":9999`) &&
+					strings.Contains(body, `"eth_getBlockByNumber"`) &&
+					strings.Contains(body, `"0x12345"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      9999,
+				"result": map[string]interface{}{
+					"number": "0x12345",
+					"hash":   "0xabc_hex",
+				},
+			})
+
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		statusCode, respBody := sendRequest(userRequestBody, nil, nil)
+		assert.Equal(t, http.StatusOK, statusCode)
+
+		var respObj map[string]interface{}
+		err := sonic.UnmarshalString(respBody, &respObj)
+		require.NoError(t, err, "should parse response body")
+
+		result := respObj["result"].(map[string]interface{})
+		assert.Equal(t, "0xabc_hex", result["hash"], "direct hex param should not be overridden")
+
+		assert.Equal(t, 1, len(gock.Pending()), "unexpected pending requests")
+	})
+
+	t.Run("ShouldNoopIfParamIsEarliestOrPending", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// Provide a config with EnforceHighestBlock = true. We'll confirm the hook
+		// is skipped for 'earliest' and 'pending'.
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("5s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: "evm",
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+								Integrity: &common.EvmIntegrityConfig{
+									EnforceHighestBlock: util.BoolPtr(true),
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Endpoint: "http://rpc1.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             1,
+								StatePollerInterval: "10s",
+							},
+						},
+					},
+				},
+			},
+		}
+
+		// Mock poller calls: "eth_syncing" => false, "latest" => 0x300
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_syncing")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"result": false})
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBlockByNumber") &&
+					strings.Contains(util.SafeReadBody(r), `"latest"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"result": map[string]interface{}{
+					"number": "0x300",
+				},
+			})
+
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		// We'll test "earliest" -> returns 0x0
+		userRequestEarliest := `{
+			"jsonrpc":"2.0",
+			"id":1,
+			"method":"eth_getBlockByNumber",
+			"params":["earliest",true]
+		}`
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `"id":1`) &&
+					strings.Contains(body, `"eth_getBlockByNumber"`) &&
+					strings.Contains(body, `"earliest"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]interface{}{
+					"number": "0x0",
+					"hash":   "0xearliest",
+				},
+			})
+
+		statusCodeEarliest, respBodyEarliest := sendRequest(userRequestEarliest, nil, nil)
+		assert.Equal(t, http.StatusOK, statusCodeEarliest)
+
+		var respObjEarliest map[string]interface{}
+		errEarliest := sonic.UnmarshalString(respBodyEarliest, &respObjEarliest)
+		require.NoError(t, errEarliest, "should parse earliest response")
+
+		resultEarliest := respObjEarliest["result"].(map[string]interface{})
+		assert.Equal(t, "0xearliest", resultEarliest["hash"], "earliest block should be returned unchanged")
+
+		// We'll test "pending" -> returns e.g. 0x301 (typical pending block num)
+		userRequestPending := `{
+			"jsonrpc":"2.0",
+			"id":2,
+			"method":"eth_getBlockByNumber",
+			"params":["pending",false]
+		}`
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `"id":2`) &&
+					strings.Contains(body, `"eth_getBlockByNumber"`) &&
+					strings.Contains(body, `"pending"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      2,
+				"result": map[string]interface{}{
+					"number": "0x301",
+					"hash":   "0xpending",
+				},
+			})
+
+		statusCodePending, respBodyPending := sendRequest(userRequestPending, nil, nil)
+		assert.Equal(t, http.StatusOK, statusCodePending)
+
+		var respObjPending map[string]interface{}
+		errPending := sonic.UnmarshalString(respBodyPending, &respObjPending)
+		require.NoError(t, errPending, "should parse pending response")
+
+		resultPending := respObjPending["result"].(map[string]interface{})
+		assert.Equal(t, "0xpending", resultPending["hash"], "pending block should be returned unchanged")
+
+		assert.Equal(t, 1, len(gock.Pending()), "unexpected pending requests")
+	})
+
+	t.Run("ShouldOverrideIfUpstreamReturnsOlderBlockOnFinalized", func(t *testing.T) {
+		// This test covers the scenario:
+		// - User calls eth_getBlockByNumber("finalized", true)
+		// - The chosen upstream returns a finalized block number X
+		// - The poller, however, knows a newer finalized block number X+5
+		// - The code triggers a second request to a different upstream ("!firstUpstream") to fetch block X+5
+		// - We confirm that the final response to the user is the newer block X+5.
+
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// Create a config with 2 upstreams, and EnforceHighestBlock = true.
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("5s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+								Integrity: &common.EvmIntegrityConfig{
+									EnforceHighestBlock: util.BoolPtr(true),
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Endpoint: "http://rpc1.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             1,
+								StatePollerInterval: "10s",
+							},
+						},
+						{
+							Id:       "rpc2",
+							Endpoint: "http://rpc2.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             1,
+								StatePollerInterval: "10s",
+							},
+						},
+					},
+				},
+			},
+		}
+
+		// Mock poller calls so that upstreams are recognized and we learn what the "finalized" block is on each:
+		// The poller loop typically calls:
+		//   eth_syncing
+		//   eth_getBlockByNumber("latest")
+		//   eth_getBlockByNumber("finalized") if available
+		// We'll fake that upstream1 sees finalized = 0x100, upstream2 sees finalized = 0x105
+		// Thus the poller aggregates and says the highest finalized is 0x105.
+
+		// Mark both upstreams as not syncing
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_syncing") }).
+			Reply(200).
+			JSON(map[string]interface{}{"result": false})
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool { return strings.Contains(util.SafeReadBody(r), "eth_syncing") }).
+			Reply(200).
+			JSON(map[string]interface{}{"result": false})
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBlockByNumber") &&
+					strings.Contains(util.SafeReadBody(r), `"latest"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"result": map[string]interface{}{
+					"number": "0x444",
+				},
+			})
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBlockByNumber") &&
+					strings.Contains(util.SafeReadBody(r), `"latest"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"result": map[string]interface{}{
+					"number": "0x444",
+				},
+			})
+
+		// Poller sees upstream1 for finalized => 0x100
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBlockByNumber") &&
+					strings.Contains(util.SafeReadBody(r), `"finalized"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"result": map[string]interface{}{
+					"number": "0x100",
+				},
+			})
+
+		// Poller sees upstream2 for finalized => 0x105
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBlockByNumber") &&
+					strings.Contains(util.SafeReadBody(r), `"finalized"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"result": map[string]interface{}{
+					"number": "0x105",
+				},
+			})
+
+		// Now the user calls eth_getBlockByNumber("finalized", true).
+		// The server picks upstream1 first. Let's say upstream1 returns block 0x100:
+		userRequest := `{
+			"jsonrpc": "2.0",
+			"id":      42,
+			"method":  "eth_getBlockByNumber",
+			"params": ["finalized", true]
+		}`
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `"id":42`) &&
+					strings.Contains(body, `"eth_getBlockByNumber"`) &&
+					strings.Contains(body, `"finalized"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      42,
+				"result": map[string]interface{}{
+					"number": "0x100",
+					"hash":   "0x111111bb83862798c81820bbaae8bfbc542b8abf73c130583f2b36521cf10624",
+				},
+			})
+
+		// The server sees that the poller says the highest finalized is 0x105, so it triggers a second request
+		// to a different upstream (i.e. "!rpc1") for block 0x105.
+		// We mock that request:
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				// We expect a request for exactly block 0x105.
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, "eth_getBlockByNumber") &&
+					strings.Contains(body, "0x105")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      42,
+				"result": map[string]interface{}{
+					"number": "0x105",
+					"hash":   "0x222222bb83862798c81820bbaae8bfbc542b8abf73c130583f2b36521cf10624",
+				},
+			})
+
+		// Spin up the test server, send the request, check final result is 0x105 from the second upstream.
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		statusCode, respBody := sendRequest(userRequest, nil, nil)
+		assert.Equal(t, http.StatusOK, statusCode, "overall request should be 200")
+
+		var respObj map[string]interface{}
+		err := sonic.UnmarshalString(respBody, &respObj)
+		require.NoError(t, err, "should parse response body")
+
+		result, hasResult := respObj["result"].(map[string]interface{})
+		require.True(t, hasResult, "the response must contain a 'result' object")
+
+		assert.Equal(t, "0x105", result["number"], "the server should override the older 0x100 with finalized 0x105")
+		assert.Equal(t, "0x222222bb83862798c81820bbaae8bfbc542b8abf73c130583f2b36521cf10624", result["hash"], "the final data should come from the second upstream")
+
+		assert.Equal(t, 4, len(gock.Pending()), "unexpected pending requests")
+	})
+
+	t.Run("ShouldStickWithUpstreamBlockIfItMatchesHighestOnFinalized", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// Use a config with 2 upstreams, EnforceHighestBlock = true,
+		// so we can confirm that even with multiple upstreams, no fallback request is triggered if
+		// the first upstream's "finalized" block is already the highest known block.
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("5s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+								Integrity: &common.EvmIntegrityConfig{
+									EnforceHighestBlock: util.BoolPtr(true),
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Endpoint: "http://rpc1.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             1,
+								StatePollerInterval: "10s",
+							},
+						},
+						{
+							Id:       "rpc2",
+							Endpoint: "http://rpc2.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             1,
+								StatePollerInterval: "10s",
+							},
+						},
+					},
+				},
+			},
+		}
+
+		// ----------------------------
+		// Poller Mock Setup
+		// ----------------------------
+		// Mark both upstreams as "not syncing."
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_syncing")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"result": false})
+
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_syncing")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"result": false})
+
+		// Poller calls eth_getBlockByNumber("latest") to establish each upstream's tip
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBlockByNumber") &&
+					strings.Contains(util.SafeReadBody(r), `"latest"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"result": map[string]interface{}{
+					"number": "0x300",
+				},
+			})
+
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "eth_getBlockByNumber") &&
+					strings.Contains(util.SafeReadBody(r), `"latest"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"result": map[string]interface{}{
+					"number": "0x300",
+				},
+			})
+
+		// Poller calls eth_getBlockByNumber("finalized") if it's supported. We'll say each upstream's finalized is 0x100.
+		// So the poller sees that the highest finalized block across both upstreams is also 0x100.
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), `"finalized"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"result": map[string]interface{}{
+					"number": "0x100",
+				},
+			})
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), `"finalized"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"result": map[string]interface{}{
+					"number": "0x100",
+				},
+			})
+
+		// ----------------------------
+		// User Request: eth_getBlockByNumber("finalized", true)
+		// ----------------------------
+		// The chosen upstream returns block 0x100, which matches poller's highest finalized block.
+		userRequest := `{
+			"jsonrpc": "2.0",
+			"id":      999,
+			"method":  "eth_getBlockByNumber",
+			"params": ["finalized", true]
+		}`
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `"id":999`) &&
+					strings.Contains(body, `"eth_getBlockByNumber"`) &&
+					strings.Contains(body, `"finalized"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      999,
+				"result": map[string]interface{}{
+					"number": "0x100",
+					"hash":   "0x222222bb83862798c81820bbaae8bfbc542b8abf73c130583f2b36521cf10624",
+				},
+			})
+
+		// We expect no second request to the other upstream for block 0x100,
+		// because the block number from the first upstream matches the highest known finalized block.
+
+		// ----------------------------
+		// Spin up the test server, send request
+		// ----------------------------
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		statusCode, respBody := sendRequest(userRequest, nil, nil)
+		assert.Equal(t, http.StatusOK, statusCode, "overall request should be successful")
+
+		// Parse the response
+		var respObj map[string]interface{}
+		err := sonic.UnmarshalString(respBody, &respObj)
+		require.NoError(t, err, "should parse response body")
+
+		// Ensure that result is still 0x100 and the same hash, meaning we used the original upstream response
+		result, hasResult := respObj["result"].(map[string]interface{})
+		require.True(t, hasResult, "must have a 'result' object in the JSON")
+
+		assert.Equal(t, "0x100", result["number"], "should match poller's highest finalized block with no override")
+		assert.Equal(t, "0x222222bb83862798c81820bbaae8bfbc542b8abf73c130583f2b36521cf10624", result["hash"], "should remain the same as upstream's response")
+
+		assert.True(t, len(gock.Pending()) == 2, "unexpected pending requests")
+	})
+
+	t.Run("ShouldHandleInvalidBlockTag", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// Provide a config with EnforceHighestBlock = true so we can confirm that
+		// the logic still skips override if the block tag is not one of the recognized keywords.
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("5s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: "evm",
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+								Integrity: &common.EvmIntegrityConfig{
+									EnforceHighestBlock: util.BoolPtr(true),
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Endpoint: "http://rpc1.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             1,
+								StatePollerInterval: "10s",
+							},
+						},
+					},
+				},
+			},
+		}
+
+		// Mock poller calls: "eth_syncing" => false, then "latest" => 0x300, just so the poller
+		// has some known state. We won't use it because the block tag is invalid, so the hook shouldn't apply.
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_syncing")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{"result": false})
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(request), "eth_getBlockByNumber") &&
+					strings.Contains(util.SafeReadBody(request), `"latest"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"result": map[string]interface{}{
+					"number": "0x300",
+				},
+			})
+
+		// The user calls eth_getBlockByNumber("unknownTag", false). Since "unknownTag" is neither
+		// 'latest', 'finalized', 'pending', 'earliest', nor a direct hex, we expect NO override logic to happen.
+		// The server should forward the call as-is, and return whatever the upstream responds.
+		userRequestBody := `{
+			"jsonrpc": "2.0",
+			"id":      5050,
+			"method":  "eth_getBlockByNumber",
+			"params": ["unknownTag", false]
+		}`
+
+		// Mock the upstream returning a normal block result, e.g. block "0xABCD" for "unknownTag".
+		// In reality, many upstreams might just return an error for an unrecognized block tag,
+		// but for testing, let's assume it returns a valid response so we can confirm the override is skipped.
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `"id":5050`) &&
+					strings.Contains(body, `"eth_getBlockByNumber"`) &&
+					strings.Contains(body, `"unknownTag"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      5050,
+				"result": map[string]interface{}{
+					"number": "0xabcd",
+					"hash":   "0xhash_for_unknownTag",
+				},
+			})
+
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		statusCode, respBody := sendRequest(userRequestBody, nil, nil)
+		assert.Equal(t, http.StatusOK, statusCode, "the server should pass the response as-is")
+
+		var respObj map[string]interface{}
+		err := sonic.UnmarshalString(respBody, &respObj)
+		require.NoError(t, err, "should parse response body")
+
+		// Confirm the server didn't do any override logic; it just returned whatever the upstream said.
+		result := respObj["result"].(map[string]interface{})
+		assert.Equal(t, "0xabcd", result["number"], "invalid block tag should not trigger any override")
+		assert.Equal(t, "0xhash_for_unknownTag", result["hash"], "the block hash should match upstream exactly")
+
+		// Only the poller calls plus the single user request are used; no fallback or second request is triggered.
+		assert.Equal(t, 1, len(gock.Pending()), "unexpected pending requests")
+	})
+}
+
 func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 	func(body string, headers map[string]string, queryParams map[string]string) (int, string),
 	func(host string) (int, map[string]string, string),

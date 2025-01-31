@@ -13,6 +13,22 @@ import type {
 } from "./types"
 
 //////////
+// source: architecture_evm.go
+
+export const UpstreamTypeEvm: UpstreamType = "evm";
+export type EvmUpstream = 
+    Upstream;
+export type EvmNodeType = string;
+export const EvmNodeTypeFull: EvmNodeType = "full";
+export const EvmNodeTypeArchive: EvmNodeType = "archive";
+export const EvmNodeTypeLight: EvmNodeType = "light";
+export type EvmSyncingState = number /* int */;
+export const EvmSyncingStateUnknown: EvmSyncingState = 0;
+export const EvmSyncingStateSyncing: EvmSyncingState = 1;
+export const EvmSyncingStateNotSyncing: EvmSyncingState = 2;
+export type EvmStatePoller = any;
+
+//////////
 // source: cache_dal.go
 
 export type CacheDAL = any;
@@ -169,6 +185,7 @@ export interface NetworkDefaults {
   failsafe?: FailsafeConfig;
   selectionPolicy?: SelectionPolicyConfig;
   directiveDefaults?: DirectiveDefaultsConfig;
+  evm?: EvmNetworkConfig;
 }
 export interface CORSConfig {
   allowedOrigins: string[];
@@ -239,13 +256,16 @@ export interface EvmUpstreamConfig {
   chainId: number /* int64 */;
   nodeType?: EvmNodeType;
   statePollerInterval?: string;
+  statePollerDebounce?: string;
   maxAvailableRecentBlocks?: number /* int64 */;
+  getLogsMaxBlockRange?: number /* int64 */;
 }
 export interface FailsafeConfig {
   retry?: RetryPolicyConfig;
   circuitBreaker?: CircuitBreakerPolicyConfig;
   timeout?: TimeoutPolicyConfig;
   hedge?: HedgePolicyConfig;
+  consensus?: ConsensusPolicyConfig;
 }
 export interface RetryPolicyConfig {
   maxAttempts: number /* int */;
@@ -270,6 +290,33 @@ export interface HedgePolicyConfig {
   quantile: number /* float64 */;
   minDelay: Duration;
   maxDelay: Duration;
+}
+export type ConsensusFailureBehavior = string;
+export const ConsensusFailureBehaviorReturnError: ConsensusFailureBehavior = "returnError";
+export const ConsensusFailureBehaviorAcceptAnyValidResult: ConsensusFailureBehavior = "acceptAnyValidResult";
+export const ConsensusFailureBehaviorPreferBlockHeadLeader: ConsensusFailureBehavior = "preferBlockHeadLeader";
+export const ConsensusFailureBehaviorOnlyBlockHeadLeader: ConsensusFailureBehavior = "onlyBlockHeadLeader";
+export type ConsensusLowParticipantsBehavior = string;
+export const ConsensusLowParticipantsBehaviorReturnError: ConsensusLowParticipantsBehavior = "returnError";
+export const ConsensusLowParticipantsBehaviorAcceptAnyValidResult: ConsensusLowParticipantsBehavior = "acceptAnyValidResult";
+export const ConsensusLowParticipantsBehaviorPreferBlockHeadLeader: ConsensusLowParticipantsBehavior = "preferBlockHeadLeader";
+export const ConsensusLowParticipantsBehaviorOnlyBlockHeadLeader: ConsensusLowParticipantsBehavior = "onlyBlockHeadLeader";
+export type ConsensusDisputeBehavior = string;
+export const ConsensusDisputeBehaviorReturnError: ConsensusDisputeBehavior = "returnError";
+export const ConsensusDisputeBehaviorAcceptAnyValidResult: ConsensusDisputeBehavior = "acceptAnyValidResult";
+export const ConsensusDisputeBehaviorPreferBlockHeadLeader: ConsensusDisputeBehavior = "preferBlockHeadLeader";
+export const ConsensusDisputeBehaviorOnlyBlockHeadLeader: ConsensusDisputeBehavior = "onlyBlockHeadLeader";
+export interface ConsensusPolicyConfig {
+  requiredParticipants: number /* int */;
+  agreementThreshold?: number /* int */;
+  failureBehavior?: ConsensusFailureBehavior;
+  disputeBehavior?: ConsensusDisputeBehavior;
+  lowParticipantsBehavior?: ConsensusLowParticipantsBehavior;
+  punishMisbehavior?: PunishMisbehaviorConfig;
+}
+export interface PunishMisbehaviorConfig {
+  disputeThreshold: number /* int */;
+  sitOutPenalty?: string;
 }
 export interface RateLimiterConfig {
   budgets: RateLimitBudgetConfig[];
@@ -308,6 +355,12 @@ export interface DirectiveDefaultsConfig {
 export interface EvmNetworkConfig {
   chainId: number /* int64 */;
   fallbackFinalityDepth?: number /* int64 */;
+  fallbackStatePollerDebounce?: string;
+  integrity?: EvmIntegrityConfig;
+}
+export interface EvmIntegrityConfig {
+  enforceHighestBlock?: boolean;
+  enforceGetLogsBlockRange?: boolean;
 }
 export interface SelectionPolicyConfig {
   evalInterval?: number /* time in nanoseconds (time.Duration) */;
@@ -397,6 +450,7 @@ export const CacheEmptyBehaviorOnly: CacheEmptyBehavior = 2;
 // source: defaults.go
 
 export const DefaultEvmFinalityDepth = 1024;
+export const DefaultEvmStatePollerDebounce = "5s";
 export const DefaultPolicyFunction = `
 	(upstreams, method) => {
 		const defaults = upstreams.filter(u => u.config.group !== 'fallback')
@@ -431,15 +485,6 @@ export const DefaultPolicyFunction = `
 `;
 
 //////////
-// source: evm.go
-
-export type EvmNodeType = string;
-export const EvmNodeTypeFull: EvmNodeType = "full";
-export const EvmNodeTypeArchive: EvmNodeType = "archive";
-export const EvmNodeTypeLight: EvmNodeType = "light";
-export type EvmStatePoller = any;
-
-//////////
 // source: matcher.go
 
 
@@ -467,11 +512,6 @@ export const ScopeNetwork: Scope = "network";
  */
 export const ScopeUpstream: Scope = "upstream";
 export type UpstreamType = string;
-export const UpstreamTypeEvm: UpstreamType = "evm";
-export type EvmSyncingState = number /* int */;
-export const EvmSyncingStateUnknown: EvmSyncingState = 0;
-export const EvmSyncingStateSyncing: EvmSyncingState = 1;
-export const EvmSyncingStateNotSyncing: EvmSyncingState = 2;
 export type Upstream = any;
 
 //////////
