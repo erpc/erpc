@@ -709,6 +709,9 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 			common.ErrCodeEndpointClientSideException,
 			common.ErrCodeInvalidUrlPath,
 			common.ErrCodeInvalidRequest,
+			common.ErrCodeAuthUnauthorized,
+			common.ErrCodeJsonRpcRequestUnmarshal,
+			common.ErrCodeProjectNotFound,
 		) {
 			logger.Debug().Err(err).Object("request", nq).Msgf("forward request errored with client-side exception")
 		} else {

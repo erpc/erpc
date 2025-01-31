@@ -440,7 +440,7 @@ func (n *Network) acquireSelectionPolicyPermit(lg *zerolog.Logger, ups *upstream
 
 func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, req *common.NormalizedRequest, startTime time.Time) (*Multiplexer, *common.NormalizedResponse, error) {
 	mlxHash, err := req.CacheHash()
-	lg.Debug().Str("hash", mlxHash).Object("request", req).Msgf("checking if multiplexing is possible")
+	lg.Trace().Str("hash", mlxHash).Object("request", req).Msgf("checking if multiplexing is possible")
 	if err != nil || mlxHash == "" {
 		lg.Debug().Str("hash", mlxHash).Err(err).Object("request", req).Msgf("could not get multiplexing hash for request")
 		return nil, nil, nil
