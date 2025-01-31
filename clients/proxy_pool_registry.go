@@ -44,7 +44,7 @@ func NewProxyPoolRegistry(
 		pools:  make(map[string]*ProxyPool),
 	}
 	if len(cfg) == 0 {
-		r.logger.Warn().Msg("no proxy pools defined; all requests will go direct")
+		r.logger.Debug().Msg("no proxy pools defined, all outgoing requests will go direct to upstreams")
 		return r, nil
 	}
 

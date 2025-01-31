@@ -405,10 +405,12 @@ func (e *ErrAuthRateLimitRuleExceeded) ErrorStatusCode() int {
 
 type ErrProjectNotFound struct{ BaseError }
 
+const ErrCodeProjectNotFound ErrorCode = "ErrProjectNotFound"
+
 var NewErrProjectNotFound = func(projectId string) error {
 	return &ErrProjectNotFound{
 		BaseError{
-			Code:    "ErrProjectNotFound",
+			Code:    ErrCodeProjectNotFound,
 			Message: fmt.Sprintf("project '%s' not configured in the config", projectId),
 		},
 	}

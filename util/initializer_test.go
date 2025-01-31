@@ -24,7 +24,8 @@ func TestInitializer_SingleTaskSuccess(t *testing.T) {
 		return nil
 	})
 
-	err := init.ExecuteTasks(context.Background(), task)
+	err := init.ExecuteTasks(appCtx, task)
+	defer init.Stop(nil)
 	require.NoError(t, err)
 	assert.Equal(t, StateReady, init.State())
 	assert.Equal(t, TaskSucceeded, TaskState(task.state.Load()))
@@ -43,7 +44,8 @@ func TestInitializer_SingleTaskImmediateFailureNoRetry(t *testing.T) {
 		return expectedErr
 	})
 
-	err := init.ExecuteTasks(context.Background(), task)
+	err := init.ExecuteTasks(appCtx, task)
+	defer init.Stop(nil)
 	require.Error(t, err)
 	assert.Equal(t, StateFailed, init.State())
 	assert.Equal(t, TaskFailed, TaskState(task.state.Load()))
@@ -101,6 +103,7 @@ func TestInitializer_SingleTaskFailsThenSucceeds(t *testing.T) {
 	})
 
 	init.ExecuteTasks(appCtx, task)
+	defer init.Stop(nil)
 	time.Sleep(time.Millisecond * 100)
 	err := init.WaitForTasks(appCtx)
 	require.NoError(t, err)
@@ -121,6 +124,7 @@ func TestInitializer_MultipleTasksAllSucceed(t *testing.T) {
 	}
 
 	err := init.ExecuteTasks(appCtx, tasks...)
+	defer init.Stop(nil)
 	require.NoError(t, err)
 	assert.Equal(t, StateReady, init.State())
 
@@ -148,6 +152,7 @@ func TestInitializer_MultipleTasksMixedResultsNoRetry(t *testing.T) {
 	}
 
 	err := init.ExecuteTasks(appCtx, tasks...)
+	defer init.Stop(nil)
 	require.Error(t, err)
 	assert.Equal(t, TaskFailed, TaskState(failingTask.state.Load()))
 	assert.Equal(t, StatePartial, init.State())
@@ -205,6 +210,7 @@ func TestInitializer_MultipleTasksMixedResultsInitializing(t *testing.T) {
 
 	// Now that the failed task has succeeded, the overall state should be Ready.
 	assert.Equal(t, StateReady, init.State(), "once all tasks succeed, the initializer should be Ready")
+	init.Stop(nil)
 }
 
 func TestInitializer_LongRunningTask(t *testing.T) {
@@ -225,6 +231,7 @@ func TestInitializer_LongRunningTask(t *testing.T) {
 	})
 
 	err := init.ExecuteTasks(appCtx, longTask, quickTask)
+	defer init.Stop(nil)
 	require.NoError(t, err)
 	assert.Equal(t, StateReady, init.State())
 	assert.Equal(t, TaskSucceeded, TaskState(longTask.state.Load()))
@@ -245,6 +252,7 @@ func TestInitializer_TaskTimeout(t *testing.T) {
 	})
 
 	err := init.ExecuteTasks(appCtx, task)
+	defer init.Stop(nil)
 	require.Error(t, err)
 	assert.Equal(t, StateFailed, init.State())
 	assert.Equal(t, TaskFailed, TaskState(task.state.Load()))
@@ -282,6 +290,8 @@ func TestInitializer_MarkTaskAsFailed(t *testing.T) {
 	assert.Equal(t, StateFailed, init.State())
 	assert.Equal(t, TaskFailed, TaskState(task.state.Load()))
 	assert.Equal(t, expectedErr, task.Error().Err)
+
+	init.Stop(nil)
 }
 
 func TestInitializer_StopWithDestroyFn(t *testing.T) {
@@ -386,6 +396,7 @@ func TestInitializer_ForcedCancellationMidTask(t *testing.T) {
 
 	// Once canceled, WaitForTasks should return a context error
 	err := init.WaitForTasks(ctx)
+	defer init.Stop(nil)
 	require.Error(t, err, "should fail or be canceled")
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 
@@ -489,6 +500,7 @@ func TestInitializer_ManualMarkAsFailedAfterSuccess(t *testing.T) {
 
 	// 1) Execute tasks for the first time - should succeed on attempt #1
 	err := init.ExecuteTasks(appCtx, task)
+	defer init.Stop(nil)
 	require.NoError(t, err, "ExecuteTasks should not error")
 
 	// Wait for the first success
