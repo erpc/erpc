@@ -290,7 +290,7 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 	defer u.upstreamsMu.Unlock()
 
 	if len(u.allUpstreams) == 0 {
-		u.logger.Debug().Str("projectId", u.prjId).Msgf("no upstreams yet to refresh scores")
+		u.logger.Trace().Str("projectId", u.prjId).Msgf("no upstreams yet to refresh scores")
 		return nil
 	}
 

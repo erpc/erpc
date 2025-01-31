@@ -33,7 +33,7 @@ type Config struct {
 	Projects     []*ProjectConfig   `yaml:"projects" json:"projects"`
 	RateLimiters *RateLimiterConfig `yaml:"rateLimiters" json:"rateLimiters"`
 	Metrics      *MetricsConfig     `yaml:"metrics" json:"metrics"`
-	ProxyPools   []*ProxyPoolConfig  `yaml:"proxyPools" json:"proxyPools"`
+	ProxyPools   []*ProxyPoolConfig  `yaml:"proxyPools,omitempty" json:"proxyPools"`
 }
 
 func (c *Config) HasRateLimiterBudget(id string) bool {
@@ -273,9 +273,9 @@ type ProjectConfig struct {
 	Id               string             `yaml:"id" json:"id"`
 	Auth             *AuthConfig        `yaml:"auth,omitempty" json:"auth"`
 	CORS             *CORSConfig        `yaml:"cors,omitempty" json:"cors"`
-	Providers        []*ProviderConfig  `yaml:"providers" json:"providers"`
+	Providers        []*ProviderConfig  `yaml:"providers,omitempty" json:"providers"`
 	UpstreamDefaults *UpstreamConfig    `yaml:"upstreamDefaults,omitempty" json:"upstreamDefaults"`
-	Upstreams        []*UpstreamConfig  `yaml:"upstreams" json:"upstreams"`
+	Upstreams        []*UpstreamConfig  `yaml:"upstreams,omitempty" json:"upstreams"`
 	NetworkDefaults  *NetworkDefaults   `yaml:"networkDefaults,omitempty" json:"networkDefaults"`
 	Networks         []*NetworkConfig   `yaml:"networks,omitempty" json:"networks"`
 	RateLimitBudget  string             `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
