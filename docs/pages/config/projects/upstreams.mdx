@@ -777,3 +777,107 @@ export default createConfig({
 ```
 </Tab>
 </Tabs>
+
+## Client proxy pools
+
+You define proxies for outgoing traffic from eRPC to upstreams. Proxy Pools enable centralized management of http(s)/socks5 proxies with round-robin load balancing across multiple upstreams. This is particularly useful for routing requests through different proxy servers based on geographic location or specific requirements (e.g., public vs private RPC endpoints).
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0}>
+  <Tab>
+```yaml filename="erpc.yaml"
+# Define proxy pools at the root level
+proxyPools:
+  - id: eu-dc1-pool
+    urls:
+      - http://proxy111.myorg.local:3128
+      - https://proxy222.myorg.local:3129
+  - id: us-dc1-pool
+    urls:
+      - http://proxy333.myorg.local:3128
+      - socks5://proxy444.myorg.local:3129
+
+projects:
+  - id: main
+    # Option 1: Apply proxy pool to all upstreams
+    upstreamDefaults:
+      jsonRpc:
+        proxyPool: eu-dc1-pool
+    
+    # Option 2: Apply proxy pools selectively to specific upstreams
+    upstreams:
+      - id: public-rpc-1
+        endpoint: https://public-rpc-1.example.com
+        jsonRpc:
+          proxyPool: eu-dc1-pool
+      
+      - id: public-rpc-2
+        endpoint: https://public-rpc-2.example.com
+        jsonRpc:
+          proxyPool: us-dc1-pool
+      
+      # This upstream won't use a proxy since it has no proxyPool specified
+      - id: private-rpc-1
+        endpoint: https://private-rpc-1.example.com
+```
+  </Tab>
+  <Tab>
+```typescript filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  proxyPools: {
+    "eu-dc1-pool": {
+      urls: [
+        "http://proxy111.myorg.local:3128",
+        "https://proxy222.myorg.local:3129",
+      ],
+    },
+    "us-dc1-pool": {
+      urls: [
+        "http://proxy333.myorg.local:3128",
+        "socks5://proxy444.myorg.local:3129",
+      ],
+    },
+  },
+  projects: [
+    {
+      id: "main",
+      // Option 1: Apply proxy pool to all upstreams
+      upstreamDefaults: {
+        jsonRpc: {
+          proxyPool: "eu-dc1-pool",
+        },
+      },
+      
+      // Option 2: Apply proxy pools selectively to specific upstreams
+      upstreams: [
+        {
+          id: "public-rpc-1",
+          endpoint: "https://public-rpc-1.example.com",
+          jsonRpc: {
+            proxyPool: "eu-dc1-pool",
+          },
+        },
+        {
+          id: "public-rpc-2", 
+          endpoint: "https://public-rpc-2.example.com",
+          jsonRpc: {
+            proxyPool: "us-dc1-pool",
+          },
+        },
+        // This upstream won't use a proxy since it has no proxyPool specified
+        {
+          id: "private-rpc-1",
+          endpoint: "https://private-rpc-1.example.com",
+        },
+      ],
+    },
+  ],
+});
+```
+  </Tab>
+</Tabs>
+
+<Callout type="info">
+  You can use `upstreamDefaults` to apply a proxy pool to all upstreams, or configure them individually. Individual upstream configurations will override the defaults.
+</Callout>

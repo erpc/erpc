@@ -20,16 +20,16 @@ func (v *QuicknodeVendor) Name() string {
 	return "quicknode"
 }
 
-func (v *QuicknodeVendor) PrepareConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
+func (v *QuicknodeVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
 
 	if upstream.Endpoint == "" {
-		return fmt.Errorf("quicknode vendor requires upstream.endpoint to be defined")
+		return nil, fmt.Errorf("quicknode vendor requires upstream.endpoint to be defined")
 	}
 
-	return nil
+	return []*common.UpstreamConfig{upstream}, nil
 }
 
 func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {

@@ -49,6 +49,56 @@ func (c *Config) SetDefaults() error {
 			}
 		}
 	}
+	if len(c.Projects) == 0 {
+		log.Warn().Msg("no projects found in config; will add a default 'main' project")
+		c.Projects = []*ProjectConfig{
+			{
+				Id: "main",
+				NetworkDefaults: &NetworkDefaults{
+					Failsafe: &FailsafeConfig{
+						Retry: &RetryPolicyConfig{
+							MaxAttempts: 3,
+							Delay:       "0",
+							Jitter:      "0",
+						},
+						Timeout: &TimeoutPolicyConfig{
+							Duration: "60s",
+						},
+						Hedge: &HedgePolicyConfig{
+							Quantile: 0.9,
+							MaxCount: 3,
+							MinDelay: "500ms",
+						},
+					},
+				},
+				UpstreamDefaults: &UpstreamConfig{
+					Evm: &EvmUpstreamConfig{
+						GetLogsMaxBlockRange: 500,
+					},
+					Failsafe: &FailsafeConfig{
+						Retry: &RetryPolicyConfig{
+							MaxAttempts: 2,
+							Delay:       "500ms",
+						},
+						Timeout: &TimeoutPolicyConfig{
+							Duration: "20s",
+						},
+						CircuitBreaker: &CircuitBreakerPolicyConfig{
+							FailureThresholdCount:    8,
+							FailureThresholdCapacity: 10,
+							HalfOpenAfter:            "5m",
+							SuccessThresholdCount:    5,
+							SuccessThresholdCapacity: 5,
+						},
+					},
+				},
+			},
+		}
+		err := c.Projects[0].SetDefaults()
+		if err != nil {
+			return err
+		}
+	}
 
 	if c.RateLimiters != nil {
 		if err := c.RateLimiters.SetDefaults(); err != nil {
@@ -589,6 +639,18 @@ func (p *ProjectConfig) SetDefaults() error {
 			}
 		}
 	}
+	if len(p.Providers) == 0 && len(p.Upstreams) == 0 {
+		log.Warn().Msg("no providers or upstreams found in project; will use default 'public' endpoints repository")
+		repositoryCfg := &ProviderConfig{
+			Id:     "public",
+			Vendor: "repository",
+			// Let the vendor use the default repository URL
+		}
+		if err := repositoryCfg.SetDefaults(nil); err != nil {
+			return fmt.Errorf("failed to set defaults for repository provider: %w", err)
+		}
+		p.Providers = append(p.Providers, repositoryCfg)
+	}
 	if p.Networks != nil {
 		for _, network := range p.Networks {
 			if err := network.SetDefaults(p.Upstreams, p.NetworkDefaults); err != nil {
@@ -692,6 +754,10 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 	case "thirdweb", "evm+thirdweb":
 		return VendorSettings{
 			"clientId": endpoint.Host,
+		}, nil
+	case "repository", "evm+repository":
+		return VendorSettings{
+			"repositoryUrl": "https://" + endpoint.Host,
 		}, nil
 	}
 
@@ -907,9 +973,10 @@ func (e *EvmUpstreamConfig) SetDefaults() error {
 		}
 	}
 
-	if e.GetLogsMaxBlockRange == 0 {
-		e.GetLogsMaxBlockRange = 500
-	}
+	// TODO Enable this after more production testing
+	// if e.GetLogsMaxBlockRange == 0 {
+	// 	e.GetLogsMaxBlockRange = 500
+	// }
 
 	return nil
 }

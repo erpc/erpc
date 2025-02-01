@@ -26,7 +26,7 @@ export async function verifyChecksum(
 
   if (actualChecksum !== expectedChecksum) {
     throw new Error(
-      `ChecksumVerificationError: actualChecksum=${actualChecksum} expectedChecksum=${expectedChecksum}`,
+      `ChecksumVerificationError: actualChecksum=${actualChecksum} expectedChecksum=${expectedChecksum} filePath=${filePath} platform=${platform}`,
     );
   }
 

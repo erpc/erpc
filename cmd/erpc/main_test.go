@@ -42,6 +42,8 @@ func TestMain_Default_FlagConfigFile(t *testing.T) {
 	// check if the server is running
 	if _, err := http.Get(localBaseUrl); err != nil {
 		t.Fatalf("expected server to be running, got %v", err)
+	} else {
+		t.Logf("server is running on %s", localBaseUrl)
 	}
 }
 

@@ -129,16 +129,56 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 		t := u.buildProviderBootstrapTask(p, networkId)
 		tasks = append(tasks, t)
 	}
+	errCh := make(chan error, 1)
+	go func() {
+		if err := u.initializer.ExecuteTasks(ctx, tasks...); err != nil {
+			u.logger.Error().
+				Err(err).
+				Str("networkId", networkId).
+				Msg("failed to execute provider bootstrap tasks")
+			errCh <- err
+		}
+		close(errCh)
+	}()
 
-	if err := u.initializer.ExecuteTasks(ctx, tasks...); err != nil {
-		u.logger.Error().
-			Err(err).
-			Str("networkId", networkId).
-			Msg("failed to execute provider bootstrap tasks")
-		return err
+	// Wait for minimum success threshold, completion, or error
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-errCh:
+			if err != nil {
+				return err
+			}
+			// If errCh was closed without error, continue checking status
+		case <-ticker.C:
+			status := u.initializer.Status()
+			totalTasks := len(tasks)
+			successfulTasks := 0
+
+			for _, task := range status.Tasks {
+				if task.State == util.TaskSucceeded {
+					successfulTasks++
+				}
+			}
+
+			successRate := float64(successfulTasks) / float64(totalTasks)
+			if successRate >= 0.2 { // 20% threshold
+				u.logger.Info().
+					Str("networkId", networkId).
+					Float64("successRate", successRate).
+					Msg("upstreams initialization based on provider is partially successful, will continue to unblock the flow")
+				return nil
+			}
+
+			if status.State == util.StateFailed {
+				return fmt.Errorf("initialization failed with state: %v", status.State)
+			}
+		}
 	}
-
-	return nil
 }
 
 func (u *UpstreamsRegistry) GetNetworkUpstreams(networkId string) []*Upstream {
@@ -394,17 +434,15 @@ func (u *UpstreamsRegistry) buildProviderBootstrapTask(
 
 			lg.Debug().Msg("attempting to create upstream from provider")
 
-			upsCfg, err := provider.GenerateUpstreamConfig(networkId)
+			upsCfgs, err := provider.GenerateUpstreamConfigs(networkId)
 			if err != nil {
 				return err
 			}
-
-			err = u.registerUpstream(ctx, upsCfg)
+			err = u.registerUpstream(ctx, upsCfgs...)
 			if err != nil {
-				lg.Error().Err(err).Msg("failed to bootstrap upstream from provider")
+				lg.Error().Err(err).Msg("failed to bootstrap upstreams from provider")
 				return err
 			}
-
 			return nil
 		},
 	)

@@ -73,7 +73,7 @@ func (v *EtherspotVendor) SupportsNetwork(ctx context.Context, logger *zerolog.L
 	return ok, nil
 }
 
-func (v *EtherspotVendor) PrepareConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
+func (v *EtherspotVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
@@ -96,21 +96,21 @@ func (v *EtherspotVendor) PrepareConfig(upstream *common.UpstreamConfig, setting
 		if apiKey, ok := settings["apiKey"].(string); ok && apiKey != "" {
 			chainID := upstream.Evm.ChainId
 			if chainID == 0 {
-				return fmt.Errorf("etherspot vendor requires upstream.evm.chainId to be defined")
+				return nil, fmt.Errorf("etherspot vendor requires upstream.evm.chainId to be defined")
 			}
 			parsedURL, err := v.generateUrl(chainID, apiKey)
 			if err != nil {
-				return err
+				return nil, err
 			}
 
 			upstream.Endpoint = parsedURL.String()
 			upstream.Type = common.UpstreamTypeEvm
 		} else {
-			return fmt.Errorf("apiKey is required in etherspot settings")
+			return nil, fmt.Errorf("apiKey is required in etherspot settings")
 		}
 	}
 
-	return nil
+	return []*common.UpstreamConfig{upstream}, nil
 }
 
 func (v *EtherspotVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {

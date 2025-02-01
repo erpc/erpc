@@ -45,7 +45,7 @@ func (v *LlamaVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logge
 	return ok, nil
 }
 
-func (v *LlamaVendor) PrepareConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
+func (v *LlamaVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
@@ -53,20 +53,20 @@ func (v *LlamaVendor) PrepareConfig(upstream *common.UpstreamConfig, settings co
 		if apiKey, ok := settings["apiKey"].(string); ok && apiKey != "" {
 			chainID := upstream.Evm.ChainId
 			if chainID == 0 {
-				return fmt.Errorf("llama vendor requires upstream.evm.chainId to be defined")
+				return nil, fmt.Errorf("llama vendor requires upstream.evm.chainId to be defined")
 			}
 			netName, ok := llamaNetworkNames[chainID]
 			if !ok {
-				return fmt.Errorf("unsupported network chain ID for Llama: %d", chainID)
+				return nil, fmt.Errorf("unsupported network chain ID for Llama: %d", chainID)
 			}
 			upstream.Endpoint = fmt.Sprintf("https://%s.llamarpc.com/%s", netName, apiKey)
 			upstream.Type = common.UpstreamTypeEvm
 		} else {
-			return fmt.Errorf("apiKey is required in llama settings")
+			return nil, fmt.Errorf("apiKey is required in llama settings")
 		}
 	}
 
-	return nil
+	return []*common.UpstreamConfig{upstream}, nil
 }
 
 func (v *LlamaVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {

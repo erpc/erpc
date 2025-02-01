@@ -148,7 +148,7 @@ func (v *PimlicoVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 	return cid == chainId, nil
 }
 
-func (v *PimlicoVendor) PrepareConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
+func (v *PimlicoVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
@@ -157,7 +157,7 @@ func (v *PimlicoVendor) PrepareConfig(upstream *common.UpstreamConfig, settings 
 		if apiKey, ok := settings["apiKey"].(string); ok && apiKey != "" {
 			chainID := upstream.Evm.ChainId
 			if chainID == 0 {
-				return fmt.Errorf("pimlico vendor requires upstream.evm.chainId to be defined")
+				return nil, fmt.Errorf("pimlico vendor requires upstream.evm.chainId to be defined")
 			}
 			var pimlicoURL string
 			if apiKey == "public" {
@@ -167,12 +167,12 @@ func (v *PimlicoVendor) PrepareConfig(upstream *common.UpstreamConfig, settings 
 			}
 			parsedURL, err := url.Parse(pimlicoURL)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			upstream.Endpoint = parsedURL.String()
 			upstream.Type = common.UpstreamTypeEvm
 		} else {
-			return fmt.Errorf("apiKey is required in pimlico settings (set to 'public' for public endpoint)")
+			return nil, fmt.Errorf("apiKey is required in pimlico settings (set to 'public' for public endpoint)")
 		}
 	}
 
@@ -195,7 +195,7 @@ func (v *PimlicoVendor) PrepareConfig(upstream *common.UpstreamConfig, settings 
 		}
 	}
 
-	return nil
+	return []*common.UpstreamConfig{upstream}, nil
 }
 
 func (v *PimlicoVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {
