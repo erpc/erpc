@@ -108,7 +108,7 @@ func (v *BlastApiVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Lo
 	return ok, nil
 }
 
-func (v *BlastApiVendor) PrepareConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
+func (v *BlastApiVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
@@ -116,15 +116,15 @@ func (v *BlastApiVendor) PrepareConfig(upstream *common.UpstreamConfig, settings
 	if upstream.Endpoint == "" {
 		if apiKey, ok := settings["apiKey"].(string); ok && apiKey != "" {
 			if upstream.Evm == nil {
-				return fmt.Errorf("blastapi vendor requires upstream.evm to be defined")
+				return nil, fmt.Errorf("blastapi vendor requires upstream.evm to be defined")
 			}
 			chainID := upstream.Evm.ChainId
 			if chainID == 0 {
-				return fmt.Errorf("blastapi vendor requires upstream.evm.chainId to be defined")
+				return nil, fmt.Errorf("blastapi vendor requires upstream.evm.chainId to be defined")
 			}
 			netName, ok := blastapiNetworkNames[chainID]
 			if !ok {
-				return fmt.Errorf("unsupported network chain ID for BlastAPI: %d", chainID)
+				return nil, fmt.Errorf("unsupported network chain ID for BlastAPI: %d", chainID)
 			}
 			blastapiURL := fmt.Sprintf("https://%s.blastapi.io/%s", netName, apiKey)
 			if netName == "ava-mainnet" || netName == "ava-testnet" {
@@ -133,17 +133,17 @@ func (v *BlastApiVendor) PrepareConfig(upstream *common.UpstreamConfig, settings
 			}
 			parsedURL, err := url.Parse(blastapiURL)
 			if err != nil {
-				return err
+				return nil, err
 			}
 
 			upstream.Endpoint = parsedURL.String()
 			upstream.Type = common.UpstreamTypeEvm
 		} else {
-			return fmt.Errorf("apiKey is required in blastapi settings")
+			return nil, fmt.Errorf("apiKey is required in blastapi settings")
 		}
 	}
 
-	return nil
+	return []*common.UpstreamConfig{upstream}, nil
 }
 
 func (v *BlastApiVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {

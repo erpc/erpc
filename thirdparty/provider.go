@@ -42,16 +42,16 @@ func (p *Provider) SupportsNetwork(ctx context.Context, networkId string) (bool,
 	return p.vendor.SupportsNetwork(ctx, p.logger, p.config.Settings, networkId)
 }
 
-func (p *Provider) GenerateUpstreamConfig(networkId string) (*common.UpstreamConfig, error) {
+func (p *Provider) GenerateUpstreamConfigs(networkId string) ([]*common.UpstreamConfig, error) {
 	upsCfg, err := p.buildBaseUpstreamConfig(networkId)
 	if err != nil {
 		return nil, err
 	}
-	err = p.vendor.PrepareConfig(upsCfg, p.config.Settings)
+	upsCfgs, err := p.vendor.GenerateConfigs(upsCfg, p.config.Settings)
 	if err != nil {
 		return nil, err
 	}
-	return upsCfg, nil
+	return upsCfgs, nil
 }
 
 // buildBaseUpstreamConfig uses the ProviderConfig's Overrides map to find an

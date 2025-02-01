@@ -82,7 +82,7 @@ func (v *ThirdwebVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Lo
 	return cid == chainId, nil
 }
 
-func (v *ThirdwebVendor) PrepareConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
+func (v *ThirdwebVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
@@ -91,15 +91,15 @@ func (v *ThirdwebVendor) PrepareConfig(upstream *common.UpstreamConfig, settings
 		if clientId, ok := settings["clientId"].(string); ok && clientId != "" {
 			parsedURL, err := v.generateUrl(upstream.Evm.ChainId, clientId)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			upstream.Endpoint = parsedURL.String()
 			upstream.Type = common.UpstreamTypeEvm
 		} else {
-			return fmt.Errorf("clientId is required in thirdweb settings")
+			return nil, fmt.Errorf("clientId is required in thirdweb settings")
 		}
 	}
-	return nil
+	return []*common.UpstreamConfig{upstream}, nil
 }
 
 func (v *ThirdwebVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {

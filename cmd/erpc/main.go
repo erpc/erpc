@@ -38,6 +38,10 @@ func main() {
 		Usage:    "Config file to use (by default checking erpc.js, erpc.ts, erpc.yaml, erpc.yml)",
 		Required: false,
 	}
+	requireConfigFlag := &cli.BoolFlag{
+		Name:  "require-config",
+		Usage: "Enforce passing a config file instead of using a default project and public endpoints",
+	}
 
 	// Define the validate command
 	validateCmd := &cli.Command{
@@ -52,6 +56,9 @@ func main() {
 	startCmd := &cli.Command{
 		Name:  "start",
 		Usage: "Start the eRPC service",
+		Flags: []cli.Flag{
+			requireConfigFlag,
+		},
 		Action: baseCliAction(logger, func(cfg *common.Config) error {
 			return erpc.Init(
 				context.Background(),
@@ -69,6 +76,7 @@ func main() {
 		Version:   common.ErpcVersion,
 		Flags: []cli.Flag{
 			configFileFlag,
+			requireConfigFlag,
 		},
 		// Legacy action being the start one directly, to ensure we fetch the potential first arg as config file
 		Action: baseCliAction(logger, func(cfg *common.Config) error {
@@ -124,6 +132,7 @@ func getConfig(
 	fs := afero.NewOsFs()
 	configPath := ""
 	possibleConfigs := []string{"./erpc.js", "./erpc.ts", "./erpc.yaml", "./erpc.yml"}
+	requireConfig := cmd.Bool("require-config")
 
 	if configFile := cmd.String("config"); len(configFile) > 1 {
 		// Check for the config flag, if present, use that file
@@ -141,15 +150,21 @@ func getConfig(
 		}
 	}
 
-	if configPath == "" {
-		return nil, fmt.Errorf("no valid configuration file found in %v", possibleConfigs)
+	if requireConfig || configPath != "" {
+		if configPath == "" {
+			return nil, fmt.Errorf("no valid configuration file found in %v", possibleConfigs)
+		}
+		logger.Info().Msgf("resolved configuration file to: %s", configPath)
+		cfg, err := common.LoadConfig(fs, configPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load configuration from %s: %v", configPath, err)
+		}
+		return cfg, nil
+	} else {
+		cfg := &common.Config{}
+		if err := cfg.SetDefaults(); err != nil {
+			return nil, fmt.Errorf("failed to set defaults for config: %v", err)
+		}
+		return cfg, nil
 	}
-
-	logger.Info().Msgf("resolved configuration file to: %s", configPath)
-	cfg, err := common.LoadConfig(fs, configPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load configuration from %s: %v", configPath, err)
-	}
-
-	return cfg, nil
 }

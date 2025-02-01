@@ -144,7 +144,7 @@ func (v *EnvioVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logge
 	return cid == chainId, nil
 }
 
-func (v *EnvioVendor) PrepareConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
+func (v *EnvioVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
@@ -178,17 +178,17 @@ func (v *EnvioVendor) PrepareConfig(upstream *common.UpstreamConfig, settings co
 		}
 		chainID := upstream.Evm.ChainId
 		if chainID == 0 {
-			return fmt.Errorf("envio vendor requires upstream.evm.chainId to be defined")
+			return nil, fmt.Errorf("envio vendor requires upstream.evm.chainId to be defined")
 		}
 		parsedURL, err := v.generateUrl(chainID, rootDomain)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		upstream.Endpoint = parsedURL.String()
 		upstream.Type = common.UpstreamTypeEvm
 	}
 
-	return nil
+	return []*common.UpstreamConfig{upstream}, nil
 }
 
 func (v *EnvioVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {

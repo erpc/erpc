@@ -8,6 +8,7 @@ import { Callout, Tabs, Tab } from "nextra/components";
 
 Providers make it easy to add well-known third-parties RPC endpoints quickly. Here are the supported providers:
 
+- [`repository`](#repository) A special provider where it automatically adds "public and free" RPC endpoints automatically for all EVM chains.
 - [`alchemy`](#alchemy) Accepts alchemy.com api key and automatically adds all their EVM chains.
 - [`drpc`](#drpc) Accepts drpc.org api key and automatically adds all their EVM chains.
 - [`blastapi`](#blastapi) Accepts blastapi.io api key and automatically adds all their EVM chains.
@@ -22,6 +23,46 @@ Providers make it easy to add well-known third-parties RPC endpoints quickly. He
 </Callout>
 
 ## Simple endpoints
+
+#### `repository`
+
+This special provider read a remote repository (a simple JSON file) that contains a list of RPC endpoints for any EVM chain. This allows automatic and lazy-loading of EVM chains on "first request":
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - endpoint: repository://evm-public-endpoints.erpc.cloud
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          endpoint: "repository://evm-public-endpoints.erpc.cloud",
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+<Callout type='info'>
+  eRPC team has published an IPFS file containing public endpoints from [chainlist.org](https://chainlist.org), [chainid.network](https://chainid.network) and [viem library](https://viem.sh), which is pointed to by [https://evm-public-endpoints.erpc.cloud](https://evm-public-endpoints.erpc.cloud) domain.
+</Callout>
 
 #### `alchemy`
 
@@ -483,4 +524,8 @@ providers:
   - vendor: thirdweb
     settings:
       clientId: xxxxx
+  - vendor: repository
+    settings:
+      repositoryUrl: https://evm-public-endpoints.erpc.cloud
+      recheckInterval: 1h # How often to recheck the repository for newly added RPC endpoints
 ```

@@ -80,7 +80,7 @@ func (v *AlchemyVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 	return ok, nil
 }
 
-func (v *AlchemyVendor) PrepareConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
+func (v *AlchemyVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
@@ -88,30 +88,30 @@ func (v *AlchemyVendor) PrepareConfig(upstream *common.UpstreamConfig, settings 
 	if upstream.Endpoint == "" {
 		if apiKey, ok := settings["apiKey"].(string); ok && apiKey != "" {
 			if upstream.Evm == nil {
-				return fmt.Errorf("alchemy vendor requires upstream.evm to be defined")
+				return nil, fmt.Errorf("alchemy vendor requires upstream.evm to be defined")
 			}
 			chainID := upstream.Evm.ChainId
 			if chainID == 0 {
-				return fmt.Errorf("alchemy vendor requires upstream.evm.chainId to be defined")
+				return nil, fmt.Errorf("alchemy vendor requires upstream.evm.chainId to be defined")
 			}
 			subdomain, ok := alchemyNetworkSubdomains[chainID]
 			if !ok {
-				return fmt.Errorf("unsupported network chain ID for Alchemy: %d", chainID)
+				return nil, fmt.Errorf("unsupported network chain ID for Alchemy: %d", chainID)
 			}
 			alchemyURL := fmt.Sprintf("https://%s.g.alchemy.com/v2/%s", subdomain, apiKey)
 			parsedURL, err := url.Parse(alchemyURL)
 			if err != nil {
-				return err
+				return nil, err
 			}
 
 			upstream.Endpoint = parsedURL.String()
 			upstream.Type = common.UpstreamTypeEvm
 		} else {
-			return fmt.Errorf("apiKey is required in alchemy settings")
+			return nil, fmt.Errorf("apiKey is required in alchemy settings")
 		}
 	}
 
-	return nil
+	return []*common.UpstreamConfig{upstream}, nil
 }
 
 func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {

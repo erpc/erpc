@@ -198,7 +198,7 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if e.synced > FullySyncedThreshold || e.skipSyncingCheck {
+		if e.synced >= FullySyncedThreshold || e.skipSyncingCheck {
 			return
 		}
 
