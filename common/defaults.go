@@ -766,7 +766,7 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 		}, nil
 	case "repository", "evm+repository":
 		return VendorSettings{
-			"repositoryUrl": "https://" + endpoint.Host,
+			"repositoryUrl": "https://" + endpoint.Host + "/" + strings.TrimPrefix(endpoint.Path, "/") + "?" + endpoint.RawQuery,
 		}, nil
 	}
 

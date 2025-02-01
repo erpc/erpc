@@ -139,8 +139,8 @@ jobs:
       # Create git tag
       - name: Create tag
         run: |
-          git tag ${{ steps.version.outputs.VERSION }}
-          git push origin ${{ steps.version.outputs.VERSION }}
+          git tag ${{ steps.version.outputs.VERSION }} -f
+          git push origin ${{ steps.version.outputs.VERSION }} -f
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
@@ -173,7 +173,7 @@ jobs:
         working-directory: typescript/cli
         run: |
           pnpm run build
-          pnpm publish --access public --no-git-checks
+          pnpm publish --access public --no-git-checks || true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -186,7 +186,7 @@ jobs:
           # Modify the package.json name from "@erpc-cloud/cli" to "start-rpc"
           sed -i 's/"@erpc-cloud\/cli"/"start-rpc"/' package.json
           # Publish under the new name
-          pnpm publish --access public --no-git-checks
+          pnpm publish --access public --no-git-checks || true
           # Restore the original package.json
           mv package.json.bak package.json
         env:
@@ -201,7 +201,7 @@ jobs:
           # Modify the package.json name from "@erpc-cloud/cli" to "start-erpc"
           sed -i 's/"@erpc-cloud\/cli"/"start-erpc"/' package.json
           # Publish under the new name
-          pnpm publish --access public --no-git-checks
+          pnpm publish --access public --no-git-checks || true
           # Restore the original package.json
           mv package.json.bak package.json
         env:
@@ -211,7 +211,7 @@ jobs:
         working-directory: typescript/config
         run: |
           pnpm run build
-          pnpm publish --access public --no-git-checks
+          pnpm publish --access public --no-git-checks || true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
