@@ -500,6 +500,11 @@ func (s *HttpServer) parseUrlPath(
 		case 2:
 			architecture = segments[0]
 			chainId = segments[1]
+		case 3:
+			// Still allow explicitly specifying projectId
+			projectId = segments[0]
+			architecture = segments[1]
+			chainId = segments[2]
 		case 0:
 			if !isHealthCheck {
 				return "", "", "", false, false, common.NewErrInvalidUrlPath("for project-only alias must provide /<architecture>/<chainId>", ps)
@@ -516,6 +521,11 @@ func (s *HttpServer) parseUrlPath(
 			if chainId == "" && !isHealthCheck {
 				return "", "", "", false, false, common.NewErrInvalidUrlPath("for project-and-architecture alias must provide /<chainId>", ps)
 			}
+		case 3:
+			// Still allow explicitly specifying projectId+architecture
+			projectId = segments[0]
+			architecture = segments[1]
+			chainId = segments[2]
 		case 0:
 			if !isHealthCheck {
 				return "", "", "", false, false, common.NewErrInvalidUrlPath("for project-and-architecture alias must provide /<chainId>", ps)
@@ -541,6 +551,11 @@ func (s *HttpServer) parseUrlPath(
 			if !isHealthCheck {
 				return "", "", "", false, false, common.NewErrInvalidUrlPath("for architecture-and-chain alias must provide /<project>", ps)
 			}
+		case 3:
+			// Still allow explicitly specifying project+architecture+chain
+			projectId = segments[0]
+			architecture = segments[1]
+			chainId = segments[2]
 		default:
 			return "", "", "", false, false, common.NewErrInvalidUrlPath("for architecture-and-chain alias must only provide /<project>", ps)
 		}
@@ -552,6 +567,11 @@ func (s *HttpServer) parseUrlPath(
 		case 2:
 			projectId = segments[0]
 			chainId = segments[1]
+		case 3:
+			// Still allow explicitly specifying project+architecture+chain
+			projectId = segments[0]
+			architecture = segments[1]
+			chainId = segments[2]
 		default:
 			return "", "", "", false, false, common.NewErrInvalidUrlPath("for architecture-only alias must only provide /<project>", ps)
 		}
