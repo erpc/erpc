@@ -150,14 +150,15 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 		case <-ctx.Done():
 			return ctx.Err()
 		case err := <-errCh:
-			if err != nil {
-				return err
-			}
-			// If errCh was closed without error, continue checking status
+			return err
 		case <-ticker.C:
 			status := u.initializer.Status()
 			totalTasks := len(tasks)
 			successfulTasks := 0
+
+			if totalTasks == 0 {
+				continue
+			}
 
 			for _, task := range status.Tasks {
 				if task.State == util.TaskSucceeded {

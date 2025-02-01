@@ -5302,6 +5302,8 @@ func TestNetwork_Forward(t *testing.T) {
 
 		upstream.ReorderUpstreams(upr)
 
+		time.Sleep(300 * time.Millisecond)
+
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 

@@ -28,6 +28,10 @@ Providers make it easy to add well-known third-parties RPC endpoints quickly. He
 
 This special provider read a remote repository (a simple JSON file) that contains a list of RPC endpoints for any EVM chain. This allows automatic and lazy-loading of EVM chains on "first request":
 
+<Callout type='warning'>
+  eRPC design aims to be robust towards any number of endpoints in terms of failures or response times, but it is recommended to test before you use this provider in production.
+</Callout>
+
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
@@ -61,7 +65,7 @@ export default createConfig({
 </Tabs>
 
 <Callout type='info'>
-  eRPC team has published an IPFS file containing public endpoints from [chainlist.org](https://chainlist.org), [chainid.network](https://chainid.network) and [viem library](https://viem.sh), which is pointed to by [https://evm-public-endpoints.erpc.cloud](https://evm-public-endpoints.erpc.cloud) domain.
+  eRPC team regularly updates an IPFS file containing public endpoints from [chainlist.org](https://chainlist.org), [chainid.network](https://chainid.network) and [viem library](https://viem.sh), which is pointed to by [https://evm-public-endpoints.erpc.cloud](https://evm-public-endpoints.erpc.cloud) domain.
 </Callout>
 
 #### `alchemy`

@@ -134,14 +134,14 @@ func getConfig(
 	possibleConfigs := []string{"./erpc.js", "./erpc.ts", "./erpc.yaml", "./erpc.yml"}
 	requireConfig := cmd.Bool("require-config")
 
+	// Check for the config flag, if present, use that file
 	if configFile := cmd.String("config"); len(configFile) > 1 {
-		// Check for the config flag, if present, use that file
 		configPath = configFile
-	} else if len(cmd.Args().Slice()) > 0 {
-		// Check for positional arg, if present, use that file
+		requireConfig = true // Since a config path is provided, we enforce it
+	} else if len(cmd.Args().Slice()) > 0 { // Check for positional arg, if present, use that file
 		configPath = cmd.Args().First()
-	} else {
-		// Check for defaults config paths
+		requireConfig = true
+	} else { // Check for defaults config paths
 		for _, path := range possibleConfigs {
 			if _, err := fs.Stat(path); err == nil {
 				configPath = path

@@ -168,13 +168,42 @@ jobs:
         run: pnpm install
         env:
           CI: true
-
       # Publish packages
       - name: Build and publish CLI package
         working-directory: typescript/cli
         run: |
           pnpm run build
           pnpm publish --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Publish the same package under the "start-rpc" name
+      - name: Publish start-rpc alias package
+        working-directory: typescript/cli
+        run: |
+          # Backup the original package.json
+          cp package.json package.json.bak
+          # Modify the package.json name from "@erpc-cloud/cli" to "start-rpc"
+          sed -i 's/"@erpc-cloud\/cli"/"start-rpc"/' package.json
+          # Publish under the new name
+          pnpm publish --access public --no-git-checks
+          # Restore the original package.json
+          mv package.json.bak package.json
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Publish the same package under the "start-erpc" name
+      - name: Publish start-erpc alias package
+        working-directory: typescript/cli
+        run: |
+          # Backup the original package.json
+          cp package.json package.json.bak
+          # Modify the package.json name from "@erpc-cloud/cli" to "start-erpc"
+          sed -i 's/"@erpc-cloud\/cli"/"start-erpc"/' package.json
+          # Publish under the new name
+          pnpm publish --access public --no-git-checks
+          # Restore the original package.json
+          mv package.json.bak package.json
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

@@ -51,6 +51,15 @@ func (c *Config) SetDefaults() error {
 	}
 	if len(c.Projects) == 0 {
 		log.Warn().Msg("no projects found in config; will add a default 'main' project")
+		c.Server.Aliasing = &AliasingConfig{
+			// Since we're adding only 1 project let's add an aliasing rule so users can send requests to /evm/123 without specifying the project id (/main/evm/123)
+			Rules: []*AliasingRuleConfig{
+				{
+					MatchDomain: "*",
+					ServeProject: "main",
+				},
+			},
+		}
 		c.Projects = []*ProjectConfig{
 			{
 				Id: "main",
