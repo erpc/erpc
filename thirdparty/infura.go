@@ -71,7 +71,7 @@ func (v *InfuraVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logg
 	return ok, nil
 }
 
-func (v *InfuraVendor) PrepareConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
+func (v *InfuraVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
@@ -80,11 +80,11 @@ func (v *InfuraVendor) PrepareConfig(upstream *common.UpstreamConfig, settings c
 		if apiKey, ok := settings["apiKey"].(string); ok && apiKey != "" {
 			chainID := upstream.Evm.ChainId
 			if chainID == 0 {
-				return fmt.Errorf("infura vendor requires upstream.evm.chainId to be defined")
+				return nil, fmt.Errorf("infura vendor requires upstream.evm.chainId to be defined")
 			}
 			netName, ok := infuraNetworkNames[chainID]
 			if !ok {
-				return fmt.Errorf("unsupported network chain ID for Infura: %d", chainID)
+				return nil, fmt.Errorf("unsupported network chain ID for Infura: %d", chainID)
 			}
 			infuraURL := fmt.Sprintf("https://%s.infura.io/v3/%s", netName, apiKey)
 			if netName == "ava-mainnet" || netName == "ava-testnet" {
@@ -93,16 +93,16 @@ func (v *InfuraVendor) PrepareConfig(upstream *common.UpstreamConfig, settings c
 			}
 			parsedURL, err := url.Parse(infuraURL)
 			if err != nil {
-				return err
+				return nil, err
 			}
 
 			upstream.Endpoint = parsedURL.String()
 			upstream.Type = common.UpstreamTypeEvm
 		} else {
-			return fmt.Errorf("apiKey is required in infura settings")
+			return nil, fmt.Errorf("apiKey is required in infura settings")
 		}
 	}
-	return nil
+	return []*common.UpstreamConfig{upstream}, nil
 }
 
 func (v *InfuraVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {

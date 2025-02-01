@@ -293,7 +293,8 @@ func (i *Initializer) attemptRemainingTasks(ctx context.Context) {
 					} else {
 						bt.lastErr.Store(wrappedError{err: nil})
 						bt.state.Store(int32(TaskSucceeded))
-						i.logger.Info().Str("task", bt.Name).Msg("initialization task succeeded")
+						lastAttempt, _ := bt.lastAttempt.Load().(time.Time)
+						i.logger.Info().Str("task", bt.Name).Dur("durationMs", time.Since(lastAttempt)).Msg("initialization task succeeded")
 					}
 				}(t, doneCh)
 			} else {

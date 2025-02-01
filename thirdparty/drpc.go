@@ -154,7 +154,7 @@ func (v *DrpcVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger
 	return ok, nil
 }
 
-func (v *DrpcVendor) PrepareConfig(upstream *common.UpstreamConfig, settings common.VendorSettings) error {
+func (v *DrpcVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	// Intentionally not ignore missing method exceptions because dRPC sometimes routes to nodes that don't support the method
 	// but it doesn't mean that method is actually not supported, i.e. on next retry to dRPC it might work.
 	upstream.AutoIgnoreUnsupportedMethods = &common.FALSE
@@ -162,29 +162,29 @@ func (v *DrpcVendor) PrepareConfig(upstream *common.UpstreamConfig, settings com
 	if upstream.Endpoint == "" {
 		if apiKey, ok := settings["apiKey"].(string); ok && apiKey != "" {
 			if upstream.Evm == nil {
-				return fmt.Errorf("drpc vendor requires upstream.evm to be defined")
+				return nil, fmt.Errorf("drpc vendor requires upstream.evm to be defined")
 			}
 			chainID := upstream.Evm.ChainId
 			if chainID == 0 {
-				return fmt.Errorf("drpc vendor requires upstream.evm.chainId to be defined")
+				return nil, fmt.Errorf("drpc vendor requires upstream.evm.chainId to be defined")
 			}
 			netName, ok := drpcNetworkNames[chainID]
 			if !ok {
-				return fmt.Errorf("unsupported network chain ID for DRPC: %d", chainID)
+				return nil, fmt.Errorf("unsupported network chain ID for DRPC: %d", chainID)
 			}
 			drpcURL := fmt.Sprintf("https://lb.drpc.org/ogrpc?network=%s&dkey=%s", netName, apiKey)
 			parsedURL, err := url.Parse(drpcURL)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			upstream.Endpoint = parsedURL.String()
 			upstream.Type = common.UpstreamTypeEvm
 		} else {
-			return fmt.Errorf("apiKey is required in drpc settings")
+			return nil, fmt.Errorf("apiKey is required in drpc settings")
 		}
 	}
 
-	return nil
+	return []*common.UpstreamConfig{upstream}, nil
 }
 
 func (v *DrpcVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {
