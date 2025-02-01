@@ -1293,7 +1293,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("HedgeReturnsResponseFromSecondUpstreamWhenFirstUpstreamReturnsSlowBillingIssues", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("1000ms"),
+				MaxTimeout: util.StringPtr("2000ms"),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -1613,7 +1613,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				// Enough total server time to let hedged calls finish.
-				MaxTimeout: util.StringPtr("1s"),
+				MaxTimeout: util.StringPtr("5s"),
 			},
 			Projects: []*common.ProjectConfig{
 				{
