@@ -27,6 +27,15 @@ func init() {
 			w.TimeFormat = "04:05.000ms"
 		})).With().Timestamp().Logger()
 	}
+
+	if logLevel := os.Getenv("LOG_LEVEL"); logLevel != "" {
+		level, err := zerolog.ParseLevel(logLevel)
+		if err != nil {
+			log.Warn().Msgf("invalid log level '%s', defaulting to 'debug': %s", logLevel, err)
+		} else {
+			zerolog.SetGlobalLevel(level)
+		}
+	}
 }
 
 func main() {
@@ -150,21 +159,32 @@ func getConfig(
 		}
 	}
 
+	cfg := &common.Config{}
 	if requireConfig || configPath != "" {
 		if configPath == "" {
 			return nil, fmt.Errorf("no valid configuration file found in %v", possibleConfigs)
 		}
 		logger.Info().Msgf("resolved configuration file to: %s", configPath)
-		cfg, err := common.LoadConfig(fs, configPath)
+		var err error
+		cfg, err = common.LoadConfig(fs, configPath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load configuration from %s: %v", configPath, err)
 		}
-		return cfg, nil
 	} else {
-		cfg := &common.Config{}
 		if err := cfg.SetDefaults(); err != nil {
 			return nil, fmt.Errorf("failed to set defaults for config: %v", err)
 		}
-		return cfg, nil
 	}
+
+	if lvl := os.Getenv("LOG_LEVEL"); lvl != "" {
+		// Allow overriding the log level from the environment variable
+		level, err := zerolog.ParseLevel(lvl)
+		if err != nil {
+			logger.Warn().Msgf("invalid log level '%s', defaulting to 'debug': %s", lvl, err)
+		} else {
+			cfg.LogLevel = level.String()
+		}
+	}
+
+	return cfg, nil
 }

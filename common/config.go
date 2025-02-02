@@ -326,7 +326,7 @@ type UpstreamConfig struct {
 	Type                         UpstreamType             `yaml:"type,omitempty" json:"type" tstype:"TsUpstreamType"`
 	Group                        string                   `yaml:"group,omitempty" json:"group"`
 	VendorName                   string                   `yaml:"vendorName,omitempty" json:"vendorName"`
-	Endpoint                     string                   `yaml:"endpoint" json:"endpoint"`
+	Endpoint                     string                   `yaml:"endpoint,omitempty" json:"endpoint"`
 	Evm                          *EvmUpstreamConfig       `yaml:"evm,omitempty" json:"evm"`
 	JsonRpc                      *JsonRpcUpstreamConfig   `yaml:"jsonRpc,omitempty" json:"jsonRpc"`
 	IgnoreMethods                []string                 `yaml:"ignoreMethods,omitempty" json:"ignoreMethods"`
@@ -402,11 +402,12 @@ type FailsafeConfig struct {
 }
 
 type RetryPolicyConfig struct {
-	MaxAttempts     int     `yaml:"maxAttempts" json:"maxAttempts"`
-	Delay           string  `yaml:"delay" json:"delay"`
-	BackoffMaxDelay string  `yaml:"backoffMaxDelay" json:"backoffMaxDelay"`
-	BackoffFactor   float32 `yaml:"backoffFactor" json:"backoffFactor"`
-	Jitter          string  `yaml:"jitter" json:"jitter"`
+	MaxAttempts        int     `yaml:"maxAttempts" json:"maxAttempts"`
+	Delay              string  `yaml:"delay" json:"delay"`
+	BackoffMaxDelay    string  `yaml:"backoffMaxDelay" json:"backoffMaxDelay"`
+	BackoffFactor      float32 `yaml:"backoffFactor" json:"backoffFactor"`
+	Jitter             string  `yaml:"jitter" json:"jitter"`
+	IgnoreClientErrors bool    `yaml:"ignoreClientErrors" json:"ignoreClientErrors"`
 }
 
 type CircuitBreakerPolicyConfig struct {
@@ -662,8 +663,6 @@ type MetricsConfig struct {
 	Port     *int    `yaml:"port" json:"port"`
 }
 
-var cfgInstance *Config
-
 // LoadConfig loads the configuration from the specified file.
 // It supports both YAML and TypeScript (.ts) files.
 func LoadConfig(fs afero.Fs, filename string) (*Config, error) {
@@ -700,8 +699,6 @@ func LoadConfig(fs afero.Fs, filename string) (*Config, error) {
 		return nil, err
 	}
 
-	cfgInstance = &cfg
-
 	return &cfg, nil
 }
 
@@ -735,10 +732,6 @@ func loadConfigFromTypescript(filename string) (*Config, error) {
 	}
 
 	return &cfg, nil
-}
-
-func GetConfig() *Config {
-	return cfgInstance
 }
 
 // GetProjectConfig returns the project configuration by the specified project ID.
