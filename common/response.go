@@ -225,17 +225,11 @@ func (r *NormalizedResponse) IsResultEmptyish() bool {
 	jrr.resultMu.RLock()
 	defer jrr.resultMu.RUnlock()
 
-	lnr := len(jrr.Result)
-	if lnr == 0 ||
-		(lnr == 4 && jrr.Result[0] == '"' && jrr.Result[1] == '0' && jrr.Result[2] == 'x' && jrr.Result[3] == '"') ||
-		(lnr == 4 && jrr.Result[0] == 'n' && jrr.Result[1] == 'u' && jrr.Result[2] == 'l' && jrr.Result[3] == 'l') ||
-		(lnr == 2 && jrr.Result[0] == '"' && jrr.Result[1] == '"') ||
-		(lnr == 2 && jrr.Result[0] == '[' && jrr.Result[1] == ']') ||
-		(lnr == 2 && jrr.Result[0] == '{' && jrr.Result[1] == '}') {
-		return true
+	if jrr.resultWriter != nil {
+		return jrr.resultWriter.IsResultEmptyish()
 	}
 
-	return false
+	return util.IsBytesEmptyish(jrr.Result)
 }
 
 func (r *NormalizedResponse) IsObjectNull() bool {

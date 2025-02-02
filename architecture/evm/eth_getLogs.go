@@ -268,6 +268,20 @@ func (g *GetLogsMultiResponseWriter) WriteTo(w io.Writer) (n int64, err error) {
 	return n + int64(nn), err
 }
 
+func (g *GetLogsMultiResponseWriter) IsResultEmptyish() bool {
+	if len(g.results) == 0 {
+		return true
+	}
+
+	for _, result := range g.results {
+		if !util.IsBytesEmptyish(result) {
+			return false
+		}
+	}
+
+	return true
+}
+
 type ethGetLogsSubRequest struct {
 	fromBlock int64
 	toBlock   int64
