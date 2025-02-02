@@ -30,12 +30,12 @@ func Init(
 		logger = logger.Level(level)
 	}
 
-	if logger.GetLevel() <= zerolog.DebugLevel {
+	if logger.GetLevel() <= zerolog.InfoLevel {
 		finalCfgJson, err := common.SonicCfg.Marshal(cfg)
 		if err != nil {
 			logger.Warn().Msgf("failed to marshal final configuration for tracing: %v", err)
 		} else {
-			logger.Debug().RawJSON("config", finalCfgJson).Msg("")
+			logger.Info().RawJSON("config", finalCfgJson).Msg("")
 		}
 	}
 

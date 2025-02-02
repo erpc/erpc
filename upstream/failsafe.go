@@ -346,13 +346,19 @@ func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolic
 	builder.HandleIf(func(result *common.NormalizedResponse, err error) bool {
 		// 400 / 404 / 405 / 413 -> No Retry
 		// RPC-RPC client-side error (invalid params) -> No Retry
-		if common.IsClientError(err) {
+		if err != nil && cfg.IgnoreClientErrors && common.IsClientError(err) {
+			// Most often you cannot trust the RPC node's response semantics (e.g. a client-side error
+			// might be due to the provider's own config) so if you try with another provider you will not get the same error.
+			// In these cases we want to continue retrying with another provider.
 			return false
 		}
 
 		// Any error that cannot be retried against an upstream
-		if scope == common.ScopeUpstream {
+		if scope == common.ScopeUpstream && err != nil {
 			if !common.IsRetryableTowardsUpstream(err) || common.IsCapacityIssue(err) {
+				if !cfg.IgnoreClientErrors && common.IsClientError(err) {
+					return true
+				}
 				return false
 			}
 		}
@@ -368,14 +374,14 @@ func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolic
 			if ok {
 				errs := exher.Errors()
 				if len(errs) > 0 {
-					shouldRetry := false
 					for _, err := range errs {
 						if common.IsRetryableTowardsUpstream(err) && !common.IsCapacityIssue(err) {
-							shouldRetry = true
-							break
+							return true
+						}
+						if !cfg.IgnoreClientErrors && common.IsClientError(err) {
+							return true
 						}
 					}
-					return shouldRetry
 				}
 			}
 		}
@@ -394,9 +400,9 @@ func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolic
 						return false
 					}
 					ups := result.Upstream()
-					// has Retry-Empty directive + "empty" response + node is synced + block is finalized -> No Retry
+					// has Retry-Empty directive + "empty" response + node is archive and synced + block is finalized -> No Retry
 					if err == nil && rds.RetryEmpty && isEmpty {
-						if ups.Config().Type == common.UpstreamTypeEvm {
+						if ups.Config().Type == common.UpstreamTypeEvm && ups.Config().Evm != nil && ups.Config().Evm.NodeType == common.EvmNodeTypeArchive {
 							if ups, ok := ups.(common.EvmUpstream); ok {
 								if ups.EvmSyncingState() == common.EvmSyncingStateNotSyncing {
 									_, bn, ebn := evm.ExtractBlockReferenceFromRequest(req)
