@@ -55,7 +55,7 @@ func (c *Config) SetDefaults() error {
 			// Since we're adding only 1 project let's add an aliasing rule so users can send requests to /evm/123 without specifying the project id (/main/evm/123)
 			Rules: []*AliasingRuleConfig{
 				{
-					MatchDomain: "*",
+					MatchDomain:  "*",
 					ServeProject: "main",
 				},
 			},
@@ -64,33 +64,40 @@ func (c *Config) SetDefaults() error {
 			{
 				Id: "main",
 				NetworkDefaults: &NetworkDefaults{
+					Evm: &EvmNetworkConfig{
+						Integrity: &EvmIntegrityConfig{
+							EnforceHighestBlock:      util.BoolPtr(true),
+							EnforceGetLogsBlockRange: util.BoolPtr(true),
+						},
+					},
 					Failsafe: &FailsafeConfig{
 						Retry: &RetryPolicyConfig{
-							MaxAttempts: 3,
-							Delay:       "0",
-							Jitter:      "0",
+							MaxAttempts:     5,
+							Delay:           "0ms",
+							Jitter:          "0",
+							BackoffMaxDelay: "0ms",
+							BackoffFactor:   1.0,
 						},
 						Timeout: &TimeoutPolicyConfig{
 							Duration: "60s",
 						},
 						Hedge: &HedgePolicyConfig{
-							Quantile: 0.9,
+							Delay:    "0ms",
 							MaxCount: 3,
-							MinDelay: "500ms",
 						},
 					},
 				},
 				UpstreamDefaults: &UpstreamConfig{
 					Evm: &EvmUpstreamConfig{
-						GetLogsMaxBlockRange: 500,
+						GetLogsMaxBlockRange: 100,
 					},
 					Failsafe: &FailsafeConfig{
 						Retry: &RetryPolicyConfig{
-							MaxAttempts: 2,
+							MaxAttempts: 1,
 							Delay:       "500ms",
 						},
 						Timeout: &TimeoutPolicyConfig{
-							Duration: "20s",
+							Duration: "30s",
 						},
 						CircuitBreaker: &CircuitBreakerPolicyConfig{
 							FailureThresholdCount:    8,
@@ -972,7 +979,7 @@ func (e *EvmUpstreamConfig) SetDefaults() error {
 	}
 
 	if e.NodeType == "" {
-		e.NodeType = EvmNodeTypeArchive
+		e.NodeType = EvmNodeTypeUnknown
 	}
 
 	if e.MaxAvailableRecentBlocks == 0 {
@@ -982,10 +989,9 @@ func (e *EvmUpstreamConfig) SetDefaults() error {
 		}
 	}
 
-	// TODO Enable this after more production testing
-	// if e.GetLogsMaxBlockRange == 0 {
-	// 	e.GetLogsMaxBlockRange = 500
-	// }
+	if e.GetLogsMaxBlockRange == 0 {
+		e.GetLogsMaxBlockRange = 500
+	}
 
 	return nil
 }
@@ -1100,12 +1106,11 @@ func (e *EvmNetworkConfig) SetDefaults() error {
 }
 
 func (i *EvmIntegrityConfig) SetDefaults() error {
-	// TODO After testing for a while, we can set these to true by default
 	if i.EnforceHighestBlock == nil {
-		i.EnforceHighestBlock = util.BoolPtr(false)
+		i.EnforceHighestBlock = util.BoolPtr(true)
 	}
 	if i.EnforceGetLogsBlockRange == nil {
-		i.EnforceGetLogsBlockRange = util.BoolPtr(false)
+		i.EnforceGetLogsBlockRange = util.BoolPtr(true)
 	}
 	return nil
 }

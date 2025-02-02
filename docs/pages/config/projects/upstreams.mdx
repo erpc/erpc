@@ -58,6 +58,7 @@ projects:
           maxAvailableRecentBlocks: 128
           # (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
           # This is used to automatically split the request into smaller sub-requests if the range is too high.
+          # Set to -1 to disable this behavior.
           # DEFAULT: 500 (500 blocks)
           getLogsMaxBlockRange: 500
 
@@ -186,6 +187,7 @@ export default createConfig({
             maxAvailableRecentBlocks: 128,
             // (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
             // This is used to automatically split the request into smaller sub-requests if the range is too high.
+            // Set to -1 to disable this behavior.
             // DEFAULT: 500 (500 blocks)
             getLogsMaxBlockRange: 500,
           },
@@ -569,6 +571,7 @@ projects:
           maxAvailableRecentBlocks: 128
           # (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
           # This is used to automatically split the request into smaller sub-requests if the range is too high.
+          # Set to -1 to disable this behavior.
           # DEFAULT: 500 (500 blocks)
           getLogsMaxBlockRange: 500
         # ...
@@ -610,6 +613,7 @@ export default createConfig({
             maxAvailableRecentBlocks: 128,
             // (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
             // This is used to automatically split the request into smaller sub-requests if the range is too high.
+            // Set to -1 to disable this behavior.
             // DEFAULT: 500 (500 blocks)
             getLogsMaxBlockRange: 500,
           },
@@ -638,6 +642,7 @@ upstreams:
     evm:
       # (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
       # This is used to automatically split the request into smaller sub-requests if the range is too high.
+      # Set to -1 to disable this behavior.
       # DEFAULT: 500 (500 blocks)
       getLogsMaxBlockRange: 500
 ```
@@ -653,6 +658,7 @@ export default createConfig({
       evm: {
         // (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
         // This is used to automatically split the request into smaller sub-requests if the range is too high.
+        // Set to -1 to disable this behavior.
         // DEFAULT: 500 (500 blocks)
         getLogsMaxBlockRange: 500,
       },

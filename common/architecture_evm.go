@@ -19,9 +19,9 @@ type EvmUpstream interface {
 type EvmNodeType string
 
 const (
+	EvmNodeTypeUnknown EvmNodeType = "unknown"
 	EvmNodeTypeFull    EvmNodeType = "full"
 	EvmNodeTypeArchive EvmNodeType = "archive"
-	EvmNodeTypeLight   EvmNodeType = "light"
 )
 
 type EvmSyncingState int

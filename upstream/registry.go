@@ -369,15 +369,17 @@ func (u *UpstreamsRegistry) registerUpstream(ctx context.Context, upsCfgs ...*co
 }
 
 func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamConfig) *util.BootstrapTask {
+	cfg := new(common.UpstreamConfig)
+	*cfg = *upsCfg
 	return util.NewBootstrapTask(
-		fmt.Sprintf("upstream/%s", upsCfg.Id),
+		fmt.Sprintf("upstream/%s", cfg.Id),
 		func(ctx context.Context) error {
-			u.logger.Debug().Str("upstreamId", upsCfg.Id).Msg("attempt to bootstrap upstream")
+			u.logger.Debug().Str("upstreamId", cfg.Id).Msg("attempt to bootstrap upstream")
 
 			u.upstreamsMu.RLock()
 			var ups *Upstream
 			for _, up := range u.allUpstreams {
-				if up.Config().Id == upsCfg.Id {
+				if up.Config().Id == cfg.Id {
 					ups = up
 					break
 				}
@@ -386,7 +388,7 @@ func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamCo
 
 			var err error
 			if ups == nil {
-				ups, err = u.NewUpstream(u.prjId, upsCfg, u.logger, u.metricsTracker)
+				ups, err = u.NewUpstream(u.prjId, cfg, u.logger, u.metricsTracker)
 				if err != nil {
 					return err
 				}
@@ -404,12 +406,12 @@ func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamCo
 				go func() {
 					err = u.onUpstreamRegistered(ups)
 					if err != nil {
-						u.logger.Error().Err(err).Str("upstreamId", upsCfg.Id).Msg("failed to call onUpstreamRegistered")
+						u.logger.Error().Err(err).Str("upstreamId", cfg.Id).Msg("failed to call onUpstreamRegistered")
 					}
 				}()
 			}
 
-			u.logger.Debug().Str("upstreamId", upsCfg.Id).Msg("upstream bootstrap completed")
+			u.logger.Debug().Str("upstreamId", cfg.Id).Msg("upstream bootstrap completed")
 			return nil
 		},
 	)
