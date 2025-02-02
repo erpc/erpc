@@ -81,7 +81,7 @@ func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr i
 				nil,
 			)
 		} else if code == 3 {
-			return common.NewErrEndpointClientSideException(
+			return common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					code,
 					common.JsonRpcErrorEvmReverted,

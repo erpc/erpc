@@ -71,6 +71,8 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	if err != nil {
 		return true, nil, err
 	}
+	jrq.RLock()
+	defer jrq.RUnlock()
 	if len(jrq.Params) < 1 {
 		return false, nil, nil
 	}
