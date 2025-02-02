@@ -166,8 +166,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		u *upstream.Upstream,
 		ctx context.Context,
 		lg *zerolog.Logger,
+		hedge int,
+		attempt int,
 	) (resp *common.NormalizedResponse, err error) {
-		lg.Debug().Msgf("trying to forward request to upstream")
+		lg.Debug().Int("hedge", hedge).Int("attempt", attempt).Msgf("trying to forward request to upstream")
 
 		if err := n.acquireSelectionPolicyPermit(lg, u, req); err != nil {
 			return nil, err
@@ -186,9 +188,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 
 		if err != nil {
-			lg.Debug().Err(err).Msgf("finished forwarding request to upstream with error")
+			lg.Debug().Object("response", resp).Err(err).Msgf("finished forwarding request to upstream with error")
 		} else {
-			lg.Debug().Msgf("finished forwarding request to upstream with success")
+			lg.Debug().Object("response", resp).Msgf("finished forwarding request to upstream with success")
 		}
 
 		return resp, err
@@ -197,7 +199,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// 5) Actual forwarding logic
 	var execution failsafe.Execution[*common.NormalizedResponse]
 	errorsByUpstream := &sync.Map{}
-
+	emptyResponses := &sync.Map{}
 	ectx := context.WithValue(ctx, common.RequestContextKey, req)
 
 	i := 0
@@ -250,14 +252,18 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				// We need to use write-lock here because "i" is being updated.
 				req.Lock()
 				u := upsList[i]
-				upsId := u.Config().Id
 				ulg := lg.With().Str("upstreamId", u.Config().Id).Logger()
 				ulg.Trace().Int("index", i).Int("upstreams", ln).Msgf("attempt to forward request to next upstream")
 				i++
 				if i >= ln {
 					i = 0
 				}
-				if prevErr, exists := errorsByUpstream.Load(upsId); exists {
+				if _, respondedEmptyBefore := emptyResponses.Load(u); respondedEmptyBefore {
+					ulg.Debug().Msgf("upstream already responded empty no reason to retry, skipping")
+					req.Unlock()
+					continue
+				}
+				if prevErr, exists := errorsByUpstream.Load(u); exists {
 					pe := prevErr.(error)
 					if !common.IsRetryableTowardsUpstream(pe) || common.IsCapacityIssue(pe) {
 						// Do not even try this upstream if we already know
@@ -275,7 +281,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 
 				var r *common.NormalizedResponse
-				r, err = tryForward(u, ictx, &ulg)
+				r, err = tryForward(u, ictx, &ulg, hedges, attempts)
 				if e := n.normalizeResponse(req, r); e != nil {
 					ulg.Error().Err(e).Msgf("failed to normalize response")
 					err = e
@@ -291,7 +297,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 
 				if err != nil {
-					errorsByUpstream.Store(upsId, err)
+					errorsByUpstream.Store(u, err)
+				} else if r.IsResultEmptyish() {
+					emptyResponses.Store(u, true)
 				}
 
 				if err == nil || isClientErr {
