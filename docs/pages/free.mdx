@@ -1,0 +1,54 @@
+---
+description: Fastest way to run an eRPC proxy for 2,000+ chains and 4,000+ public free RPC endpoints... 
+---
+
+
+import { Tabs, Tab } from "nextra/components";
+
+## Free & Public RPC Endpoints
+
+Get immediate access to 2,000+ chains and 4,000+ public free EVM RPC endpoints:
+
+1. Run an eRPC instance:
+<Tabs items={["NPM", "Docker"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```bash
+npx start-erpc
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```bash
+docker run -p 4000:4000 ghcr.io/erpc/erpc
+```
+</Tabs.Tab>
+</Tabs>
+
+2. Send requests to the eRPC instance based on chainId:
+
+```bash
+curl 'http://localhost:4000/evm/42161' \
+--header 'Content-Type: application/json' \
+--data '{
+    "method": "eth_getBlockByNumber",
+    "params": [
+        "latest",
+        false
+    ],
+    "id": 9199,
+    "jsonrpc": "2.0"
+}'
+```
+
+3. 🚀 Profit!
+
+![../public/assets/romulus.gif](../public/assets/romulus.gif)
+
+### How it works?
+
+When running eRPC without a configuration file, it will use a basic configuration using the special [repository](/config/projects/providers#repository) provider. 
+
+This provider automatically fetches (every 1 hour) RPC public endpoints from [https://evm-public-endpoints.erpc.cloud](https://evm-public-endpoints.erpc.cloud) which is a combination of [Chainlist](https://chainlist.org/), [ChainID.Network](https://chainid.network/), and [Viem](https://viem.sh/) public RPC endpoints.
+
+### Next steps
+
+This setup is recommended for development and testing purposes. For production environments, we recommend [extending eRPC config](https://docs.erpc.cloud/config/example) with dedicated premium providers and advanced failover configs.
