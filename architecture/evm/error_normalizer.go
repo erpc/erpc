@@ -12,23 +12,22 @@ import (
 
 func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *common.JsonRpcResponse) error {
 	if (jr != nil && jr.Error != nil) || r.StatusCode > 299 {
-		var err *common.ErrJsonRpcExceptionExternal
-		if jr != nil && jr.Error != nil {
-			err = jr.Error
-		} else {
-			err = common.NewErrJsonRpcExceptionExternal(
-				int(common.JsonRpcErrorServerSideException),
-				fmt.Sprintf("unexpected http failure with status code %d", r.StatusCode),
-				string(jr.Result),
-			)
-		}
-
 		var details map[string]interface{} = make(map[string]interface{})
 		details["statusCode"] = r.StatusCode
 		details["headers"] = util.ExtractUsefulHeaders(r)
 
-		if ver := getVendorSpecificErrorIfAny(r, nr, jr, details); ver != nil {
-			return ver
+		var err *common.ErrJsonRpcExceptionExternal
+		if jr != nil && jr.Error != nil {
+			err = jr.Error
+			if ver := getVendorSpecificErrorIfAny(r, nr, jr, details); ver != nil {
+				return ver
+			}
+		} else {
+			err = common.NewErrJsonRpcExceptionExternal(
+				int(common.JsonRpcErrorServerSideException),
+				fmt.Sprintf("unexpected http failure with status code %d", r.StatusCode),
+				"",
+			)
 		}
 
 		code := common.JsonRpcErrorNumber(err.Code)
@@ -201,7 +200,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			)
 		} else if strings.Contains(msg, "not found") ||
 			strings.Contains(msg, "does not exist") ||
-			strings.Contains(msg, "is not available") ||
+			strings.Contains(msg, "not available") ||
 			strings.Contains(msg, "is disabled") {
 			if strings.Contains(msg, "Method") ||
 				strings.Contains(msg, "method") ||
