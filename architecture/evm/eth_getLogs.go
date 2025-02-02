@@ -190,22 +190,34 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 }
 
 func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u common.Upstream, rq *common.NormalizedRequest, rs *common.NormalizedResponse, re error, skipCacheRead bool) (*common.NormalizedResponse, error) {
-	if re != nil && common.HasErrorCode(re, common.ErrCodeEndpointRequestTooLarge) {
-		// TODO Update the evmGetLogsMaxRange accordingly?
-		// Split the request in half, first on block range, if 1 block then on addresses, if 1 address then on topics
-		subRequests, err := splitEthGetLogsRequest(rq)
-		if err != nil {
-			return nil, err
-		}
-		mergedResponse, err := executeGetLogsSubRequests(ctx, n, u, rq, subRequests, skipCacheRead)
-		if err != nil {
-			return nil, err
-		}
+	if re != nil {
+		if common.HasErrorCode(re, common.ErrCodeEndpointRequestTooLarge) {
+			// TODO Update the evmGetLogsMaxRange accordingly?
+			// Split the request in half, first on block range, if 1 block then on addresses, if 1 address then on topics
+			subRequests, err := splitEthGetLogsRequest(rq)
+			if err != nil {
+				return nil, err
+			}
+			mergedResponse, err := executeGetLogsSubRequests(ctx, n, u, rq, subRequests, skipCacheRead)
+			if err != nil {
+				return nil, err
+			}
 
-		return common.NewNormalizedResponse().
-			WithRequest(rq).
-			WithJsonRpcResponse(mergedResponse), nil
+			return common.NewNormalizedResponse().
+				WithRequest(rq).
+				WithJsonRpcResponse(mergedResponse), nil
+		}
+	} else if rs != nil && rs.IsResultEmptyish() {
+		// This is to normalize empty logs responses (e.g. instead of returning "null")
+		jrr, err := common.NewJsonRpcResponse(rq.ID(), []interface{}{}, nil)
+		if err != nil {
+			return nil, err
+		}
+		nnr := common.NewNormalizedResponse().WithRequest(rq).WithJsonRpcResponse(jrr)
+		rq.SetLastValidResponse(nnr)
+		return nnr, nil
 	}
+
 	return rs, re
 }
 
@@ -381,6 +393,20 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 			if err != nil {
 				mu.Lock()
 				errs = append(errs, err)
+				mu.Unlock()
+				return
+			}
+
+			if jrr == nil {
+				mu.Lock()
+				errs = append(errs, fmt.Errorf("unexpected empty json-rpc response %v", rs))
+				mu.Unlock()
+				return
+			}
+
+			if jrr.Error != nil {
+				mu.Lock()
+				errs = append(errs, jrr.Error)
 				mu.Unlock()
 				return
 			}
