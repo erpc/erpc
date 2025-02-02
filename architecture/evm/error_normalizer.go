@@ -2,6 +2,7 @@ package evm
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -10,8 +11,17 @@ import (
 )
 
 func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *common.JsonRpcResponse) error {
-	if jr != nil && jr.Error != nil {
-		err := jr.Error
+	if (jr != nil && jr.Error != nil) || r.StatusCode > 299 {
+		var err *common.ErrJsonRpcExceptionExternal
+		if jr != nil && jr.Error != nil {
+			err = jr.Error
+		} else {
+			err = common.NewErrJsonRpcExceptionExternal(
+				int(common.JsonRpcErrorServerSideException),
+				fmt.Sprintf("unexpected http failure with status code %d", r.StatusCode),
+				string(jr.Result),
+			)
+		}
 
 		var details map[string]interface{} = make(map[string]interface{})
 		details["statusCode"] = r.StatusCode
