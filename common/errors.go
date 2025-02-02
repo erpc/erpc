@@ -1516,6 +1516,20 @@ func (e *ErrEndpointClientSideException) ErrorStatusCode() int {
 	return http.StatusBadRequest
 }
 
+type ErrEndpointExecutionException struct{ BaseError }
+
+const ErrCodeEndpointExecutionException = "ErrEndpointExecutionException"
+
+var NewErrEndpointExecutionException = func(cause error) error {
+	return &ErrEndpointExecutionException{
+		BaseError{
+			Code:    ErrCodeEndpointExecutionException,
+			Message: "execution exception on node",
+			Cause:   cause,
+		},
+	}
+}
+
 type ErrEndpointTransportFailure struct{ BaseError }
 
 const ErrCodeEndpointTransportFailure = "ErrEndpointTransportFailure"
@@ -1914,6 +1928,9 @@ func IsRetryableTowardsUpstream(err error) bool {
 		// RPC-RPC client-side error (invalid params) -> No Retry
 		ErrCodeEndpointClientSideException,
 		ErrCodeJsonRpcRequestUnmarshal,
+
+		// Execution exceptions are not retryable
+		ErrCodeEndpointExecutionException,
 
 		// Upstream-level + 401 / 403 -> No Retry
 		// RPC vendor billing/capacity/auth -> No Retry

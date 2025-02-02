@@ -990,7 +990,7 @@ func (e *EvmUpstreamConfig) SetDefaults() error {
 	}
 
 	if e.GetLogsMaxBlockRange == 0 {
-		e.GetLogsMaxBlockRange = 500
+		e.GetLogsMaxBlockRange = 10_000
 	}
 
 	return nil

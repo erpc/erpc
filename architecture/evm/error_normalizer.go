@@ -175,7 +175,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "VM execution error") ||
 			strings.Contains(msg, "transaction: revert") ||
 			strings.Contains(msg, "VM Exception") {
-			return common.NewErrEndpointClientSideException(
+			return common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorEvmReverted,
@@ -343,7 +343,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		dt := util.Mem2Str(jr.Result)
 		// keccak256("Error(string)")
 		if len(dt) > 11 && dt[1:11] == "0x08c379a0" {
-			return common.NewErrEndpointClientSideException(
+			return common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					0,
 					common.JsonRpcErrorEvmReverted,
