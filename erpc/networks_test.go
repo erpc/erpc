@@ -3051,8 +3051,8 @@ func TestNetwork_Forward(t *testing.T) {
 		if err == nil {
 			t.Errorf("Expected an error, got nil")
 		}
-		if !strings.Contains(err.Error(), "ErrEndpointClientSideException") {
-			t.Errorf("Expected %v, got %v", "ErrEndpointClientSideException", err)
+		if !strings.Contains(err.Error(), "ErrEndpointExecutionException") {
+			t.Errorf("Expected %v, got %v", "ErrEndpointExecutionException", err)
 		}
 	})
 
