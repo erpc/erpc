@@ -16,12 +16,13 @@
   "scripts": {
     "build": "tsc",
     "prepare": "npm run build",
-    "postinstall": "npm run build && node dist/install.js",
+    "postinstall": "node dist/install.js",
     "preuninstall": "rm -rf bin",
     "format": "biome format --write"
   },
-  "dependencies": {
-    "@types/node": "^22.10.5"
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.3"
   },
   "files": [
     "dist",
