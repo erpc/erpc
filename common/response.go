@@ -330,10 +330,10 @@ func (r *NormalizedResponse) MarshalZerologObject(e *zerolog.Event) {
 		if jrr.errBytes != nil && len(jrr.errBytes) > 0 {
 			e.RawJSON("error", jrr.errBytes)
 		}
-		if len(jrr.Result) < 100*1024 {
+		if len(jrr.Result) < 300*1024 {
 			e.RawJSON("result", jrr.Result)
 		} else {
-			head := 50 * 1024
+			head := 150 * 1024
 			tail := len(jrr.Result) - head
 			if tail < head {
 				head = tail
