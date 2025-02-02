@@ -617,6 +617,7 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 	}
 	if e.NodeType != "" {
 		allowed := []EvmNodeType{
+			EvmNodeTypeUnknown,
 			EvmNodeTypeArchive,
 			EvmNodeTypeFull,
 		}

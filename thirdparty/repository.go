@@ -166,22 +166,9 @@ func (v *RepositoryVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 	v.remoteDataLock.Lock()
 	defer v.remoteDataLock.Unlock()
 
-	// If the user put "remote://" or "evm+remote://" or if it matches
-	// any known remote endpoints, let's say yes.
-	if strings.HasPrefix(ups.Endpoint, "remote://") || strings.HasPrefix(ups.Endpoint, "evm+remote://") {
+	// If the user put "repository://" or "evm+repository://"
+	if strings.HasPrefix(ups.Endpoint, "repository://") || strings.HasPrefix(ups.Endpoint, "evm+repository://") {
 		return true
-	}
-
-	// Another check: parse the chain ID from the config and see if the endpoint is in remoteData.
-	if ups.Evm != nil {
-		endpoints, exists := v.remoteData[ups.Evm.ChainId]
-		if exists {
-			for _, ep := range endpoints {
-				if ups.Endpoint == ep {
-					return true
-				}
-			}
-		}
 	}
 
 	return false
