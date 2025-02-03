@@ -66,6 +66,9 @@ jobs:
         env:
           CI: true
 
+      - name: Try building npm package
+        run: pnpm run build
+
       # Update version in package.json files
       - name: Update package versions
         run: |

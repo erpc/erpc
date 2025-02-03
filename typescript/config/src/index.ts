@@ -28,7 +28,7 @@ export {
   // Evm node type
   EvmNodeTypeFull,
   EvmNodeTypeArchive,
-  EvmNodeTypeLight,
+  EvmNodeTypeUnknown,
   // Evm syncing type
   EvmSyncingStateUnknown,
   EvmSyncingStateSyncing,
