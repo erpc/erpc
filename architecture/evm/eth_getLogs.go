@@ -71,31 +71,38 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	if err != nil {
 		return true, nil, err
 	}
+
 	jrq.RLock()
-	defer jrq.RUnlock()
 	if len(jrq.Params) < 1 {
+		jrq.RUnlock()
 		return false, nil, nil
 	}
 	filter, ok := jrq.Params[0].(map[string]interface{})
 	if !ok {
+		jrq.RUnlock()
 		return false, nil, nil
 	}
 	fb, ok := filter["fromBlock"].(string)
 	if !ok || !strings.HasPrefix(fb, "0x") {
+		jrq.RUnlock()
 		return false, nil, nil
 	}
 	fromBlock, err := strconv.ParseInt(fb, 0, 64)
 	if err != nil {
+		jrq.RUnlock()
 		return true, nil, err
 	}
 	tb, ok := filter["toBlock"].(string)
 	if !ok || !strings.HasPrefix(tb, "0x") {
+		jrq.RUnlock()
 		return false, nil, nil
 	}
 	toBlock, err := strconv.ParseInt(tb, 0, 64)
 	if err != nil {
+		jrq.RUnlock()
 		return true, nil, err
 	}
+	jrq.RUnlock()
 
 	statePoller := up.EvmStatePoller()
 	if statePoller == nil {
@@ -194,15 +201,18 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u common.Upstream, rq *common.NormalizedRequest, rs *common.NormalizedResponse, re error, skipCacheRead bool) (*common.NormalizedResponse, error) {
 	if re != nil {
 		if common.HasErrorCode(re, common.ErrCodeEndpointRequestTooLarge) {
-			// TODO Update the evmGetLogsMaxRange accordingly?
+			logger := u.Logger().With().Str("method", "eth_getLogs").Interface("id", rq.ID()).Logger()
 			// Split the request in half, first on block range, if 1 block then on addresses, if 1 address then on topics
 			subRequests, err := splitEthGetLogsRequest(rq)
+			// TODO Update the evmGetLogsMaxRange accordingly?
 			if err != nil {
-				return nil, err
+				logger.Warn().Err(err).Object("request", rq).Msg("could not split eth_getLogs request, returning original response")
+				return rs, re
 			}
 			mergedResponse, err := executeGetLogsSubRequests(ctx, n, u, rq, subRequests, skipCacheRead)
 			if err != nil {
-				return nil, err
+				logger.Warn().Err(err).Object("request", rq).Msg("could not execute eth_getLogs sub-requests, returning original response")
+				return rs, re
 			}
 
 			return common.NewNormalizedResponse().
@@ -241,8 +251,15 @@ func (g *GetLogsMultiResponseWriter) WriteTo(w io.Writer) (n int64, err error) {
 	}
 	n += int64(nn)
 
-	for i, result := range g.results {
-		if i > 0 {
+	first := true
+	for _, result := range g.results {
+		// Trim leading/trailing whitespace and brackets
+		trimmed := bytes.TrimSpace(result)
+		if util.IsBytesEmptyish(trimmed) {
+			continue // Skip empty results
+		}
+
+		if !first {
 			// Write comma separator
 			nn, err = w.Write([]byte{','})
 			if err != nil {
@@ -250,12 +267,7 @@ func (g *GetLogsMultiResponseWriter) WriteTo(w io.Writer) (n int64, err error) {
 			}
 			n += int64(nn)
 		}
-
-		// Trim leading/trailing whitespace and brackets
-		trimmed := bytes.TrimSpace(result)
-		if len(trimmed) < 2 {
-			continue // Skip empty results
-		}
+		first = false
 
 		// Write the inner content, skipping the outer brackets
 		nn, err = w.Write(trimmed[1 : len(trimmed)-1])
@@ -366,7 +378,7 @@ func extractBlockRange(filter map[string]interface{}) (fromBlock, toBlock int64,
 }
 
 func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.Upstream, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead bool) (*common.JsonRpcResponse, error) {
-	logger := u.(common.EvmUpstream).Logger().With().Str("method", "eth_getLogs").Interface("id", r.ID()).Logger()
+	logger := u.Logger().With().Str("method", "eth_getLogs").Interface("id", r.ID()).Logger()
 
 	wg := sync.WaitGroup{}
 	results := make([][]byte, 0)

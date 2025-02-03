@@ -1,7 +1,9 @@
 package evm
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -417,6 +419,117 @@ func TestUpstreamPostForward_eth_getLogs(t *testing.T) {
 			u.AssertExpectations(t)
 		})
 	}
+}
+
+func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
+	nonEmpty := []byte(`[{"logIndex":1,"address":"0x123","topics":["0xabc"],"data":"0x1234567890"}]`)
+	emptyResp := []byte(`[]`)
+	nullResp := []byte(`null`)
+
+	t.Run("FirstFillLastEmpty", func(t *testing.T) {
+		// Create the multi-response writer with both responses.
+		writer := NewGetLogsMultiResponseWriter([][]byte{nonEmpty, emptyResp})
+
+		var buf bytes.Buffer
+		writtenBytes, err := writer.WriteTo(&buf)
+		assert.NoError(t, err, "WriteTo should not return an error")
+		assert.Greater(t, writtenBytes, int64(0), "WriteTo should write some bytes")
+
+		mergedJSON := buf.Bytes()
+		// Validate that the merged JSON output is valid.
+		assert.True(t, json.Valid(mergedJSON), "Merged JSON should be valid")
+
+		// Unmarshal the merged JSON to verify its structure.
+		var logs []map[string]interface{}
+		err = json.Unmarshal(mergedJSON, &logs)
+		assert.NoError(t, err, "Unmarshal of merged JSON should succeed")
+
+		assert.Equal(t, 1, len(logs), "Expected only one log from non-empty sub-response")
+		if len(logs) > 0 {
+			assert.Equal(t, "0x1234567890", logs[0]["data"], "Expected the log to be '0x1234567890'")
+		} else {
+			assert.Fail(t, "Expected at least one log from non-empty sub-response")
+		}
+	})
+
+	t.Run("FirstEmptyLastFill", func(t *testing.T) {
+		// Create the multi-response writer with both responses.
+		writer := NewGetLogsMultiResponseWriter([][]byte{emptyResp, nonEmpty})
+
+		var buf bytes.Buffer
+		writtenBytes, err := writer.WriteTo(&buf)
+		assert.NoError(t, err, "WriteTo should not return an error")
+		assert.Greater(t, writtenBytes, int64(0), "WriteTo should write some bytes")
+
+		mergedJSON := buf.Bytes()
+		// Validate that the merged JSON output is valid.
+		assert.True(t, json.Valid(mergedJSON), "Merged JSON should be valid")
+
+		// Unmarshal the merged JSON to verify its structure.
+		var logs []map[string]interface{}
+		err = json.Unmarshal(mergedJSON, &logs)
+		assert.NoError(t, err, "Unmarshal of merged JSON should succeed")
+
+		assert.Equal(t, 1, len(logs), "Expected only one log from non-empty sub-response")
+		if len(logs) > 0 {
+			assert.Equal(t, "0x1234567890", logs[0]["data"], "Expected the log to be '0x1234567890'")
+		} else {
+			assert.Fail(t, "Expected at least one log from non-empty sub-response")
+		}
+	})
+
+	t.Run("FirstFillMidNullLastEmpty", func(t *testing.T) {
+		// Create the multi-response writer with both responses.
+		writer := NewGetLogsMultiResponseWriter([][]byte{emptyResp, nullResp, nonEmpty})
+
+		var buf bytes.Buffer
+		writtenBytes, err := writer.WriteTo(&buf)
+		assert.NoError(t, err, "WriteTo should not return an error")
+		assert.Greater(t, writtenBytes, int64(0), "WriteTo should write some bytes")
+
+		mergedJSON := buf.Bytes()
+		// Validate that the merged JSON output is valid.
+		assert.True(t, json.Valid(mergedJSON), "Merged JSON should be valid")
+
+		// Unmarshal the merged JSON to verify its structure.
+		var logs []map[string]interface{}
+		err = json.Unmarshal(mergedJSON, &logs)
+		assert.NoError(t, err, "Unmarshal of merged JSON should succeed")
+
+		assert.Equal(t, 1, len(logs), "Expected only one log from non-empty sub-response")
+		if len(logs) > 0 {
+			assert.Equal(t, "0x1234567890", logs[0]["data"], "Expected the log to be '0x1234567890'")
+		} else {
+			assert.Fail(t, "Expected at least one log from non-empty sub-response")
+		}
+	})
+
+	t.Run("FirstNullMidMixLastEmpty", func(t *testing.T) {
+		// Create the multi-response writer with both responses.
+		writer := NewGetLogsMultiResponseWriter([][]byte{nullResp, nonEmpty, emptyResp, nullResp, emptyResp, nonEmpty, emptyResp})
+
+		var buf bytes.Buffer
+		writtenBytes, err := writer.WriteTo(&buf)
+		assert.NoError(t, err, "WriteTo should not return an error")
+		assert.Greater(t, writtenBytes, int64(0), "WriteTo should write some bytes")
+
+		mergedJSON := buf.Bytes()
+		// Validate that the merged JSON output is valid.
+		assert.True(t, json.Valid(mergedJSON), "Merged JSON should be valid")
+
+		// Unmarshal the merged JSON to verify its structure.
+		var logs []map[string]interface{}
+		err = json.Unmarshal(mergedJSON, &logs)
+		assert.NoError(t, err, "Unmarshal of merged JSON should succeed")
+
+		assert.Equal(t, 2, len(logs), "Expected only one log from non-empty sub-response")
+		if len(logs) > 0 {
+			assert.Equal(t, "0x1234567890", logs[0]["data"], "Expected the 1st log to be '0x1234567890'")
+			assert.Equal(t, "0x1234567890", logs[1]["data"], "Expected the 2nd log to be '0x1234567890'")
+		} else {
+			assert.Fail(t, "Expected at least one log from non-empty sub-response")
+		}
+	})
 }
 
 func createTestRequest(filter interface{}) *common.NormalizedRequest {
