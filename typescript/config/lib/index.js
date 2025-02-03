@@ -46,7 +46,7 @@ __export(src_exports, {
   DataFinalityStateUnknown: () => DataFinalityStateUnknown,
   EvmNodeTypeArchive: () => EvmNodeTypeArchive,
   EvmNodeTypeFull: () => EvmNodeTypeFull,
-  EvmNodeTypeLight: () => EvmNodeTypeLight,
+  EvmNodeTypeUnknown: () => EvmNodeTypeUnknown,
   EvmSyncingStateNotSyncing: () => EvmSyncingStateNotSyncing,
   EvmSyncingStateSyncing: () => EvmSyncingStateSyncing,
   EvmSyncingStateUnknown: () => EvmSyncingStateUnknown,
@@ -59,9 +59,9 @@ module.exports = __toCommonJS(src_exports);
 
 // src/generated.ts
 var UpstreamTypeEvm = "evm";
+var EvmNodeTypeUnknown = "unknown";
 var EvmNodeTypeFull = "full";
 var EvmNodeTypeArchive = "archive";
-var EvmNodeTypeLight = "light";
 var EvmSyncingStateUnknown = 0;
 var EvmSyncingStateSyncing = 1;
 var EvmSyncingStateNotSyncing = 2;
@@ -124,7 +124,7 @@ var createConfig = (cfg) => {
   DataFinalityStateUnknown,
   EvmNodeTypeArchive,
   EvmNodeTypeFull,
-  EvmNodeTypeLight,
+  EvmNodeTypeUnknown,
   EvmSyncingStateNotSyncing,
   EvmSyncingStateSyncing,
   EvmSyncingStateUnknown,

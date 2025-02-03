@@ -2,9 +2,9 @@ import type { LogLevel, Duration, ByteSize, ConnectorDriverType as TsConnectorDr
 export declare const UpstreamTypeEvm: UpstreamType;
 export type EvmUpstream = Upstream;
 export type EvmNodeType = string;
+export declare const EvmNodeTypeUnknown: EvmNodeType;
 export declare const EvmNodeTypeFull: EvmNodeType;
 export declare const EvmNodeTypeArchive: EvmNodeType;
-export declare const EvmNodeTypeLight: EvmNodeType;
 export type EvmSyncingState = number;
 export declare const EvmSyncingStateUnknown: EvmSyncingState;
 export declare const EvmSyncingStateSyncing: EvmSyncingState;
@@ -186,7 +186,7 @@ export interface UpstreamConfig {
     type?: TsUpstreamType;
     group?: string;
     vendorName?: string;
-    endpoint: string;
+    endpoint?: string;
     evm?: EvmUpstreamConfig;
     jsonRpc?: JsonRpcUpstreamConfig;
     ignoreMethods?: string[];
@@ -248,10 +248,11 @@ export interface FailsafeConfig {
 }
 export interface RetryPolicyConfig {
     maxAttempts: number;
-    delay: string;
-    backoffMaxDelay: string;
-    backoffFactor: number;
-    jitter: string;
+    delay?: string;
+    backoffMaxDelay?: string;
+    backoffFactor?: number;
+    jitter?: string;
+    ignoreClientErrors?: boolean;
 }
 export interface CircuitBreakerPolicyConfig {
     failureThresholdCount: number;

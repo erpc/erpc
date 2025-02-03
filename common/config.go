@@ -403,11 +403,11 @@ type FailsafeConfig struct {
 
 type RetryPolicyConfig struct {
 	MaxAttempts        int     `yaml:"maxAttempts" json:"maxAttempts"`
-	Delay              string  `yaml:"delay" json:"delay"`
-	BackoffMaxDelay    string  `yaml:"backoffMaxDelay" json:"backoffMaxDelay"`
-	BackoffFactor      float32 `yaml:"backoffFactor" json:"backoffFactor"`
-	Jitter             string  `yaml:"jitter" json:"jitter"`
-	IgnoreClientErrors bool    `yaml:"ignoreClientErrors" json:"ignoreClientErrors"`
+	Delay              string  `yaml:"delay,omitempty" json:"delay"`
+	BackoffMaxDelay    string  `yaml:"backoffMaxDelay,omitempty" json:"backoffMaxDelay"`
+	BackoffFactor      float32 `yaml:"backoffFactor,omitempty" json:"backoffFactor"`
+	Jitter             string  `yaml:"jitter,omitempty" json:"jitter"`
+	IgnoreClientErrors bool    `yaml:"ignoreClientErrors,omitempty" json:"ignoreClientErrors"`
 }
 
 type CircuitBreakerPolicyConfig struct {
