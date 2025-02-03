@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +21,8 @@ const (
 	RedisDriverName    = "redis"
 	reverseIndexPrefix = "rvi"
 )
+
+var _ Connector = &RedisConnector{}
 
 type RedisConnector struct {
 	id          string
@@ -66,7 +69,6 @@ func NewRedisConnector(
 	return connector, nil
 }
 
-// Id satisfies a hypothetical Connector interface.
 func (r *RedisConnector) Id() string {
 	return r.id
 }
@@ -94,19 +96,18 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 	r.logger.Info().Str("addr", r.cfg.Addr).Msg("attempting to connect to Redis")
 	client := redis.NewClient(options)
 
-	// Test the connection
+	// Test the connection with Ping.
 	_, err := client.Ping(ctx).Result()
 	if err != nil {
 		return fmt.Errorf("failed to connect to Redis: %w", err)
 	}
 
-	// If we succeed, store the new client.
 	r.client = client
 	r.logger.Info().Str("addr", r.cfg.Addr).Msg("successfully connected to Redis")
 	return nil
 }
 
-// createTLSConfig is unchanged from your original snippet, included here for completeness.
+// createTLSConfig creates a tls.Config based on the provided TLS settings.
 func createTLSConfig(tlsCfg *common.TLSConfig) (*tls.Config, error) {
 	config := &tls.Config{
 		InsecureSkipVerify: tlsCfg.InsecureSkipVerify, // #nosec G402
@@ -220,4 +221,122 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 		return "", err
 	}
 	return value, nil
+}
+
+// Lock attempts to acquire a distributed lock for the specified key.
+// It uses SET NX with an expiration TTL. Returns a DistributedLock instance on success.
+func (r *RedisConnector) Lock(ctx context.Context, lockKey string, ttl time.Duration) (DistributedLock, error) {
+	// We'll use the connector's own id as a token
+	token := r.id
+
+	// Attempt to acquire the lock with SET NX.
+	ok, err := r.client.SetNX(ctx, lockKey, token, ttl).Result()
+	if err != nil {
+		return nil, fmt.Errorf("error acquiring lock: %w", err)
+	}
+	if !ok {
+		return nil, errors.New("failed to acquire lock")
+	}
+
+	return &redisLock{
+		connector: r,
+		key:       lockKey,
+		token:     token,
+		ttl:       ttl,
+	}, nil
+}
+
+// WatchCounterInt64 watches a counter in Redis. Returns a channel of updates and a cleanup function.
+func (r *RedisConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan int64, func(), error) {
+	// Create buffered channel to avoid blocking
+	updates := make(chan int64, 1)
+	pubsub := r.client.Subscribe(ctx, "counter:"+key)
+
+	// Start a goroutine to handle updates
+	go func() {
+		defer close(updates)
+		defer pubsub.Close()
+
+		// Poll every 30s as a safety net
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+
+			case msg := <-pubsub.Channel():
+				if val, err := strconv.ParseInt(msg.Payload, 10, 64); err == nil {
+					select {
+					case updates <- val:
+					default: // Don't block if channel is full
+					}
+				}
+
+			case <-ticker.C:
+				// Safety net: poll current value
+				if val, err := r.getCurrentValue(ctx, key); err == nil {
+					select {
+					case updates <- val:
+					default:
+					}
+				}
+			}
+		}
+	}()
+
+	cleanup := func() {
+		pubsub.Close()
+	}
+
+	// Get initial value
+	if val, err := r.getCurrentValue(ctx, key); err == nil {
+		updates <- val
+	}
+
+	return updates, cleanup, nil
+}
+
+// PublishCounterInt64 publishes a counter value to Redis.
+func (r *RedisConnector) PublishCounterInt64(ctx context.Context, key string, value int64) error {
+	return r.client.Publish(ctx, "counter:"+key, value).Err()
+}
+
+func (r *RedisConnector) getCurrentValue(ctx context.Context, key string) (int64, error) {
+	val, err := r.Get(ctx, ConnectorMainIndex, key, "value")
+	if err != nil {
+		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return strconv.ParseInt(val, 10, 64)
+}
+
+// redisLock implements the DistributedLock interface for Redis.
+type redisLock struct {
+	connector *RedisConnector
+	key       string
+	token     string
+	ttl       time.Duration
+}
+
+// Unlock releases the lock using a Lua script to ensure the token matches.
+func (l *redisLock) Unlock(ctx context.Context) error {
+	script := `
+		if redis.call("get", KEYS[1]) == ARGV[1] then
+			return redis.call("del", KEYS[1])
+		else
+			return 0
+		end
+	`
+	result, err := l.connector.client.Eval(ctx, script, []string{l.key}, l.token).Result()
+	if err != nil {
+		return fmt.Errorf("error releasing lock: %w", err)
+	}
+	if result.(int64) == 0 {
+		return errors.New("failed to release lock")
+	}
+	return nil
 }

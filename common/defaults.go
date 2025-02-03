@@ -621,6 +621,9 @@ func (d *DynamoDBConnectorConfig) SetDefaults() error {
 	if d.SetTimeout == 0 {
 		d.SetTimeout = 2 * time.Second
 	}
+	if d.StatePollInterval == 0 {
+		d.StatePollInterval = 1 * time.Second
+	}
 
 	return nil
 }

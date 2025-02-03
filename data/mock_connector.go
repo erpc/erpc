@@ -33,6 +33,24 @@ func (m *MockConnector) Set(ctx context.Context, partitionKey, rangeKey, value s
 	return args.Error(0)
 }
 
+// Lock mocks the Lock method of the Connector interface
+func (m *MockConnector) Lock(ctx context.Context, key string, ttl time.Duration) (DistributedLock, error) {
+	args := m.Called(ctx, key, ttl)
+	return args.Get(0).(DistributedLock), args.Error(1)
+}
+
+// WatchCounterInt64 mocks the WatchCounterInt64 method of the Connector interface
+func (m *MockConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan int64, func(), error) {
+	args := m.Called(ctx, key)
+	return args.Get(0).(<-chan int64), args.Get(1).(func()), args.Error(2)
+}
+
+// PublishCounterInt64 mocks the PublishCounterInt64 method of the Connector interface
+func (m *MockConnector) PublishCounterInt64(ctx context.Context, key string, value int64) error {
+	args := m.Called(ctx, key, value)
+	return args.Error(0)
+}
+
 // NewMockConnector creates a new instance of MockConnector
 func NewMockConnector(id string) *MockConnector {
 	return &MockConnector{id: id}
@@ -40,7 +58,7 @@ func NewMockConnector(id string) *MockConnector {
 
 // MockMemoryConnector extends MemoryConnector with a fake delay feature
 type MockMemoryConnector struct {
-	MemoryConnector
+	*MemoryConnector
 	fakeDelay time.Duration
 }
 
@@ -52,7 +70,7 @@ func NewMockMemoryConnector(ctx context.Context, logger *zerolog.Logger, id stri
 	}
 
 	return &MockMemoryConnector{
-		MemoryConnector: *baseConnector,
+		MemoryConnector: baseConnector,
 		fakeDelay:       fakeDelay,
 	}, nil
 }

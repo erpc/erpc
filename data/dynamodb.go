@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
@@ -24,18 +25,24 @@ const (
 var _ Connector = (*DynamoDBConnector)(nil)
 
 type DynamoDBConnector struct {
-	id               string
-	logger           *zerolog.Logger
-	client           *dynamodb.DynamoDB
-	initializer      *util.Initializer
-	table            string
-	ttlAttributeName string
-	partitionKeyName string
-	rangeKeyName     string
-	reverseIndexName string
-	initTimeout      time.Duration
-	getTimeout       time.Duration
-	setTimeout       time.Duration
+	id                string
+	logger            *zerolog.Logger
+	initializer       *util.Initializer
+	client            *dynamodb.DynamoDB
+	table             string
+	ttlAttributeName  string
+	partitionKeyName  string
+	rangeKeyName      string
+	reverseIndexName  string
+	initTimeout       time.Duration
+	getTimeout        time.Duration
+	setTimeout        time.Duration
+	statePollInterval time.Duration
+}
+
+type dynamoLock struct {
+	connector *DynamoDBConnector
+	lockKey   string
 }
 
 func NewDynamoDBConnector(
@@ -48,16 +55,17 @@ func NewDynamoDBConnector(
 	lg.Debug().Interface("config", cfg).Msg("creating DynamoDBConnector")
 
 	connector := &DynamoDBConnector{
-		id:               id,
-		logger:           &lg,
-		table:            cfg.Table,
-		partitionKeyName: cfg.PartitionKeyName,
-		rangeKeyName:     cfg.RangeKeyName,
-		reverseIndexName: cfg.ReverseIndexName,
-		ttlAttributeName: cfg.TTLAttributeName,
-		initTimeout:      cfg.InitTimeout,
-		getTimeout:       cfg.GetTimeout,
-		setTimeout:       cfg.SetTimeout,
+		id:                id,
+		logger:            &lg,
+		table:             cfg.Table,
+		partitionKeyName:  cfg.PartitionKeyName,
+		rangeKeyName:      cfg.RangeKeyName,
+		reverseIndexName:  cfg.ReverseIndexName,
+		ttlAttributeName:  cfg.TTLAttributeName,
+		initTimeout:       cfg.InitTimeout,
+		getTimeout:        cfg.GetTimeout,
+		setTimeout:        cfg.SetTimeout,
+		statePollInterval: cfg.StatePollInterval,
 	}
 
 	// create an Initializer to handle (re)connecting
@@ -434,4 +442,157 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 	}
 
 	return value, nil
+}
+
+func (d *DynamoDBConnector) Lock(ctx context.Context, key string, ttl time.Duration) (DistributedLock, error) {
+	lockKey := fmt.Sprintf("%s:lock", key)
+	expiryTime := time.Now().Add(ttl).Unix()
+
+	_, err := d.client.PutItemWithContext(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(d.table),
+		Item: map[string]*dynamodb.AttributeValue{
+			d.partitionKeyName: {S: aws.String(lockKey)},
+			d.rangeKeyName:     {S: aws.String("lock")},
+			"expiry":           {N: aws.String(fmt.Sprintf("%d", expiryTime))},
+		},
+		ConditionExpression: aws.String(
+			"attribute_not_exists(#pk) OR #expiry < :now",
+		),
+		ExpressionAttributeNames: map[string]*string{
+			"#pk":     aws.String(d.partitionKeyName),
+			"#expiry": aws.String("expiry"),
+		},
+		ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
+			":now": {N: aws.String(fmt.Sprintf("%d", time.Now().Unix()))},
+		},
+	})
+
+	if err != nil {
+		if aerr, ok := err.(awserr.Error); ok && aerr.Code() == dynamodb.ErrCodeConditionalCheckFailedException {
+			return nil, fmt.Errorf("lock is held by another process")
+		}
+		return nil, fmt.Errorf("failed to acquire lock: %w", err)
+	}
+
+	return &dynamoLock{
+		connector: d,
+		lockKey:   lockKey,
+	}, nil
+}
+
+func (l *dynamoLock) Unlock(ctx context.Context) error {
+	_, err := l.connector.client.DeleteItemWithContext(ctx, &dynamodb.DeleteItemInput{
+		TableName: aws.String(l.connector.table),
+		Key: map[string]*dynamodb.AttributeValue{
+			l.connector.partitionKeyName: {S: aws.String(l.lockKey)},
+			l.connector.rangeKeyName:     {S: aws.String("lock")},
+		},
+	})
+	return err
+}
+
+func (d *DynamoDBConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan int64, func(), error) {
+	updates := make(chan int64, 1)
+
+	// Start polling goroutine
+	ticker := time.NewTicker(d.statePollInterval)
+	done := make(chan struct{})
+
+	go func() {
+		defer ticker.Stop()
+
+		var lastValue int64
+		var lastVersion int64
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-done:
+				return
+			case <-ticker.C:
+				value, version, err := d.getValueAndVersion(ctx, key)
+				if err != nil {
+					d.logger.Warn().Err(err).Str("key", key).Msg("failed to poll counter value")
+					continue
+				}
+
+				// Only send updates when version changes
+				if version > lastVersion && value > lastValue {
+					lastVersion = version
+					lastValue = value
+					select {
+					case updates <- value:
+					default:
+					}
+				}
+			}
+		}
+	}()
+
+	// Get initial value
+	if val, _, err := d.getValueAndVersion(ctx, key); err == nil {
+		updates <- val
+	}
+
+	cleanup := func() {
+		close(done)
+		close(updates)
+	}
+
+	return updates, cleanup, nil
+}
+
+func (d *DynamoDBConnector) getValueAndVersion(ctx context.Context, key string) (int64, int64, error) {
+	result, err := d.client.GetItemWithContext(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(d.table),
+		Key: map[string]*dynamodb.AttributeValue{
+			d.partitionKeyName: {S: aws.String(key)},
+			d.rangeKeyName:     {S: aws.String("value")},
+		},
+		ConsistentRead: aws.Bool(true),
+	})
+
+	if err != nil {
+		return 0, 0, err
+	}
+
+	if result.Item == nil {
+		return 0, 0, nil
+	}
+
+	var value, version int64
+
+	if v, ok := result.Item["value"]; ok && v.N != nil {
+		value, _ = strconv.ParseInt(*v.N, 10, 64)
+	}
+
+	if v, ok := result.Item["version"]; ok && v.N != nil {
+		version, _ = strconv.ParseInt(*v.N, 10, 64)
+	}
+
+	return value, version, nil
+}
+
+func (d *DynamoDBConnector) PublishCounterInt64(ctx context.Context, key string, value int64) error {
+	_, err := d.client.UpdateItemWithContext(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(d.table),
+		Key: map[string]*dynamodb.AttributeValue{
+			d.partitionKeyName: {S: aws.String(key)},
+			d.rangeKeyName:     {S: aws.String("value")},
+		},
+		UpdateExpression: aws.String(
+			"SET #value = :value, #version = #version + :inc",
+		),
+		ExpressionAttributeNames: map[string]*string{
+			"#value":   aws.String("value"),
+			"#version": aws.String("version"),
+		},
+		ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
+			":value": {N: aws.String(fmt.Sprintf("%d", value))},
+			":inc":   {N: aws.String("1")},
+		},
+	})
+
+	return err
 }

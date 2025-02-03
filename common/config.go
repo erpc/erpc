@@ -216,17 +216,73 @@ func (r *RedisConnectorConfig) MarshalJSON() ([]byte, error) {
 }
 
 type DynamoDBConnectorConfig struct {
-	Table            string         `yaml:"table" json:"table"`
-	Region           string         `yaml:"region" json:"region"`
-	Endpoint         string         `yaml:"endpoint" json:"endpoint"`
-	Auth             *AwsAuthConfig `yaml:"auth" json:"auth"`
-	PartitionKeyName string         `yaml:"partitionKeyName" json:"partitionKeyName"`
-	RangeKeyName     string         `yaml:"rangeKeyName" json:"rangeKeyName"`
-	ReverseIndexName string         `yaml:"reverseIndexName" json:"reverseIndexName"`
-	TTLAttributeName string         `yaml:"ttlAttributeName" json:"ttlAttributeName"`
-	InitTimeout      time.Duration  `yaml:"initTimeout,omitempty" json:"initTimeout"`
-	GetTimeout       time.Duration  `yaml:"getTimeout,omitempty" json:"getTimeout"`
-	SetTimeout       time.Duration  `yaml:"setTimeout,omitempty" json:"setTimeout"`
+	Table             string         `yaml:"table" json:"table"`
+	Region            string         `yaml:"region" json:"region"`
+	Endpoint          string         `yaml:"endpoint" json:"endpoint"`
+	Auth              *AwsAuthConfig `yaml:"auth" json:"auth"`
+	PartitionKeyName  string         `yaml:"partitionKeyName" json:"partitionKeyName"`
+	RangeKeyName      string         `yaml:"rangeKeyName" json:"rangeKeyName"`
+	ReverseIndexName  string         `yaml:"reverseIndexName" json:"reverseIndexName"`
+	TTLAttributeName  string         `yaml:"ttlAttributeName" json:"ttlAttributeName"`
+	InitTimeout       time.Duration  `yaml:"initTimeout,omitempty" json:"initTimeout"`
+	GetTimeout        time.Duration  `yaml:"getTimeout,omitempty" json:"getTimeout"`
+	SetTimeout        time.Duration  `yaml:"setTimeout,omitempty" json:"setTimeout"`
+	StatePollInterval time.Duration  `yaml:"statePollInterval,omitempty" json:"statePollInterval"`
+}
+
+func (c *DynamoDBConnectorConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type rawConfig DynamoDBConnectorConfig
+	raw := struct {
+		InitTimeout       string `yaml:"initTimeout"`
+		GetTimeout        string `yaml:"getTimeout"`
+		SetTimeout        string `yaml:"setTimeout"`
+		StatePollInterval string `yaml:"statePollInterval"`
+		*rawConfig
+	}{
+		rawConfig: (*rawConfig)(c),
+	}
+
+	if err := unmarshal(&raw); err != nil {
+		return err
+	}
+
+	// Parse InitTimeout
+	if raw.InitTimeout != "" {
+		if d, err := time.ParseDuration(raw.InitTimeout); err != nil {
+			return fmt.Errorf("invalid initTimeout: %v", err)
+		} else {
+			c.InitTimeout = d
+		}
+	}
+
+	// Parse GetTimeout
+	if raw.GetTimeout != "" {
+		if d, err := time.ParseDuration(raw.GetTimeout); err != nil {
+			return fmt.Errorf("invalid getTimeout: %v", err)
+		} else {
+			c.GetTimeout = d
+		}
+	}
+
+	// Parse SetTimeout
+	if raw.SetTimeout != "" {
+		if d, err := time.ParseDuration(raw.SetTimeout); err != nil {
+			return fmt.Errorf("invalid setTimeout: %v", err)
+		} else {
+			c.SetTimeout = d
+		}
+	}
+
+	// Parse StatePollInterval
+	if raw.StatePollInterval != "" {
+		if d, err := time.ParseDuration(raw.StatePollInterval); err != nil {
+			return fmt.Errorf("invalid statePollInterval: %v", err)
+		} else {
+			c.StatePollInterval = d
+		}
+	}
+
+	return nil
 }
 
 type PostgreSQLConnectorConfig struct {

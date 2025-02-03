@@ -330,6 +330,9 @@ func (p *DynamoDBConnectorConfig) Validate() error {
 	if p.SetTimeout == 0 {
 		return fmt.Errorf("database.*.connector.dynamodb.setTimeout is required")
 	}
+	if p.StatePollInterval == 0 {
+		return fmt.Errorf("database.*.connector.dynamodb.statePollInterval is required")
+	}
 	return nil
 }
 
