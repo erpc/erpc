@@ -61,8 +61,8 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           cache: 'pnpm'
 
-      - name: Install dependencies
-        run: pnpm install
+      - name: Install dependencies without postinstall hooks
+        run: pnpm install --ignore-scripts
         env:
           CI: true
 
@@ -164,10 +164,11 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           cache: 'pnpm'
 
-      - name: Install dependencies
-        run: pnpm install
+      - name: Install dependencies without postinstall hooks
+        run: pnpm install --ignore-scripts
         env:
           CI: true
+
       # Publish packages
       - name: Build and publish CLI package
         working-directory: typescript/cli
@@ -264,8 +265,8 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           cache: 'pnpm'
 
-      - name: Install dependencies
-        run: pnpm install
+      - name: Install dependencies without postinstall hooks
+        run: pnpm install --ignore-scripts
         env:
           CI: true
 
