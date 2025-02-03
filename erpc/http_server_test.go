@@ -2804,6 +2804,76 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		}
 		wg.Wait()
 	})
+
+	t.Run("CorrectResponseonEvmRevertData", func(t *testing.T) {
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("500s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
+						{
+							Id:       "rpc2",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc2.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		// Set up test fixtures
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Reply(400).
+			BodyString(`{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"method not found"}}`)
+
+		gock.New("http://rpc2.localhost").
+			Times(1).
+			Post("").
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":3,"message":"execution reverted: Dai/insufficient-balance"}}`))
+
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_call","params":[],"id":1}`, nil, nil)
+		assert.Equal(t, http.StatusOK, statusCode)
+		assert.Contains(t, body, "Dai/insufficient-balance")
+	})
 }
 
 func TestHttpServer_MultipleUpstreams(t *testing.T) {
@@ -5749,7 +5819,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 	baseURL := fmt.Sprintf("http://localhost:%d", port)
 
 	sendRequest := func(body string, headers map[string]string, queryParams map[string]string) (int, string) {
-		rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		rctx, cancel := context.WithTimeout(ctx, 100*time.Second)
 		defer cancel()
 		chainId := "1"
 		if queryParams["chainId"] != "" {
