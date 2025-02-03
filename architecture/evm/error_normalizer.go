@@ -44,11 +44,16 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				} else {
 					details["data"] = s
 				}
+
+				// Add the data to the message for text-based checks below
 				msg += " Data: " + s
 			}
 		default:
 			// passthrough error data as is
 			details["data"] = err.Data
+
+			// Add the data as string to the message for text-based checks below
+			msg += " Data: " + fmt.Sprintf("%v", err.Data)
 		}
 
 		// Infer from known status codes

@@ -59,8 +59,8 @@ projects:
           # (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
           # This is used to automatically split the request into smaller sub-requests if the range is too high.
           # Set to -1 to disable this behavior.
-          # DEFAULT: 500 (500 blocks)
-          getLogsMaxBlockRange: 500
+          # DEFAULT: 10000 (10000 blocks)
+          getLogsMaxBlockRange: 10000
 
         # (OPTIONAL) Defines which budget to use when hadnling requests of this upstream (e.g. to limit total RPS)
         # Since budgets can be applied to multiple upstreams they all consume from the same budget.
@@ -188,8 +188,8 @@ export default createConfig({
             // (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
             // This is used to automatically split the request into smaller sub-requests if the range is too high.
             // Set to -1 to disable this behavior.
-            // DEFAULT: 500 (500 blocks)
-            getLogsMaxBlockRange: 500,
+            // DEFAULT: 10000 (10000 blocks)
+            getLogsMaxBlockRange: 10000,
           },
 
           /**
@@ -572,8 +572,8 @@ projects:
           # (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
           # This is used to automatically split the request into smaller sub-requests if the range is too high.
           # Set to -1 to disable this behavior.
-          # DEFAULT: 500 (500 blocks)
-          getLogsMaxBlockRange: 500
+          # DEFAULT: 10000 (10000 blocks)
+          getLogsMaxBlockRange: 10000
         # ...
 ```
 </Tabs.Tab>
@@ -614,8 +614,8 @@ export default createConfig({
             // (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
             // This is used to automatically split the request into smaller sub-requests if the range is too high.
             // Set to -1 to disable this behavior.
-            // DEFAULT: 500 (500 blocks)
-            getLogsMaxBlockRange: 500,
+            // DEFAULT: 10000 (10000 blocks)
+            getLogsMaxBlockRange: 10000,
           },
           // ...
         },
@@ -643,8 +643,8 @@ upstreams:
       # (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
       # This is used to automatically split the request into smaller sub-requests if the range is too high.
       # Set to -1 to disable this behavior.
-      # DEFAULT: 500 (500 blocks)
-      getLogsMaxBlockRange: 500
+      # DEFAULT: 10000 (10000 blocks)
+      getLogsMaxBlockRange: 10000
 ```
 </Tabs.Tab>
   <Tabs.Tab>
@@ -659,8 +659,8 @@ export default createConfig({
         // (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
         // This is used to automatically split the request into smaller sub-requests if the range is too high.
         // Set to -1 to disable this behavior.
-        // DEFAULT: 500 (500 blocks)
-        getLogsMaxBlockRange: 500,
+        // DEFAULT: 10000 (10000 blocks)
+        getLogsMaxBlockRange: 10000,
       },
     },
   ],
