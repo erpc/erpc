@@ -756,6 +756,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		unsynced := 0
 		excluded := 0
 		nodeTypeMismatch := 0
+		tooLarge := 0
 
 		for _, e := range joinedErr.Unwrap() {
 			if HasErrorCode(e, ErrCodeEndpointUnsupported) {
@@ -801,6 +802,9 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			} else if HasErrorCode(e, ErrCodeUpstreamMethodIgnored, ErrCodeUpstreamRequestSkipped) {
 				skips++
 				continue
+			} else if HasErrorCode(e, ErrCodeEndpointRequestTooLarge) {
+				tooLarge++
+				continue
 			} else {
 				other++
 			}
@@ -845,6 +849,9 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		}
 		if skips > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d upstream skipped", skips))
+		}
+		if tooLarge > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d too-large requests", tooLarge))
 		}
 		if other > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d other upstream errors", other))
@@ -1934,7 +1941,9 @@ func IsRetryableTowardsUpstream(err error) bool {
 
 		// Upstream-level + 401 / 403 -> No Retry
 		// RPC vendor billing/capacity/auth -> No Retry
+		// Request too-large -> No Retry
 		ErrCodeEndpointUnauthorized,
+		ErrCodeEndpointRequestTooLarge,
 	)
 }
 
