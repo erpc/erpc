@@ -19,9 +19,9 @@ export const UpstreamTypeEvm: UpstreamType = "evm";
 export type EvmUpstream = 
     Upstream;
 export type EvmNodeType = string;
+export const EvmNodeTypeUnknown: EvmNodeType = "unknown";
 export const EvmNodeTypeFull: EvmNodeType = "full";
 export const EvmNodeTypeArchive: EvmNodeType = "archive";
-export const EvmNodeTypeLight: EvmNodeType = "light";
 export type EvmSyncingState = number /* int */;
 export const EvmSyncingStateUnknown: EvmSyncingState = 0;
 export const EvmSyncingStateSyncing: EvmSyncingState = 1;
@@ -209,7 +209,7 @@ export interface UpstreamConfig {
   type?: TsUpstreamType;
   group?: string;
   vendorName?: string;
-  endpoint: string;
+  endpoint?: string;
   evm?: EvmUpstreamConfig;
   jsonRpc?: JsonRpcUpstreamConfig;
   ignoreMethods?: string[];
@@ -273,6 +273,7 @@ export interface RetryPolicyConfig {
   backoffMaxDelay: string;
   backoffFactor: number /* float32 */;
   jitter: string;
+  ignoreClientErrors: boolean;
 }
 export interface CircuitBreakerPolicyConfig {
   failureThresholdCount: number /* uint */;
