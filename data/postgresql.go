@@ -34,7 +34,7 @@ type PostgreSQLConnector struct {
 }
 
 func NewPostgreSQLConnector(
-	appCtx context.Context,
+	ctx context.Context,
 	logger *zerolog.Logger,
 	id string,
 	cfg *common.PostgreSQLConnectorConfig,
@@ -55,13 +55,13 @@ func NewPostgreSQLConnector(
 	}
 
 	// create an Initializer to handle (re)connecting
-	connector.initializer = util.NewInitializer(appCtx, &lg, nil)
+	connector.initializer = util.NewInitializer(ctx, &lg, nil)
 
 	connectTask := util.NewBootstrapTask(fmt.Sprintf("postgres-connect/%s", id), func(ctx context.Context) error {
 		return connector.connectTask(ctx, cfg)
 	})
 
-	if err := connector.initializer.ExecuteTasks(appCtx, connectTask); err != nil {
+	if err := connector.initializer.ExecuteTasks(ctx, connectTask); err != nil {
 		lg.Error().Err(err).Msg("failed to initialize PostgreSQL on first attempt (will retry in background)")
 		// Return the connector so the app can proceed, but note that it's not ready yet.
 		return connector, nil
