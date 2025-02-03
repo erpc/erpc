@@ -1537,6 +1537,11 @@ var NewErrEndpointExecutionException = func(cause error) error {
 	}
 }
 
+func (e *ErrEndpointExecutionException) ErrorStatusCode() int {
+	// Reverted calls are expected to be a successful json-rpc response
+	return http.StatusOK
+}
+
 type ErrEndpointTransportFailure struct{ BaseError }
 
 const ErrCodeEndpointTransportFailure = "ErrEndpointTransportFailure"
