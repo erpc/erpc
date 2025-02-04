@@ -6,14 +6,51 @@
 [![Docs](https://img.shields.io/badge/docs-get%20started-brightgreen?style=flat&colorA=000000&colorB=000000)](https://docs.erpc.cloud/)
 [![License](https://img.shields.io/github/license/erpc/erpc?style=flat&colorA=000000&colorB=000000)](https://github.com/erpc/erpc/blob/main/LICENSE)
 [![Contributors](https://img.shields.io/github/contributors/erpc/erpc?style=flat&colorA=000000&colorB=000000)](https://github.com/erpc/erpc/graphs/contributors)
-[![Telegram](https://img.shields.io/endpoint?logo=telegram&url=https%3A%2F%2Fmogyo.ro%2Fquart-apis%2Ftgmembercount%3Fchat_id%3Derpc_cloud&style=flat&colorA=000000&colorB=000000)](https://t.me/erpc_cloud)
+[![Telegram](https://img.shields.io/endpoint?logo=telegram&url=https%3A%2F%2Ftg.sumanjay.workers.dev%2Ferpc_cloud&style=flat&colorA=000000&colorB=000000&label=telegram)](https://t.me/erpc_cloud)
 
-
-[eRPC](https://erpc.cloud/) is a fault-tolerant EVM RPC proxy and **re-org aware permanent caching solution**. It is built with read-heavy use-cases in mind, such as data indexing and high-load frontend usage.
-
-<img src="./assets/hla-diagram.svg" alt="Architecture Diagram" width="70%" />
+eRPC is a fault-tolerant EVM RPC proxy and **re-org aware permanent caching solution**. It is built with read-heavy use-cases in mind, such as data indexing and high-load frontend usage.
 
 > **⚠️ Note**: eRPC is still under development. We recommend using it for testnets or as a fallback provider for production RPC calls.
+
+---
+
+### Quick Start
+
+With the below setup, you get immediate access to 2,000+ chains and 4,000+ public free EVM RPC endpoints.
+
+#### Run an eRPC instance:
+
+Using `npx`:
+
+```bash
+npx start-erpc
+```
+
+Or, using `Docker`:
+
+```bash
+docker run -p 4000:4000 ghcr.io/erpc/erpc
+```
+
+Or, using `Railway`:
+
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.com/template/10iW1q?referralCode=PpPFJd)
+
+#### Send a request to your eRPC instance:
+
+```bash
+curl 'http://localhost:4000/evm/42161' \
+--header 'Content-Type: application/json' \
+--data '{
+    "method": "eth_getBlockByNumber",
+    "params": ["latest", false],
+    "id": 9199,
+    "jsonrpc": "2.0"
+}'
+```
+
+#### Next Steps:
+This setup is ideal for development and testing purposes. For production environments, we recommend extending your configuration with dedicated premium providers and advanced failover settings. See our [Configuration Guide](https://docs.erpc.cloud/config/example) for more details.
 
 ---
 
@@ -27,6 +64,8 @@
 - **Single dashboard**: Observe throughput (RPS), errors, and average latency across all providers  
 - **Flexible authentication**: Supports [basic auth, secrets, JWT, SIWE](https://docs.erpc.cloud/config/auth) and more  
 - **Smart batching**: [Aggregate multiple RPC or contract calls into one](https://docs.erpc.cloud/operation/batch)
+- **Selection policy**: Allows you to influence how upstreams are selected to serve traffic (or not) w/ [selection policies](https://docs.erpc.cloud/config/projects/selection-policies).
+- **Data integrity**: Ensures accurate, up-to-date responses by levering several [data integrity mechanisms](https://docs.erpc.cloud/config/failsafe/integrity).
 
 ---
 
@@ -37,41 +76,33 @@
 
 ---
 
-### Getting Started
-
-<img src="https://i.imgur.com/hCdjkvk.png" alt="Getting Started" width="70%" />
-
-* For full usage instructions and configuration guides, visit [docs.erpc.cloud](https://docs.erpc.cloud).  
-* You can also join our [Telegram chat](https://t.me/+eEik0_G1VMhmN2U8) for technical discussions or request features in our [Featurebase](https://erpc.featurebase.app).
-
----
-
 ### Local Development
 
-1. Clone this repository:
+1. **Clone this repository:**
 
 ```bash
 git clone https://github.com/erpc/erpc.git
 ```
 
-2. Install Go dependencies:
+2. **Install Go dependencies:**
 
 ```bash
 make setup
 ```
 
-3. Create a `erpc.yaml` configuration file based on the [`erpc.dist.yaml`](./erpc.dist.yaml) file, and use your RPC provider credentials:
+3. **Create a configuration file:**
 
 ```bash
 cp erpc.yaml.dist erpc.yaml
 vi erpc.yaml
 ```
 
-4. Run the eRPC server:
+4. **Run the eRPC server:**
 
 ```bash
 make run
 ```
+
 ---
 
 ### Contributors
@@ -79,8 +110,7 @@ make run
 <a href="https://github.com/erpc/erpc/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=erpc/erpc&max=50&columns=10&anon=1" alt="Contributors" />
 </a>
-<br />
-<br />
+
 <p>
   By contributing to this project, you agree that your contributions may be used in both the open-source and enterprise versions of the software. Please review our 
   <a href="./CONTRIBUTING.md">Contributing Guidelines</a> and 
@@ -91,4 +121,4 @@ make run
 
 ### License
 
-Apache 2.0
+Apache 2.0 
