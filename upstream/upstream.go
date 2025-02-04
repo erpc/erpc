@@ -301,7 +301,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 							method,
 						)
 					}
-					health.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method, common.ErrorSummary(errCall), string(severity)).Inc()
+					health.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method, common.ErrorFingerprint(errCall), string(severity)).Inc()
 				}
 
 				if exec != nil {
