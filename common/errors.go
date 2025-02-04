@@ -42,6 +42,15 @@ func ErrorSummary(err interface{}) string {
 	return s
 }
 
+func ErrorFingerprint(err interface{}) string {
+	summary := ErrorSummary(err)
+	summary = regexp.MustCompile(`[^a-zA-Z0-9\s]+`).ReplaceAllString(summary, "")
+	if len(summary) > 512 {
+		summary = summary[:512]
+	}
+	return summary
+}
+
 var longHash = regexp.MustCompile(`0x[a-fA-F0-9][a-fA-F0-9]+`)
 var txHashErr = regexp.MustCompile(`transaction [a-fA-F0-9][a-fA-F0-9][a-fA-F0-9]+`)
 var trieNodeErr = regexp.MustCompile(`trie node [a-fA-F0-9][a-fA-F0-9][a-fA-F0-9]+`)
