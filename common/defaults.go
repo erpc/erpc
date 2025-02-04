@@ -665,7 +665,14 @@ func (p *ProjectConfig) SetDefaults() error {
 		if err := repositoryCfg.SetDefaults(nil); err != nil {
 			return fmt.Errorf("failed to set defaults for repository provider: %w", err)
 		}
-		p.Providers = append(p.Providers, repositoryCfg)
+		envioCfg := &ProviderConfig{
+			Id:     "envio",
+			Vendor: "envio",
+		}
+		if err := envioCfg.SetDefaults(nil); err != nil {
+			return fmt.Errorf("failed to set defaults for envio provider: %w", err)
+		}
+		p.Providers = append(p.Providers, repositoryCfg, envioCfg)
 	}
 	if p.Networks != nil {
 		for _, network := range p.Networks {
