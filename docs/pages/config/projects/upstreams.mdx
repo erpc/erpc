@@ -671,6 +671,10 @@ export default createConfig({
 
 Additionally eRPC has integrity checks for eth_getLogs you can read more about in the [Integrity](/config/failsafe/integrity#eth_getLogs-behavior) section.
 
+<Callout type='info'>
+  If an RPC node complains about "**too many results**" eRPC will automatically split the request (first on block range, then on address filter, then on topics filter) and retry until it works, then merges the results automatically.
+</Callout>
+
 ## Compression
 
 eRPC supports gzip compression at multiple points in the request/response cycle:
