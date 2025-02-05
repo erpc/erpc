@@ -353,6 +353,11 @@ func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolic
 			return false
 		}
 
+		// Node-level execution exceptions (e.g. reverted eth_call) -> No Retry
+		if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+			return false
+		}
+
 		// Any error that cannot be retried against an upstream
 		if scope == common.ScopeUpstream && err != nil {
 			if !common.IsRetryableTowardsUpstream(err) || common.IsCapacityIssue(err) {
