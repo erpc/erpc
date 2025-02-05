@@ -53,14 +53,16 @@ type EvmStatePoller struct {
 	skipFinalizedCheck      bool
 	finalizedBlockUpdatedAt time.Time
 	finalizedBlockNumber    int64
+	finalizedBlockMu        sync.Mutex
 
 	// The reason to not use latestBlockTimestamp is to avoid thundering herd,
 	// when a node is actively syncing and timestamp is always way in the past.
 	skipLatestBlockCheck bool
 	latestBlockUpdatedAt time.Time
 	latestBlockNumber    int64
+	latestBlockMu        sync.Mutex
 
-	mu sync.RWMutex
+	stateMu sync.RWMutex
 }
 
 func NewEvmStatePoller(
@@ -144,8 +146,8 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 }
 
 func (e *EvmStatePoller) SetNetworkConfig(cfg *common.EvmNetworkConfig) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
 	e.cfg = cfg
 
 	if e.debounceInterval == 0 {
@@ -217,8 +219,8 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 
 		e.logger.Debug().Bool("syncingResult", syncing).Msg("fetched syncing state")
 
-		e.mu.Lock()
-		defer e.mu.Unlock()
+		e.stateMu.Lock()
+		defer e.stateMu.Unlock()
 		if syncing {
 			e.synced = 1
 		} else {
@@ -260,8 +262,9 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		return 0, nil
 	}
 
-	// Lock to check last poll time
-	e.mu.Lock()
+	e.latestBlockMu.Lock()
+	defer e.latestBlockMu.Unlock()
+
 	dbi := e.debounceInterval
 	if dbi == 0 {
 		// We must have some debounce interval to avoid thundering herd
@@ -270,13 +273,11 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 	if time.Since(e.latestBlockUpdatedAt) < dbi {
 		// Skip the call and return cached
 		blockNum := e.latestBlockNumber
-		e.mu.Unlock()
 		e.logger.Debug().
 			Int64("blockNumber", blockNum).
 			Msg("skipping poll for latest block due to debounce interval and use existing values")
 		return blockNum, nil
 	}
-	e.mu.Unlock()
 
 	health.MetricUpstreamLatestBlockPolled.WithLabelValues(
 		e.projectId,
@@ -305,10 +306,6 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 	// Update internal state
 	e.setLatestBlockNumber(blockNum)
 
-	e.mu.Lock()
-	e.latestBlockUpdatedAt = time.Now()
-	e.mu.Unlock()
-
 	e.logger.Debug().
 		Int64("blockNumber", blockNum).
 		Msg("fetched latest block")
@@ -318,8 +315,8 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 
 func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 	// TODO after subscription epic this method should be called for every new block received from this upstream
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.latestBlockMu.Lock()
+	defer e.latestBlockMu.Unlock()
 	if blockNumber > e.latestBlockNumber {
 		e.latestBlockNumber = blockNumber
 		e.latestBlockUpdatedAt = time.Now()
@@ -327,8 +324,8 @@ func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 }
 
 func (e *EvmStatePoller) LatestBlock() int64 {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
 	return int64(e.latestBlockNumber)
 }
 
@@ -338,17 +335,22 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 	}
 
 	// Lock to check last poll time
-	e.mu.Lock()
-	if e.debounceInterval > 0 && time.Since(e.finalizedBlockUpdatedAt) < e.debounceInterval {
+	e.finalizedBlockMu.Lock()
+	defer e.finalizedBlockMu.Unlock()
+
+	dbi := e.debounceInterval
+	if dbi == 0 {
+		// We must have some debounce interval to avoid thundering herd
+		dbi = 1 * time.Second
+	}
+	if time.Since(e.finalizedBlockUpdatedAt) < dbi {
 		// Skip the call and return cached
 		blockNum := e.finalizedBlockNumber
-		e.mu.Unlock()
 		e.logger.Debug().
 			Int64("blockNumber", blockNum).
 			Msg("skipping poll for finalized block due to debounce interval and use existing values")
 		return blockNum, nil
 	}
-	e.mu.Unlock()
 
 	health.MetricUpstreamFinalizedBlockPolled.WithLabelValues(
 		e.projectId,
@@ -377,10 +379,6 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 	// Update internal state
 	e.setFinalizedBlockNumber(blockNum)
 
-	e.mu.Lock()
-	e.latestBlockUpdatedAt = time.Now()
-	e.mu.Unlock()
-
 	e.logger.Debug().
 		Int64("blockNumber", blockNum).
 		Msg("fetched finalized block")
@@ -389,8 +387,8 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 }
 
 func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
 	if blockNumber > e.finalizedBlockNumber {
 		e.finalizedBlockNumber = blockNumber
 		e.finalizedBlockUpdatedAt = time.Now()
@@ -398,8 +396,8 @@ func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {
 }
 
 func (e *EvmStatePoller) FinalizedBlock() int64 {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
 	return e.finalizedBlockNumber
 }
 
@@ -430,8 +428,8 @@ func (e *EvmStatePoller) IsBlockFinalized(blockNumber int64) (bool, error) {
 	}
 
 	var fb int64
-	e.mu.RLock()
-	defer e.mu.RUnlock()
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
 	if e.cfg != nil && e.cfg.FallbackFinalityDepth > 0 {
 		if latestBlock > e.cfg.FallbackFinalityDepth {
 			fb = latestBlock - e.cfg.FallbackFinalityDepth
@@ -456,15 +454,15 @@ func (e *EvmStatePoller) IsBlockFinalized(blockNumber int64) (bool, error) {
 }
 
 func (e *EvmStatePoller) SyncingState() common.EvmSyncingState {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
 	return e.syncingState
 }
 
 func (e *EvmStatePoller) SetSyncingState(state common.EvmSyncingState) {
-	e.mu.Lock()
+	e.stateMu.Lock()
 	e.syncingState = state
-	e.mu.Unlock()
+	e.stateMu.Unlock()
 }
 
 func (e *EvmStatePoller) IsObjectNull() bool {
@@ -472,41 +470,43 @@ func (e *EvmStatePoller) IsObjectNull() bool {
 }
 
 func (e *EvmStatePoller) setLatestBlockNumber(blockNumber int64) {
-	e.mu.Lock()
+	e.stateMu.Lock()
 	e.latestBlockNumber = blockNumber
-	e.mu.Unlock()
+	e.latestBlockUpdatedAt = time.Now()
+	e.stateMu.Unlock()
 	e.tracker.SetLatestBlockNumber(e.upstream.Config().Id, e.upstream.NetworkId(), blockNumber)
 }
 
 func (e *EvmStatePoller) shouldSkipLatestBlockCheck() bool {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
 	return e.skipLatestBlockCheck
 }
 
 func (e *EvmStatePoller) setSkipLatestBlockCheck(skip bool) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
 	e.skipLatestBlockCheck = skip
 }
 
 func (e *EvmStatePoller) setFinalizedBlockNumber(blockNumber int64) {
-	e.mu.Lock()
+	e.stateMu.Lock()
 	e.finalizedBlockNumber = blockNumber
-	e.mu.Unlock()
+	e.finalizedBlockUpdatedAt = time.Now()
+	e.stateMu.Unlock()
 	e.tracker.SetFinalizedBlockNumber(e.upstream.Config().Id, e.upstream.NetworkId(), blockNumber)
 }
 
 func (e *EvmStatePoller) shouldSkipFinalizedCheck() bool {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
 
 	return e.skipFinalizedCheck
 }
 
 func (e *EvmStatePoller) setSkipFinalizedCheck(skip bool) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
 
 	e.skipFinalizedCheck = skip
 }

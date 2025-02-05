@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 
@@ -2873,6 +2874,159 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_call","params":[],"id":1}`, nil, nil)
 		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "Dai/insufficient-balance")
+	})
+
+	t.Run("ForwardEthCallWithoutBlockParameter", func(t *testing.T) {
+		// Define the configuration
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("500s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		// Set up test fixtures
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		// Mock the upstream response, expecting "latest" as second parameter
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				b := util.SafeReadBody(request)
+				return strings.Contains(b, "eth_call") && strings.Contains(b, "latest")
+			}).
+			Reply(200).
+			JSON([]byte(`{
+				"jsonrpc": "2.0",
+				"id": 1,
+				"result": "0x0000000000000000000000000000000000000000000000056bc75e2d63100000"
+			}`))
+
+		// Send request and verify response
+		request := `{
+			"jsonrpc": "2.0",
+			"method": "eth_call",
+			"params": [{
+				"to": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
+				"data": "0x70a08231000000000000000000000000b5e5d0f8c0cba267cd3d7035d6adc8eba7df7cdd"
+			}],
+			"id": 1
+		}`
+
+		statusCode, body := sendRequest(request, nil, nil)
+
+		// Verify response
+		assert.Equal(t, http.StatusOK, statusCode)
+		assert.Contains(t, body, "0x0000000000000000000000000000000000000000000000056bc75e2d63100000")
+
+		// Verify that the response is a valid JSON-RPC response
+		var response map[string]interface{}
+		err := json.Unmarshal([]byte(body), &response)
+		assert.NoError(t, err)
+		assert.Contains(t, response, "result")
+		assert.Equal(t, "2.0", response["jsonrpc"])
+		assert.Equal(t, float64(1), response["id"])
+	})
+
+	t.Run("ForwardEthCallWithBlockParameter", func(t *testing.T) {
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("500s"),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		// Mock the upstream response, expecting "latest" as second parameter
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				b := util.SafeReadBody(request)
+				return strings.Contains(b, "eth_call") && strings.Contains(b, "0x44444")
+			}).
+			Reply(200).
+			JSON([]byte(`{
+				"jsonrpc": "2.0",
+				"id": 1,
+				"result": "0x0000000000000000000000000000000000000000000000056bc75e2d63100000"
+			}`))
+
+		request := `{
+			"jsonrpc": "2.0",
+			"method": "eth_call",
+			"params": [{
+				"to": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
+				"data": "0x70a08231000000000000000000000000b5e5d0f8c0cba267cd3d7035d6adc8eba7df7cdd"
+			},"0x44444"],
+			"id": 1
+		}`
+
+		statusCode, body := sendRequest(request, nil, nil)
+
+		assert.Equal(t, http.StatusOK, statusCode)
+		assert.Contains(t, body, "0x0000000000000000000000000000000000000000000000056bc75e2d63100000")
 	})
 }
 
