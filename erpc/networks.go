@@ -535,6 +535,8 @@ func (n *Network) enrichStatePoller(method string, req *common.NormalizedRequest
 		// TODO Move the logic to evm package as a post-forward hook?
 		if method == "eth_getBlockByNumber" {
 			jrq, _ := req.JsonRpcRequest()
+			jrq.RLock()
+			defer jrq.RUnlock()
 			if blkTag, ok := jrq.Params[0].(string); ok {
 				if blkTag == "finalized" || blkTag == "latest" {
 					jrs, _ := resp.JsonRpcResponse()

@@ -2937,7 +2937,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 	})
 
-	t.Run("ForwardMustNotRetryRevertedEthCalls", func(t *testing.T) {
+	t.Run("ForwardMustNotRetryRevertedEthCallsMultiUpstreams", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
@@ -3083,6 +3083,134 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 		pup3.Client = cl3
+		ntw, err := NewNetwork(
+			ctx,
+			&log.Logger,
+			"prjA",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+				},
+				Failsafe: fsCfg,
+			},
+			rlr,
+			upr,
+			health.NewTracker("prjA", 2*time.Second),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		upstream.ReorderUpstreams(upr)
+
+		fakeReq := common.NewNormalizedRequest(requestBytes)
+
+		_, err = ntw.Forward(ctx, fakeReq)
+
+		if err == nil {
+			t.Errorf("Expected an error, got nil")
+		}
+		if !strings.Contains(err.Error(), "ErrEndpointExecutionException") {
+			t.Errorf("Expected %v, got: %s", "ErrEndpointExecutionException", err.Error())
+		}
+		if strings.Contains(err.Error(), "ErrUpstreamsExhausted") {
+			t.Errorf("Did not expect ErrUpstreamsExhausted, got: %s", err.Error())
+		}
+	})
+
+	t.Run("ForwardMustNotRetryRevertedEthCallsSingleUpstream", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 1) // 1 not-called upstream
+
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_call","params":[{"to":"0x362fa9d0bca5d19f743db50738345ce2b40ec99f","data":"0xa4baa10c"}]}`)
+
+		gock.New("http://rpc1.localhost").
+			Times(1).
+			Post("").
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32000,"message":"historical backend error: execution reverted: Dai/insufficient-balance"}}`))
+
+		gock.New("http://rpc1.localhost").
+			Times(1).
+			Post("").
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32000,"message":"historical backend error: execution reverted: Dai/insufficient-balance"}}`))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
+
+		fsCfg := &common.FailsafeConfig{
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 3,
+			},
+		}
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+			Budgets: []*common.RateLimitBudgetConfig{},
+		}, &log.Logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mt := health.NewTracker("prjA", 2*time.Second)
+		up1 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "test",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+			Failsafe: fsCfg,
+		}
+		upr := upstream.NewUpstreamsRegistry(
+			ctx,
+			&log.Logger,
+			"prjA",
+			[]*common.UpstreamConfig{
+				up1,
+			},
+			rlr,
+			vr,
+			pr,
+			nil,
+			mt,
+			1*time.Second,
+		)
+		err = upr.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1, err := upr.NewUpstream(
+			"prjA",
+			up1,
+			&log.Logger,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1.Client = cl1
 		ntw, err := NewNetwork(
 			ctx,
 			&log.Logger,
@@ -6412,6 +6540,7 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
 				StatePollerInterval: "50ms", // Fast polling for test
+				StatePollerDebounce: "1ms", // Small debounce for test
 			},
 			JsonRpc: &common.JsonRpcUpstreamConfig{
 				SupportsBatch: &common.FALSE,
@@ -7075,6 +7204,9 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
 		}
+
+		// Wait for state poller debounce to pass
+		time.Sleep(1010 * time.Millisecond)
 
 		req := common.NewNormalizedRequest(requestBytes)
 		resp, err := network.Forward(ctx, req)
