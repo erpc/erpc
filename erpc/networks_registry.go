@@ -39,6 +39,7 @@ func NewNetworksRegistry(
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
 	logger *zerolog.Logger,
 ) *NetworksRegistry {
+	lg := logger.With().Str("component", "networksRegistry").Logger()
 	r := &NetworksRegistry{
 		project:              project,
 		appCtx:               appCtx,
@@ -47,7 +48,7 @@ func NewNetworksRegistry(
 		evmJsonRpcCache:      evmJsonRpcCache,
 		rateLimitersRegistry: rateLimitersRegistry,
 		preparedNetworks:     sync.Map{},
-		initializer:          util.NewInitializer(appCtx, logger, nil),
+		initializer:          util.NewInitializer(appCtx, &lg, nil),
 		logger:               logger,
 	}
 	return r
