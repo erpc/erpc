@@ -19,6 +19,8 @@ func HandleNetworkPreForward(ctx context.Context, network common.Network, nq *co
 	switch method {
 	case "eth_blockNumber":
 		return networkPreForward_eth_blockNumber(ctx, network, nq)
+	case "eth_call":
+		return networkPreForward_eth_call(ctx, network, nq)
 	default:
 		return false, nil, nil
 	}

@@ -58,6 +58,9 @@ func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common
 	if err != nil {
 		return nil, err
 	}
+	rqj.RLock()
+	defer rqj.RUnlock()
+
 	if len(rqj.Params) < 1 {
 		return nr, re
 	}
