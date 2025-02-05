@@ -61,6 +61,7 @@ func NewUpstreamsRegistry(
 	mt *health.Tracker,
 	scoreRefreshInterval time.Duration,
 ) *UpstreamsRegistry {
+	lg := logger.With().Str("component", "upstreamsRegistry").Logger()
 	return &UpstreamsRegistry{
 		appCtx:               appCtx,
 		prjId:                prjId,
@@ -77,7 +78,7 @@ func NewUpstreamsRegistry(
 		upstreamScores:       make(map[string]map[string]map[string]float64),
 		upstreamsMu:          &sync.RWMutex{},
 		networkMu:            &sync.Map{},
-		initializer:          util.NewInitializer(appCtx, logger, nil),
+		initializer:          util.NewInitializer(appCtx, &lg, nil),
 	}
 }
 

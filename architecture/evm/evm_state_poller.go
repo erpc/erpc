@@ -262,7 +262,12 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 
 	// Lock to check last poll time
 	e.mu.Lock()
-	if e.debounceInterval > 0 && time.Since(e.latestBlockUpdatedAt) < e.debounceInterval {
+	dbi := e.debounceInterval
+	if dbi == 0 {
+		// We must have some debounce interval to avoid thundering herd
+		dbi = 1 * time.Second
+	}
+	if time.Since(e.latestBlockUpdatedAt) < dbi {
 		// Skip the call and return cached
 		blockNum := e.latestBlockNumber
 		e.mu.Unlock()
