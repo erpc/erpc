@@ -80,6 +80,10 @@ func (v *RepositoryVendor) GenerateConfigs(upstream *common.UpstreamConfig, sett
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
+	if upstream.AutoIgnoreUnsupportedMethods == nil {
+		// If not explicitly set, default to true because there are so many limited public RPCs out there
+		upstream.AutoIgnoreUnsupportedMethods = util.BoolPtr(true)
+	}
 
 	if upstream.Evm == nil {
 		return nil, fmt.Errorf("remote vendor requires upstream.evm to be defined")
