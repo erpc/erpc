@@ -2,7 +2,10 @@ package erpc
 
 import (
 	"context"
+	"fmt"
+	"math/rand"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -294,6 +297,133 @@ func BenchmarkNetworkForward_RetryFailures(b *testing.B) {
 			fakeReq := common.NewNormalizedRequest(requestBytes)
 			_, _ = ntw.Forward(ctx, fakeReq)
 			// We’re mainly measuring how quickly we process repeated fails
+		}
+	})
+}
+
+func BenchmarkNetworkForward_ConcurrentEthGetLogsIntegrityEnabled(b *testing.B) {
+	util.ConfigureTestLogger()
+	util.ResetGock()
+	defer util.ResetGock()
+
+	gock.New("http://rpc1.localhost").
+		Persist().
+		Post("").
+		Filter(func(request *http.Request) bool {
+			body := util.SafeReadBody(request)
+			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
+		}).
+		Reply(200).
+		Delay(100 * time.Millisecond).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":{"number":"0x21118000"}}`))
+
+	gock.New("http://rpc1.localhost").
+		Persist().
+		Post("").
+		Filter(func(request *http.Request) bool {
+			body := util.SafeReadBody(request)
+			return strings.Contains(body, "eth_getLogs")
+		}).
+		Reply(200).
+		Delay(5 * time.Millisecond).
+		JSON([]byte(`{"jsonrpc":"2.0","id":1,"result":[{"address":"0x0000000000000000000000000000000000000000","topics":["0x0000000000000000000000000000000000000000000000000000000000000000"]}]}`))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+		Budgets: []*common.RateLimitBudgetConfig{},
+	}, &log.Logger)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	mt := health.NewTracker("benchProject", 2*time.Second)
+	upConfig := &common.UpstreamConfig{
+		Type:     common.UpstreamTypeEvm,
+		Id:       "rpc1",
+		Endpoint: "http://rpc1.localhost",
+		Evm: &common.EvmUpstreamConfig{
+			ChainId: 123,
+			StatePollerDebounce: "10s",
+		},
+	}
+
+	vr := thirdparty.NewVendorsRegistry()
+	pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	upsReg := upstream.NewUpstreamsRegistry(
+		ctx,
+		&log.Logger,
+		"benchProject",
+		[]*common.UpstreamConfig{upConfig},
+		rlr,
+		vr,
+		pr,
+		nil,
+		mt,
+		10*time.Second,
+	)
+	if err := upsReg.Bootstrap(ctx); err != nil {
+		b.Fatal(err)
+	}
+	if err := upsReg.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)); err != nil {
+		b.Fatal(err)
+	}
+
+	ntw, err := NewNetwork(
+		ctx,
+		&log.Logger,
+		"benchProject",
+		&common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm: &common.EvmNetworkConfig{
+				ChainId: 123,
+				Integrity: &common.EvmIntegrityConfig{
+					EnforceGetLogsBlockRange: util.BoolPtr(true),
+					EnforceHighestBlock:      util.BoolPtr(true),
+				},
+			},
+		},
+		rlr,
+		upsReg,
+		mt,
+	)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	upsList := ntw.upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
+
+	upsList[0].EvmStatePoller().SuggestLatestBlock(0x11118000)
+	upsList[0].EvmStatePoller().SuggestFinalizedBlock(0x11117FFF)
+
+	time.Sleep(1*time.Second + 10*time.Millisecond)
+
+	b.SetParallelism(500)
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			fromBlock := 0x11118001 + uint64(rand.Intn(1000000))
+			toBlock := fromBlock + 0x50
+			requestBytes := []byte(`{
+				"jsonrpc": "2.0",
+				"method": "eth_getLogs",
+				"params": [{
+					"fromBlock": "0x` + fmt.Sprintf("%x", fromBlock) + `",
+					"toBlock":   "0x` + fmt.Sprintf("%x", toBlock) + `"
+				}],
+				"id": 1
+			}`)
+			fakeReq := common.NewNormalizedRequest(requestBytes)
+			_, err := ntw.Forward(ctx, fakeReq)
+			if err != nil {
+				// Not failing the test, but we can log if we want
+				b.Logf("Error in Forward: %v", err)
+			}
 		}
 	})
 }
