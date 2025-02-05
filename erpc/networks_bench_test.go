@@ -344,7 +344,7 @@ func BenchmarkNetworkForward_ConcurrentEthGetLogsIntegrityEnabled(b *testing.B) 
 		Id:       "rpc1",
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
-			ChainId: 123,
+			ChainId:             123,
 			StatePollerDebounce: "10s",
 		},
 	}

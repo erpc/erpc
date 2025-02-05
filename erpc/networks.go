@@ -288,12 +288,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 
 				isClientErr := common.IsClientError(err)
-				if hedges > 0 {
-					if err != nil && common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled) {
-						ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
-						health.MetricNetworkHedgeDiscardsTotal.WithLabelValues(n.projectId, n.networkId, u.Config().Id, method, fmt.Sprintf("%d", attempts), fmt.Sprintf("%d", hedges)).Inc()
-						return nil, common.NewErrUpstreamHedgeCancelled(u.Config().Id, err)
-					}
+				if hedges > 0 && common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled) {
+					ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
+					health.MetricNetworkHedgeDiscardsTotal.WithLabelValues(n.projectId, n.networkId, u.Config().Id, method, fmt.Sprintf("%d", attempts), fmt.Sprintf("%d", hedges)).Inc()
+					return nil, common.NewErrUpstreamHedgeCancelled(u.Config().Id, err)
 				}
 
 				if err != nil {
@@ -302,7 +300,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					emptyResponses.Store(u, true)
 				}
 
-				if err == nil || isClientErr {
+				if err == nil || isClientErr || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
 					if r != nil {
 						r.SetUpstream(u)
 					}

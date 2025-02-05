@@ -2941,14 +2941,26 @@ func TestNetwork_Forward(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		defer util.AssertNoPendingMocks(t, 2) // 2 not-called upstreams
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":9199,"method":"eth_call","params":[{"to":"0x362fa9d0bca5d19f743db50738345ce2b40ec99f","data":"0xa4baa10c"}]}`)
 
 		gock.New("http://rpc1.localhost").
 			Times(1).
 			Post("").
-			Reply(404).
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32000,"message":"historical backend error: execution reverted: Dai/insufficient-balance"}}`))
+
+		gock.New("http://rpc2.localhost").
+			Times(1).
+			Post("").
+			Reply(200).
+			JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32000,"message":"historical backend error: execution reverted: Dai/insufficient-balance"}}`))
+
+		gock.New("http://rpc3.localhost").
+			Times(1).
+			Post("").
+			Reply(200).
 			JSON([]byte(`{"jsonrpc":"2.0","id":9199,"error":{"code":-32000,"message":"historical backend error: execution reverted: Dai/insufficient-balance"}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -2987,12 +2999,32 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 			Failsafe: fsCfg,
 		}
+		up2 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "test2",
+			Endpoint: "http://rpc2.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+			Failsafe: fsCfg,
+		}
+		up3 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "test3",
+			Endpoint: "http://rpc3.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+			Failsafe: fsCfg,
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{
 				up1,
+				up2,
+				up3,
 			},
 			rlr,
 			vr,
@@ -3009,7 +3041,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup, err := upr.NewUpstream(
+		pup1, err := upr.NewUpstream(
 			"prjA",
 			up1,
 			&log.Logger,
@@ -3018,11 +3050,39 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cl, err := clr.GetOrCreateClient(ctx, pup)
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup.Client = cl
+		pup1.Client = cl1
+		pup2, err := upr.NewUpstream(
+			"prjA",
+			up2,
+			&log.Logger,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup2.Client = cl2
+		pup3, err := upr.NewUpstream(
+			"prjA",
+			up3,
+			&log.Logger,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl3, err := clr.GetOrCreateClient(ctx, pup3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup3.Client = cl3
 		ntw, err := NewNetwork(
 			ctx,
 			&log.Logger,
@@ -3052,7 +3112,10 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Errorf("Expected an error, got nil")
 		}
 		if !strings.Contains(err.Error(), "ErrEndpointExecutionException") {
-			t.Errorf("Expected %v, got %v", "ErrEndpointExecutionException", err)
+			t.Errorf("Expected %v, got: %s", "ErrEndpointExecutionException", err.Error())
+		}
+		if strings.Contains(err.Error(), "ErrUpstreamsExhausted") {
+			t.Errorf("Did not expect ErrUpstreamsExhausted, got: %s", err.Error())
 		}
 	})
 
