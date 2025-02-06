@@ -58,7 +58,7 @@ func TestDynamoDBConnectorInitialization(t *testing.T) {
 			},
 		}
 
-		// 4) creating the connector should succeed immediately
+		// Creating the connector should succeed immediately
 		connector, err := NewDynamoDBConnector(ctx, &logger, "test-dynamo-connector", cfg)
 		require.NoError(t, err, "expected no error from NewDynamoDBConnector with a valid local container")
 
@@ -81,9 +81,9 @@ func TestDynamoDBConnectorInitialization(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		// 1) Intentionally invalid endpoint/port
+		// Intentionally invalid endpoint/port
 		cfg := &common.DynamoDBConnectorConfig{
-			Endpoint:         "http://127.0.0.1:9999", // no server listening
+			Endpoint:         "http://127.0.0.1:9876", // no server listening
 			Region:           "us-west-2",
 			Table:            "test_table",
 			PartitionKeyName: "pk",
@@ -100,7 +100,7 @@ func TestDynamoDBConnectorInitialization(t *testing.T) {
 			},
 		}
 
-		// 2) We expect the connector constructor to return with no fatal error,
+		// We expect the connector constructor to return with no fatal error,
 		//    but the connector won't be ready.
 		connector, err := NewDynamoDBConnector(ctx, &logger, "test-dynamo-invalid-endpoint", cfg)
 		require.NoError(t, err, "Constructor does not necessarily return an error even if the first attempt fails")
