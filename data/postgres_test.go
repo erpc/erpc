@@ -15,7 +15,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-func TestPostgreSQLConnectorInitialization(t *testing.T) {
+func TestPostgreConnectorInitialization(t *testing.T) {
 	t.Run("succeeds immediately with valid config (real container)", func(t *testing.T) {
 		logger := zerolog.New(io.Discard)
 		ctx, cancel := context.WithCancel(context.Background())
