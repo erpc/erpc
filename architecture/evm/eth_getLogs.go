@@ -20,18 +20,23 @@ import (
 // when looking for data too close to the lower-end of Full nodes, because they might have pruned the data already.
 var LowerBoundBlocksSafetyMargin int64 = 10
 
-func BuildGetLogsRequest(fromBlock, toBlock int64, address interface{}, topics interface{}) (*common.JsonRpcRequest, error) {
-	fb, err := common.NormalizeHex(fromBlock)
-	if err != nil {
-		return nil, err
-	}
-	tb, err := common.NormalizeHex(toBlock)
-	if err != nil {
-		return nil, err
-	}
-	filter := map[string]interface{}{
-		"fromBlock": fb,
-		"toBlock":   tb,
+func BuildGetLogsRequest(fromBlock, toBlock int64, address interface{}, topics interface{}, blockHash string) (*common.JsonRpcRequest, error) {
+	filter := make(map[string]interface{})
+
+	if blockHash != "" {
+		// Per EIP-234, if blockHash is present, fromBlock/toBlock should not be included.
+		filter["blockHash"] = blockHash
+	} else {
+		fb, err := common.NormalizeHex(fromBlock)
+		if err != nil {
+			return nil, err
+		}
+		tb, err := common.NormalizeHex(toBlock)
+		if err != nil {
+			return nil, err
+		}
+		filter["fromBlock"] = fb
+		filter["toBlock"] = tb
 	}
 	if address != nil {
 		filter["address"] = address
@@ -40,7 +45,7 @@ func BuildGetLogsRequest(fromBlock, toBlock int64, address interface{}, topics i
 		filter["topics"] = topics
 	}
 	jrq := common.NewJsonRpcRequest("eth_getLogs", []interface{}{filter})
-	err = jrq.SetID(util.RandomID())
+	err := jrq.SetID(util.RandomID())
 	if err != nil {
 		return nil, err
 	}
@@ -82,6 +87,15 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		jrq.RUnlock()
 		return false, nil, nil
 	}
+
+	blockHash, hasBlockHash := filter["blockHash"].(string)
+	if hasBlockHash && blockHash != "" {
+		// If blockHash is present, we skip all fromBlock/toBlock checks
+		jrq.RUnlock()
+		logger.Debug().Str("blockHash", blockHash).Msg("blockHash is specified, skipping from/to block range checks")
+		return false, nil, nil
+	}
+
 	fb, ok := filter["fromBlock"].(string)
 	if !ok || !strings.HasPrefix(fb, "0x") {
 		jrq.RUnlock()
@@ -301,6 +315,7 @@ type ethGetLogsSubRequest struct {
 	toBlock   int64
 	address   interface{}
 	topics    interface{}
+	blockHash string
 }
 
 func splitEthGetLogsRequest(r *common.NormalizedRequest) ([]ethGetLogsSubRequest, error) {
@@ -390,7 +405,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 		go func(req ethGetLogsSubRequest) {
 			defer wg.Done()
 
-			srq, err := BuildGetLogsRequest(req.fromBlock, req.toBlock, req.address, req.topics)
+			srq, err := BuildGetLogsRequest(req.fromBlock, req.toBlock, req.address, req.topics, req.blockHash)
 			logger.Debug().
 				Object("request", srq).
 				Msg("executing eth_getLogs sub-request")
