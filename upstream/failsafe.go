@@ -361,9 +361,6 @@ func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolic
 		// Any error that cannot be retried against an upstream
 		if scope == common.ScopeUpstream && err != nil {
 			if !common.IsRetryableTowardsUpstream(err) || common.IsCapacityIssue(err) {
-				if !cfg.IgnoreClientErrors && common.IsClientError(err) {
-					return true
-				}
 				return false
 			}
 		}
