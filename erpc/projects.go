@@ -150,7 +150,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	}
 	resp, err := p.doForward(ctx, network, nq)
 
-	if err == nil || common.HasErrorCode(err, common.ErrCodeEndpointClientSideException) {
+	if err == nil || common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
 		if err != nil {
 			lg.Info().Err(err).Msgf("finished forwarding request for network with some client-side exception")
 		} else {
