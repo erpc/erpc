@@ -339,9 +339,9 @@ projects:
           # ...
           circuitBreaker:
             # These two variables indicate how many failures and capacity to tolerate before opening the circuit.
-            # e.g. if 30 requests have failed out of last 100 requests, circuit breaker will be opened:
-            failureThresholdCount: 30
-            failureThresholdCapacity: 100
+            # e.g. if 80% (160) of last 200 requests have failed, circuit breaker will be opened:
+            failureThresholdCount: 160
+            failureThresholdCapacity: 200
             # How long to wait before trying to re-enable the upstream after circuit breaker was opened.
             # e.g. after 60s give the upstream another chance:
             halfOpenAfter: 60s
@@ -368,9 +368,9 @@ export default createConfig({
             // ...
             circuitBreaker: {
               // These two variables indicate how many failures and capacity to tolerate before opening the circuit.
-              // e.g. if 30 requests have failed out of last 100 requests, circuit breaker will be opened:
-              failureThresholdCount: 30,
-              failureThresholdCapacity: 100,
+              // e.g. if 80% (160) of last 200 requests have failed, circuit breaker will be opened:
+              failureThresholdCount: 160,
+              failureThresholdCapacity: 200,
               // How long to wait before trying to re-enable the upstream after circuit breaker was opened.
               // e.g. after 60s give the upstream another chance:
               halfOpenAfter: "60s",
