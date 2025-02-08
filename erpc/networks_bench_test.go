@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
@@ -57,11 +58,23 @@ func BenchmarkNetworkForward_SimpleSuccess(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
+	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems: 100_000,
+			},
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
 	upsReg := upstream.NewUpstreamsRegistry(
 		ctx,
 		&log.Logger,
 		"benchProject",
 		[]*common.UpstreamConfig{upConfig},
+		ssr,
 		rlr,
 		vr,
 		pr,
@@ -150,11 +163,23 @@ func BenchmarkNetworkForward_MethodIgnoreCase(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
+	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems: 100_000,
+			},
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
 	upsReg := upstream.NewUpstreamsRegistry(
 		ctx,
 		&log.Logger,
 		"benchProject",
 		[]*common.UpstreamConfig{upConfig},
+		ssr,
 		rlr,
 		vr,
 		pr,
@@ -250,11 +275,23 @@ func BenchmarkNetworkForward_RetryFailures(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
+	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems: 100_000,
+			},
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
 	upsReg := upstream.NewUpstreamsRegistry(
 		ctx,
 		&log.Logger,
 		"benchProject",
 		[]*common.UpstreamConfig{upConfig},
+		ssr,
 		rlr,
 		vr,
 		pr,
@@ -354,12 +391,23 @@ func BenchmarkNetworkForward_ConcurrentEthGetLogsIntegrityEnabled(b *testing.B) 
 	if err != nil {
 		b.Fatal(err)
 	}
-
+	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems: 100_000,
+			},
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
 	upsReg := upstream.NewUpstreamsRegistry(
 		ctx,
 		&log.Logger,
 		"benchProject",
 		[]*common.UpstreamConfig{upConfig},
+		ssr,
 		rlr,
 		vr,
 		pr,

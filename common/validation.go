@@ -173,6 +173,25 @@ func (d *DatabaseConfig) Validate() error {
 			return err
 		}
 	}
+	if d.SharedState != nil {
+		if err := d.SharedState.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *SharedStateConfig) Validate() error {
+	if s.Connector != nil {
+		if err := s.Connector.Validate(); err != nil {
+			return err
+		}
+	} else {
+		return fmt.Errorf("sharedState.connector is required")
+	}
+	if s.FallbackTimeout == 0 {
+		return fmt.Errorf("sharedState.fallbackTimeout is required")
+	}
 	return nil
 }
 

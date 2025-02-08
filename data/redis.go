@@ -13,6 +13,7 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 )
@@ -31,10 +32,11 @@ type RedisConnector struct {
 	initializer *util.Initializer
 	cfg         *common.RedisConnectorConfig
 
-	ttls        map[string]time.Duration
-	initTimeout time.Duration
-	getTimeout  time.Duration
-	setTimeout  time.Duration
+	ttls         map[string]time.Duration
+	initTimeout  time.Duration
+	getTimeout   time.Duration
+	setTimeout   time.Duration
+	sessionToken string
 }
 
 func NewRedisConnector(
@@ -45,15 +47,17 @@ func NewRedisConnector(
 ) (*RedisConnector, error) {
 	lg := logger.With().Str("connector", id).Logger()
 	lg.Debug().Interface("config", cfg).Msg("creating RedisConnector")
+	token := uuid.New().String()
 
 	connector := &RedisConnector{
-		id:          id,
-		logger:      &lg,
-		cfg:         cfg,
-		ttls:        make(map[string]time.Duration),
-		initTimeout: cfg.InitTimeout,
-		getTimeout:  cfg.GetTimeout,
-		setTimeout:  cfg.SetTimeout,
+		id:           id,
+		logger:       &lg,
+		cfg:          cfg,
+		ttls:         make(map[string]time.Duration),
+		initTimeout:  cfg.InitTimeout,
+		getTimeout:   cfg.GetTimeout,
+		setTimeout:   cfg.SetTimeout,
+		sessionToken: token,
 	}
 
 	// Create an initializer to manage (re)connecting to Redis.
@@ -226,11 +230,9 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 // Lock attempts to acquire a distributed lock for the specified key.
 // It uses SET NX with an expiration TTL. Returns a DistributedLock instance on success.
 func (r *RedisConnector) Lock(ctx context.Context, lockKey string, ttl time.Duration) (DistributedLock, error) {
-	// We'll use the connector's own id as a token
-	token := r.id
-
 	// Attempt to acquire the lock with SET NX.
-	ok, err := r.client.SetNX(ctx, lockKey, token, ttl).Result()
+	ok, err := r.client.SetNX(ctx, lockKey, r.sessionToken, ttl).Result()
+	r.logger.Trace().Err(err).Str("lockKey", lockKey).Str("token", r.sessionToken).Bool("ok", ok).Msg("lock result")
 	if err != nil {
 		return nil, fmt.Errorf("error acquiring lock: %w", err)
 	}
@@ -241,7 +243,7 @@ func (r *RedisConnector) Lock(ctx context.Context, lockKey string, ttl time.Dura
 	return &redisLock{
 		connector: r,
 		key:       lockKey,
-		token:     token,
+		token:     r.sessionToken,
 		ttl:       ttl,
 	}, nil
 }
@@ -332,6 +334,7 @@ func (l *redisLock) Unlock(ctx context.Context) error {
 		end
 	`
 	result, err := l.connector.client.Eval(ctx, script, []string{l.key}, l.token).Result()
+	l.connector.logger.Debug().Err(err).Str("key", l.key).Str("token", l.token).Interface("result", result).Msg("unlock result")
 	if err != nil {
 		return fmt.Errorf("error releasing lock: %w", err)
 	}

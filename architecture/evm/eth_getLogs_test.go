@@ -85,6 +85,10 @@ func (m *mockStatePoller) LatestBlock() int64 {
 	return lb
 }
 
+func (m *mockStatePoller) IsObjectNull() bool {
+	return false
+}
+
 func TestSplitEthGetLogsRequest(t *testing.T) {
 	tests := []struct {
 		name          string

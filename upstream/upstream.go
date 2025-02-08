@@ -12,6 +12,7 @@ import (
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/util"
@@ -48,6 +49,7 @@ func NewUpstream(
 	vr *thirdparty.VendorsRegistry,
 	logger *zerolog.Logger,
 	mt *health.Tracker,
+	ssr data.SharedStateRegistry,
 ) (*Upstream, error) {
 	lg := logger.With().Str("upstreamId", cfg.Id).Logger()
 
@@ -102,7 +104,7 @@ func NewUpstream(
 	}
 
 	if pup.config.Type == common.UpstreamTypeEvm {
-		pup.evmStatePoller = evm.NewEvmStatePoller(projectId, appCtx, &lg, pup, mt)
+		pup.evmStatePoller = evm.NewEvmStatePoller(projectId, appCtx, &lg, pup, mt, ssr)
 	}
 
 	lg.Debug().Msgf("prepared upstream")
@@ -284,9 +286,9 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 			}
 			if errCall != nil {
 				if common.HasErrorCode(errCall, common.ErrCodeUpstreamRequestSkipped) {
-					health.MetricUpstreamSkippedTotal.WithLabelValues(u.ProjectId, cfg.Id, u.networkId, method).Inc()
+					health.MetricUpstreamSkippedTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method).Inc()
 				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointMissingData) {
-					health.MetricUpstreamMissingDataErrorTotal.WithLabelValues(u.ProjectId, cfg.Id, u.networkId, method).Inc()
+					health.MetricUpstreamMissingDataErrorTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method).Inc()
 				} else {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
 						u.recordRemoteRateLimit(u.networkId, method)

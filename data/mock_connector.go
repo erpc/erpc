@@ -36,13 +36,20 @@ func (m *MockConnector) Set(ctx context.Context, partitionKey, rangeKey, value s
 // Lock mocks the Lock method of the Connector interface
 func (m *MockConnector) Lock(ctx context.Context, key string, ttl time.Duration) (DistributedLock, error) {
 	args := m.Called(ctx, key, ttl)
-	return args.Get(0).(DistributedLock), args.Error(1)
+	var a0 DistributedLock = nil
+	a0, _ = args.Get(0).(DistributedLock)
+	a1 := args.Error(1)
+	return a0, a1
 }
 
 // WatchCounterInt64 mocks the WatchCounterInt64 method of the Connector interface
 func (m *MockConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan int64, func(), error) {
 	args := m.Called(ctx, key)
-	return args.Get(0).(<-chan int64), args.Get(1).(func()), args.Error(2)
+	var a0 <-chan int64 = nil
+	a0, _ = args.Get(0).(chan int64)
+	a1, _ := args.Get(1).(func())
+	a2 := args.Error(2)
+	return a0, a1, a2
 }
 
 // PublishCounterInt64 mocks the PublishCounterInt64 method of the Connector interface

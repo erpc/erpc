@@ -1993,7 +1993,7 @@ func ClassifySeverity(err error) Severity {
 	if err == nil {
 		return SeverityInfo
 	}
-	if IsClientError(err) {
+	if IsClientError(err) || HasErrorCode(err, ErrCodeEndpointExecutionException) {
 		return SeverityInfo
 	}
 	if IsCapacityIssue(err) || !IsRetryableTowardsUpstream(err) {

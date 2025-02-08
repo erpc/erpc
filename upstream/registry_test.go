@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/rs/zerolog"
@@ -758,11 +759,23 @@ func createTestRegistry(ctx context.Context, projectID string, logger *zerolog.L
 	if err != nil {
 		panic(err)
 	}
+	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems: 100_000,
+			},
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
 	registry := NewUpstreamsRegistry(
 		ctx,
 		logger,
 		projectID,
 		upstreamConfigs,
+		ssr,
 		nil, // RateLimitersRegistry not needed for these tests
 		vr,
 		pr,

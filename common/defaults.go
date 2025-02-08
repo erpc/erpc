@@ -475,9 +475,37 @@ func (a *AdminConfig) SetDefaults() error {
 	return nil
 }
 
+func (c *SharedStateConfig) SetDefaults() error {
+	if c.Connector == nil {
+		c.Connector = &ConnectorConfig{
+			Id:     "memory",
+			Driver: DriverMemory,
+			Memory: &MemoryConnectorConfig{
+				MaxItems: 100_000,
+			},
+		}
+	} else {
+		if c.Connector.Id == "" {
+			c.Connector.Id = string(c.Connector.Driver)
+		}
+	}
+	if err := c.Connector.SetDefaults(); err != nil {
+		return err
+	}
+	if c.FallbackTimeout == 0 {
+		c.FallbackTimeout = 500 * time.Millisecond
+	}
+	return nil
+}
+
 func (d *DatabaseConfig) SetDefaults() error {
 	if d.EvmJsonRpcCache != nil {
 		if err := d.EvmJsonRpcCache.SetDefaults(); err != nil {
+			return err
+		}
+	}
+	if d.SharedState != nil {
+		if err := d.SharedState.SetDefaults(); err != nil {
 			return err
 		}
 	}

@@ -2,49 +2,40 @@ package data
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
+
+	"github.com/erpc/erpc/common"
 )
 
-// SharedVariable represents a generic shared variable with last updated tracking
 type SharedVariable interface {
-	GetLastUpdated() time.Time
 	IsStale(staleness time.Duration) bool
 }
 
-// CounterInt64SharedVariable represents an int64 counter that can only increase
 type CounterInt64SharedVariable interface {
 	SharedVariable
 	GetValue() int64
-	TryUpdate(ctx context.Context, newValue int64) (int64, bool, error)
+	TryUpdateIfStale(ctx context.Context, staleness time.Duration, getNewValue func() (int64, error)) (int64, error)
+	TryUpdate(ctx context.Context, newValue int64) int64
+	OnValue(callback func(int64))
 }
 
-// SharedStateRegistry manages shared variables across instances
-type SharedStateRegistry interface {
-	GetCounterInt64(key string) CounterInt64SharedVariable
-	Close() error
-}
-
-// baseSharedVariable implements the SharedVariable interface
 type baseSharedVariable struct {
 	lastUpdated time.Time
-}
-
-func (v *baseSharedVariable) GetLastUpdated() time.Time {
-	return v.lastUpdated
 }
 
 func (v *baseSharedVariable) IsStale(staleness time.Duration) bool {
 	return time.Since(v.lastUpdated) > staleness
 }
 
-// counterInt64 implements CounterInt64SharedVariable
 type counterInt64 struct {
 	baseSharedVariable
 	registry *sharedStateRegistry
 	key      string
 	value    int64
 	mu       sync.RWMutex
+	callback func(int64)
 }
 
 func (c *counterInt64) GetValue() int64 {
@@ -53,6 +44,187 @@ func (c *counterInt64) GetValue() int64 {
 	return c.value
 }
 
-func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) (int64, bool, error) {
-	return c.registry.updateCounter(ctx, c, newValue)
+func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
+	// Try remote lock first
+	lock, err := c.registry.connector.Lock(ctx, fmt.Sprintf("lock:%s", c.key), c.registry.fallbackTimeout)
+	if err != nil {
+		// Fallback to local lock if remote lock fails
+		c.mu.Lock()
+		defer c.mu.Unlock()
+
+		if newValue > c.value {
+			c.setValue(newValue)
+		}
+		return c.value
+	}
+	defer lock.Unlock(ctx)
+
+	// Get remote value
+	remoteVal, err := c.registry.connector.Get(ctx, ConnectorMainIndex, c.key, "value")
+	if err != nil && !common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
+		// Fallback to local update on error
+		c.mu.Lock()
+		defer c.mu.Unlock()
+
+		if newValue > c.value {
+			c.setValue(newValue)
+		}
+		return c.value
+	}
+
+	var remoteValue int64
+	if remoteVal != "" {
+		if _, err := fmt.Sscanf(remoteVal, "%d", &remoteValue); err != nil {
+			// Fallback to local update on parse error
+			c.mu.Lock()
+			defer c.mu.Unlock()
+
+			if newValue > c.value {
+				c.setValue(newValue)
+			}
+			return c.value
+		}
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Use highest value among local, remote, and new
+	highestValue := c.value
+	if remoteValue > highestValue {
+		highestValue = remoteValue
+	}
+	if newValue > highestValue {
+		highestValue = newValue
+
+		// Only update remote if we're using the new value
+		err = c.registry.connector.Set(ctx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
+		if err == nil {
+			err = c.registry.connector.PublishCounterInt64(ctx, c.key, newValue)
+		}
+		if err != nil {
+			c.registry.logger.Warn().Err(err).
+				Str("key", c.key).
+				Int64("value", newValue).
+				Msg("failed to update remote value")
+		}
+	}
+
+	if highestValue > 0 {
+		c.setValue(highestValue)
+	}
+	return c.value
+}
+
+func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Duration, getNewValue func() (int64, error)) (int64, error) {
+	// Quick check if value is not stale using read lock
+	c.mu.RLock()
+	if !c.IsStale(staleness) {
+		value := c.value
+		c.mu.RUnlock()
+		return value, nil
+	}
+	c.mu.RUnlock()
+
+	// Try remote lock first
+	lock, err := c.registry.connector.Lock(ctx, fmt.Sprintf("lock:%s", c.key), c.registry.fallbackTimeout)
+	if err != nil {
+		// Fallback to local lock if remote lock fails
+		c.mu.Lock()
+		defer c.mu.Unlock()
+
+		// Double-check staleness under lock
+		if !c.IsStale(staleness) {
+			return c.value, nil
+		}
+
+		newValue, err := getNewValue()
+		if err != nil {
+			return c.value, err
+		}
+
+		if newValue > c.value {
+			c.setValue(newValue)
+		}
+		return c.value, nil
+	}
+	defer lock.Unlock(ctx)
+
+	// Get remote value
+	remoteVal, err := c.registry.connector.Get(ctx, ConnectorMainIndex, c.key, "value")
+	if err != nil && !common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
+		// Fallback to local update on error
+		c.mu.Lock()
+		defer c.mu.Unlock()
+
+		if !c.IsStale(staleness) {
+			return c.value, nil
+		}
+
+		newValue, err := getNewValue()
+		if err != nil {
+			return c.value, err
+		}
+
+		if newValue > c.value {
+			c.setValue(newValue)
+		}
+		return c.value, nil
+	}
+
+	var remoteValue int64
+	if remoteVal != "" {
+		if _, err := fmt.Sscanf(remoteVal, "%d", &remoteValue); err != nil {
+			return 0, fmt.Errorf("failed to parse remote value: %w", err)
+		}
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Update local value if remote is higher
+	if remoteValue > c.value {
+		c.setValue(remoteValue)
+	}
+
+	// Check staleness again under lock
+	if !c.IsStale(staleness) {
+		return c.value, nil
+	}
+
+	// Get new value
+	newValue, err := getNewValue()
+	if err != nil {
+		return c.value, err
+	}
+
+	// Update if new value is higher
+	if newValue > c.value {
+		err = c.registry.connector.Set(ctx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
+		if err == nil {
+			err = c.registry.connector.PublishCounterInt64(ctx, c.key, newValue)
+		}
+		if err != nil {
+			c.registry.logger.Warn().Err(err).
+				Str("key", c.key).
+				Int64("value", newValue).
+				Msg("failed to update remote value")
+		}
+
+		c.setValue(newValue)
+	}
+
+	return c.value, nil
+}
+
+func (c *counterInt64) OnValue(cb func(int64)) {
+	c.callback = cb
+}
+
+func (c *counterInt64) setValue(val int64) {
+	c.value = val
+	c.lastUpdated = time.Now()
+	if c.callback != nil {
+		c.callback(val)
+	}
 }

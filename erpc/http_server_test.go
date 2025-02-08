@@ -18,6 +18,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
@@ -84,7 +85,18 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			RateLimiters: &common.RateLimiterConfig{},
 		}
 
-		erpcInstance, err := NewERPC(ctx, &logger, nil, cfg)
+		ssr, err := data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
+		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
 		require.NoError(t, err)
 
 		httpServer := NewHttpServer(ctx, &logger, cfg.Server, cfg.Admin, erpcInstance)
@@ -212,7 +224,18 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			RateLimiters: &common.RateLimiterConfig{},
 		}
 
-		erpcInstance, err := NewERPC(ctx, &logger, nil, cfg)
+		ssr, err := data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
+		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
 		require.NoError(t, err)
 
 		httpServer := NewHttpServer(ctx, &logger, cfg.Server, cfg.Admin, erpcInstance)
@@ -342,7 +365,18 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			RateLimiters: &common.RateLimiterConfig{},
 		}
 
-		erpcInstance, err := NewERPC(ctx, &logger, nil, cfg)
+		ssr, err := data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
+		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
 		require.NoError(t, err)
 
 		httpServer := NewHttpServer(ctx, &logger, cfg.Server, cfg.Admin, erpcInstance)
@@ -3801,7 +3835,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			name: "Basic healthcheck",
 			setupServer: func() *HttpServer {
 				pp := &PreparedProject{
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(context.TODO(), &zerolog.Logger{}, "", nil, nil, nil, nil, nil, nil, 0*time.Second),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(context.TODO(), &zerolog.Logger{}, "", nil, nil, nil, nil, nil, nil, nil, 0*time.Second),
 				}
 				pp.networksRegistry = NewNetworksRegistry(pp, context.TODO(), pp.upstreamsRegistry, nil, nil, nil, &zerolog.Logger{})
 				return &HttpServer{
@@ -3839,7 +3873,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			name: "Root healthcheck",
 			setupServer: func() *HttpServer {
 				pp := &PreparedProject{
-					upstreamsRegistry: upstream.NewUpstreamsRegistry(context.TODO(), &zerolog.Logger{}, "", nil, nil, nil, nil, nil, nil, 0*time.Second),
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(context.TODO(), &zerolog.Logger{}, "", nil, nil, nil, nil, nil, nil, nil, 0*time.Second),
 				}
 				pp.networksRegistry = NewNetworksRegistry(pp, context.TODO(), pp.upstreamsRegistry, nil, nil, nil, &zerolog.Logger{})
 				return &HttpServer{
@@ -5950,7 +5984,18 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 	logger := log.Logger
 	ctx, cancel := context.WithCancel(context.Background())
 
-	erpcInstance, err := NewERPC(ctx, &logger, nil, cfg)
+	ssr, err := data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems: 100_000,
+			},
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
 	require.NoError(t, err)
 
 	httpServer := NewHttpServer(ctx, &logger, cfg.Server, cfg.Admin, erpcInstance)

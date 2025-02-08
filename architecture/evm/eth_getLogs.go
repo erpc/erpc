@@ -105,7 +105,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	jrq.RUnlock()
 
 	statePoller := up.EvmStatePoller()
-	if statePoller == nil {
+	if statePoller == nil || statePoller.IsObjectNull() {
 		return true, nil, common.NewErrUpstreamRequestSkipped(
 			fmt.Errorf("upstream evm state poller is not available"),
 			up.Config().Id,

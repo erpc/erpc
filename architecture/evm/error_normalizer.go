@@ -90,6 +90,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "response size should not") ||
 			strings.Contains(msg, "returned more than") ||
 			strings.Contains(msg, "exceeds max results") ||
+			strings.Contains(msg, "range is too large") ||
+			strings.Contains(msg, "too large, max is") ||
 			strings.Contains(msg, "response too large") ||
 			strings.Contains(msg, "query exceeds limit") ||
 			strings.Contains(msg, "exceeds the range") ||

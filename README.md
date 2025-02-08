@@ -41,7 +41,7 @@ Or, using `Railway`:
 #### Send a request to your eRPC instance:
 
 ```bash
-curl 'http://localhost:4000/evm/42161' \
+curl 'http://localhost:4000/main/evm/42161' \
 --header 'Content-Type: application/json' \
 --data '{
     "method": "eth_getBlockByNumber",
