@@ -48,6 +48,10 @@ func HandleUpstreamPreForward(ctx context.Context, n common.Network, u common.Up
 		return false, nil, err
 	}
 
+	if method == "eth_getLogs" && requestHasBlockHash(r) {
+		return false, nil, nil
+	}
+
 	switch method {
 	case "eth_getLogs":
 		return upstreamPreForward_eth_getLogs(ctx, n, u, r)

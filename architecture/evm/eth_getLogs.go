@@ -497,3 +497,22 @@ func mergeEthGetLogsResults(results [][]byte) *common.JsonRpcResponse {
 	jrr.SetResultWriter(writer)
 	return jrr
 }
+
+func requestHasBlockHash(r *common.NormalizedRequest) bool {
+	jrq, err := r.JsonRpcRequest()
+	if err != nil {
+		return false
+	}
+
+	filter, ok := jrq.Params[0].(map[string]interface{})
+	if !ok {
+		return false
+	}
+
+	blockHash, ok := filter["blockHash"].(string)
+	if !ok || blockHash == "" {
+		return false
+	}
+
+	return true
+}
