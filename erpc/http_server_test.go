@@ -2798,7 +2798,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
-				statusCode, body := sendRequest(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":%d}`, i), nil, nil)
+				statusCode, body := sendRequest(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[{"fromBlock":"0x0","toBlock":"0x0"}],"id":%d}`, i), nil, nil)
 				assert.Equal(t, http.StatusOK, statusCode)
 				assert.Contains(t, body, "0x123456")
 			}(i)
