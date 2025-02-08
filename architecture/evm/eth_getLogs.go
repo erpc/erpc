@@ -93,22 +93,14 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		// EIP-234 => if blockHash is present, fromBlock or toBlock is NOT allowed
 		if _, hasFB := filter["fromBlock"]; hasFB {
 			jrq.RUnlock()
-			return true, nil, common.NewErrEndpointServerSideException(
+			return true, nil, common.NewErrEndpointClientSideException(
 				fmt.Errorf("EIP-234 violation: blockHash and fromBlock cannot both be present for eth_getLogs"),
-				map[string]interface{}{
-					"blockHash": blockHash,
-					"fromBlock": filter["fromBlock"],
-				},
 			)
 		}
 		if _, hasTB := filter["toBlock"]; hasTB {
 			jrq.RUnlock()
-			return true, nil, common.NewErrEndpointServerSideException(
+			return true, nil, common.NewErrEndpointClientSideException(
 				fmt.Errorf("EIP-234 violation: blockHash and toBlock cannot both be present for eth_getLogs"),
-				map[string]interface{}{
-					"blockHash": blockHash,
-					"toBlock":   filter["toBlock"],
-				},
 			)
 		}
 
