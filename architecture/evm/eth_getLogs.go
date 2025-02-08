@@ -98,7 +98,6 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 				map[string]interface{}{
 					"blockHash": blockHash,
 					"fromBlock": filter["fromBlock"],
-					"toBlock":   filter["toBlock"],
 				},
 			)
 		}
@@ -108,7 +107,6 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 				fmt.Errorf("EIP-234 violation: blockHash and toBlock cannot both be present for eth_getLogs"),
 				map[string]interface{}{
 					"blockHash": blockHash,
-					"fromBlock": filter["fromBlock"],
 					"toBlock":   filter["toBlock"],
 				},
 			)
