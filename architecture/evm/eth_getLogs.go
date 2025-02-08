@@ -88,11 +88,37 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		return false, nil, nil
 	}
 
-	blockHash, hasBlockHash := filter["blockHash"].(string)
-	if hasBlockHash && blockHash != "" {
-		// If blockHash is present, we skip all fromBlock/toBlock checks
+	blockHash, ok := filter["blockHash"].(string)
+	if ok && blockHash != "" {
+		// EIP-234 => if blockHash is present, fromBlock or toBlock is NOT allowed
+		if _, hasFB := filter["fromBlock"]; hasFB {
+			jrq.RUnlock()
+			return true, nil, common.NewErrEndpointServerSideException(
+				fmt.Errorf("EIP-234 violation: blockHash and fromBlock cannot both be present for eth_getLogs"),
+				map[string]interface{}{
+					"blockHash": blockHash,
+					"fromBlock": filter["fromBlock"],
+					"toBlock":   filter["toBlock"],
+				},
+			)
+		}
+		if _, hasTB := filter["toBlock"]; hasTB {
+			jrq.RUnlock()
+			return true, nil, common.NewErrEndpointServerSideException(
+				fmt.Errorf("EIP-234 violation: blockHash and toBlock cannot both be present for eth_getLogs"),
+				map[string]interface{}{
+					"blockHash": blockHash,
+					"fromBlock": filter["fromBlock"],
+					"toBlock":   filter["toBlock"],
+				},
+			)
+		}
+
 		jrq.RUnlock()
-		logger.Debug().Str("blockHash", blockHash).Msg("blockHash is specified, skipping from/to block range checks")
+		logger.Debug().
+			Str("blockHash", blockHash).
+			Msg("blockHash is specified, skipping from/to block range checks")
+
 		return false, nil, nil
 	}
 
