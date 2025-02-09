@@ -44,9 +44,7 @@ func NewConnector(
 	}
 
 	if util.IsTest() && cfg.Driver == "mock" {
-		return NewMockMemoryConnector(ctx, logger, "mock", &common.MemoryConnectorConfig{
-			MaxItems: 1000,
-		}, 100*time.Millisecond)
+		return NewMockMemoryConnector(ctx, logger, "mock", cfg.Mock)
 	}
 
 	return nil, common.NewErrInvalidConnectorDriver(cfg.Driver)

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -29,6 +30,7 @@ func setupTest(clusterKey string) (*sharedStateRegistry, *MockConnector, context
 		logger:          &log.Logger,
 		connector:       connector,
 		fallbackTimeout: 500 * time.Millisecond,
+		initializer:     util.NewInitializer(context.Background(), &log.Logger, nil),
 	}
 	return registry, connector, context.Background()
 }
@@ -39,7 +41,7 @@ func TestSharedStateRegistry_UpdateCounter_Success(t *testing.T) {
 	lock := &MockLock{}
 	lock.On("Unlock", mock.Anything).Return(nil)
 
-	connector.On("Lock", mock.Anything, "lock:my-dev/test", mock.Anything).Return(lock, nil)
+	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
 	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value").Return("5", nil)
 	connector.On("Set", mock.Anything, "my-dev/test", "value", "10", mock.Anything).Return(nil)
 	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", int64(10)).Return(nil)
@@ -53,6 +55,8 @@ func TestSharedStateRegistry_UpdateCounter_Success(t *testing.T) {
 	result := counter.TryUpdate(ctx, 10)
 	assert.Equal(t, int64(10), result)
 
+	time.Sleep(10 * time.Millisecond)
+
 	connector.AssertExpectations(t)
 	lock.AssertExpectations(t)
 }
@@ -60,7 +64,7 @@ func TestSharedStateRegistry_UpdateCounter_Success(t *testing.T) {
 func TestSharedStateRegistry_UpdateCounter_LockFailure(t *testing.T) {
 	registry, connector, ctx := setupTest("my-dev")
 
-	connector.On("Lock", mock.Anything, "lock:my-dev/test", mock.Anything).
+	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).
 		Return(nil, errors.New("lock acquisition failed"))
 
 	counter := &counterInt64{
@@ -81,7 +85,7 @@ func TestSharedStateRegistry_UpdateCounter_GetFailure(t *testing.T) {
 	lock := &MockLock{}
 	lock.On("Unlock", mock.Anything).Return(nil)
 
-	connector.On("Lock", mock.Anything, "lock:my-dev/test", mock.Anything).Return(lock, nil)
+	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
 	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value").
 		Return("", errors.New("get failed"))
 
@@ -104,7 +108,7 @@ func TestSharedStateRegistry_UpdateCounter_SetFailure(t *testing.T) {
 	lock := &MockLock{}
 	lock.On("Unlock", mock.Anything).Return(nil)
 
-	connector.On("Lock", mock.Anything, "lock:my-dev/test", mock.Anything).Return(lock, nil)
+	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
 	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value").Return("5", nil)
 	connector.On("Set", mock.Anything, "my-dev/test", "value", "10", mock.Anything).
 		Return(errors.New("set failed"))
@@ -118,6 +122,8 @@ func TestSharedStateRegistry_UpdateCounter_SetFailure(t *testing.T) {
 	result := counter.TryUpdate(ctx, 10)
 	assert.Equal(t, int64(10), result) // Should fall back to local update
 
+	time.Sleep(10 * time.Millisecond)
+
 	connector.AssertExpectations(t)
 	lock.AssertExpectations(t)
 }
@@ -128,7 +134,7 @@ func TestSharedStateRegistry_UpdateCounter_PublishFailure(t *testing.T) {
 	lock := &MockLock{}
 	lock.On("Unlock", mock.Anything).Return(nil)
 
-	connector.On("Lock", mock.Anything, "lock:my-dev/test", mock.Anything).Return(lock, nil)
+	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
 	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value").Return("5", nil)
 	connector.On("Set", mock.Anything, "my-dev/test", "value", "10", mock.Anything).Return(nil)
 	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", int64(10)).
@@ -143,6 +149,8 @@ func TestSharedStateRegistry_UpdateCounter_PublishFailure(t *testing.T) {
 	result := counter.TryUpdate(ctx, 10)
 	assert.Equal(t, int64(10), result) // Should fall back to local update
 
+	time.Sleep(10 * time.Millisecond)
+
 	connector.AssertExpectations(t)
 	lock.AssertExpectations(t)
 }
@@ -153,7 +161,7 @@ func TestSharedStateRegistry_UpdateCounter_RemoteHigherValue(t *testing.T) {
 	lock := &MockLock{}
 	lock.On("Unlock", mock.Anything).Return(nil)
 
-	connector.On("Lock", mock.Anything, "lock:my-dev/test", mock.Anything).Return(lock, nil)
+	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
 	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value").Return("15", nil)
 
 	counter := &counterInt64{
@@ -175,7 +183,7 @@ func TestSharedStateRegistry_UpdateCounter_ConcurrentUpdates(t *testing.T) {
 	lock := &MockLock{}
 	lock.On("Unlock", mock.Anything).Return(nil).Times(10)
 
-	connector.On("Lock", mock.Anything, "lock:my-dev/test", mock.Anything).Return(lock, nil).Times(10)
+	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil).Times(10)
 	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value").Return("5", nil).Times(10)
 	connector.On("Set", mock.Anything, "my-dev/test", "value", mock.Anything, mock.Anything).Return(nil).Times(10)
 	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", mock.Anything).Return(nil).Times(10)
@@ -225,7 +233,7 @@ func TestSharedStateRegistry_GetCounterInt64_WatchFailure(t *testing.T) {
 	lock := &MockLock{}
 	lock.On("Unlock", mock.Anything).Return(nil).Times(1)
 
-	connector.On("Lock", mock.Anything, "lock:my-dev/test", mock.Anything).Return(lock, nil)
+	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
 	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value").Return("5", nil)
 	connector.On("Set", mock.Anything, "my-dev/test", "value", mock.Anything, mock.Anything).Return(nil)
 	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", mock.Anything).Return(nil)

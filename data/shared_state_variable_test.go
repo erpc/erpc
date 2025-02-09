@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -24,7 +27,7 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 		{
 			name: "lock failure falls back to local",
 			setupMocks: func(c *MockConnector, l *MockLock) {
-				c.On("Lock", mock.Anything, "lock:test", mock.Anything).
+				c.On("Lock", mock.Anything, "test", mock.Anything).
 					Return(nil, errors.New("lock failed"))
 			},
 			initialValue:   5,
@@ -36,7 +39,7 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 		{
 			name: "get failure falls back to local",
 			setupMocks: func(c *MockConnector, l *MockLock) {
-				c.On("Lock", mock.Anything, "lock:test", mock.Anything).Return(l, nil)
+				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
 				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").
 					Return("", errors.New("get failed"))
@@ -50,7 +53,7 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 		{
 			name: "remote value higher than update",
 			setupMocks: func(c *MockConnector, l *MockLock) {
-				c.On("Lock", mock.Anything, "lock:test", mock.Anything).Return(l, nil)
+				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
 				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").Return("15", nil)
 			},
@@ -63,7 +66,7 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 		{
 			name: "successful remote update",
 			setupMocks: func(c *MockConnector, l *MockLock) {
-				c.On("Lock", mock.Anything, "lock:test", mock.Anything).Return(l, nil)
+				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
 				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").Return("5", nil)
 				c.On("Set", mock.Anything, "test", "value", "10", mock.Anything).Return(nil)
@@ -91,6 +94,7 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 
 			result := counter.TryUpdate(context.Background(), tt.updateValue)
 			assert.Equal(t, tt.expectedValue, result)
+			time.Sleep(10 * time.Millisecond)
 			connector.AssertExpectations(t)
 			lock.AssertExpectations(t)
 		})
@@ -125,7 +129,7 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 		{
 			name: "stale value updates successfully",
 			setupMocks: func(c *MockConnector, l *MockLock) {
-				c.On("Lock", mock.Anything, "lock:test", mock.Anything).Return(l, nil)
+				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
 				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").Return("5", nil)
 				c.On("Set", mock.Anything, "test", "value", "10", mock.Anything).Return(nil)
@@ -142,7 +146,7 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 		{
 			name: "stale value with remote higher",
 			setupMocks: func(c *MockConnector, l *MockLock) {
-				c.On("Lock", mock.Anything, "lock:test", mock.Anything).Return(l, nil)
+				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
 				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").Return("15", nil)
 			},
@@ -157,7 +161,7 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 		{
 			name: "update function returns error",
 			setupMocks: func(c *MockConnector, l *MockLock) {
-				c.On("Lock", mock.Anything, "lock:test", mock.Anything).Return(l, nil)
+				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
 				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").Return("5", nil)
 			},
@@ -201,7 +205,7 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 				assert.NoError(t, err)
 			}
 			assert.Equal(t, tt.expectedValue, result)
-
+			time.Sleep(10 * time.Millisecond)
 			connector.AssertExpectations(t)
 			lock.AssertExpectations(t)
 		})
@@ -213,7 +217,7 @@ func TestCounterInt64_Concurrency(t *testing.T) {
 	lock := &MockLock{}
 
 	// Setup mocks for multiple concurrent calls
-	connector.On("Lock", mock.Anything, "lock:test", mock.Anything).Return(lock, nil).Times(10)
+	connector.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil).Times(10)
 	lock.On("Unlock", mock.Anything).Return(nil).Times(10)
 	connector.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").Return("5", nil).Times(10)
 	connector.On("Set", mock.Anything, "test", "value", mock.Anything, mock.Anything).Return(nil).Times(10)
@@ -286,4 +290,182 @@ func TestCounterInt64_IsStale(t *testing.T) {
 			assert.Equal(t, tt.expected, counter.IsStale(tt.staleness))
 		})
 	}
+}
+
+func TestSharedVariable(t *testing.T) {
+	t.Run("basic remote sync updates local value", func(t *testing.T) {
+		connector := NewMockConnector("test")
+		registry := &sharedStateRegistry{
+			appCtx:          context.Background(),
+			clusterKey:      "test",
+			logger:          &log.Logger,
+			connector:       connector,
+			fallbackTimeout: time.Second,
+			initializer:     util.NewInitializer(context.Background(), &log.Logger, nil),
+		}
+
+		updates := make(chan int64, 10)
+		cleanup := func() { close(updates) }
+
+		// Setup mock expectations
+		connector.On("WatchCounterInt64", mock.Anything, "test/counter1").
+			Return(updates, cleanup, nil)
+
+		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/counter1", "value").
+			Return("42", nil)
+
+		// Get the counter and verify initial setup
+		counter := registry.GetCounterInt64("counter1").(*counterInt64)
+		time.Sleep(100 * time.Millisecond) // Allow goroutine to start
+
+		// Verify initial value was fetched
+		assert.Equal(t, int64(42), counter.GetValue())
+
+		// Simulate remote update
+		updates <- 100
+		time.Sleep(100 * time.Millisecond)
+
+		// Verify value was updated
+		assert.Equal(t, int64(100), counter.GetValue())
+	})
+
+	t.Run("callback is triggered on remote updates", func(t *testing.T) {
+		connector := NewMockConnector("test")
+		registry := &sharedStateRegistry{
+			appCtx:          context.Background(),
+			clusterKey:      "test",
+			logger:          &log.Logger,
+			connector:       connector,
+			fallbackTimeout: time.Second,
+			initializer:     util.NewInitializer(context.Background(), &log.Logger, nil),
+		}
+
+		updates := make(chan int64, 10)
+		cleanup := func() { close(updates) }
+
+		connector.On("WatchCounterInt64", mock.Anything, "test/counter2").
+			Return(updates, cleanup, nil)
+
+		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/counter2", "value").
+			Return("0", nil)
+
+		counter := registry.GetCounterInt64("counter2")
+
+		// Setup callback
+		callbackCalled := make(chan int64, 1)
+		counter.OnValue(func(val int64) {
+			callbackCalled <- val
+		})
+
+		// Simulate remote update
+		updates <- 50
+
+		// Wait for callback
+		select {
+		case val := <-callbackCalled:
+			assert.Equal(t, int64(50), val)
+		case <-time.After(time.Second):
+			t.Fatal("callback was not called")
+		}
+	})
+
+	t.Run("lower remote values are ignored", func(t *testing.T) {
+		connector := NewMockConnector("test")
+		registry := &sharedStateRegistry{
+			appCtx:          context.Background(),
+			clusterKey:      "test",
+			logger:          &log.Logger,
+			connector:       connector,
+			fallbackTimeout: time.Second,
+			initializer:     util.NewInitializer(context.Background(), &log.Logger, nil),
+		}
+
+		updates := make(chan int64, 10)
+		cleanup := func() { close(updates) }
+
+		connector.On("WatchCounterInt64", mock.Anything, "test/counter3").
+			Return(updates, cleanup, nil)
+
+		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/counter3", "value").
+			Return("100", nil)
+
+		counter := registry.GetCounterInt64("counter3")
+		time.Sleep(100 * time.Millisecond)
+
+		// Verify initial value
+		assert.Equal(t, int64(100), counter.GetValue())
+
+		// Try to update with lower value
+		updates <- 50
+		time.Sleep(100 * time.Millisecond)
+
+		// Value should remain unchanged
+		assert.Equal(t, int64(100), counter.GetValue())
+	})
+
+	t.Run("handles watch channel closure gracefully", func(t *testing.T) {
+		connector := NewMockConnector("test")
+		registry := &sharedStateRegistry{
+			appCtx:          context.Background(),
+			clusterKey:      "test",
+			logger:          &log.Logger,
+			connector:       connector,
+			fallbackTimeout: time.Second,
+			initializer:     util.NewInitializer(context.Background(), &log.Logger, nil),
+		}
+
+		updates := make(chan int64, 10)
+		cleanup := func() {
+			close(updates)
+		}
+
+		connector.On("WatchCounterInt64", mock.Anything, "test/counter4").
+			Return(updates, cleanup, nil)
+
+		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/counter4", "value").
+			Return("42", nil)
+
+		counter := registry.GetCounterInt64("counter4")
+		time.Sleep(100 * time.Millisecond)
+
+		// Initial value check
+		assert.Equal(t, int64(42), counter.GetValue())
+
+		time.Sleep(100 * time.Millisecond)
+
+		// Counter should retain its last value
+		assert.Equal(t, int64(42), counter.GetValue())
+	})
+
+	t.Run("handles initial fetch error gracefully", func(t *testing.T) {
+		connector := NewMockConnector("test")
+		registry := &sharedStateRegistry{
+			appCtx:          context.Background(),
+			clusterKey:      "test",
+			logger:          &log.Logger,
+			connector:       connector,
+			fallbackTimeout: time.Second,
+			initializer:     util.NewInitializer(context.Background(), &log.Logger, nil),
+		}
+
+		updates := make(chan int64, 10)
+		cleanup := func() { close(updates) }
+
+		connector.On("WatchCounterInt64", mock.Anything, "test/counter6").
+			Return(updates, cleanup, nil)
+
+		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/counter6", "value").
+			Return("", common.NewErrRecordNotFound("test/counter6", "value", "mock"))
+
+		counter := registry.GetCounterInt64("counter6")
+		time.Sleep(100 * time.Millisecond)
+
+		// Initial value should be 0
+		assert.Equal(t, int64(0), counter.GetValue())
+
+		// Should still handle updates
+		updates <- 100
+		time.Sleep(100 * time.Millisecond)
+		assert.Equal(t, int64(100), counter.GetValue())
+	})
 }

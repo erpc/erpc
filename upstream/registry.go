@@ -177,7 +177,7 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 			}
 
 			if status.State == util.StateFailed {
-				return fmt.Errorf("initialization failed with state: %v", status.State)
+				return fmt.Errorf("initialization failed with state: %s", status.State.String())
 			}
 		}
 	}
@@ -316,12 +316,12 @@ func (u *UpstreamsRegistry) sortAndFilterUpstreams(networkId, method string, ups
 		for i, ups := range activeUpstreams {
 			scores[i] = u.upstreamScores[ups.Config().Id][networkId][method]
 		}
-		u.logger.Trace().
-			Str("networkId", networkId).
-			Str("method", method).
-			Strs("upstreams", ids).
-			Floats64("scores", scores).
-			Msgf("sorted upstreams")
+		// u.logger.Trace().
+		// 	Str("networkId", networkId).
+		// 	Str("method", method).
+		// 	Strs("upstreams", ids).
+		// 	Floats64("scores", scores).
+		// 	Msgf("sorted upstreams")
 	}
 
 	return activeUpstreams

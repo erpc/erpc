@@ -85,6 +85,7 @@ type SharedStateConfig struct {
 	ClusterKey      string           `yaml:"clusterKey,omitempty" json:"clusterKey"`
 	Connector       *ConnectorConfig `yaml:"connector,omitempty" json:"connector"`
 	FallbackTimeout time.Duration    `yaml:"fallbackTimeout,omitempty" json:"fallbackTimeout"`
+	LockTtl         time.Duration    `yaml:"lockTtl,omitempty" json:"lockTtl"`
 }
 
 func (c *SharedStateConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
@@ -92,6 +93,7 @@ func (c *SharedStateConfig) UnmarshalYAML(unmarshal func(interface{}) error) err
 		ClusterKey      string           `yaml:"clusterKey,omitempty"`
 		Connector       *ConnectorConfig `yaml:"connector,omitempty"`
 		FallbackTimeout string           `yaml:"fallbackTimeout,omitempty"`
+		LockTtl         string           `yaml:"lockTtl,omitempty"`
 	}
 	raw := rawSharedStateConfig{}
 	if err := unmarshal(&raw); err != nil {
@@ -101,6 +103,7 @@ func (c *SharedStateConfig) UnmarshalYAML(unmarshal func(interface{}) error) err
 		ClusterKey:      raw.ClusterKey,
 		Connector:       raw.Connector,
 		FallbackTimeout: time.Duration(0),
+		LockTtl:         time.Duration(0),
 	}
 	if raw.FallbackTimeout != "" {
 		ft, err := time.ParseDuration(raw.FallbackTimeout)
@@ -108,6 +111,13 @@ func (c *SharedStateConfig) UnmarshalYAML(unmarshal func(interface{}) error) err
 			return fmt.Errorf("sharedState.fallbackTimeout is invalid: %w", err)
 		}
 		c.FallbackTimeout = ft
+	}
+	if raw.LockTtl != "" {
+		lt, err := time.ParseDuration(raw.LockTtl)
+		if err != nil {
+			return fmt.Errorf("sharedState.lockTtl is invalid: %w", err)
+		}
+		c.LockTtl = lt
 	}
 	return nil
 }
@@ -210,10 +220,19 @@ type ConnectorConfig struct {
 	Redis      *RedisConnectorConfig      `yaml:"redis,omitempty" json:"redis"`
 	DynamoDB   *DynamoDBConnectorConfig   `yaml:"dynamodb,omitempty" json:"dynamodb"`
 	PostgreSQL *PostgreSQLConnectorConfig `yaml:"postgresql,omitempty" json:"postgresql"`
+	Mock       *MockConnectorConfig       `yaml:"-" json:"-"`
 }
 
 type MemoryConnectorConfig struct {
 	MaxItems int `yaml:"maxItems" json:"maxItems"`
+}
+
+type MockConnectorConfig struct {
+	MemoryConnectorConfig
+	GetDelay     time.Duration
+	SetDelay     time.Duration
+	GetErrorRate float64
+	SetErrorRate float64
 }
 
 type TLSConfig struct {
@@ -663,8 +682,8 @@ func (c *SelectionPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error)
 		EvalFunction:     nil,
 		EvalPerMethod:    raw.EvalPerMethod,
 		ResampleInterval: time.Duration(0),
-		ResampleCount:    0,
-		ResampleExcluded: false,
+		ResampleCount:    raw.ResampleCount,
+		ResampleExcluded: raw.ResampleExcluded,
 	}
 
 	if raw.ResampleInterval != "" {

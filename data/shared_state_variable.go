@@ -45,8 +45,11 @@ func (c *counterInt64) GetValue() int64 {
 }
 
 func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
+	rctx, cancel := context.WithTimeout(ctx, c.registry.fallbackTimeout)
+	defer cancel()
+
 	// Try remote lock first
-	lock, err := c.registry.connector.Lock(ctx, fmt.Sprintf("lock:%s", c.key), c.registry.fallbackTimeout)
+	lock, err := c.registry.connector.Lock(rctx, c.key, c.registry.lockTtl)
 	if err != nil {
 		// Fallback to local lock if remote lock fails
 		c.mu.Lock()
@@ -57,10 +60,16 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 		}
 		return c.value
 	}
-	defer lock.Unlock(ctx)
+	defer func() {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), c.registry.lockTtl)
+		defer cancel()
+		if err := lock.Unlock(unlockCtx); err != nil {
+			c.registry.logger.Error().Err(err).Str("key", c.key).Msg("failed to unlock counter")
+		}
+	}()
 
 	// Get remote value
-	remoteVal, err := c.registry.connector.Get(ctx, ConnectorMainIndex, c.key, "value")
+	remoteVal, err := c.registry.connector.Get(rctx, ConnectorMainIndex, c.key, "value")
 	if err != nil && !common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
 		// Fallback to local update on error
 		c.mu.Lock()
@@ -97,17 +106,19 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 	if newValue > highestValue {
 		highestValue = newValue
 
-		// Only update remote if we're using the new value
-		err = c.registry.connector.Set(ctx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
-		if err == nil {
-			err = c.registry.connector.PublishCounterInt64(ctx, c.key, newValue)
-		}
-		if err != nil {
-			c.registry.logger.Warn().Err(err).
-				Str("key", c.key).
-				Int64("value", newValue).
-				Msg("failed to update remote value")
-		}
+		go func() {
+			// Only update remote if we're using the new value
+			err := c.registry.connector.Set(c.registry.appCtx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
+			if err == nil {
+				err = c.registry.connector.PublishCounterInt64(c.registry.appCtx, c.key, newValue)
+			}
+			if err != nil {
+				c.registry.logger.Warn().Err(err).
+					Str("key", c.key).
+					Int64("value", newValue).
+					Msg("failed to update remote value")
+			}
+		}()
 	}
 
 	if highestValue > 0 {
@@ -126,8 +137,11 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	}
 	c.mu.RUnlock()
 
+	rctx, cancel := context.WithTimeout(ctx, c.registry.fallbackTimeout)
+	defer cancel()
+
 	// Try remote lock first
-	lock, err := c.registry.connector.Lock(ctx, fmt.Sprintf("lock:%s", c.key), c.registry.fallbackTimeout)
+	lock, err := c.registry.connector.Lock(rctx, c.key, c.registry.lockTtl)
 	if err != nil {
 		// Fallback to local lock if remote lock fails
 		c.mu.Lock()
@@ -148,10 +162,16 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 		}
 		return c.value, nil
 	}
-	defer lock.Unlock(ctx)
+	defer func() {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), c.registry.lockTtl)
+		defer cancel()
+		if err := lock.Unlock(unlockCtx); err != nil {
+			c.registry.logger.Error().Err(err).Str("key", c.key).Msg("failed to unlock counter")
+		}
+	}()
 
 	// Get remote value
-	remoteVal, err := c.registry.connector.Get(ctx, ConnectorMainIndex, c.key, "value")
+	remoteVal, err := c.registry.connector.Get(rctx, ConnectorMainIndex, c.key, "value")
 	if err != nil && !common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
 		// Fallback to local update on error
 		c.mu.Lock()
@@ -200,18 +220,19 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 
 	// Update if new value is higher
 	if newValue > c.value {
-		err = c.registry.connector.Set(ctx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
-		if err == nil {
-			err = c.registry.connector.PublishCounterInt64(ctx, c.key, newValue)
-		}
-		if err != nil {
-			c.registry.logger.Warn().Err(err).
-				Str("key", c.key).
-				Int64("value", newValue).
-				Msg("failed to update remote value")
-		}
-
 		c.setValue(newValue)
+		go func() {
+			err := c.registry.connector.Set(ctx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
+			if err == nil {
+				err = c.registry.connector.PublishCounterInt64(ctx, c.key, newValue)
+			}
+			if err != nil {
+				c.registry.logger.Warn().Err(err).
+					Str("key", c.key).
+					Int64("value", newValue).
+					Msg("failed to update remote value")
+			}
+		}()
 	}
 
 	return c.value, nil

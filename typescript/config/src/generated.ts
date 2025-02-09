@@ -47,11 +47,12 @@ export interface MockCacheDal {
  * Config represents the configuration of the application.
  */
 export interface Config {
-  logLevel: LogLevel;
+  logLevel?: LogLevel;
+  clusterKey?: string;
   server?: ServerConfig;
   admin?: AdminConfig;
   database?: DatabaseConfig;
-  projects: (ProjectConfig | undefined)[];
+  projects?: (ProjectConfig | undefined)[];
   rateLimiters?: RateLimiterConfig;
   metrics?: MetricsConfig;
   proxyPools?: (ProxyPoolConfig | undefined)[];
@@ -84,6 +85,12 @@ export interface AliasingRuleConfig {
 }
 export interface DatabaseConfig {
   evmJsonRpcCache?: CacheConfig;
+  sharedState?: SharedStateConfig;
+}
+export interface SharedStateConfig {
+  clusterKey?: string;
+  connector?: ConnectorConfig;
+  fallbackTimeout?: number /* time in nanoseconds (time.Duration) */;
 }
 export interface CacheConfig {
   connectors?: TsConnectorConfig[];
@@ -113,7 +120,7 @@ export const DriverRedis: ConnectorDriverType = "redis";
 export const DriverPostgreSQL: ConnectorDriverType = "postgresql";
 export const DriverDynamoDB: ConnectorDriverType = "dynamodb";
 export interface ConnectorConfig {
-  id: string;
+  id?: string;
   driver: TsConnectorDriverType;
   memory?: MemoryConnectorConfig;
   redis?: RedisConnectorConfig;
@@ -122,6 +129,13 @@ export interface ConnectorConfig {
 }
 export interface MemoryConnectorConfig {
   maxItems: number /* int */;
+}
+export interface MockConnectorConfig {
+  memoryconnectorconfig: MemoryConnectorConfig;
+  getdelay: number /* time in nanoseconds (time.Duration) */;
+  setdelay: number /* time in nanoseconds (time.Duration) */;
+  geterrorrate: number /* float64 */;
+  seterrorrate: number /* float64 */;
 }
 export interface TLSConfig {
   enabled: boolean;
@@ -140,17 +154,18 @@ export interface RedisConnectorConfig {
   setTimeout?: number /* time in nanoseconds (time.Duration) */;
 }
 export interface DynamoDBConnectorConfig {
-  table: string;
-  region: string;
-  endpoint: string;
+  table?: string;
+  region?: string;
+  endpoint?: string;
   auth?: AwsAuthConfig;
-  partitionKeyName: string;
-  rangeKeyName: string;
-  reverseIndexName: string;
-  ttlAttributeName: string;
+  partitionKeyName?: string;
+  rangeKeyName?: string;
+  reverseIndexName?: string;
+  ttlAttributeName?: string;
   initTimeout?: number /* time in nanoseconds (time.Duration) */;
   getTimeout?: number /* time in nanoseconds (time.Duration) */;
   setTimeout?: number /* time in nanoseconds (time.Duration) */;
+  statePollInterval?: number /* time in nanoseconds (time.Duration) */;
 }
 export interface PostgreSQLConnectorConfig {
   connectionUri: string;

@@ -2,6 +2,8 @@ package evm
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
@@ -72,8 +74,8 @@ func NewEvmStatePoller(
 ) *EvmStatePoller {
 	lg := logger.With().Str("upstreamId", up.Config().Id).Str("component", "evmStatePoller").Logger()
 
-	lbs := sharedState.GetCounterInt64(fmt.Sprintf("latestBlock/%s", up.Config().Id))
-	fbs := sharedState.GetCounterInt64(fmt.Sprintf("finalizedBlock/%s", up.Config().Id))
+	lbs := sharedState.GetCounterInt64(fmt.Sprintf("latestBlock/%s", uniqueUpstreamKey(up)))
+	fbs := sharedState.GetCounterInt64(fmt.Sprintf("finalizedBlock/%s", uniqueUpstreamKey(up)))
 
 	e := &EvmStatePoller{
 		projectId:            projectId,
@@ -86,11 +88,9 @@ func NewEvmStatePoller(
 	}
 
 	lbs.OnValue(func(value int64) {
-		lg.Debug().Int64("value", value).Msg("local latest block number updated")
 		e.tracker.SetLatestBlockNumber(e.upstream.Config().Id, e.upstream.NetworkId(), value)
 	})
 	fbs.OnValue(func(value int64) {
-		lg.Debug().Int64("value", value).Msg("local finalized block number updated")
 		e.tracker.SetFinalizedBlockNumber(e.upstream.Config().Id, e.upstream.NetworkId(), value)
 	})
 
@@ -280,7 +280,7 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		dbi = 1 * time.Second
 	}
 	return e.latestBlockShared.TryUpdateIfStale(ctx, dbi, func() (int64, error) {
-		e.logger.Debug().Msg("fetching latest block number for evm state poller")
+		e.logger.Trace().Msg("fetching latest block number for evm state poller")
 		health.MetricUpstreamLatestBlockPolled.WithLabelValues(
 			e.projectId,
 			e.upstream.NetworkId(),
@@ -328,7 +328,7 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 		dbi = 1 * time.Second
 	}
 	return e.finalizedBlockShared.TryUpdateIfStale(ctx, dbi, func() (int64, error) {
-		e.logger.Debug().Msg("fetching finalized block number for evm state poller")
+		e.logger.Trace().Msg("fetching finalized block number for evm state poller")
 		health.MetricUpstreamFinalizedBlockPolled.WithLabelValues(
 			e.projectId,
 			e.upstream.NetworkId(),
@@ -570,4 +570,24 @@ func (e *EvmStatePoller) inferDebounceIntervalFromBlockTime(chainId int64) {
 			e.debounceInterval = d
 		}
 	}
+}
+
+// uniqueUpstreamKey returns a unique hash for an upstream.
+// It is used to identify the upstream uniquely in shared-state storage.
+// Sometimes ID might not be enough for example if user changes the endpoint to a completely different network.
+func uniqueUpstreamKey(up common.Upstream) string {
+	sha := sha256.New()
+	cfg := up.Config()
+
+	sha.Write([]byte(cfg.Id))
+	sha.Write([]byte(cfg.Endpoint))
+	sha.Write([]byte(up.NetworkId()))
+	if cfg.JsonRpc != nil {
+		for k, v := range cfg.JsonRpc.Headers {
+			sha.Write([]byte(k))
+			sha.Write([]byte(v))
+		}
+	}
+
+	return cfg.Id + "/" + hex.EncodeToString(sha.Sum(nil))
 }

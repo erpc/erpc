@@ -5330,6 +5330,346 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		assert.Equal(t, 2, len(gock.Pending()), "unexpected pending requests")
 	})
 
+	t.Run("FailFastIfSharedStateIsTooSlow", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// Create a config with 1 upstream and enforce highest block.
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("100s"),
+			},
+			Database: &common.DatabaseConfig{
+				SharedState: &common.SharedStateConfig{
+					Connector: &common.ConnectorConfig{
+						Driver: "mock",
+						Mock: &common.MockConnectorConfig{
+							MemoryConnectorConfig: common.MemoryConnectorConfig{
+								MaxItems: 100_000,
+							},
+							GetDelay: 100 * time.Minute,
+							SetDelay: 100 * time.Minute,
+						},
+					},
+					FallbackTimeout: 100 * time.Millisecond,
+				},
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: "evm",
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+								Integrity: &common.EvmIntegrityConfig{
+									EnforceHighestBlock: util.BoolPtr(true),
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Endpoint: "http://rpc1.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             1,
+								StatePollerInterval: "1000s",
+							},
+						},
+						{
+							Id:       "rpc2",
+							Endpoint: "http://rpc2.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             1,
+								StatePollerInterval: "1000s",
+							},
+						},
+					},
+				},
+			},
+		}
+
+		requestBody := `{
+			"jsonrpc": "2.0",
+			"id":      999,
+			"method":  "eth_getBlockByNumber",
+			"params": ["latest", false]
+		}`
+
+		// Mock poller calls for "rpc1" => we say "eth_syncing" = false, and eth_getBlockByNumber("latest") = 0x100
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_syncing")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":false}`))
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_syncing")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":false}`))
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x777"}}`))
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x777"}}`))
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"finalized"`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x775"}}`))
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"finalized"`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x775"}}`))
+
+		// Mock "rpc1" returning the user's newer block 0x123 in response to the request
+		// for the method "eth_getBlockByNumber('latest')".
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      999,
+				"result": map[string]interface{}{
+					"number": "0x123", // Lower than highest latest block (0x777)
+					"hash":   "0x6a251dd26d1f5b4c84bb434fea376a91c8d37c11dc8b496ca1e79a9101906df7",
+				},
+			})
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"0x777"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      999,
+				"result":  nil,
+			})
+
+		// Spin up the test server, make the request, and check final result.
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		statusCode, body := sendRequest(requestBody, nil, nil)
+
+		assert.Equal(t, http.StatusOK, statusCode)
+
+		var respObject map[string]interface{}
+		err := sonic.UnmarshalString(body, &respObject)
+		assert.NoError(t, err, "should parse response body successfully")
+
+		assert.Contains(t, body, "0x123")
+
+		assert.Equal(t, 2, len(gock.Pending()), "unexpected pending requests")
+	})
+
+	t.Run("FailFastIfSharedStateIsDown", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		// Create a config with 1 upstream and enforce highest block.
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: util.StringPtr("100s"),
+			},
+			Database: &common.DatabaseConfig{
+				SharedState: &common.SharedStateConfig{
+					Connector: &common.ConnectorConfig{
+						Driver: "mock",
+						Mock: &common.MockConnectorConfig{
+							MemoryConnectorConfig: common.MemoryConnectorConfig{
+								MaxItems: 100_000,
+							},
+							GetErrorRate: 1,
+							SetErrorRate: 1,
+						},
+					},
+					FallbackTimeout: 100 * time.Millisecond,
+				},
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: "evm",
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+								Integrity: &common.EvmIntegrityConfig{
+									EnforceHighestBlock: util.BoolPtr(true),
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Endpoint: "http://rpc1.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             1,
+								StatePollerInterval: "1000s",
+							},
+						},
+						{
+							Id:       "rpc2",
+							Endpoint: "http://rpc2.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             1,
+								StatePollerInterval: "1000s",
+							},
+						},
+					},
+				},
+			},
+		}
+
+		requestBody := `{
+			"jsonrpc": "2.0",
+			"id":      999,
+			"method":  "eth_getBlockByNumber",
+			"params": ["latest", false]
+		}`
+
+		// Mock poller calls for "rpc1" => we say "eth_syncing" = false, and eth_getBlockByNumber("latest") = 0x100
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_syncing")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":false}`))
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_syncing")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":false}`))
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x777"}}`))
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x777"}}`))
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"finalized"`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x775"}}`))
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"finalized"`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x775"}}`))
+
+		// Mock "rpc1" returning the user's newer block 0x123 in response to the request
+		// for the method "eth_getBlockByNumber('latest')".
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      999,
+				"result": map[string]interface{}{
+					"number": "0x123", // Lower than highest latest block (0x777)
+					"hash":   "0x6a251dd26d1f5b4c84bb434fea376a91c8d37c11dc8b496ca1e79a9101906df7",
+				},
+			})
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, `"0x777"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      999,
+				"result":  nil,
+			})
+
+		// Spin up the test server, make the request, and check final result.
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		statusCode, body := sendRequest(requestBody, nil, nil)
+
+		assert.Equal(t, http.StatusOK, statusCode)
+
+		var respObject map[string]interface{}
+		err := sonic.UnmarshalString(body, &respObject)
+		assert.NoError(t, err, "should parse response body successfully")
+
+		assert.Contains(t, body, "0x123")
+
+		assert.Equal(t, 2, len(gock.Pending()), "unexpected pending requests")
+	})
+
 	t.Run("ShouldSkipHookIfHighestBlockCheckDisabled", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -6292,14 +6632,20 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 	logger := log.Logger
 	ctx, cancel := context.WithCancel(context.Background())
 
-	ssr, err := data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{
-		Connector: &common.ConnectorConfig{
-			Driver: "memory",
-			Memory: &common.MemoryConnectorConfig{
-				MaxItems: 100_000,
+	var ssr data.SharedStateRegistry
+	var err error
+	if cfg != nil && cfg.Database != nil && cfg.Database.SharedState != nil {
+		ssr, err = data.NewSharedStateRegistry(ctx, &logger, cfg.Database.SharedState)
+	} else {
+		ssr, err = data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
 			},
-		},
-	})
+		})
+	}
 	if err != nil {
 		panic(err)
 	}

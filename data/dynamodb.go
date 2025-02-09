@@ -310,7 +310,11 @@ func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, val
 		return fmt.Errorf("DynamoDB client not initialized yet")
 	}
 
-	d.logger.Debug().Msgf("writing to dynamodb with partition key: %s and range key: %s", partitionKey, rangeKey)
+	if len(value) > 1024 {
+		d.logger.Debug().Int("len", len(value)).Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Interface("ttl", ttl).Msg("putting item in dynamodb")
+	} else {
+		d.logger.Debug().Str("value", value).Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Interface("ttl", ttl).Msg("putting item in dynamodb")
+	}
 
 	item := map[string]*dynamodb.AttributeValue{
 		d.partitionKeyName: {
@@ -445,6 +449,10 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 }
 
 func (d *DynamoDBConnector) Lock(ctx context.Context, key string, ttl time.Duration) (DistributedLock, error) {
+	if d.client == nil {
+		return nil, fmt.Errorf("DynamoDB client not initialized yet")
+	}
+
 	lockKey := fmt.Sprintf("%s:lock", key)
 	expiryTime := time.Now().Add(ttl).Unix()
 
@@ -474,6 +482,8 @@ func (d *DynamoDBConnector) Lock(ctx context.Context, key string, ttl time.Durat
 		return nil, fmt.Errorf("failed to acquire lock: %w", err)
 	}
 
+	d.logger.Debug().Str("lockKey", lockKey).Dur("ttl", ttl).Msg("distributed lock acquired")
+
 	return &dynamoLock{
 		connector: d,
 		lockKey:   lockKey,
@@ -488,10 +498,21 @@ func (l *dynamoLock) Unlock(ctx context.Context) error {
 			l.connector.rangeKeyName:     {S: aws.String("lock")},
 		},
 	})
+
+	if err != nil {
+		l.connector.logger.Warn().Err(err).Str("lockKey", l.lockKey).Msg("failed to release distributed lock")
+	} else {
+		l.connector.logger.Debug().Str("lockKey", l.lockKey).Msg("distributed lock released")
+	}
+
 	return err
 }
 
 func (d *DynamoDBConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan int64, func(), error) {
+	if d.client == nil {
+		return nil, nil, fmt.Errorf("DynamoDB client not initialized yet")
+	}
+
 	updates := make(chan int64, 1)
 
 	// Start polling goroutine
@@ -500,10 +521,7 @@ func (d *DynamoDBConnector) WatchCounterInt64(ctx context.Context, key string) (
 
 	go func() {
 		defer ticker.Stop()
-
 		var lastValue int64
-		var lastVersion int64
-
 		for {
 			select {
 			case <-ctx.Done():
@@ -511,15 +529,12 @@ func (d *DynamoDBConnector) WatchCounterInt64(ctx context.Context, key string) (
 			case <-done:
 				return
 			case <-ticker.C:
-				value, version, err := d.getValueAndVersion(ctx, key)
+				value, err := d.getValue(ctx, key)
 				if err != nil {
 					d.logger.Warn().Err(err).Str("key", key).Msg("failed to poll counter value")
 					continue
 				}
-
-				// Only send updates when version changes
-				if version > lastVersion && value > lastValue {
-					lastVersion = version
+				if value > lastValue {
 					lastValue = value
 					select {
 					case updates <- value:
@@ -531,7 +546,7 @@ func (d *DynamoDBConnector) WatchCounterInt64(ctx context.Context, key string) (
 	}()
 
 	// Get initial value
-	if val, _, err := d.getValueAndVersion(ctx, key); err == nil {
+	if val, err := d.getValue(ctx, key); err == nil {
 		updates <- val
 	}
 
@@ -543,7 +558,7 @@ func (d *DynamoDBConnector) WatchCounterInt64(ctx context.Context, key string) (
 	return updates, cleanup, nil
 }
 
-func (d *DynamoDBConnector) getValueAndVersion(ctx context.Context, key string) (int64, int64, error) {
+func (d *DynamoDBConnector) getValue(ctx context.Context, key string) (int64, error) {
 	result, err := d.client.GetItemWithContext(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(d.table),
 		Key: map[string]*dynamodb.AttributeValue{
@@ -554,27 +569,31 @@ func (d *DynamoDBConnector) getValueAndVersion(ctx context.Context, key string) 
 	})
 
 	if err != nil {
-		return 0, 0, err
+		return 0, err
 	}
 
 	if result.Item == nil {
-		return 0, 0, nil
+		return 0, nil
 	}
 
-	var value, version int64
+	var value int64
 
-	if v, ok := result.Item["value"]; ok && v.N != nil {
-		value, _ = strconv.ParseInt(*v.N, 10, 64)
+	if v, ok := result.Item["value"]; ok && v.S != nil {
+		value, _ = strconv.ParseInt(*v.S, 0, 64)
+	} else if v, ok := result.Item["value"]; ok && v.N != nil {
+		value, _ = strconv.ParseInt(*v.N, 0, 64)
+	} else {
+		return 0, fmt.Errorf("invalid value type for counter: %T", result.Item["value"])
 	}
 
-	if v, ok := result.Item["version"]; ok && v.N != nil {
-		version, _ = strconv.ParseInt(*v.N, 10, 64)
-	}
-
-	return value, version, nil
+	return value, nil
 }
 
 func (d *DynamoDBConnector) PublishCounterInt64(ctx context.Context, key string, value int64) error {
+	if d.client == nil {
+		return fmt.Errorf("DynamoDB client not initialized yet")
+	}
+
 	_, err := d.client.UpdateItemWithContext(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(d.table),
 		Key: map[string]*dynamodb.AttributeValue{
@@ -582,17 +601,26 @@ func (d *DynamoDBConnector) PublishCounterInt64(ctx context.Context, key string,
 			d.rangeKeyName:     {S: aws.String("value")},
 		},
 		UpdateExpression: aws.String(
-			"SET #value = :value, #version = #version + :inc",
+			"SET #value = :value",
+		),
+		ConditionExpression: aws.String(
+			"attribute_not_exists(#value) OR #value < :value",
 		),
 		ExpressionAttributeNames: map[string]*string{
-			"#value":   aws.String("value"),
-			"#version": aws.String("version"),
+			"#value": aws.String("value"),
 		},
 		ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
 			":value": {N: aws.String(fmt.Sprintf("%d", value))},
-			":inc":   {N: aws.String("1")},
 		},
 	})
 
-	return err
+	// Ignore condition check failures as they just mean the value wasn't higher
+	if err != nil {
+		if aerr, ok := err.(awserr.Error); ok && aerr.Code() == dynamodb.ErrCodeConditionalCheckFailedException {
+			return nil
+		}
+		return err
+	}
+
+	return nil
 }

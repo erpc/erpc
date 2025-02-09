@@ -3,7 +3,6 @@ package data
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,11 +23,7 @@ type MemoryConnector struct {
 	logger        *zerolog.Logger
 	cache         *lru.Cache[string, cacheItem]
 	cleanupTicker *time.Ticker
-
-	// Add new fields for shared state support
-	locks    sync.Map // map[string]*sync.Mutex
-	watchers sync.Map // map[string][]chan int64
-	mu       sync.RWMutex
+	locks         sync.Map // map[string]*sync.Mutex
 }
 
 type cacheItem struct {
@@ -127,31 +122,15 @@ func (m *MemoryConnector) Get(ctx context.Context, index, partitionKey, rangeKey
 
 	return item.value, nil
 }
+
 func (m *MemoryConnector) Lock(ctx context.Context, key string, ttl time.Duration) (DistributedLock, error) {
-	// Get or create mutex for this key
 	value, _ := m.locks.LoadOrStore(key, &sync.Mutex{})
 	mutex := value.(*sync.Mutex)
 
-	// Try to acquire lock with context timeout
-	done := make(chan struct{})
-	acquired := false
-	go func() {
-		mutex.Lock()
-		acquired = true
-		close(done)
-	}()
-
-	select {
-	case <-ctx.Done():
-		if acquired {
-			mutex.Unlock()
-		}
-		return nil, ctx.Err()
-	case <-done:
-		return &memoryLock{
-			mutex: mutex,
-		}, nil
-	}
+	mutex.Lock()
+	return &memoryLock{
+		mutex: mutex,
+	}, nil
 }
 
 type memoryLock struct {
@@ -163,82 +142,19 @@ func (l *memoryLock) Unlock(ctx context.Context) error {
 	return nil
 }
 
-// Implement WatchCounterInt64 for memory connector
+// WatchCounterInt64 is a no-op for memory connector since distributed pub/sub
+// is unnecessary when all operations are in-memory within the same process.
+// Any updates to counters are immediately visible to all code accessing the
+// memory connector instance.
 func (m *MemoryConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan int64, func(), error) {
-	updates := make(chan int64, 1)
-
-	// Create watcher list if doesn't exist
-	m.mu.Lock()
-	watchers, _ := m.watchers.LoadOrStore(key, make([]chan int64, 0))
-	watcherList := watchers.([]chan int64)
-	watcherList = append(watcherList, updates)
-	m.watchers.Store(key, watcherList)
-	m.mu.Unlock()
-
-	// Send initial value if exists
-	if val, err := m.getCurrentValue(ctx, key); err == nil {
-		select {
-		case updates <- val:
-		default:
-		}
-	}
-
-	cleanup := func() {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-
-		if watchers, ok := m.watchers.Load(key); ok {
-			watcherList := watchers.([]chan int64)
-			for i, ch := range watcherList {
-				if ch == updates {
-					watcherList = append(watcherList[:i], watcherList[i+1:]...)
-					break
-				}
-			}
-			if len(watcherList) == 0 {
-				m.watchers.Delete(key)
-			} else {
-				m.watchers.Store(key, watcherList)
-			}
-		}
-		close(updates)
-	}
-
-	return updates, cleanup, nil
+	ch := make(chan int64)
+	return ch, func() {}, nil
 }
 
-// Implement PublishCounterInt64 for memory connector
+// PublishCounterInt64 is a no-op for memory connector since distributed pub/sub
+// is unnecessary when all operations are in-memory within the same process.
 func (m *MemoryConnector) PublishCounterInt64(ctx context.Context, key string, value int64) error {
-	m.mu.RLock()
-	watchers, exists := m.watchers.Load(key)
-	if !exists {
-		m.mu.RUnlock()
-		return nil
-	}
-	watcherList := watchers.([]chan int64)
-	m.mu.RUnlock()
-
-	// Notify all watchers
-	for _, ch := range watcherList {
-		select {
-		case ch <- value:
-		default: // Don't block if channel is full
-		}
-	}
-
 	return nil
-}
-
-// Helper function to get current value
-func (m *MemoryConnector) getCurrentValue(ctx context.Context, key string) (int64, error) {
-	val, err := m.Get(ctx, ConnectorMainIndex, key, "value")
-	if err != nil {
-		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
-			return 0, nil
-		}
-		return 0, err
-	}
-	return strconv.ParseInt(val, 10, 64)
 }
 
 func (m *MemoryConnector) getWithWildcard(_ context.Context, _, partitionKey, rangeKey string) (string, error) {

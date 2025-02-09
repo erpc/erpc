@@ -76,12 +76,10 @@ func NewERPC(
 		}
 	}
 
-	go func() {
-		err := projectRegistry.Bootstrap(appCtx)
-		if err != nil {
-			logger.Error().Err(err).Msg("failed to bootstrap projects on first attempt (will keep retrying in the background)")
-		}
-	}()
+	err = projectRegistry.Bootstrap(appCtx)
+	if err != nil {
+		logger.Error().Err(err).Msg("failed to bootstrap projects on first attempt (will keep retrying in the background)")
+	}
 
 	return &ERPC{
 		cfg:               cfg,

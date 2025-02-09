@@ -12,6 +12,13 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+type connectorScope string
+
+const (
+	connectorScopeSharedState connectorScope = "shared-state"
+	connectorScopeCache       connectorScope = "cache"
+)
+
 func (c *Config) SetDefaults() error {
 	if c.LogLevel == "" {
 		c.LogLevel = "INFO"
@@ -372,7 +379,7 @@ func (c *CacheConfig) SetDefaults() error {
 	}
 	if len(c.Connectors) > 0 {
 		for _, connector := range c.Connectors {
-			if err := connector.SetDefaults(); err != nil {
+			if err := connector.SetDefaults(connectorScopeCache); err != nil {
 				return fmt.Errorf("failed to set defaults for cache connector: %w", err)
 			}
 		}
@@ -495,11 +502,14 @@ func (c *SharedStateConfig) SetDefaults(defClusterKey string) error {
 	if c.ClusterKey == "" {
 		c.ClusterKey = defClusterKey
 	}
-	if err := c.Connector.SetDefaults(); err != nil {
+	if err := c.Connector.SetDefaults(connectorScopeSharedState); err != nil {
 		return err
 	}
 	if c.FallbackTimeout == 0 {
 		c.FallbackTimeout = 500 * time.Millisecond
+	}
+	if c.LockTtl == 0 {
+		c.LockTtl = 10 * time.Second
 	}
 	return nil
 }
@@ -519,11 +529,7 @@ func (d *DatabaseConfig) SetDefaults(defClusterKey string) error {
 	return nil
 }
 
-func (c *ConnectorConfig) SetDefaults() error {
-	if c.Driver == "" {
-		return nil
-	}
-
+func (c *ConnectorConfig) SetDefaults(scope connectorScope) error {
 	if c.Memory != nil {
 		c.Driver = DriverMemory
 	}
@@ -553,7 +559,7 @@ func (c *ConnectorConfig) SetDefaults() error {
 		if c.PostgreSQL == nil {
 			c.PostgreSQL = &PostgreSQLConnectorConfig{}
 		}
-		if err := c.PostgreSQL.SetDefaults(); err != nil {
+		if err := c.PostgreSQL.SetDefaults(scope); err != nil {
 			return fmt.Errorf("failed to set defaults for postgres connector: %w", err)
 		}
 	}
@@ -564,7 +570,7 @@ func (c *ConnectorConfig) SetDefaults() error {
 		if c.DynamoDB == nil {
 			c.DynamoDB = &DynamoDBConnectorConfig{}
 		}
-		if err := c.DynamoDB.SetDefaults(); err != nil {
+		if err := c.DynamoDB.SetDefaults(scope); err != nil {
 			return fmt.Errorf("failed to set defaults for dynamo db connector: %w", err)
 		}
 	}
@@ -607,9 +613,16 @@ func (r *RedisConnectorConfig) SetDefaults() error {
 	return nil
 }
 
-func (p *PostgreSQLConnectorConfig) SetDefaults() error {
+func (p *PostgreSQLConnectorConfig) SetDefaults(scope connectorScope) error {
 	if p.Table == "" {
-		p.Table = "erpc_json_rpc_cache"
+		switch scope {
+		case connectorScopeSharedState:
+			p.Table = "erpc_shared_state"
+		case connectorScopeCache:
+			p.Table = "erpc_json_rpc_cache"
+		default:
+			return fmt.Errorf("invalid connector scope: %s", scope)
+		}
 	}
 	if p.MinConns == 0 {
 		p.MinConns = 4
@@ -630,9 +643,16 @@ func (p *PostgreSQLConnectorConfig) SetDefaults() error {
 	return nil
 }
 
-func (d *DynamoDBConnectorConfig) SetDefaults() error {
+func (d *DynamoDBConnectorConfig) SetDefaults(scope connectorScope) error {
 	if d.Table == "" {
-		d.Table = "erpc_json_rpc_cache"
+		switch scope {
+		case connectorScopeSharedState:
+			d.Table = "erpc_shared_state"
+		case connectorScopeCache:
+			d.Table = "erpc_json_rpc_cache"
+		default:
+			return fmt.Errorf("invalid connector scope: %s", scope)
+		}
 	}
 	if d.PartitionKeyName == "" {
 		d.PartitionKeyName = "groupKey"
@@ -656,7 +676,7 @@ func (d *DynamoDBConnectorConfig) SetDefaults() error {
 		d.SetTimeout = 2 * time.Second
 	}
 	if d.StatePollInterval == 0 {
-		d.StatePollInterval = 1 * time.Second
+		d.StatePollInterval = 5 * time.Second
 	}
 
 	return nil

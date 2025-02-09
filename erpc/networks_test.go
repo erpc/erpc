@@ -6884,6 +6884,13 @@ func TestNetwork_Forward(t *testing.T) {
 				{
 					Id:     "mock",
 					Driver: "mock",
+					Mock: &common.MockConnectorConfig{
+						MemoryConnectorConfig: common.MemoryConnectorConfig{
+							MaxItems: 100_000,
+						},
+						// GetDelay: 10 * time.Second,
+						// SetDelay: 10 * time.Second,
+					},
 				},
 			},
 			Policies: []*common.CachePolicyConfig{
@@ -8678,6 +8685,13 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 				{
 					Id:     "mock",
 					Driver: "mock",
+					Mock: &common.MockConnectorConfig{
+						MemoryConnectorConfig: common.MemoryConnectorConfig{
+							MaxItems: 100_000,
+						},
+						// GetDelay: 10 * time.Second,
+						// SetDelay: 10 * time.Second,
+					},
 				},
 			},
 			Policies: []*common.CachePolicyConfig{
