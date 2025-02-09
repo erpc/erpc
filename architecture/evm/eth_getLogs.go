@@ -504,6 +504,9 @@ func requestHasBlockHash(r *common.NormalizedRequest) bool {
 		return false
 	}
 
+	jrq.RLock()
+	defer jrq.RUnlock()
+
 	if len(jrq.Params) == 0 {
 		return false
 	}
