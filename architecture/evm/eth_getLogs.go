@@ -504,6 +504,10 @@ func requestHasBlockHash(r *common.NormalizedRequest) bool {
 		return false
 	}
 
+	if len(jrq.Params) == 0 {
+		return false
+	}
+
 	filter, ok := jrq.Params[0].(map[string]interface{})
 	if !ok {
 		return false
