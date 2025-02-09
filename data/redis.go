@@ -230,6 +230,9 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 // Lock attempts to acquire a distributed lock for the specified key.
 // It uses SET NX with an expiration TTL. Returns a DistributedLock instance on success.
 func (r *RedisConnector) Lock(ctx context.Context, lockKey string, ttl time.Duration) (DistributedLock, error) {
+	if err := r.checkReady(); err != nil {
+		return nil, err
+	}
 	// Attempt to acquire the lock with SET NX.
 	ok, err := r.client.SetNX(ctx, lockKey, r.sessionToken, ttl).Result()
 	r.logger.Trace().Err(err).Str("lockKey", lockKey).Str("token", r.sessionToken).Bool("ok", ok).Msg("lock result")
@@ -250,6 +253,9 @@ func (r *RedisConnector) Lock(ctx context.Context, lockKey string, ttl time.Dura
 
 // WatchCounterInt64 watches a counter in Redis. Returns a channel of updates and a cleanup function.
 func (r *RedisConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan int64, func(), error) {
+	if err := r.checkReady(); err != nil {
+		return nil, nil, err
+	}
 	// Create buffered channel to avoid blocking
 	updates := make(chan int64, 1)
 	pubsub := r.client.Subscribe(ctx, "counter:"+key)
@@ -289,7 +295,11 @@ func (r *RedisConnector) WatchCounterInt64(ctx context.Context, key string) (<-c
 	}()
 
 	cleanup := func() {
-		pubsub.Close()
+		err := pubsub.Close()
+		if err != nil {
+			r.logger.Warn().Err(err).Str("key", key).Msg("failed to close pubsub, marking connection lost")
+			r.markConnectionAsLostIfNecessary(err)
+		}
 	}
 
 	// Get initial value
@@ -302,6 +312,9 @@ func (r *RedisConnector) WatchCounterInt64(ctx context.Context, key string) (<-c
 
 // PublishCounterInt64 publishes a counter value to Redis.
 func (r *RedisConnector) PublishCounterInt64(ctx context.Context, key string, value int64) error {
+	if err := r.checkReady(); err != nil {
+		return err
+	}
 	return r.client.Publish(ctx, "counter:"+key, value).Err()
 }
 
@@ -334,7 +347,7 @@ func (l *redisLock) Unlock(ctx context.Context) error {
 		end
 	`
 	result, err := l.connector.client.Eval(ctx, script, []string{l.key}, l.token).Result()
-	l.connector.logger.Debug().Err(err).Str("key", l.key).Str("token", l.token).Interface("result", result).Msg("unlock result")
+	l.connector.logger.Trace().Err(err).Str("key", l.key).Str("token", l.token).Interface("result", result).Msg("unlock result")
 	if err != nil {
 		return fmt.Errorf("error releasing lock: %w", err)
 	}

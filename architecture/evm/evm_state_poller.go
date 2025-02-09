@@ -72,8 +72,8 @@ func NewEvmStatePoller(
 ) *EvmStatePoller {
 	lg := logger.With().Str("upstreamId", up.Config().Id).Str("component", "evmStatePoller").Logger()
 
-	lbs := sharedState.GetCounterInt64(fmt.Sprintf("latestBlock_%s", up.Config().Id))
-	fbs := sharedState.GetCounterInt64(fmt.Sprintf("finalizedBlock_%s", up.Config().Id))
+	lbs := sharedState.GetCounterInt64(fmt.Sprintf("latestBlock/%s", up.Config().Id))
+	fbs := sharedState.GetCounterInt64(fmt.Sprintf("finalizedBlock/%s", up.Config().Id))
 
 	e := &EvmStatePoller{
 		projectId:            projectId,

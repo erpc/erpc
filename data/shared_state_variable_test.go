@@ -79,7 +79,7 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			registry, connector, _ := setupTest()
+			registry, connector, _ := setupTest("my-dev")
 			lock := &MockLock{}
 			tt.setupMocks(connector, lock)
 
@@ -173,7 +173,7 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			registry, connector, _ := setupTest()
+			registry, connector, _ := setupTest("my-dev")
 			lock := &MockLock{}
 			tt.setupMocks(connector, lock)
 
@@ -209,7 +209,7 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 }
 
 func TestCounterInt64_Concurrency(t *testing.T) {
-	registry, connector, _ := setupTest()
+	registry, connector, _ := setupTest("my-dev")
 	lock := &MockLock{}
 
 	// Setup mocks for multiple concurrent calls

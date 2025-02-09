@@ -16,6 +16,9 @@ func (c *Config) SetDefaults() error {
 	if c.LogLevel == "" {
 		c.LogLevel = "INFO"
 	}
+	if c.ClusterKey == "" {
+		c.ClusterKey = "erpc-default"
+	}
 	if c.Server == nil {
 		c.Server = &ServerConfig{}
 	}
@@ -24,7 +27,7 @@ func (c *Config) SetDefaults() error {
 	}
 
 	if c.Database != nil {
-		if err := c.Database.SetDefaults(); err != nil {
+		if err := c.Database.SetDefaults(c.ClusterKey); err != nil {
 			return err
 		}
 	}
@@ -475,7 +478,7 @@ func (a *AdminConfig) SetDefaults() error {
 	return nil
 }
 
-func (c *SharedStateConfig) SetDefaults() error {
+func (c *SharedStateConfig) SetDefaults(defClusterKey string) error {
 	if c.Connector == nil {
 		c.Connector = &ConnectorConfig{
 			Id:     "memory",
@@ -489,6 +492,9 @@ func (c *SharedStateConfig) SetDefaults() error {
 			c.Connector.Id = string(c.Connector.Driver)
 		}
 	}
+	if c.ClusterKey == "" {
+		c.ClusterKey = defClusterKey
+	}
 	if err := c.Connector.SetDefaults(); err != nil {
 		return err
 	}
@@ -498,14 +504,14 @@ func (c *SharedStateConfig) SetDefaults() error {
 	return nil
 }
 
-func (d *DatabaseConfig) SetDefaults() error {
+func (d *DatabaseConfig) SetDefaults(defClusterKey string) error {
 	if d.EvmJsonRpcCache != nil {
 		if err := d.EvmJsonRpcCache.SetDefaults(); err != nil {
 			return err
 		}
 	}
 	if d.SharedState != nil {
-		if err := d.SharedState.SetDefaults(); err != nil {
+		if err := d.SharedState.SetDefaults(defClusterKey); err != nil {
 			return err
 		}
 	}

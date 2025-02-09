@@ -16,12 +16,12 @@ type SharedStateRegistry interface {
 }
 
 type sharedStateRegistry struct {
-	appCtx             context.Context
-	logger             *zerolog.Logger
-	connector          Connector
-	variables          sync.Map // map[string]*counterInt64
-	fallbackTimeout    time.Duration
-	toleratedStaleness time.Duration
+	appCtx          context.Context
+	logger          *zerolog.Logger
+	clusterKey      string
+	connector       Connector
+	variables       sync.Map // map[string]*counterInt64
+	fallbackTimeout time.Duration
 }
 
 func NewSharedStateRegistry(
@@ -38,26 +38,32 @@ func NewSharedStateRegistry(
 	return &sharedStateRegistry{
 		appCtx:          appCtx,
 		logger:          &lg,
+		clusterKey:      cfg.ClusterKey,
 		connector:       connector,
 		fallbackTimeout: cfg.FallbackTimeout,
 	}, nil
 }
 
 func (r *sharedStateRegistry) GetCounterInt64(key string) CounterInt64SharedVariable {
-	value, alreadySetup := r.variables.LoadOrStore(key, &counterInt64{
+	fkey := fmt.Sprintf("%s/%s", r.clusterKey, key)
+	value, alreadySetup := r.variables.LoadOrStore(fkey, &counterInt64{
 		registry: r,
-		key:      key,
+		key:      fkey,
 	})
 	counter := value.(*counterInt64)
 
 	// Setup sync only once per counter
 	if !alreadySetup {
 		go r.setupCounterSync(r.appCtx, counter)
-		v, err := r.fetchValue(r.appCtx, key)
+		v, err := r.fetchValue(r.appCtx, fkey)
 		if err != nil {
-			r.logger.Error().Err(err).Str("key", key).Msg("failed to fetch initial value for counter")
+			if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
+				r.logger.Debug().Str("key", fkey).Msg("no local initial value found for counter")
+			} else {
+				r.logger.Error().Err(err).Str("key", fkey).Msg("failed to fetch initial value for counter")
+			}
 		} else {
-			r.logger.Debug().Str("key", key).Int64("value", v).Msg("fetched initial value for counter")
+			r.logger.Debug().Str("key", fkey).Int64("value", v).Msg("fetched initial value for counter")
 		}
 		if v > 0 {
 			counter.mu.Lock()
@@ -70,6 +76,11 @@ func (r *sharedStateRegistry) GetCounterInt64(key string) CounterInt64SharedVari
 }
 
 func (r *sharedStateRegistry) setupCounterSync(ctx context.Context, counter *counterInt64) {
+	defer func() {
+		if rc := recover(); rc != nil {
+			r.logger.Error().Interface("panic", rc).Str("key", counter.key).Msg("failed to setup counter sync")
+		}
+	}()
 	updates, cleanup, err := r.connector.WatchCounterInt64(ctx, counter.key)
 	if err != nil {
 		r.logger.Error().Err(err).Str("key", counter.key).Msg("failed to setup counter sync")
@@ -109,13 +120,13 @@ func (r *sharedStateRegistry) fetchValue(ctx context.Context, key string) (int64
 	defer cancel()
 	remoteVal, err := r.connector.Get(tctx, ConnectorMainIndex, key, "value")
 	if err != nil {
-		return 0, fmt.Errorf("failed to get remote value: %w", err)
+		return 0, err
 	}
 
 	var remoteValue int64
 	if remoteVal != "" {
 		if _, err := fmt.Sscanf(remoteVal, "%d", &remoteValue); err != nil {
-			return 0, fmt.Errorf("failed to parse remote value: %w", err)
+			return 0, err
 		}
 	}
 

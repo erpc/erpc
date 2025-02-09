@@ -282,7 +282,10 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 func (p *PostgreSQLConnector) Lock(ctx context.Context, key string, ttl time.Duration) (DistributedLock, error) {
 	// Generate consistent hash for the key as advisory lock ID
 	h := fnv.New64a()
-	h.Write([]byte(key))
+	_, err := h.Write([]byte(key))
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate advisory lock ID: %w", err)
+	}
 	lockID := h.Sum64()
 
 	// Try to acquire advisory lock with timeout
@@ -291,7 +294,7 @@ func (p *PostgreSQLConnector) Lock(ctx context.Context, key string, ttl time.Dur
 
 	// pg_try_advisory_lock returns true if lock acquired, false if not
 	var acquired bool
-	err := p.conn.QueryRow(ctx, `
+	err = p.conn.QueryRow(ctx, `
         SELECT pg_try_advisory_lock($1)
     `, lockID).Scan(&acquired)
 
@@ -383,7 +386,10 @@ func (p *PostgreSQLConnector) WatchCounterInt64(ctx context.Context, key string)
 		if len(listener.watchers) == 0 {
 			p.listeners.Delete(key)
 			if listener.conn != nil {
-				listener.conn.Close(context.Background())
+				err := listener.conn.Close(context.Background())
+				if err != nil {
+					p.logger.Warn().Err(err).Str("key", key).Msg("failed to close listener connection")
+				}
 			}
 		}
 

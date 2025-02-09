@@ -129,7 +129,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		if err != nil {
 			lg.Debug().Err(err).Msgf("could not find response in cache")
 		} else if resp != nil && !resp.IsObjectNull() && !resp.IsResultEmptyish() {
-			lg.Info().Msgf("response served from cache")
+			if lg.GetLevel() <= zerolog.DebugLevel {
+				lg.Debug().Object("response", resp).Msgf("response served from cache")
+			} else {
+				lg.Info().Msgf("response served from cache")
+			}
 			if mlx != nil {
 				mlx.Close(resp, err)
 			}
