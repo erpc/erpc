@@ -82,6 +82,15 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		jrq.RUnlock()
 		return false, nil, nil
 	}
+
+	// EIP 234: If blockHash is present, we set handled to false to directly forward to upstream since there
+	// is no need to break the request into sub-requests.
+	blockHash, ok := filter["blockHash"].(string)
+	if ok && blockHash != "" {
+		jrq.RUnlock()
+		return false, nil, nil
+	}
+
 	fb, ok := filter["fromBlock"].(string)
 	if !ok || !strings.HasPrefix(fb, "0x") {
 		jrq.RUnlock()
