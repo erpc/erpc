@@ -83,6 +83,8 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		return false, nil, nil
 	}
 
+	// EIP 234: If blockHash is present, we set handled to false to directly forward to upstream since there
+	// is no need to break the request into sub-requests.
 	if requestHasBlockHash(r) {
 		return false, nil, nil
 	}
@@ -306,7 +308,6 @@ type ethGetLogsSubRequest struct {
 	toBlock   int64
 	address   interface{}
 	topics    interface{}
-	blockHash string
 }
 
 func splitEthGetLogsRequest(r *common.NormalizedRequest) ([]ethGetLogsSubRequest, error) {
