@@ -279,6 +279,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				return n, u, r
 			},
 			expectSplit: false,
+			expectError: false,
 		},
 		{
 			name: "range exceeds limits",
@@ -289,7 +290,6 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 					"fromBlock": "0x1",
 					"toBlock":   "0x15",
 				})
-
 				n.On("Config").Return(&common.NetworkConfig{
 					Evm: &common.EvmNetworkConfig{
 						Integrity: &common.EvmIntegrityConfig{
@@ -318,6 +318,30 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				return n, u, r
 			},
 			expectSplit: true,
+			expectError: false,
+		},
+		{
+			name: "blockHash is present",
+			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
+				n := new(mockNetwork)
+				u := new(mockEvmUpstream)
+				r := createTestRequest(map[string]interface{}{
+					"fromBlock": "0x1",
+					"toBlock":   "0x5",
+					"blockHash": "0x123",
+				})
+				n.On("Config").Return(&common.NetworkConfig{
+					Evm: &common.EvmNetworkConfig{
+						Integrity: &common.EvmIntegrityConfig{
+							EnforceGetLogsBlockRange: util.BoolPtr(true),
+							EnforceHighestBlock:      util.BoolPtr(true),
+						},
+					},
+				})
+				return n, u, r
+			},
+			expectSplit: false,
+			expectError: false,
 		},
 	}
 
@@ -529,42 +553,6 @@ func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
 		} else {
 			assert.Fail(t, "Expected at least one log from non-empty sub-response")
 		}
-	})
-}
-
-func TestBuildGetLogsRequestWithBlockHash(t *testing.T) {
-	t.Run("blockHash is present => skip fromBlock/toBlock", func(t *testing.T) {
-		req, err := BuildGetLogsRequest(100, 200, "0x123", []interface{}{"topicA"}, "0xBLOCKHASH")
-		assert.NoError(t, err)
-		assert.NotNil(t, req)
-
-		// Inspect the filter in the params
-		filter, ok := req.Params[0].(map[string]interface{})
-		assert.True(t, ok, "Filter must be a map")
-
-		// blockHash should be present
-		assert.Equal(t, "0xBLOCKHASH", filter["blockHash"])
-
-		// fromBlock and toBlock must NOT be included
-		_, hasFB := filter["fromBlock"]
-		_, hasTB := filter["toBlock"]
-		assert.False(t, hasFB, "should not have fromBlock when blockHash is present")
-		assert.False(t, hasTB, "should not have toBlock when blockHash is present")
-	})
-
-	t.Run("blockHash is empty => fromBlock/toBlock must be set", func(t *testing.T) {
-		req, err := BuildGetLogsRequest(100, 200, "0x123", []interface{}{"topicA"}, "")
-		assert.NoError(t, err)
-		assert.NotNil(t, req)
-
-		filter, ok := req.Params[0].(map[string]interface{})
-		assert.True(t, ok, "Filter must be a map")
-
-		// fromBlock and toBlock should be included here
-		assert.Equal(t, "0x64", filter["fromBlock"])
-		assert.Equal(t, "0xc8", filter["toBlock"])
-		_, hasBH := filter["blockHash"]
-		assert.False(t, hasBH, "should not have blockHash when it's empty")
 	})
 }
 
