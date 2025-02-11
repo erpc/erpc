@@ -20,23 +20,18 @@ import (
 // when looking for data too close to the lower-end of Full nodes, because they might have pruned the data already.
 var LowerBoundBlocksSafetyMargin int64 = 10
 
-func BuildGetLogsRequest(fromBlock, toBlock int64, address interface{}, topics interface{}, blockHash string) (*common.JsonRpcRequest, error) {
-	filter := make(map[string]interface{})
-
-	if blockHash != "" {
-		// Per EIP-234, if blockHash is present, fromBlock/toBlock should not be included.
-		filter["blockHash"] = blockHash
-	} else {
-		fb, err := common.NormalizeHex(fromBlock)
-		if err != nil {
-			return nil, err
-		}
-		tb, err := common.NormalizeHex(toBlock)
-		if err != nil {
-			return nil, err
-		}
-		filter["fromBlock"] = fb
-		filter["toBlock"] = tb
+func BuildGetLogsRequest(fromBlock, toBlock int64, address interface{}, topics interface{}) (*common.JsonRpcRequest, error) {
+	fb, err := common.NormalizeHex(fromBlock)
+	if err != nil {
+		return nil, err
+	}
+	tb, err := common.NormalizeHex(toBlock)
+	if err != nil {
+		return nil, err
+	}
+	filter := map[string]interface{}{
+		"fromBlock": fb,
+		"toBlock":   tb,
 	}
 	if address != nil {
 		filter["address"] = address
@@ -45,7 +40,7 @@ func BuildGetLogsRequest(fromBlock, toBlock int64, address interface{}, topics i
 		filter["topics"] = topics
 	}
 	jrq := common.NewJsonRpcRequest("eth_getLogs", []interface{}{filter})
-	err := jrq.SetID(util.RandomID())
+	err = jrq.SetID(util.RandomID())
 	if err != nil {
 		return nil, err
 	}
@@ -88,27 +83,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		return false, nil, nil
 	}
 
-	blockHash, ok := filter["blockHash"].(string)
-	if ok && blockHash != "" {
-		// EIP-234 => if blockHash is present, fromBlock or toBlock is NOT allowed
-		if _, hasFB := filter["fromBlock"]; hasFB {
-			jrq.RUnlock()
-			return true, nil, common.NewErrEndpointClientSideException(
-				fmt.Errorf("EIP-234 violation: blockHash and fromBlock cannot both be present for eth_getLogs"),
-			)
-		}
-		if _, hasTB := filter["toBlock"]; hasTB {
-			jrq.RUnlock()
-			return true, nil, common.NewErrEndpointClientSideException(
-				fmt.Errorf("EIP-234 violation: blockHash and toBlock cannot both be present for eth_getLogs"),
-			)
-		}
-
-		jrq.RUnlock()
-		logger.Debug().
-			Str("blockHash", blockHash).
-			Msg("blockHash is specified, skipping from/to block range checks")
-
+	if requestHasBlockHash(r) {
 		return false, nil, nil
 	}
 
@@ -421,7 +396,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 		go func(req ethGetLogsSubRequest) {
 			defer wg.Done()
 
-			srq, err := BuildGetLogsRequest(req.fromBlock, req.toBlock, req.address, req.topics, req.blockHash)
+			srq, err := BuildGetLogsRequest(req.fromBlock, req.toBlock, req.address, req.topics)
 			logger.Debug().
 				Object("request", srq).
 				Msg("executing eth_getLogs sub-request")

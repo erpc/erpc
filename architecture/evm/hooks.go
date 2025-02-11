@@ -50,10 +50,6 @@ func HandleUpstreamPreForward(ctx context.Context, n common.Network, u common.Up
 
 	switch method {
 	case "eth_getLogs":
-		// If the request has a blockhash, we can do a simple forward to upstream without sending it to the eth_getLogs hooks
-		if requestHasBlockHash(r) {
-			return false, nil, nil
-		}
 		return upstreamPreForward_eth_getLogs(ctx, n, u, r)
 	default:
 		return false, nil, nil
