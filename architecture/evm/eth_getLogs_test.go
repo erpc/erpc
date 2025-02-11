@@ -279,6 +279,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				return n, u, r
 			},
 			expectSplit: false,
+			expectError: false,
 		},
 		{
 			name: "range exceeds limits",
@@ -289,7 +290,6 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 					"fromBlock": "0x1",
 					"toBlock":   "0x15",
 				})
-
 				n.On("Config").Return(&common.NetworkConfig{
 					Evm: &common.EvmNetworkConfig{
 						Integrity: &common.EvmIntegrityConfig{
@@ -318,6 +318,30 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				return n, u, r
 			},
 			expectSplit: true,
+			expectError: false,
+		},
+		{
+			name: "blockHash is present",
+			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
+				n := new(mockNetwork)
+				u := new(mockEvmUpstream)
+				r := createTestRequest(map[string]interface{}{
+					"fromBlock": "0x1",
+					"toBlock":   "0x5",
+					"blockHash": "0x123",
+				})
+				n.On("Config").Return(&common.NetworkConfig{
+					Evm: &common.EvmNetworkConfig{
+						Integrity: &common.EvmIntegrityConfig{
+							EnforceGetLogsBlockRange: util.BoolPtr(true),
+							EnforceHighestBlock:      util.BoolPtr(true),
+						},
+					},
+				})
+				return n, u, r
+			},
+			expectSplit: false,
+			expectError: false,
 		},
 	}
 

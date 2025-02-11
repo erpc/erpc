@@ -2631,7 +2631,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 					Reply(400).
 					BodyString(`{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"Invalid params","data":{"range":"the range 55074203 - 55124202 exceeds the range allowed for your plan (49999 > 2000)."}}}`)
 
-				_, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[],"id":1}`, nil, nil)
+				_, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x0","toBlock":"0x0"}],"id":1}`, nil, nil)
 				assert.Contains(t, body, "the range 55074203 - 55124202")
 			})
 
@@ -2798,7 +2798,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
-				statusCode, body := sendRequest(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[],"id":%d}`, i), nil, nil)
+				statusCode, body := sendRequest(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[{"fromBlock":"0x0","toBlock":"0x0"}],"id":%d}`, i), nil, nil)
 				assert.Equal(t, http.StatusOK, statusCode)
 				assert.Contains(t, body, "0x123456")
 			}(i)
@@ -4137,13 +4137,13 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
-		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[],"id":1234}`, nil, map[string]string{"chainId": "12340001234"})
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x0","toBlock":"0x0"}],"id":1234}`, nil, map[string]string{"chainId": "12340001234"})
 		assert.Equal(t, http.StatusInternalServerError, statusCode)
 		assert.Contains(t, body, "Internal bummer error")
 
 		time.Sleep((3 * time.Second) + (100 * time.Millisecond))
 
-		statusCode, body = sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[],"id":1234}`, nil, map[string]string{"chainId": "12340001234"})
+		statusCode, body = sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x0","toBlock":"0x0"}],"id":1234}`, nil, map[string]string{"chainId": "12340001234"})
 		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "0x123456")
 	})
@@ -4209,7 +4209,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
-		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[],"id":1234}`, nil, nil)
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x0","toBlock":"0x0"}],"id":1234}`, nil, nil)
 		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "0x123456")
 
@@ -4295,7 +4295,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
-		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[],"id":1234}`, nil, nil)
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x0","toBlock":"0x0"}],"id":1234}`, nil, nil)
 		assert.Equal(t, http.StatusOK, statusCode)
 		assert.Contains(t, body, "0x123456")
 
