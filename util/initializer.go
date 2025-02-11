@@ -20,6 +20,7 @@ const (
 	StateRetrying
 	StateReady
 	StateFailed
+	StateFatal
 )
 
 type TaskState int
@@ -30,6 +31,7 @@ const (
 	TaskSucceeded
 	TaskTimedOut
 	TaskFailed
+	TaskFatal
 )
 
 type BootstrapTask struct {
