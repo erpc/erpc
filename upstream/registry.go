@@ -381,10 +381,8 @@ func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamCo
 			for _, up := range u.allUpstreams {
 				if up.Config().Id == cfg.Id {
 					u.upstreamsMu.RUnlock()
-					return fmt.Errorf(
-						"cannot register upstream with duplicate ID %q; another upstream already exists",
-						cfg.Id,
-					)
+					u.initializer.MarkTaskAsFatal(fmt.Sprintf("upstream/%s", cfg.Id), fmt.Errorf(`upstream (%s) already exists`, cfg.Id))
+					return fmt.Errorf(`upstream (%s) already exists`, cfg.Id)
 				}
 			}
 			u.upstreamsMu.RUnlock()

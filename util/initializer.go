@@ -386,6 +386,27 @@ func (i *Initializer) MarkTaskAsFailed(name string, err error) {
 	i.ensureAutoRetryIfEnabled()
 }
 
+func (i *Initializer) MarkTaskAsFatal(name string, err error) {
+	i.logger.Error().Str("task", name).Err(err).Msg("marking task as fatal")
+	i.tasks.Range(func(key, value interface{}) bool {
+		t := value.(*BootstrapTask)
+		if t.Name == name {
+			currentState := TaskState(t.state.Load())
+			if currentState == TaskRunning {
+				if ctxCancel, ok := t.ctxCancel.Load().(context.CancelFunc); ok && ctxCancel != nil {
+					ctxCancel()
+				}
+			}
+			t.lastErr.Store(wrappedError{err: err})
+			t.state.Store(int32(TaskFatal))
+			return false
+		}
+		return true
+	})
+
+	i.ensureAutoRetryIfEnabled()
+}
+
 func (i *Initializer) Stop(destroyFn func() error) error {
 	i.logger.Debug().Msg("stopping initializer")
 
@@ -480,6 +501,12 @@ func (i *Initializer) autoRetryLoop(ctx context.Context) {
 		defer cancel.(context.CancelFunc)()
 	}
 	if i.State() == StateReady {
+		i.autoRetryActive.Store(false)
+		return
+	}
+
+	if i.State() == StateFatal {
+		i.logger.Error().Msg("initialization fatal state, stopping auto-retry")
 		i.autoRetryActive.Store(false)
 		return
 	}
