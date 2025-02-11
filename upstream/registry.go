@@ -378,15 +378,18 @@ func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamCo
 			u.logger.Debug().Str("upstreamId", cfg.Id).Msg("attempt to bootstrap upstream")
 
 			u.upstreamsMu.RLock()
-			var ups *Upstream
 			for _, up := range u.allUpstreams {
 				if up.Config().Id == cfg.Id {
-					ups = up
-					break
+					u.upstreamsMu.RUnlock()
+					return fmt.Errorf(
+						"cannot register upstream with duplicate ID %q; another upstream already exists",
+						cfg.Id,
+					)
 				}
 			}
 			u.upstreamsMu.RUnlock()
 
+			var ups *Upstream
 			var err error
 			if ups == nil {
 				ups, err = u.NewUpstream(u.prjId, cfg, u.logger, u.metricsTracker)
