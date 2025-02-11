@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/rs/zerolog"
@@ -22,6 +23,7 @@ type PostgreSQLConnector struct {
 	id            string
 	logger        *zerolog.Logger
 	conn          *pgxpool.Pool
+	initializer   *util.Initializer
 	minConns      int32
 	maxConns      int32
 	table         string
@@ -52,32 +54,23 @@ func NewPostgreSQLConnector(
 		cleanupTicker: time.NewTicker(5 * time.Minute),
 	}
 
-	// Attempt the actual connecting in background to avoid blocking the main thread.
-	go func() {
-		for i := 0; i < 30; i++ {
-			select {
-			case <-ctx.Done():
-				lg.Error().Msg("context cancelled while attempting to connect to PostgreSQL")
-				return
-			default:
-				lg.Debug().Msgf("attempting to connect to PostgreSQL (attempt %d of 30)", i+1)
-				err := connector.connect(ctx, cfg)
-				if err == nil {
-					// Start TTL cleanup routine after successful connection
-					go connector.startCleanup(ctx)
-					return
-				}
-				lg.Warn().Err(err).Msgf("failed to connect to PostgreSQL (attempt %d of 30)", i+1)
-				time.Sleep(10 * time.Second)
-			}
-		}
-		lg.Error().Msg("failed to connect to PostgreSQL after maximum attempts")
-	}()
+	// create an Initializer to handle (re)connecting
+	connector.initializer = util.NewInitializer(ctx, &lg, nil)
+
+	connectTask := util.NewBootstrapTask(fmt.Sprintf("postgres-connect/%s", id), func(ctx context.Context) error {
+		return connector.connectTask(ctx, cfg)
+	})
+
+	if err := connector.initializer.ExecuteTasks(ctx, connectTask); err != nil {
+		lg.Error().Err(err).Msg("failed to initialize PostgreSQL on first attempt (will retry in background)")
+		// Return the connector so the app can proceed, but note that it's not ready yet.
+		return connector, nil
+	}
 
 	return connector, nil
 }
 
-func (p *PostgreSQLConnector) connect(ctx context.Context, cfg *common.PostgreSQLConnectorConfig) error {
+func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.PostgreSQLConnectorConfig) error {
 	config, err := pgxpool.ParseConfig(cfg.ConnectionUri)
 	if err != nil {
 		return fmt.Errorf("failed to parse connection URI: %w", err)
@@ -164,6 +157,13 @@ func (p *PostgreSQLConnector) connect(ctx context.Context, cfg *common.PostgreSQ
 	}
 
 	p.conn = conn
+	p.logger.Info().Str("table", p.table).Msg("successfully connected to PostgreSQL")
+
+	// If we are *not* using pg_cron, we still have a non-nil ticker,
+	// so we spawn the local cleanup routine:
+	if p.cleanupTicker != nil {
+		go p.startCleanup(ctx)
+	}
 	return nil
 }
 

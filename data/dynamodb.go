@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
 
@@ -26,6 +27,7 @@ type DynamoDBConnector struct {
 	id               string
 	logger           *zerolog.Logger
 	client           *dynamodb.DynamoDB
+	initializer      *util.Initializer
 	table            string
 	ttlAttributeName string
 	partitionKeyName string
@@ -58,30 +60,23 @@ func NewDynamoDBConnector(
 		setTimeout:       cfg.SetTimeout,
 	}
 
-	// Attempt the actual connecting in background to avoid blocking the main thread.
-	go func() {
-		for i := 0; i < 30; i++ {
-			select {
-			case <-ctx.Done():
-				logger.Error().Msg("Context cancelled while attempting to connect to DynamoDB")
-				return
-			default:
-				logger.Debug().Msgf("attempting to connect to DynamoDB (attempt %d of 30)", i+1)
-				err := connector.connect(ctx, cfg)
-				if err == nil {
-					return
-				}
-				logger.Warn().Msgf("failed to connect to DynamoDB (attempt %d of 30): %s", i+1, err)
-				time.Sleep(10 * time.Second)
-			}
-		}
-		logger.Error().Msg("Failed to connect to DynamoDB after maximum attempts")
-	}()
+	// create an Initializer to handle (re)connecting
+	connector.initializer = util.NewInitializer(ctx, &lg, nil)
+
+	connectTask := util.NewBootstrapTask(fmt.Sprintf("dynamodb-connect/%s", id), func(ctx context.Context) error {
+		return connector.connectTask(ctx, cfg)
+	})
+
+	if err := connector.initializer.ExecuteTasks(ctx, connectTask); err != nil {
+		lg.Error().Err(err).Msg("failed to initialize DynamoDB on first attempt (will retry in background)")
+		// Return the connector so the app can proceed, but note that it's not ready yet.
+		return connector, nil
+	}
 
 	return connector, nil
 }
 
-func (d *DynamoDBConnector) connect(ctx context.Context, cfg *common.DynamoDBConnectorConfig) error {
+func (d *DynamoDBConnector) connectTask(ctx context.Context, cfg *common.DynamoDBConnectorConfig) error {
 	sess, err := createSession(cfg)
 	if err != nil {
 		return err
