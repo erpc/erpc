@@ -85,7 +85,9 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 
 	// EIP 234: If blockHash is present, we set handled to false to directly forward to upstream since there
 	// is no need to break the request into sub-requests.
-	if requestHasBlockHash(r) {
+	blockHash, ok := filter["blockHash"].(string)
+	if ok && blockHash != "" {
+		jrq.RUnlock()
 		return false, nil, nil
 	}
 
@@ -472,30 +474,4 @@ func mergeEthGetLogsResults(results [][]byte) *common.JsonRpcResponse {
 	jrr := &common.JsonRpcResponse{}
 	jrr.SetResultWriter(writer)
 	return jrr
-}
-
-func requestHasBlockHash(r *common.NormalizedRequest) bool {
-	jrq, err := r.JsonRpcRequest()
-	if err != nil {
-		return false
-	}
-
-	jrq.RLock()
-	defer jrq.RUnlock()
-
-	if len(jrq.Params) == 0 {
-		return false
-	}
-
-	filter, ok := jrq.Params[0].(map[string]interface{})
-	if !ok {
-		return false
-	}
-
-	blockHash, ok := filter["blockHash"].(string)
-	if !ok || blockHash == "" {
-		return false
-	}
-
-	return true
 }
