@@ -313,7 +313,7 @@ func (i *Initializer) attemptRemainingTasks(ctx context.Context) {
 }
 
 func (i *Initializer) State() InitializationState {
-	var total, pending, running, succeeded, failed int
+	var total, pending, running, succeeded, failed, fatal int
 	i.tasks.Range(func(key, value interface{}) bool {
 		t := value.(*BootstrapTask)
 		state := TaskState(t.state.Load())
@@ -326,6 +326,8 @@ func (i *Initializer) State() InitializationState {
 			succeeded++
 		case TaskFailed:
 			failed++
+		case TaskFatal:
+			fatal++
 		}
 		total++
 		return true
@@ -342,6 +344,11 @@ func (i *Initializer) State() InitializationState {
 	if total == succeeded {
 		return StateReady
 	}
+
+	if fatal > 0 {
+		return StateFatal
+	}
+
 	// If all tasks are done (some are failed, none running or pending), it's a "Failed" state
 	if failed > 0 && (pending+running+succeeded == 0) {
 		return StateFailed
