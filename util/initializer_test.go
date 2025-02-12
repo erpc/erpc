@@ -294,6 +294,41 @@ func TestInitializer_MarkTaskAsFailed(t *testing.T) {
 	init.Stop(nil)
 }
 
+func TestInitializer_MarkTaskAsFatal(t *testing.T) {
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	init := setupInitializer(t, appCtx, &InitializerConfig{
+		TaskTimeout: time.Second,
+		AutoRetry:   false,
+	})
+
+	task := NewBootstrapTask("to-be-marked-fatal", func(ctx context.Context) error {
+		time.Sleep(time.Hour) // Long sleep that we'll interrupt
+		return nil
+	})
+
+	// Start the task in a goroutine
+	go func() {
+		_ = init.ExecuteTasks(appCtx, task)
+	}()
+
+	// Give it a moment to start
+	time.Sleep(time.Millisecond * 10)
+
+	expectedErr := errors.New("manual fatal error")
+	init.MarkTaskAsFatal("to-be-marked-fatal", expectedErr)
+
+	// Wait for task to reach terminal state
+	err := task.Wait(context.Background())
+	require.Error(t, err)
+
+	assert.Equal(t, StateFatal, init.State())
+	assert.Equal(t, TaskFatal, TaskState(task.state.Load()))
+	assert.Equal(t, expectedErr, task.Error().Err)
+
+	init.Stop(nil)
+}
+
 func TestInitializer_StopWithDestroyFn(t *testing.T) {
 	appCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()

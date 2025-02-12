@@ -91,7 +91,7 @@ func (t *BootstrapTask) createNewDoneChannel() chan struct{} {
 func (t *BootstrapTask) Wait(ctx context.Context) error {
 	for {
 		state := TaskState(t.state.Load())
-		if state == TaskSucceeded || state == TaskFailed || state == TaskTimedOut {
+		if state == TaskSucceeded || state == TaskFailed || state == TaskTimedOut || state == TaskFatal {
 			lastErr, ok := t.lastErr.Load().(wrappedError)
 			if ok && lastErr.err != nil {
 				return lastErr.err
@@ -339,6 +339,7 @@ func (i *Initializer) State() InitializationState {
 		Int("running", running).
 		Int("succeeded", succeeded).
 		Int("failed", failed).
+		Int("fatal", fatal).
 		Msg("calculating initialization state")
 
 	if total == succeeded {
