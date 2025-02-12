@@ -13,7 +13,6 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/thirdparty"
-	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
 
@@ -28,7 +27,7 @@ type UpstreamsRegistry struct {
 	providersRegistry    *thirdparty.ProvidersRegistry
 	rateLimitersRegistry *RateLimitersRegistry
 	upsCfg               []*common.UpstreamConfig
-	initializer          *util.Initializer
+	initializer          *common.Initializer
 
 	allUpstreams []*Upstream
 	upstreamsMu  *sync.RWMutex
@@ -78,7 +77,7 @@ func NewUpstreamsRegistry(
 		upstreamScores:       make(map[string]map[string]map[string]float64),
 		upstreamsMu:          &sync.RWMutex{},
 		networkMu:            &sync.Map{},
-		initializer:          util.NewInitializer(appCtx, &lg, nil),
+		initializer:          common.NewInitializer(appCtx, &lg, nil),
 	}
 }
 
@@ -125,7 +124,7 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 
 	allProviders := u.providersRegistry.GetAllProviders()
 
-	var tasks []*util.BootstrapTask
+	var tasks []*common.BootstrapTask
 	for _, p := range allProviders {
 		t := u.buildProviderBootstrapTask(p, networkId)
 		tasks = append(tasks, t)
@@ -162,7 +161,7 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 			}
 
 			for _, task := range status.Tasks {
-				if task.State == util.TaskSucceeded {
+				if task.State == common.TaskSucceeded {
 					successfulTasks++
 				}
 			}
@@ -176,11 +175,11 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 				return nil
 			}
 
-			if status.State == util.StateFailed {
+			if status.State == common.StateFailed {
 				return fmt.Errorf("initialization failed with state: %v", status.State)
 			}
 
-			if status.State == util.StateFatal {
+			if status.State == common.StateFatal {
 				return fmt.Errorf("initialization fatal state, stopping auto-retry")
 			}
 		}
@@ -366,17 +365,17 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 }
 
 func (u *UpstreamsRegistry) registerUpstream(ctx context.Context, upsCfgs ...*common.UpstreamConfig) error {
-	tasks := make([]*util.BootstrapTask, 0)
+	tasks := make([]*common.BootstrapTask, 0)
 	for _, upsCfg := range upsCfgs {
 		tasks = append(tasks, u.buildUpstreamBootstrapTask(upsCfg))
 	}
 	return u.initializer.ExecuteTasks(ctx, tasks...)
 }
 
-func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamConfig) *util.BootstrapTask {
+func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamConfig) *common.BootstrapTask {
 	cfg := new(common.UpstreamConfig)
 	*cfg = *upsCfg
-	return util.NewBootstrapTask(
+	return common.NewBootstrapTask(
 		fmt.Sprintf("upstream/%s", cfg.Id),
 		func(ctx context.Context) error {
 			u.logger.Debug().Str("upstreamId", cfg.Id).Msg("attempt to bootstrap upstream")
@@ -385,8 +384,7 @@ func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamCo
 			for _, up := range u.allUpstreams {
 				if up.Config().Id == cfg.Id {
 					u.upstreamsMu.RUnlock()
-					u.initializer.MarkTaskAsFatal(fmt.Sprintf("upstream/%s", cfg.Id), fmt.Errorf(`upstream (%s) already exists`, cfg.Id))
-					return fmt.Errorf(`upstream (%s) already exists`, cfg.Id)
+					return common.NewErrTaskFatal(fmt.Sprintf("upstream (%s) already exists", cfg.Id), nil)
 				}
 			}
 			u.upstreamsMu.RUnlock()
@@ -426,9 +424,9 @@ func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamCo
 func (u *UpstreamsRegistry) buildProviderBootstrapTask(
 	provider *thirdparty.Provider,
 	networkId string,
-) *util.BootstrapTask {
+) *common.BootstrapTask {
 	taskName := fmt.Sprintf("provider/%s/network/%s", provider.Id(), networkId)
-	return util.NewBootstrapTask(
+	return common.NewBootstrapTask(
 		taskName,
 		func(ctx context.Context) error {
 			lg := u.logger.With().Str("provider", provider.Id()).Str("networkId", networkId).Logger()

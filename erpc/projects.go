@@ -12,7 +12,6 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/upstream"
-	"github.com/erpc/erpc/util"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 )
@@ -29,7 +28,7 @@ type PreparedProject struct {
 
 type ProjectHealthInfo struct {
 	upstream.UpstreamsHealth
-	Initialization *util.InitializerStatus `json:"initialization,omitempty"`
+	Initialization *common.InitializerStatus `json:"initialization,omitempty"`
 }
 
 func (p *PreparedProject) Bootstrap(appCtx context.Context) error {

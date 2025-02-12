@@ -13,7 +13,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
 
@@ -27,7 +26,7 @@ type DynamoDBConnector struct {
 	id               string
 	logger           *zerolog.Logger
 	client           *dynamodb.DynamoDB
-	initializer      *util.Initializer
+	initializer      *common.Initializer
 	table            string
 	ttlAttributeName string
 	partitionKeyName string
@@ -61,9 +60,9 @@ func NewDynamoDBConnector(
 	}
 
 	// create an Initializer to handle (re)connecting
-	connector.initializer = util.NewInitializer(ctx, &lg, nil)
+	connector.initializer = common.NewInitializer(ctx, &lg, nil)
 
-	connectTask := util.NewBootstrapTask(fmt.Sprintf("dynamodb-connect/%s", id), func(ctx context.Context) error {
+	connectTask := common.NewBootstrapTask(fmt.Sprintf("dynamodb-connect/%s", id), func(ctx context.Context) error {
 		return connector.connectTask(ctx, cfg)
 	})
 

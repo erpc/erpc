@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -64,7 +63,7 @@ func TestDynamoDBConnectorInitialization(t *testing.T) {
 
 		if connector.initializer != nil {
 			state := connector.initializer.State()
-			require.Equal(t, util.StateReady, state, "connector should be in ready state")
+			require.Equal(t, common.StateReady, state, "connector should be in ready state")
 		}
 
 		// Try a simple SET/GET to confirm real operation
@@ -106,7 +105,7 @@ func TestDynamoDBConnectorInitialization(t *testing.T) {
 		require.NoError(t, err, "Constructor does not necessarily return an error even if the first attempt fails")
 
 		if connector.initializer != nil {
-			require.NotEqual(t, util.StateReady, connector.initializer.State(),
+			require.NotEqual(t, common.StateReady, connector.initializer.State(),
 				"connector should not be in READY state if it failed to connect")
 		}
 

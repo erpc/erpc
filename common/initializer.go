@@ -1,4 +1,4 @@
-package util
+package common
 
 import (
 	"context"
@@ -43,6 +43,10 @@ type BootstrapTask struct {
 	ctxCancel   atomic.Value                    // context.CancelFunc
 	doneVal     atomic.Value                    // chan struct{}
 	attempts    atomic.Int32
+}
+
+func IsFatalError(err error) bool {
+	return HasErrorCode(err, ErrCodeTaskFatal)
 }
 
 func NewBootstrapTask(name string, fn func(ctx context.Context) error) *BootstrapTask {
@@ -290,8 +294,14 @@ func (i *Initializer) attemptRemainingTasks(ctx context.Context) {
 						} else {
 							bt.lastErr.CompareAndSwap(nil, wrappedError{err: err})
 						}
-						bt.state.Store(int32(TaskFailed))
-						i.logger.Warn().Str("task", bt.Name).Err(err).Msg("initialization task failed")
+						if IsFatalError(err) {
+							bt.state.Store(int32(TaskFatal))
+							i.logger.Error().Str("task", bt.Name).Err(err).
+								Msg("initialization task encountered fatal error, no more retries")
+						} else {
+							bt.state.Store(int32(TaskFailed))
+							i.logger.Warn().Str("task", bt.Name).Err(err).Msg("initialization task failed")
+						}
 					} else {
 						bt.lastErr.Store(wrappedError{err: nil})
 						bt.state.Store(int32(TaskSucceeded))
@@ -386,27 +396,6 @@ func (i *Initializer) MarkTaskAsFailed(name string, err error) {
 			}
 			t.lastErr.Store(wrappedError{err: err})
 			t.state.Store(int32(TaskFailed))
-			return false
-		}
-		return true
-	})
-
-	i.ensureAutoRetryIfEnabled()
-}
-
-func (i *Initializer) MarkTaskAsFatal(name string, err error) {
-	i.logger.Error().Str("task", name).Err(err).Msg("marking task as fatal")
-	i.tasks.Range(func(key, value interface{}) bool {
-		t := value.(*BootstrapTask)
-		if t.Name == name {
-			currentState := TaskState(t.state.Load())
-			if currentState == TaskRunning {
-				if ctxCancel, ok := t.ctxCancel.Load().(context.CancelFunc); ok && ctxCancel != nil {
-					ctxCancel()
-				}
-			}
-			t.lastErr.Store(wrappedError{err: err})
-			t.state.Store(int32(TaskFatal))
 			return false
 		}
 		return true

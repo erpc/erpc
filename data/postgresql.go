@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/util"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/rs/zerolog"
@@ -23,7 +22,7 @@ type PostgreSQLConnector struct {
 	id            string
 	logger        *zerolog.Logger
 	conn          *pgxpool.Pool
-	initializer   *util.Initializer
+	initializer   *common.Initializer
 	minConns      int32
 	maxConns      int32
 	table         string
@@ -55,9 +54,9 @@ func NewPostgreSQLConnector(
 	}
 
 	// create an Initializer to handle (re)connecting
-	connector.initializer = util.NewInitializer(ctx, &lg, nil)
+	connector.initializer = common.NewInitializer(ctx, &lg, nil)
 
-	connectTask := util.NewBootstrapTask(fmt.Sprintf("postgres-connect/%s", id), func(ctx context.Context) error {
+	connectTask := common.NewBootstrapTask(fmt.Sprintf("postgres-connect/%s", id), func(ctx context.Context) error {
 		return connector.connectTask(ctx, cfg)
 	})
 

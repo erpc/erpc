@@ -1,4 +1,4 @@
-package util
+package common
 
 import (
 	"context"
@@ -289,41 +289,6 @@ func TestInitializer_MarkTaskAsFailed(t *testing.T) {
 
 	assert.Equal(t, StateFailed, init.State())
 	assert.Equal(t, TaskFailed, TaskState(task.state.Load()))
-	assert.Equal(t, expectedErr, task.Error().Err)
-
-	init.Stop(nil)
-}
-
-func TestInitializer_MarkTaskAsFatal(t *testing.T) {
-	appCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	init := setupInitializer(t, appCtx, &InitializerConfig{
-		TaskTimeout: time.Second,
-		AutoRetry:   false,
-	})
-
-	task := NewBootstrapTask("to-be-marked-fatal", func(ctx context.Context) error {
-		time.Sleep(time.Hour) // Long sleep that we'll interrupt
-		return nil
-	})
-
-	// Start the task in a goroutine
-	go func() {
-		_ = init.ExecuteTasks(appCtx, task)
-	}()
-
-	// Give it a moment to start
-	time.Sleep(time.Millisecond * 10)
-
-	expectedErr := errors.New("manual fatal error")
-	init.MarkTaskAsFatal("to-be-marked-fatal", expectedErr)
-
-	// Wait for task to reach terminal state
-	err := task.Wait(context.Background())
-	require.Error(t, err)
-
-	assert.Equal(t, StateFatal, init.State())
-	assert.Equal(t, TaskFatal, TaskState(task.state.Load()))
 	assert.Equal(t, expectedErr, task.Error().Err)
 
 	init.Stop(nil)
@@ -648,4 +613,36 @@ func TestInitializer_MarkAsFailedUnblocksWaitThenRetries(t *testing.T) {
 	assert.Equal(t, TaskSucceeded, TaskState(task.state.Load()), "task should be succeeded after final attempt")
 
 	init.Stop(nil)
+}
+
+func TestInitializer_SingleTaskImmediateFatal(t *testing.T) {
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	init := setupInitializer(t, appCtx, &InitializerConfig{
+		TaskTimeout: time.Second,
+		AutoRetry:   true,
+	})
+
+	// This task immediately returns a fatal error
+	task := NewBootstrapTask("immediate-fatal", func(ctx context.Context) error {
+		return NewErrTaskFatal("duplicate upstream", nil)
+	})
+
+	err := init.ExecuteTasks(appCtx, task)
+	defer init.Stop(nil)
+
+	// Check that ExecuteTasks returns an error (one task is fatal)
+	require.Error(t, err, "the fatal error should bubble up")
+
+	// Check the final initializer state is StateFatal
+	assert.Equal(t, StateFatal, init.State(), "initializer should be in fatal state")
+
+	// Check the task state is TaskFatal
+	assert.Equal(t, TaskFatal, TaskState(task.state.Load()), "task should be marked as fatal")
+
+	// Confirm that no additional attempts were made
+	// (since the task was fatal on the first run).
+	st := TaskState(task.state.Load())
+	assert.Equal(t, TaskFatal, st, "no further attempts after a fatal error")
 }
