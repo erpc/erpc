@@ -179,6 +179,10 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 			if status.State == util.StateFailed {
 				return fmt.Errorf("initialization failed with state: %v", status.State)
 			}
+
+			if status.State == util.StateFatal {
+				return fmt.Errorf("initialization fatal state, stopping auto-retry")
+			}
 		}
 	}
 }
