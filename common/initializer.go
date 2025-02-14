@@ -45,10 +45,6 @@ type BootstrapTask struct {
 	attempts    atomic.Int32
 }
 
-func IsTaskFatalError(err error) bool {
-	return HasErrorCode(err, ErrCodeTaskFatal)
-}
-
 func NewBootstrapTask(name string, fn func(ctx context.Context) error) *BootstrapTask {
 	t := &BootstrapTask{
 		Name: name,
@@ -294,7 +290,7 @@ func (i *Initializer) attemptRemainingTasks(ctx context.Context) {
 						} else {
 							bt.lastErr.CompareAndSwap(nil, wrappedError{err: err})
 						}
-						if IsTaskFatalError(err) {
+						if HasErrorCode(err, ErrCodeTaskFatal) {
 							bt.state.Store(int32(TaskFatal))
 							i.logger.Error().Str("task", bt.Name).Err(err).
 								Msg("initialization task encountered fatal error, no more retries")
