@@ -646,3 +646,37 @@ func TestInitializer_SingleTaskImmediateFatal(t *testing.T) {
 	st := TaskState(task.state.Load())
 	assert.Equal(t, TaskFatal, st, "no further attempts after a fatal error")
 }
+
+func TestInitializer_TaskFailsThenBecomesFatal(t *testing.T) {
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	init := setupInitializer(t, appCtx, &InitializerConfig{
+		TaskTimeout:   time.Second,
+		AutoRetry:     true,
+		RetryMinDelay: time.Millisecond * 10,
+		RetryMaxDelay: time.Millisecond * 50,
+		RetryFactor:   1.2,
+	})
+
+	var attempts int
+	task := NewBootstrapTask("fatal-on-second-attempt", func(ctx context.Context) error {
+		attempts++
+		if attempts == 1 {
+			return errors.New("non-fatal first failure")
+		}
+		// Second attempt: Return fatal error
+		return NewErrTaskFatal("second attempt is fatal", nil)
+	})
+
+	err := init.ExecuteTasks(appCtx, task)
+	defer init.Stop(nil)
+	require.Error(t, err, "eventually the task becomes fatal, so initializer fails")
+
+	// We wait enough time for at least the second attempt to start
+	time.Sleep(time.Millisecond * 200)
+
+	assert.Equal(t, 2, attempts, "task should have run exactly twice")
+	assert.Equal(t, StateFatal, init.State(), "initializer should be in fatal state")
+	assert.Equal(t, TaskFatal, TaskState(task.state.Load()), "task should be marked as fatal")
+}
