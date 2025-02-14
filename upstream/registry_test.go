@@ -854,3 +854,45 @@ func checkUpstreamScoreOrder(t *testing.T, registry *UpstreamsRegistry, networkI
 	}
 	registry.RUnlockUpstreams()
 }
+
+func TestUpstreamsRegistry_DuplicateUpstreamRegistration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// createTestRegistry() sets up “upstream-a”, “upstream-b”, “upstream-c”
+	registry, _ := createTestRegistry(ctx, "test-project", &log.Logger, 1*time.Second)
+
+	// Duplicate for “upstream-a”
+	duplicateConfig := &common.UpstreamConfig{
+		Id:       "upstream-a",
+		Endpoint: "http://duplicate.localhost",
+		Type:     common.UpstreamTypeEvm,
+		Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+	}
+
+	// Attempt to register the duplicate
+	err := registry.registerUpstream(ctx, duplicateConfig)
+	assert.NoError(t, err, "Expected no error on duplicate registration call itself")
+
+	// Wait for the initializer to process tasks
+	err = registry.initializer.WaitForTasks(ctx)
+	if err != nil {
+		t.Logf("Initializer returned error on WaitForTasks: %v", err)
+	}
+
+	// Confirm we went fatal due to the duplicate
+	status := registry.initializer.Status()
+	assert.Equal(t, common.StateFatal, status.State, "Expected StateFatal after duplicate registration")
+
+	// Now verify non-duplicate upstreams are still present
+	upstreams := registry.GetNetworkUpstreams("evm:123")
+	var ids []string
+	for _, ups := range upstreams {
+		ids = append(ids, ups.Config().Id)
+	}
+
+	// “createTestRegistry” initially registered these three:
+	assert.Contains(t, ids, "upstream-a", "Original upstream-a should still exist")
+	assert.Contains(t, ids, "upstream-b", "Non-duplicate upstream-b should still be registered")
+	assert.Contains(t, ids, "upstream-c", "Non-duplicate upstream-c should still be registered")
+}

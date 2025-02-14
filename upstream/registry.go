@@ -375,8 +375,11 @@ func (u *UpstreamsRegistry) registerUpstream(ctx context.Context, upsCfgs ...*co
 func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamConfig) *common.BootstrapTask {
 	cfg := new(common.UpstreamConfig)
 	*cfg = *upsCfg
+	// unique task name to avoid race condition and making sure the task is not reused
+	taskName := fmt.Sprintf("upstream/%s/%d", cfg.Id, time.Now().UnixNano())
+
 	return common.NewBootstrapTask(
-		fmt.Sprintf("upstream/%s", cfg.Id),
+		taskName,
 		func(ctx context.Context) error {
 			u.logger.Debug().Str("upstreamId", cfg.Id).Msg("attempt to bootstrap upstream")
 
