@@ -3,6 +3,7 @@ package common
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -659,13 +660,14 @@ func TestInitializer_TaskFailsThenBecomesFatal(t *testing.T) {
 		RetryFactor:   1.2,
 	})
 
-	var attempts int
+	var attempts int32
 	task := NewBootstrapTask("fatal-on-second-attempt", func(ctx context.Context) error {
-		attempts++
-		if attempts == 1 {
+		val := atomic.AddInt32(&attempts, 1)
+		if val == 1 {
+			// first attempt fails non-fatally
 			return errors.New("non-fatal first failure")
 		}
-		// Second attempt: Return fatal error
+		// second attempt: fatal
 		return NewErrTaskFatal("second attempt is fatal", nil)
 	})
 
@@ -676,7 +678,8 @@ func TestInitializer_TaskFailsThenBecomesFatal(t *testing.T) {
 	// We wait enough time for at least the second attempt to start
 	time.Sleep(time.Millisecond * 200)
 
-	assert.Equal(t, 2, attempts, "task should have run exactly twice")
+	finalAttempts := atomic.LoadInt32(&attempts)
+	assert.Equal(t, int32(2), finalAttempts, "task should have run exactly twice")
 	assert.Equal(t, StateFatal, init.State(), "initializer should be in fatal state")
 	assert.Equal(t, TaskFatal, TaskState(task.state.Load()), "task should be marked as fatal")
 }
