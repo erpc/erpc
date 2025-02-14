@@ -13,6 +13,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestUpstreamsRegistry_Ordering(t *testing.T) {
@@ -871,18 +872,17 @@ func TestUpstreamsRegistry_DuplicateUpstreamRegistration(t *testing.T) {
 	}
 
 	// Attempt to register the duplicate
+	// Since the code returns a fatal error for duplicates, we expect an error here
 	err := registry.registerUpstream(ctx, duplicateConfig)
-	assert.NoError(t, err, "Expected no error on duplicate registration call itself")
+	require.Error(t, err, "Expected a fatal error for duplicate upstream")
 
-	// Wait for the initializer to process tasks
-	err = registry.initializer.WaitForTasks(ctx)
-	if err != nil {
-		t.Logf("Initializer returned error on WaitForTasks: %v", err)
-	}
+	// The initializer is already in a fatal state after that attempt
+	assert.Equal(t, common.StateFatal, registry.initializer.State(),
+		"Expected StateFatal after duplicate registration")
 
-	// Confirm we went fatal due to the duplicate
-	status := registry.initializer.Status()
-	assert.Equal(t, common.StateFatal, status.State, "Expected StateFatal after duplicate registration")
+	// Optionally, you could call WaitForTasks(...) if you want
+	// but it's likely to return the same fatal error again.
+	_ = registry.initializer.WaitForTasks(ctx)
 
 	// Now verify non-duplicate upstreams are still present
 	upstreams := registry.GetNetworkUpstreams("evm:123")
