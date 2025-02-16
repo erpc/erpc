@@ -23,6 +23,10 @@ const (
 	StateFatal
 )
 
+func (s InitializationState) String() string {
+	return []string{"uninitialized", "initializing", "partial", "retrying", "ready", "failed"}[s]
+}
+
 type TaskState int
 
 const (
@@ -168,7 +172,7 @@ func NewInitializer(appCtx context.Context, logger *zerolog.Logger, conf *Initia
 			AutoRetry:     true,
 			RetryFactor:   1.5,
 			RetryMinDelay: 3 * time.Second,
-			RetryMaxDelay: 30 * time.Second,
+			RetryMaxDelay: 130 * time.Second,
 		}
 	}
 	return &Initializer{
@@ -360,13 +364,13 @@ func (i *Initializer) State() InitializationState {
 	if failed > 0 && (pending+running+succeeded == 0) {
 		return StateFailed
 	}
+	if failed > 0 && (pending+running == 0) {
+		return StatePartial
+	}
 	// If we've tried multiple times but still have tasks not succeeded
 	atp := i.attempts.Load()
 	if atp > 1 && (pending > 0 || running > 0) {
 		return StateRetrying
-	}
-	if failed > 0 {
-		return StatePartial
 	}
 	return StateInitializing
 }
@@ -384,14 +388,13 @@ func (i *Initializer) MarkTaskAsFailed(name string, err error) {
 	i.tasks.Range(func(key, value interface{}) bool {
 		t := value.(*BootstrapTask)
 		if t.Name == name {
-			currentState := TaskState(t.state.Load())
-			if currentState == TaskRunning {
+			previousState := TaskState(t.state.Swap(int32(TaskFailed)))
+			if previousState == TaskRunning {
 				if ctxCancel, ok := t.ctxCancel.Load().(context.CancelFunc); ok && ctxCancel != nil {
 					ctxCancel()
 				}
 			}
 			t.lastErr.Store(wrappedError{err: err})
-			t.state.Store(int32(TaskFailed))
 			return false
 		}
 		return true
@@ -524,10 +527,7 @@ func (i *Initializer) autoRetryLoop(ctx context.Context) {
 			return
 		}
 		if err != nil {
-			i.logger.Warn().
-				Err(err).
-				Int("state", int(state)).
-				Msgf("initialization auto-retry failed, will retry in %v", delay)
+			i.logger.Warn().Err(err).Str("state", state.String()).Msgf("initialization auto-retry failed, will retry in %v", delay)
 		}
 
 		select {

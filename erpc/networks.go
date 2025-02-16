@@ -128,7 +128,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		if err != nil {
 			lg.Debug().Err(err).Msgf("could not find response in cache")
 		} else if resp != nil && !resp.IsObjectNull() && !resp.IsResultEmptyish() {
-			lg.Info().Msgf("response served from cache")
+			// TODO should we skip the empty response check, that way we allow empty responses to be cached?
+			if lg.GetLevel() <= zerolog.DebugLevel {
+				lg.Debug().Object("response", resp).Msgf("response served from cache")
+			} else {
+				lg.Info().Msgf("response served from cache")
+			}
 			if mlx != nil {
 				mlx.Close(resp, err)
 			}
@@ -390,7 +395,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	if execErr == nil && resp != nil && !resp.IsObjectNull() {
-		n.enrichStatePoller(method, req, resp)
+		go n.enrichStatePoller(method, req, resp)
 	}
 	if mlx != nil {
 		mlx.Close(resp, nil)

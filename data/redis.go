@@ -7,10 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/go-redsync/redsync/v4"
+	"github.com/go-redsync/redsync/v4/redis/goredis/v9"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 )
@@ -20,12 +25,15 @@ const (
 	reverseIndexPrefix = "rvi"
 )
 
+var _ Connector = &RedisConnector{}
+
 type RedisConnector struct {
 	id          string
 	logger      *zerolog.Logger
 	client      *redis.Client
 	initializer *common.Initializer
 	cfg         *common.RedisConnectorConfig
+	redsync     *redsync.Redsync
 
 	ttls        map[string]time.Duration
 	initTimeout time.Duration
@@ -65,7 +73,6 @@ func NewRedisConnector(
 	return connector, nil
 }
 
-// Id satisfies a hypothetical Connector interface.
 func (r *RedisConnector) Id() string {
 	return r.id
 }
@@ -90,22 +97,30 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 		options.TLSConfig = tlsConfig
 	}
 
-	r.logger.Info().Str("addr", r.cfg.Addr).Msg("attempting to connect to Redis")
+	r.logger.Debug().Str("addr", r.cfg.Addr).Msg("attempting to connect to Redis")
 	client := redis.NewClient(options)
 
-	// Test the connection
+	// Test the connection with Ping.
+	ctx, cancel := context.WithTimeout(ctx, r.initTimeout)
+	defer cancel()
 	_, err := client.Ping(ctx).Result()
 	if err != nil {
 		return fmt.Errorf("failed to connect to Redis: %w", err)
 	}
 
-	// If we succeed, store the new client.
+	if r.client != nil {
+		_ = r.client.Close()
+	}
 	r.client = client
+
+	pool := goredis.NewPool(client)
+	r.redsync = redsync.New(pool)
+
 	r.logger.Info().Str("addr", r.cfg.Addr).Msg("successfully connected to Redis")
 	return nil
 }
 
-// createTLSConfig is unchanged from your original snippet, included here for completeness.
+// createTLSConfig creates a tls.Config based on the provided TLS settings.
 func createTLSConfig(tlsCfg *common.TLSConfig) (*tls.Config, error) {
 	config := &tls.Config{
 		InsecureSkipVerify: tlsCfg.InsecureSkipVerify, // #nosec G402
@@ -140,10 +155,10 @@ func (r *RedisConnector) markConnectionAsLostIfNecessary(err error) {
 	if err == nil {
 		return
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
 		return
 	}
-	r.initializer.MarkTaskAsFailed(fmt.Sprintf("redis-connect/%s", r.id), fmt.Errorf("connection lost or redis error: %w", err))
+	r.initializer.MarkTaskAsFailed(fmt.Sprintf("redis-connect/%s", r.id), fmt.Errorf("connection lost or redis error: %w stack: %s", err, string(debug.Stack())))
 }
 
 // checkReady returns an error if Redis is not in a ready state.
@@ -153,10 +168,13 @@ func (r *RedisConnector) checkReady() error {
 	}
 	state := r.initializer.State()
 	if state != common.StateReady {
-		return fmt.Errorf("redis is not connected (initializer state=%d)", state)
+		return fmt.Errorf("redis is not connected (%s)", state.String())
 	}
 	if r.client == nil {
 		return fmt.Errorf("redis client not initialized yet")
+	}
+	if r.redsync == nil {
+		return fmt.Errorf("redsync not initialized yet")
 	}
 	return nil
 }
@@ -168,7 +186,11 @@ func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey, value 
 	}
 
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
-	r.logger.Debug().Msgf("writing to Redis with partition key: %s and range key: %s", partitionKey, rangeKey)
+	if len(value) < 1024 {
+		r.logger.Debug().Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Str("value", value).Msg("writing value to Redis")
+	} else {
+		r.logger.Debug().Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Int("len", len(value)).Msg("writing value to Redis")
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, r.setTimeout)
 	defer cancel()
@@ -209,14 +231,180 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 		key = keys[0]
 	}
 
-	r.logger.Debug().Str("key", key).Msg("getting item from Redis")
+	r.logger.Trace().Str("key", key).Msg("getting item from Redis")
 	value, err := r.client.Get(ctx, key).Result()
 	if err == redis.Nil {
 		return "", common.NewErrRecordNotFound(partitionKey, rangeKey, RedisDriverName)
 	} else if err != nil {
-		r.logger.Warn().Err(err).Str("key", key).Msg("failed to GET in Redis, marking connection lost")
+		r.logger.Warn().Err(err).Str("key", key).Msg("failed to GET in Redis")
 		r.markConnectionAsLostIfNecessary(err)
 		return "", err
 	}
+	if len(value) < 1024 {
+		r.logger.Debug().Str("key", key).Str("value", value).Msg("received item from Redis")
+	} else {
+		r.logger.Debug().Str("key", key).Int("len", len(value)).Msg("received item from Redis")
+	}
 	return value, nil
+}
+
+// Lock attempts to acquire a distributed lock for the specified key.
+// It uses SET NX with an expiration TTL. Returns a DistributedLock instance on success.
+func (r *RedisConnector) Lock(ctx context.Context, lockKey string, ttl time.Duration) (DistributedLock, error) {
+	if err := r.checkReady(); err != nil {
+		return nil, err
+	}
+
+	// Generate a unique token for this specific lock operation
+	token := uuid.New().String()
+	ctx, cancel := context.WithTimeout(ctx, r.setTimeout)
+	defer cancel()
+
+	mutex := r.redsync.NewMutex(
+		fmt.Sprintf("lock:%s", lockKey),
+		redsync.WithExpiry(ttl),
+		redsync.WithTries(1), // Only try once to match original behavior
+	)
+
+	if err := mutex.LockContext(ctx); err != nil {
+		return nil, fmt.Errorf("failed to acquire lock: %w", err)
+	}
+
+	r.logger.Trace().Str("key", lockKey).Str("token", token).Msg("distributed lock acquired")
+
+	return &redisLock{
+		connector: r,
+		key:       lockKey,
+		mutex:     mutex,
+	}, nil
+}
+
+// WatchCounterInt64 watches a counter in Redis. Returns a channel of updates and a cleanup function.
+// Callers of this method are responsible to re-try the operation if "values" channel is closed.
+func (r *RedisConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan int64, func(), error) {
+	r.logger.Debug().Str("key", key).Msg("trying to watch counter int64 in Redis")
+	if err := r.checkReady(); err != nil {
+		return nil, nil, err
+	}
+	updates := make(chan int64, 1)
+	pubsub := r.client.Subscribe(ctx, "counter:"+key)
+
+	// Start a goroutine to handle updates
+	go func() {
+		defer close(updates)
+		defer func() {
+			if err := pubsub.Close(); err != nil {
+				r.logger.Warn().Err(err).Str("key", key).Msg("failed to close pubsub")
+				r.markConnectionAsLostIfNecessary(err)
+			}
+		}()
+
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		ch := pubsub.Channel()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+
+			case msg, ok := <-ch:
+				if ok && msg != nil {
+					if val, err := strconv.ParseInt(msg.Payload, 10, 64); err == nil {
+						select {
+						case updates <- val:
+						default:
+						}
+					} else {
+						r.logger.Warn().Str("key", key).Str("payload", msg.Payload).Msg("failed to parse received payload")
+					}
+				} else {
+					r.logger.Warn().Str("key", key).Interface("msg", msg).Msg("pubsub channel closed")
+					return
+				}
+
+			case <-ticker.C:
+				r.logger.Debug().Str("key", key).Msg("polling current value")
+				if val, err := r.getCurrentValue(ctx, key); err != nil {
+					r.markConnectionAsLostIfNecessary(err)
+					return
+				} else {
+					select {
+					case updates <- val:
+					default:
+					}
+				}
+			}
+		}
+	}()
+
+	cleanup := func() {
+		err := pubsub.Close()
+		if err != nil {
+			r.logger.Warn().Err(err).Str("key", key).Msg("failed to close pubsub")
+			r.markConnectionAsLostIfNecessary(err)
+		}
+	}
+
+	go func() {
+		defer func() {
+			if rc := recover(); rc != nil {
+				r.logger.Error().Interface("panic", rc).Str("key", key).Msg("panic in WatchCounterInt64")
+			}
+		}()
+		// Get initial value
+		if val, err := r.getCurrentValue(ctx, key); err == nil {
+			select {
+			case updates <- val:
+			default:
+				r.logger.Warn().Str("key", key).Msg("skipping initial value send - channel full or closed")
+			}
+		} else {
+			r.logger.Warn().Err(err).Str("key", key).Msg("failed to get initial value")
+		}
+	}()
+
+	r.logger.Info().Str("key", key).Msg("started watching counter int64 in Redis")
+
+	return updates, cleanup, nil
+}
+
+// PublishCounterInt64 publishes a counter value to Redis.
+func (r *RedisConnector) PublishCounterInt64(ctx context.Context, key string, value int64) error {
+	if err := r.checkReady(); err != nil {
+		return err
+	}
+	r.logger.Debug().Str("key", key).Int64("value", value).Msg("publishing counter int64 update to Redis")
+	return r.client.Publish(ctx, "counter:"+key, value).Err()
+}
+
+func (r *RedisConnector) getCurrentValue(ctx context.Context, key string) (int64, error) {
+	val, err := r.Get(ctx, ConnectorMainIndex, key, "value")
+	if err != nil {
+		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return strconv.ParseInt(val, 10, 64)
+}
+
+type redisLock struct {
+	connector *RedisConnector
+	key       string
+	mutex     *redsync.Mutex
+}
+
+func (l *redisLock) Unlock(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, l.connector.setTimeout)
+	defer cancel()
+	ok, err := l.mutex.UnlockContext(ctx)
+	if err != nil {
+		return fmt.Errorf("error releasing lock: %w", err)
+	}
+	if !ok {
+		return errors.New("failed to release lock")
+	}
+	l.connector.logger.Trace().Str("key", l.key).Msg("distributed lock released")
+	return nil
 }

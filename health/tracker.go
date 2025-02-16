@@ -335,6 +335,8 @@ func (t *Tracker) GetNetworkMethodMetrics(network, method string) *TrackedMetric
 // --------------------------------------------
 
 func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
+	log.Trace().Str("upstreamId", ups).Str("networkId", network).Int64("value", blockNumber).Msg("updating latest block number in tracker")
+
 	mdKey := duoKey{ups: ups, network: network}
 	ntwMdKey := duoKey{ups: "*", network: network}
 
@@ -402,6 +404,8 @@ func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
 }
 
 func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64) {
+	log.Trace().Str("upstreamId", ups).Str("networkId", network).Int64("value", blockNumber).Msg("updating finalized block number in tracker")
+
 	mdKey := duoKey{ups, network}
 	ntwMdKey := duoKey{"*", network}
 

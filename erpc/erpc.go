@@ -8,6 +8,7 @@ import (
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
 	"github.com/rs/zerolog"
@@ -22,6 +23,7 @@ type ERPC struct {
 func NewERPC(
 	appCtx context.Context,
 	logger *zerolog.Logger,
+	sharedState data.SharedStateRegistry,
 	evmJsonRpcCache *evm.EvmJsonRpcCache,
 	cfg *common.Config,
 ) (*ERPC, error) {
@@ -38,11 +40,25 @@ func NewERPC(
 		return nil, err
 	}
 
+	if sharedState == nil {
+		sharedState, err = data.NewSharedStateRegistry(appCtx, logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
 	vendorsRegistry := thirdparty.NewVendorsRegistry()
 	projectRegistry, err := NewProjectsRegistry(
 		appCtx,
 		logger,
 		cfg.Projects,
+		sharedState,
 		evmJsonRpcCache,
 		rateLimitersRegistry,
 		vendorsRegistry,
@@ -60,12 +76,10 @@ func NewERPC(
 		}
 	}
 
-	go func() {
-		err := projectRegistry.Bootstrap(appCtx)
-		if err != nil {
-			logger.Error().Err(err).Msg("failed to bootstrap projects on first attempt (will keep retrying in the background)")
-		}
-	}()
+	err = projectRegistry.Bootstrap(appCtx)
+	if err != nil {
+		logger.Error().Err(err).Msg("failed to bootstrap projects on first attempt (will keep retrying in the background)")
+	}
 
 	return &ERPC{
 		cfg:               cfg,

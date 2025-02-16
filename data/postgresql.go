@@ -3,7 +3,10 @@ package data
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -22,6 +25,7 @@ type PostgreSQLConnector struct {
 	id            string
 	logger        *zerolog.Logger
 	conn          *pgxpool.Pool
+	connMu        sync.RWMutex
 	initializer   *common.Initializer
 	minConns      int32
 	maxConns      int32
@@ -30,6 +34,21 @@ type PostgreSQLConnector struct {
 	initTimeout   time.Duration
 	getTimeout    time.Duration
 	setTimeout    time.Duration
+	listeners     sync.Map      // map[string]*pgxListener
+	listenerPool  *pgxpool.Pool // Separate pool for LISTEN connections
+}
+
+type pgxListener struct {
+	mu       sync.Mutex
+	conn     *pgx.Conn
+	watchers []chan int64
+}
+
+type postgresLock struct {
+	conn   *pgxpool.Pool
+	lockID int64
+	logger *zerolog.Logger
+	tx     pgx.Tx
 }
 
 func NewPostgreSQLConnector(
@@ -51,17 +70,18 @@ func NewPostgreSQLConnector(
 		getTimeout:    cfg.GetTimeout,
 		setTimeout:    cfg.SetTimeout,
 		cleanupTicker: time.NewTicker(5 * time.Minute),
+		connMu:        sync.RWMutex{},
 	}
 
 	// create an Initializer to handle (re)connecting
 	connector.initializer = common.NewInitializer(ctx, &lg, nil)
 
-	connectTask := common.NewBootstrapTask(fmt.Sprintf("postgres-connect/%s", id), func(ctx context.Context) error {
+	connectTask := common.NewBootstrapTask(connector.taskId(), func(ctx context.Context) error {
 		return connector.connectTask(ctx, cfg)
 	})
 
 	if err := connector.initializer.ExecuteTasks(ctx, connectTask); err != nil {
-		lg.Error().Err(err).Msg("failed to initialize PostgreSQL on first attempt (will retry in background)")
+		lg.Error().Err(err).Msg("failed to initialize postgres on first attempt (will retry in background)")
 		// Return the connector so the app can proceed, but note that it's not ready yet.
 		return connector, nil
 	}
@@ -70,6 +90,20 @@ func NewPostgreSQLConnector(
 }
 
 func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.PostgreSQLConnectorConfig) error {
+	p.connMu.Lock()
+	defer p.connMu.Unlock()
+
+	listenerConfig, err := pgxpool.ParseConfig(cfg.ConnectionUri)
+	if err != nil {
+		return err
+	}
+	listenerConfig.MaxConns = cfg.MaxConns
+	listenerPool, err := pgxpool.ConnectConfig(ctx, listenerConfig)
+	if err != nil {
+		return err
+	}
+	p.listenerPool = listenerPool
+
 	config, err := pgxpool.ParseConfig(cfg.ConnectionUri)
 	if err != nil {
 		return fmt.Errorf("failed to parse connection URI: %w", err)
@@ -84,7 +118,7 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 
 	conn, err := pgxpool.ConnectConfig(ctx, config)
 	if err != nil {
-		return fmt.Errorf("failed to connect to PostgreSQL: %w", err)
+		return fmt.Errorf("failed to connect to postgres: %w", err)
 	}
 
 	// Create table if not exists with TTL column
@@ -156,7 +190,7 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 	}
 
 	p.conn = conn
-	p.logger.Info().Str("table", p.table).Msg("successfully connected to PostgreSQL")
+	p.logger.Info().Str("table", p.table).Msg("successfully connected to postgres")
 
 	// If we are *not* using pg_cron, we still have a non-nil ticker,
 	// so we spawn the local cleanup routine:
@@ -171,11 +205,18 @@ func (p *PostgreSQLConnector) Id() string {
 }
 
 func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey, value string, ttl *time.Duration) error {
+	p.connMu.RLock()
+	defer p.connMu.RUnlock()
+
 	if p.conn == nil {
 		return fmt.Errorf("PostgreSQLConnector not connected yet")
 	}
 
-	p.logger.Debug().Msgf("writing to PostgreSQL with partition key: %s and range key: %s", partitionKey, rangeKey)
+	if len(value) < 1024 {
+		p.logger.Debug().Str("value", value).Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("writing to postgres")
+	} else {
+		p.logger.Debug().Int("length", len(value)).Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("writing to postgres")
+	}
 
 	var expiresAt *time.Time
 	if ttl != nil && *ttl > 0 {
@@ -203,10 +244,17 @@ func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey, v
 		`, p.table), partitionKey, rangeKey, value)
 	}
 
+	if err != nil {
+		p.handleConnectionFailure(err)
+	}
+
 	return err
 }
 
 func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) (string, error) {
+	p.connMu.RLock()
+	defer p.connMu.RUnlock()
+
 	if p.conn == nil {
 		return "", fmt.Errorf("PostgreSQLConnector not connected yet")
 	}
@@ -237,18 +285,284 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 		args = []interface{}{partitionKey, rangeKey}
 	}
 
-	p.logger.Debug().Msgf("getting item from PostgreSQL with query: %s args: %v", query, args)
+	p.logger.Debug().Str("query", query).Interface("args", args).Msg("getting item from postgres")
 
 	var value string
 	err := p.conn.QueryRow(ctx, query, args...).Scan(&value)
 
-	if err == pgx.ErrNoRows {
-		return "", common.NewErrRecordNotFound(partitionKey, rangeKey, PostgreSQLDriverName)
-	} else if err != nil {
-		return "", err
+	if err != nil {
+		p.handleConnectionFailure(err)
 	}
 
-	return value, nil
+	if err == pgx.ErrNoRows {
+		return "", common.NewErrRecordNotFound(partitionKey, rangeKey, PostgreSQLDriverName)
+	}
+
+	return value, err
+}
+
+func (p *PostgreSQLConnector) Lock(ctx context.Context, key string, ttl time.Duration) (DistributedLock, error) {
+	p.connMu.RLock()
+	defer p.connMu.RUnlock()
+
+	if p.conn == nil {
+		return nil, fmt.Errorf("PostgreSQLConnector not connected yet")
+	}
+
+	// Generate consistent hash for the key as advisory lock ID
+	h := fnv.New64a()
+	_, err := h.Write([]byte(key))
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate advisory lock ID: %w", err)
+	}
+	lockID := int64(h.Sum64()) // #nosec
+
+	// Start a transaction
+	tx, err := p.conn.Begin(ctx)
+	if err != nil {
+		p.handleConnectionFailure(err)
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+
+	// Try to acquire transaction-level advisory lock
+	var acquired bool
+	err = tx.QueryRow(ctx, `
+        SELECT pg_try_advisory_xact_lock($1)
+    `, lockID).Scan(&acquired)
+
+	if err != nil {
+		p.handleConnectionFailure(err)
+		_ = tx.Rollback(ctx)
+		return nil, fmt.Errorf("failed to acquire advisory lock: %w", err)
+	}
+
+	if !acquired {
+		_ = tx.Rollback(ctx)
+		return nil, fmt.Errorf("failed to acquire lock: already locked")
+	}
+
+	p.logger.Trace().Str("key", key).Int64("lockID", lockID).Msg("distributed lock acquired")
+
+	return &postgresLock{
+		conn:   p.conn,
+		lockID: lockID,
+		logger: p.logger,
+		tx:     tx,
+	}, nil
+}
+
+func (l *postgresLock) Unlock(ctx context.Context) error {
+	if l.tx == nil {
+		return fmt.Errorf("no active transaction")
+	}
+
+	// Commit or rollback the transaction will automatically release the advisory lock
+	err := l.tx.Commit(ctx)
+	if err != nil {
+		// Try to rollback if commit fails
+		rollbackErr := l.tx.Rollback(ctx)
+		if rollbackErr != nil {
+			l.logger.Error().Err(rollbackErr).Msg("failed to rollback transaction after commit failure")
+		}
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	l.logger.Trace().Int64("lockID", l.lockID).Msg("distributed lock released")
+
+	l.tx = nil
+	return nil
+}
+
+func (p *PostgreSQLConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan int64, func(), error) {
+	updates := make(chan int64, 1)
+
+	// Create or get listener for this key
+	listener, err := p.getOrCreateListener(ctx, key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create listener: %w", err)
+	}
+
+	// Add watcher to listener
+	listener.mu.Lock()
+	listener.watchers = append(listener.watchers, updates)
+	listener.mu.Unlock()
+
+	p.logger.Debug().Str("key", key).Int("watchers", len(listener.watchers)).Msg("starting watcher for key")
+
+	// Start fallback polling
+	ticker := time.NewTicker(30 * time.Second)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				p.logger.Debug().Str("key", key).Msg("stopping watcher for key due to context termination")
+				return
+			case <-ticker.C:
+				if val, err := p.getCurrentValue(ctx, key); err == nil {
+					select {
+					case updates <- val:
+					default:
+					}
+				} else {
+					p.logger.Warn().Err(err).Str("key", key).Msg("failed to proactively get current value from postgres")
+				}
+			}
+		}
+	}()
+
+	// Send initial value
+	if val, err := p.getCurrentValue(ctx, key); err == nil {
+		updates <- val
+	}
+
+	cleanup := func() {
+		ticker.Stop()
+
+		listener.mu.Lock()
+		defer listener.mu.Unlock()
+
+		// Remove this watcher
+		for i, ch := range listener.watchers {
+			if ch == updates {
+				listener.watchers = append(listener.watchers[:i], listener.watchers[i+1:]...)
+				break
+			}
+		}
+
+		close(updates)
+	}
+
+	return updates, cleanup, nil
+}
+
+func (p *PostgreSQLConnector) PublishCounterInt64(ctx context.Context, key string, value int64) error {
+	p.connMu.RLock()
+	defer p.connMu.RUnlock()
+
+	if p.conn == nil {
+		return fmt.Errorf("postgres not connected yet")
+	}
+
+	p.logger.Debug().Str("key", key).Int64("value", value).Msg("publishing counter int64 update to postgres")
+
+	channel := sanitizeChannelName(fmt.Sprintf("counter_%s", key))
+	_, err := p.conn.Exec(ctx, fmt.Sprintf("NOTIFY %s, '%d'", channel, value))
+	return err
+}
+
+func (p *PostgreSQLConnector) taskId() string {
+	return fmt.Sprintf("postgres-connect/%s", p.id)
+}
+
+func (p *PostgreSQLConnector) handleConnectionFailure(err error) {
+	if strings.Contains(err.Error(), "connection") {
+		s := p.initializer.State()
+		if s != common.StateInitializing &&
+			s != common.StateRetrying {
+			// p.conn = nil
+			p.logger.Warn().Err(err).Str("state", s.String()).Msg("postgres connection lost; marking connector as failed for reinitialization")
+			p.initializer.MarkTaskAsFailed(p.taskId(), err)
+		} else {
+			p.logger.Warn().Err(err).Str("state", s.String()).Msg("postgres connection lost; and will not be retried due to connector state")
+		}
+	}
+}
+
+func (p *PostgreSQLConnector) getOrCreateListener(ctx context.Context, key string) (*pgxListener, error) {
+	if l, ok := p.listeners.Load(key); ok {
+		return l.(*pgxListener), nil
+	}
+
+	listener := &pgxListener{}
+	channel := sanitizeChannelName(fmt.Sprintf("counter_%s", key))
+
+	conn, err := p.connectListener(ctx, channel)
+	if err != nil {
+		return nil, err
+	}
+
+	go func() {
+		for {
+			if err := ctx.Err(); err != nil {
+				p.logger.Debug().Err(err).Str("key", key).Msg("stopping postgres listener due to context termination")
+				return
+			}
+
+			notification, err := conn.Conn().WaitForNotification(ctx)
+			if err != nil {
+				// Try to reconnect
+				p.logger.Warn().Err(err).Str("key", key).Msg("lost postgres connection, attempting reconnect")
+				if newConn, err := p.connectListener(ctx, channel); err == nil {
+					p.logger.Debug().Str("key", key).Msg("successfully reconnected to postgres channel")
+					conn = newConn
+					continue
+				}
+				return
+			}
+
+			p.logger.Trace().Str("key", key).Interface("payload", notification).Msg("received postgres notification")
+
+			// Parse and broadcast value
+			if val, err := strconv.ParseInt(notification.Payload, 10, 64); err == nil {
+				listener.mu.Lock()
+				for _, ch := range listener.watchers {
+					select {
+					case ch <- val:
+					default:
+					}
+				}
+				listener.mu.Unlock()
+			}
+		}
+	}()
+
+	p.logger.Debug().Str("key", key).Msg("successfully created postgres listener for key")
+	listener.conn = conn.Conn()
+	p.listeners.Store(key, listener)
+	return listener, nil
+}
+
+func (p *PostgreSQLConnector) connectListener(ctx context.Context, channel string) (*pgxpool.Conn, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			p.logger.Debug().Err(err).Str("channel", channel).Msg("stopping postgres listener reconnection due to context termination")
+			return nil, err
+		}
+		p.logger.Trace().Str("channel", channel).Msg("attempting to connect to postgres channel")
+
+		p.connMu.RLock()
+		conn, err := p.listenerPool.Acquire(ctx)
+		p.connMu.RUnlock()
+
+		if err != nil {
+			p.logger.Trace().Err(err).Str("channel", channel).Msg("failed to acquire postgres listener connection, will retry")
+			time.Sleep(time.Second * 5)
+			continue
+		}
+
+		_, err = conn.Exec(ctx, fmt.Sprintf("LISTEN %s", channel))
+		if err != nil {
+			p.logger.Trace().Err(err).Str("channel", channel).Msg("failed to listen to postgres channel, will retry")
+			conn.Release()
+			time.Sleep(time.Second * 5)
+			continue
+		}
+
+		p.logger.Debug().Str("channel", channel).Msg("connected listener to postgres channel")
+		return conn, nil
+	}
+}
+
+func (p *PostgreSQLConnector) getCurrentValue(ctx context.Context, key string) (int64, error) {
+	p.logger.Trace().Str("key", key).Msg("proactively getting current value from postgres")
+	val, err := p.Get(ctx, ConnectorMainIndex, key, "value")
+	if err != nil {
+		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return strconv.ParseInt(val, 10, 64)
 }
 
 func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, index, partitionKey, rangeKey string) (string, error) {
@@ -277,7 +591,7 @@ func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, index, partit
 		}
 	}
 
-	p.logger.Debug().Msgf("getting item from PostgreSQL with wildcard query: %s args: %v", query, args)
+	p.logger.Debug().Str("query", query).Interface("args", args).Msg("getting item from postgres with wildcard")
 
 	var value string
 	err := p.conn.QueryRow(ctx, query, args...).Scan(&value)
@@ -313,6 +627,9 @@ func (p *PostgreSQLConnector) startCleanup(ctx context.Context) {
 }
 
 func (p *PostgreSQLConnector) cleanupExpired(ctx context.Context) error {
+	p.connMu.RLock()
+	defer p.connMu.RUnlock()
+
 	result, err := p.conn.Exec(ctx, fmt.Sprintf(`
 		DELETE FROM %s
 		WHERE expires_at IS NOT NULL AND expires_at <= NOW() AT TIME ZONE 'UTC'
@@ -325,4 +642,30 @@ func (p *PostgreSQLConnector) cleanupExpired(ctx context.Context) error {
 		p.logger.Debug().Int64("count", rowsAffected).Msg("removed expired items")
 	}
 	return nil
+}
+
+// sanitizeChannelName converts any string into a valid postgres channel name
+// postgres identifiers must start with a letter or underscore and can only contain
+// letters, digits, and underscores
+func sanitizeChannelName(key string) string {
+	// Replace any non-alphanumeric character with underscore
+	sanitized := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			return r
+		}
+		return '_'
+	}, key)
+
+	// Ensure it starts with a letter or underscore
+	if len(sanitized) > 0 && !((sanitized[0] >= 'a' && sanitized[0] <= 'z') ||
+		(sanitized[0] >= 'A' && sanitized[0] <= 'Z') || sanitized[0] == '_') {
+		sanitized = "_" + sanitized
+	}
+
+	// Truncate if too long (postgres has a 63-byte limit for identifiers)
+	if len(sanitized) > 63 {
+		sanitized = sanitized[:63]
+	}
+
+	return sanitized
 }

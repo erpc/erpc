@@ -11,6 +11,7 @@ import (
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/common/script"
+	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
@@ -1757,11 +1758,23 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 		},
 	}
 
+	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems: 100_000,
+			},
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
 	upr := upstream.NewUpstreamsRegistry(
 		ctx,
 		&log.Logger,
 		"prjA",
 		upstreamConfigs,
+		ssr,
 		rlr,
 		vr,
 		pr,
@@ -1780,12 +1793,7 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 
 	var pup1, pup2, pup3 *upstream.Upstream
 	if len(upstreamConfigs) > 0 {
-		pup1, err = upr.NewUpstream(
-			"prjA",
-			upstreamConfigs[0],
-			&log.Logger,
-			mt,
-		)
+		pup1, err = upr.NewUpstream(upstreamConfigs[0])
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1797,12 +1805,7 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 	}
 
 	if len(upstreamConfigs) > 1 {
-		pup2, err = upr.NewUpstream(
-			"prjA",
-			upstreamConfigs[1],
-			&log.Logger,
-			mt,
-		)
+		pup2, err = upr.NewUpstream(upstreamConfigs[1])
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1814,12 +1817,7 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 	}
 
 	if len(upstreamConfigs) > 2 {
-		pup3, err = upr.NewUpstream(
-			"prjA",
-			upstreamConfigs[2],
-			&log.Logger,
-			mt,
-		)
+		pup3, err = upr.NewUpstream(upstreamConfigs[2])
 		if err != nil {
 			t.Fatal(err)
 		}
