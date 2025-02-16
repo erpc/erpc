@@ -11,6 +11,7 @@ import (
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
@@ -22,6 +23,7 @@ type ProjectsRegistry struct {
 	appCtx context.Context
 
 	rateLimitersRegistry *upstream.RateLimitersRegistry
+	sharedState          data.SharedStateRegistry
 	evmJsonRpcCache      *evm.EvmJsonRpcCache
 	preparedProjects     map[string]*PreparedProject
 	staticProjects       []*common.ProjectConfig
@@ -33,6 +35,7 @@ func NewProjectsRegistry(
 	appCtx context.Context,
 	logger *zerolog.Logger,
 	staticProjects []*common.ProjectConfig,
+	sharedState data.SharedStateRegistry,
 	evmJsonRpcCache *evm.EvmJsonRpcCache,
 	rateLimitersRegistry *upstream.RateLimitersRegistry,
 	vendorsRegistry *thirdparty.VendorsRegistry,
@@ -43,6 +46,7 @@ func NewProjectsRegistry(
 		logger:               logger,
 		staticProjects:       staticProjects,
 		preparedProjects:     make(map[string]*PreparedProject),
+		sharedState:          sharedState,
 		rateLimitersRegistry: rateLimitersRegistry,
 		evmJsonRpcCache:      evmJsonRpcCache,
 		vendorsRegistry:      vendorsRegistry,
@@ -120,6 +124,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		&lg,
 		prjCfg.Id,
 		prjCfg.Upstreams,
+		r.sharedState,
 		r.rateLimitersRegistry,
 		r.vendorsRegistry,
 		providersRegistry,

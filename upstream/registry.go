@@ -11,6 +11,7 @@ import (
 
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/util"
@@ -23,6 +24,7 @@ type UpstreamsRegistry struct {
 	scoreRefreshInterval time.Duration
 	logger               *zerolog.Logger
 	metricsTracker       *health.Tracker
+	sharedStateRegistry  data.SharedStateRegistry
 	clientRegistry       *clients.ClientRegistry
 	vendorsRegistry      *thirdparty.VendorsRegistry
 	providersRegistry    *thirdparty.ProvidersRegistry
@@ -54,10 +56,11 @@ func NewUpstreamsRegistry(
 	logger *zerolog.Logger,
 	prjId string,
 	upsCfg []*common.UpstreamConfig,
+	ssr data.SharedStateRegistry,
 	rr *RateLimitersRegistry,
 	vr *thirdparty.VendorsRegistry,
 	pr *thirdparty.ProvidersRegistry,
-	proxyPoolRegistry *clients.ProxyPoolRegistry,
+	ppr *clients.ProxyPoolRegistry,
 	mt *health.Tracker,
 	scoreRefreshInterval time.Duration,
 ) *UpstreamsRegistry {
@@ -67,7 +70,8 @@ func NewUpstreamsRegistry(
 		prjId:                prjId,
 		scoreRefreshInterval: scoreRefreshInterval,
 		logger:               logger,
-		clientRegistry:       clients.NewClientRegistry(logger, prjId, proxyPoolRegistry),
+		sharedStateRegistry:  ssr,
+		clientRegistry:       clients.NewClientRegistry(logger, prjId, ppr),
 		rateLimitersRegistry: rr,
 		vendorsRegistry:      vr,
 		providersRegistry:    pr,
@@ -95,21 +99,17 @@ func (u *UpstreamsRegistry) OnUpstreamRegistered(fn func(ups *Upstream) error) {
 	u.onUpstreamRegistered = fn
 }
 
-func (u *UpstreamsRegistry) NewUpstream(
-	projectId string,
-	cfg *common.UpstreamConfig,
-	logger *zerolog.Logger,
-	mt *health.Tracker,
-) (*Upstream, error) {
+func (u *UpstreamsRegistry) NewUpstream(cfg *common.UpstreamConfig) (*Upstream, error) {
 	return NewUpstream(
 		u.appCtx,
-		projectId,
+		u.prjId,
 		cfg,
 		u.clientRegistry,
 		u.rateLimitersRegistry,
 		u.vendorsRegistry,
-		logger,
-		mt,
+		u.logger,
+		u.metricsTracker,
+		u.sharedStateRegistry,
 	)
 }
 
@@ -177,7 +177,7 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 			}
 
 			if status.State == util.StateFailed {
-				return fmt.Errorf("initialization failed with state: %v", status.State)
+				return fmt.Errorf("initialization failed with state: %s", status.State.String())
 			}
 		}
 	}
@@ -316,12 +316,12 @@ func (u *UpstreamsRegistry) sortAndFilterUpstreams(networkId, method string, ups
 		for i, ups := range activeUpstreams {
 			scores[i] = u.upstreamScores[ups.Config().Id][networkId][method]
 		}
-		u.logger.Trace().
-			Str("networkId", networkId).
-			Str("method", method).
-			Strs("upstreams", ids).
-			Floats64("scores", scores).
-			Msgf("sorted upstreams")
+		// u.logger.Trace().
+		// 	Str("networkId", networkId).
+		// 	Str("method", method).
+		// 	Strs("upstreams", ids).
+		// 	Floats64("scores", scores).
+		// 	Msgf("sorted upstreams")
 	}
 
 	return activeUpstreams
@@ -389,7 +389,7 @@ func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamCo
 
 			var err error
 			if ups == nil {
-				ups, err = u.NewUpstream(u.prjId, cfg, u.logger, u.metricsTracker)
+				ups, err = u.NewUpstream(cfg)
 				if err != nil {
 					return err
 				}

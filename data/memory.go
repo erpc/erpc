@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -22,6 +23,7 @@ type MemoryConnector struct {
 	logger        *zerolog.Logger
 	cache         *lru.Cache[string, cacheItem]
 	cleanupTicker *time.Ticker
+	locks         sync.Map // map[string]*sync.Mutex
 }
 
 type cacheItem struct {
@@ -119,6 +121,40 @@ func (m *MemoryConnector) Get(ctx context.Context, index, partitionKey, rangeKey
 	}
 
 	return item.value, nil
+}
+
+func (m *MemoryConnector) Lock(ctx context.Context, key string, ttl time.Duration) (DistributedLock, error) {
+	value, _ := m.locks.LoadOrStore(key, &sync.Mutex{})
+	mutex := value.(*sync.Mutex)
+
+	mutex.Lock()
+	return &memoryLock{
+		mutex: mutex,
+	}, nil
+}
+
+type memoryLock struct {
+	mutex *sync.Mutex
+}
+
+func (l *memoryLock) Unlock(ctx context.Context) error {
+	l.mutex.Unlock()
+	return nil
+}
+
+// WatchCounterInt64 is a no-op for memory connector since distributed pub/sub
+// is unnecessary when all operations are in-memory within the same process.
+// Any updates to counters are immediately visible to all code accessing the
+// memory connector instance.
+func (m *MemoryConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan int64, func(), error) {
+	ch := make(chan int64)
+	return ch, func() {}, nil
+}
+
+// PublishCounterInt64 is a no-op for memory connector since distributed pub/sub
+// is unnecessary when all operations are in-memory within the same process.
+func (m *MemoryConnector) PublishCounterInt64(ctx context.Context, key string, value int64) error {
+	return nil
 }
 
 func (m *MemoryConnector) getWithWildcard(_ context.Context, _, partitionKey, rangeKey string) (string, error) {

@@ -19,6 +19,7 @@ import (
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/common/script"
+	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
@@ -84,6 +85,17 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upsReg := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
@@ -91,6 +103,7 @@ func TestNetwork_Forward(t *testing.T) {
 			[]*common.UpstreamConfig{
 				up1,
 			},
+			ssr,
 			rateLimitersRegistry,
 			vr,
 			pr,
@@ -193,6 +206,17 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upsReg := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
@@ -200,6 +224,7 @@ func TestNetwork_Forward(t *testing.T) {
 			[]*common.UpstreamConfig{
 				up1,
 			},
+			ssr,
 			rateLimitersRegistry,
 			vr,
 			pr,
@@ -300,6 +325,17 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
@@ -307,6 +343,7 @@ func TestNetwork_Forward(t *testing.T) {
 			[]*common.UpstreamConfig{
 				up1,
 			},
+			ssr,
 			rlr,
 			vndr,
 			pr,
@@ -322,12 +359,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -414,6 +446,17 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 			Failsafe: fsCfg,
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
@@ -421,6 +464,7 @@ func TestNetwork_Forward(t *testing.T) {
 			[]*common.UpstreamConfig{
 				up1,
 			},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -436,12 +480,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -556,6 +595,17 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 			Failsafe: upsFsCfg,
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
@@ -564,6 +614,7 @@ func TestNetwork_Forward(t *testing.T) {
 				up1,
 				up2,
 			},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -579,12 +630,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup1, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -594,12 +640,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup1.Client = cl
 
-		pup2, err := upr.NewUpstream(
-			"prjA",
-			up2,
-			&log.Logger,
-			mt,
-		)
+		pup2, err := upr.NewUpstream(up2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -710,6 +751,17 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 			Failsafe: upsFsCfg,
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
@@ -718,6 +770,7 @@ func TestNetwork_Forward(t *testing.T) {
 				up1,
 				up2,
 			},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -733,12 +786,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup1, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -748,12 +796,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup1.Client = cl
 
-		pup2, err := upr.NewUpstream(
-			"prjA",
-			up2,
-			&log.Logger,
-			mt,
-		)
+		pup2, err := upr.NewUpstream(up2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -876,11 +919,23 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -898,12 +953,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Create and register clients for both upstreams
-		pup1, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -913,12 +963,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup1.Client = cl1
 
-		pup2, err := upr.NewUpstream(
-			"prjA",
-			up2,
-			&log.Logger,
-			mt,
-		)
+		pup2, err := upr.NewUpstream(up2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1071,11 +1116,23 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -1093,12 +1150,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Create and register clients for both upstreams
-		pup1, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1108,12 +1160,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup1.Client = cl1
 
-		pup2, err := upr.NewUpstream(
-			"prjA",
-			up2,
-			&log.Logger,
-			mt,
-		)
+		pup2, err := upr.NewUpstream(up2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1186,153 +1233,160 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 
 	t.Run("ForwardRespectsIgnoreClientErrorsTrue", func(t *testing.T) {
-        util.ResetGock()
-        defer util.ResetGock()
-        util.SetupMocksForEvmStatePoller()
-        defer util.AssertNoPendingMocks(t, 0)
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
-        var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"}]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"}]}`)
 
-        // Mock a client error response (400)
-        gock.New("http://rpc1.localhost").
-            Post("").
-            Reply(400).
-            JSON([]byte(`{"error":{"code":-32602,"message":"invalid argument 0: json: cannot unmarshal string into Go value of type map[string]interface {}"}}}`))
+		// Mock a client error response (400)
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Reply(400).
+			JSON([]byte(`{"error":{"code":-32602,"message":"invalid argument 0: json: cannot unmarshal string into Go value of type map[string]interface {}"}}}`))
 
-        ctx, cancel := context.WithCancel(context.Background())
-        defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-        clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
-        rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
-            Budgets: []*common.RateLimitBudgetConfig{},
-        }, &log.Logger)
-        if err != nil {
-            t.Fatal(err)
-        }
-        mt := health.NewTracker("prjA", 2*time.Second)
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+			Budgets: []*common.RateLimitBudgetConfig{},
+		}, &log.Logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mt := health.NewTracker("prjA", 2*time.Second)
 
-        up1 := &common.UpstreamConfig{
-            Id:       "rpc1",
-            Type:     common.UpstreamTypeEvm,
-            Endpoint: "http://rpc1.localhost",
-            Evm: &common.EvmUpstreamConfig{
-                ChainId: 123,
-            },
-        }
+		up1 := &common.UpstreamConfig{
+			Id:       "rpc1",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
 
-        vr := thirdparty.NewVendorsRegistry()
-        pr, err := thirdparty.NewProvidersRegistry(
-            &log.Logger,
-            vr,
-            []*common.ProviderConfig{},
-            nil,
-        )
-        if err != nil {
-            t.Fatal(err)
-        }
-        upr := upstream.NewUpstreamsRegistry(
-            ctx,
-            &log.Logger,
-            "prjA",
-            []*common.UpstreamConfig{up1},
-            rlr,
-            vr,
-            pr,
-            nil,
-            mt,
-            1*time.Second,
-        )
-        err = upr.Bootstrap(ctx)
-        if err != nil {
-            t.Fatal(err)
-        }
-        err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-        if err != nil {
-            t.Fatal(err)
-        }
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
+		upr := upstream.NewUpstreamsRegistry(
+			ctx,
+			&log.Logger,
+			"prjA",
+			[]*common.UpstreamConfig{up1},
+			ssr,
+			rlr,
+			vr,
+			pr,
+			nil,
+			mt,
+			1*time.Second,
+		)
+		err = upr.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+		if err != nil {
+			t.Fatal(err)
+		}
 
-        pup1, err := upr.NewUpstream(
-            "prjA",
-            up1,
-            &log.Logger,
-            mt,
-        )
-        if err != nil {
-            t.Fatal(err)
-        }
-        cl1, err := clr.GetOrCreateClient(ctx, pup1)
-        if err != nil {
-            t.Fatal(err)
-        }
-        pup1.Client = cl1
+		pup1, err := upr.NewUpstream(up1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1.Client = cl1
 
-        ntw, err := NewNetwork(
-            ctx,
-            &log.Logger,
-            "prjA",
-            &common.NetworkConfig{
-                Architecture: common.ArchitectureEvm,
-                Evm: &common.EvmNetworkConfig{
-                    ChainId: 123,
-                },
-                Failsafe: &common.FailsafeConfig{
-                    Retry: &common.RetryPolicyConfig{
-                        MaxAttempts:        3,
-                        IgnoreClientErrors: true, // Should not retry client errors
-                    },
-                },
-            },
-            rlr,
-            upr,
-            mt,
-        )
-        if err != nil {
-            t.Fatal(err)
-        }
+		ntw, err := NewNetwork(
+			ctx,
+			&log.Logger,
+			"prjA",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+				},
+				Failsafe: &common.FailsafeConfig{
+					Retry: &common.RetryPolicyConfig{
+						MaxAttempts:        3,
+						IgnoreClientErrors: true, // Should not retry client errors
+					},
+				},
+			},
+			rlr,
+			upr,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
 
-        ntw.Bootstrap(ctx)
-        time.Sleep(100 * time.Millisecond)
+		ntw.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 
-        poller := pup1.EvmStatePoller()
-        poller.SuggestLatestBlock(9)
-        poller.SuggestFinalizedBlock(8)
+		poller := pup1.EvmStatePoller()
+		poller.SuggestLatestBlock(9)
+		poller.SuggestFinalizedBlock(8)
 
-        upstream.ReorderUpstreams(upr)
+		upstream.ReorderUpstreams(upr)
 
-        fakeReq := common.NewNormalizedRequest(requestBytes)
-        resp, err := ntw.Forward(ctx, fakeReq)
+		fakeReq := common.NewNormalizedRequest(requestBytes)
+		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if resp != nil {
 			t.Fatalf("Expected nil response, got %v", resp)
 		}
 
-        // Should return the client error directly without retrying
-        if err == nil {
-            t.Fatal("Expected client error, got nil")
-        }
+		// Should return the client error directly without retrying
+		if err == nil {
+			t.Fatal("Expected client error, got nil")
+		}
 
-        if !common.IsClientError(err) {
-            t.Errorf("Expected client error, got: %v", err)
-        }
-    })
+		if !common.IsClientError(err) {
+			t.Errorf("Expected client error, got: %v", err)
+		}
+	})
 
-    t.Run("ForwardRespectsIgnoreClientErrorsFalse", func(t *testing.T) {
-        util.ResetGock()
-        defer util.ResetGock()
-        util.SetupMocksForEvmStatePoller()
-        defer util.AssertNoPendingMocks(t, 0)
+	t.Run("ForwardRespectsIgnoreClientErrorsFalse", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
 
-        var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"}]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"}]}`)
 
-        // Mock multiple client error responses since we expect retries
-        gock.New("http://rpc1.localhost").
-            Times(1).
-            Post("").
+		// Mock multiple client error responses since we expect retries
+		gock.New("http://rpc1.localhost").
+			Times(1).
+			Post("").
 			Filter(func(request *http.Request) bool {
 				return strings.Contains(util.SafeReadBody(request), "eth_call")
 			}).
-            Reply(400).
-            JSON([]byte(`{"error":{"code":-32602,"message":"invalid argument 0: json: cannot unmarshal string into Go value of type map[string]interface {}"}}}`))
+			Reply(400).
+			JSON([]byte(`{"error":{"code":-32602,"message":"invalid argument 0: json: cannot unmarshal string into Go value of type map[string]interface {}"}}}`))
 
 		gock.New("http://rpc2.localhost").
 			Post("").
@@ -1342,86 +1396,88 @@ func TestNetwork_Forward(t *testing.T) {
 			Reply(200).
 			JSON([]byte(`{"result":"0x123"}`))
 
-        ctx, cancel := context.WithCancel(context.Background())
-        defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-        clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
-        rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
-            Budgets: []*common.RateLimitBudgetConfig{},
-        }, &log.Logger)
-        if err != nil {
-            t.Fatal(err)
-        }
-        mt := health.NewTracker("prjA", 2*time.Second)
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+			Budgets: []*common.RateLimitBudgetConfig{},
+		}, &log.Logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mt := health.NewTracker("prjA", 2*time.Second)
 
-        up1 := &common.UpstreamConfig{
-            Id:       "rpc1",
-            Type:     common.UpstreamTypeEvm,
-            Endpoint: "http://rpc1.localhost",
-            Evm: &common.EvmUpstreamConfig{
-                ChainId: 123,
-            },
-        }
+		up1 := &common.UpstreamConfig{
+			Id:       "rpc1",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
 		up2 := &common.UpstreamConfig{
-			Id: "rpc2",
-			Type: common.UpstreamTypeEvm,
+			Id:       "rpc2",
+			Type:     common.UpstreamTypeEvm,
 			Endpoint: "http://rpc2.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId: 123,
 			},
 		}
-        vr := thirdparty.NewVendorsRegistry()
-        pr, err := thirdparty.NewProvidersRegistry(
-            &log.Logger,
-            vr,
-            []*common.ProviderConfig{},
-            nil,
-        )
-        if err != nil {
-            t.Fatal(err)
-        }
-        upr := upstream.NewUpstreamsRegistry(
-            ctx,
-            &log.Logger,
-            "prjA",
-            []*common.UpstreamConfig{up1, up2},
-            rlr,
-            vr,
-            pr,
-            nil,
-            mt,
-            1*time.Second,
-        )
-        err = upr.Bootstrap(ctx)
-        if err != nil {
-            t.Fatal(err)
-        }
-        err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-        if err != nil {
-            t.Fatal(err)
-        }
-
-        pup1, err := upr.NewUpstream(
-            "prjA",
-            up1,
-            &log.Logger,
-            mt,
-        )
-        if err != nil {
-            t.Fatal(err)
-        }
-        cl1, err := clr.GetOrCreateClient(ctx, pup1)
-        if err != nil {
-            t.Fatal(err)
-        }
-        pup1.Client = cl1
-
-		pup2, err := upr.NewUpstream(
-			"prjA",
-			up2,
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
-			mt,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
 		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
+		upr := upstream.NewUpstreamsRegistry(
+			ctx,
+			&log.Logger,
+			"prjA",
+			[]*common.UpstreamConfig{up1, up2},
+			ssr,
+			rlr,
+			vr,
+			pr,
+			nil,
+			mt,
+			1*time.Second,
+		)
+		err = upr.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		pup1, err := upr.NewUpstream(up1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1.Client = cl1
+
+		pup2, err := upr.NewUpstream(up2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1431,48 +1487,48 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup2.Client = cl2
 
-        ntw, err := NewNetwork(
-            ctx,
-            &log.Logger,
-            "prjA",
-            &common.NetworkConfig{
-                Architecture: common.ArchitectureEvm,
-                Evm: &common.EvmNetworkConfig{
-                    ChainId: 123,
-                },
-                Failsafe: &common.FailsafeConfig{
-                    Retry: &common.RetryPolicyConfig{
-                        MaxAttempts:        3,
-                        IgnoreClientErrors: false, // Should retry client errors
-                    },
-                },
-            },
-            rlr,
-            upr,
-            mt,
-        )
-        if err != nil {
-            t.Fatal(err)
-        }
+		ntw, err := NewNetwork(
+			ctx,
+			&log.Logger,
+			"prjA",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+				},
+				Failsafe: &common.FailsafeConfig{
+					Retry: &common.RetryPolicyConfig{
+						MaxAttempts:        3,
+						IgnoreClientErrors: false, // Should retry client errors
+					},
+				},
+			},
+			rlr,
+			upr,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
 
-        ntw.Bootstrap(ctx)
-        time.Sleep(100 * time.Millisecond)
+		ntw.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 
-        poller := pup1.EvmStatePoller()
-        poller.SuggestLatestBlock(9)
-        poller.SuggestFinalizedBlock(8)
+		poller := pup1.EvmStatePoller()
+		poller.SuggestLatestBlock(9)
+		poller.SuggestFinalizedBlock(8)
 
-        upstream.ReorderUpstreams(upr)
+		upstream.ReorderUpstreams(upr)
 
-        fakeReq := common.NewNormalizedRequest(requestBytes)
-        resp, err := ntw.Forward(ctx, fakeReq)
+		fakeReq := common.NewNormalizedRequest(requestBytes)
+		resp, err := ntw.Forward(ctx, fakeReq)
 
-        if resp == nil {
+		if resp == nil {
 			t.Fatalf("Expected response, got %v", resp)
 		}
-        if err != nil {
-            t.Fatalf("Expected no error, got %v", err)
-        }
+		if err != nil {
+			t.Fatalf("Expected no error, got %v", err)
+		}
 
 		jrr, err := resp.JsonRpcResponse()
 		if err != nil {
@@ -1482,172 +1538,174 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected result, got nil")
 		}
 		assert.Equal(t, "\"0x123\"", strings.ToLower(string(jrr.Result)))
-    })
+	})
 
-    t.Run("ForwardRespectsIgnoreClientErrorsWithMultipleUpstreams", func(t *testing.T) {
-        util.ResetGock()
-        defer util.ResetGock()
-        util.SetupMocksForEvmStatePoller()
-        defer util.AssertNoPendingMocks(t, 1) // Second upstream is not called
+	t.Run("ForwardRespectsIgnoreClientErrorsWithMultipleUpstreams", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 1) // Second upstream is not called
 
-        var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"}]}`)
+		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"}]}`)
 
-        // First upstream returns client error
-        gock.New("http://rpc1.localhost").
-            Post("").
-            Reply(400).
-            JSON([]byte(`{"error":{"code":-32602,"message":"invalid argument 0"}}`))
+		// First upstream returns client error
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Reply(400).
+			JSON([]byte(`{"error":{"code":-32602,"message":"invalid argument 0"}}`))
 
-        // Second upstream would succeed if called
-        gock.New("http://rpc2.localhost").
-            Post("").
-            Reply(200).
-            JSON([]byte(`{"result":"0x123"}`))
+		// Second upstream would succeed if called
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Reply(200).
+			JSON([]byte(`{"result":"0x123"}`))
 
-        ctx, cancel := context.WithCancel(context.Background())
-        defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-        clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
-        rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
-            Budgets: []*common.RateLimitBudgetConfig{},
-        }, &log.Logger)
-        if err != nil {
-            t.Fatal(err)
-        }
-        mt := health.NewTracker("prjA", 2*time.Second)
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+			Budgets: []*common.RateLimitBudgetConfig{},
+		}, &log.Logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mt := health.NewTracker("prjA", 2*time.Second)
 
-        up1 := &common.UpstreamConfig{
-            Id:       "rpc1",
-            Type:     common.UpstreamTypeEvm,
-            Endpoint: "http://rpc1.localhost",
-            Evm: &common.EvmUpstreamConfig{
-                ChainId: 123,
-            },
-        }
+		up1 := &common.UpstreamConfig{
+			Id:       "rpc1",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
 
-        up2 := &common.UpstreamConfig{
-            Id:       "rpc2",
-            Type:     common.UpstreamTypeEvm,
-            Endpoint: "http://rpc2.localhost",
-            Evm: &common.EvmUpstreamConfig{
-                ChainId: 123,
-            },
-        }
+		up2 := &common.UpstreamConfig{
+			Id:       "rpc2",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://rpc2.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
 
-        vr := thirdparty.NewVendorsRegistry()
-        pr, err := thirdparty.NewProvidersRegistry(
-            &log.Logger,
-            vr,
-            []*common.ProviderConfig{},
-            nil,
-        )
-        if err != nil {
-            t.Fatal(err)
-        }
-        upr := upstream.NewUpstreamsRegistry(
-            ctx,
-            &log.Logger,
-            "prjA",
-            []*common.UpstreamConfig{up1, up2},
-            rlr,
-            vr,
-            pr,
-            nil,
-            mt,
-            1*time.Second,
-        )
-        err = upr.Bootstrap(ctx)
-        if err != nil {
-            t.Fatal(err)
-        }
-        err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-        if err != nil {
-            t.Fatal(err)
-        }
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
+		upr := upstream.NewUpstreamsRegistry(
+			ctx,
+			&log.Logger,
+			"prjA",
+			[]*common.UpstreamConfig{up1, up2},
+			ssr,
+			rlr,
+			vr,
+			pr,
+			nil,
+			mt,
+			1*time.Second,
+		)
+		err = upr.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+		if err != nil {
+			t.Fatal(err)
+		}
 
-        pup1, err := upr.NewUpstream(
-            "prjA",
-            up1,
-            &log.Logger,
-            mt,
-        )
-        if err != nil {
-            t.Fatal(err)
-        }
-        cl1, err := clr.GetOrCreateClient(ctx, pup1)
-        if err != nil {
-            t.Fatal(err)
-        }
-        pup1.Client = cl1
+		pup1, err := upr.NewUpstream(up1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1.Client = cl1
 
-        pup2, err := upr.NewUpstream(
-            "prjA",
-            up2,
-            &log.Logger,
-            mt,
-        )
-        if err != nil {
-            t.Fatal(err)
-        }
-        cl2, err := clr.GetOrCreateClient(ctx, pup2)
-        if err != nil {
-            t.Fatal(err)
-        }
-        pup2.Client = cl2
+		pup2, err := upr.NewUpstream(up2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup2.Client = cl2
 
-        ntw, err := NewNetwork(
-            ctx,
-            &log.Logger,
-            "prjA",
-            &common.NetworkConfig{
-                Architecture: common.ArchitectureEvm,
-                Evm: &common.EvmNetworkConfig{
-                    ChainId: 123,
-                },
-                Failsafe: &common.FailsafeConfig{
-                    Retry: &common.RetryPolicyConfig{
-                        MaxAttempts:        3,
-                        IgnoreClientErrors: true, // Should not try other upstreams on client error
-                    },
-                },
-            },
-            rlr,
-            upr,
-            mt,
-        )
-        if err != nil {
-            t.Fatal(err)
-        }
+		ntw, err := NewNetwork(
+			ctx,
+			&log.Logger,
+			"prjA",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+				},
+				Failsafe: &common.FailsafeConfig{
+					Retry: &common.RetryPolicyConfig{
+						MaxAttempts:        3,
+						IgnoreClientErrors: true, // Should not try other upstreams on client error
+					},
+				},
+			},
+			rlr,
+			upr,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
 
-        ntw.Bootstrap(ctx)
-        time.Sleep(100 * time.Millisecond)
+		ntw.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
 
-        poller1 := pup1.EvmStatePoller()
-        poller1.SuggestLatestBlock(9)
-        poller1.SuggestFinalizedBlock(8)
+		poller1 := pup1.EvmStatePoller()
+		poller1.SuggestLatestBlock(9)
+		poller1.SuggestFinalizedBlock(8)
 
-        poller2 := pup2.EvmStatePoller()
-        poller2.SuggestLatestBlock(9)
-        poller2.SuggestFinalizedBlock(8)
+		poller2 := pup2.EvmStatePoller()
+		poller2.SuggestLatestBlock(9)
+		poller2.SuggestFinalizedBlock(8)
 
-        upstream.ReorderUpstreams(upr)
+		upstream.ReorderUpstreams(upr)
 
-        fakeReq := common.NewNormalizedRequest(requestBytes)
-        resp, err := ntw.Forward(ctx, fakeReq)
+		fakeReq := common.NewNormalizedRequest(requestBytes)
+		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if resp != nil {
 			t.Fatalf("Expected nil response, got %v", resp)
 		}
 
-        // Should return the client error from first upstream without trying second
-        if err == nil {
-            t.Fatal("Expected client error, got nil")
-        }
+		// Should return the client error from first upstream without trying second
+		if err == nil {
+			t.Fatal("Expected client error, got nil")
+		}
 
-        if !common.IsClientError(err) {
-            t.Errorf("Expected client error, got: %v", err)
-        }
-    })
+		if !common.IsClientError(err) {
+			t.Errorf("Expected client error, got: %v", err)
+		}
+	})
 
 	t.Run("ForwardWithMinimumMemoryAllocation", func(t *testing.T) {
 		util.ResetGock()
@@ -1713,11 +1771,23 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 		// Initialize the upstreams registry
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -1735,12 +1805,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Create and register clients for both upstreams
-		pup1, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1910,12 +1975,24 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		// Initialize the upstreams registry
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -1933,12 +2010,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Create and register clients for both upstreams
-		pup1, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1948,12 +2020,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup1.Client = cl1
 
-		pup2, err := upr.NewUpstream(
-			"prjA",
-			up2,
-			&log.Logger,
-			mt,
-		)
+		pup2, err := upr.NewUpstream(up2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2109,12 +2176,24 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		// Initialize the upstreams registry
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -2132,12 +2211,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Create and register clients for both upstreams
-		pup1, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2147,12 +2221,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup1.Client = cl1
 
-		pup2, err := upr.NewUpstream(
-			"prjA",
-			up2,
-			&log.Logger,
-			mt,
-		)
+		pup2, err := upr.NewUpstream(up2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2298,12 +2367,24 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		// Initialize the upstreams registry
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -2321,12 +2402,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Create and register clients for both upstreams
-		pup1, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2336,12 +2412,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup1.Client = cl1
 
-		pup2, err := upr.NewUpstream(
-			"prjA",
-			up2,
-			&log.Logger,
-			mt,
-		)
+		pup2, err := upr.NewUpstream(up2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2477,12 +2548,24 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		// Initialize the upstreams registry
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -2502,12 +2585,7 @@ func TestNetwork_Forward(t *testing.T) {
 		upstream.ReorderUpstreams(upr)
 
 		// Create and register clients for both upstreams
-		pup1, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2517,12 +2595,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup1.Client = cl1
 
-		pup2, err := upr.NewUpstream(
-			"prjA",
-			up2,
-			&log.Logger,
-			mt,
-		)
+		pup2, err := upr.NewUpstream(up2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2670,12 +2743,24 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		// Set up registry with both upstreams
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -2691,7 +2776,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Create and register clients
-		pup1, err := upr.NewUpstream("prjA", up1, &log.Logger, mt)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2701,7 +2786,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup1.Client = cl1
 
-		pup2, err := upr.NewUpstream("prjA", up2, &log.Logger, mt)
+		pup2, err := upr.NewUpstream(up2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2849,12 +2934,24 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		// Initialize the upstreams registry
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -2872,12 +2969,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Create and register clients for both upstreams
-		pup1, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2887,12 +2979,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup1.Client = cl1
 
-		pup2, err := upr.NewUpstream(
-			"prjA",
-			up2,
-			&log.Logger,
-			mt,
-		)
+		pup2, err := upr.NewUpstream(up2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3037,12 +3124,24 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		// Initialize the upstreams registry
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -3060,12 +3159,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Create and register clients for both upstreams
-		pup1, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3075,12 +3169,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup1.Client = cl1
 
-		pup2, err := upr.NewUpstream(
-			"prjA",
-			up2,
-			&log.Logger,
-			mt,
-		)
+		pup2, err := upr.NewUpstream(up2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3206,11 +3295,23 @@ func TestNetwork_Forward(t *testing.T) {
 				ChainId: 123,
 			},
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -3226,12 +3327,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup1, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3330,6 +3426,17 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 			AutoIgnoreUnsupportedMethods: &common.TRUE,
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
@@ -3337,6 +3444,7 @@ func TestNetwork_Forward(t *testing.T) {
 			[]*common.UpstreamConfig{
 				up1,
 			},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -3352,12 +3460,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3481,6 +3584,17 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 			Failsafe: fsCfg,
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
@@ -3490,6 +3604,7 @@ func TestNetwork_Forward(t *testing.T) {
 				up2,
 				up3,
 			},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -3505,12 +3620,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup1, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3519,12 +3629,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 		pup1.Client = cl1
-		pup2, err := upr.NewUpstream(
-			"prjA",
-			up2,
-			&log.Logger,
-			mt,
-		)
+		pup2, err := upr.NewUpstream(up2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3533,12 +3638,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 		pup2.Client = cl2
-		pup3, err := upr.NewUpstream(
-			"prjA",
-			up3,
-			&log.Logger,
-			mt,
-		)
+		pup3, err := upr.NewUpstream(up3)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3639,6 +3739,17 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 			Failsafe: fsCfg,
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
@@ -3646,6 +3757,7 @@ func TestNetwork_Forward(t *testing.T) {
 			[]*common.UpstreamConfig{
 				up1,
 			},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -3661,12 +3773,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup1, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3765,6 +3872,17 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 			Failsafe: fsCfg,
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
@@ -3772,6 +3890,7 @@ func TestNetwork_Forward(t *testing.T) {
 			[]*common.UpstreamConfig{
 				up1,
 			},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -3787,12 +3906,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3877,6 +3991,17 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upsReg := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
@@ -3891,6 +4016,7 @@ func TestNetwork_Forward(t *testing.T) {
 					},
 				},
 			},
+			ssr,
 			rateLimitersRegistry,
 			vr,
 			pr,
@@ -3992,6 +4118,17 @@ func TestNetwork_Forward(t *testing.T) {
 				ChainId: 123,
 			},
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
@@ -3999,6 +4136,7 @@ func TestNetwork_Forward(t *testing.T) {
 			[]*common.UpstreamConfig{
 				up1,
 			},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -4014,12 +4152,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4117,6 +4250,17 @@ func TestNetwork_Forward(t *testing.T) {
 				ChainId: 123,
 			},
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
@@ -4124,6 +4268,7 @@ func TestNetwork_Forward(t *testing.T) {
 			[]*common.UpstreamConfig{
 				up1,
 			},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -4139,12 +4284,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4239,6 +4379,17 @@ func TestNetwork_Forward(t *testing.T) {
 				ChainId: 123,
 			},
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
@@ -4246,6 +4397,7 @@ func TestNetwork_Forward(t *testing.T) {
 			[]*common.UpstreamConfig{
 				up1,
 			},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -4261,12 +4413,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4366,6 +4513,17 @@ func TestNetwork_Forward(t *testing.T) {
 				ChainId: 123,
 			},
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
@@ -4373,6 +4531,7 @@ func TestNetwork_Forward(t *testing.T) {
 			[]*common.UpstreamConfig{
 				up1,
 			},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -4388,12 +4547,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4498,11 +4652,23 @@ func TestNetwork_Forward(t *testing.T) {
 				ChainId: 123,
 			},
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -4518,12 +4684,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup1, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4533,12 +4694,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup1.Client = cl1
 
-		pup2, err := upr.NewUpstream(
-			"prjA",
-			up2,
-			&log.Logger,
-			mt,
-		)
+		pup2, err := upr.NewUpstream(up2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4650,11 +4806,23 @@ func TestNetwork_Forward(t *testing.T) {
 				ChainId: 123,
 			},
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -4670,12 +4838,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup1, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4685,12 +4848,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup1.Client = cl1
 
-		pup2, err := upr.NewUpstream(
-			"prjA",
-			up2,
-			&log.Logger,
-			mt,
-		)
+		pup2, err := upr.NewUpstream(up2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4801,11 +4959,23 @@ func TestNetwork_Forward(t *testing.T) {
 				ChainId: 123,
 			},
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -4821,12 +4991,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup1, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4836,12 +5001,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup1.Client = cl1
 
-		pup2, err := upr.NewUpstream(
-			"prjA",
-			up2,
-			&log.Logger,
-			mt,
-		)
+		pup2, err := upr.NewUpstream(up2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4951,11 +5111,23 @@ func TestNetwork_Forward(t *testing.T) {
 				ChainId: 123,
 			},
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"test_cb",
 			[]*common.UpstreamConfig{up1},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -4971,12 +5143,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup1, err := upr.NewUpstream(
-			"test_cb",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -5079,11 +5246,23 @@ func TestNetwork_Forward(t *testing.T) {
 				ChainId: 123,
 			},
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"test_cb",
 			[]*common.UpstreamConfig{up1},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -5100,12 +5279,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		pup1, err := upr.NewUpstream(
-			"test_cb",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -5215,11 +5389,23 @@ func TestNetwork_Forward(t *testing.T) {
 				},
 			},
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"test_cb",
 			[]*common.UpstreamConfig{up1},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -5236,12 +5422,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup1, err := upr.NewUpstream(
-			"test_cb",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -5355,11 +5536,23 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 		}
 
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -5375,12 +5568,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup1, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -5495,11 +5683,23 @@ func TestNetwork_Forward(t *testing.T) {
 				ChainId: 123,
 			},
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -5515,12 +5715,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup1, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -5530,12 +5725,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup1.Client = cl1
 
-		pup2, err := upr.NewUpstream(
-			"prjA",
-			up2,
-			&log.Logger,
-			mt,
-		)
+		pup2, err := upr.NewUpstream(up2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -5627,11 +5817,23 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 			IgnoreMethods: []string{"ignored_method"},
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -5647,12 +5849,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup1, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -5755,11 +5952,23 @@ func TestNetwork_Forward(t *testing.T) {
 				ChainId: 123,
 			},
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -5775,12 +5984,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pup1, err := upr.NewUpstream(
-			"prjA",
-			up1,
-			&log.Logger,
-			mt,
-		)
+		pup1, err := upr.NewUpstream(up1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -5790,12 +5994,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 		pup1.Client = cl1
 
-		pup2, err := upr.NewUpstream(
-			"prjA",
-			up2,
-			&log.Logger,
-			mt,
-		)
+		pup2, err := upr.NewUpstream(up2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -5915,11 +6114,23 @@ func TestNetwork_Forward(t *testing.T) {
 				ChainId: 123,
 			},
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1, up2},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -6029,11 +6240,23 @@ func TestNetwork_Forward(t *testing.T) {
 				SupportsBatch: &FALSE,
 			},
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -6140,11 +6363,23 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 			VendorName: "llama",
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -6251,11 +6486,23 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 			VendorName: "llama",
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{up1},
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -6349,11 +6596,23 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upstreamsRegistry := upstream.NewUpstreamsRegistry(
 			ctx,
 			&logger,
 			projectID,
 			upstreamConfigs,
+			ssr,
 			rateLimitersRegistry,
 			vr,
 			pr,
@@ -6541,11 +6800,23 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		upr := upstream.NewUpstreamsRegistry(
 			ctx,
 			&log.Logger,
 			"prjA",
 			[]*common.UpstreamConfig{upEnvio, upRpc1}, // Both upstreams
+			ssr,
 			rlr,
 			vr,
 			pr,
@@ -6613,6 +6884,13 @@ func TestNetwork_Forward(t *testing.T) {
 				{
 					Id:     "mock",
 					Driver: "mock",
+					Mock: &common.MockConnectorConfig{
+						MemoryConnectorConfig: common.MemoryConnectorConfig{
+							MaxItems: 100_000,
+						},
+						// GetDelay: 10 * time.Second,
+						// SetDelay: 10 * time.Second,
+					},
 				},
 			},
 			Policies: []*common.CachePolicyConfig{
@@ -7004,7 +7282,7 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
 				StatePollerInterval: "50ms", // Fast polling for test
-				StatePollerDebounce: "1ms", // Small debounce for test
+				StatePollerDebounce: "1ms",  // Small debounce for test
 			},
 			JsonRpc: &common.JsonRpcUpstreamConfig{
 				SupportsBatch: &common.FALSE,
@@ -8407,6 +8685,13 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 				{
 					Id:     "mock",
 					Driver: "mock",
+					Mock: &common.MockConnectorConfig{
+						MemoryConnectorConfig: common.MemoryConnectorConfig{
+							MaxItems: 100_000,
+						},
+						// GetDelay: 10 * time.Second,
+						// SetDelay: 10 * time.Second,
+					},
 				},
 			},
 			Policies: []*common.CachePolicyConfig{
@@ -8617,11 +8902,23 @@ func setupTestNetworkSimple(t *testing.T, ctx context.Context, upstreamConfig *c
 	if err != nil {
 		t.Fatal(err)
 	}
+	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems: 100_000,
+			},
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
 	upstreamsRegistry := upstream.NewUpstreamsRegistry(
 		ctx,
 		&log.Logger,
 		"test",
 		[]*common.UpstreamConfig{upstreamConfig},
+		ssr,
 		rateLimitersRegistry,
 		vr,
 		pr,
@@ -8705,11 +9002,23 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.C
 	if err != nil {
 		t.Fatal(err)
 	}
+	ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems: 100_000,
+			},
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
 	upstreamsRegistry := upstream.NewUpstreamsRegistry(
 		ctx,
 		&log.Logger,
 		"test",
 		[]*common.UpstreamConfig{up1, up2},
+		ssr,
 		rateLimitersRegistry,
 		vr,
 		pr,

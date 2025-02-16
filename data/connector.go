@@ -14,10 +14,17 @@ const (
 	ConnectorReverseIndex = "idx_reverse"
 )
 
+type DistributedLock interface {
+	Unlock(ctx context.Context) error
+}
+
 type Connector interface {
 	Id() string
 	Get(ctx context.Context, index, partitionKey, rangeKey string) (string, error)
 	Set(ctx context.Context, partitionKey, rangeKey, value string, ttl *time.Duration) error
+	Lock(ctx context.Context, key string, ttl time.Duration) (DistributedLock, error)
+	WatchCounterInt64(ctx context.Context, key string) (<-chan int64, func(), error)
+	PublishCounterInt64(ctx context.Context, key string, value int64) error
 }
 
 func NewConnector(
@@ -37,9 +44,7 @@ func NewConnector(
 	}
 
 	if util.IsTest() && cfg.Driver == "mock" {
-		return NewMockMemoryConnector(ctx, logger, "mock", &common.MemoryConnectorConfig{
-			MaxItems: 1000,
-		}, 100*time.Millisecond)
+		return NewMockMemoryConnector(ctx, logger, "mock", cfg.Mock)
 	}
 
 	return nil, common.NewErrInvalidConnectorDriver(cfg.Driver)
