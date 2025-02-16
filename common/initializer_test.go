@@ -630,7 +630,7 @@ func TestInitializer_SingleTaskImmediateFatal(t *testing.T) {
 		return NewErrTaskFatal("duplicate upstream", nil)
 	})
 
-	// Since your code aggregates failures/fatals immediately,
+	// Since we aggregate failures/fatals immediately,
 	// we DO expect an error from ExecuteTasks.
 	err := init.ExecuteTasks(appCtx, task)
 	require.Error(t, err,

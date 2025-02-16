@@ -880,8 +880,7 @@ func TestUpstreamsRegistry_DuplicateUpstreamRegistration(t *testing.T) {
 	assert.Equal(t, common.StateFatal, registry.initializer.State(),
 		"Expected StateFatal after duplicate registration")
 
-	// Optionally, you could call WaitForTasks(...) if you want
-	// but it's likely to return the same fatal error again.
+	// Wait for all tasks to complete or fail
 	_ = registry.initializer.WaitForTasks(ctx)
 
 	// Now verify non-duplicate upstreams are still present
