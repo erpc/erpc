@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -301,7 +300,7 @@ func TestSharedVariable(t *testing.T) {
 			logger:          &log.Logger,
 			connector:       connector,
 			fallbackTimeout: time.Second,
-			initializer:     util.NewInitializer(context.Background(), &log.Logger, nil),
+			initializer:     common.NewInitializer(context.Background(), &log.Logger, nil),
 		}
 
 		updates := make(chan int64, 10)
@@ -337,7 +336,7 @@ func TestSharedVariable(t *testing.T) {
 			logger:          &log.Logger,
 			connector:       connector,
 			fallbackTimeout: time.Second,
-			initializer:     util.NewInitializer(context.Background(), &log.Logger, nil),
+			initializer:     common.NewInitializer(context.Background(), &log.Logger, nil),
 		}
 
 		updates := make(chan int64, 10)
@@ -377,7 +376,7 @@ func TestSharedVariable(t *testing.T) {
 			logger:          &log.Logger,
 			connector:       connector,
 			fallbackTimeout: time.Second,
-			initializer:     util.NewInitializer(context.Background(), &log.Logger, nil),
+			initializer:     common.NewInitializer(context.Background(), &log.Logger, nil),
 		}
 
 		updates := make(chan int64, 10)
@@ -411,7 +410,7 @@ func TestSharedVariable(t *testing.T) {
 			logger:          &log.Logger,
 			connector:       connector,
 			fallbackTimeout: time.Second,
-			initializer:     util.NewInitializer(context.Background(), &log.Logger, nil),
+			initializer:     common.NewInitializer(context.Background(), &log.Logger, nil),
 		}
 
 		updates := make(chan int64, 10)
@@ -445,7 +444,7 @@ func TestSharedVariable(t *testing.T) {
 			logger:          &log.Logger,
 			connector:       connector,
 			fallbackTimeout: time.Second,
-			initializer:     util.NewInitializer(context.Background(), &log.Logger, nil),
+			initializer:     common.NewInitializer(context.Background(), &log.Logger, nil),
 		}
 
 		updates := make(chan int64, 10)

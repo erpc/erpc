@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
 
@@ -23,7 +22,7 @@ type sharedStateRegistry struct {
 	variables       sync.Map // map[string]*counterInt64
 	fallbackTimeout time.Duration
 	lockTtl         time.Duration
-	initializer     *util.Initializer
+	initializer     *common.Initializer
 }
 
 func NewSharedStateRegistry(
@@ -44,7 +43,7 @@ func NewSharedStateRegistry(
 		connector:       connector,
 		fallbackTimeout: cfg.FallbackTimeout,
 		lockTtl:         cfg.LockTtl,
-		initializer:     util.NewInitializer(appCtx, &lg, nil),
+		initializer:     common.NewInitializer(appCtx, &lg, nil),
 	}, nil
 }
 
@@ -73,8 +72,8 @@ func (r *sharedStateRegistry) GetCounterInt64(key string) CounterInt64SharedVari
 	return counter
 }
 
-func (r *sharedStateRegistry) buildCounterSyncTask(counter *counterInt64) *util.BootstrapTask {
-	return util.NewBootstrapTask(
+func (r *sharedStateRegistry) buildCounterSyncTask(counter *counterInt64) *common.BootstrapTask {
+	return common.NewBootstrapTask(
 		r.getCounterSyncTaskName(counter),
 		func(ctx context.Context) error {
 			return r.initCounterSync(counter)
@@ -82,8 +81,8 @@ func (r *sharedStateRegistry) buildCounterSyncTask(counter *counterInt64) *util.
 	)
 }
 
-func (r *sharedStateRegistry) buildInitialValueTask(counter *counterInt64) *util.BootstrapTask {
-	return util.NewBootstrapTask(
+func (r *sharedStateRegistry) buildInitialValueTask(counter *counterInt64) *common.BootstrapTask {
+	return common.NewBootstrapTask(
 		r.getInitialValueTaskName(counter),
 		func(ctx context.Context) error {
 			v, err := r.fetchValue(ctx, counter.key)

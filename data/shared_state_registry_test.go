@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/erpc/erpc/util"
+	"github.com/erpc/erpc/common"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -30,7 +30,7 @@ func setupTest(clusterKey string) (*sharedStateRegistry, *MockConnector, context
 		logger:          &log.Logger,
 		connector:       connector,
 		fallbackTimeout: 500 * time.Millisecond,
-		initializer:     util.NewInitializer(context.Background(), &log.Logger, nil),
+		initializer:     common.NewInitializer(context.Background(), &log.Logger, nil),
 	}
 	return registry, connector, context.Background()
 }
