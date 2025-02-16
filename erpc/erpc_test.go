@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog/log"
@@ -94,7 +95,18 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 
 	lg := log.With().Logger()
 	ctx1, cancel1 := context.WithCancel(context.Background())
-	erpcInstance, err := NewERPC(ctx1, &lg, nil, cfg)
+	ssr, err := data.NewSharedStateRegistry(ctx1, &lg, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems: 100_000,
+			},
+		},
+	})
+	if err != nil {
+		t.Errorf("expected nil, got %v", err)
+	}
+	erpcInstance, err := NewERPC(ctx1, &lg, ssr, nil, cfg)
 	if err != nil {
 		t.Errorf("expected nil, got %v", err)
 	}

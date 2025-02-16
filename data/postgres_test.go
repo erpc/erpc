@@ -16,7 +16,7 @@ import (
 )
 
 func TestPostgreConnectorInitialization(t *testing.T) {
-	t.Run("succeeds immediately with valid config (real container)", func(t *testing.T) {
+	t.Run("SucceedsValidConfigRealContainer", func(t *testing.T) {
 		logger := zerolog.New(io.Discard)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -70,7 +70,7 @@ func TestPostgreConnectorInitialization(t *testing.T) {
 		require.Equal(t, "hello-world", val)
 	})
 
-	t.Run("fails on first attempt with invalid address, but returns connector anyway", func(t *testing.T) {
+	t.Run("FailsOnFirstAttemptWithInvalidAddressButReturnsConnectorAnyway", func(t *testing.T) {
 		logger := zerolog.New(io.Discard)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()

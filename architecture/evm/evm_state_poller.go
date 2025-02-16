@@ -2,12 +2,15 @@ package evm
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
@@ -50,17 +53,13 @@ type EvmStatePoller struct {
 
 	// Certain networks and nodes do not support "finalized" tag,
 	// therefore we must avoid sending redundant requests.
-	skipFinalizedCheck      bool
-	finalizedBlockUpdatedAt time.Time
-	finalizedBlockNumber    int64
-	finalizedBlockMu        sync.Mutex
+	skipFinalizedCheck   bool
+	finalizedBlockShared data.CounterInt64SharedVariable
 
 	// The reason to not use latestBlockTimestamp is to avoid thundering herd,
 	// when a node is actively syncing and timestamp is always way in the past.
 	skipLatestBlockCheck bool
-	latestBlockUpdatedAt time.Time
-	latestBlockNumber    int64
-	latestBlockMu        sync.Mutex
+	latestBlockShared    data.CounterInt64SharedVariable
 
 	stateMu sync.RWMutex
 }
@@ -71,15 +70,29 @@ func NewEvmStatePoller(
 	logger *zerolog.Logger,
 	up common.Upstream,
 	tracker *health.Tracker,
+	sharedState data.SharedStateRegistry,
 ) *EvmStatePoller {
-	lg := logger.With().Str("upstreamId", up.Config().Id).Logger()
+	lg := logger.With().Str("upstreamId", up.Config().Id).Str("component", "evmStatePoller").Logger()
+
+	lbs := sharedState.GetCounterInt64(fmt.Sprintf("latestBlock/%s", uniqueUpstreamKey(up)))
+	fbs := sharedState.GetCounterInt64(fmt.Sprintf("finalizedBlock/%s", uniqueUpstreamKey(up)))
+
 	e := &EvmStatePoller{
-		projectId: projectId,
-		appCtx:    appCtx,
-		logger:    &lg,
-		upstream:  up,
-		tracker:   tracker,
+		projectId:            projectId,
+		appCtx:               appCtx,
+		logger:               &lg,
+		upstream:             up,
+		tracker:              tracker,
+		latestBlockShared:    lbs,
+		finalizedBlockShared: fbs,
 	}
+
+	lbs.OnValue(func(value int64) {
+		e.tracker.SetLatestBlockNumber(e.upstream.Config().Id, e.upstream.NetworkId(), value)
+	})
+	fbs.OnValue(func(value int64) {
+		e.tracker.SetFinalizedBlockNumber(e.upstream.Config().Id, e.upstream.NetworkId(), value)
+	})
 
 	return e
 }
@@ -261,149 +274,106 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 	if e.shouldSkipLatestBlockCheck() {
 		return 0, nil
 	}
-
-	e.latestBlockMu.Lock()
-	defer e.latestBlockMu.Unlock()
-
 	dbi := e.debounceInterval
 	if dbi == 0 {
 		// We must have some debounce interval to avoid thundering herd
 		dbi = 1 * time.Second
 	}
-	if time.Since(e.latestBlockUpdatedAt) < dbi {
-		// Skip the call and return cached
-		blockNum := e.latestBlockNumber
+	return e.latestBlockShared.TryUpdateIfStale(ctx, dbi, func() (int64, error) {
+		e.logger.Trace().Msg("fetching latest block number for evm state poller")
+		health.MetricUpstreamLatestBlockPolled.WithLabelValues(
+			e.projectId,
+			e.upstream.NetworkId(),
+			e.upstream.Config().Id,
+		).Inc()
+		blockNum, err := e.fetchBlock(ctx, "latest")
+		if err != nil {
+			if common.HasErrorCode(err,
+				common.ErrCodeUpstreamRequestSkipped,
+				common.ErrCodeUpstreamMethodIgnored,
+				common.ErrCodeEndpointUnsupported,
+				common.ErrCodeEndpointMissingData,
+			) || common.IsClientError(err) {
+				e.setSkipLatestBlockCheck(true)
+				e.logger.Info().Err(err).Msg("upstream does not support fetching latest block number in evm state poller, will skip")
+				return 0, nil
+			} else {
+				e.logger.Warn().Err(err).Msg("failed to get latest block number in evm state poller")
+				return 0, err
+			}
+		}
 		e.logger.Debug().
 			Int64("blockNumber", blockNum).
-			Msg("skipping poll for latest block due to debounce interval and use existing values")
+			Msg("fetched latest block from upstream")
 		return blockNum, nil
-	}
-
-	health.MetricUpstreamLatestBlockPolled.WithLabelValues(
-		e.projectId,
-		e.upstream.NetworkId(),
-		e.upstream.Config().Id,
-	).Inc()
-
-	// Actually fetch from upstream
-	blockNum, err := e.fetchBlock(ctx, "latest")
-	if err != nil {
-		if common.HasErrorCode(err,
-			common.ErrCodeUpstreamRequestSkipped,
-			common.ErrCodeUpstreamMethodIgnored,
-			common.ErrCodeEndpointUnsupported,
-			common.ErrCodeEndpointMissingData,
-		) || common.IsClientError(err) {
-			e.setSkipLatestBlockCheck(true)
-			e.logger.Info().Err(err).Msg("upstream does not support fetching latest block number in evm state poller, will skip")
-			return 0, nil
-		} else {
-			e.logger.Warn().Err(err).Msg("failed to get latest block number in evm state poller")
-			return 0, err
-		}
-	}
-
-	// Update internal state
-	e.setLatestBlockNumber(blockNum)
-
-	e.logger.Debug().
-		Int64("blockNumber", blockNum).
-		Msg("fetched latest block")
-
-	return blockNum, nil
+	})
 }
 
 func (e *EvmStatePoller) SuggestLatestBlock(blockNumber int64) {
 	// TODO after subscription epic this method should be called for every new block received from this upstream
-	e.latestBlockMu.Lock()
-	defer e.latestBlockMu.Unlock()
-	if blockNumber > e.latestBlockNumber {
-		e.latestBlockNumber = blockNumber
-		e.latestBlockUpdatedAt = time.Now()
-	}
+	e.latestBlockShared.TryUpdate(e.appCtx, blockNumber)
 }
 
 func (e *EvmStatePoller) LatestBlock() int64 {
-	e.stateMu.RLock()
-	defer e.stateMu.RUnlock()
-	return int64(e.latestBlockNumber)
+	return e.latestBlockShared.GetValue()
 }
 
 func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, error) {
 	if e.shouldSkipFinalizedCheck() {
 		return 0, nil
 	}
-
-	// Lock to check last poll time
-	e.finalizedBlockMu.Lock()
-	defer e.finalizedBlockMu.Unlock()
-
 	dbi := e.debounceInterval
 	if dbi == 0 {
 		// We must have some debounce interval to avoid thundering herd
 		dbi = 1 * time.Second
 	}
-	if time.Since(e.finalizedBlockUpdatedAt) < dbi {
-		// Skip the call and return cached
-		blockNum := e.finalizedBlockNumber
+	return e.finalizedBlockShared.TryUpdateIfStale(ctx, dbi, func() (int64, error) {
+		e.logger.Trace().Msg("fetching finalized block number for evm state poller")
+		health.MetricUpstreamFinalizedBlockPolled.WithLabelValues(
+			e.projectId,
+			e.upstream.NetworkId(),
+			e.upstream.Config().Id,
+		).Inc()
+
+		// Actually fetch from upstream
+		blockNum, err := e.fetchBlock(ctx, "finalized")
+		if err != nil {
+			if common.HasErrorCode(err,
+				common.ErrCodeUpstreamRequestSkipped,
+				common.ErrCodeUpstreamMethodIgnored,
+				common.ErrCodeEndpointUnsupported,
+				common.ErrCodeEndpointMissingData,
+			) || common.IsClientError(err) {
+				e.setSkipFinalizedCheck(true)
+				e.logger.Info().Err(err).Msg("upstream does not support fetching finalized block number in evm state poller, will skip")
+				return 0, nil
+			} else {
+				e.logger.Warn().Err(err).Msg("failed to get finalized block number in evm state poller")
+				return 0, err
+			}
+		}
+
 		e.logger.Debug().
 			Int64("blockNumber", blockNum).
-			Msg("skipping poll for finalized block due to debounce interval and use existing values")
+			Msg("fetched finalized block")
+
+		e.tracker.SetFinalizedBlockNumber(e.upstream.Config().Id, e.upstream.NetworkId(), blockNum)
+
 		return blockNum, nil
-	}
-
-	health.MetricUpstreamFinalizedBlockPolled.WithLabelValues(
-		e.projectId,
-		e.upstream.NetworkId(),
-		e.upstream.Config().Id,
-	).Inc()
-
-	// Actually fetch from upstream
-	blockNum, err := e.fetchBlock(ctx, "finalized")
-	if err != nil {
-		if common.HasErrorCode(err,
-			common.ErrCodeUpstreamRequestSkipped,
-			common.ErrCodeUpstreamMethodIgnored,
-			common.ErrCodeEndpointUnsupported,
-			common.ErrCodeEndpointMissingData,
-		) || common.IsClientError(err) {
-			e.setSkipFinalizedCheck(true)
-			e.logger.Info().Err(err).Msg("upstream does not support fetching finalized block number in evm state poller, will skip")
-			return 0, nil
-		} else {
-			e.logger.Warn().Err(err).Msg("failed to get finalized block number in evm state poller")
-			return 0, err
-		}
-	}
-
-	// Update internal state
-	e.setFinalizedBlockNumber(blockNum)
-
-	e.logger.Debug().
-		Int64("blockNumber", blockNum).
-		Msg("fetched finalized block")
-
-	return blockNum, nil
+	})
 }
 
 func (e *EvmStatePoller) SuggestFinalizedBlock(blockNumber int64) {
-	e.stateMu.Lock()
-	defer e.stateMu.Unlock()
-	if blockNumber > e.finalizedBlockNumber {
-		e.finalizedBlockNumber = blockNumber
-		e.finalizedBlockUpdatedAt = time.Now()
-	}
+	e.finalizedBlockShared.TryUpdate(e.appCtx, blockNumber)
 }
 
 func (e *EvmStatePoller) FinalizedBlock() int64 {
-	e.stateMu.RLock()
-	defer e.stateMu.RUnlock()
-	return e.finalizedBlockNumber
+	return e.finalizedBlockShared.GetValue()
 }
 
 func (e *EvmStatePoller) IsBlockFinalized(blockNumber int64) (bool, error) {
-	finalizedBlock := e.finalizedBlockNumber
-	latestBlock := e.latestBlockNumber
+	finalizedBlock := e.finalizedBlockShared.GetValue()
+	latestBlock := e.latestBlockShared.GetValue()
 	if latestBlock == 0 && finalizedBlock == 0 {
 		e.logger.Debug().
 			Int64("finalizedBlock", finalizedBlock).
@@ -469,14 +439,6 @@ func (e *EvmStatePoller) IsObjectNull() bool {
 	return e == nil || e.upstream == nil
 }
 
-func (e *EvmStatePoller) setLatestBlockNumber(blockNumber int64) {
-	e.stateMu.Lock()
-	e.latestBlockNumber = blockNumber
-	e.latestBlockUpdatedAt = time.Now()
-	e.stateMu.Unlock()
-	e.tracker.SetLatestBlockNumber(e.upstream.Config().Id, e.upstream.NetworkId(), blockNumber)
-}
-
 func (e *EvmStatePoller) shouldSkipLatestBlockCheck() bool {
 	e.stateMu.RLock()
 	defer e.stateMu.RUnlock()
@@ -487,14 +449,6 @@ func (e *EvmStatePoller) setSkipLatestBlockCheck(skip bool) {
 	e.stateMu.Lock()
 	defer e.stateMu.Unlock()
 	e.skipLatestBlockCheck = skip
-}
-
-func (e *EvmStatePoller) setFinalizedBlockNumber(blockNumber int64) {
-	e.stateMu.Lock()
-	e.finalizedBlockNumber = blockNumber
-	e.finalizedBlockUpdatedAt = time.Now()
-	e.stateMu.Unlock()
-	e.tracker.SetFinalizedBlockNumber(e.upstream.Config().Id, e.upstream.NetworkId(), blockNumber)
 }
 
 func (e *EvmStatePoller) shouldSkipFinalizedCheck() bool {
@@ -616,4 +570,24 @@ func (e *EvmStatePoller) inferDebounceIntervalFromBlockTime(chainId int64) {
 			e.debounceInterval = d
 		}
 	}
+}
+
+// uniqueUpstreamKey returns a unique hash for an upstream.
+// It is used to identify the upstream uniquely in shared-state storage.
+// Sometimes ID might not be enough for example if user changes the endpoint to a completely different network.
+func uniqueUpstreamKey(up common.Upstream) string {
+	sha := sha256.New()
+	cfg := up.Config()
+
+	sha.Write([]byte(cfg.Id))
+	sha.Write([]byte(cfg.Endpoint))
+	sha.Write([]byte(up.NetworkId()))
+	if cfg.JsonRpc != nil {
+		for k, v := range cfg.JsonRpc.Headers {
+			sha.Write([]byte(k))
+			sha.Write([]byte(v))
+		}
+	}
+
+	return cfg.Id + "/" + hex.EncodeToString(sha.Sum(nil))
 }

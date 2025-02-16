@@ -47,6 +47,17 @@ func createCacheTestFixtures(upstreamConfigs []upsTestCfg) ([]*data.MockConnecto
 
 	clr := clients.NewClientRegistry(&logger, "prjA", nil)
 	vr := thirdparty.NewVendorsRegistry()
+	ssr, err := data.NewSharedStateRegistry(context.Background(), &logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems: 100_000,
+			},
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
 	upstreams := make([]*upstream.Upstream, 0, len(upstreamConfigs))
 
 	for _, cfg := range upstreamConfigs {
@@ -63,7 +74,7 @@ func createCacheTestFixtures(upstreamConfigs []upsTestCfg) ([]*data.MockConnecto
 				ChainId:             123,
 				StatePollerInterval: "1m",
 			},
-		}, clr, rlr, vr, &logger, mt)
+		}, clr, rlr, vr, &logger, mt, ssr)
 		if err != nil {
 			panic(err)
 		}

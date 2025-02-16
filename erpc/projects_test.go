@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
@@ -47,6 +48,17 @@ func TestProject_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		prjReg, err := NewProjectsRegistry(
 			ctx,
 			&log.Logger,
@@ -74,6 +86,7 @@ func TestProject_Forward(t *testing.T) {
 					},
 				},
 			},
+			ssr,
 			nil,
 			rateLimitersRegistry,
 			thirdparty.NewVendorsRegistry(),
@@ -128,6 +141,17 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		// Configure a project with an extremely short upstream failsafe timeout.
 		// We’ll make the server and network have bigger timeouts so that only
 		// the upstream times out first.
@@ -168,6 +192,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 					},
 				},
 			},
+			ssr,
 			nil,
 			// &common.ServerConfig{
 			// 	MaxTimeout: util.StringPtr("10s"), // Large server timeout
@@ -230,6 +255,17 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		// Configure a project with an extremely short "network" timeout.
 		// The upstream itself can have a longer timeout, but the network-level
 		// failsafe triggers earlier.
@@ -271,6 +307,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 					},
 				},
 			},
+			ssr,
 			nil,
 			rateLimitersRegistry,
 			thirdparty.NewVendorsRegistry(),
@@ -350,10 +387,22 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 
 		// Build ProjectsRegistry with no existing EvmJsonRpcCache or RateLimiter
 		rateLimiters, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
 		reg, err := NewProjectsRegistry(
 			ctx,
 			&log.Logger,
 			[]*common.ProjectConfig{prjConfig},
+			ssr,
 			nil,          // EvmJsonRpcCache
 			rateLimiters, // RateLimitersRegistry
 			thirdparty.NewVendorsRegistry(),
