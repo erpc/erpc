@@ -24,7 +24,7 @@ const (
 )
 
 func (s InitializationState) String() string {
-	return []string{"uninitialized", "initializing", "partial", "retrying", "ready", "failed"}[s]
+	return []string{"uninitialized", "initializing", "partial", "retrying", "ready", "failed", "fatal"}[s]
 }
 
 type TaskState int
