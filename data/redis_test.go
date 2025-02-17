@@ -8,7 +8,6 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 )
@@ -40,7 +39,7 @@ func TestRedisConnectorInitialization(t *testing.T) {
 
 		// Ensure the connector reports StateReady via its initializer
 		state := connector.initializer.State()
-		require.Equal(t, util.StateReady, state, "connector should be in ready state")
+		require.Equal(t, common.StateReady, state, "connector should be in ready state")
 
 		// Try a simple SET/GET to verify readiness.
 		err = connector.Set(ctx, "testPK", "testRK", "hello", nil)
@@ -78,7 +77,7 @@ func TestRedisConnectorInitialization(t *testing.T) {
 
 		// The connector’s initializer should NOT be ready if it failed to connect.
 		state := connector.initializer.State()
-		require.NotEqual(t, util.StateReady, state, "connector should not be in ready state")
+		require.NotEqual(t, common.StateReady, state, "connector should not be in ready state")
 
 		// Attempting to call Set or Get here should result in an error because checkReady will fail.
 		err = connector.Set(ctx, "testPK", "testRK", "value", nil)
@@ -113,7 +112,7 @@ func TestRedisConnectorInitialization(t *testing.T) {
 		require.NoError(t, err, "NewRedisConnector doesn't necessarily bubble up the error directly.")
 
 		// The connector is returned, but the state should not be ready.
-		require.NotEqual(t, util.StateReady, connector.initializer.State())
+		require.NotEqual(t, common.StateReady, connector.initializer.State())
 
 		// checkReady should fail
 		err = connector.checkReady()
@@ -153,7 +152,7 @@ func TestRedisConnectorInitialization(t *testing.T) {
 		require.NoError(t, err, "Constructor should not hard-fail. It returns a connector with a failing initializer.")
 
 		// Verify that the connector is not ready right now.
-		require.NotEqual(t, util.StateReady, connector.initializer.State(),
+		require.NotEqual(t, common.StateReady, connector.initializer.State(),
 			"Connector should not be in ready state since no Redis is listening yet.")
 
 		// Now start a new miniredis on the SAME address as before.
@@ -165,7 +164,7 @@ func TestRedisConnectorInitialization(t *testing.T) {
 
 		//require.Eventually loop and check whether the connector’s initializer has transitioned to READY.
 		require.Eventually(t, func() bool {
-			return connector.initializer.State() == util.StateReady
+			return connector.initializer.State() == common.StateReady
 		}, 5*time.Second, 200*time.Millisecond,
 			"Connector did not become READY within the expected timeframe")
 

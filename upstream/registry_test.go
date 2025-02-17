@@ -14,6 +14,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestUpstreamsRegistry_Ordering(t *testing.T) {
@@ -866,4 +867,44 @@ func checkUpstreamScoreOrder(t *testing.T, registry *UpstreamsRegistry, networkI
 		assert.Equal(t, expectedOrder[i], ups.Config().Id)
 	}
 	registry.RUnlockUpstreams()
+}
+
+func TestUpstreamsRegistry_DuplicateUpstreamRegistration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// createTestRegistry() sets up “upstream-a”, “upstream-b”, “upstream-c”
+	registry, _ := createTestRegistry(ctx, "test-project", &log.Logger, 1*time.Second)
+
+	// Duplicate for “upstream-a”
+	duplicateConfig := &common.UpstreamConfig{
+		Id:       "upstream-a",
+		Endpoint: "http://duplicate.localhost",
+		Type:     common.UpstreamTypeEvm,
+		Evm:      &common.EvmUpstreamConfig{ChainId: 123},
+	}
+
+	// Attempt to register the duplicate
+	// Since the code returns a fatal error for duplicates, we expect an error here
+	err := registry.registerUpstream(ctx, duplicateConfig)
+	require.Error(t, err, "Expected a fatal error for duplicate upstream")
+
+	// The initializer is already in a fatal state after that attempt
+	assert.Equal(t, common.StateFatal, registry.initializer.State(),
+		"Expected StateFatal after duplicate registration")
+
+	// Wait for all tasks to complete or fail
+	_ = registry.initializer.WaitForTasks(ctx)
+
+	// Now verify non-duplicate upstreams are still present
+	upstreams := registry.GetNetworkUpstreams("evm:123")
+	var ids []string
+	for _, ups := range upstreams {
+		ids = append(ids, ups.Config().Id)
+	}
+
+	// “createTestRegistry” initially registered these three:
+	assert.Contains(t, ids, "upstream-a", "Original upstream-a should still exist")
+	assert.Contains(t, ids, "upstream-b", "Non-duplicate upstream-b should still be registered")
+	assert.Contains(t, ids, "upstream-c", "Non-duplicate upstream-c should still be registered")
 }

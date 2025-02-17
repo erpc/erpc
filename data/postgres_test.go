@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -58,7 +57,7 @@ func TestPostgreConnectorInitialization(t *testing.T) {
 		// Ensure the connector reports StateReady via its initializer
 		if connector.initializer != nil {
 			state := connector.initializer.State()
-			require.Equal(t, util.StateReady, state, "connector should be in ready state")
+			require.Equal(t, common.StateReady, state, "connector should be in ready state")
 		}
 
 		// Try a simple SET/GET to verify readiness.
@@ -92,7 +91,7 @@ func TestPostgreConnectorInitialization(t *testing.T) {
 		require.NoError(t, err)
 
 		if connector.initializer != nil {
-			require.NotEqual(t, util.StateReady, connector.initializer.State(),
+			require.NotEqual(t, common.StateReady, connector.initializer.State(),
 				"connector should not be in ready state if it failed to connect")
 		}
 

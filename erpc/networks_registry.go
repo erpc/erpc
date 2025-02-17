@@ -13,7 +13,6 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/upstream"
-	"github.com/erpc/erpc/util"
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/rs/zerolog"
 )
@@ -26,7 +25,7 @@ type NetworksRegistry struct {
 	evmJsonRpcCache      *evm.EvmJsonRpcCache
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	preparedNetworks     sync.Map // map[string]*Network
-	initializer          *util.Initializer
+	initializer          *common.Initializer
 	logger               *zerolog.Logger
 }
 
@@ -48,7 +47,7 @@ func NewNetworksRegistry(
 		evmJsonRpcCache:      evmJsonRpcCache,
 		rateLimitersRegistry: rateLimitersRegistry,
 		preparedNetworks:     sync.Map{},
-		initializer:          util.NewInitializer(appCtx, &lg, nil),
+		initializer:          common.NewInitializer(appCtx, &lg, nil),
 		logger:               logger,
 	}
 	return r
@@ -97,7 +96,7 @@ func NewNetwork(
 		inFlightRequests: &sync.Map{},
 		timeoutDuration:  timeoutDuration,
 		failsafeExecutor: failsafe.NewExecutor(policyArray...),
-		initializer:      util.NewInitializer(appCtx, &lg, nil),
+		initializer:      common.NewInitializer(appCtx, &lg, nil),
 	}
 
 	if nwCfg.Architecture == "" {
@@ -113,7 +112,7 @@ func (nr *NetworksRegistry) Bootstrap(appCtx context.Context) error {
 	defer nr.project.cfgMu.RUnlock()
 
 	nl := nr.project.Config.Networks
-	tasks := []*util.BootstrapTask{}
+	tasks := []*common.BootstrapTask{}
 	for _, nwCfg := range nl {
 		tasks = append(tasks, nr.buildNetworkBootstrapTask(nwCfg.NetworkId()))
 	}
@@ -154,8 +153,8 @@ func (nr *NetworksRegistry) GetNetworks() []*Network {
 	return networks
 }
 
-func (nr *NetworksRegistry) buildNetworkBootstrapTask(networkId string) *util.BootstrapTask {
-	return util.NewBootstrapTask(
+func (nr *NetworksRegistry) buildNetworkBootstrapTask(networkId string) *common.BootstrapTask {
+	return common.NewBootstrapTask(
 		fmt.Sprintf("network/%s", networkId),
 		func(ctx context.Context) error {
 			nr.logger.Debug().Str("networkId", networkId).Msg("attempt to bootstrap network")

@@ -1,8 +1,9 @@
-package util
+package common
 
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -613,4 +614,80 @@ func TestInitializer_MarkAsFailedUnblocksWaitThenRetries(t *testing.T) {
 	assert.Equal(t, TaskSucceeded, TaskState(task.state.Load()), "task should be succeeded after final attempt")
 
 	init.Stop(nil)
+}
+
+func TestInitializer_SingleTaskImmediateFatal(t *testing.T) {
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	init := setupInitializer(t, appCtx, &InitializerConfig{
+		TaskTimeout: time.Second,
+		AutoRetry:   true,
+	})
+
+	// A task that is fatal on the very first attempt:
+	task := NewBootstrapTask("immediate-fatal", func(ctx context.Context) error {
+		return NewErrTaskFatal("duplicate upstream", nil)
+	})
+
+	// Since we aggregate failures/fatals immediately,
+	// we DO expect an error from ExecuteTasks.
+	err := init.ExecuteTasks(appCtx, task)
+	require.Error(t, err,
+		"Expected ExecuteTasks to return an error when a task is immediately fatal")
+
+	// The initializer transitions to fatal immediately.
+	assert.Equal(t, StateFatal, init.State(), "initializer should be in fatal state")
+
+	// The task is also marked fatal.
+	assert.Equal(t, TaskFatal, TaskState(task.state.Load()), "task should be marked as fatal")
+
+	// Because it's fatal right away, there's only one attempt.
+	assert.Equal(t, int32(1), task.attempts.Load(), "no further attempts after fatal error")
+}
+
+func TestInitializer_TaskFailsThenBecomesFatal(t *testing.T) {
+	appCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	init := setupInitializer(t, appCtx, &InitializerConfig{
+		TaskTimeout:   time.Second,
+		AutoRetry:     true,
+		RetryMinDelay: time.Millisecond * 10,
+		RetryMaxDelay: time.Millisecond * 50,
+		RetryFactor:   1.2,
+	})
+
+	var attempts int32
+	task := NewBootstrapTask("fatal-on-second-attempt", func(ctx context.Context) error {
+		val := atomic.AddInt32(&attempts, 1)
+		if val == 1 {
+			// first attempt fails (non-fatal),
+			// but the initializer’s aggregator returns an error from ExecuteTasks anyway
+			return errors.New("non-fatal first failure")
+		}
+		// second attempt => fatal
+		return NewErrTaskFatal("second attempt is fatal", nil)
+	})
+
+	// First call: code sees the first attempt fail => returns error
+	err := init.ExecuteTasks(appCtx, task)
+	require.Error(t, err,
+		"Even a non-fatal failure triggers ExecuteTasks to return an error under the current code")
+
+	// Meanwhile, auto-retry in the background tries again
+	// Give it time to do the second attempt:
+	time.Sleep(200 * time.Millisecond)
+
+	// At this point, the second attempt should have triggered and gone fatal.
+	finalAttempts := atomic.LoadInt32(&attempts)
+	require.GreaterOrEqual(t, finalAttempts, int32(2),
+		"the second attempt (fatal) should have occurred by now")
+
+	// Double-check: the initializer is now fatal
+	assert.Equal(t, StateFatal, init.State(),
+		"initializer should be in fatal state after second attempt fails fatally")
+
+	// The task should be marked fatal
+	assert.Equal(t, TaskFatal, TaskState(task.state.Load()), "task should be marked as fatal")
 }
