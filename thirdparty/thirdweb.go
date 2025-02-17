@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/clients"
@@ -17,10 +18,13 @@ import (
 
 type ThirdwebVendor struct {
 	common.Vendor
+	headlessClient atomic.Value
 }
 
 func CreateThirdwebVendor() common.Vendor {
-	return &ThirdwebVendor{}
+	return &ThirdwebVendor{
+		headlessClient: atomic.Value{},
+	}
 }
 
 func (v *ThirdwebVendor) Name() string {
@@ -47,7 +51,7 @@ func (v *ThirdwebVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Lo
 	}
 
 	// Check against endpoint to see if eth_chainId responds successfully
-	client, err := v.createClient(ctx, logger, parsedURL)
+	client, err := v.getOrCreateClient(ctx, logger, parsedURL)
 	if err != nil {
 		return false, err
 	}
@@ -123,10 +127,14 @@ func (v *ThirdwebVendor) generateUrl(chainId int64, clientId string) (*url.URL, 
 	return parsedURL, nil
 }
 
-func (v *ThirdwebVendor) createClient(ctx context.Context, logger *zerolog.Logger, parsedURL *url.URL) (clients.HttpJsonRpcClient, error) {
+func (v *ThirdwebVendor) getOrCreateClient(ctx context.Context, logger *zerolog.Logger, parsedURL *url.URL) (clients.HttpJsonRpcClient, error) {
+	if client, ok := v.headlessClient.Load().(clients.HttpJsonRpcClient); ok {
+		return client, nil
+	}
 	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", "n/a", parsedURL, nil, nil)
 	if err != nil {
 		return nil, err
 	}
+	v.headlessClient.Store(client)
 	return client, nil
 }

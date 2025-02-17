@@ -2,8 +2,6 @@ package evm
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
@@ -74,8 +72,8 @@ func NewEvmStatePoller(
 ) *EvmStatePoller {
 	lg := logger.With().Str("upstreamId", up.Config().Id).Str("component", "evmStatePoller").Logger()
 
-	lbs := sharedState.GetCounterInt64(fmt.Sprintf("latestBlock/%s", uniqueUpstreamKey(up)))
-	fbs := sharedState.GetCounterInt64(fmt.Sprintf("finalizedBlock/%s", uniqueUpstreamKey(up)))
+	lbs := sharedState.GetCounterInt64(fmt.Sprintf("latestBlock/%s", common.UniqueUpstreamKey(up)))
+	fbs := sharedState.GetCounterInt64(fmt.Sprintf("finalizedBlock/%s", common.UniqueUpstreamKey(up)))
 
 	e := &EvmStatePoller{
 		projectId:            projectId,
@@ -570,24 +568,4 @@ func (e *EvmStatePoller) inferDebounceIntervalFromBlockTime(chainId int64) {
 			e.debounceInterval = d
 		}
 	}
-}
-
-// uniqueUpstreamKey returns a unique hash for an upstream.
-// It is used to identify the upstream uniquely in shared-state storage.
-// Sometimes ID might not be enough for example if user changes the endpoint to a completely different network.
-func uniqueUpstreamKey(up common.Upstream) string {
-	sha := sha256.New()
-	cfg := up.Config()
-
-	sha.Write([]byte(cfg.Id))
-	sha.Write([]byte(cfg.Endpoint))
-	sha.Write([]byte(up.NetworkId()))
-	if cfg.JsonRpc != nil {
-		for k, v := range cfg.JsonRpc.Headers {
-			sha.Write([]byte(k))
-			sha.Write([]byte(v))
-		}
-	}
-
-	return cfg.Id + "/" + hex.EncodeToString(sha.Sum(nil))
 }

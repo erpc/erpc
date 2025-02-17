@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/clients"
@@ -74,10 +75,13 @@ var envioKnownSupportedChains = map[int64]struct{}{
 
 type EnvioVendor struct {
 	common.Vendor
+	headlessClient atomic.Value
 }
 
 func CreateEnvioVendor() common.Vendor {
-	return &EnvioVendor{}
+	return &EnvioVendor{
+		headlessClient: atomic.Value{},
+	}
 }
 
 func (v *EnvioVendor) Name() string {
@@ -109,7 +113,7 @@ func (v *EnvioVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logge
 	}
 
 	// Check against endpoint to see if eth_chainId responds successfully
-	client, err := v.createClient(ctx, logger, parsedURL)
+	client, err := v.getOrCreateClient(ctx, logger, parsedURL)
 	if err != nil {
 		return false, err
 	}
@@ -211,10 +215,14 @@ func (v *EnvioVendor) generateUrl(chainId int64, rootDomain string) (*url.URL, e
 	return parsedURL, nil
 }
 
-func (v *EnvioVendor) createClient(ctx context.Context, logger *zerolog.Logger, parsedURL *url.URL) (clients.HttpJsonRpcClient, error) {
+func (v *EnvioVendor) getOrCreateClient(ctx context.Context, logger *zerolog.Logger, parsedURL *url.URL) (clients.HttpJsonRpcClient, error) {
+	if client, ok := v.headlessClient.Load().(clients.HttpJsonRpcClient); ok {
+		return client, nil
+	}
 	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", "n/a", parsedURL, nil, nil)
 	if err != nil {
 		return nil, err
 	}
+	v.headlessClient.Store(client)
 	return client, nil
 }

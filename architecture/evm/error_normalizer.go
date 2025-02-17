@@ -73,7 +73,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "Exceeded the quota") ||
 			strings.Contains(msg, "Too many requests") ||
 			strings.Contains(msg, "Too Many Requests") ||
-			strings.Contains(msg, "under too much load") {
+			strings.Contains(msg, "under too much load") ||
+			strings.Contains(msg, "reached the quota") {
 			return common.NewErrEndpointCapacityExceeded(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
