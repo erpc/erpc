@@ -5,13 +5,15 @@ help:
 	@echo
 	@echo "Commands:"
 	@echo " build                         Build the eRPC server"
-	@echo
-	@echo " docker-up                     Up docker services"
-	@echo " docker-down                   Down docker services"
-	@echo
 	@echo " fmt                           Format source code"
 	@echo " test                          Run unit tests"
 	@echo
+	@echo " run-k6                        Run k6 tests"
+	@echo " run-pprof                     Run the eRPC server with pprof"
+	@echo " run-fake-rpcs                 Run fake RPCs"
+	@echo " up                            Up docker services"
+	@echo " down                          Down docker services"
+	@echo " fmt                           Format source code"
 
 .PHONY: setup
 setup:

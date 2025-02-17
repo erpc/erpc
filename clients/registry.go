@@ -98,7 +98,7 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 			}
 
 			if clientErr == nil {
-				manager.clients.Store(cfg.Endpoint, newClient)
+				manager.clients.Store(common.UniqueUpstreamKey(ups), newClient)
 			}
 		})
 	}
