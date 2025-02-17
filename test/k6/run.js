@@ -3,8 +3,7 @@ import { check, sleep } from 'k6';
 import { Rate } from 'k6/metrics';
 
 // Target URL (can be configured via environment variables)
-// const TARGET_URL = __ENV.TARGET_URL || 'http://localhost:4000/main/evm/1';
-const TARGET_URL = __ENV.TARGET_URL || 'https://c570.us-west.gcp.erpc.cloud/main/evm/1';
+const TARGET_URL = __ENV.TARGET_URL || 'http://localhost:4000/main/evm/1';
 
 // Traffic pattern weights (in percentage, should sum to 100)
 const TRAFFIC_PATTERNS = {
@@ -22,7 +21,7 @@ const CONFIG = {
   RANDOM_BLOCK_MIN: 0x0800000,       
   RANDOM_BLOCK_MAX: 0x1000000,       
   LOG_RANGE_MIN_BLOCKS: 1,
-  LOG_RANGE_MAX_BLOCKS: 1,
+  LOG_RANGE_MAX_BLOCKS: 100,
   CACHED_LATEST_BLOCK: null,
   CACHED_LATEST_BLOCK_TIMESTAMP: 0,
   LATEST_BLOCK_CACHE_TTL: 5,         // seconds
@@ -33,7 +32,7 @@ export const options = {
   scenarios: {    
     constant_request_rate: {
       executor: 'constant-arrival-rate',
-      rate: 5,
+      rate: 10,
       timeUnit: '1s',
       duration: '10m',
       preAllocatedVUs: 500,
@@ -285,37 +284,38 @@ export default async function () {
   let cumulativeWeight = 0;
   let res;
 
-  // for (const [pattern, weight] of Object.entries(TRAFFIC_PATTERNS)) {
-  //   cumulativeWeight += weight;
-  //   if (rand <= cumulativeWeight) {
-  //     switch (pattern) {
-  //       case 'RANDOM_HISTORICAL_BLOCKS':
-  //         res = randomHistoricalBlocks(http, params);
-  //         break;
-  //       case 'LATEST_BLOCK_WITH_LOGS':
-  //         res = await latestBlockWithLogs(http, params);
-  //         break;
-  //       case 'RANDOM_LOG_RANGES':
-  //         res = randomLogRanges(http, params);
-  //         break;
-  //       case 'RANDOM_HISTORICAL_RECEIPTS':
-  //         res = randomHistoricalReceipts(http, params);
-  //         break;
-  //       case 'LATEST_BLOCK_RECEIPTS':
-  //         res = await latestBlockReceipts(http, params);
-  //         break;
-  //       case 'RANDOM_ACCOUNT_BALANCES':
-  //         res = randomAccountBalances(http, params);
-  //         break;
-  //       case 'TRACE_RANDOM_TRANSACTIONS':
-  //         res = await traceRandomTransaction(http, params);
-  //         break;
-  //     }
-  //     break;
-  //   }
-  // }
-  const sampleReq = {"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0xfaeff2","toBlock":"0xfaeff3","topics":["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"]}],"id":Math.ceil(Math.random() * 10000000)};
-  res = http.post(TARGET_URL, JSON.stringify(sampleReq), params);
+  for (const [pattern, weight] of Object.entries(TRAFFIC_PATTERNS)) {
+    cumulativeWeight += weight;
+    if (rand <= cumulativeWeight) {
+      switch (pattern) {
+        case 'RANDOM_HISTORICAL_BLOCKS':
+          res = randomHistoricalBlocks(http, params);
+          break;
+        case 'LATEST_BLOCK_WITH_LOGS':
+          res = await latestBlockWithLogs(http, params);
+          break;
+        case 'RANDOM_LOG_RANGES':
+          res = randomLogRanges(http, params);
+          break;
+        case 'RANDOM_HISTORICAL_RECEIPTS':
+          res = randomHistoricalReceipts(http, params);
+          break;
+        case 'LATEST_BLOCK_RECEIPTS':
+          res = await latestBlockReceipts(http, params);
+          break;
+        case 'RANDOM_ACCOUNT_BALANCES':
+          res = randomAccountBalances(http, params);
+          break;
+        case 'TRACE_RANDOM_TRANSACTIONS':
+          res = await traceRandomTransaction(http, params);
+          break;
+      }
+      break;
+    }
+  }
+  
+  // const sampleReq = {"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0xfaeff2","toBlock":"0xfaeff3","topics":["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"]}],"id":Math.ceil(Math.random() * 10000000)};
+  // res = http.post(TARGET_URL, JSON.stringify(sampleReq), params);
 
   if (res) {
     check(res, {
