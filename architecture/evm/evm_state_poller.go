@@ -139,8 +139,8 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 				return
 			case <-ticker.C:
 				nctx, cancel := context.WithTimeout(e.appCtx, 10*time.Second)
-				defer cancel()
 				err := e.Poll(nctx)
+				cancel()
 				if err != nil {
 					e.logger.Error().Err(err).Msgf("failed to poll evm state for upstream %s", e.upstream.Config().Id)
 				}
