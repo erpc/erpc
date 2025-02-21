@@ -396,7 +396,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	if execErr == nil && resp != nil && !resp.IsObjectNull() {
-		go n.enrichStatePoller(method, req, resp)
+		n.enrichStatePoller(method, req, resp)
 	}
 	if mlx != nil {
 		mlx.Close(resp, nil)
@@ -551,10 +551,12 @@ func (n *Network) enrichStatePoller(method string, req *common.NormalizedRequest
 						if err == nil {
 							if ups := resp.Upstream(); ups != nil {
 								if ups, ok := ups.(common.EvmUpstream); ok {
+									// We don't need to wait for these calls (as it might take bit long when updating distributed shard-variables)
+									// but the overall request doesn't need to wait for these poller proactive updates.
 									if blkTag == "finalized" {
-										ups.EvmStatePoller().SuggestFinalizedBlock(blockNumber)
+										go ups.EvmStatePoller().SuggestFinalizedBlock(blockNumber)
 									} else if blkTag == "latest" {
-										ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
+										go ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
 									}
 								}
 							}
@@ -570,7 +572,7 @@ func (n *Network) enrichStatePoller(method string, req *common.NormalizedRequest
 				if err == nil {
 					if ups := resp.Upstream(); ups != nil {
 						if ups, ok := ups.(common.EvmUpstream); ok {
-							ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
+							go ups.EvmStatePoller().SuggestLatestBlock(blockNumber)
 						}
 					}
 				}
