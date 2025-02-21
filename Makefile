@@ -31,9 +31,13 @@ run-pprof:
 run-fake-rpcs:
 	@go run ./test/cmd/main.go
 
-.PHONY: run-k6
-run-k6:
-	@k6 run ./test/k6/run.js
+.PHONY: run-k6-evm-tip-of-chain
+run-k6-evm-tip-of-chain:
+	@k6 run ./test/k6/evm-tip-of-chain.js
+
+.PHONY: run-k6-evm-historical-randomized
+run-k6-evm-historical-randomized:
+	@k6 run ./test/k6/evm-historical-randomized.js
 
 .PHONY: build
 build:
