@@ -2,6 +2,7 @@ package thirdparty
 
 import (
 	"context"
+	"os"
 	"strconv"
 	"strings"
 
@@ -51,7 +52,14 @@ func (p *Provider) GenerateUpstreamConfigs(networkId string) ([]*common.Upstream
 	if err != nil {
 		return nil, err
 	}
+	p.expandEnvVars(upsCfgs)
 	return upsCfgs, nil
+}
+
+func (p *Provider) expandEnvVars(upsCfgs []*common.UpstreamConfig) {
+	for _, upsCfg := range upsCfgs {
+		upsCfg.Endpoint = os.ExpandEnv(upsCfg.Endpoint)
+	}
 }
 
 // buildBaseUpstreamConfig uses the ProviderConfig's Overrides map to find an
