@@ -127,7 +127,9 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 
 	var tasks []*util.BootstrapTask
 	for _, p := range allProviders {
-		t := u.buildProviderBootstrapTask(p, networkId)
+		// Capture loop variable in local scope
+		provider := p
+		t := u.buildProviderBootstrapTask(provider, networkId)
 		tasks = append(tasks, t)
 	}
 	errCh := make(chan error, 1)
@@ -363,7 +365,8 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 
 func (u *UpstreamsRegistry) registerUpstream(ctx context.Context, upsCfgs ...*common.UpstreamConfig) error {
 	tasks := make([]*util.BootstrapTask, 0)
-	for _, upsCfg := range upsCfgs {
+	for _, c := range upsCfgs {
+		upsCfg := c
 		tasks = append(tasks, u.buildUpstreamBootstrapTask(upsCfg))
 	}
 	return u.initializer.ExecuteTasks(ctx, tasks...)
@@ -427,7 +430,7 @@ func (u *UpstreamsRegistry) buildProviderBootstrapTask(
 		taskName,
 		func(ctx context.Context) error {
 			lg := u.logger.With().Str("provider", provider.Id()).Str("networkId", networkId).Logger()
-			lg.Debug().Msg("attempting to create upstream from provider")
+			lg.Debug().Msg("attempting to create upstream(s) from provider")
 
 			if ok, err := provider.SupportsNetwork(ctx, networkId); err == nil && !ok {
 				lg.Debug().Msg("provider does not support network; skipping upstream creation")
@@ -436,11 +439,14 @@ func (u *UpstreamsRegistry) buildProviderBootstrapTask(
 				return err
 			}
 
-			lg.Debug().Msg("attempting to create upstream from provider")
-
 			upsCfgs, err := provider.GenerateUpstreamConfigs(networkId)
 			if err != nil {
 				return err
+			}
+			if lg.GetLevel() <= zerolog.DebugLevel {
+				lg.Debug().Interface("upstreams", upsCfgs).Msgf("created %d upstream(s) from provider", len(upsCfgs))
+			} else {
+				lg.Info().Msgf("registering %d upstream(s) from provider", len(upsCfgs))
 			}
 			err = u.registerUpstream(ctx, upsCfgs...)
 			if err != nil {

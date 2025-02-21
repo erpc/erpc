@@ -26,6 +26,8 @@ func RedactEndpoint(endpoint string) string {
 		redactedEndpoint = parsedURL.Scheme + "://" + parsedURL.Host + "#redacted=" + hash[:5]
 	} else if strings.HasSuffix(parsedURL.Scheme, "envio") {
 		redactedEndpoint = parsedURL.Scheme + "://" + parsedURL.Host
+	} else if strings.HasSuffix(parsedURL.Scheme, "repository") {
+		redactedEndpoint = parsedURL.Scheme + "://" + parsedURL.Host + "#redacted=" + hash[:5]
 	} else {
 		redactedEndpoint = parsedURL.Scheme + "#redacted=" + hash[:5]
 	}
