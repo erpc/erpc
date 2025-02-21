@@ -279,6 +279,24 @@ func (e *BaseError) MarshalZerologObject(v *zerolog.Event) {
 }
 
 //
+// Initializer
+//
+
+type ErrTaskFatal struct{ BaseError }
+
+const ErrCodeTaskFatal ErrorCode = "ErrTaskFatal"
+
+var NewErrTaskFatal = func(message string, cause error) error {
+	return &ErrTaskFatal{
+		BaseError{
+			Code:    ErrCodeTaskFatal,
+			Message: message,
+			Cause:   cause,
+		},
+	}
+}
+
+//
 // Server
 //
 

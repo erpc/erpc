@@ -1,4 +1,4 @@
-package util
+package common
 
 import (
 	"context"
@@ -20,10 +20,11 @@ const (
 	StateRetrying
 	StateReady
 	StateFailed
+	StateFatal
 )
 
 func (s InitializationState) String() string {
-	return []string{"uninitialized", "initializing", "partial", "retrying", "ready", "failed"}[s]
+	return []string{"uninitialized", "initializing", "partial", "retrying", "ready", "failed", "fatal"}[s]
 }
 
 type TaskState int
@@ -34,6 +35,7 @@ const (
 	TaskSucceeded
 	TaskTimedOut
 	TaskFailed
+	TaskFatal
 )
 
 type BootstrapTask struct {
@@ -93,7 +95,7 @@ func (t *BootstrapTask) createNewDoneChannel() chan struct{} {
 func (t *BootstrapTask) Wait(ctx context.Context) error {
 	for {
 		state := TaskState(t.state.Load())
-		if state == TaskSucceeded || state == TaskFailed || state == TaskTimedOut {
+		if state == TaskSucceeded || state == TaskFailed || state == TaskTimedOut || state == TaskFatal {
 			lastErr, ok := t.lastErr.Load().(wrappedError)
 			if ok && lastErr.err != nil {
 				return lastErr.err
@@ -122,7 +124,7 @@ func (t *BootstrapTask) Wait(ctx context.Context) error {
 				return ctx.Err()
 			case <-ch.(chan struct{}):
 				// The attempt ended. Check if we failed.
-				if TaskState(t.state.Load()) == TaskFailed {
+				if TaskState(t.state.Load()) == TaskFailed || TaskState(t.state.Load()) == TaskFatal {
 					wr, _ := t.lastErr.Load().(wrappedError)
 					if wr.err == nil {
 						t.lastErr.Store(wrappedError{err: errors.New("task failed without specific error")})
@@ -224,7 +226,7 @@ func (i *Initializer) waitForTasks(ctx context.Context, tasks ...*BootstrapTask)
 		}
 		// If task is failed, record that error
 		state := TaskState(task.state.Load())
-		if state == TaskFailed && task.Error() != nil {
+		if (state == TaskFailed || state == TaskFatal) && task.Error() != nil {
 			errs = append(errs, task.Error().Err)
 		}
 	}
@@ -292,8 +294,14 @@ func (i *Initializer) attemptRemainingTasks(ctx context.Context) {
 						} else {
 							bt.lastErr.CompareAndSwap(nil, wrappedError{err: err})
 						}
-						bt.state.Store(int32(TaskFailed))
-						i.logger.Warn().Str("task", bt.Name).Err(err).Msg("initialization task failed")
+						if HasErrorCode(err, ErrCodeTaskFatal) {
+							bt.state.Store(int32(TaskFatal))
+							i.logger.Error().Str("task", bt.Name).Err(err).
+								Msg("initialization task encountered fatal error, no more retries")
+						} else {
+							bt.state.Store(int32(TaskFailed))
+							i.logger.Warn().Str("task", bt.Name).Err(err).Msg("initialization task failed")
+						}
 					} else {
 						bt.lastErr.Store(wrappedError{err: nil})
 						bt.state.Store(int32(TaskSucceeded))
@@ -315,7 +323,7 @@ func (i *Initializer) attemptRemainingTasks(ctx context.Context) {
 }
 
 func (i *Initializer) State() InitializationState {
-	var total, pending, running, succeeded, failed int
+	var total, pending, running, succeeded, failed, fatal int
 	i.tasks.Range(func(key, value interface{}) bool {
 		t := value.(*BootstrapTask)
 		state := TaskState(t.state.Load())
@@ -328,6 +336,8 @@ func (i *Initializer) State() InitializationState {
 			succeeded++
 		case TaskFailed:
 			failed++
+		case TaskFatal:
+			fatal++
 		}
 		total++
 		return true
@@ -339,11 +349,17 @@ func (i *Initializer) State() InitializationState {
 		Int("running", running).
 		Int("succeeded", succeeded).
 		Int("failed", failed).
+		Int("fatal", fatal).
 		Msg("calculating initialization state")
 
 	if total == succeeded {
 		return StateReady
 	}
+
+	if fatal > 0 {
+		return StateFatal
+	}
+
 	// If all tasks are done (some are failed, none running or pending), it's a "Failed" state
 	if failed > 0 && (pending+running+succeeded == 0) {
 		return StateFailed
@@ -391,16 +407,18 @@ func (i *Initializer) Stop(destroyFn func() error) error {
 	i.logger.Debug().Msg("stopping initializer")
 
 	i.tasksMu.Lock()
-	defer i.tasksMu.Unlock()
-
 	if cancel := i.cancelAutoRetry.Load(); cancel != nil {
 		cancel.(context.CancelFunc)()
 	}
+	// Unlock the tasksMu before waiting for auto-retry to finish
+	i.tasksMu.Unlock()
 
-	// Wait for auto-retry goroutine to finish
 	i.autoRetryWg.Wait()
 
-	// Now, wait for any tasks that might still be running to finish or fail.
+	// After auto-retry has finished, lock again for the rest
+	i.tasksMu.Lock()
+	defer i.tasksMu.Unlock()
+
 	waitCtx, waitCancel := context.WithTimeout(i.appCtx, i.conf.TaskTimeout+100*time.Millisecond)
 	defer waitCancel()
 
@@ -481,6 +499,12 @@ func (i *Initializer) autoRetryLoop(ctx context.Context) {
 		defer cancel.(context.CancelFunc)()
 	}
 	if i.State() == StateReady {
+		i.autoRetryActive.Store(false)
+		return
+	}
+
+	if i.State() == StateFatal {
+		i.logger.Error().Msg("initialization fatal state, stopping auto-retry")
 		i.autoRetryActive.Store(false)
 		return
 	}

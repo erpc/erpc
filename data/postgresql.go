@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/util"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/rs/zerolog"
@@ -27,7 +26,7 @@ type PostgreSQLConnector struct {
 	logger        *zerolog.Logger
 	conn          *pgxpool.Pool
 	connMu        sync.RWMutex
-	initializer   *util.Initializer
+	initializer   *common.Initializer
 	minConns      int32
 	maxConns      int32
 	table         string
@@ -75,9 +74,9 @@ func NewPostgreSQLConnector(
 	}
 
 	// create an Initializer to handle (re)connecting
-	connector.initializer = util.NewInitializer(ctx, &lg, nil)
+	connector.initializer = common.NewInitializer(ctx, &lg, nil)
 
-	connectTask := util.NewBootstrapTask(connector.taskId(), func(ctx context.Context) error {
+	connectTask := common.NewBootstrapTask(connector.taskId(), func(ctx context.Context) error {
 		return connector.connectTask(ctx, cfg)
 	})
 
@@ -458,8 +457,8 @@ func (p *PostgreSQLConnector) taskId() string {
 func (p *PostgreSQLConnector) handleConnectionFailure(err error) {
 	if strings.Contains(err.Error(), "connection") {
 		s := p.initializer.State()
-		if s != util.StateInitializing &&
-			s != util.StateRetrying {
+		if s != common.StateInitializing &&
+			s != common.StateRetrying {
 			// p.conn = nil
 			p.logger.Warn().Err(err).Str("state", s.String()).Msg("postgres connection lost; marking connector as failed for reinitialization")
 			p.initializer.MarkTaskAsFailed(p.taskId(), err)

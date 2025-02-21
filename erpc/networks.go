@@ -11,7 +11,6 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/upstream"
-	"github.com/erpc/erpc/util"
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/rs/zerolog"
 )
@@ -31,7 +30,7 @@ type Network struct {
 	metricsTracker           *health.Tracker
 	upstreamsRegistry        *upstream.UpstreamsRegistry
 	selectionPolicyEvaluator *PolicyEvaluator
-	initializer              *util.Initializer
+	initializer              *common.Initializer
 }
 
 func (n *Network) Bootstrap(ctx context.Context) error {

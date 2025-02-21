@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/util"
 	"github.com/go-redsync/redsync/v4"
 	"github.com/go-redsync/redsync/v4/redis/goredis/v9"
 	"github.com/google/uuid"
@@ -32,7 +31,7 @@ type RedisConnector struct {
 	id          string
 	logger      *zerolog.Logger
 	client      *redis.Client
-	initializer *util.Initializer
+	initializer *common.Initializer
 	cfg         *common.RedisConnectorConfig
 	redsync     *redsync.Redsync
 
@@ -62,10 +61,10 @@ func NewRedisConnector(
 	}
 
 	// Create an initializer to manage (re)connecting to Redis.
-	connector.initializer = util.NewInitializer(appCtx, &lg, nil) // pass config if needed
+	connector.initializer = common.NewInitializer(appCtx, &lg, nil) // pass config if needed
 
 	// Define the redis connection task and let the Initializer handle retries.
-	connectTask := util.NewBootstrapTask(fmt.Sprintf("redis-connect/%s", id), connector.connectTask)
+	connectTask := common.NewBootstrapTask(fmt.Sprintf("redis-connect/%s", id), connector.connectTask)
 	if err := connector.initializer.ExecuteTasks(appCtx, connectTask); err != nil {
 		lg.Error().Err(err).Msg("failed to initialize redis connection on first attempt (will keep retrying in the background)")
 		return connector, nil
@@ -168,7 +167,7 @@ func (r *RedisConnector) checkReady() error {
 		return fmt.Errorf("initializer not set")
 	}
 	state := r.initializer.State()
-	if state != util.StateReady {
+	if state != common.StateReady {
 		return fmt.Errorf("redis is not connected (%s)", state.String())
 	}
 	if r.client == nil {
