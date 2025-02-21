@@ -28,13 +28,14 @@ type RepositoryVendor struct {
 
 	// local cache of remote data
 	remoteDataLock          sync.Mutex
-	remoteData              map[int64][]string
-	remoteDataLastFetchedAt time.Time
+	remoteData              map[string]map[int64][]string
+	remoteDataLastFetchedAt map[string]time.Time
 }
 
 func CreateRepositoryVendor() common.Vendor {
 	return &RepositoryVendor{
-		remoteData: make(map[int64][]string),
+		remoteData:              make(map[string]map[int64][]string),
+		remoteDataLastFetchedAt: make(map[string]time.Time),
 	}
 }
 
@@ -68,7 +69,7 @@ func (v *RepositoryVendor) SupportsNetwork(ctx context.Context, logger *zerolog.
 		return false, fmt.Errorf("unable to load remote data: %w", err)
 	}
 
-	endpoints, ok := v.remoteData[chainID]
+	endpoints, ok := v.remoteData[urlStr][chainID]
 	if !ok || len(endpoints) == 0 {
 		return false, nil
 	}
@@ -107,7 +108,7 @@ func (v *RepositoryVendor) GenerateConfigs(upstream *common.UpstreamConfig, sett
 		return nil, fmt.Errorf("unable to load remote data: %w", err)
 	}
 
-	endpoints, ok := v.remoteData[chainID]
+	endpoints, ok := v.remoteData[urlStr][chainID]
 	if !ok || len(endpoints) == 0 {
 		return nil, fmt.Errorf("chain ID %d not found in remote data or has no endpoints", chainID)
 	}
@@ -159,6 +160,8 @@ func (v *RepositoryVendor) GenerateConfigs(upstream *common.UpstreamConfig, sett
 		})
 	}
 
+	log.Debug().Int64("chainId", chainID).Interface("upstreams", upsList).Interface("settings", settings).Msg("generated upstreams from repository provider")
+
 	return upsList, nil
 }
 
@@ -183,7 +186,7 @@ func (v *RepositoryVendor) ensureRemoteData(ctx context.Context, recheckInterval
 	defer v.remoteDataLock.Unlock()
 
 	// If we've fetched within the last hour, do not refetch.
-	if time.Since(v.remoteDataLastFetchedAt) < recheckInterval {
+	if ltm, ok := v.remoteDataLastFetchedAt[remoteURL]; ok && time.Since(ltm) < recheckInterval {
 		return nil
 	}
 
@@ -195,8 +198,8 @@ func (v *RepositoryVendor) ensureRemoteData(ctx context.Context, recheckInterval
 	}
 
 	// successfully fetched new data, store it & update timestamp
-	v.remoteData = newData
-	v.remoteDataLastFetchedAt = time.Now()
+	v.remoteData[remoteURL] = newData
+	v.remoteDataLastFetchedAt[remoteURL] = time.Now()
 	return nil
 }
 
