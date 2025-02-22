@@ -124,25 +124,28 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	// Check if upstream state poller has the last block >= logs range end,
 	// if not force a poller update, and if still not enough, skip the request.
 	latestBlock := statePoller.LatestBlock()
+	if latestBlock > 0 {
+		logger.Debug().Int64("fromBlock", fromBlock).Int64("toBlock", toBlock).Int64("latestBlock", latestBlock).Msg("checking eth_getLogs block range integrity")
 
-	logger.Debug().Int64("fromBlock", fromBlock).Int64("toBlock", toBlock).Int64("latestBlock", latestBlock).Msg("checking eth_getLogs block range integrity")
-
-	if latestBlock < toBlock {
-		latestBlock, err = statePoller.PollLatestBlockNumber(ctx)
-		if err != nil {
-			return true, nil, err
+		if latestBlock < toBlock {
+			latestBlock, err = statePoller.PollLatestBlockNumber(ctx)
+			if err != nil {
+				return true, nil, err
+			}
 		}
-	}
-	if latestBlock < toBlock {
-		health.MetricUpstreamEvmGetLogsStaleUpperBound.WithLabelValues(
-			n.ProjectId(),
-			up.NetworkId(),
-			up.Config().Id,
-		).Inc()
-		return true, nil, common.NewErrUpstreamRequestSkipped(
-			fmt.Errorf("upstream latest block %d is less than toBlock %d", latestBlock, toBlock),
-			up.Config().Id,
-		)
+		if latestBlock < toBlock {
+			health.MetricUpstreamEvmGetLogsStaleUpperBound.WithLabelValues(
+				n.ProjectId(),
+				up.NetworkId(),
+				up.Config().Id,
+			).Inc()
+			return true, nil, common.NewErrUpstreamRequestSkipped(
+				fmt.Errorf("upstream latest block %d is less than toBlock %d", latestBlock, toBlock),
+				up.Config().Id,
+			)
+		}
+	} else {
+		logger.Debug().Msg("upstream latest block is not available, skipping integrity check")
 	}
 
 	cfg := up.Config()
