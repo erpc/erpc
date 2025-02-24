@@ -206,6 +206,29 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
+		} else if strings.Contains(msg, "Unsupported method") ||
+			strings.Contains(msg, "not supported") ||
+			strings.Contains(msg, "method is not whitelisted") ||
+			strings.Contains(msg, "is not included in your current plan") {
+			return common.NewErrEndpointUnsupported(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorUnsupportedException,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+		} else if r.StatusCode == 401 || r.StatusCode == 403 || strings.Contains(msg, "not allowed to access") {
+			return common.NewErrEndpointUnauthorized(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorUnauthorized,
+					err.Message,
+					nil,
+					details,
+				),
+			)
 		} else if strings.Contains(msg, "not found") ||
 			strings.Contains(msg, "does not exist") ||
 			strings.Contains(msg, "not available") ||
@@ -249,14 +272,31 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					),
 				)
 			}
-		} else if strings.Contains(msg, "Unsupported method") ||
-			strings.Contains(msg, "not supported") ||
-			strings.Contains(msg, "method is not whitelisted") ||
-			strings.Contains(msg, "is not included in your current plan") {
-			return common.NewErrEndpointUnsupported(
+		} else if code == -32602 ||
+			strings.Contains(msg, "param is required") ||
+			strings.Contains(msg, "Invalid Request") ||
+			strings.Contains(msg, "validation errors") ||
+			strings.Contains(msg, "invalid argument") ||
+			strings.Contains(msg, "invalid params") {
+			if strings.Contains(msg, "tx of type") {
+				// TODO For now we're returning a server-side exception for this error
+				// so that the request is retried on a different upstream which supports the requested TX type.
+				// This must be properly handled when "Upstream Features" is implemented which allows for feature-based routing.
+				return common.NewErrEndpointServerSideException(
+					common.NewErrJsonRpcExceptionInternal(
+						int(code),
+						common.JsonRpcErrorCallException,
+						err.Message,
+						nil,
+						details,
+					),
+					nil,
+				)
+			}
+			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
-					common.JsonRpcErrorUnsupportedException,
+					common.JsonRpcErrorInvalidArgument,
 					err.Message,
 					nil,
 					details,
@@ -281,46 +321,6 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 						)
 					}
 				}
-			}
-			return common.NewErrEndpointClientSideException(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorInvalidArgument,
-					err.Message,
-					nil,
-					details,
-				),
-			)
-		} else if r.StatusCode == 401 || r.StatusCode == 403 || strings.Contains(msg, "not allowed to access") {
-			return common.NewErrEndpointUnauthorized(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorUnauthorized,
-					err.Message,
-					nil,
-					details,
-				),
-			)
-		} else if code == -32602 ||
-			strings.Contains(msg, "param is required") ||
-			strings.Contains(msg, "Invalid Request") ||
-			strings.Contains(msg, "validation errors") ||
-			strings.Contains(msg, "invalid argument") ||
-			strings.Contains(msg, "invalid params") {
-			if strings.Contains(msg, "tx of type") {
-				// TODO For now we're returning a server-side exception for this error
-				// so that the request is retried on a different upstream which supports the requested TX type.
-				// This must be properly handled when "Upstream Features" is implemented which allows for feature-based routing.
-				return common.NewErrEndpointServerSideException(
-					common.NewErrJsonRpcExceptionInternal(
-						int(code),
-						common.JsonRpcErrorCallException,
-						err.Message,
-						nil,
-						details,
-					),
-					nil,
-				)
 			}
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
