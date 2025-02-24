@@ -38,6 +38,9 @@ type Config struct {
 }
 
 func (c *Config) HasRateLimiterBudget(id string) bool {
+	if c.RateLimiters == nil || len(c.RateLimiters.Budgets) == 0 {
+		return false
+	}
 	for _, budget := range c.RateLimiters.Budgets {
 		if budget.Id == id {
 			return true
