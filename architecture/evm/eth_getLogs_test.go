@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/erpc/erpc/common"
@@ -28,9 +29,20 @@ func (m *mockNetwork) Forward(
 ) (*common.NormalizedResponse, error) {
 	args := m.Called(ctx, req)
 	// Retrieve arguments from the mock and return them
-	resp, _ := args.Get(0).(*common.NormalizedResponse)
-	err, _ := args.Get(1).(error)
-	return resp, err
+	respFn, eFn := args.Get(0).(func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error))
+	if respFn != nil {
+		resp, err := respFn(ctx, req)
+		if resp == nil && err == nil {
+			panic("Forward() returned nil for both resp and error eFn: " + fmt.Sprintf("%T", eFn))
+		}
+		return resp, err
+	}
+	respRaw, eRs := args.Get(0).(*common.NormalizedResponse)
+	err, eEr := args.Get(1).(error)
+	if respRaw == nil && err == nil {
+		panic("Forward() returned nil for both resp and error eFn: " + fmt.Sprintf("%T", eFn) + " eRs: " + fmt.Sprintf("%T", eRs) + " eEr: " + fmt.Sprintf("%T", eEr))
+	}
+	return respRaw, err
 }
 
 func (m *mockNetwork) Config() *common.NetworkConfig {
@@ -450,16 +462,19 @@ func TestUpstreamPostForward_eth_getLogs(t *testing.T) {
 }
 
 func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
-	nonEmpty := []byte(`[{"logIndex":1,"address":"0x123","topics":["0xabc"],"data":"0x1234567890"}]`)
-	emptyResp := []byte(`[]`)
-	nullResp := []byte(`null`)
+	nonEmpty := &common.JsonRpcResponse{Result: []byte(`[{"logIndex":1,"address":"0x123","topics":["0xabc"],"data":"0x1234567890"}]`)}
+	emptyResp := &common.JsonRpcResponse{Result: []byte(`[]`)}
+	nullResp := &common.JsonRpcResponse{Result: []byte(`null`)}
 
 	t.Run("FirstFillLastEmpty", func(t *testing.T) {
 		// Create the multi-response writer with both responses.
-		writer := NewGetLogsMultiResponseWriter([][]byte{nonEmpty, emptyResp})
+		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{
+			nonEmpty,
+			emptyResp,
+		})
 
 		var buf bytes.Buffer
-		writtenBytes, err := writer.WriteTo(&buf)
+		writtenBytes, err := writer.WriteTo(&buf, false)
 		assert.NoError(t, err, "WriteTo should not return an error")
 		assert.Greater(t, writtenBytes, int64(0), "WriteTo should write some bytes")
 
@@ -482,10 +497,13 @@ func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
 
 	t.Run("FirstEmptyLastFill", func(t *testing.T) {
 		// Create the multi-response writer with both responses.
-		writer := NewGetLogsMultiResponseWriter([][]byte{emptyResp, nonEmpty})
+		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{
+			emptyResp,
+			nonEmpty,
+		})
 
 		var buf bytes.Buffer
-		writtenBytes, err := writer.WriteTo(&buf)
+		writtenBytes, err := writer.WriteTo(&buf, false)
 		assert.NoError(t, err, "WriteTo should not return an error")
 		assert.Greater(t, writtenBytes, int64(0), "WriteTo should write some bytes")
 
@@ -508,10 +526,13 @@ func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
 
 	t.Run("FirstFillMidNullLastEmpty", func(t *testing.T) {
 		// Create the multi-response writer with both responses.
-		writer := NewGetLogsMultiResponseWriter([][]byte{emptyResp, nullResp, nonEmpty})
+		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{
+			emptyResp,
+			nonEmpty,
+		})
 
 		var buf bytes.Buffer
-		writtenBytes, err := writer.WriteTo(&buf)
+		writtenBytes, err := writer.WriteTo(&buf, false)
 		assert.NoError(t, err, "WriteTo should not return an error")
 		assert.Greater(t, writtenBytes, int64(0), "WriteTo should write some bytes")
 
@@ -534,10 +555,17 @@ func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
 
 	t.Run("FirstNullMidMixLastEmpty", func(t *testing.T) {
 		// Create the multi-response writer with both responses.
-		writer := NewGetLogsMultiResponseWriter([][]byte{nullResp, nonEmpty, emptyResp, nullResp, emptyResp, nonEmpty, emptyResp})
+		writer := NewGetLogsMultiResponseWriter([]*common.JsonRpcResponse{
+			nullResp,
+			nonEmpty,
+			emptyResp,
+			nullResp,
+			emptyResp,
+			nonEmpty,
+		})
 
 		var buf bytes.Buffer
-		writtenBytes, err := writer.WriteTo(&buf)
+		writtenBytes, err := writer.WriteTo(&buf, false)
 		assert.NoError(t, err, "WriteTo should not return an error")
 		assert.Greater(t, writtenBytes, int64(0), "WriteTo should write some bytes")
 
@@ -558,6 +586,106 @@ func TestGetLogsMultiResponseWriter_WithEmptySubResponse(t *testing.T) {
 			assert.Fail(t, "Expected at least one log from non-empty sub-response")
 		}
 	})
+}
+
+func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
+	// Setup mocks
+	mockNetwork := new(mockNetwork)
+	mockUpstream := new(mockEvmUpstream)
+	mockStatePoller := new(mockStatePoller)
+
+	// Configure upstream
+	mockUpstream.On("Config").Return(&common.UpstreamConfig{
+		Evm: &common.EvmUpstreamConfig{
+			GetLogsMaxBlockRange: 1,
+		},
+	})
+	mockUpstream.On("NetworkId").Return("evm:1")
+	mockUpstream.On("EvmStatePoller").Return(mockStatePoller)
+	mockStatePoller.On("LatestBlock").Return(int64(1000))
+
+	// Setup request that will trigger nested splits
+	req := createTestRequest(map[string]interface{}{
+		"fromBlock": "0x1",
+		"toBlock":   "0x4",
+		"address":   []interface{}{"0x123", "0x456"}, // Will split by address
+		"topics":    []interface{}{"0xabc", "0xdef"}, // Will split by topics
+	})
+
+	// Mock network responses for the nested splits
+	// Each block range (0x1-0x2, 0x3-0x4) will be split by address (0x123, 0x456)
+	// and then by topics (0xabc, 0xdef)
+	mockNetwork.On("Forward", mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, r *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+			// Extract params to generate appropriate response
+			jrr, err := r.JsonRpcRequest()
+			assert.NoError(t, err)
+			filter := jrr.Params[0].(map[string]interface{})
+
+			fromBlock := filter["fromBlock"].(string)
+			toBlock := filter["toBlock"].(string)
+
+			// Generate response based on the combination
+			var subJrr *common.JsonRpcResponse
+			switch {
+			case fromBlock == "0x1" && toBlock == "0x4":
+				subJrr, err = executeGetLogsSubRequests(ctx, mockNetwork, mockUpstream, req, []ethGetLogsSubRequest{
+					{fromBlock: 0x1, toBlock: 0x2, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
+					{fromBlock: 0x3, toBlock: 0x4, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
+				}, false)
+				if err != nil {
+					return nil, err
+				}
+			case fromBlock == "0x5" && toBlock == "0x8":
+				subJrr, err = executeGetLogsSubRequests(ctx, mockNetwork, mockUpstream, req, []ethGetLogsSubRequest{
+					{fromBlock: 0x5, toBlock: 0x6, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
+					{fromBlock: 0x7, toBlock: 0x8, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
+				}, false)
+				if err != nil {
+					return nil, err
+				}
+
+			case fromBlock == "0x1" && toBlock == "0x2":
+				subJrr = &common.JsonRpcResponse{Result: []byte(`[{"logIndex":"0x1","address":"0x123","topics":["0xabc"],"data":"0x1"}]`)}
+			case fromBlock == "0x3" && toBlock == "0x4":
+				subJrr = &common.JsonRpcResponse{Result: []byte(`[{"logIndex":"0x2","address":"0x123","topics":["0xdef"],"data":"0x2"}]`)}
+
+			case fromBlock == "0x5" && toBlock == "0x6":
+				subJrr = &common.JsonRpcResponse{Result: []byte(`[{"logIndex":"0x3","address":"0x456","topics":["0xabc"],"data":"0x3"}]`)}
+			case fromBlock == "0x7" && toBlock == "0x8":
+				subJrr = &common.JsonRpcResponse{Result: []byte(`[{"logIndex":"0x4","address":"0x456","topics":["0xdef"],"data":"0x4"}]`)}
+			}
+
+			return common.NewNormalizedResponse().WithJsonRpcResponse(subJrr), nil
+		},
+		nil,
+	).Times(6)
+
+	// Execute the request
+	jrr, err := executeGetLogsSubRequests(context.Background(), mockNetwork, mockUpstream, req, []ethGetLogsSubRequest{
+		{fromBlock: 0x1, toBlock: 0x4, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
+		{fromBlock: 0x5, toBlock: 0x8, address: []interface{}{"0x123", "0x456"}, topics: []interface{}{"0xabc", "0xdef"}},
+	}, false)
+
+	// Verify results
+	assert.NoError(t, err)
+	assert.NotNil(t, jrr)
+
+	var buf bytes.Buffer
+	jrr.WriteTo(&buf)
+
+	var resp map[string]interface{}
+	err = json.Unmarshal(buf.Bytes(), &resp)
+	assert.NoError(t, err)
+	result, ok := resp["result"].([]interface{})
+	assert.True(t, ok)
+	assert.Equal(t, 4, len(result), "Expected 4 logs instead of %d in the response: %s", len(result), buf.String())
+
+	for _, log := range result {
+		logMap, ok := log.(map[string]interface{})
+		assert.True(t, ok)
+		assert.Contains(t, logMap, "logIndex")
+	}
 }
 
 func createTestRequest(filter interface{}) *common.NormalizedRequest {

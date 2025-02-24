@@ -218,18 +218,11 @@ func (r *NormalizedResponse) IsResultEmptyish() bool {
 		return false
 	}
 
-	if jrr == nil {
-		return true
+	if jrr != nil {
+		return jrr.IsResultEmptyish()
 	}
 
-	jrr.resultMu.RLock()
-	defer jrr.resultMu.RUnlock()
-
-	if jrr.resultWriter != nil {
-		return jrr.resultWriter.IsResultEmptyish()
-	}
-
-	return util.IsBytesEmptyish(jrr.Result)
+	return true
 }
 
 func (r *NormalizedResponse) IsObjectNull() bool {
