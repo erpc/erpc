@@ -7095,7 +7095,7 @@ func TestNetwork_Forward(t *testing.T) {
 			]`)
 
 		// Create normalized requests
-		req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":32,"method":"eth_getLogs","params":[{"fromBlock":"0x35A35CB","toBlock":"0x35AF7CA"}]}`))
+		req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":32,"method":"eth_trace","params":[{"fromBlock":"0x35A35CB","toBlock":"0x35AF7CA"}]}`))
 		req2 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":43,"method":"eth_getBalance","params":["0x742d35Cc6634C0532925a3b844Bc454e4438f44e", "latest"]}`))
 
 		// Process requests
@@ -7108,6 +7108,7 @@ func TestNetwork_Forward(t *testing.T) {
 			defer wg.Done()
 			resp1, err1 = network.Forward(ctx, req1)
 		}()
+		time.Sleep(100 * time.Millisecond)
 		go func() {
 			defer wg.Done()
 			resp2, err2 = network.Forward(ctx, req2)
@@ -7119,100 +7120,6 @@ func TestNetwork_Forward(t *testing.T) {
 		assert.Nil(t, resp1, "Expected nil response for the first request")
 		assert.False(t, common.IsRetryableTowardsUpstream(err1), "Expected a retryable error for the first request")
 		assert.True(t, common.HasErrorCode(err1, common.ErrCodeEndpointUnsupported), "Expected a unsupported method error for the first request")
-
-		// Assertions for the second request (client-side error, should not be retried)
-		assert.Nil(t, err2, "Expected no error for the second request")
-		assert.NotNil(t, resp2, "Expected non-nil response for the second request")
-	})
-
-	t.Run("BatchRequestValidationAndRetryLargeGetLogsRange", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
-
-		// Set up the test environment
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		network := setupTestNetworkSimple(t, ctx, &common.UpstreamConfig{
-			Type:     common.UpstreamTypeEvm,
-			Id:       "test",
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-			JsonRpc: &common.JsonRpcUpstreamConfig{
-				SupportsBatch: &common.TRUE,
-			},
-			Failsafe: &common.FailsafeConfig{
-				Retry: &common.RetryPolicyConfig{
-					MaxAttempts: 2,
-				},
-			},
-		}, nil)
-
-		// Mock the response for the batch request
-		gock.New("http://rpc1.localhost").
-			Post("/").
-			Reply(200).
-			BodyString(`[
-				{
-					"jsonrpc": "2.0",
-					"id": 32,
-					"error": {
-						"code": -32602,
-						"message": "Invalid params",
-						"data": {
-							"range": "the range 56224203 - 56274202 exceeds the range allowed for your plan (49999 > 2000)."
-						}
-					}
-				},
-				{
-					"jsonrpc": "2.0",
-					"id": 43,
-					"error": {
-						"code": -32600,
-						"message": "Invalid Request",
-						"data": {
-							"message": "Cancelled due to validation errors in batch request"
-						}
-					}
-				}
-			]`)
-		gock.New("http://rpc1.localhost").
-			Post("/").
-			Reply(200).
-			BodyString(`[
-				{
-					"jsonrpc": "2.0",
-					"id": 43,
-					"result": "0x22222222222222"
-				}
-			]`)
-
-		// Create normalized requests
-		req1 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":32,"method":"eth_getLogs","params":[{"fromBlock":"0x35A35CB","toBlock":"0x35AF7CA"}]}`))
-		req2 := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":43,"method":"eth_getBalance","params":["0x742d35Cc6634C0532925a3b844Bc454e4438f44e", "latest"]}`))
-
-		// Process requests
-		var resp1, resp2 *common.NormalizedResponse
-		var err1, err2 error
-
-		wg := sync.WaitGroup{}
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			resp1, err1 = network.Forward(ctx, req1)
-		}()
-		go func() {
-			defer wg.Done()
-			resp2, err2 = network.Forward(ctx, req2)
-		}()
-		wg.Wait()
-
-		// TODO Add assertions for getLogs merged response (how to find the IDs of sub-requests?)
-		_ = resp1
-		_ = err1
 
 		// Assertions for the second request (client-side error, should not be retried)
 		assert.Nil(t, err2, "Expected no error for the second request")

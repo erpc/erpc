@@ -6,33 +6,33 @@ import { Rate, Counter, Trend, Gauge } from 'k6/metrics';
 const ERPC_BASE_URL = __ENV.ERPC_BASE_URL || 'http://localhost:4000/main/evm/';
 
 const CHAINS = {
-  ETH: {
-    id: '1',
-    blockMin: 0x1006F40,    // Adjust these based on each chain's history
-    blockMax: 0x1406F40,
+  ABS: {
+    id: '11124',
+    blockMin: 0x194920,    // Adjust these based on each chain's history
+    blockMax: 0x694920,
     cached: {
       latestBlock: null,
       latestBlockTimestamp: 0
     }
   },
-  POLYGON: {
-    id: '137',
-    blockMin: 0x20D9900,    // Adjust these based on each chain's history
-    blockMax: 0x40D9900,
-    cached: {
-      latestBlock: null,
-      latestBlockTimestamp: 0
-    }
-  },
-  ARBITRUM: {
-    id: '42161',
-    blockMin: 0x10E1A300,    // Adjust these based on each chain's history
-    blockMax: 0x11E1A300,
-    cached: {
-      latestBlock: null,
-      latestBlockTimestamp: 0
-    }
-  }
+  // POLYGON: {
+  //   id: '137',
+  //   blockMin: 0x20D9900,    // Adjust these based on each chain's history
+  //   blockMax: 0x40D9900,
+  //   cached: {
+  //     latestBlock: null,
+  //     latestBlockTimestamp: 0
+  //   }
+  // },
+  // ARBITRUM: {
+  //   id: '42161',
+  //   blockMin: 0x10E1A300,    // Adjust these based on each chain's history
+  //   blockMax: 0x11E1A300,
+  //   cached: {
+  //     latestBlock: null,
+  //     latestBlockTimestamp: 0
+  //   }
+  // }
 };
 
 if (__ENV.RANDOM_SEED) {
@@ -59,7 +59,7 @@ export const options = {
   scenarios: {    
     constant_request_rate: {
       executor: 'constant-arrival-rate',
-      rate: 10,
+      rate: 100,
       timeUnit: '1s',
       duration: '1m',
       preAllocatedVUs: 500,
