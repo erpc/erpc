@@ -1,23 +1,36 @@
 import http from 'k6/http';
-import { check, randomSeed, sleep } from 'k6';
+import { check, randomSeed } from 'k6';
 import { Rate, Counter, Trend, Gauge } from 'k6/metrics';
+import { textSummary } from 'https://jslib.k6.io/k6-summary/0.1.0/index.js';
 
 // Target URL (can be configured via environment variables)
 const ERPC_BASE_URL = __ENV.ERPC_BASE_URL || 'http://localhost:4000/main/evm/';
 
+// Common ERC20 Transfer event topic
+const TRANSFER_EVENT_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+
 const CHAINS = {
-  ABS: {
-    id: '11124',
-    blockMin: 0x194920,    // Adjust these based on each chain's history
-    blockMax: 0x694920,
+  ETH: {
+    id: '1',
+    blockMin: 0x1006F40,
+    blockMax: 0x1406F40,
     cached: {
       latestBlock: null,
       latestBlockTimestamp: 0
     }
   },
+  // ABS: {
+  //   id: '11124',
+  //   blockMin: 0x194920,
+  //   blockMax: 0x694920,
+  //   cached: {
+  //     latestBlock: null,
+  //     latestBlockTimestamp: 0
+  //   }
+  // },
   // POLYGON: {
   //   id: '137',
-  //   blockMin: 0x20D9900,    // Adjust these based on each chain's history
+  //   blockMin: 0x20D9900,
   //   blockMax: 0x40D9900,
   //   cached: {
   //     latestBlock: null,
@@ -26,7 +39,7 @@ const CHAINS = {
   // },
   // ARBITRUM: {
   //   id: '42161',
-  //   blockMin: 0x10E1A300,    // Adjust these based on each chain's history
+  //   blockMin: 0x10E1A300,
   //   blockMax: 0x11E1A300,
   //   cached: {
   //     latestBlock: null,
@@ -61,42 +74,17 @@ export const options = {
       executor: 'constant-arrival-rate',
       rate: 100,
       timeUnit: '1s',
-      duration: '1m',
+      duration: '15s',
       preAllocatedVUs: 500,
       maxVUs: 500,
     },
   },
-  ext: {
-    loadimpact: {
-      distribution: {
-        distributionLabel1: { loadZone: 'amazon:de:frankfurt', percent: 100 },
-      },
-    },
-  },
 };
 
-const errorRate = new Rate('errors');
-
-// Common ERC20 Transfer event topic
-const TRANSFER_EVENT_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
-
-// Add new metrics
-const requestsByChain = {};
-Object.keys(CHAINS).forEach(chain => {
-  requestsByChain[chain] = new Counter(`requests_${chain.toLowerCase()}`);
-});
-
-const requestsByType = {
-  blocks: new Counter('requests_historical_blocks'),
-  logs: new Counter('requests_log_ranges'),
-  receipts: new Counter('requests_historical_receipts'),
-  traces: new Counter('requests_traces'),
-};
-
+const statusCodeCounter = new Counter('status_codes');
+const jsonRpcErrorCounter = new Counter('jsonrpc_errors');
+const parsingErrorsCounter = new Counter('parsing_errors');
 const responseSizes = new Trend('response_sizes');
-const responseTimings = new Trend('response_times');
-const activeRequests = new Gauge('active_requests');
-const successfulTraces = new Counter('successful_traces');
 
 function getRandomChain() {
   const chains = Object.values(CHAINS);
@@ -138,11 +126,11 @@ function randomLogRanges(http, params, chain) {
     }],
     id: Math.floor(Math.random() * 100000000)
   });
-  return http.post(ERPC_BASE_URL, payload, params);
+  return http.post(ERPC_BASE_URL + chain.id, payload, params);
 }
 
 function randomHistoricalReceipts(http, params, chain) {
-  // First get a random block
+  // TODO maybe find a way to gather bunch of random transaction hashes before the test starts to avoid this extra call PER request
   const blockPayload = JSON.stringify({
     jsonrpc: "2.0",
     method: "eth_getBlockByNumber",
@@ -247,20 +235,15 @@ function randomIntBetween(min, max) {
 
 // Main test function
 export default async function () {
-  activeRequests.add(1);  // Increment active requests counter
-  const startTime = Date.now();
-  
   const params = {
     headers: { 'Content-Type': 'application/json' },
     insecureSkipTLSVerify: true,
     timeout: '30s',
   };
 
-  
   // Randomly select traffic pattern based on weights
   const selectedChain = getRandomChain();
-  requestsByChain[Object.keys(CHAINS).find(key => CHAINS[key] === selectedChain)].add(1);
-  
+  const tags = { chain: selectedChain.id };  
   const rand = Math.random() * 100;
   let cumulativeWeight = 0;
   let res;
@@ -268,21 +251,19 @@ export default async function () {
   for (const [pattern, weight] of Object.entries(TRAFFIC_PATTERNS)) {
     cumulativeWeight += weight;
     if (rand <= cumulativeWeight) {
+      tags['pattern'] = pattern;
+      params['tags'] = tags;
       switch (pattern) {
         case 'RANDOM_HISTORICAL_BLOCKS':
-          requestsByType.blocks.add(1);
           res = randomHistoricalBlocks(http, params, selectedChain);
           break;
         case 'RANDOM_LOG_RANGES':
-          requestsByType.logs.add(1);
           res = randomLogRanges(http, params, selectedChain);
           break;
         case 'RANDOM_HISTORICAL_RECEIPTS':
-          requestsByType.receipts.add(1);
           res = randomHistoricalReceipts(http, params, selectedChain);
           break;
         case 'TRACE_RANDOM_TRANSACTIONS':
-          requestsByType.traces.add(1);
           res = await traceRandomTransaction(http, params, selectedChain);
           break;
       }
@@ -291,48 +272,69 @@ export default async function () {
   }
   
   // const sampleReq = {"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0xfaeff2","toBlock":"0xfaeff3","topics":["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"]}],"id":Math.ceil(Math.random() * 10000000)};
-  // res = http.post(ERPC_BASE_URL, JSON.stringify(sampleReq), params);
+  // res = http.post(ERPC_BASE_URL + selectedChain.id, JSON.stringify(sampleReq), params);
 
   if (res) {
-    // Track response metrics
-    responseSizes.add(res.body.length);
-    responseTimings.add(Date.now() - startTime);
+    tags['status_code'] = res.status.toString();
+    statusCodeCounter.add(1, tags);
+    responseSizes.add(res.body.length, tags);
 
-    // Track successful traces
-    if (res.status === 200 && res.request.body.includes('debug_traceTransaction')) {
-      try {
-        const body = JSON.parse(res.body);
-        if (body.result && !body.error) {
-          successfulTraces.add(1);
-        }
-      } catch (e) {}
+    let parsedBody = null;
+    try {
+      parsedBody = JSON.parse(res.body);
+    } catch (e) {
+      parsingErrorsCounter.add(1, tags);
+      console.error(`Failed to parse response body: ${e}`);
+    }
+
+    if (parsedBody?.error?.code) {
+      tags['rpc_error_code'] = parsedBody.error.code.toString();
+      tags['rpc_error_message'] = parsedBody?.error?.message;
+      jsonRpcErrorCounter.add(1, tags);
     }
 
     check(res, {
-      'status is 200': (r) => r.status === 200,
-      'response has no error': (r) => {
-        const size = r?.body?.length;
-        if (size > 1000000) {
-          console.log(`Large response body: ${size} bytes found: ${r?.request?.body} ====> ${r?.body?.substring(0, 100)}`);
-        }
-        try {
-          const body = JSON.parse(r.body);
-          return body && (body.error === undefined || body.error === null);
-        } catch (e) {
-          if (size > 200) {
-            const head = r.body.substring(0, 5000);
-            const tail = r.body.substring(size - 5000);
-            console.log(`Unmarshal error: "${e}" for ${size} bytes body: REQUEST=${r?.request?.body} ===> RESPONSE=${head}...${tail}`);
-          } else {
-            console.log(`Unmarshal error: "${e}" for ${size} bytes body: REQUEST=${r?.request?.body} ===> RESPONSE=${r.body}`);
-          }
+      'status is 2xx': (r) => r.status >= 200 && r.status < 300,
+      'response has no json-rpc error': (r) => {
+        if (parsedBody?.error?.code) {
           return false;
         }
+        return true;
       },
-    });
+    }, tags);
 
-    errorRate.add(res.status !== 200);
+    // Add console output during the test
+    if (__ENV.DEBUG) {
+      console.log(`Tags: ${JSON.stringify(tags)}`);
+    }
   }
+}
 
-  activeRequests.add(-1);  // Decrement active requests counter
+export function handleSummary(data) {
+  const statusCodeStats = {};
+  data?.metrics?.status_codes?.values?.tags?.forEach(t => {
+    const code = t.status_code;
+    statusCodeStats[code] = (statusCodeStats[code] || 0) + t.value;
+  });
+
+  const jsonRpcErrorStats = {};
+  data?.metrics?.jsonrpc_errors?.values?.tags?.forEach(t => {
+    const key = `${t.code}:${t.message}`;
+    jsonRpcErrorStats[key] = (jsonRpcErrorStats[key] || 0) + t.value;
+  });
+
+  console.log('\nStatus Code Breakdown:', JSON.stringify(statusCodeStats));
+  Object.entries(statusCodeStats || {}).forEach(([code, count]) => {
+    console.log(`  HTTP ${code}: ${count} requests`);
+  });
+
+  console.log('\nJSON-RPC Error Breakdown:', JSON.stringify(jsonRpcErrorStats));
+  Object.entries(jsonRpcErrorStats || {}).forEach(([key, count]) => {
+    const [code, message] = key.split(':');
+    console.log(`  Code ${code} (${message}): ${count} errors`);
+  });
+
+  return {
+    stdout: textSummary(data, { indent: "  ", enableColors: true }),
+  };
 }
