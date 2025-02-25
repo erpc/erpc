@@ -340,9 +340,29 @@ func splitEthGetLogsRequest(r *common.NormalizedRequest) ([]ethGetLogsSubRequest
 		return nil, err
 	}
 
+	n := r.Network()
+	var u common.Upstream
+	var c *common.UpstreamConfig
+	if p := r.LastValidResponse(); p != nil {
+		if s := p.Upstream(); s != nil {
+			u = s
+			if f := u.Config(); f != nil {
+				c = f
+			}
+		}
+	}
+
 	// First try splitting by block range
 	blockRange := tb - fb + 1
 	if blockRange > 1 {
+		if n != nil && u != nil && c != nil {
+			health.MetricUpstreamEvmGetLogsForcedSplits.WithLabelValues(
+				n.ProjectId(),
+				u.NetworkId(),
+				c.Id,
+				"block_range",
+			).Inc()
+		}
 		mid := fb + (blockRange / 2)
 		return []ethGetLogsSubRequest{
 			{fromBlock: fb, toBlock: mid - 1, address: filter["address"], topics: filter["topics"]},
@@ -354,6 +374,14 @@ func splitEthGetLogsRequest(r *common.NormalizedRequest) ([]ethGetLogsSubRequest
 	addresses, ok := filter["address"].([]interface{})
 	if ok && len(addresses) > 1 {
 		mid := len(addresses) / 2
+		if n != nil && u != nil && c != nil {
+			health.MetricUpstreamEvmGetLogsForcedSplits.WithLabelValues(
+				n.ProjectId(),
+				u.NetworkId(),
+				c.Id,
+				"addresses",
+			).Inc()
+		}
 		return []ethGetLogsSubRequest{
 			{fromBlock: fb, toBlock: tb, address: addresses[:mid], topics: filter["topics"]},
 			{fromBlock: fb, toBlock: tb, address: addresses[mid:], topics: filter["topics"]},
@@ -364,6 +392,14 @@ func splitEthGetLogsRequest(r *common.NormalizedRequest) ([]ethGetLogsSubRequest
 	topics, ok := filter["topics"].([]interface{})
 	if ok && len(topics) > 1 {
 		mid := len(topics) / 2
+		if n != nil && u != nil && c != nil {
+			health.MetricUpstreamEvmGetLogsForcedSplits.WithLabelValues(
+				n.ProjectId(),
+				u.NetworkId(),
+				c.Id,
+				"topics",
+			).Inc()
+		}
 		return []ethGetLogsSubRequest{
 			{fromBlock: fb, toBlock: tb, address: filter["address"], topics: topics[:mid]},
 			{fromBlock: fb, toBlock: tb, address: filter["address"], topics: topics[mid:]},
