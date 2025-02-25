@@ -42,3 +42,15 @@ Storing cached RPC responses requires high storage for read-heavy use-cases such
 As described in [Database](/config/database) section depending on your requirements choose the right type. You can start with Redis which is easiest to setup, and if amount of cached data is larger than available memory you can switch to PostgreSQL.
 
 Using [eRPC cloud](/operation/cloud) solution will be most cost-efficient in terms of caching storage costs, as we'll be able to break the costs over many projects.
+
+## Horizontal scaling
+
+When running multiple eRPC instances (e.g., in a Kubernetes deployment with multiple replicas), it's recommended to enable shared state with Redis to ensure proper synchronization between instances.
+
+The [shared state feature](/config/database/shared-state) allows your eRPC instances to share critical blockchain information such as latest and finalized block numbers, which reduces redundant upstream requests and improves integrity checks.
+
+<Callout type="info">
+  Even if Redis becomes temporarily unavailable, eRPC will continue serving requests by falling back to local state tracking. This might cause a slight increase in upstream requests as each instance will need to poll for latest/finalized blocks independently, but the impact is minimal and service availability is maintained.
+</Callout>
+
+The shared state feature requires minimal storage (less than 1MB per upstream) while significantly improving coordination between instances. For high-traffic deployments with multiple replicas, this pattern is strongly recommended.
