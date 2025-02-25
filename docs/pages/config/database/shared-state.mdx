@@ -1,0 +1,137 @@
+---
+description: sharedState allows more efficient horizontal scaling of eRPC with multiple instances...
+---
+
+import { Callout, Tabs, Tab } from "nextra/components";
+
+
+# `sharedState`
+
+The `sharedState` feature enables multiple eRPC instances to share critical state information across a cluster. This is especially useful for horizontal scaling deployments where having a shared view of blockchain state improves efficiency and reduces unnecessary upstream requests.
+
+Key benefits:
+- **Reduced upstream load**: Instances share latest and finalized block info, eliminating redundant polling.
+- **Enhanced integrity checks**: More accurate integrity checks for operations like `eth_getLogs` by using shared latest block number.
+
+## Config
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+<Tab>
+```yaml filename="erpc.yaml"
+database:
+  sharedState:
+    # Unique identifier for a group of eRPC instances that should share state
+    # Recommended if you have multiple separate eRPC clusters 
+    # Default: "erpc-default"
+    clusterKey: "my-cluster-1"
+    
+    # Storage backend configuration
+    # Local "memory" is used by default
+    connector:
+      # Storage driver: memory, redis, postgresql (memory is default)
+      driver: redis
+      # Redis-specific configuration
+      redis:
+        addr: "localhost:6379"
+        password: ""
+        db: 0
+        connPoolSize: 10
+    
+    # Maximum time to wait for shared state operations before falling back to local state
+    # Default: 500ms
+    # Lower values improve resilience but may cause more divergence between instances
+    fallbackTimeout: 500ms
+    
+    # Time-to-live for distributed locks
+    # Default: 10s
+    # Should be longer than typical operation time but not so long it blocks operations if an instance fails
+    lockTtl: 10s
+```
+</Tab>
+<Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  database: {
+    sharedState: {
+      // Unique identifier for a group of eRPC instances that should share state
+      // Recommended if you have multiple separate eRPC clusters 
+      // Default: "erpc-default"
+      clusterKey: "erpc-default",
+      
+      // Storage backend configuration
+      // Local "memory" is used by default
+      connector: {
+        // Storage driver: memory, redis, postgresql (memory is default)
+        driver: "redis",
+        // Redis-specific configuration
+        redis: {
+          addr: "localhost:6379",
+          password: "",
+          db: 0,
+          connPoolSize: 128
+        }
+      },
+      
+      // Maximum time to wait for shared state operations before falling back to local state
+      // Default: 500ms
+      // Lower values improve resilience but may cause more divergence between instances
+      fallbackTimeout: "500ms",
+      
+      // Time-to-live for distributed locks
+      // Default: 10s
+      // Should be longer than typical operation time but not so long it blocks operations if an instance fails
+      lockTtl: "10s"
+    }
+  }
+});
+```
+</Tab>
+</Tabs>
+
+<Callout type="warning">
+  Setting a unique `clusterKey` is critical if you have multiple eRPC deployments (e.g., different clusters in Kubernetes). 
+  This ensures each cluster maintains its own isolated shared state. If not specified, it defaults to "erpc-default".
+</Callout>
+
+### Recommendation
+
+We recommend using Redis as the shared state connector for production deployments:
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+<Tab>
+```yaml filename="erpc.yaml"
+database:
+  sharedState:
+    connector:
+      driver: redis
+      redis:
+        addr: "your-redis-host:6379"
+```
+</Tab>
+<Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  database: {
+    sharedState: {
+      connector: {
+        driver: "redis",
+        redis: {
+          addr: "your-redis-host:6379",
+        }
+      },
+    }
+  }
+});
+```
+</Tab>
+</Tabs>
+
+<Callout type="info">
+  Redis is the recommended connector for shared state as it provides fast synchronization between instances. The total storage needed is typically less than 1MB per upstream.
+</Callout>
+
+For more information on available connectors and their configuration options, see the [Drivers](/config/database/drivers) documentation.
