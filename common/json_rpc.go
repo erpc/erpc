@@ -424,7 +424,7 @@ func (r *JsonRpcResponse) WriteTo(w io.Writer) (n int64, err error) {
 		}
 		n += int64(nn)
 
-		nw, err := r.resultWriter.WriteTo(w)
+		nw, err := r.resultWriter.WriteTo(w, false)
 		if err != nil {
 			return n + nw, err
 		}
@@ -434,6 +434,22 @@ func (r *JsonRpcResponse) WriteTo(w io.Writer) (n int64, err error) {
 	// Write closing brace
 	nn, err = w.Write([]byte{'}'})
 	return n + int64(nn), err
+}
+
+func (r *JsonRpcResponse) WriteResultTo(w io.Writer, trimSides bool) (n int64, err error) {
+	r.resultMu.RLock()
+	defer r.resultMu.RUnlock()
+
+	if r.Result != nil && len(r.Result) > 0 {
+		if trimSides {
+			nn, err := w.Write(r.Result[1 : len(r.Result)-1])
+			return int64(nn), err
+		}
+		nn, err := w.Write(r.Result)
+		return int64(nn), err
+	}
+
+	return r.resultWriter.WriteTo(w, trimSides)
 }
 
 func (r *JsonRpcResponse) Clone() (*JsonRpcResponse, error) {
@@ -449,6 +465,25 @@ func (r *JsonRpcResponse) Clone() (*JsonRpcResponse, error) {
 		Result:     r.Result,
 		cachedNode: r.cachedNode,
 	}, nil
+}
+
+func (r *JsonRpcResponse) IsResultEmptyish() bool {
+	if r == nil {
+		return true
+	}
+
+	r.resultMu.RLock()
+	defer r.resultMu.RUnlock()
+
+	if r.Result != nil && len(r.Result) > 0 {
+		return util.IsBytesEmptyish(r.Result)
+	}
+
+	if r.resultWriter != nil {
+		return r.resultWriter.IsResultEmptyish()
+	}
+
+	return true
 }
 
 //
