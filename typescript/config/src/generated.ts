@@ -91,6 +91,7 @@ export interface SharedStateConfig {
   clusterKey?: string;
   connector?: ConnectorConfig;
   fallbackTimeout?: number /* time in nanoseconds (time.Duration) */;
+  lockTtl?: number /* time in nanoseconds (time.Duration) */;
 }
 export interface CacheConfig {
   connectors?: TsConnectorConfig[];
