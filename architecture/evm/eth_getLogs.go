@@ -1,7 +1,6 @@
 package evm
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -246,34 +245,34 @@ func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u co
 }
 
 type GetLogsMultiResponseWriter struct {
-	results [][]byte
+	responses []*common.JsonRpcResponse
 }
 
-func NewGetLogsMultiResponseWriter(results [][]byte) *GetLogsMultiResponseWriter {
+func NewGetLogsMultiResponseWriter(responses []*common.JsonRpcResponse) *GetLogsMultiResponseWriter {
 	return &GetLogsMultiResponseWriter{
-		results: results,
+		responses: responses,
 	}
 }
 
-func (g *GetLogsMultiResponseWriter) WriteTo(w io.Writer) (n int64, err error) {
+func (g *GetLogsMultiResponseWriter) WriteTo(w io.Writer, trimSides bool) (n int64, err error) {
 	// Write opening bracket
-	nn, err := w.Write([]byte{'['})
-	if err != nil {
-		return int64(nn), err
+	if !trimSides {
+		nn, err := w.Write([]byte{'['})
+		if err != nil {
+			return int64(nn), err
+		}
+		n += int64(nn)
 	}
-	n += int64(nn)
 
 	first := true
-	for _, result := range g.results {
-		// Trim leading/trailing whitespace and brackets
-		trimmed := bytes.TrimSpace(result)
-		if util.IsBytesEmptyish(trimmed) {
+	for _, response := range g.responses {
+		if response == nil || response.IsResultEmptyish() {
 			continue // Skip empty results
 		}
 
 		if !first {
 			// Write comma separator
-			nn, err = w.Write([]byte{','})
+			nn, err := w.Write([]byte{','})
 			if err != nil {
 				return n + int64(nn), err
 			}
@@ -282,25 +281,32 @@ func (g *GetLogsMultiResponseWriter) WriteTo(w io.Writer) (n int64, err error) {
 		first = false
 
 		// Write the inner content, skipping the outer brackets
-		nn, err = w.Write(trimmed[1 : len(trimmed)-1])
+		nw, err := response.WriteResultTo(w, true)
 		if err != nil {
-			return n + int64(nn), err
+			return n + nw, err
 		}
-		n += int64(nn)
+		n += nw
 	}
 
-	// Write closing bracket
-	nn, err = w.Write([]byte{']'})
-	return n + int64(nn), err
+	if !trimSides {
+		// Write closing bracket
+		nn, err := w.Write([]byte{']'})
+		return n + int64(nn), err
+	}
+
+	return n, nil
 }
 
 func (g *GetLogsMultiResponseWriter) IsResultEmptyish() bool {
-	if len(g.results) == 0 {
+	if len(g.responses) == 0 {
 		return true
 	}
 
-	for _, result := range g.results {
-		if !util.IsBytesEmptyish(result) {
+	for _, response := range g.responses {
+		if response == nil {
+			continue
+		}
+		if !response.IsResultEmptyish() {
 			return false
 		}
 	}
@@ -393,7 +399,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 	logger := u.Logger().With().Str("method", "eth_getLogs").Interface("id", r.ID()).Logger()
 
 	wg := sync.WaitGroup{}
-	results := make([][]byte, 0)
+	responses := make([]*common.JsonRpcResponse, 0)
 	errs := make([]error, 0)
 	mu := sync.Mutex{}
 
@@ -452,7 +458,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 			}
 
 			mu.Lock()
-			results = append(results, jrr.Result)
+			responses = append(responses, jrr)
 			mu.Unlock()
 		}(sr)
 	}
@@ -462,7 +468,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 		return nil, errors.Join(errs...)
 	}
 
-	mergedResponse := mergeEthGetLogsResults(results)
+	mergedResponse := mergeEthGetLogsResults(responses)
 	jrq, _ := r.JsonRpcRequest()
 	err := mergedResponse.SetID(jrq.ID)
 	if err != nil {
@@ -472,8 +478,8 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 	return mergedResponse, nil
 }
 
-func mergeEthGetLogsResults(results [][]byte) *common.JsonRpcResponse {
-	writer := NewGetLogsMultiResponseWriter(results)
+func mergeEthGetLogsResults(responses []*common.JsonRpcResponse) *common.JsonRpcResponse {
+	writer := NewGetLogsMultiResponseWriter(responses)
 	jrr := &common.JsonRpcResponse{}
 	jrr.SetResultWriter(writer)
 	return jrr

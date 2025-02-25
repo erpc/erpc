@@ -37,7 +37,7 @@ run-k6-evm-tip-of-chain:
 
 .PHONY: run-k6-evm-historical-randomized
 run-k6-evm-historical-randomized:
-	@k6 run ./test/k6/evm-historical-randomized.js
+	@k6 run --summary-export=summary.json ./test/k6/evm-historical-randomized.js
 
 .PHONY: build
 build:
