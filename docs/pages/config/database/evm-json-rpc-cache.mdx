@@ -1,13 +1,15 @@
 ---
-description: evmJsonRpcCachehe defines the storage backend for the eRPC cache...
+description: evmJsonRpcCache defines the storage backend for the eRPC cache...
 ---
 
 import { Callout, Tabs, Tab } from "nextra/components";
 
-### `evmJsonRpcCache`
+# `evmJsonRpcCache`
 
 This feature defines the destination for caching JSON-RPC calls towards any EVM architecture upstream.
 Caching mechanism is non-blocking on critical path, and is used as best-effort. If the database is not available, the cache set/get will be skipped.
+
+## Config
 
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
 <Tab>
@@ -254,14 +256,14 @@ export default createConfig({
 </Tab>
 </Tabs>
 
-#### Cache policies
+### Cache policies
 
 You can create multiple policies to define different caching behavior for different networks, methods, finality state, emptyish checks, and item size limits.
 
 * On each cache "set" operation all policies that match the network/method/finality state will be used to store the data.
 * On each cache "get" operation all policies that match the network/method will be used to retrieve the data, from top to bottom as defined in the config, the first policy that returns a cache hit will be used.
 
-#### Policy matching
+### Policy matching
 
 Each policy can define matching rules for:
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
@@ -447,7 +449,7 @@ These values are considered empty:
 - `{}` (empty object) for example when trace results is empty
 - `0x` (empty hex) for example for an empty string from eth_getCode or eth_call
 
-#### Re-org mechanism
+### Re-org mechanism
 
 The cache system provides mechanisms to handle blockchain reorganizations (re-orgs) through the finality state matchers and TTL settings. Here are the key strategies:
 
@@ -498,7 +500,7 @@ Make sure to properly test your dApps/indexer full flow to ensure unfinalized da
 
 For chains which do not support "finalized" block method, eRPC will consider last 1024 blocks unfinalized. This number can be configured via `network.evm.fallbackFinalityDepth`.
 
-#### Cacheable methods
+### Cacheable methods
 Methods are cached if they include a `blockNumber` or `blockHash` in the request or response, allowing cache invalidation during blockchain reorgs.
 If no blockNumber is present, caching is still viable if the method returns data unaffected by reorgs, like `eth_chainId`, or if the data won't change after a reorg, such as `eth_getTransactionReceipt`.
 
