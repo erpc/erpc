@@ -131,6 +131,9 @@ func (u *Upstream) Bootstrap(ctx context.Context) error {
 }
 
 func (u *Upstream) Config() *common.UpstreamConfig {
+	if u == nil {
+		return nil
+	}
 	return u.config
 }
 
@@ -139,10 +142,16 @@ func (u *Upstream) Logger() *zerolog.Logger {
 }
 
 func (u *Upstream) Vendor() common.Vendor {
+	if u == nil {
+		return nil
+	}
 	return u.vendor
 }
 
 func (u *Upstream) NetworkId() string {
+	if u == nil {
+		return ""
+	}
 	return u.networkId
 }
 
