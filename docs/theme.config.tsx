@@ -90,5 +90,12 @@ export default {
 			<meta name="apple-mobile-web-app-title" content="eRPC" />
 		  </>
 		)
-	}
+	},
+	footer: {
+	  text: (
+		<span>
+		  © {new Date().getFullYear()} eRPC. All rights reserved.
+		</span>
+	  ),
+	},
 }
