@@ -115,7 +115,7 @@ func (v *RepositoryVendor) GenerateConfigs(upstream *common.UpstreamConfig, sett
 
 	upsList := []*common.UpstreamConfig{}
 	for _, ep := range endpoints {
-		if !strings.HasPrefix(strings.ToLower(ep), "https://") {
+		if !strings.HasPrefix(strings.ToLower(ep), "http") {
 			continue
 		}
 		var evm *common.EvmUpstreamConfig

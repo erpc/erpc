@@ -1,0 +1,4434 @@
+# https://docs.erpc.cloud/ llms-full.txt
+
+Why eRPC?
+
+# Why eRPC?
+
+These are the main reasons eRPC was built:
+
+- To **reduce overall costs** of RPC usage and egress traffic, by local caching.
+- To provide a **fault-tolerant** and **reliable source** for RPC consumers in case of one or more provider outages.
+- To give a global **observability** about your RPC usage both within internal teams and projects, and towards the upstream RPC 3rd party companies.
+
+# Features
+
+- [Failover](https://docs.erpc.cloud/config/failsafe) across multiple upstreams by tracking their response time, error rate, blockchain sync status, etc.
+- Offer self-imposed [rate limitting](https://docs.erpc.cloud/rate-limiting) per project, or network, or upstream to avoid abuse, and unintentional DDoS.
+- Prometheus metrics collection and Grafana dashboards to [monitor](https://docs.erpc.cloud/operation/monitoring) costs, usage and health of your RPC endpoints.
+- [Caching](https://docs.erpc.cloud/config/caching) and multiplexing (auto-merging identical requests) to reduce redundant RPC calls and costs.
+
+# Use-cases
+
+For the start the main focus of eRPC will be on read-heavy use-cases such as:
+
+### Frontend of dApps [Permalink for this section](https://docs.erpc.cloud/why\#frontend-of-dapps)
+
+Often many requests made from dApps can be multiplexed into a single RPC call, or use cache to reduce costs.
+
+Here are real production case studies where eRPC serves 8k RPS and 1B requests / month:
+
+- 🚀 [Moonwell: How eRPC slashed RPC calls by 67% (opens in a new tab)](https://erpc.cloud/case-studies/moonwell)
+- 🚀 [Chronicle: How eRPC reduced RPC cost by 45% (opens in a new tab)](https://erpc.cloud/case-studies/chronicle)
+
+### Data indexing using Ponder, Graph, Envio, Flair, etc. [Permalink for this section](https://docs.erpc.cloud/why\#data-indexing-using-ponder-graph-envio-flair-etc)
+
+When using any of the web3 indexing tools you will be making lots of requests towards your RPC provider, especially during re-backfills for historical data.
+
+eRPC can help in two main areas:
+
+- Cache already made RPC calls (eth\_getLogs, eth\_call, eth\_getBlockByNumber, etc)
+- Rate-limit upstream pressure towards RPC nodes to avoid fatal error
+
+### Resilient load balancer for self-hosted RPC nodes [Permalink for this section](https://docs.erpc.cloud/why\#resilient-load-balancer-for-self-hosted-rpc-nodes)
+
+For app-specific chains and rollups, or projects who prefer to self-host RPC nodes for performance reasons, it makes sense to use eRPC as the entry-point load-balancer.
+
+Compared to more traditional LB solutions (ALB, K8S Services, etc) eRPC will provide EVM-focused features like:
+
+- EVM-aware healthchecks (e.g. how many blocks behind)
+- EVM-aware fallbacks (e.g. if a 4xx is because of missing block, try another upstream)
+- EVM-aware method filters (e.g. certain methods to go to node A and other methods to go to node B)
+
+[Quick start](https://docs.erpc.cloud/ "Quick start") [Free & Public RPCs](https://docs.erpc.cloud/free "Free & Public RPCs")[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+Operation
+
+URL
+
+# URL
+
+eRPC supports several URL patterns for making requests, with options for both single-chain and multi-chain endpoints.
+
+## Single-chain requests [Permalink for this section](https://docs.erpc.cloud/operation/url\#single-chain-requests)
+
+### Standard URL pattern [Permalink for this section](https://docs.erpc.cloud/operation/url\#standard-url-pattern)
+
+When making requests only for a single chain, you can use this URL structure:
+
+https://<your-erpc-hostname>/<project-id>/<network-architecture>/<chain-id>
+
+##### `<your-erpc-hostname>` [Permalink for this section](https://docs.erpc.cloud/operation/url\#your-erpc-hostname)
+
+Depends on your deployment setup, for example in local development (using `make run`) it will be `localhost:4000`.
+
+##### `<project-id>` [Permalink for this section](https://docs.erpc.cloud/operation/url\#project-id)
+
+Target project ID you configured in [erpc.yaml](https://docs.erpc.cloud/config/example), for example "main" or "frontend", "backend", etc.
+
+##### `<network-architecture>` [Permalink for this section](https://docs.erpc.cloud/operation/url\#network-architecture)
+
+Target network architecture you configured in [erpc.yaml](https://docs.erpc.cloud/config/example), for example `evm`.
+
+##### `<chain-id>` [Permalink for this section](https://docs.erpc.cloud/operation/url\#chain-id)
+
+Target chain ID that one or more upstreams support, for example `1` or `42161`.
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+# A cURL example of sending a request to a project named "main" and Ethereum mainnet chain:
+
+curl --location 'http://localhost:4000/main/evm/1' \
+--header 'Content-Type: application/json' \
+--data '{
+    "method": "eth_getBlockByNumber",
+    "params": [\
+        "0x1203319",\
+        false\
+    ],
+    "id": 9199,
+    "jsonrpc": "2.0"
+}'
+```
+
+### Domain aliasing [Permalink for this section](https://docs.erpc.cloud/operation/url\#domain-aliasing)
+
+If configured with domain aliasing, you can have predefined project and network values:
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+server:
+  # ...
+  aliasing:
+    rules:
+      - matchDomain: "*" # (OPTIONAL) Pattern to match Host header, defaults to `*` (all domains)
+        serveProject: "main" # (OPTIONAL) Project ID to serve for matched domains
+        serveArchitecture: "evm" # (OPTIONAL) Network architecture (e.g., "evm")
+        serveChain: "1" # (OPTIONAL) Chain ID (e.g., "1" for Ethereum mainnet)
+```
+
+#### Configuration examples [Permalink for this section](https://docs.erpc.cloud/operation/url\#configuration-examples)
+
+- **No aliasing** \- full URL is required
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+aliasing: ~
+```
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+https://api.myservice.com/main/evm/1
+```
+
+- **Project only**
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+server:
+  aliasing:
+    rules:
+      - matchDomain: "api.myservice.com"
+        serveProject: "main"
+```
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+https://api.myservice.com/evm/1
+```
+
+- **Project and architecture**
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+server:
+  aliasing:
+    rules:
+      - matchDomain: "evm.myservice.com"
+        serveProject: "main"
+        serveArchitecture: "evm"
+```
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+https://evm.myservice.com/1
+```
+
+- **Full aliasing**
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+server:
+  aliasing:
+    rules:
+      - matchDomain: "eth.myservice.com"
+        serveProject: "main"
+        serveArchitecture: "evm"
+        serveChain: "1"
+```
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+https://eth.myservice.com
+```
+
+#### Multiple rules example [Permalink for this section](https://docs.erpc.cloud/operation/url\#multiple-rules-example)
+
+You can define multiple rules to handle different domains:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+server:
+  aliasing:
+    rules:
+      # Ethereum Mainnet specific endpoint
+      - matchDomain: "eth.myservice.com"
+        serveProject: "main"
+        serveArchitecture: "evm"
+        serveChain: "1"
+
+      # Arbitrum specific endpoint
+      - matchDomain: "arbitrum.myservice.com"
+        serveProject: "main"
+        serveArchitecture: "evm"
+        serveChain: "42161"
+
+      # Generic EVM endpoint (requires chain ID in URL)
+      - matchDomain: "evm.myservice.com"
+        serveProject: "main"
+        serveArchitecture: "evm"
+
+      # Project-specific endpoint (requires architecture and chain in URL)
+      - matchDomain: "api.myservice.com"
+        serveProject: "main"
+```
+
+Alias domains are matched with `Host` header using [matcher syntax](https://docs.erpc.cloud/config/matcher)
+
+## Multi-chain requests [Permalink for this section](https://docs.erpc.cloud/operation/url\#multi-chain-requests)
+
+When making requests for multiple chains, you can use the project endpoint only and must include "networkId" within the request body:
+
+https://<your-erpc-hostname>/<project-id>
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+# A cURL example of sending a request to a project named "main" and Ethereum mainnet chain:
+
+curl --location 'http://localhost:4000/main' \
+--header 'Content-Type: application/json' \
+--data '{
+    "networkId": "evm:1",
+    "method": "eth_getBlockByNumber",
+    "params": [\
+        "0x1203319",\
+        false\
+    ],
+    "id": 9199,
+    "jsonrpc": "2.0"
+}'
+```
+
+## Batch requests [Permalink for this section](https://docs.erpc.cloud/operation/url\#batch-requests)
+
+You can batch multiple calls across any number of networks, in a single request. Read more about it in [Batch requests](https://docs.erpc.cloud/operation/batch) page.
+
+## Healthcheck [Permalink for this section](https://docs.erpc.cloud/operation/url\#healthcheck)
+
+eRPC has a built-in `/healthcheck` endpoint that can be used to check the health of the service within Kubernetes, Railway, etc.
+
+### Global healthcheck [Permalink for this section](https://docs.erpc.cloud/operation/url\#global-healthcheck)
+
+Check the health of all projects and their upstreams:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+curl http://localhost:4000/healthcheck -v
+# < HTTP/1.1 200 OK
+# OK
+```
+
+This endpoint checks active projects and their upstreams (i.e. those which received at least 1 request) for total error rate, and it will return a non-200 response if all endpoints have a +99% error rate.
+
+### Project-specific healthcheck [Permalink for this section](https://docs.erpc.cloud/operation/url\#project-specific-healthcheck)
+
+Check the health of a specific project and network:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+curl http://localhost:4000/main/evm/1/healthcheck -v
+# < HTTP/1.1 200 OK
+# OK
+```
+
+The healthcheck endpoints verify active upstreams (i.e. those which received at least 1 request) for total error rate, and will return a non-200 response if all endpoints have a +99% error rate. For project-specific healthchecks, only the upstreams for the specified network are checked.
+
+### Aliasing healthcheck [Permalink for this section](https://docs.erpc.cloud/operation/url\#aliasing-healthcheck)
+
+If you have configured domain aliasing, you can append the `/healthcheck` to the URL:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+# When aliasing is NOT used:
+curl http://eth.myapi.com/main/evm/42161/healthcheck -v
+
+# When only project is aliased:
+curl http://eth.myapi.com/evm/42161/healthcheck -v
+
+# When only project and network architecture is aliased:
+curl http://eth.myapi.com/42161/healthcheck -v
+
+# When all project, network architecture and chain are aliased:
+curl http://eth.myapi.com/healthcheck -v
+```
+
+[Cloud](https://docs.erpc.cloud/deployment/cloud "Cloud") [Batching](https://docs.erpc.cloud/operation/batch "Batching")[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+Config
+
+Database
+
+EVM Cache
+
+# `evmJsonRpcCache`
+
+This feature defines the destination for caching JSON-RPC calls towards any EVM architecture upstream.
+Caching mechanism is non-blocking on critical path, and is used as best-effort. If the database is not available, the cache set/get will be skipped.
+
+## Config [Permalink for this section](https://docs.erpc.cloud/config/database/evm-json-rpc-cache\#config)
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+database:
+  evmJsonRpcCache:
+    # Backend storage connectors where to store the cache
+    connectors:
+      - id: string
+        driver: memory | redis | postgresql | dynamodb
+        # ... (driver specific config, see below)
+
+    # Cache policies for different network/method/finality states
+    policies:
+      - network: string # Optional (default: "*")
+        method: string # Optional (default: "*")
+        params: []any # Optional
+        finality: finalized | unfinalized | realtime | unknown # Optional (default: finalized)
+        empty: ignore | allow | only # Optional (default: ignore)
+        minItemSize: string # Optional - xB | xKB | xMB
+        maxItemSize: string # Optional - xB | xKB | xMB
+        connector: string # Required
+        ttl: duration # Optional (default: "0" means forever) - 100ms, 5s, 1m, ...
+
+    # Optional cache methods configuration to override default supported methods
+    # These are used to understand nature of each method and where to find the block reference.
+    # Scroll to bottom of this page for default supported methods and examples.
+    methods:
+      <method_name>:
+        reqRefs: [][]any # Optional - array of path to potential palce of block number/hash in request.params
+        respRefs: [][]any # Optional - array of path to potential palce of block number/hash in response.result
+        finalized: bool # Optional - this method always returns finalized data (e.g. eth_chainId)
+        realtime: bool # Optional - this method always returns realtime data (e.g. eth_gasPrice)
+```
+
+Make sure the storage requirements meet your usage, for example caching 70m
+blocks + 10m txs + 10m traces on Arbitrum needs 200GB of storage.
+
+The cache config allows you to define multiple connectors (storage backends) and policies for different finality states. Here's the basic structure:
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+database:
+  evmJsonRpcCache:
+    # Define one or more storage connectors with unique IDs useful in policies
+    connectors:
+      - id: memory-cache
+        driver: memory # Refer to "memory" driver docs below
+        memory:
+          maxItems: 100000
+      - id: redis-cache-local
+        driver: redis # Refer to "redis" driver docs below
+        redis:
+          addr: localhost:6379
+          password: "xxxxxxxxx"
+          db: 0
+          connPoolSize: 128
+      - id: redis-cache-momento
+        driver: redis # Refer to "redis" driver docs below
+        redis:
+          addr: momento.aws.momentohq.com:6379
+          password: "xxxxxxxxx"
+          db: 0
+          connPoolSize: 128
+      - id: postgres-cache
+        driver: postgresql # Refer to "postgresql" driver docs below
+        postgresql:
+          connectionUri: >-
+            postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name
+          table: rpc_cache
+      # ... any driver can be used multiple times
+
+    # Define caching policies for different network/method/finality states
+    policies:
+      # Example: Cache all methods with finalized data including empty responses
+      - network: "*"
+        method: "*"
+        finality: finalized
+        empty: allow
+        connector: memory-cache
+        ttl: 0
+      # Example: Cache unfinalized data only for 5 seconds (getLogs of a recent block) except empty responses
+      - network: "*"
+        method: "*"
+        finality: unfinalized
+        empty: ignore
+        connector: memory-cache
+        ttl: 5s
+      # Example: Cache unknown finalization data (eth_trace*) only for 10 seconds
+      - network: "*"
+        method: "*"
+        finality: unknown
+        empty: ignore
+        connector: memory-cache
+        ttl: 10s
+      # Example: Cache realtime data only for 2 seconds (eth_blockNumber, eth_gasPrice, etc) to reduce costs yet fresh enough data
+      - network: "*"
+        method: "*"
+        finality: realtime
+        empty: ignore
+        connector: memory-cache
+        ttl: 2s
+
+      - network: "*" # "network" supports * as wildcard and | as OR operator
+        method: "eth_getLogs | trace_*" # "method" supports * as wildcard and | as OR operator
+        finality: finalized
+        empty: allow
+        connector: postgres-cache
+        ttl: 0
+      - network: "evm:42161 | evm:10"
+        method: "arbtrace_*"
+        finality: finalized
+        empty: ignore
+        connector: postgres-cache
+        ttl: 86400s
+```
+
+### Cache policies [Permalink for this section](https://docs.erpc.cloud/config/database/evm-json-rpc-cache\#cache-policies)
+
+You can create multiple policies to define different caching behavior for different networks, methods, finality state, emptyish checks, and item size limits.
+
+- On each cache "set" operation all policies that match the network/method/finality state will be used to store the data.
+- On each cache "get" operation all policies that match the network/method will be used to retrieve the data, from top to bottom as defined in the config, the first policy that returns a cache hit will be used.
+
+### Policy matching [Permalink for this section](https://docs.erpc.cloud/config/database/evm-json-rpc-cache\#policy-matching)
+
+Each policy can define matching rules for:
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+policies:
+  - network: "evm:42161 | evm:10" # (OPTIONAL) Network ID matching
+    method: "eth_getLogs | trace_*" # (OPTIONAL) Method name matching
+    params: # (OPTIONAL) parameter matching
+      - ">=0x100 | <=0x200" # First parameter
+      - "*" # Second parameter
+      # ... additional param matchers
+    finality: finalized
+    empty: ignore
+    minItemSize: 10b
+    maxItemSize: 100mb
+    connector: postgres-cache
+    ttl: 86400s
+
+  #
+  # The `params` field allows you to define matching rules for RPC method parameters. This is useful for creating granular caching policies based on specific parameter values:
+  #
+
+  # Cache eth_getLogs requests for specific block ranges
+  - network: "*"
+    method: "eth_getLogs"
+    params:
+      - fromBlock: ">=0x100"
+        toBlock: "<=0x200"
+    finality: finalized
+    connector: postgres-cache
+    ttl: 86400s
+
+  # Cache eth_getBlockByNumber for specific blocks
+  - network: "*"
+    method: "eth_getBlockByNumber"
+    params:
+      - ">=0x100 | <=0x200" # Block number range
+      - "*" # Include details flag
+    finality: finalized
+    connector: redis-cache
+    ttl: 1h
+
+#
+# More examples for params matching:
+#
+
+# Match specific block numbers
+params: ["0x1 | 0x2 | 0x3", "*"]
+
+# Match block number ranges
+params: [">=0x100 | <=0x200", "*"]
+
+# Match eth_getLogs with specific criteria
+params:
+  - fromBlock: ">=0x100"
+    toBlock: "<=0x200"
+    address: "*"
+    topics: ["*"]
+
+# Match array parameters:
+params: [[">0x123", ">=0x456"], "*"]
+
+# Match empty parameters:
+params: ["*", "<empty>"]
+```
+
+The parameter matcher supports:
+
+- **Wildcards**: Use `*` to match any value
+- **OR operator**: Use `|` to specify multiple valid values
+- **Numeric comparisons**: For hex/decimal numbers:
+
+  - `>value` \- Greater than
+  - `>=value` \- Greater than or equal
+  - `<value` \- Less than
+  - `<=value` \- Less than or equal
+- **Object matching**: For nested parameter objects (like in eth\_getLogs), you can specify matchers for individual fields
+- **Array matching**: For array parameters, each element can have its own matcher
+- **Empty values**: Use `<empty>` to match null/undefined values
+
+#### `finality` states [Permalink for this section](https://docs.erpc.cloud/config/database/evm-json-rpc-cache\#finality-states)
+
+The cache system recognizes three finality states:
+
+- `finalized`: (default) Data from blocks that are confirmed as finalized (safe to cache long-term). This is based on 'finalized' block fetched via eth\_getBlockByNumber of the upstream corresponding to the received response (not other upstreams).
+- `unfinalized`: Data from recent blocks that could still be reorged. Also any data/transaction from pending blocks is considered unfinalized.
+- `realtime`: Data that is expected to be updated on every new block (e.g. eth\_blockNumber, eth\_gasPrice, eth\_maxPriorityFeePerGas, etc). You must use a short TTL (i.e. 2 \* block time) to ensure it's fresh enough.
+- `unknown`: When block number cannot be determined from request/response (e.g., `eth_traceTransaction`). Most often it is safe to cache this data without reorg safety because they are not referenced by final actual blocks (e.g. eth\_getTransactionByHash).
+
+#### `empty` states [Permalink for this section](https://docs.erpc.cloud/config/database/evm-json-rpc-cache\#empty-states)
+
+The cache can match three empty states:
+
+- `ignore`: (default) Ignore empty responses and do not cache them.
+- `allow`: Allow caching empty responses as well.
+- `only`: Only cache empty responses, e.g. if you want to give different TTL.
+
+These values are considered empty:
+
+- `null` for example for a non-existent block
+- `[]` (empty array) for example for an empty array from eth\_getLogs
+- `{}` (empty object) for example when trace results is empty
+- `0x` (empty hex) for example for an empty string from eth\_getCode or eth\_call
+
+### Re-org mechanism [Permalink for this section](https://docs.erpc.cloud/config/database/evm-json-rpc-cache\#re-org-mechanism)
+
+The cache system provides mechanisms to handle blockchain reorganizations (re-orgs) through the finality state matchers and TTL settings. Here are the key strategies:
+
+1. **Finalized data caching**
+   - Use the `finality: finalized` matcher for data that is confirmed and safe from re-orgs
+   - This data can be cached with long or infinite TTL ( `ttl: 0`)
+   - Example: Historical block data, old transaction receipts
+2. **Unfinalized data caching**
+
+
+   - Use `finality: unfinalized` for recent blocks that could be re-orged
+   - Set short TTL values (10-30 seconds recommended)
+   - Example: Recent blocks, pending transactions
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+- network: "*"
+  method: "eth_getBlockByNumber"
+  finality: unfinalized
+  connector: memory-cache
+  ttl: 5s
+```
+
+3. **Mixed strategy example**
+You can combine multiple policies for the same method:
+
+
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+policies:
+     # Cache finalized blocks forever
+  - network: "*"
+    method: "eth_getBlockByNumber"
+    finality: finalized
+    connector: postgres-cache
+    ttl: 0
+
+# Cache unfinalized blocks briefly
+  - network: "*"
+    method: "eth_getBlockByNumber"
+    finality: unfinalized
+    connector: memory-cache
+    ttl: 5s
+```
+
+This approach is useful for various scenarios:
+
+- Caching gas estimates briefly to reduce RPC calls
+- Temporarily storing `eth_blockNumber` results
+- Balancing between performance and data consistency
+
+⚠️
+
+Make sure to properly test your dApps/indexer full flow to ensure unfinalized data caching works as expected.
+
+For chains which do not support "finalized" block method, eRPC will consider last 1024 blocks unfinalized. This number can be configured via `network.evm.fallbackFinalityDepth`.
+
+### Cacheable methods [Permalink for this section](https://docs.erpc.cloud/config/database/evm-json-rpc-cache\#cacheable-methods)
+
+Methods are cached if they include a `blockNumber` or `blockHash` in the request or response, allowing cache invalidation during blockchain reorgs.
+If no blockNumber is present, caching is still viable if the method returns data unaffected by reorgs, like `eth_chainId`, or if the data won't change after a reorg, such as `eth_getTransactionReceipt`.
+
+By default, eRPC comes with pre-configured method caching rules. Here's the default configuration:
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+database:
+evmJsonRpcCache:
+    # Here are default supported methods and their configuration:
+    methods:
+      # Static methods that return fixed values:
+      eth_chainId:
+        finalized: true
+      net_version:
+        finalized: true
+
+      # Realtime methods that change frequently (i.e. on every block):
+      eth_hashrate:
+        realtime: true
+      eth_mining:
+        realtime: true
+      eth_syncing:
+        realtime: true
+      net_peerCount:
+        realtime: true
+      eth_gasPrice:
+        realtime: true
+      eth_maxPriorityFeePerGas:
+        realtime: true
+      eth_blobBaseFee:
+        realtime: true
+      eth_blockNumber:
+        realtime: true
+      erigon_blockNumber:
+        realtime: true
+
+      # Methods with block references in request/response:
+      # Make sure number is first in the array if hash is also present
+      eth_getLogs:
+        reqRefs:
+          - [0, fromBlock]
+          - [0, toBlock]
+          - [0, blockHash]
+      eth_getBlockByHash:
+        reqRefs: [[0]]
+        respRefs: [[number], [hash]]
+      eth_getBlockByNumber:
+        reqRefs: [[0]]
+        respRefs: [[number], [hash]]
+      eth_getTransactionByBlockHashAndIndex:
+        reqRefs: [[0]]
+        respRefs: [[blockNumber], [blockHash]]
+      eth_getTransactionByBlockNumberAndIndex:
+        reqRefs: [[0]]
+        respRefs: [[blockNumber], [blockHash]]
+      eth_getUncleByBlockHashAndIndex:
+        reqRefs: [[0]]
+        respRefs: [[number], [hash]]
+      eth_getUncleByBlockNumberAndIndex:
+        reqRefs: [[0]]
+        respRefs: [[number], [hash]]
+      eth_getBlockTransactionCountByHash:
+        reqRefs: [[0]]
+      eth_getBlockTransactionCountByNumber:
+        reqRefs: [[0]]
+      eth_getUncleCountByBlockHash:
+        reqRefs: [[0]]
+      eth_getUncleCountByBlockNumber:
+        reqRefs: [[0]]
+      eth_getStorageAt:
+        reqRefs: [[2]]
+      eth_getBalance:
+        reqRefs: [[1]]
+      eth_getTransactionCount:
+        reqRefs: [[1]]
+      eth_getCode:
+        reqRefs: [[1]]
+      eth_call:
+        reqRefs: [[1]]
+      eth_getProof:
+        reqRefs: [[2]]
+      arbtrace_call:
+        reqRefs: [[2]]
+      eth_feeHistory:
+        reqRefs: [[1]]
+      eth_getAccount:
+        reqRefs: [[1]]
+      eth_estimateGas:
+        reqRefs: [[1]]
+      debug_traceCall:
+        reqRefs: [[1]]
+      eth_simulateV1:
+        reqRefs: [[1]]
+      erigon_getBlockByTimestamp:
+        reqRefs: [[1]]
+      arbtrace_callMany:
+        reqRefs: [[1]]
+      eth_getBlockReceipts:
+        reqRefs: [[0]]
+      trace_block:
+        reqRefs: [[0]]
+      debug_traceBlockByNumber:
+        reqRefs: [[0]]
+      trace_replayBlockTransactions:
+        reqRefs: [[0]]
+      debug_storageRangeAt:
+        reqRefs: [[0]]
+      debug_traceBlockByHash:
+        reqRefs: [[0]]
+      debug_getRawBlock:
+        reqRefs: [[0]]
+      debug_getRawHeader:
+        reqRefs: [[0]]
+      debug_getRawReceipts:
+        reqRefs: [[0]]
+      erigon_getHeaderByNumber:
+        reqRefs: [[0]]
+      arbtrace_block:
+        reqRefs: [[0]]
+      arbtrace_replayBlockTransactions:
+        reqRefs: [[0]]
+
+      # Special methods that can be cached regardless of block:
+      # Most often finality of these responses is 'unknown'.
+      # For these data it is safe to keep the data in cache even after reorg,
+      # because if client explcitly querying such data (e.g. a specific tx hash receipt)
+      # they know it might be reorged from a separate process.
+      # For example this is not safe to do for eth_getBlockByNumber because users
+      # require the method to always give them current accurate data (even if it's reorged).
+      # Using "*" as request blockRef means that these data are safe be cached irrevelant of their block.
+      eth_getTransactionReceipt:
+        reqRefs: [["*"]]
+        respRefs: [[blockNumber], [blockHash]]
+      eth_getTransactionByHash:
+        reqRefs: [["*"]]
+        respRefs: [[blockNumber], [blockHash]]
+      arbtrace_replayTransaction:
+        reqRefs: [["*"]]
+      trace_replayTransaction:
+        reqRefs: [["*"]]
+      debug_traceTransaction:
+        reqRefs: [["*"]]
+      trace_rawTransaction:
+        reqRefs: [["*"]]
+      trace_transaction:
+        reqRefs: [["*"]]
+      debug_traceBlock:
+        reqRefs: [["*"]]
+```
+
+To customize the cacheable methods, you can override the default configuration. Note that if you customize the methods, you must include ALL methods you want to cache - the defaults will not be merged.
+
+⚠️
+
+When customizing methods, make sure to include all methods you want to cache. The default configuration will be completely replaced by your custom configuration.
+
+Here's how method configuration works:
+
+- `finalized: true` \- Method returns static data that never changes.
+- `realtime: true` \- Method returns data that changes frequently (e.g. on every block).
+- `reqRefs` \- Array of paths to find block numbers/hashes in the request.
+- `respRefs` \- Array of paths to find block numbers/hashes in the response.
+- Special value `[["*"]]` means the method can be cached regardless of block reorgs.
+
+[Drivers](https://docs.erpc.cloud/config/database/drivers "Drivers") [Shared State](https://docs.erpc.cloud/config/database/shared-state "Shared State")[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+Config
+
+[Projects](https://docs.erpc.cloud/config/projects)
+
+Selection policies
+
+### Selection policies [Permalink for this section](https://docs.erpc.cloud/config/projects/selection-policies\#selection-policies)
+
+**Selection policy** allows you to influence how upstreams are selected to serve traffic (or not). A selection policy is defined at the network level and is responsible for returning a list of upstreams that must remain active.
+
+The primary purpose of a selection policy is to define acceptable performance metrics and/or required conditions for selecting an upstream node.
+
+Selection policies can be configured to run per-method and network or per-network only.
+
+⚠️
+
+Selection policies are not executed per request, instead they run on an interval much like a healthcheck and update the available upstreams.
+
+#### Default fallback policy [Permalink for this section](https://docs.erpc.cloud/config/projects/selection-policies\#default-fallback-policy)
+
+By default a built-in selection policy is activated if **at least one upstream** is assigned to the "fallback" group. This default policy incorporates basic logic for error rates and block lag, which can be tuned via theese environment variables
+
+- `ROUTING_POLICY_MAX_ERROR_RATE` (Default: `0.7`): Maximum allowed error rate.
+- `ROUTING_POLICY_MAX_BLOCK_HEAD_LAG` (Default: `10`): Maximum allowed block head lag.
+- `ROUTING_POLICY_MIN_HEALTHY_THRESHOLD` (Default: `1`): Minimum number of healthy upstreams that must be included in default group.
+
+These environment variables allow you to adjust the default logic without rewriting the policy function.
+
+#### Use cases [Permalink for this section](https://docs.erpc.cloud/config/projects/selection-policies\#use-cases)
+
+- **Block Lag:** Disable upstreams that are lagging behind more than a specified number of blocks until they resync.
+- **Error Rate:** Exclude upstreams exceeding a certain error rate and periodically check their status.
+- **Cost-Efficiency:** Prioritize "cheap" nodes and fallback to "fast" nodes only is all cheap nodes are down.
+
+##### Looking to influence selection ordering? [Permalink for this section](https://docs.erpc.cloud/config/projects/selection-policies\#looking-to-influence-selection-ordering)
+
+If you only want to change ordering of upstreams (not entirely exclude them) check out [Scoring multipliers](https://docs.erpc.cloud/config/projects/upstreams#customizing-scores--priorities) docs. Remember selection policy will NOT influence the ordering of upstreams.
+
+#### Config [Permalink for this section](https://docs.erpc.cloud/config/projects/selection-policies\#config)
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+projects:
+  - id: main
+
+    upstreams:
+      - endpoint: cheap-1.com
+      - endpoint: cheap-2.com
+      - endpoint: fast-1.com
+        # Each upstream can have an arbitrary group name which is used in metrics, as well as
+        # useful when writing an eval function in selectionPolicy below.
+        group: fallback
+      - endpoint: fast-2.com
+        group: fallback
+
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+
+        # Determines when to include or exclude upstreams depending on their health and performance
+        selectionPolicy:
+          # Every 1 minute evaluate which upstreams must be included,
+          # based on the arbitrary logic (e.g., <90% error rate and <10 block lag):
+          evalInterval: 1m
+
+          # Freeform TypeScript-based logic to select upstreams to be included by returning them:
+          evalFunction: |
+            (upstreams, method) => {
+
+              const defaults = upstreams.filter(u => u.config.group !== 'fallback')
+              const fallbacks = upstreams.filter(u => u.config.group === 'fallback')
+
+              // Maximum allowed error rate.
+              const maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7')
+
+              // Maximum allowed block head lag.
+              const maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10')
+
+              // Minimum number of healthy upstreams that must be included in default group.
+              const minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1')
+
+              // Filter upstreams that are healthy based on error rate and block head lag.
+              const healthyOnes = defaults.filter(
+                u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
+              )
+
+              // If there are enough healthy upstreams, return them.
+              if (healthyOnes.length >= minHealthyThreshold) {
+                return healthyOnes
+              }
+
+              // The reason all upstreams are returned is to be less harsh and still consider default nodes (in case they have intermittent issues)
+              // Order of upstreams does not matter as that will be decided by the upstream scoring mechanism
+              return upstreams
+            }
+
+          # To isolate selection evaluation and result to each "method" separately change this flag to true
+          evalPerMethod: false
+
+          # When an upstream is excluded, you can give it a chance on a regular basis
+          # to handle a certain number of sample requests again, so that metrics are refreshed.
+          # For example, to see if error rate is improving after 5 minutes, or still too high.
+          # This is conceptually similar to how a circuit-breaker works in a "half-open" state.
+          # Resampling is not always needed because the "evm state poller" component will still make
+          # requests for the "latest" block, which still updates errorRate.
+          resampleExcluded: false
+          resampleInterval: 5m
+          resampleCount: 100
+```
+
+#### `evalFunction` parameters [Permalink for this section](https://docs.erpc.cloud/config/projects/selection-policies\#evalfunction-parameters)
+
+`upstreams` and `method` are available as variables in the `evalFunction`.
+
+types.d.ts
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+// Current upstream
+export type Upstream = {
+    id: string;
+    config: UpstreamConfig;
+    metrics: UpstreamMetrics;
+};
+
+// Upstream configuration
+export type UpstreamConfig = {
+    // Upstream ID is optional and can be used to identify the upstream in logs/metrics.
+    id: string;
+
+    // Each upstream can have an arbitrary group name which is used in metrics, as well as
+    // useful when writing an eval function in selectionPolicy below.
+    // Use "fallback" group to let eRPC automatically create a "default" selection policy on the network level
+    // and then fallback to this group if the default one doesn't have enough healthy upstreams.
+    group: string;
+
+    // Endpoint URL supports http(s) scheme along with custom schemes like "alchemy://" defined below in this docs.
+    endpoint: string;
+};
+
+// Upstream metrics
+export type UpstreamMetrics = {
+    // p90 rate of errors of last X minutes (X is based on `project.healthCheck.scoreMetricsWindowSize`)
+    errorRate: number;
+
+    // total errors of this upstream
+    errorsTotal: number;
+
+    // total requests served by this upstream
+    requestsTotal: number;
+
+    // Throttled rate of this upstream.
+    throttledRate: number;
+
+    // p90 response time in seconds for this upstream.
+    p90ResponseSeconds: number;
+
+    // p95 response time in seconds for this upstream.
+    p95ResponseSeconds: number;
+
+    // p99 response time in seconds for this upstream.
+    p99ResponseSeconds: number;
+
+    // Block head lag in seconds for this upstream.
+    blockHeadLag: number;
+
+    // Finalization lag in seconds for this upstream.
+    finalizationLag: number;
+};
+
+// Method is either `*` (all methods) or a specific method name.
+export type Method = '*' | string;
+```
+
+[Providers](https://docs.erpc.cloud/config/projects/providers "Providers") [CORS](https://docs.erpc.cloud/config/projects/cors "CORS")[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+Deployment
+
+Railway
+
+# Railway installation
+
+[Railway (opens in a new tab)](https://railway.app/) provides a quick and easy way to deploy eRPC. To get started, please ensure that you have signed up or logged in to Railway and connected your GitHub account.
+
+### Deploy [Permalink for this section](https://docs.erpc.cloud/deployment/railway\#deploy)
+
+Click the `Deploy on Railway` button below to get started. This will take you to our eRPC template, which includes proxy and monitoring services.
+
+[![Deploy on Railway](https://railway.app/button.svg) (opens in a new tab)](https://railway.app/template/10iW1q)
+
+This template comes with a default [erpc.yaml](https://docs.erpc.cloud/config/example) configuration file. If you need further customization, you can fork the [template's repository (opens in a new tab)](https://github.com/erpc/railway-deployment).
+
+After forking and adjustments, you can either connect your forked repository to your existing deployment or create a new service linked to this forked repository.
+
+### Set environment variables [Permalink for this section](https://docs.erpc.cloud/deployment/railway\#set-environment-variables)
+
+The eRPC template includes pre-configured environment variables to simplify the deployment process. While some variables are optional and can be set later, we highly recommend setting at least one of the following to ensure additional upstreams for the eRPC proxy:
+
+- `ALCHEMY_API_KEY`: _API key from alchemy.com_
+- `BLASTAPI_API_KEY`: _API key from balastapi.io_
+- `DRPC_API_KEY`: _API key from drpc.org_
+
+### Usage in your services [Permalink for this section](https://docs.erpc.cloud/deployment/railway\#usage-in-your-services)
+
+To reduce cost and overhead use private network ( `.railway.internal`) to connect to eRPC, from your backend services (such as indexers or mev bots):
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+const result = await fetch("https://my-erpc.railway.internal/main/evm/1", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    method: "eth_getBlockByNumber",
+    params: ["0x1203319"],
+  }),
+});
+```
+
+### Send your first request [Permalink for this section](https://docs.erpc.cloud/deployment/railway\#send-your-first-request)
+
+Within your `erpc` service, find the proxy URL under `Settings > Networking > Public Networking`.
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+curl --location 'https://erpc-xxxxxxx.up.railway.app/main/evm/1' \
+--header 'Content-Type: application/json' \
+--data '{
+    "method": "eth_getBlockByNumber",
+    "params": [\
+        "0x1203319",\
+        false\
+    ],
+    "id": 9199,
+    "jsonrpc": "2.0"
+}'
+```
+
+![image](https://i.imgur.com/WRezSaK.png)
+
+### Monitoring [Permalink for this section](https://docs.erpc.cloud/deployment/railway\#monitoring)
+
+After sending more requests, click on `monitoring` service and find your Grafana url under `Settings > Networking > Public Networking`
+
+You can login with the following credentials:
+
+- username: `admin`
+- password: `admin`
+
+![image](https://i.imgur.com/sOpBuXe.png)
+
+[Docker](https://docs.erpc.cloud/deployment/docker "Docker") [Kubernetes](https://docs.erpc.cloud/deployment/kubernetes "Kubernetes")# 404
+
+## This page could not be found.[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+Config
+
+Matcher syntax
+
+# Matcher syntax
+
+Certain configurations accept a matcher syntax with some basic operations designed for blockchain json-rpc request/response values.
+
+Matchers are used in the following configurations:
+
+- [Upstream](https://docs.erpc.cloud/config/projects/upstreams)'s allowMethods or ignoreMethods.
+- [Cache policy](https://docs.erpc.cloud/config/database/evm-json-rpc-cache#cache-policies) patterns for network/method/params.
+- [Aliasing](https://docs.erpc.cloud/operation/url#domain-aliasing) rules for `Host` header.
+
+## Examples [Permalink for this section](https://docs.erpc.cloud/config/matcher\#examples)
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+// Match one exact method OR any eth_ method
+arbtrace_transaction | eth_*
+
+// Match all methods expect those prefixed with alchemy_*
+!alchemy_*
+
+// Match a number between 1 and 100
+>=1 & <=100
+
+// Match some block tags AND any numeric blocks higher than 1000 (also with hex example)
+(latest | safe | finalized) | >=1000
+(latest | safe | finalized) | >=0x4096
+
+// Match only numeric values (e.g. ignore block tags)
+0x*
+```
+
+## Operations [Permalink for this section](https://docs.erpc.cloud/config/matcher\#operations)
+
+### Wildcards [Permalink for this section](https://docs.erpc.cloud/config/matcher\#wildcards)
+
+- `*` \- matches any number of characters
+- `<empty>` \- matches an empty string
+
+### Logical Operations [Permalink for this section](https://docs.erpc.cloud/config/matcher\#logical-operations)
+
+- `|` \- OR operation
+- `&` \- AND operation
+- `!` \- NOT operation
+- `()` \- grouping/nesting operations
+
+### Numeric Comparisons (for hex values) [Permalink for this section](https://docs.erpc.cloud/config/matcher\#numeric-comparisons-for-hex-values)
+
+- `>` \- greater than
+- `<` \- less than
+- `>=` \- greater than or equal
+- `<=` \- less than or equal
+- `=` \- equal to
+
+[Rate limiters](https://docs.erpc.cloud/config/rate-limiters "Rate limiters") [Docker](https://docs.erpc.cloud/deployment/docker "Docker")[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+Config
+
+Projects
+
+# Projects
+
+A single instance of eRPC can be used for various projects, any number of chains, and any number of upstreams.
+
+You can have separate `backend`, `indexer` and `frontend` projects, so that you control self-imposed rate-limits, or supported methods. This allows you to decide different **"cost"** vs **"reliability"** strategies for each project.
+
+## Config [Permalink for this section](https://docs.erpc.cloud/config/projects\#config)
+
+The `projects:` array is the top-most configuration, and it is required to have at least 1 project. Each project has the following properties:
+
+- `id:` a unique identifier used in logs and metrics.
+- [`rateLimitBudget:`](https://docs.erpc.cloud/config/rate-limiters) a budget for the total number of requests that this project is allowed to serve.
+- [`networks:`](https://docs.erpc.cloud/config/projects/networks) an array of custom configuration for one or more of the supported networks.
+- [`networkDefaults:`](https://docs.erpc.cloud/config/projects/networks#config-defaults) default configuration for all networks in this project.
+- [`upstreams:`](https://docs.erpc.cloud/config/projects/upstreams) an array of all upstreams to use in this project.
+- [`upstreamDefaults:`](https://docs.erpc.cloud/config/projects/upstreams#config-defaults) default configuration for all upstreams in this project.
+
+#### Example [Permalink for this section](https://docs.erpc.cloud/config/projects\#example)
+
+Refer to [`erpc.yaml`](https://docs.erpc.cloud/config/example) and "projects" section.
+
+[erpc.yaml/ts](https://docs.erpc.cloud/config/example "erpc.yaml/ts") [Networks](https://docs.erpc.cloud/config/projects/networks "Networks")# 404
+
+## This page could not be found.[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+Config
+
+erpc.yaml/ts
+
+# Complete config example
+
+This example config demonstrates all features of eRPC in one place. For more explanation of each section, refer to dedicated pages:
+
+- [Database](https://docs.erpc.cloud/config/database/drivers): to configure caching and database.
+- [Projects](https://docs.erpc.cloud/config/projects): to define multiple projects with different rate limit budgets.
+- [Networks](https://docs.erpc.cloud/config/projects/networks): to configure failsafe policies for each network.
+- [Upstreams](https://docs.erpc.cloud/config/projects/upstreams): to configure upstreams with failsafe policies, rate limiters, allowed/rejected methods, etc.
+- [Rate limiters](https://docs.erpc.cloud/config/rate-limiters): to configure various self-imposed budgets to prevent pressure on upstreams.
+- [Failsafe](https://docs.erpc.cloud/config/failsafe): explains different policies such as retry, timeout, and hedges, used for networks and upstreams.
+
+By default `erpc` binary will look for `./erpc.ts`, `./erpc.yaml`, `./erpc.yml` files in the current directory. You can change this path by passing an argument to the binary:
+
+yamltypescript
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+$ erpc /path/to/your/erpc.yaml
+```
+
+### Minimal config example [Permalink for this section](https://docs.erpc.cloud/config/example\#minimal-config-example)
+
+eRPC will auto-detect or use sane defaults for various configs such as retries, timeouts, circuit-breaker, hedges, node architecture etc.
+
+**eRPC is Multi-chain**
+
+A single instance of eRPC can server multiple projects (frontend, indexer, etc) and multiple chains.
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+logLevel: debug
+projects:
+ - id: main
+   upstreams:
+   # Put all your RPC endpoints for any network here.
+   # You don't need to define architecture (e.g. evm) or chain id (e.g. 42161)
+   # as they will be detected automatically by eRPC.
+   - endpoint: https://xxxxx.matic.quiknode.pro/xxxxxxxxxx/
+   - endpoint: drpc://XXX_MY_DRPC.ORG_API_KEY_XXX # Add all supported chains of drpc.org
+   - endpoint: blastapi://XXX_MY_BLASTAPI.IO_API_KEY_XXX # Add all supported chains of blastapi.io
+   - endpoint: alchemy://XXX_MY_ALCHEMY.COM_API_KEY_XXX # Add all supported chains of alchemy.com
+   - endpoint: envio://rpc.hypersync.xyz # Add all supported methods and chains of envio.dev HyperRPC
+```
+
+### Full config example [Permalink for this section](https://docs.erpc.cloud/config/example\#full-config-example)
+
+To have more control over the configuration, you can use the example below.
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+# Log level helps in debugging or error detection:
+# - debug: information down to actual request and responses, and decisions about rate-liming etc.
+# - info: usually prints happy paths and might print 1 log per request indicating of success or failure.
+# - warn: these problems do not cause end-user problems, but might indicate degredataion or an issue such as cache databse being down.
+# - error: these are problems that have end-user impact, such as misconfigurations.
+logLevel: warn
+
+# The main server for eRPC to listen for requests.
+server:
+  listenV4: true
+  httpHostV4: "0.0.0.0"
+  listenV6: false
+  httpHostV6: "[::]"
+  httpPort: 4000
+  maxTimeout: 30s
+  readTimeout: 10s
+  writeTimeout: 20s
+  enableGzip: true
+  tls:
+    enabled: false
+    certFile: "/path/to/cert.pem"
+    keyFile: "/path/to/key.pem"
+    caFile: "/path/to/ca.pem"  # Optional, for client cert verification
+    insecureSkipVerify: false  # Optional, defaults to false
+
+# Optional Prometheus metrics server
+metrics:
+  enabled: true
+  listenV4: true
+  hostV4: "0.0.0.0"
+  listenV6: false
+  hostV6: "[::]"
+  port: 4001
+
+# There are various use-cases of database in erpc, such as caching, dynamic configs, rate limit persistence, etc.
+database:
+  # `evmJsonRpcCache` defines the destination for caching JSON-RPC cals towards any EVM architecture upstream.
+  # This database is non-blocking on critical path, and is used as best-effort.
+  # Make sure the storage requirements meet your usage, for example caching 70m blocks + 10m txs + 10m traces on Arbitrum needs 200GB of storage.
+  evmJsonRpcCache:
+    # Refer to "Database" section for more details.
+    # Note that table, schema and indexes will be created automatically if they don't exist.
+    connectors:
+      - id: memory-cache
+        driver: memory
+        memory:
+          maxItems: 100000
+      - id: postgres-cache
+        driver: postgresql
+        postgresql:
+          connectionUri: >-
+            postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name
+          table: rpc_cache
+    policies:
+      - network: "*"
+        method: "*"
+        finality: finalized
+        connector: memory-cache
+        ttl: 0
+      - network: "*"
+        method: "*"
+        finality: unfinalized
+        connector: memory-cache
+        maxItemSize: 1MB # optional max size of item to store via this policy
+        ttl: 5s
+      - network: "*"
+        method: "*"
+        finality: unknown
+        connector: memory-cache
+        ttl: 5s
+      - network: "*" # supports * as wildcard and | as OR operator
+        method: "eth_getLogs|trace_*" # supports * as wildcard and | as OR operator
+        finality: finalized
+        connector: postgres-cache
+        ttl: 0
+      - network: "evm:42161|evm:10" # supports * as wildcard and | as OR operator
+        method: "arbtrace_*" # supports * as wildcard and | as OR operator
+        finality: finalized
+        connector: postgres-cache
+        ttl: 86400s
+
+# Each project is a collection of networks and upstreams.
+# For example "backend", "indexer", "frontend", and you want to use only 1 project you can name it "main"
+# The main purpose of multiple projects is different failsafe policies (more aggressive and costly, or less costly and more error-prone)
+projects:
+  - id: main
+
+    # Optionally you can define a self-imposed rate limite budget for each project
+    # This is useful if you want to limit the number of requests per second or daily allowance.
+    rateLimitBudget: frontend-budget
+
+    # This array configures network-specific (a.k.a chain-specific) features.
+    # For each network "architecture" and corresponding network id (e.g. evm.chainId) is required.
+    # Remember defining networks is OPTIONAL, so only provide these only if you want to override defaults.
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+        # Refer to "Failsafe" section for more details.
+        # On network-level "timeout" is applied for the whole lifecycle of the request (including however many retries)
+        failsafe:
+          timeout:
+            duration: 30s
+          retry:
+            maxAttempts: 3
+            delay: 0ms
+            backoffMaxDelay: 3s
+            backoffFactor: 1.2
+            jitter: 0ms
+          # Defining a "hedge" is highly-recommended on network-level because if upstream A is being slow for
+          # a specific request, it can start a new parallel hedged request to upstream B, for whichever responds faster.
+          hedge:
+            delay: 500ms
+            maxCount: 1
+          circuitBreaker:
+            failureThresholdCount: 160 # 80% error rate
+            failureThresholdCapacity: 200
+            halfOpenAfter: 5m
+            successThresholdCount: 3
+            successThresholdCapacity: 3
+      - architecture: evm
+        evm:
+          chainId: 42161
+        failsafe:
+          timeout:
+            duration: 30s
+          retry:
+            maxAttempts: 3
+            delay: 0ms
+            backoffMaxDelay: 3s
+            backoffFactor: 1.2
+            jitter: 0ms
+          hedge:
+            delay: 500ms
+            maxCount: 1
+
+    # Each upstream supports 1 or more networks (chains)
+    upstreams:
+      - id: blastapi-chain-42161
+        type: evm
+        endpoint: https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
+        # Defines which budget to use when hadnling requests of this upstream.
+        rateLimitBudget: global-blast
+        # chainId is optional and will be detected from the endpoint (eth_chainId) but it is recommended to set it explicitly, for faster initialization.
+        evm:
+          chainId: 42161
+        # Which methods must never be sent to this upstream:
+        ignoreMethods:
+          - "alchemy_*"
+          - "eth_traceTransaction"
+        # Refer to "Failsafe" section for more details:
+        failsafe:
+          timeout:
+            duration: 15s
+          retry:
+            maxAttempts: 2
+            delay: 500ms
+            backoffMaxDelay: 3s
+            backoffFactor: 1.2
+            jitter: 0ms
+      - id: blastapi-chain-1
+        type: evm
+        endpoint: https://eth-mainnet.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
+        rateLimitBudget: global-blast
+        evm:
+          chainId: 1
+        failsafe:
+          timeout:
+            duration: 15s
+          retry:
+            maxAttempts: 2
+            delay: 500ms
+            backoffMaxDelay: 3s
+            backoffFactor: 1.2
+            jitter: 0ms
+      - id: quiknode-chain-42161
+        type: evm
+        endpoint: https://xxxxxx-xxxxxx.arbitrum-mainnet.quiknode.pro/xxxxxxxxxxxxxxxxxxxxxxxx/
+        rateLimitBudget: global-quicknode
+        # You can enable auto-ignoring unsupported methods, instead of defining them explicitly.
+        # NOTE: some providers (e.g. dRPC) are not consistent with "unsupported method" responses,
+        # so this feature might mark methods as unsupported that are actually supported!
+        autoIgnoreUnsupportedMethods: true
+        # To allow auto-batching requests towards the upstream, use these settings.
+        # Remember if "supportsBatch" is false, you still can send batch requests to eRPC
+        # but they will be sent to upstream as individual requests.
+        jsonRpc:
+          supportsBatch: true
+          batchMaxSize: 10
+          batchMaxWait: 100ms
+        evm:
+          chainId: 42161
+        failsafe:
+          timeout:
+            duration: 15s
+          retry:
+            maxAttempts: 2
+            delay: 500ms
+            backoffMaxDelay: 3s
+            backoffFactor: 1.2
+            jitter: 0ms
+
+        # "id" is a unique identifier to distinguish in logs and metrics.
+      - id: alchemy-multi-chain-example
+        # For certain known providers (such as Alchemy) you use a custom protocol name
+        # which allows a single upstream to import "all chains" supported by that provider.
+        # Note that these chains are hard-coded in the repo, so if they support a new chain eRPC must be updated.
+        endpoint: alchemy://XXXX_YOUR_ALCHEMY_API_KEY_HERE_XXXX
+        rateLimitBudget: global
+        failsafe:
+          timeout:
+            duration: 15s
+          retry:
+            maxAttempts: 2
+            delay: 500ms
+            backoffMaxDelay: 3s
+            backoffFactor: 1.2
+            jitter: 0ms
+
+# Rate limiter allows you to create "shared" budgets for upstreams.
+# For example upstream A and B can use the same budget, which means both of them together must not exceed the defined limits.
+rateLimiters:
+  budgets:
+    - id: default-budget
+      rules:
+        - method: "*"
+          maxCount: 10000
+          period: 1s
+          waitTime: 100ms # Allow waiting up to 100ms for capacity to free up (Default is 0 meaning immediate error)
+    - id: global-blast
+      rules:
+        - method: "*"
+          maxCount: 1000
+          period: 1s
+    - id: global-quicknode
+      rules:
+        - method: "*"
+          maxCount: 300
+          period: 1s
+    - id: frontend-budget
+      rules:
+        - method: "*"
+          maxCount: 500
+          period: 1s
+```
+
+[FAQ](https://docs.erpc.cloud/faq "FAQ") [Projects](https://docs.erpc.cloud/config/projects "Projects")[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+Quick start
+
+# Introducing eRPC
+
+eRPC is a fault-tolerant EVM RPC proxy and permanent caching solution. It is built with read-heavy use-cases in mind such as data indexing and high-load frontend usage.
+
+End User
+
+If data is already cached
+
+5 RPS
+
+500 RPS
+
+0 RPS
+
+eRPC
+
+RPC
+
+Request
+
+Indexers
+
+Services
+
+k8s, docker, etc
+
+**Storage**
+
+Weak
+
+Upstream
+
+A
+
+Strong
+
+Upstream
+
+B
+
+Offline
+
+Upstream
+
+C
+
+Monthly, daily rate-limits
+
+Archive/Full node auto-routing
+
+Auto-split+batch for getLogs limits
+
+# Quick start
+
+### Create configuration [Permalink for this section](https://docs.erpc.cloud/\#create-configuration)
+
+Create your [`erpc.yaml`](https://docs.erpc.cloud/config/example) configuration file based on the `erpc.yaml.dist` file:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+cp erpc.yaml.dist erpc.yaml
+code erpc.yaml
+```
+
+See [a complete config example](https://docs.erpc.cloud/config/example) for inspiration.
+
+### Run with Docker [Permalink for this section](https://docs.erpc.cloud/\#run-with-docker)
+
+Use the Docker image:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+docker run -v $(pwd)/erpc.yaml:/root/erpc.yaml -p 4000:4000 -p 4001:4001 ghcr.io/erpc/erpc:latest
+```
+
+### Test the setup [Permalink for this section](https://docs.erpc.cloud/\#test-the-setup)
+
+Send your first request:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+curl --location 'http://localhost:4000/main/evm/42161' \
+--header 'Content-Type: application/json' \
+--data '{
+    "method": "eth_getBlockByNumber",
+    "params": [\
+        "0x1203319",\
+        false\
+    ],
+    "id": 9199,
+    "jsonrpc": "2.0"
+}'
+```
+
+### Setup monitoring (optional) [Permalink for this section](https://docs.erpc.cloud/\#setup-monitoring-optional)
+
+Bring up monitoring stack (Prometheus, Grafana) using docker-compose:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+# clone the repo if you haven't
+git clone https://github.com/erpc/erpc.git
+cd erpc
+
+# bring up the monitoring stack
+docker-compose up -d
+```
+
+### Access Grafana [Permalink for this section](https://docs.erpc.cloud/\#access-grafana)
+
+Open Grafana at [http://localhost:3000 (opens in a new tab)](http://localhost:3000/) and login with the following credentials:
+
+- username: `admin`
+- password: `admin`
+
+### Monitor metrics [Permalink for this section](https://docs.erpc.cloud/\#monitor-metrics)
+
+Send more requests and watch the metrics being collected and visualized in Grafana.
+
+![eRPC Grafana Dashboard](https://docs.erpc.cloud/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Fmonitoring-example-erpc.2cb040a1.png&w=3840&q=75)
+
+[Why eRPC?](https://docs.erpc.cloud/why "Why eRPC?")[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+FAQ
+
+## Frequently Asked Questions [Permalink for this section](https://docs.erpc.cloud/faq\#frequently-asked-questions)
+
+### How to set env variables? [Permalink for this section](https://docs.erpc.cloud/faq\#how-to-set-env-variables)
+
+To use env variables in [erpc.yaml](https://docs.erpc.cloud/config/example), follow these steps:
+
+1. **Set env variables**: Define the env variables in your system or shell before running your application:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+export ETHEREUM_RPC_URL=https://mainnet.infura.io/v3/YOUR_INFURA_KEY
+```
+
+2. **Use placeholders in config**: Add placeholders in your config file where you want the env variables to be used:
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+ upstreams:
+      - endpoint: ${ETHEREUM_RPC_URL}
+```
+
+### How to disable caching? [Permalink for this section](https://docs.erpc.cloud/faq\#how-to-disable-caching)
+
+To disable caching, set [`evmJsonRpcCache`](https://docs.erpc.cloud/config/database#evmjsonrpccache) to `null` in your configuration:
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+database:
+  evmJsonRpcCache: ~
+```
+
+[Free & Public RPCs](https://docs.erpc.cloud/free "Free & Public RPCs") [erpc.yaml/ts](https://docs.erpc.cloud/config/example "erpc.yaml/ts")[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+Config
+
+[Projects](https://docs.erpc.cloud/config/projects)
+
+Upstreams
+
+# Upstreams
+
+An upstream is defined to handle 1 or more networks (a.k.a. chains). There are currently these types of upstreams:
+
+- [`evm`](https://docs.erpc.cloud/config/projects/upstreams#evm-json-rpc) A generic EVM-compatible JSON-RPC endpoint. This is the default and most-used type.
+
+eRPC supports **any EVM-compatible** JSON-RPC endpoint when using `evm` type. Specialized types like "alchemy" are built for well-known providers to make it easier to import "all supported evm chains" with just an API-KEY.
+
+## Config [Permalink for this section](https://docs.erpc.cloud/config/projects/upstreams\#config)
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+# ...
+projects:
+  - id: main
+    # ...
+
+    # Each upstream supports 1 or more networks (i.e. evm chains)
+    upstreams:
+      # (REQUIRED) Endpoint URL supports http(s) scheme along with custom schemes like "alchemy://" defined below in this docs.
+      - endpoint: https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
+
+        # Each upstream can have an arbitrary group name which is used in metrics, as well as
+        # useful when writing an eval function in selectionPolicy below.
+        # Use "fallback" group to let eRPC automatically create a "default" selection policy on the network level
+        # and then fallback to this group if the default one doesn't have enough healthy upstreams.
+        group: fallback
+
+        # (OPTIONAL) Upstream ID is optional and can be used to identify the upstream in logs/metrics.
+        id: blastapi-chain-42161
+
+        # (OPTIONAL) Configurations for EVM-compatible upstreams.
+        evm:
+          # (OPTIONAL) chainId is optional and will be detected from the endpoint (eth_chainId),
+          # but it is recommended to set it explicitly, for faster initialization.
+          # DEFAULT: auto-detected.
+          chainId: 42161
+          # (OPTIONAL) statePollerInterval used to periodically fetch the latest/finalized/sync states.
+          # DEFAULT: 30s.
+          statePollerInterval: 30s
+          # (OPTIONAL) statePollerDebounce prevents too many Polls for latest/finalized block numbers during integrity checks.
+          # This ideally must be close (or lower than) the block time of the chain, but not too low to avoid thundering herd (e.g <1s is too low).
+          # DEFAULT: 5s (or equal to block time if the chainId is a known chain)
+          statePollerDebounce: 5s
+          # (OPTIONAL) nodeType is optional and you can manually set it to "full" or "archive".
+          # DEFAULT: archive
+          nodeType: full
+          # (OPTIONAL) maxAvailableRecentBlocks limits the maximum number of recent blocks to be served by this upstream.
+          # DEFAULT: 128 (for "full" nodes).
+          maxAvailableRecentBlocks: 128
+          # (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
+          # This is used to automatically split the request into smaller sub-requests if the range is too high.
+          # Set to -1 to disable this behavior.
+          # DEFAULT: 10000 (10000 blocks)
+          getLogsMaxBlockRange: 10000
+
+        # (OPTIONAL) Defines which budget to use when hadnling requests of this upstream (e.g. to limit total RPS)
+        # Since budgets can be applied to multiple upstreams they all consume from the same budget.
+        # For example "global-blast" below can be applied to all chains supported by BlastAPI,
+        # to ensure you're not hitting them more than your account allows.
+        # DEFAULT: <none> - no budget applied.
+        rateLimitBudget: global-blast
+
+        # (OPTIONAL) Rate limit budget can be automatically adjusted based on the "rate-limited" error rate,
+        # received from upstream. Auto-tuning is enabled by default with values below.
+        # This is useful to automatically increase the budget if an upstream is capable of handling more requests,
+        # and decrease the budget if upstream is degraded.
+        # Every "adjustmentPeriod" total number of requests vs rate-limited will be calculated,
+        # if the value (0 to 1) is above "errorRateThreshold" then budget will be decreased by "decreaseFactor",
+        # if the value is below "errorRateThreshold" then budget will be increased by "increaseFactor".
+        # Note that the new budget will be applied to any upstream using this budget (e.g. Quicknode budget decreases).
+        # DEFAULT: if any budget is defined, auto-tuning is enabled with these values:
+        rateLimitAutoTune:
+          enabled: true
+          adjustmentPeriod: 1m
+          errorRateThreshold: 0.1
+          increaseFactor: 1.05
+          decreaseFactor: 0.9
+          minBudget: 0
+          maxBudget: 10_000
+
+        jsonRpc:
+          # (OPTIONAL) To allow auto-batching requests towards the upstream.
+          # Remember even if "supportsBatch" is false, you still can send batch requests to eRPC
+          # but they will be sent to upstream as individual requests.
+          supportsBatch: true
+          batchMaxSize: 10
+          batchMaxWait: 50ms
+
+          # (OPTIONAL) Headers to send along with every outbound JSON-RPC request.
+          # This is especially useful for upstreams that require a static Bearer token for authentication.
+          headers:
+            Authorization: "Bearer 1234567890"
+
+        # (OPTIONAL) Which methods must never be sent to this upstream.
+        # For example this can be used to avoid archive calls (traces) to full nodes
+        ignoreMethods:
+          - "eth_traceTransaction"
+          - "alchemy_*"
+        # (OPTIONAL) Explicitly allowed methods will take precedence over ignoreMethods.
+        # For example if you only want eth_getLogs to be served, set ignore methods to "*" and allowMethods to "eth_getLogs".
+        allowMethods:
+          - "eth_getLogs"
+        # (OPTIONAL) By default a dynamic mechanism automatically adds "Unsupported" methods to ignoreMethods,
+        # based on errors returned by the upstream. Set this to false to disable this behavior.
+        # Default: true
+        autoIgnoreUnsupportedMethods: true
+
+        # (OPTIONAL) Refer to "Failsafe" docs section for more details.
+        # Here is "default" configuration if not explicitly set:
+        failsafe:
+          timeout:
+            duration: 15s
+          retry:
+            maxAttempts: 2
+            delay: 1000ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 500ms
+          circuitBreaker:
+            # Open circuit after 80% of requests so far have failed (160 out of 200 last requests)
+            failureThresholdCount: 160
+            failureThresholdCapacity: 200
+            # Wait 5 minutes before trying again
+            halfOpenAfter: 5m
+            # Close circuit after 3 successful requests (3 out of 10)
+            successThresholdCount: 3
+            successThresholdCapacity: 10
+```
+
+### Config defaults [Permalink for this section](https://docs.erpc.cloud/config/projects/upstreams\#config-defaults)
+
+The `project.upstreamDefaults` configuration allows you to set default values for all [`upstreams`](https://docs.erpc.cloud/config/projects/upstreams) in a project. These defaults are applied before any upstream-specific configurations:
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+projects:
+  - id: main
+
+    upstreams:
+      # ... example above ^
+
+    upstreamDefaults:
+      # Default group for all upstreams
+      group: "default"
+
+      # Default JSON-RPC settings
+      jsonRpc:
+        supportsBatch: true
+        batchMaxSize: 10
+        batchMaxWait: "50ms"
+
+      # Default failsafe policies
+      failsafe:
+        timeout:
+          duration: "15s"
+        retry:
+          maxAttempts: 3
+          delay: "300ms"
+          jitter: "100ms"
+          backoffMaxDelay: "5s"
+          backoffFactor: 1.5
+        circuitBreaker:
+          failureThresholdCount: 160
+          failureThresholdCapacity: 200
+          halfOpenAfter: "5m"
+          successThresholdCount: 3
+          successThresholdCapacity: 3
+
+      # Default method filters
+      ignoreMethods:
+        - "eth_traceTransaction"
+        - "alchemy_*"
+      allowMethods:
+        - "eth_getLogs"
+```
+
+Default values are only applied if the upstream doesn't have those values explicitly set. This allows you to have consistent configuration across all upstreams while still maintaining the ability to override specific values when needed.
+
+Defaults are merged on the first-level only (and not a deep merge).
+
+i.e. If an upstream has its own `failsafe:` defined, it will not take any of policies from upstreamDefaults.
+
+e.g. if an upstream.failsafe only has "timeout" policy, it will **NOT** get retry/circuitBreaker from upstreamDefaults (those will be disabled).
+
+## Priority & selection mechanism [Permalink for this section](https://docs.erpc.cloud/config/projects/upstreams\#priority--selection-mechanism)
+
+eRPC evaluates each upstream's performance using key metrics to decide the most suitable upstream for each request. These metrics include:
+
+- **Total request failures**: Prioritizes upstreams with lower failure rates.
+- **Rate-limited requests**: Gives preference to upstreams with fewer rate-limited requests.
+- **P90 request latency**: Prioritizes upstreams with lower latency.
+- **Total requests served**: Favors upstreams that have served fewer requests to balance load.
+- **Block head lag**: Prefers upstreams with lower lag compared to the best-performing upstream.
+- **Finalization lag**: Prioritizes upstreams with lower finalization lag.
+
+Each upstream receives a **score** based on these metrics, calculated per method (e.g., `eth_blockNumber`, `eth_getLogs`) over a configurable time window ( `windowSize`, default 30 minutes). Adjust the window size in `erpc.yaml` as shown:
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+projects:
+  # ...
+  - id: main
+    # ...
+    healthCheck:
+      scoreMetricsWindowSize: 1h
+      # ...
+```
+
+The scoring mechanism only affects the order in which upstreams are tried. To fully disable an unreliable upstream, use the [Circuit Breaker](https://docs.erpc.cloud/config/failsafe#circuitbreaker-policy) failsafe policy at the upstream level.
+
+### Customizing scores & priorities [Permalink for this section](https://docs.erpc.cloud/config/projects/upstreams\#customizing-scores--priorities)
+
+Upstreams are ranked by score, controlling selection order. You can adjust this ranking by setting multipliers at different levels: overall, per network or method, or for specific metrics (e.g., error rate, block lag).
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+upstreams:
+  # ...
+  - id: my-alchemy
+    # ...
+    routing:
+      scoreMultipliers:
+        - network: '*' # Relevant when upstream supports multiple networks (default: all networks)
+          method: '*' # Method(s) where you want to apply these multipliers (default: all methods)
+          # method: 'eth_*|alchemy_*' means apply these multipliers to all methods starting with "eth_" or "alchemy_"
+
+          # (OPTIONAL) Adjusts the overall score scale.
+          # DEFAULT: 1.0
+          overall: 1.0
+
+          # (OPTIONAL) Default multiplier values:
+          errorRate: 8.0       # Penalize higher error rates by increasing this value.
+          p90latency: 4.0      # Penalize higher latency by increasing this value.
+          totalRequests: 1.0   # Give more weight to upstreams with fewer requests.
+          throttledRate: 3.0   # Penalize higher throttled requests by increasing this value.
+          blockHeadLag: 2.0    # Penalize nodes lagging in block head updates by increasing this value.
+          finalizationLag: 1.0 # Penalize nodes lagging in finalization by increasing this value.
+```
+
+Example: To prioritize a less expensive (but slower) upstream, adjust the `overall` score multiplier as follows:
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+upstreams:
+  # ...
+  - id: my-cheap-node
+    # ...
+    routing:
+      scoreMultipliers:
+        - overall: 10
+  - id: my-expensive-node
+    # ...
+    routing:
+      scoreMultipliers:
+        - overall: 1
+```
+
+A higher score means the upstream is tried first. If errors occur, other upstreams are attempted.
+
+## Upstream types [Permalink for this section](https://docs.erpc.cloud/config/projects/upstreams\#upstream-types)
+
+### `evm` [Permalink for this section](https://docs.erpc.cloud/config/projects/upstreams\#evm)
+
+These are generic well-known EVM-compatible JSON-RPC endpoints. This is the default and most-used type. They can be your own self-hosted nodes, or remote 3rd-party provider nodes.
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - id: my-infura
+        type: evm
+        endpoint: https://mainnet.infura.io/v3/YOUR_INFURA_KEY
+
+        # (OPTIONAL) Configurations for EVM-compatible upstreams.
+        evm:
+          # (OPTIONAL) chainId is optional and will be detected from the endpoint (eth_chainId),
+          # but it is recommended to set it explicitly, for faster initialization.
+          # DEFAULT: auto-detected.
+          chainId: 42161
+          # (OPTIONAL) statePollerInterval used to periodically fetch the latest/finalized/sync states.
+          # To disable state polling set this value to 0, which means no regular calls to RPC for latest/finalized/sync states.
+          # The consequence of this is all data will be considered "unfinalized" or "unknown" despite their block numbers (and where if theye're actually finalized or not).
+          # DEFAULT: 30s.
+          statePollerInterval: 30s
+          # (OPTIONAL) statePollerDebounce prevents too many Polls for latest/finalized block numbers during integrity checks.
+          # This ideally must be close (or lower than) the block time of the chain, but not too low to avoid thundering herd (e.g <1s is too low).
+          # DEFAULT: 5s (or equal to block time if the chainId is a known chain)
+          statePollerDebounce: 5s
+          # (OPTIONAL) nodeType is optional and you can manually set it to "full" or "archive".
+          # DEFAULT: archive
+          nodeType: full
+          # (OPTIONAL) maxAvailableRecentBlocks limits the maximum number of recent blocks to be served by this upstream.
+          # DEFAULT: 128 (for "full" nodes).
+          maxAvailableRecentBlocks: 128
+          # (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
+          # This is used to automatically split the request into smaller sub-requests if the range is too high.
+          # Set to -1 to disable this behavior.
+          # DEFAULT: 10000 (10000 blocks)
+          getLogsMaxBlockRange: 10000
+        # ...
+```
+
+#### `eth_getLogs` max range automatic splitting [Permalink for this section](https://docs.erpc.cloud/config/projects/upstreams\#eth_getlogs-max-range-automatic-splitting)
+
+Certain providers have a limit on the maximum block range for `eth_getLogs` requests. If the range is too high, eRPC will automatically split the request into smaller sub-requests.
+
+To enable this feature, set the `getLogsMaxBlockRange` in the upstream config:
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+upstreams:
+  - id: my-infura
+    evm:
+      # (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
+      # This is used to automatically split the request into smaller sub-requests if the range is too high.
+      # Set to -1 to disable this behavior.
+      # DEFAULT: 10000 (10000 blocks)
+      getLogsMaxBlockRange: 10000
+```
+
+Additionally eRPC has integrity checks for eth\_getLogs you can read more about in the [Integrity](https://docs.erpc.cloud/config/failsafe/integrity#eth_getLogs-behavior) section.
+
+If an RPC node complains about " **too many results**" eRPC will automatically split the request (first on block range, then on address filter, then on topics filter) and retry until it works, then merges the results automatically.
+
+## Compression [Permalink for this section](https://docs.erpc.cloud/config/projects/upstreams\#compression)
+
+eRPC supports gzip compression at multiple points in the request/response cycle:
+
+1. **Client → eRPC**: Clients can send gzipped requests by setting `Content-Encoding: gzip` header
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+# Example of sending gzipped request to eRPC
+curl -X POST \
+  -H "Content-Encoding: gzip" \
+  -H "Content-Type: application/json" \
+  --data-binary @<(echo '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[]}' | gzip) \
+  http://localhost:4000/main/evm/42161
+```
+
+2. **eRPC → Upstream**: Configurable per upstream to send gzipped requests (disabled by default)
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+upstreams:
+  - id: my-infura
+    jsonRpc:
+      enableGzip: false  # gzip when sending requests to this upstream (disabled by default)
+```
+
+3. **Upstream → eRPC**: Automatically handles gzipped responses from upstreams when they send `Content-Encoding: gzip`
+
+4. **eRPC → Client**: Automatically enabled when clients send `Accept-Encoding: gzip` header (can be disabled in server config)
+
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+server:
+  enableGzip: true  # gzip compression for responses to clients (enabled by default)
+```
+
+Using gzip can reduce ingress/egress bandwidth costs, and in certain cases (e.g. large RPC requests) it can improve performance.
+
+## Custom HTTP Headers [Permalink for this section](https://docs.erpc.cloud/config/projects/upstreams\#custom-http-headers)
+
+You can send additional headers (e.g. `Authorization`) along with every outbound JSON-RPC request to an upstream by specifying `jsonRpc.headers` in the config. This is especially useful for upstreams that require a static Bearer token for authentication.
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+upstreams:
+  - id: my-private-upstream
+    endpoint: https://private-provider.io/v1
+    jsonRpc:
+      # (OPTIONAL) Send additional headers to this upstream on every request
+      # e.g. Authorization bearer token, custom X-Header, etc.
+      headers:
+        Authorization: "Bearer SECRET_VALUE_123"
+        X-Custom-Header: "HelloWorld"
+```
+
+## Client proxy pools [Permalink for this section](https://docs.erpc.cloud/config/projects/upstreams\#client-proxy-pools)
+
+You define proxies for outgoing traffic from eRPC to upstreams. Proxy Pools enable centralized management of http(s)/socks5 proxies with round-robin load balancing across multiple upstreams. This is particularly useful for routing requests through different proxy servers based on geographic location or specific requirements (e.g., public vs private RPC endpoints).
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+# Define proxy pools at the root level
+proxyPools:
+  - id: eu-dc1-pool
+    urls:
+      - http://proxy111.myorg.local:3128
+      - https://proxy222.myorg.local:3129
+  - id: us-dc1-pool
+    urls:
+      - http://proxy333.myorg.local:3128
+      - socks5://proxy444.myorg.local:3129
+
+projects:
+  - id: main
+    # Option 1: Apply proxy pool to all upstreams
+    upstreamDefaults:
+      jsonRpc:
+        proxyPool: eu-dc1-pool
+
+    # Option 2: Apply proxy pools selectively to specific upstreams
+    upstreams:
+      - id: public-rpc-1
+        endpoint: https://public-rpc-1.example.com
+        jsonRpc:
+          proxyPool: eu-dc1-pool
+
+      - id: public-rpc-2
+        endpoint: https://public-rpc-2.example.com
+        jsonRpc:
+          proxyPool: us-dc1-pool
+
+      # This upstream won't use a proxy since it has no proxyPool specified
+      - id: private-rpc-1
+        endpoint: https://private-rpc-1.example.com
+```
+
+You can use `upstreamDefaults` to apply a proxy pool to all upstreams, or configure them individually. Individual upstream configurations will override the defaults.
+
+[Networks](https://docs.erpc.cloud/config/projects/networks "Networks") [Providers](https://docs.erpc.cloud/config/projects/providers "Providers")# 404
+
+## This page could not be found.[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+Config
+
+Auth
+
+# Authentication
+
+Each project can have one or more authentication strategies enabled. When any authentication strategy is defined all requests towards the project must comply with at least one of the strategies.
+
+## Config [Permalink for this section](https://docs.erpc.cloud/config/auth\#config)
+
+The appropriate strategy will be activated based on request payload. For example if "token" is present as a query string then "secret" strategy will be activated. These are currently supported strategies:
+
+- [`secret`](https://docs.erpc.cloud/config/auth#secret)
+- [`network`](https://docs.erpc.cloud/config/auth#network)
+- [`jwt`](https://docs.erpc.cloud/config/auth#jwt)
+- [`siwe`](https://docs.erpc.cloud/config/auth#siwe)
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+logLevel: debug
+projects:
+  - id: frontend
+    auth:
+      strategies:
+      # Define a simple secret token for authentication of this project:
+      - type: secret
+        rateLimitBudget: free-tier
+        secret:
+          value: "some-random-secret-value"
+      # Define another secret token, that can also be used, but with higher rate limit:
+      - type: secret
+        rateLimitBudget: premium
+        secret:
+          value: "some-other-random-secret-value"
+    upstreams:
+    # ...
+rateLimiters:
+  # ...
+```
+
+#### Method filtering [Permalink for this section](https://docs.erpc.cloud/config/auth\#method-filtering)
+
+You can allow or disallow certain methods when a client is authenticated by a specific strategy. For example you can limit types of method available for a certain IP (or token), or define multiple secret tokens with different allowed methods.
+
+`allowMethods` takes precedence over `ignoreMethods`. For example if you only want to allow eth\_getLogs for a certain IP, you can:
+
+Both allowMethods and ignoreMethods support wildcard `*` anywhere in the method name.
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+projects:
+  - id: main
+    auth:
+      strategies:
+      - type: secret
+        ignoreMethods:
+        - eth_getLogs
+        - alchemy_*
+        allowMethods:
+        - alchemy_getAssetTransfers
+        # ...
+    upstreams:
+    # ...
+rateLimiters:
+  # ...
+```
+
+#### Rate limiter [Permalink for this section](https://docs.erpc.cloud/config/auth\#rate-limiter)
+
+For each strategy item defined for a project you can enforce a separate rate limit budget. For example to limit users providing secret A to 100 requests per second, and users providing secret B to 1000 requests per second.
+
+⚠️
+
+At the moment, rate limit budgets apply across all clients authenticated by a specific strategy, and **NOT** per user.
+
+For example in sample below, no matter how many actual clients use the premium secret token, all of them **together** cannot exceed 1000 requests per second.
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+projects:
+  - id: main
+    auth:
+      strategies:
+      - type: secret
+        rateLimitBudget: free-tier
+        # ...
+      - type: jwt
+        rateLimitBudget: premium
+        # ...
+    upstreams:
+    # ...
+rateLimiters:
+  budgets:
+  - id: low-tier
+    rules:
+    - method: '*'
+        maxCount: 10
+        period: 1s
+  - id: premium
+    rules:
+    - method: '*'
+        maxCount: 1000
+        period: 1s
+```
+
+## `secret` strategy [Permalink for this section](https://docs.erpc.cloud/config/auth\#secret-strategy)
+
+A simple strategy that allows you to define a secret value that will be checked against a `token` provided via query string, or via `X-ERPC-Secret-Token` header.
+
+This strategy is mainly recommended for backend to backend communication. Exposing this token on your frontend allows users to impersonate the requests from anywhere.
+
+If you still want to use this strategy on frontend, make sure [CORS configuration](https://docs.erpc.cloud/config/projects/cors) are defined to reduce the potential abuse.
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+projects:
+  - id: main
+    auth:
+      strategies:
+      - type: secret
+        ignoreMethods:
+        - eth_getLogs
+        - alchemy_*
+        allowMethods:
+        - alchemy_getAssetTransfers
+        rateLimitBudget: premium
+        secret:
+          value: "some-random-secret-value" # To use env vars: ${MY_SECRET_VALUE}
+    upstreams:
+    # ...
+rateLimiters:
+  budgets:
+  - id: premium
+    rules:
+    - method: '*'
+        maxCount: 1000
+        period: 1s
+```
+
+The client must provide this value either via a query string parameter:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+curl -X POST https://localhost:4000/main/evm/42161?token=some-random-secret-value \
+  # ...
+```
+
+Or via a header:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+curl -X POST https://localhost:4000 \
+  -H "X-ERPC-Secret-Token: some-random-secret-value"
+  # ...
+```
+
+## `network` strategy [Permalink for this section](https://docs.erpc.cloud/config/auth\#network-strategy)
+
+To prevent requests based on IP address of the client, use `network` strategy:
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+projects:
+  - id: main
+    auth:
+      strategies:
+      - type: network
+        network:
+          # To allow requests coming from the same host (localhost, 127.0.0.1, ::1)
+          allowLocalhost: true
+
+          # To allow requests coming from the specific IPs
+          allowedIPs:
+          - "89.123.123.123"
+
+          # To allow requests coming from the specific CIDR ranges
+          allowedCIDRs:
+          - "78.13.0.0/16"
+
+          # When requests carry X-Forwarded-For header, you can define trusted proxies
+          # that are allowed to override the client's IP address.
+          #
+          # These will evaluate X-Forwarded-For value from the left to the right,
+          # and will use the first IP address that is not in the trustedProxies list.
+          #
+          # Example 1:
+          #   X-Forwarded-For: 192.168.1.123, 22.22.22.22, 33.33.33.33
+          #   trustedProxies:
+          #   - "192.168.1.123"
+          #   \_____ Detected client IP: 22.22.22.22
+          #
+          # Example 2:
+          #   X-Forwarded-For: 11.11.11.11, 22.22.22.22, 33.33.33.33
+          #   trustedProxies:
+          #   - "192.168.1.123"
+          #   \_____ Detected client IP: 11.11.11.11
+          trustedProxies:
+          - "192.168.1.123"
+    upstreams:
+    # ...
+rateLimiters:
+  # ...
+```
+
+## `jwt` strategy [Permalink for this section](https://docs.erpc.cloud/config/auth\#jwt-strategy)
+
+Use [JWT (opens in a new tab)](https://jwt.io/) strategy to only allow requests carrying a JWT token signed by you or a trusted party. The main requirement for this strategy is public key(s) that you trust.
+
+For frontend dApps this strategy is the **most recommended** because it allows control over how many users can hit your RPC endpoint and the "expiration" prevents users from abusing the RPC by copying the jwt token in multiple places.
+
+If you already use a JWT for your frontend, you can use the same token for eRPC, only providing the proper public key(s).
+
+This strategy respects the JWT token's expiration ( `exp` claim) and will reject the request if token has expired.
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+projects:
+  - id: main
+    auth:
+      strategies:
+      - type: jwt
+        jwt:
+          # At least one public key must be provided, you can either provide the public key PEM as plain value,
+          # or provide a path to the file containing the public key.
+          #
+          # The for each verification key you can use their "kid" (e.g. rsa-kid-1) as a key, and provide the PEM as a value.
+          verificationKeys:
+            "rsa-kid-1": "file:///Users/aram/www/0xflair/erpc/test/aux/public_key.pem"
+            "rsa-kid-2": "${MY_RSA_KEY_2_PEM}"
+
+          # Optional list of issuers that are allowed, if token has a different "iss" claim it will be rejected.
+          allowedIssuers:
+            - "https://erpc.web3-project.xyz"
+
+          # Optional list of audiences that are allowed, if token has a different "aud" claim it will be rejected.
+          allowedAudiences:
+            - "https://frontend.web3-project.xyz"
+
+          # Optional list of algorithms that are allowed, if token has a different "alg" header it will be rejected.
+          allowedAlgorithms:
+            - "RS256"
+            - "HS256"
+
+          # Optional list of claims that are required to be present in the token, otherwise the token will be rejected.
+          requiredClaims:
+            - "sub"
+            - "role"
+    upstreams:
+    # ...
+rateLimiters:
+  # ...
+```
+
+## `siwe` strategy [Permalink for this section](https://docs.erpc.cloud/config/auth\#siwe-strategy)
+
+Many frontend dApps already use [Sign-in with Ethereum (opens in a new tab)](https://eips.ethereum.org/EIPS/eip-4361) (SIWE) to authenticate wallets. You can use `siwe` strategy to allow requests from your dApp by providing the signature and signed message:
+
+Message (which includes your statement, domain, expiration, etc) must be provided as base64 encoded string.
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+projects:
+  - id: main
+    auth:
+      strategies:
+      - type: siwe
+        siwe:
+          # A list of domains from which SIWE messages are allowed to be signed.
+          allowedDomains:
+            - "my-web3-project.xyz"
+    upstreams:
+    # ...
+rateLimiters:
+  # ...
+```
+
+Message and signature can be provided via query string parameters:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+curl -X POST https://localhost:4000/main/evm/42161?message=my_message_base64_ecnoded&signature=0x123456 \
+  # ...
+```
+
+or via `X-ERPC-SIWE-Message` and `X-ERPC-SIWE-Signature` headers:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+curl -X POST https://localhost:4000 \
+  -H "X-ERPC-SIWE-Message: my_message_base64_ecnoded"
+  -H "X-ERPC-SIWE-Signature: 0x123456"
+  # ...
+```
+
+#### Roadmap [Permalink for this section](https://docs.erpc.cloud/config/auth\#roadmap)
+
+On some doc pages we like to share our ideas for related future implementations, feel free to open a PR if you're up for a challenge:
+
+- [ ]  Allow defining rate-limits per user (vs across all users), for more granular control over usage.
+
+[Shared State](https://docs.erpc.cloud/config/database/shared-state "Shared State") [Rate limiters](https://docs.erpc.cloud/config/rate-limiters "Rate limiters")[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+Free & Public RPCs
+
+## Free & Public RPC Endpoints [Permalink for this section](https://docs.erpc.cloud/free\#free--public-rpc-endpoints)
+
+Get immediate access to 2,000+ chains and 4,000+ public free EVM RPC endpoints:
+
+1. Run an eRPC instance:
+
+NPMDocker
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+npx start-erpc
+```
+
+You can also deploy it to `Railway`:
+
+[![Deploy on Railway](https://railway.app/button.svg) (opens in a new tab)](https://railway.com/template/10iW1q?referralCode=PpPFJd)
+
+2. Send requests to the eRPC instance based on chainId:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+curl 'http://localhost:4000/evm/42161' \
+--header 'Content-Type: application/json' \
+--data '{
+    "method": "eth_getBlockByNumber",
+    "params": [\
+        "latest",\
+        false\
+    ],
+    "id": 9199,
+    "jsonrpc": "2.0"
+}'
+```
+
+3. 🚀 Profit!
+
+![../public/assets/romulus.gif](https://docs.erpc.cloud/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Fromulus.7f2e7f9c.gif&w=1080&q=75)
+
+### How it works? [Permalink for this section](https://docs.erpc.cloud/free\#how-it-works)
+
+When running eRPC without a configuration file, it will use a basic configuration using the special [repository](https://docs.erpc.cloud/config/projects/providers#repository) provider.
+
+This provider automatically fetches (every 1 hour) RPC public endpoints from [https://evm-public-endpoints.erpc.cloud (opens in a new tab)](https://evm-public-endpoints.erpc.cloud/) which is a combination of [Chainlist (opens in a new tab)](https://chainlist.org/), [ChainID.Network (opens in a new tab)](https://chainid.network/), and [Viem (opens in a new tab)](https://viem.sh/) public RPC endpoints.
+
+### Next steps [Permalink for this section](https://docs.erpc.cloud/free\#next-steps)
+
+This setup is recommended for development and testing purposes. For production environments, we recommend [extending eRPC config (opens in a new tab)](https://docs.erpc.cloud/config/example) with dedicated premium providers and advanced failover configs.
+
+[Why eRPC?](https://docs.erpc.cloud/why "Why eRPC?") [FAQ](https://docs.erpc.cloud/faq "FAQ")# 404
+
+## This page could not be found.[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+Operation
+
+Admin
+
+## Admin endpoint [Permalink for this section](https://docs.erpc.cloud/operation/admin\#admin-endpoint)
+
+Administrative operations are available through:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+https://<hostname>/admin
+```
+
+Admin endpoints require authentication configured under root `admin` section:
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+admin:
+  auth:
+    strategies:
+      - type: secret
+        secret:
+          value: <your-secret>
+
+server:
+  # ...
+projects:
+  # ...
+```
+
+### Available admin methods [Permalink for this section](https://docs.erpc.cloud/operation/admin\#available-admin-methods)
+
+#### erpc\_taxonomy [Permalink for this section](https://docs.erpc.cloud/operation/admin\#erpc_taxonomy)
+
+Returns a taxonomy of projects, networks, and upstreams configured in the system.
+
+**Example request:**
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+curl --location 'http://localhost:4000/admin?secret=<your-secret-here>' \
+# OR as a header:
+# --header 'X-ERPC-Secret-Token: <your-secret-here>' \
+--header 'Content-Type: application/json' \
+--data '{
+    "method": "erpc_taxonomy",
+    "id": 1,
+    "jsonrpc": "2.0"
+}'
+```
+
+**Example Response:**
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+{
+    "jsonrpc": "2.0",
+    "result": {
+        "projects": [\
+            {\
+                "id": "frontend",\
+                "networks": [\
+                    {\
+                        "id": "evm:1",\
+                        "upstreams": [\
+                            {\
+                                "id": "blastapi-test"\
+                            },\
+                            {\
+                                "id": "my-alchemy"\
+                            }\
+                        ]\
+                    }\
+                ]\
+            }\
+        ]
+    }
+}
+```
+
+#### erpc\_project [Permalink for this section](https://docs.erpc.cloud/operation/admin\#erpc_project)
+
+Returns detailed configuration and upstream scoring/health information for a specific project.
+
+**Example request:**
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+curl --location 'http://localhost:4000/admin?secret=<your-secret-here>' \
+# OR as a header:
+# --header 'X-ERPC-Secret-Token: <your-secret-here>' \
+--header 'Content-Type: application/json' \
+--data '{
+    "method": "erpc_project",
+    "params": ["main"],
+    "id": 1,
+    "jsonrpc": "2.0"
+}'
+```
+
+**Example response:**
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+        "config": {
+            "id": "frontend",
+            "cors": { /* ... */ },
+            "upstreams": [\
+                {\
+                    "id": "blastapi-test",\
+                    "endpoint": "blastapi#redacted=e6401",\
+                    "type": "evm",\
+                    "ignoreMethods": [\
+                        "*"\
+                    ],\
+                    "allowMethods": [\
+                        "eth_blockNumber"\
+                    ],\
+                },\
+                // ...\
+            ],
+            "networks": [\
+                {\
+                    "architecture": "evm",\
+                    "evm": {\
+                        "chainId": 1,\
+                        "fallbackFinalityDepth": 1024\
+                    },\
+                    "rateLimitBudget": "my-network-budget",\
+                    // ...\
+                }\
+            ],
+            "rateLimitBudget": "my-project-budget",
+            // ...
+        },
+        "health": {
+            "upstreams": [\
+                {\
+                    "id": "blastapi#redacted=e6401",\
+                    "metrics": {\
+                        "evm:1|eth_blockNumber": {\
+                            "errorsTotal": 0,\
+                            "remoteRateLimitedTotal": 0,\
+                            "blockHeadLag": 0,\
+                            "finalizationLag": 0,\
+                            "cordoned": false,\
+                            "latencySecs": {\
+                                "p90": 0.110877458\
+                            },\
+                            "selfRateLimitedTotal": 0,\
+                            "requestsTotal": 1,\
+                            "cordonedReason": null\
+                        },\
+                        "*|eth_blockNumber": {\
+                            "blockHeadLag": 0,\
+                            "cordoned": false,\
+                            "cordonedReason": null,\
+                            "selfRateLimitedTotal": 0,\
+                            "errorsTotal": 0,\
+                            "remoteRateLimitedTotal": 0,\
+                            "requestsTotal": 1,\
+                            "finalizationLag": 0,\
+                            "latencySecs": {\
+                                "p90": 0.110877458\
+                            }\
+                        },\
+                        "evm:1|*": {\
+                            "blockHeadLag": 0,\
+                            "finalizationLag": 0,\
+                            "cordoned": false,\
+                            "cordonedReason": null,\
+                            "latencySecs": {\
+                                "p90": 0.110877458\
+                            },\
+                            "errorsTotal": 0,\
+                            "remoteRateLimitedTotal": 0,\
+                            "selfRateLimitedTotal": 0,\
+                            "requestsTotal": 1\
+                        },\
+                        "*|*": {\
+                            "blockHeadLag": 0,\
+                            "finalizationLag": 0,\
+                            "latencySecs": {\
+                                "p90": 0.110877458\
+                            },\
+                            "selfRateLimitedTotal": 0,\
+                            "remoteRateLimitedTotal": 0,\
+                            "requestsTotal": 1,\
+                            "errorsTotal": 0,\
+                            "cordoned": false,\
+                            "cordonedReason": null\
+                        }\
+                    },\
+                    "activeNetworks": [\
+                        "evm:1"\
+                    ]\
+                },\
+                // ...\
+            ],
+            "sortedUpstreams": {
+                "evm:1": {
+                    "*": [\
+                        "my-alchemy",\
+                        "blastapi-test"\
+                    ],
+                    "eth_blockNumber": [\
+                        "my-alchemy",\
+                        "blastapi-test"\
+                    ]
+                },
+                "*": {
+                    "*": [\
+                        "blastapi-test",\
+                        "my-alchemy"\
+                    ],
+                    "eth_blockNumber": [\
+                        "my-alchemy",\
+                        "blastapi-test"\
+                    ]
+                }
+            },
+            "upstreamScores": {
+                "blastapi-test": {
+                    "evm:1": {
+                        "eth_blockNumber": 14,
+                        "*": 14
+                    },
+                    "*": {
+                        "*": 15.41420133288338,
+                        "eth_blockNumber": 14
+                    }
+                },
+                "my-alchemy": {
+                    "evm:1": {
+                        "*": 19,
+                        "eth_blockNumber": 19
+                    },
+                    "*": {
+                        "eth_blockNumber": 19,
+                        "*": 14
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+[Monitoring](https://docs.erpc.cloud/operation/monitoring "Monitoring")[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+Config
+
+Database
+
+Drivers
+
+## Drivers [Permalink for this section](https://docs.erpc.cloud/config/database/drivers\#drivers)
+
+Depending on your use-case storage and performance requirements, you can use different drivers.
+
+### Memory [Permalink for this section](https://docs.erpc.cloud/config/database/drivers\#memory)
+
+Mainly useful when you want fast access for limited amount of cached data. Use this driver for high-frequency RPC calls.
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+database:
+  evmJsonRpcCache:
+    connectors:
+      - id: memory-cache
+        driver: memory
+        memory:
+          maxItems: 10000
+    policies:
+      - network: "*"
+        method: "*"
+        finality: finalized
+        connector: memory-cache
+```
+
+### Redis [Permalink for this section](https://docs.erpc.cloud/config/database/drivers\#redis)
+
+Redis is useful when you need to store cached data temporarily with **eviction policy** (e.g. certain amount of memory).
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+database:
+  evmJsonRpcCache:
+    connectors:
+      - id: redis-cache
+        driver: redis
+        redis:
+          addr: YOUR_REDIS_ADDRESS_HERE
+          password: YOUR_REDIS_PASSWORD_HERE
+          db: XXX
+          connPoolSize: 128
+          tls:
+            enabled: false # or "true" if redis is configured with TLS
+            certFile: /path/to/client.crt # Optional
+            keyFile: /path/to/client.key # Optional
+            caFile: /path/to/ca.crt # Optional
+          initTimeout: 5s
+          getTimeout: 1s
+          setTimeout: 2s
+    policies:
+      - network: "*"
+        method: "*"
+        finality: finalized
+        connector: redis-cache
+```
+
+Example of Redis config with eviction policy:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+maxmemory 2000mb
+maxmemory-policy allkeys-lru
+```
+
+### PostgreSQL [Permalink for this section](https://docs.erpc.cloud/config/database/drivers\#postgresql)
+
+Useful when you need to store cached data permanently without TTL i.e. forever.
+
+You don't need to create the table, the driver will automatically create the
+table and requried indexes.
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+database:
+  evmJsonRpcCache:
+    connectors:
+      - id: postgres-cache
+        driver: postgresql
+        postgresql:
+          connectionUri: >-
+            postgres://YOUR_USERNAME_HERE:YOUR_PASSWORD_HERE@your.postgres.hostname.here.com:5432/your_database_name
+          table: rpc_cache
+          initTimeout: 5s
+          getTimeout: 1s
+          setTimeout: 2s
+    policies:
+      - network: "*"
+        method: "*"
+        finality: finalized
+        connector: postgres-cache
+```
+
+### DynamoDB [Permalink for this section](https://docs.erpc.cloud/config/database/drivers\#dynamodb)
+
+When you need to have scalable (compared to Postgres) permanent caching and are happy with the costs.
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+database:
+  evmJsonRpcCache:
+    connectors:
+      - id: dynamodb-cache
+        driver: dynamodb
+        dynamodb:
+          table: rpc_cache
+          region: eu-west-1
+          initTimeout: 5s
+          getTimeout: 1s
+          setTimeout: 2s
+          endpoint: https://dynamodb.eu-west-1.amazonaws.com # Optional
+          # Auth is optional if you are running within AWS.
+          auth:
+            mode: secret # file, or env
+            accessKeyId: YOUR_ACCESS_KEY_ID # Only if mode is secret
+            secretAccessKey: YOUR_SECRET_ACCESS_KEY # Only if mode is secret
+            profile: xxxxx # Only if mode is file
+            credentialsFile: xxxx # Only if mode is file
+    policies:
+      - network: "*"
+        method: "*"
+        finality: finalized
+        connector: dynamodb-cache
+```
+
+Timeout [EVM Cache](https://docs.erpc.cloud/config/database/evm-json-rpc-cache "EVM Cache")# 404
+
+## This page could not be found.# 404
+
+## This page could not be found.[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+Config
+
+[Projects](https://docs.erpc.cloud/config/projects)
+
+CORS
+
+# Cross-Origin Resource Sharing (CORS)
+
+When using eRPC directly from the browser (i.e., frontend), you might need to enable Cross-Origin Resource Sharing (CORS) so that only your domains are allowed to access eRPC endpoints.
+
+## Config [Permalink for this section](https://docs.erpc.cloud/config/projects/cors\#config)
+
+Here's an example of how to configure CORS in your `erpc.yaml` file:
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+projects:
+  - id: main
+    cors:
+      # List of allowed origins. Use ["*"] to allow any origin
+      allowedOrigins:
+        - "https://example.com"
+        - "https://*.example.com"
+      # HTTP methods allowed for CORS requests
+      allowedMethods:
+        - "GET"
+        - "POST"
+        - "OPTIONS"
+      # Headers allowed in actual requests
+      allowedHeaders:
+        - "Content-Type"
+        - "Authorization"
+      # Headers exposed to the browser
+      exposedHeaders:
+        - "X-Request-ID"
+      # Whether the browser should include credentials with requests
+      allowCredentials: true
+      # How long (in seconds) browsers should cache preflight request results
+      maxAge: 3600
+    upstreams:
+    # ...
+rateLimiters:
+  # ...
+```
+
+#### `allowedOrigins` [Permalink for this section](https://docs.erpc.cloud/config/projects/cors\#allowedorigins)
+
+- Type: array of strings
+- Description: Specifies which origins are allowed to make requests to your eRPC endpoint.
+- Example: `["https://example.com", "https://*.example.com"]`
+- Use `["*"]` to allow any origin (not recommended for production)
+
+#### `allowedMethods` [Permalink for this section](https://docs.erpc.cloud/config/projects/cors\#allowedmethods)
+
+- Type: array of strings
+- Description: HTTP methods that are allowed when accessing the resource.
+- Example: `["GET", "POST", "OPTIONS"]`
+
+#### `allowedHeaders` [Permalink for this section](https://docs.erpc.cloud/config/projects/cors\#allowedheaders)
+
+- Type: array of strings
+- Description: Headers that are allowed in actual requests.
+- Example: `["Content-Type", "Authorization"]`
+
+#### `exposedHeaders` [Permalink for this section](https://docs.erpc.cloud/config/projects/cors\#exposedheaders)
+
+- Type: array of strings
+- Description: Headers that browsers are allowed to access.
+- Example: `["X-Request-ID"]`
+
+#### `allowCredentials` [Permalink for this section](https://docs.erpc.cloud/config/projects/cors\#allowcredentials)
+
+- Type: boolean
+- Description: Indicates whether the request can include user credentials like cookies, HTTP authentication or client side SSL certificates.
+- Example: `true`
+
+#### `maxAge` [Permalink for this section](https://docs.erpc.cloud/config/projects/cors\#maxage)
+
+- Type: integer
+- Description: Indicates how long (in seconds) the results of a preflight request can be cached.
+- Example: `3600` (1 hour)
+
+## Behavior for Disallowed Origins [Permalink for this section](https://docs.erpc.cloud/config/projects/cors\#behavior-for-disallowed-origins)
+
+eRPC handles disallowed origins in a standards-compliant way:
+
+- eRPC does not forcibly block requests from origins that are not in your `allowedOrigins`. Instead, it simply omits the CORS headers in those cases.
+- **Browser-based clients** that strictly enforce CORS will automatically block these requests (due to missing CORS headers)
+- **Non-browser clients** (like curl, Postman, or certain Chrome extensions) typically don't enforce CORS and can still receive valid responses even without CORS headers
+
+This approach follows the [W3C CORS recommendation (opens in a new tab)](https://www.w3.org/TR/cors/#cross-origin-requests), which treats the server's CORS headers as an "opt-in" rather than a hard firewall. Since the Origin header is easily spoofed, relying on it for strict blocking is not recommended.
+
+## Examples [Permalink for this section](https://docs.erpc.cloud/config/projects/cors\#examples)
+
+### Basic Web Application [Permalink for this section](https://docs.erpc.cloud/config/projects/cors\#basic-web-application)
+
+For a basic web application where you want to allow requests only from your main domain:
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+cors:
+  allowedOrigins:
+    - "https://myapp.com"
+  allowedMethods:
+    - "GET"
+    - "POST"
+  allowedHeaders:
+    - "Content-Type"
+  allowCredentials: false
+  maxAge: 300
+```
+
+### Multiple Subdomains [Permalink for this section](https://docs.erpc.cloud/config/projects/cors\#multiple-subdomains)
+
+If your application spans multiple subdomains:
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+cors:
+  allowedOrigins:
+    - "https://*.myapp.com"
+  allowedMethods:
+    - "GET"
+    - "POST"
+    - "PUT"
+    - "DELETE"
+  allowedHeaders:
+    - "Content-Type"
+    - "Authorization"
+  exposedHeaders:
+    - "X-Request-ID"
+  allowCredentials: true
+  maxAge: 3600
+```
+
+### Development Environment [Permalink for this section](https://docs.erpc.cloud/config/projects/cors\#development-environment)
+
+For a development environment where you need more permissive settings:
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+cors:
+  allowedOrigins:
+    - "http://localhost:3000"
+    - "http://127.0.0.1:3000"
+  allowedMethods:
+    - "GET"
+    - "POST"
+    - "PUT"
+    - "DELETE"
+    - "OPTIONS"
+  allowedHeaders:
+    - "*"
+  allowCredentials: true
+  maxAge: 86400
+```
+
+[Selection policies](https://docs.erpc.cloud/config/projects/selection-policies "Selection policies") [Failsafe](https://docs.erpc.cloud/config/failsafe "Failsafe")[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+Config
+
+[Projects](https://docs.erpc.cloud/config/projects)
+
+Networks
+
+# Networks
+
+A network represents a chain (e.g., evm, solana, etc), and it is a logical grouping of upstreams.
+
+[Upstreams](https://docs.erpc.cloud/config/projects/upstreams) are configured separately, and on the first request to a network, the eRPC will automatically find any upstream that support that network.
+
+You can configure failover behavior per network as follows:
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+projects:
+  - id: main
+
+    # (OPTIONAL) This array configures network-specific (a.k.a chain-specific) features.
+    # For each network "architecture" and corresponding network id (e.g. evm.chainId) is required.
+    # You don't need to define networks as they will be automatically detected from configured endpoints (lazy-loaded).
+    # Only provide network list if you want to customize features such as failsafe policies, rate limit budget, finality depth, etc.
+    networks:
+      - architecture: evm
+        # (OPTIONAL) When "evm" is used, "chainId" is required, so that rate limit budget or failsafe policies are properly applied.
+        evm:
+          # (REQUIRED) chainId is required when "evm" architecture is used.
+          chainId: 1
+          # (OPTIONAL) fallbackFinalityDepth is optional and allows to manually set a finality depth in case upstream does not support eth_getBlockByNumber(finalized).
+          # In case this fallback is used, finalized block will be 'LatestBlock - fallbackFinalityDepth'.
+          # Defining this fallback helps with increasing cache-hit rate and reducing redundant 'retry' attempts on empty responses, as we know which data is finalized.
+          # DEFAULT: auto-detect - via eth_getBlockByNumber(finalized).
+          fallbackFinalityDepth: 1024
+
+        # (OPTIONAL) Refer to "Selection Policy" section for more details.
+        # Here are default values used for selectionPolicy if not explicitly defined:
+        selectionPolicy:
+          # Every 1 minute evaluate which upstreams must be included,
+          # based on the arbitrary logic (e.g., <90% error rate and <10 block lag):
+          evalInterval: 1m
+
+          # To isolate selection evaluation and result to each "method" separately change this flag to true
+          evalPerMethod: false
+
+          # Freeform TypeScript-based logic to select upstreams to be included by returning them:
+          evalFunction: |
+            (upstreams, method) => {
+
+              const defaults = upstreams.filter(u => u.config.group !== 'fallback')
+              const fallbacks = upstreams.filter(u => u.config.group === 'fallback')
+
+              // Maximum allowed error rate.
+              const maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7')
+
+              // Maximum allowed block head lag.
+              const maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10')
+
+              // Minimum number of healthy upstreams that must be included in default group.
+              const minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1')
+
+              // Filter upstreams that are healthy based on error rate and block head lag.
+              const healthyOnes = defaults.filter(
+                u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
+              )
+
+              // If there are enough healthy upstreams, return them.
+              if (healthyOnes.length >= minHealthyThreshold) {
+                return healthyOnes
+              }
+
+
+              // If there are fallbacks defined, try to use them
+              if (fallbacks.length > 0) {
+                // Apply same health filtering as default rpcs
+                let healthyFallbacks = fallbacks.filter(
+                  u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
+                )
+
+                // If there are healthy fallbacks use them
+                if (healthyFallbacks.length > 0) {
+                  return healthyFallbacks
+                }
+              }
+
+              // The reason all upstreams are returned is to be less harsh and still consider default nodes (in case they have intermittent issues)
+              // Order of upstreams does not matter as that will be decided by the upstream scoring mechanism
+              return upstreams
+            }
+
+          # When an upstream is excluded, you can give it a chance on a regular basis
+          # to handle a certain number of sample requests again, so that metrics are refreshed.
+          # For example, to see if error rate is improving after 5 minutes, or still too high.
+          # This is conceptually similar to how a circuit-breaker works in a "half-open" state.
+          # Resampling is not always needed because the "evm state poller" component will still make
+          # requests for the "latest" block, which still updates errorRate.
+          resampleExcluded: false
+          resampleInterval: 5m
+          resampleCount: 10
+
+        # (OPTIONAL) A network-level rate limit budget applied to all requests despite upstreams own rate-limits.
+        # For example even if upstreams can handle 1000 RPS, and network-level is limited to 100 RPS,
+        # the request will be rate-limited to 100 RPS.
+        rateLimitBudget: my-limiter-budget
+
+        # (OPTIONAL) Refer to "Failsafe" section for more details.
+        # Here are default values used for networks if not explicitly defined:
+        failsafe:
+          timeout:
+            # On network-level "timeout" is applied for the whole lifecycle of the request (including however many retries happens on upstream)
+            duration: 30s
+          retry:
+            # It is recommended to set a retry policy on network-level to make sure if one upstream is rate-limited,
+            # the request will be retried on another upstream.
+            maxAttempts: 3
+            delay: 100ms
+            jitter: 0ms
+            backoffMaxDelay: 1s
+            backoffFactor: 1.5
+          # Defining a "hedge" is highly-recommended on network-level because if upstream A is being slow for
+          # a specific request, it can start a new parallel hedged request to upstream B, for whichever responds faster.
+          hedge:
+            delay: 200ms
+            maxCount: 3
+
+    upstreams:
+    # Refer to "Upstreams" section to learn how to configure upstreams.
+    # ...
+# ...
+```
+
+## Default config and lazy-loading [Permalink for this section](https://docs.erpc.cloud/config/projects/networks\#default-config-and-lazy-loading)
+
+Networks are lazy-loaded on first request for a network (if not explicitly defined in config). You can configure "networkDefaults" to set default values for all networks (both static or lazy-loaded):
+
+yaml
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+projects:
+  - id: main
+    networkDefaults:
+      # (OPTIONAL) A network-level rate limit budget applied to all requests despite upstreams own rate-limits.
+      # For example even if upstreams can handle 1000 RPS, and network-level is limited to 100 RPS,
+      # the request will be rate-limited to 100 RPS.
+      # Defaults to no rate limit budget.
+      rateLimitBudget: "my-default-budget"
+
+      # (OPTIONAL) Refer to "Failsafe" section for more details.
+      # https://docs.erpc.cloud/config/failsafe
+      # If a network has its own failsafe defined, it will not take any of policies from networkDefaults.
+      # i.e. if network has only "timeout" policy, it will NOT get hedge/retry from networkDefaults (those will be disabled).
+      # Here are default values used for networkDefaults if not explicitly defined:
+      failsafe:
+        timeout:
+          duration: "30s"
+        hedge:
+          delay: "200ms"
+          maxCount: 3
+        retry:
+          maxAttempts: 3
+          delay: "100ms"
+          jitter: "0ms"
+          backoffMaxDelay: "1s"
+          backoffFactor: 1.5
+
+      # (OPTIONAL) Refer to "Selection Policy" section for more details about default values.
+      # https://docs.erpc.cloud/config/projects/selection-policies#config
+      selectionPolicy:
+        #...
+
+      # (OPTIONAL) Default directives to apply to all requests for this network.
+      # These can be overridden by request-specific directives via HTTP headers or query parameters.
+      # See https://docs.erpc.cloud/operation/directives for more details about each directive.
+      directiveDefaults:
+        retryEmpty: true                       # OPTIONAL (default: true)
+        retryPending: false                    # OPTIONAL (default: false)
+        skipCacheRead: false                   # OPTIONAL (default: false)
+        useUpstream: "alchemy-*|localnode-*"   # OPTIONAL (default: *)
+
+    # (OPTIONAL) List of customizations per network if needed can be defined as usual:
+    # For each static network, first networkDefaults will be applied (deep object merge),
+    # then network-specific overrides can be applied.
+    networks:
+      # ...
+```
+
+If a network has its own `failsafe:` defined, it will not take any of policies from networkDefaults.
+
+e.g. if a network only has "timeout" policy, it will **NOT** get hedge/retry from networkDefaults (those will be disabled).
+
+### Architectures [Permalink for this section](https://docs.erpc.cloud/config/projects/networks\#architectures)
+
+#### `evm` [Permalink for this section](https://docs.erpc.cloud/config/projects/networks\#evm)
+
+This type of network are generic EVM-based chains that support JSON-RPC protocol.
+
+#### Roadmap [Permalink for this section](https://docs.erpc.cloud/config/projects/networks\#roadmap)
+
+On some doc pages we like to share our ideas for related future implementations, feel free to open a PR if you're up for a challenge:
+
+- [ ]  Add support for more architectures (Solana, etc)
+
+[Projects](https://docs.erpc.cloud/config/projects "Projects") [Upstreams](https://docs.erpc.cloud/config/projects/upstreams "Upstreams")[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+Operation
+
+Production
+
+# Production guidelines
+
+Here are some recommendations for running eRPC in production.
+
+## Memory usage [Permalink for this section](https://docs.erpc.cloud/operation/production\#memory-usage)
+
+Biggest memory usage contributor in eRPC is size of responses of your requests. For example, for common requests such as `eth_getBlockByNumber` or `eth_getTransactionReceipt` the size (<1MB) will be relatively smaller than `debug_traceTransaction` (which could potentially be up to 50MB). When using eRPC in Kubernetes for example your might see occesional `OOMKilled` errors which is most often because of high RPS of large request/responses.
+
+In majority of use-cases eRPC uses around 256MB of memory (and 1vCPU). To find the ideal memory limit based on your use-case start with a high limit first (e.g. 16GB) and route your production traffic (either shadow or real) to see what is the usage based on your request patterns.
+
+For more control you can configure Go's garbage collection with the following env variables (e.g. when facing OOM Killed errors on Kubernetes):
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+# This flag controls when GC kicks in, for example when memory is increased by 30% try to run GC:
+export GOGC=30
+
+# This flag instructs Go to do a GC when memory goes over the 2GiB limit.
+# IMPORTANT: if this value is too low, it might cause high GC frequency,
+# which in turn might impact the performance without giving much memory benefits.
+export GOMEMLIMIT=2GiB
+```
+
+## Failsafe policies [Permalink for this section](https://docs.erpc.cloud/operation/production\#failsafe-policies)
+
+Make sure to configure [retry policy](https://docs.erpc.cloud/config/failsafe#retry-policy) on both network-level and upstream-level.
+
+- Network-level retry configuration is useful to try other upstreams if one has an issue. Even when you only have 1 upstream, network-level retry is still useful. Recommendation is to configure `maxCount` to be equal to the number of upstreams.
+- Upstream-level retry configuration covers intermittent issues with a specific upstream. It is recommended to set at least 2 and at most 5 as `maxCount`.
+
+[Timeout policy](https://docs.erpc.cloud/config/failsafe#timeout-policy) depends on the expected response time for your use-case, for example when using "trace" methods on EVM chains, providers might take up to 10 seconds to respond. Therefore a low timeout might ultimately always fail. If you are not using heavy methods such as trace or large getLogs, you can use `3s` as a default timeout.
+
+[Hedge policy](https://docs.erpc.cloud/config/failsafe#hedge-policy) is **highly-recommended** if you prefer "fast response as soon as possible". For example setting `500ms` as "delay" will make sure if upstream A did not respond under 500 milliseconds, simultaneously another request to upstream B will be fired, and eRPC will respond back as soon as any of them comes back with result faster. Note: since more requests are sent, it might incur higher costs to achieve the "fast response" goal.
+
+## Caching database [Permalink for this section](https://docs.erpc.cloud/operation/production\#caching-database)
+
+Storing cached RPC responses requires high storage for read-heavy use-cases such as indexing 100m blocks on Arbitrum. eRPC is designed to be robust towards cache database issues, so even if database is completely down it will not impact the RPC availability.
+
+As described in [Database](https://docs.erpc.cloud/config/database) section depending on your requirements choose the right type. You can start with Redis which is easiest to setup, and if amount of cached data is larger than available memory you can switch to PostgreSQL.
+
+Using [eRPC cloud](https://docs.erpc.cloud/operation/cloud) solution will be most cost-efficient in terms of caching storage costs, as we'll be able to break the costs over many projects.
+
+## Horizontal scaling [Permalink for this section](https://docs.erpc.cloud/operation/production\#horizontal-scaling)
+
+When running multiple eRPC instances (e.g., in a Kubernetes deployment with multiple replicas), it's recommended to enable shared state with Redis to ensure proper synchronization between instances.
+
+The [shared state feature](https://docs.erpc.cloud/config/database/shared-state) allows your eRPC instances to share critical blockchain information such as latest and finalized block numbers, which reduces redundant upstream requests and improves integrity checks.
+
+Even if Redis becomes temporarily unavailable, eRPC will continue serving requests by falling back to local state tracking. This might cause a slight increase in upstream requests as each instance will need to poll for latest/finalized blocks independently, but the impact is minimal and service availability is maintained.
+
+The shared state feature requires minimal storage (less than 1MB per upstream) while significantly improving coordination between instances. For high-traffic deployments with multiple replicas, this pattern is strongly recommended.
+
+[Directives](https://docs.erpc.cloud/operation/directives "Directives") [Monitoring](https://docs.erpc.cloud/operation/monitoring "Monitoring")[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+Operation
+
+Directives
+
+# Directives
+
+To instruct eRPC behavior on a per-request basis, you can provide directive "Headers" based on actual use-case:
+
+- [Retry empty responses](https://docs.erpc.cloud/operation/directives#retry-empty-responses)
+- [Retry pending transactions](https://docs.erpc.cloud/operation/directives#retry-pending-transactions)
+- [Skip cache read](https://docs.erpc.cloud/operation/directives#skip-cache-read)
+- [Use specific upstream(s)](https://docs.erpc.cloud/operation/directives#use-specific-upstreams)
+
+## Retry empty responses [Permalink for this section](https://docs.erpc.cloud/operation/directives\#retry-empty-responses)
+
+By default all empty-ish responses will be retried, and only if all upstreams return the same empty response, then client will receive the empty response.
+
+Emptyish means any of these:
+
+- Response is `[]` empty array for example for eth\_getLogs
+- Response is `null` or `{}` empty object for example for eth\_getTransactionReceipt
+- Response is `""` or `0x` empty hashed byte, for example for certain eth\_call responses
+
+To explicitly disable this behavior for certain requests, you can use either:
+
+- Header `X-ERPC-Retry-Empty: false`
+- Or query parameter `?retry-empty=false`
+
+Empty-response retry behavior only applies when dealing with unfinalized data (recent blocks). For blocks in far past, empty responses are treated as final and won't be retried.
+
+For example when you're requesting eth\_getTransactionReceipt of mostly reecent transactions and prefer to immeditely get an empty response and handle it on your client side:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+curl --location 'http://localhost:4000/main/evm/42161' \
+--header 'Content-Type: application/json' \
+--header 'X-ERPC-Retry-Empty: false' \
+--data '{
+    "method": "eth_getTransactionReceipt",
+    "params": [\
+        "0xe014f359cb3988f9944cd8003aac58812730383041993fdf762efcee21172d15",\
+    ],
+    "id": 9199,
+    "jsonrpc": "2.0"
+}'
+
+# OR
+curl --location 'http://localhost:4000/main/evm/42161?retry-empty=false'
+# ...
+```
+
+You can set this directive on network-wide configuration so that it applies to all requests:
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+projects:
+  - id: main
+
+    # To apply to all networks in this project:
+    networkDefaults:
+      directiveDefaults:
+        retryEmpty: false # (default: true)
+
+    # For a specific network:
+    networks:
+      - type: evm
+        evm:
+          chainId: 137
+        directiveDefaults:
+          retryEmpty: false # (default: true)
+```
+
+## Retry pending transactions [Permalink for this section](https://docs.erpc.cloud/operation/directives\#retry-pending-transactions)
+
+By default requests towards pending transactions will be retried until tx is included (blockNumber is not `null`), and fail if even after all retries blockNumber is still null.
+
+This behavior is applied to these methods:
+
+- eth\_getTransactionByHash
+- eth\_getTransactionByBlockHashAndIndex
+- eth\_getTransactionByBlockNumberAndIndex
+- eth\_getTransactionReceipt
+
+To disable this behavior, you can use either:
+
+- Header `X-ERPC-Retry-Pending: false`
+- Or query parameter `?retry-pending=false`
+
+For example if you're intentionally looking to query data of pending transactions (e.g. MEV bot) and prefer to immeditely get the pending tx data:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+curl --location 'http://localhost:4000/main/evm/42161' \
+--header 'Content-Type: application/json' \
+--header 'X-ERPC-Retry-Pending: false' \
+--data '{
+    "method": "eth_getTransactionReceipt",
+    "params": [\
+        "0xe014f359cb3988f9944cd8003aac58812730383041993fdf762efcee21172d15",\
+    ],
+    "id": 9199,
+    "jsonrpc": "2.0"
+}'
+
+# OR
+curl --location 'http://localhost:4000/main/evm/42161?retry-pending=false'
+# ...
+```
+
+Pending transactions (with blockNumber of `null`) are not stored in [cache](https://docs.erpc.cloud/config/database#evmjsonrpccache) because they are not guaranteed to be included in any block.
+
+You can set this directive on network-wide configuration so that it applies to all requests:
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+projects:
+  - id: main
+    # To apply to all networks in this project:
+    networkDefaults:
+      directiveDefaults:
+        retryPending: false # (default: true)
+
+    # For a specific network:
+    networks:
+      - type: evm
+        evm:
+          chainId: 137
+        directiveDefaults:
+          retryPending: false # (default: true)
+
+```
+
+## Skip cache read [Permalink for this section](https://docs.erpc.cloud/operation/directives\#skip-cache-read)
+
+To instruct eRPC to skip 'reading' responses from cache, and make actual calls to upstreams. This directive is "false" by default, which means cache will be used.
+Useful when you need to force-refresh some data or override an already cached response.
+
+- Header `X-ERPC-Skip-Cache-Read: true`
+- Or query parameter `?skip-cache-read=true`
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+curl --location 'http://localhost:4000/main/evm/42161' \
+--header 'Content-Type: application/json' \
+--header 'X-ERPC-Skip-Cache-Read: true' \
+--data '{
+    "method": "eth_getTransactionReceipt",
+    "params": [\
+        "0xe014f359cb3988f9944cd8003aac58812730383041993fdf762efcee21172d15",\
+    ],
+    "id": 9199,
+    "jsonrpc": "2.0"
+}'
+
+# OR
+curl --location 'http://localhost:4000/main/evm/42161?skip-cache-read=true'
+# ...
+```
+
+> The new response will still be subject to caching as per usual.
+
+## Use specific upstream(s) [Permalink for this section](https://docs.erpc.cloud/operation/directives\#use-specific-upstreams)
+
+When sending requests to eRPC you can instruct to use only one specific upstream (or multiple via wildcard match) using:
+
+- Header `X-ERPC-Use-Upstream: <xxx>`
+- Or query parameter `?use-upstream=<xxx>`
+
+This will skip over any upstream that does not match the value you've provided.
+
+You can use `*` as wildcard character to match a group of upstreams. e.g. "priv-\*" will match any upstream IDs starting with "priv-"
+
+For example if you want to make sure that request is sent to a specific upstream:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+curl --location 'http://localhost:4000/main/evm/42161' \
+--header 'Content-Type: application/json' \
+--header 'X-ERPC-Use-Upstream: up123' \
+--data '{
+    "method": "eth_getTransactionReceipt",
+    "params": [\
+        "0xe014f359cb3988f9944cd8003aac58812730383041993fdf762efcee21172d15",\
+    ],
+    "id": 9199,
+    "jsonrpc": "2.0"
+}'
+
+# OR
+curl --location 'http://localhost:4000/main/evm/42161?use-upstream=up123'
+# ...
+```
+
+[Batching](https://docs.erpc.cloud/operation/batch "Batching") [Production](https://docs.erpc.cloud/operation/production "Production")[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+Deployment
+
+Cloud
+
+# Hosted cloud
+
+To avoid DevOps overhead, and optimal caching storage costs you can request a hosted cloud solution in your preferred infrastrcutre region.
+
+Available regions include but not limited to:
+
+- `EU` close to AWS's eu-central-1 or Hetzner's EU region
+- `US` close to AWS's us-east-1 or Hetzner's US region
+
+### Pricing [Permalink for this section](https://docs.erpc.cloud/deployment/cloud\#pricing)
+
+| Feature | Unit cost / month |
+| --- | --- |
+| Compute instance(s) | $50 per 2vCPU+4GB RAM |
+| Cache data storage | $0.3 per 1GB |
+
+As an example LiFi project on Arbitrum chain caches 10m transactions and traces, 200m blocks, which results in ~400GB of storage:
+
+- 1 x instance = $50 / mo
+- 400 GB x cached data = $100 / mo
+
+Ping our engineers to [bring up a cloud instance (opens in a new tab)](https://t.me/erpc_cloud) in few minutes.
+
+[Kubernetes](https://docs.erpc.cloud/deployment/kubernetes "Kubernetes") [URL](https://docs.erpc.cloud/operation/url "URL")[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+Deployment
+
+Docker
+
+# Docker installation
+
+eRPC provides official Docker images that can be used to quickly deploy the service. Follow these steps to get started:
+
+### Create configuration [Permalink for this section](https://docs.erpc.cloud/deployment/docker\#create-configuration)
+
+Create your `erpc.yaml` configuration file. You can start with the minimal example:
+
+yamltypescript
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+logLevel: debug
+projects:
+ - id: main
+   upstreams:
+   - endpoint: alchemy://XXX_MY_ALCHEMY_API_KEY_XXX
+   - endpoint: blastapi://XXX_MY_BLASTAPI_API_KEY_XXX
+```
+
+See the [complete config example](https://docs.erpc.cloud/config/example) for all available options and detailed explanations.
+
+### Run eRPC container [Permalink for this section](https://docs.erpc.cloud/deployment/docker\#run-erpc-container)
+
+Run the Docker container, mounting your configuration file:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+docker run -v $(pwd)/erpc.yaml:/root/erpc.yaml \
+  -p 4000:4000 -p 4001:4001 \
+  ghcr.io/erpc/erpc:latest
+```
+
+### Test the deployment [Permalink for this section](https://docs.erpc.cloud/deployment/docker\#test-the-deployment)
+
+Send a test request to verify the setup:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+curl --location 'http://localhost:4000/main/evm/1' \
+--header 'Content-Type: application/json' \
+--data '{
+    "method": "eth_getBlockByNumber",
+    "params": ["0x1203319", false],
+    "id": 1,
+    "jsonrpc": "2.0"
+}'
+```
+
+### Setup monitoring (optional) [Permalink for this section](https://docs.erpc.cloud/deployment/docker\#setup-monitoring-optional)
+
+For production deployments, we recommend setting up monitoring with Prometheus and Grafana. You can use our docker-compose setup:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+# Clone the repo if you haven't
+git clone https://github.com/erpc/erpc.git
+cd erpc
+
+# Start the monitoring stack
+docker-compose up -d
+```
+
+See the [monitoring guide](https://docs.erpc.cloud/operation/monitoring) for more details on metrics and dashboards.
+
+## Docker compose [Permalink for this section](https://docs.erpc.cloud/deployment/docker\#docker-compose)
+
+For production deployments, you might want to use docker-compose to manage eRPC along with its monitoring stack. Here's a basic example:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+version: '3.8'
+services:
+  erpc:
+    image: ghcr.io/erpc/erpc:latest
+    ports:
+      - "4000:4000"
+      - "4001:4001"
+    volumes:
+      - ./erpc.yaml:/root/erpc.yaml
+    restart: unless-stopped
+```
+
+## Installing custom NPM modules [Permalink for this section](https://docs.erpc.cloud/deployment/docker\#installing-custom-npm-modules)
+
+When using TypeScript configuration with additional NPM dependencies beyond `@erpc-cloud/config`, you'll need to make these dependencies available inside the Docker container. There are two approaches to achieve this:
+
+### Option 1: Building a custom image [Permalink for this section](https://docs.erpc.cloud/deployment/docker\#option-1-building-a-custom-image)
+
+Create a custom Dockerfile that includes your dependencies:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+FROM debian:12
+
+COPY package.json pnpm-lock.yaml /root/
+# COPY package.json package-lock.json /root/  # For npm
+# COPY package.json yarn.lock /root/          # For yarn
+
+RUN pnpm install
+# RUN npm install   # For npm
+# RUN yarn install  # For yarn
+
+FROM ghcr.io/erpc/erpc:latest
+
+COPY --from=0 /root/node_modules /root/node_modules
+```
+
+Build and run your custom image:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+docker build -t erpc-custom -f Dockerfile.custom .
+docker run -v $(pwd)/erpc.ts:/root/erpc.ts \
+  -p 4000:4000 -p 4001:4001 \
+  erpc-custom
+```
+
+### Option 2: Mounting host dependencies [Permalink for this section](https://docs.erpc.cloud/deployment/docker\#option-2-mounting-host-dependencies)
+
+Alternatively, you can mount your local `package.json` and `node_modules` directly:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+docker run \
+  -v $(pwd)/package.json:/root/package.json \
+  -v $(pwd)/node_modules:/root/node_modules \
+  -v $(pwd)/erpc.ts:/root/erpc.ts \
+  -p 4000:4000 -p 4001:4001 \
+  ghcr.io/erpc/erpc:latest
+```
+
+For docker-compose, add the volumes to your service configuration:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+version: '3.8'
+services:
+  erpc:
+    image: ghcr.io/erpc/erpc:latest
+    ports:
+      - "4000:4000"
+      - "4001:4001"
+    volumes:
+      - ./erpc.ts:/root/erpc.ts
+      - ./package.json:/root/package.json
+      - ./node_modules:/root/node_modules
+    restart: unless-stopped
+```
+
+If you're only using the `@erpc-cloud/config` package, you don't need these additional steps. The base image already includes this package.
+
+[Matcher syntax](https://docs.erpc.cloud/config/matcher "Matcher syntax") [Railway](https://docs.erpc.cloud/deployment/railway "Railway")[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+Config
+
+Rate limiters
+
+# Rate limiters
+
+To add self-imposed rate limits when sending requests to upstreams (RPS, Daily, etc) you can define one or more rate limiter budgets.
+
+A "budget" can be assigned to one or more upstreams, and those upstreams will share the usage of the budget.
+
+### Config [Permalink for this section](https://docs.erpc.cloud/config/rate-limiters\#config)
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+# ...
+projects:
+  - id: main
+    # ...
+
+    # A project can have a budget that applies to all requests (any network or upstream)
+    # Useful to prevent a project (e.g. frontend, or indexer) to send too much requests.
+    rateLimitBudget: frontend
+
+    # ...
+
+    # Each upstream can have its own budget
+    upstreams:
+      - id: blastapi-chain-42161
+        type: evm
+        endpoint: https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
+        rateLimitBudget: global-blast
+        # ...
+      - id: blastapi-chain-1
+        type: evm
+        endpoint: https://eth-mainnet.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
+        rateLimitBudget: global-blast
+        # ...
+      - id: quiknode-chain-42161
+        type: evm
+        endpoint: https://xxxxxx-xxxxxx.arbitrum-mainnet.quiknode.pro/xxxxxxxxxxxxxxxxxxxxxxxx/
+        rateLimitBudget: global-quicknode
+        # ...
+
+# Rate limiter allows you to create "shared" budgets for upstreams.
+# For example upstream A and B can use the same budget, which means both of them together must not exceed the defined limits.
+rateLimiters:
+  budgets:
+    - id: frontend
+      rules:
+        - method: '*'
+          maxCount: 1000
+          period: 1s
+        - method: 'eth_trace*'
+          maxCount: 100
+          period: 1s
+    - id: global-blast
+      rules:
+        # You can limit which methods apply to this rule e.g. eth_getLogs or eth_* or * (all methods).
+        - method: '*'
+          maxCount: 1000
+          period: 1s
+    - id: global-quicknode
+      rules:
+        - method: '*'
+          maxCount: 300
+          period: 1s
+```
+
+## Auto-tuner [Permalink for this section](https://docs.erpc.cloud/config/rate-limiters\#auto-tuner)
+
+The auto-tuner feature allows dynamic adjustment of rate limits based on the upstream's performance. It's particularly useful in the following scenarios:
+
+1. When you're unsure about the actual RPS limit imposed by the provider.
+2. When you need to update the limits dynamically based on the provider's current capacity.
+
+The auto-tuner is enabled by default when an upstream has any rate limit budget defined. Here's an example configuration with explanations:
+
+yamltypescript
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+upstreams:
+  - id: example-upstream
+    type: evm
+    endpoint: https://example-endpoint.com
+    rateLimitBudget: example-budget
+    rateLimitAutoTune:
+      enabled: true                # Enable auto-tuning (default: true)
+      adjustmentPeriod: "1m"       # How often to adjust the rate limit (default: "1m")
+      errorRateThreshold: 0.1      # Maximum acceptable error rate (default: 0.1)
+      increaseFactor: 1.05         # Factor to increase the limit by (default: 1.05)
+      decreaseFactor: 0.9          # Factor to decrease the limit by (default: 0.9)
+      minBudget: 1                 # Minimum rate limit (default: 0)
+      maxBudget: 10000             # Maximum rate limit (default: 10000)
+```
+
+It's recommended to set `minBudget` to at least 1. This ensures that some requests are always routed to the upstream, allowing the auto-tuner to re-adjust if the provider can handle more requests.
+
+The auto-tuner works by monitoring the "rate limited" (e.g. 429 status code) error rate of requests to the upstream. If the 'rate-limited' error rate is below the `errorRateThreshold`, it gradually increases the rate limit by the `increaseFactor`. If the 'rate-limited' error rate exceeds the threshold, it quickly decreases the rate limit by the `decreaseFactor`.
+
+By default, the auto-tuner is enabled with the following configuration:
+
+yamltypescript
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+rateLimitAutoTune:
+  enabled: true
+  adjustmentPeriod: "1m"
+  errorRateThreshold: 0.1
+  increaseFactor: 1.05
+  decreaseFactor: 0.9
+  minBudget: 0
+  maxBudget: 10000
+```
+
+You can override these defaults by specifying the desired values in your configuration.
+
+### Metrics [Permalink for this section](https://docs.erpc.cloud/config/rate-limiters\#metrics)
+
+The following metrics are available for rate limiter budgets:
+
+- `erpc_rate_limiter_budget_max_count` with labels `budget` and `method`
+
+This metrics shows how maxCount is adjusted over time if auto-tuning is enabled.
+
+[Auth](https://docs.erpc.cloud/config/auth "Auth") [Matcher syntax](https://docs.erpc.cloud/config/matcher "Matcher syntax")[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+Config
+
+Failsafe
+
+# Failsafe
+
+There are various policies you can use either on [Upstream](https://docs.erpc.cloud/config/projects/upstreams)-level or [Network](https://docs.erpc.cloud/config/projects/networks)-level, to help with intermittent issues and increase general resiliency.
+
+- [`timeout:`](https://docs.erpc.cloud/failsafe/timeout) helps prevent requests from hanging indefinitely.
+- [`retry:`](https://docs.erpc.cloud/failsafe/retry) is used to recover transient issues.
+- [`hedge:`](https://docs.erpc.cloud/failsafe/hedge) might run simultaneous requests when one upstream is too slow to respond.
+- [`circuitBreaker:`](https://docs.erpc.cloud/failsafe/circuit-breaker) temporarily removes a down upstream until it recovers.
+
+Config source code: [common/config.go (opens in a new tab)](https://github.com/erpc/erpc/blob/main/common/config.go#L103-L133)
+
+## `timeout` policy [Permalink for this section](https://docs.erpc.cloud/config/failsafe\#timeout-policy)
+
+This policy simply sets a timeout for the request, either on Network-level (when requests are sent to eRPC), or on Upstream-level (when requests are sent to a specific upstream).
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+# ...
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 42161
+        failsafe:
+          #...
+          timeout:
+            # Network-level timeout applies to the whole lifecycle of the request,
+            # this includes retries on network and/or upstream level.
+            duration: 30s
+
+    upstreams:
+      - id: blastapi-chain-42161
+        #...
+        failsafe:
+          timeout:
+            # Upstream-level timeout applies each request sent towards the upstream,
+            # e.g. if retry policy is set to 2 retries total time will be 30s for:
+            duration: 15s
+```
+
+## `retry` policy [Permalink for this section](https://docs.erpc.cloud/config/failsafe\#retry-policy)
+
+This policies will retry certain retriable failures, either on network-level and/or upstream-level.
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+# ...
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+        failsafe:
+          # ...
+          # On network-level retry policy applies to the incoming request to eRPC,
+          # this is additional to the retry policy set on upstream level.
+          retry:
+            # Total retries besides the initial request:
+            maxAttempts: 3
+            # Min delay between retries:
+            delay: 500ms
+            # Maximum delay between retries:
+            backoffMaxDelay: 10s
+            # Multiplier for each retry for exponential backoff:
+            backoffFactor: 0.3
+            # Random jitter to avoid thundering herd,
+            # e.g. add between 0 to 500ms to each retry delay:
+            jitter: 500ms
+
+    upstreams:
+      - id: blastapi-chain-42161
+        # ...
+        failsafe:
+          # Upstream-level retry policy applies each request sent towards the upstream,
+          # this is additional to the retry policy set on network level.
+          # For example if network has 2 retries and upstream has 2 retries,
+          # total retries will be 4.
+          retry:
+            maxAttempts: 2
+            delay: 1000ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 500ms
+```
+
+These errors will be retried:
+
+- `5xx` and generally any error that indicate server-side (intermittent) issues.
+- `408` which means request timeout.
+- `429` which means rate limit exceeded, therefore retrying after few moments.
+- `EmptyResponse` for certain methods (e.g. eth\_getLogs) if upstream A returns empty array, it could be due to lag in node syncing, so upstream B will be retried.
+
+These errors will not be retried:
+
+- `4xx` and generally any error that indicate client-side issues (invalid request, invalid parameters, etc).
+- `UnsupportedMethods` which means upstream does not support certain methods (e.g. eth\_traceTransaction)
+
+## `hedge` policy [Permalink for this section](https://docs.erpc.cloud/config/failsafe\#hedge-policy)
+
+When a request towards an upstream is slow, the `hedge` policy will start a new simultaneous request towards the next upstream.
+
+This policy is highly recommended to be set at least on network-level. It will
+ensure if upstream A is slow, a new request towards upstream B will be
+started, whichever responds faster will be returned to the client.
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+# ...
+projects:
+  - id: main
+    networks:
+      - architecture: evm
+        evm:
+          chainId: 1
+        failsafe:
+          # ...
+          hedge:
+            # Recommended: Use quantile-based hedging, e.g. p99:
+            quantile: 0.99
+            # This fixed-delay is always added to whatever is the quantile-based delay.
+            delay: 0ms
+            # Minimum delay to wait before trigger next hedge.
+            minDelay: 100ms
+            # Maximum delay to wait before trigger next hedge.
+            maxDelay: 2s
+            # Maximum number of hedges to trigger.
+            maxCount: 1
+
+            # Alternative: Simple fixed-delay hedging
+            # delay: 500ms
+            # maxCount: 1
+```
+
+The hedge policy supports two modes:
+
+1. **Quantile-based hedging (recommended)**: Uses per-method response time statistics across all upstreams to determine optimal hedge timing. Set `quantile: 0.99` to hedge after the 99th percentile response time plus `delay`. Use `minDelay` and `maxDelay` to bound the hedge timing. Using quantile-based means eRPC will observe the response time of a specific method (across all upstreams) for a while and then decides what should be the hedge delay. This approach means highest effective ness for this feature and lowest wasted number of resources.
+
+2. **Fixed-delay hedging**: Simply waits for `delay` duration before hedging. This approach might be less effective and wasteful by trigger too many hedges that will be discarded anyway.
+
+
+You can monitor hedging effectiveness through the `erpc_network_hedged_request_total` and `erpc_network_hedge_discards_total` metrics in the sample [Grafana dashboard](https://docs.erpc.cloud/operation/monitoring):
+
+![Hedged Requests Effectiveness](https://docs.erpc.cloud/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Fhedged-requests-effectiveness.44b2d4b2.png&w=3840&q=75)
+
+To disable hedge policy, set it to null:
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+failsafe:
+  hedge: ~
+```
+
+## `circuitBreaker` policy [Permalink for this section](https://docs.erpc.cloud/config/failsafe\#circuitbreaker-policy)
+
+When upstreams are constantly failing, the `circuitBreaker` policy will temporarily remove them from list of available upstreams.
+
+This policy is recommended to be set on upstream-level. This will make sure
+temporarily broken upstreams are not used, and will give them time to recover.
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+# ...
+projects:
+  - id: main
+    upstreams:
+      - id: blastapi-chain-42161
+        # ...
+        failsafe:
+          # ...
+          circuitBreaker:
+            # These two variables indicate how many failures and capacity to tolerate before opening the circuit.
+            # e.g. if 80% (160) of last 200 requests have failed, circuit breaker will be opened:
+            failureThresholdCount: 160
+            failureThresholdCapacity: 200
+            # How long to wait before trying to re-enable the upstream after circuit breaker was opened.
+            # e.g. after 60s give the upstream another chance:
+            halfOpenAfter: 60s
+            # These two variables indicate how many successes are required in half-open state before closing the circuit,
+            # and putting the upstream back in available upstreams.
+            # e.g. after 8 requests have succeeded out of last 10 requests, circuit breaker will be closed:
+            successThresholdCount: 8
+            successThresholdCapacity: 10
+```
+
+To disable circuit breaker policy, set it to null:
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+# ...
+projects:
+  - id: main
+    upstreams:
+      - id: blastapi-chain-42161
+        failsafe:
+          circuitBreaker: ~
+```
+
+- Circuit breaker "open" means that upstream is temporarily removed from the list of available upstreams.
+- Circuit breaker "half-open" means that upstream is tentatively put back into the list of available upstreams,
+but with reduced capacity (e.g. only 10 requests are allowed).
+- Circuit breaker "closed" means that upstream is fully recovered and put back into the list of available upstreams.
+
+#### Roadmap [Permalink for this section](https://docs.erpc.cloud/config/failsafe\#roadmap)
+
+On some doc pages we like to share our ideas for related future implementations, feel free to open a PR if you're up for a challenge:
+
+- [ ]  Allow defining failsafe policies on a per-method basis (e.g. different behavior for eth\_getLogs vs other methods).
+
+[CORS](https://docs.erpc.cloud/config/projects/cors "CORS")Circuit breaker# 404
+
+## This page could not be found.[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+Operation
+
+Batching
+
+# Batch requests
+
+eRPC automatically batches requests towards upstreams which support it. Additionally you can send batched requests (an array of multiple requests) to eRPC itself.
+
+👋
+
+Most often json-rpc batching for EVM is [anti-pattern (opens in a new tab)](https://www.quicknode.com/guides/quicknode-products/apis/guide-to-efficient-rpc-requests#avoid-batching-multiple-rpc-requests), as it increases resource consumption without significant benefits:
+
+- All requests will be as slow as the slowest request inside the batch.
+- JSON handling will be more expensive causing memory spikes and OOM errors.
+- Handling partial failures will be burdensome for the client (status code is always 200 OK).
+- Many 3rd-party providers (Alchemy, Infura, etc) charge based on number of method calls, not actual requests.
+- When running eRPC in private network locally close to your services, overhead of many single requests is negligible.
+
+### How it works? [Permalink for this section](https://docs.erpc.cloud/operation/batch\#how-it-works)
+
+- When an upstream is configured to support batching, eRPC will accumulate as many requests as possible for that upstream, even if you send many single requests.
+- Batching mechanism respects other aspects of eRPC such as allowed/ignored methods, rate limits, supported/unsupported methods, therefore one huge batch request might be split into smaller ones depending on the most efficient distribution among upstreams.
+- Requests will be handled separately (or in mini-batches) and at the end results will be merged back together.
+- Response status code will always be `200 OK` because there might be a mix of successful and failed requests.
+- At the moment self-imposed rate limiters work as-if these requests are sent individually (Ping our engineers if this becomes an issue).
+
+Even if you send many single requests to eRPC they might be batched together if the upstream supports it. This minimizes the need to actually batch the requests on client-side, unless "network traffic" is a concern.
+
+In this scenario auto-batching mechanism is transparent to you.
+
+## Upstream config [Permalink for this section](https://docs.erpc.cloud/operation/batch\#upstream-config)
+
+You can explicitly enable batching for an upstream as follows:
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+# ...
+projects:
+  - id: main
+    upstreams:
+      - id: blastapi-chain-42161
+        # ...
+        endpoint: https://arbitrum-one.blastapi.io/xxxxxx
+        jsonRpc:
+          # When enabled eRPC will wait for a specified amount of time to batch as many requests as possible.
+          supportsBatch: true
+          # The maximum amount of time to wait to collect requests for a batch.
+          batchMaxWait: 100ms
+          # The maximum amount of requests in a single batch, which is usually enforced by the provider.
+          batchMaxSize: 100
+```
+
+For certain known providers (Alchemy, Infura, etc) batching is enabled by default.
+
+### Example single chain [Permalink for this section](https://docs.erpc.cloud/operation/batch\#example-single-chain)
+
+When all the requests are for the same chain, you can send them to the URL that includes chain id.
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+curl --location 'http://localhost:4000/main/evm/1' \
+--header 'Content-Type: application/json' \
+--data '[\
+    {\
+        "method": "eth_getBlockByNumber",\
+        "params": [\
+            "0x1203318888888888",\
+            false\
+        ],\
+        "id": 8888,\
+        "jsonrpc": "2.0"\
+    },\
+    {\
+        "method": "eth_getBlockByNumber",\
+        "params": [\
+            "0x1203319",\
+            false\
+        ],\
+        "id": 9999,\
+        "jsonrpc": "2.0"\
+    }\
+]'
+```
+
+### Example multi-chain [Permalink for this section](https://docs.erpc.cloud/operation/batch\#example-multi-chain)
+
+You can provide "networkId" within each request to specify which chain it is for by sending the request to project endpoint:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+curl --location 'http://localhost:4000/main' \
+--header 'Content-Type: application/json' \
+--data '[\
+    {\
+        "networkId": "evm:1",\
+        "method": "eth_getBlockByNumber",\
+        "params": [\
+            "0x1203888",\
+            false\
+        ],\
+        "id": 888,\
+        "jsonrpc": "2.0"\
+    },\
+    {\
+        "networkId": "evm:42161",\
+        "method": "eth_getBlockByNumber",\
+        "params": [\
+            "0x1203999",\
+            false\
+        ],\
+        "id": 999,\
+        "jsonrpc": "2.0"\
+    }\
+]'
+```
+
+#### Roadmap [Permalink for this section](https://docs.erpc.cloud/operation/batch\#roadmap)
+
+On some doc pages we like to share our ideas for related future implementations, feel free to open a PR if you're up for a challenge:
+
+- [ ]  Auto-batch multiple `eth_call` s for evm upstreams using multicall3 contracts if available on that chain.
+
+[URL](https://docs.erpc.cloud/operation/url "URL") [Directives](https://docs.erpc.cloud/operation/directives "Directives")# 404
+
+## This page could not be found.[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+Deployment
+
+Kubernetes
+
+# Kubernetes installation
+
+eRPC can be deployed on Kubernetes using the following manifests. These examples provide a basic setup that you can customize based on your needs.
+
+### Configuration [Permalink for this section](https://docs.erpc.cloud/deployment/kubernetes\#configuration)
+
+First, create a ConfigMap and a Secret for your eRPC configuration:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: erpc-config
+data:
+  erpc.yaml: |
+    logLevel: debug
+    projects:
+     - id: main
+       upstreams:
+       - endpoint: alchemy://${ALCHEMY_API_KEY}
+       - endpoint: blastapi://${BLASTAPI_API_KEY}
+       - endpoint: https://mynode-chain-1.svc.cluster.local
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: erpc-secrets
+type: Opaque
+stringData:
+  ALCHEMY_API_KEY: your-alchemy-key-here
+  BLASTAPI_API_KEY: your-blastapi-key-here
+```
+
+### Deployment [Permalink for this section](https://docs.erpc.cloud/deployment/kubernetes\#deployment)
+
+Deploy eRPC with the following configuration:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: erpc
+  labels:
+    app: erpc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: erpc
+  template:
+    metadata:
+      labels:
+        app: erpc
+    spec:
+      containers:
+      - name: erpc
+        image: ghcr.io/erpc/erpc:latest
+        resources:
+          requests:
+            cpu: "0.5"
+            memory: "256Mi"
+          limits:
+            cpu: "1"
+            memory: "512Mi"
+        envFrom:
+        - secretRef:
+            name: erpc-secrets
+        ports:
+        - containerPort: 4000
+          name: http
+        - containerPort: 4001
+          name: metrics
+        volumeMounts:
+        - name: config
+          mountPath: /root/erpc.yaml
+          subPath: erpc.yaml
+        readinessProbe:
+          httpGet:
+            path: /healthcheck
+            port: 4000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthcheck
+            port: 4000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: config
+        configMap:
+          name: erpc-config
+```
+
+### Service [Permalink for this section](https://docs.erpc.cloud/deployment/kubernetes\#service)
+
+Expose eRPC using a Service:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+apiVersion: v1
+kind: Service
+metadata:
+  name: erpc
+  labels:
+    app: erpc
+spec:
+  ports:
+  - port: 4000
+    name: http
+    targetPort: 4000
+  - port: 4001
+    name: metrics
+    targetPort: 4001
+  selector:
+    app: erpc
+```
+
+### Horizontal Pod Autoscaling [Permalink for this section](https://docs.erpc.cloud/deployment/kubernetes\#horizontal-pod-autoscaling)
+
+Configure automatic scaling based on CPU and memory usage:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: erpc
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: erpc
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 80
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+```
+
+### Installation [Permalink for this section](https://docs.erpc.cloud/deployment/kubernetes\#installation)
+
+Apply the manifests using kubectl:
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+# Apply the manifests
+kubectl apply -f erpc-configmap.yaml
+kubectl apply -f erpc-secret.yaml
+kubectl apply -f erpc-deployment.yaml
+kubectl apply -f erpc-service.yaml
+kubectl apply -f erpc-hpa.yaml
+
+# Verify the deployment
+kubectl get pods
+kubectl get services
+kubectl get hpa
+```
+
+The eRPC service will be available within your cluster at `erpc:4000` for HTTP traffic and `erpc:4001` for metrics.
+
+[Railway](https://docs.erpc.cloud/deployment/railway "Railway") [Cloud](https://docs.erpc.cloud/deployment/cloud "Cloud")[If you like eRPC, give it a star on GitHub ⭐️](https://github.com/erpc/erpc)
+
+Operation
+
+Monitoring
+
+# Monitoring and metrics
+
+Network-level and upstream-level metrics are available via [Prometheus (opens in a new tab)](https://prometheus.io/) and [Grafana (opens in a new tab)](https://grafana.com/).
+
+To enable metrics via config:
+
+yamltypescript
+
+erpc.yaml
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+# ...
+metrics:
+  enabled: true
+  listenV4: true
+  hostV4: "0.0.0.0"
+  listenV6: false
+  hostV6: "[::]"
+  port: 4001
+```
+
+Refer to [erpc/docker-compose.yml (opens in a new tab)](https://github.com/erpc/erpc/blob/main/docker-compose.yml#L4-L17) and [erpc/monitoring (opens in a new tab)](https://github.com/erpc/erpc/tree/main/monitoring) for ready-made templates to bring up montoring.
+
+### Available metrics [Permalink for this section](https://docs.erpc.cloud/operation/monitoring\#available-metrics)
+
+To get full list of available metrics check the source code of [erpc/health/metrics.go (opens in a new tab)](https://github.com/erpc/erpc/blob/main/health/metrics.go).
+
+![eRPC Grafana Dashboard](https://docs.erpc.cloud/_next/image?url=%2F_next%2Fstatic%2Fmedia%2Fmonitoring-example-erpc.2cb040a1.png&w=3840&q=75)
+
+Here is a list of some of the most important metrics:
+
+| Metric | Type | Description |
+| --- | --- | --- |
+| erpc\_upstream\_request\_total | Counter | Total number of actual requests to upstreams. |
+| erpc\_upstream\_request\_duration\_seconds | Histogram | Duration of requests to upstreams. |
+| erpc\_upstream\_request\_errors\_total | Counter | Total number of errors for requests to upstreams. |
+| erpc\_upstream\_request\_self\_rate\_limited\_total | Counter | Total number of self-imposed rate limited requests before sending to upstreams. |
+| erpc\_upstream\_request\_remote\_rate\_limited\_total | Counter | Total number of remote rate limited requests by upstreams. |
+| erpc\_upstream\_request\_skipped\_total | Counter | Total number of requests skipped by upstreams. |
+| erpc\_upstream\_request\_missing\_data\_error\_total | Counter | Total number of requests where upstream is missing data or not synced yet. |
+| erpc\_upstream\_request\_empty\_response\_total | Counter | Total number of empty responses from upstreams. |
+| erpc\_upstream\_block\_head\_lag | Gauge | Total number of blocks (head) behind the most up-to-date upstream. |
+| erpc\_upstream\_finalization\_lag | Gauge | Total number of finalized blocks behind the most up-to-date upstream. |
+| erpc\_upstream\_score\_overall | Gauge | Overall score of upstreams. |
+| erpc\_upstream\_latest\_block\_number | Gauge | Latest block number of upstreams. |
+| erpc\_upstream\_finalized\_block\_number | Gauge | Finalized block number of upstreams. |
+| erpc\_upstream\_cordoned | Gauge | Whether upstream is excluded from routing by selection policy. (0=uncordoned or 1=cordoned) |
+| erpc\_upstream\_stale\_latest\_block\_total | Counter | Total number of times an upstream returned a stale latest block number (vs others). |
+| erpc\_upstream\_stale\_finalized\_block\_total | Counter | Total number of times an upstream returned a stale finalized block number (vs others). |
+| erpc\_upstream\_evm\_get\_logs\_stale\_upper\_bound\_total | Counter | Total number of times eth\_getLogs was skipped due to upstream latest block being less than requested toBlock. |
+| erpc\_upstream\_evm\_get\_logs\_stale\_lower\_bound\_total | Counter | Total number of times eth\_getLogs was skipped due to fromBlock being less than upstream's available block range. |
+| erpc\_upstream\_evm\_get\_logs\_range\_exceeded\_total | Counter | Total number of times eth\_getLogs request exceeded the maximum allowed block range and needed splitting (based on upstream config for `upstream.evm.getLogsMaxBlockRange`). |
+| erpc\_upstream\_evm\_get\_logs\_forced\_splits\_total | Counter | Total number of eth\_getLogs request splits by dimension (block\_range, addresses, topics), due to a complain/error from upstream (e.g. "Returned too many results use a smaller block range"). |
+| erpc\_upstream\_evm\_get\_logs\_split\_success\_total | Counter | Total number of successful split eth\_getLogs sub-requests. |
+| erpc\_upstream\_evm\_get\_logs\_split\_failure\_total | Counter | Total number of failed split eth\_getLogs sub-requests. |
+| erpc\_upstream\_latest\_block\_polled\_total | Counter | Total number of times the latest block was pro-actively polled from an upstream. |
+| erpc\_upstream\_finalized\_block\_polled\_total | Counter | Total number of times the finalized block was pro-actively polled from an upstream. |
+| erpc\_network\_request\_received\_total | Counter | Total number of requests received by the network. |
+| erpc\_network\_multiplexed\_request\_total | Counter | Total number of multiplexed requests received by the network. |
+| erpc\_network\_failed\_request\_total | Counter | Total number of failed requests received by the network. |
+| erpc\_network\_request\_self\_rate\_limited\_total | Counter | Total number of self-imposed rate limited requests before sending to upstreams. |
+| erpc\_network\_successful\_request\_total | Counter | Total number of successful requests received by the network. |
+| erpc\_network\_cache\_hits\_total | Counter | Total number of cache hits for requests received by the network. |
+| erpc\_network\_cache\_misses\_total | Counter | Total number of cache misses for requests received by the network. |
+| erpc\_network\_request\_duration\_seconds | Histogram | Duration of requests received by the network. |
+| erpc\_project\_request\_self\_rate\_limited\_total | Counter | Total number of self-imposed rate limited requests towards the project. |
+| erpc\_rate\_limiter\_budget\_max\_count | Gauge | Maximum number of requests allowed per second for a rate limiter budget |
+| erpc\_auth\_request\_self\_rate\_limited\_total | Counter | Total number of self-imposed rate limited requests due to auth config for a project. |
+| erpc\_cache\_set\_success\_total | Counter | Total number of cache set operations. |
+| erpc\_cache\_set\_error\_total | Counter | Total number of cache set errors. |
+| erpc\_cache\_set\_skipped\_total | Counter | Total number of cache set skips. |
+| erpc\_cache\_get\_success\_hit\_total | Counter | Total number of cache get hits. |
+| erpc\_cache\_get\_success\_miss\_total | Counter | Total number of cache get misses. |
+| erpc\_cache\_get\_error\_total | Counter | Total number of cache get errors. |
+| erpc\_cache\_get\_skipped\_total | Counter | Total number of cache get skips (i.e. no matching policy found). |
+| erpc\_cors\_requests\_total | Counter | Total number of CORS requests received. |
+| erpc\_cors\_preflight\_requests\_total | Counter | Total number of CORS preflight requests received. |
+| erpc\_cors\_disallowed\_origin\_total | Counter | Total number of CORS requests from disallowed origins. |
+
+#### PromQL examples [Permalink for this section](https://docs.erpc.cloud/operation/monitoring\#promql-examples)
+
+```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
+# Request rate per second by network over last 5 minutes
+sum(rate(erpc_network_request_received_total{}[5m])) by (network)
+
+# Total daily requests by project and network
+sum(increase(erpc_network_request_received_total{}[24h])) by (project, network)
+
+# Top 5 project and networks by request volume
+topk(5, sum(rate(erpc_network_request_received_total{}[5m])) by (project, network))
+
+# Error rate percentage by network and upstream
+100 * sum(rate(erpc_upstream_request_errors_total{}[5m])) by (network, upstream) /
+sum(rate(erpc_upstream_request_total{}[5m])) by (network, upstream)
+
+# Top error types in the last hour
+topk(10, sum(increase(erpc_upstream_request_errors_total{}[1h])) by (error))
+
+# Missing data errors by network and upstream
+sum(rate(erpc_upstream_request_missing_data_error_total{}[5m])) by (network, upstream)
+
+# 95th percentile request duration by network
+histogram_quantile(0.95, sum(rate(erpc_network_request_duration_seconds_bucket{}[5m])) by (le,network))
+
+# Average request duration for eth_call methods
+sum(rate(erpc_upstream_request_duration_seconds_sum{category="eth_call"}[5m])) by (network, upstream) /
+sum(rate(erpc_upstream_request_duration_seconds_count{category="eth_call"}[5m])) by (network, upstream)
+
+# Identify slow upstreams (avg duration > 500ms)
+sum(rate(erpc_upstream_request_duration_seconds_sum{}[5m])) by (network, upstream) /
+sum(rate(erpc_upstream_request_duration_seconds_count{}[5m])) by (network, upstream) > 0.5
+
+# Cache hit ratio by network
+sum(rate(erpc_network_cache_hits_total{}[5m])) by (network) /
+(
+  sum(rate(erpc_network_cache_hits_total{}[5m])) by (network) +
+  sum(rate(erpc_network_cache_misses_total{}[5m])) by (network)
+)
+
+# Cache miss rate for eth_getBlockByNumber
+rate(erpc_network_cache_misses_total{category="eth_getBlockByNumber"}[5m])
+
+# Self rate-limited requests by project and network
+sum(rate(erpc_network_request_self_rate_limited_total{}[5m])) by (project,network)
+
+# Authentication rate limiting by strategy
+sum(rate(erpc_auth_request_self_rate_limited_total{strategy="jwt"}[5m])) by (project)
+
+# Remote rate limiting from upstreams
+sum(rate(erpc_upstream_request_remote_rate_limited_total{}[5m])) by (upstream)
+
+# Block lag by network and upstream
+max(erpc_upstream_block_head_lag) by (network,upstream)
+
+# Finalization lag alert (lag > 5 blocks)
+max(erpc_upstream_finalization_lag) by (network) > 5
+
+# Block height difference between upstreams
+max(erpc_upstream_latest_block_number) by (network) -
+min(erpc_upstream_latest_block_number) by (network)
+
+# Overall upstream health score
+avg(erpc_upstream_score_overall) by (network, upstream)
+
+# CORS issues by origin
+sum(rate(erpc_cors_disallowed_origin_total{}[5m])) by (project, origin)
+```
+
+[Production](https://docs.erpc.cloud/operation/production "Production") [Admin](https://docs.erpc.cloud/operation/admin "Admin")
