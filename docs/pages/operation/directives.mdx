@@ -103,7 +103,7 @@ curl --location 'http://localhost:4000/main/evm/42161?retry-pending=false'
 ```
 
 <Callout type="info">
-    Pending transactions (with blockNumber of `null`) are not stored in [cache](/config/database#evmjsonrpccache) because they are not guaranteed to be included in any block.
+    Pending transactions (with blockNumber of `null`) are not stored in [cache](/config/database/evm-json-rpc-cache) because they are not guaranteed to be included in any block.
 </Callout>
 
 You can set this directive on network-wide configuration so that it applies to all requests:

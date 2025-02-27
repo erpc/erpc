@@ -8,10 +8,11 @@ import { Callout, Tabs, Tab } from "nextra/components";
 
 There are various policies you can use either on [Upstream](/config/projects/upstreams)-level or [Network](/config/projects/networks)-level, to help with intermittent issues and increase general resiliency.
 
-- [`timeout:`](/failsafe/timeout) helps prevent requests from hanging indefinitely.
-- [`retry:`](/failsafe/retry) is used to recover transient issues.
-- [`hedge:`](/failsafe/hedge) might run simultaneous requests when one upstream is too slow to respond.
-- [`circuitBreaker:`](/failsafe/circuit-breaker) temporarily removes a down upstream until it recovers.
+- [`timeout:`](/config/failsafe#timeout-policy) helps prevent requests from hanging indefinitely.
+- [`retry:`](/config/failsafe#retry-policy) is used to recover transient issues.
+- [`hedge:`](/config/failsafe#hedge-policy) might run simultaneous requests when one upstream is too slow to respond.
+- [`circuitBreaker:`](/config/failsafe#circuitbreaker-policy) temporarily removes a down upstream until it recovers.
+- [Integrity](/config/failsafe/integrity) module helps increase data quality on certain methods such as getLogs or getBlockByNumber.
 
 Config source code: [common/config.go](https://github.com/erpc/erpc/blob/main/common/config.go#L103-L133)
 

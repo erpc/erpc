@@ -78,19 +78,19 @@ projects:
 ```
 
 Additionally these are the ad-hoc scenarios where highest-known block number is updated:
-- When a call to `eth_blockNumber` is made, the result will be checked against existing highest-known block number.
-- When a call to `eth_getBlockByNumber(latest)` is made, the result will be checked against existing highest-known block number.
-- When a call to `eth_getLogs` is made and range-end is a block higher than chosen upstream's latest block, a pro-active poll happens on state poller (respecting the debouncing interval) to update the highest-known block number. If still upstream is behind the requested range-end then it will be skipped.
+- When a call to `eth_blockNumber` is made, the result will be checked against existing highest-known block number, and if it's higher it updates the state poller proactivley.
+- When a call to `eth_getBlockByNumber(latest)` is made, the result will be checked against existing highest-known block number, and if it's higher it updates the state poller proactivley.
+- When a call to `eth_getLogs` is made and range-end is a block higher than chosen upstream's latest block, a proactive poll happens on state poller (respecting the statePollerDebounce interval) to update the highest-known block number. If still upstream is behind the requested range-end then it will be skipped.
 
-In the config above `statePollerInterval` is the interval to poll the latest/finalized block number from the upstream. `statePollerDebounce` is the minimum interval required before next poll happens, this is mainly useful for when pro-active polls are triggered as explained for eth_getLogs. The `statePollerDebounce` value must be equal to block time of the chain.
+In the config above `statePollerInterval` is the interval to poll the latest/finalized block number from the upstream. `statePollerDebounce` is the minimum interval required before next poll happens, this is mainly useful to prevent redundant calls when proactive 'fetch latest block' polls are triggered, as explained for eth_getLogs. The `statePollerDebounce` value ideally must be equal to block time of the chain (or lower to be safe).
 
 ### `eth_blockNumber` behavior
 
 This method is intercepted by the integrity module to ensure the highest known block number is returned.
 1. First request will be sent to the chosen upstream.
-2. The response will be checked against high-known block number (across all upstreams state pollers).
-  - During this check if any upstream's "last update to latest block" is older than statePollerDebounce it will try to fetch the latest block from the upstream (i.e. we make sure we have most recent view of upstream's latest block).
-3. If the response is older than the high-known block number, the response will be replaced with the high-known block number.
+2. The response will be checked against highest-known block number (across all upstreams state pollers).
+   - During this check if any upstream's "last update to latest block" is older than statePollerDebounce it will try to fetch the latest block from the upstream (i.e. we make sure we have most recent view of upstream's latest block).
+3. If the response is older than the highest-known block number, the response will be replaced with the highest-known block number.
 
 Relevant Prometheus metrics:
 - `erpc_upstream_stale_latest_block_total` - Total number of times an upstream returned a stale latest block number (vs others).
@@ -100,9 +100,9 @@ Relevant Prometheus metrics:
 
 This method is intercepted by the integrity module to ensure the highest known block number is used for "latest" and "finalized" block tags.
 1. First request will be sent to the chosen upstream.
-2. The response will be checked against high-known block number (across all upstreams state pollers).
-  - During this check if any upstream's "last update to latest block" is older than statePollerDebounce it will try to fetch the latest block from the upstream (i.e. we make sure we have most recent view of upstream's latest block).
-3. If the response is older than the high-known block number, then the request will be sent to all 'other' upstreams (excluding the current one).
+2. The response will be checked against highest-known block number (across all upstreams state pollers).
+   - During this check if any upstream's "last update to latest block" is older than statePollerDebounce it will try to fetch the latest block from the upstream (i.e. we make sure we have most recent view of upstream's latest block).
+3. If the response is older than the highest-known block number, then the request will be sent to all 'other' upstreams (excluding the current one).
 
 Relevant Prometheus metrics:
 - `erpc_upstream_stale_latest_block_total` - Total number of times an upstream returned a stale latest block number (vs others).
