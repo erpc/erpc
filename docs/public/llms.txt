@@ -1,4 +1,4 @@
-# https://docs.erpc.cloud/ llms-full.txt
+# https://docs.erpc.cloud/llms.txt
 
 Why eRPC?
 

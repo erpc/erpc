@@ -39,9 +39,6 @@ func (q *QuantileTracker) Reset() {
 }
 
 func (q *QuantileTracker) MarshalJSON() ([]byte, error) {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
-
 	return sonic.Marshal(struct {
 		P50 float64 `json:"p50"`
 		P70 float64 `json:"p70"`
