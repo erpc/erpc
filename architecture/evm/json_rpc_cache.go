@@ -83,7 +83,8 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	}
 
 	ntwId := req.NetworkId()
-	policies, err := c.findGetPolicies(ntwId, rpcReq.Method, rpcReq.Params)
+	finState := c.getFinalityState(req, nil)
+	policies, err := c.findGetPolicies(ntwId, rpcReq.Method, rpcReq.Params, finState)
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +204,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 		return err
 	}
 
-	finState := c.getFinalityState(resp)
+	finState := c.getFinalityState(req, resp)
 	policies, err := c.findSetPolicies(ntwId, rpcReq.Method, rpcReq.Params, finState)
 	lg.Trace().Err(err).Interface("policies", policies).Str("finality", finState.String()).Msg("result of finding cache policy during SET")
 	if err != nil {
@@ -380,9 +381,9 @@ func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []int
 			c.logger.Trace().
 				Str("networkId", networkId).
 				Str("method", method).
+				Str("finality", finality.String()).
 				Interface("params", params).
 				Interface("policy", policy).
-				Str("finality", finality.String()).
 				Msg("checking policy match for set")
 		}
 
@@ -397,7 +398,7 @@ func (c *EvmJsonRpcCache) findSetPolicies(networkId, method string, params []int
 	return policies, nil
 }
 
-func (c *EvmJsonRpcCache) findGetPolicies(networkId, method string, params []interface{}) ([]*data.CachePolicy, error) {
+func (c *EvmJsonRpcCache) findGetPolicies(networkId, method string, params []interface{}, finality common.DataFinalityState) ([]*data.CachePolicy, error) {
 	var policies []*data.CachePolicy
 	for _, policy := range c.policies {
 		// Add debug logging for complex param matching
@@ -405,12 +406,13 @@ func (c *EvmJsonRpcCache) findGetPolicies(networkId, method string, params []int
 			c.logger.Trace().
 				Str("networkId", networkId).
 				Str("method", method).
+				Str("finality", finality.String()).
 				Interface("params", params).
 				Interface("policy", policy).
 				Msg("checking policy match for get")
 		}
 
-		match, err := policy.MatchesForGet(networkId, method, params)
+		match, err := policy.MatchesForGet(networkId, method, params, finality)
 		if err != nil {
 			return nil, err
 		}
@@ -470,15 +472,10 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 	return jrr, nil
 }
 
-func (c *EvmJsonRpcCache) getFinalityState(r *common.NormalizedResponse) (finality common.DataFinalityState) {
+func (c *EvmJsonRpcCache) getFinalityState(req *common.NormalizedRequest, resp *common.NormalizedResponse) (finality common.DataFinalityState) {
 	finality = common.DataFinalityStateUnknown
 
-	if r == nil {
-		return
-	}
-
-	req := r.Request()
-	if req == nil {
+	if req == nil && resp == nil {
 		return
 	}
 
@@ -493,17 +490,23 @@ func (c *EvmJsonRpcCache) getFinalityState(r *common.NormalizedResponse) (finali
 		}
 	}
 
-	_, blockNumber, _ := ExtractBlockReferenceFromRequest(req)
+	blockRef, blockNumber, _ := ExtractBlockReferenceFromRequest(req)
 
-	if blockNumber > 0 {
-		upstream := r.Upstream()
-		if upstream != nil {
-			if ups, ok := upstream.(common.EvmUpstream); ok {
-				if isFinalized, err := ups.EvmIsBlockFinalized(blockNumber); err == nil {
-					if isFinalized {
-						finality = common.DataFinalityStateFinalized
-					} else {
-						finality = common.DataFinalityStateUnfinalized
+	if blockRef == "latest" || blockRef == "pending" {
+		finality = common.DataFinalityStateUnfinalized
+	} else if blockRef == "finalized" {
+		finality = common.DataFinalityStateFinalized
+	} else if resp != nil {
+		if blockNumber > 0 {
+			upstream := resp.Upstream()
+			if upstream != nil {
+				if ups, ok := upstream.(common.EvmUpstream); ok {
+					if isFinalized, err := ups.EvmIsBlockFinalized(blockNumber); err == nil {
+						if isFinalized {
+							finality = common.DataFinalityStateFinalized
+						} else {
+							finality = common.DataFinalityStateUnfinalized
+						}
 					}
 				}
 			}

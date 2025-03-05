@@ -1072,7 +1072,7 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 			// Test both Set and Get matching
 			matchesSet, err := policy.MatchesForSet(tc.config.Network, tc.method, tc.params, common.DataFinalityStateFinalized)
 			require.NoError(t, err)
-			matchesGet, err := policy.MatchesForGet(tc.config.Network, tc.method, tc.params)
+			matchesGet, err := policy.MatchesForGet(tc.config.Network, tc.method, tc.params, common.DataFinalityStateFinalized)
 			require.NoError(t, err)
 
 			assert.Equal(t, tc.matches, matchesSet, "MatchesForSet returned unexpected result")
