@@ -362,7 +362,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 			for _, resp := range responses {
 				if r, ok := resp.(*common.NormalizedResponse); ok {
-					r.Release()
+					go r.Release()
 				}
 			}
 
@@ -379,7 +379,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			switch v := res.(type) {
 			case *common.NormalizedResponse:
 				_, err = v.WriteTo(w)
-				v.Release()
+				go v.Release()
 			case *HttpJsonRpcErrorResponse:
 				_, err = writeJsonRpcError(w, v)
 			default:
