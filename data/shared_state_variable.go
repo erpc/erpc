@@ -222,9 +222,9 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	if newValue > c.value {
 		c.setValue(newValue)
 		go func() {
-			err := c.registry.connector.Set(ctx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
+			err := c.registry.connector.Set(c.registry.appCtx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
 			if err == nil {
-				err = c.registry.connector.PublishCounterInt64(ctx, c.key, newValue)
+				err = c.registry.connector.PublishCounterInt64(c.registry.appCtx, c.key, newValue)
 			}
 			if err != nil {
 				c.registry.logger.Warn().Err(err).
