@@ -89,7 +89,7 @@ func (p *CachePolicy) MatchesForSet(networkId, method string, params []interface
 	return p.config.Finality == finality, nil
 }
 
-func (p *CachePolicy) MatchesForGet(networkId, method string, params []interface{}) (bool, error) {
+func (p *CachePolicy) MatchesForGet(networkId, method string, params []interface{}, finality common.DataFinalityState) (bool, error) {
 	match, err := common.WildcardMatch(p.config.Network, networkId)
 	if err != nil {
 		return false, err
@@ -114,9 +114,22 @@ func (p *CachePolicy) MatchesForGet(networkId, method string, params []interface
 		return false, nil
 	}
 
-	// When fetching data we need to iterate over all policies as we don't know finality of the data when originally written
-	// We will iterate from first to last policy (matched on network/method) to see which one has the data
-	// Therefore it is recommended to put the fastest most up-to-date policy first
+	// When finality is already known based on request params (e.g. eth_getBlockNumber(latest))
+	// we can only match policies that have the same finality.
+	if finality == common.DataFinalityStateFinalized {
+		return p.config.Finality == common.DataFinalityStateFinalized ||
+			// If request implies that data is finalized, it could be that originally written response was still unfinalized,
+			// therefore we should still match unfinalized policies as well.
+			p.config.Finality == common.DataFinalityStateUnfinalized, nil
+	} else if finality == common.DataFinalityStateUnfinalized {
+		return p.config.Finality == common.DataFinalityStateUnfinalized, nil
+	} else if finality == common.DataFinalityStateRealtime {
+		return p.config.Finality == common.DataFinalityStateRealtime, nil
+	}
+
+	// When fetching data for unknown finality we need to iterate over all policies as we don't know finality of the response when originally written.
+	// We will iterate from first to last policy (matched on network/method) to see which one has the data.
+	// Therefore it is recommended to put the fastest storage and most up-to-date policy first.
 	return true, nil
 }
 
