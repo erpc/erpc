@@ -113,6 +113,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	method, _ := req.Method()
 	lg := n.logger.With().Str("method", method).Interface("id", req.ID()).Str("ptr", fmt.Sprintf("%p", req)).Logger()
 
+	if lg.GetLevel() == zerolog.TraceLevel {
+		lg.Debug().Object("request", req).Msgf("forwarding request for network")
+	} else {
+		lg.Debug().Msgf("forwarding request for network")
+	}
+
 	mlx, resp, err := n.handleMultiplexing(ctx, &lg, req, startTime)
 	if err != nil || resp != nil {
 		// When the original request is already fulfilled by multiplexer

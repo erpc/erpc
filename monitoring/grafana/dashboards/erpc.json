@@ -128,13 +128,13 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "histogram_quantile(0.95, sum(rate(erpc_upstream_request_duration_seconds_bucket{network!=\"n/a\"}[30s])) by (le, network, upstream)) > 0",
+          "expr": "histogram_quantile(0.99, sum by(le, network, upstream) (rate(erpc_upstream_request_duration_seconds_bucket{network!=\"n/a\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s]))) > 0",
           "legendFormat": "{{upstream}} / {{network}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "P95 resp. time",
+      "title": "p99 resp. time",
       "transparent": true,
       "type": "gauge"
     },
@@ -279,7 +279,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_network_request_received_total[30s])) by (project, network, category)",
+          "expr": "sum(increase(erpc_network_request_received_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, category)",
           "interval": "",
           "legendFormat": "{{project}}, {{network}}, {{category}}",
           "range": true,
@@ -417,7 +417,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(erpc_network_request_received_total[30s])) by (project, network, category)",
+          "expr": "sum(rate(erpc_network_request_received_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, category)",
           "interval": "",
           "legendFormat": "{{project}}, {{network}}, {{category}}",
           "range": true,
@@ -554,7 +554,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(erpc_network_request_self_rate_limited_total[30s])) by (project, network)",
+          "expr": "sum(rate(erpc_network_request_self_rate_limited_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network)",
           "legendFormat": "{{project}}, {{network}}",
           "range": true,
           "refId": "A"
@@ -690,7 +690,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum(rate(erpc_network_request_duration_seconds_bucket[30s])) by (le, project, network, category))",
+          "expr": "histogram_quantile(0.5, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, network, category))",
           "hide": false,
           "legendFormat": "p50: {{project}}, {{network}}, {{category}}",
           "range": true,
@@ -702,7 +702,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(erpc_network_request_duration_seconds_bucket[30s])) by (le, project, network, category))",
+          "expr": "histogram_quantile(0.95, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, network, category))",
           "legendFormat": "p95: {{project}}, {{network}}, {{category}}",
           "range": true,
           "refId": "A"
@@ -713,7 +713,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum(rate(erpc_network_request_duration_seconds_bucket[5m])) by (le, project, network, category))",
+          "expr": "histogram_quantile(0.99, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[5m])) by (le, project, network, category))",
           "hide": false,
           "legendFormat": "p99: {{project}}, {{network}}, {{category}}",
           "range": true,
@@ -852,7 +852,7 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "sum(increase(erpc_network_failed_request_total[30s])) by (project,network,error) > 0",
+          "expr": "sum(increase(erpc_network_failed_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project,network,error) > 0",
           "instant": false,
           "interval": "",
           "legendFormat": "{{project}}, {{network}}, {{error}}",
@@ -949,7 +949,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_network_multiplexed_request_total[30s])) by (project, network, category)",
+          "expr": "sum(increase(erpc_network_multiplexed_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, category)",
           "legendFormat": "{{project}}, {{network}}, {{category}}",
           "range": true,
           "refId": "A"
@@ -1045,7 +1045,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_network_hedged_request_total[30s])) by (project, network, upstream) > 0",
+          "expr": "sum(increase(erpc_network_hedged_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, upstream) > 0",
           "legendFormat": "{{project}}, {{network}}, {{upstream}}",
           "range": true,
           "refId": "A"
@@ -1141,7 +1141,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "1 - ((sum(increase(erpc_network_hedge_discards_total{attempt!=\"1\"}[30s])) by (project, network, upstream)) / (sum(increase(erpc_network_hedged_request_total{}[30s])) by (project, network, upstream))) > 0",
+          "expr": "1 - ((sum(increase(erpc_network_hedge_discards_total{attempt!=\"1\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, upstream)) / (sum(increase(erpc_network_hedged_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, upstream))) > 0",
           "legendFormat": "{{project}}, {{network}}, {{upstream}}",
           "range": true,
           "refId": "A"
@@ -1250,7 +1250,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_upstream_request_total[30s])) by (project, network, upstream, attempt)",
+          "expr": "sum(increase(erpc_upstream_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, upstream, attempt)",
           "interval": "",
           "legendFormat": "{{project}}, {{network}}, {{upstream}}, {{attempt}}",
           "range": true,
@@ -1347,7 +1347,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(erpc_upstream_request_total[30s])) by (project, network, upstream, attempt)",
+          "expr": "sum(rate(erpc_upstream_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, upstream, attempt)",
           "interval": "",
           "legendFormat": "{{project}}, {{network}}, {{upstream}}, {{attempt}}",
           "range": true,
@@ -1540,7 +1540,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_upstream_request_remote_rate_limited_total[30s])) by (project, network, upstream)",
+          "expr": "sum(increase(erpc_upstream_request_remote_rate_limited_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, upstream)",
           "legendFormat": "{{project}}, {{network}}, {{upstream}}",
           "range": true,
           "refId": "A"
@@ -1636,7 +1636,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_upstream_request_self_rate_limited_total[30s])) by (project, network, upstream)",
+          "expr": "sum(increase(erpc_upstream_request_self_rate_limited_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, upstream)",
           "legendFormat": "{{project}}, {{network}}, {{upstream}}",
           "range": true,
           "refId": "A"
@@ -1733,7 +1733,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (budget, method) (erpc_rate_limiter_budget_max_count)\n",
-          "legendFormat": "{{budget}}, {{method}}",
+          "legendFormat": "{{budget}}, config_method={{method}}",
           "range": true,
           "refId": "A"
         }
@@ -1798,36 +1798,7 @@
           },
           "unit": "s"
         },
-        "overrides": [
-          {
-            "__systemRef": "hideSeriesFrom",
-            "matcher": {
-              "id": "byNames",
-              "options": {
-                "mode": "exclude",
-                "names": [
-                  "p99: main, chainstack",
-                  "p99: main, blast",
-                  "p99: main, dwellir",
-                  "p99: main, onfinality",
-                  "p99: main, quiknode"
-                ],
-                "prefix": "All except:",
-                "readOnly": true
-              }
-            },
-            "properties": [
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": true
-                }
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "gridPos": {
         "h": 12,
@@ -1857,7 +1828,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum(rate(erpc_upstream_request_duration_seconds_bucket[30s])) by (le, project, upstream))",
+          "expr": "histogram_quantile(0.50, sum(rate(erpc_upstream_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, upstream))",
           "legendFormat": "p50: {{project}}, {{upstream}}",
           "range": true,
           "refId": "A"
@@ -1868,7 +1839,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(erpc_upstream_request_duration_seconds_bucket[30s])) by (le, project, upstream))",
+          "expr": "histogram_quantile(0.95, sum(rate(erpc_upstream_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, upstream))",
           "legendFormat": "p95: {{project}}, {{upstream}}",
           "range": true,
           "refId": "B"
@@ -1879,7 +1850,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket[1m])) by (le, project, upstream))",
+          "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (le, project, upstream))",
           "legendFormat": "p99: {{project}}, {{upstream}}",
           "range": true,
           "refId": "C"
@@ -1975,7 +1946,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum(rate(erpc_upstream_request_duration_seconds_bucket{network!=\"n/a\"}[30s])) by (le, project, network, upstream, category))",
+          "expr": "histogram_quantile(0.50, sum(rate(erpc_upstream_request_duration_seconds_bucket{network!=\"n/a\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, network, upstream, category))",
           "legendFormat": "p50: {{project}}, {{network}}, {{upstream}}, {{category}}",
           "range": true,
           "refId": "A"
@@ -1986,7 +1957,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(erpc_upstream_request_duration_seconds_bucket{network!=\"n/a\"}[30s])) by (le, project, network, upstream, category))",
+          "expr": "histogram_quantile(0.95, sum(rate(erpc_upstream_request_duration_seconds_bucket{network!=\"n/a\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, network, upstream, category))",
           "legendFormat": "p95: {{project}}, {{network}}, {{upstream}}, {{category}}",
           "range": true,
           "refId": "B"
@@ -1997,7 +1968,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket{network!=\"n/a\"}[1m])) by (le, project, network, upstream, category))",
+          "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket{network!=\"n/a\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (le, project, network, upstream, category))",
           "legendFormat": "p99: {{project}}, {{network}}, {{upstream}}, {{category}}",
           "range": true,
           "refId": "C"
@@ -2092,7 +2063,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_upstream_request_errors_total{severity=\"warning\"}[30s])) by (project, network, upstream, error) > 0",
+          "expr": "sum(increase(erpc_upstream_request_errors_total{severity=\"warning\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, upstream, error) > 0",
           "interval": "",
           "legendFormat": "{{project}}, {{network}}, {{upstream}}, {{error}}",
           "range": true,
@@ -2188,7 +2159,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_upstream_request_errors_total{severity=\"critical\"}[30s])) by (project, network, upstream, error) > 0",
+          "expr": "sum(increase(erpc_upstream_request_errors_total{severity=\"critical\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, upstream, error) > 0",
           "interval": "",
           "legendFormat": "{{project}}, {{network}}, {{upstream}}, {{error}}",
           "range": true,
@@ -2296,7 +2267,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_cache_set_success_total[30s])) by (project, network, category, connector, policy, ttl)",
+          "expr": "sum(increase(erpc_cache_set_success_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, category, connector, policy, ttl)",
           "legendFormat": "{{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
           "range": true,
           "refId": "A"
@@ -2391,7 +2362,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_set_success_duration_seconds_bucket[30s])) by (le, project, network, category, connector, policy, ttl))",
+          "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_set_success_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, network, category, connector, policy, ttl))",
           "legendFormat": "p50 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
           "range": true,
           "refId": "A"
@@ -2402,7 +2373,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_set_success_duration_seconds_bucket[30s])) by (le, project, network, category, connector, policy, ttl))",
+          "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_set_success_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, network, category, connector, policy, ttl))",
           "hide": false,
           "legendFormat": "p95 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
           "range": true,
@@ -2497,7 +2468,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_cache_set_error_total[30s])) by (project, network, category, connector, policy, ttl)",
+          "expr": "sum(increase(erpc_cache_set_error_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, category, connector, policy, ttl)",
           "legendFormat": "{{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
           "range": true,
           "refId": "A"
@@ -2592,7 +2563,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_set_error_duration_seconds_bucket[30s])) by (le, project, network, category, connector, policy, ttl))",
+          "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_set_error_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, network, category, connector, policy, ttl))",
           "legendFormat": "p50 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
           "range": true,
           "refId": "A"
@@ -2603,7 +2574,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_set_error_duration_seconds_bucket[30s])) by (le, project, network, category, connector, policy, ttl))",
+          "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_set_error_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, network, category, connector, policy, ttl))",
           "hide": false,
           "legendFormat": "p95 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
           "range": true,
@@ -2698,7 +2669,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_cache_get_success_hit_total[30s])) by (project, network, category, connector, policy, ttl)",
+          "expr": "sum(increase(erpc_cache_get_success_hit_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, category, connector, policy, ttl)",
           "legendFormat": "{{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
           "range": true,
           "refId": "A"
@@ -2793,7 +2764,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_get_success_hit_duration_seconds_bucket[30s])) by (le, project, network, category, connector, policy, ttl))",
+          "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_get_success_hit_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, network, category, connector, policy, ttl))",
           "legendFormat": "p50 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
           "range": true,
           "refId": "A"
@@ -2804,7 +2775,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_get_success_hit_duration_seconds_bucket[30s])) by (le, project, network, category, connector, policy, ttl))",
+          "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_get_success_hit_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, network, category, connector, policy, ttl))",
           "hide": false,
           "legendFormat": "p95 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
           "range": true,
@@ -2899,7 +2870,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_cache_get_success_miss_total[30s])) by (project, network, category, connector, policy, ttl)",
+          "expr": "sum(increase(erpc_cache_get_success_miss_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, category, connector, policy, ttl)",
           "legendFormat": "{{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
           "range": true,
           "refId": "A"
@@ -2994,7 +2965,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_get_success_miss_duration_seconds_bucket[30s])) by (le, project, network, category, connector, policy, ttl))",
+          "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_get_success_miss_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, network, category, connector, policy, ttl))",
           "legendFormat": "p50 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
           "range": true,
           "refId": "A"
@@ -3005,7 +2976,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_get_success_miss_duration_seconds_bucket[30s])) by (le, project, network, category, connector, policy, ttl))",
+          "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_get_success_miss_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, network, category, connector, policy, ttl))",
           "hide": false,
           "legendFormat": "p95 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
           "range": true,
@@ -3100,8 +3071,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_cache_get_error_total[30s])) by (project, network, category, connector, policy, ttl)",
-          "legendFormat": "{{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
+          "expr": "sum(increase(erpc_cache_get_error_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, category, connector, policy, ttl, error)",
+          "legendFormat": "{{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, {{error}}, TTL={{ttl}}",
           "range": true,
           "refId": "A"
         }
@@ -3195,8 +3166,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_get_error_duration_seconds_bucket[30s])) by (le, project, network, category, connector, policy, ttl))",
-          "legendFormat": "p50 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
+          "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_get_error_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, network, category, connector, policy, ttl, error))",
+          "legendFormat": "p50 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, {{error}}, TTL={{ttl}}",
           "range": true,
           "refId": "A"
         },
@@ -3206,9 +3177,9 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_get_error_duration_seconds_bucket[30s])) by (le, project, network, category, connector, policy, ttl))",
+          "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_get_error_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, network, category, connector, policy, ttl, error))",
           "hide": false,
-          "legendFormat": "p95 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
+          "legendFormat": "p95 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, {{error}}, TTL={{ttl}}",
           "range": true,
           "refId": "B"
         }
@@ -3217,7 +3188,7 @@
       "type": "timeseries"
     }
   ],
-  "refresh": "5s",
+  "refresh": false,
   "schemaVersion": 38,
   "style": "dark",
   "tags": [],
@@ -3225,9 +3196,9 @@
     "list": [
       {
         "current": {
-          "selected": false,
-          "text": "Mimir",
-          "value": "Mimir"
+          "selected": true,
+          "text": "default",
+          "value": "default"
         },
         "hide": 0,
         "includeAll": false,
@@ -3240,6 +3211,99 @@
         "regex": "",
         "skipUrlSync": false,
         "type": "datasource"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(network)",
+        "hide": 0,
+        "includeAll": true,
+        "multi": true,
+        "name": "network",
+        "options": [],
+        "query": {
+          "query": "label_values(network)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(upstream)",
+        "hide": 0,
+        "includeAll": true,
+        "multi": true,
+        "name": "upstream",
+        "options": [],
+        "query": {
+          "query": "label_values(upstream)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(category)",
+        "hide": 0,
+        "includeAll": true,
+        "multi": true,
+        "name": "category",
+        "options": [],
+        "query": {
+          "query": "label_values(category)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 0,
+        "type": "query"
       }
     ]
   },

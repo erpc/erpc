@@ -143,11 +143,6 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		Str("ptr", fmt.Sprintf("%p", nq)).
 		Logger()
 
-	if lg.GetLevel() == zerolog.TraceLevel {
-		lg.Debug().Object("request", nq).Msgf("forwarding request for network")
-	} else {
-		lg.Debug().Msgf("forwarding request for network")
-	}
 	resp, err := p.doForward(ctx, network, nq)
 
 	if err == nil || common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
