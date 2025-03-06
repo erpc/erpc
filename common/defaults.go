@@ -707,7 +707,7 @@ func (p *ProjectConfig) SetDefaults() error {
 				return fmt.Errorf("failed to convert upstream to provider: %w", err)
 			} else if provider != nil {
 				p.Providers = append(p.Providers, provider)
-				p.Upstreams = append(p.Upstreams[:i], p.Upstreams[i+1:]...)
+				p.Upstreams = slices.Delete(p.Upstreams, i, i+1)
 				i--
 			}
 		}
@@ -784,11 +784,21 @@ func convertUpstreamToProvider(upstream *UpstreamConfig) (*ProviderConfig, error
 		return nil, fmt.Errorf("failed to build provider settings: %w", err)
 	}
 
+	// Create a copy of upstream config to apply to provider-created upstreams,
+	// except Id and Endpoint, because they will be set by the provider.
+	upsCfg := &UpstreamConfig{}
+	*upsCfg = *upstream
+	upsCfg.Endpoint = ""
+	upsCfg.Id = ""
+
 	cfg := &ProviderConfig{
 		Id:                 util.RedactEndpoint(upstream.Endpoint),
 		Vendor:             vendorName,
 		Settings:           settings,
 		UpstreamIdTemplate: "<PROVIDER>-<NETWORK>",
+		Overrides: map[string]*UpstreamConfig{
+			"*": upsCfg,
+		},
 	}
 	if err := cfg.SetDefaults(upstream); err != nil {
 		return nil, fmt.Errorf("failed to set defaults for provider: %w", err)
@@ -927,7 +937,7 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 			StatePollerDebounce:      defaults.Evm.StatePollerDebounce,
 			MaxAvailableRecentBlocks: defaults.Evm.MaxAvailableRecentBlocks,
 		}
-		if err := u.Evm.SetDefaults(); err != nil {
+		if err := u.Evm.SetDefaults(defaults.Evm); err != nil {
 			return fmt.Errorf("failed to set defaults for evm upstream: %w", err)
 		}
 	} else if u.Evm != nil && defaults.Evm != nil {
@@ -1008,8 +1018,14 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 		}
 	}
 	if u.Evm != nil {
-		if err := u.Evm.SetDefaults(); err != nil {
-			return fmt.Errorf("failed to set defaults for evm: %w", err)
+		if defaults != nil && defaults.Evm != nil {
+			if err := u.Evm.SetDefaults(defaults.Evm); err != nil {
+				return fmt.Errorf("failed to set defaults for evm: %w", err)
+			}
+		} else {
+			if err := u.Evm.SetDefaults(nil); err != nil {
+				return fmt.Errorf("failed to set defaults for evm: %w", err)
+			}
 		}
 	}
 
@@ -1037,24 +1053,39 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 	return nil
 }
 
-func (e *EvmUpstreamConfig) SetDefaults() error {
+func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 	if e.StatePollerInterval == "" {
-		e.StatePollerInterval = "30s"
+		if defaults != nil && defaults.StatePollerInterval != "" {
+			e.StatePollerInterval = defaults.StatePollerInterval
+		} else {
+			e.StatePollerInterval = "30s"
+		}
 	}
-
 	if e.NodeType == "" {
-		e.NodeType = EvmNodeTypeUnknown
+		if defaults != nil && defaults.NodeType != "" {
+			e.NodeType = defaults.NodeType
+		} else {
+			e.NodeType = EvmNodeTypeUnknown
+		}
 	}
 
 	if e.MaxAvailableRecentBlocks == 0 {
-		switch e.NodeType {
-		case EvmNodeTypeFull:
-			e.MaxAvailableRecentBlocks = 128
+		if defaults != nil && defaults.MaxAvailableRecentBlocks != 0 {
+			e.MaxAvailableRecentBlocks = defaults.MaxAvailableRecentBlocks
+		} else {
+			switch e.NodeType {
+			case EvmNodeTypeFull:
+				e.MaxAvailableRecentBlocks = 128
+			}
 		}
 	}
 
 	if e.GetLogsMaxBlockRange == 0 {
-		e.GetLogsMaxBlockRange = 10_000
+		if defaults != nil && defaults.GetLogsMaxBlockRange != 0 {
+			e.GetLogsMaxBlockRange = defaults.GetLogsMaxBlockRange
+		} else {
+			e.GetLogsMaxBlockRange = 10_000
+		}
 	}
 
 	return nil
