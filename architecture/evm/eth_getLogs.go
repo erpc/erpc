@@ -181,10 +181,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 			var subRequests []ethGetLogsSubRequest
 			sb := fromBlock
 			for sb <= toBlock {
-				eb := sb + cfg.Evm.GetLogsMaxBlockRange - 1
-				if eb > toBlock {
-					eb = toBlock
-				}
+				eb := min(sb + cfg.Evm.GetLogsMaxBlockRange - 1, toBlock)
 				subRequests = append(subRequests, ethGetLogsSubRequest{
 					fromBlock: sb,
 					toBlock:   eb,
@@ -193,6 +190,11 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 				})
 				sb = eb + 1
 			}
+			logger.Debug().
+				Int64("requestRange", requestRange).
+				Int64("maxBlockRange", cfg.Evm.GetLogsMaxBlockRange).
+				Int("subRequests", len(subRequests)).
+				Msg("eth_getLogs block range exceeded, splitting")
 
 			mergedResponse, err := executeGetLogsSubRequests(ctx, n, u, r, subRequests, r.Directives().SkipCacheRead)
 			if err != nil {
@@ -439,10 +441,17 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 	errs := make([]error, 0)
 	mu := sync.Mutex{}
 
+	semaphore := make(chan struct{}, 200)
 	for _, sr := range subRequests {
 		wg.Add(1)
+		// Acquire semaphore token (blocks if at capacity)
+		semaphore <- struct{}{}
 		go func(req ethGetLogsSubRequest) {
-			defer wg.Done()
+			defer wg.Done()			
+			defer func() {
+				// Release semaphore token when done
+				<-semaphore
+			}()
 
 			srq, err := BuildGetLogsRequest(req.fromBlock, req.toBlock, req.address, req.topics)
 			logger.Debug().
