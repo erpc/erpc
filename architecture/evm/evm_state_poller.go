@@ -548,6 +548,15 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 		}
 	}
 
+	// Some upstreams incorrectly wrap the syncing object in quotes, i.e. a JSON string
+	// containing another JSON object. In that case, we handle it below with a second unmarshal.
+	if s, ok := syncing.(string); ok {
+		var nested map[string]interface{}
+		if err := common.SonicCfg.Unmarshal([]byte(s), &nested); err == nil {
+			return true, nil
+		}
+	}
+
 	return false, &common.BaseError{
 		Code:    "ErrEvmStatePoller",
 		Message: "cannot parse syncing state result (must be boolean or object)",
