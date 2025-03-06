@@ -414,7 +414,7 @@ func (p *ProjectConfig) Validate(c *Config) error {
 	if p.Upstreams != nil && len(p.Upstreams) > 0 {
 		existingIds := make(map[string]bool)
 		for _, upstream := range p.Upstreams {
-			if err := upstream.Validate(c); err != nil {
+			if err := upstream.Validate(c, false); err != nil {
 				return err
 			}
 			if existingIds[upstream.Id] {
@@ -565,7 +565,7 @@ func (u *ProviderConfig) Validate(c *Config) error {
 	}
 	if u.Overrides != nil {
 		for _, override := range u.Overrides {
-			if err := override.Validate(c); err != nil {
+			if err := override.Validate(c, true); err != nil {
 				return err
 			}
 		}
@@ -580,8 +580,8 @@ func (u *ProviderConfig) Validate(c *Config) error {
 	return nil
 }
 
-func (u *UpstreamConfig) Validate(c *Config) error {
-	if u.Endpoint == "" {
+func (u *UpstreamConfig) Validate(c *Config, skipEndpointCheck bool) error {
+	if !skipEndpointCheck && u.Endpoint == "" {
 		return fmt.Errorf("upstream.*.endpoint is required")
 	}
 	if u.Evm != nil {
