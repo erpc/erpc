@@ -109,7 +109,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 	if err != nil {
 		return nil, err
 	}
-	metricsTracker := health.NewTracker(prjCfg.Id, wsDuration)
+	metricsTracker := health.NewTracker(&lg, prjCfg.Id, wsDuration)
 	providersRegistry, err := thirdparty.NewProvidersRegistry(
 		&lg,
 		r.vendorsRegistry,

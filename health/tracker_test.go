@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -17,7 +18,7 @@ func TestTracker(t *testing.T) {
 	windowSize := 2000 * time.Millisecond
 
 	t.Run("BasicMetricsCollection", func(t *testing.T) {
-		tracker := NewTracker(projectID, windowSize)
+		tracker := NewTracker(&log.Logger, projectID, windowSize)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -41,7 +42,7 @@ func TestTracker(t *testing.T) {
 	})
 
 	t.Run("MetricsOverTime", func(t *testing.T) {
-		tracker := NewTracker(projectID, windowSize)
+		tracker := NewTracker(&log.Logger, projectID, windowSize)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -67,7 +68,7 @@ func TestTracker(t *testing.T) {
 	})
 
 	t.Run("RateLimitingMetrics", func(t *testing.T) {
-		tracker := NewTracker(projectID, windowSize)
+		tracker := NewTracker(&log.Logger, projectID, windowSize)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -84,7 +85,7 @@ func TestTracker(t *testing.T) {
 	})
 
 	t.Run("LatencyMetrics", func(t *testing.T) {
-		tracker := NewTracker(projectID, windowSize)
+		tracker := NewTracker(&log.Logger, projectID, windowSize)
 		resetMetrics()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -101,7 +102,7 @@ func TestTracker(t *testing.T) {
 	})
 
 	t.Run("MultipleUpstreamsComparison", func(t *testing.T) {
-		tracker := NewTracker(projectID, windowSize)
+		tracker := NewTracker(&log.Logger, projectID, windowSize)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -133,7 +134,7 @@ func TestTracker(t *testing.T) {
 	})
 
 	t.Run("ResetMetrics", func(t *testing.T) {
-		tracker := NewTracker(projectID, windowSize)
+		tracker := NewTracker(&log.Logger, projectID, windowSize)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -159,7 +160,7 @@ func TestTracker(t *testing.T) {
 	})
 
 	t.Run("DifferentMethods", func(t *testing.T) {
-		tracker := NewTracker(projectID, windowSize)
+		tracker := NewTracker(&log.Logger, projectID, windowSize)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -179,7 +180,7 @@ func TestTracker(t *testing.T) {
 
 	t.Run("LongTermMetrics", func(t *testing.T) {
 		longWindowSize := 500 * time.Millisecond
-		tracker := NewTracker(projectID, longWindowSize)
+		tracker := NewTracker(&log.Logger, projectID, longWindowSize)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -198,7 +199,7 @@ func TestTracker(t *testing.T) {
 	})
 
 	t.Run("LongTermMetricsReset", func(t *testing.T) {
-		tracker := NewTracker(projectID, windowSize)
+		tracker := NewTracker(&log.Logger, projectID, windowSize)
 		resetMetrics()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -219,7 +220,7 @@ func TestTracker(t *testing.T) {
 	})
 
 	t.Run("MultipleMethodsRequestsIncreaseNetworkOverall", func(t *testing.T) {
-		tracker := NewTracker(projectID, windowSize)
+		tracker := NewTracker(&log.Logger, projectID, windowSize)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		tracker.Bootstrap(ctx)
@@ -234,7 +235,7 @@ func TestTracker(t *testing.T) {
 	})
 
 	t.Run("MultipleMethodsRequestsIncreaseUpstreamOverall", func(t *testing.T) {
-		tracker := NewTracker(projectID, windowSize)
+		tracker := NewTracker(&log.Logger, projectID, windowSize)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		tracker.Bootstrap(ctx)
@@ -249,7 +250,7 @@ func TestTracker(t *testing.T) {
 	})
 
 	t.Run("LatencyCorrectP90AcrossMethods", func(t *testing.T) {
-		tracker := NewTracker(projectID, windowSize)
+		tracker := NewTracker(&log.Logger, projectID, windowSize)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		tracker.Bootstrap(ctx)
@@ -265,7 +266,7 @@ func TestTracker(t *testing.T) {
 	})
 
 	t.Run("LatencyCorrectP90SingleMethod", func(t *testing.T) {
-		tracker := NewTracker(projectID, windowSize)
+		tracker := NewTracker(&log.Logger, projectID, windowSize)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		tracker.Bootstrap(ctx)

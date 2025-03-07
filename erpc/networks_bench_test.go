@@ -43,7 +43,7 @@ func BenchmarkNetworkForward_SimpleSuccess(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	mt := health.NewTracker("benchProject", 2*time.Second)
+	mt := health.NewTracker(&log.Logger, "benchProject", 2*time.Second)
 	upConfig := &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "upstream_success",
@@ -148,7 +148,7 @@ func BenchmarkNetworkForward_MethodIgnoreCase(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	mt := health.NewTracker("benchProject", 2*time.Second)
+	mt := health.NewTracker(&log.Logger, "benchProject", 2*time.Second)
 	upConfig := &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "upstream_unsupported",
@@ -259,7 +259,7 @@ func BenchmarkNetworkForward_RetryFailures(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	mt := health.NewTracker("benchProject", 2*time.Second)
+	mt := health.NewTracker(&log.Logger, "benchProject", 2*time.Second)
 	upConfig := &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "flaky_upstream",
@@ -375,7 +375,7 @@ func BenchmarkNetworkForward_ConcurrentEthGetLogsIntegrityEnabled(b *testing.B) 
 		b.Fatal(err)
 	}
 
-	mt := health.NewTracker("benchProject", 2*time.Second)
+	mt := health.NewTracker(&log.Logger, "benchProject", 2*time.Second)
 	upConfig := &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
 		Id:       "rpc1",
