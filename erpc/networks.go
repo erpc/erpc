@@ -334,6 +334,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			)
 		})
 
+	req.RLock()
+	defer req.RUnlock()
+
 	if execErr != nil {
 		err := upstream.TranslateFailsafeError(common.ScopeNetwork, "", method, execErr, &startTime)
 		// If error is due to empty response be generous and accept it,

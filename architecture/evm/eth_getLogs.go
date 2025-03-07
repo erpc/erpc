@@ -181,7 +181,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 			var subRequests []ethGetLogsSubRequest
 			sb := fromBlock
 			for sb <= toBlock {
-				eb := min(sb + cfg.Evm.GetLogsMaxBlockRange - 1, toBlock)
+				eb := min(sb+cfg.Evm.GetLogsMaxBlockRange-1, toBlock)
 				subRequests = append(subRequests, ethGetLogsSubRequest{
 					fromBlock: sb,
 					toBlock:   eb,
@@ -328,6 +328,9 @@ func splitEthGetLogsRequest(r *common.NormalizedRequest) ([]ethGetLogsSubRequest
 	if err != nil {
 		return nil, err
 	}
+	jrq.RLock()
+	defer jrq.RUnlock()
+
 	if len(jrq.Params) < 1 {
 		return nil, fmt.Errorf("invalid params length")
 	}
@@ -447,7 +450,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 		// Acquire semaphore token (blocks if at capacity)
 		semaphore <- struct{}{}
 		go func(req ethGetLogsSubRequest) {
-			defer wg.Done()			
+			defer wg.Done()
 			defer func() {
 				// Release semaphore token when done
 				<-semaphore
