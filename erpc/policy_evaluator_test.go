@@ -1728,7 +1728,7 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 	if err != nil {
 		t.Fatal(err)
 	}
-	mt := health.NewTracker("prjA", time.Minute)
+	mt := health.NewTracker(&log.Logger, "prjA", time.Minute)
 
 	upstreamConfigs := []*common.UpstreamConfig{
 		{

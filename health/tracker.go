@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/rs/zerolog/log"
+	"github.com/rs/zerolog"
 )
 
 // ------------------------------------
@@ -117,6 +117,7 @@ func (m *TrackedMetrics) Reset() {
 type Tracker struct {
 	projectId  string
 	windowSize time.Duration
+	logger     *zerolog.Logger
 
 	// Replace the maps + mu with sync.Map for concurrency:
 	metrics  sync.Map // map[tripletKey]*TrackedMetrics
@@ -124,8 +125,9 @@ type Tracker struct {
 }
 
 // NewTracker constructs a new Tracker, using sync.Map for concurrency.
-func NewTracker(projectId string, windowSize time.Duration) *Tracker {
+func NewTracker(logger *zerolog.Logger, projectId string, windowSize time.Duration) *Tracker {
 	return &Tracker{
+		logger:     logger,
 		projectId:  projectId,
 		windowSize: windowSize,
 	}
@@ -203,7 +205,7 @@ func (t *Tracker) getMetrics(k tripletKey) *TrackedMetrics {
 // --------------------
 
 func (t *Tracker) Cordon(ups, network, method, reason string) {
-	log.Debug().Str("upstream", ups).
+	t.logger.Debug().Str("upstream", ups).
 		Str("network", network).
 		Str("method", method).
 		Str("reason", reason).
@@ -335,7 +337,7 @@ func (t *Tracker) GetNetworkMethodMetrics(network, method string) *TrackedMetric
 // --------------------------------------------
 
 func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
-	log.Trace().Str("upstreamId", ups).Str("networkId", network).Int64("value", blockNumber).Msg("updating latest block number in tracker")
+	t.logger.Trace().Str("upstreamId", ups).Str("networkId", network).Int64("value", blockNumber).Msg("updating latest block number in tracker")
 
 	mdKey := duoKey{ups: ups, network: network}
 	ntwMdKey := duoKey{ups: "*", network: network}
@@ -404,7 +406,7 @@ func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
 }
 
 func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64) {
-	log.Trace().Str("upstreamId", ups).Str("networkId", network).Int64("value", blockNumber).Msg("updating finalized block number in tracker")
+	t.logger.Trace().Str("upstreamId", ups).Str("networkId", network).Int64("value", blockNumber).Msg("updating finalized block number in tracker")
 
 	mdKey := duoKey{ups, network}
 	ntwMdKey := duoKey{"*", network}

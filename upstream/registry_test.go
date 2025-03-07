@@ -740,7 +740,7 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 }
 
 func createTestRegistry(ctx context.Context, projectID string, logger *zerolog.Logger, windowSize time.Duration) (*UpstreamsRegistry, *health.Tracker) {
-	metricsTracker := health.NewTracker(projectID, windowSize)
+	metricsTracker := health.NewTracker(logger, projectID, windowSize)
 	metricsTracker.Bootstrap(ctx)
 
 	upstreamConfigs := []*common.UpstreamConfig{

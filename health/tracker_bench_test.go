@@ -11,6 +11,7 @@ import (
 
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/util"
+	"github.com/rs/zerolog/log"
 )
 
 var (
@@ -31,7 +32,7 @@ func getRandomTestData() (string, string, string) {
 }
 
 func BenchmarkRecordUpstreamRequest(b *testing.B) {
-	tracker := health.NewTracker("benchProj", time.Minute)
+	tracker := health.NewTracker(&log.Logger, "benchProj", time.Minute)
 	ups, net, meth := getRandomTestData()
 
 	b.ResetTimer()
@@ -44,7 +45,7 @@ func BenchmarkRecordUpstreamRequest(b *testing.B) {
 }
 
 func BenchmarkRecordUpstreamDuration(b *testing.B) {
-	tracker := health.NewTracker("benchProj", time.Minute)
+	tracker := health.NewTracker(&log.Logger, "benchProj", time.Minute)
 	ups, net, meth := getRandomTestData()
 
 	duration := 100 * time.Millisecond
@@ -58,7 +59,7 @@ func BenchmarkRecordUpstreamDuration(b *testing.B) {
 }
 
 func BenchmarkRecordUpstreamFailure(b *testing.B) {
-	tracker := health.NewTracker("benchProj", time.Minute)
+	tracker := health.NewTracker(&log.Logger, "benchProj", time.Minute)
 	ups, net, meth := getRandomTestData()
 
 	b.ResetTimer()
@@ -70,7 +71,7 @@ func BenchmarkRecordUpstreamFailure(b *testing.B) {
 }
 
 func BenchmarkGetUpstreamMethodMetrics(b *testing.B) {
-	tracker := health.NewTracker("benchProj", time.Minute)
+	tracker := health.NewTracker(&log.Logger, "benchProj", time.Minute)
 	ups, net, meth := getRandomTestData()
 
 	// Pre-warm the tracker with some data
@@ -88,7 +89,7 @@ func BenchmarkGetUpstreamMethodMetrics(b *testing.B) {
 
 func BenchmarkTrackerMixed(b *testing.B) {
 	// Set up the tracker (single instance) with a 1-minute window
-	tracker := health.NewTracker("benchProj", time.Minute)
+	tracker := health.NewTracker(&log.Logger, "benchProj", time.Minute)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -122,7 +123,7 @@ func BenchmarkTrackerMixed(b *testing.B) {
 // BenchmarkRecordAndGetMetrics tests the most common operations pattern:
 // recording metrics and then reading them back
 func BenchmarkRecordAndGetMetrics(b *testing.B) {
-	tracker := health.NewTracker("test", time.Second)
+	tracker := health.NewTracker(&log.Logger, "test", time.Second)
 	ctx := context.Background()
 	tracker.Bootstrap(ctx)
 
@@ -146,7 +147,7 @@ func BenchmarkRecordAndGetMetrics(b *testing.B) {
 
 // BenchmarkReadHeavy simulates scenarios where reads vastly outnumber writes
 func BenchmarkReadHeavy(b *testing.B) {
-	tracker := health.NewTracker("test", time.Second)
+	tracker := health.NewTracker(&log.Logger, "test", time.Second)
 	ctx := context.Background()
 	tracker.Bootstrap(ctx)
 
@@ -177,7 +178,7 @@ func BenchmarkReadHeavy(b *testing.B) {
 
 // BenchmarkWriteHeavy simulates scenarios where writes vastly outnumber reads
 func BenchmarkWriteHeavy(b *testing.B) {
-	tracker := health.NewTracker("test", time.Second)
+	tracker := health.NewTracker(&log.Logger, "test", time.Second)
 	ctx := context.Background()
 	tracker.Bootstrap(ctx)
 
@@ -204,7 +205,7 @@ func BenchmarkWriteHeavy(b *testing.B) {
 func BenchmarkHighConcurrency(b *testing.B) {
 	for _, numG := range []int{10, 50, 100, 200, 500} {
 		b.Run(fmt.Sprintf("goroutines-%d", numG), func(b *testing.B) {
-			tracker := health.NewTracker("test", time.Second)
+			tracker := health.NewTracker(&log.Logger, "test", time.Second)
 			ctx := context.Background()
 			tracker.Bootstrap(ctx)
 
@@ -232,7 +233,7 @@ func BenchmarkHighConcurrency(b *testing.B) {
 
 // BenchmarkBlockNumberUpdates tests the block number tracking performance
 func BenchmarkBlockNumberUpdates(b *testing.B) {
-	tracker := health.NewTracker("test", time.Second)
+	tracker := health.NewTracker(&log.Logger, "test", time.Second)
 	ctx := context.Background()
 	tracker.Bootstrap(ctx)
 
@@ -250,7 +251,7 @@ func BenchmarkBlockNumberUpdates(b *testing.B) {
 
 // BenchmarkHotKeyAccess tests performance when many goroutines access the same metrics
 func BenchmarkHotKeyAccess(b *testing.B) {
-	tracker := health.NewTracker("test", time.Second)
+	tracker := health.NewTracker(&log.Logger, "test", time.Second)
 	ctx := context.Background()
 	tracker.Bootstrap(ctx)
 
@@ -274,7 +275,7 @@ func BenchmarkHotKeyAccess(b *testing.B) {
 
 // BenchmarkFullRequestFlow simulates a complete request flow
 func BenchmarkFullRequestFlow(b *testing.B) {
-	tracker := health.NewTracker("test", time.Second)
+	tracker := health.NewTracker(&log.Logger, "test", time.Second)
 	ctx := context.Background()
 	tracker.Bootstrap(ctx)
 
@@ -316,7 +317,7 @@ func BenchmarkFullRequestFlow(b *testing.B) {
 
 // BenchmarkConcurrentCordonOperations tests cordon/uncordon operations
 func BenchmarkConcurrentCordonOperations(b *testing.B) {
-	tracker := health.NewTracker("test", time.Second)
+	tracker := health.NewTracker(&log.Logger, "test", time.Second)
 	ctx := context.Background()
 	tracker.Bootstrap(ctx)
 

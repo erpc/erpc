@@ -61,7 +61,7 @@ func createCacheTestFixtures(upstreamConfigs []upsTestCfg) ([]*data.MockConnecto
 	upstreams := make([]*upstream.Upstream, 0, len(upstreamConfigs))
 
 	for _, cfg := range upstreamConfigs {
-		mt := health.NewTracker("prjA", 100*time.Second)
+		mt := health.NewTracker(&logger, "prjA", 100*time.Second)
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &logger)
 		if err != nil {
 			panic(err)
