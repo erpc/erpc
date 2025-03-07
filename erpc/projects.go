@@ -147,7 +147,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 
 	if err == nil || common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
 		if err != nil {
-			lg.Error().Err(err).Msgf("finished forwarding request for network with some client-side exception")
+			lg.Info().Err(err).Msgf("finished forwarding request for network with some client-side exception")
 		} else {
 			if lg.GetLevel() == zerolog.TraceLevel {
 				lg.Info().Object("response", resp).Msgf("successfully forwarded request for network")
