@@ -84,6 +84,13 @@ Additionally these are the ad-hoc scenarios where highest-known block number is 
 
 In the config above `statePollerInterval` is the interval to poll the latest/finalized block number from the upstream. `statePollerDebounce` is the minimum interval required before next poll happens, this is mainly useful to prevent redundant calls when proactive 'fetch latest block' polls are triggered, as explained for eth_getLogs. The `statePollerDebounce` value ideally must be equal to block time of the chain (or lower to be safe).
 
+#### How is large ranges handled?
+
+eRPC has two mechanisms to deal with large ranges for eth_getLogs:
+
+* Manual splitting based on [`upstream.evm.getLogsMaxBlockRange` config](/config/projects/upstreams#eth_getlogs-max-range-automatic-splitting) per-upstream when you what is the max block range they support.
+* Automatic splitting when a node returns an error that indicates the range is too large.
+
 ### `eth_blockNumber` behavior
 
 This method is intercepted by the integrity module to ensure the highest known block number is returned.
