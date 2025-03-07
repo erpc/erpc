@@ -66,7 +66,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Id:       "test",
 			Type:     common.UpstreamTypeEvm,
@@ -187,7 +187,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Id:       "test",
 			Type:     common.UpstreamTypeEvm,
@@ -305,7 +305,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 		vndr := thirdparty.NewVendorsRegistry()
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Id:       "test",
 			Type:     common.UpstreamTypeEvm,
@@ -380,7 +380,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 			rlr,
 			upr,
-			health.NewTracker("prjA", 2*time.Second),
+			health.NewTracker(&log.Logger, "prjA", 2*time.Second),
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -436,7 +436,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Id:       "test",
 			Type:     common.UpstreamTypeEvm,
@@ -576,7 +576,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Id:       "rpc1",
 			Type:     common.UpstreamTypeEvm,
@@ -663,7 +663,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 			rlr,
 			upr,
-			health.NewTracker("prjA", 2*time.Second),
+			health.NewTracker(&log.Logger, "prjA", 2*time.Second),
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -732,7 +732,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Id:       "rpc1",
 			Type:     common.UpstreamTypeEvm,
@@ -819,7 +819,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 			rlr,
 			upr,
-			health.NewTracker("prjA", 2*time.Second),
+			health.NewTracker(&log.Logger, "prjA", 2*time.Second),
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -888,7 +888,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
 		// Set up upstream configurations
 		up1 := &common.UpstreamConfig{
@@ -1085,7 +1085,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
 		// Set up upstream configurations
 		up1 := &common.UpstreamConfig{
@@ -1256,7 +1256,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
 		up1 := &common.UpstreamConfig{
 			Id:       "rpc1",
@@ -1406,7 +1406,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
 		up1 := &common.UpstreamConfig{
 			Id:       "rpc1",
@@ -1570,7 +1570,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
 		up1 := &common.UpstreamConfig{
 			Id:       "rpc1",
@@ -1759,7 +1759,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
 		// Set up upstream configurations
 		up1 := &common.UpstreamConfig{
@@ -1955,7 +1955,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
 		// Set up upstream configurations
 		up1 := &common.UpstreamConfig{
@@ -2156,7 +2156,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
 		// Set up upstream configurations
 		up1 := &common.UpstreamConfig{
@@ -2347,7 +2347,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
 		// Set up upstream configurations
 		up1 := &common.UpstreamConfig{
@@ -2528,7 +2528,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
 		// Set up upstream configurations
 		up1 := &common.UpstreamConfig{
@@ -2725,7 +2725,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 
 		// Set up test environment
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Id:       "rpc1",
 			Type:     common.UpstreamTypeEvm,
@@ -2914,7 +2914,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
 		// Set up upstream configurations
 		up1 := &common.UpstreamConfig{
@@ -3104,7 +3104,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
 		// Set up upstream configurations
 		up1 := &common.UpstreamConfig{
@@ -3286,7 +3286,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
@@ -3416,7 +3416,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "test",
@@ -3481,7 +3481,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 			rlr,
 			upr,
-			health.NewTracker("prjA", 2*time.Second),
+			health.NewTracker(&log.Logger, "prjA", 2*time.Second),
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3556,7 +3556,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "test",
@@ -3660,7 +3660,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 			rlr,
 			upr,
-			health.NewTracker("prjA", 2*time.Second),
+			health.NewTracker(&log.Logger, "prjA", 2*time.Second),
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3729,7 +3729,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "test",
@@ -3795,7 +3795,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 			rlr,
 			upr,
-			health.NewTracker("prjA", 2*time.Second),
+			health.NewTracker(&log.Logger, "prjA", 2*time.Second),
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3858,7 +3858,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		FALSE := false
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -3927,7 +3927,7 @@ func TestNetwork_Forward(t *testing.T) {
 			},
 			rlr,
 			upr,
-			health.NewTracker("prjA", 10*time.Second),
+			health.NewTracker(&log.Logger, "prjA", 10*time.Second),
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -3980,7 +3980,7 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		vr := thirdparty.NewVendorsRegistry()
 		pr, err := thirdparty.NewProvidersRegistry(
 			&log.Logger,
@@ -4109,7 +4109,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "test",
@@ -4241,7 +4241,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "test",
@@ -4370,7 +4370,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "test",
@@ -4504,7 +4504,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "test",
@@ -4635,7 +4635,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
@@ -4789,7 +4789,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
@@ -4942,7 +4942,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
@@ -5101,7 +5101,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("test_cb", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "test_cb", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "upstream1",
@@ -5236,7 +5236,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("test_cb", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "test_cb", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "upstream1",
@@ -5371,7 +5371,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("test_cb", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "test_cb", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "upstream1",
@@ -5526,7 +5526,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
@@ -5666,7 +5666,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
@@ -5807,7 +5807,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
@@ -5935,7 +5935,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
@@ -6097,7 +6097,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
@@ -6226,7 +6226,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		FALSE := false
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
@@ -6350,7 +6350,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
@@ -6473,7 +6473,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 		up1 := &common.UpstreamConfig{
 			Type:     common.UpstreamTypeEvm,
 			Id:       "rpc1",
@@ -6568,7 +6568,7 @@ func TestNetwork_Forward(t *testing.T) {
 		networkID := "evm:123"
 
 		logger := log.Logger
-		metricsTracker := health.NewTracker(projectID, 1*time.Hour)
+		metricsTracker := health.NewTracker(&logger, projectID, 1*time.Hour)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -6764,7 +6764,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker("prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
 		// First upstream (Envio) with unsupported network
 		upEnvio := &common.UpstreamConfig{
@@ -8931,7 +8931,7 @@ func setupTestNetworkSimple(t *testing.T, ctx context.Context, upstreamConfig *c
 	t.Helper()
 
 	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
-	metricsTracker := health.NewTracker("test", time.Minute)
+	metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
 
 	if upstreamConfig == nil {
 		upstreamConfig = &common.UpstreamConfig{
@@ -9019,7 +9019,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.C
 	t.Helper()
 
 	rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
-	metricsTracker := health.NewTracker("test", time.Minute)
+	metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
 
 	up1 := &common.UpstreamConfig{
 		Type:     common.UpstreamTypeEvm,
