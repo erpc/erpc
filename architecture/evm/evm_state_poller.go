@@ -146,13 +146,12 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 				if err != nil {
 					if errors.Is(subCtxErr, context.DeadlineExceeded) {
 						e.logger.Error().Err(err).
-							Msgf("failed to poll EVM state: sub-context timed out (%s) for upstream %s", timeout, e.upstream.Config().Id)
+							Msgf("failed to poll evm state due to sub-context timeout after %f seconds", timeout.Seconds())
 					} else if errors.Is(subCtxErr, context.Canceled) {
-						e.logger.Error().Err(err).
-							Msgf("failed to poll EVM state: sub-context canceled for upstream %s (app shutting down?)", e.upstream.Config().Id)
+						e.logger.Info().Err(err).
+							Msgf("shutting down evm state poller due to context cancellation (e.g. app exiting)")
 					} else {
-						e.logger.Error().Err(err).
-							Msgf("failed to poll EVM state for upstream %s", e.upstream.Config().Id)
+						e.logger.Error().Err(err).Msgf("failed to poll evm state")
 					}
 				}
 			}
