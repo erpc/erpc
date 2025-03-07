@@ -67,23 +67,6 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if r.StatusCode == 429 ||
-			strings.Contains(msg, "requests limited to") ||
-			strings.Contains(msg, "has exceeded") ||
-			strings.Contains(msg, "Exceeded the quota") ||
-			strings.Contains(msg, "Too many requests") ||
-			strings.Contains(msg, "Too Many Requests") ||
-			strings.Contains(msg, "under too much load") ||
-			strings.Contains(msg, "reached the quota") {
-			return common.NewErrEndpointCapacityExceeded(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorCapacityExceeded,
-					err.Message,
-					nil,
-					details,
-				),
-			)
 		} else if strings.Contains(msg, "block range") ||
 			strings.Contains(msg, "exceeds the range") ||
 			strings.Contains(msg, "Max range") ||
@@ -106,6 +89,23 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 				common.EvmBlockRangeTooLarge,
+			)
+		} else if r.StatusCode == 429 ||
+			strings.Contains(msg, "requests limited to") ||
+			strings.Contains(msg, "has exceeded") ||
+			strings.Contains(msg, "Exceeded the quota") ||
+			strings.Contains(msg, "Too many requests") ||
+			strings.Contains(msg, "Too Many Requests") ||
+			strings.Contains(msg, "under too much load") ||
+			strings.Contains(msg, "reached the quota") {
+			return common.NewErrEndpointCapacityExceeded(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorCapacityExceeded,
+					err.Message,
+					nil,
+					details,
+				),
 			)
 		} else if strings.Contains(msg, "specify less number of address") {
 			return common.NewErrEndpointRequestTooLarge(

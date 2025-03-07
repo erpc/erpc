@@ -8289,6 +8289,150 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		assert.True(t, len(gock.Pending()) == 0, "Expected no pending mocks")
 	})
 
+	t.Run("SplitOnErrorWhenHedgePolicyExistsWithoutRaceCondition", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 3)
+
+		// Mock eth_getLogs request with a large block range
+		requestBytes := []byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getLogs",
+			"params": [{
+				"fromBlock": "0x18000",
+				"toBlock": "0x18500",
+				"address": "0x0000000000000000000000000000000000000000",
+				"topics": ["0x1234567890123456789012345678901234567890123456789012345678901234"]
+			}]
+		}`)
+
+		// Mock responses for the main request
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist(). // Not exact number because requests might be multiplexed
+			Filter(func(request *http.Request) bool {
+				body := strings.ToLower(util.SafeReadBody(request))
+				return strings.Contains(body, "eth_getlogs") &&
+					strings.Contains(body, "0x18000") &&
+					strings.Contains(body, "0x18500")
+			}).
+			Reply(429).
+			Delay(2 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"error": map[string]interface{}{
+					"code":    -32000,
+					"message": "Request exceeds the range",
+				},
+			})
+
+		// First sub-request
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist(). // Not exact number because sub-requests might be multiplexed for a hedged splitted getLogs request
+			Filter(func(request *http.Request) bool {
+				body := strings.ToLower(util.SafeReadBody(request))
+				return strings.Contains(body, "eth_getlogs") &&
+					strings.Contains(body, "0x18000") &&
+					strings.Contains(body, "0x1827f")
+			}).
+			Reply(200).
+			Delay(50 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      2,
+				"result": []map[string]interface{}{
+					{"logIndex": "0x2", "blockNumber": "0x18101"},
+				},
+			})
+
+		// Second sub-request
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist(). // Not exact number because sub-requests might be multiplexed for a hedged splitted getLogs request
+			Filter(func(request *http.Request) bool {
+				body := strings.ToLower(util.SafeReadBody(request))
+				return strings.Contains(body, "eth_getlogs") &&
+					strings.Contains(body, "0x18280") &&
+					strings.Contains(body, "0x18500")
+			}).
+			Reply(200).
+			Delay(50 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      3,
+				"result": []map[string]interface{}{
+					{"logIndex": "0x3", "blockNumber": "0x18202"},
+				},
+			})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Setup network with a node that has a small GetLogsMaxBlockRange
+		network := setupTestNetworkSimple(t, ctx, nil, &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm: &common.EvmNetworkConfig{
+				ChainId: 123,
+				Integrity: &common.EvmIntegrityConfig{
+					EnforceGetLogsBlockRange: util.BoolPtr(true),
+				},
+			},
+			Failsafe: &common.FailsafeConfig{
+				Hedge: &common.HedgePolicyConfig{
+					Delay:    "1ms",
+					MaxCount: 10,
+				},
+			},
+		})
+
+		upsList := network.upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
+		upsList[0].Config().Evm.GetLogsMaxBlockRange = 0x10000000 // Large range to avoid auto-splitting since we want error-based splitting
+
+		req := common.NewNormalizedRequest(requestBytes)
+		resp, err := network.Forward(ctx, req)
+
+		// Verify the merged response
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+		if resp == nil {
+			t.Fatalf("merged response is nil")
+			return
+		}
+
+		jrr, err := resp.JsonRpcResponse()
+		assert.NoError(t, err)
+		if jrr == nil {
+			t.Fatalf("merged response is nil")
+			return
+		}
+		w := bytes.NewBuffer(nil)
+		jrr.WriteTo(w)
+		result := w.Bytes()
+
+		// Parse the result to verify all logs from sub-requests are present
+		var respObject map[string]interface{}
+		err = sonic.Unmarshal(result, &respObject)
+		if err != nil {
+			t.Fatalf("Cannot parse response err: %s: %s", err, string(result))
+		}
+
+		// Verify we got all logs from all sub-requests
+		logs := respObject["result"].([]interface{})
+		assert.Equal(t, 2, len(logs))
+
+		// Verify logs are from different blocks as expected
+		blockNumbers := make([]string, len(logs))
+		for i, l := range logs {
+			log := l.(map[string]interface{})
+			blockNumbers[i] = log["blockNumber"].(string)
+		}
+		assert.Contains(t, blockNumbers, "0x18101")
+		assert.Contains(t, blockNumbers, "0x18202")
+	})
+
 	t.Run("SplitCorrectlyWhenMaxRangeIsOne", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
