@@ -67,8 +67,12 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if strings.Contains(msg, "block range") ||
+		} else if strings.Contains(msg, "Try with this block range") ||
+			strings.Contains(msg, "block range is too wide") ||
+			strings.Contains(msg, "this block range should work") ||
+			strings.Contains(msg, "range too large") ||
 			strings.Contains(msg, "exceeds the range") ||
+			strings.Contains(msg, "max block range") ||
 			strings.Contains(msg, "Max range") ||
 			strings.Contains(msg, "limited to") ||
 			strings.Contains(msg, "response size should not") ||
@@ -78,7 +82,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "too large, max is") ||
 			strings.Contains(msg, "response too large") ||
 			strings.Contains(msg, "query exceeds limit") ||
-			strings.Contains(msg, "exceeds the range") ||
+			strings.Contains(msg, "limit the query to") ||
+			strings.Contains(msg, "maximum block range") ||
 			strings.Contains(msg, "range limit exceeded") {
 			return common.NewErrEndpointRequestTooLarge(
 				common.NewErrJsonRpcExceptionInternal(
@@ -97,7 +102,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "Too many requests") ||
 			strings.Contains(msg, "Too Many Requests") ||
 			strings.Contains(msg, "under too much load") ||
-			strings.Contains(msg, "reached the quota") {
+			strings.Contains(msg, "reached the quota") ||
+			strings.Contains(msg, "rate limited") {
 			return common.NewErrEndpointCapacityExceeded(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
