@@ -12,13 +12,15 @@ A clear and concise description of what the bug is.
 
 **To Reproduce**
 Steps to reproduce the behavior:
-1. Use this erpc.yaml config:
+1. Use erpc version (e.g `0.0.40`)
+
+2. Use this erpc.yaml config:
 ```yaml
 logLevel: debug
 projects:
 # ...
 ```
-2. Make this request:
+3. Make this request:
 ```bash
 curl --location 'http://localhost:4000/main/evm/42161' \
 --header 'Content-Type: application/json' \
