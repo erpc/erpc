@@ -129,6 +129,8 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-ERPC-Version", common.ErpcVersion)
+		w.Header().Set("X-ERPC-Commit", common.ErpcCommitSha)
 
 		projectId, architecture, chainId, isAdmin, isHealthCheck, err = s.parseUrlPath(r, projectId, architecture, chainId)
 		if err != nil {
@@ -685,8 +687,8 @@ func setResponseHeaders(res interface{}, w http.ResponseWriter) {
 		} else {
 			w.Header().Set("X-ERPC-Cache", "MISS")
 		}
-		if rm.UpstreamId() != "" {
-			w.Header().Set("X-ERPC-Upstream", rm.UpstreamId())
+		if ups := rm.UpstreamId(); ups != "" {
+			w.Header().Set("X-ERPC-Upstream", ups)
 		}
 		w.Header().Set("X-ERPC-Attempts", fmt.Sprintf("%d", rm.Attempts()))
 		w.Header().Set("X-ERPC-Retries", fmt.Sprintf("%d", rm.Retries()))
