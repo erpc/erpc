@@ -553,7 +553,7 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 		// For chains such as Arbitrum L2, the syncing state is returned as an object with a "msgCount" field
 		// And any value for "msgCount" means the node is syncing.
 		// Ref. https://docs.arbitrum.io/build-decentralized-apps/arbitrum-vs-ethereum/rpc-methods#eth_syncing
-		if _, okMsg := s["msgCount"]; okMsg {
+		if _, ok := s["msgCount"]; ok {
 			return true, nil
 		}
 
