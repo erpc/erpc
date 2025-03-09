@@ -754,7 +754,7 @@ func (c *CircuitBreakerPolicyConfig) Validate() error {
 }
 
 func (j *JsonRpcUpstreamConfig) Validate(c *Config) error {
-	if j.SupportsBatch != nil && !*j.SupportsBatch {
+	if j.SupportsBatch != nil && *j.SupportsBatch {
 		if j.BatchMaxWait == "" {
 			return fmt.Errorf("upstream.*.jsonRpc.batchMaxWait is required")
 		}
