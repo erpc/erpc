@@ -756,14 +756,14 @@ func (c *CircuitBreakerPolicyConfig) Validate() error {
 func (j *JsonRpcUpstreamConfig) Validate(c *Config) error {
 	if j.SupportsBatch != nil && *j.SupportsBatch {
 		if j.BatchMaxWait == "" {
-			return fmt.Errorf("upstream.*.jsonRpc.batchMaxWait is required")
+			return fmt.Errorf("upstream.*.jsonRpc.batchMaxWait or upstreamDefaults.jsonRpc.batchMaxWait is required")
 		}
 		_, err := time.ParseDuration(j.BatchMaxWait)
 		if err != nil {
-			return fmt.Errorf("upstream.*.jsonRpc.batchMaxWait is invalid (must be like 500ms, 2s, etc): %w", err)
+			return fmt.Errorf("upstream.*.jsonRpc.batchMaxWait or upstreamDefaults.jsonRpc.batchMaxWait is invalid (must be like 500ms, 2s, etc): %w", err)
 		}
 		if j.BatchMaxSize <= 0 {
-			return fmt.Errorf("upstream.*.jsonRpc.batchMaxSize must be greater than 0")
+			return fmt.Errorf("upstream.*.jsonRpc.batchMaxSize or upstreamDefaults.jsonRpc.batchMaxSize must be greater than 0")
 		}
 	}
 	if j.ProxyPool != "" {
