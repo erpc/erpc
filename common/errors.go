@@ -1524,12 +1524,22 @@ type ErrEndpointClientSideException struct{ BaseError }
 
 const ErrCodeEndpointClientSideException = "ErrEndpointClientSideException"
 
-var NewErrEndpointClientSideException = func(cause error) error {
+func NewErrEndpointClientSideException(cause error, retriable ...bool) error {
+	// Default retriable to false
+	isRetriable := false
+
+	if len(retriable) > 0 {
+		isRetriable = retriable[0]
+	}
+
 	return &ErrEndpointClientSideException{
-		BaseError{
+		BaseError: BaseError{
 			Code:    ErrCodeEndpointClientSideException,
 			Message: "client-side error when sending request to remote endpoint",
 			Cause:   cause,
+			Details: map[string]interface{}{
+				"retriable": isRetriable,
+			},
 		},
 	}
 }
@@ -1946,6 +1956,23 @@ func HasErrorCode(err error, codes ...ErrorCode) bool {
 }
 
 func IsRetryableTowardsUpstream(err error) bool {
+	// Special check for client-side errors that might be “retryable”
+	if e, ok := err.(interface {
+		Code() string
+		Details() map[string]interface{}
+	}); ok {
+		if e.Code() == ErrCodeEndpointClientSideException {
+			// If “retriable: true” is present in the details, treat it as "retryable"
+			if details := e.Details(); details != nil {
+				if r, has := details["retriable"].(bool); has && r {
+					return true
+				}
+			}
+			// Otherwise, it’s not retriable
+			return false
+		}
+	}
+
 	return !HasErrorCode(
 		err,
 
@@ -1961,8 +1988,6 @@ func IsRetryableTowardsUpstream(err error) bool {
 		ErrCodeEndpointBillingIssue,
 
 		// 400 / 404 / 405 / 413 -> No Retry
-		// RPC-RPC client-side error (invalid params) -> No Retry
-		ErrCodeEndpointClientSideException,
 		ErrCodeJsonRpcRequestUnmarshal,
 
 		// Execution exceptions are not retryable
