@@ -553,8 +553,7 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 	// And any value for "msgCount" means the node is syncing.
 	// Ref. https://docs.arbitrum.io/build-decentralized-apps/arbitrum-vs-ethereum/rpc-methods#eth_syncing
 	//
-	// For other EVM chains, returning an object containing "currentBlock", "highestBlock"
-	// means the node is syncing.
+	// For other EVM chains, returning an object containing "currentBlock" means the node is syncing.
 	// Ref. https://ethereum.org/en/developers/docs/apis/json-rpc/#eth_syncing
 	if objectSync, ok := syncing.(map[string]interface{}); ok &&
 		(objectSync["currentBlock"] != nil || objectSync["msgCount"] != nil) {
