@@ -278,6 +278,20 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					nil,
 				)
 			}
+			// Special case for envio's handling of "eth_getBlockReceipts" where they don't support object of
+			// type "BlockNumber" in the "blockHash" field.
+			if strings.Contains(msg, "invalid type: map, expected BlockNumber, 'latest', or 'earliest'") {
+				return common.NewErrEndpointClientSideException(
+					common.NewErrJsonRpcExceptionInternal(
+						int(code),
+						common.JsonRpcErrorInvalidArgument,
+						err.Message,
+						nil,
+						details,
+					),
+					true,
+				)
+			}
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
