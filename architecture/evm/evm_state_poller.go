@@ -549,22 +549,15 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 		return s, nil
 	}
 
-	if s, ok := syncing.(map[string]interface{}); ok {
-		// For chains such as Arbitrum L2, the syncing state is returned as an object with a "msgCount" field
-		// And any value for "msgCount" means the node is syncing.
-		// Ref. https://docs.arbitrum.io/build-decentralized-apps/arbitrum-vs-ethereum/rpc-methods#eth_syncing
-		if _, ok := s["msgCount"]; ok {
-			return true, nil
-		}
-	}
-
-	// Some upstreams incorrectly wrap the syncing object in quotes, i.e. a JSON string
-	// containing another JSON object. In that case, we handle it below with a second unmarshal.
-	if s, ok := syncing.(string); ok {
-		var nested map[string]interface{}
-		if err := common.SonicCfg.Unmarshal([]byte(s), &nested); err == nil {
-			return true, nil
-		}
+	// For Arbitrum, the syncing state is returned as an object with a "msgCount" field
+	// And any value for "msgCount" means the node is syncing.
+	// Ref. https://docs.arbitrum.io/build-decentralized-apps/arbitrum-vs-ethereum/rpc-methods#eth_syncing
+	//
+	// For other EVM chains, returning an object containing "currentBlock" means the node is syncing.
+	// Ref. https://ethereum.org/en/developers/docs/apis/json-rpc/#eth_syncing
+	if objectSync, ok := syncing.(map[string]interface{}); ok &&
+		(objectSync["currentBlock"] != nil || objectSync["msgCount"] != nil) {
+		return true, nil
 	}
 
 	return false, &common.BaseError{
