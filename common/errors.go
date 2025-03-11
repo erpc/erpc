@@ -1956,24 +1956,7 @@ func HasErrorCode(err error, codes ...ErrorCode) bool {
 }
 
 func IsRetryableTowardsUpstream(err error) bool {
-	// Special check for client-side errors that might be “retryable”
-	if e, ok := err.(interface {
-		Code() string
-		Details() map[string]interface{}
-	}); ok {
-		if e.Code() == ErrCodeEndpointClientSideException {
-			// If “retriable: true” is present in the details, treat it as "retryable"
-			if details := e.Details(); details != nil {
-				if r, has := details["retriable"].(bool); has && r {
-					return true
-				}
-			}
-			// Otherwise, it’s not retriable
-			return false
-		}
-	}
-
-	return !HasErrorCode(
+	if !HasErrorCode(
 		err,
 
 		// Circuit breaker is open -> No Retry
@@ -1998,7 +1981,15 @@ func IsRetryableTowardsUpstream(err error) bool {
 		// Request too-large -> No Retry
 		ErrCodeEndpointUnauthorized,
 		ErrCodeEndpointRequestTooLarge,
-	)
+	) {
+		return false
+	} else if se, ok := err.(StandardError); ok {
+		if rt, ok := se.DeepSearch("retryable").(bool); ok && !rt {
+			return false
+		}
+	}
+
+	return true
 }
 
 func IsCapacityIssue(err error) bool {
