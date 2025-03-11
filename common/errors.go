@@ -1524,12 +1524,12 @@ type ErrEndpointClientSideException struct{ BaseError }
 
 const ErrCodeEndpointClientSideException = "ErrEndpointClientSideException"
 
-func NewErrEndpointClientSideException(cause error, retriable ...bool) error {
-	// Default retriable to false
-	isRetriable := false
+func NewErrEndpointClientSideException(cause error, retryable ...bool) error {
+	// Default retryable to false
+	isRetryable := false
 
-	if len(retriable) > 0 {
-		isRetriable = retriable[0]
+	if len(retryable) > 0 {
+		isRetryable = retryable[0]
 	}
 
 	return &ErrEndpointClientSideException{
@@ -1538,7 +1538,7 @@ func NewErrEndpointClientSideException(cause error, retriable ...bool) error {
 			Message: "client-side error when sending request to remote endpoint",
 			Cause:   cause,
 			Details: map[string]interface{}{
-				"retriable": isRetriable,
+				"retryable": isRetryable,
 			},
 		},
 	}
