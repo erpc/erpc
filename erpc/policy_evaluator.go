@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/common/script"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/upstream"
 	"github.com/rs/zerolog"
@@ -20,7 +19,7 @@ type PolicyEvaluator struct {
 	networkId         string
 	logger            *zerolog.Logger
 	config            *common.SelectionPolicyConfig
-	runtime           *script.Runtime
+	runtime           *common.Runtime
 	upstreamsMu       sync.RWMutex
 	metricsTracker    *health.Tracker
 	upstreamsRegistry *upstream.UpstreamsRegistry
@@ -50,7 +49,7 @@ func NewPolicyEvaluator(
 	upstreamsRegistry *upstream.UpstreamsRegistry,
 	metricsTracker *health.Tracker,
 ) (*PolicyEvaluator, error) {
-	runtime, err := script.NewRuntime()
+	runtime, err := common.NewRuntime()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create JavaScript runtime: %w", err)
 	}
@@ -69,7 +68,7 @@ func NewPolicyEvaluator(
 
 func (p *PolicyEvaluator) Start(ctx context.Context) error {
 	go func() {
-		ticker := time.NewTicker(p.config.EvalInterval)
+		ticker := time.NewTicker(p.config.EvalInterval.Duration())
 		defer ticker.Stop()
 
 		for {
@@ -246,7 +245,7 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 			if state.isActive {
 				// Newly deactivated
 				state.isActive = false
-				state.resampleInterval = now.Add(p.config.ResampleInterval)
+				state.resampleInterval = now.Add(p.config.ResampleInterval.Duration())
 				state.sampleCounter = p.config.ResampleCount
 			}
 		}
@@ -341,7 +340,7 @@ func (p *PolicyEvaluator) checkPermitForMethod(upstreamId string, method string)
 			state.sampleCounter--
 			if state.sampleCounter < 1 {
 				state.sampleCounter = p.config.ResampleCount
-				state.resampleInterval = now.Add(p.config.ResampleInterval)
+				state.resampleInterval = now.Add(p.config.ResampleInterval.Duration())
 			}
 			state.mu.Unlock()
 			return true

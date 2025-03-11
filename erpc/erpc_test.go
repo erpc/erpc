@@ -25,7 +25,7 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 			HttpHostV4: util.StringPtr("0.0.0.0"),
 			HttpHostV6: util.StringPtr("[::]"),
 			HttpPort:   util.IntPtr(port),
-			MaxTimeout: util.StringPtr("5s"),
+			MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 		},
 		Projects: []*common.ProjectConfig{
 			{
@@ -39,7 +39,7 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 						Failsafe: &common.FailsafeConfig{
 							Retry: &common.RetryPolicyConfig{
 								MaxAttempts: 3,
-								Delay:       "10ms",
+								Delay:       common.Duration(10 * time.Millisecond),
 							},
 						},
 					},

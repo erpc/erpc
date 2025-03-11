@@ -18,7 +18,6 @@ import (
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/common/script"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/thirdparty"
@@ -50,8 +49,8 @@ func TestNetwork_Forward(t *testing.T) {
 							{
 								Method:   "*",
 								MaxCount: 3,
-								Period:   "60s",
-								WaitTime: "",
+								Period:   common.Duration(60 * time.Second),
+								WaitTime: common.Duration(0),
 							},
 						},
 					},
@@ -171,8 +170,8 @@ func TestNetwork_Forward(t *testing.T) {
 							{
 								Method:   "*",
 								MaxCount: 1000,
-								Period:   "60s",
-								WaitTime: "",
+								Period:   common.Duration(60 * time.Second),
+								WaitTime: common.Duration(0),
 							},
 						},
 					},
@@ -3964,8 +3963,8 @@ func TestNetwork_Forward(t *testing.T) {
 							{
 								Method:   "*",
 								MaxCount: 1000,
-								Period:   "60s",
-								WaitTime: "",
+								Period:   common.Duration(60 * time.Second),
+								WaitTime: common.Duration(0),
 							},
 						},
 					},
@@ -4433,7 +4432,7 @@ func TestNetwork_Forward(t *testing.T) {
 				},
 				Failsafe: &common.FailsafeConfig{
 					Timeout: &common.TimeoutPolicyConfig{
-						Duration: "30ms",
+						Duration: common.Duration(30 * time.Millisecond),
 					},
 				},
 			},
@@ -4495,7 +4494,7 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Timeout: &common.TimeoutPolicyConfig{
-				Duration: "1s",
+				Duration: common.Duration(1 * time.Second),
 			},
 		}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
@@ -4625,7 +4624,7 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Hedge: &common.HedgePolicyConfig{
-				Delay:    "200ms",
+				Delay:    common.Duration(200 * time.Millisecond),
 				MaxCount: 1,
 			},
 		}
@@ -4779,7 +4778,7 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Hedge: &common.HedgePolicyConfig{
-				Delay:    "100ms",
+				Delay:    common.Duration(100 * time.Millisecond),
 				MaxCount: 5,
 			},
 		}
@@ -4932,7 +4931,7 @@ func TestNetwork_Forward(t *testing.T) {
 		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
 		fsCfg := &common.FailsafeConfig{
 			Hedge: &common.HedgePolicyConfig{
-				Delay:    "100ms",
+				Delay:    common.Duration(100 * time.Millisecond),
 				MaxCount: 5,
 			},
 		}
@@ -5091,7 +5090,7 @@ func TestNetwork_Forward(t *testing.T) {
 			CircuitBreaker: &common.CircuitBreakerPolicyConfig{
 				FailureThresholdCount:    2,
 				FailureThresholdCapacity: 4,
-				HalfOpenAfter:            "2s",
+				HalfOpenAfter:            common.Duration(2 * time.Second),
 			},
 		}
 
@@ -5226,7 +5225,7 @@ func TestNetwork_Forward(t *testing.T) {
 			CircuitBreaker: &common.CircuitBreakerPolicyConfig{
 				FailureThresholdCount:    1,
 				FailureThresholdCapacity: 1,
-				HalfOpenAfter:            "20s",
+				HalfOpenAfter:            common.Duration(20 * time.Second),
 			},
 		}
 
@@ -5383,7 +5382,7 @@ func TestNetwork_Forward(t *testing.T) {
 				CircuitBreaker: &common.CircuitBreakerPolicyConfig{
 					FailureThresholdCount:    2,
 					FailureThresholdCapacity: 4,
-					HalfOpenAfter:            "500ms",
+					HalfOpenAfter:            common.Duration(500 * time.Millisecond),
 					SuccessThresholdCount:    2,
 					SuccessThresholdCapacity: 2,
 				},
@@ -6897,7 +6896,7 @@ func TestNetwork_Forward(t *testing.T) {
 				{
 					Network:   "*",
 					Method:    "*",
-					TTL:       5 * time.Minute,
+					TTL:       common.Duration(5 * time.Minute),
 					Connector: "mock",
 				},
 			},
@@ -7132,14 +7131,14 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 
-		evalFn, _ := script.CompileFunction(`
+		evalFn, _ := common.CompileFunction(`
 			(upstreams) => {
 				return upstreams.filter(u => u.metrics.errorRate < 0.7);
 			}
 		`)
 		selectionPolicy := &common.SelectionPolicyConfig{
 			ResampleExcluded: false,
-			EvalInterval:     100 * time.Millisecond,
+			EvalInterval:     common.Duration(100 * time.Millisecond),
 			EvalFunction:     evalFn,
 		}
 		selectionPolicy.SetDefaults()
@@ -7188,8 +7187,8 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
-				StatePollerInterval: "50ms", // Fast polling for test
-				StatePollerDebounce: "1ms",  // Small debounce for test
+				StatePollerInterval: common.Duration(50 * time.Millisecond), // Fast polling for test
+				StatePollerDebounce: common.Duration(1 * time.Millisecond),  // Small debounce for test
 			},
 			JsonRpc: &common.JsonRpcUpstreamConfig{
 				SupportsBatch: &common.FALSE,
@@ -7333,7 +7332,7 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 				Retry: nil,
 				Hedge: nil,
 				Timeout: &common.TimeoutPolicyConfig{
-					Duration: "50ms",
+					Duration: common.Duration(50 * time.Millisecond),
 				},
 			},
 		}, nil)
@@ -8382,7 +8381,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			},
 			Failsafe: &common.FailsafeConfig{
 				Hedge: &common.HedgePolicyConfig{
-					Delay:    "1ms",
+					Delay:    common.Duration(1 * time.Millisecond),
 					MaxCount: 10,
 				},
 			},
@@ -8749,7 +8748,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 				{
 					Network:   "*",
 					Method:    "*",
-					TTL:       5 * time.Minute,
+					TTL:       common.Duration(5 * time.Minute),
 					Connector: "mock",
 					Finality:  common.DataFinalityStateUnfinalized,
 				},

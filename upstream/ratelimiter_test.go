@@ -29,7 +29,7 @@ func TestRateLimitersRegistry_New(t *testing.T) {
 						{
 							Method:   "test-method",
 							MaxCount: 10,
-							Period:   "1s",
+							Period:   common.Duration(1 * time.Second),
 						},
 					},
 				},
@@ -38,47 +38,6 @@ func TestRateLimitersRegistry_New(t *testing.T) {
 		registry, err := NewRateLimitersRegistry(cfg, &logger)
 		require.NoError(t, err)
 		assert.NotNil(t, registry)
-	})
-
-	t.Run("invalid duration", func(t *testing.T) {
-		cfg := &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{
-				{
-					Id: "test-budget",
-					Rules: []*common.RateLimitRuleConfig{
-						{
-							Method:   "test-method",
-							MaxCount: 10,
-							Period:   "invalid",
-						},
-					},
-				},
-			},
-		}
-		_, err := NewRateLimitersRegistry(cfg, &logger)
-		require.Error(t, err)
-		assert.IsType(t, &common.ErrRateLimitInvalidConfig{}, err)
-	})
-
-	t.Run("invalid wait time", func(t *testing.T) {
-		cfg := &common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{
-				{
-					Id: "test-budget",
-					Rules: []*common.RateLimitRuleConfig{
-						{
-							Method:   "test-method",
-							MaxCount: 10,
-							Period:   "1s",
-							WaitTime: "invalid",
-						},
-					},
-				},
-			},
-		}
-		_, err := NewRateLimitersRegistry(cfg, &logger)
-		require.Error(t, err)
-		assert.IsType(t, &common.ErrRateLimitInvalidConfig{}, err)
 	})
 }
 
@@ -92,7 +51,7 @@ func TestRateLimitersRegistry_GetBudget(t *testing.T) {
 					{
 						Method:   "test-method",
 						MaxCount: 10,
-						Period:   "1s",
+						Period:   common.Duration(1 * time.Second),
 					},
 				},
 			},
@@ -132,12 +91,12 @@ func TestRateLimiterBudget_GetRulesByMethod(t *testing.T) {
 					{
 						Method:   "exact-method",
 						MaxCount: 10,
-						Period:   "1s",
+						Period:   common.Duration(1 * time.Second),
 					},
 					{
 						Method:   "wild*",
 						MaxCount: 20,
-						Period:   "1s",
+						Period:   common.Duration(1 * time.Second),
 					},
 				},
 			},
@@ -181,7 +140,7 @@ func TestRateLimiter_ConcurrentPermits(t *testing.T) {
 					{
 						Method:   "test-method",
 						MaxCount: 3000,
-						Period:   "1s",
+						Period:   common.Duration(1 * time.Second),
 					},
 				},
 			},
@@ -230,7 +189,7 @@ func TestRateLimiter_ExceedCapacity(t *testing.T) {
 					{
 						Method:   "test-method",
 						MaxCount: 10,
-						Period:   "1s",
+						Period:   common.Duration(1 * time.Second),
 					},
 				},
 			},

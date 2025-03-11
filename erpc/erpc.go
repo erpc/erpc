@@ -41,14 +41,19 @@ func NewERPC(
 	}
 
 	if sharedState == nil {
-		sharedState, err = data.NewSharedStateRegistry(appCtx, logger, &common.SharedStateConfig{
+		cfg := &common.SharedStateConfig{
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
 					MaxItems: 100_000,
 				},
 			},
-		})
+		}
+		err = cfg.SetDefaults(cfg.ClusterKey)
+		if err != nil {
+			return nil, err
+		}
+		sharedState, err = data.NewSharedStateRegistry(appCtx, logger, cfg)
 		if err != nil {
 			return nil, err
 		}

@@ -59,7 +59,7 @@ func NewPostgreSQLConnector(
 	cfg *common.PostgreSQLConnectorConfig,
 ) (*PostgreSQLConnector, error) {
 	lg := logger.With().Str("connector", id).Logger()
-	lg.Debug().Interface("config", cfg).Msg("creating PostgreSQLConnector")
+	lg.Debug().Interface("config", cfg).Msg("creating postgresql connector")
 
 	connector := &PostgreSQLConnector{
 		id:            id,
@@ -67,9 +67,9 @@ func NewPostgreSQLConnector(
 		table:         cfg.Table,
 		minConns:      cfg.MinConns,
 		maxConns:      cfg.MaxConns,
-		initTimeout:   cfg.InitTimeout,
-		getTimeout:    cfg.GetTimeout,
-		setTimeout:    cfg.SetTimeout,
+		initTimeout:   cfg.InitTimeout.Duration(),
+		getTimeout:    cfg.GetTimeout.Duration(),
+		setTimeout:    cfg.SetTimeout.Duration(),
 		cleanupTicker: time.NewTicker(5 * time.Minute),
 		connMu:        sync.RWMutex{},
 	}

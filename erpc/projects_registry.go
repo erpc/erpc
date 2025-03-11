@@ -101,13 +101,11 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 
 	lg := r.logger.With().Str("projectId", prjCfg.Id).Logger()
 
-	ws := "30m"
-	if prjCfg.HealthCheck != nil && prjCfg.HealthCheck.ScoreMetricsWindowSize != "" {
-		ws = prjCfg.HealthCheck.ScoreMetricsWindowSize
-	}
-	wsDuration, err := time.ParseDuration(ws)
-	if err != nil {
-		return nil, err
+	var wsDuration time.Duration
+	if prjCfg.HealthCheck != nil && prjCfg.HealthCheck.ScoreMetricsWindowSize > 0 {
+		wsDuration = prjCfg.HealthCheck.ScoreMetricsWindowSize.Duration()
+	} else {
+		wsDuration = 30 * time.Minute
 	}
 	metricsTracker := health.NewTracker(&lg, prjCfg.Id, wsDuration)
 	providersRegistry, err := thirdparty.NewProvidersRegistry(

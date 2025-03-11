@@ -34,7 +34,7 @@ export default createConfig({
                     network: '*',
                     method: '*',
                     finality: DataFinalityStateFinalized,
-                    ttl: undefined
+                    ttl: '0s'
                 }
             ]
         }
