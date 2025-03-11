@@ -90,7 +90,7 @@ type StandardError interface {
 	HasCode(...ErrorCode) bool
 	CodeChain() string
 	DeepestMessage() string
-	DeepSearch(key string) string
+	DeepSearch(key string) interface{}
 	GetCause() error
 	ErrorStatusCode() int
 	Base() *BaseError
@@ -152,13 +152,10 @@ func (e *BaseError) DeepestMessage() string {
 
 	return e.Message
 }
-
-func (e *BaseError) DeepSearch(key string) string {
+func (e *BaseError) DeepSearch(key string) interface{} {
 	if e.Details != nil {
 		if v, ok := e.Details[key]; ok {
-			if s, ok := v.(string); ok {
-				return s
-			}
+			return v
 		}
 	}
 	if e.Cause != nil {
@@ -169,14 +166,14 @@ func (e *BaseError) DeepSearch(key string) string {
 			for _, err := range cs.Unwrap() {
 				if be, ok := err.(StandardError); ok {
 					ds := be.DeepSearch(key)
-					if ds != "" {
+					if ds != nil {
 						return ds
 					}
 				}
 			}
 		}
 	}
-	return ""
+	return nil
 }
 
 func (e *BaseError) GetCause() error {
@@ -938,7 +935,10 @@ func (e *ErrUpstreamsExhausted) DeepestMessage() string {
 }
 
 func (e *ErrUpstreamsExhausted) UpstreamId() string {
-	return e.DeepSearch("upstreamId")
+	if val := e.DeepSearch("upstreamId"); val != nil {
+		return val.(string)
+	}
+	return ""
 }
 
 func (e *ErrUpstreamsExhausted) FromCache() bool {
