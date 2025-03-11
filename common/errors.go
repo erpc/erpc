@@ -1956,7 +1956,7 @@ func HasErrorCode(err error, codes ...ErrorCode) bool {
 }
 
 func IsRetryableTowardsUpstream(err error) bool {
-	if !HasErrorCode(
+	if HasErrorCode(
 		err,
 
 		// Circuit breaker is open -> No Retry
