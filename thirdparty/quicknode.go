@@ -60,8 +60,9 @@ func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr i
 				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorCapacityExceeded, msg, nil, details),
 			)
 		} else if strings.Contains(msg, "failed to parse") {
+			// We do not retry on parse errors, as they are not retryable.
 			return common.NewErrEndpointClientSideException(
-				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorParseException, msg, nil, details),
+				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorParseException, msg, nil, details), false, // not retryable
 			)
 		} else if code == -32010 {
 			return common.NewErrEndpointClientSideException(

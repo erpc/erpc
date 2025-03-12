@@ -333,20 +333,12 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		// 11) "Invalid Argument / Params" errors
 		//----------------------------------------------------------------
 
-		if code == -32602 ||
-			strings.Contains(msg, "param is required") ||
-			strings.Contains(msg, "Invalid Request") ||
-			strings.Contains(msg, "validation errors") ||
-			strings.Contains(msg, "invalid argument") ||
-			strings.Contains(msg, "invalid params") ||
-			strings.Contains(msg, "tx of type") ||
-			strings.Contains(msg, "invalid type") {
-
-			// by default, we retry this type of client-side exception, as the root cause
-			// might be an invalid argument, that another upstream might support.
-			//
-			// Examples:
-			// - Envio not supporting { blockNumber: XXX, blockHash: YYY } for eth_getBlockReceipts
+		// Even though these errors have invalid argument or params, they are more about a lack of standard
+		// for certain args/params for certain methods, among different providers or clients. We will retry them.
+		//
+		// Examples:
+		if strings.Contains(msg, "tx of type") || // Should be retried toward upstreams that support this tx type
+			strings.Contains(msg, "invalid type: map, expected BlockNumber, 'latest', or 'earliest'") { // Envio not supporting { blockNumber: XXX, blockHash: YYY } for eth_getBlockReceipts
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -356,6 +348,26 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 				true, // retryable
+			)
+		} else if code == -32602 ||
+			strings.Contains(msg, "param is required") ||
+			strings.Contains(msg, "Invalid Request") ||
+			strings.Contains(msg, "validation errors") ||
+			strings.Contains(msg, "invalid argument") ||
+			strings.Contains(msg, "invalid params") ||
+			strings.Contains(msg, "tx of type") {
+
+			// For invalid args/params errors, there is a high chance that the error is due to a mistake that the user
+			// has done, and retrying another upstream would not help.
+			return common.NewErrEndpointClientSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorInvalidArgument,
+					err.Message,
+					nil,
+					details,
+				),
+				false, // not retryable
 			)
 		}
 
@@ -381,8 +393,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					}
 				}
 			}
-			// We are going to retry this type of client-side exception, as the root cause
-			// might be an invalid request, that another upstream might support.
+			// For invalid request errors, there is a high chance that the error is due to a mistake that the user
+			// has done, and retrying another upstream would not help.
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -391,7 +403,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					nil,
 					details,
 				),
-				true, // retryable
+				false, // not retryable
 			)
 		}
 
