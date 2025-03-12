@@ -1525,8 +1525,8 @@ type ErrEndpointClientSideException struct{ BaseError }
 const ErrCodeEndpointClientSideException = "ErrEndpointClientSideException"
 
 func NewErrEndpointClientSideException(cause error, retryable ...bool) error {
-	// Default retryable to false
-	isRetryable := false
+	// Default retryable to true
+	isRetryable := true
 
 	if len(retryable) > 0 {
 		isRetryable = retryable[0]
