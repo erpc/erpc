@@ -60,18 +60,31 @@ func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr i
 				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorCapacityExceeded, msg, nil, details),
 			)
 		} else if strings.Contains(msg, "failed to parse") {
-			// We do not retry on parse errors, as they are not retryable.
+			// We do not retry on parse errors, as retrying another upstream would not help.
 			return common.NewErrEndpointClientSideException(
-				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorParseException, msg, nil, details), false, // not retryable
+				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorParseException, msg, nil, details),
+				false, // not retryable
 			)
-		} else if code == -32010 {
+		} else if code == -32010 { // Transaction cost exceeds current gas limit
+			// We do not retry low gas limit errors, as retrying another upstream would not help.
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorClientSideException, msg, nil, details),
+				false, // not retryable
 			)
 		} else if code == -32602 {
-			return common.NewErrEndpointClientSideException(
-				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorInvalidArgument, msg, nil, details),
-			)
+			if strings.Contains(msg, "cannot unmarshal hex string") {
+				// We do not retry on invalid argument errors, as retrying another upstream would not help.
+				return common.NewErrEndpointClientSideException(
+					common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorInvalidArgument, msg, nil, details),
+					false, // not retryable
+				)
+			} else if strings.Contains(msg, "eth_getLogs and eth_newFilter are limited") {
+				// retrying on limited range errors for eth_getLogs and eth_newFilter toward other upstreams would be helpful.
+				return common.NewErrEndpointClientSideException(
+					common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorInvalidArgument, msg, nil, details),
+					true, // retryable
+				)
+			}
 		} else if strings.Contains(msg, "UNAUTHORIZED") {
 			return common.NewErrEndpointUnauthorized(
 				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorUnauthorized, msg, nil, details),
