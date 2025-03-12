@@ -66,14 +66,15 @@ func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr i
 				false, // not retryable
 			)
 		} else if code == -32010 { // Transaction cost exceeds current gas limit
-			// We do not retry low gas limit errors, as retrying another upstream would not help.
+			// retrying on gas limit exceeded errors toward other upstreams would be helpful, as max gas limit
+			// can be defined per client (reth, geth, parity, etc.) (still needs to be lower than overall block gas limit)
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorClientSideException, msg, nil, details),
-				false, // not retryable
+				true, // retryable
 			)
 		} else if code == -32602 {
 			if strings.Contains(msg, "cannot unmarshal hex string") {
-				// We do not retry on invalid argument errors, as retrying another upstream would not help.
+				// we do not retry on invalid argument errors, as retrying another upstream would not help.
 				return common.NewErrEndpointClientSideException(
 					common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorInvalidArgument, msg, nil, details),
 					false, // not retryable
