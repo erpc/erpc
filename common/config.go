@@ -393,12 +393,11 @@ type FailsafeConfig struct {
 }
 
 type RetryPolicyConfig struct {
-	MaxAttempts        int      `yaml:"maxAttempts" json:"maxAttempts"`
-	Delay              Duration `yaml:"delay,omitempty" json:"delay" tstype:"Duration"`
-	BackoffMaxDelay    Duration `yaml:"backoffMaxDelay,omitempty" json:"backoffMaxDelay" tstype:"Duration"`
-	BackoffFactor      float32  `yaml:"backoffFactor,omitempty" json:"backoffFactor"`
-	Jitter             Duration `yaml:"jitter,omitempty" json:"jitter" tstype:"Duration"`
-	IgnoreClientErrors bool     `yaml:"ignoreClientErrors,omitempty" json:"ignoreClientErrors"`
+	MaxAttempts     int      `yaml:"maxAttempts" json:"maxAttempts"`
+	Delay           Duration `yaml:"delay,omitempty" json:"delay" tstype:"Duration"`
+	BackoffMaxDelay Duration `yaml:"backoffMaxDelay,omitempty" json:"backoffMaxDelay" tstype:"Duration"`
+	BackoffFactor   float32  `yaml:"backoffFactor,omitempty" json:"backoffFactor"`
+	Jitter          Duration `yaml:"jitter,omitempty" json:"jitter" tstype:"Duration"`
 }
 
 type CircuitBreakerPolicyConfig struct {

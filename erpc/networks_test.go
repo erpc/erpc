@@ -1231,7 +1231,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 	})
 
-	t.Run("ForwardRespectsIgnoreClientErrorsTrue", func(t *testing.T) {
+	t.Run("ForwardDoesNotRetryOnInvalidArgumentClientError", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
@@ -1239,11 +1239,11 @@ func TestNetwork_Forward(t *testing.T) {
 
 		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"}]}`)
 
-		// Mock a client error response (400)
+		// Mock a client error response (400) and code -32602, meaning invalid argument
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(400).
-			JSON([]byte(`{"error":{"code":-32602,"message":"invalid argument 0: json: cannot unmarshal string into Go value of type map[string]interface {}"}}}`))
+			JSON([]byte(`{"error":{"message":"invalid argument 0: json: cannot unmarshal string into Go value of type map[string]interface {}"}}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -1330,8 +1330,7 @@ func TestNetwork_Forward(t *testing.T) {
 				},
 				Failsafe: &common.FailsafeConfig{
 					Retry: &common.RetryPolicyConfig{
-						MaxAttempts:        3,
-						IgnoreClientErrors: true, // Should not retry client errors
+						MaxAttempts: 3,
 					},
 				},
 			},
@@ -1369,31 +1368,47 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 	})
 
-	t.Run("ForwardRespectsIgnoreClientErrorsFalse", func(t *testing.T) {
+	t.Run("ForwardRetriesOnPendingBlockIsNotAvailableClientError", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
+		// We expect no leftover mocks after both calls
 		defer util.AssertNoPendingMocks(t, 0)
 
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"}]}`)
+		var requestBytes = []byte(`{
+			"jsonrpc": "2.0",
+			"id": 1,
+			"method": "eth_call",
+			"params": [
+				{
+					"to": "0x123"
+				},
+				"pending"
+			]
+		}`)
 
-		// Mock multiple client error responses since we expect retries
+		// First upstream returns the retryable client error
 		gock.New("http://rpc1.localhost").
-			Times(1).
 			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_call")
-			}).
 			Reply(400).
-			JSON([]byte(`{"error":{"code":-32602,"message":"invalid argument 0: json: cannot unmarshal string into Go value of type map[string]interface {}"}}}`))
+			JSON([]byte(`{
+				"jsonrpc": "2.0",
+				"id": 1,
+				"error": {
+					"code": -32000,
+					"message": "pending block is not available"
+				}
+			}`))
 
+		// Second upstream responds successfully
 		gock.New("http://rpc2.localhost").
 			Post("").
-			Filter(func(request *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(request), "eth_call")
-			}).
 			Reply(200).
-			JSON([]byte(`{"result":"0x123"}`))
+			JSON([]byte(`{
+				"jsonrpc": "2.0",
+				"id": 1,
+				"result": "0x123"
+			}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -1405,170 +1420,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
-		up1 := &common.UpstreamConfig{
-			Id:       "rpc1",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc1.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		up2 := &common.UpstreamConfig{
-			Id:       "rpc2",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc2.localhost",
-			Evm: &common.EvmUpstreamConfig{
-				ChainId: 123,
-			},
-		}
-		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(
-			&log.Logger,
-			vr,
-			[]*common.ProviderConfig{},
-			nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
-				},
-			},
-		})
-		if err != nil {
-			panic(err)
-		}
-		upr := upstream.NewUpstreamsRegistry(
-			ctx,
-			&log.Logger,
-			"prjA",
-			[]*common.UpstreamConfig{up1, up2},
-			ssr,
-			rlr,
-			vr,
-			pr,
-			nil,
-			mt,
-			1*time.Second,
-		)
-		err = upr.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		pup1, err := upr.NewUpstream(up1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl1, err := clr.GetOrCreateClient(ctx, pup1)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup1.Client = cl1
-
-		pup2, err := upr.NewUpstream(up2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl2, err := clr.GetOrCreateClient(ctx, pup2)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pup2.Client = cl2
-
-		ntw, err := NewNetwork(
-			ctx,
-			&log.Logger,
-			"prjA",
-			&common.NetworkConfig{
-				Architecture: common.ArchitectureEvm,
-				Evm: &common.EvmNetworkConfig{
-					ChainId: 123,
-				},
-				Failsafe: &common.FailsafeConfig{
-					Retry: &common.RetryPolicyConfig{
-						MaxAttempts:        3,
-						IgnoreClientErrors: false, // Should retry client errors
-					},
-				},
-			},
-			rlr,
-			upr,
-			mt,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		ntw.Bootstrap(ctx)
-		time.Sleep(100 * time.Millisecond)
-
-		poller := pup1.EvmStatePoller()
-		poller.SuggestLatestBlock(9)
-		poller.SuggestFinalizedBlock(8)
-
-		upstream.ReorderUpstreams(upr)
-
-		fakeReq := common.NewNormalizedRequest(requestBytes)
-		resp, err := ntw.Forward(ctx, fakeReq)
-
-		if resp == nil {
-			t.Fatalf("Expected response, got %v", resp)
-		}
-		if err != nil {
-			t.Fatalf("Expected no error, got %v", err)
-		}
-
-		jrr, err := resp.JsonRpcResponse()
-		if err != nil {
-			t.Fatalf("Expected no error, got %v", err)
-		}
-		if jrr.Result == nil {
-			t.Fatalf("Expected result, got nil")
-		}
-		assert.Equal(t, "\"0x123\"", strings.ToLower(string(jrr.Result)))
-	})
-
-	t.Run("ForwardRespectsIgnoreClientErrorsWithMultipleUpstreams", func(t *testing.T) {
-		util.ResetGock()
-		defer util.ResetGock()
-		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 1) // Second upstream is not called
-
-		var requestBytes = []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x123"}]}`)
-
-		// First upstream returns client error
-		gock.New("http://rpc1.localhost").
-			Post("").
-			Reply(400).
-			JSON([]byte(`{"error":{"code":-32602,"message":"invalid argument 0"}}`))
-
-		// Second upstream would succeed if called
-		gock.New("http://rpc2.localhost").
-			Post("").
-			Reply(200).
-			JSON([]byte(`{"result":"0x123"}`))
-
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
-			Budgets: []*common.RateLimitBudgetConfig{},
-		}, &log.Logger)
-		if err != nil {
-			t.Fatal(err)
-		}
 		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
 		up1 := &common.UpstreamConfig{
@@ -1663,8 +1515,7 @@ func TestNetwork_Forward(t *testing.T) {
 				},
 				Failsafe: &common.FailsafeConfig{
 					Retry: &common.RetryPolicyConfig{
-						MaxAttempts:        3,
-						IgnoreClientErrors: true, // Should not try other upstreams on client error
+						MaxAttempts: 3,
 					},
 				},
 			},
@@ -1692,18 +1543,24 @@ func TestNetwork_Forward(t *testing.T) {
 		fakeReq := common.NewNormalizedRequest(requestBytes)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
-		if resp != nil {
-			t.Fatalf("Expected nil response, got %v", resp)
+		// Since "pending block is not available" client error is considered retryable,
+		// aggregator should try the second upstream and succeed.
+		if err != nil {
+			t.Fatalf("Expected no error (success from second upstream), got %v", err)
+		}
+		if resp == nil {
+			t.Fatal("Expected a non-nil response from second upstream, got nil")
 		}
 
-		// Should return the client error from first upstream without trying second
-		if err == nil {
-			t.Fatal("Expected client error, got nil")
+		jrr, err := resp.JsonRpcResponse()
+		if err != nil {
+			t.Fatalf("Unable to parse JSON-RPC response: %v", err)
+		}
+		if jrr.Result == nil {
+			t.Fatal("Expected a successful 'result' field, got nil")
 		}
 
-		if !common.IsClientError(err) {
-			t.Errorf("Expected client error, got: %v", err)
-		}
+		assert.Equal(t, "\"0x123\"", strings.ToLower(string(jrr.Result)))
 	})
 
 	t.Run("ForwardWithMinimumMemoryAllocation", func(t *testing.T) {
