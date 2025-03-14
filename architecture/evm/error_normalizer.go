@@ -330,7 +330,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		//----------------------------------------------------------------
-		// 11) "Invalid Argument / Params" errors
+		// 11) "Invalid Argument / Params / Request" errors
 		//----------------------------------------------------------------
 
 		// Even though these errors have invalid argument or params, they are more about a lack of standard
@@ -349,7 +349,25 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				),
 				true, // retryable
 			)
-		} else if code == -32602 ||
+		} else if code == -32600 {
+			if dt, ok := err.Data.(map[string]interface{}); ok {
+				if innerMsg, ok := dt["message"]; ok {
+					if strings.Contains(innerMsg.(string), "validation errors in batch") {
+						// Return a server-side error so the caller might retry or split the batch.
+						return common.NewErrEndpointClientSideException(
+							common.NewErrJsonRpcExceptionInternal(
+								int(code),
+								common.JsonRpcErrorInvalidArgument,
+								err.Message,
+								nil,
+								details,
+							),
+							true, // retryable
+						)
+					}
+				}
+			}
+		} else if code == -32602 || code == -32600 ||
 			strings.Contains(msg, "param is required") ||
 			strings.Contains(msg, "Invalid Request") ||
 			strings.Contains(msg, "validation errors") ||
@@ -358,42 +376,6 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "tx of type") {
 
 			// For invalid args/params errors, there is a high chance that the error is due to a mistake that the user
-			// has done, and retrying another upstream would not help.
-			return common.NewErrEndpointClientSideException(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorInvalidArgument,
-					err.Message,
-					nil,
-					details,
-				),
-				false, // not retryable
-			)
-		}
-
-		//----------------------------------------------------------------
-		// 12) "Invalid Request" errors
-		//----------------------------------------------------------------
-
-		if code == -32600 {
-			if dt, ok := err.Data.(map[string]interface{}); ok {
-				if innerMsg, ok := dt["message"]; ok {
-					if strings.Contains(innerMsg.(string), "validation errors in batch") {
-						// Return a server-side error so the caller might retry or split the batch.
-						return common.NewErrEndpointServerSideException(
-							common.NewErrJsonRpcExceptionInternal(
-								int(code),
-								common.JsonRpcErrorServerSideException,
-								err.Message,
-								nil,
-								details,
-							),
-							nil,
-						)
-					}
-				}
-			}
-			// For invalid request errors, there is a high chance that the error is due to a mistake that the user
 			// has done, and retrying another upstream would not help.
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
