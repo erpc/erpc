@@ -46,7 +46,7 @@ func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr i
 			details["data"] = err.Data
 		}
 
-		if code == -32602 && strings.Contains(msg, "eth_getLogs") && strings.Contains(msg, "limited") {
+		if code == -32614 && strings.Contains(msg, "eth_getLogs") && strings.Contains(msg, "limited") {
 			return common.NewErrEndpointRequestTooLarge(
 				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorEvmLargeRange, msg, nil, details),
 				common.EvmBlockRangeTooLarge,
@@ -72,20 +72,12 @@ func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr i
 				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorClientSideException, msg, nil, details),
 				true, // retryable
 			)
-		} else if code == -32602 {
-			if strings.Contains(msg, "cannot unmarshal hex string") {
-				// we do not retry on invalid argument errors, as retrying another upstream would not help.
-				return common.NewErrEndpointClientSideException(
-					common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorInvalidArgument, msg, nil, details),
-					false, // not retryable
-				)
-			} else if strings.Contains(msg, "eth_getLogs and eth_newFilter are limited") {
-				// retrying on limited range errors for eth_getLogs and eth_newFilter toward other upstreams would be helpful.
-				return common.NewErrEndpointClientSideException(
-					common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorInvalidArgument, msg, nil, details),
-					true, // retryable
-				)
-			}
+		} else if code == -32602 && strings.Contains(msg, "cannot unmarshal hex string") {
+			// we do not retry on invalid argument errors, as retrying another upstream would not help.
+			return common.NewErrEndpointClientSideException(
+				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorInvalidArgument, msg, nil, details),
+				false, // not retryable
+			)
 		} else if strings.Contains(msg, "UNAUTHORIZED") {
 			return common.NewErrEndpointUnauthorized(
 				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorUnauthorized, msg, nil, details),
