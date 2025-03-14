@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
-	"github.com/erpc/erpc/common/script"
 	"github.com/erpc/erpc/util"
 	"github.com/grafana/sobek"
 	"github.com/rs/zerolog"
@@ -37,16 +36,43 @@ type Config struct {
 	ProxyPools   []*ProxyPoolConfig `yaml:"proxyPools,omitempty" json:"proxyPools"`
 }
 
-func (c *Config) HasRateLimiterBudget(id string) bool {
-	if c.RateLimiters == nil || len(c.RateLimiters.Budgets) == 0 {
-		return false
+// LoadConfig loads the configuration from the specified file.
+// It supports both YAML and TypeScript (.ts) files.
+func LoadConfig(fs afero.Fs, filename string) (*Config, error) {
+	data, err := afero.ReadFile(fs, filename)
+	if err != nil {
+		return nil, err
 	}
-	for _, budget := range c.RateLimiters.Budgets {
-		if budget.Id == id {
-			return true
+
+	var cfg Config
+
+	if strings.HasSuffix(filename, ".ts") || strings.HasSuffix(filename, ".js") {
+		cfgPtr, err := loadConfigFromTypescript(filename)
+		if err != nil {
+			return nil, err
+		}
+		cfg = *cfgPtr
+	} else {
+		expandedData := []byte(os.ExpandEnv(string(data)))
+		decoder := yaml.NewDecoder(bytes.NewReader(expandedData))
+		decoder.KnownFields(true)
+		err = decoder.Decode(&cfg)
+		if err != nil {
+			return nil, err
 		}
 	}
-	return false
+
+	err = cfg.SetDefaults()
+	if err != nil {
+		return nil, err
+	}
+
+	err = cfg.Validate()
+	if err != nil {
+		return nil, err
+	}
+
+	return &cfg, nil
 }
 
 type ServerConfig struct {
@@ -55,9 +81,9 @@ type ServerConfig struct {
 	ListenV6     *bool           `yaml:"listenV6,omitempty" json:"listenV6"`
 	HttpHostV6   *string         `yaml:"httpHostV6,omitempty" json:"httpHostV6"`
 	HttpPort     *int            `yaml:"httpPort,omitempty" json:"httpPort"`
-	MaxTimeout   *string         `yaml:"maxTimeout,omitempty" json:"maxTimeout"`
-	ReadTimeout  *string         `yaml:"readTimeout,omitempty" json:"readTimeout"`
-	WriteTimeout *string         `yaml:"writeTimeout,omitempty" json:"writeTimeout"`
+	MaxTimeout   *Duration       `yaml:"maxTimeout,omitempty" json:"maxTimeout" tstype:"Duration"`
+	ReadTimeout  *Duration       `yaml:"readTimeout,omitempty" json:"readTimeout" tstype:"Duration"`
+	WriteTimeout *Duration       `yaml:"writeTimeout,omitempty" json:"writeTimeout" tstype:"Duration"`
 	EnableGzip   *bool           `yaml:"enableGzip,omitempty" json:"enableGzip"`
 	TLS          *TLSConfig      `yaml:"tls,omitempty" json:"tls"`
 	Aliasing     *AliasingConfig `yaml:"aliasing" json:"aliasing"`
@@ -87,42 +113,8 @@ type DatabaseConfig struct {
 type SharedStateConfig struct {
 	ClusterKey      string           `yaml:"clusterKey,omitempty" json:"clusterKey"`
 	Connector       *ConnectorConfig `yaml:"connector,omitempty" json:"connector"`
-	FallbackTimeout time.Duration    `yaml:"fallbackTimeout,omitempty" json:"fallbackTimeout"`
-	LockTtl         time.Duration    `yaml:"lockTtl,omitempty" json:"lockTtl"`
-}
-
-func (c *SharedStateConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	type rawSharedStateConfig struct {
-		ClusterKey      string           `yaml:"clusterKey,omitempty"`
-		Connector       *ConnectorConfig `yaml:"connector,omitempty"`
-		FallbackTimeout string           `yaml:"fallbackTimeout,omitempty"`
-		LockTtl         string           `yaml:"lockTtl,omitempty"`
-	}
-	raw := rawSharedStateConfig{}
-	if err := unmarshal(&raw); err != nil {
-		return err
-	}
-	*c = SharedStateConfig{
-		ClusterKey:      raw.ClusterKey,
-		Connector:       raw.Connector,
-		FallbackTimeout: time.Duration(0),
-		LockTtl:         time.Duration(0),
-	}
-	if raw.FallbackTimeout != "" {
-		ft, err := time.ParseDuration(raw.FallbackTimeout)
-		if err != nil {
-			return fmt.Errorf("sharedState.fallbackTimeout is invalid: %w", err)
-		}
-		c.FallbackTimeout = ft
-	}
-	if raw.LockTtl != "" {
-		lt, err := time.ParseDuration(raw.LockTtl)
-		if err != nil {
-			return fmt.Errorf("sharedState.lockTtl is invalid: %w", err)
-		}
-		c.LockTtl = lt
-	}
-	return nil
+	FallbackTimeout Duration         `yaml:"fallbackTimeout,omitempty" json:"fallbackTimeout" tstype:"Duration"`
+	LockTtl         Duration         `yaml:"lockTtl,omitempty" json:"lockTtl" tstype:"Duration"`
 }
 
 type CacheConfig struct {
@@ -143,68 +135,11 @@ type CachePolicyConfig struct {
 	Network     string             `yaml:"network,omitempty" json:"network"`
 	Method      string             `yaml:"method,omitempty" json:"method"`
 	Params      []interface{}      `yaml:"params,omitempty" json:"params"`
-	Finality    DataFinalityState  `yaml:"finality,omitempty" json:"finality"`
-	Empty       CacheEmptyBehavior `yaml:"empty,omitempty" json:"empty"`
+	Finality    DataFinalityState  `yaml:"finality,omitempty" json:"finality" tstype:"DataFinalityState"`
+	Empty       CacheEmptyBehavior `yaml:"empty,omitempty" json:"empty" tstype:"CacheEmptyBehavior"`
 	MinItemSize *string            `yaml:"minItemSize,omitempty" json:"minItemSize" tstype:"ByteSize"`
 	MaxItemSize *string            `yaml:"maxItemSize,omitempty" json:"maxItemSize" tstype:"ByteSize"`
-	TTL         time.Duration      `yaml:"ttl,omitempty" json:"ttl"`
-}
-
-func (c *CachePolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	type rawCachePolicyConfig struct {
-		Connector   string             `yaml:"connector"`
-		Network     string             `yaml:"network,omitempty"`
-		Method      string             `yaml:"method,omitempty"`
-		Params      []interface{}      `yaml:"params,omitempty"`
-		Finality    DataFinalityState  `yaml:"finality,omitempty"`
-		Empty       CacheEmptyBehavior `yaml:"empty,omitempty"`
-		MinItemSize *string            `yaml:"minItemSize,omitempty"`
-		MaxItemSize *string            `yaml:"maxItemSize,omitempty"`
-		TTL         interface{}        `yaml:"ttl"`
-	}
-	raw := rawCachePolicyConfig{}
-	if err := unmarshal(&raw); err != nil {
-		return err
-	}
-	*c = CachePolicyConfig{
-		Connector:   raw.Connector,
-		Network:     raw.Network,
-		Method:      raw.Method,
-		Params:      raw.Params,
-		Finality:    raw.Finality,
-		Empty:       raw.Empty,
-		MinItemSize: raw.MinItemSize,
-		MaxItemSize: raw.MaxItemSize,
-	}
-	if raw.TTL != nil {
-		switch v := raw.TTL.(type) {
-		case string:
-			ttl, err := time.ParseDuration(v)
-			if err != nil {
-				return fmt.Errorf("failed to parse ttl: %v", err)
-			}
-			c.TTL = ttl
-		case int:
-			c.TTL = time.Duration(v) * time.Second
-		default:
-			return fmt.Errorf("invalid ttl type: %T", v)
-		}
-	} else {
-		// Set default value of 0 when TTL is not specified, which means no ttl
-		c.TTL = time.Duration(0)
-	}
-	return nil
-}
-
-func (c *CachePolicyConfig) MarshalJSON() ([]byte, error) {
-	return sonic.Marshal(map[string]interface{}{
-		"network":   c.Network,
-		"method":    c.Method,
-		"params":    c.Params,
-		"finality":  c.Finality,
-		"ttl":       c.TTL,
-		"connector": c.Connector,
-	})
+	TTL         Duration           `yaml:"ttl,omitempty" json:"ttl" tstype:"Duration"`
 }
 
 type ConnectorDriverType string
@@ -247,14 +182,14 @@ type TLSConfig struct {
 }
 
 type RedisConnectorConfig struct {
-	Addr         string        `yaml:"addr" json:"addr"`
-	Password     string        `yaml:"password" json:"-"`
-	DB           int           `yaml:"db" json:"db"`
-	TLS          *TLSConfig    `yaml:"tls" json:"tls"`
-	ConnPoolSize int           `yaml:"connPoolSize" json:"connPoolSize"`
-	InitTimeout  time.Duration `yaml:"initTimeout,omitempty" json:"initTimeout"`
-	GetTimeout   time.Duration `yaml:"getTimeout,omitempty" json:"getTimeout"`
-	SetTimeout   time.Duration `yaml:"setTimeout,omitempty" json:"setTimeout"`
+	Addr         string     `yaml:"addr" json:"addr"`
+	Password     string     `yaml:"password" json:"-"`
+	DB           int        `yaml:"db" json:"db"`
+	TLS          *TLSConfig `yaml:"tls" json:"tls"`
+	ConnPoolSize int        `yaml:"connPoolSize" json:"connPoolSize"`
+	InitTimeout  Duration   `yaml:"initTimeout,omitempty" json:"initTimeout" tstype:"Duration"`
+	GetTimeout   Duration   `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
+	SetTimeout   Duration   `yaml:"setTimeout,omitempty" json:"setTimeout" tstype:"Duration"`
 }
 
 func (r *RedisConnectorConfig) MarshalJSON() ([]byte, error) {
@@ -279,95 +214,20 @@ type DynamoDBConnectorConfig struct {
 	RangeKeyName      string         `yaml:"rangeKeyName,omitempty" json:"rangeKeyName"`
 	ReverseIndexName  string         `yaml:"reverseIndexName,omitempty" json:"reverseIndexName"`
 	TTLAttributeName  string         `yaml:"ttlAttributeName,omitempty" json:"ttlAttributeName"`
-	InitTimeout       time.Duration  `yaml:"initTimeout,omitempty" json:"initTimeout"`
-	GetTimeout        time.Duration  `yaml:"getTimeout,omitempty" json:"getTimeout"`
-	SetTimeout        time.Duration  `yaml:"setTimeout,omitempty" json:"setTimeout"`
-	StatePollInterval time.Duration  `yaml:"statePollInterval,omitempty" json:"statePollInterval"`
-}
-
-func (c *DynamoDBConnectorConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	type tempConfig struct {
-		Table             string         `yaml:"table,omitempty"`
-		Region            string         `yaml:"region,omitempty"`
-		Endpoint          string         `yaml:"endpoint,omitempty"`
-		Auth              *AwsAuthConfig `yaml:"auth,omitempty"`
-		PartitionKeyName  string         `yaml:"partitionKeyName,omitempty"`
-		RangeKeyName      string         `yaml:"rangeKeyName,omitempty"`
-		ReverseIndexName  string         `yaml:"reverseIndexName,omitempty"`
-		TTLAttributeName  string         `yaml:"ttlAttributeName,omitempty"`
-		InitTimeout       string         `yaml:"initTimeout,omitempty"`
-		GetTimeout        string         `yaml:"getTimeout,omitempty"`
-		SetTimeout        string         `yaml:"setTimeout,omitempty"`
-		StatePollInterval string         `yaml:"statePollInterval,omitempty"`
-	}
-
-	var raw tempConfig
-	if err := unmarshal(&raw); err != nil {
-		return err
-	}
-
-	*c = DynamoDBConnectorConfig{
-		Table:             raw.Table,
-		Region:            raw.Region,
-		Endpoint:          raw.Endpoint,
-		Auth:              raw.Auth,
-		PartitionKeyName:  raw.PartitionKeyName,
-		RangeKeyName:      raw.RangeKeyName,
-		ReverseIndexName:  raw.ReverseIndexName,
-		TTLAttributeName:  raw.TTLAttributeName,
-		InitTimeout:       time.Duration(0),
-		GetTimeout:        time.Duration(0),
-		SetTimeout:        time.Duration(0),
-		StatePollInterval: time.Duration(0),
-	}
-
-	// Parse InitTimeout
-	if raw.InitTimeout != "" {
-		if d, err := time.ParseDuration(raw.InitTimeout); err != nil {
-			return fmt.Errorf("invalid initTimeout: %v", err)
-		} else {
-			c.InitTimeout = d
-		}
-	}
-
-	// Parse GetTimeout
-	if raw.GetTimeout != "" {
-		if d, err := time.ParseDuration(raw.GetTimeout); err != nil {
-			return fmt.Errorf("invalid getTimeout: %v", err)
-		} else {
-			c.GetTimeout = d
-		}
-	}
-
-	// Parse SetTimeout
-	if raw.SetTimeout != "" {
-		if d, err := time.ParseDuration(raw.SetTimeout); err != nil {
-			return fmt.Errorf("invalid setTimeout: %v", err)
-		} else {
-			c.SetTimeout = d
-		}
-	}
-
-	// Parse StatePollInterval
-	if raw.StatePollInterval != "" {
-		if d, err := time.ParseDuration(raw.StatePollInterval); err != nil {
-			return fmt.Errorf("invalid statePollInterval: %v", err)
-		} else {
-			c.StatePollInterval = d
-		}
-	}
-
-	return nil
+	InitTimeout       Duration       `yaml:"initTimeout,omitempty" json:"initTimeout" tstype:"Duration"`
+	GetTimeout        Duration       `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
+	SetTimeout        Duration       `yaml:"setTimeout,omitempty" json:"setTimeout" tstype:"Duration"`
+	StatePollInterval Duration       `yaml:"statePollInterval,omitempty" json:"statePollInterval" tstype:"Duration"`
 }
 
 type PostgreSQLConnectorConfig struct {
-	ConnectionUri string        `yaml:"connectionUri" json:"connectionUri"`
-	Table         string        `yaml:"table" json:"table"`
-	MinConns      int32         `yaml:"minConns,omitempty" json:"minConns"`
-	MaxConns      int32         `yaml:"maxConns,omitempty" json:"maxConns"`
-	InitTimeout   time.Duration `yaml:"initTimeout,omitempty" json:"initTimeout"`
-	GetTimeout    time.Duration `yaml:"getTimeout,omitempty" json:"getTimeout"`
-	SetTimeout    time.Duration `yaml:"setTimeout,omitempty" json:"setTimeout"`
+	ConnectionUri string   `yaml:"connectionUri" json:"connectionUri"`
+	Table         string   `yaml:"table" json:"table"`
+	MinConns      int32    `yaml:"minConns,omitempty" json:"minConns"`
+	MaxConns      int32    `yaml:"maxConns,omitempty" json:"maxConns"`
+	InitTimeout   Duration `yaml:"initTimeout,omitempty" json:"initTimeout" tstype:"Duration"`
+	GetTimeout    Duration `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
+	SetTimeout    Duration `yaml:"setTimeout,omitempty" json:"setTimeout" tstype:"Duration"`
 }
 
 func (p *PostgreSQLConnectorConfig) MarshalJSON() ([]byte, error) {
@@ -497,19 +357,19 @@ func (u *UpstreamConfig) MarshalJSON() ([]byte, error) {
 }
 
 type RateLimitAutoTuneConfig struct {
-	Enabled            *bool   `yaml:"enabled" json:"enabled"`
-	AdjustmentPeriod   string  `yaml:"adjustmentPeriod" json:"adjustmentPeriod" tstype:"Duration"`
-	ErrorRateThreshold float64 `yaml:"errorRateThreshold" json:"errorRateThreshold"`
-	IncreaseFactor     float64 `yaml:"increaseFactor" json:"increaseFactor"`
-	DecreaseFactor     float64 `yaml:"decreaseFactor" json:"decreaseFactor"`
-	MinBudget          int     `yaml:"minBudget" json:"minBudget"`
-	MaxBudget          int     `yaml:"maxBudget" json:"maxBudget"`
+	Enabled            *bool    `yaml:"enabled" json:"enabled"`
+	AdjustmentPeriod   Duration `yaml:"adjustmentPeriod" json:"adjustmentPeriod" tstype:"Duration"`
+	ErrorRateThreshold float64  `yaml:"errorRateThreshold" json:"errorRateThreshold"`
+	IncreaseFactor     float64  `yaml:"increaseFactor" json:"increaseFactor"`
+	DecreaseFactor     float64  `yaml:"decreaseFactor" json:"decreaseFactor"`
+	MinBudget          int      `yaml:"minBudget" json:"minBudget"`
+	MaxBudget          int      `yaml:"maxBudget" json:"maxBudget"`
 }
 
 type JsonRpcUpstreamConfig struct {
 	SupportsBatch *bool             `yaml:"supportsBatch,omitempty" json:"supportsBatch"`
 	BatchMaxSize  int               `yaml:"batchMaxSize,omitempty" json:"batchMaxSize"`
-	BatchMaxWait  string            `yaml:"batchMaxWait,omitempty" json:"batchMaxWait"`
+	BatchMaxWait  Duration          `yaml:"batchMaxWait,omitempty" json:"batchMaxWait" tstype:"Duration"`
 	EnableGzip    *bool             `yaml:"enableGzip,omitempty" json:"enableGzip"`
 	Headers       map[string]string `yaml:"headers,omitempty" json:"headers"`
 	ProxyPool     string            `yaml:"proxyPool,omitempty" json:"proxyPool"`
@@ -518,8 +378,8 @@ type JsonRpcUpstreamConfig struct {
 type EvmUpstreamConfig struct {
 	ChainId                  int64       `yaml:"chainId" json:"chainId"`
 	NodeType                 EvmNodeType `yaml:"nodeType,omitempty" json:"nodeType"`
-	StatePollerInterval      string      `yaml:"statePollerInterval,omitempty" json:"statePollerInterval"`
-	StatePollerDebounce      string      `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce"`
+	StatePollerInterval      Duration    `yaml:"statePollerInterval,omitempty" json:"statePollerInterval" tstype:"Duration"`
+	StatePollerDebounce      Duration    `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce" tstype:"Duration"`
 	MaxAvailableRecentBlocks int64       `yaml:"maxAvailableRecentBlocks,omitempty" json:"maxAvailableRecentBlocks"`
 	GetLogsMaxBlockRange     int64       `yaml:"getLogsMaxBlockRange,omitempty" json:"getLogsMaxBlockRange"`
 }
@@ -533,32 +393,32 @@ type FailsafeConfig struct {
 }
 
 type RetryPolicyConfig struct {
-	MaxAttempts        int     `yaml:"maxAttempts" json:"maxAttempts"`
-	Delay              string  `yaml:"delay,omitempty" json:"delay"`
-	BackoffMaxDelay    string  `yaml:"backoffMaxDelay,omitempty" json:"backoffMaxDelay"`
-	BackoffFactor      float32 `yaml:"backoffFactor,omitempty" json:"backoffFactor"`
-	Jitter             string  `yaml:"jitter,omitempty" json:"jitter"`
-	IgnoreClientErrors bool    `yaml:"ignoreClientErrors,omitempty" json:"ignoreClientErrors"`
+	MaxAttempts        int      `yaml:"maxAttempts" json:"maxAttempts"`
+	Delay              Duration `yaml:"delay,omitempty" json:"delay" tstype:"Duration"`
+	BackoffMaxDelay    Duration `yaml:"backoffMaxDelay,omitempty" json:"backoffMaxDelay" tstype:"Duration"`
+	BackoffFactor      float32  `yaml:"backoffFactor,omitempty" json:"backoffFactor"`
+	Jitter             Duration `yaml:"jitter,omitempty" json:"jitter" tstype:"Duration"`
+	IgnoreClientErrors bool     `yaml:"ignoreClientErrors,omitempty" json:"ignoreClientErrors"`
 }
 
 type CircuitBreakerPolicyConfig struct {
-	FailureThresholdCount    uint   `yaml:"failureThresholdCount" json:"failureThresholdCount"`
-	FailureThresholdCapacity uint   `yaml:"failureThresholdCapacity" json:"failureThresholdCapacity"`
-	HalfOpenAfter            string `yaml:"halfOpenAfter" json:"halfOpenAfter"`
-	SuccessThresholdCount    uint   `yaml:"successThresholdCount" json:"successThresholdCount"`
-	SuccessThresholdCapacity uint   `yaml:"successThresholdCapacity" json:"successThresholdCapacity"`
+	FailureThresholdCount    uint     `yaml:"failureThresholdCount" json:"failureThresholdCount"`
+	FailureThresholdCapacity uint     `yaml:"failureThresholdCapacity" json:"failureThresholdCapacity"`
+	HalfOpenAfter            Duration `yaml:"halfOpenAfter,omitempty" json:"halfOpenAfter" tstype:"Duration"`
+	SuccessThresholdCount    uint     `yaml:"successThresholdCount" json:"successThresholdCount"`
+	SuccessThresholdCapacity uint     `yaml:"successThresholdCapacity" json:"successThresholdCapacity"`
 }
 
 type TimeoutPolicyConfig struct {
-	Duration string `yaml:"duration" json:"duration" tstype:"Duration"`
+	Duration Duration `yaml:"duration,omitempty" json:"duration" tstype:"Duration"`
 }
 
 type HedgePolicyConfig struct {
-	Delay    string  `yaml:"delay" json:"delay"`
-	MaxCount int     `yaml:"maxCount" json:"maxCount"`
-	Quantile float64 `yaml:"quantile" json:"quantile"`
-	MinDelay string  `yaml:"minDelay" json:"minDelay" tstype:"Duration"`
-	MaxDelay string  `yaml:"maxDelay" json:"maxDelay" tstype:"Duration"`
+	Delay    Duration `yaml:"delay,omitempty" json:"delay" tstype:"Duration"`
+	MaxCount int      `yaml:"maxCount" json:"maxCount"`
+	Quantile float64  `yaml:"quantile,omitempty" json:"quantile"`
+	MinDelay Duration `yaml:"minDelay,omitempty" json:"minDelay" tstype:"Duration"`
+	MaxDelay Duration `yaml:"maxDelay,omitempty" json:"maxDelay" tstype:"Duration"`
 }
 
 type ConsensusFailureBehavior string
@@ -612,10 +472,22 @@ type RateLimitBudgetConfig struct {
 }
 
 type RateLimitRuleConfig struct {
-	Method   string `yaml:"method" json:"method"`
-	MaxCount uint   `yaml:"maxCount" json:"maxCount"`
-	Period   string `yaml:"period" json:"period" tstype:"Duration"`
-	WaitTime string `yaml:"waitTime" json:"waitTime" tstype:"Duration"`
+	Method   string   `yaml:"method" json:"method"`
+	MaxCount uint     `yaml:"maxCount" json:"maxCount"`
+	Period   Duration `yaml:"period" json:"period" tstype:"Duration"`
+	WaitTime Duration `yaml:"waitTime" json:"waitTime" tstype:"Duration"`
+}
+
+func (c *Config) HasRateLimiterBudget(id string) bool {
+	if c.RateLimiters == nil || len(c.RateLimiters.Budgets) == 0 {
+		return false
+	}
+	for _, budget := range c.RateLimiters.Budgets {
+		if budget.Id == id {
+			return true
+		}
+	}
+	return false
 }
 
 type ProxyPoolConfig struct {
@@ -624,7 +496,7 @@ type ProxyPoolConfig struct {
 }
 
 type HealthCheckConfig struct {
-	ScoreMetricsWindowSize string `yaml:"scoreMetricsWindowSize" json:"scoreMetricsWindowSize"`
+	ScoreMetricsWindowSize Duration `yaml:"scoreMetricsWindowSize" json:"scoreMetricsWindowSize" tstype:"Duration"`
 }
 
 type NetworkConfig struct {
@@ -646,7 +518,7 @@ type DirectiveDefaultsConfig struct {
 type EvmNetworkConfig struct {
 	ChainId                     int64               `yaml:"chainId" json:"chainId"`
 	FallbackFinalityDepth       int64               `yaml:"fallbackFinalityDepth,omitempty" json:"fallbackFinalityDepth"`
-	FallbackStatePollerDebounce string              `yaml:"fallbackStatePollerDebounce,omitempty" json:"fallbackStatePollerDebounce"`
+	FallbackStatePollerDebounce Duration            `yaml:"fallbackStatePollerDebounce,omitempty" json:"fallbackStatePollerDebounce" tstype:"Duration"`
 	Integrity                   *EvmIntegrityConfig `yaml:"integrity,omitempty" json:"integrity"`
 }
 
@@ -656,11 +528,11 @@ type EvmIntegrityConfig struct {
 }
 
 type SelectionPolicyConfig struct {
-	EvalInterval     time.Duration  `yaml:"evalInterval,omitempty" json:"evalInterval"`
+	EvalInterval     Duration       `yaml:"evalInterval,omitempty" json:"evalInterval" tstype:"Duration"`
 	EvalFunction     sobek.Callable `yaml:"evalFunction,omitempty" json:"evalFunction" tstype:"SelectionPolicyEvalFunction | undefined"`
 	EvalPerMethod    bool           `yaml:"evalPerMethod,omitempty" json:"evalPerMethod"`
 	ResampleExcluded bool           `yaml:"resampleExcluded,omitempty" json:"resampleExcluded"`
-	ResampleInterval time.Duration  `yaml:"resampleInterval,omitempty" json:"resampleInterval"`
+	ResampleInterval Duration       `yaml:"resampleInterval,omitempty" json:"resampleInterval" tstype:"Duration"`
 	ResampleCount    int            `yaml:"resampleCount,omitempty" json:"resampleCount"`
 
 	evalFunctionOriginal string `yaml:"-" json:"-"`
@@ -668,12 +540,12 @@ type SelectionPolicyConfig struct {
 
 func (c *SelectionPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	type rawSelectionPolicyConfig struct {
-		EvalInterval     string `yaml:"evalInterval"`
-		EvalPerMethod    bool   `yaml:"evalPerMethod"`
-		EvalFunction     string `yaml:"evalFunction"`
-		ResampleInterval string `yaml:"resampleInterval"`
-		ResampleCount    int    `yaml:"resampleCount"`
-		ResampleExcluded bool   `yaml:"resampleExcluded"`
+		EvalInterval     Duration `yaml:"evalInterval"`
+		EvalPerMethod    bool     `yaml:"evalPerMethod"`
+		EvalFunction     string   `yaml:"evalFunction"`
+		ResampleInterval Duration `yaml:"resampleInterval"`
+		ResampleCount    int      `yaml:"resampleCount"`
+		ResampleExcluded bool     `yaml:"resampleExcluded"`
 	}
 	raw := rawSelectionPolicyConfig{}
 
@@ -681,34 +553,18 @@ func (c *SelectionPolicyConfig) UnmarshalYAML(unmarshal func(interface{}) error)
 		return err
 	}
 	*c = SelectionPolicyConfig{
-		EvalInterval:     time.Duration(0),
+		EvalInterval:     raw.EvalInterval,
 		EvalFunction:     nil,
 		EvalPerMethod:    raw.EvalPerMethod,
-		ResampleInterval: time.Duration(0),
+		ResampleInterval: raw.ResampleInterval,
 		ResampleCount:    raw.ResampleCount,
 		ResampleExcluded: raw.ResampleExcluded,
 	}
 
-	if raw.ResampleInterval != "" {
-		resampleInterval, err := time.ParseDuration(raw.ResampleInterval)
-		if err != nil {
-			return fmt.Errorf("failed to parse resampleInterval: %v", err)
-		}
-		c.ResampleInterval = resampleInterval
-	}
-
-	if raw.EvalInterval != "" {
-		evalInterval, err := time.ParseDuration(raw.EvalInterval)
-		if err != nil {
-			return fmt.Errorf("failed to parse evalInterval: %v", err)
-		}
-		c.EvalInterval = evalInterval
-		c.evalFunctionOriginal = raw.EvalFunction
-	}
-
 	if raw.EvalFunction != "" {
-		evalFunction, err := script.CompileFunction(raw.EvalFunction)
+		evalFunction, err := CompileFunction(raw.EvalFunction)
 		c.EvalFunction = evalFunction
+		c.evalFunctionOriginal = raw.EvalFunction
 		if err != nil {
 			return fmt.Errorf("failed to compile selectionPolicy.evalFunction: %v", err)
 		}
@@ -799,52 +655,44 @@ type MetricsConfig struct {
 	Port     *int    `yaml:"port" json:"port"`
 }
 
-// LoadConfig loads the configuration from the specified file.
-// It supports both YAML and TypeScript (.ts) files.
-func LoadConfig(fs afero.Fs, filename string) (*Config, error) {
-	data, err := afero.ReadFile(fs, filename)
-	if err != nil {
-		return nil, err
-	}
-
-	var cfg Config
-
-	if strings.HasSuffix(filename, ".ts") || strings.HasSuffix(filename, ".js") {
-		cfgPtr, err := loadConfigFromTypescript(filename)
-		if err != nil {
-			return nil, err
-		}
-		cfg = *cfgPtr
-	} else {
-		expandedData := []byte(os.ExpandEnv(string(data)))
-		decoder := yaml.NewDecoder(bytes.NewReader(expandedData))
-		decoder.KnownFields(true)
-		err = decoder.Decode(&cfg)
-		if err != nil {
-			return nil, err
+// GetProjectConfig returns the project configuration by the specified project ID.
+func (c *Config) GetProjectConfig(projectId string) *ProjectConfig {
+	for _, project := range c.Projects {
+		if project.Id == projectId {
+			return project
 		}
 	}
 
-	err = cfg.SetDefaults()
-	if err != nil {
-		return nil, err
+	return nil
+}
+
+func (c *RateLimitRuleConfig) MarshalZerologObject(e *zerolog.Event) {
+	e.Str("method", c.Method).
+		Uint("maxCount", c.MaxCount).
+		Str("periodMs", fmt.Sprintf("%d", c.Period)).
+		Str("waitTimeMs", fmt.Sprintf("%d", c.WaitTime))
+}
+
+func (c *NetworkConfig) NetworkId() string {
+	if c.Architecture == "" || c.Evm == nil {
+		return ""
 	}
 
-	err = cfg.Validate()
-	if err != nil {
-		return nil, err
+	switch c.Architecture {
+	case "evm":
+		return util.EvmNetworkId(c.Evm.ChainId)
+	default:
+		return ""
 	}
-
-	return &cfg, nil
 }
 
 func loadConfigFromTypescript(filename string) (*Config, error) {
-	contents, err := script.CompileTypeScript(filename)
+	contents, err := CompileTypeScript(filename)
 	if err != nil {
 		return nil, err
 	}
 
-	runtime, err := script.NewRuntime()
+	runtime, err := NewRuntime()
 	if err != nil {
 		return nil, err
 	}
@@ -862,41 +710,10 @@ func loadConfigFromTypescript(filename string) (*Config, error) {
 	}
 
 	var cfg Config
-	err = script.MapJavascriptObjectToGo(v, &cfg)
+	err = MapJavascriptObjectToGo(v, &cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	return &cfg, nil
-}
-
-// GetProjectConfig returns the project configuration by the specified project ID.
-func (c *Config) GetProjectConfig(projectId string) *ProjectConfig {
-	for _, project := range c.Projects {
-		if project.Id == projectId {
-			return project
-		}
-	}
-
-	return nil
-}
-
-func (c *RateLimitRuleConfig) MarshalZerologObject(e *zerolog.Event) {
-	e.Str("method", c.Method).
-		Uint("maxCount", c.MaxCount).
-		Str("period", c.Period).
-		Str("waitTime", c.WaitTime)
-}
-
-func (c *NetworkConfig) NetworkId() string {
-	if c.Architecture == "" || c.Evm == nil {
-		return ""
-	}
-
-	switch c.Architecture {
-	case "evm":
-		return util.EvmNetworkId(c.Evm.ChainId)
-	default:
-		return ""
-	}
 }

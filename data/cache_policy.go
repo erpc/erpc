@@ -241,5 +241,5 @@ func (p *CachePolicy) String() string {
 }
 
 func (p *CachePolicy) GetTTL() *time.Duration {
-	return &p.config.TTL
+	return p.config.TTL.DurationPtr()
 }

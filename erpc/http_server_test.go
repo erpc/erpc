@@ -58,7 +58,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("500ms"), // Set a very short timeout for testing
+				MaxTimeout: common.Duration(500 * time.Millisecond).Ptr(), // Set a very short timeout for testing
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -197,7 +197,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("500ms"), // Set a very short timeout for testing
+				MaxTimeout: common.Duration(500 * time.Millisecond).Ptr(), // Set a very short timeout for testing
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -338,7 +338,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("500ms"), // Set a very short timeout for testing
+				MaxTimeout: common.Duration(500 * time.Millisecond).Ptr(), // Set a very short timeout for testing
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -461,7 +461,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	t.Run("ServerHandlerTimeout", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("10ms"),
+				MaxTimeout: common.Duration(10 * time.Millisecond).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -474,7 +474,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: &common.FailsafeConfig{
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "200ms",
+									Duration: common.Duration(200 * time.Millisecond),
 								},
 							},
 						},
@@ -488,7 +488,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: &common.FailsafeConfig{
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "100ms",
+									Duration: common.Duration(100 * time.Millisecond),
 								},
 							},
 						},
@@ -530,7 +530,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	t.Run("NetworkTimeoutBatchingEnabled", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("50000ms"),
+				MaxTimeout: common.Duration(50 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -545,7 +545,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 								Retry: nil,
 								Hedge: nil,
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "30ms",
+									Duration: common.Duration(30 * time.Millisecond),
 								},
 							},
 						},
@@ -561,12 +561,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 								Retry: nil,
 								Hedge: nil,
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "300ms",
+									Duration: common.Duration(300 * time.Millisecond),
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.TRUE,
-								BatchMaxWait:  "1ms",
+								BatchMaxWait:  common.Duration(1 * time.Millisecond),
 								BatchMaxSize:  1,
 							},
 						},
@@ -608,7 +608,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	t.Run("NetworkTimeoutBatchingDisabled", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("10s"),
+				MaxTimeout: common.Duration(10 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -623,7 +623,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 								Retry: nil,
 								Hedge: nil,
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "100ms",
+									Duration: common.Duration(100 * time.Millisecond),
 								},
 							},
 						},
@@ -640,7 +640,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 								Retry: nil,
 								Hedge: nil,
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "5s",
+									Duration: common.Duration(5 * time.Second),
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -685,7 +685,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	t.Run("UpstreamRequestTimeoutBatchingEnabled", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("2s"),
+				MaxTimeout: common.Duration(2 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -698,7 +698,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: &common.FailsafeConfig{
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "1s",
+									Duration: common.Duration(1 * time.Second),
 								},
 							},
 						},
@@ -712,12 +712,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: &common.FailsafeConfig{
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "100ms",
+									Duration: common.Duration(100 * time.Millisecond),
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.TRUE,
-								BatchMaxWait:  "5ms",
+								BatchMaxWait:  common.Duration(5 * time.Millisecond),
 							},
 						},
 					},
@@ -758,7 +758,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	t.Run("UpstreamRequestTimeoutBatchingDisabled", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("10s"),
+				MaxTimeout: common.Duration(10 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -773,7 +773,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 								Retry: nil,
 								Hedge: nil,
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "5s",
+									Duration: common.Duration(5 * time.Second),
 								},
 							},
 						},
@@ -790,7 +790,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 								Retry: nil,
 								Hedge: nil,
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "100ms",
+									Duration: common.Duration(100 * time.Millisecond),
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -835,7 +835,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	t.Run("SameTimeoutLowForServerAndNetwork", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("1ms"),
+				MaxTimeout: common.Duration(1 * time.Millisecond).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -848,7 +848,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: &common.FailsafeConfig{
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "1ms",
+									Duration: common.Duration(1 * time.Millisecond),
 								},
 							},
 						},
@@ -862,12 +862,12 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: &common.FailsafeConfig{
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "5s",
+									Duration: common.Duration(5 * time.Second),
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.TRUE,
-								BatchMaxWait:  "5ms",
+								BatchMaxWait:  common.Duration(5 * time.Millisecond),
 							},
 						},
 					},
@@ -894,7 +894,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	t.Run("ServerTimeoutNoUpstreamNoNetworkTimeout", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("500ms"),
+				MaxTimeout: common.Duration(500 * time.Millisecond).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -927,7 +927,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.TRUE,
-								BatchMaxWait:  "5ms",
+								BatchMaxWait:  common.Duration(5 * time.Millisecond),
 							},
 						},
 					},
@@ -968,7 +968,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	t.Run("MidServerHighNetworkLowUpstreamTimeoutBatchingDisabled", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("200ms"),
+				MaxTimeout: common.Duration(200 * time.Millisecond).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -983,7 +983,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 								Retry: nil,
 								Hedge: nil,
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "300ms",
+									Duration: common.Duration(300 * time.Millisecond),
 								},
 							},
 						},
@@ -1000,7 +1000,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 								Retry: nil,
 								Hedge: nil,
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "10ms",
+									Duration: common.Duration(10 * time.Millisecond),
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1047,7 +1047,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("SimpleHedgePolicyWithoutOtherPoliciesBatchingDisabled", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("10s"),
+				MaxTimeout: common.Duration(10 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -1061,7 +1061,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Failsafe: &common.FailsafeConfig{
 								Hedge: &common.HedgePolicyConfig{
 									MaxCount: 1,
-									Delay:    "10ms",
+									Delay:    common.Duration(10 * time.Millisecond),
 								},
 							},
 						},
@@ -1129,7 +1129,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("SimpleHedgePolicyWithoutOtherPoliciesBatchingEnabled", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("10s"),
+				MaxTimeout: common.Duration(10 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -1145,7 +1145,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								Retry:   nil,
 								Hedge: &common.HedgePolicyConfig{
 									MaxCount: 1,
-									Delay:    "100ms",
+									Delay:    common.Duration(100 * time.Millisecond),
 								},
 							},
 						},
@@ -1165,7 +1165,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.TRUE,
-								BatchMaxWait:  "5ms",
+								BatchMaxWait:  common.Duration(5 * time.Millisecond),
 							},
 						},
 					},
@@ -1220,7 +1220,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("HedgeReturnsResponseFromSecondUpstreamWhenFirstUpstreamTimesOut", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("2000ms"),
+				MaxTimeout: common.Duration(2 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -1235,10 +1235,10 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								Retry: nil,
 								Hedge: &common.HedgePolicyConfig{
 									MaxCount: 1,
-									Delay:    "50ms",
+									Delay:    common.Duration(50 * time.Millisecond),
 								},
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "1000ms",
+									Duration: common.Duration(1000 * time.Millisecond),
 								},
 							},
 						},
@@ -1254,7 +1254,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Failsafe: &common.FailsafeConfig{
 								Retry: nil,
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "100ms",
+									Duration: common.Duration(100 * time.Millisecond),
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1271,7 +1271,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Failsafe: &common.FailsafeConfig{
 								Retry: nil,
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "500ms",
+									Duration: common.Duration(500 * time.Millisecond),
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1328,7 +1328,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("HedgeReturnsResponseFromSecondUpstreamWhenFirstUpstreamReturnsSlowBillingIssues", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("2000ms"),
+				MaxTimeout: common.Duration(2 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -1343,10 +1343,10 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								Retry: nil,
 								Hedge: &common.HedgePolicyConfig{
 									MaxCount: 1,
-									Delay:    "100ms",
+									Delay:    common.Duration(100 * time.Millisecond),
 								},
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "1000ms",
+									Duration: common.Duration(1000 * time.Millisecond),
 								},
 							},
 						},
@@ -1362,7 +1362,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Failsafe: &common.FailsafeConfig{
 								Retry: nil,
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "1000ms",
+									Duration: common.Duration(1000 * time.Millisecond),
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1379,7 +1379,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							Failsafe: &common.FailsafeConfig{
 								Retry: nil,
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "1000ms",
+									Duration: common.Duration(1000 * time.Millisecond),
 								},
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
@@ -1441,7 +1441,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 	t.Run("ServerTimesOutBeforeHedgeReturnsResponseFromSecondUpstreamWhenFirstUpstreamHasTimeout", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("30ms"),
+				MaxTimeout: common.Duration(30 * time.Millisecond).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -1456,10 +1456,10 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								Retry: nil,
 								Hedge: &common.HedgePolicyConfig{
 									MaxCount: 1,
-									Delay:    "10ms",
+									Delay:    common.Duration(10 * time.Millisecond),
 								},
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "300ms",
+									Duration: common.Duration(300 * time.Millisecond),
 								},
 							},
 						},
@@ -1474,7 +1474,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							},
 							Failsafe: &common.FailsafeConfig{
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "150ms",
+									Duration: common.Duration(150 * time.Millisecond),
 								},
 								Retry: nil,
 							},
@@ -1491,7 +1491,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 							},
 							Failsafe: &common.FailsafeConfig{
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: "200ms",
+									Duration: common.Duration(200 * time.Millisecond),
 								},
 								Retry: nil,
 							},
@@ -1555,7 +1555,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				// Enough total server time to let hedged calls finish.
-				MaxTimeout: util.StringPtr("2s"),
+				MaxTimeout: common.Duration(2 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -1568,7 +1568,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								// We allow a 2-attempt hedge: the "original" plus 1 "hedge".
 								Hedge: &common.HedgePolicyConfig{
 									MaxCount: 1,
-									Delay:    "10ms",
+									Delay:    common.Duration(10 * time.Millisecond),
 								},
 							},
 						},
@@ -1648,7 +1648,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
 				// Enough total server time to let hedged calls finish.
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -1661,7 +1661,7 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 								// We allow a 2-attempt hedge: the "original" plus 1 "hedge".
 								Hedge: &common.HedgePolicyConfig{
 									MaxCount: 1,
-									Delay:    "10ms",
+									Delay:    common.Duration(10 * time.Millisecond),
 								},
 							},
 						},
@@ -1750,7 +1750,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			configure: func(cfg *common.Config) {
 				cfg.Projects[0].Upstreams[0].JsonRpc.SupportsBatch = &common.TRUE
 				cfg.Projects[0].Upstreams[0].JsonRpc.BatchMaxSize = 1
-				cfg.Projects[0].Upstreams[0].JsonRpc.BatchMaxWait = "10ms"
+				cfg.Projects[0].Upstreams[0].JsonRpc.BatchMaxWait = common.Duration(10 * time.Millisecond)
 			},
 		},
 		{
@@ -1777,7 +1777,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 							{
 								Network: "*",
 								Method:  "*",
-								TTL:     5 * time.Minute,
+								TTL:     common.Duration(5 * time.Minute),
 							},
 						},
 					},
@@ -1804,7 +1804,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			t.Run("ConcurrentRequests", func(t *testing.T) {
 				cfg := &common.Config{
 					Server: &common.ServerConfig{
-						MaxTimeout: util.StringPtr("5s"),
+						MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 					},
 					Projects: []*common.ProjectConfig{
 						{
@@ -1846,7 +1846,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 
 				if *cfg.Projects[0].Upstreams[0].JsonRpc.SupportsBatch {
 					cfg.Projects[0].Upstreams[0].JsonRpc.BatchMaxSize = 10
-					cfg.Projects[0].Upstreams[0].JsonRpc.BatchMaxWait = "100ms"
+					cfg.Projects[0].Upstreams[0].JsonRpc.BatchMaxWait = common.Duration(100 * time.Millisecond)
 					gock.New("http://rpc1.localhost").
 						Post("/").
 						Filter(func(request *http.Request) bool {
@@ -1960,7 +1960,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			t.Run("InvalidJSON", func(t *testing.T) {
 				cfg := &common.Config{
 					Server: &common.ServerConfig{
-						MaxTimeout: util.StringPtr("5s"),
+						MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 					},
 					Projects: []*common.ProjectConfig{
 						{
@@ -2021,7 +2021,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			t.Run("UnsupportedMethod", func(t *testing.T) {
 				cfg := &common.Config{
 					Server: &common.ServerConfig{
-						MaxTimeout: util.StringPtr("5s"),
+						MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 					},
 					Projects: []*common.ProjectConfig{
 						{
@@ -2094,7 +2094,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			t.Run("IgnoredMethod", func(t *testing.T) {
 				cfg := &common.Config{
 					Server: &common.ServerConfig{
-						MaxTimeout: util.StringPtr("5s"),
+						MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 					},
 					Projects: []*common.ProjectConfig{
 						{
@@ -2167,7 +2167,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			t.Run("InvalidProjectID", func(t *testing.T) {
 				cfg := &common.Config{
 					Server: &common.ServerConfig{
-						MaxTimeout: util.StringPtr("5s"),
+						MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 					},
 					Projects: []*common.ProjectConfig{
 						{
@@ -2239,7 +2239,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			t.Run("UpstreamLatencyAndTimeout", func(t *testing.T) {
 				cfg := &common.Config{
 					Server: &common.ServerConfig{
-						MaxTimeout: util.StringPtr("5s"),
+						MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 					},
 					Projects: []*common.ProjectConfig{
 						{
@@ -2310,7 +2310,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			t.Run("UnexpectedPlainErrorResponseFromUpstream", func(t *testing.T) {
 				cfg := &common.Config{
 					Server: &common.ServerConfig{
-						MaxTimeout: util.StringPtr("5s"),
+						MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 					},
 					Projects: []*common.ProjectConfig{
 						{
@@ -2369,7 +2369,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			t.Run("UnexpectedServerErrorResponseFromUpstream", func(t *testing.T) {
 				cfg := &common.Config{
 					Server: &common.ServerConfig{
-						MaxTimeout: util.StringPtr("5s"),
+						MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 					},
 					Projects: []*common.ProjectConfig{
 						{
@@ -2429,7 +2429,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			t.Run("MissingIDInJsonRpcRequest", func(t *testing.T) {
 				cfg := &common.Config{
 					Server: &common.ServerConfig{
-						MaxTimeout: util.StringPtr("5s"),
+						MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 					},
 					Projects: []*common.ProjectConfig{
 						{
@@ -2539,7 +2539,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			t.Run("AutoAddIDandJSONRPCFieldstoRequest", func(t *testing.T) {
 				cfg := &common.Config{
 					Server: &common.ServerConfig{
-						MaxTimeout: util.StringPtr("5s"),
+						MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 					},
 					Projects: []*common.ProjectConfig{
 						{
@@ -2616,7 +2616,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			t.Run("AlwaysPropagateUpstreamErrorDataField", func(t *testing.T) {
 				cfg := &common.Config{
 					Server: &common.ServerConfig{
-						MaxTimeout: util.StringPtr("5s"),
+						MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 					},
 					Projects: []*common.ProjectConfig{
 						{
@@ -2672,7 +2672,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			t.Run("KeepIDWhen0IsProvided", func(t *testing.T) {
 				cfg := &common.Config{
 					Server: &common.ServerConfig{
-						MaxTimeout: util.StringPtr("5s"),
+						MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 					},
 					Projects: []*common.ProjectConfig{
 						{
@@ -2767,7 +2767,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 	t.Run("ManyRequestsMultiplexedInOneUpstream", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -2843,7 +2843,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 	t.Run("CorrectResponseonEvmRevertData", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("500s"),
+				MaxTimeout: common.Duration(500 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -2914,7 +2914,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		// Define the configuration
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("500s"),
+				MaxTimeout: common.Duration(500 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -2997,7 +2997,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 	t.Run("ForwardEthCallWithBlockParameter", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("500s"),
+				MaxTimeout: common.Duration(500 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -3068,7 +3068,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 	t.Run("UpstreamNotAllowedByDirectiveViaHeaders", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("10s"),
+				MaxTimeout: common.Duration(10 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -3163,7 +3163,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 	t.Run("UpstreamNotAllowedByDirectiveViaQueryParams", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("10s"),
+				MaxTimeout: common.Duration(10 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -3260,7 +3260,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 	t.Run("SuccessRequestWithNoParams", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -3321,7 +3321,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 	t.Run("DrpcUnsupportedMethod", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -3384,7 +3384,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 	t.Run("ReturnCorrectCORS", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -3433,7 +3433,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 		// When the origin is allowed, we send CORS headers
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -3478,7 +3478,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 		// When the origin is disallowed, we don't send CORS headers
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -3922,7 +3922,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 	t.Run("SimpleCallExistingNetwork", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -3976,7 +3976,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 	t.Run("SimpleCallLazyLoadedNetwork", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -4022,7 +4022,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 	t.Run("RespectsOnlyNetworksWhenNoMatch", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -4060,7 +4060,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 	t.Run("RespectsOnlyNetworksWhenMatch", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -4109,7 +4109,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 	t.Run("EventuallyAddsUpstreamWhenSupportsNetworkFailsInitially", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -4185,7 +4185,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 	t.Run("InheritUpstreamDefaultsConfig", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -4193,7 +4193,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 					UpstreamDefaults: &common.UpstreamConfig{
 						Failsafe: &common.FailsafeConfig{
 							Hedge: &common.HedgePolicyConfig{
-								Delay:    "10ms",
+								Delay:    common.Duration(10 * time.Millisecond),
 								MaxCount: 267,
 							},
 						},
@@ -4256,13 +4256,13 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		upsCfg := upstreams[0].Config()
 
 		assert.Equalf(t, upsCfg.Failsafe.Hedge.MaxCount, 267, "Hedge policy maxCount should be set")
-		assert.Equalf(t, upsCfg.Failsafe.Hedge.Delay, "10ms", "Hedge policy delay should be set")
+		assert.Equalf(t, upsCfg.Failsafe.Hedge.Delay, common.Duration(10*time.Millisecond), "Hedge policy delay should be set")
 	})
 
 	t.Run("InheritUpstreamsOverridesAfterUpstreamDefaultsConfig", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -4270,7 +4270,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 					UpstreamDefaults: &common.UpstreamConfig{
 						Failsafe: &common.FailsafeConfig{
 							Hedge: &common.HedgePolicyConfig{
-								Delay:    "10ms",
+								Delay:    common.Duration(10 * time.Millisecond),
 								MaxCount: 267,
 							},
 						},
@@ -4355,7 +4355,7 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -4536,7 +4536,7 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -4654,7 +4654,7 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -4777,7 +4777,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// 2. Create a config with 2 upstreams and enforce highest block
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -4800,7 +4800,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             1,
-								StatePollerInterval: "10s",
+								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
 						{
@@ -4809,7 +4809,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             1,
-								StatePollerInterval: "10s",
+								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
 					},
@@ -4926,7 +4926,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// Create a config with 1 upstream and enforce highest block.
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -4949,7 +4949,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             1,
-								StatePollerInterval: "10s",
+								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
 					},
@@ -5029,7 +5029,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// Create a config with 1 upstream and enforce highest block.
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("100s"),
+				MaxTimeout: common.Duration(100 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -5052,7 +5052,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             1,
-								StatePollerInterval: "10s",
+								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
 						{
@@ -5061,7 +5061,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             1,
-								StatePollerInterval: "10s",
+								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
 					},
@@ -5184,7 +5184,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// Create a config with 1 upstream and enforce highest block.
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("100s"),
+				MaxTimeout: common.Duration(100 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -5207,7 +5207,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             1,
-								StatePollerInterval: "10s",
+								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
 						{
@@ -5216,7 +5216,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             1,
-								StatePollerInterval: "10s",
+								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
 					},
@@ -5337,7 +5337,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// Create a config with 1 upstream and enforce highest block.
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("100s"),
+				MaxTimeout: common.Duration(100 * time.Second).Ptr(),
 			},
 			Database: &common.DatabaseConfig{
 				SharedState: &common.SharedStateConfig{
@@ -5351,7 +5351,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							SetDelay: 100 * time.Minute,
 						},
 					},
-					FallbackTimeout: 100 * time.Millisecond,
+					FallbackTimeout: common.Duration(100 * time.Millisecond),
 				},
 			},
 			Projects: []*common.ProjectConfig{
@@ -5375,7 +5375,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             1,
-								StatePollerInterval: "1000s",
+								StatePollerInterval: common.Duration(1000 * time.Second),
 							},
 						},
 						{
@@ -5384,7 +5384,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             1,
-								StatePollerInterval: "1000s",
+								StatePollerInterval: common.Duration(1000 * time.Second),
 							},
 						},
 					},
@@ -5507,7 +5507,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// Create a config with 1 upstream and enforce highest block.
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("100s"),
+				MaxTimeout: common.Duration(100 * time.Second).Ptr(),
 			},
 			Database: &common.DatabaseConfig{
 				SharedState: &common.SharedStateConfig{
@@ -5521,7 +5521,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							SetErrorRate: 1,
 						},
 					},
-					FallbackTimeout: 100 * time.Millisecond,
+					FallbackTimeout: common.Duration(100 * time.Millisecond),
 				},
 			},
 			Projects: []*common.ProjectConfig{
@@ -5545,7 +5545,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             1,
-								StatePollerInterval: "1000s",
+								StatePollerInterval: common.Duration(1000 * time.Second),
 							},
 						},
 						{
@@ -5554,7 +5554,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             1,
-								StatePollerInterval: "1000s",
+								StatePollerInterval: common.Duration(1000 * time.Second),
 							},
 						},
 					},
@@ -5677,7 +5677,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// Provide a config where Evm.Integrity.EnforceHighestBlock = false
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -5700,7 +5700,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             1,
-								StatePollerInterval: "10s",
+								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
 					},
@@ -5784,7 +5784,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// Provide a config with Evm.Integrity.EnforceHighestBlock = true
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -5807,7 +5807,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             1,
-								StatePollerInterval: "10s",
+								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
 					},
@@ -5896,7 +5896,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// that the hook is skipped if the param is a direct hex number.
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -5919,7 +5919,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             1,
-								StatePollerInterval: "10s",
+								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
 					},
@@ -6001,7 +6001,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// is skipped for 'earliest' and 'pending'.
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -6024,7 +6024,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             1,
-								StatePollerInterval: "10s",
+								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
 					},
@@ -6145,7 +6145,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// Create a config with 2 upstreams, and EnforceHighestBlock = true.
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -6168,7 +6168,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             1,
-								StatePollerInterval: "10s",
+								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
 						{
@@ -6177,7 +6177,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             1,
-								StatePollerInterval: "10s",
+								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
 					},
@@ -6338,7 +6338,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// the first upstream's "finalized" block is already the highest known block.
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -6361,7 +6361,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             1,
-								StatePollerInterval: "10s",
+								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
 						{
@@ -6370,7 +6370,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             1,
-								StatePollerInterval: "10s",
+								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
 					},
@@ -6516,7 +6516,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// the logic still skips override if the block tag is not one of the recognized keywords.
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: util.StringPtr("5s"),
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -6539,7 +6539,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
 								ChainId:             1,
-								StatePollerInterval: "10s",
+								StatePollerInterval: common.Duration(10 * time.Second),
 							},
 						},
 					},

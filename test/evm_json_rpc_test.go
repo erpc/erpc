@@ -24,8 +24,8 @@ func TestStress_EvmJsonRpc_SimpleVariedFailures(t *testing.T) {
 			Failsafe: &common.FailsafeConfig{
 				Retry: &common.RetryPolicyConfig{
 					MaxAttempts: 4,
-					Delay:       "1000ms",
-					Jitter:      "200ms",
+					Delay:       common.Duration(1000 * time.Millisecond),
+					Jitter:      common.Duration(200 * time.Millisecond),
 				},
 			},
 		},

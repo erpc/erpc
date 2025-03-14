@@ -47,7 +47,16 @@ database:
 </Tab>
 <Tab>
 ```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+import { 
+  createConfig,
+  DataFinalityStateFinalized,
+  DataFinalityStateUnfinalized,
+  DataFinalityStateRealtime,
+  DataFinalityStateUnknown,
+  CacheEmptyBehaviorIgnore,
+  CacheEmptyBehaviorAllow,
+  CacheEmptyBehaviorOnly
+} from "@erpc-cloud/config";
 
 export default createConfig({
   database: {
@@ -61,8 +70,8 @@ export default createConfig({
         network?: string,
         method?: string,
         params?: any[],
-        finality: "finalized" | "unfinalized" | "realtime" | "unknown",
-        empty?: "ignore" | "allow" | "only",
+        finality: DataFinalityStateFinalized |DataFinalityStateUnfinalized | DataFinalityStateRealtime | DataFinalityStateUnknown,
+        empty?: CacheEmptyBehaviorIgnore | CacheEmptyBehaviorAllow | CacheEmptyBehaviorOnly,
         minItemSize?: string, // e.g. "1KB", "1MB"
         maxItemSize?: string, // e.g. "1KB", "1MB"
         connector: string,
@@ -161,7 +170,13 @@ database:
 </Tab>
 <Tab>
 ```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+import { 
+  createConfig,
+  DataFinalityStateFinalized,
+  DataFinalityStateUnfinalized,
+  DataFinalityStateRealtime,
+  DataFinalityStateUnknown
+} from "@erpc-cloud/config";
 
 export default createConfig({
   database: {
@@ -211,40 +226,40 @@ export default createConfig({
         {
           network: "*",
           method: "*",
-          finality: "finalized",
-          empty: "allow",
+          finality: DataFinalityStateFinalized,
+          empty: CacheEmptyBehaviorAllow,
           connector: "memory-cache",
           ttl: 0
         },
         {
           network: "*",
           method: "*",
-          finality: "unfinalized",
-          empty: "ignore",
+          finality: DataFinalityStateUnfinalized,
+          empty: CacheEmptyBehaviorIgnore,
           connector: "memory-cache",
           ttl: "30s"
         },
         {
           network: "*",
           method: "*",
-          finality: "unknown",
-          empty: "allow",
+          finality: DataFinalityStateUnknown,
+          empty: CacheEmptyBehaviorAllow,
           connector: "memory-cache",
           ttl: "30s"
         },
         {
           network: "*", // supports * as wildcard and | as OR operator
           method: "eth_getLogs | trace_*", // supports * as wildcard and | as OR operator
-          finality: "finalized",
-          empty: "allow",
+          finality: DataFinalityStateFinalized,
+          empty: CacheEmptyBehaviorAllow,
           connector: "postgres-cache",
           ttl: 0
         },
         {
           network: "evm:42161 | evm:10", // supports * as wildcard and | as OR operator
           method: "arbtrace_*", // supports * as wildcard and | as OR operator
-          finality: "finalized",
-          empty: "ignore",
+          finality: DataFinalityStateFinalized,
+          empty: CacheEmptyBehaviorIgnore,
           connector: "postgres-cache",
           ttl: "86400s"
         }
@@ -333,7 +348,16 @@ params: ["*", "<empty>"]
 </Tab>
 <Tab>
 ```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+import { 
+  createConfig,
+  DataFinalityStateFinalized,
+  DataFinalityStateUnfinalized,
+  DataFinalityStateRealtime,
+  DataFinalityStateUnknown,
+  CacheEmptyBehaviorIgnore,
+  CacheEmptyBehaviorAllow,
+  CacheEmptyBehaviorOnly
+} from "@erpc-cloud/config";
 
 export default createConfig({
   policies: [
@@ -345,8 +369,8 @@ export default createConfig({
         "*", // Second parameter
         // ... additional param matchers
       ],
-      finality: "finalized",
-      empty: "ignore",
+      finality: DataFinalityStateFinalized,
+      empty: CacheEmptyBehaviorIgnore,
       minItemSize: "10b",
       maxItemSize: "100mb",
       connector: "postgres-cache",
@@ -365,7 +389,7 @@ export default createConfig({
         fromBlock: ">=0x100",
         toBlock: "<=0x200"
       }],
-      finality: "finalized",
+      finality: DataFinalityStateFinalized,
       connector: "postgres-cache",
       ttl: "1d"
     },
@@ -378,7 +402,7 @@ export default createConfig({
         ">=0x100 | <=0x200", // Block number range
         "*" // Include details flag
       ],
-      finality: "finalized",
+      finality: DataFinalityStateFinalized,
       connector: "redis-cache",
       ttl: "1h"
     }

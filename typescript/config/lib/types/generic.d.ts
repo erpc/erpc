@@ -4,13 +4,14 @@ import type { DynamoDBConnectorConfig, AuthStrategyConfig as GenAuthStrategyConf
  */
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error" | "disabled" | undefined;
 /**
- * Generic type representing a string that will be parsed via `time.ParseDuration` config
+ * Generic type representing a time duration with units (ms, s, m, h),
+ * or a number that will be interpreted as milliseconds.
  */
-export type Duration = `${number}ms` | `${number}s` | `${number}m` | `${number}h`;
+export type Duration = `${number}ms` | `${number}s` | `${number}m` | `${number}h` | number;
 /**
- * Generic type representing a time.Duration config
+ * Generic type representing size with units (b, kb, mb), or a number that will be interpreted as bytes.
  */
-export type ByteSize = `${number}kb` | `${number}mb` | `${number}b` | `${number}`;
+export type ByteSize = `${number}kb` | `${number}mb` | `${number}b` | number;
 /**
  * Suported network architecture
  */

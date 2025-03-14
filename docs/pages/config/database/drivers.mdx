@@ -31,7 +31,10 @@ database:
 </Tab>
 <Tab>
 ```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+import { 
+  createConfig,
+  DataFinalityStateFinalized
+} from "@erpc-cloud/config";
 
 export default createConfig({
   database: {
@@ -49,7 +52,7 @@ export default createConfig({
         {
           network: "*",
           method: "*",
-          finality: "finalized",
+          finality: DataFinalityStateFinalized,
           connector: "memory-cache"
         }
       ]
@@ -94,7 +97,10 @@ database:
 </Tab>
 <Tab>
 ```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+import { 
+  createConfig,
+  DataFinalityStateFinalized
+} from "@erpc-cloud/config";
 
 export default createConfig({
   database: {
@@ -124,7 +130,7 @@ export default createConfig({
         {
           network: "*",
           method: "*",
-          finality: "finalized",
+          finality: DataFinalityStateFinalized,
           connector: "redis-cache"
         }
       ]
@@ -173,7 +179,10 @@ database:
 </Tab>
 <Tab>
 ```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+import { 
+  createConfig,
+  DataFinalityStateFinalized
+} from "@erpc-cloud/config";
 
 export default createConfig({
   database: {
@@ -195,7 +204,7 @@ export default createConfig({
         {
           network: "*",
           method: "*",
-          finality: "finalized",
+          finality: DataFinalityStateFinalized,
           connector: "postgres-cache"
         }
       ]
@@ -240,7 +249,10 @@ database:
 </Tab>
 <Tab>
 ```ts filename="erpc.ts"
-import { createConfig } from "@erpc-cloud/config";
+import { 
+  createConfig,
+  DataFinalityStateFinalized
+} from "@erpc-cloud/config";
 
 export default createConfig({
   database: {
@@ -271,7 +283,7 @@ export default createConfig({
         {
           network: "*",
           method: "*",
-          finality: "finalized",
+          finality: DataFinalityStateFinalized,
           connector: "dynamodb-cache"
         }
       ]

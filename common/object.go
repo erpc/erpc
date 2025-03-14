@@ -1,9 +1,10 @@
-package script
+package common
 
 import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/grafana/sobek"
 )
@@ -61,6 +62,27 @@ func MapJavascriptObjectToGo(v sobek.Value, dest interface{}) error {
 func setJsValueToGoField(jsValue sobek.Value, fieldValue reflect.Value) error {
 	if !fieldValue.CanSet() {
 		return nil
+	}
+
+	// Handle special case for Duration
+	if fieldValue.Type() == reflect.TypeOf(Duration(0)) {
+		jsType := jsValue.ExportType().Kind()
+		// Handle string durations like "5s" or "1m"
+		if jsType == reflect.String {
+			duration, err := time.ParseDuration(jsValue.String())
+			if err != nil {
+				return fmt.Errorf("invalid duration format: %v", err)
+			}
+			fieldValue.Set(reflect.ValueOf(Duration(duration)))
+			return nil
+		}
+		// Handle numeric values as milliseconds
+		if jsType == reflect.Int || jsType == reflect.Int8 || jsType == reflect.Int16 || jsType == reflect.Int32 || jsType == reflect.Int64 {
+			ms := jsValue.ToInteger()
+			duration := time.Duration(ms) * time.Millisecond
+			fieldValue.Set(reflect.ValueOf(Duration(duration)))
+			return nil
+		}
 	}
 
 	switch fieldValue.Kind() {

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/erpc/erpc/util"
 )
@@ -74,12 +73,8 @@ func (s *ServerConfig) Validate() error {
 			}
 		}
 	}
-	if s.MaxTimeout == nil || *s.MaxTimeout == "" {
+	if s.MaxTimeout == nil || *s.MaxTimeout == 0 {
 		return fmt.Errorf("server.maxTimeout is required")
-	}
-	_, err := time.ParseDuration(*s.MaxTimeout)
-	if err != nil {
-		return fmt.Errorf("server.maxTimeout is invalid (must be like 500ms, 2s, etc): %w", err)
 	}
 	return nil
 }
@@ -137,13 +132,8 @@ func (r *RateLimitRuleConfig) Validate() error {
 	if r.Method == "" {
 		return fmt.Errorf("rateLimiter.*.budget.rules.*.method is required")
 	}
-	if r.WaitTime == "" {
+	if r.WaitTime == 0 {
 		return fmt.Errorf("rateLimiter.*.budget.rules.*.waitTime is required")
-	} else {
-		_, err := time.ParseDuration(r.WaitTime)
-		if err != nil {
-			return fmt.Errorf("rateLimiter.*.budget.rules.*.waitTime is invalid: %w", err)
-		}
 	}
 	return nil
 }
@@ -547,7 +537,7 @@ func (c *CORSConfig) Validate() error {
 }
 
 func (h *HealthCheckConfig) Validate() error {
-	if h.ScoreMetricsWindowSize == "" {
+	if h.ScoreMetricsWindowSize == 0 {
 		return fmt.Errorf("project.*.healthCheck.scoreMetricsWindowSize is required")
 	}
 	return nil
@@ -624,18 +614,8 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 		}
 	}
 
-	if e.StatePollerInterval == "" {
+	if e.StatePollerInterval == 0 {
 		return fmt.Errorf("upstream.*.evm.statePollerInterval is required")
-	}
-	_, err := time.ParseDuration(e.StatePollerInterval)
-	if err != nil {
-		return fmt.Errorf("upstream.*.evm.statePollerInterval is invalid (must be like 10s, 5m, etc): %w", err)
-	}
-	if e.StatePollerDebounce != "" {
-		_, err = time.ParseDuration(e.StatePollerDebounce)
-		if err != nil {
-			return fmt.Errorf("upstream.*.evm.statePollerDebounce is invalid (must be like 100ms, 10s, 1m, etc): %w", err)
-		}
 	}
 	if e.NodeType != "" {
 		allowed := []EvmNodeType{
@@ -647,6 +627,7 @@ func (e *EvmUpstreamConfig) Validate(u *UpstreamConfig) error {
 			return fmt.Errorf("upstream.*.evm.nodeType '%s' is invalid must be one of: %v", e.NodeType, allowed)
 		}
 	}
+
 	return nil
 }
 
@@ -675,12 +656,8 @@ func (f *FailsafeConfig) Validate() error {
 }
 
 func (t *TimeoutPolicyConfig) Validate() error {
-	if t.Duration == "" {
+	if t.Duration == 0 {
 		return fmt.Errorf("upstream.*.failsafe.timeout.duration is required")
-	}
-	_, err := time.ParseDuration(t.Duration)
-	if err != nil {
-		return fmt.Errorf("upstream.*.failsafe.timeout.duration is invalid (must be like 500ms, 2s, etc): %w", err)
 	}
 	return nil
 }
@@ -689,93 +666,65 @@ func (r *RetryPolicyConfig) Validate() error {
 	if r.BackoffFactor <= 0 {
 		return fmt.Errorf("upstream.*.failsafe.retry.backoffFactor must be greater than 0")
 	}
-	if r.BackoffMaxDelay == "" {
+	if r.BackoffMaxDelay == 0 {
 		return fmt.Errorf("upstream.*.failsafe.retry.backoffMaxDelay is required")
-	}
-	_, err := time.ParseDuration(r.BackoffMaxDelay)
-	if err != nil {
-		return fmt.Errorf("upstream.*.failsafe.retry.backoffMaxDelay is invalid (must be like 500ms, 2s, etc): %w", err)
-	}
-	if r.Jitter == "" {
-		return fmt.Errorf("upstream.*.failsafe.retry.jitter is required")
-	}
-	_, err = time.ParseDuration(r.Jitter)
-	if err != nil {
-		return fmt.Errorf("upstream.*.failsafe.retry.jitter is invalid (must be like 500ms, 2s, etc): %w", err)
-	}
-	if r.Delay == "" {
-		return fmt.Errorf("upstream.*.failsafe.retry.delay is required")
-	}
-	_, err = time.ParseDuration(r.Delay)
-	if err != nil {
-		return fmt.Errorf("upstream.*.failsafe.retry.delay is invalid (must be like 500ms, 2s, etc): %w", err)
 	}
 	return nil
 }
 
 func (h *HedgePolicyConfig) Validate() error {
-	if h.Delay == "" {
-		return fmt.Errorf("upstream.*.failsafe.hedge.delay is required")
-	}
-	_, err := time.ParseDuration(h.Delay)
-	if err != nil {
-		return fmt.Errorf("upstream.*.failsafe.hedge.delay is invalid (must be like 500ms, 2s, etc): %w", err)
+	if h.Quantile <= 0 && h.Delay <= 0 {
+		return fmt.Errorf("failsafe.hedge.delay or failsafe.hedge.quantile is required")
 	}
 	return nil
 }
 
 func (c *CircuitBreakerPolicyConfig) Validate() error {
-	if c.HalfOpenAfter == "" {
-		return fmt.Errorf("upstream.*.failsafe.circuitBreaker.halfOpenAfter is required")
-	}
-	_, err := time.ParseDuration(c.HalfOpenAfter)
-	if err != nil {
-		return fmt.Errorf("upstream.*.failsafe.circuitBreaker.halfOpenAfter is invalid (must be like 30s, 5m, etc): %w", err)
+	if c.HalfOpenAfter == 0 {
+		return fmt.Errorf("failsafe.circuitBreaker.halfOpenAfter is required")
 	}
 	if c.FailureThresholdCapacity <= 0 {
-		return fmt.Errorf("upstream.*.failsafe.circuitBreaker.failureThresholdCapacity must be greater than 0")
+		return fmt.Errorf("failsafe.circuitBreaker.failureThresholdCapacity must be greater than 0")
 	}
 	if c.FailureThresholdCount <= 0 {
-		return fmt.Errorf("upstream.*.failsafe.circuitBreaker.failureThresholdCount must be greater than 0")
+		return fmt.Errorf("failsafe.circuitBreaker.failureThresholdCount must be greater than 0")
 	}
 	if c.FailureThresholdCount > c.FailureThresholdCapacity {
-		return fmt.Errorf("upstream.*.failsafe.circuitBreaker.failureThresholdCount must be less than or equal to failureThresholdCapacity")
+		return fmt.Errorf("failsafe.circuitBreaker.failureThresholdCount must be less than or equal to failureThresholdCapacity")
 	}
 	if c.SuccessThresholdCount <= 0 {
-		return fmt.Errorf("upstream.*.failsafe.circuitBreaker.successThresholdCount must be greater than 0")
+		return fmt.Errorf("failsafe.circuitBreaker.successThresholdCount must be greater than 0")
 	}
 	if c.SuccessThresholdCapacity <= 0 {
-		return fmt.Errorf("upstream.*.failsafe.circuitBreaker.successThresholdCapacity must be greater than 0")
+		return fmt.Errorf("failsafe.circuitBreaker.successThresholdCapacity must be greater than 0")
 	}
 	if c.SuccessThresholdCount > c.SuccessThresholdCapacity {
-		return fmt.Errorf("upstream.*.failsafe.circuitBreaker.successThresholdCount must be less than or equal to failureThresholdCapacity")
+		return fmt.Errorf("failsafe.circuitBreaker.successThresholdCount must be less than or equal to failureThresholdCapacity")
 	}
 	return nil
 }
 
 func (j *JsonRpcUpstreamConfig) Validate(c *Config) error {
 	if j.SupportsBatch != nil && *j.SupportsBatch {
-		if j.BatchMaxWait == "" {
-			return fmt.Errorf("upstream.*.jsonRpc.batchMaxWait or upstreamDefaults.jsonRpc.batchMaxWait is required")
-		}
-		_, err := time.ParseDuration(j.BatchMaxWait)
-		if err != nil {
-			return fmt.Errorf("upstream.*.jsonRpc.batchMaxWait or upstreamDefaults.jsonRpc.batchMaxWait is invalid (must be like 500ms, 2s, etc): %w", err)
+		if j.BatchMaxWait == 0 {
+			return fmt.Errorf("jsonRpc.batchMaxWait is required and must be greater than 0")
 		}
 		if j.BatchMaxSize <= 0 {
-			return fmt.Errorf("upstream.*.jsonRpc.batchMaxSize or upstreamDefaults.jsonRpc.batchMaxSize must be greater than 0")
+			return fmt.Errorf("jsonRpc.batchMaxSize must be greater than 0")
 		}
 	}
 	if j.ProxyPool != "" {
 		found := false
+		allIds := []string{}
 		for _, pool := range c.ProxyPools {
+			allIds = append(allIds, pool.ID)
 			if pool.ID == j.ProxyPool {
 				found = true
 				break
 			}
 		}
 		if !found {
-			return fmt.Errorf("upstream.*.jsonRpc.proxyPool '%s' does not exist in config.proxyPools", j.ProxyPool)
+			return fmt.Errorf("jsonRpc.proxyPool '%s' does not exist in configured proxyPools, must be one of: %v", j.ProxyPool, allIds)
 		}
 	}
 	return nil
@@ -785,12 +734,8 @@ func (r *RateLimitAutoTuneConfig) Validate() error {
 	if r.Enabled == nil || !*r.Enabled {
 		return nil
 	}
-	if r.AdjustmentPeriod == "" {
+	if r.AdjustmentPeriod == 0 {
 		return fmt.Errorf("upstream.*.rateLimitAutoTune.adjustmentPeriod is required")
-	}
-	_, err := time.ParseDuration(r.AdjustmentPeriod)
-	if err != nil {
-		return fmt.Errorf("upstream.*.rateLimitAutoTune.adjustmentPeriod is invalid (must be like 30s, 5m, etc): %w", err)
 	}
 	if r.ErrorRateThreshold <= 0 || r.ErrorRateThreshold > 1 {
 		return fmt.Errorf("upstream.*.rateLimitAutoTune.errorRateThreshold must be greater than 0 and less than 1")
@@ -855,12 +800,8 @@ func (e *EvmNetworkConfig) Validate() error {
 	if e.FallbackFinalityDepth == 0 {
 		return fmt.Errorf("network.*.evm.fallbackFinalityDepth must be greater than 0")
 	}
-	if e.FallbackStatePollerDebounce == "" {
+	if e.FallbackStatePollerDebounce == 0 {
 		return fmt.Errorf("network.*.evm.fallbackStatePollerDebounce is required")
-	}
-	_, err := time.ParseDuration(e.FallbackStatePollerDebounce)
-	if err != nil {
-		return fmt.Errorf("network.*.evm.fallbackStatePollerDebounce is invalid (must be like 100ms, 10s, 1m, etc): %w", err)
 	}
 	return nil
 }

@@ -63,9 +63,9 @@ export interface ServerConfig {
   listenV6?: boolean;
   httpHostV6?: string;
   httpPort?: number /* int */;
-  maxTimeout?: string;
-  readTimeout?: string;
-  writeTimeout?: string;
+  maxTimeout?: Duration;
+  readTimeout?: Duration;
+  writeTimeout?: Duration;
   enableGzip?: boolean;
   tls?: TLSConfig;
   aliasing?: AliasingConfig;
@@ -90,8 +90,8 @@ export interface DatabaseConfig {
 export interface SharedStateConfig {
   clusterKey?: string;
   connector?: ConnectorConfig;
-  fallbackTimeout?: number /* time in nanoseconds (time.Duration) */;
-  lockTtl?: number /* time in nanoseconds (time.Duration) */;
+  fallbackTimeout?: Duration;
+  lockTtl?: Duration;
 }
 export interface CacheConfig {
   connectors?: TsConnectorConfig[];
@@ -113,7 +113,7 @@ export interface CachePolicyConfig {
   empty?: CacheEmptyBehavior;
   minItemSize?: ByteSize;
   maxItemSize?: ByteSize;
-  ttl?: number /* time in nanoseconds (time.Duration) */;
+  ttl?: Duration;
 }
 export type ConnectorDriverType = string;
 export const DriverMemory: ConnectorDriverType = "memory";
@@ -150,9 +150,9 @@ export interface RedisConnectorConfig {
   db: number /* int */;
   tls?: TLSConfig;
   connPoolSize: number /* int */;
-  initTimeout?: number /* time in nanoseconds (time.Duration) */;
-  getTimeout?: number /* time in nanoseconds (time.Duration) */;
-  setTimeout?: number /* time in nanoseconds (time.Duration) */;
+  initTimeout?: Duration;
+  getTimeout?: Duration;
+  setTimeout?: Duration;
 }
 export interface DynamoDBConnectorConfig {
   table?: string;
@@ -163,19 +163,19 @@ export interface DynamoDBConnectorConfig {
   rangeKeyName?: string;
   reverseIndexName?: string;
   ttlAttributeName?: string;
-  initTimeout?: number /* time in nanoseconds (time.Duration) */;
-  getTimeout?: number /* time in nanoseconds (time.Duration) */;
-  setTimeout?: number /* time in nanoseconds (time.Duration) */;
-  statePollInterval?: number /* time in nanoseconds (time.Duration) */;
+  initTimeout?: Duration;
+  getTimeout?: Duration;
+  setTimeout?: Duration;
+  statePollInterval?: Duration;
 }
 export interface PostgreSQLConnectorConfig {
   connectionUri: string;
   table: string;
   minConns?: number /* int32 */;
   maxConns?: number /* int32 */;
-  initTimeout?: number /* time in nanoseconds (time.Duration) */;
-  getTimeout?: number /* time in nanoseconds (time.Duration) */;
-  setTimeout?: number /* time in nanoseconds (time.Duration) */;
+  initTimeout?: Duration;
+  getTimeout?: Duration;
+  setTimeout?: Duration;
 }
 export interface AwsAuthConfig {
   mode: 'file' | 'env' | 'secret'; // "file", "env", "secret"
@@ -263,7 +263,7 @@ export interface RateLimitAutoTuneConfig {
 export interface JsonRpcUpstreamConfig {
   supportsBatch?: boolean;
   batchMaxSize?: number /* int */;
-  batchMaxWait?: string;
+  batchMaxWait?: Duration;
   enableGzip?: boolean;
   headers?: { [key: string]: string};
   proxyPool?: string;
@@ -271,8 +271,8 @@ export interface JsonRpcUpstreamConfig {
 export interface EvmUpstreamConfig {
   chainId: number /* int64 */;
   nodeType?: EvmNodeType;
-  statePollerInterval?: string;
-  statePollerDebounce?: string;
+  statePollerInterval?: Duration;
+  statePollerDebounce?: Duration;
   maxAvailableRecentBlocks?: number /* int64 */;
   getLogsMaxBlockRange?: number /* int64 */;
 }
@@ -285,28 +285,28 @@ export interface FailsafeConfig {
 }
 export interface RetryPolicyConfig {
   maxAttempts: number /* int */;
-  delay?: string;
-  backoffMaxDelay?: string;
+  delay?: Duration;
+  backoffMaxDelay?: Duration;
   backoffFactor?: number /* float32 */;
-  jitter?: string;
+  jitter?: Duration;
   ignoreClientErrors?: boolean;
 }
 export interface CircuitBreakerPolicyConfig {
   failureThresholdCount: number /* uint */;
   failureThresholdCapacity: number /* uint */;
-  halfOpenAfter: string;
+  halfOpenAfter?: Duration;
   successThresholdCount: number /* uint */;
   successThresholdCapacity: number /* uint */;
 }
 export interface TimeoutPolicyConfig {
-  duration: Duration;
+  duration?: Duration;
 }
 export interface HedgePolicyConfig {
-  delay: string;
+  delay?: Duration;
   maxCount: number /* int */;
-  quantile: number /* float64 */;
-  minDelay: Duration;
-  maxDelay: Duration;
+  quantile?: number /* float64 */;
+  minDelay?: Duration;
+  maxDelay?: Duration;
 }
 export type ConsensusFailureBehavior = string;
 export const ConsensusFailureBehaviorReturnError: ConsensusFailureBehavior = "returnError";
@@ -353,7 +353,7 @@ export interface ProxyPoolConfig {
   urls: string[];
 }
 export interface HealthCheckConfig {
-  scoreMetricsWindowSize: string;
+  scoreMetricsWindowSize: Duration;
 }
 export interface NetworkConfig {
   architecture: TsNetworkArchitecture;
@@ -372,7 +372,7 @@ export interface DirectiveDefaultsConfig {
 export interface EvmNetworkConfig {
   chainId: number /* int64 */;
   fallbackFinalityDepth?: number /* int64 */;
-  fallbackStatePollerDebounce?: string;
+  fallbackStatePollerDebounce?: Duration;
   integrity?: EvmIntegrityConfig;
 }
 export interface EvmIntegrityConfig {
@@ -380,11 +380,11 @@ export interface EvmIntegrityConfig {
   enforceGetLogsBlockRange?: boolean;
 }
 export interface SelectionPolicyConfig {
-  evalInterval?: number /* time in nanoseconds (time.Duration) */;
+  evalInterval?: Duration;
   evalFunction?: SelectionPolicyEvalFunction | undefined;
   evalPerMethod?: boolean;
   resampleExcluded?: boolean;
-  resampleInterval?: number /* time in nanoseconds (time.Duration) */;
+  resampleInterval?: Duration;
   resampleCount?: number /* int */;
 }
 export type AuthType = string;
@@ -464,48 +464,6 @@ export const CacheEmptyBehaviorAllow: CacheEmptyBehavior = 1;
 export const CacheEmptyBehaviorOnly: CacheEmptyBehavior = 2;
 
 //////////
-// source: defaults.go
-
-export const DefaultEvmFinalityDepth = 1024;
-export const DefaultEvmStatePollerDebounce = "5s";
-export const DefaultPolicyFunction = `
-	(upstreams, method) => {
-		const defaults = upstreams.filter(u => u.config.group !== 'fallback')
-		const fallbacks = upstreams.filter(u => u.config.group === 'fallback')
-		
-		const maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7')
-		const maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10')
-		const minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1')
-		
-		const healthyOnes = defaults.filter(
-			u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
-		)
-		
-		if (healthyOnes.length >= minHealthyThreshold) {
-			return healthyOnes
-		}
-
-		if (fallbacks.length > 0) {
-			let healthyFallbacks = fallbacks.filter(
-				u => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag
-			)
-			
-			if (healthyFallbacks.length > 0) {
-				return healthyFallbacks
-			}
-		}
-
-		// The reason all upstreams are returned is to be less harsh and still consider default nodes (in case they have intermittent issues)
-		// Order of upstreams does not matter as that will be decided by the upstream scoring mechanism
-		return upstreams
-	}
-`;
-
-//////////
-// source: matcher.go
-
-
-//////////
 // source: network.go
 
 export type NetworkArchitecture = string;
@@ -530,14 +488,3 @@ export const ScopeNetwork: Scope = "network";
 export const ScopeUpstream: Scope = "upstream";
 export type UpstreamType = string;
 export type Upstream = any;
-
-//////////
-// source: upstream_fake.go
-
-export interface FakeUpstream {
-}
-
-//////////
-// source: vendors.go
-
-export type Vendor = any;

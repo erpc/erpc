@@ -28,9 +28,9 @@ func TestRedisConnectorInitialization(t *testing.T) {
 			Password:     "",
 			DB:           0,
 			ConnPoolSize: 5,
-			InitTimeout:  2 * time.Second,
-			GetTimeout:   2 * time.Second,
-			SetTimeout:   2 * time.Second,
+			InitTimeout:  common.Duration(2 * time.Second),
+			GetTimeout:   common.Duration(2 * time.Second),
+			SetTimeout:   common.Duration(2 * time.Second),
 			TLS:          nil,
 		}
 
@@ -62,9 +62,9 @@ func TestRedisConnectorInitialization(t *testing.T) {
 			Password:     "",
 			DB:           0,
 			ConnPoolSize: 5,
-			InitTimeout:  500 * time.Millisecond,
-			GetTimeout:   500 * time.Millisecond,
-			SetTimeout:   500 * time.Millisecond,
+			InitTimeout:  common.Duration(500 * time.Millisecond),
+			GetTimeout:   common.Duration(500 * time.Millisecond),
+			SetTimeout:   common.Duration(500 * time.Millisecond),
 		}
 
 		connector, err := NewRedisConnector(ctx, &logger, "test-connector-invalid-addr", cfg)
@@ -96,7 +96,7 @@ func TestRedisConnectorInitialization(t *testing.T) {
 
 		cfg := &common.RedisConnectorConfig{
 			Addr:        "localhost:6379",
-			InitTimeout: 1 * time.Second,
+			InitTimeout: common.Duration(1 * time.Second),
 			TLS: &common.TLSConfig{
 				Enabled:            true,
 				InsecureSkipVerify: false,
@@ -141,9 +141,9 @@ func TestRedisConnectorInitialization(t *testing.T) {
 			Password:     "",
 			DB:           0,
 			ConnPoolSize: 5,
-			InitTimeout:  300 * time.Millisecond,
-			GetTimeout:   300 * time.Millisecond,
-			SetTimeout:   300 * time.Millisecond,
+			InitTimeout:  common.Duration(300 * time.Millisecond),
+			GetTimeout:   common.Duration(300 * time.Millisecond),
+			SetTimeout:   common.Duration(300 * time.Millisecond),
 		}
 
 		// This will fail its first internal connection attempt,

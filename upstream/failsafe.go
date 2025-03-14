@@ -2,7 +2,6 @@ package upstream
 
 import (
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
@@ -28,7 +27,7 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity s
 
 	if fsCfg.Timeout != nil {
 		var err error
-		p, err := createTimeoutPolicy(&lg, entity, fsCfg.Timeout)
+		p, err := createTimeoutPolicy(&lg, fsCfg.Timeout)
 		if err != nil {
 			return nil, err
 		}
@@ -37,7 +36,7 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity s
 	}
 
 	if fsCfg.Retry != nil {
-		p, err := createRetryPolicy(scope, entity, fsCfg.Retry)
+		p, err := createRetryPolicy(scope, fsCfg.Retry)
 		if err != nil {
 			return nil, err
 		}
@@ -55,7 +54,7 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity s
 				},
 			)
 		}
-		p, err := createCircuitBreakerPolicy(&lg, entity, fsCfg.CircuitBreaker)
+		p, err := createCircuitBreakerPolicy(&lg, fsCfg.CircuitBreaker)
 		if err != nil {
 			return nil, err
 		}
@@ -63,7 +62,7 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity s
 	}
 
 	if fsCfg.Hedge != nil && fsCfg.Hedge.MaxCount > 0 {
-		p, err := createHedgePolicy(&lg, entity, fsCfg.Hedge)
+		p, err := createHedgePolicy(&lg, fsCfg.Hedge)
 		if err != nil {
 			return nil, err
 		}
@@ -80,7 +79,7 @@ func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity s
 				},
 			)
 		}
-		p, err := createConsensusPolicy(&lg, entity, fsCfg.Consensus)
+		p, err := createConsensusPolicy(&lg, fsCfg.Consensus)
 		if err != nil {
 			return nil, err
 		}
@@ -102,7 +101,7 @@ func ToPolicyArray(policies map[string]failsafe.Policy[*common.NormalizedRespons
 	return pls
 }
 
-func createCircuitBreakerPolicy(logger *zerolog.Logger, entity string, cfg *common.CircuitBreakerPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+func createCircuitBreakerPolicy(logger *zerolog.Logger, cfg *common.CircuitBreakerPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
 	builder := circuitbreaker.Builder[*common.NormalizedResponse]()
 
 	if cfg.FailureThresholdCount > 0 {
@@ -121,16 +120,8 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, entity string, cfg *comm
 		}
 	}
 
-	if cfg.HalfOpenAfter != "" {
-		dur, err := time.ParseDuration(cfg.HalfOpenAfter)
-		if err != nil {
-			return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse circuitBreaker.halfOpenAfter: %v", err), map[string]interface{}{
-				"entity": entity,
-				"policy": cfg,
-			})
-		}
-
-		builder = builder.WithDelay(dur)
+	if cfg.HalfOpenAfter > 0 {
+		builder = builder.WithDelay(cfg.HalfOpenAfter.Duration())
 	}
 
 	builder.OnStateChanged(func(event circuitbreaker.StateChangedEvent) {
@@ -204,32 +195,14 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, entity string, cfg *comm
 	return builder.Build(), nil
 }
 
-func createHedgePolicy(logger *zerolog.Logger, entity string, cfg *common.HedgePolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
 	var builder hedgepolicy.HedgePolicyBuilder[*common.NormalizedResponse]
 
-	delay, err := time.ParseDuration(cfg.Delay)
-	if err != nil {
-		return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse hedge.delay: %v", err), map[string]interface{}{
-			"entity": entity,
-			"policy": cfg,
-		})
-	}
-
+	delay := cfg.Delay.Duration()
 	if cfg.Quantile > 0 {
-		minDelay, err := time.ParseDuration(cfg.MinDelay)
-		if err != nil {
-			return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse hedge.minDelay: %v", err), map[string]interface{}{
-				"entity": entity,
-				"policy": cfg,
-			})
-		}
-		maxDelay, err := time.ParseDuration(cfg.MaxDelay)
-		if err != nil {
-			return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse hedge.maxDelay: %v", err), map[string]interface{}{
-				"entity": entity,
-				"policy": cfg,
-			})
-		}
+		minDelay := cfg.MinDelay.Duration()
+		maxDelay := cfg.MaxDelay.Duration()
+
 		builder = hedgepolicy.BuilderWithDelayFunc(func(exec failsafe.ExecutionAttempt[*common.NormalizedResponse]) time.Duration {
 			ctx := exec.Context()
 			if ctx != nil {
@@ -296,30 +269,16 @@ func createHedgePolicy(logger *zerolog.Logger, entity string, cfg *common.HedgeP
 	return builder.Build(), nil
 }
 
-func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
 	builder := retrypolicy.Builder[*common.NormalizedResponse]()
 
 	if cfg.MaxAttempts > 0 {
 		builder = builder.WithMaxAttempts(cfg.MaxAttempts)
 	}
-	if cfg.Delay != "" {
-		delayDuration, err := time.ParseDuration(cfg.Delay)
-		if err != nil {
-			return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse retry.delay: %v", err), map[string]interface{}{
-				"entity": entity,
-				"policy": cfg,
-			})
-		}
-
-		if cfg.BackoffMaxDelay != "" {
-			backoffMaxDuration, err := time.ParseDuration(cfg.BackoffMaxDelay)
-			if err != nil {
-				return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse retry.backoffMaxDelay: %v", err), map[string]interface{}{
-					"entity": entity,
-					"policy": cfg,
-				})
-			}
-
+	if cfg.Delay > 0 {
+		delayDuration := cfg.Delay.Duration()
+		if cfg.BackoffMaxDelay > 0 {
+			backoffMaxDuration := cfg.BackoffMaxDelay.Duration()
 			if cfg.BackoffFactor > 0 {
 				builder = builder.WithBackoffFactor(delayDuration, backoffMaxDuration, cfg.BackoffFactor)
 			} else {
@@ -329,18 +288,8 @@ func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolic
 			builder = builder.WithDelay(delayDuration)
 		}
 	}
-	if cfg.Jitter != "" {
-		jitterDuration, err := time.ParseDuration(cfg.Jitter)
-		if err != nil {
-			return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse retry.jitter: %v", err), map[string]interface{}{
-				"entity": entity,
-				"policy": cfg,
-			})
-		}
-
-		if jitterDuration > 0 {
-			builder = builder.WithJitter(jitterDuration)
-		}
+	if cfg.Jitter > 0 {
+		builder = builder.WithJitter(cfg.Jitter.Duration())
 	}
 
 	builder.HandleIf(func(result *common.NormalizedResponse, err error) bool {
@@ -459,16 +408,8 @@ func createRetryPolicy(scope common.Scope, entity string, cfg *common.RetryPolic
 	return builder.Build(), nil
 }
 
-func createTimeoutPolicy(logger *zerolog.Logger, entity string, cfg *common.TimeoutPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
-	if cfg.Duration == "" {
-		return nil, common.NewErrFailsafeConfiguration(errors.New("missing timeout"), map[string]interface{}{
-			"entity": entity,
-			"policy": cfg,
-		})
-	}
-
-	timeoutDuration, err := time.ParseDuration(cfg.Duration)
-	builder := timeout.Builder[*common.NormalizedResponse](timeoutDuration)
+func createTimeoutPolicy(logger *zerolog.Logger, cfg *common.TimeoutPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+	builder := timeout.Builder[*common.NormalizedResponse](cfg.Duration.Duration())
 
 	if logger.GetLevel() == zerolog.TraceLevel {
 		builder.OnTimeoutExceeded(func(event failsafe.ExecutionDoneEvent[*common.NormalizedResponse]) {
@@ -476,17 +417,10 @@ func createTimeoutPolicy(logger *zerolog.Logger, entity string, cfg *common.Time
 		})
 	}
 
-	if err != nil {
-		return nil, common.NewErrFailsafeConfiguration(fmt.Errorf("failed to parse timeout: %v", err), map[string]interface{}{
-			"entity": entity,
-			"policy": cfg,
-		})
-	}
-
 	return builder.Build(), nil
 }
 
-func createConsensusPolicy(logger *zerolog.Logger, entity string, cfg *common.ConsensusPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
+func createConsensusPolicy(logger *zerolog.Logger, cfg *common.ConsensusPolicyConfig) (failsafe.Policy[*common.NormalizedResponse], error) {
 	if cfg == nil {
 		// No consensus config given, so no policy
 		return nil, nil
@@ -501,9 +435,7 @@ func createConsensusPolicy(logger *zerolog.Logger, entity string, cfg *common.Co
 	builder = builder.WithLowParticipantsBehavior(cfg.LowParticipantsBehavior)
 
 	builder.OnAgreement(func(event failsafe.ExecutionEvent[*common.NormalizedResponse]) {
-		logger.Debug().
-			Str("entity", entity).
-			Msg("spawning additional consensus request")
+		logger.Debug().Msg("spawning additional consensus request")
 	})
 
 	p := builder.Build()

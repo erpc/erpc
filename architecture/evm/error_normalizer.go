@@ -57,17 +57,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		// Infer from known status codes
-		if r.StatusCode == 415 || code == common.JsonRpcErrorUnsupportedException {
-			return common.NewErrEndpointUnsupported(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorUnsupportedException,
-					err.Message,
-					nil,
-					details,
-				),
-			)
-		} else if strings.Contains(msg, "Try with this block range") ||
+		if strings.Contains(msg, "Try with this block range") ||
 			strings.Contains(msg, "block range is too wide") ||
 			strings.Contains(msg, "this block range should work") ||
 			strings.Contains(msg, "range too large") ||
@@ -144,7 +134,6 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.HasPrefix(msg, "Finalized block not found") {
 			// This error means node does not support "finalized/safe/pending" blocks.
 			// ref https://github.com/ethereum/go-ethereum/blob/368e16f39d6c7e5cce72a92ec289adbfbaed4854/eth/api_backend.go#L67-L95
-			details["blockTag"] = strings.ToLower(strings.SplitN(err.Message, " ", 2)[0])
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -159,16 +148,6 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorMissingData,
-					err.Message,
-					nil,
-					details,
-				),
-			)
-		} else if code == -32004 || code == -32001 {
-			return common.NewErrEndpointUnsupported(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorUnsupportedException,
 					err.Message,
 					nil,
 					details,
@@ -303,6 +282,16 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorInvalidArgument,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+		} else if r.StatusCode == 415 || code == -32004 || code == -32001 || code == common.JsonRpcErrorUnsupportedException {
+			return common.NewErrEndpointUnsupported(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorUnsupportedException,
 					err.Message,
 					nil,
 					details,
