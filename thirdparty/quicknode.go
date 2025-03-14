@@ -46,7 +46,8 @@ func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr i
 			details["data"] = err.Data
 		}
 
-		if code == -32614 && strings.Contains(msg, "eth_getLogs") && strings.Contains(msg, "limited") {
+		if (code == -32614 && strings.Contains(msg, "eth_getLogs") && strings.Contains(msg, "limited")) ||
+			strings.Contains(msg, "eth_getLogs and eth_newFilter are limited") {
 			return common.NewErrEndpointRequestTooLarge(
 				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorEvmLargeRange, msg, nil, details),
 				common.EvmBlockRangeTooLarge,
