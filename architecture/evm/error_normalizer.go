@@ -169,9 +169,6 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.HasPrefix(msg, "Safe block not found") ||
 			strings.HasPrefix(msg, "finalized block not found") ||
 			strings.HasPrefix(msg, "Finalized block not found") {
-
-			details["blockTag"] = strings.ToLower(strings.SplitN(err.Message, " ", 2)[0])
-
 			// by default, we retry this type of clien-side exception as other upstreams might
 			// have/support this specific block tag data.
 			return common.NewErrEndpointClientSideException(
