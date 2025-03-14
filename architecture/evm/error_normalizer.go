@@ -169,6 +169,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.HasPrefix(msg, "Safe block not found") ||
 			strings.HasPrefix(msg, "finalized block not found") ||
 			strings.HasPrefix(msg, "Finalized block not found") {
+
 			// by default, we retry this type of clien-side exception as other upstreams might
 			// have/support this specific block tag data.
 			return common.NewErrEndpointClientSideException(
@@ -350,7 +351,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			if dt, ok := err.Data.(map[string]interface{}); ok {
 				if innerMsg, ok := dt["message"]; ok {
 					if strings.Contains(innerMsg.(string), "validation errors in batch") {
-						// Return a server-side error so the caller might retry or split the batch.
+						// Return a retryable client-side error so the caller might retry or split the batch.
 						return common.NewErrEndpointClientSideException(
 							common.NewErrJsonRpcExceptionInternal(
 								int(code),
