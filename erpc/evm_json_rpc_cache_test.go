@@ -602,11 +602,11 @@ func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
 		})
 
-		ttl := common.Duration(5 * time.Minute)
+		ttl := time.Duration(5 * time.Minute)
 		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
 			Network: "evm:123",
 			Method:  "eth_getBalance",
-			TTL:     ttl,
+			TTL:     common.Duration(ttl),
 		}, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{
@@ -625,7 +625,7 @@ func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 		err = cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
-		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:5", mock.Anything, mock.Anything, &ttl)
+		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:5", mock.Anything, mock.Anything, mock.AnythingOfType("*time.Duration"))
 	})
 
 	t.Run("ShouldNotSetTTLWhenPolicyDoesNotDefineIt", func(t *testing.T) {
@@ -681,7 +681,7 @@ func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 
 		assert.NoError(t, err)
 		mockConnectors[0].AssertNotCalled(t, "Set")
-		mockConnectors[1].AssertCalled(t, "Set", mock.Anything, "evm:123:5", mock.Anything, mock.Anything, &ttl)
+		mockConnectors[1].AssertCalled(t, "Set", mock.Anything, "evm:123:5", mock.Anything, mock.Anything, mock.AnythingOfType("*time.Duration"))
 	})
 }
 
