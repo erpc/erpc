@@ -382,7 +382,7 @@ func BenchmarkNetworkForward_ConcurrentEthGetLogsIntegrityEnabled(b *testing.B) 
 		Endpoint: "http://rpc1.localhost",
 		Evm: &common.EvmUpstreamConfig{
 			ChainId:             123,
-			StatePollerDebounce: "10s",
+			StatePollerDebounce: common.Duration(10 * time.Second),
 		},
 	}
 

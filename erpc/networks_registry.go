@@ -73,13 +73,8 @@ func NewNetwork(
 	policyArray := upstream.ToPolicyArray(pls, "timeout", "retry", "hedge", "consensus")
 	var timeoutDuration *time.Duration
 	if nwCfg.Failsafe != nil && nwCfg.Failsafe.Timeout != nil {
-		d, err := time.ParseDuration(nwCfg.Failsafe.Timeout.Duration)
-		timeoutDuration = &d
-		if err != nil {
-			return nil, err
-		}
+		timeoutDuration = nwCfg.Failsafe.Timeout.Duration.DurationPtr()
 	}
-
 	lg.Debug().Interface("config", nwCfg.Failsafe).Msg("creating network")
 
 	network := &Network{

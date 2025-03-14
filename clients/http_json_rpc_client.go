@@ -91,22 +91,8 @@ func NewGenericHttpJsonRpcClient(
 	if jsonRpcCfg != nil {
 		if jsonRpcCfg.SupportsBatch != nil && *jsonRpcCfg.SupportsBatch {
 			client.supportsBatch = true
-
-			if jsonRpcCfg.BatchMaxSize > 0 {
-				client.batchMaxSize = jsonRpcCfg.BatchMaxSize
-			} else {
-				client.batchMaxSize = 10
-			}
-			if jsonRpcCfg.BatchMaxWait != "" {
-				duration, err := time.ParseDuration(jsonRpcCfg.BatchMaxWait)
-				if err != nil {
-					return nil, err
-				}
-				client.batchMaxWait = duration
-			} else {
-				client.batchMaxWait = 50 * time.Millisecond
-			}
-
+			client.batchMaxSize = jsonRpcCfg.BatchMaxSize
+			client.batchMaxWait = jsonRpcCfg.BatchMaxWait.Duration()
 			client.batchRequests = make(map[interface{}]*batchRequest)
 		}
 

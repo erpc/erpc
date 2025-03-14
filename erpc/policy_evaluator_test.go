@@ -10,7 +10,6 @@ import (
 
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/common/script"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/thirdparty"
@@ -35,7 +34,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that selects upstreams with error rate < 0.5
-		evalFn, err := script.CompileFunction(`
+		evalFn, err := common.CompileFunction(`
 			(upstreams) => {
 				return upstreams.filter(u => u.metrics.errorRate < 0.5);
 			}
@@ -43,10 +42,10 @@ func TestPolicyEvaluator(t *testing.T) {
 		require.NoError(t, err)
 
 		config := &common.SelectionPolicyConfig{
-			EvalInterval:     50 * time.Millisecond,
+			EvalInterval:     common.Duration(50 * time.Millisecond),
 			EvalPerMethod:    false,
 			EvalFunction:     evalFn,
-			ResampleInterval: 200 * time.Millisecond,
+			ResampleInterval: common.Duration(200 * time.Millisecond),
 			ResampleCount:    1,
 		}
 
@@ -86,7 +85,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer cancel()
 		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
 
-		evalFn, err := script.CompileFunction(`
+		evalFn, err := common.CompileFunction(`
 			(upstreams) => {
 				return "not an array";
 			}
@@ -94,10 +93,10 @@ func TestPolicyEvaluator(t *testing.T) {
 		require.NoError(t, err)
 
 		config := &common.SelectionPolicyConfig{
-			EvalInterval:     50 * time.Millisecond,
+			EvalInterval:     common.Duration(50 * time.Millisecond),
 			EvalPerMethod:    false,
 			EvalFunction:     evalFn,
-			ResampleInterval: 200 * time.Millisecond,
+			ResampleInterval: common.Duration(200 * time.Millisecond),
 			ResampleCount:    1,
 		}
 
@@ -127,7 +126,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer cancel()
 		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
 
-		evalFn, err := script.CompileFunction(`
+		evalFn, err := common.CompileFunction(`
 			(upstreams) => {
 				return [{ invalid: "structure" }];
 			}
@@ -135,10 +134,10 @@ func TestPolicyEvaluator(t *testing.T) {
 		require.NoError(t, err)
 
 		config := &common.SelectionPolicyConfig{
-			EvalInterval:     50 * time.Millisecond,
+			EvalInterval:     common.Duration(50 * time.Millisecond),
 			EvalPerMethod:    false,
 			EvalFunction:     evalFn,
-			ResampleInterval: 200 * time.Millisecond,
+			ResampleInterval: common.Duration(200 * time.Millisecond),
 			ResampleCount:    1,
 		}
 
@@ -168,7 +167,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer cancel()
 		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
 
-		evalFn, err := script.CompileFunction(`
+		evalFn, err := common.CompileFunction(`
 			(upstreams) => {
 				return upstreams.map(u => ({
 					metrics: u.metrics,
@@ -179,10 +178,10 @@ func TestPolicyEvaluator(t *testing.T) {
 		require.NoError(t, err)
 
 		config := &common.SelectionPolicyConfig{
-			EvalInterval:     50 * time.Millisecond,
+			EvalInterval:     common.Duration(50 * time.Millisecond),
 			EvalPerMethod:    false,
 			EvalFunction:     evalFn,
-			ResampleInterval: 200 * time.Millisecond,
+			ResampleInterval: common.Duration(200 * time.Millisecond),
 			ResampleCount:    1,
 		}
 
@@ -213,7 +212,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that marks all upstreams as inactive
-		evalFn, err := script.CompileFunction(`
+		evalFn, err := common.CompileFunction(`
 			(upstreams) => {
 				return []; // Return empty array to make all upstreams inactive
 			}
@@ -221,9 +220,9 @@ func TestPolicyEvaluator(t *testing.T) {
 		require.NoError(t, err)
 
 		resampleCount := 3
-		resampleInterval := 100 * time.Millisecond
+		resampleInterval := common.Duration(100 * time.Millisecond)
 		config := &common.SelectionPolicyConfig{
-			EvalInterval:     50 * time.Millisecond,
+			EvalInterval:     common.Duration(50 * time.Millisecond),
 			EvalPerMethod:    false,
 			EvalFunction:     evalFn,
 			ResampleExcluded: true,
@@ -245,7 +244,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		assert.Error(t, err)
 
 		// Wait for sampling period to begin
-		time.Sleep(resampleInterval)
+		time.Sleep(resampleInterval.Duration())
 
 		// During sampling period, we should get resampleCount successful permits
 		for i := 0; i < resampleCount; i++ {
@@ -265,7 +264,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		assert.Error(t, err, "Upstream should be inactive after sampling period")
 
 		// Wait for another sampling period
-		time.Sleep(resampleInterval)
+		time.Sleep(resampleInterval.Duration())
 
 		// Verify sample counter was reset and we can sample again
 		err = evaluator.AcquirePermit(&logger, ups1, "method1")
@@ -283,7 +282,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that selects upstreams with error rate < 0.3
-		evalFn, err := script.CompileFunction(`
+		evalFn, err := common.CompileFunction(`
 			(upstreams) => {
 				return upstreams.filter(u => u.metrics.errorRate < 0.3);
 			}
@@ -291,11 +290,11 @@ func TestPolicyEvaluator(t *testing.T) {
 		require.NoError(t, err)
 
 		config := &common.SelectionPolicyConfig{
-			EvalInterval:     50 * time.Millisecond,
+			EvalInterval:     common.Duration(50 * time.Millisecond),
 			EvalPerMethod:    false,
 			EvalFunction:     evalFn,
 			ResampleExcluded: true,
-			ResampleInterval: 100 * time.Millisecond,
+			ResampleInterval: common.Duration(100 * time.Millisecond),
 			ResampleCount:    2,
 		}
 
@@ -352,7 +351,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		ntw, ups1, ups2, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that alternates between accepting all and no upstreams
-		evalFn, err := script.CompileFunction(`
+		evalFn, err := common.CompileFunction(`
         let counter = 0;
         (upstreams) => {
             counter++;
@@ -363,10 +362,10 @@ func TestPolicyEvaluator(t *testing.T) {
 		require.NoError(t, err)
 
 		config := &common.SelectionPolicyConfig{
-			EvalInterval:     1 * time.Millisecond, // Fast evaluation for testing
+			EvalInterval:     common.Duration(1 * time.Millisecond), // Fast evaluation for testing
 			EvalPerMethod:    false,
 			EvalFunction:     evalFn,
-			ResampleInterval: 50 * time.Millisecond,
+			ResampleInterval: common.Duration(50 * time.Millisecond),
 			ResampleCount:    2,
 		}
 
@@ -448,7 +447,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that selects upstreams with error rate < 0.4
-		evalFn, err := script.CompileFunction(`
+		evalFn, err := common.CompileFunction(`
 			(upstreams) => {
 				return upstreams.filter(u => {
 					// Handle case where metrics might be undefined
@@ -460,10 +459,10 @@ func TestPolicyEvaluator(t *testing.T) {
 		require.NoError(t, err)
 
 		config := &common.SelectionPolicyConfig{
-			EvalInterval:     50 * time.Millisecond,
+			EvalInterval:     common.Duration(50 * time.Millisecond),
 			EvalPerMethod:    false,
 			EvalFunction:     evalFn,
-			ResampleInterval: 100 * time.Millisecond,
+			ResampleInterval: common.Duration(100 * time.Millisecond),
 			ResampleCount:    2,
 		}
 
@@ -531,7 +530,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that uses a threshold variable to control upstream selection
-		evalFn, err := script.CompileFunction(`
+		evalFn, err := common.CompileFunction(`
         let errorThreshold = 0.3;
         (upstreams) => {
             return upstreams.filter(u => {
@@ -543,11 +542,11 @@ func TestPolicyEvaluator(t *testing.T) {
 		require.NoError(t, err)
 
 		config := &common.SelectionPolicyConfig{
-			EvalInterval:     50 * time.Millisecond,
+			EvalInterval:     common.Duration(50 * time.Millisecond),
 			EvalPerMethod:    false,
 			EvalFunction:     evalFn,
 			ResampleExcluded: true,
-			ResampleInterval: 100 * time.Millisecond,
+			ResampleInterval: common.Duration(100 * time.Millisecond),
 			ResampleCount:    2,
 		}
 
@@ -575,7 +574,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		assert.Error(t, err, "Upstream should transition to inactive state")
 
 		// Transition: Inactive -> Sampling (wait for sampling period)
-		time.Sleep(config.ResampleInterval)
+		time.Sleep(config.ResampleInterval.Duration())
 
 		// Should get exactly ResampleCount permits during sampling
 		err = evaluator.AcquirePermit(&logger, ups1, "method1")
@@ -626,7 +625,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		ntw, _, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that selects upstreams based on error rate threshold
-		evalFn, err := script.CompileFunction(`
+		evalFn, err := common.CompileFunction(`
 			(upstreams) => {
 				return upstreams.filter(u => {
 					if (!u.metrics || !u.metrics.errorRate) return true;
@@ -637,10 +636,10 @@ func TestPolicyEvaluator(t *testing.T) {
 		require.NoError(t, err)
 
 		config := &common.SelectionPolicyConfig{
-			EvalInterval:     50 * time.Millisecond,
+			EvalInterval:     common.Duration(50 * time.Millisecond),
 			EvalPerMethod:    true, // Enable per-method evaluation
 			EvalFunction:     evalFn,
-			ResampleInterval: 100 * time.Millisecond,
+			ResampleInterval: common.Duration(100 * time.Millisecond),
 			ResampleCount:    2,
 		}
 
@@ -706,7 +705,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		ntw, _, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that cordons all upstreams
-		evalFn, err := script.CompileFunction(`
+		evalFn, err := common.CompileFunction(`
 			(upstreams) => {
 				return []; // Return empty array to cordon all upstreams
 			}
@@ -714,10 +713,10 @@ func TestPolicyEvaluator(t *testing.T) {
 		require.NoError(t, err)
 
 		config := &common.SelectionPolicyConfig{
-			EvalInterval:     50 * time.Millisecond,
+			EvalInterval:     common.Duration(50 * time.Millisecond),
 			EvalPerMethod:    false, // Test network-wide evaluation
 			EvalFunction:     evalFn,
-			ResampleInterval: 100 * time.Millisecond,
+			ResampleInterval: common.Duration(100 * time.Millisecond),
 			ResampleCount:    2,
 		}
 
@@ -753,7 +752,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that counts evaluations
-		evalFn, err := script.CompileFunction(`
+		evalFn, err := common.CompileFunction(`
 			let evaluationCount = 0;
 			(upstreams) => {
 				evaluationCount++;
@@ -763,12 +762,12 @@ func TestPolicyEvaluator(t *testing.T) {
 		`)
 		require.NoError(t, err)
 
-		evalInterval := 100 * time.Millisecond
+		evalInterval := common.Duration(100 * time.Millisecond)
 		config := &common.SelectionPolicyConfig{
 			EvalInterval:     evalInterval,
 			EvalPerMethod:    false,
 			EvalFunction:     evalFn,
-			ResampleInterval: 200 * time.Millisecond,
+			ResampleInterval: common.Duration(200 * time.Millisecond),
 			ResampleCount:    1,
 		}
 
@@ -785,24 +784,24 @@ func TestPolicyEvaluator(t *testing.T) {
 		assert.Error(t, err, "Initial evaluation should have occurred immediately")
 
 		// Wait for next evaluation cycle
-		time.Sleep(evalInterval)
+		time.Sleep(evalInterval.Duration())
 		err = evaluator.AcquirePermit(&logger, ups1, "method1")
 		assert.NoError(t, err, "Second evaluation should have different result")
 
 		// Wait for third evaluation cycle
-		time.Sleep(evalInterval)
+		time.Sleep(evalInterval.Duration())
 		err = evaluator.AcquirePermit(&logger, ups1, "method1")
 		assert.Error(t, err, "Third evaluation should have different result")
 
 		// Test evaluation stops when context is cancelled
 		cancel()
-		time.Sleep(evalInterval * 2)
+		time.Sleep(evalInterval.Duration() * 2)
 
 		// Record current permit state
 		initialPermitState := evaluator.AcquirePermit(&logger, ups1, "method1")
 
 		// Wait for what would have been multiple evaluation cycles
-		time.Sleep(evalInterval * 3)
+		time.Sleep(evalInterval.Duration() * 3)
 
 		// Verify permit state hasn't changed after context cancellation
 		laterPermitState := evaluator.AcquirePermit(&logger, ups1, "method1")
@@ -812,7 +811,7 @@ func TestPolicyEvaluator(t *testing.T) {
 			"Permit state should not change after context cancellation")
 
 		// Test starting a new evaluator after cancellation
-		ctx2, cancel2 := context.WithTimeout(context.Background(), evalInterval*5)
+		ctx2, cancel2 := context.WithTimeout(context.Background(), evalInterval.Duration()*5)
 		defer cancel2()
 
 		evaluator2, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, ntw.metricsTracker)
@@ -824,8 +823,8 @@ func TestPolicyEvaluator(t *testing.T) {
 		// Verify the new evaluator is working
 		var lastResult error
 		var changes int
-		checkInterval := evalInterval / 4
-		deadline := time.Now().Add(evalInterval * 3)
+		checkInterval := evalInterval.Duration() / 4
+		deadline := time.Now().Add(evalInterval.Duration() * 3)
 
 		// Monitor for at least 2 state changes to confirm periodic evaluation
 		for time.Now().Before(deadline) && changes < 2 {
@@ -851,7 +850,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that excludes all upstreams
-		evalFn, err := script.CompileFunction(`
+		evalFn, err := common.CompileFunction(`
 			(upstreams) => {
 				return []; // Return empty array to exclude all upstreams
 			}
@@ -859,10 +858,10 @@ func TestPolicyEvaluator(t *testing.T) {
 		require.NoError(t, err)
 
 		config := &common.SelectionPolicyConfig{
-			EvalInterval:     50 * time.Millisecond,
+			EvalInterval:     common.Duration(50 * time.Millisecond),
 			EvalPerMethod:    false,
 			EvalFunction:     evalFn,
-			ResampleInterval: 100 * time.Millisecond,
+			ResampleInterval: common.Duration(100 * time.Millisecond),
 			ResampleCount:    0, // Zero sample count
 		}
 
@@ -891,7 +890,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that excludes all upstreams
-		evalFn, err := script.CompileFunction(`
+		evalFn, err := common.CompileFunction(`
 			(upstreams) => {
 				return []; // Return empty array to exclude all upstreams
 			}
@@ -899,11 +898,11 @@ func TestPolicyEvaluator(t *testing.T) {
 		require.NoError(t, err)
 
 		config := &common.SelectionPolicyConfig{
-			EvalInterval:     50 * time.Millisecond,
+			EvalInterval:     common.Duration(50 * time.Millisecond),
 			EvalPerMethod:    false,
 			EvalFunction:     evalFn,
 			ResampleExcluded: true,
-			ResampleInterval: 100 * time.Millisecond,
+			ResampleInterval: common.Duration(100 * time.Millisecond),
 			ResampleCount:    1000, // Very high sample count
 		}
 
@@ -938,7 +937,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that excludes all upstreams
-		evalFn1, err := script.CompileFunction(`
+		evalFn1, err := common.CompileFunction(`
 			(upstreams) => {
 				return []; // Return empty array to exclude all upstreams
 			}
@@ -947,11 +946,11 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Test very short sample after
 		shortConfig := &common.SelectionPolicyConfig{
-			EvalInterval:     50 * time.Millisecond,
+			EvalInterval:     common.Duration(50 * time.Millisecond),
 			EvalPerMethod:    false,
 			EvalFunction:     evalFn1,
 			ResampleExcluded: true,
-			ResampleInterval: 1 * time.Millisecond, // Very short
+			ResampleInterval: common.Duration(1 * time.Millisecond), // Very short
 			ResampleCount:    2,
 		}
 
@@ -974,7 +973,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		}
 		assert.Equal(t, 2, samplesGranted, "Should grant exactly ResampleCount permits with very short ResampleInterval")
 
-		evalFn2, err := script.CompileFunction(`
+		evalFn2, err := common.CompileFunction(`
 			(upstreams) => {
 				return []; // Return empty array to exclude all upstreams
 			}
@@ -983,10 +982,10 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Test very long sample after
 		longConfig := &common.SelectionPolicyConfig{
-			EvalInterval:     50 * time.Millisecond,
+			EvalInterval:     common.Duration(50 * time.Millisecond),
 			EvalPerMethod:    false,
 			EvalFunction:     evalFn2,
-			ResampleInterval: 24 * time.Hour, // Very long
+			ResampleInterval: common.Duration(24 * time.Hour), // Very long
 			ResampleCount:    2,
 		}
 
@@ -1015,7 +1014,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		ntw, ups1, _, _ := createTestNetwork(t, ctxRoot)
 
 		// Create eval function that introduces artificial delay to increase chance of race conditions
-		evalFn, err := script.CompileFunction(`
+		evalFn, err := common.CompileFunction(`
 			(upstreams) => {
 				// Artificial delay during evaluation
 				const start = Date.now();
@@ -1029,11 +1028,11 @@ func TestPolicyEvaluator(t *testing.T) {
 		require.NoError(t, err)
 
 		config := &common.SelectionPolicyConfig{
-			EvalInterval:     100 * time.Millisecond,
+			EvalInterval:     common.Duration(100 * time.Millisecond),
 			EvalPerMethod:    false,
 			EvalFunction:     evalFn,
 			ResampleExcluded: true,
-			ResampleInterval: 200 * time.Millisecond,
+			ResampleInterval: common.Duration(200 * time.Millisecond),
 			ResampleCount:    2,
 		}
 
@@ -1195,7 +1194,7 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Final evaluation should complete without panic
 		assert.NotPanics(t, func() {
-			time.Sleep(config.EvalInterval)
+			time.Sleep(config.EvalInterval.Duration())
 			_ = evaluator.AcquirePermit(&logger, ups1, "method1")
 		}, "Final evaluation should complete without panic")
 	})
@@ -1211,7 +1210,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
 		// Create eval function that uses different error thresholds per method
-		evalFn, err := script.CompileFunction(`
+		evalFn, err := common.CompileFunction(`
 			(upstreams, method) => {
 				const thresholds = {
 					"method1": 0.3,
@@ -1228,10 +1227,10 @@ func TestPolicyEvaluator(t *testing.T) {
 		require.NoError(t, err)
 
 		config := &common.SelectionPolicyConfig{
-			EvalInterval:     50 * time.Millisecond,
+			EvalInterval:     common.Duration(50 * time.Millisecond),
 			EvalPerMethod:    true, // Enable per-method evaluation
 			EvalFunction:     evalFn,
-			ResampleInterval: 100 * time.Millisecond,
+			ResampleInterval: common.Duration(100 * time.Millisecond),
 			ResampleCount:    2,
 		}
 
@@ -1273,7 +1272,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer cancel()
 		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
-		evalFn, err := script.CompileFunction(`
+		evalFn, err := common.CompileFunction(`
 			(upstreams, method) => {
 				return upstreams.filter(u => {
 					if (!u.metrics || !u.metrics.errorRate) return true;
@@ -1284,10 +1283,10 @@ func TestPolicyEvaluator(t *testing.T) {
 		require.NoError(t, err)
 
 		config := &common.SelectionPolicyConfig{
-			EvalInterval:     50 * time.Millisecond,
+			EvalInterval:     common.Duration(50 * time.Millisecond),
 			EvalPerMethod:    true,
 			EvalFunction:     evalFn,
-			ResampleInterval: 100 * time.Millisecond,
+			ResampleInterval: common.Duration(100 * time.Millisecond),
 			ResampleCount:    2,
 		}
 
@@ -1331,7 +1330,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		defer cancel()
 		ntw, ups1, _, _ := createTestNetwork(t, ctx)
 
-		evalFn, err := script.CompileFunction(`
+		evalFn, err := common.CompileFunction(`
 			(upstreams, method) => {
 				if (method === "method1") {
 					throw new Error("Intentional evaluation failure");
@@ -1345,10 +1344,10 @@ func TestPolicyEvaluator(t *testing.T) {
 		require.NoError(t, err)
 
 		config := &common.SelectionPolicyConfig{
-			EvalInterval:     50 * time.Millisecond,
+			EvalInterval:     common.Duration(50 * time.Millisecond),
 			EvalPerMethod:    true,
 			EvalFunction:     evalFn,
-			ResampleInterval: 100 * time.Millisecond,
+			ResampleInterval: common.Duration(100 * time.Millisecond),
 			ResampleCount:    2,
 		}
 
@@ -1383,9 +1382,9 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Create config with default policy
 		config := &common.SelectionPolicyConfig{
-			EvalInterval:     50 * time.Millisecond,
+			EvalInterval:     common.Duration(50 * time.Millisecond),
 			EvalPerMethod:    false,
-			ResampleInterval: 100 * time.Millisecond,
+			ResampleInterval: common.Duration(100 * time.Millisecond),
 			ResampleCount:    2,
 		}
 		config.SetDefaults() // This will set the default policy function
@@ -1445,7 +1444,7 @@ func TestPolicyEvaluator(t *testing.T) {
 
 		// Create config with default policy
 		config := &common.SelectionPolicyConfig{
-			EvalInterval:     50 * time.Millisecond,
+			EvalInterval:     common.Duration(50 * time.Millisecond),
 			EvalPerMethod:    false,
 			ResampleExcluded: false,
 		}
@@ -1520,7 +1519,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		t.Setenv("ROUTING_POLICY_MAX_BLOCK_HEAD_LAG", "5")
 
 		config := &common.SelectionPolicyConfig{
-			EvalInterval:  50 * time.Millisecond,
+			EvalInterval:  common.Duration(50 * time.Millisecond),
 			EvalPerMethod: false,
 		}
 		config.SetDefaults() // This will set the default policy function
@@ -1588,7 +1587,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		t.Setenv("ROUTING_POLICY_MIN_HEALTHY_THRESHOLD", "1")
 
 		config := &common.SelectionPolicyConfig{
-			EvalInterval:  50 * time.Millisecond,
+			EvalInterval:  common.Duration(50 * time.Millisecond),
 			EvalPerMethod: false,
 		}
 		config.SetDefaults()
@@ -1643,7 +1642,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		t.Setenv("ROUTING_POLICY_MIN_HEALTHY_THRESHOLD", "1")
 
 		config := &common.SelectionPolicyConfig{
-			EvalInterval:  50 * time.Millisecond,
+			EvalInterval:  common.Duration(50 * time.Millisecond),
 			EvalPerMethod: false,
 		}
 		config.SetDefaults()

@@ -44,9 +44,9 @@ func TestPostgreConnectorInitialization(t *testing.T) {
 		cfg := &common.PostgreSQLConnectorConfig{
 			Table:         "test_table",
 			ConnectionUri: connURI,
-			InitTimeout:   2 * time.Second,
-			GetTimeout:    2 * time.Second,
-			SetTimeout:    2 * time.Second,
+			InitTimeout:   common.Duration(2 * time.Second),
+			GetTimeout:    common.Duration(2 * time.Second),
+			SetTimeout:    common.Duration(2 * time.Second),
 			MinConns:      1,
 			MaxConns:      5,
 		}
@@ -79,9 +79,9 @@ func TestPostgreConnectorInitialization(t *testing.T) {
 		cfg := &common.PostgreSQLConnectorConfig{
 			Table:         "test_table",
 			ConnectionUri: "postgres://user:pass@127.0.0.1:9876/bogusdb?sslmode=disable", // no server
-			InitTimeout:   500 * time.Millisecond,
-			GetTimeout:    500 * time.Millisecond,
-			SetTimeout:    500 * time.Millisecond,
+			InitTimeout:   common.Duration(500 * time.Millisecond),
+			GetTimeout:    common.Duration(500 * time.Millisecond),
+			SetTimeout:    common.Duration(500 * time.Millisecond),
 			MinConns:      1,
 			MaxConns:      5,
 		}

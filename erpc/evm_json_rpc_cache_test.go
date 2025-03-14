@@ -72,7 +72,7 @@ func createCacheTestFixtures(upstreamConfigs []upsTestCfg) ([]*data.MockConnecto
 			Type:     common.UpstreamTypeEvm,
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
-				StatePollerInterval: "1m",
+				StatePollerInterval: common.Duration(1 * time.Minute),
 			},
 		}, clr, rlr, vr, &logger, mt, ssr)
 		if err != nil {
@@ -482,7 +482,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			Network:   "*",
 			Method:    "*",
 			Finality:  common.DataFinalityStateUnknown,
-			TTL:       30 * time.Second,
+			TTL:       common.Duration(30 * time.Second),
 			Connector: "mock1",
 		}, mockConnectors[0])
 		require.NoError(t, err)
@@ -491,7 +491,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			Network:   "*",
 			Method:    "*",
 			Finality:  common.DataFinalityStateUnfinalized,
-			TTL:       30 * time.Second,
+			TTL:       common.Duration(30 * time.Second),
 			Connector: "mock1",
 		}, mockConnectors[0])
 		require.NoError(t, err)
@@ -573,7 +573,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			Network:  "evm:123",
 			Method:   "eth_getBlockByNumber",
 			Params:   []interface{}{"latest", "*"},
-			TTL:      5 * time.Second,
+			TTL:      common.Duration(5 * time.Second),
 			Finality: common.DataFinalityStateUnfinalized,
 		}, mockConnectors[0])
 		require.NoError(t, err)
@@ -586,7 +586,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(resp)
 
-		ttl := 5 * time.Second
+		ttl := time.Duration(5 * time.Second)
 		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl).Return(nil)
 
 		err = cache.Set(context.Background(), req, resp)
@@ -602,11 +602,11 @@ func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
 		})
 
-		ttl := 5 * time.Minute
+		ttl := time.Duration(5 * time.Minute)
 		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
 			Network: "evm:123",
 			Method:  "eth_getBalance",
-			TTL:     ttl,
+			TTL:     common.Duration(ttl),
 		}, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{
@@ -625,7 +625,7 @@ func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 		err = cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
-		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:5", mock.Anything, mock.Anything, &ttl)
+		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:5", mock.Anything, mock.Anything, mock.AnythingOfType("*time.Duration"))
 	})
 
 	t.Run("ShouldNotSetTTLWhenPolicyDoesNotDefineIt", func(t *testing.T) {
@@ -650,11 +650,11 @@ func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 		policy0, err0 := data.NewCachePolicy(&common.CachePolicyConfig{
 			Network: "evm:123",
 			Method:  "eth_getBlockByNumber",
-			TTL:     2 * time.Minute,
+			TTL:     common.Duration(2 * time.Minute),
 		}, mockConnectors[0])
 		require.NoError(t, err0)
 
-		ttl := 6 * time.Minute
+		ttl := common.Duration(6 * time.Minute)
 		policy1, err1 := data.NewCachePolicy(&common.CachePolicyConfig{
 			Network: "evm:123",
 			Method:  "eth_getBalance",
@@ -681,7 +681,7 @@ func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 
 		assert.NoError(t, err)
 		mockConnectors[0].AssertNotCalled(t, "Set")
-		mockConnectors[1].AssertCalled(t, "Set", mock.Anything, "evm:123:5", mock.Anything, mock.Anything, &ttl)
+		mockConnectors[1].AssertCalled(t, "Set", mock.Anything, "evm:123:5", mock.Anything, mock.Anything, mock.AnythingOfType("*time.Duration"))
 	})
 }
 

@@ -49,16 +49,16 @@ func NewRedisConnector(
 	cfg *common.RedisConnectorConfig,
 ) (*RedisConnector, error) {
 	lg := logger.With().Str("connector", id).Logger()
-	lg.Debug().Interface("config", cfg).Msg("creating RedisConnector")
+	lg.Debug().Interface("config", cfg).Msg("creating redis connector")
 
 	connector := &RedisConnector{
 		id:          id,
 		logger:      &lg,
 		cfg:         cfg,
 		ttls:        make(map[string]time.Duration),
-		initTimeout: cfg.InitTimeout,
-		getTimeout:  cfg.GetTimeout,
-		setTimeout:  cfg.SetTimeout,
+		initTimeout: cfg.InitTimeout.Duration(),
+		getTimeout:  cfg.GetTimeout.Duration(),
+		setTimeout:  cfg.SetTimeout.Duration(),
 	}
 
 	// Create an initializer to manage (re)connecting to Redis.

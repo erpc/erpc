@@ -52,7 +52,7 @@ func NewDynamoDBConnector(
 	cfg *common.DynamoDBConnectorConfig,
 ) (*DynamoDBConnector, error) {
 	lg := logger.With().Str("connector", id).Logger()
-	lg.Debug().Interface("config", cfg).Msg("creating DynamoDBConnector")
+	lg.Debug().Interface("config", cfg).Msg("creating dynamodb connector")
 
 	connector := &DynamoDBConnector{
 		id:                id,
@@ -62,10 +62,10 @@ func NewDynamoDBConnector(
 		rangeKeyName:      cfg.RangeKeyName,
 		reverseIndexName:  cfg.ReverseIndexName,
 		ttlAttributeName:  cfg.TTLAttributeName,
-		initTimeout:       cfg.InitTimeout,
-		getTimeout:        cfg.GetTimeout,
-		setTimeout:        cfg.SetTimeout,
-		statePollInterval: cfg.StatePollInterval,
+		initTimeout:       cfg.InitTimeout.Duration(),
+		getTimeout:        cfg.GetTimeout.Duration(),
+		setTimeout:        cfg.SetTimeout.Duration(),
+		statePollInterval: cfg.StatePollInterval.Duration(),
 	}
 
 	// create an Initializer to handle (re)connecting
@@ -135,7 +135,7 @@ func createSession(cfg *common.DynamoDBConnectorConfig) (*session.Session, error
 			Region:   aws.String(cfg.Region),
 			Endpoint: aws.String(cfg.Endpoint),
 			HTTPClient: &http.Client{
-				Timeout: cfg.InitTimeout,
+				Timeout: cfg.InitTimeout.Duration(),
 			},
 		})
 	}
@@ -156,7 +156,7 @@ func createSession(cfg *common.DynamoDBConnectorConfig) (*session.Session, error
 		Region:      aws.String(cfg.Region),
 		Credentials: creds,
 		HTTPClient: &http.Client{
-			Timeout: cfg.InitTimeout,
+			Timeout: cfg.InitTimeout.Duration(),
 		},
 	})
 }

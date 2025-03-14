@@ -1,9 +1,7 @@
 package upstream
 
 import (
-	"fmt"
 	"sync"
-	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
@@ -66,19 +64,10 @@ func (r *RateLimitersRegistry) bootstrap() error {
 }
 
 func (r *RateLimitersRegistry) createRateLimiter(budgetId string, rule *common.RateLimitRuleConfig) (ratelimiter.RateLimiter[interface{}], error) {
-	duration, err := time.ParseDuration(rule.Period)
-	if err != nil {
-		return nil, common.NewErrRateLimitInvalidConfig(fmt.Errorf("failed to parse duration for limit %v: %w", rule, err))
-	}
-
+	duration := rule.Period.Duration()
 	builder := ratelimiter.BurstyBuilder[interface{}](rule.MaxCount, duration)
-
-	if rule.WaitTime != "" {
-		waitTime, err := time.ParseDuration(rule.WaitTime)
-		if err != nil {
-			return nil, common.NewErrRateLimitInvalidConfig(fmt.Errorf("failed to parse wait time for limit %v: %w", rule, err))
-		}
-		builder = builder.WithMaxWaitTime(waitTime)
+	if rule.WaitTime > 0 {
+		builder = builder.WithMaxWaitTime(rule.WaitTime.Duration())
 	}
 
 	builder.OnRateLimitExceeded(func(e failsafe.ExecutionEvent[any]) {

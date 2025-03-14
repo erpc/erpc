@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/erpc/erpc/common/script"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog/log"
 )
@@ -83,16 +82,16 @@ func (c *Config) SetDefaults() error {
 					Failsafe: &FailsafeConfig{
 						Retry: &RetryPolicyConfig{
 							MaxAttempts:     5,
-							Delay:           "0ms",
-							Jitter:          "0",
-							BackoffMaxDelay: "0ms",
+							Delay:           Duration(0),
+							Jitter:          Duration(0),
+							BackoffMaxDelay: Duration(0),
 							BackoffFactor:   1.0,
 						},
 						Timeout: &TimeoutPolicyConfig{
-							Duration: "60s",
+							Duration: Duration(60 * time.Second),
 						},
 						Hedge: &HedgePolicyConfig{
-							Delay:    "0ms",
+							Delay:    Duration(0),
 							MaxCount: 3,
 						},
 					},
@@ -104,15 +103,15 @@ func (c *Config) SetDefaults() error {
 					Failsafe: &FailsafeConfig{
 						Retry: &RetryPolicyConfig{
 							MaxAttempts: 1,
-							Delay:       "500ms",
+							Delay:       Duration(500 * time.Millisecond),
 						},
 						Timeout: &TimeoutPolicyConfig{
-							Duration: "30s",
+							Duration: Duration(30 * time.Second),
 						},
 						CircuitBreaker: &CircuitBreakerPolicyConfig{
 							FailureThresholdCount:    8,
 							FailureThresholdCapacity: 10,
-							HalfOpenAfter:            "5m",
+							HalfOpenAfter:            Duration(5 * time.Minute),
 							SuccessThresholdCount:    5,
 							SuccessThresholdCapacity: 5,
 						},
@@ -437,13 +436,16 @@ func (s *ServerConfig) SetDefaults() error {
 		s.HttpPort = util.IntPtr(4000)
 	}
 	if s.MaxTimeout == nil {
-		s.MaxTimeout = util.StringPtr("150s")
+		d := Duration(150 * time.Second)
+		s.MaxTimeout = &d
 	}
 	if s.ReadTimeout == nil {
-		s.ReadTimeout = util.StringPtr("30s")
+		d := Duration(30 * time.Second)
+		s.ReadTimeout = &d
 	}
 	if s.WriteTimeout == nil {
-		s.WriteTimeout = util.StringPtr("120s")
+		d := Duration(120 * time.Second)
+		s.WriteTimeout = &d
 	}
 	if s.EnableGzip == nil {
 		s.EnableGzip = util.BoolPtr(true)
@@ -510,10 +512,10 @@ func (c *SharedStateConfig) SetDefaults(defClusterKey string) error {
 		return err
 	}
 	if c.FallbackTimeout == 0 {
-		c.FallbackTimeout = 500 * time.Millisecond
+		c.FallbackTimeout = Duration(500 * time.Millisecond)
 	}
 	if c.LockTtl == 0 {
-		c.LockTtl = 10 * time.Second
+		c.LockTtl = Duration(10 * time.Second)
 	}
 	return nil
 }
@@ -605,13 +607,13 @@ func (r *RedisConnectorConfig) SetDefaults() error {
 		r.ConnPoolSize = 128
 	}
 	if r.InitTimeout == 0 {
-		r.InitTimeout = 5 * time.Second
+		r.InitTimeout = Duration(5 * time.Second)
 	}
 	if r.GetTimeout == 0 {
-		r.GetTimeout = 1 * time.Second
+		r.GetTimeout = Duration(1 * time.Second)
 	}
 	if r.SetTimeout == 0 {
-		r.SetTimeout = 2 * time.Second
+		r.SetTimeout = Duration(2 * time.Second)
 	}
 
 	return nil
@@ -635,13 +637,13 @@ func (p *PostgreSQLConnectorConfig) SetDefaults(scope connectorScope) error {
 		p.MaxConns = 32
 	}
 	if p.InitTimeout == 0 {
-		p.InitTimeout = 5 * time.Second
+		p.InitTimeout = Duration(5 * time.Second)
 	}
 	if p.GetTimeout == 0 {
-		p.GetTimeout = 1 * time.Second
+		p.GetTimeout = Duration(1 * time.Second)
 	}
 	if p.SetTimeout == 0 {
-		p.SetTimeout = 2 * time.Second
+		p.SetTimeout = Duration(2 * time.Second)
 	}
 
 	return nil
@@ -671,16 +673,16 @@ func (d *DynamoDBConnectorConfig) SetDefaults(scope connectorScope) error {
 		d.TTLAttributeName = "ttl"
 	}
 	if d.InitTimeout == 0 {
-		d.InitTimeout = 5 * time.Second
+		d.InitTimeout = Duration(5 * time.Second)
 	}
 	if d.GetTimeout == 0 {
-		d.GetTimeout = 1 * time.Second
+		d.GetTimeout = Duration(1 * time.Second)
 	}
 	if d.SetTimeout == 0 {
-		d.SetTimeout = 2 * time.Second
+		d.SetTimeout = Duration(2 * time.Second)
 	}
 	if d.StatePollInterval == 0 {
-		d.StatePollInterval = 5 * time.Second
+		d.StatePollInterval = Duration(5 * time.Second)
 	}
 
 	return nil
@@ -945,10 +947,10 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 			return fmt.Errorf("failed to set defaults for evm upstream: %w", err)
 		}
 	} else if u.Evm != nil && defaults.Evm != nil {
-		if u.Evm.StatePollerInterval == "" && defaults.Evm.StatePollerInterval != "" {
+		if u.Evm.StatePollerInterval == 0 && defaults.Evm.StatePollerInterval != 0 {
 			u.Evm.StatePollerInterval = defaults.Evm.StatePollerInterval
 		}
-		if u.Evm.StatePollerDebounce == "" && defaults.Evm.StatePollerDebounce != "" {
+		if u.Evm.StatePollerDebounce == 0 && defaults.Evm.StatePollerDebounce != 0 {
 			u.Evm.StatePollerDebounce = defaults.Evm.StatePollerDebounce
 		}
 		if u.Evm.MaxAvailableRecentBlocks == 0 && defaults.Evm.MaxAvailableRecentBlocks != 0 {
@@ -1058,11 +1060,11 @@ func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 }
 
 func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
-	if e.StatePollerInterval == "" {
-		if defaults != nil && defaults.StatePollerInterval != "" {
+	if e.StatePollerInterval == 0 {
+		if defaults != nil && defaults.StatePollerInterval != 0 {
 			e.StatePollerInterval = defaults.StatePollerInterval
 		} else {
-			e.StatePollerInterval = "30s"
+			e.StatePollerInterval = Duration(30 * time.Second)
 		}
 	}
 	if e.NodeType == "" {
@@ -1128,7 +1130,7 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 				n.Evm.Integrity = &EvmIntegrityConfig{}
 				*n.Evm.Integrity = *defaults.Evm.Integrity
 			}
-			if n.Evm.FallbackStatePollerDebounce == "" && defaults.Evm.FallbackStatePollerDebounce != "" {
+			if n.Evm.FallbackStatePollerDebounce == 0 && defaults.Evm.FallbackStatePollerDebounce != 0 {
 				n.Evm.FallbackStatePollerDebounce = defaults.Evm.FallbackStatePollerDebounce
 			}
 			if n.Evm.FallbackFinalityDepth == 0 && defaults.Evm.FallbackFinalityDepth != 0 {
@@ -1185,13 +1187,13 @@ func (n *NetworkConfig) SetDefaults(upstreams []*UpstreamConfig, defaults *Netwo
 }
 
 const DefaultEvmFinalityDepth = 1024
-const DefaultEvmStatePollerDebounce = "5s"
+const DefaultEvmStatePollerDebounce = Duration(5 * time.Second)
 
 func (e *EvmNetworkConfig) SetDefaults() error {
 	if e.FallbackFinalityDepth == 0 {
 		e.FallbackFinalityDepth = DefaultEvmFinalityDepth
 	}
-	if e.FallbackStatePollerDebounce == "" {
+	if e.FallbackStatePollerDebounce == 0 {
 		e.FallbackStatePollerDebounce = DefaultEvmStatePollerDebounce
 	}
 	if e.Integrity == nil {
@@ -1284,7 +1286,7 @@ func (f *FailsafeConfig) SetDefaults(defaults *FailsafeConfig) error {
 }
 
 func (t *TimeoutPolicyConfig) SetDefaults(defaults *TimeoutPolicyConfig) error {
-	if defaults != nil && t.Duration == "" {
+	if defaults != nil && t.Duration == 0 {
 		t.Duration = defaults.Duration
 	}
 
@@ -1306,25 +1308,25 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 			r.BackoffFactor = 1.2
 		}
 	}
-	if r.BackoffMaxDelay == "" {
-		if defaults != nil && defaults.BackoffMaxDelay != "" {
+	if r.BackoffMaxDelay == 0 {
+		if defaults != nil && defaults.BackoffMaxDelay != 0 {
 			r.BackoffMaxDelay = defaults.BackoffMaxDelay
 		} else {
-			r.BackoffMaxDelay = "3s"
+			r.BackoffMaxDelay = Duration(3 * time.Second)
 		}
 	}
-	if r.Delay == "" {
-		if defaults != nil && defaults.Delay != "" {
+	if r.Delay == 0 {
+		if defaults != nil && defaults.Delay != 0 {
 			r.Delay = defaults.Delay
 		} else {
-			r.Delay = "100ms"
+			r.Delay = Duration(100 * time.Millisecond)
 		}
 	}
-	if r.Jitter == "" {
-		if defaults != nil && defaults.Jitter != "" {
+	if r.Jitter == 0 {
+		if defaults != nil && defaults.Jitter != 0 {
 			r.Jitter = defaults.Jitter
 		} else {
-			r.Jitter = "0ms"
+			r.Jitter = Duration(0 * time.Millisecond)
 		}
 	}
 
@@ -1332,11 +1334,11 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 }
 
 func (h *HedgePolicyConfig) SetDefaults(defaults *HedgePolicyConfig) error {
-	if h.Delay == "" {
-		if defaults != nil && defaults.Delay != "" {
+	if h.Delay == 0 {
+		if defaults != nil && defaults.Delay != 0 {
 			h.Delay = defaults.Delay
 		} else {
-			h.Delay = "0ms"
+			h.Delay = Duration(0)
 		}
 	}
 	if h.Quantile == 0 {
@@ -1344,19 +1346,19 @@ func (h *HedgePolicyConfig) SetDefaults(defaults *HedgePolicyConfig) error {
 			h.Quantile = defaults.Quantile
 		}
 	}
-	if h.MinDelay == "" {
-		if defaults != nil && defaults.MinDelay != "" {
+	if h.MinDelay == 0 {
+		if defaults != nil && defaults.MinDelay != 0 {
 			h.MinDelay = defaults.MinDelay
 		} else {
-			h.MinDelay = "100ms"
+			h.MinDelay = Duration(100 * time.Millisecond)
 		}
 	}
-	if h.MaxDelay == "" {
-		if defaults != nil && defaults.MaxDelay != "" {
+	if h.MaxDelay == 0 {
+		if defaults != nil && defaults.MaxDelay != 0 {
 			h.MaxDelay = defaults.MaxDelay
 		} else {
 			// Intentionally high, so it never hits in practical scenarios
-			h.MaxDelay = "999s"
+			h.MaxDelay = Duration(999 * time.Second)
 		}
 	}
 	if h.MaxCount == 0 {
@@ -1392,11 +1394,11 @@ func (c *CircuitBreakerPolicyConfig) SetDefaults(defaults *CircuitBreakerPolicyC
 			c.SuccessThresholdCapacity = 200
 		}
 	}
-	if c.HalfOpenAfter == "" {
-		if defaults != nil && defaults.HalfOpenAfter != "" {
+	if c.HalfOpenAfter == 0 {
+		if defaults != nil && defaults.HalfOpenAfter != 0 {
 			c.HalfOpenAfter = defaults.HalfOpenAfter
 		} else {
-			c.HalfOpenAfter = "5m"
+			c.HalfOpenAfter = Duration(5 * time.Minute)
 		}
 	}
 	if c.SuccessThresholdCount == 0 {
@@ -1421,8 +1423,8 @@ func (r *RateLimitAutoTuneConfig) SetDefaults() error {
 	if r.Enabled == nil {
 		r.Enabled = util.BoolPtr(true)
 	}
-	if r.AdjustmentPeriod == "" {
-		r.AdjustmentPeriod = "1m"
+	if r.AdjustmentPeriod == 0 {
+		r.AdjustmentPeriod = Duration(1 * time.Minute)
 	}
 	if r.ErrorRateThreshold == 0 {
 		r.ErrorRateThreshold = 0.1
@@ -1533,10 +1535,10 @@ const DefaultPolicyFunction = `
 
 func (c *SelectionPolicyConfig) SetDefaults() error {
 	if c.EvalInterval == 0 {
-		c.EvalInterval = 1 * time.Minute
+		c.EvalInterval = Duration(1 * time.Minute)
 	}
 	if c.EvalFunction == nil {
-		evalFunction, err := script.CompileFunction(DefaultPolicyFunction)
+		evalFunction, err := CompileFunction(DefaultPolicyFunction)
 		if err != nil {
 			log.Error().Err(err).Msg("failed to compile default selection policy function")
 		} else {
@@ -1545,7 +1547,7 @@ func (c *SelectionPolicyConfig) SetDefaults() error {
 	}
 	if c.ResampleExcluded {
 		if c.ResampleInterval == 0 {
-			c.ResampleInterval = 5 * time.Minute
+			c.ResampleInterval = Duration(5 * time.Minute)
 		}
 		if c.ResampleCount == 0 {
 			c.ResampleCount = 10
@@ -1651,11 +1653,11 @@ func (b *RateLimitBudgetConfig) SetDefaults() error {
 }
 
 func (r *RateLimitRuleConfig) SetDefaults() error {
-	if r.WaitTime == "" {
-		r.WaitTime = "1s"
+	if r.WaitTime == 0 {
+		r.WaitTime = Duration(1 * time.Second)
 	}
-	if r.Period == "" {
-		r.Period = "1s"
+	if r.Period == 0 {
+		r.Period = Duration(1 * time.Second)
 	}
 	if r.Method == "" {
 		r.Method = "*"
@@ -1689,8 +1691,8 @@ func (c *CORSConfig) SetDefaults() error {
 }
 
 func (h *HealthCheckConfig) SetDefaults() error {
-	if h.ScoreMetricsWindowSize == "" {
-		h.ScoreMetricsWindowSize = "30m"
+	if h.ScoreMetricsWindowSize == 0 {
+		h.ScoreMetricsWindowSize = Duration(30 * time.Minute)
 	}
 
 	return nil
@@ -1702,17 +1704,17 @@ func NewDefaultNetworkConfig(upstreams []*UpstreamConfig) *NetworkConfig {
 	})
 	n := &NetworkConfig{}
 	if hasAnyFallbackUpstream {
-		evalFunction, err := script.CompileFunction(DefaultPolicyFunction)
+		evalFunction, err := CompileFunction(DefaultPolicyFunction)
 		if err != nil {
 			log.Error().Err(err).Msg("failed to compile default selection policy function")
 			return nil
 		}
 
 		selectionPolicy := &SelectionPolicyConfig{
-			EvalInterval:     1 * time.Minute,
+			EvalInterval:     Duration(1 * time.Minute),
 			EvalFunction:     evalFunction,
 			EvalPerMethod:    false,
-			ResampleInterval: 5 * time.Minute,
+			ResampleInterval: Duration(5 * time.Minute),
 			ResampleCount:    10,
 
 			evalFunctionOriginal: DefaultPolicyFunction,

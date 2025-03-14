@@ -97,29 +97,15 @@ func NewEvmStatePoller(
 
 func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 	cfg := e.upstream.Config()
-	var intvl string
-	if cfg.Evm != nil && cfg.Evm.StatePollerInterval != "" {
-		intvl = cfg.Evm.StatePollerInterval
-	}
-	if intvl == "" {
-		e.logger.Debug().Msgf("skipping evm state poller for upstream as no interval is provided")
-		return nil
-	}
-	interval, err := time.ParseDuration(intvl)
-	if err != nil {
-		return fmt.Errorf("invalid state poller interval: %v", err)
-	}
-
+	interval := cfg.Evm.StatePollerInterval
 	if interval == 0 {
 		e.logger.Debug().Msg("skipping evm state poller for upstream as interval is 0")
 		return nil
 	}
 
 	if cfg.Evm != nil {
-		if cfg.Evm.StatePollerDebounce != "" {
-			if d, derr := time.ParseDuration(cfg.Evm.StatePollerDebounce); derr == nil {
-				e.debounceInterval = d
-			}
+		if cfg.Evm.StatePollerDebounce != 0 {
+			e.debounceInterval = cfg.Evm.StatePollerDebounce.Duration()
 		}
 		if e.debounceInterval == 0 && cfg.Evm.ChainId > 0 {
 			e.inferDebounceIntervalFromBlockTime(cfg.Evm.ChainId)
@@ -130,7 +116,7 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 	e.Enabled = true
 
 	go (func() {
-		ticker := time.NewTicker(interval)
+		ticker := time.NewTicker(interval.Duration())
 		defer ticker.Stop()
 		for {
 			select {
@@ -158,7 +144,7 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 		}
 	})()
 
-	err = e.Poll(ctx)
+	err := e.Poll(ctx)
 	if err == nil {
 		e.logger.Info().Msgf("bootstrapped evm state poller to track upstream latest/finalized blocks and syncing states")
 	}
@@ -172,10 +158,8 @@ func (e *EvmStatePoller) SetNetworkConfig(cfg *common.EvmNetworkConfig) {
 	e.cfg = cfg
 
 	if e.debounceInterval == 0 {
-		if cfg.FallbackStatePollerDebounce != "" {
-			if d, err := time.ParseDuration(cfg.FallbackStatePollerDebounce); err == nil {
-				e.debounceInterval = d
-			}
+		if cfg.FallbackStatePollerDebounce != 0 {
+			e.debounceInterval = cfg.FallbackStatePollerDebounce.Duration()
 		}
 	}
 	if e.debounceInterval == 0 {

@@ -42,8 +42,8 @@ func NewSharedStateRegistry(
 		logger:          &lg,
 		clusterKey:      cfg.ClusterKey,
 		connector:       connector,
-		fallbackTimeout: cfg.FallbackTimeout,
-		lockTtl:         cfg.LockTtl,
+		fallbackTimeout: cfg.FallbackTimeout.Duration(),
+		lockTtl:         cfg.LockTtl.Duration(),
 		initializer:     util.NewInitializer(appCtx, &lg, nil),
 	}, nil
 }

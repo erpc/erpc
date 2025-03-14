@@ -34,9 +34,9 @@ export interface ServerConfig {
     listenV6?: boolean;
     httpHostV6?: string;
     httpPort?: number;
-    maxTimeout?: string;
-    readTimeout?: string;
-    writeTimeout?: string;
+    maxTimeout?: Duration;
+    readTimeout?: Duration;
+    writeTimeout?: Duration;
     enableGzip?: boolean;
     tls?: TLSConfig;
     aliasing?: AliasingConfig;
@@ -61,8 +61,8 @@ export interface DatabaseConfig {
 export interface SharedStateConfig {
     clusterKey?: string;
     connector?: ConnectorConfig;
-    fallbackTimeout?: number;
-    lockTtl?: number;
+    fallbackTimeout?: Duration;
+    lockTtl?: Duration;
 }
 export interface CacheConfig {
     connectors?: TsConnectorConfig[];
@@ -86,7 +86,7 @@ export interface CachePolicyConfig {
     empty?: CacheEmptyBehavior;
     minItemSize?: ByteSize;
     maxItemSize?: ByteSize;
-    ttl?: number;
+    ttl?: Duration;
 }
 export type ConnectorDriverType = string;
 export declare const DriverMemory: ConnectorDriverType;
@@ -123,9 +123,9 @@ export interface RedisConnectorConfig {
     db: number;
     tls?: TLSConfig;
     connPoolSize: number;
-    initTimeout?: number;
-    getTimeout?: number;
-    setTimeout?: number;
+    initTimeout?: Duration;
+    getTimeout?: Duration;
+    setTimeout?: Duration;
 }
 export interface DynamoDBConnectorConfig {
     table?: string;
@@ -136,19 +136,19 @@ export interface DynamoDBConnectorConfig {
     rangeKeyName?: string;
     reverseIndexName?: string;
     ttlAttributeName?: string;
-    initTimeout?: number;
-    getTimeout?: number;
-    setTimeout?: number;
-    statePollInterval?: number;
+    initTimeout?: Duration;
+    getTimeout?: Duration;
+    setTimeout?: Duration;
+    statePollInterval?: Duration;
 }
 export interface PostgreSQLConnectorConfig {
     connectionUri: string;
     table: string;
     minConns?: number;
     maxConns?: number;
-    initTimeout?: number;
-    getTimeout?: number;
-    setTimeout?: number;
+    initTimeout?: Duration;
+    getTimeout?: Duration;
+    setTimeout?: Duration;
 }
 export interface AwsAuthConfig {
     mode: 'file' | 'env' | 'secret';
@@ -240,7 +240,7 @@ export interface RateLimitAutoTuneConfig {
 export interface JsonRpcUpstreamConfig {
     supportsBatch?: boolean;
     batchMaxSize?: number;
-    batchMaxWait?: string;
+    batchMaxWait?: Duration;
     enableGzip?: boolean;
     headers?: {
         [key: string]: string;
@@ -250,8 +250,8 @@ export interface JsonRpcUpstreamConfig {
 export interface EvmUpstreamConfig {
     chainId: number;
     nodeType?: EvmNodeType;
-    statePollerInterval?: string;
-    statePollerDebounce?: string;
+    statePollerInterval?: Duration;
+    statePollerDebounce?: Duration;
     maxAvailableRecentBlocks?: number;
     getLogsMaxBlockRange?: number;
 }
@@ -264,28 +264,28 @@ export interface FailsafeConfig {
 }
 export interface RetryPolicyConfig {
     maxAttempts: number;
-    delay?: string;
-    backoffMaxDelay?: string;
+    delay?: Duration;
+    backoffMaxDelay?: Duration;
     backoffFactor?: number;
-    jitter?: string;
+    jitter?: Duration;
     ignoreClientErrors?: boolean;
 }
 export interface CircuitBreakerPolicyConfig {
     failureThresholdCount: number;
     failureThresholdCapacity: number;
-    halfOpenAfter: string;
+    halfOpenAfter?: Duration;
     successThresholdCount: number;
     successThresholdCapacity: number;
 }
 export interface TimeoutPolicyConfig {
-    duration: Duration;
+    duration?: Duration;
 }
 export interface HedgePolicyConfig {
-    delay: string;
+    delay?: Duration;
     maxCount: number;
-    quantile: number;
-    minDelay: Duration;
-    maxDelay: Duration;
+    quantile?: number;
+    minDelay?: Duration;
+    maxDelay?: Duration;
 }
 export type ConsensusFailureBehavior = string;
 export declare const ConsensusFailureBehaviorReturnError: ConsensusFailureBehavior;
@@ -332,7 +332,7 @@ export interface ProxyPoolConfig {
     urls: string[];
 }
 export interface HealthCheckConfig {
-    scoreMetricsWindowSize: string;
+    scoreMetricsWindowSize: Duration;
 }
 export interface NetworkConfig {
     architecture: TsNetworkArchitecture;
@@ -351,7 +351,7 @@ export interface DirectiveDefaultsConfig {
 export interface EvmNetworkConfig {
     chainId: number;
     fallbackFinalityDepth?: number;
-    fallbackStatePollerDebounce?: string;
+    fallbackStatePollerDebounce?: Duration;
     integrity?: EvmIntegrityConfig;
 }
 export interface EvmIntegrityConfig {
@@ -359,11 +359,11 @@ export interface EvmIntegrityConfig {
     enforceGetLogsBlockRange?: boolean;
 }
 export interface SelectionPolicyConfig {
-    evalInterval?: number;
+    evalInterval?: Duration;
     evalFunction?: SelectionPolicyEvalFunction | undefined;
     evalPerMethod?: boolean;
     resampleExcluded?: boolean;
-    resampleInterval?: number;
+    resampleInterval?: Duration;
     resampleCount?: number;
 }
 export type AuthType = string;
@@ -439,9 +439,6 @@ export type CacheEmptyBehavior = number;
 export declare const CacheEmptyBehaviorIgnore: CacheEmptyBehavior;
 export declare const CacheEmptyBehaviorAllow: CacheEmptyBehavior;
 export declare const CacheEmptyBehaviorOnly: CacheEmptyBehavior;
-export declare const DefaultEvmFinalityDepth = 1024;
-export declare const DefaultEvmStatePollerDebounce = "5s";
-export declare const DefaultPolicyFunction = "\n\t(upstreams, method) => {\n\t\tconst defaults = upstreams.filter(u => u.config.group !== 'fallback')\n\t\tconst fallbacks = upstreams.filter(u => u.config.group === 'fallback')\n\t\t\n\t\tconst maxErrorRate = parseFloat(process.env.ROUTING_POLICY_MAX_ERROR_RATE || '0.7')\n\t\tconst maxBlockHeadLag = parseFloat(process.env.ROUTING_POLICY_MAX_BLOCK_HEAD_LAG || '10')\n\t\tconst minHealthyThreshold = parseInt(process.env.ROUTING_POLICY_MIN_HEALTHY_THRESHOLD || '1')\n\t\t\n\t\tconst healthyOnes = defaults.filter(\n\t\t\tu => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag\n\t\t)\n\t\t\n\t\tif (healthyOnes.length >= minHealthyThreshold) {\n\t\t\treturn healthyOnes\n\t\t}\n\n\t\tif (fallbacks.length > 0) {\n\t\t\tlet healthyFallbacks = fallbacks.filter(\n\t\t\t\tu => u.metrics.errorRate < maxErrorRate && u.metrics.blockHeadLag < maxBlockHeadLag\n\t\t\t)\n\t\t\t\n\t\t\tif (healthyFallbacks.length > 0) {\n\t\t\t\treturn healthyFallbacks\n\t\t\t}\n\t\t}\n\n\t\t// The reason all upstreams are returned is to be less harsh and still consider default nodes (in case they have intermittent issues)\n\t\t// Order of upstreams does not matter as that will be decided by the upstream scoring mechanism\n\t\treturn upstreams\n\t}\n";
 export type NetworkArchitecture = string;
 export declare const ArchitectureEvm: NetworkArchitecture;
 export type Network = any;
@@ -460,7 +457,4 @@ export declare const ScopeNetwork: Scope;
 export declare const ScopeUpstream: Scope;
 export type UpstreamType = string;
 export type Upstream = any;
-export interface FakeUpstream {
-}
-export type Vendor = any;
 //# sourceMappingURL=generated.d.ts.map

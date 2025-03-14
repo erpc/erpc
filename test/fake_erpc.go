@@ -158,7 +158,7 @@ func executeStressTest(config StressTestConfig) (*StressTestResult, error) {
 	fs := afero.NewOsFs()
 
 	// Prepare eRPC configuration
-	erpcConfig, localBaseUrl, err := prepareERPCConfig(fs, config)
+	erpcConfig, localBaseUrl, err := prepareERPCConfig(config)
 	if err != nil {
 		return nil, err
 	}
@@ -195,7 +195,7 @@ func executeStressTest(config StressTestConfig) (*StressTestResult, error) {
 	return fetchPrometheusMetrics(config.MetricsPort)
 }
 
-func prepareERPCConfig(fs afero.Fs, config StressTestConfig) (*common.Config, string, error) {
+func prepareERPCConfig(config StressTestConfig) (*common.Config, string, error) {
 	localBaseUrl := fmt.Sprintf("http://localhost:%d", config.ServicePort)
 
 	upsList := []*common.UpstreamConfig{}

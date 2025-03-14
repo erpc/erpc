@@ -351,7 +351,11 @@ rateLimiters:
 /**
  * Converted config in TypeScript. Copy and create erpc.ts so the binary automatically imports it.
  */
-import { createConfig } from "@erpc-cloud/config";
+import { 
+  createConfig,
+  DataFinalityStateFinalized,
+  DataFinalityStateUnfinalized
+} from "@erpc-cloud/config";
 
 export default createConfig({
   // Log level helps in debugging or error detection:
@@ -390,35 +394,35 @@ export default createConfig({
         {
           network: "*",
           method: "*",
-          finality: "finalized",
+          finality: DataFinalityStateFinalized,
           connector: "memory-cache",
           ttl: 0,
         },
         {
           network: "*",
           method: "*",
-          finality: "unfinalized",
+          finality: DataFinalityStateUnfinalized,
           connector: "memory-cache",
           ttl: "5s",
         },
         {
           network: "*",
           method: "*",
-          finality: "unknown",
+          finality: DataFinalityStateUnknown,
           connector: "memory-cache",
           ttl: "5s",
         },
         {
           network: "*", // supports * as wildcard and | as OR operator
           method: "eth_getLogs|trace_*", // supports * as wildcard and | as OR operator
-          finality: "finalized",
+          finality: DataFinalityStateFinalized,
           connector: "postgres-cache",
           ttl: 0,
         },
         {
           network: "evm:42161|evm:10", // supports * as wildcard and | as OR operator
           method: "arbtrace_*", // supports * as wildcard and | as OR operator
-          finality: "finalized",
+          finality: DataFinalityStateFinalized,
           connector: "postgres-cache",
           ttl: "1d",
         },

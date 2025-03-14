@@ -1378,18 +1378,6 @@ var NewErrRateLimitRuleNotFound = func(budgetId, method string) error {
 	}
 }
 
-type ErrRateLimitInvalidConfig struct{ BaseError }
-
-var NewErrRateLimitInvalidConfig = func(cause error) error {
-	return &ErrRateLimitInvalidConfig{
-		BaseError{
-			Code:    "ErrRateLimitInvalidConfig",
-			Message: "invalid rate limit config",
-			Cause:   cause,
-		},
-	}
-}
-
 type ErrProjectRateLimitRuleExceeded struct{ BaseError }
 
 const ErrCodeProjectRateLimitRuleExceeded ErrorCode = "ErrProjectRateLimitRuleExceeded"

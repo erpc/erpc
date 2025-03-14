@@ -37,29 +37,17 @@ type HttpServer struct {
 }
 
 func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.ServerConfig, admin *common.AdminConfig, erpc *ERPC) *HttpServer {
-	var err error
 	reqMaxTimeout := 150 * time.Second
 	if cfg.MaxTimeout != nil {
-		reqMaxTimeout, err = time.ParseDuration(*cfg.MaxTimeout)
-		if err != nil {
-			logger.Error().Err(err).Msgf("failed to parse max timeout duration using 150s default")
-		}
+		reqMaxTimeout = cfg.MaxTimeout.Duration()
 	}
-
 	readTimeout := 30 * time.Second
 	if cfg.ReadTimeout != nil {
-		readTimeout, err = time.ParseDuration(*cfg.ReadTimeout)
-		if err != nil {
-			logger.Error().Err(err).Msgf("failed to parse read timeout duration using 30s default")
-		}
+		readTimeout = cfg.ReadTimeout.Duration()
 	}
-
 	writeTimeout := 120 * time.Second
 	if cfg.WriteTimeout != nil {
-		writeTimeout, err = time.ParseDuration(*cfg.WriteTimeout)
-		if err != nil {
-			logger.Error().Err(err).Msgf("failed to parse write timeout duration using 120s default")
-		}
+		writeTimeout = cfg.WriteTimeout.Duration()
 	}
 
 	srv := &HttpServer{

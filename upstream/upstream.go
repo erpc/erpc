@@ -61,11 +61,7 @@ func NewUpstream(
 
 	var timeoutDuration *time.Duration
 	if cfg.Failsafe != nil && cfg.Failsafe.Timeout != nil {
-		d, err := time.ParseDuration(cfg.Failsafe.Timeout.Duration)
-		timeoutDuration = &d
-		if err != nil {
-			return nil, err
-		}
+		timeoutDuration = cfg.Failsafe.Timeout.Duration.DurationPtr()
 	}
 
 	vn := vr.LookupByUpstream(cfg)
@@ -545,15 +541,10 @@ func (u *Upstream) initRateLimitAutoTuner() {
 		if cfg.Enabled != nil && *cfg.Enabled {
 			budget, err := u.rateLimitersRegistry.GetBudget(u.config.RateLimitBudget)
 			if err == nil {
-				dur, err := time.ParseDuration(cfg.AdjustmentPeriod)
-				if err != nil {
-					u.logger.Error().Err(err).Msgf("failed to parse rate limit auto-tune adjustment period: %s", cfg.AdjustmentPeriod)
-					return
-				}
 				u.rateLimiterAutoTuner = NewRateLimitAutoTuner(
 					u.logger,
 					budget,
-					dur,
+					cfg.AdjustmentPeriod.Duration(),
 					cfg.ErrorRateThreshold,
 					cfg.IncreaseFactor,
 					cfg.DecreaseFactor,

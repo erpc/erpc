@@ -38,7 +38,7 @@ func NewMemoryConnector(
 	cfg *common.MemoryConnectorConfig,
 ) (*MemoryConnector, error) {
 	lg := logger.With().Str("connector", id).Logger()
-	lg.Debug().Interface("config", cfg).Msg("creating MemoryConnector")
+	lg.Debug().Interface("config", cfg).Msg("creating memory connector")
 
 	if cfg != nil && cfg.MaxItems <= 0 {
 		return nil, fmt.Errorf("maxItems must be greater than 0")
