@@ -1243,7 +1243,7 @@ func TestNetwork_Forward(t *testing.T) {
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Reply(400).
-			JSON([]byte(`{"error":{"message":"invalid argument 0: json: cannot unmarshal string into Go value of type map[string]interface {}"}}}`))
+			JSON([]byte(`{"error":{"code":-32602,"message":"invalid argument 0: json: cannot unmarshal string into Go value of type map[string]interface {}"}}}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
