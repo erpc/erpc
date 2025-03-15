@@ -936,7 +936,9 @@ func (e *ErrUpstreamsExhausted) DeepestMessage() string {
 
 func (e *ErrUpstreamsExhausted) UpstreamId() string {
 	if val := e.DeepSearch("upstreamId"); val != nil {
-		return val.(string)
+		if s, ok := val.(string); ok {
+			return s
+		}
 	}
 	return ""
 }
