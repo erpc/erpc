@@ -966,6 +966,8 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 			BatchMaxSize:  defaults.JsonRpc.BatchMaxSize,
 			BatchMaxWait:  defaults.JsonRpc.BatchMaxWait,
 			EnableGzip:    defaults.JsonRpc.EnableGzip,
+			ProxyPool:     defaults.JsonRpc.ProxyPool,
+			Headers:       defaults.JsonRpc.Headers,
 		}
 	}
 	if u.Routing == nil {
