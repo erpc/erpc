@@ -57,28 +57,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		//----------------------------------------------------------------
-		// 1) "Unsupported" errors
-		//----------------------------------------------------------------
-
-		if r.StatusCode == 415 || code == common.JsonRpcErrorUnsupportedException || // By HTTP status code or explicit JSON-RPC error code
-			code == -32004 || code == -32001 || // direct codes from upstream
-			strings.Contains(msg, "Unsupported method") ||
-			strings.Contains(msg, "not supported") ||
-			strings.Contains(msg, "method is not whitelisted") ||
-			strings.Contains(msg, "is not included in your current plan") {
-			return common.NewErrEndpointUnsupported(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorUnsupportedException,
-					err.Message,
-					nil,
-					details,
-				),
-			)
-		}
-
-		//----------------------------------------------------------------
-		// 2) "Request-too-large / range-too-large" errors
+		// "Request-too-large / range-too-large" errors
 		//----------------------------------------------------------------
 
 		if strings.Contains(msg, "Try with this block range") ||
@@ -123,7 +102,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		//----------------------------------------------------------------
-		// 3) "Capacity-exceeded / rate-limiting / billing" errors
+		// "Capacity-exceeded / rate-limiting / billing" errors
 		//----------------------------------------------------------------
 
 		if r.StatusCode == 429 ||
@@ -159,7 +138,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		//----------------------------------------------------------------
-		// 4) "Block tag" errors (pending/finalized/safe not supported)
+		// "Block tag" errors (pending/finalized/safe not supported)
 		//----------------------------------------------------------------
 
 		if strings.HasPrefix(msg, "pending block is not available") ||
@@ -185,7 +164,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		//----------------------------------------------------------------
-		// 5) "Known missing data" errors
+		// "Known missing data" errors
 		//----------------------------------------------------------------
 
 		if IsMissingDataError(err) {
@@ -201,7 +180,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		//----------------------------------------------------------------
-		// 6) "Timeouts / node-level" errors
+		// "Timeouts / node-level" errors
 		//----------------------------------------------------------------
 
 		if strings.Contains(msg, "execution timeout") {
@@ -218,7 +197,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		//----------------------------------------------------------------
-		// 7) "EVM reverts and execution" errors
+		// "EVM reverts and execution" errors
 		//----------------------------------------------------------------
 
 		if strings.Contains(msg, "reverted") ||
@@ -237,7 +216,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		//----------------------------------------------------------------
-		// 8) "Insufficient funds" or "out of gas" errors
+		// "Insufficient funds" or "out of gas" errors
 		//----------------------------------------------------------------
 
 		if strings.Contains(msg, "insufficient funds") ||
@@ -261,7 +240,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		//----------------------------------------------------------------
-		// 9) "Unauthorized" errors
+		// "Unauthorized" errors
 		//----------------------------------------------------------------
 
 		if r.StatusCode == 401 || r.StatusCode == 403 || strings.Contains(msg, "not allowed to access") {
@@ -277,7 +256,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		//----------------------------------------------------------------
-		// 10) "Not found" or "disabled" errors (missing data or unsupported)
+		// "Not found" or "disabled" errors (missing data or unsupported)
 		//----------------------------------------------------------------
 
 		if strings.Contains(msg, "not found") ||
@@ -328,7 +307,31 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		//----------------------------------------------------------------
-		// 11) "Invalid Argument / Params / Request" errors
+		// "Unsupported" errors
+		//----------------------------------------------------------------
+
+		// Note: do not move this check above "Not found" errors, as we want to
+		// avoid premature detection when message is only "not found" (e.g. from Tenderly)
+
+		if r.StatusCode == 415 || code == common.JsonRpcErrorUnsupportedException || // By HTTP status code or explicit JSON-RPC error code
+			code == -32004 || code == -32001 || // direct codes from upstream
+			strings.Contains(msg, "Unsupported method") ||
+			strings.Contains(msg, "not supported") ||
+			strings.Contains(msg, "method is not whitelisted") ||
+			strings.Contains(msg, "is not included in your current plan") {
+			return common.NewErrEndpointUnsupported(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorUnsupportedException,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+		}
+
+		//----------------------------------------------------------------
+		// "Invalid Argument / Params / Request" errors
 		//----------------------------------------------------------------
 
 		// Even though these errors have invalid argument or params, they are more about a lack of standard
