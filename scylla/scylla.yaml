@@ -530,7 +530,7 @@ commitlog_total_space_in_mb: -1
 
 # Uncomment to set socket buffer size for internode communication
 # Note that when setting this, the buffer size is limited by net.core.wmem_max
-# and when not setting it it is defined by net.ipv4.tcp_wmem
+# and when not setting it is defined by net.ipv4.tcp_wmem
 # See:
 # /proc/sys/net/core/wmem_max
 # /proc/sys/net/core/rmem_max

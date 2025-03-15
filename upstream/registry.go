@@ -347,7 +347,7 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 
 	for _, networkId := range allNetworks {
 		for method := range u.sortedUpstreams[networkId] {
-			// Create a copy of all the the upstreams so we can re-add
+			// Create a copy of all the upstreams so we can re-add
 			// previously cordoned upstreams that might have become healthy and uncordoned.
 			var upsList []*Upstream
 			if networkId == "*" {

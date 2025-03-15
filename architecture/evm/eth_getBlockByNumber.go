@@ -112,7 +112,7 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			nq.SetNetwork(network)
 			nnr, err := network.Forward(ctx, nq)
 			// This is needed in case highest block number is corrupted somehow and for example
-			// it is requesting a a very high non-existent block number.
+			// it is requesting a very high non-existent block number.
 			return pickHighestBlock(nnr, nr, err)
 		} else {
 			return nr, re
@@ -145,7 +145,7 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			nq.SetNetwork(network)
 			nnr, err := network.Forward(ctx, nq)
 			// This is needed in case highest block number is corrupted somehow and for example
-			// it is requesting a a very high non-existent block number.
+			// it is requesting a very high non-existent block number.
 			return pickHighestBlock(nnr, nr, err)
 		} else {
 			return nr, re
