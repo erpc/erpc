@@ -293,15 +293,6 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 	}
 
 	builder.HandleIf(func(result *common.NormalizedResponse, err error) bool {
-		// 400 / 404 / 405 / 413 -> No Retry
-		// RPC-RPC client-side error (invalid params) -> No Retry
-		if err != nil && cfg.IgnoreClientErrors && common.IsClientError(err) {
-			// Most often you cannot trust the RPC node's response semantics (e.g. a client-side error
-			// might be due to the provider's own config) so if you try with another provider you will not get the same error.
-			// In these cases we want to continue retrying with another provider.
-			return false
-		}
-
 		// Node-level execution exceptions (e.g. reverted eth_call) -> No Retry
 		if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
 			return false
@@ -327,9 +318,6 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 				if len(errs) > 0 {
 					for _, err := range errs {
 						if common.IsRetryableTowardsUpstream(err) && !common.IsCapacityIssue(err) {
-							return true
-						}
-						if !cfg.IgnoreClientErrors && common.IsClientError(err) {
 							return true
 						}
 					}

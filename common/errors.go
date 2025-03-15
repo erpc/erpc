@@ -90,7 +90,7 @@ type StandardError interface {
 	HasCode(...ErrorCode) bool
 	CodeChain() string
 	DeepestMessage() string
-	DeepSearch(key string) string
+	DeepSearch(key string) interface{}
 	GetCause() error
 	ErrorStatusCode() int
 	Base() *BaseError
@@ -152,13 +152,10 @@ func (e *BaseError) DeepestMessage() string {
 
 	return e.Message
 }
-
-func (e *BaseError) DeepSearch(key string) string {
+func (e *BaseError) DeepSearch(key string) interface{} {
 	if e.Details != nil {
 		if v, ok := e.Details[key]; ok {
-			if s, ok := v.(string); ok {
-				return s
-			}
+			return v
 		}
 	}
 	if e.Cause != nil {
@@ -169,14 +166,14 @@ func (e *BaseError) DeepSearch(key string) string {
 			for _, err := range cs.Unwrap() {
 				if be, ok := err.(StandardError); ok {
 					ds := be.DeepSearch(key)
-					if ds != "" {
+					if ds != nil {
 						return ds
 					}
 				}
 			}
 		}
 	}
-	return ""
+	return nil
 }
 
 func (e *BaseError) GetCause() error {
@@ -938,7 +935,12 @@ func (e *ErrUpstreamsExhausted) DeepestMessage() string {
 }
 
 func (e *ErrUpstreamsExhausted) UpstreamId() string {
-	return e.DeepSearch("upstreamId")
+	if val := e.DeepSearch("upstreamId"); val != nil {
+		if s, ok := val.(string); ok {
+			return s
+		}
+	}
+	return ""
 }
 
 func (e *ErrUpstreamsExhausted) FromCache() bool {
@@ -1524,12 +1526,22 @@ type ErrEndpointClientSideException struct{ BaseError }
 
 const ErrCodeEndpointClientSideException = "ErrEndpointClientSideException"
 
-var NewErrEndpointClientSideException = func(cause error) error {
+func NewErrEndpointClientSideException(cause error, retryable ...bool) error {
+	// Default retryable to true
+	isRetryable := true
+
+	if len(retryable) > 0 {
+		isRetryable = retryable[0]
+	}
+
 	return &ErrEndpointClientSideException{
-		BaseError{
+		BaseError: BaseError{
 			Code:    ErrCodeEndpointClientSideException,
 			Message: "client-side error when sending request to remote endpoint",
 			Cause:   cause,
+			Details: map[string]interface{}{
+				"retryable": isRetryable,
+			},
 		},
 	}
 }
@@ -1946,7 +1958,7 @@ func HasErrorCode(err error, codes ...ErrorCode) bool {
 }
 
 func IsRetryableTowardsUpstream(err error) bool {
-	return !HasErrorCode(
+	if HasErrorCode(
 		err,
 
 		// Circuit breaker is open -> No Retry
@@ -1961,8 +1973,6 @@ func IsRetryableTowardsUpstream(err error) bool {
 		ErrCodeEndpointBillingIssue,
 
 		// 400 / 404 / 405 / 413 -> No Retry
-		// RPC-RPC client-side error (invalid params) -> No Retry
-		ErrCodeEndpointClientSideException,
 		ErrCodeJsonRpcRequestUnmarshal,
 
 		// Execution exceptions are not retryable
@@ -1973,7 +1983,15 @@ func IsRetryableTowardsUpstream(err error) bool {
 		// Request too-large -> No Retry
 		ErrCodeEndpointUnauthorized,
 		ErrCodeEndpointRequestTooLarge,
-	)
+	) {
+		return false
+	} else if se, ok := err.(StandardError); ok {
+		if rt, ok := se.DeepSearch("retryable").(bool); ok && !rt {
+			return false
+		}
+	}
+
+	return true
 }
 
 func IsCapacityIssue(err error) bool {
