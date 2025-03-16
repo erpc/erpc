@@ -2062,7 +2062,7 @@ func ClassifySeverity(err error) Severity {
 	if IsClientError(err) || HasErrorCode(err, ErrCodeEndpointExecutionException) {
 		return SeverityInfo
 	}
-	if IsCapacityIssue(err) || !IsRetryableTowardsUpstream(err) {
+	if !IsRetryableTowardsUpstream(err) {
 		return SeverityWarning
 	}
 	// Usually context cancellation is due to discarded hedged requests.
