@@ -298,9 +298,9 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 			return false
 		}
 
-		if scope == common.ScopeUpstream {
+		if scope == common.ScopeUpstream && err != nil {
 			return common.IsRetryableTowardsUpstream(err)
-		} else if scope == common.ScopeNetwork {
+		} else if scope == common.ScopeNetwork && err != nil {
 			return common.IsRetryableTowardNetwork(err)
 		}
 
