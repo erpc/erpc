@@ -298,31 +298,10 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 			return false
 		}
 
-		// Any error that cannot be retried against an upstream
-		if scope == common.ScopeUpstream && err != nil {
-			if !common.IsRetryableTowardsUpstream(err) || common.IsCapacityIssue(err) {
-				return false
-			}
-		}
-
-		// When error is "missing data" retry on network-level
-		if scope == common.ScopeNetwork && common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
-			return true
-		}
-
-		// On network-level if all upstreams returned non-retryable errors then do not retry
-		if scope == common.ScopeNetwork && common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
-			exher, ok := err.(*common.ErrUpstreamsExhausted)
-			if ok {
-				errs := exher.Errors()
-				if len(errs) > 0 {
-					for _, err := range errs {
-						if common.IsRetryableTowardsUpstream(err) && !common.IsCapacityIssue(err) {
-							return true
-						}
-					}
-				}
-			}
+		if scope == common.ScopeUpstream {
+			return common.IsRetryableTowardsUpstream(err)
+		} else if scope == common.ScopeNetwork {
+			return common.IsRetryableTowardNetwork(err)
 		}
 
 		if scope == common.ScopeNetwork && result != nil && !result.IsObjectNull() {

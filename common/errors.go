@@ -1984,6 +1984,7 @@ func IsRetryableTowardNetwork(err error) bool {
 		}
 	}
 
+	// If the error is retryable towards upstream, then it is also retryable towards network
 	return IsRetryableTowardsUpstream(err)
 }
 
