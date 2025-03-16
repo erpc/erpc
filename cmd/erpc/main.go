@@ -10,6 +10,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/erpc"
 	"github.com/erpc/erpc/util"
+	"github.com/joho/godotenv"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/afero"
@@ -17,6 +18,13 @@ import (
 )
 
 func init() {
+	// Load .env file if it exists
+	if err := godotenv.Load(); err != nil {
+		if !os.IsNotExist(err) {
+			log.Error().Err(err).Msg("failed to load .env file")
+		}
+	}
+
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnixMs
 	zerolog.ErrorMarshalFunc = func(err error) interface{} {
 		return err
