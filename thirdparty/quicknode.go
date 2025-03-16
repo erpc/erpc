@@ -64,20 +64,20 @@ func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr i
 			// We do not retry on parse errors, as retrying another upstream would not help.
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorParseException, msg, nil, details),
-				false, // not retryable
+				false, // not retryable towards network
 			)
 		} else if code == -32010 { // Transaction cost exceeds current gas limit
 			// retrying on gas limit exceeded errors toward other upstreams would be helpful, as max gas limit
 			// can be defined per client (reth, geth, parity, etc.) (still needs to be lower than overall block gas limit)
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorClientSideException, msg, nil, details),
-				true, // retryable
+				true, // retryable towards network
 			)
 		} else if code == -32602 && strings.Contains(msg, "cannot unmarshal hex string") {
 			// we do not retry on invalid argument errors, as retrying another upstream would not help.
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorInvalidArgument, msg, nil, details),
-				false, // not retryable
+				false, // not retryable towards network
 			)
 		} else if strings.Contains(msg, "UNAUTHORIZED") {
 			return common.NewErrEndpointUnauthorized(

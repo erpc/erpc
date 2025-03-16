@@ -190,7 +190,7 @@ func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr int
 					nil,
 					details,
 				),
-				false, // not retryable
+				false, // not retryable towards network
 			)
 		} else if code == 3 {
 			return common.NewErrEndpointExecutionException(

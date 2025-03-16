@@ -1526,12 +1526,12 @@ type ErrEndpointClientSideException struct{ BaseError }
 
 const ErrCodeEndpointClientSideException = "ErrEndpointClientSideException"
 
-func NewErrEndpointClientSideException(cause error, retryable ...bool) error {
+func NewErrEndpointClientSideException(cause error, retryableTowardNetwork ...bool) error {
 	// Default retryable to true
-	isRetryable := true
+	isRetryableTowardNetwork := true
 
-	if len(retryable) > 0 {
-		isRetryable = retryable[0]
+	if len(retryableTowardNetwork) > 0 {
+		isRetryableTowardNetwork = retryableTowardNetwork[0]
 	}
 
 	return &ErrEndpointClientSideException{
@@ -1540,7 +1540,7 @@ func NewErrEndpointClientSideException(cause error, retryable ...bool) error {
 			Message: "client-side error when sending request to remote endpoint",
 			Cause:   cause,
 			Details: map[string]interface{}{
-				"retryable": isRetryable,
+				"retryableTowardNetwork": isRetryableTowardNetwork,
 			},
 		},
 	}
@@ -1957,6 +1957,36 @@ func HasErrorCode(err error, codes ...ErrorCode) bool {
 	return false
 }
 
+func IsRetryableTowardNetwork(err error) bool {
+	// Missing data errors -> Retry
+	if HasErrorCode(err, ErrCodeEndpointMissingData) {
+		return true
+	}
+
+	// If the error says it's explicitly retryable/not retryable towards network
+	if se, ok := err.(StandardError); ok {
+		if rt, ok := se.DeepSearch("retryableTowardNetwork").(bool); ok {
+			return rt
+		}
+	}
+
+	// For exhausted upstreams, check if any of the underlying errors are retryable towards upstream
+	if HasErrorCode(err, ErrCodeUpstreamsExhausted) {
+		if exher, ok := err.(*ErrUpstreamsExhausted); ok {
+			errs := exher.Errors()
+			if len(errs) > 0 {
+				for _, e := range errs {
+					if IsRetryableTowardsUpstream(e) {
+						return true
+					}
+				}
+			}
+		}
+	}
+
+	return IsRetryableTowardsUpstream(err)
+}
+
 func IsRetryableTowardsUpstream(err error) bool {
 	if HasErrorCode(
 		err,
@@ -1985,12 +2015,14 @@ func IsRetryableTowardsUpstream(err error) bool {
 		ErrCodeEndpointRequestTooLarge,
 	) {
 		return false
-	} else if se, ok := err.(StandardError); ok {
-		if rt, ok := se.DeepSearch("retryable").(bool); ok && !rt {
-			return false
-		}
 	}
 
+	// If the upstream is hitting capacity limits -> no retry
+	if IsCapacityIssue(err) {
+		return false
+	}
+
+	// Otherwise, consider it retryable
 	return true
 }
 
