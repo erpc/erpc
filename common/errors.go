@@ -97,6 +97,14 @@ type StandardError interface {
 	MarshalZerologObject(v *zerolog.Event)
 }
 
+type ExceptionOption func(details map[string]interface{})
+
+func WithRetryableTowardNetwork(retryable bool) ExceptionOption {
+	return func(details map[string]interface{}) {
+		details["retryableTowardNetwork"] = retryable
+	}
+}
+
 func (e *BaseError) GetCode() ErrorCode {
 	return e.Code
 }
@@ -1526,12 +1534,14 @@ type ErrEndpointClientSideException struct{ BaseError }
 
 const ErrCodeEndpointClientSideException = "ErrEndpointClientSideException"
 
-func NewErrEndpointClientSideException(cause error, retryableTowardNetwork ...bool) error {
+func NewErrEndpointClientSideException(cause error, opts ...ExceptionOption) error {
 	// Default retryable to true
-	isRetryableTowardNetwork := true
+	details := map[string]interface{}{
+		"retryableTowardNetwork": true,
+	}
 
-	if len(retryableTowardNetwork) > 0 {
-		isRetryableTowardNetwork = retryableTowardNetwork[0]
+	for _, opt := range opts {
+		opt(details)
 	}
 
 	return &ErrEndpointClientSideException{
@@ -1539,9 +1549,7 @@ func NewErrEndpointClientSideException(cause error, retryableTowardNetwork ...bo
 			Code:    ErrCodeEndpointClientSideException,
 			Message: "client-side error when sending request to remote endpoint",
 			Cause:   cause,
-			Details: map[string]interface{}{
-				"retryableTowardNetwork": isRetryableTowardNetwork,
-			},
+			Details: details,
 		},
 	}
 }
