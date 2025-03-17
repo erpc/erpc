@@ -1545,7 +1545,7 @@ func NewErrEndpointClientSideException(cause error) RetryableError {
 	return &ErrEndpointClientSideException{
 		BaseError: BaseError{
 			Code:    ErrCodeEndpointClientSideException,
-			Message: "client-side error, etc.",
+			Message: "client-side error when sending request to remote endpoint",
 			Cause:   cause,
 			Details: map[string]interface{}{
 				"retryableTowardNetwork": true,
