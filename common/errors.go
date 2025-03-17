@@ -1543,7 +1543,7 @@ const ErrCodeEndpointClientSideException = "ErrEndpointClientSideException"
 
 var NewErrEndpointClientSideException = func(cause error) RetryableError {
 	return &ErrEndpointClientSideException{
-		BaseError: BaseError{
+		BaseError{
 			Code:    ErrCodeEndpointClientSideException,
 			Message: "client-side error when sending request to remote endpoint",
 			Cause:   cause,
