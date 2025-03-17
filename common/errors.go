@@ -1965,35 +1965,21 @@ func HasErrorCode(err error, codes ...ErrorCode) bool {
 	return false
 }
 
-func IsRetryableTowardNetwork(err error) bool {
-	// Missing data errors -> Retry
+func IsRetryableTowardNetwork(err error) *bool {
+	// 1) Missing data errors -> Retry
 	if HasErrorCode(err, ErrCodeEndpointMissingData) {
-		return true
+		t := true
+		return &t
 	}
 
 	// If the error says it's explicitly retryable/not retryable towards network
 	if se, ok := err.(StandardError); ok {
 		if rt, ok := se.DeepSearch("retryableTowardNetwork").(bool); ok {
-			return rt
+			return &rt
 		}
 	}
 
-	// For exhausted upstreams, check if any of the underlying errors are retryable towards upstream
-	if HasErrorCode(err, ErrCodeUpstreamsExhausted) {
-		if exher, ok := err.(*ErrUpstreamsExhausted); ok {
-			errs := exher.Errors()
-			if len(errs) > 0 {
-				for _, e := range errs {
-					if IsRetryableTowardsUpstream(e) {
-						return true
-					}
-				}
-			}
-		}
-	}
-
-	// If the error is retryable towards upstream, then it is also retryable towards network
-	return IsRetryableTowardsUpstream(err)
+	return nil
 }
 
 func IsRetryableTowardsUpstream(err error) bool {
@@ -2029,6 +2015,22 @@ func IsRetryableTowardsUpstream(err error) bool {
 	// If the upstream is hitting capacity limits -> no retry
 	if IsCapacityIssue(err) {
 		return false
+	}
+
+	// Check if this is an exhausted upstreams error with retryable underlying errors
+	if HasErrorCode(err, ErrCodeUpstreamsExhausted) {
+		if exher, ok := err.(*ErrUpstreamsExhausted); ok {
+			errs := exher.Errors()
+			if len(errs) > 0 {
+				for _, e := range errs {
+					if IsRetryableTowardsUpstream(e) {
+						return true
+					}
+				}
+			}
+			// If we get here, none of the underlying errors were retryable
+			return false
+		}
 	}
 
 	// Otherwise, consider it retryable
