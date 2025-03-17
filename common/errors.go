@@ -97,14 +97,19 @@ type StandardError interface {
 	MarshalZerologObject(v *zerolog.Event)
 }
 
-type ExceptionOption func(e StandardError)
+type RetryableError interface {
+	error
+	WithRetryableTowardNetwork(bool) RetryableError
+}
 
-func WithRetryableTowardNetwork(retryable bool) ExceptionOption {
-	return func(e StandardError) {
-		if e.Base() != nil {
-			e.Base().Details["retryableTowardNetwork"] = retryable
+func (e *BaseError) WithRetryableTowardNetwork(r bool) RetryableError {
+	if e != nil {
+		if e.Details == nil {
+			e.Details = map[string]interface{}{}
 		}
+		e.Details["retryableTowardNetwork"] = r
 	}
+	return e
 }
 
 func (e *BaseError) GetCode() ErrorCode {
@@ -1536,24 +1541,17 @@ type ErrEndpointClientSideException struct{ BaseError }
 
 const ErrCodeEndpointClientSideException = "ErrEndpointClientSideException"
 
-func NewErrEndpointClientSideException(cause error, opts ...ExceptionOption) error {
-
-	errObj := &ErrEndpointClientSideException{
-		BaseError{
+func NewErrEndpointClientSideException(cause error) RetryableError {
+	return &ErrEndpointClientSideException{
+		BaseError: BaseError{
 			Code:    ErrCodeEndpointClientSideException,
-			Message: "client-side error when sending request to remote endpoint",
+			Message: "client-side error, etc.",
 			Cause:   cause,
 			Details: map[string]interface{}{
 				"retryableTowardNetwork": true,
 			},
 		},
 	}
-
-	for _, opt := range opts {
-		opt(errObj)
-	}
-
-	return errObj
 }
 
 func (e *ErrEndpointClientSideException) ErrorStatusCode() int {
