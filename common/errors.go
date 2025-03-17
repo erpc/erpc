@@ -1541,7 +1541,7 @@ type ErrEndpointClientSideException struct{ BaseError }
 
 const ErrCodeEndpointClientSideException = "ErrEndpointClientSideException"
 
-func NewErrEndpointClientSideException(cause error) RetryableError {
+var NewErrEndpointClientSideException = func(cause error) RetryableError {
 	return &ErrEndpointClientSideException{
 		BaseError: BaseError{
 			Code:    ErrCodeEndpointClientSideException,
