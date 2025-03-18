@@ -2033,9 +2033,6 @@ func IsRetryableTowardsUpstream(err error) bool {
 	if HasErrorCode(
 		err,
 
-		// Missing data errors -> No Retry
-		ErrCodeEndpointMissingData,
-
 		// Circuit breaker is open -> No Retry
 		ErrCodeFailsafeCircuitBreakerOpen,
 
