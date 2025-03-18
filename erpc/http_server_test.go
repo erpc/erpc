@@ -5318,7 +5318,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		statusCode, body := sendRequest(requestBody, nil, nil)
 
-		assert.Equal(t, http.StatusBadRequest, statusCode)
+		assert.Equal(t, http.StatusServiceUnavailable, statusCode)
 
 		var respObject map[string]interface{}
 		err := sonic.UnmarshalString(body, &respObject)
