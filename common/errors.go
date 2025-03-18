@@ -1720,9 +1720,6 @@ var NewErrEndpointMissingData = func(cause error) error {
 			Code:    ErrCodeEndpointMissingData,
 			Message: "remote endpoint does not have this data/block or not synced yet",
 			Cause:   cause,
-			Details: map[string]interface{}{
-				"retryableTowardNetwork": true,
-			},
 		},
 	}
 }
