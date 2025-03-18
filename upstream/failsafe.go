@@ -298,11 +298,14 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 			return false
 		}
 
+		// We are only short-circuiting retry if the error is not retryable towards the upstream or network
 		if scope == common.ScopeUpstream && err != nil {
-			return common.IsRetryableTowardsUpstream(err)
+			if !common.IsRetryableTowardsUpstream(err) {
+				return false
+			}
 		} else if scope == common.ScopeNetwork && err != nil {
-			if rt := common.IsRetryableTowardNetwork(err); rt != nil {
-				return *rt
+			if !common.IsRetryableTowardNetwork(err) {
+				return false
 			}
 		}
 

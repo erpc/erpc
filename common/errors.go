@@ -1171,6 +1171,9 @@ var NewErrJsonRpcRequestUnmarshal = func(cause error) error {
 				Code:    ErrCodeJsonRpcRequestUnmarshal,
 				Message: "failed to unmarshal json-rpc request",
 				Cause:   cause,
+				Details: map[string]interface{}{
+					"retryableTowardNetwork": false,
+				},
 			},
 		}
 	} else if cause != nil {
@@ -1178,6 +1181,9 @@ var NewErrJsonRpcRequestUnmarshal = func(cause error) error {
 			BaseError{
 				Code:    ErrCodeJsonRpcRequestUnmarshal,
 				Message: fmt.Sprintf("%s", cause),
+				Details: map[string]interface{}{
+					"retryableTowardNetwork": false,
+				},
 			},
 		}
 	}
@@ -1185,6 +1191,9 @@ var NewErrJsonRpcRequestUnmarshal = func(cause error) error {
 		BaseError{
 			Code:    ErrCodeJsonRpcRequestUnmarshal,
 			Message: "failed to unmarshal json-rpc request",
+			Details: map[string]interface{}{
+				"retryableTowardNetwork": false,
+			},
 		},
 	}
 }
@@ -1201,7 +1210,8 @@ var NewErrJsonRpcRequestUnresolvableMethod = func(rpcRequest interface{}) error 
 			Code:    "ErrJsonRpcRequestUnresolvableMethod",
 			Message: "could not resolve method in json-rpc request",
 			Details: map[string]interface{}{
-				"request": rpcRequest,
+				"request":                rpcRequest,
+				"retryableTowardNetwork": false,
 			},
 		},
 	}
@@ -1212,7 +1222,7 @@ type ErrJsonRpcRequestPreparation struct {
 }
 
 var NewErrJsonRpcRequestPreparation = func(cause error, details map[string]interface{}) error {
-	return &ErrJsonRpcRequestPreparation{
+	err := &ErrJsonRpcRequestPreparation{
 		BaseError{
 			Code:    "ErrJsonRpcRequestPreparation",
 			Message: "failed to prepare json-rpc request",
@@ -1220,6 +1230,16 @@ var NewErrJsonRpcRequestPreparation = func(cause error, details map[string]inter
 			Details: details,
 		},
 	}
+
+	if err.Details == nil {
+		err.Details = make(map[string]interface{})
+	}
+
+	if _, ok := err.Details["retryableTowardNetwork"]; !ok {
+		err.Details["retryableTowardNetwork"] = false
+	}
+
+	return err
 }
 
 //
@@ -1547,9 +1567,6 @@ var NewErrEndpointClientSideException = func(cause error) RetryableError {
 			Code:    ErrCodeEndpointClientSideException,
 			Message: "client-side error when sending request to remote endpoint",
 			Cause:   cause,
-			Details: map[string]interface{}{
-				"retryableTowardNetwork": true,
-			},
 		},
 	}
 }
@@ -1577,6 +1594,9 @@ var NewErrEndpointExecutionException = func(cause error) error {
 			Code:    ErrCodeEndpointExecutionException,
 			Message: "execution exception on node",
 			Cause:   cause,
+			Details: map[string]interface{}{
+				"retryableTowardNetwork": false,
+			},
 		},
 	}
 }
@@ -1700,6 +1720,9 @@ var NewErrEndpointMissingData = func(cause error) error {
 			Code:    ErrCodeEndpointMissingData,
 			Message: "remote endpoint does not have this data/block or not synced yet",
 			Cause:   cause,
+			Details: map[string]interface{}{
+				"retryableTowardNetwork": true,
+			},
 		},
 	}
 }
@@ -1965,26 +1988,56 @@ func HasErrorCode(err error, codes ...ErrorCode) bool {
 	return false
 }
 
-func IsRetryableTowardNetwork(err error) *bool {
-	// 1) Missing data errors -> Retry
-	if HasErrorCode(err, ErrCodeEndpointMissingData) {
-		t := true
-		return &t
+func IsRetryableTowardNetwork(err error) bool {
+	// Check if this is an exhausted upstreams error with retryable underlying errors
+	if HasErrorCode(err, ErrCodeUpstreamsExhausted) {
+		if exher, ok := err.(*ErrUpstreamsExhausted); ok {
+			errs := exher.Errors()
+			if len(errs) > 0 {
+				for _, e := range errs {
+					if IsRetryableTowardsUpstream(e) {
+						return true
+					}
+				}
+			}
+			// If we get here, none of the underlying errors were retryable
+			return false
+		}
 	}
 
 	// If the error says it's explicitly retryable/not retryable towards network
 	if se, ok := err.(StandardError); ok {
-		if rt, ok := se.DeepSearch("retryableTowardNetwork").(bool); ok {
-			return &rt
+		if rt, ok := se.DeepSearch("retryableTowardNetwork").(bool); ok && !rt {
+			return false
 		}
 	}
 
-	return nil
+	// Otherwise, consider it retryable
+	return true
 }
 
 func IsRetryableTowardsUpstream(err error) bool {
+	// Check if this is an exhausted upstreams error with retryable underlying errors
+	if HasErrorCode(err, ErrCodeUpstreamsExhausted) {
+		if exher, ok := err.(*ErrUpstreamsExhausted); ok {
+			errs := exher.Errors()
+			if len(errs) > 0 {
+				for _, e := range errs {
+					if IsRetryableTowardsUpstream(e) {
+						return true
+					}
+				}
+			}
+			// If we get here, none of the underlying errors were retryable
+			return false
+		}
+	}
+
 	if HasErrorCode(
 		err,
+
+		// Missing data errors -> No Retry
+		ErrCodeEndpointMissingData,
 
 		// Circuit breaker is open -> No Retry
 		ErrCodeFailsafeCircuitBreakerOpen,
@@ -2015,22 +2068,6 @@ func IsRetryableTowardsUpstream(err error) bool {
 	// If the upstream is hitting capacity limits -> no retry
 	if IsCapacityIssue(err) {
 		return false
-	}
-
-	// Check if this is an exhausted upstreams error with retryable underlying errors
-	if HasErrorCode(err, ErrCodeUpstreamsExhausted) {
-		if exher, ok := err.(*ErrUpstreamsExhausted); ok {
-			errs := exher.Errors()
-			if len(errs) > 0 {
-				for _, e := range errs {
-					if IsRetryableTowardsUpstream(e) {
-						return true
-					}
-				}
-			}
-			// If we get here, none of the underlying errors were retryable
-			return false
-		}
 	}
 
 	// Otherwise, consider it retryable

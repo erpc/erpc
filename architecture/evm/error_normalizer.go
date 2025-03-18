@@ -159,7 +159,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					nil,
 					details,
 				),
-			).WithRetryableTowardNetwork(true)
+			)
 		}
 
 		//----------------------------------------------------------------
@@ -299,7 +299,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 						nil,
 						details,
 					),
-				).WithRetryableTowardNetwork(true)
+				)
 			}
 		}
 
@@ -345,7 +345,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					nil,
 					details,
 				),
-			).WithRetryableTowardNetwork(true)
+			)
 		} else if code == -32600 {
 			if dt, ok := err.Data.(map[string]interface{}); ok {
 				if innerMsg, ok := dt["message"]; ok {
@@ -359,7 +359,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 								nil,
 								details,
 							),
-						).WithRetryableTowardNetwork(true)
+						)
 					}
 				}
 			}
