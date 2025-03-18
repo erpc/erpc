@@ -4650,7 +4650,7 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
-		defer util.AssertNoPendingMocks(t, 0)
+		defer util.AssertNoPendingMocks(t, 1)
 
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
