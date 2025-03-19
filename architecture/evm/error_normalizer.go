@@ -354,7 +354,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 						return common.NewErrEndpointClientSideException(
 							common.NewErrJsonRpcExceptionInternal(
 								int(code),
-								common.JsonRpcErrorInvalidArgument,
+								common.JsonRpcErrorCallException,
 								err.Message,
 								nil,
 								details,
@@ -363,14 +363,24 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					}
 				}
 			}
-		} else if code == -32602 || code == -32600 ||
-			strings.Contains(msg, "param is required") ||
+		} else if code == -32602 || code == -32600 {
+			// For generic invalid args/params errors, we retry.
+			return common.NewErrEndpointClientSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorInvalidArgument,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+		} else if strings.Contains(msg, "param is required") ||
 			strings.Contains(msg, "Invalid Request") ||
 			strings.Contains(msg, "validation errors") ||
 			strings.Contains(msg, "invalid argument") ||
 			strings.Contains(msg, "invalid params") {
 
-			// For invalid args/params errors, there is a high chance that the error is due to a mistake that the user
+			// For specific invalid args/params errors, there is a high chance that the error is due to a mistake that the user
 			// has done, and retrying another upstream would not help.
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
