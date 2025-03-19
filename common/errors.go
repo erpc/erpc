@@ -2018,6 +2018,22 @@ func IsRetryableTowardNetwork(err error) bool {
 }
 
 func IsRetryableTowardsUpstream(err error) bool {
+	// Check if this is an exhausted upstreams error with retryable underlying errors
+	if HasErrorCode(err, ErrCodeUpstreamsExhausted) {
+		if exher, ok := err.(*ErrUpstreamsExhausted); ok {
+			errs := exher.Errors()
+			if len(errs) > 0 {
+				for _, e := range errs {
+					if IsRetryableTowardsUpstream(e) {
+						return true
+					}
+				}
+			}
+			// If we get here, none of the underlying errors were retryable
+			return false
+		}
+	}
+
 	if HasErrorCode(
 		err,
 
