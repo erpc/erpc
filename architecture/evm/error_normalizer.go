@@ -149,7 +149,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.HasPrefix(msg, "finalized block not found") ||
 			strings.HasPrefix(msg, "Finalized block not found") {
 
-			// by default, we retry this type of clien-side exception as other upstreams might
+			// by default, we retry this type of client-side exception as other upstreams might
 			// have/support this specific block tag data.
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
@@ -368,8 +368,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "Invalid Request") ||
 			strings.Contains(msg, "validation errors") ||
 			strings.Contains(msg, "invalid argument") ||
-			strings.Contains(msg, "invalid params") ||
-			strings.Contains(msg, "tx of type") {
+			strings.Contains(msg, "invalid params") {
 
 			// For invalid args/params errors, there is a high chance that the error is due to a mistake that the user
 			// has done, and retrying another upstream would not help.
