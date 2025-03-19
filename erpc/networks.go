@@ -276,7 +276,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 				if prevErr, exists := errorsByUpstream.Load(u); exists {
 					pe := prevErr.(error)
-					if !common.IsRetryableTowardsUpstream(pe) || common.IsCapacityIssue(pe) {
+					if !common.IsRetryableTowardsUpstream(pe) {
 						// Do not even try this upstream if we already know
 						// the previous error was not retryable. e.g. Billing issues
 						// Or there was a rate-limit error.
