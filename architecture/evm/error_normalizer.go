@@ -354,7 +354,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 						return common.NewErrEndpointClientSideException(
 							common.NewErrJsonRpcExceptionInternal(
 								int(code),
-								common.JsonRpcErrorInvalidArgument,
+								common.JsonRpcErrorUnsupportedException,
 								err.Message,
 								nil,
 								details,
