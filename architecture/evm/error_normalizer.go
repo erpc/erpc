@@ -56,7 +56,10 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			msg += " Data: " + fmt.Sprintf("%v", err.Data)
 		}
 
-		// Infer from known status codes
+		//----------------------------------------------------------------
+		// "Request-too-large / range-too-large" errors
+		//----------------------------------------------------------------
+
 		if strings.Contains(msg, "Try with this block range") ||
 			strings.Contains(msg, "block range is too wide") ||
 			strings.Contains(msg, "this block range should work") ||
@@ -85,7 +88,24 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				),
 				common.EvmBlockRangeTooLarge,
 			)
-		} else if r.StatusCode == 429 ||
+		} else if strings.Contains(msg, "specify less number of address") {
+			return common.NewErrEndpointRequestTooLarge(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorEvmLargeRange,
+					err.Message,
+					nil,
+					details,
+				),
+				common.EvmAddressesTooLarge,
+			)
+		}
+
+		//----------------------------------------------------------------
+		// "Capacity-exceeded / rate-limiting / billing" errors
+		//----------------------------------------------------------------
+
+		if r.StatusCode == 429 ||
 			strings.Contains(msg, "requests limited to") ||
 			strings.Contains(msg, "has exceeded") ||
 			strings.Contains(msg, "Exceeded the quota") ||
@@ -103,19 +123,9 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if strings.Contains(msg, "specify less number of address") {
-			return common.NewErrEndpointRequestTooLarge(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorCapacityExceeded,
-					err.Message,
-					nil,
-					details,
-				),
-				common.EvmAddressesTooLarge,
-			)
 		} else if strings.Contains(msg, "reached the free tier") ||
 			strings.Contains(msg, "Monthly capacity limit") {
+			// Specific billing-tier exhaustion or subscription limit
 			return common.NewErrEndpointBillingIssue(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -125,15 +135,22 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if strings.HasPrefix(msg, "pending block is not available") ||
+		}
+
+		//----------------------------------------------------------------
+		// "Block tag" errors (pending/finalized/safe not supported)
+		//----------------------------------------------------------------
+
+		if strings.HasPrefix(msg, "pending block is not available") ||
 			strings.HasPrefix(msg, "pending block not found") ||
 			strings.HasPrefix(msg, "Pending block not found") ||
 			strings.HasPrefix(msg, "safe block not found") ||
 			strings.HasPrefix(msg, "Safe block not found") ||
 			strings.HasPrefix(msg, "finalized block not found") ||
 			strings.HasPrefix(msg, "Finalized block not found") {
-			// This error means node does not support "finalized/safe/pending" blocks.
-			// ref https://github.com/ethereum/go-ethereum/blob/368e16f39d6c7e5cce72a92ec289adbfbaed4854/eth/api_backend.go#L67-L95
+
+			// by default, we retry this type of client-side exception as other upstreams might
+			// have/support this specific block tag data.
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -143,7 +160,13 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if IsMissingDataError(err) {
+		}
+
+		//----------------------------------------------------------------
+		// "Known missing data" errors
+		//----------------------------------------------------------------
+
+		if IsMissingDataError(err) {
 			return common.NewErrEndpointMissingData(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -153,7 +176,13 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if strings.Contains(msg, "execution timeout") {
+		}
+
+		//----------------------------------------------------------------
+		// "Timeouts / node-level" errors
+		//----------------------------------------------------------------
+
+		if strings.Contains(msg, "execution timeout") {
 			return common.NewErrEndpointServerSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -164,7 +193,13 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 				),
 				nil,
 			)
-		} else if strings.Contains(msg, "reverted") ||
+		}
+
+		//----------------------------------------------------------------
+		// "EVM reverts and execution" errors
+		//----------------------------------------------------------------
+
+		if strings.Contains(msg, "reverted") ||
 			strings.Contains(msg, "VM execution error") ||
 			strings.Contains(msg, "transaction: revert") ||
 			strings.Contains(msg, "VM Exception") {
@@ -177,11 +212,20 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if strings.Contains(msg, "insufficient funds") ||
+		}
+
+		//----------------------------------------------------------------
+		// "Insufficient funds" or "out of gas" errors
+		//----------------------------------------------------------------
+
+		if strings.Contains(msg, "insufficient funds") ||
 			strings.Contains(msg, "insufficient balance") ||
 			strings.Contains(msg, "out of gas") ||
 			strings.Contains(msg, "gas too low") ||
 			strings.Contains(msg, "IntrinsicGas") {
+
+			// by default, we do not retry this type of client-side exception
+			// as if the gas/funds is low, retrying another upstream would not help.
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -190,21 +234,14 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					nil,
 					details,
 				),
-			)
-		} else if strings.Contains(msg, "Unsupported method") ||
-			strings.Contains(msg, "not supported") ||
-			strings.Contains(msg, "method is not whitelisted") ||
-			strings.Contains(msg, "is not included in your current plan") {
-			return common.NewErrEndpointUnsupported(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorUnsupportedException,
-					err.Message,
-					nil,
-					details,
-				),
-			)
-		} else if r.StatusCode == 401 || r.StatusCode == 403 || strings.Contains(msg, "not allowed to access") {
+			).WithRetryableTowardNetwork(false)
+		}
+
+		//----------------------------------------------------------------
+		// "Unauthorized" errors
+		//----------------------------------------------------------------
+
+		if r.StatusCode == 401 || r.StatusCode == 403 || strings.Contains(msg, "not allowed to access") {
 			return common.NewErrEndpointUnauthorized(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -214,14 +251,19 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
-		} else if strings.Contains(msg, "not found") ||
+		}
+
+		//----------------------------------------------------------------
+		// "Not found" or "disabled" errors (missing data or unsupported)
+		//----------------------------------------------------------------
+
+		if strings.Contains(msg, "not found") ||
 			strings.Contains(msg, "does not exist") ||
 			strings.Contains(msg, "not available") ||
 			strings.Contains(msg, "is disabled") {
-			if strings.Contains(msg, "Method") ||
-				strings.Contains(msg, "method") ||
-				strings.Contains(msg, "Module") ||
-				strings.Contains(msg, "module") {
+
+			if strings.Contains(msg, "Method") || strings.Contains(msg, "method") ||
+				strings.Contains(msg, "Module") || strings.Contains(msg, "module") {
 				return common.NewErrEndpointUnsupported(
 					common.NewErrJsonRpcExceptionInternal(
 						int(code),
@@ -247,6 +289,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					),
 				)
 			} else {
+				// by default, we retry this type of client-side exception, as the root cause
+				// might be an unsupported method or missing data, that another upstream might support.
 				return common.NewErrEndpointClientSideException(
 					common.NewErrJsonRpcExceptionInternal(
 						int(code),
@@ -257,38 +301,43 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					),
 				)
 			}
-		} else if code == -32602 ||
-			strings.Contains(msg, "param is required") ||
-			strings.Contains(msg, "Invalid Request") ||
-			strings.Contains(msg, "validation errors") ||
-			strings.Contains(msg, "invalid argument") ||
-			strings.Contains(msg, "invalid params") {
-			if strings.Contains(msg, "tx of type") {
-				// TODO For now we're returning a server-side exception for this error
-				// so that the request is retried on a different upstream which supports the requested TX type.
-				// This must be properly handled when "Upstream Features" is implemented which allows for feature-based routing.
-				return common.NewErrEndpointServerSideException(
-					common.NewErrJsonRpcExceptionInternal(
-						int(code),
-						common.JsonRpcErrorCallException,
-						err.Message,
-						nil,
-						details,
-					),
-					nil,
-				)
-			}
-			return common.NewErrEndpointClientSideException(
+		}
+
+		//----------------------------------------------------------------
+		// "Unsupported" errors
+		//----------------------------------------------------------------
+
+		// Note: do not move this check above "Not found" errors, as we want to
+		// avoid premature detection when message is only "not found" (e.g. from Tenderly)
+
+		if r.StatusCode == 415 || code == common.JsonRpcErrorUnsupportedException || // By HTTP status code or explicit JSON-RPC error code
+			code == -32004 || code == -32001 || // direct codes from upstream
+			strings.Contains(msg, "Unsupported method") ||
+			strings.Contains(msg, "not supported") ||
+			strings.Contains(msg, "method is not whitelisted") ||
+			strings.Contains(msg, "is not included in your current plan") {
+			return common.NewErrEndpointUnsupported(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
-					common.JsonRpcErrorInvalidArgument,
+					common.JsonRpcErrorUnsupportedException,
 					err.Message,
 					nil,
 					details,
 				),
 			)
-		} else if r.StatusCode == 415 || code == -32004 || code == -32001 || code == common.JsonRpcErrorUnsupportedException {
-			return common.NewErrEndpointUnsupported(
+		}
+
+		//----------------------------------------------------------------
+		// "Invalid Argument / Params / Request" errors
+		//----------------------------------------------------------------
+
+		// Even though these errors have invalid argument or params, they are more about a lack of standard
+		// for certain args/params for certain methods, among different providers or clients. We will retry them.
+		//
+		// Examples:
+		if strings.Contains(msg, "tx of type") || // Should be retried toward upstreams that support this tx type
+			strings.Contains(msg, "invalid type: map, expected BlockNumber, 'latest', or 'earliest'") { // Envio not supporting { blockNumber: XXX, blockHash: YYY } for eth_getBlockReceipts
+			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorUnsupportedException,
@@ -299,24 +348,23 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			)
 		} else if code == -32600 {
 			if dt, ok := err.Data.(map[string]interface{}); ok {
-				if msg, ok := dt["message"]; ok {
-					if strings.Contains(msg.(string), "validation errors in batch") {
-						// Intentionally return a server-side error for failed requests in a batch
-						// so they are retried in a different batch.
-						// TODO Should we split a batch instead on json-rpc client level?
-						return common.NewErrEndpointServerSideException(
+				if innerMsg, ok := dt["message"]; ok {
+					if strings.Contains(innerMsg.(string), "validation errors in batch") {
+						// Return a retryable client-side error so the caller might retry or split the batch.
+						return common.NewErrEndpointClientSideException(
 							common.NewErrJsonRpcExceptionInternal(
 								int(code),
-								common.JsonRpcErrorServerSideException,
+								common.JsonRpcErrorCallException,
 								err.Message,
 								nil,
 								details,
 							),
-							nil,
 						)
 					}
 				}
 			}
+		} else if code == -32602 || code == -32600 {
+			// For generic invalid args/params errors, we retry.
 			return common.NewErrEndpointClientSideException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -326,9 +374,28 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			)
+		} else if strings.Contains(msg, "param is required") ||
+			strings.Contains(msg, "Invalid Request") ||
+			strings.Contains(msg, "validation errors") ||
+			strings.Contains(msg, "invalid argument") ||
+			strings.Contains(msg, "invalid params") {
+
+			// For specific invalid args/params errors, there is a high chance that the error is due to a mistake that the user
+			// has done, and retrying another upstream would not help.
+			return common.NewErrEndpointClientSideException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorInvalidArgument,
+					err.Message,
+					nil,
+					details,
+				),
+			).WithRetryableTowardNetwork(false)
 		}
 
-		// By default we consider a problem on the server so that retry/failover mechanisms try other upstreams
+		//----------------------------------------------------------------
+		// Fallback -> we consider it a server-side problem (failover / retry).
+		//----------------------------------------------------------------
 		return common.NewErrEndpointServerSideException(
 			common.NewErrJsonRpcExceptionInternal(
 				int(code),
@@ -341,7 +408,10 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		)
 	}
 
-	// There's a special case for certain clients that return a normal response for reverts:
+	// -----------------------------------------------------------------------
+	// Special-case check for reverts: Some clients return a normal 200 status,
+	// but an EVM revert payload in jr.Result.
+	// -----------------------------------------------------------------------
 	if jr != nil && jr.Result != nil && len(jr.Result) > 0 {
 		dt := util.Mem2Str(jr.Result)
 		// keccak256("Error(string)")
@@ -387,6 +457,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 	}
 
+	// No error detected.
 	return nil
 }
 

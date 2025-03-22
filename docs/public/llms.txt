@@ -3792,7 +3792,7 @@ projects:
 
 ## `retry` policy [Permalink for this section](https://docs.erpc.cloud/config/failsafe\#retry-policy)
 
-This policies will retry certain retriable failures, either on network-level and/or upstream-level.
+This policies will retry certain retryable failures, either on network-level and/or upstream-level.
 
 yamltypescript
 

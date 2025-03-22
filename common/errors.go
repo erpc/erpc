@@ -90,11 +90,26 @@ type StandardError interface {
 	HasCode(...ErrorCode) bool
 	CodeChain() string
 	DeepestMessage() string
-	DeepSearch(key string) string
+	DeepSearch(key string) interface{}
 	GetCause() error
 	ErrorStatusCode() int
 	Base() *BaseError
 	MarshalZerologObject(v *zerolog.Event)
+}
+
+type RetryableError interface {
+	error
+	WithRetryableTowardNetwork(bool) RetryableError
+}
+
+func (e *BaseError) WithRetryableTowardNetwork(r bool) RetryableError {
+	if e != nil {
+		if e.Details == nil {
+			e.Details = map[string]interface{}{}
+		}
+		e.Details["retryableTowardNetwork"] = r
+	}
+	return e
 }
 
 func (e *BaseError) GetCode() ErrorCode {
@@ -152,13 +167,10 @@ func (e *BaseError) DeepestMessage() string {
 
 	return e.Message
 }
-
-func (e *BaseError) DeepSearch(key string) string {
+func (e *BaseError) DeepSearch(key string) interface{} {
 	if e.Details != nil {
 		if v, ok := e.Details[key]; ok {
-			if s, ok := v.(string); ok {
-				return s
-			}
+			return v
 		}
 	}
 	if e.Cause != nil {
@@ -169,14 +181,14 @@ func (e *BaseError) DeepSearch(key string) string {
 			for _, err := range cs.Unwrap() {
 				if be, ok := err.(StandardError); ok {
 					ds := be.DeepSearch(key)
-					if ds != "" {
+					if ds != nil {
 						return ds
 					}
 				}
 			}
 		}
 	}
-	return ""
+	return nil
 }
 
 func (e *BaseError) GetCause() error {
@@ -938,7 +950,12 @@ func (e *ErrUpstreamsExhausted) DeepestMessage() string {
 }
 
 func (e *ErrUpstreamsExhausted) UpstreamId() string {
-	return e.DeepSearch("upstreamId")
+	if val := e.DeepSearch("upstreamId"); val != nil {
+		if s, ok := val.(string); ok {
+			return s
+		}
+	}
+	return ""
 }
 
 func (e *ErrUpstreamsExhausted) FromCache() bool {
@@ -1154,6 +1171,9 @@ var NewErrJsonRpcRequestUnmarshal = func(cause error) error {
 				Code:    ErrCodeJsonRpcRequestUnmarshal,
 				Message: "failed to unmarshal json-rpc request",
 				Cause:   cause,
+				Details: map[string]interface{}{
+					"retryableTowardNetwork": false,
+				},
 			},
 		}
 	} else if cause != nil {
@@ -1161,6 +1181,9 @@ var NewErrJsonRpcRequestUnmarshal = func(cause error) error {
 			BaseError{
 				Code:    ErrCodeJsonRpcRequestUnmarshal,
 				Message: fmt.Sprintf("%s", cause),
+				Details: map[string]interface{}{
+					"retryableTowardNetwork": false,
+				},
 			},
 		}
 	}
@@ -1168,6 +1191,9 @@ var NewErrJsonRpcRequestUnmarshal = func(cause error) error {
 		BaseError{
 			Code:    ErrCodeJsonRpcRequestUnmarshal,
 			Message: "failed to unmarshal json-rpc request",
+			Details: map[string]interface{}{
+				"retryableTowardNetwork": false,
+			},
 		},
 	}
 }
@@ -1184,7 +1210,8 @@ var NewErrJsonRpcRequestUnresolvableMethod = func(rpcRequest interface{}) error 
 			Code:    "ErrJsonRpcRequestUnresolvableMethod",
 			Message: "could not resolve method in json-rpc request",
 			Details: map[string]interface{}{
-				"request": rpcRequest,
+				"request":                rpcRequest,
+				"retryableTowardNetwork": false,
 			},
 		},
 	}
@@ -1195,7 +1222,7 @@ type ErrJsonRpcRequestPreparation struct {
 }
 
 var NewErrJsonRpcRequestPreparation = func(cause error, details map[string]interface{}) error {
-	return &ErrJsonRpcRequestPreparation{
+	err := &ErrJsonRpcRequestPreparation{
 		BaseError{
 			Code:    "ErrJsonRpcRequestPreparation",
 			Message: "failed to prepare json-rpc request",
@@ -1203,6 +1230,16 @@ var NewErrJsonRpcRequestPreparation = func(cause error, details map[string]inter
 			Details: details,
 		},
 	}
+
+	if err.Details == nil {
+		err.Details = make(map[string]interface{})
+	}
+
+	if _, ok := err.Details["retryableTowardNetwork"]; !ok {
+		err.Details["retryableTowardNetwork"] = false
+	}
+
+	return err
 }
 
 //
@@ -1524,7 +1561,7 @@ type ErrEndpointClientSideException struct{ BaseError }
 
 const ErrCodeEndpointClientSideException = "ErrEndpointClientSideException"
 
-var NewErrEndpointClientSideException = func(cause error) error {
+var NewErrEndpointClientSideException = func(cause error) RetryableError {
 	return &ErrEndpointClientSideException{
 		BaseError{
 			Code:    ErrCodeEndpointClientSideException,
@@ -1557,6 +1594,9 @@ var NewErrEndpointExecutionException = func(cause error) error {
 			Code:    ErrCodeEndpointExecutionException,
 			Message: "execution exception on node",
 			Cause:   cause,
+			Details: map[string]interface{}{
+				"retryableTowardNetwork": false,
+			},
 		},
 	}
 }
@@ -1682,6 +1722,10 @@ var NewErrEndpointMissingData = func(cause error) error {
 			Cause:   cause,
 		},
 	}
+}
+
+func (e *ErrEndpointMissingData) ErrorStatusCode() int {
+	return http.StatusServiceUnavailable
 }
 
 type ErrUpstreamNodeTypeMismatch struct{ BaseError }
@@ -1945,9 +1989,56 @@ func HasErrorCode(err error, codes ...ErrorCode) bool {
 	return false
 }
 
+func IsRetryableTowardNetwork(err error) bool {
+	// Check if this is an exhausted upstreams error with retryable underlying errors
+	if HasErrorCode(err, ErrCodeUpstreamsExhausted) {
+		if exher, ok := err.(*ErrUpstreamsExhausted); ok {
+			errs := exher.Errors()
+			if len(errs) > 0 {
+				for _, e := range errs {
+					if IsRetryableTowardsUpstream(e) {
+						return true
+					}
+				}
+			}
+			// If we get here, none of the underlying errors were retryable
+			return false
+		}
+	}
+
+	// If the error says it's explicitly retryable/not retryable towards network
+	if se, ok := err.(StandardError); ok {
+		if rt, ok := se.DeepSearch("retryableTowardNetwork").(bool); ok && !rt {
+			return false
+		}
+	}
+
+	// Otherwise, consider it retryable
+	return true
+}
+
 func IsRetryableTowardsUpstream(err error) bool {
-	return !HasErrorCode(
+	// Check if this is an exhausted upstreams error with retryable underlying errors
+	if HasErrorCode(err, ErrCodeUpstreamsExhausted) {
+		if exher, ok := err.(*ErrUpstreamsExhausted); ok {
+			errs := exher.Errors()
+			if len(errs) > 0 {
+				for _, e := range errs {
+					if IsRetryableTowardsUpstream(e) {
+						return true
+					}
+				}
+			}
+			// If we get here, none of the underlying errors were retryable
+			return false
+		}
+	}
+
+	if HasErrorCode(
 		err,
+
+		// Missing data errors -> No Retry
+		ErrCodeEndpointMissingData,
 
 		// Circuit breaker is open -> No Retry
 		ErrCodeFailsafeCircuitBreakerOpen,
@@ -1961,8 +2052,6 @@ func IsRetryableTowardsUpstream(err error) bool {
 		ErrCodeEndpointBillingIssue,
 
 		// 400 / 404 / 405 / 413 -> No Retry
-		// RPC-RPC client-side error (invalid params) -> No Retry
-		ErrCodeEndpointClientSideException,
 		ErrCodeJsonRpcRequestUnmarshal,
 
 		// Execution exceptions are not retryable
@@ -1973,7 +2062,17 @@ func IsRetryableTowardsUpstream(err error) bool {
 		// Request too-large -> No Retry
 		ErrCodeEndpointUnauthorized,
 		ErrCodeEndpointRequestTooLarge,
-	)
+	) {
+		return false
+	}
+
+	// If the upstream is hitting capacity limits -> no retry
+	if IsCapacityIssue(err) {
+		return false
+	}
+
+	// Otherwise, consider it retryable
+	return true
 }
 
 func IsCapacityIssue(err error) bool {
@@ -2011,7 +2110,7 @@ func ClassifySeverity(err error) Severity {
 	if IsClientError(err) || HasErrorCode(err, ErrCodeEndpointExecutionException) {
 		return SeverityInfo
 	}
-	if IsCapacityIssue(err) || !IsRetryableTowardsUpstream(err) {
+	if !IsRetryableTowardsUpstream(err) {
 		return SeverityWarning
 	}
 	// Usually context cancellation is due to discarded hedged requests.
