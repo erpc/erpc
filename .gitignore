@@ -16,3 +16,4 @@ __debug*
 node_modules
 .next
 .env
+bin/**

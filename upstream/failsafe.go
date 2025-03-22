@@ -293,47 +293,19 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 	}
 
 	builder.HandleIf(func(result *common.NormalizedResponse, err error) bool {
-		// 400 / 404 / 405 / 413 -> No Retry
-		// RPC-RPC client-side error (invalid params) -> No Retry
-		if err != nil && cfg.IgnoreClientErrors && common.IsClientError(err) {
-			// Most often you cannot trust the RPC node's response semantics (e.g. a client-side error
-			// might be due to the provider's own config) so if you try with another provider you will not get the same error.
-			// In these cases we want to continue retrying with another provider.
-			return false
-		}
-
 		// Node-level execution exceptions (e.g. reverted eth_call) -> No Retry
 		if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
 			return false
 		}
 
-		// Any error that cannot be retried against an upstream
+		// We are only short-circuiting retry if the error is not retryable towards the upstream or network
 		if scope == common.ScopeUpstream && err != nil {
-			if !common.IsRetryableTowardsUpstream(err) || common.IsCapacityIssue(err) {
+			if !common.IsRetryableTowardsUpstream(err) {
 				return false
 			}
-		}
-
-		// When error is "missing data" retry on network-level
-		if scope == common.ScopeNetwork && common.HasErrorCode(err, common.ErrCodeEndpointMissingData) {
-			return true
-		}
-
-		// On network-level if all upstreams returned non-retryable errors then do not retry
-		if scope == common.ScopeNetwork && common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
-			exher, ok := err.(*common.ErrUpstreamsExhausted)
-			if ok {
-				errs := exher.Errors()
-				if len(errs) > 0 {
-					for _, err := range errs {
-						if common.IsRetryableTowardsUpstream(err) && !common.IsCapacityIssue(err) {
-							return true
-						}
-						if !cfg.IgnoreClientErrors && common.IsClientError(err) {
-							return true
-						}
-					}
-				}
+		} else if scope == common.ScopeNetwork && err != nil {
+			if !common.IsRetryableTowardNetwork(err) {
+				return false
 			}
 		}
 
