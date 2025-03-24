@@ -31,6 +31,11 @@ func (c *Config) SetDefaults() error {
 	if err := c.Server.SetDefaults(); err != nil {
 		return err
 	}
+	if c.Tracing != nil {
+		if err := c.Tracing.SetDefaults(); err != nil {
+			return err
+		}
+	}
 
 	if c.Database != nil {
 		if err := c.Database.SetDefaults(c.ClusterKey); err != nil {
@@ -415,6 +420,24 @@ func (c *CachePolicyConfig) SetDefaults() error {
 	}
 	if c.Network == "" {
 		c.Network = "*"
+	}
+
+	return nil
+}
+
+func (c *TracingConfig) SetDefaults() error {
+	if c.Protocol == "" {
+		c.Protocol = "grpc"
+	}
+	if c.Endpoint == "" {
+		if c.Protocol == TracingProtocolGrpc {
+			c.Endpoint = "localhost:4317"
+		} else {
+			c.Endpoint = "http://localhost:4318"
+		}
+	}
+	if c.SampleRate == 0 {
+		c.SampleRate = 1.0
 	}
 
 	return nil

@@ -7,6 +7,9 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/tracing"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type SharedVariable interface {
@@ -16,7 +19,7 @@ type SharedVariable interface {
 type CounterInt64SharedVariable interface {
 	SharedVariable
 	GetValue() int64
-	TryUpdateIfStale(ctx context.Context, staleness time.Duration, getNewValue func() (int64, error)) (int64, error)
+	TryUpdateIfStale(ctx context.Context, staleness time.Duration, getNewValue func(ctx context.Context) (int64, error)) (int64, error)
 	TryUpdate(ctx context.Context, newValue int64) int64
 	OnValue(callback func(int64))
 }
@@ -45,6 +48,14 @@ func (c *counterInt64) GetValue() int64 {
 }
 
 func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
+	ctx, span := tracing.StartSpan(ctx, "CounterInt64.TryUpdate",
+		trace.WithAttributes(
+			attribute.String("key", c.key),
+			attribute.Int64("new_value", newValue),
+		),
+	)
+	defer span.End()
+
 	rctx, cancel := context.WithTimeout(ctx, c.registry.fallbackTimeout)
 	defer cancel()
 
@@ -127,7 +138,15 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 	return c.value
 }
 
-func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Duration, getNewValue func() (int64, error)) (int64, error) {
+func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Duration, getNewValue func(ctx context.Context) (int64, error)) (int64, error) {
+	ctx, span := tracing.StartSpan(ctx, "CounterInt64.TryUpdateIfStale",
+		trace.WithAttributes(
+			attribute.String("key", c.key),
+			attribute.Int64("staleness_ms", staleness.Milliseconds()),
+		),
+	)
+	defer span.End()
+
 	// Quick check if value is not stale using read lock
 	c.mu.RLock()
 	if !c.IsStale(staleness) {
@@ -152,7 +171,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 			return c.value, nil
 		}
 
-		newValue, err := getNewValue()
+		newValue, err := getNewValue(ctx)
 		if err != nil {
 			return c.value, err
 		}
@@ -166,7 +185,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 		unlockCtx, cancel := context.WithTimeout(context.Background(), c.registry.lockTtl)
 		defer cancel()
 		if err := lock.Unlock(unlockCtx); err != nil {
-			c.registry.logger.Error().Err(err).Str("key", c.key).Msg("failed to unlock counter")
+			c.registry.logger.Warn().Err(err).Str("key", c.key).Msg("failed to unlock counter")
 		}
 	}()
 
@@ -181,7 +200,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 			return c.value, nil
 		}
 
-		newValue, err := getNewValue()
+		newValue, err := getNewValue(ctx)
 		if err != nil {
 			return c.value, err
 		}
@@ -213,7 +232,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	}
 
 	// Get new value
-	newValue, err := getNewValue()
+	newValue, err := getNewValue(ctx)
 	if err != nil {
 		return c.value, err
 	}

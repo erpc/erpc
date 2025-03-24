@@ -2,11 +2,8 @@ package data
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
-	"os"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -91,7 +88,7 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 	}
 
 	if r.cfg.TLS != nil && r.cfg.TLS.Enabled {
-		tlsConfig, err := createTLSConfig(r.cfg.TLS)
+		tlsConfig, err := common.CreateTLSConfig(r.cfg.TLS)
 		if err != nil {
 			return fmt.Errorf("failed to create TLS config: %w", err)
 		}
@@ -119,33 +116,6 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 
 	r.logger.Info().Str("addr", r.cfg.Addr).Msg("successfully connected to Redis")
 	return nil
-}
-
-// createTLSConfig creates a tls.Config based on the provided TLS settings.
-func createTLSConfig(tlsCfg *common.TLSConfig) (*tls.Config, error) {
-	config := &tls.Config{
-		InsecureSkipVerify: tlsCfg.InsecureSkipVerify, // #nosec G402
-	}
-
-	if tlsCfg.CertFile != "" && tlsCfg.KeyFile != "" {
-		cert, err := tls.LoadX509KeyPair(tlsCfg.CertFile, tlsCfg.KeyFile)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load client cert/key pair: %w", err)
-		}
-		config.Certificates = []tls.Certificate{cert}
-	}
-
-	if tlsCfg.CAFile != "" {
-		caCert, err := os.ReadFile(tlsCfg.CAFile)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read CA file: %w", err)
-		}
-		caCertPool := x509.NewCertPool()
-		caCertPool.AppendCertsFromPEM(caCert)
-		config.RootCAs = caCertPool
-	}
-
-	return config, nil
 }
 
 // markConnectionAsLostIfNecessary sets the connection task's state to "failed" so that the Initializer triggers a retry.

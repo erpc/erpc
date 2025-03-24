@@ -15,8 +15,11 @@ import (
 	"github.com/bytedance/sonic/ast"
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/tracing"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type HttpJsonRpcClient interface {
@@ -549,9 +552,18 @@ func getJsonRpcResponseFromNode(rootNode ast.Node) (*common.JsonRpcResponse, err
 }
 
 func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	ctx, span := tracing.StartSpan(ctx, "HttpJsonRpcClient.sendSingleRequest",
+		trace.WithAttributes(
+			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
+			attribute.String("network.id", req.NetworkId()),
+			attribute.String("upstream.id", c.upstreamId),
+		),
+	)
+	defer span.End()
 	// TODO check if context is cancellable and then get the "cause" that is already set
 	jrReq, err := req.JsonRpcRequest()
 	if err != nil {
+		tracing.SetError(span, err)
 		return nil, common.NewErrUpstreamRequest(
 			err,
 			c.upstreamId,
@@ -565,6 +577,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 	}
 
 	jrReq.RLock()
+	span.SetAttributes(attribute.String("request.method", jrReq.Method))
 	requestBody, err := common.SonicCfg.Marshal(common.JsonRpcRequest{
 		JSONRPC: jrReq.JSONRPC,
 		Method:  jrReq.Method,
@@ -572,14 +585,15 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		ID:      jrReq.ID,
 	})
 	jrReq.RUnlock()
-
 	if err != nil {
+		tracing.SetError(span, err)
 		return nil, err
 	}
 
 	reqStartTime := time.Now()
 	httpReq, err := c.prepareRequest(ctx, requestBody)
 	if err != nil {
+		tracing.SetError(span, err)
 		return nil, &common.BaseError{
 			Code:    "ErrHttp",
 			Message: fmt.Sprintf("%v", err),
@@ -602,6 +616,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		if cause != nil {
 			err = cause
 		}
+		tracing.SetError(span, err)
 		// TODO For both of these conditions failsafe library can introduce carrying
 		//      the "cause" so we know this cancellation is due to Hedge policy for example.
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -628,7 +643,12 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		WithBody(bodyReader).
 		WithExpectedSize(int(resp.ContentLength))
 
-	return nr, c.normalizeJsonRpcError(resp, nr)
+	err = c.normalizeJsonRpcError(resp, nr)
+	if err != nil {
+		tracing.SetError(span, err)
+	}
+
+	return nr, err
 }
 
 func (c *GenericHttpJsonRpcClient) prepareRequest(ctx context.Context, body []byte) (*http.Request, error) {
