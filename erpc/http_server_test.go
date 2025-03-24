@@ -3900,9 +3900,9 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 			startTime := time.Now()
 
 			encoder := common.SonicCfg.NewEncoder(w)
-			s.handleHealthCheck(w, &startTime, tt.projectId, encoder, func(code int, err error) {
-				w.WriteHeader(code)
-				encoder.Encode(map[string]string{"error": err.Error()})
+			s.handleHealthCheck(s.appCtx, w, &startTime, tt.projectId, encoder, func(ctx context.Context, statusCode int, body error) {
+				w.WriteHeader(statusCode)
+				encoder.Encode(map[string]string{"error": body.Error()})
 			})
 
 			resp := w.Result()

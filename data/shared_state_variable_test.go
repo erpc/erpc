@@ -190,7 +190,7 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 				},
 			}
 
-			getNewValue := func() (int64, error) {
+			getNewValue := func(ctx context.Context) (int64, error) {
 				if tt.expectedError != nil {
 					return 0, tt.expectedError
 				}

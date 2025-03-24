@@ -14,6 +14,9 @@ module.exports = {
 	monitoring: {
 		title: "Monitoring",
 	},
+	tracing: {
+		title: "Tracing",
+	},
 	admin: {
 		title: "Admin",
 	}

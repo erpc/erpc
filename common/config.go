@@ -34,6 +34,7 @@ type Config struct {
 	RateLimiters *RateLimiterConfig `yaml:"rateLimiters,omitempty" json:"rateLimiters"`
 	Metrics      *MetricsConfig     `yaml:"metrics,omitempty" json:"metrics"`
 	ProxyPools   []*ProxyPoolConfig `yaml:"proxyPools,omitempty" json:"proxyPools"`
+	Tracing      *TracingConfig     `yaml:"tracing,omitempty" json:"tracing"`
 }
 
 // LoadConfig loads the configuration from the specified file.
@@ -87,6 +88,21 @@ type ServerConfig struct {
 	EnableGzip   *bool           `yaml:"enableGzip,omitempty" json:"enableGzip"`
 	TLS          *TLSConfig      `yaml:"tls,omitempty" json:"tls"`
 	Aliasing     *AliasingConfig `yaml:"aliasing" json:"aliasing"`
+}
+
+type TracingProtocol string
+
+const (
+	TracingProtocolHttp TracingProtocol = "http"
+	TracingProtocolGrpc TracingProtocol = "grpc"
+)
+
+type TracingConfig struct {
+	Enabled    bool            `yaml:"enabled,omitempty" json:"enabled"`
+	Endpoint   string          `yaml:"endpoint,omitempty" json:"endpoint"`
+	Protocol   TracingProtocol `yaml:"protocol,omitempty" json:"protocol"`
+	SampleRate float64         `yaml:"sampleRate,omitempty" json:"sampleRate"`
+	TLS        *TLSConfig      `yaml:"tls,omitempty" json:"tls"`
 }
 
 type AdminConfig struct {
