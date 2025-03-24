@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
 
@@ -1218,7 +1219,7 @@ type ErrJsonRpcRequestUnmarshal struct {
 
 const ErrCodeJsonRpcRequestUnmarshal ErrorCode = "ErrJsonRpcRequestUnmarshal"
 
-var NewErrJsonRpcRequestUnmarshal = func(cause error) error {
+var NewErrJsonRpcRequestUnmarshal = func(cause error, body []byte) error {
 	if _, ok := cause.(*BaseError); ok {
 		return &ErrJsonRpcRequestUnmarshal{
 			BaseError{
@@ -1227,6 +1228,7 @@ var NewErrJsonRpcRequestUnmarshal = func(cause error) error {
 				Cause:   cause,
 				Details: map[string]interface{}{
 					"retryableTowardNetwork": false,
+					"body":                   util.Mem2Str(body),
 				},
 			},
 		}
@@ -1237,6 +1239,7 @@ var NewErrJsonRpcRequestUnmarshal = func(cause error) error {
 				Message: fmt.Sprintf("%s", cause),
 				Details: map[string]interface{}{
 					"retryableTowardNetwork": false,
+					"body":                   util.Mem2Str(body),
 				},
 			},
 		}
@@ -1247,6 +1250,7 @@ var NewErrJsonRpcRequestUnmarshal = func(cause error) error {
 			Message: "failed to unmarshal json-rpc request",
 			Details: map[string]interface{}{
 				"retryableTowardNetwork": false,
+				"body":                   util.Mem2Str(body),
 			},
 		},
 	}

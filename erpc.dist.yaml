@@ -2,14 +2,40 @@ logLevel: warn
 database:
   evmJsonRpcCache:
     connectors: 
-      - id: memory
+      - id: memory-cache
         driver: memory
+      - id: postgres-cache
+        driver: postgresql
+        postgresql:
+          connectionUri: postgres://erpc:erpc@localhost:5432/erpc
+      - id: redis-cache
+        driver: redis
+        redis:
+          addr: redis://localhost:6379
+      - id: scylladb-cache
+        driver: dynamodb
+        dynamodb:
+          region: DC1
+          endpoint: http://localhost:8067
+          
     policies:
+      - network: "*"
+        method: "*"
+        finality: realtime
+        empty: allow
+        connector: memory-cache
+        ttl: 2s
+      - network: "*"
+        method: "*"
+        finality: unfinalized
+        empty: allow
+        connector: redis-cache
+        ttl: 10s
       - network: "*"
         method: "*"
         finality: finalized
         empty: allow
-        connector: memory
+        connector: scylladb-cache
         ttl: 0
   #  Cache is disabled by default. You can also disable it by uncommenting the following line
   #  evmJsonRpcCache: ~ 
