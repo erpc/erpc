@@ -262,7 +262,7 @@ func (r *NormalizedRequest) JsonRpcRequest() (*JsonRpcRequest, error) {
 
 	rpcReq := new(JsonRpcRequest)
 	if err := SonicCfg.Unmarshal(r.body, rpcReq); err != nil {
-		return nil, NewErrJsonRpcRequestUnmarshal(err)
+		return nil, NewErrJsonRpcRequestUnmarshal(err, r.body)
 	}
 
 	method := rpcReq.Method
@@ -292,7 +292,7 @@ func (r *NormalizedRequest) Method() (string, error) {
 	if len(r.body) > 0 {
 		method, err := sonic.Get(r.body, "method")
 		if err != nil {
-			return "", NewErrJsonRpcRequestUnmarshal(err)
+			return "", NewErrJsonRpcRequestUnmarshal(err, r.body)
 		}
 		m, err := method.String()
 		r.method = m

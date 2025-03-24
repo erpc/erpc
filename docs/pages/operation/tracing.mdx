@@ -1,0 +1,55 @@
+# OpenTelemetry Tracing
+
+eRPC includes support for distributed tracing using OpenTelemetry. This allows you to track requests as they flow through the system, identify performance bottlenecks, and debug issues in production environments.
+
+## Config
+
+To enable tracing, add the following to your `erpc.yaml` configuration:
+
+```yaml
+tracing:
+  enabled: true
+  endpoint: "localhost:4317"  # OTLP endpoint (Jaeger, Tempo, etc.)
+  protocol: "grpc"            # "grpc" or "http"
+  samplingRatio: 0.1          # Sample 10% of requests
+  tls:
+    enabled: false            # Enable TLS for secure connections
+    # certFile: "/path/to/cert.pem"
+    # keyFile: "/path/to/key.pem"
+    # caFile: "/path/to/ca.pem"
+server:
+ # ...
+projects:
+ # ...
+```
+
+## Using with Jaeger
+
+The included [`docker-compose.yml`](https://github.com/erpc/erpc/blob/main/docker-compose.yml) file contains a Jaeger service for visualizing traces. To use it:
+
+1. Start the Jaeger container:
+   ```bash
+   docker-compose up jaeger
+   ```
+
+2. Configure eRPC to send traces to Jaeger:
+   ```yaml
+   tracing:
+     enabled: true
+     endpoint: "localhost:4317"
+     protocol: "grpc"
+     samplingRatio: 1.0 # Sample all requests during development
+   ```
+
+3. Access the Jaeger UI at http://localhost:16686
+
+## Traced Components
+
+The following components are instrumented with tracing:
+
+- HTTP server request handling
+- Network-level (chain) forwarding
+- Upstream-level request forwarding
+- Cache operations (get/set)
+- Failsafe executor operations (hedges, retries)
+- HTTP client requests to upstreams

@@ -1,6 +1,7 @@
 package erpc
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -8,13 +9,21 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/erpc/erpc/tracing"
 )
 
-func (s *HttpServer) handleHealthCheck(w http.ResponseWriter, startedAt *time.Time, projectId string, encoder sonic.Encoder, writeFatalError func(statusCode int, body error)) {
+func (s *HttpServer) handleHealthCheck(
+	ctx context.Context,
+	w http.ResponseWriter,
+	startedAt *time.Time,
+	projectId string,
+	encoder sonic.Encoder,
+	writeFatalError func(ctx context.Context, statusCode int, body error),
+) {
 	logger := s.logger.With().Str("handler", "healthcheck").Str("projectId", projectId).Logger()
 
 	if s.erpc == nil {
-		handleErrorResponse(&logger, startedAt, nil, errors.New("eRPC is not initialized"), w, encoder, writeFatalError)
+		handleErrorResponse(ctx, &logger, startedAt, nil, errors.New("eRPC is not initialized"), w, encoder, writeFatalError)
 		return
 	}
 
@@ -24,7 +33,7 @@ func (s *HttpServer) handleHealthCheck(w http.ResponseWriter, startedAt *time.Ti
 	} else {
 		project, err := s.erpc.GetProject(projectId)
 		if err != nil {
-			handleErrorResponse(&logger, startedAt, nil, err, w, encoder, writeFatalError)
+			handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError)
 			return
 		}
 		projects = []*PreparedProject{project}
@@ -33,7 +42,7 @@ func (s *HttpServer) handleHealthCheck(w http.ResponseWriter, startedAt *time.Ti
 	for _, project := range projects {
 		h, err := project.GatherHealthInfo()
 		if err != nil {
-			handleErrorResponse(&logger, startedAt, nil, err, w, encoder, writeFatalError)
+			handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError)
 			return
 		}
 
@@ -53,6 +62,7 @@ func (s *HttpServer) handleHealthCheck(w http.ResponseWriter, startedAt *time.Ti
 				sort.Float64s(allErrorRates)
 				if allErrorRates[0] > 0.99 {
 					handleErrorResponse(
+						ctx,
 						&logger,
 						startedAt,
 						nil,
@@ -67,6 +77,7 @@ func (s *HttpServer) handleHealthCheck(w http.ResponseWriter, startedAt *time.Ti
 		}
 	}
 
+	tracing.EnrichHTTPServerSpan(ctx, http.StatusOK, nil)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("OK"))
 }

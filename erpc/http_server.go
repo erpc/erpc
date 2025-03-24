@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/erpc/erpc/tracing"
+
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
@@ -84,7 +86,7 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 }
 
 func (s *HttpServer) createRequestHandler() http.Handler {
-	handleRequest := func(r *http.Request, w http.ResponseWriter, writeFatalError func(statusCode int, body error)) {
+	handleRequest := func(httpCtx context.Context, r *http.Request, w http.ResponseWriter, writeFatalError func(ctx context.Context, statusCode int, body error)) {
 		startedAt := time.Now()
 		encoder := common.SonicCfg.NewEncoder(w)
 		encoder.SetEscapeHTML(false)
@@ -122,18 +124,27 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 		projectId, architecture, chainId, isAdmin, isHealthCheck, err = s.parseUrlPath(r, projectId, architecture, chainId)
 		if err != nil {
-			handleErrorResponse(s.logger, &startedAt, nil, err, w, encoder, writeFatalError)
+			handleErrorResponse(
+				httpCtx,
+				s.logger,
+				&startedAt,
+				nil,
+				err,
+				w,
+				encoder,
+				writeFatalError,
+			)
 			return
 		}
 
 		if isHealthCheck {
-			s.handleHealthCheck(w, &startedAt, projectId, encoder, writeFatalError)
+			s.handleHealthCheck(httpCtx, w, &startedAt, projectId, encoder, writeFatalError)
 			return
 		}
 
 		if isAdmin {
 			if s.admin != nil && s.admin.CORS != nil {
-				if !s.handleCORS(w, r, s.admin.CORS) || r.Method == http.MethodOptions {
+				if !s.handleCORS(httpCtx, w, r, s.admin.CORS) || r.Method == http.MethodOptions {
 					return
 				}
 			}
@@ -147,18 +158,36 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		}
 
 		if projectId == "" && !isAdmin {
-			handleErrorResponse(&lg, &startedAt, nil, common.NewErrInvalidRequest(fmt.Errorf("projectId is required in path or must be aliased")), w, encoder, writeFatalError)
+			handleErrorResponse(
+				httpCtx,
+				&lg,
+				&startedAt,
+				nil,
+				common.NewErrInvalidRequest(fmt.Errorf("projectId is required in path or must be aliased")),
+				w,
+				encoder,
+				writeFatalError,
+			)
 			return
 		}
 
 		project, err := s.erpc.GetProject(projectId)
 		if err != nil {
-			handleErrorResponse(&lg, &startedAt, nil, err, w, encoder, writeFatalError)
+			handleErrorResponse(
+				httpCtx,
+				&lg,
+				&startedAt,
+				nil,
+				err,
+				w,
+				encoder,
+				writeFatalError,
+			)
 			return
 		}
 
 		if project != nil && project.Config.CORS != nil {
-			if !s.handleCORS(w, r, project.Config.CORS) || r.Method == http.MethodOptions {
+			if !s.handleCORS(httpCtx, w, r, project.Config.CORS) || r.Method == http.MethodOptions {
 				return
 			}
 		}
@@ -168,7 +197,16 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		if r.Header.Get("Content-Encoding") == "gzip" {
 			gzReader, err := gzip.NewReader(r.Body)
 			if err != nil {
-				handleErrorResponse(&lg, &startedAt, nil, common.NewErrInvalidRequest(fmt.Errorf("invalid gzip body: %w", err)), w, encoder, writeFatalError)
+				handleErrorResponse(
+					httpCtx,
+					&lg,
+					&startedAt,
+					nil,
+					common.NewErrInvalidRequest(fmt.Errorf("invalid gzip body: %w", err)),
+					w,
+					encoder,
+					writeFatalError,
+				)
 				return
 			}
 			defer gzReader.Close()
@@ -178,7 +216,16 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		// Replace the existing body read with our potentially decompressed reader
 		body, err := util.ReadAll(bodyReader, 1024*1024, 512)
 		if err != nil {
-			handleErrorResponse(&lg, &startedAt, nil, err, w, encoder, writeFatalError)
+			handleErrorResponse(
+				httpCtx,
+				&lg,
+				&startedAt,
+				nil,
+				err,
+				w,
+				encoder,
+				writeFatalError,
+			)
 			return
 		}
 
@@ -192,10 +239,11 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			err = common.SonicCfg.Unmarshal(body, &requests)
 			if err != nil {
 				handleErrorResponse(
+					httpCtx,
 					&lg,
 					&startedAt,
 					nil,
-					common.NewErrJsonRpcRequestUnmarshal(err),
+					common.NewErrJsonRpcRequestUnmarshal(err, body),
 					w,
 					encoder,
 					writeFatalError,
@@ -220,16 +268,16 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 						responses[index] = processErrorBody(&lg, &startedAt, nil, fmt.Errorf(msg))
 					}
 				}()
-
 				defer wg.Done()
 
-				requestCtx := r.Context()
-
 				nq := common.NewNormalizedRequest(rawReq)
+				requestCtx := tracing.StartRequestSpan(httpCtx, nq)
+
 				nq.ApplyDirectivesFromHttp(headers, queryArgs)
 
 				if err := nq.Validate(); err != nil {
 					responses[index] = processErrorBody(&lg, &startedAt, nq, err)
+					tracing.EndRequestSpan(requestCtx, nil, responses[index])
 					return
 				}
 
@@ -248,17 +296,20 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				}
 				if err != nil {
 					responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
+					tracing.EndRequestSpan(requestCtx, nil, err)
 					return
 				}
 
 				if isAdmin {
 					if err := s.erpc.AdminAuthenticate(requestCtx, nq, ap); err != nil {
 						responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
+						tracing.EndRequestSpan(requestCtx, nil, err)
 						return
 					}
 				} else {
 					if err := project.AuthenticateConsumer(requestCtx, nq, ap); err != nil {
 						responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
+						tracing.EndRequestSpan(requestCtx, nil, err)
 						return
 					}
 				}
@@ -268,9 +319,11 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 						resp, err := s.erpc.AdminHandleRequest(requestCtx, nq)
 						if err != nil {
 							responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
+							tracing.EndRequestSpan(requestCtx, nil, err)
 							return
 						}
 						responses[index] = resp
+						tracing.EndRequestSpan(requestCtx, resp, nil)
 						return
 					} else {
 						responses[index] = processErrorBody(
@@ -282,6 +335,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 								"admin is not enabled for this project",
 							),
 						)
+						tracing.EndRequestSpan(requestCtx, nil, err)
 						return
 					}
 				}
@@ -292,6 +346,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					var req map[string]interface{}
 					if err := common.SonicCfg.Unmarshal(rawReq, &req); err != nil {
 						responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(err))
+						tracing.EndRequestSpan(requestCtx, nil, err)
 						return
 					}
 					if networkIdFromBody, ok := req["networkId"].(string); ok {
@@ -310,12 +365,14 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(fmt.Errorf(
 						"architecture and chain must be provided in URL (for example /<project>/evm/42161) or in request body (for example \"networkId\":\"evm:42161\") or configureed via domain aliasing",
 					)))
+					tracing.EndRequestSpan(requestCtx, nil, err)
 					return
 				}
 
 				nw, err := project.GetNetwork(networkId)
 				if err != nil {
 					responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
+					tracing.EndRequestSpan(requestCtx, nil, err)
 					return
 				}
 				nq.SetNetwork(nw)
@@ -323,27 +380,30 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				resp, err := project.Forward(requestCtx, networkId, nq)
 				if err != nil {
 					responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
+					tracing.EndRequestSpan(requestCtx, nil, err)
 					return
 				}
 
 				responses[index] = resp
+				tracing.EndRequestSpan(requestCtx, resp, nil)
 			}(i, reqBody, headers, queryArgs)
 		}
 
 		wg.Wait()
-		requestCtx := r.Context()
 
-		if err := requestCtx.Err(); err != nil {
+		if err := httpCtx.Err(); err != nil {
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-				cause := context.Cause(requestCtx)
+				cause := context.Cause(httpCtx)
 				if cause != nil {
 					err = cause
 				}
 				s.logger.Trace().Err(err).Msg("request premature context error")
-				writeFatalError(http.StatusInternalServerError, err)
+				writeFatalError(httpCtx, http.StatusInternalServerError, err)
 			}
 			return
 		}
+
+		tracing.InjectHTTPResponseTraceContext(httpCtx, w)
 
 		if isBatch {
 			w.WriteHeader(http.StatusOK)
@@ -358,13 +418,16 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 			if err != nil && !errors.Is(err, http.ErrHandlerTimeout) {
 				s.logger.Error().Err(err).Msg("failed to write batch response")
-				writeFatalError(http.StatusInternalServerError, err)
+				writeFatalError(httpCtx, http.StatusInternalServerError, err)
 				return
 			}
+
+			tracing.EnrichHTTPServerSpan(httpCtx, http.StatusOK, nil)
 		} else {
 			res := responses[0]
 			setResponseHeaders(res, w)
-			setResponseStatusCode(res, w)
+			statusCode := determineResponseStatusCode(res)
+			w.WriteHeader(statusCode)
 
 			switch v := res.(type) {
 			case *common.NormalizedResponse:
@@ -377,15 +440,21 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			}
 
 			if err != nil {
-				writeFatalError(http.StatusInternalServerError, err)
+				writeFatalError(httpCtx, statusCode, err)
 				return
+			} else {
+				tracing.EnrichHTTPServerSpan(httpCtx, statusCode, nil)
 			}
 		}
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Extract trace context from request headers and start a new span
+		httpCtx, span := tracing.StartHTTPServerSpan(r.Context(), r)
+		defer span.End()
+
 		finalErrorOnce := &sync.Once{}
-		writeFatalError := func(statusCode int, err error) {
+		writeFatalError := func(httpCtx context.Context, statusCode int, err error) {
 			finalErrorOnce.Do(func() {
 				defer func() {
 					if rec := recover(); rec != nil {
@@ -401,6 +470,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				body := fmt.Sprintf(`{"jsonrpc":"2.0","error":{"code":-32603,"message":%s}}`, msg)
 
 				fmt.Fprint(w, body)
+				tracing.EnrichHTTPServerSpan(httpCtx, statusCode, err)
 			})
 		}
 
@@ -409,13 +479,14 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				msg := fmt.Sprintf("unexpected server panic on top-level handler: %v -> %s", rec, debug.Stack())
 				s.logger.Error().Msgf(msg)
 				writeFatalError(
+					httpCtx,
 					http.StatusInternalServerError,
 					fmt.Errorf(`unexpected server panic on top-level handler: %s`, rec),
 				)
 			}
 		}()
 
-		handleRequest(r, w, writeFatalError)
+		handleRequest(httpCtx, r, w, writeFatalError)
 	})
 }
 
@@ -585,7 +656,7 @@ func (s *HttpServer) parseUrlPath(
 	return projectId, architecture, chainId, isAdmin, isHealthCheck, nil
 }
 
-func (s *HttpServer) handleCORS(w http.ResponseWriter, r *http.Request, corsConfig *common.CORSConfig) bool {
+func (s *HttpServer) handleCORS(httpCtx context.Context, w http.ResponseWriter, r *http.Request, corsConfig *common.CORSConfig) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		// When no Origin is provided, we allow the request as there's no point in enforcing CORS.
@@ -620,6 +691,7 @@ func (s *HttpServer) handleCORS(w http.ResponseWriter, r *http.Request, corsConf
 		// If it's a preflight OPTIONS request, we can send a basic 204 with no CORS.
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
+			tracing.EnrichHTTPServerSpan(httpCtx, http.StatusNoContent, nil)
 			return false
 		}
 
@@ -647,6 +719,7 @@ func (s *HttpServer) handleCORS(w http.ResponseWriter, r *http.Request, corsConf
 	if r.Method == http.MethodOptions {
 		health.MetricCORSPreflightRequestsTotal.WithLabelValues(r.URL.Path, origin).Inc()
 		w.WriteHeader(http.StatusNoContent)
+		tracing.EnrichHTTPServerSpan(httpCtx, http.StatusNoContent, nil)
 		return false
 	}
 
@@ -684,7 +757,7 @@ func setResponseHeaders(res interface{}, w http.ResponseWriter) {
 	}
 }
 
-func setResponseStatusCode(respOrErr interface{}, w http.ResponseWriter) {
+func determineResponseStatusCode(respOrErr interface{}) int {
 	statusCode := http.StatusOK
 	if err, ok := respOrErr.(error); ok {
 		statusCode = decideErrorStatusCode(err)
@@ -699,7 +772,7 @@ func setResponseStatusCode(respOrErr interface{}, w http.ResponseWriter) {
 	} else if respOrErr == nil {
 		statusCode = http.StatusInternalServerError
 	}
-	w.WriteHeader(statusCode)
+	return statusCode
 }
 
 type HttpJsonRpcErrorResponse struct {
@@ -794,20 +867,24 @@ func decideErrorStatusCode(err error) int {
 }
 
 func handleErrorResponse(
+	httpCtx context.Context,
 	logger *zerolog.Logger,
 	startedAt *time.Time,
 	nq *common.NormalizedRequest,
 	err error,
 	w http.ResponseWriter,
 	encoder sonic.Encoder,
-	writeFatalError func(statusCode int, body error),
+	writeFatalError func(ctx context.Context, statusCode int, body error),
 ) {
 	resp := processErrorBody(logger, startedAt, nq, err)
-	setResponseStatusCode(err, w)
+	statusCode := determineResponseStatusCode(err)
 	err = encoder.Encode(resp)
 	if err != nil {
 		logger.Error().Err(err).Msgf("failed to encode error response")
-		writeFatalError(http.StatusInternalServerError, err)
+		writeFatalError(httpCtx, http.StatusInternalServerError, err)
+	} else {
+		w.WriteHeader(statusCode)
+		tracing.EnrichHTTPServerSpan(httpCtx, statusCode, nil)
 	}
 }
 
