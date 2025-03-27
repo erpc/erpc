@@ -10,8 +10,11 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/tracing"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const FullySyncedThreshold = 4
@@ -271,7 +274,14 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		// We must have some debounce interval to avoid thundering herd
 		dbi = 1 * time.Second
 	}
-	return e.latestBlockShared.TryUpdateIfStale(ctx, dbi, func() (int64, error) {
+	ctx, span := tracing.StartSpan(ctx, "EvmStatePoller.PollLatestBlockNumber",
+		trace.WithAttributes(
+			attribute.String("upstream.id", e.upstream.Config().Id),
+			attribute.String("network.id", e.upstream.NetworkId()),
+		),
+	)
+	defer span.End()
+	return e.latestBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		e.logger.Trace().Msg("fetching latest block number for evm state poller")
 		health.MetricUpstreamLatestBlockPolled.WithLabelValues(
 			e.projectId,
@@ -314,12 +324,19 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 	if e.shouldSkipFinalizedCheck() {
 		return 0, nil
 	}
+	ctx, span := tracing.StartSpan(ctx, "EvmStatePoller.PollFinalizedBlockNumber",
+		trace.WithAttributes(
+			attribute.String("upstream.id", e.upstream.Config().Id),
+			attribute.String("network.id", e.upstream.NetworkId()),
+		),
+	)
+	defer span.End()
 	dbi := e.debounceInterval
 	if dbi == 0 {
 		// We must have some debounce interval to avoid thundering herd
 		dbi = 1 * time.Second
 	}
-	return e.finalizedBlockShared.TryUpdateIfStale(ctx, dbi, func() (int64, error) {
+	return e.finalizedBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		e.logger.Trace().Msg("fetching finalized block number for evm state poller")
 		health.MetricUpstreamFinalizedBlockPolled.WithLabelValues(
 			e.projectId,

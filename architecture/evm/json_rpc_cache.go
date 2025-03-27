@@ -10,8 +10,11 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/tracing"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type EvmJsonRpcCache struct {
@@ -76,16 +79,31 @@ func (c *EvmJsonRpcCache) SetPolicies(policies []*data.CachePolicy) {
 }
 
 func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	ctx, span := tracing.StartSpan(ctx, "Cache.Get",
+		trace.WithAttributes(
+			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
+			attribute.String("network.id", req.NetworkId()),
+		),
+	)
+	defer span.End()
+
 	start := time.Now()
 	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
+		tracing.SetError(span, err)
 		return nil, err
 	}
 
 	ntwId := req.NetworkId()
 	finState := c.getFinalityState(req, nil)
 	policies, err := c.findGetPolicies(ntwId, rpcReq.Method, rpcReq.Params, finState)
+	span.SetAttributes(
+		attribute.String("request.method", rpcReq.Method),
+		attribute.String("request.finality", finState.String()),
+		attribute.Int("cache.policies_matched", len(policies)),
+	)
 	if err != nil {
+		tracing.SetError(span, err)
 		return nil, err
 	}
 	if len(policies) == 0 {
@@ -94,6 +112,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 			req.NetworkId(),
 			rpcReq.Method,
 		).Inc()
+		span.SetAttributes(attribute.Bool("cache.hit", false))
 		return nil, nil
 	}
 
@@ -150,6 +169,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 			policy.String(),
 			policy.GetTTL().String(),
 		).Observe(time.Since(start).Seconds())
+		span.SetAttributes(attribute.Bool("cache.hit", false))
 		return nil, nil
 	}
 
@@ -169,7 +189,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		policy.String(),
 		policy.GetTTL().String(),
 	).Observe(time.Since(start).Seconds())
-
+	span.SetAttributes(attribute.Bool("cache.hit", true))
 	if c.logger.GetLevel() <= zerolog.DebugLevel {
 		c.logger.Trace().Str("method", rpcReq.Method).Interface("id", req.ID()).RawJSON("result", jrr.Result).Msg("returning cached response")
 	} else {
@@ -183,31 +203,59 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 }
 
 func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
+	spanOpts := []trace.SpanStartOption{
+		trace.WithAttributes(
+			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
+			attribute.String("upstream.id", resp.Upstream().Config().Id),
+		),
+	}
+	if ps, ok := ctx.Value(tracing.SpanContextKey).(trace.Span); ok {
+		spanOpts = append(spanOpts, trace.WithLinks(trace.Link{SpanContext: ps.SpanContext()}))
+	}
+	ctx, span := tracing.StartSpan(ctx, "Cache.Set", spanOpts...)
+	defer span.End()
+
 	// TODO after subscription epic this method can be called for every new block data to pre-populate the cache,
 	// based on the evmJsonRpcCache.hyrdation.filters which is only the data (logs, txs) that user cares about.
 	start := time.Now()
 	rpcReq, err := req.JsonRpcRequest()
 	if err != nil {
+		tracing.SetError(span, err)
 		return err
 	}
 
 	rpcResp, err := resp.JsonRpcResponse()
 	if err != nil {
+		tracing.SetError(span, err)
 		return err
 	}
 
 	ntwId := req.NetworkId()
 	lg := c.logger.With().Str("networkId", ntwId).Str("method", rpcReq.Method).Interface("id", req.ID()).Logger()
 
+	span.SetAttributes(
+		attribute.String("request.method", rpcReq.Method),
+		attribute.String("network.id", ntwId),
+	)
+
 	blockRef, blockNumber, err := ExtractBlockReferenceFromRequest(req)
 	if err != nil {
+		tracing.SetError(span, err)
 		return err
 	}
 
 	finState := c.getFinalityState(req, resp)
 	policies, err := c.findSetPolicies(ntwId, rpcReq.Method, rpcReq.Params, finState)
+	span.SetAttributes(
+		attribute.String("block.ref", blockRef),
+		attribute.Int64("block.number", blockNumber),
+		attribute.String("finality", finState.String()),
+		attribute.Int("cache.policies_matched", len(policies)),
+	)
+
 	lg.Trace().Err(err).Interface("policies", policies).Str("finality", finState.String()).Msg("result of finding cache policy during SET")
 	if err != nil {
+		tracing.SetError(span, err)
 		return err
 	}
 	if len(policies) == 0 {
@@ -234,6 +282,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 
 	pk, rk, err := generateKeysForJsonRpcRequest(req, blockRef)
 	if err != nil {
+		tracing.SetError(span, err)
 		return err
 	}
 
@@ -354,9 +403,14 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 
 	if len(errs) > 0 {
 		if len(errs) == 1 {
+			tracing.SetError(span, errs[0])
 			return errs[0]
 		}
-		return fmt.Errorf("failed to set cache for %d policies: %v", len(errs), errs)
+
+		// TODO use a new composite error object to keep an array of causes (similar to Upstreams Exhausted error)
+		err = fmt.Errorf("failed to set cache for %d policies: %v", len(errs), errs)
+		tracing.SetError(span, err)
+		return err
 	}
 
 	return nil

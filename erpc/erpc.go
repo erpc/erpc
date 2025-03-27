@@ -10,6 +10,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/thirdparty"
+	"github.com/erpc/erpc/tracing"
 	"github.com/erpc/erpc/upstream"
 	"github.com/rs/zerolog"
 )
@@ -27,6 +28,10 @@ func NewERPC(
 	evmJsonRpcCache *evm.EvmJsonRpcCache,
 	cfg *common.Config,
 ) (*ERPC, error) {
+	if err := tracing.Initialize(appCtx, logger, cfg.Tracing); err != nil {
+		logger.Error().Err(err).Msg("failed to initialize tracing")
+	}
+
 	rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
 		cfg.RateLimiters,
 		logger,
@@ -83,8 +88,16 @@ func NewERPC(
 
 	err = projectRegistry.Bootstrap(appCtx)
 	if err != nil {
-		logger.Error().Err(err).Msg("failed to bootstrap projects on first attempt (will keep retrying in the background)")
+		logger.Warn().Err(err).Msg("could not bootstrap projects on first attempt (will keep retrying in the background)")
 	}
+
+	// Shutdown tracing after appCtx is finished/cancelled
+	go func() {
+		<-appCtx.Done()
+		if err := tracing.Shutdown(appCtx); err != nil {
+			logger.Error().Err(err).Msg("failed to shutdown tracer provider")
+		}
+	}()
 
 	return &ERPC{
 		cfg:               cfg,

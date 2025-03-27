@@ -15,9 +15,12 @@ import (
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/thirdparty"
+	"github.com/erpc/erpc/tracing"
 	"github.com/erpc/erpc/util"
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Upstream struct {
@@ -163,8 +166,33 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 	startTime := time.Now()
 	cfg := u.Config()
 
+	method, err := req.Method()
+	ctx, span := tracing.StartSpan(ctx, "Upstream.Forward",
+		trace.WithAttributes(
+			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
+			attribute.String("network.id", u.networkId),
+			attribute.String("upstream.id", cfg.Id),
+			attribute.String("request.method", method),
+		),
+	)
+	defer span.End()
+	if err != nil {
+		tracing.SetError(span, err)
+		return nil, common.NewErrUpstreamRequest(
+			err,
+			cfg.Id,
+			u.networkId,
+			method,
+			time.Since(startTime),
+			0,
+			0,
+			0,
+		)
+	}
 	if !byPassMethodExclusion {
 		if reason, skip := u.shouldSkip(req); skip {
+			span.SetAttributes(attribute.Bool("skipped", true))
+			span.SetAttributes(attribute.String("skipped_reason", reason.Error()))
 			return nil, common.NewErrUpstreamRequestSkipped(reason, cfg.Id)
 		}
 	}
@@ -179,22 +207,9 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 		var errLimiters error
 		limitersBudget, errLimiters = u.rateLimitersRegistry.GetBudget(cfg.RateLimitBudget)
 		if errLimiters != nil {
+			tracing.SetError(span, errLimiters)
 			return nil, errLimiters
 		}
-	}
-
-	method, err := req.Method()
-	if err != nil {
-		return nil, common.NewErrUpstreamRequest(
-			err,
-			cfg.Id,
-			u.networkId,
-			method,
-			time.Since(startTime),
-			0,
-			0,
-			0,
-		)
 	}
 
 	lg := u.logger.With().Str("method", method).Str("networkId", u.networkId).Interface("id", req.ID()).Logger()
@@ -203,6 +218,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 		lg.Trace().Str("budget", cfg.RateLimitBudget).Msgf("checking upstream-level rate limiters budget")
 		rules, err := limitersBudget.GetRulesByMethod(method)
 		if err != nil {
+			tracing.SetError(span, err)
 			return nil, err
 		}
 		if len(rules) > 0 {
@@ -214,11 +230,13 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 						cfg.Id,
 						method,
 					)
-					return nil, common.NewErrUpstreamRateLimitRuleExceeded(
+					err = common.NewErrUpstreamRateLimitRuleExceeded(
 						cfg.Id,
 						cfg.RateLimitBudget,
 						fmt.Sprintf("%+v", rule.Config),
 					)
+					tracing.SetError(span, err)
+					return nil, err
 				} else {
 					lg.Trace().Str("budget", cfg.RateLimitBudget).Object("rule", rule.Config).Msgf("upstream-level rate limit passed")
 				}
@@ -232,6 +250,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 	req.SetLastUpstream(u)
 	err = u.prepareRequest(req)
 	if err != nil {
+		tracing.SetError(span, err)
 		return nil, err
 	}
 
@@ -242,7 +261,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 	case clients.ClientTypeHttpJsonRpc:
 		jsonRpcClient, okClient := u.Client.(clients.HttpJsonRpcClient)
 		if !okClient {
-			return nil, common.NewErrJsonRpcExceptionInternal(
+			err := common.NewErrJsonRpcExceptionInternal(
 				0,
 				common.JsonRpcErrorServerSideException,
 				fmt.Sprintf("failed to initialize client for upstream %s", cfg.Id),
@@ -252,6 +271,8 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				),
 				nil,
 			)
+			tracing.SetError(span, err)
+			return nil, err
 		}
 
 		tryForward := func(
@@ -349,12 +370,25 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 		resp, execErr := executor.
 			WithContext(ctx).
 			GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
-				ectx := exec.Context()
+				ectx, execSpan := tracing.StartSpan(exec.Context(), "Upstream.forwardExecution",
+					trace.WithAttributes(
+						attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
+						attribute.String("network.id", u.networkId),
+						attribute.String("upstream.id", cfg.Id),
+						attribute.Int("execution.attempt", exec.Attempts()),
+						attribute.Int("execution.retry", exec.Retries()),
+						attribute.Int("execution.hedge", exec.Hedges()),
+					),
+				)
+				defer execSpan.End()
+
 				if ctxErr := ectx.Err(); ctxErr != nil {
 					cause := context.Cause(ectx)
 					if cause != nil {
+						tracing.SetError(execSpan, cause)
 						return nil, cause
 					} else {
+						tracing.SetError(execSpan, ctxErr)
 						return nil, ctxErr
 					}
 				}
@@ -371,7 +405,12 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 					defer cancelFn()
 				}
 
-				return tryForward(ectx, exec)
+				nr, err := tryForward(ectx, exec)
+				if err != nil {
+					tracing.SetError(execSpan, err)
+					return nil, err
+				}
+				return nr, nil
 			})
 
 		if _, ok := execErr.(common.StandardError); !ok {
@@ -386,15 +425,18 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 		}
 
 		if execErr != nil {
+			tracing.SetError(span, execErr)
 			return nil, TranslateFailsafeError(common.ScopeUpstream, u.config.Id, method, execErr, &startTime)
 		}
 
 		return resp, nil
 	default:
-		return nil, common.NewErrUpstreamClientInitialization(
+		err := common.NewErrUpstreamClientInitialization(
 			fmt.Errorf("unsupported client type during forward: %s", clientType),
 			cfg.Id,
 		)
+		tracing.SetError(span, err)
+		return nil, err
 	}
 }
 
