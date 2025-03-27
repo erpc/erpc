@@ -8,14 +8,17 @@ rule_files:
 scrape_configs:
   - job_name: 'prometheus'
     static_configs:
-      - targets: ['localhost:9090']
+      - targets:
+          - 'localhost:9090'
 
   - job_name: 'erpc'
     static_configs:
-      - targets: ['host.docker.internal:4001']
+      - targets:
+          - 'host.docker.internal:4001'
+          - 'REPLACE_SERVICE_ENDPOINT_HERE:REPLACE_SERVICE_PORT_HERE'
 
 alerting:
   alertmanagers:
-  - static_configs:
-    - targets:
-      # - alertmanager:9093
+    - static_configs:
+      - targets:
+        # - alertmanager:9093

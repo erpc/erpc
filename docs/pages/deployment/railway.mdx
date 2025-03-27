@@ -18,22 +18,20 @@ Click the `Deploy on Railway` button below to get started. This will take you to
 [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template/10iW1q)
 
 <Callout type="info">
-  This template comes with a default [erpc.yaml](/config/example) configuration file. If you need further customization, you can fork the [template's repository](https://github.com/erpc/railway-deployment).
-
-  After forking and adjustments, you can either connect your forked repository to your existing deployment or create a new service linked to this forked repository.
+  This template comes with a default [erpc.yaml](/config/projects/providers#repository) configuration that will give you access to 2,000+ chains and 4,000+ public free EVM RPC endpoints.
 </Callout>
 
-### Set environment variables
+### Config customizaiton 
 
-The eRPC template includes pre-configured environment variables to simplify the deployment process. While some variables are optional and can be set later, we highly recommend setting at least one of the following to ensure additional upstreams for the eRPC proxy:
+  If you need further [customization](/config/projects/providers#repository), you can fork the [template's repository](https://github.com/erpc/railway-deployment). E.g. you can create an `erpc.yaml` file in your forked repository to add your own premium RPC endpoints, caching, customised network or upstream level failsafe configs, etc. 
 
-  - `ALCHEMY_API_KEY`: *API key from alchemy.com*
-  - `BLASTAPI_API_KEY`: *API key from balastapi.io*
-  - `DRPC_API_KEY`: *API key from drpc.org*
+  After forking and adjustments, you can either connect your forked repository to your existing deployment or create a new service linked to this forked repository.
+
+  ![image](https://i.imgur.com/xZQudNq.png)
 
 ### Usage in your services
 
-To reduce cost and overhead use private network (`.railway.internal`) to connect to eRPC, from your backend services (such as indexers or mev bots):
+If your backend services (like indexers or MEV bots) are on the same Railway project as eRPC, you can reduce cost and overhead by using private networking (`.railway.internal`) to connect:
 
 ```js
 const result = await fetch("https://my-erpc.railway.internal/main/evm/1", {
@@ -43,28 +41,14 @@ const result = await fetch("https://my-erpc.railway.internal/main/evm/1", {
   },
   body: JSON.stringify({
     method: "eth_getBlockByNumber",
-    params: ["0x1203319"],
+    params: ["0x1203319", false],
+    id: 9199,
+    jsonrpc: "2.0",
   }),
 });
 ```
 
-### Send your first request
-
-Within your `erpc` service, find the proxy URL under `Settings > Networking > Public Networking`.
-
-```bash
-curl --location 'https://erpc-xxxxxxx.up.railway.app/main/evm/1' \
---header 'Content-Type: application/json' \
---data '{
-    "method": "eth_getBlockByNumber",
-    "params": [
-        "0x1203319",
-        false
-    ],
-    "id": 9199,
-    "jsonrpc": "2.0"
-}'
-```
+If you need external access or your services are hosted elsewhere, use the public URL found under `Settings > Networking > Public Networking` in your eRPC service:
 
 ![image](https://i.imgur.com/WRezSaK.png)
 
@@ -78,5 +62,9 @@ You can login with the following credentials:
 - password: `admin`
 
 ![image](https://i.imgur.com/sOpBuXe.png)
+
+Send more requests and watch the metrics being collected and visualized in Grafana.
+
+![image](https://i.imgur.com/2aOA960.png)
 
 </Steps>
