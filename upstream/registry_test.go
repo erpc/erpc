@@ -27,7 +27,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
-		_, _ = registry.GetSortedUpstreams(networkID, method)
+		_, _ = registry.GetSortedUpstreams(ctx, networkID, method)
 
 		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 20)
 		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 30)
@@ -43,7 +43,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
-		_, _ = registry.GetSortedUpstreams(networkID, method)
+		_, _ = registry.GetSortedUpstreams(ctx, networkID, method)
 
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method, 10, 0.20)
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", method, 10, 0.70)
@@ -59,7 +59,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 10*time.Hour)
-		_, _ = registry.GetSortedUpstreams(networkID, method)
+		_, _ = registry.GetSortedUpstreams(ctx, networkID, method)
 
 		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 30)
 		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 80)
@@ -75,7 +75,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 10*time.Hour)
-		_, _ = registry.GetSortedUpstreams(networkID, method)
+		_, _ = registry.GetSortedUpstreams(ctx, networkID, method)
 
 		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 0)
 		metricsTracker.SetLatestBlockNumber("upstream-a", networkID, 4000090)
@@ -97,7 +97,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 10*time.Hour)
-		_, _ = registry.GetSortedUpstreams(networkID, method)
+		_, _ = registry.GetSortedUpstreams(ctx, networkID, method)
 
 		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 0)
 		metricsTracker.SetFinalizedBlockNumber("upstream-a", networkID, 4000090)
@@ -119,7 +119,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
-		_, _ = registry.GetSortedUpstreams(networkID, method)
+		_, _ = registry.GetSortedUpstreams(ctx, networkID, method)
 
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method, 10, 0.05)
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", method, 10, 0.03)
@@ -134,7 +134,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
-		_, _ = registry.GetSortedUpstreams(networkID, method)
+		_, _ = registry.GetSortedUpstreams(ctx, networkID, method)
 
 		// Initial phase
 		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 30)
@@ -161,7 +161,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 		method := "eth_call"
-		_, _ = registry.GetSortedUpstreams(networkID, method)
+		_, _ = registry.GetSortedUpstreams(ctx, networkID, method)
 
 		time.Sleep(100 * time.Millisecond)
 
@@ -178,7 +178,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 		method := "eth_call"
-		_, _ = registry.GetSortedUpstreams(networkID, method)
+		_, _ = registry.GetSortedUpstreams(ctx, networkID, method)
 
 		simulateRequests(metricsTracker, networkID, "upstream-a", method, 1000, 0)
 		simulateRequests(metricsTracker, networkID, "upstream-b", method, 20000, 0)
@@ -195,8 +195,8 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 
 		methodGetLogs := "eth_getLogs"
 		methodTraceTransaction := "eth_traceTransaction"
-		_, _ = registry.GetSortedUpstreams(networkID, methodGetLogs)
-		_, _ = registry.GetSortedUpstreams(networkID, methodTraceTransaction)
+		_, _ = registry.GetSortedUpstreams(ctx, networkID, methodGetLogs)
+		_, _ = registry.GetSortedUpstreams(ctx, networkID, methodTraceTransaction)
 
 		// Simulate performance for eth_getLogs
 		simulateRequests(metricsTracker, networkID, "upstream-a", methodGetLogs, 100, 10)
@@ -222,8 +222,8 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 
 		method1 := "eth_call"
 		method2 := "eth_getBalance"
-		_, _ = registry.GetSortedUpstreams(networkID, method1)
-		_, _ = registry.GetSortedUpstreams(networkID, method2)
+		_, _ = registry.GetSortedUpstreams(ctx, networkID, method1)
+		_, _ = registry.GetSortedUpstreams(ctx, networkID, method2)
 
 		// Phase 1: Initial performance
 		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method1, 5, 0.01)
@@ -310,7 +310,7 @@ func TestUpstreamsRegistry_Scoring(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			registry, metricsTracker := createTestRegistry(ctx, projectID, &log.Logger, scenario.windowSize)
-			_, _ = registry.GetSortedUpstreams(networkID, method)
+			_, _ = registry.GetSortedUpstreams(ctx, networkID, method)
 
 			for _, upstream := range scenario.upstreamConfig {
 				successfulRequests := int(float64(upstream.requestCount) * upstream.successRate)
@@ -858,7 +858,7 @@ func checkUpstreamScoreOrder(t *testing.T, registry *UpstreamsRegistry, networkI
 		}
 	}
 
-	sortedUpstreams, err := registry.GetSortedUpstreams(networkID, method)
+	sortedUpstreams, err := registry.GetSortedUpstreams(context.Background(), networkID, method)
 
 	assert.NoError(t, err)
 	registry.RLockUpstreams()

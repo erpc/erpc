@@ -1,6 +1,7 @@
 package common
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -240,8 +241,25 @@ func (r *NormalizedRequest) Directives() *RequestDirectives {
 	return r.directives
 }
 
+func (r *NormalizedRequest) LockWithTrace(ctx context.Context) {
+	_, span := StartDetailSpan(ctx, "Request.Lock")
+	defer span.End()
+	r.Lock()
+}
+
+func (r *NormalizedRequest) RLockWithTrace(ctx context.Context) {
+	_, span := StartDetailSpan(ctx, "Request.RLock")
+	defer span.End()
+	r.RLock()
+}
+
 // Extract and prepare the request for forwarding.
-func (r *NormalizedRequest) JsonRpcRequest() (*JsonRpcRequest, error) {
+func (r *NormalizedRequest) JsonRpcRequest(ctx ...context.Context) (*JsonRpcRequest, error) {
+	if len(ctx) > 0 {
+		_, span := StartDetailSpan(ctx[0], "Request.ResolveJsonRpc")
+		defer span.End()
+	}
+
 	if r == nil {
 		return nil, nil
 	}
@@ -365,14 +383,14 @@ func (r *NormalizedRequest) MarshalJSON() ([]byte, error) {
 	return nil, nil
 }
 
-func (r *NormalizedRequest) CacheHash() (string, error) {
-	rq, err := r.JsonRpcRequest()
+func (r *NormalizedRequest) CacheHash(ctx ...context.Context) (string, error) {
+	rq, err := r.JsonRpcRequest(ctx...)
 	if err != nil {
 		return "", err
 	}
 
 	if rq != nil {
-		return rq.CacheHash()
+		return rq.CacheHash(ctx...)
 	}
 
 	return "", fmt.Errorf("request is not valid to generate cache hash")

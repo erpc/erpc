@@ -33,6 +33,8 @@ services:
       - "4318:4318"      # OTLP HTTP
     environment:
       - COLLECTOR_OTLP_ENABLED=true
+      - COLLECTOR_FILTER_PROCESSOR_ENABLED=true
+      - COLLECTOR_FILTER_PROCESSOR_MAX_DURATION=1s
     networks:
       erpc:
 
@@ -53,11 +55,12 @@ services:
     container_name: erpc-scylla
     image: scylladb/scylla:5.2.18
     restart: always
-    command: --alternator-port=8067 --alternator-write-isolation=unsafe_rmw --seeds=erpc-scylla --smp 1 --memory 1G --overprovisioned 1 --api-address 0.0.0.0
+    command: --alternator-port=8067 --alternator-write-isolation=unsafe_rmw --seeds=erpc-scylla --smp 1 --memory 6G --overprovisioned 1 --api-address 0.0.0.0
     volumes:
       - "./scylla/scylla.yaml:/etc/scylla/scylla.yaml"
       - "./scylla/cassandra-rackdc.properties.dc1:/etc/scylla/cassandra-rackdc.properties"
       - "./scylla/mutant-data.txt:/mutant-data.txt"
+      - "./scylla/data:/var/lib/scylla"
     ports:
       - "8067:8067"
       - "9042:9042"

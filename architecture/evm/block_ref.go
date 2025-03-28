@@ -1,17 +1,22 @@
 package evm
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"strings"
 
 	"github.com/erpc/erpc/common"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // ExtractBlockReferenceFromRequest extracts any possible block reference and number from the request and from response if it exists.
 // This method is more 'complete' than ExtractBlockReferenceFromResponse() because we might not even have a response
 // in certain situations (for example, when we are using failsafe retries).
-func ExtractBlockReferenceFromRequest(r *common.NormalizedRequest) (string, int64, error) {
+func ExtractBlockReferenceFromRequest(ctx context.Context, r *common.NormalizedRequest) (string, int64, error) {
+	ctx, span := common.StartDetailSpan(ctx, "Evm.ExtractBlockReferenceFromRequest")
+	defer span.End()
+
 	if r == nil {
 		return "", 0, nil
 	}
@@ -28,16 +33,23 @@ func ExtractBlockReferenceFromRequest(r *common.NormalizedRequest) (string, int6
 	}
 
 	if blockRef != "" && blockNumber != 0 {
+		if common.IsTracingDetailed {
+			span.SetAttributes(
+				attribute.String("block.ref", blockRef),
+				attribute.Int64("block.number", blockNumber),
+			)
+		}
 		return blockRef, blockNumber, nil
 	}
 
 	// Try to load from JSON-RPC request
-	rpcReq, err := r.JsonRpcRequest()
+	rpcReq, err := r.JsonRpcRequest(ctx)
 	if err != nil {
+		common.SetTraceSpanError(span, err)
 		return blockRef, blockNumber, err
 	}
 
-	br, bn, err := extractRefFromJsonRpcRequest(r.CacheDal(), rpcReq)
+	br, bn, err := extractRefFromJsonRpcRequest(ctx, r.CacheDal(), rpcReq)
 	if br != "" {
 		blockRef = br
 	}
@@ -45,6 +57,7 @@ func ExtractBlockReferenceFromRequest(r *common.NormalizedRequest) (string, int6
 		blockNumber = bn
 	}
 	if err != nil {
+		common.SetTraceSpanError(span, err)
 		return blockRef, blockNumber, err
 	}
 
@@ -52,7 +65,7 @@ func ExtractBlockReferenceFromRequest(r *common.NormalizedRequest) (string, int6
 	if blockRef == "" || blockNumber == 0 {
 		lvr := r.LastValidResponse()
 		if lvr != nil {
-			br, bn, err = ExtractBlockReferenceFromResponse(lvr)
+			br, bn, err = ExtractBlockReferenceFromResponse(ctx, lvr)
 			if br != "" && (blockRef == "" || blockRef == "*") {
 				// The condition (blockRef == ""|"*") makes sure if request already has a ref we won't override it from response.
 				// For example eth_getBlockByNumber(latest) will have a "latest" ref, so it'll be cached under "latest" ref,
@@ -70,9 +83,17 @@ func ExtractBlockReferenceFromRequest(r *common.NormalizedRequest) (string, int6
 				blockNumber = bn
 			}
 			if err != nil {
+				common.SetTraceSpanError(span, err)
 				return blockRef, blockNumber, err
 			}
 		}
+	}
+
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.String("block.ref", blockRef),
+			attribute.Int64("block.number", blockNumber),
+		)
 	}
 
 	// Store to local cache
@@ -86,7 +107,10 @@ func ExtractBlockReferenceFromRequest(r *common.NormalizedRequest) (string, int6
 	return blockRef, blockNumber, nil
 }
 
-func ExtractBlockReferenceFromResponse(r *common.NormalizedResponse) (string, int64, error) {
+func ExtractBlockReferenceFromResponse(ctx context.Context, r *common.NormalizedResponse) (string, int64, error) {
+	ctx, span := common.StartDetailSpan(ctx, "Evm.ExtractBlockReferenceFromResponse")
+	defer span.End()
+
 	if r == nil {
 		return "", 0, nil
 	}
@@ -102,23 +126,30 @@ func ExtractBlockReferenceFromResponse(r *common.NormalizedResponse) (string, in
 		blockRef = br.(string)
 	}
 	if blockRef != "" && blockNumber != 0 {
+		span.SetAttributes(
+			attribute.String("block.ref", blockRef),
+			attribute.Int64("block.number", blockNumber),
+		)
 		return blockRef, blockNumber, nil
 	}
 
 	// Try to load from response (enriched with request context)
 	nreq := r.Request()
 	if nreq == nil {
+		common.SetTraceSpanError(span, errors.New("unexpected nil request"))
 		return blockRef, blockNumber, nil
 	}
 	jrr, err := r.JsonRpcResponse()
 	if jrr == nil || err != nil {
+		common.SetTraceSpanError(span, err)
 		return blockRef, blockNumber, err
 	}
-	rq, err := nreq.JsonRpcRequest()
+	rq, err := nreq.JsonRpcRequest(ctx)
 	if err != nil {
+		common.SetTraceSpanError(span, err)
 		return blockRef, blockNumber, err
 	}
-	br, bn, err := extractRefFromJsonRpcResponse(nreq.CacheDal(), rq, jrr)
+	br, bn, err := extractRefFromJsonRpcResponse(ctx, nreq.CacheDal(), rq, jrr)
 	if br != "" {
 		blockRef = br
 	}
@@ -126,7 +157,15 @@ func ExtractBlockReferenceFromResponse(r *common.NormalizedResponse) (string, in
 		blockNumber = bn
 	}
 	if err != nil {
+		common.SetTraceSpanError(span, err)
 		return blockRef, blockNumber, err
+	}
+
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.String("block.ref", blockRef),
+			attribute.Int64("block.number", blockNumber),
+		)
 	}
 
 	// Store to local cache
@@ -140,18 +179,24 @@ func ExtractBlockReferenceFromResponse(r *common.NormalizedResponse) (string, in
 	return blockRef, blockNumber, nil
 }
 
-func extractRefFromJsonRpcRequest(cacheDal common.CacheDAL, r *common.JsonRpcRequest) (string, int64, error) {
+func extractRefFromJsonRpcRequest(ctx context.Context, cacheDal common.CacheDAL, r *common.JsonRpcRequest) (string, int64, error) {
+	ctx, span := common.StartDetailSpan(ctx, "Evm.extractRefFromJsonRpcRequest")
+	defer span.End()
+
 	if r == nil {
-		return "", 0, errors.New("cannot extract block reference when json-rpc request is nil")
+		err := errors.New("cannot extract block reference when json-rpc request is nil")
+		common.SetTraceSpanError(span, err)
+		return "", 0, err
 	}
 	methodConfig := getMethodConfig(cacheDal, r.Method)
 	if methodConfig == nil {
+		common.SetTraceSpanError(span, errors.New("method config not found for "+r.Method+" when extracting block reference from json-rpc request"))
 		// For unknown methods blockRef and/or blockNumber will be empty therefore such data will not be cached despite any caching policies.
 		// This strict behavior avoids caching data that we're not aware of its nature.
 		return "", 0, nil
 	}
 
-	r.RLock()
+	r.RLockWithTrace(ctx)
 	defer r.RUnlock()
 
 	if methodConfig.Finalized {
@@ -204,16 +249,28 @@ func extractRefFromJsonRpcRequest(cacheDal common.CacheDAL, r *common.JsonRpcReq
 	return blockRef, blockNumber, nil
 }
 
-func extractRefFromJsonRpcResponse(cacheDal common.CacheDAL, rpcReq *common.JsonRpcRequest, rpcResp *common.JsonRpcResponse) (string, int64, error) {
+func extractRefFromJsonRpcResponse(ctx context.Context, cacheDal common.CacheDAL, rpcReq *common.JsonRpcRequest, rpcResp *common.JsonRpcResponse) (string, int64, error) {
+	ctx, span := common.StartDetailSpan(ctx, "Evm.extractRefFromJsonRpcResponse")
+	defer span.End()
+
 	if rpcReq == nil {
-		return "", 0, errors.New("cannot extract block reference when json-rpc request is nil")
+		err := errors.New("cannot extract block reference when json-rpc request is nil")
+		common.SetTraceSpanError(span, err)
+		return "", 0, err
 	}
 	if rpcResp == nil {
-		return "", 0, errors.New("cannot extract block reference when json-rpc response is nil")
+		err := errors.New("cannot extract block reference when json-rpc response is nil")
+		common.SetTraceSpanError(span, err)
+		return "", 0, err
 	}
 
 	methodConfig := getMethodConfig(cacheDal, rpcReq.Method)
-	if methodConfig == nil || len(rpcResp.Result) == 0 {
+	if methodConfig == nil {
+		common.SetTraceSpanError(span, errors.New("method config not found for "+rpcReq.Method+" when extracting block reference from json-rpc response"))
+		return "", 0, nil
+	}
+	if len(rpcResp.Result) == 0 {
+		common.SetTraceSpanError(span, errors.New("no result found for method "+rpcReq.Method+" in json-rpc response when extracting block reference"))
 		return "", 0, nil
 	}
 
@@ -223,7 +280,7 @@ func extractRefFromJsonRpcResponse(cacheDal common.CacheDAL, rpcReq *common.Json
 		blockNumber := int64(0)
 
 		for _, ref := range methodConfig.RespRefs {
-			if val, err := rpcResp.PeekStringByPath(ref...); err == nil {
+			if val, err := rpcResp.PeekStringByPath(ctx, ref...); err == nil {
 				bref, bn, err := parseCompositeBlockParam(val)
 				if err != nil {
 					return "", 0, err

@@ -182,13 +182,22 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 	}
 }
 
-func (u *UpstreamsRegistry) GetNetworkUpstreams(networkId string) []*Upstream {
+func (u *UpstreamsRegistry) GetNetworkUpstreams(ctx context.Context, networkId string) []*Upstream {
+	if ctx == nil {
+		ctx = u.appCtx
+	}
+	_, span := common.StartDetailSpan(ctx, "UpstreamsRegistry.GetNetworkUpstreams")
+	defer span.End()
+
 	u.upstreamsMu.RLock()
 	defer u.upstreamsMu.RUnlock()
 	return u.networkUpstreams[networkId]
 }
 
-func (u *UpstreamsRegistry) GetSortedUpstreams(networkId, method string) ([]*Upstream, error) {
+func (u *UpstreamsRegistry) GetSortedUpstreams(ctx context.Context, networkId, method string) ([]*Upstream, error) {
+	_, span := common.StartDetailSpan(ctx, "UpstreamsRegistry.GetSortedUpstreams")
+	defer span.End()
+
 	u.upstreamsMu.RLock()
 	upsList := u.sortedUpstreams[networkId][method]
 	u.upstreamsMu.RUnlock()
@@ -327,6 +336,9 @@ func (u *UpstreamsRegistry) sortAndFilterUpstreams(networkId, method string, ups
 }
 
 func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
+	ctx, span := common.StartDetailSpan(u.appCtx, "UpstreamsRegistry.RefreshUpstreamNetworkMethodScores")
+	defer span.End()
+
 	u.upstreamsMu.Lock()
 	defer u.upstreamsMu.Unlock()
 
@@ -353,7 +365,7 @@ func (u *UpstreamsRegistry) RefreshUpstreamNetworkMethodScores() error {
 			} else {
 				upsList = append([]*Upstream{}, u.networkUpstreams[networkId]...)
 			}
-			u.updateScoresAndSort(networkId, method, upsList)
+			u.updateScoresAndSort(ctx, networkId, method, upsList)
 		}
 	}
 
@@ -375,6 +387,9 @@ func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamCo
 	return util.NewBootstrapTask(
 		fmt.Sprintf("upstream/%s", cfg.Id),
 		func(ctx context.Context) error {
+			_, span := common.StartDetailSpan(ctx, "UpstreamsRegistry.buildUpstreamBootstrapTask")
+			defer span.End()
+
 			u.logger.Debug().Str("upstreamId", cfg.Id).Msg("attempt to bootstrap upstream")
 
 			u.upstreamsMu.RLock()
@@ -426,6 +441,9 @@ func (u *UpstreamsRegistry) buildProviderBootstrapTask(
 	return util.NewBootstrapTask(
 		taskName,
 		func(ctx context.Context) error {
+			_, span := common.StartDetailSpan(ctx, "UpstreamsRegistry.buildProviderBootstrapTask")
+			defer span.End()
+
 			lg := u.logger.With().Str("provider", provider.Id()).Str("networkId", networkId).Logger()
 			lg.Debug().Msg("attempting to create upstream(s) from provider")
 
@@ -593,7 +611,10 @@ func (u *UpstreamsRegistry) scheduleScoreCalculationTimers(ctx context.Context) 
 	return nil
 }
 
-func (u *UpstreamsRegistry) updateScoresAndSort(networkId, method string, upsList []*Upstream) {
+func (u *UpstreamsRegistry) updateScoresAndSort(ctx context.Context, networkId, method string, upsList []*Upstream) {
+	_, span := common.StartDetailSpan(ctx, "UpstreamsRegistry.UpdateScoresAndSort")
+	defer span.End()
+
 	var p90Latencies, errorRates, totalRequests, throttledRates, blockHeadLags, finalizationLags []float64
 
 	for _, ups := range upsList {

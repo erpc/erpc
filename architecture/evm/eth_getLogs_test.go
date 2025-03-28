@@ -23,6 +23,11 @@ type mockNetwork struct {
 	common.Network
 }
 
+func (m *mockNetwork) Id() string {
+	args := m.Called()
+	return args.Get(0).(string)
+}
+
 func (m *mockNetwork) Forward(
 	ctx context.Context,
 	req *common.NormalizedRequest,
@@ -267,7 +272,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 		expectError bool
 	}{
 		{
-			name: "range within limits",
+			name: "range_within_limits",
 			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
 				n := new(mockNetwork)
 				u := new(mockEvmUpstream)
@@ -275,6 +280,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 					"fromBlock": "0x1",
 					"toBlock":   "0x5",
 				})
+				n.On("Id").Return("evm:123")
 				n.On("Config").Return(&common.NetworkConfig{
 					Evm: &common.EvmNetworkConfig{
 						Integrity: &common.EvmIntegrityConfig{
@@ -298,7 +304,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "range exceeds auto-splitting range threshold",
+			name: "range_exceeds_auto_splitting_range_threshold",
 			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
 				n := new(mockNetwork)
 				u := new(mockEvmUpstream)
@@ -306,6 +312,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 					"fromBlock": "0x1",
 					"toBlock":   "0x15", // 21 blocks
 				})
+				n.On("Id").Return("evm:123")
 				n.On("Config").Return(&common.NetworkConfig{
 					Evm: &common.EvmNetworkConfig{
 						Integrity: &common.EvmIntegrityConfig{
@@ -337,7 +344,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "range exceeds max allowed range (hard limit)",
+			name: "range_exceeds_max_allowed_range_hard_limit",
 			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
 				n := new(mockNetwork)
 				u := new(mockEvmUpstream)
@@ -375,7 +382,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name: "address list exceeds max allowed addresses (hard limit)",
+			name: "address_list_exceeds_max_allowed_addresses_hard_limit",
 			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
 				n := new(mockNetwork)
 				u := new(mockEvmUpstream)
@@ -414,7 +421,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name: "topics list exceeds max allowed topics (hard limit)",
+			name: "topics_list_exceeds_max_allowed_topics_hard_limit",
 			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
 				n := new(mockNetwork)
 				u := new(mockEvmUpstream)
@@ -451,7 +458,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name: "blockHash is present",
+			name: "blockHash_is_present",
 			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
 				n := new(mockNetwork)
 				u := new(mockEvmUpstream)
@@ -460,6 +467,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 					"toBlock":   "0x5",
 					"blockHash": "0x123",
 				})
+				n.On("Id").Return("evm:123")
 				n.On("Config").Return(&common.NetworkConfig{
 					Evm: &common.EvmNetworkConfig{
 						Integrity: &common.EvmIntegrityConfig{
@@ -467,6 +475,9 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 							EnforceHighestBlock:      util.BoolPtr(true),
 						},
 					},
+				})
+				u.On("Config").Return(&common.UpstreamConfig{
+					Evm: nil,
 				})
 				return n, u, r
 			},
@@ -506,11 +517,16 @@ func TestUpstreamPostForward_eth_getLogs(t *testing.T) {
 		expectError bool
 	}{
 		{
-			name: "no error",
+			name: "no_error",
 			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
 				n := new(mockNetwork)
 				u := new(mockEvmUpstream)
 				r := createTestRequest(nil)
+
+				n.On("Id").Return("evm:123")
+				u.On("Config").Return(&common.UpstreamConfig{
+					Evm: nil,
+				})
 
 				return n, u, r
 			},
@@ -518,7 +534,7 @@ func TestUpstreamPostForward_eth_getLogs(t *testing.T) {
 			expectSplit: false,
 		},
 		{
-			name: "request too large error",
+			name: "request_too_large_error",
 			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
 				n := new(mockNetwork)
 				u := new(mockEvmUpstream)
@@ -526,6 +542,7 @@ func TestUpstreamPostForward_eth_getLogs(t *testing.T) {
 					"fromBlock": "0x1",
 					"toBlock":   "0x2",
 				})
+				n.On("Id").Return("evm:123")
 				n.On("Forward", mock.Anything, mock.Anything).Return(
 					common.NewNormalizedResponse().WithJsonRpcResponse(
 						&common.JsonRpcResponse{Result: []byte(`["log1"]`)},
@@ -538,6 +555,11 @@ func TestUpstreamPostForward_eth_getLogs(t *testing.T) {
 					),
 					nil,
 				).Times(1)
+				u.On("Config").Return(&common.UpstreamConfig{
+					Evm: &common.EvmUpstreamConfig{
+						GetLogsMaxBlockRange: 10,
+					},
+				})
 
 				return n, u, r
 			},

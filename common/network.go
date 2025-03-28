@@ -25,8 +25,8 @@ type Network interface {
 	Forward(ctx context.Context, nq *NormalizedRequest) (*NormalizedResponse, error)
 
 	// TODO Move to EvmNetwork interface?
-	EvmHighestLatestBlockNumber() int64
-	EvmHighestFinalizedBlockNumber() int64
+	EvmHighestLatestBlockNumber(ctx context.Context) int64
+	EvmHighestFinalizedBlockNumber(ctx context.Context) int64
 }
 
 func IsValidArchitecture(architecture string) bool {

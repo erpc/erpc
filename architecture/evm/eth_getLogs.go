@@ -13,6 +13,8 @@ import (
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // LowerBoundBlocksSafetyMargin is the number of blocks to subtract from the last available block to be on the safe side,
@@ -63,10 +65,16 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		// If integrity check for eth_getLogs block range is disabled, skip this hook.
 		return false, nil, nil
 	}
+	ctx, span := common.StartDetailSpan(ctx, "Upstream.PreForwardHook.eth_getLogs", trace.WithAttributes(
+		attribute.String("request.id", fmt.Sprintf("%v", r.ID())),
+		attribute.String("network.id", n.Id()),
+		attribute.String("upstream.id", up.Config().Id),
+	))
+	defer span.End()
 
 	logger := up.Logger().With().Str("method", "eth_getLogs").Interface("id", r.ID()).Logger()
 
-	jrq, err := r.JsonRpcRequest()
+	jrq, err := r.JsonRpcRequest(ctx)
 	if err != nil {
 		return true, nil, err
 	}
@@ -117,7 +125,12 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	}
 	requestRange := toBlock - fromBlock + 1
 	cfg := up.Config()
-
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.Int64("request_range", requestRange),
+			attribute.Int64("max_allowed_range", cfg.Evm.GetLogsMaxAllowedRange),
+		)
+	}
 	// check if the log range is beyond the hard limit
 	if requestRange > 0 && cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsMaxAllowedRange > 0 {
 		if requestRange > cfg.Evm.GetLogsMaxAllowedRange {
@@ -162,6 +175,13 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	// Check if upstream state poller has the last block >= logs range end,
 	// if not force a poller update, and if still not enough, skip the request.
 	latestBlock := statePoller.LatestBlock()
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.Int64("upstream_latest_block", latestBlock),
+			attribute.Int64("from_block", fromBlock),
+			attribute.Int64("to_block", toBlock),
+		)
+	}
 	if latestBlock > 0 {
 		logger.Debug().Int64("fromBlock", fromBlock).Int64("toBlock", toBlock).Int64("latestBlock", latestBlock).Msg("checking eth_getLogs block range integrity")
 
@@ -190,6 +210,11 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	// if not, skip the request.
 	if cfg != nil && cfg.Evm != nil && cfg.Evm.MaxAvailableRecentBlocks > 0 {
 		lastAvailableBlock := latestBlock - cfg.Evm.MaxAvailableRecentBlocks
+		if common.IsTracingDetailed {
+			span.SetAttributes(
+				attribute.Int64("last_available_block", lastAvailableBlock),
+			)
+		}
 		// If range is beyond the last available block, or too close to the last available block, skip the request for safety.
 		if fromBlock < (lastAvailableBlock + LowerBoundBlocksSafetyMargin) {
 			health.MetricUpstreamEvmGetLogsStaleLowerBound.WithLabelValues(
@@ -248,6 +273,13 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 }
 
 func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u common.Upstream, rq *common.NormalizedRequest, rs *common.NormalizedResponse, re error, skipCacheRead bool) (*common.NormalizedResponse, error) {
+	ctx, span := common.StartDetailSpan(ctx, "Upstream.PostForwardHook.eth_getLogs", trace.WithAttributes(
+		attribute.String("request.id", fmt.Sprintf("%v", rq.ID())),
+		attribute.String("network.id", n.Id()),
+		attribute.String("upstream.id", u.Config().Id),
+	))
+	defer span.End()
+
 	if re != nil {
 		if common.HasErrorCode(re, common.ErrCodeEndpointRequestTooLarge) {
 			logger := u.Logger().With().Str("method", "eth_getLogs").Interface("id", rq.ID()).Logger()
@@ -268,7 +300,7 @@ func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u co
 				WithRequest(rq).
 				WithJsonRpcResponse(mergedResponse), nil
 		}
-	} else if rs != nil && rs.IsResultEmptyish() {
+	} else if rs != nil && rs.IsResultEmptyish(ctx) {
 		// This is to normalize empty logs responses (e.g. instead of returning "null")
 		jrr, err := common.NewJsonRpcResponse(rq.ID(), []interface{}{}, nil)
 		if err != nil {
@@ -480,6 +512,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 	errs := make([]error, 0)
 	mu := sync.Mutex{}
 
+	// TODO should we make this semaphore configurable?
 	semaphore := make(chan struct{}, 200)
 	for _, sr := range subRequests {
 		wg.Add(1)
@@ -519,7 +552,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 				return
 			}
 
-			jrr, err := rs.JsonRpcResponse()
+			jrr, err := rs.JsonRpcResponse(ctx)
 			if err != nil {
 				mu.Lock()
 				errs = append(errs, err)

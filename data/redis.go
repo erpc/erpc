@@ -16,6 +16,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -152,7 +154,19 @@ func (r *RedisConnector) checkReady() error {
 
 // Set stores a key-value pair in Redis with an optional TTL. Returns early if Redis is not ready.
 func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey, value string, ttl *time.Duration) error {
+	ctx, span := common.StartSpan(ctx, "RedisConnector.Set")
+	defer span.End()
+
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.String("partition_key", partitionKey),
+			attribute.String("range_key", rangeKey),
+			attribute.Int("value_size", len(value)),
+		)
+	}
+
 	if err := r.checkReady(); err != nil {
+		common.SetTraceSpanError(span, err)
 		return err
 	}
 
@@ -174,6 +188,7 @@ func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey, value 
 	if err := r.client.Set(ctx, key, value, duration).Err(); err != nil {
 		r.logger.Warn().Err(err).Str("key", key).Msg("failed to SET in Redis, marking connection lost")
 		r.markConnectionAsLostIfNecessary(err)
+		common.SetTraceSpanError(span, err)
 		return err
 	}
 	return nil
@@ -181,7 +196,17 @@ func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey, value 
 
 // Get retrieves a value from Redis. If wildcard, retrieves the first matching key. Returns early if not ready.
 func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) (string, error) {
+	ctx, span := common.StartSpan(ctx, "RedisConnector.Get",
+		trace.WithAttributes(
+			attribute.String("index", index),
+			attribute.String("partition_key", partitionKey),
+			attribute.String("range_key", rangeKey),
+		),
+	)
+	defer span.End()
+
 	if err := r.checkReady(); err != nil {
+		common.SetTraceSpanError(span, err)
 		return "", err
 	}
 
@@ -194,10 +219,13 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 		if err != nil {
 			r.logger.Warn().Err(err).Str("pattern", key).Msg("failed to KEYS in Redis, marking connection lost")
 			r.markConnectionAsLostIfNecessary(err)
+			common.SetTraceSpanError(span, err)
 			return "", err
 		}
 		if len(keys) == 0 {
-			return "", common.NewErrRecordNotFound(partitionKey, rangeKey, RedisDriverName)
+			err := common.NewErrRecordNotFound(partitionKey, rangeKey, RedisDriverName)
+			common.SetTraceSpanError(span, err)
+			return "", err
 		}
 		key = keys[0]
 	}
@@ -205,10 +233,13 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 	r.logger.Trace().Str("key", key).Msg("getting item from Redis")
 	value, err := r.client.Get(ctx, key).Result()
 	if err == redis.Nil {
-		return "", common.NewErrRecordNotFound(partitionKey, rangeKey, RedisDriverName)
+		err = common.NewErrRecordNotFound(partitionKey, rangeKey, RedisDriverName)
+		common.SetTraceSpanError(span, err)
+		return "", err
 	} else if err != nil {
 		r.logger.Warn().Err(err).Str("key", key).Msg("failed to GET in Redis")
 		r.markConnectionAsLostIfNecessary(err)
+		common.SetTraceSpanError(span, err)
 		return "", err
 	}
 	if len(value) < 1024 {
@@ -216,13 +247,29 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 	} else {
 		r.logger.Debug().Str("key", key).Int("len", len(value)).Msg("received item from Redis")
 	}
+
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.Int("value_size", len(value)),
+		)
+	}
+
 	return value, nil
 }
 
 // Lock attempts to acquire a distributed lock for the specified key.
 // It uses SET NX with an expiration TTL. Returns a DistributedLock instance on success.
 func (r *RedisConnector) Lock(ctx context.Context, lockKey string, ttl time.Duration) (DistributedLock, error) {
+	ctx, span := common.StartSpan(ctx, "RedisConnector.Lock",
+		trace.WithAttributes(
+			attribute.String("lock_key", lockKey),
+			attribute.Int64("ttl_ms", ttl.Milliseconds()),
+		),
+	)
+	defer span.End()
+
 	if err := r.checkReady(); err != nil {
+		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
 
@@ -238,6 +285,7 @@ func (r *RedisConnector) Lock(ctx context.Context, lockKey string, ttl time.Dura
 	)
 
 	if err := mutex.LockContext(ctx); err != nil {
+		common.SetTraceSpanError(span, err)
 		return nil, fmt.Errorf("failed to acquire lock: %w", err)
 	}
 
@@ -342,22 +390,57 @@ func (r *RedisConnector) WatchCounterInt64(ctx context.Context, key string) (<-c
 
 // PublishCounterInt64 publishes a counter value to Redis.
 func (r *RedisConnector) PublishCounterInt64(ctx context.Context, key string, value int64) error {
+	ctx, span := common.StartSpan(ctx, "RedisConnector.PublishCounterInt64",
+		trace.WithAttributes(
+			attribute.String("key", key),
+		),
+	)
+	defer span.End()
+
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.Int64("value", value),
+		)
+	}
+
 	if err := r.checkReady(); err != nil {
+		common.SetTraceSpanError(span, err)
 		return err
 	}
 	r.logger.Debug().Str("key", key).Int64("value", value).Msg("publishing counter int64 update to Redis")
-	return r.client.Publish(ctx, "counter:"+key, value).Err()
+
+	err := r.client.Publish(ctx, "counter:"+key, value).Err()
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+	}
+	return err
 }
 
 func (r *RedisConnector) getCurrentValue(ctx context.Context, key string) (int64, error) {
+	ctx, span := common.StartDetailSpan(ctx, "RedisConnector.getCurrentValue",
+		trace.WithAttributes(
+			attribute.String("key", key),
+		),
+	)
+	defer span.End()
+
 	val, err := r.Get(ctx, ConnectorMainIndex, key, "value")
 	if err != nil {
+		common.SetTraceSpanError(span, err)
 		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
 			return 0, nil
 		}
 		return 0, err
 	}
-	return strconv.ParseInt(val, 10, 64)
+
+	value, err := strconv.ParseInt(val, 10, 64)
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return 0, err
+	}
+
+	span.SetAttributes(attribute.Int64("value", value))
+	return value, nil
 }
 
 type redisLock struct {
@@ -367,14 +450,24 @@ type redisLock struct {
 }
 
 func (l *redisLock) Unlock(ctx context.Context) error {
+	ctx, span := common.StartSpan(ctx, "RedisConnector.Unlock",
+		trace.WithAttributes(
+			attribute.String("lock_key", l.key),
+		),
+	)
+	defer span.End()
+
 	ctx, cancel := context.WithTimeout(ctx, l.connector.setTimeout)
 	defer cancel()
 	ok, err := l.mutex.UnlockContext(ctx)
 	if err != nil {
+		common.SetTraceSpanError(span, err)
 		return fmt.Errorf("error releasing lock: %w", err)
 	}
 	if !ok {
-		return errors.New("failed to release lock")
+		err := errors.New("failed to release lock")
+		common.SetTraceSpanError(span, err)
+		return err
 	}
 	l.connector.logger.Trace().Str("key", l.key).Msg("distributed lock released")
 	return nil

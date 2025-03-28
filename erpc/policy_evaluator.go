@@ -30,6 +30,7 @@ type PolicyEvaluator struct {
 	globalState map[string]*upstreamState
 
 	evalMutex sync.Mutex
+	appCtx    context.Context
 }
 
 type upstreamState struct {
@@ -67,6 +68,8 @@ func NewPolicyEvaluator(
 }
 
 func (p *PolicyEvaluator) Start(ctx context.Context) error {
+	p.appCtx = ctx
+
 	go func() {
 		ticker := time.NewTicker(p.config.EvalInterval.Duration())
 		defer ticker.Stop()
@@ -96,7 +99,7 @@ func (p *PolicyEvaluator) evaluateUpstreams() error {
 	defer p.upstreamsMu.Unlock()
 
 	// Get all upstreams for this network
-	upsList := p.upstreamsRegistry.GetNetworkUpstreams(p.networkId)
+	upsList := p.upstreamsRegistry.GetNetworkUpstreams(p.appCtx, p.networkId)
 	if len(upsList) == 0 {
 		return fmt.Errorf("no upstreams found for network: %s", p.networkId)
 	}

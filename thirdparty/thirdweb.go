@@ -68,7 +68,7 @@ func (v *ThirdwebVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Lo
 		return false, err
 	}
 
-	cids, err := jrr.PeekStringByPath()
+	cids, err := jrr.PeekStringByPath(ctx)
 	if err != nil {
 		return false, err
 	}

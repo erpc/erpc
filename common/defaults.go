@@ -303,7 +303,10 @@ var DefaultWithBlockCacheMethods = map[string]*CacheMethodConfig{
 			{0, "blockHash"},
 			{0, "blockNumber"},
 		},
-		RespRefs: BlockNumberOrBlockHashParam,
+		RespRefs: [][]interface{}{
+			{0, "blockHash"},
+			{0, "blockNumber"},
+		},
 	},
 	"trace_block": {
 		ReqRefs: FirstParam,
@@ -1376,7 +1379,7 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 		if defaults != nil && defaults.Delay != 0 {
 			r.Delay = defaults.Delay
 		} else {
-			r.Delay = Duration(100 * time.Millisecond)
+			r.Delay = Duration(0 * time.Millisecond)
 		}
 	}
 	if r.Jitter == 0 {

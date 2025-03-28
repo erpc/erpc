@@ -10,7 +10,6 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/thirdparty"
-	"github.com/erpc/erpc/tracing"
 	"github.com/erpc/erpc/upstream"
 	"github.com/rs/zerolog"
 )
@@ -28,7 +27,7 @@ func NewERPC(
 	evmJsonRpcCache *evm.EvmJsonRpcCache,
 	cfg *common.Config,
 ) (*ERPC, error) {
-	if err := tracing.Initialize(appCtx, logger, cfg.Tracing); err != nil {
+	if err := common.InitializeTracing(appCtx, logger, cfg.Tracing); err != nil {
 		logger.Error().Err(err).Msg("failed to initialize tracing")
 	}
 
@@ -94,7 +93,7 @@ func NewERPC(
 	// Shutdown tracing after appCtx is finished/cancelled
 	go func() {
 		<-appCtx.Done()
-		if err := tracing.Shutdown(appCtx); err != nil {
+		if err := common.ShutdownTracing(appCtx); err != nil {
 			logger.Error().Err(err).Msg("failed to shutdown tracer provider")
 		}
 	}()
@@ -151,7 +150,7 @@ func (e *ERPC) AdminHandleRequest(ctx context.Context, nq *common.NormalizedRequ
 					Id:        n.Id(),
 					Upstreams: []*taxonomyUpstream{},
 				}
-				upstreams := n.upstreamsRegistry.GetNetworkUpstreams(n.Id())
+				upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.Id())
 				for _, u := range upstreams {
 					ntw.Upstreams = append(ntw.Upstreams, &taxonomyUpstream{Id: u.Config().Id})
 				}

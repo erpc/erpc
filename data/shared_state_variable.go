@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/tracing"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -25,36 +25,40 @@ type CounterInt64SharedVariable interface {
 }
 
 type baseSharedVariable struct {
-	lastUpdated time.Time
+	lastUpdated atomic.Int64 // Unix nanoseconds
 }
 
 func (v *baseSharedVariable) IsStale(staleness time.Duration) bool {
-	return time.Since(v.lastUpdated) > staleness
+	lastUpdatedNano := v.lastUpdated.Load()
+	return time.Since(time.Unix(0, lastUpdatedNano)) > staleness
 }
 
 type counterInt64 struct {
 	baseSharedVariable
 	registry *sharedStateRegistry
 	key      string
-	value    int64
-	mu       sync.RWMutex
+	value    atomic.Int64
+	mu       sync.Mutex // still needed for complex operations
 	callback func(int64)
 }
 
 func (c *counterInt64) GetValue() int64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.value
+	return c.value.Load()
 }
 
 func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
-	ctx, span := tracing.StartSpan(ctx, "CounterInt64.TryUpdate",
+	ctx, span := common.StartSpan(ctx, "CounterInt64.TryUpdate",
 		trace.WithAttributes(
 			attribute.String("key", c.key),
-			attribute.Int64("new_value", newValue),
 		),
 	)
 	defer span.End()
+
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.Int64("new_value", newValue),
+		)
+	}
 
 	rctx, cancel := context.WithTimeout(ctx, c.registry.fallbackTimeout)
 	defer cancel()
@@ -66,16 +70,17 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 
-		if newValue > c.value {
+		currentValue := c.value.Load()
+		if newValue > currentValue {
 			c.setValue(newValue)
 		}
-		return c.value
+		return c.value.Load()
 	}
 	defer func() {
 		unlockCtx, cancel := context.WithTimeout(context.Background(), c.registry.lockTtl)
 		defer cancel()
 		if err := lock.Unlock(unlockCtx); err != nil {
-			c.registry.logger.Error().Err(err).Str("key", c.key).Msg("failed to unlock counter")
+			c.registry.logger.Warn().Err(err).Str("key", c.key).Int64("lock_ttl_ms", c.registry.lockTtl.Milliseconds()).Msg("failed to unlock counter, so it will be expired after ttl")
 		}
 	}()
 
@@ -86,10 +91,11 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 
-		if newValue > c.value {
+		currentValue := c.value.Load()
+		if newValue > currentValue {
 			c.setValue(newValue)
 		}
-		return c.value
+		return c.value.Load()
 	}
 
 	var remoteValue int64
@@ -99,10 +105,11 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 			c.mu.Lock()
 			defer c.mu.Unlock()
 
-			if newValue > c.value {
+			currentValue := c.value.Load()
+			if newValue > currentValue {
 				c.setValue(newValue)
 			}
-			return c.value
+			return c.value.Load()
 		}
 	}
 
@@ -110,7 +117,8 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 	defer c.mu.Unlock()
 
 	// Use highest value among local, remote, and new
-	highestValue := c.value
+	currentValue := c.value.Load()
+	highestValue := currentValue
 	if remoteValue > highestValue {
 		highestValue = remoteValue
 	}
@@ -119,9 +127,12 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 
 		go func() {
 			// Only update remote if we're using the new value
-			err := c.registry.connector.Set(c.registry.appCtx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
+			setCtx, setCancel := context.WithCancel(c.registry.appCtx)
+			defer setCancel()
+			setCtx = trace.ContextWithSpanContext(setCtx, span.SpanContext())
+			err := c.registry.connector.Set(setCtx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
 			if err == nil {
-				err = c.registry.connector.PublishCounterInt64(c.registry.appCtx, c.key, newValue)
+				err = c.registry.connector.PublishCounterInt64(setCtx, c.key, newValue)
 			}
 			if err != nil {
 				c.registry.logger.Warn().Err(err).
@@ -135,11 +146,12 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 	if highestValue > 0 {
 		c.setValue(highestValue)
 	}
-	return c.value
+
+	return c.value.Load()
 }
 
 func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Duration, getNewValue func(ctx context.Context) (int64, error)) (int64, error) {
-	ctx, span := tracing.StartSpan(ctx, "CounterInt64.TryUpdateIfStale",
+	ctx, span := common.StartSpan(ctx, "CounterInt64.TryUpdateIfStale",
 		trace.WithAttributes(
 			attribute.String("key", c.key),
 			attribute.Int64("staleness_ms", staleness.Milliseconds()),
@@ -147,14 +159,10 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	)
 	defer span.End()
 
-	// Quick check if value is not stale using read lock
-	c.mu.RLock()
+	// Quick check if value is not stale using atomic read
 	if !c.IsStale(staleness) {
-		value := c.value
-		c.mu.RUnlock()
-		return value, nil
+		return c.value.Load(), nil
 	}
-	c.mu.RUnlock()
 
 	rctx, cancel := context.WithTimeout(ctx, c.registry.fallbackTimeout)
 	defer cancel()
@@ -168,18 +176,19 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 
 		// Double-check staleness under lock
 		if !c.IsStale(staleness) {
-			return c.value, nil
+			return c.value.Load(), nil
 		}
 
 		newValue, err := getNewValue(ctx)
 		if err != nil {
-			return c.value, err
+			return c.value.Load(), err
 		}
 
-		if newValue > c.value {
+		currentValue := c.value.Load()
+		if newValue > currentValue {
 			c.setValue(newValue)
 		}
-		return c.value, nil
+		return c.value.Load(), nil
 	}
 	defer func() {
 		unlockCtx, cancel := context.WithTimeout(context.Background(), c.registry.lockTtl)
@@ -197,18 +206,19 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 		defer c.mu.Unlock()
 
 		if !c.IsStale(staleness) {
-			return c.value, nil
+			return c.value.Load(), nil
 		}
 
 		newValue, err := getNewValue(ctx)
 		if err != nil {
-			return c.value, err
+			return c.value.Load(), err
 		}
 
-		if newValue > c.value {
+		currentValue := c.value.Load()
+		if newValue > currentValue {
 			c.setValue(newValue)
 		}
-		return c.value, nil
+		return c.value.Load(), nil
 	}
 
 	var remoteValue int64
@@ -222,23 +232,25 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	defer c.mu.Unlock()
 
 	// Update local value if remote is higher
-	if remoteValue > c.value {
+	currentValue := c.value.Load()
+	if remoteValue > currentValue {
 		c.setValue(remoteValue)
 	}
 
 	// Check staleness again under lock
 	if !c.IsStale(staleness) {
-		return c.value, nil
+		return c.value.Load(), nil
 	}
 
 	// Get new value
 	newValue, err := getNewValue(ctx)
 	if err != nil {
-		return c.value, err
+		return c.value.Load(), err
 	}
 
 	// Update if new value is higher
-	if newValue > c.value {
+	currentValue = c.value.Load() // Re-read in case it changed
+	if newValue > currentValue {
 		c.setValue(newValue)
 		go func() {
 			err := c.registry.connector.Set(c.registry.appCtx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
@@ -254,16 +266,18 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 		}()
 	}
 
-	return c.value, nil
+	return c.value.Load(), nil
 }
 
 func (c *counterInt64) OnValue(cb func(int64)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.callback = cb
 }
 
 func (c *counterInt64) setValue(val int64) {
-	c.value = val
-	c.lastUpdated = time.Now()
+	c.value.Store(val)
+	c.lastUpdated.Store(time.Now().UnixNano())
 	if c.callback != nil {
 		c.callback(val)
 	}

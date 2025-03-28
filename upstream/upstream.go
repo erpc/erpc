@@ -15,7 +15,6 @@ import (
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
 	"github.com/erpc/erpc/thirdparty"
-	"github.com/erpc/erpc/tracing"
 	"github.com/erpc/erpc/util"
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/rs/zerolog"
@@ -167,17 +166,23 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 	cfg := u.Config()
 
 	method, err := req.Method()
-	ctx, span := tracing.StartSpan(ctx, "Upstream.Forward",
+	ctx, span := common.StartSpan(ctx, "Upstream.Forward",
 		trace.WithAttributes(
-			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
 			attribute.String("network.id", u.networkId),
 			attribute.String("upstream.id", cfg.Id),
 			attribute.String("request.method", method),
 		),
 	)
 	defer span.End()
+
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
+		)
+	}
+
 	if err != nil {
-		tracing.SetError(span, err)
+		common.SetTraceSpanError(span, err)
 		return nil, common.NewErrUpstreamRequest(
 			err,
 			cfg.Id,
@@ -190,7 +195,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 		)
 	}
 	if !byPassMethodExclusion {
-		if reason, skip := u.shouldSkip(req); skip {
+		if reason, skip := u.shouldSkip(ctx, req); skip {
 			span.SetAttributes(attribute.Bool("skipped", true))
 			span.SetAttributes(attribute.String("skipped_reason", reason.Error()))
 			return nil, common.NewErrUpstreamRequestSkipped(reason, cfg.Id)
@@ -207,7 +212,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 		var errLimiters error
 		limitersBudget, errLimiters = u.rateLimitersRegistry.GetBudget(cfg.RateLimitBudget)
 		if errLimiters != nil {
-			tracing.SetError(span, errLimiters)
+			common.SetTraceSpanError(span, errLimiters)
 			return nil, errLimiters
 		}
 	}
@@ -218,7 +223,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 		lg.Trace().Str("budget", cfg.RateLimitBudget).Msgf("checking upstream-level rate limiters budget")
 		rules, err := limitersBudget.GetRulesByMethod(method)
 		if err != nil {
-			tracing.SetError(span, err)
+			common.SetTraceSpanError(span, err)
 			return nil, err
 		}
 		if len(rules) > 0 {
@@ -235,7 +240,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 						cfg.RateLimitBudget,
 						fmt.Sprintf("%+v", rule.Config),
 					)
-					tracing.SetError(span, err)
+					common.SetTraceSpanError(span, err)
 					return nil, err
 				} else {
 					lg.Trace().Str("budget", cfg.RateLimitBudget).Object("rule", rule.Config).Msgf("upstream-level rate limit passed")
@@ -248,9 +253,9 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 	// Prepare and normalize the request object
 	//
 	req.SetLastUpstream(u)
-	err = u.prepareRequest(req)
+	err = u.prepareRequest(ctx, req)
 	if err != nil {
-		tracing.SetError(span, err)
+		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
 
@@ -271,7 +276,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				),
 				nil,
 			)
-			tracing.SetError(span, err)
+			common.SetTraceSpanError(span, err)
 			return nil, err
 		}
 
@@ -370,9 +375,8 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 		resp, execErr := executor.
 			WithContext(ctx).
 			GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
-				ectx, execSpan := tracing.StartSpan(exec.Context(), "Upstream.forwardExecution",
+				ectx, execSpan := common.StartSpan(exec.Context(), "Upstream.forwardAttempt",
 					trace.WithAttributes(
-						attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
 						attribute.String("network.id", u.networkId),
 						attribute.String("upstream.id", cfg.Id),
 						attribute.Int("execution.attempt", exec.Attempts()),
@@ -382,13 +386,19 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				)
 				defer execSpan.End()
 
+				if common.IsTracingDetailed {
+					execSpan.SetAttributes(
+						attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
+					)
+				}
+
 				if ctxErr := ectx.Err(); ctxErr != nil {
 					cause := context.Cause(ectx)
 					if cause != nil {
-						tracing.SetError(execSpan, cause)
+						common.SetTraceSpanError(execSpan, cause)
 						return nil, cause
 					} else {
-						tracing.SetError(execSpan, ctxErr)
+						common.SetTraceSpanError(execSpan, ctxErr)
 						return nil, ctxErr
 					}
 				}
@@ -407,7 +417,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 
 				nr, err := tryForward(ectx, exec)
 				if err != nil {
-					tracing.SetError(execSpan, err)
+					common.SetTraceSpanError(execSpan, err)
 					return nil, err
 				}
 				return nr, nil
@@ -425,7 +435,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 		}
 
 		if execErr != nil {
-			tracing.SetError(span, execErr)
+			common.SetTraceSpanError(span, execErr)
 			return nil, TranslateFailsafeError(common.ScopeUpstream, u.config.Id, method, execErr, &startTime)
 		}
 
@@ -435,7 +445,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 			fmt.Errorf("unsupported client type during forward: %s", clientType),
 			cfg.Id,
 		)
-		tracing.SetError(span, err)
+		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
 }
@@ -528,7 +538,7 @@ func (u *Upstream) IgnoreMethod(method string) {
 	u.supportedMethods.Store(method, false)
 }
 
-func (u *Upstream) prepareRequest(nr *common.NormalizedRequest) error {
+func (u *Upstream) prepareRequest(ctx context.Context, nr *common.NormalizedRequest) error {
 	cfg := u.Config()
 	switch cfg.Type {
 	case common.UpstreamTypeEvm:
@@ -544,7 +554,7 @@ func (u *Upstream) prepareRequest(nr *common.NormalizedRequest) error {
 		}
 
 		if u.Client.GetType() == clients.ClientTypeHttpJsonRpc {
-			jsonRpcReq, err := nr.JsonRpcRequest()
+			jsonRpcReq, err := nr.JsonRpcRequest(ctx)
 			if err != nil {
 				return common.NewErrJsonRpcExceptionInternal(
 					0,
@@ -705,7 +715,7 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 	return nil
 }
 
-func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip bool) {
+func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest) (reason error, skip bool) {
 	method, _ := req.Method()
 
 	if u.config.Evm != nil {
@@ -736,7 +746,7 @@ func (u *Upstream) shouldSkip(req *common.NormalizedRequest) (reason error, skip
 
 	// if block can be determined from request and upstream is only full-node and block is historical skip
 	if u.config.Evm != nil && u.config.Evm.MaxAvailableRecentBlocks > 0 {
-		_, bn, ebn := evm.ExtractBlockReferenceFromRequest(req)
+		_, bn, ebn := evm.ExtractBlockReferenceFromRequest(ctx, req)
 		if ebn != nil || bn <= 0 {
 			return nil, false
 		}

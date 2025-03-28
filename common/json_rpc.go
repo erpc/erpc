@@ -1,12 +1,12 @@
 package common
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -156,7 +156,12 @@ func (r *JsonRpcResponse) SetIDBytes(idBytes []byte) error {
 	return r.parseID()
 }
 
-func (r *JsonRpcResponse) ParseFromStream(reader io.Reader, expectedSize int) error {
+func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reader, expectedSize int) error {
+	if len(ctx) > 0 {
+		_, span := StartDetailSpan(ctx[0], "JsonRpcResponse.ParseFromStream")
+		defer span.End()
+	}
+
 	data, err := util.ReadAll(reader, 16*1024, expectedSize) // 16KB
 	if err != nil {
 		return err
@@ -274,7 +279,10 @@ func (r *JsonRpcResponse) ParseError(raw string) error {
 	return nil
 }
 
-func (r *JsonRpcResponse) PeekStringByPath(path ...interface{}) (string, error) {
+func (r *JsonRpcResponse) PeekStringByPath(ctx context.Context, path ...interface{}) (string, error) {
+	_, span := StartDetailSpan(ctx, "JsonRpcResponse.PeekStringByPath")
+	defer span.End()
+
 	err := r.ensureCachedNode()
 	if err != nil {
 		return "", err
@@ -291,14 +299,6 @@ func (r *JsonRpcResponse) PeekStringByPath(path ...interface{}) (string, error) 
 	}
 
 	return n.String()
-}
-
-func (r *JsonRpcResponse) PeekInt64ByPath(path ...interface{}) (int64, error) {
-	s, err := r.PeekStringByPath(path...)
-	if err != nil {
-		return 0, err
-	}
-	return strconv.ParseInt(s, 0, 64)
 }
 
 func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
@@ -467,7 +467,12 @@ func (r *JsonRpcResponse) Clone() (*JsonRpcResponse, error) {
 	}, nil
 }
 
-func (r *JsonRpcResponse) IsResultEmptyish() bool {
+func (r *JsonRpcResponse) IsResultEmptyish(ctx ...context.Context) bool {
+	if len(ctx) > 0 {
+		_, span := StartDetailSpan(ctx[0], "JsonRpcResponse.IsResultEmptyish")
+		defer span.End()
+	}
+
 	if r == nil {
 		return true
 	}
@@ -506,6 +511,18 @@ func NewJsonRpcRequest(method string, params []interface{}) *JsonRpcRequest {
 		Method:  method,
 		Params:  params,
 	}
+}
+
+func (r *JsonRpcRequest) LockWithTrace(ctx context.Context) {
+	_, span := StartDetailSpan(ctx, "JsonRpcRequest.Lock")
+	defer span.End()
+	r.Lock()
+}
+
+func (r *JsonRpcRequest) RLockWithTrace(ctx context.Context) {
+	_, span := StartDetailSpan(ctx, "JsonRpcRequest.RLock")
+	defer span.End()
+	r.RLock()
 }
 
 func (r *JsonRpcRequest) SetID(id interface{}) error {
@@ -570,7 +587,12 @@ func (r *JsonRpcRequest) MarshalZerologObject(e *zerolog.Event) {
 		Interface("id", r.ID)
 }
 
-func (r *JsonRpcRequest) CacheHash() (string, error) {
+func (r *JsonRpcRequest) CacheHash(ctx ...context.Context) (string, error) {
+	if len(ctx) > 0 {
+		_, span := StartDetailSpan(ctx[0], "Request.GenerateCacheHash")
+		defer span.End()
+	}
+
 	if r == nil {
 		return "", nil
 	}

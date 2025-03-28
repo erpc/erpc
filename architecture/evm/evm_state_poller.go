@@ -10,7 +10,6 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
-	"github.com/erpc/erpc/tracing"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
@@ -274,7 +273,7 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		// We must have some debounce interval to avoid thundering herd
 		dbi = 1 * time.Second
 	}
-	ctx, span := tracing.StartSpan(ctx, "EvmStatePoller.PollLatestBlockNumber",
+	ctx, span := common.StartDetailSpan(ctx, "EvmStatePoller.PollLatestBlockNumber",
 		trace.WithAttributes(
 			attribute.String("upstream.id", e.upstream.Config().Id),
 			attribute.String("network.id", e.upstream.NetworkId()),
@@ -324,7 +323,7 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 	if e.shouldSkipFinalizedCheck() {
 		return 0, nil
 	}
-	ctx, span := tracing.StartSpan(ctx, "EvmStatePoller.PollFinalizedBlockNumber",
+	ctx, span := common.StartDetailSpan(ctx, "EvmStatePoller.PollFinalizedBlockNumber",
 		trace.WithAttributes(
 			attribute.String("upstream.id", e.upstream.Config().Id),
 			attribute.String("network.id", e.upstream.NetworkId()),
@@ -490,7 +489,7 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 		return 0, jrr.Error
 	}
 
-	numberStr, err := jrr.PeekStringByPath("number")
+	numberStr, err := jrr.PeekStringByPath(ctx, "number")
 	if err != nil {
 		return 0, &common.BaseError{
 			Code:    "ErrEvmStatePoller",

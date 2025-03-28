@@ -102,6 +102,7 @@ type TracingConfig struct {
 	Endpoint   string          `yaml:"endpoint,omitempty" json:"endpoint"`
 	Protocol   TracingProtocol `yaml:"protocol,omitempty" json:"protocol"`
 	SampleRate float64         `yaml:"sampleRate,omitempty" json:"sampleRate"`
+	Detailed   bool            `yaml:"detailed,omitempty" json:"detailed"`
 	TLS        *TLSConfig      `yaml:"tls,omitempty" json:"tls"`
 }
 
