@@ -139,7 +139,7 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 	cancel1()
 	cancel2()
 
-	sortedUpstreams, err := nw.upstreamsRegistry.GetSortedUpstreams("evm:123", "eth_getTransactionReceipt")
+	sortedUpstreams, err := nw.upstreamsRegistry.GetSortedUpstreams(context.Background(), "evm:123", "eth_getTransactionReceipt")
 
 	expectedOrder := []string{"rpc2", "rpc1"}
 	assert.NoError(t, err)

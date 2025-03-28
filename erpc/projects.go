@@ -114,11 +114,16 @@ func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, nq *common.N
 }
 
 func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *common.NormalizedRequest) (*common.NormalizedResponse, error) {
+	ctx, span := common.StartDetailSpan(ctx, "Project.Forward")
+	defer span.End()
+
 	network, err := p.networksRegistry.GetNetwork(networkId)
 	if err != nil {
+		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
 	if err := p.acquireRateLimitPermit(nq); err != nil {
+		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
 
@@ -145,7 +150,15 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 
 	resp, err := p.doForward(ctx, network, nq)
 
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+	}
+
+	finishCtx, finishSpan := common.StartDetailSpan(ctx, "Project.FinishForward")
+	defer finishSpan.End()
+
 	if err == nil || common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+		_, logsSpan := common.StartDetailSpan(finishCtx, "Project.Logs")
 		if err != nil {
 			lg.Info().Err(err).Msgf("finished forwarding request for network with some client-side exception")
 		} else {
@@ -155,9 +168,14 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 				lg.Info().Msgf("successfully forwarded request for network")
 			}
 		}
+		logsSpan.End()
+		_, metricsSpan := common.StartDetailSpan(finishCtx, "Project.SuccessMetrics")
+		defer metricsSpan.End()
 		health.MetricNetworkSuccessfulRequests.WithLabelValues(p.Config.Id, network.networkId, method, strconv.Itoa(resp.Attempts())).Inc()
 		return resp, err
 	} else {
+		_, errSpan := common.StartDetailSpan(finishCtx, "Project.ErrorMetrics")
+		defer errSpan.End()
 		lg.Debug().Err(err).Object("request", nq).Msgf("failed to forward request for network")
 		health.MetricNetworkFailedRequests.WithLabelValues(network.projectId, network.networkId, method, strconv.Itoa(resp.Attempts()), common.ErrorSummary(err)).Inc()
 	}

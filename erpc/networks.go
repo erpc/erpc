@@ -10,7 +10,6 @@ import (
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
-	"github.com/erpc/erpc/tracing"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/failsafe-go/failsafe-go"
@@ -76,8 +75,11 @@ func (n *Network) Logger() *zerolog.Logger {
 	return n.logger
 }
 
-func (n *Network) EvmHighestLatestBlockNumber() int64 {
-	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(n.networkId)
+func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
+	ctx, span := common.StartDetailSpan(ctx, "Network.EvmHighestLatestBlockNumber")
+	defer span.End()
+
+	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
 	var maxBlock int64 = 0
 	for _, u := range upstreams {
 		statePoller := u.EvmStatePoller()
@@ -89,11 +91,17 @@ func (n *Network) EvmHighestLatestBlockNumber() int64 {
 			maxBlock = upBlock
 		}
 	}
+	span.SetAttributes(attribute.Int64("highest_latest_block", maxBlock))
 	return maxBlock
 }
 
-func (n *Network) EvmHighestFinalizedBlockNumber() int64 {
-	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(n.networkId)
+func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
+	ctx, span := common.StartDetailSpan(ctx, "Network.EvmHighestFinalizedBlockNumber", trace.WithAttributes(
+		attribute.String("network.id", n.networkId),
+	))
+	defer span.End()
+
+	upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.networkId)
 	var maxBlock int64 = 0
 	for _, u := range upstreams {
 		statePoller := u.EvmStatePoller()
@@ -105,6 +113,7 @@ func (n *Network) EvmHighestFinalizedBlockNumber() int64 {
 			maxBlock = upBlock
 		}
 	}
+	span.SetAttributes(attribute.Int64("highest_finalized_block", maxBlock))
 	return maxBlock
 }
 
@@ -118,13 +127,17 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	lg := n.logger.With().Str("method", method).Interface("id", req.ID()).Str("ptr", fmt.Sprintf("%p", req)).Logger()
 
 	// Start a span for network forwarding
-	ctx, forwardSpan := tracing.StartSpan(ctx, "Network.Forward",
+	ctx, forwardSpan := common.StartSpan(ctx, "Network.Forward",
 		trace.WithAttributes(
 			attribute.String("network.id", n.networkId),
 			attribute.String("request.method", method),
-			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
 		),
 	)
+	if common.IsTracingDetailed {
+		forwardSpan.SetAttributes(
+			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
+		)
+	}
 	defer forwardSpan.End()
 
 	if lg.GetLevel() == zerolog.TraceLevel {
@@ -139,7 +152,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		// When the original request is already fulfilled by multiplexer
 		forwardSpan.SetAttributes(attribute.Bool("multiplexed", true))
 		if err != nil {
-			tracing.SetError(forwardSpan, err)
+			common.SetTraceSpanError(forwardSpan, err)
 		}
 		return resp, err
 	}
@@ -153,7 +166,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		resp, err := n.cacheDal.Get(ctx, req)
 		if err != nil {
 			lg.Debug().Err(err).Msgf("could not find response in cache")
-		} else if resp != nil && !resp.IsObjectNull() && !resp.IsResultEmptyish() {
+		} else if resp != nil && !resp.IsObjectNull(ctx) && !resp.IsResultEmptyish(ctx) {
 			// TODO should we skip the empty response check, that way we allow empty responses to be cached?
 			if lg.GetLevel() <= zerolog.DebugLevel {
 				lg.Debug().Object("response", resp).Msgf("response served from cache")
@@ -161,7 +174,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				lg.Info().Msgf("response served from cache")
 			}
 			if mlx != nil {
-				mlx.Close(resp, err)
+				mlx.Close(ctx, resp, err)
 			}
 			forwardSpan.SetAttributes(attribute.Bool("cache.hit", true))
 			return resp, err
@@ -169,15 +182,15 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		forwardSpan.SetAttributes(attribute.Bool("cache.hit", false))
 	}
 
-	_, upstreamSpan := tracing.StartSpan(ctx, "GetSortedUpstreams")
-	upsList, err := n.upstreamsRegistry.GetSortedUpstreams(n.networkId, method)
+	_, upstreamSpan := common.StartDetailSpan(ctx, "GetSortedUpstreams")
+	upsList, err := n.upstreamsRegistry.GetSortedUpstreams(ctx, n.networkId, method)
 	upstreamSpan.SetAttributes(attribute.Int("upstreams.count", len(upsList)))
 	upstreamSpan.End()
 
 	if err != nil {
-		tracing.SetError(forwardSpan, err)
+		common.SetTraceSpanError(forwardSpan, err)
 		if mlx != nil {
-			mlx.Close(nil, err)
+			mlx.Close(ctx, nil, err)
 		}
 		return nil, err
 	}
@@ -185,7 +198,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// 3) Check if we should handle this method on this network
 	if err := n.shouldHandleMethod(method, upsList); err != nil {
 		if mlx != nil {
-			mlx.Close(nil, err)
+			mlx.Close(ctx, nil, err)
 		}
 		return nil, err
 	}
@@ -193,7 +206,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	// 3) Apply rate limits
 	if err := n.acquireRateLimitPermit(req); err != nil {
 		if mlx != nil {
-			mlx.Close(nil, err)
+			mlx.Close(ctx, nil, err)
 		}
 		return nil, err
 	}
@@ -207,19 +220,22 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		attempt int,
 		retry int,
 	) (resp *common.NormalizedResponse, err error) {
+		ctx, span := common.StartDetailSpan(execSpanCtx, "Network.TryForward")
+		defer span.End()
+
 		lg.Debug().Int("hedge", hedge).Int("attempt", attempt).Int("retry", retry).Msgf("trying to forward request to upstream")
 
-		if err := n.acquireSelectionPolicyPermit(lg, u, req); err != nil {
+		if err := n.acquireSelectionPolicyPermit(ctx, lg, u, req); err != nil {
 			return nil, err
 		}
 
-		resp, err = n.doForward(execSpanCtx, u, req, false)
+		resp, err = n.doForward(ctx, u, req, false)
 
 		if err != nil && !common.IsNull(err) {
 			// If upstream complains that the method is not supported let's dynamically add it ignoreMethods config
 			if common.HasErrorCode(err, common.ErrCodeEndpointUnsupported) {
 				lg.Warn().Err(err).Msgf("upstream does not support method, dynamically adding to ignoreMethods")
-				u.IgnoreMethod(method)
+				go u.IgnoreMethod(method)
 			}
 
 			lg.Debug().Object("response", resp).Err(err).Msgf("finished forwarding request to upstream with error")
@@ -241,11 +257,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	resp, execErr := n.failsafeExecutor.
 		WithContext(ectx).
 		GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
-			execSpanCtx, execSpan := tracing.StartSpan(exec.Context(), "Network.forwardExecution",
+			execSpanCtx, execSpan := common.StartSpan(exec.Context(), "Network.forwardAttempt",
 				trace.WithAttributes(
 					attribute.String("network.id", n.networkId),
 					attribute.String("request.method", method),
-					attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
 					attribute.Int("execution.attempt", exec.Attempts()),
 					attribute.Int("execution.retry", exec.Retries()),
 					attribute.Int("execution.hedge", exec.Hedges()),
@@ -253,17 +268,23 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			)
 			defer execSpan.End()
 
-			req.Lock()
+			if common.IsTracingDetailed {
+				execSpan.SetAttributes(
+					attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
+				)
+			}
+
+			req.LockWithTrace(execSpanCtx)
 			execution = exec
 			req.Unlock()
 
 			if ctxErr := execSpanCtx.Err(); ctxErr != nil {
 				cause := context.Cause(execSpanCtx)
 				if cause != nil {
-					tracing.SetError(execSpan, cause)
+					common.SetTraceSpanError(execSpan, cause)
 					return nil, cause
 				} else {
-					tracing.SetError(execSpan, ctxErr)
+					common.SetTraceSpanError(execSpan, ctxErr)
 					return nil, ctxErr
 				}
 			}
@@ -289,20 +310,24 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			// Upstream-level retry is handled by the upstream itself (and its own failsafe policies).
 			ln := len(upsList)
 			for range upsList {
-				if ctxErr := execSpanCtx.Err(); ctxErr != nil {
-					cause := context.Cause(execSpanCtx)
+				loopCtx, loopSpan := common.StartDetailSpan(execSpanCtx, "Network.UpstreamLoop")
+
+				if ctxErr := loopCtx.Err(); ctxErr != nil {
+					cause := context.Cause(loopCtx)
 					if cause != nil {
-						tracing.SetError(execSpan, cause)
+						common.SetTraceSpanError(loopSpan, cause)
+						loopSpan.End()
 						return nil, cause
 					} else {
-						tracing.SetError(execSpan, ctxErr)
+						common.SetTraceSpanError(loopSpan, ctxErr)
+						loopSpan.End()
 						return nil, ctxErr
 					}
 				}
 				// We need to use write-lock here because "i" is being updated.
-				req.Lock()
+				req.LockWithTrace(loopCtx)
 				u := upsList[i]
-				execSpan.SetAttributes(attribute.String("upstream.id", u.Config().Id))
+				loopSpan.SetAttributes(attribute.String("upstream.id", u.Config().Id))
 				ulg := lg.With().Str("upstreamId", u.Config().Id).Logger()
 				ulg.Trace().Int("index", i).Int("upstreams", ln).Msgf("attempt to forward request to next upstream")
 				i++
@@ -310,12 +335,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					i = 0
 				}
 				if _, respondedEmptyBefore := emptyResponses.Load(u); respondedEmptyBefore {
-					execSpan.SetAttributes(
+					loopSpan.SetAttributes(
 						attribute.Bool("skipped", true),
 						attribute.String("skipped_reason", "upstream already responded empty"),
 					)
 					ulg.Debug().Msgf("upstream already responded empty no reason to retry, skipping")
 					req.Unlock()
+					loopSpan.End()
 					continue
 				}
 				if prevErr, exists := errorsByUpstream.Load(u); exists {
@@ -325,10 +351,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						// the previous error was not retryable. e.g. Billing issues
 						// Or there was a rate-limit error.
 						req.Unlock()
-						execSpan.SetAttributes(
+						loopSpan.SetAttributes(
 							attribute.Bool("skipped", true),
 							attribute.String("skipped_reason", "upstream already responded with non-retryable error"),
 						)
+						loopSpan.End()
 						continue
 					}
 				}
@@ -340,9 +367,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 
 				var r *common.NormalizedResponse
-				r, err = tryForward(u, execSpanCtx, &ulg, hedges, attempts, exec.Retries())
+				r, err = tryForward(u, loopCtx, &ulg, hedges, attempts, exec.Retries())
 
-				if e := n.normalizeResponse(req, r); e != nil {
+				if e := n.normalizeResponse(loopCtx, req, r); e != nil {
 					ulg.Error().Err(e).Msgf("failed to normalize response")
 					err = e
 				}
@@ -352,18 +379,18 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
 					health.MetricNetworkHedgeDiscardsTotal.WithLabelValues(n.projectId, n.networkId, u.Config().Id, method, fmt.Sprintf("%d", attempts), fmt.Sprintf("%d", hedges)).Inc()
 					err := common.NewErrUpstreamHedgeCancelled(u.Config().Id, err)
-					tracing.SetError(execSpan, err)
+					common.SetTraceSpanError(loopSpan, err)
 					return nil, err
 				}
 
 				if err != nil {
 					errorsByUpstream.Store(u, err)
-				} else if r.IsResultEmptyish() {
+				} else if r.IsResultEmptyish(loopCtx) {
 					emptyResponses.Store(u, true)
 				}
 
 				if err != nil {
-					execSpan.SetAttributes(
+					loopSpan.SetAttributes(
 						attribute.Bool("error.is_client", isClientErr),
 					)
 				}
@@ -373,14 +400,15 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						r.SetUpstream(u)
 					}
 					if err == nil {
-						execSpan.SetStatus(codes.Ok, "")
+						loopSpan.SetStatus(codes.Ok, "")
 					} else {
-						tracing.SetError(execSpan, err)
+						common.SetTraceSpanError(loopSpan, err)
 					}
+					loopSpan.End()
 					return r, err
-				} else if err != nil {
-					continue
 				}
+
+				loopSpan.End()
 			}
 
 			err = common.NewErrUpstreamsExhausted(
@@ -394,11 +422,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				exec.Retries(),
 				exec.Hedges(),
 			)
-			tracing.SetError(execSpan, err)
+			common.SetTraceSpanError(execSpan, err)
 			return nil, err
 		})
 
-	req.RLock()
+	req.RLockWithTrace(ctx)
 	defer req.RUnlock()
 
 	if execErr != nil {
@@ -408,14 +436,14 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		if common.HasErrorCode(err, common.ErrCodeFailsafeRetryExceeded) {
 			// TODO is there a cleaner way to use last result when retry is exhausted?
 			lvr := req.LastValidResponse()
-			if !lvr.IsObjectNull() {
-				if lvr.IsResultEmptyish() {
+			if !lvr.IsObjectNull(ctx) {
+				if lvr.IsResultEmptyish(ctx) {
 					// We don't need to worry about replying wrongly empty responses for unfinalized data
 					// because cache layer already is not caching unfinalized data.
 					resp = lvr
 				} else if n.Architecture() == common.ArchitectureEvm {
 					// TODO Move the logic to evm package as a post-forward hook?
-					_, evmBlkNum, err := evm.ExtractBlockReferenceFromRequest(req)
+					_, evmBlkNum, err := evm.ExtractBlockReferenceFromRequest(ctx, req)
 					if err == nil && evmBlkNum == 0 {
 						// For pending txs we can accept the response, if after retries it is still pending.
 						// This avoids failing with "retry" error, when we actually do have a response but blockNumber is null since tx is pending.
@@ -435,13 +463,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					execution.Hedges(),
 				)
 				if mlx != nil {
-					mlx.Close(nil, err)
+					mlx.Close(ctx, nil, err)
 				}
 				return nil, err
 			}
 		} else {
 			if mlx != nil {
-				mlx.Close(nil, err)
+				mlx.Close(ctx, nil, err)
 			}
 			return nil, err
 		}
@@ -460,25 +488,25 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 
 		if n.cacheDal != nil {
-			resp.RLock()
-			go (func(resp *common.NormalizedResponse) {
+			resp.RLockWithTrace(ctx)
+			go (func(resp *common.NormalizedResponse, forwardSpan trace.Span) {
 				defer resp.RUnlock()
 				timeoutCtx, timeoutCtxCancel := context.WithTimeoutCause(n.appCtx, 10*time.Second, errors.New("cache driver timeout during set"))
 				defer timeoutCtxCancel()
-				tracedCtx := context.WithValue(timeoutCtx, tracing.SpanContextKey, forwardSpan)
+				tracedCtx := trace.ContextWithSpanContext(timeoutCtx, forwardSpan.SpanContext())
 				err := n.cacheDal.Set(tracedCtx, req, resp)
 				if err != nil {
 					lg.Warn().Err(err).Msgf("could not store response in cache")
 				}
-			})(resp)
+			})(resp, forwardSpan)
 		}
 	}
 
-	if execErr == nil && resp != nil && !resp.IsObjectNull() {
-		n.enrichStatePoller(method, req, resp)
+	if execErr == nil && resp != nil && !resp.IsObjectNull(ctx) {
+		n.enrichStatePoller(ctx, method, req, resp)
 	}
 	if mlx != nil {
-		mlx.Close(resp, nil)
+		mlx.Close(ctx, resp, nil)
 	}
 	return resp, nil
 }
@@ -508,19 +536,23 @@ func (n *Network) doForward(execSpanCtx context.Context, u *upstream.Upstream, r
 	return evm.HandleUpstreamPostForward(execSpanCtx, n, u, req, resp, err, skipCacheRead)
 }
 
-func (n *Network) acquireSelectionPolicyPermit(lg *zerolog.Logger, ups *upstream.Upstream, req *common.NormalizedRequest) error {
+func (n *Network) acquireSelectionPolicyPermit(ctx context.Context, lg *zerolog.Logger, ups *upstream.Upstream, req *common.NormalizedRequest) error {
 	if n.cfg.SelectionPolicy == nil {
 		return nil
 	}
+	_, span := common.StartDetailSpan(ctx, "Network.AcquireSelectionPolicyPermit")
+	defer span.End()
 
 	method, err := req.Method()
 	if err != nil {
+		common.SetTraceSpanError(span, err)
 		return err
 	}
 
 	if dr := req.Directives(); dr != nil {
 		// If directive is instructed to use specific upstream(s), bypass selection policy evaluation
 		if dr.UseUpstream != "" {
+			span.SetAttributes(attribute.String("force_use_upstream", dr.UseUpstream))
 			return nil
 		}
 	}
@@ -563,11 +595,13 @@ func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, re
 }
 
 func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, req *common.NormalizedRequest, startTime time.Time) (*common.NormalizedResponse, error) {
+	ctx, span := common.StartSpan(ctx, "Network.WaitForMultiplexResult")
+	defer span.End()
 	// Check if result is already available
 	mlx.mu.RLock()
 	if mlx.resp != nil || mlx.err != nil {
 		mlx.mu.RUnlock()
-		resp, err := common.CopyResponseForRequest(mlx.resp, req)
+		resp, err := common.CopyResponseForRequest(ctx, mlx.resp, req)
 		if err != nil {
 			return nil, err
 		}
@@ -578,7 +612,7 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 	// Wait for result
 	select {
 	case <-mlx.done:
-		resp, err := common.CopyResponseForRequest(mlx.resp, req)
+		resp, err := common.CopyResponseForRequest(ctx, mlx.resp, req)
 		if err != nil {
 			return nil, err
 		}
@@ -613,18 +647,21 @@ func (n *Network) shouldHandleMethod(method string, upsList []*upstream.Upstream
 	return nil
 }
 
-func (n *Network) enrichStatePoller(method string, req *common.NormalizedRequest, resp *common.NormalizedResponse) {
+func (n *Network) enrichStatePoller(ctx context.Context, method string, req *common.NormalizedRequest, resp *common.NormalizedResponse) {
+	ctx, span := common.StartDetailSpan(ctx, "Network.EnrichStatePoller")
+	defer span.End()
+
 	switch n.Architecture() {
 	case common.ArchitectureEvm:
 		// TODO Move the logic to evm package as a post-forward hook?
 		if method == "eth_getBlockByNumber" {
-			jrq, _ := req.JsonRpcRequest()
+			jrq, _ := req.JsonRpcRequest(ctx)
 			jrq.RLock()
 			defer jrq.RUnlock()
 			if blkTag, ok := jrq.Params[0].(string); ok {
 				if blkTag == "finalized" || blkTag == "latest" {
-					jrs, _ := resp.JsonRpcResponse()
-					bnh, err := jrs.PeekStringByPath("number")
+					jrs, _ := resp.JsonRpcResponse(ctx)
+					bnh, err := jrs.PeekStringByPath(ctx, "number")
 					if err == nil {
 						blockNumber, err := common.HexToInt64(bnh)
 						if err == nil {
@@ -644,8 +681,8 @@ func (n *Network) enrichStatePoller(method string, req *common.NormalizedRequest
 				}
 			}
 		} else if method == "eth_blockNumber" {
-			jrs, _ := resp.JsonRpcResponse()
-			bnh, err := jrs.PeekStringByPath()
+			jrs, _ := resp.JsonRpcResponse(ctx)
+			bnh, err := jrs.PeekStringByPath(ctx)
 			if err == nil {
 				blockNumber, err := common.HexToInt64(bnh)
 				if err == nil {
@@ -660,14 +697,17 @@ func (n *Network) enrichStatePoller(method string, req *common.NormalizedRequest
 	}
 }
 
-func (n *Network) normalizeResponse(req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
+func (n *Network) normalizeResponse(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
+	ctx, span := common.StartDetailSpan(ctx, "Network.NormalizeResponse")
+	defer span.End()
+
 	switch n.Architecture() {
 	case common.ArchitectureEvm:
 		if resp != nil {
 			// This ensures that even if upstream gives us wrong/missing ID we'll
 			// use correct one from original incoming request.
-			if jrr, err := resp.JsonRpcResponse(); err == nil {
-				jrq, err := req.JsonRpcRequest()
+			if jrr, err := resp.JsonRpcResponse(ctx); err == nil {
+				jrq, err := req.JsonRpcRequest(ctx)
 				if err != nil {
 					return err
 				}

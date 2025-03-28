@@ -14,7 +14,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/tracing"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
@@ -309,18 +308,20 @@ func (d *DynamoDBConnector) Id() string {
 }
 
 func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, value string, ttl *time.Duration) error {
-	ctx, span := tracing.StartSpan(ctx, "DynamoDBConnector.Set",
-		trace.WithAttributes(
+	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.Set")
+	defer span.End()
+
+	if common.IsTracingDetailed {
+		span.SetAttributes(
 			attribute.String("partition_key", partitionKey),
 			attribute.String("range_key", rangeKey),
 			attribute.Int("value_size", len(value)),
-		),
-	)
-	defer span.End()
+		)
+	}
 
 	if d.client == nil {
 		err := fmt.Errorf("DynamoDB client not initialized yet")
-		tracing.SetError(span, err)
+		common.SetTraceSpanError(span, err)
 		return err
 	}
 
@@ -359,25 +360,27 @@ func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, val
 	})
 
 	if err != nil {
-		tracing.SetError(span, err)
+		common.SetTraceSpanError(span, err)
 	}
 
 	return err
 }
 
 func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) (string, error) {
-	ctx, span := tracing.StartSpan(ctx, "DynamoDBConnector.Get",
-		trace.WithAttributes(
+	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.Get")
+	defer span.End()
+
+	if common.IsTracingDetailed {
+		span.SetAttributes(
 			attribute.String("index", index),
 			attribute.String("partition_key", partitionKey),
 			attribute.String("range_key", rangeKey),
-		),
-	)
-	defer span.End()
+		)
+	}
 
 	if d.client == nil {
 		err := fmt.Errorf("DynamoDB client not initialized yet")
-		tracing.SetError(span, err)
+		common.SetTraceSpanError(span, err)
 		return "", err
 	}
 
@@ -423,12 +426,12 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 		d.logger.Debug().Str("index", d.reverseIndexName).Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("getting item from dynamodb")
 		result, err := d.client.QueryWithContext(ctx, qi)
 		if err != nil {
-			tracing.SetError(span, err)
+			common.SetTraceSpanError(span, err)
 			return "", err
 		}
 		if len(result.Items) == 0 {
 			err := common.NewErrRecordNotFound(partitionKey, rangeKey, DynamoDBDriverName)
-			tracing.SetError(span, err)
+			common.SetTraceSpanError(span, err)
 			return "", err
 		}
 
@@ -438,7 +441,7 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 			now := time.Now().Unix()
 			if err == nil && now > expirationTime {
 				err := common.NewErrRecordExpired(partitionKey, rangeKey, DynamoDBDriverName, now, expirationTime)
-				tracing.SetError(span, err)
+				common.SetTraceSpanError(span, err)
 				return "", err
 			}
 		}
@@ -460,13 +463,13 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 		})
 
 		if err != nil {
-			tracing.SetError(span, err)
+			common.SetTraceSpanError(span, err)
 			return "", err
 		}
 
 		if result.Item == nil {
 			err := common.NewErrRecordNotFound(partitionKey, rangeKey, DynamoDBDriverName)
-			tracing.SetError(span, err)
+			common.SetTraceSpanError(span, err)
 			return "", err
 		}
 
@@ -476,7 +479,7 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 			now := time.Now().Unix()
 			if err == nil && now > expirationTime {
 				err := common.NewErrRecordExpired(partitionKey, rangeKey, DynamoDBDriverName, now, expirationTime)
-				tracing.SetError(span, err)
+				common.SetTraceSpanError(span, err)
 				return "", err
 			}
 		}
@@ -484,24 +487,27 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 		value = *result.Item["value"].S
 	}
 
-	span.SetAttributes(
-		attribute.Int("value_size", len(value)),
-	)
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.Int("value_size", len(value)),
+		)
+	}
 
 	return value, nil
 }
 
 func (d *DynamoDBConnector) Lock(ctx context.Context, key string, ttl time.Duration) (DistributedLock, error) {
-	ctx, span := tracing.StartSpan(ctx, "DynamoDBConnector.Lock",
+	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.Lock",
 		trace.WithAttributes(
 			attribute.String("lock_key", key),
 			attribute.Int64("ttl_ms", ttl.Milliseconds()),
 		),
 	)
 	defer span.End()
+
 	if d.client == nil {
 		err := fmt.Errorf("DynamoDB client not initialized yet")
-		tracing.SetError(span, err)
+		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
 
@@ -530,11 +536,11 @@ func (d *DynamoDBConnector) Lock(ctx context.Context, key string, ttl time.Durat
 	if err != nil {
 		if aerr, ok := err.(awserr.Error); ok && aerr.Code() == dynamodb.ErrCodeConditionalCheckFailedException {
 			err := fmt.Errorf("lock is held by another process")
-			tracing.SetError(span, err)
+			common.SetTraceSpanError(span, err)
 			return nil, err
 		}
 		err := fmt.Errorf("failed to acquire lock: %w", err)
-		tracing.SetError(span, err)
+		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
 
@@ -547,7 +553,7 @@ func (d *DynamoDBConnector) Lock(ctx context.Context, key string, ttl time.Durat
 }
 
 func (l *dynamoLock) Unlock(ctx context.Context) error {
-	ctx, span := tracing.StartSpan(ctx, "DynamoDBConnector.Unlock",
+	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.Unlock",
 		trace.WithAttributes(
 			attribute.String("lock_key", l.lockKey),
 		),
@@ -592,7 +598,7 @@ func (d *DynamoDBConnector) WatchCounterInt64(ctx context.Context, key string) (
 			case <-done:
 				return
 			case <-ticker.C:
-				value, err := d.getValue(ctx, key)
+				value, err := d.getSimpleValue(ctx, key)
 				if err != nil {
 					d.logger.Warn().Err(err).Str("key", key).Msg("failed to poll counter value")
 					continue
@@ -609,7 +615,7 @@ func (d *DynamoDBConnector) WatchCounterInt64(ctx context.Context, key string) (
 	}()
 
 	// Get initial value
-	if val, err := d.getValue(ctx, key); err == nil {
+	if val, err := d.getSimpleValue(ctx, key); err == nil {
 		updates <- val
 	}
 
@@ -621,7 +627,14 @@ func (d *DynamoDBConnector) WatchCounterInt64(ctx context.Context, key string) (
 	return updates, cleanup, nil
 }
 
-func (d *DynamoDBConnector) getValue(ctx context.Context, key string) (int64, error) {
+func (d *DynamoDBConnector) getSimpleValue(ctx context.Context, key string) (int64, error) {
+	ctx, span := common.StartDetailSpan(ctx, "DynamoDBConnector.getSimpleValue",
+		trace.WithAttributes(
+			attribute.String("key", key),
+		),
+	)
+	defer span.End()
+
 	result, err := d.client.GetItemWithContext(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(d.table),
 		Key: map[string]*dynamodb.AttributeValue{
@@ -653,6 +666,19 @@ func (d *DynamoDBConnector) getValue(ctx context.Context, key string) (int64, er
 }
 
 func (d *DynamoDBConnector) PublishCounterInt64(ctx context.Context, key string, value int64) error {
+	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.PublishCounterInt64",
+		trace.WithAttributes(
+			attribute.String("key", key),
+		),
+	)
+	defer span.End()
+
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.Int64("value", value),
+		)
+	}
+
 	if d.client == nil {
 		return fmt.Errorf("DynamoDB client not initialized yet")
 	}

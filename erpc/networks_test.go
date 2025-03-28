@@ -1802,7 +1802,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		fromHost, err := jrr.PeekStringByPath(0, "fromHost")
+		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
 		if err != nil {
 			t.Fatalf("Failed to get fromHost from result: %v", err)
 		}
@@ -1993,7 +1993,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		fromHost, err := jrr.PeekStringByPath(0, "fromHost")
+		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
 		if err != nil {
 			t.Fatalf("Failed to get fromHost from result: %v", err)
 		}
@@ -2184,7 +2184,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		fromHost, err := jrr.PeekStringByPath(0, "fromHost")
+		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
 		if err != nil {
 			t.Fatalf("Failed to get fromHost from result: %v", err)
 		}
@@ -2375,7 +2375,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		blockNumber, err := jrr.PeekStringByPath("blockNumber")
+		blockNumber, err := jrr.PeekStringByPath(context.TODO(), "blockNumber")
 		if err != nil {
 			t.Fatalf("Failed to get blockNumber from result: %v", err)
 		}
@@ -2383,7 +2383,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Errorf("Expected blockNumber to be %q, got %q", "0x54C563", blockNumber)
 		}
 
-		fromHost, err := jrr.PeekStringByPath("fromHost")
+		fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
 		if err != nil {
 			t.Fatalf("Failed to get fromHost from result: %v", err)
 		}
@@ -2562,7 +2562,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Failed to get JSON-RPC response: %v", err)
 		}
 
-		blockNumber, err := jrr.PeekStringByPath("blockNumber")
+		blockNumber, err := jrr.PeekStringByPath(context.TODO(), "blockNumber")
 		if err != nil {
 			t.Fatalf("Failed to get blockNumber: %v", err)
 		}
@@ -2570,7 +2570,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Errorf("Expected blockNumber %q, got %q", "0x54C563", blockNumber)
 		}
 
-		fromHost, err := jrr.PeekStringByPath("fromHost")
+		fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
 		if err != nil {
 			t.Fatalf("Failed to get fromHost: %v", err)
 		}
@@ -2762,7 +2762,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		hash, err := jrr.PeekStringByPath("hash")
+		hash, err := jrr.PeekStringByPath(context.TODO(), "hash")
 		if err != nil {
 			t.Fatalf("Failed to get hash from result: %v", err)
 		}
@@ -2770,7 +2770,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Errorf("Expected hash to be %q, got %q", "0xabcdef", hash)
 		}
 
-		fromHost, err := jrr.PeekStringByPath("fromHost")
+		fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
 		if err != nil {
 			t.Fatalf("Failed to get fromHost from result: %v", err)
 		}
@@ -2951,7 +2951,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		blockNumber, err := jrr.PeekStringByPath("blockNumber")
+		blockNumber, err := jrr.PeekStringByPath(context.TODO(), "blockNumber")
 		if err != nil {
 			t.Fatalf("Failed to get blockNumber from result: %v", err)
 		}
@@ -2959,7 +2959,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Errorf("Expected blockNumber to be empty, got %q", blockNumber)
 		}
 
-		fromHost, err := jrr.PeekStringByPath("fromHost")
+		fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
 		if err != nil {
 			t.Fatalf("Failed to get fromHost from result: %v", err)
 		}
@@ -4045,7 +4045,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected result, got %v", jrr)
 		}
 
-		hash, err := jrr.PeekStringByPath("hash")
+		hash, err := jrr.PeekStringByPath(context.TODO(), "hash")
 		if err != nil || hash == "" {
 			t.Fatalf("Expected hash to exist and be non-empty, got %v", hash)
 		}
@@ -4459,7 +4459,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected result, got nil")
 		}
 
-		fromHost, err := jrr.PeekStringByPath("fromHost")
+		fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
 		if err != nil || fromHost != "rpc2" {
 			t.Errorf("Expected fromHost to be %v, got %v", "rpc2", fromHost)
 		}
@@ -4612,7 +4612,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected result, got nil")
 		}
 
-		fromHost, err := jrr.PeekStringByPath("fromHost")
+		fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
 		if err != nil || fromHost != "rpc1" {
 			t.Errorf("Expected fromHost to be %v, got %v", "rpc1", fromHost)
 		}
@@ -4765,7 +4765,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected result, got nil")
 		}
 
-		fromHost, err := jrr.PeekStringByPath("fromHost")
+		fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
 		if err != nil || fromHost != "rpc1" {
 			t.Errorf("Expected fromHost to be %v, got %v", "rpc1", fromHost)
 		}
@@ -5203,7 +5203,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
 		}
-		hash, err := jrr.PeekStringByPath("hash")
+		hash, err := jrr.PeekStringByPath(context.TODO(), "hash")
 		if err != nil || hash == "" {
 			t.Fatalf("Expected hash to exist and be non-empty, got %v", hash)
 		}
@@ -5490,7 +5490,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected result, got nil")
 		}
 
-		fromHost, err := jrr.PeekStringByPath("fromHost")
+		fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
 		if err != nil || fromHost != "rpc2" {
 			t.Errorf("Expected fromHost to be %v, got %v", "rpc2", fromHost)
 		}
@@ -5759,7 +5759,7 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		fromHost, err := jrr.PeekStringByPath(0, "fromHost")
+		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
 		if err != nil || fromHost != "rpc2" {
 			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
 		}
@@ -6414,7 +6414,7 @@ func TestNetwork_Forward(t *testing.T) {
 					upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
 					req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":[],"id":1}`, method)))
 					req.SetNetwork(ntw)
-					oups, err := upstreamsRegistry.GetSortedUpstreams(networkID, method)
+					oups, err := upstreamsRegistry.GetSortedUpstreams(context.Background(), networkID, method)
 					upstreamsRegistry.RLockUpstreams()
 					ups := []*upstream.Upstream{}
 					ups = append(ups, oups...)
@@ -6433,15 +6433,15 @@ func TestNetwork_Forward(t *testing.T) {
 		time.Sleep(2 * time.Second)
 		upstreamsRegistry.RefreshUpstreamNetworkMethodScores()
 
-		sortedUpstreamsGetLogs, err := upstreamsRegistry.GetSortedUpstreams(networkID, "eth_getLogs")
+		sortedUpstreamsGetLogs, err := upstreamsRegistry.GetSortedUpstreams(context.TODO(), networkID, "eth_getLogs")
 		assert.NoError(t, err)
 		assert.Equal(t, "upstream-c", sortedUpstreamsGetLogs[0].Config().Id, "Expected upstream-c to be preferred for eth_getLogs in Phase 1")
 
-		sortedUpstreamsTraceTransaction, err := upstreamsRegistry.GetSortedUpstreams(networkID, "eth_traceTransaction")
+		sortedUpstreamsTraceTransaction, err := upstreamsRegistry.GetSortedUpstreams(context.TODO(), networkID, "eth_traceTransaction")
 		assert.NoError(t, err)
 		assert.Equal(t, "upstream-b", sortedUpstreamsTraceTransaction[0].Config().Id, "Expected upstream-b to be preferred for eth_traceTransaction in Phase 1")
 
-		sortedUpstreamsCall, err := upstreamsRegistry.GetSortedUpstreams(networkID, "eth_call")
+		sortedUpstreamsCall, err := upstreamsRegistry.GetSortedUpstreams(context.TODO(), networkID, "eth_call")
 		assert.NoError(t, err)
 		assert.Equal(t, "upstream-a", sortedUpstreamsCall[0].Config().Id, "Expected upstream-a to be preferred for eth_call in Phase 1")
 	})
@@ -6923,7 +6923,7 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 		// Let the state poller run and accumulate errors
 		time.Sleep(300 * time.Millisecond)
 
-		ups1 := network.upstreamsRegistry.GetNetworkUpstreams("evm:123")[0]
+		ups1 := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), "evm:123")[0]
 
 		// Verify the upstream is marked as inactive due to high error rate
 		err := network.selectionPolicyEvaluator.AcquirePermit(&log.Logger, ups1, "eth_getBalance")
@@ -7379,7 +7379,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		fromHost, err := jrr.PeekStringByPath(0, "fromHost")
+		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
 		if err != nil {
 			t.Fatalf("Failed to get fromHost from result: %v", err)
 		}
@@ -7432,7 +7432,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		fromHost, err := jrr.PeekStringByPath(0, "fromHost")
+		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
 		if err != nil {
 			t.Fatalf("Failed to get fromHost from result: %v", err)
 		}
@@ -7476,7 +7476,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		fromHost, err := jrr.PeekStringByPath(0, "fromHost")
+		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
 		if err != nil {
 			t.Fatalf("Failed to get fromHost from result: %v", err)
 		}
@@ -7520,7 +7520,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		fromHost, err := jrr.PeekStringByPath(0, "fromHost")
+		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
 		if err != nil {
 			t.Fatalf("Failed to get fromHost from result: %v", err)
 		}
@@ -7590,7 +7590,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		fromHost, err := jrr.PeekStringByPath(0, "fromHost")
+		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
 		if err != nil {
 			t.Fatalf("Failed to get fromHost from result: %v", err)
 		}
@@ -7680,7 +7680,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		fromHost, err := jrr.PeekStringByPath(0, "fromHost")
+		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
 		if err != nil {
 			t.Fatalf("Failed to get fromHost from result: %v", err)
 		}
@@ -7742,7 +7742,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		fromHost, err := jrr.PeekStringByPath(0, "fromHost")
+		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
 		if err != nil {
 			t.Fatalf("Failed to get fromHost from result: %v", err)
 		}
@@ -7822,7 +7822,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		assert.NoError(t, err)
 		assert.NotNil(t, jrr.Result)
 
-		fromHost, err := jrr.PeekStringByPath(0, "fromHost")
+		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
 		assert.NoError(t, err)
 		assert.Equal(t, "rpc1", fromHost)
 
@@ -7964,7 +7964,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
 		}
-		upsList := network.upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
+		upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
 		upsList[0].Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x100 // Small range to force splitting
 
 		req := common.NewNormalizedRequest(requestBytes)
@@ -8106,7 +8106,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			},
 		})
 
-		upsList := network.upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
+		upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
 		upsList[0].Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x10000000 // Large range to avoid auto-splitting since we want error-based splitting
 
 		req := common.NewNormalizedRequest(requestBytes)
@@ -8232,7 +8232,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
 		}
-		upsList := network.upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
+		upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
 		upsList[0].Config().Evm.GetLogsAutoSplittingRangeThreshold = 1 // Force splitting into individual blocks
 
 		req := common.NewNormalizedRequest(requestBytes)
@@ -8324,7 +8324,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
 		}
-		upsList := network.upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
+		upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
 		upsList[0].Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x100 // Range that's larger than our test range
 
 		req := common.NewNormalizedRequest(requestBytes)
@@ -8406,7 +8406,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
 		}
-		upsList := network.upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
+		upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
 		upsList[0].Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x100 // Range exactly equal to our test range
 
 		req := common.NewNormalizedRequest(requestBytes)
@@ -8483,7 +8483,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
 		}
-		upsList := network.upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
+		upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
 		upsList[0].Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x100 // Force splitting into ranges of 256 blocks
 
 		// Create and set cache
@@ -8723,7 +8723,7 @@ func setupTestNetworkSimple(t *testing.T, ctx context.Context, upstreamConfig *c
 
 	if upstreamConfig.Id == "test" {
 		h, _ := common.HexToInt64("0x1273c18")
-		upsList := upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
+		upsList := upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
 		upsList[0].EvmStatePoller().SuggestFinalizedBlock(h)
 		upsList[0].EvmStatePoller().SuggestLatestBlock(h)
 	}
@@ -8835,7 +8835,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.C
 	upstream.ReorderUpstreams(upstreamsRegistry)
 
 	fb1, _ := common.HexToInt64("0x11117777")
-	upsList := upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
+	upsList := upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
 	upsList[0].EvmStatePoller().SuggestFinalizedBlock(fb1)
 	lb1, _ := common.HexToInt64("0x11118888")
 	upsList[0].EvmStatePoller().SuggestLatestBlock(lb1)

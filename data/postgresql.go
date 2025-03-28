@@ -14,6 +14,8 @@ import (
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -206,11 +208,24 @@ func (p *PostgreSQLConnector) Id() string {
 }
 
 func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey, value string, ttl *time.Duration) error {
+	ctx, span := common.StartSpan(ctx, "PostgreSQLConnector.Set")
+	defer span.End()
+
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.String("partition_key", partitionKey),
+			attribute.String("range_key", rangeKey),
+			attribute.Int("value_size", len(value)),
+		)
+	}
+
 	p.connMu.RLock()
 	defer p.connMu.RUnlock()
 
 	if p.conn == nil {
-		return fmt.Errorf("PostgreSQLConnector not connected yet")
+		err := fmt.Errorf("PostgreSQLConnector not connected yet")
+		common.SetTraceSpanError(span, err)
+		return err
 	}
 
 	if len(value) < 1024 {
@@ -247,17 +262,31 @@ func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey, v
 
 	if err != nil {
 		p.handleConnectionFailure(err)
+		common.SetTraceSpanError(span, err)
 	}
 
 	return err
 }
 
 func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) (string, error) {
+	ctx, span := common.StartSpan(ctx, "PostgreSQLConnector.Get")
+	defer span.End()
+
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.String("index", index),
+			attribute.String("partition_key", partitionKey),
+			attribute.String("range_key", rangeKey),
+		)
+	}
+
 	p.connMu.RLock()
 	defer p.connMu.RUnlock()
 
 	if p.conn == nil {
-		return "", fmt.Errorf("PostgreSQLConnector not connected yet")
+		err := fmt.Errorf("PostgreSQLConnector not connected yet")
+		common.SetTraceSpanError(span, err)
+		return "", err
 	}
 
 	var query string
@@ -293,27 +322,49 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 
 	if err != nil {
 		p.handleConnectionFailure(err)
+		common.SetTraceSpanError(span, err)
 	}
 
 	if err == pgx.ErrNoRows {
-		return "", common.NewErrRecordNotFound(partitionKey, rangeKey, PostgreSQLDriverName)
+		err := common.NewErrRecordNotFound(partitionKey, rangeKey, PostgreSQLDriverName)
+		common.SetTraceSpanError(span, err)
+		return "", err
+	}
+
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.Int("value_size", len(value)),
+		)
 	}
 
 	return value, err
 }
 
 func (p *PostgreSQLConnector) Lock(ctx context.Context, key string, ttl time.Duration) (DistributedLock, error) {
+	ctx, span := common.StartSpan(ctx, "PostgreSQLConnector.Lock")
+	defer span.End()
+
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.String("lock_key", key),
+			attribute.Int64("ttl_ms", ttl.Milliseconds()),
+		)
+	}
+
 	p.connMu.RLock()
 	defer p.connMu.RUnlock()
 
 	if p.conn == nil {
-		return nil, fmt.Errorf("PostgreSQLConnector not connected yet")
+		err := fmt.Errorf("PostgreSQLConnector not connected yet")
+		common.SetTraceSpanError(span, err)
+		return nil, err
 	}
 
 	// Generate consistent hash for the key as advisory lock ID
 	h := fnv.New64a()
 	_, err := h.Write([]byte(key))
 	if err != nil {
+		common.SetTraceSpanError(span, err)
 		return nil, fmt.Errorf("failed to generate advisory lock ID: %w", err)
 	}
 	lockID := int64(h.Sum64()) // #nosec
@@ -322,6 +373,7 @@ func (p *PostgreSQLConnector) Lock(ctx context.Context, key string, ttl time.Dur
 	tx, err := p.conn.Begin(ctx)
 	if err != nil {
 		p.handleConnectionFailure(err)
+		common.SetTraceSpanError(span, err)
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
@@ -334,12 +386,15 @@ func (p *PostgreSQLConnector) Lock(ctx context.Context, key string, ttl time.Dur
 	if err != nil {
 		p.handleConnectionFailure(err)
 		_ = tx.Rollback(ctx)
+		common.SetTraceSpanError(span, err)
 		return nil, fmt.Errorf("failed to acquire advisory lock: %w", err)
 	}
 
 	if !acquired {
 		_ = tx.Rollback(ctx)
-		return nil, fmt.Errorf("failed to acquire lock: already locked")
+		err := fmt.Errorf("failed to acquire lock: already locked")
+		common.SetTraceSpanError(span, err)
+		return nil, err
 	}
 
 	p.logger.Trace().Str("key", key).Int64("lockID", lockID).Msg("distributed lock acquired")
@@ -353,8 +408,17 @@ func (p *PostgreSQLConnector) Lock(ctx context.Context, key string, ttl time.Dur
 }
 
 func (l *postgresLock) Unlock(ctx context.Context) error {
+	ctx, span := common.StartSpan(ctx, "PostgreSQLConnector.Unlock",
+		trace.WithAttributes(
+			attribute.Int64("lockID", l.lockID),
+		),
+	)
+	defer span.End()
+
 	if l.tx == nil {
-		return fmt.Errorf("no active transaction")
+		err := fmt.Errorf("no active transaction")
+		common.SetTraceSpanError(span, err)
+		return err
 	}
 
 	// Commit or rollback the transaction will automatically release the advisory lock
@@ -365,6 +429,7 @@ func (l *postgresLock) Unlock(ctx context.Context) error {
 		if rollbackErr != nil {
 			l.logger.Error().Err(rollbackErr).Msg("failed to rollback transaction after commit failure")
 		}
+		common.SetTraceSpanError(span, err)
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
@@ -437,17 +502,37 @@ func (p *PostgreSQLConnector) WatchCounterInt64(ctx context.Context, key string)
 }
 
 func (p *PostgreSQLConnector) PublishCounterInt64(ctx context.Context, key string, value int64) error {
+	ctx, span := common.StartSpan(ctx, "PostgreSQLConnector.PublishCounterInt64",
+		trace.WithAttributes(
+			attribute.String("key", key),
+		),
+	)
+	defer span.End()
+
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.Int64("value", value),
+		)
+	}
+
 	p.connMu.RLock()
 	defer p.connMu.RUnlock()
 
 	if p.conn == nil {
-		return fmt.Errorf("postgres not connected yet")
+		err := fmt.Errorf("postgres not connected yet")
+		common.SetTraceSpanError(span, err)
+		return err
 	}
 
 	p.logger.Debug().Str("key", key).Int64("value", value).Msg("publishing counter int64 update to postgres")
 
 	channel := sanitizeChannelName(fmt.Sprintf("counter_%s", key))
 	_, err := p.conn.Exec(ctx, fmt.Sprintf("NOTIFY %s, '%d'", channel, value))
+
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+	}
+
 	return err
 }
 
@@ -555,18 +640,43 @@ func (p *PostgreSQLConnector) connectListener(ctx context.Context, channel strin
 }
 
 func (p *PostgreSQLConnector) getCurrentValue(ctx context.Context, key string) (int64, error) {
+	ctx, span := common.StartDetailSpan(ctx, "PostgreSQLConnector.getCurrentValue",
+		trace.WithAttributes(
+			attribute.String("key", key),
+		),
+	)
+	defer span.End()
+
 	p.logger.Trace().Str("key", key).Msg("proactively getting current value from postgres")
 	val, err := p.Get(ctx, ConnectorMainIndex, key, "value")
 	if err != nil {
+		common.SetTraceSpanError(span, err)
 		if common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
 			return 0, nil
 		}
 		return 0, err
 	}
-	return strconv.ParseInt(val, 10, 64)
+
+	value, err := strconv.ParseInt(val, 10, 64)
+	if err != nil {
+		common.SetTraceSpanError(span, err)
+		return 0, err
+	}
+
+	span.SetAttributes(attribute.Int64("value", value))
+	return value, nil
 }
 
 func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, index, partitionKey, rangeKey string) (string, error) {
+	ctx, span := common.StartDetailSpan(ctx, "PostgreSQLConnector.getWithWildcard",
+		trace.WithAttributes(
+			attribute.String("index", index),
+			attribute.String("partition_key", partitionKey),
+			attribute.String("range_key", rangeKey),
+		),
+	)
+	defer span.End()
+
 	var query string
 	var args []interface{}
 
@@ -598,11 +708,17 @@ func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, index, partit
 	err := p.conn.QueryRow(ctx, query, args...).Scan(&value)
 
 	if err == pgx.ErrNoRows {
-		return "", common.NewErrRecordNotFound(partitionKey, rangeKey, PostgreSQLDriverName)
+		err := common.NewErrRecordNotFound(partitionKey, rangeKey, PostgreSQLDriverName)
+		common.SetTraceSpanError(span, err)
+		return "", err
 	} else if err != nil {
+		common.SetTraceSpanError(span, err)
 		return "", err
 	}
 
+	if common.IsTracingDetailed {
+		span.SetAttributes(attribute.Int("value_size", len(value)))
+	}
 	return value, nil
 }
 

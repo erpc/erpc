@@ -1,6 +1,7 @@
 package common
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"sync"
@@ -29,13 +30,15 @@ type NormalizedResponse struct {
 	evmBlockRef     atomic.Value
 }
 
+var _ ResponseMetadata = &NormalizedResponse{}
+
 type ResponseMetadata interface {
 	FromCache() bool
 	Attempts() int
 	Retries() int
 	Hedges() int
 	UpstreamId() string
-	IsObjectNull() bool
+	IsObjectNull(ctx ...context.Context) bool
 }
 
 func LookupResponseMetadata(err error) ResponseMetadata {
@@ -58,6 +61,18 @@ func LookupResponseMetadata(err error) ResponseMetadata {
 
 func NewNormalizedResponse() *NormalizedResponse {
 	return &NormalizedResponse{}
+}
+
+func (r *NormalizedResponse) LockWithTrace(ctx context.Context) {
+	_, span := StartDetailSpan(ctx, "Response.Lock")
+	defer span.End()
+	r.Lock()
+}
+
+func (r *NormalizedResponse) RLockWithTrace(ctx context.Context) {
+	_, span := StartDetailSpan(ctx, "Response.RLock")
+	defer span.End()
+	r.RLock()
 }
 
 func (r *NormalizedResponse) FromCache() bool {
@@ -167,7 +182,12 @@ func (r *NormalizedResponse) WithFromCache(fromCache bool) *NormalizedResponse {
 	return r
 }
 
-func (r *NormalizedResponse) JsonRpcResponse() (*JsonRpcResponse, error) {
+func (r *NormalizedResponse) JsonRpcResponse(ctx ...context.Context) (*JsonRpcResponse, error) {
+	if len(ctx) > 0 {
+		_, span := StartDetailSpan(ctx[0], "Response.ResolveJsonRpc")
+		defer span.End()
+	}
+
 	if r == nil {
 		return nil, nil
 	}
@@ -179,7 +199,7 @@ func (r *NormalizedResponse) JsonRpcResponse() (*JsonRpcResponse, error) {
 	jrr := &JsonRpcResponse{}
 
 	if r.body != nil {
-		err := jrr.ParseFromStream(r.body, r.expectedSize)
+		err := jrr.ParseFromStream(ctx, r.body, r.expectedSize)
 		if err != nil {
 			return nil, err
 		}
@@ -212,27 +232,32 @@ func (r *NormalizedResponse) Request() *NormalizedRequest {
 	return r.request
 }
 
-func (r *NormalizedResponse) IsResultEmptyish() bool {
-	jrr, err := r.JsonRpcResponse()
+func (r *NormalizedResponse) IsResultEmptyish(ctx ...context.Context) bool {
+	jrr, err := r.JsonRpcResponse(ctx...)
 	if err != nil {
 		return false
 	}
 
 	if jrr != nil {
-		return jrr.IsResultEmptyish()
+		return jrr.IsResultEmptyish(ctx...)
 	}
 
 	return true
 }
 
-func (r *NormalizedResponse) IsObjectNull() bool {
+func (r *NormalizedResponse) IsObjectNull(ctx ...context.Context) bool {
 	if r == nil {
 		return true
 	}
 
-	jrr, _ := r.JsonRpcResponse()
+	jrr, _ := r.JsonRpcResponse(ctx...)
 	if jrr == nil {
 		return true
+	}
+
+	if len(ctx) > 0 {
+		_, span := StartDetailSpan(ctx[0], "Response.IsObjectNull")
+		defer span.End()
 	}
 
 	jrr.resultMu.RLock()
@@ -315,8 +340,8 @@ func (r *NormalizedResponse) MarshalZerologObject(e *zerolog.Event) {
 
 // CopyResponseForRequest creates a copy of the response for another request
 // We use references for underlying Result and Error fields to save memory.
-func CopyResponseForRequest(resp *NormalizedResponse, req *NormalizedRequest) (*NormalizedResponse, error) {
-	req.RLock()
+func CopyResponseForRequest(ctx context.Context, resp *NormalizedResponse, req *NormalizedRequest) (*NormalizedResponse, error) {
+	req.RLockWithTrace(ctx)
 	defer req.RUnlock()
 
 	if resp == nil {
