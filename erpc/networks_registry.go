@@ -137,7 +137,34 @@ func (nr *NetworksRegistry) GetNetwork(networkId string) (*Network, error) {
 		return nil, fmt.Errorf("network %s is not properly initialized yet", networkId)
 	}
 
-	return ntw.(*Network), nil
+	// Check if upstreams are available for this network
+	network := ntw.(*Network)
+	upstreams := nr.upstreamsRegistry.GetNetworkUpstreams(networkId)
+	if len(upstreams) == 0 {
+		// Instead of returning an error, wait a short time for upstreams to initialize
+		// This helps with race conditions where the network is created but upstreams aren't ready yet
+		ctx, cancel := context.WithTimeout(context.Background(), 1000*time.Millisecond)
+		defer cancel()
+
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				// If we timeout waiting, return the network anyway - subsequent requests will likely succeed
+				nr.logger.Warn().Str("networkId", networkId).Msg("returning network with no upstreams yet, subsequent requests may succeed")
+				return network, nil
+			case <-ticker.C:
+				upstreams = nr.upstreamsRegistry.GetNetworkUpstreams(networkId)
+				if len(upstreams) > 0 {
+					return network, nil
+				}
+			}
+		}
+	}
+
+	return network, nil
 }
 
 func (nr *NetworksRegistry) GetNetworks() []*Network {
