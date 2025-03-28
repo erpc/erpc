@@ -444,7 +444,7 @@ func BenchmarkNetworkForward_ConcurrentEthGetLogsIntegrityEnabled(b *testing.B) 
 		b.Fatal(err)
 	}
 
-	upsList := ntw.upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
+	upsList := ntw.upstreamsRegistry.GetNetworkUpstreams(context.Background(), util.EvmNetworkId(123))
 
 	upsList[0].EvmStatePoller().SuggestLatestBlock(0x11118000)
 	upsList[0].EvmStatePoller().SuggestFinalizedBlock(0x11117FFF)

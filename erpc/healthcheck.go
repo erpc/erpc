@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
-	"github.com/erpc/erpc/tracing"
+	"github.com/erpc/erpc/common"
 )
 
 func (s *HttpServer) handleHealthCheck(
@@ -77,7 +77,7 @@ func (s *HttpServer) handleHealthCheck(
 		}
 	}
 
-	tracing.EnrichHTTPServerSpan(ctx, http.StatusOK, nil)
+	common.EnrichHTTPServerSpan(ctx, http.StatusOK, nil)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("OK"))
 }

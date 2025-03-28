@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -328,7 +329,7 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 						if ups.Config().Type == common.UpstreamTypeEvm && ups.Config().Evm != nil && ups.Config().Evm.NodeType == common.EvmNodeTypeArchive {
 							if ups, ok := ups.(common.EvmUpstream); ok {
 								if ups.EvmSyncingState() == common.EvmSyncingStateNotSyncing {
-									_, bn, ebn := evm.ExtractBlockReferenceFromRequest(req)
+									_, bn, ebn := evm.ExtractBlockReferenceFromRequest(context.TODO(), req)
 									if ebn == nil && bn > 0 {
 										if isFinalized, err := ups.EvmIsBlockFinalized(bn); err == nil && isFinalized {
 											return false
@@ -353,7 +354,7 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 						"eth_getTransactionByHash",
 						"eth_getTransactionByBlockHashAndIndex",
 						"eth_getTransactionByBlockNumberAndIndex":
-						_, blkNum, err := evm.ExtractBlockReferenceFromRequest(req)
+						_, blkNum, err := evm.ExtractBlockReferenceFromRequest(context.TODO(), req)
 						if err == nil {
 							if blkNum == 0 {
 								return true

@@ -15,10 +15,10 @@ import (
 	"github.com/bytedance/sonic/ast"
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/tracing"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -552,18 +552,24 @@ func getJsonRpcResponseFromNode(rootNode ast.Node) (*common.JsonRpcResponse, err
 }
 
 func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *common.NormalizedRequest) (*common.NormalizedResponse, error) {
-	ctx, span := tracing.StartSpan(ctx, "HttpJsonRpcClient.sendSingleRequest",
+	ctx, span := common.StartSpan(ctx, "HttpJsonRpcClient.sendSingleRequest",
 		trace.WithAttributes(
-			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
 			attribute.String("network.id", req.NetworkId()),
 			attribute.String("upstream.id", c.upstreamId),
 		),
 	)
 	defer span.End()
+
+	if common.IsTracingDetailed {
+		span.SetAttributes(
+			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
+		)
+	}
+
 	// TODO check if context is cancellable and then get the "cause" that is already set
 	jrReq, err := req.JsonRpcRequest()
 	if err != nil {
-		tracing.SetError(span, err)
+		common.SetTraceSpanError(span, err)
 		return nil, common.NewErrUpstreamRequest(
 			err,
 			c.upstreamId,
@@ -586,14 +592,14 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 	})
 	jrReq.RUnlock()
 	if err != nil {
-		tracing.SetError(span, err)
+		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
 
 	reqStartTime := time.Now()
 	httpReq, err := c.prepareRequest(ctx, requestBody)
 	if err != nil {
-		tracing.SetError(span, err)
+		common.SetTraceSpanError(span, err)
 		return nil, &common.BaseError{
 			Code:    "ErrHttp",
 			Message: fmt.Sprintf("%v", err),
@@ -616,7 +622,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		if cause != nil {
 			err = cause
 		}
-		tracing.SetError(span, err)
+		common.SetTraceSpanError(span, err)
 		// TODO For both of these conditions failsafe library can introduce carrying
 		//      the "cause" so we know this cancellation is due to Hedge policy for example.
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -645,7 +651,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 
 	err = c.normalizeJsonRpcError(resp, nr)
 	if err != nil {
-		tracing.SetError(span, err)
+		common.SetTraceSpanError(span, err)
 	}
 
 	return nr, err
@@ -694,6 +700,13 @@ func (c *GenericHttpJsonRpcClient) prepareRequest(ctx context.Context, body []by
 	for k, v := range c.headers {
 		httpReq.Header.Set(k, v)
 	}
+
+	// Inject OpenTelemetry trace context into HTTP headers
+	propagator := propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	)
+	propagator.Inject(ctx, propagation.HeaderCarrier(httpReq.Header))
 
 	return httpReq, nil
 }

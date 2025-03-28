@@ -134,7 +134,7 @@ func (v *PimlicoVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 		return false, err
 	}
 
-	cids, err := jrr.PeekStringByPath()
+	cids, err := jrr.PeekStringByPath(ctx)
 	if err != nil {
 		return false, err
 	}

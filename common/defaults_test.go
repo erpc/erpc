@@ -89,7 +89,7 @@ func TestSetDefaults_NetworkConfig(t *testing.T) {
 		assert.EqualValues(t, &FailsafeConfig{
 			Retry: &RetryPolicyConfig{
 				MaxAttempts:     12345,
-				Delay:           Duration(100 * time.Millisecond),
+				Delay:           Duration(0 * time.Millisecond),
 				BackoffMaxDelay: Duration(3 * time.Second),
 				BackoffFactor:   1.2,
 				Jitter:          Duration(0 * time.Millisecond),

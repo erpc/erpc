@@ -1,6 +1,7 @@
 package erpc
 
 import (
+	"context"
 	"sync"
 
 	"github.com/erpc/erpc/common"
@@ -23,7 +24,10 @@ func NewMultiplexer(hash string) *Multiplexer {
 	}
 }
 
-func (inf *Multiplexer) Close(resp *common.NormalizedResponse, err error) {
+func (inf *Multiplexer) Close(ctx context.Context, resp *common.NormalizedResponse, err error) {
+	_, span := common.StartDetailSpan(ctx, "Multiplexer.Close")
+	defer span.End()
+
 	inf.once.Do(func() {
 		inf.mu.Lock()
 		defer inf.mu.Unlock()

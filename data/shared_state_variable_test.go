@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -89,8 +90,9 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 			counter := &counterInt64{
 				registry: registry,
 				key:      "test",
-				value:    tt.initialValue,
+				value:    atomic.Int64{},
 			}
+			counter.value.Store(tt.initialValue)
 
 			result := counter.TryUpdate(context.Background(), tt.updateValue)
 			assert.Equal(t, tt.expectedValue, result)
@@ -184,11 +186,13 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 			counter := &counterInt64{
 				registry: registry,
 				key:      "test",
-				value:    tt.initialValue,
+				value:    atomic.Int64{},
 				baseSharedVariable: baseSharedVariable{
-					lastUpdated: tt.lastUpdated,
+					lastUpdated: atomic.Int64{},
 				},
 			}
+			counter.value.Store(tt.initialValue)
+			counter.lastUpdated.Store(tt.lastUpdated.UnixNano())
 
 			getNewValue := func(ctx context.Context) (int64, error) {
 				if tt.expectedError != nil {
@@ -226,8 +230,9 @@ func TestCounterInt64_Concurrency(t *testing.T) {
 	counter := &counterInt64{
 		registry: registry,
 		key:      "test",
-		value:    5,
+		value:    atomic.Int64{},
 	}
+	counter.value.Store(5)
 
 	// Run multiple goroutines updating the counter
 	var wg sync.WaitGroup
@@ -247,8 +252,9 @@ func TestCounterInt64_Concurrency(t *testing.T) {
 
 func TestCounterInt64_GetValue(t *testing.T) {
 	counter := &counterInt64{
-		value: 42,
+		value: atomic.Int64{},
 	}
+	counter.value.Store(42)
 
 	assert.Equal(t, int64(42), counter.GetValue())
 }
@@ -284,9 +290,10 @@ func TestCounterInt64_IsStale(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			counter := &counterInt64{
 				baseSharedVariable: baseSharedVariable{
-					lastUpdated: tt.lastUpdate,
+					lastUpdated: atomic.Int64{},
 				},
 			}
+			counter.lastUpdated.Store(tt.lastUpdate.UnixNano())
 			assert.Equal(t, tt.expected, counter.IsStale(tt.staleness))
 		})
 	}

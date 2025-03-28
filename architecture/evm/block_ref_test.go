@@ -1,6 +1,7 @@
 package evm
 
 import (
+	"context"
 	"testing"
 
 	"github.com/erpc/erpc/common"
@@ -398,14 +399,14 @@ func TestExtractBlockReference(t *testing.T) {
 			var err error
 
 			if tt.response == nil {
-				blkRef, blkNum, err = extractRefFromJsonRpcRequest(cacheDal, tt.request)
+				blkRef, blkNum, err = extractRefFromJsonRpcRequest(context.TODO(), cacheDal, tt.request)
 			} else {
 				nrq := common.NewNormalizedRequestFromJsonRpcRequest(tt.request)
 				nrq.SetCacheDal(cacheDal)
 				nrs := common.NewNormalizedResponse().WithJsonRpcResponse(tt.response).WithRequest(nrq)
 				nrq.SetLastValidResponse(nrs)
 
-				blkRef, blkNum, err = ExtractBlockReferenceFromRequest(nrq)
+				blkRef, blkNum, err = ExtractBlockReferenceFromRequest(context.TODO(), nrq)
 			}
 
 			if tt.expectedErr {

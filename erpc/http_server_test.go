@@ -1732,6 +1732,120 @@ func TestHttpServer_HedgedRequests(t *testing.T) {
 		assert.Contains(t, body, "0xFAST", "Expected final result from faster hedge call")
 		assert.NotContains(t, body, "context canceled", "Must never return 'context canceled' to the user")
 	})
+
+	t.Run("HedgeReturnsFirstResponseWhenInitiallySlowRequestCompletesFaster", func(t *testing.T) {
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				// Enough total server time to let hedged calls finish
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm:          &common.EvmNetworkConfig{ChainId: 1},
+							Failsafe: &common.FailsafeConfig{
+								// Network-level hedge configuration
+								Hedge: &common.HedgePolicyConfig{
+									MaxCount: 1,
+									Delay:    common.Duration(100 * time.Millisecond),
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://primary.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
+						{
+							Id:       "rpc2",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://backup.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		// Mock first upstream - initially slow but eventually completes faster
+		// The key feature is that this request looks like it will be slow (it waits 300ms before responding)
+		// but actually finishes before the second request
+		gock.New("http://primary.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_blockNumber")
+			}).
+			Reply(200).
+			Delay(300 * time.Millisecond). // Enough delay to trigger hedge but not too long
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0xPRIMARY",
+			})
+
+		// Mock second upstream - hedge request goes to this upstream
+		// This request is much slower overall (1000ms)
+		gock.New("http://backup.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_blockNumber")
+			}).
+			Reply(200).
+			Delay(1000 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0xBACKUP",
+			})
+
+		// Launch test server with config
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		// Time the request to verify we don't wait for the slower hedge
+		start := time.Now()
+		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`, nil, nil)
+		elapsed := time.Since(start)
+
+		// Verify correct response was returned
+		assert.Equal(t, http.StatusOK, statusCode, "Expected 200 OK response")
+		assert.Contains(t, body, "0xPRIMARY", "Expected result from primary upstream")
+
+		// Check that response time is approximately equal to the first request latency
+		// and NOT waiting for the second request to finish (which would be ~1000ms)
+		// We add a small buffer for processing time
+		assert.Less(t, elapsed, 600*time.Millisecond,
+			"Response time should be close to first request latency (~300ms) and not wait for hedge request to complete (~1000ms)")
+		assert.GreaterOrEqual(t, elapsed, 300*time.Millisecond,
+			"Response time should be at least equal to the simulated primary upstream delay")
+
+		// Make sure we don't return context canceled errors to the user
+		assert.NotContains(t, body, "context canceled", "Must never return 'context canceled' to the user")
+	})
 }
 
 func TestHttpServer_SingleUpstream(t *testing.T) {
@@ -4250,7 +4364,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
 
-		upstreams := prj.upstreamsRegistry.GetNetworkUpstreams("evm:1")
+		upstreams := prj.upstreamsRegistry.GetNetworkUpstreams(context.Background(), "evm:1")
 		require.NotNil(t, upstreams)
 		require.Equal(t, len(upstreams), 1)
 		upsCfg := upstreams[0].Config()
@@ -4336,7 +4450,7 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 		prj, err := erpcInstance.GetProject("test_project")
 		require.NoError(t, err)
 
-		upstreams := prj.upstreamsRegistry.GetNetworkUpstreams("evm:1")
+		upstreams := prj.upstreamsRegistry.GetNetworkUpstreams(context.Background(), "evm:1")
 		require.NotNil(t, upstreams)
 		require.Equal(t, len(upstreams), 1)
 		upsCfg := upstreams[0].Config()

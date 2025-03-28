@@ -8,6 +8,8 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func BuildGetBlockByNumberRequest(blockNumberOrTag interface{}, includeTransactions bool) (*common.JsonRpcRequest, error) {
@@ -38,8 +40,15 @@ func BuildGetBlockByNumberRequest(blockNumberOrTag interface{}, includeTransacti
 }
 
 func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common.Network, nq *common.NormalizedRequest, nr *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
+	ctx, span := common.StartDetailSpan(ctx, "Network.PostForward.eth_getBlockByNumber", trace.WithAttributes(
+		attribute.String("request.id", fmt.Sprintf("%v", nq.ID())),
+		attribute.String("network.id", network.Id()),
+	))
+	defer span.End()
+
 	nr, err := enforceHighestBlock(ctx, network, nq, nr, re)
 	if err != nil {
+		common.SetTraceSpanError(span, err)
 		return nr, err
 	}
 	return enforceNonNullBlock(nr)
@@ -61,7 +70,7 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 		return nr, re
 	}
 
-	rqj, err := nq.JsonRpcRequest()
+	rqj, err := nq.JsonRpcRequest(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -81,8 +90,8 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 
 	switch bnp {
 	case "latest":
-		highestBlockNumber := network.EvmHighestLatestBlockNumber()
-		_, respBlockNumber, err := ExtractBlockReferenceFromResponse(nr)
+		highestBlockNumber := network.EvmHighestLatestBlockNumber(ctx)
+		_, respBlockNumber, err := ExtractBlockReferenceFromResponse(ctx, nr)
 		if err != nil {
 			return nil, err
 		}
@@ -112,14 +121,14 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			nq.SetNetwork(network)
 			nnr, err := network.Forward(ctx, nq)
 			// This is needed in case highest block number is corrupted somehow and for example
-			// it is requesting a a very high non-existent block number.
-			return pickHighestBlock(nnr, nr, err)
+			// it is requesting a very high non-existent block number.
+			return pickHighestBlock(ctx, nnr, nr, err)
 		} else {
 			return nr, re
 		}
 	case "finalized":
-		highestBlockNumber := network.EvmHighestFinalizedBlockNumber()
-		_, respBlockNumber, err := ExtractBlockReferenceFromResponse(nr)
+		highestBlockNumber := network.EvmHighestFinalizedBlockNumber(ctx)
+		_, respBlockNumber, err := ExtractBlockReferenceFromResponse(ctx, nr)
 		if err != nil {
 			return nil, err
 		}
@@ -145,8 +154,8 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			nq.SetNetwork(network)
 			nnr, err := network.Forward(ctx, nq)
 			// This is needed in case highest block number is corrupted somehow and for example
-			// it is requesting a a very high non-existent block number.
-			return pickHighestBlock(nnr, nr, err)
+			// it is requesting a very high non-existent block number.
+			return pickHighestBlock(ctx, nnr, nr, err)
 		} else {
 			return nr, re
 		}
@@ -181,7 +190,10 @@ func enforceNonNullBlock(nr *common.NormalizedResponse) (*common.NormalizedRespo
 	return nr, nil
 }
 
-func pickHighestBlock(x *common.NormalizedResponse, y *common.NormalizedResponse, err error) (*common.NormalizedResponse, error) {
+func pickHighestBlock(ctx context.Context, x *common.NormalizedResponse, y *common.NormalizedResponse, err error) (*common.NormalizedResponse, error) {
+	ctx, span := common.StartDetailSpan(ctx, "Evm.PickHighestBlock")
+	defer span.End()
+
 	xnull := x == nil || x.IsObjectNull() || x.IsResultEmptyish()
 	ynull := y == nil || y.IsObjectNull() || y.IsResultEmptyish()
 	if xnull && ynull && err != nil {
@@ -191,22 +203,24 @@ func pickHighestBlock(x *common.NormalizedResponse, y *common.NormalizedResponse
 	} else if !xnull && ynull {
 		return x, nil
 	}
-	xjrr, err := x.JsonRpcResponse()
+	xjrr, err := x.JsonRpcResponse(ctx)
 	if err != nil || xjrr == nil {
 		return y, nil
 	}
-	yjrr, err := y.JsonRpcResponse()
+	yjrr, err := y.JsonRpcResponse(ctx)
 	if err != nil || yjrr == nil {
 		return x, nil
 	}
-	xbn, err := xjrr.PeekStringByPath("number")
+	xbn, err := xjrr.PeekStringByPath(ctx, "number")
 	if err != nil {
 		return y, nil
 	}
-	ybn, err := yjrr.PeekStringByPath("number")
+	span.SetAttributes(attribute.String("block_number_1", xbn))
+	ybn, err := yjrr.PeekStringByPath(ctx, "number")
 	if err != nil {
 		return x, nil
 	}
+	span.SetAttributes(attribute.String("block_number_2", ybn))
 	xbnInt, err := strconv.ParseInt(xbn, 0, 64)
 	if err != nil {
 		return y, nil
