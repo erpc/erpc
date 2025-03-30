@@ -144,7 +144,7 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 		close(errCh)
 	}()
 
-	// Wait for minimum success threshold, completion, or error
+	// Wait for at least one upstream, completion, or error
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
@@ -155,31 +155,28 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 		case err := <-errCh:
 			return err
 		case <-ticker.C:
+			// check if the initializer has failed
 			status := u.initializer.Status()
-			totalTasks := len(tasks)
-			successfulTasks := 0
-
-			if totalTasks == 0 {
-				continue
-			}
-
-			for _, task := range status.Tasks {
-				if task.State == util.TaskSucceeded {
-					successfulTasks++
-				}
-			}
-
-			successRate := float64(successfulTasks) / float64(totalTasks)
-			if successRate >= 0.2 { // 20% threshold
-				u.logger.Info().
-					Str("networkId", networkId).
-					Float64("successRate", successRate).
-					Msg("upstreams initialization based on provider is partially successful, will continue to unblock the flow")
-				return nil
-			}
 
 			if status.State == util.StateFailed {
 				return fmt.Errorf("initialization failed with state: %s", status.State.String())
+			}
+
+			// Check if we have at least one upstream for this network
+			u.upstreamsMu.RLock()
+			upstreamsCount := len(u.networkUpstreams[networkId])
+			u.upstreamsMu.RUnlock()
+
+			if upstreamsCount == 0 {
+				continue
+			}
+
+			if upstreamsCount > 0 {
+				u.logger.Info().
+					Str("networkId", networkId).
+					Int("upstreamsCount", upstreamsCount).
+					Msg("at least one upstream is available for network, continuing initialization")
+				return nil
 			}
 		}
 	}
