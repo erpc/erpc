@@ -128,7 +128,7 @@ func (v *ThirdwebVendor) generateUrl(chainId int64, clientId string) (*url.URL, 
 }
 
 func (v *ThirdwebVendor) getOrCreateClient(ctx context.Context, logger *zerolog.Logger, chainId int64, parsedURL *url.URL) (clients.HttpJsonRpcClient, error) {
-	// Check if we already have a client for this chain ID
+	// Try to get existing client for this chainId
 	if client, ok := v.headlessClients.Load(chainId); ok {
 		return client.(clients.HttpJsonRpcClient), nil
 	}

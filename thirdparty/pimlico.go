@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/erpc/erpc/clients"
@@ -89,12 +89,12 @@ var pimlicoSupportedChains = map[int64]struct{}{
 
 type PimlicoVendor struct {
 	common.Vendor
-	headlessClient atomic.Value
+	headlessClients sync.Map
 }
 
 func CreatePimlicoVendor() common.Vendor {
 	return &PimlicoVendor{
-		headlessClient: atomic.Value{},
+		headlessClients: sync.Map{},
 	}
 }
 
@@ -116,7 +116,7 @@ func (v *PimlicoVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 		return true, nil
 	}
 
-	client, err := v.getOrCreateClient(ctx, logger, nil)
+	client, err := v.getOrCreateClient(ctx, logger, chainId, nil)
 	if err != nil {
 		return false, err
 	}
@@ -212,14 +212,19 @@ func (v *PimlicoVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 		strings.Contains(ups.Endpoint, "pimlico.io")
 }
 
-func (v *PimlicoVendor) getOrCreateClient(ctx context.Context, logger *zerolog.Logger, parsedURL *url.URL) (clients.HttpJsonRpcClient, error) {
-	if client, ok := v.headlessClient.Load().(clients.HttpJsonRpcClient); ok {
-		return client, nil
+func (v *PimlicoVendor) getOrCreateClient(ctx context.Context, logger *zerolog.Logger, chainId int64, parsedURL *url.URL) (clients.HttpJsonRpcClient, error) {
+	// Try to get existing client for this chainId
+	if client, ok := v.headlessClients.Load(chainId); ok {
+		return client.(clients.HttpJsonRpcClient), nil
 	}
+
+	// Create new client if none exists
 	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", "n/a", parsedURL, nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	v.headlessClient.Store(client)
+
+	// Store the new client
+	v.headlessClients.Store(chainId, client)
 	return client, nil
 }
