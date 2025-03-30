@@ -7,7 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/erpc/erpc/clients"
@@ -18,12 +18,12 @@ import (
 
 type ThirdwebVendor struct {
 	common.Vendor
-	headlessClient atomic.Value
+	headlessClients sync.Map
 }
 
 func CreateThirdwebVendor() common.Vendor {
 	return &ThirdwebVendor{
-		headlessClient: atomic.Value{},
+		headlessClients: sync.Map{},
 	}
 }
 
@@ -51,7 +51,7 @@ func (v *ThirdwebVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Lo
 	}
 
 	// Check against endpoint to see if eth_chainId responds successfully
-	client, err := v.getOrCreateClient(ctx, logger, parsedURL)
+	client, err := v.getOrCreateClient(ctx, logger, chainId, parsedURL)
 	if err != nil {
 		return false, err
 	}
@@ -127,14 +127,19 @@ func (v *ThirdwebVendor) generateUrl(chainId int64, clientId string) (*url.URL, 
 	return parsedURL, nil
 }
 
-func (v *ThirdwebVendor) getOrCreateClient(ctx context.Context, logger *zerolog.Logger, parsedURL *url.URL) (clients.HttpJsonRpcClient, error) {
-	if client, ok := v.headlessClient.Load().(clients.HttpJsonRpcClient); ok {
-		return client, nil
+func (v *ThirdwebVendor) getOrCreateClient(ctx context.Context, logger *zerolog.Logger, chainId int64, parsedURL *url.URL) (clients.HttpJsonRpcClient, error) {
+	// Try to get existing client for this chainId
+	if client, ok := v.headlessClients.Load(chainId); ok {
+		return client.(clients.HttpJsonRpcClient), nil
 	}
+
+	// Create a new client for this chain ID
 	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", "n/a", parsedURL, nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	v.headlessClient.Store(client)
+
+	// Store the client for this chain ID
+	v.headlessClients.Store(chainId, client)
 	return client, nil
 }

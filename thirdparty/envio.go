@@ -7,7 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/erpc/erpc/clients"
@@ -34,7 +34,6 @@ var envioKnownSupportedChains = map[int64]struct{}{
 	2001:       {}, // C1 Milkomeda
 	42220:      {}, // Celo
 	44:         {}, // Crab
-	7560:       {}, // Cyber
 	46:         {}, // Darwinia
 	1:          {}, // Ethereum Mainnet
 	250:        {}, // Fantom
@@ -71,16 +70,27 @@ var envioKnownSupportedChains = map[int64]struct{}{
 	7000:       {}, // Zeta
 	324:        {}, // ZKsync
 	7777777:    {}, // Zora
+	50:         {}, // Xdc
+	2741:       {}, // Abstract
+	5115:       {}, // Citrea Testnet
+	7560:       {}, // Cyber
+	80084:      {}, // Berachain Bartio
+	80094:      {}, // Berachain
+	8888:       {}, // Chiliz
+	645749:     {}, // Hyperliquid
+	1750:       {}, // Metall2
+	1287:       {}, // Moonbase Alpha
+	50104:      {}, // Sophon
 }
 
 type EnvioVendor struct {
 	common.Vendor
-	headlessClient atomic.Value
+	headlessClients sync.Map
 }
 
 func CreateEnvioVendor() common.Vendor {
 	return &EnvioVendor{
-		headlessClient: atomic.Value{},
+		headlessClients: sync.Map{},
 	}
 }
 
@@ -113,7 +123,7 @@ func (v *EnvioVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logge
 	}
 
 	// Check against endpoint to see if eth_chainId responds successfully
-	client, err := v.getOrCreateClient(ctx, logger, parsedURL)
+	client, err := v.getOrCreateClient(ctx, logger, chainId, parsedURL)
 	if err != nil {
 		return false, err
 	}
@@ -215,14 +225,19 @@ func (v *EnvioVendor) generateUrl(chainId int64, rootDomain string) (*url.URL, e
 	return parsedURL, nil
 }
 
-func (v *EnvioVendor) getOrCreateClient(ctx context.Context, logger *zerolog.Logger, parsedURL *url.URL) (clients.HttpJsonRpcClient, error) {
-	if client, ok := v.headlessClient.Load().(clients.HttpJsonRpcClient); ok {
-		return client, nil
+func (v *EnvioVendor) getOrCreateClient(ctx context.Context, logger *zerolog.Logger, chainId int64, parsedURL *url.URL) (clients.HttpJsonRpcClient, error) {
+	// Check if we already have a client for this chain ID
+	if client, ok := v.headlessClients.Load(chainId); ok {
+		return client.(clients.HttpJsonRpcClient), nil
 	}
+
+	// Create a new client for this chain ID
 	client, err := clients.NewGenericHttpJsonRpcClient(ctx, logger, "n/a", "n/a", parsedURL, nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	v.headlessClient.Store(client)
+
+	// Store the client for this chain ID
+	v.headlessClients.Store(chainId, client)
 	return client, nil
 }

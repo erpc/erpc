@@ -158,11 +158,8 @@ func (nr *NetworksRegistry) buildNetworkBootstrapTask(networkId string) *util.Bo
 			if err != nil {
 				return err
 			}
-			// The reason we pass appCtx here is because we want to bootstrap the network even if the current request times out.
-			// Another edge-case is when network is partially initialized (i.e. 20% of upstreams are initialized) we want
-			// the request to continue without waiting too much, still keep upstreams initializing in the background,
-			// if we pass the task's "ctx" it will be cancelled when the request is finished.
-			err = nr.upstreamsRegistry.PrepareUpstreamsForNetwork(nr.appCtx, networkId)
+			// passing task ctx here will cancel the task if the request is finished or the initializer is cancelled/times out
+			err = nr.upstreamsRegistry.PrepareUpstreamsForNetwork(ctx, networkId)
 			if err != nil {
 				return err
 			}
