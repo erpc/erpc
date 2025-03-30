@@ -289,7 +289,6 @@ export interface RetryPolicyConfig {
   backoffMaxDelay?: Duration;
   backoffFactor?: number /* float32 */;
   jitter?: Duration;
-  ignoreClientErrors?: boolean;
 }
 export interface CircuitBreakerPolicyConfig {
   failureThresholdCount: number /* uint */;
