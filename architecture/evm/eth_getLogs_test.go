@@ -298,13 +298,13 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "range exceeds limits",
+			name: "range exceeds auto-splitting range threshold",
 			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
 				n := new(mockNetwork)
 				u := new(mockEvmUpstream)
 				r := createTestRequest(map[string]interface{}{
 					"fromBlock": "0x1",
-					"toBlock":   "0x15",
+					"toBlock":   "0x15", // 21 blocks
 				})
 				n.On("Config").Return(&common.NetworkConfig{
 					Evm: &common.EvmNetworkConfig{
@@ -335,6 +335,45 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 			},
 			expectSplit: true,
 			expectError: false,
+		},
+		{
+			name: "range exceeds max allowed range (hard limit)",
+			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
+				n := new(mockNetwork)
+				u := new(mockEvmUpstream)
+				r := createTestRequest(map[string]interface{}{
+					"fromBlock": "0x1",
+					"toBlock":   "0x14", // 20 blocks
+				})
+
+				n.On("Config").Return(&common.NetworkConfig{
+					Evm: &common.EvmNetworkConfig{
+						Integrity: &common.EvmIntegrityConfig{
+							EnforceGetLogsBlockRange: util.BoolPtr(true),
+							EnforceHighestBlock:      util.BoolPtr(true),
+						},
+					},
+				})
+				n.On("ProjectId").Return("test")
+				// We do NOT expect "Forward" to be called at all, because we won't split
+				// (the range is above the allowed limit => immediate error)
+
+				u.On("Config").Return(&common.UpstreamConfig{
+					Evm: &common.EvmUpstreamConfig{
+						GetLogsMaxAllowedRange:             10,
+						GetLogsAutoSplittingRangeThreshold: 5,
+					},
+				})
+				u.On("NetworkId").Return("evm:123")
+
+				stp := new(mockStatePoller)
+				u.On("EvmStatePoller").Return(stp)
+				stp.On("LatestBlock").Return(int64(1000))
+
+				return n, u, r
+			},
+			expectSplit: false,
+			expectError: true,
 		},
 		{
 			name: "blockHash is present",
