@@ -112,9 +112,11 @@ func (p *Provider) buildBaseUpstreamConfig(networkId string) (*common.UpstreamCo
 		if err != nil {
 			return nil, err
 		}
-		baseCfg.Evm = &common.EvmUpstreamConfig{
-			ChainId: chainId,
+		if baseCfg.Evm == nil {
+			baseCfg.Evm = &common.EvmUpstreamConfig{}
 		}
+		baseCfg.Evm.ChainId = chainId
+
 		var defs *common.EvmUpstreamConfig
 		if p.upstreamDefaults != nil && p.upstreamDefaults.Evm != nil {
 			defs = p.upstreamDefaults.Evm

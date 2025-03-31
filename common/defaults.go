@@ -1088,8 +1088,13 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 		}
 	}
 
+	// TODO: deprecated alias (backward compat): maps to GetLogsAutoSplittingRangeThreshold
 	if e.GetLogsAutoSplittingRangeThreshold == 0 {
-		if defaults != nil && defaults.GetLogsAutoSplittingRangeThreshold != 0 {
+		if e.GetLogsMaxBlockRange > 0 {
+			e.GetLogsAutoSplittingRangeThreshold = e.GetLogsMaxBlockRange
+		} else if defaults != nil && defaults.GetLogsMaxAllowedRange != 0 {
+			e.GetLogsAutoSplittingRangeThreshold = defaults.GetLogsMaxAllowedRange
+		} else if defaults != nil && defaults.GetLogsAutoSplittingRangeThreshold != 0 {
 			e.GetLogsAutoSplittingRangeThreshold = defaults.GetLogsAutoSplittingRangeThreshold
 		} else {
 			e.GetLogsAutoSplittingRangeThreshold = 10_000

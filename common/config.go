@@ -390,17 +390,30 @@ type EvmUpstreamConfig struct {
 }
 
 func (e *EvmUpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	var tmp EvmUpstreamConfig
+	type rawEvmUpstreamConfig struct {
+		ChainId                            int64       `yaml:"chainId" json:"chainId"`
+		NodeType                           EvmNodeType `yaml:"nodeType,omitempty" json:"nodeType"`
+		StatePollerInterval                Duration    `yaml:"statePollerInterval,omitempty" json:"statePollerInterval"`
+		StatePollerDebounce                Duration    `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce"`
+		MaxAvailableRecentBlocks           int64       `yaml:"maxAvailableRecentBlocks,omitempty" json:"maxAvailableRecentBlocks"`
+		GetLogsAutoSplittingRangeThreshold int64       `yaml:"getLogsAutoSplittingRangeThreshold,omitempty" json:"getLogsAutoSplittingRangeThreshold"`
+		GetLogsMaxAllowedRange             int64       `yaml:"getLogsMaxAllowedRange,omitempty" json:"getLogsMaxAllowedRange"`
+
+		// Deprecated alias
+		GetLogsMaxBlockRange int64 `yaml:"getLogsMaxBlockRange,omitempty" json:"getLogsMaxBlockRange"`
+	}
+
+	var tmp rawEvmUpstreamConfig
 	if err := unmarshal(&tmp); err != nil {
 		return err
 	}
 
-	// TODO: backward compatibility for getLogsMaxBlockRange (old field) --> getLogsAutoSplittingRangeThreshold (new field)
+	// If the old field is set, copy it over to the new field
 	if tmp.GetLogsMaxBlockRange > 0 {
 		tmp.GetLogsAutoSplittingRangeThreshold = tmp.GetLogsMaxBlockRange
 		log.Warn().
 			Int64("value", tmp.GetLogsMaxBlockRange).
-			Msg("deprecated config field `getLogsMaxBlockRange` was set; mapping it to `getLogsAutoSplittingRangeThreshold` (please update your config)")
+			Msg("deprecated config field `getLogsMaxBlockRange` was set; mapping it to `getLogsAutoSplittingRangeThreshold` and ignoring in future versions.")
 	}
 
 	*e = EvmUpstreamConfig(tmp)
