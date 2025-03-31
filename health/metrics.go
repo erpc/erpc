@@ -132,8 +132,14 @@ var (
 
 	MetricUpstreamEvmGetLogsRangeExceeded = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
-		Name:      "upstream_evm_get_logs_range_exceeded_total",
-		Help:      "Total number of times eth_getLogs request exceeded the maximum allowed block range and needed splitting.",
+		Name:      "upstream_evm_get_logs_range_exceeded_auto_splitting_threshold_total",
+		Help:      "Total number of times eth_getLogs request exceeded the block range threshold and needed splitting.",
+	}, []string{"project", "network", "upstream"})
+
+	MetricUpstreamEvmGetLogsRangeExceededHardLimit = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_evm_get_logs_range_exceeded_hard_limit_total",
+		Help:      "Total number of times eth_getLogs request exceeded the block range hard limit will not be split further.",
 	}, []string{"project", "network", "upstream"})
 
 	MetricUpstreamEvmGetLogsSplitSuccess = promauto.NewCounterVec(prometheus.CounterOpts{
