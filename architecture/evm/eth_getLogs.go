@@ -112,6 +112,22 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	}
 	jrq.RUnlock()
 
+	maxAllowedRange := common.ResolveMaxAllowedGetLogsRangeConstraints(n, up)
+	requestRange := toBlock - fromBlock + 1
+
+	if maxAllowedRange > 0 && requestRange > maxAllowedRange {
+		health.MetricUpstreamEvmGetLogsRangeExceeded.WithLabelValues(
+			n.ProjectId(),
+			up.NetworkId(),
+			up.Config().Id,
+		).Inc()
+
+		return true, nil, common.NewErrUpstreamRequestSkipped(
+			fmt.Errorf("eth_getLogs request range %d exceeds hard limit %d", requestRange, maxAllowedRange),
+			up.Config().Id,
+		)
+	}
+
 	statePoller := up.EvmStatePoller()
 	if statePoller == nil || statePoller.IsObjectNull() {
 		return true, nil, common.NewErrUpstreamRequestSkipped(
