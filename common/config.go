@@ -272,7 +272,6 @@ type ProjectConfig struct {
 	Networks         []*NetworkConfig   `yaml:"networks,omitempty" json:"networks"`
 	RateLimitBudget  string             `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	HealthCheck      *HealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
-	Constraints      *ConstraintConfig  `yaml:"constraints,omitempty" json:"constraints"`
 }
 
 type NetworkDefaults struct {
@@ -281,7 +280,6 @@ type NetworkDefaults struct {
 	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
 	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm"`
-	Constraints       *ConstraintConfig        `yaml:"constraints,omitempty" json:"constraints"`
 }
 
 type CORSConfig struct {
@@ -330,7 +328,6 @@ type UpstreamConfig struct {
 	RateLimitBudget              string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune,omitempty" json:"rateLimitAutoTune"`
 	Routing                      *RoutingConfig           `yaml:"routing,omitempty" json:"routing"`
-	Constraints                  *ConstraintConfig        `yaml:"constraints,omitempty" json:"constraints"`
 }
 
 type RoutingConfig struct {
@@ -531,7 +528,6 @@ type NetworkConfig struct {
 	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm"`
 	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
-	Constraints       *ConstraintConfig        `yaml:"constraints,omitempty" json:"constraints"`
 }
 
 type DirectiveDefaultsConfig struct {
@@ -742,12 +738,4 @@ func loadConfigFromTypescript(filename string) (*Config, error) {
 	}
 
 	return &cfg, nil
-}
-
-type ConstraintConfig struct {
-	Evm *EvmConstraintConfig `yaml:"evm,omitempty" json:"evm"`
-}
-
-type EvmConstraintConfig struct {
-	MaxAllowedGetLogsRange int64 `yaml:"maxAllowedGetLogsRange" json:"maxAllowedGetLogsRange"`
 }
