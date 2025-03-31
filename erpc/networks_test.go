@@ -6763,8 +6763,8 @@ func TestNetwork_Forward(t *testing.T) {
 			Id:       "test",
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
-				ChainId:              123,
-				GetLogsMaxBlockRange: 100_000,
+				ChainId:                            123,
+				GetLogsAutoSplittingRangeThreshold: 100_000,
 			},
 			JsonRpc: &common.JsonRpcUpstreamConfig{
 				SupportsBatch: &common.TRUE,
@@ -7957,15 +7957,15 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		// Setup network with a node that has a small GetLogsMaxBlockRange
+		// Setup network with a node that has a small GetLogsAutoSplittingRangeThreshold
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000)
 
-		// Configure a small GetLogsMaxBlockRange to force splitting
+		// Configure a small GetLogsAutoSplittingRangeThreshold to force splitting
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
 		}
 		upsList := network.upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
-		upsList[0].Config().Evm.GetLogsMaxBlockRange = 0x100 // Small range to force splitting
+		upsList[0].Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x100 // Small range to force splitting
 
 		req := common.NewNormalizedRequest(requestBytes)
 		resp, err := network.Forward(ctx, req)
@@ -8089,7 +8089,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		// Setup network with a node that has a small GetLogsMaxBlockRange
+		// Setup network with a node that has a small GetLogsAutoSplittingRangeThreshold
 		network := setupTestNetworkSimple(t, ctx, nil, &common.NetworkConfig{
 			Architecture: common.ArchitectureEvm,
 			Evm: &common.EvmNetworkConfig{
@@ -8107,7 +8107,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		})
 
 		upsList := network.upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
-		upsList[0].Config().Evm.GetLogsMaxBlockRange = 0x10000000 // Large range to avoid auto-splitting since we want error-based splitting
+		upsList[0].Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x10000000 // Large range to avoid auto-splitting since we want error-based splitting
 
 		req := common.NewNormalizedRequest(requestBytes)
 		resp, err := network.Forward(ctx, req)
@@ -8225,15 +8225,15 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		// Setup network with a node that has GetLogsMaxBlockRange = 1
+		// Setup network with a node that has GetLogsAutoSplittingRangeThreshold = 1
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 120)
 
-		// Configure GetLogsMaxBlockRange = 1 to force splitting into individual blocks
+		// Configure GetLogsAutoSplittingRangeThreshold = 1 to force splitting into individual blocks
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
 		}
 		upsList := network.upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
-		upsList[0].Config().Evm.GetLogsMaxBlockRange = 1 // Force splitting into individual blocks
+		upsList[0].Config().Evm.GetLogsAutoSplittingRangeThreshold = 1 // Force splitting into individual blocks
 
 		req := common.NewNormalizedRequest(requestBytes)
 		resp, err := network.Forward(ctx, req)
@@ -8318,14 +8318,14 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		// Setup network with GetLogsMaxBlockRange = 0x100
+		// Setup network with GetLogsAutoSplittingRangeThreshold = 0x100
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000)
 
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
 		}
 		upsList := network.upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
-		upsList[0].Config().Evm.GetLogsMaxBlockRange = 0x100 // Range that's larger than our test range
+		upsList[0].Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x100 // Range that's larger than our test range
 
 		req := common.NewNormalizedRequest(requestBytes)
 		resp, err := network.Forward(ctx, req)
@@ -8400,14 +8400,14 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		// Setup network with GetLogsMaxBlockRange = 0x100
+		// Setup network with GetLogsAutoSplittingRangeThreshold = 0x100
 		network := setupTestNetworkWithFullAndArchiveNodeUpstreams(t, ctx, common.EvmNodeTypeArchive, 0, common.EvmNodeTypeFull, 1000)
 
 		network.cfg.Evm.Integrity = &common.EvmIntegrityConfig{
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
 		}
 		upsList := network.upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
-		upsList[0].Config().Evm.GetLogsMaxBlockRange = 0x100 // Range exactly equal to our test range
+		upsList[0].Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x100 // Range exactly equal to our test range
 
 		req := common.NewNormalizedRequest(requestBytes)
 		resp, err := network.Forward(ctx, req)
@@ -8484,7 +8484,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			EnforceGetLogsBlockRange: util.BoolPtr(true),
 		}
 		upsList := network.upstreamsRegistry.GetNetworkUpstreams(util.EvmNetworkId(123))
-		upsList[0].Config().Evm.GetLogsMaxBlockRange = 0x100 // Force splitting into ranges of 256 blocks
+		upsList[0].Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x100 // Force splitting into ranges of 256 blocks
 
 		// Create and set cache
 		slowCache, err := evm.NewEvmJsonRpcCache(ctx, &log.Logger, cacheCfg)

@@ -323,7 +323,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				).Times(3)
 				u.On("Config").Return(&common.UpstreamConfig{
 					Evm: &common.EvmUpstreamConfig{
-						GetLogsMaxBlockRange: 10,
+						GetLogsAutoSplittingRangeThreshold: 10,
 					},
 				})
 				u.On("NetworkId").Return("evm:123")
@@ -597,7 +597,7 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 	// Configure upstream
 	mockUpstream.On("Config").Return(&common.UpstreamConfig{
 		Evm: &common.EvmUpstreamConfig{
-			GetLogsMaxBlockRange: 1,
+			GetLogsAutoSplittingRangeThreshold: 1,
 		},
 	})
 	mockUpstream.On("NetworkId").Return("evm:1")

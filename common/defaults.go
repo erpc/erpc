@@ -98,7 +98,7 @@ func (c *Config) SetDefaults() error {
 				},
 				UpstreamDefaults: &UpstreamConfig{
 					Evm: &EvmUpstreamConfig{
-						GetLogsMaxBlockRange: 100,
+						GetLogsAutoSplittingRangeThreshold: 100,
 					},
 					Failsafe: &FailsafeConfig{
 						Retry: &RetryPolicyConfig{
@@ -956,8 +956,8 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		if u.Evm.MaxAvailableRecentBlocks == 0 && defaults.Evm.MaxAvailableRecentBlocks != 0 {
 			u.Evm.MaxAvailableRecentBlocks = defaults.Evm.MaxAvailableRecentBlocks
 		}
-		if u.Evm.GetLogsMaxBlockRange == 0 && defaults.Evm.GetLogsMaxBlockRange != 0 {
-			u.Evm.GetLogsMaxBlockRange = defaults.Evm.GetLogsMaxBlockRange
+		if u.Evm.GetLogsAutoSplittingRangeThreshold == 0 && defaults.Evm.GetLogsAutoSplittingRangeThreshold != 0 {
+			u.Evm.GetLogsAutoSplittingRangeThreshold = defaults.Evm.GetLogsAutoSplittingRangeThreshold
 		}
 	}
 	if u.JsonRpc == nil && defaults.JsonRpc != nil {
@@ -1088,11 +1088,11 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 		}
 	}
 
-	if e.GetLogsMaxBlockRange == 0 {
-		if defaults != nil && defaults.GetLogsMaxBlockRange != 0 {
-			e.GetLogsMaxBlockRange = defaults.GetLogsMaxBlockRange
+	if e.GetLogsAutoSplittingRangeThreshold == 0 {
+		if defaults != nil && defaults.GetLogsAutoSplittingRangeThreshold != 0 {
+			e.GetLogsAutoSplittingRangeThreshold = defaults.GetLogsAutoSplittingRangeThreshold
 		} else {
-			e.GetLogsMaxBlockRange = 10_000
+			e.GetLogsAutoSplittingRangeThreshold = 10_000
 		}
 	}
 

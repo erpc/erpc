@@ -12,6 +12,7 @@ import (
 	"github.com/erpc/erpc/util"
 	"github.com/grafana/sobek"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v3"
 )
@@ -379,12 +380,34 @@ type JsonRpcUpstreamConfig struct {
 }
 
 type EvmUpstreamConfig struct {
-	ChainId                  int64       `yaml:"chainId" json:"chainId"`
-	NodeType                 EvmNodeType `yaml:"nodeType,omitempty" json:"nodeType"`
-	StatePollerInterval      Duration    `yaml:"statePollerInterval,omitempty" json:"statePollerInterval" tstype:"Duration"`
-	StatePollerDebounce      Duration    `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce" tstype:"Duration"`
-	MaxAvailableRecentBlocks int64       `yaml:"maxAvailableRecentBlocks,omitempty" json:"maxAvailableRecentBlocks"`
-	GetLogsMaxBlockRange     int64       `yaml:"getLogsMaxBlockRange,omitempty" json:"getLogsMaxBlockRange"`
+	ChainId                            int64       `yaml:"chainId" json:"chainId"`
+	NodeType                           EvmNodeType `yaml:"nodeType,omitempty" json:"nodeType"`
+	StatePollerInterval                Duration    `yaml:"statePollerInterval,omitempty" json:"statePollerInterval" tstype:"Duration"`
+	StatePollerDebounce                Duration    `yaml:"statePollerDebounce,omitempty" json:"statePollerDebounce" tstype:"Duration"`
+	MaxAvailableRecentBlocks           int64       `yaml:"maxAvailableRecentBlocks,omitempty" json:"maxAvailableRecentBlocks"`
+	GetLogsAutoSplittingRangeThreshold int64       `yaml:"getLogsAutoSplittingRangeThreshold,omitempty" json:"getLogsAutoSplittingRangeThreshold"`
+	GetLogsMaxAllowedRange             int64       `yaml:"getLogsMaxAllowedRange,omitempty" json:"getLogsMaxAllowedRange"`
+
+	// TODO: deprecated alias (backward compat): maps to GetLogsAutoSplittingRangeThreshold
+	GetLogsMaxBlockRange int64 `yaml:"getLogsMaxBlockRange,omitempty" json:"getLogsMaxBlockRange"`
+}
+
+func (e *EvmUpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	var tmp EvmUpstreamConfig
+	if err := unmarshal(&tmp); err != nil {
+		return err
+	}
+
+	// TODO: backward compatibility for getLogsMaxBlockRange (old field) --> getLogsAutoSplittingRangeThreshold (new field)
+	if tmp.GetLogsMaxBlockRange > 0 {
+		tmp.GetLogsAutoSplittingRangeThreshold = tmp.GetLogsMaxBlockRange
+		log.Warn().
+			Int64("value", tmp.GetLogsMaxBlockRange).
+			Msg("deprecated config field `getLogsMaxBlockRange` was set; mapping it to `getLogsAutoSplittingRangeThreshold` (please update your config)")
+	}
+
+	*e = EvmUpstreamConfig(tmp)
+	return nil
 }
 
 type FailsafeConfig struct {

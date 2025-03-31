@@ -112,22 +112,6 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	}
 	jrq.RUnlock()
 
-	maxAllowedRange := common.ResolveMaxAllowedGetLogsRangeConstraints(n, up)
-	requestRange := toBlock - fromBlock + 1
-
-	if maxAllowedRange > 0 && requestRange > maxAllowedRange {
-		health.MetricUpstreamEvmGetLogsRangeExceeded.WithLabelValues(
-			n.ProjectId(),
-			up.NetworkId(),
-			up.Config().Id,
-		).Inc()
-
-		return true, nil, common.NewErrUpstreamRequestSkipped(
-			fmt.Errorf("eth_getLogs request range %d exceeds hard limit %d", requestRange, maxAllowedRange),
-			up.Config().Id,
-		)
-	}
-
 	statePoller := up.EvmStatePoller()
 	if statePoller == nil || statePoller.IsObjectNull() {
 		return true, nil, common.NewErrUpstreamRequestSkipped(
@@ -185,9 +169,9 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 
 	// Check evmGetLogsMaxRange and if the range is already bigger try to split in multiple smaller requests, and merge the final result
 	// For better performance try to use byte merging (not JSON parsing/encoding)
-	if cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsMaxBlockRange > 0 {
+	if cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsAutoSplittingRangeThreshold > 0 {
 		requestRange := toBlock - fromBlock + 1
-		if requestRange > cfg.Evm.GetLogsMaxBlockRange {
+		if requestRange > cfg.Evm.GetLogsAutoSplittingRangeThreshold {
 			health.MetricUpstreamEvmGetLogsRangeExceeded.WithLabelValues(
 				n.ProjectId(),
 				up.NetworkId(),
@@ -197,7 +181,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 			var subRequests []ethGetLogsSubRequest
 			sb := fromBlock
 			for sb <= toBlock {
-				eb := min(sb+cfg.Evm.GetLogsMaxBlockRange-1, toBlock)
+				eb := min(sb+cfg.Evm.GetLogsAutoSplittingRangeThreshold-1, toBlock)
 				subRequests = append(subRequests, ethGetLogsSubRequest{
 					fromBlock: sb,
 					toBlock:   eb,
@@ -208,7 +192,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 			}
 			logger.Debug().
 				Int64("requestRange", requestRange).
-				Int64("maxBlockRange", cfg.Evm.GetLogsMaxBlockRange).
+				Int64("maxBlockRange", cfg.Evm.GetLogsAutoSplittingRangeThreshold).
 				Int("subRequests", len(subRequests)).
 				Msg("eth_getLogs block range exceeded, splitting")
 

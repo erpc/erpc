@@ -56,11 +56,11 @@ projects:
           # (OPTIONAL) maxAvailableRecentBlocks limits the maximum number of recent blocks to be served by this upstream.
           # DEFAULT: 128 (for "full" nodes).
           maxAvailableRecentBlocks: 128
-          # (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
+          # (OPTIONAL) getLogsAutoSplittingRangeThreshold limits the maximum block range for eth_getLogs requests.
           # This is used to automatically split the request into smaller sub-requests if the range is too high.
           # Set to -1 to disable this behavior.
           # DEFAULT: 10000 (10000 blocks)
-          getLogsMaxBlockRange: 10000
+          getLogsAutoSplittingRangeThreshold: 10000
 
         # (OPTIONAL) Defines which budget to use when hadnling requests of this upstream (e.g. to limit total RPS)
         # Since budgets can be applied to multiple upstreams they all consume from the same budget.
@@ -185,11 +185,11 @@ export default createConfig({
             // (OPTIONAL) maxAvailableRecentBlocks limits the maximum number of recent blocks to be served by this upstream.
             // DEFAULT: 128 (for "full" nodes).
             maxAvailableRecentBlocks: 128,
-            // (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
+            // (OPTIONAL) getLogsAutoSplittingRangeThreshold limits the maximum block range for eth_getLogs requests.
             // This is used to automatically split the request into smaller sub-requests if the range is too high.
             // Set to -1 to disable this behavior.
             // DEFAULT: 10000 (10000 blocks)
-            getLogsMaxBlockRange: 10000,
+            getLogsAutoSplittingRangeThreshold: 10000,
           },
 
           /**
@@ -569,11 +569,11 @@ projects:
           # (OPTIONAL) maxAvailableRecentBlocks limits the maximum number of recent blocks to be served by this upstream.
           # DEFAULT: 128 (for "full" nodes).
           maxAvailableRecentBlocks: 128
-          # (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
+          # (OPTIONAL) getLogsAutoSplittingRangeThreshold limits the maximum block range for eth_getLogs requests.
           # This is used to automatically split the request into smaller sub-requests if the range is too high.
           # Set to -1 to disable this behavior.
           # DEFAULT: 10000 (10000 blocks)
-          getLogsMaxBlockRange: 10000
+          getLogsAutoSplittingRangeThreshold: 10000
         # ...
 ```
 </Tabs.Tab>
@@ -611,11 +611,11 @@ export default createConfig({
             // (OPTIONAL) maxAvailableRecentBlocks limits the maximum number of recent blocks to be served by this upstream.
             // DEFAULT: 128 (for "full" nodes").
             maxAvailableRecentBlocks: 128,
-            // (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
+            // (OPTIONAL) getLogsAutoSplittingRangeThreshold limits the maximum block range for eth_getLogs requests.
             // This is used to automatically split the request into smaller sub-requests if the range is too high.
             // Set to -1 to disable this behavior.
             // DEFAULT: 10000 (10000 blocks)
-            getLogsMaxBlockRange: 10000,
+            getLogsAutoSplittingRangeThreshold: 10000,
           },
           // ...
         },
@@ -632,7 +632,7 @@ export default createConfig({
 
 Certain providers have a limit on the maximum block range for `eth_getLogs` requests. If the range is too high, eRPC will automatically split the request into smaller sub-requests.
 
-To enable this feature, set the `getLogsMaxBlockRange` in the upstream config:
+To enable this feature, set the `getLogsAutoSplittingRangeThreshold` in the upstream config:
 
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
@@ -640,11 +640,11 @@ To enable this feature, set the `getLogsMaxBlockRange` in the upstream config:
 upstreams:
   - id: my-infura
     evm:
-      # (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
+      # (OPTIONAL) getLogsAutoSplittingRangeThreshold limits the maximum block range for eth_getLogs requests.
       # This is used to automatically split the request into smaller sub-requests if the range is too high.
       # Set to -1 to disable this behavior.
       # DEFAULT: 10000 (10000 blocks)
-      getLogsMaxBlockRange: 10000
+      getLogsAutoSplittingRangeThreshold: 10000
 ```
 </Tabs.Tab>
   <Tabs.Tab>
@@ -656,11 +656,11 @@ export default createConfig({
     {
       id: "my-infura",
       evm: {
-        // (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
+        // (OPTIONAL) getLogsAutoSplittingRangeThreshold limits the maximum block range for eth_getLogs requests.
         // This is used to automatically split the request into smaller sub-requests if the range is too high.
         // Set to -1 to disable this behavior.
         // DEFAULT: 10000 (10000 blocks)
-        getLogsMaxBlockRange: 10000,
+        getLogsAutoSplittingRangeThreshold: 10000,
       },
     },
   ],
