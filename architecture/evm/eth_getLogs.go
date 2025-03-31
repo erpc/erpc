@@ -112,6 +112,8 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	}
 	jrq.RUnlock()
 
+	requestRange := toBlock - fromBlock + 1
+
 	statePoller := up.EvmStatePoller()
 	if statePoller == nil || statePoller.IsObjectNull() {
 		return true, nil, common.NewErrUpstreamRequestSkipped(
@@ -149,6 +151,23 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 
 	cfg := up.Config()
 
+	// check if the log range is beyond the hard limit
+	if cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsMaxAllowedRange > 0 {
+		if requestRange > cfg.Evm.GetLogsMaxAllowedRange {
+			// Don’t attempt splitting; return an error
+			health.MetricUpstreamEvmGetLogsRangeExceeded.WithLabelValues(
+				n.ProjectId(),
+				up.NetworkId(),
+				up.Config().Id,
+			).Inc()
+
+			return true, nil, common.NewErrUpstreamRequestSkipped(
+				fmt.Errorf("request range (%d blocks) is beyond upstream's hard limit for max allowed range %d", requestRange, cfg.Evm.GetLogsMaxAllowedRange),
+				up.Config().Id,
+			)
+		}
+	}
+
 	// Check if the log range start is higher than node's max available block range,
 	// if not, skip the request.
 	if cfg != nil && cfg.Evm != nil && cfg.Evm.MaxAvailableRecentBlocks > 0 {
@@ -170,7 +189,6 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	// Check evmGetLogsMaxRange and if the range is already bigger try to split in multiple smaller requests, and merge the final result
 	// For better performance try to use byte merging (not JSON parsing/encoding)
 	if cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsAutoSplittingRangeThreshold > 0 {
-		requestRange := toBlock - fromBlock + 1
 		if requestRange > cfg.Evm.GetLogsAutoSplittingRangeThreshold {
 			health.MetricUpstreamEvmGetLogsRangeExceeded.WithLabelValues(
 				n.ProjectId(),

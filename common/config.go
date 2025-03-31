@@ -413,7 +413,7 @@ func (e *EvmUpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) err
 		tmp.GetLogsAutoSplittingRangeThreshold = tmp.GetLogsMaxBlockRange
 		log.Warn().
 			Int64("value", tmp.GetLogsMaxBlockRange).
-			Msg("deprecated config field `getLogsMaxBlockRange` was set; mapping it to `getLogsAutoSplittingRangeThreshold` and ignoring in future versions.")
+			Msg("deprecated config field `getLogsMaxBlockRange` was set; mapping it to `getLogsAutoSplittingRangeThreshold`.")
 	}
 
 	*e = EvmUpstreamConfig(tmp)
