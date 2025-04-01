@@ -126,6 +126,28 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		}
 	}
 
+	// check if the number of addresses is beyond the hard limit
+	addresses, ok := filter["address"].([]interface{})
+	if ok && cfg.Evm.GetLogsMaxAllowedAddresses > 0 &&
+		int64(len(addresses)) > cfg.Evm.GetLogsMaxAllowedAddresses {
+		return true, nil, common.NewErrUpstreamGetLogsExceededMaxAllowedAddresses(
+			up.Config().Id,
+			int64(len(addresses)),
+			cfg.Evm.GetLogsMaxAllowedAddresses,
+		)
+	}
+
+	// check if the number of topics is beyond the hard limit
+	topics, ok := filter["topics"].([]interface{})
+	if ok && cfg.Evm.GetLogsMaxAllowedTopics > 0 &&
+		int64(len(topics)) > cfg.Evm.GetLogsMaxAllowedTopics {
+		return true, nil, common.NewErrUpstreamGetLogsExceededMaxAllowedTopics(
+			up.Config().Id,
+			int64(len(topics)),
+			cfg.Evm.GetLogsMaxAllowedTopics,
+		)
+	}
+
 	statePoller := up.EvmStatePoller()
 	if statePoller == nil || statePoller.IsObjectNull() {
 		return true, nil, common.NewErrUpstreamRequestSkipped(
