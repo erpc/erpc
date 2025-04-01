@@ -113,6 +113,24 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	jrq.RUnlock()
 
 	requestRange := toBlock - fromBlock + 1
+	cfg := up.Config()
+
+	// check if the log range is beyond the hard limit
+	if cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsMaxAllowedRange > 0 {
+		if requestRange > cfg.Evm.GetLogsMaxAllowedRange {
+			// Don’t attempt splitting; return an error
+			health.MetricUpstreamEvmGetLogsRangeExceededHardLimit.WithLabelValues(
+				n.ProjectId(),
+				up.NetworkId(),
+				up.Config().Id,
+			).Inc()
+
+			return true, nil, common.NewErrUpstreamRequestSkipped(
+				fmt.Errorf("request range (%d blocks) is beyond upstream's hard limit for max allowed range %d", requestRange, cfg.Evm.GetLogsMaxAllowedRange),
+				up.Config().Id,
+			)
+		}
+	}
 
 	statePoller := up.EvmStatePoller()
 	if statePoller == nil || statePoller.IsObjectNull() {
@@ -149,25 +167,6 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		logger.Debug().Msg("upstream latest block is not available, skipping integrity check")
 	}
 
-	cfg := up.Config()
-
-	// check if the log range is beyond the hard limit
-	if cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsMaxAllowedRange > 0 {
-		if requestRange > cfg.Evm.GetLogsMaxAllowedRange {
-			// Don’t attempt splitting; return an error
-			health.MetricUpstreamEvmGetLogsRangeExceeded.WithLabelValues(
-				n.ProjectId(),
-				up.NetworkId(),
-				up.Config().Id,
-			).Inc()
-
-			return true, nil, common.NewErrUpstreamRequestSkipped(
-				fmt.Errorf("request range (%d blocks) is beyond upstream's hard limit for max allowed range %d", requestRange, cfg.Evm.GetLogsMaxAllowedRange),
-				up.Config().Id,
-			)
-		}
-	}
-
 	// Check if the log range start is higher than node's max available block range,
 	// if not, skip the request.
 	if cfg != nil && cfg.Evm != nil && cfg.Evm.MaxAvailableRecentBlocks > 0 {
@@ -190,7 +189,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	// For better performance try to use byte merging (not JSON parsing/encoding)
 	if cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsAutoSplittingRangeThreshold > 0 {
 		if requestRange > cfg.Evm.GetLogsAutoSplittingRangeThreshold {
-			health.MetricUpstreamEvmGetLogsRangeExceeded.WithLabelValues(
+			health.MetricUpstreamEvmGetLogsRangeExceededAutoSplittingThreshold.WithLabelValues(
 				n.ProjectId(),
 				up.NetworkId(),
 				up.Config().Id,
