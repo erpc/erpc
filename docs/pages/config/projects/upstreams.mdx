@@ -62,7 +62,7 @@ projects:
           # DEFAULT: 10000 (10000 blocks)
           getLogsAutoSplittingRangeThreshold: 10000
           # (OPTIONAL) getLogsMaxAllowedRange limits the maximum block range for eth_getLogs requests.
-          # This is used to reject getLogs request if the range is beyond the limit and will not be split further.
+          # This is used to reject getLogs request if the range is beyond the limit and returns an error to the caller of eRPC.
           getLogsMaxAllowedRange: 10000
 
         # (OPTIONAL) Defines which budget to use when hadnling requests of this upstream (e.g. to limit total RPS)
@@ -194,7 +194,7 @@ export default createConfig({
             // DEFAULT: 10000 (10000 blocks)
             getLogsAutoSplittingRangeThreshold: 10000,
             // (OPTIONAL) getLogsMaxAllowedRange limits the maximum block range for eth_getLogs requests.
-            // This is used to reject getLogs request if the range is beyond the limit and will not be split further.
+            // This is used to reject getLogs request if the range is beyond the limit and returns an error to the caller of eRPC.
             getLogsMaxAllowedRange: 10000,
           },
 
@@ -581,7 +581,7 @@ projects:
           # DEFAULT: 10000 (10000 blocks)
           getLogsAutoSplittingRangeThreshold: 10000
           # (OPTIONAL) getLogsMaxAllowedRange limits the maximum block range for eth_getLogs requests.
-          # This is used to reject getLogs request if the range is beyond the limit and will not be split further.
+          # This is used to reject getLogs request if the range is beyond the limit and returns an error to the caller of eRPC.
           getLogsMaxAllowedRange: 10000
         # ...
 ```
@@ -626,7 +626,7 @@ export default createConfig({
             // DEFAULT: 10000 (10000 blocks)
             getLogsAutoSplittingRangeThreshold: 10000,
             // (OPTIONAL) getLogsMaxAllowedRange limits the maximum block range for eth_getLogs requests.
-            // This is used to reject getLogs request if the range is beyond the limit and will not be split further.
+            // This is used to reject getLogs request if the range is beyond the limit and returns an error to the caller of eRPC.
             getLogsMaxAllowedRange: 10000,
           },
           // ...
@@ -700,7 +700,7 @@ upstreams:
   - id: my-infura
     evm:
       # (OPTIONAL) getLogsMaxAllowedRange limits the maximum block range for eth_getLogs requests.
-      # This is used to reject getLogs request if the range is beyond the limit and will not be split further.
+      # This is used to reject getLogs request if the range is beyond the limit and returns an error to the caller of eRPC.
       getLogsMaxAllowedRange: 10000
 ```
 </Tabs.Tab>
@@ -714,7 +714,7 @@ export default createConfig({
       id: "my-infura",
       evm: {
         // (OPTIONAL) getLogsMaxAllowedRange limits the maximum block range for eth_getLogs requests.
-        // This is used to reject getLogs request if the range is beyond the limit and will not be split further.
+        // This is used to reject getLogs request if the range is beyond the limit and returns an error to the caller of eRPC.
         getLogsMaxAllowedRange: 10000,
       },
     },

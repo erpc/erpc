@@ -360,8 +360,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 
 				u.On("Config").Return(&common.UpstreamConfig{
 					Evm: &common.EvmUpstreamConfig{
-						GetLogsMaxAllowedRange:             10,
-						GetLogsAutoSplittingRangeThreshold: 5,
+						GetLogsMaxAllowedRange: 10,
 					},
 				})
 				u.On("NetworkId").Return("evm:123")
