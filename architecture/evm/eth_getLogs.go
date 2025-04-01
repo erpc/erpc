@@ -125,7 +125,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 				cfg.Id,
 			).Inc()
 
-			return true, nil, common.NewErrUpstreamRequestExceededMaxAllowedRange(
+			return true, nil, common.NewErrUpstreamGetLogsExceededMaxAllowedRange(
 				up.Config().Id,
 				requestRange,
 				cfg.Evm.GetLogsMaxAllowedRange,
