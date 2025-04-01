@@ -959,6 +959,9 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		if u.Evm.GetLogsAutoSplittingRangeThreshold == 0 && defaults.Evm.GetLogsAutoSplittingRangeThreshold != 0 {
 			u.Evm.GetLogsAutoSplittingRangeThreshold = defaults.Evm.GetLogsAutoSplittingRangeThreshold
 		}
+		if u.Evm.GetLogsMaxAllowedRange == 0 && defaults.Evm.GetLogsMaxAllowedRange != 0 {
+			u.Evm.GetLogsMaxAllowedRange = defaults.Evm.GetLogsMaxAllowedRange
+		}
 	}
 	if u.JsonRpc == nil && defaults.JsonRpc != nil {
 		u.JsonRpc = &JsonRpcUpstreamConfig{
@@ -1088,16 +1091,22 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 		}
 	}
 
-	// TODO: deprecated alias (backward compat): maps to GetLogsAutoSplittingRangeThreshold
+	// TODO: remove deprecated alias (backward compat): maps to GetLogsAutoSplittingRangeThreshold
 	if e.GetLogsAutoSplittingRangeThreshold == 0 {
 		if e.GetLogsMaxBlockRange > 0 {
 			e.GetLogsAutoSplittingRangeThreshold = e.GetLogsMaxBlockRange
-		} else if defaults != nil && defaults.GetLogsMaxAllowedRange != 0 {
-			e.GetLogsAutoSplittingRangeThreshold = defaults.GetLogsMaxAllowedRange
+		} else if defaults != nil && defaults.GetLogsMaxBlockRange != 0 {
+			e.GetLogsAutoSplittingRangeThreshold = defaults.GetLogsMaxBlockRange
 		} else if defaults != nil && defaults.GetLogsAutoSplittingRangeThreshold != 0 {
 			e.GetLogsAutoSplittingRangeThreshold = defaults.GetLogsAutoSplittingRangeThreshold
 		} else {
 			e.GetLogsAutoSplittingRangeThreshold = 10_000
+		}
+	}
+
+	if e.GetLogsMaxAllowedRange == 0 {
+		if defaults != nil && defaults.GetLogsMaxAllowedRange != 0 {
+			e.GetLogsMaxAllowedRange = defaults.GetLogsMaxAllowedRange
 		}
 	}
 

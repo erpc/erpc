@@ -385,7 +385,7 @@ type EvmUpstreamConfig struct {
 	GetLogsAutoSplittingRangeThreshold int64       `yaml:"getLogsAutoSplittingRangeThreshold,omitempty" json:"getLogsAutoSplittingRangeThreshold"`
 	GetLogsMaxAllowedRange             int64       `yaml:"getLogsMaxAllowedRange,omitempty" json:"getLogsMaxAllowedRange"`
 
-	// TODO: deprecated alias (backward compat): maps to GetLogsAutoSplittingRangeThreshold
+	// TODO: remove deprecated alias (backward compat): maps to GetLogsAutoSplittingRangeThreshold
 	GetLogsMaxBlockRange int64 `yaml:"getLogsMaxBlockRange,omitempty" json:"getLogsMaxBlockRange"`
 }
 
@@ -399,7 +399,7 @@ func (e *EvmUpstreamConfig) UnmarshalYAML(unmarshal func(interface{}) error) err
 		GetLogsAutoSplittingRangeThreshold int64       `yaml:"getLogsAutoSplittingRangeThreshold,omitempty" json:"getLogsAutoSplittingRangeThreshold"`
 		GetLogsMaxAllowedRange             int64       `yaml:"getLogsMaxAllowedRange,omitempty" json:"getLogsMaxAllowedRange"`
 
-		// Deprecated alias
+		// TODO: remove deprecated alias (backward compat): maps to GetLogsAutoSplittingRangeThreshold
 		GetLogsMaxBlockRange int64 `yaml:"getLogsMaxBlockRange,omitempty" json:"getLogsMaxBlockRange"`
 	}
 
