@@ -118,13 +118,6 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	// check if the log range is beyond the hard limit
 	if cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsMaxAllowedRange > 0 {
 		if requestRange > cfg.Evm.GetLogsMaxAllowedRange {
-			// Don’t attempt splitting; return an error
-			health.MetricUpstreamEvmGetLogsRangeExceededHardLimit.WithLabelValues(
-				n.ProjectId(),
-				up.NetworkId(),
-				cfg.Id,
-			).Inc()
-
 			return true, nil, common.NewErrUpstreamGetLogsExceededMaxAllowedRange(
 				up.Config().Id,
 				requestRange,
