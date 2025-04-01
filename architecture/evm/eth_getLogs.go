@@ -122,7 +122,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 			health.MetricUpstreamEvmGetLogsRangeExceededHardLimit.WithLabelValues(
 				n.ProjectId(),
 				up.NetworkId(),
-				up.Config().Id,
+				cfg.Id,
 			).Inc()
 
 			return true, nil, common.NewErrUpstreamRequestSkipped(
