@@ -375,6 +375,82 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 			expectError: true,
 		},
 		{
+			name: "address list exceeds max allowed addresses (hard limit)",
+			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
+				n := new(mockNetwork)
+				u := new(mockEvmUpstream)
+
+				// Suppose we have 3 addresses while limit is 2
+				r := createTestRequest(map[string]interface{}{
+					"fromBlock": "0x1",
+					"toBlock":   "0x2",
+					"address":   []interface{}{"0xABC", "0xDEF", "0x123"},
+				})
+
+				n.On("Config").Return(&common.NetworkConfig{
+					Evm: &common.EvmNetworkConfig{
+						Integrity: &common.EvmIntegrityConfig{
+							EnforceGetLogsBlockRange: util.BoolPtr(true),
+							EnforceHighestBlock:      util.BoolPtr(true),
+						},
+					},
+				})
+				// We don’t expect any forward calls if we fail on addresses limit
+				n.On("ProjectId").Return("test").Maybe()
+
+				u.On("Config").Return(&common.UpstreamConfig{
+					Evm: &common.EvmUpstreamConfig{
+						GetLogsMaxAllowedAddresses: 2,
+					},
+				})
+
+				stp := new(mockStatePoller)
+				u.On("EvmStatePoller").Return(stp)
+				stp.On("LatestBlock").Return(int64(1000))
+
+				return n, u, r
+			},
+			expectSplit: false,
+			expectError: true,
+		},
+		{
+			name: "topics list exceeds max allowed topics (hard limit)",
+			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
+				n := new(mockNetwork)
+				u := new(mockEvmUpstream)
+
+				r := createTestRequest(map[string]interface{}{
+					"fromBlock": "0x1",
+					"toBlock":   "0x2",
+					"topics":    []interface{}{"0xAAA", "0xBBB", "0xCCC"},
+				})
+
+				n.On("Config").Return(&common.NetworkConfig{
+					Evm: &common.EvmNetworkConfig{
+						Integrity: &common.EvmIntegrityConfig{
+							EnforceGetLogsBlockRange: util.BoolPtr(true),
+							EnforceHighestBlock:      util.BoolPtr(true),
+						},
+					},
+				})
+				n.On("ProjectId").Return("test").Maybe()
+
+				u.On("Config").Return(&common.UpstreamConfig{
+					Evm: &common.EvmUpstreamConfig{
+						GetLogsMaxAllowedTopics: 2,
+					},
+				})
+
+				stp := new(mockStatePoller)
+				u.On("EvmStatePoller").Return(stp)
+				stp.On("LatestBlock").Return(int64(1000))
+
+				return n, u, r
+			},
+			expectSplit: false,
+			expectError: true,
+		},
+		{
 			name: "blockHash is present",
 			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
 				n := new(mockNetwork)
