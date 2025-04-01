@@ -1109,6 +1109,24 @@ var NewErrUpstreamSyncing = func(upstreamId string) error {
 	}
 }
 
+type ErrUpstreamRequestExceededMaxAllowedRange struct{ BaseError }
+
+const ErrCodeUpstreamRequestExceededMaxAllowedRange ErrorCode = "ErrUpstreamRequestExceededMaxAllowedRange"
+
+var NewErrUpstreamRequestExceededMaxAllowedRange = func(upstreamId string, requestRange int64, maxAllowedRange int64) error {
+	return &ErrUpstreamRequestExceededMaxAllowedRange{
+		BaseError{
+			Code:    ErrCodeUpstreamRequestExceededMaxAllowedRange,
+			Message: "upstream request range exceeded max allowed range",
+			Details: map[string]interface{}{
+				"upstreamId":      upstreamId,
+				"requestRange":    requestRange,
+				"maxAllowedRange": maxAllowedRange,
+			},
+		},
+	}
+}
+
 type ErrUpstreamNotAllowed struct{ BaseError }
 
 var NewErrUpstreamNotAllowed = func(upstreamId string) error {

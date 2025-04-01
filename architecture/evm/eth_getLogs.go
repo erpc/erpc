@@ -125,9 +125,10 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 				cfg.Id,
 			).Inc()
 
-			return true, nil, common.NewErrUpstreamRequestSkipped(
-				fmt.Errorf("request range (%d blocks) is beyond upstream's hard limit for max allowed range %d", requestRange, cfg.Evm.GetLogsMaxAllowedRange),
+			return true, nil, common.NewErrUpstreamRequestExceededMaxAllowedRange(
 				up.Config().Id,
+				requestRange,
+				cfg.Evm.GetLogsMaxAllowedRange,
 			)
 		}
 	}
