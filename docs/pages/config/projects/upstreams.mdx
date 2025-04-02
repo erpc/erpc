@@ -64,6 +64,12 @@ projects:
           # (OPTIONAL) getLogsMaxAllowedRange limits the maximum block range for eth_getLogs requests.
           # This is used to reject getLogs request if the range is beyond the limit and returns an error to the caller of eRPC.
           getLogsMaxAllowedRange: 10000
+          # (OPTIONAL) getLogsMaxAllowedAddresses limits the maximum number of addresses for eth_getLogs requests.
+          # This is used to reject getLogs request if the number of addresses is beyond the limit and returns an error to the caller of eRPC.
+          getLogsMaxAllowedAddresses: 10000
+          # (OPTIONAL) getLogsMaxAllowedTopics limits the maximum number of topics for eth_getLogs requests.
+          # This is used to reject getLogs request if the number of topics is beyond the limit and returns an error to the caller of eRPC.
+          getLogsMaxAllowedTopics: 10000
 
         # (OPTIONAL) Defines which budget to use when hadnling requests of this upstream (e.g. to limit total RPS)
         # Since budgets can be applied to multiple upstreams they all consume from the same budget.
@@ -196,6 +202,12 @@ export default createConfig({
             // (OPTIONAL) getLogsMaxAllowedRange limits the maximum block range for eth_getLogs requests.
             // This is used to reject getLogs request if the range is beyond the limit and returns an error to the caller of eRPC.
             getLogsMaxAllowedRange: 10000,
+            // (OPTIONAL) getLogsMaxAllowedAddresses limits the maximum number of addresses for eth_getLogs requests.
+            // This is used to reject getLogs request if the number of addresses is beyond the limit and returns an error to the caller of eRPC.
+            getLogsMaxAllowedAddresses: 10000,
+            // (OPTIONAL) getLogsMaxAllowedTopics limits the maximum number of topics for eth_getLogs requests.
+            // This is used to reject getLogs request if the number of topics is beyond the limit and returns an error to the caller of eRPC.
+            getLogsMaxAllowedTopics: 10000,
           },
 
           /**
@@ -583,6 +595,12 @@ projects:
           # (OPTIONAL) getLogsMaxAllowedRange limits the maximum block range for eth_getLogs requests.
           # This is used to reject getLogs request if the range is beyond the limit and returns an error to the caller of eRPC.
           getLogsMaxAllowedRange: 10000
+          # (OPTIONAL) getLogsMaxAllowedAddresses limits the maximum number of addresses for eth_getLogs requests.
+          # This is used to reject getLogs request if the number of addresses is beyond the limit and returns an error to the caller of eRPC.
+          getLogsMaxAllowedAddresses: 10000
+          # (OPTIONAL) getLogsMaxAllowedTopics limits the maximum number of topics for eth_getLogs requests.
+          # This is used to reject getLogs request if the number of topics is beyond the limit and returns an error to the caller of eRPC.
+          getLogsMaxAllowedTopics: 10000
         # ...
 ```
 </Tabs.Tab>
@@ -628,6 +646,12 @@ export default createConfig({
             // (OPTIONAL) getLogsMaxAllowedRange limits the maximum block range for eth_getLogs requests.
             // This is used to reject getLogs request if the range is beyond the limit and returns an error to the caller of eRPC.
             getLogsMaxAllowedRange: 10000,
+            // (OPTIONAL) getLogsMaxAllowedAddresses limits the maximum number of addresses for eth_getLogs requests.
+            // This is used to reject getLogs request if the number of addresses is beyond the limit and returns an error to the caller of eRPC.
+            getLogsMaxAllowedAddresses: 10000,
+            // (OPTIONAL) getLogsMaxAllowedTopics limits the maximum number of topics for eth_getLogs requests.
+            // This is used to reject getLogs request if the number of topics is beyond the limit and returns an error to the caller of eRPC.
+            getLogsMaxAllowedTopics: 10000,
           },
           // ...
         },
@@ -723,6 +747,83 @@ export default createConfig({
 ```
 </Tabs.Tab>
 </Tabs>
+
+#### `eth_getLogs` max allowed addresses
+
+Certain providers have a limit on the maximum number of addresses for `eth_getLogs` requests. If the number of addresses is beyond the limit, eRPC will reject the request and will not be split further.
+
+To set this limit, use the `getLogsMaxAllowedAddresses` config:
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+upstreams:
+  - id: my-infura
+    evm:
+      # (OPTIONAL) getLogsMaxAllowedAddresses limits the maximum number of addresses for eth_getLogs requests.
+      # This is used to reject getLogs request if the number of addresses is beyond the limit and returns an error to the caller of eRPC.
+      getLogsMaxAllowedAddresses: 10000
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  upstreams: [
+    {
+      id: "my-infura",
+      evm: {
+        // (OPTIONAL) getLogsMaxAllowedAddresses limits the maximum number of addresses for eth_getLogs requests.
+        // This is used to reject getLogs request if the number of addresses is beyond the limit and returns an error to the caller of eRPC.
+        getLogsMaxAllowedAddresses: 10000,
+      },
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+#### `eth_getLogs` max allowed topics
+
+Certain providers have a limit on the maximum number of topics for `eth_getLogs` requests. If the number of topics is beyond the limit, eRPC will reject the request and will not be split further.
+
+To set this limit, use the `getLogsMaxAllowedTopics` config:
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+upstreams:
+  - id: my-infura
+    evm:
+      # (OPTIONAL) getLogsMaxAllowedTopics limits the maximum number of topics for eth_getLogs requests.
+      # This is used to reject getLogs request if the number of topics is beyond the limit and returns an error to the caller of eRPC.
+      getLogsMaxAllowedTopics: 10000
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  upstreams: [
+    {
+      id: "my-infura",
+      evm: {
+        // (OPTIONAL) getLogsMaxAllowedTopics limits the maximum number of topics for eth_getLogs requests.
+        // This is used to reject getLogs request if the number of topics is beyond the limit and returns an error to the caller of eRPC.
+        getLogsMaxAllowedTopics: 10000,
+      },
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+
+
 
 ## Compression
 
