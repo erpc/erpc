@@ -116,7 +116,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	cfg := up.Config()
 
 	// check if the log range is beyond the hard limit
-	if cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsMaxAllowedRange > 0 {
+	if requestRange > 0 && cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsMaxAllowedRange > 0 {
 		if requestRange > cfg.Evm.GetLogsMaxAllowedRange {
 			return true, nil, common.NewErrUpstreamGetLogsExceededMaxAllowedRange(
 				up.Config().Id,
@@ -127,8 +127,8 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	}
 
 	// check if the number of addresses is beyond the hard limit
-	addresses, ok := filter["address"].([]interface{})
-	if ok && cfg.Evm.GetLogsMaxAllowedAddresses > 0 &&
+	addresses, hasAddresses := filter["address"].([]interface{})
+	if hasAddresses && cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsMaxAllowedAddresses > 0 &&
 		int64(len(addresses)) > cfg.Evm.GetLogsMaxAllowedAddresses {
 		return true, nil, common.NewErrUpstreamGetLogsExceededMaxAllowedAddresses(
 			up.Config().Id,
@@ -138,8 +138,8 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	}
 
 	// check if the number of topics is beyond the hard limit
-	topics, ok := filter["topics"].([]interface{})
-	if ok && cfg.Evm.GetLogsMaxAllowedTopics > 0 &&
+	topics, hasTopics := filter["topics"].([]interface{})
+	if hasTopics && cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsMaxAllowedTopics > 0 &&
 		int64(len(topics)) > cfg.Evm.GetLogsMaxAllowedTopics {
 		return true, nil, common.NewErrUpstreamGetLogsExceededMaxAllowedTopics(
 			up.Config().Id,
