@@ -90,7 +90,7 @@ eRPC has three mechanisms to deal with large ranges for eth_getLogs:
 
 * Manual splitting based on [`upstream.evm.GetLogsAutoSplittingRangeThreshold` config](/config/projects/upstreams#eth_getlogs-max-range-automatic-splitting) per-upstream when you set what is the max block range they support.
 * Automatic splitting when a node returns an error that indicates the range is too large.
-* Hard limit on below dimensions set per upstream (or globally with [upstreamDefaults](/config/projects/upstreams#upstream-defaults)) will reject getLogs request if it is beyond the limit and returns an error to the caller of eRPC.
+* Hard limit on below dimensions set per upstream (or globally with [upstreamDefaults](/config/projects/upstreams#config-defaults)) will reject getLogs request if it is beyond the limit and returns an error to the caller of eRPC.
   - `Max allowed range`: set with [`upstream.evm.GetLogsMaxAllowedRange`](/config/projects/upstreams#eth_getlogs-max-allowed-range)
   - `Max allowed addresses`: set with [`upstream.evm.GetLogsMaxAllowedAddresses`](/config/projects/upstreams#eth_getlogs-max-allowed-addresses)
   - `Max allowed topics`: set with [`upstream.evm.GetLogsMaxAllowedTopics`](/config/projects/upstreams#eth_getlogs-max-allowed-topics)
