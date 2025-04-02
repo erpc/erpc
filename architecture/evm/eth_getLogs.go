@@ -112,6 +112,9 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	}
 	jrq.RUnlock()
 
+	if fromBlock > toBlock {
+		return true, nil, errors.New("fromBlock must be less than or equal to toBlock")
+	}
 	requestRange := toBlock - fromBlock + 1
 	cfg := up.Config()
 
