@@ -962,6 +962,12 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		if u.Evm.GetLogsMaxAllowedRange == 0 && defaults.Evm.GetLogsMaxAllowedRange != 0 {
 			u.Evm.GetLogsMaxAllowedRange = defaults.Evm.GetLogsMaxAllowedRange
 		}
+		if u.Evm.GetLogsMaxAllowedAddresses == 0 && defaults.Evm.GetLogsMaxAllowedAddresses != 0 {
+			u.Evm.GetLogsMaxAllowedAddresses = defaults.Evm.GetLogsMaxAllowedAddresses
+		}
+		if u.Evm.GetLogsMaxAllowedTopics == 0 && defaults.Evm.GetLogsMaxAllowedTopics != 0 {
+			u.Evm.GetLogsMaxAllowedTopics = defaults.Evm.GetLogsMaxAllowedTopics
+		}
 	}
 	if u.JsonRpc == nil && defaults.JsonRpc != nil {
 		u.JsonRpc = &JsonRpcUpstreamConfig{
@@ -1107,6 +1113,18 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 	if e.GetLogsMaxAllowedRange == 0 {
 		if defaults != nil && defaults.GetLogsMaxAllowedRange != 0 {
 			e.GetLogsMaxAllowedRange = defaults.GetLogsMaxAllowedRange
+		}
+	}
+
+	if e.GetLogsMaxAllowedAddresses == 0 {
+		if defaults != nil && defaults.GetLogsMaxAllowedAddresses != 0 {
+			e.GetLogsMaxAllowedAddresses = defaults.GetLogsMaxAllowedAddresses
+		}
+	}
+
+	if e.GetLogsMaxAllowedTopics == 0 {
+		if defaults != nil && defaults.GetLogsMaxAllowedTopics != 0 {
+			e.GetLogsMaxAllowedTopics = defaults.GetLogsMaxAllowedTopics
 		}
 	}
 
