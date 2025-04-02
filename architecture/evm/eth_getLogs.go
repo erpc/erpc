@@ -203,7 +203,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 
 	// Check evmGetLogsMaxRange and if the range is already bigger try to split in multiple smaller requests, and merge the final result
 	// For better performance try to use byte merging (not JSON parsing/encoding)
-	if cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsAutoSplittingRangeThreshold > 0 {
+	if requestRange > 0 && cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsAutoSplittingRangeThreshold > 0 {
 		if requestRange > cfg.Evm.GetLogsAutoSplittingRangeThreshold {
 			health.MetricUpstreamEvmGetLogsRangeExceededAutoSplittingThreshold.WithLabelValues(
 				n.ProjectId(),
