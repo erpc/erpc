@@ -367,8 +367,20 @@ func (i *Initializer) Status() *InitializerStatus {
 	}
 }
 
+func (i *Initializer) Errors() error {
+	var errs []error
+	i.tasks.Range(func(key, value interface{}) bool {
+		t := value.(*BootstrapTask)
+		if t.Error() != nil {
+			errs = append(errs, t.Error().Err)
+		}
+		return true
+	})
+	return errors.Join(errs...)
+}
+
 func (i *Initializer) MarkTaskAsFailed(name string, err error) {
-	i.logger.Warn().Str("task", name).Err(err).Msg("marking task as failed")
+	i.logger.Error().Str("task", name).Err(err).Msg("marking task as failed")
 	i.tasks.Range(func(key, value interface{}) bool {
 		t := value.(*BootstrapTask)
 		if t.Name == name {

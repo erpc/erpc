@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -45,9 +46,9 @@ func ErrorSummary(err interface{}) string {
 
 func ErrorFingerprint(err interface{}) string {
 	summary := ErrorSummary(err)
-	summary = regexp.MustCompile(`[^a-zA-Z0-9\s]+`).ReplaceAllString(summary, "")
-	if len(summary) > 512 {
-		summary = summary[:512]
+	summary = regexp.MustCompile(`[^a-zA-Z0-9\s_-]+`).ReplaceAllString(summary, "")
+	if len(summary) > 256 {
+		summary = summary[:256]
 	}
 	return summary
 }
@@ -1668,12 +1669,20 @@ type ErrEndpointTransportFailure struct{ BaseError }
 
 const ErrCodeEndpointTransportFailure = "ErrEndpointTransportFailure"
 
-var NewErrEndpointTransportFailure = func(cause error) error {
+var NewErrEndpointTransportFailure = func(url *url.URL, cause error) error {
+	if cause != nil {
+		if _, ok := cause.(StandardError); !ok {
+			cause = fmt.Errorf(strings.ReplaceAll(cause.Error(), url.String(), ""))
+		}
+	}
 	return &ErrEndpointTransportFailure{
 		BaseError{
 			Code:    ErrCodeEndpointTransportFailure,
 			Message: "failure when sending request to remote endpoint",
 			Cause:   cause,
+			Details: map[string]interface{}{
+				"host": url.Host,
+			},
 		},
 	}
 }
