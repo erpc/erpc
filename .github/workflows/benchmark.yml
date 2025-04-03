@@ -29,7 +29,6 @@ jobs:
 
       # First, for a PR, checkout the base repository's main branch
       - name: Checkout base main
-        if: ${{ github.event_name == 'pull_request_target' || github.event_name == 'issue_comment' }}
         uses: actions/checkout@v3
         with:
           repository: ${{ github.repo }}
@@ -40,7 +39,6 @@ jobs:
         run: go install golang.org/x/perf/cmd/benchstat@latest
 
       - name: Check out PR code (pull_request_target)
-        if: ${{ github.event_name == 'pull_request_target' || github.event_name == 'issue_comment' }}
         uses: actions/checkout@v3
         with:
           repository: |
@@ -59,7 +57,6 @@ jobs:
         run: go install golang.org/x/perf/cmd/benchstat@latest
 
       - name: Benchmark main branch
-        if: ${{ github.event_name == 'pull_request_target' }}
         run: |
           # Step 1: Save current HEAD (which might be the PR code or just main code).
           PR_COMMIT=$(git rev-parse HEAD)
@@ -74,17 +71,14 @@ jobs:
         shell: bash
 
       - name: Benchmark PR code
-        if: ${{ github.event_name == 'pull_request_target' }}
         run: |
           make bench > /tmp/benchmark-pr.txt
 
       - name: Compare benchmarks
-        if: ${{ github.event_name == 'pull_request_target' }}
         run: |
           benchstat /tmp/benchmark-main.txt /tmp/benchmark-pr.txt > benchmark-result.txt
 
       - name: Comment PR with results
-        if: ${{ github.event_name == 'pull_request_target' && always() }}
         uses: actions/github-script@v6
         with:
           script: |
