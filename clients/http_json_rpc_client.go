@@ -391,7 +391,7 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 			}
 		} else {
 			for _, req := range requests {
-				req.err <- common.NewErrEndpointTransportFailure(err)
+				req.err <- common.NewErrEndpointTransportFailure(c.Url, err)
 			}
 		}
 		return
@@ -630,7 +630,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 		} else if errors.Is(err, context.Canceled) {
 			return nil, common.NewErrEndpointRequestCanceled(err)
 		}
-		return nil, common.NewErrEndpointTransportFailure(err)
+		return nil, common.NewErrEndpointTransportFailure(c.Url, err)
 	}
 	defer resp.Body.Close()
 
@@ -638,7 +638,7 @@ func (c *GenericHttpJsonRpcClient) sendSingleRequest(ctx context.Context, req *c
 	if resp.Header.Get("Content-Encoding") == "gzip" {
 		gzReader, err := gzip.NewReader(resp.Body)
 		if err != nil {
-			return nil, common.NewErrEndpointTransportFailure(fmt.Errorf("cannot create gzip reader: %w", err))
+			return nil, common.NewErrEndpointTransportFailure(c.Url, fmt.Errorf("cannot create gzip reader: %w", err))
 		}
 		defer gzReader.Close()
 		bodyReader = gzReader
