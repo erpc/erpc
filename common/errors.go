@@ -97,6 +97,7 @@ type StandardError interface {
 	ErrorStatusCode() int
 	Base() *BaseError
 	MarshalZerologObject(v *zerolog.Event)
+	Error() string
 }
 
 type RetryableError interface {
@@ -881,6 +882,9 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		}
 		if billing > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d upstream billing issues", billing))
+		}
+		if transport > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d upstream transport errors", transport))
 		}
 		if cancelled > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d hedges cancelled", cancelled))

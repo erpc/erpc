@@ -110,12 +110,12 @@ projects:
         failsafe:
           # ...
           # On network-level retry policy applies to the incoming request to eRPC,
-          # this is additional to the retry policy set on upstream level.
+          # this will be additional to the retry policy set on upstream level.
           retry:
             # Total retries besides the initial request:
             maxAttempts: 3
-            # Min delay between retries:
-            delay: 500ms
+            # Min delay between retries (most often you don't need to set this for network-level retry):
+            delay: 0ms
             # Maximum delay between retries:
             backoffMaxDelay: 10s
             # Multiplier for each retry for exponential backoff:
@@ -161,8 +161,8 @@ export default createConfig({
             retry: {
               // Total retries besides the initial request:
               maxAttempts: 3,
-              // Min delay between retries:
-              delay: "500ms",
+              // Min delay between retries (most often you don't need to set this for network-level retry):
+              delay: "0ms",
               // Maximum delay between retries:
               backoffMaxDelay: "10s",
               // Multiplier for each retry for exponential backoff:
