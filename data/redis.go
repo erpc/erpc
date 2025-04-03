@@ -141,7 +141,7 @@ func (r *RedisConnector) checkReady() error {
 	}
 	state := r.initializer.State()
 	if state != util.StateReady {
-		return fmt.Errorf("redis is not connected (%s)", state.String())
+		return fmt.Errorf("redis is not connected (state: %s), errors: %v", state.String(), r.initializer.Errors())
 	}
 	if r.client == nil {
 		return fmt.Errorf("redis client not initialized yet")
