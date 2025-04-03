@@ -130,10 +130,10 @@ var (
 		Help:      "Total number of times eth_getLogs was skipped due to fromBlock being less than upstream's available block range.",
 	}, []string{"project", "network", "upstream"})
 
-	MetricUpstreamEvmGetLogsRangeExceeded = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricUpstreamEvmGetLogsRangeExceededAutoSplittingThreshold = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
-		Name:      "upstream_evm_get_logs_range_exceeded_total",
-		Help:      "Total number of times eth_getLogs request exceeded the maximum allowed block range and needed splitting.",
+		Name:      "upstream_evm_get_logs_range_exceeded_auto_splitting_threshold_total",
+		Help:      "Total number of times eth_getLogs request exceeded the block range threshold and needed splitting.",
 	}, []string{"project", "network", "upstream"})
 
 	MetricUpstreamEvmGetLogsSplitSuccess = promauto.NewCounterVec(prometheus.CounterOpts{

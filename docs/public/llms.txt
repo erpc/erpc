@@ -1630,11 +1630,11 @@ projects:
           # (OPTIONAL) maxAvailableRecentBlocks limits the maximum number of recent blocks to be served by this upstream.
           # DEFAULT: 128 (for "full" nodes).
           maxAvailableRecentBlocks: 128
-          # (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
+          # (OPTIONAL) getLogsAutoSplittingRangeThreshold limits the maximum block range for eth_getLogs requests.
           # This is used to automatically split the request into smaller sub-requests if the range is too high.
           # Set to -1 to disable this behavior.
           # DEFAULT: 10000 (10000 blocks)
-          getLogsMaxBlockRange: 10000
+          getLogsAutoSplittingRangeThreshold: 10000
 
         # (OPTIONAL) Defines which budget to use when hadnling requests of this upstream (e.g. to limit total RPS)
         # Since budgets can be applied to multiple upstreams they all consume from the same budget.
@@ -1891,11 +1891,11 @@ projects:
           # (OPTIONAL) maxAvailableRecentBlocks limits the maximum number of recent blocks to be served by this upstream.
           # DEFAULT: 128 (for "full" nodes).
           maxAvailableRecentBlocks: 128
-          # (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
+          # (OPTIONAL) getLogsAutoSplittingRangeThreshold limits the maximum block range for eth_getLogs requests.
           # This is used to automatically split the request into smaller sub-requests if the range is too high.
           # Set to -1 to disable this behavior.
           # DEFAULT: 10000 (10000 blocks)
-          getLogsMaxBlockRange: 10000
+          getLogsAutoSplittingRangeThreshold: 10000
         # ...
 ```
 
@@ -1903,7 +1903,7 @@ projects:
 
 Certain providers have a limit on the maximum block range for `eth_getLogs` requests. If the range is too high, eRPC will automatically split the request into smaller sub-requests.
 
-To enable this feature, set the `getLogsMaxBlockRange` in the upstream config:
+To enable this feature, set the `getLogsAutoSplittingRangeThreshold` in the upstream config:
 
 yamltypescript
 
@@ -1913,11 +1913,11 @@ erpc.yaml
 upstreams:
   - id: my-infura
     evm:
-      # (OPTIONAL) getLogsMaxBlockRange limits the maximum block range for eth_getLogs requests.
+      # (OPTIONAL) getLogsAutoSplittingRangeThreshold limits the maximum block range for eth_getLogs requests.
       # This is used to automatically split the request into smaller sub-requests if the range is too high.
       # Set to -1 to disable this behavior.
       # DEFAULT: 10000 (10000 blocks)
-      getLogsMaxBlockRange: 10000
+      getLogsAutoSplittingRangeThreshold: 10000
 ```
 
 Additionally eRPC has integrity checks for eth\_getLogs you can read more about in the [Integrity](https://docs.erpc.cloud/config/failsafe/integrity#eth_getLogs-behavior) section.
@@ -4334,7 +4334,7 @@ Here is a list of some of the most important metrics:
 | erpc\_upstream\_stale\_finalized\_block\_total | Counter | Total number of times an upstream returned a stale finalized block number (vs others). |
 | erpc\_upstream\_evm\_get\_logs\_stale\_upper\_bound\_total | Counter | Total number of times eth\_getLogs was skipped due to upstream latest block being less than requested toBlock. |
 | erpc\_upstream\_evm\_get\_logs\_stale\_lower\_bound\_total | Counter | Total number of times eth\_getLogs was skipped due to fromBlock being less than upstream's available block range. |
-| erpc\_upstream\_evm\_get\_logs\_range\_exceeded\_total | Counter | Total number of times eth\_getLogs request exceeded the maximum allowed block range and needed splitting (based on upstream config for `upstream.evm.getLogsMaxBlockRange`). |
+| erpc\_upstream\_evm\_get\_logs\_range\_exceeded\_total | Counter | Total number of times eth\_getLogs request exceeded the maximum allowed block range and needed splitting (based on upstream config for `upstream.evm.getLogsAutoSplittingRangeThreshold`). |
 | erpc\_upstream\_evm\_get\_logs\_forced\_splits\_total | Counter | Total number of eth\_getLogs request splits by dimension (block\_range, addresses, topics), due to a complain/error from upstream (e.g. "Returned too many results use a smaller block range"). |
 | erpc\_upstream\_evm\_get\_logs\_split\_success\_total | Counter | Total number of successful split eth\_getLogs sub-requests. |
 | erpc\_upstream\_evm\_get\_logs\_split\_failure\_total | Counter | Total number of failed split eth\_getLogs sub-requests. |
