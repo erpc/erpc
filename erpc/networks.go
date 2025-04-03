@@ -432,8 +432,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	if execErr != nil {
 		err := upstream.TranslateFailsafeError(common.ScopeNetwork, "", method, execErr, &startTime)
 		// If error is due to empty response be generous and accept it,
-		// because this means after many retries still no data is available.
-		if common.HasErrorCode(err, common.ErrCodeFailsafeRetryExceeded) {
+		// because this means after many retries or exhausting all upstreams still no data is available.
+		if common.HasErrorCode(err, common.ErrCodeFailsafeRetryExceeded) || common.HasErrorCode(err, common.ErrCodeUpstreamsExhausted) {
 			// TODO is there a cleaner way to use last result when retry is exhausted?
 			lvr := req.LastValidResponse()
 			if !lvr.IsObjectNull(ctx) {
