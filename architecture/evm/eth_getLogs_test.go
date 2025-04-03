@@ -352,7 +352,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 					"fromBlock": "0x1",
 					"toBlock":   "0x14", // 20 blocks
 				})
-
+				n.On("Id").Return("evm:123")
 				n.On("Config").Return(&common.NetworkConfig{
 					Evm: &common.EvmNetworkConfig{
 						Integrity: &common.EvmIntegrityConfig{
@@ -393,7 +393,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 					"toBlock":   "0x2",
 					"address":   []interface{}{"0xABC", "0xDEF", "0x123"},
 				})
-
+				n.On("Id").Return("evm:123")
 				n.On("Config").Return(&common.NetworkConfig{
 					Evm: &common.EvmNetworkConfig{
 						Integrity: &common.EvmIntegrityConfig{
@@ -425,13 +425,13 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
 				n := new(mockNetwork)
 				u := new(mockEvmUpstream)
-
 				r := createTestRequest(map[string]interface{}{
 					"fromBlock": "0x1",
 					"toBlock":   "0x2",
 					"topics":    []interface{}{"0xAAA", "0xBBB", "0xCCC"},
 				})
 
+				n.On("Id").Return("evm:123")
 				n.On("Config").Return(&common.NetworkConfig{
 					Evm: &common.EvmNetworkConfig{
 						Integrity: &common.EvmIntegrityConfig{

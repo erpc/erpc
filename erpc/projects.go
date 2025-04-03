@@ -177,7 +177,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		_, errSpan := common.StartDetailSpan(finishCtx, "Project.ErrorMetrics")
 		defer errSpan.End()
 		lg.Debug().Err(err).Object("request", nq).Msgf("failed to forward request for network")
-		health.MetricNetworkFailedRequests.WithLabelValues(network.projectId, network.networkId, method, strconv.Itoa(resp.Attempts()), common.ErrorSummary(err)).Inc()
+		health.MetricNetworkFailedRequests.WithLabelValues(network.projectId, network.networkId, method, strconv.Itoa(resp.Attempts()), common.ErrorFingerprint(err)).Inc()
 	}
 
 	return nil, err

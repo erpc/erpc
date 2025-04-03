@@ -20,9 +20,11 @@
             "cwd": "${workspaceFolder}",
             "showLog": true,
             "dlvFlags": [
+                "--check-go-version",
+                "false",
                 "--log",
                 "--log-output",
-                "debugger,debuglineerr,gdbwire,lldbout,rpc"
+                "debugger,debuglineerr,gdbwire,lldbout,rpc",
             ]
         }
     ]
