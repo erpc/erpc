@@ -4377,8 +4377,8 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:              1,
-								GetLogsMaxBlockRange: 0x100,
+								ChainId:                            1,
+								GetLogsAutoSplittingRangeThreshold: 0x100,
 							},
 							Failsafe: &common.FailsafeConfig{
 								Retry: &common.RetryPolicyConfig{
@@ -4558,8 +4558,8 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:              1,
-								GetLogsMaxBlockRange: 0x100,
+								ChainId:                            1,
+								GetLogsAutoSplittingRangeThreshold: 0x100,
 							},
 							Failsafe: &common.FailsafeConfig{
 								Retry: &common.RetryPolicyConfig{
@@ -4676,8 +4676,8 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 							Endpoint: "http://rpc1.localhost",
 							Type:     common.UpstreamTypeEvm,
 							Evm: &common.EvmUpstreamConfig{
-								ChainId:              1,
-								GetLogsMaxBlockRange: 0x100,
+								ChainId:                            1,
+								GetLogsAutoSplittingRangeThreshold: 0x100,
 							},
 							Failsafe: &common.FailsafeConfig{
 								Retry: &common.RetryPolicyConfig{

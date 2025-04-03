@@ -112,6 +112,45 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	}
 	jrq.RUnlock()
 
+	if fromBlock > toBlock {
+		return true, nil, errors.New("fromBlock must be less than or equal to toBlock")
+	}
+	requestRange := toBlock - fromBlock + 1
+	cfg := up.Config()
+
+	// check if the log range is beyond the hard limit
+	if requestRange > 0 && cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsMaxAllowedRange > 0 {
+		if requestRange > cfg.Evm.GetLogsMaxAllowedRange {
+			return true, nil, common.NewErrUpstreamGetLogsExceededMaxAllowedRange(
+				up.Config().Id,
+				requestRange,
+				cfg.Evm.GetLogsMaxAllowedRange,
+			)
+		}
+	}
+
+	// check if the number of addresses is beyond the hard limit
+	addresses, hasAddresses := filter["address"].([]interface{})
+	if hasAddresses && cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsMaxAllowedAddresses > 0 &&
+		int64(len(addresses)) > cfg.Evm.GetLogsMaxAllowedAddresses {
+		return true, nil, common.NewErrUpstreamGetLogsExceededMaxAllowedAddresses(
+			up.Config().Id,
+			int64(len(addresses)),
+			cfg.Evm.GetLogsMaxAllowedAddresses,
+		)
+	}
+
+	// check if the number of topics is beyond the hard limit
+	topics, hasTopics := filter["topics"].([]interface{})
+	if hasTopics && cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsMaxAllowedTopics > 0 &&
+		int64(len(topics)) > cfg.Evm.GetLogsMaxAllowedTopics {
+		return true, nil, common.NewErrUpstreamGetLogsExceededMaxAllowedTopics(
+			up.Config().Id,
+			int64(len(topics)),
+			cfg.Evm.GetLogsMaxAllowedTopics,
+		)
+	}
+
 	statePoller := up.EvmStatePoller()
 	if statePoller == nil || statePoller.IsObjectNull() {
 		return true, nil, common.NewErrUpstreamRequestSkipped(
@@ -147,8 +186,6 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		logger.Debug().Msg("upstream latest block is not available, skipping integrity check")
 	}
 
-	cfg := up.Config()
-
 	// Check if the log range start is higher than node's max available block range,
 	// if not, skip the request.
 	if cfg != nil && cfg.Evm != nil && cfg.Evm.MaxAvailableRecentBlocks > 0 {
@@ -169,10 +206,9 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 
 	// Check evmGetLogsMaxRange and if the range is already bigger try to split in multiple smaller requests, and merge the final result
 	// For better performance try to use byte merging (not JSON parsing/encoding)
-	if cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsMaxBlockRange > 0 {
-		requestRange := toBlock - fromBlock + 1
-		if requestRange > cfg.Evm.GetLogsMaxBlockRange {
-			health.MetricUpstreamEvmGetLogsRangeExceeded.WithLabelValues(
+	if requestRange > 0 && cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsAutoSplittingRangeThreshold > 0 {
+		if requestRange > cfg.Evm.GetLogsAutoSplittingRangeThreshold {
+			health.MetricUpstreamEvmGetLogsRangeExceededAutoSplittingThreshold.WithLabelValues(
 				n.ProjectId(),
 				up.NetworkId(),
 				up.Config().Id,
@@ -181,7 +217,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 			var subRequests []ethGetLogsSubRequest
 			sb := fromBlock
 			for sb <= toBlock {
-				eb := min(sb+cfg.Evm.GetLogsMaxBlockRange-1, toBlock)
+				eb := min(sb+cfg.Evm.GetLogsAutoSplittingRangeThreshold-1, toBlock)
 				subRequests = append(subRequests, ethGetLogsSubRequest{
 					fromBlock: sb,
 					toBlock:   eb,
@@ -192,7 +228,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 			}
 			logger.Debug().
 				Int64("requestRange", requestRange).
-				Int64("maxBlockRange", cfg.Evm.GetLogsMaxBlockRange).
+				Int64("maxBlockRange", cfg.Evm.GetLogsAutoSplittingRangeThreshold).
 				Int("subRequests", len(subRequests)).
 				Msg("eth_getLogs block range exceeded, splitting")
 

@@ -98,7 +98,7 @@ func (c *Config) SetDefaults() error {
 				},
 				UpstreamDefaults: &UpstreamConfig{
 					Evm: &EvmUpstreamConfig{
-						GetLogsMaxBlockRange: 100,
+						GetLogsAutoSplittingRangeThreshold: 100,
 					},
 					Failsafe: &FailsafeConfig{
 						Retry: &RetryPolicyConfig{
@@ -956,8 +956,17 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 		if u.Evm.MaxAvailableRecentBlocks == 0 && defaults.Evm.MaxAvailableRecentBlocks != 0 {
 			u.Evm.MaxAvailableRecentBlocks = defaults.Evm.MaxAvailableRecentBlocks
 		}
-		if u.Evm.GetLogsMaxBlockRange == 0 && defaults.Evm.GetLogsMaxBlockRange != 0 {
-			u.Evm.GetLogsMaxBlockRange = defaults.Evm.GetLogsMaxBlockRange
+		if u.Evm.GetLogsAutoSplittingRangeThreshold == 0 && defaults.Evm.GetLogsAutoSplittingRangeThreshold != 0 {
+			u.Evm.GetLogsAutoSplittingRangeThreshold = defaults.Evm.GetLogsAutoSplittingRangeThreshold
+		}
+		if u.Evm.GetLogsMaxAllowedRange == 0 && defaults.Evm.GetLogsMaxAllowedRange != 0 {
+			u.Evm.GetLogsMaxAllowedRange = defaults.Evm.GetLogsMaxAllowedRange
+		}
+		if u.Evm.GetLogsMaxAllowedAddresses == 0 && defaults.Evm.GetLogsMaxAllowedAddresses != 0 {
+			u.Evm.GetLogsMaxAllowedAddresses = defaults.Evm.GetLogsMaxAllowedAddresses
+		}
+		if u.Evm.GetLogsMaxAllowedTopics == 0 && defaults.Evm.GetLogsMaxAllowedTopics != 0 {
+			u.Evm.GetLogsMaxAllowedTopics = defaults.Evm.GetLogsMaxAllowedTopics
 		}
 	}
 	if u.JsonRpc == nil && defaults.JsonRpc != nil {
@@ -1088,11 +1097,34 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 		}
 	}
 
-	if e.GetLogsMaxBlockRange == 0 {
-		if defaults != nil && defaults.GetLogsMaxBlockRange != 0 {
-			e.GetLogsMaxBlockRange = defaults.GetLogsMaxBlockRange
+	// TODO: remove deprecated alias (backward compat): maps to GetLogsAutoSplittingRangeThreshold
+	if e.GetLogsAutoSplittingRangeThreshold == 0 {
+		if e.GetLogsMaxBlockRange > 0 {
+			e.GetLogsAutoSplittingRangeThreshold = e.GetLogsMaxBlockRange
+		} else if defaults != nil && defaults.GetLogsMaxBlockRange != 0 {
+			e.GetLogsAutoSplittingRangeThreshold = defaults.GetLogsMaxBlockRange
+		} else if defaults != nil && defaults.GetLogsAutoSplittingRangeThreshold != 0 {
+			e.GetLogsAutoSplittingRangeThreshold = defaults.GetLogsAutoSplittingRangeThreshold
 		} else {
-			e.GetLogsMaxBlockRange = 10_000
+			e.GetLogsAutoSplittingRangeThreshold = 10_000
+		}
+	}
+
+	if e.GetLogsMaxAllowedRange == 0 {
+		if defaults != nil && defaults.GetLogsMaxAllowedRange != 0 {
+			e.GetLogsMaxAllowedRange = defaults.GetLogsMaxAllowedRange
+		}
+	}
+
+	if e.GetLogsMaxAllowedAddresses == 0 {
+		if defaults != nil && defaults.GetLogsMaxAllowedAddresses != 0 {
+			e.GetLogsMaxAllowedAddresses = defaults.GetLogsMaxAllowedAddresses
+		}
+	}
+
+	if e.GetLogsMaxAllowedTopics == 0 {
+		if defaults != nil && defaults.GetLogsMaxAllowedTopics != 0 {
+			e.GetLogsMaxAllowedTopics = defaults.GetLogsMaxAllowedTopics
 		}
 	}
 

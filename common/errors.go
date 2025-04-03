@@ -1109,6 +1109,60 @@ var NewErrUpstreamSyncing = func(upstreamId string) error {
 	}
 }
 
+type ErrUpstreamGetLogsExceededMaxAllowedRange struct{ BaseError }
+
+const ErrCodeUpstreamGetLogsExceededMaxAllowedRange ErrorCode = "ErrUpstreamGetLogsExceededMaxAllowedRange"
+
+var NewErrUpstreamGetLogsExceededMaxAllowedRange = func(upstreamId string, requestRange int64, maxAllowedRange int64) error {
+	return &ErrUpstreamGetLogsExceededMaxAllowedRange{
+		BaseError{
+			Code:    ErrCodeUpstreamGetLogsExceededMaxAllowedRange,
+			Message: "upstream request range exceeded max allowed range",
+			Details: map[string]interface{}{
+				"upstreamId":      upstreamId,
+				"requestRange":    requestRange,
+				"maxAllowedRange": maxAllowedRange,
+			},
+		},
+	}
+}
+
+type ErrUpstreamGetLogsExceededMaxAllowedAddresses struct{ BaseError }
+
+const ErrCodeUpstreamGetLogsExceededMaxAllowedAddresses ErrorCode = "ErrUpstreamGetLogsExceededMaxAllowedAddresses"
+
+var NewErrUpstreamGetLogsExceededMaxAllowedAddresses = func(upstreamId string, requestAddresses int64, maxAllowedAddresses int64) error {
+	return &ErrUpstreamGetLogsExceededMaxAllowedAddresses{
+		BaseError{
+			Code:    ErrCodeUpstreamGetLogsExceededMaxAllowedAddresses,
+			Message: "upstream request addresses exceeded max allowed addresses",
+			Details: map[string]interface{}{
+				"upstreamId":          upstreamId,
+				"requestAddresses":    requestAddresses,
+				"maxAllowedAddresses": maxAllowedAddresses,
+			},
+		},
+	}
+}
+
+type ErrUpstreamGetLogsExceededMaxAllowedTopics struct{ BaseError }
+
+const ErrCodeUpstreamGetLogsExceededMaxAllowedTopics ErrorCode = "ErrUpstreamGetLogsExceededMaxAllowedTopics"
+
+var NewErrUpstreamGetLogsExceededMaxAllowedTopics = func(upstreamId string, requestTopics int64, maxAllowedTopics int64) error {
+	return &ErrUpstreamGetLogsExceededMaxAllowedTopics{
+		BaseError{
+			Code:    ErrCodeUpstreamGetLogsExceededMaxAllowedTopics,
+			Message: "upstream request topics exceeded max allowed topics",
+			Details: map[string]interface{}{
+				"upstreamId":       upstreamId,
+				"requestTopics":    requestTopics,
+				"maxAllowedTopics": maxAllowedTopics,
+			},
+		},
+	}
+}
+
 type ErrUpstreamNotAllowed struct{ BaseError }
 
 var NewErrUpstreamNotAllowed = func(upstreamId string) error {
