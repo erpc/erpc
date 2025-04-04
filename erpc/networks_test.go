@@ -5794,11 +5794,6 @@ func TestNetwork_Forward(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 		defer cancel()
 
-		fsCfg := &common.FailsafeConfig{
-			Retry: &common.RetryPolicyConfig{
-				MaxAttempts: 2,
-			},
-		}
 		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
 			Budgets: []*common.RateLimitBudgetConfig{},
 		}, &log.Logger)
@@ -5874,7 +5869,11 @@ func TestNetwork_Forward(t *testing.T) {
 				Evm: &common.EvmNetworkConfig{
 					ChainId: 123,
 				},
-				Failsafe: fsCfg,
+				Failsafe: &common.FailsafeConfig{
+					Retry: &common.RetryPolicyConfig{
+						MaxAttempts: 2,
+					},
+				},
 			},
 			rlr,
 			upr,

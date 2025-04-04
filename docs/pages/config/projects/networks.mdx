@@ -114,12 +114,9 @@ projects:
             duration: 30s
           retry:
             # It is recommended to set a retry policy on network-level to make sure if one upstream is rate-limited,
-            # the request will be retried on another upstream.
+            # the request will be retried on another upstream. Most often you don't need to set a delay.
             maxAttempts: 3
-            delay: 100ms
-            jitter: 0ms
-            backoffMaxDelay: 1s
-            backoffFactor: 1.5
+            delay: 0ms
           # Defining a "hedge" is highly-recommended on network-level because if upstream A is being slow for
           # a specific request, it can start a new parallel hedged request to upstream B, for whichever responds faster.
           hedge:
@@ -249,12 +246,9 @@ export default createConfig({
             },
             retry: {
               // It is recommended to set a retry policy on network-level to make sure if one upstream is rate-limited,
-              // the request will be retried on another upstream.
+              // the request will be retried on another upstream. Most often you don't need to set a delay.
               maxAttempts: 3,
-              delay: "100ms",
-              jitter: "0ms",
-              backoffMaxDelay: "1s",
-              backoffFactor: 1.5,
+              delay: "0ms",
             },
             // Defining a "hedge" is highly-recommended on network-level because if upstream A is being slow for
             // a specific request, it can start a new parallel hedged request to upstream B, for whichever responds faster.
@@ -296,7 +290,6 @@ projects:
       # https://docs.erpc.cloud/config/failsafe
       # If a network has its own failsafe defined, it will not take any of policies from networkDefaults.
       # i.e. if network has only "timeout" policy, it will NOT get hedge/retry from networkDefaults (those will be disabled).
-      # Here are default values used for networkDefaults if not explicitly defined:
       failsafe:
         timeout:
           duration: "30s"
@@ -305,10 +298,7 @@ projects:
           maxCount: 3
         retry:
           maxAttempts: 3
-          delay: "100ms"
-          jitter: "0ms"
-          backoffMaxDelay: "1s"
-          backoffFactor: 1.5
+          delay: "0ms"
 
       # (OPTIONAL) Refer to "Selection Policy" section for more details about default values.
       # https://docs.erpc.cloud/config/projects/selection-policies#config
@@ -354,7 +344,6 @@ export default createConfig({
 
         // (OPTIONAL) Refer to "Failsafe" section for more details.
         // https://docs.erpc.cloud/config/failsafe
-        // Here are default values used for networks if not explicitly defined:
         failsafe: {
           timeout: {
             duration: "30s",
@@ -365,10 +354,7 @@ export default createConfig({
           },
           retry: {
             maxAttempts: 3,
-            delay: "100ms",
-            jitter: "0ms",
-            backoffMaxDelay: "1s",
-            backoffFactor: 1.5,
+            delay: "0ms",
           },
         },
 

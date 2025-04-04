@@ -206,9 +206,6 @@ projects:
           retry:
             maxAttempts: 3
             delay: 0ms
-            backoffMaxDelay: 3s
-            backoffFactor: 1.2
-            jitter: 0ms
           # Defining a "hedge" is highly-recommended on network-level because if upstream A is being slow for
           # a specific request, it can start a new parallel hedged request to upstream B, for whichever responds faster.
           hedge:
@@ -229,9 +226,6 @@ projects:
           retry:
             maxAttempts: 3
             delay: 0ms
-            backoffMaxDelay: 3s
-            backoffFactor: 1.2
-            jitter: 0ms
           hedge:
             delay: 500ms
             maxCount: 1
@@ -487,9 +481,6 @@ export default createConfig({
             retry: {
               maxAttempts: 3,
               delay: "0ms",
-              backoffMaxDelay: "3s",
-              backoffFactor: 1.2,
-              jitter: "0ms",
             },
             // Defining a "hedge" is highly-recommended on network-level because if upstream A is being slow for
             // a specific request, it can start a new parallel hedged request to upstream B, for whichever responds faster.
@@ -517,10 +508,7 @@ export default createConfig({
             },
             retry: {
               maxAttempts: 3,
-              delay: "500ms",
-              backoffMaxDelay: "3s",
-              backoffFactor: 1.2,
-              jitter: "0ms",
+              delay: "0ms",
             },
             hedge: {
               delay: "500ms",

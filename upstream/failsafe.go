@@ -418,9 +418,17 @@ func createConsensusPolicy(logger *zerolog.Logger, cfg *common.ConsensusPolicyCo
 func TranslateFailsafeError(scope common.Scope, upstreamId string, method string, execErr error, startTime *time.Time) error {
 	var err error
 	var retryExceededErr retrypolicy.ExceededError
-	if common.HasErrorCode(execErr, common.ErrCodeUpstreamsExhausted) {
-		err = execErr
+
+	// Our own standard error is returned when failsafe execution is returned and for example retry policy 
+	// logic above decided it does not need to retry (e.g. reverted transaction error).
+	// Another case is an UpstreamExhausted error which is not going to be retried due to all errors being unretryable.
+	// In those cases we return the standard error object as is.
+	if serr, ok := execErr.(common.StandardError); ok {
+		err = serr
 	} else if errors.As(execErr, &retryExceededErr) {
+		// When retry policy is exceeded (i.e. we wanted to retry based on the policy but it ultimately failed)
+		// we want to fetch the "last error" from the retry policy and wrap in our own standard error type of FailsafeRetryExceeded.
+		// This allows consistent error handling on http server level.
 		ler := retryExceededErr.LastError
 		if common.IsNull(ler) {
 			if lexr, ok := execErr.(common.StandardError); ok {
@@ -433,8 +441,12 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 		}
 		err = common.NewErrFailsafeRetryExceeded(scope, translatedCause, startTime)
 	} else if errors.Is(execErr, timeout.ErrExceeded) {
+		// Simply translate the failsafe library timeout error type to our own standard error type.
+		// And keep the original error as "cause" so it can be logged.
 		err = common.NewErrFailsafeTimeoutExceeded(scope, execErr, startTime)
 	} else if errors.Is(execErr, circuitbreaker.ErrOpen) {
+		// Simply translate the failsafe library circuit breaker error type to our own standard error type.
+		// And keep the original error as "cause" so it can be logged.
 		err = common.NewErrFailsafeCircuitBreakerOpen(scope, execErr, startTime)
 	}
 
@@ -461,5 +473,7 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 		return err
 	}
 
+	// For unknown errors we return as is so we're not wrongly wrapping with an inappropriate error type.
+	// An example can be deadline exceeded error which must be handled properly on http server level (e.g. wrap with http timeout error).
 	return execErr
 }
