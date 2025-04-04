@@ -432,33 +432,20 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 	if execErr != nil {
 		lvr := req.LastValidResponse()
-		// TODO is there a cleaner way to use last result when retry is exhausted?
 		if lvr != nil && !lvr.IsObjectNull() {
-			// If error is due to empty response be generous and accept it,
-			// because this means after many retries or exhausting all upstreams still no data is available.
+			// A valid response is a json-rpc response without "error" object.
+			// This mechanism is needed in these two scenarios:
 			//
+			// 1) If error is due to empty response be generous and accept it,
+			// because this means after many retries or exhausting all upstreams still no data is available.
 			// We don't need to worry about wrongly replying empty responses for unfinalized data
 			// because cache layer has mechanism to deal with empty and/or unfinalized data.
 			//
-			// For pending txs we can accept the response, if after retries it is still pending.
+			// 2) For pending txs we can accept the response, if after retries it is still pending.
 			// This avoids failing with "retry" error, when we actually do have a response but blockNumber is null since tx is pending.
 			resp = lvr
 		} else {
-			if serr, ok := execErr.(common.StandardError); ok {
-				err = serr
-			} else {
-				err = common.NewErrUpstreamsExhausted(
-					req,
-					errorsByUpstream,
-					n.projectId,
-					n.networkId,
-					method,
-					time.Since(startTime),
-					execution.Attempts(),
-					execution.Retries(),
-					execution.Hedges(),
-				)
-			}
+			err = upstream.TranslateFailsafeError(common.ScopeNetwork, "", method, execErr, &startTime)
 			if mlx != nil {
 				mlx.Close(ctx, nil, err)
 			}

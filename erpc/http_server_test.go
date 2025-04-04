@@ -835,7 +835,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 	t.Run("SameTimeoutLowForServerAndNetwork", func(t *testing.T) {
 		cfg := &common.Config{
 			Server: &common.ServerConfig{
-				MaxTimeout: common.Duration(1 * time.Millisecond).Ptr(),
+				MaxTimeout: common.Duration(50 * time.Millisecond).Ptr(),
 			},
 			Projects: []*common.ProjectConfig{
 				{
@@ -848,7 +848,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							Failsafe: &common.FailsafeConfig{
 								Timeout: &common.TimeoutPolicyConfig{
-									Duration: common.Duration(1 * time.Millisecond),
+									Duration: common.Duration(50 * time.Millisecond),
 								},
 							},
 						},
@@ -867,7 +867,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 							},
 							JsonRpc: &common.JsonRpcUpstreamConfig{
 								SupportsBatch: &common.TRUE,
-								BatchMaxWait:  common.Duration(5 * time.Millisecond),
+								BatchMaxWait:  common.Duration(1 * time.Millisecond),
 							},
 						},
 					},
@@ -881,6 +881,20 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
 
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBalance")
+			}).
+			Reply(200).
+			Delay(1000 * time.Millisecond).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x222222",
+			})
+
 		// Set up test fixtures
 		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
@@ -888,7 +902,9 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
 		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
-		assert.Contains(t, body, "http request handling timeout")
+		if !strings.Contains(body, "http request handling timeout") && !strings.Contains(body, "network-level timeout") {
+			t.Fatalf("expected timeout error, got %s", body)
+		}
 	})
 
 	t.Run("ServerTimeoutNoUpstreamNoNetworkTimeout", func(t *testing.T) {
@@ -3395,13 +3411,9 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 								ChainId: 1,
 							},
 							Failsafe: &common.FailsafeConfig{
-								Hedge: &common.HedgePolicyConfig{
-									MaxCount: 2,
-									Quantile: 0.99,
-								},
 								Retry: &common.RetryPolicyConfig{
 									MaxAttempts: 8,
-									Delay:       common.Duration(5 * time.Millisecond),
+									Delay:       common.Duration(100 * time.Millisecond),
 								},
 							},
 						},
@@ -3420,7 +3432,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Failsafe: &common.FailsafeConfig{
 								Retry: &common.RetryPolicyConfig{
 									MaxAttempts: 3,
-									Delay:       common.Duration(10 * time.Millisecond),
+									Delay:       common.Duration(100 * time.Millisecond),
 								},
 							},
 						},
@@ -3437,7 +3449,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 							Failsafe: &common.FailsafeConfig{
 								Retry: &common.RetryPolicyConfig{
 									MaxAttempts: 3,
-									Delay:       common.Duration(10 * time.Millisecond),
+									Delay:       common.Duration(100 * time.Millisecond),
 								},
 							},
 						},
@@ -3450,7 +3462,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 		// Mock the first upstream to return an empty result array
 		gock.New("http://rpc1.localhost").
 			Post("/").
-			Times(2).
+			Times(1).
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
 				return strings.Contains(string(body), "eth_getLogs")
