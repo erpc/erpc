@@ -1,5 +1,9 @@
 name: release
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
 on:
   workflow_dispatch:
     inputs:
@@ -20,6 +24,7 @@ jobs:
   prepare-release:
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch'
+    timeout-minutes: 20
     outputs:
       version: ${{ github.event.inputs.version_tag }}
     steps:
@@ -117,6 +122,7 @@ jobs:
       github.ref == 'refs/heads/main' && 
       contains(github.event.head_commit.message, 'chore: release')
     runs-on: large
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -224,6 +230,7 @@ jobs:
     runs-on: large
     needs: [prepare-release, release]
     if: always() && github.ref == 'refs/heads/main'
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:

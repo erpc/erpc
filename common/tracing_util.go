@@ -126,7 +126,7 @@ func StartRequestSpan(ctx context.Context, req *NormalizedRequest) context.Conte
 			// Add params as attributes if they're not too large
 			if jrpcReq.Params != nil {
 				paramsStr, _ := SonicCfg.MarshalToString(jrpcReq.Params)
-				span.SetAttributes(attribute.String("response.jsonrpc.params", paramsStr))
+				span.SetAttributes(attribute.String("request.jsonrpc.params", paramsStr))
 			}
 		}
 	}
