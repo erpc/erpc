@@ -840,12 +840,12 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 			reqId = jrr.ID
 		}
 	}
-	jre := &common.ErrJsonRpcExceptionInternal{}
 	// This is a special attempt to extract execution errors first (e.g. execution reverted):
 	exe := &common.ErrEndpointExecutionException{}
 	if errors.As(err, &exe) {
 		err = exe
 	}
+	jre := &common.ErrJsonRpcExceptionInternal{}
 	if errors.As(err, &jre) {
 		message := jre.Message
 		deepestMessage := jre.DeepestMessage()

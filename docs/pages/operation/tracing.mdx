@@ -12,6 +12,7 @@ tracing:
   endpoint: "localhost:4317"  # OTLP endpoint (Jaeger, Tempo, etc.)
   protocol: "grpc"            # "grpc" or "http"
   samplingRatio: 0.1          # Sample 10% of requests
+  detailed: true              # Include detailed tracing information
   tls:
     enabled: false            # Enable TLS for secure connections
     # certFile: "/path/to/cert.pem"
@@ -22,6 +23,14 @@ server:
 projects:
  # ...
 ```
+
+### Detailed tracing
+
+When `tracing.detailed` is set to true, eRPC will include detailed tracing information in the traces. This includes:
+- Internal operations and mutex locks (useful to debug long requests that are not waiting for any I/O)
+- High-cardinality attributes (e.g. request json-rpc IDs, request params, actual cache keys used, etc.)
+
+Remember that detailed tracing can significantly increase the volume of traces, so use it judiciously.
 
 ## Using with Jaeger
 
@@ -39,11 +48,12 @@ The included [`docker-compose.yml`](https://github.com/erpc/erpc/blob/main/docke
      endpoint: "localhost:4317"
      protocol: "grpc"
      samplingRatio: 1.0 # Sample all requests during development
+     detailed: true
    ```
 
 3. Access the Jaeger UI at http://localhost:16686
 
-## Traced Components
+## Traced components
 
 The following components are instrumented with tracing:
 
@@ -53,3 +63,8 @@ The following components are instrumented with tracing:
 - Cache operations (get/set)
 - Failsafe executor operations (hedges, retries)
 - HTTP client requests to upstreams
+- Rate limiters
+- And more...
+
+If you noticed a missing component from tracing, free free to open an [issue or PR](https://github.com/erpc/erpc/issues/new)!
+

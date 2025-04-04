@@ -386,6 +386,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				if err != nil {
 					errorsByUpstream.Store(u, err)
 				} else if r.IsResultEmptyish(loopCtx) {
+					errorsByUpstream.Store(u, common.NewErrEndpointMissingData(nil))
 					emptyResponses.Store(u, true)
 				}
 
@@ -430,44 +431,21 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	defer req.RUnlock()
 
 	if execErr != nil {
-		err := upstream.TranslateFailsafeError(common.ScopeNetwork, "", method, execErr, &startTime)
-		// If error is due to empty response be generous and accept it,
-		// because this means after many retries still no data is available.
-		if common.HasErrorCode(err, common.ErrCodeFailsafeRetryExceeded) {
-			// TODO is there a cleaner way to use last result when retry is exhausted?
-			lvr := req.LastValidResponse()
-			if !lvr.IsObjectNull(ctx) {
-				if lvr.IsResultEmptyish(ctx) {
-					// We don't need to worry about replying wrongly empty responses for unfinalized data
-					// because cache layer already is not caching unfinalized data.
-					resp = lvr
-				} else if n.Architecture() == common.ArchitectureEvm {
-					// TODO Move the logic to evm package as a post-forward hook?
-					_, evmBlkNum, err := evm.ExtractBlockReferenceFromRequest(ctx, req)
-					if err == nil && evmBlkNum == 0 {
-						// For pending txs we can accept the response, if after retries it is still pending.
-						// This avoids failing with "retry" error, when we actually do have a response but blockNumber is null since tx is pending.
-						resp = lvr
-					}
-				}
-			} else {
-				err = common.NewErrUpstreamsExhausted(
-					req,
-					errorsByUpstream,
-					n.projectId,
-					n.networkId,
-					method,
-					time.Since(startTime),
-					execution.Attempts(),
-					execution.Retries(),
-					execution.Hedges(),
-				)
-				if mlx != nil {
-					mlx.Close(ctx, nil, err)
-				}
-				return nil, err
-			}
+		lvr := req.LastValidResponse()
+		if lvr != nil && !lvr.IsObjectNull() {
+			// A valid response is a json-rpc response without "error" object.
+			// This mechanism is needed in these two scenarios:
+			//
+			// 1) If error is due to empty response be generous and accept it,
+			// because this means after many retries or exhausting all upstreams still no data is available.
+			// We don't need to worry about wrongly replying empty responses for unfinalized data
+			// because cache layer has mechanism to deal with empty and/or unfinalized data.
+			//
+			// 2) For pending txs we can accept the response, if after retries it is still pending.
+			// This avoids failing with "retry" error, when we actually do have a response but blockNumber is null since tx is pending.
+			resp = lvr
 		} else {
+			err = upstream.TranslateFailsafeError(common.ScopeNetwork, "", method, execErr, &startTime)
 			if mlx != nil {
 				mlx.Close(ctx, nil, err)
 			}
