@@ -4,7 +4,7 @@ import (
 	"sync"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/failsafe-go/failsafe-go/ratelimiter"
 	"github.com/rs/zerolog"
 )
@@ -60,7 +60,7 @@ func (b *RateLimiterBudget) AdjustBudget(rule *RateLimitRule, newMaxCount uint) 
 	rule.Config = newCfg
 	rule.Limiter = newLimiter
 
-	health.MetricRateLimiterBudgetMaxCount.WithLabelValues(b.Id, rule.Config.Method).Set(float64(newMaxCount))
+	telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(b.Id, rule.Config.Method).Set(float64(newMaxCount))
 
 	return nil
 }

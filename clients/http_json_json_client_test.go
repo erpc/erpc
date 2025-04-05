@@ -831,21 +831,21 @@ func TestHttpJsonRpcClient_CapacityExceededErrors(t *testing.T) {
 
 		// Verify the error
 		assert.Error(t, err)
-		
+
 		// Check that we got a capacity exceeded error
 		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded), "Expected ErrEndpointCapacityExceeded, got: %T: %v", err, err)
-		
+
 		// Verify the underlying JSON-RPC error code
 		capacityErr, ok := err.(*common.ErrEndpointCapacityExceeded)
 		assert.True(t, ok, "Expected ErrEndpointCapacityExceeded, got: %T", err)
-		
+
 		// Verify the status code was preserved in the details
 		cause, ok := capacityErr.Cause.(*common.ErrJsonRpcExceptionInternal)
 		assert.True(t, ok, "Expected ErrJsonRpcExceptionInternal, got: %T", capacityErr.Cause)
 		details := cause.Details
 		assert.Equal(t, 429, details["statusCode"])
 	})
-	
+
 	t.Run("429WithErrorMessage", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
@@ -870,10 +870,10 @@ func TestHttpJsonRpcClient_CapacityExceededErrors(t *testing.T) {
 
 		// Verify the error
 		assert.Error(t, err)
-		
+
 		// Check that we got a capacity exceeded error
 		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded), "Expected ErrEndpointCapacityExceeded, got: %T: %v", err, err)
-		
+
 		// Verify the error message was preserved
 		assert.Contains(t, err.Error(), "Rate limit exceeded")
 	})

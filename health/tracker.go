@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog"
 )
 
@@ -215,7 +216,7 @@ func (t *Tracker) Cordon(ups, network, method, reason string) {
 	tm.Cordoned.Store(true)
 	tm.CordonedReason.Store(reason)
 
-	MetricUpstreamCordoned.WithLabelValues(t.projectId, network, ups, method).Set(1)
+	telemetry.MetricUpstreamCordoned.WithLabelValues(t.projectId, network, ups, method).Set(1)
 }
 
 func (t *Tracker) Uncordon(ups, network, method string) {
@@ -223,7 +224,7 @@ func (t *Tracker) Uncordon(ups, network, method string) {
 	tm.Cordoned.Store(false)
 	tm.CordonedReason.Store("")
 
-	MetricUpstreamCordoned.WithLabelValues(t.projectId, network, ups, method).Set(0)
+	telemetry.MetricUpstreamCordoned.WithLabelValues(t.projectId, network, ups, method).Set(0)
 }
 
 // IsCordoned checks if (ups, network, method) or (ups, network, "*") is cordoned.
@@ -272,7 +273,7 @@ func (t *Tracker) RecordUpstreamDuration(ups, network, method string, duration t
 		m := t.getMetrics(k)
 		m.ResponseQuantiles.Add(sec)
 	}
-	MetricUpstreamRequestDuration.WithLabelValues(t.projectId, network, ups, method).Observe(sec)
+	telemetry.MetricUpstreamRequestDuration.WithLabelValues(t.projectId, network, ups, method).Observe(sec)
 }
 
 func (t *Tracker) RecordUpstreamFailure(ups, network, method string) {
@@ -289,7 +290,7 @@ func (t *Tracker) RecordUpstreamSelfRateLimited(ups, network, method string) {
 		m := t.getMetrics(k)
 		m.SelfRateLimitedTotal.Add(1)
 	}
-	MetricUpstreamSelfRateLimitedTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
+	telemetry.MetricUpstreamSelfRateLimitedTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
 }
 
 func (t *Tracker) RecordUpstreamRemoteRateLimited(ups, network, method string) {
@@ -298,7 +299,7 @@ func (t *Tracker) RecordUpstreamRemoteRateLimited(ups, network, method string) {
 		m := t.getMetrics(k)
 		m.RemoteRateLimitedTotal.Add(1)
 	}
-	MetricUpstreamRemoteRateLimitedTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
+	telemetry.MetricUpstreamRemoteRateLimitedTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
 }
 
 // --------------------------------------------
@@ -348,7 +349,7 @@ func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
 	needsGlobalUpdate := false
 	if blockNumber > oldNtwVal {
 		ntwMeta.evmLatestBlockNumber.Store(blockNumber)
-		MetricUpstreamLatestBlockNumber.
+		telemetry.MetricUpstreamLatestBlockNumber.
 			WithLabelValues(t.projectId, network, "*").
 			Set(float64(blockNumber))
 		needsGlobalUpdate = true
@@ -359,14 +360,14 @@ func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
 	oldUpsVal := upsMeta.evmLatestBlockNumber.Load()
 	if blockNumber > oldUpsVal {
 		upsMeta.evmLatestBlockNumber.Store(blockNumber)
-		MetricUpstreamLatestBlockNumber.
+		telemetry.MetricUpstreamLatestBlockNumber.
 			WithLabelValues(t.projectId, network, ups).
 			Set(float64(blockNumber))
 	}
 
 	// 3) Recompute block head lag for this upstream
 	upsLag := ntwMeta.evmLatestBlockNumber.Load() - upsMeta.evmLatestBlockNumber.Load()
-	MetricUpstreamBlockHeadLag.
+	telemetry.MetricUpstreamBlockHeadLag.
 		WithLabelValues(t.projectId, network, ups).
 		Set(float64(upsLag))
 
@@ -383,7 +384,7 @@ func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
 				otherUpsMeta := t.getMetadata(duoKey{ups: k.ups, network: network})
 				otherLag := ntwMeta.evmLatestBlockNumber.Load() - otherUpsMeta.evmLatestBlockNumber.Load()
 				tm.BlockHeadLag.Store(otherLag)
-				MetricUpstreamBlockHeadLag.
+				telemetry.MetricUpstreamBlockHeadLag.
 					WithLabelValues(t.projectId, network, k.ups).
 					Set(float64(otherLag))
 			}
@@ -419,7 +420,7 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 	needsGlobalUpdate := false
 	if blockNumber > oldNtwVal {
 		ntwMeta.evmFinalizedBlockNumber.Store(blockNumber)
-		MetricUpstreamFinalizedBlockNumber.
+		telemetry.MetricUpstreamFinalizedBlockNumber.
 			WithLabelValues(t.projectId, network, "*").
 			Set(float64(blockNumber))
 		needsGlobalUpdate = true
@@ -429,7 +430,7 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 	oldUpsVal := upsMeta.evmFinalizedBlockNumber.Load()
 	if blockNumber > oldUpsVal {
 		upsMeta.evmFinalizedBlockNumber.Store(blockNumber)
-		MetricUpstreamFinalizedBlockNumber.
+		telemetry.MetricUpstreamFinalizedBlockNumber.
 			WithLabelValues(t.projectId, network, ups).
 			Set(float64(blockNumber))
 	}
@@ -440,7 +441,7 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 	upsLag := ntwVal - upsVal
 
 	// Update Prometheus for this upstream
-	MetricUpstreamFinalizationLag.
+	telemetry.MetricUpstreamFinalizationLag.
 		WithLabelValues(t.projectId, network, ups).
 		Set(float64(upsLag))
 
@@ -456,7 +457,7 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 				otherUpsMeta := t.getMetadata(duoKey{ups: k.ups, network: k.network})
 				otherLag := ntwVal - otherUpsMeta.evmFinalizedBlockNumber.Load()
 				tm.FinalizationLag.Store(otherLag)
-				MetricUpstreamFinalizationLag.
+				telemetry.MetricUpstreamFinalizationLag.
 					WithLabelValues(t.projectId, network, k.ups).
 					Set(float64(otherLag))
 			}

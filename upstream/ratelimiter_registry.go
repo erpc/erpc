@@ -4,7 +4,7 @@ import (
 	"sync"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/failsafe-go/failsafe-go/ratelimiter"
 	"github.com/rs/zerolog"
@@ -77,7 +77,7 @@ func (r *RateLimitersRegistry) createRateLimiter(budgetId string, rule *common.R
 	limiter := builder.Build()
 	r.logger.Debug().Str("budget", budgetId).Str("method", rule.Method).Msgf("rate limiter rule prepared with max: %d per %s", rule.MaxCount, rule.Period)
 
-	health.MetricRateLimiterBudgetMaxCount.WithLabelValues(budgetId, rule.Method).Set(float64(rule.MaxCount))
+	telemetry.MetricRateLimiterBudgetMaxCount.WithLabelValues(budgetId, rule.Method).Set(float64(rule.MaxCount))
 
 	return limiter, nil
 }

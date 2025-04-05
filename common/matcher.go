@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/IGLOU-EU/go-wildcard/v2"
+	"github.com/erpc/erpc/telemetry"
 )
 
 type tokenType int
@@ -53,6 +54,11 @@ func ValidatePattern(pattern string) error {
 
 	defer func() {
 		if r := recover(); r != nil {
+			telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+				"validate-pattern",
+				fmt.Sprintf("pattern:%s", pattern),
+				ErrorFingerprint(r),
+			).Inc()
 			// Convert panic into error
 			if err, ok := r.(string); ok {
 				panic(fmt.Errorf("invalid pattern syntax: %s", err))

@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 	"github.com/rs/zerolog"
 )
@@ -132,7 +132,7 @@ func (a *Authorizer) acquireRateLimitPermit(req *common.NormalizedRequest) error
 		for _, rule := range rules {
 			permit := rule.Limiter.TryAcquirePermit()
 			if !permit {
-				health.MetricAuthRequestSelfRateLimited.WithLabelValues(
+				telemetry.MetricAuthRequestSelfRateLimited.WithLabelValues(
 					a.projectId,
 					string(a.cfg.Type),
 					method,

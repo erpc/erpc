@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 )
@@ -316,9 +317,9 @@ func simulateRequestMetricsWithLatency(tracker *Tracker, network, upstream, meth
 }
 
 func resetMetrics() {
-	MetricUpstreamRequestTotal.Reset()
-	MetricUpstreamRequestDuration.Reset()
-	MetricUpstreamErrorTotal.Reset()
-	MetricUpstreamSelfRateLimitedTotal.Reset()
-	MetricUpstreamRemoteRateLimitedTotal.Reset()
+	telemetry.MetricUpstreamRequestTotal.Reset()
+	telemetry.MetricUpstreamRequestDuration.Reset()
+	telemetry.MetricUpstreamErrorTotal.Reset()
+	telemetry.MetricUpstreamSelfRateLimitedTotal.Reset()
+	telemetry.MetricUpstreamRemoteRateLimitedTotal.Reset()
 }
