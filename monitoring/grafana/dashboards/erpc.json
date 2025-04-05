@@ -32,6 +32,9 @@
           "color": {
             "mode": "thresholds"
           },
+          "custom": {
+            "neutral": 0
+          },
           "mappings": [
             {
               "options": {
@@ -46,7 +49,7 @@
           ],
           "noValue": "0",
           "thresholds": {
-            "mode": "absolute",
+            "mode": "percentage",
             "steps": [
               {
                 "color": "dark-green",
@@ -54,23 +57,23 @@
               },
               {
                 "color": "green",
-                "value": 0.2
+                "value": 5
               },
               {
                 "color": "yellow",
-                "value": 0.3
+                "value": 8
               },
               {
                 "color": "orange",
-                "value": 0.5
+                "value": 10
               },
               {
                 "color": "dark-orange",
-                "value": 1
+                "value": 15
               },
               {
                 "color": "red",
-                "value": 2
+                "value": 20
               }
             ]
           },
@@ -91,14 +94,15 @@
         "orientation": "auto",
         "reduceOptions": {
           "calcs": [
-            "lastNotNull"
+            "last"
           ],
           "fields": "",
           "values": false
         },
         "showThresholdLabels": false,
         "showThresholdMarkers": false,
-        "sizing": "auto"
+        "sizing": "auto",
+        "text": {}
       },
       "pluginVersion": "9.5.1",
       "targets": [
@@ -109,13 +113,13 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "histogram_quantile(0.99, sum by(le, network, upstream) (rate(erpc_upstream_request_duration_seconds_bucket{network!=\"n/a\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s]))) > 0",
-          "legendFormat": "{{upstream}} / {{network}}",
+          "expr": "histogram_quantile(0.9, sum by(le, network, upstream) (rate(erpc_upstream_request_duration_seconds_bucket{network!=\"n/a\",network!=\"\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m]))) > 0",
+          "legendFormat": "{{network}} / {{upstream}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "p99 resp. time",
+      "title": "P90 Response Time",
       "transparent": true,
       "type": "gauge"
     },
@@ -129,7 +133,7 @@
       },
       "id": 19,
       "panels": [],
-      "title": "Network-wide",
+      "title": "Network-level Requests",
       "type": "row"
     },
     {
@@ -234,11 +238,12 @@
       },
       "gridPos": {
         "h": 12,
-        "w": 8,
+        "w": 12,
         "x": 0,
         "y": 10
       },
       "id": 2,
+      "interval": "1m",
       "options": {
         "alertThreshold": true,
         "legend": {
@@ -260,7 +265,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_network_request_received_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, category)",
+          "expr": "sum(increase(erpc_network_request_received_total{network=~\"${network:regex}\",upstream=~\"${upstream:regexp}\",category=~\"${category:regex}\"}[1m])) by (project, network, category)",
           "interval": "",
           "legendFormat": "{{project}}, {{network}}, {{category}}",
           "range": true,
@@ -372,11 +377,12 @@
       },
       "gridPos": {
         "h": 12,
-        "w": 8,
-        "x": 8,
+        "w": 12,
+        "x": 12,
         "y": 10
       },
       "id": 28,
+      "interval": "1m",
       "options": {
         "alertThreshold": true,
         "legend": {
@@ -398,7 +404,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(erpc_network_request_received_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, category)",
+          "expr": "sum(rate(erpc_network_request_received_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, category)",
           "interval": "",
           "legendFormat": "{{project}}, {{network}}, {{category}}",
           "range": true,
@@ -510,10 +516,11 @@
       "gridPos": {
         "h": 12,
         "w": 8,
-        "x": 16,
-        "y": 10
+        "x": 0,
+        "y": 22
       },
       "id": 12,
+      "interval": "1m",
       "options": {
         "alertThreshold": true,
         "legend": {
@@ -535,173 +542,13 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(erpc_network_request_self_rate_limited_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network)",
+          "expr": "sum(rate(erpc_network_request_self_rate_limited_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network)",
           "legendFormat": "{{project}}, {{network}}",
           "range": true,
           "refId": "A"
         }
       ],
       "title": "Network self-imposed Rate-limited requests",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "s"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byValue",
-              "options": {
-                "op": "gte",
-                "reducer": "allIsZero",
-                "value": 0
-              }
-            },
-            "properties": [
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "legend": true,
-                  "tooltip": true,
-                  "viz": false
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byValue",
-              "options": {
-                "op": "gte",
-                "reducer": "allIsNull",
-                "value": 0
-              }
-            },
-            "properties": [
-              {
-                "id": "custom.hideFrom",
-                "value": {
-                  "legend": true,
-                  "tooltip": true,
-                  "viz": false
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 12,
-        "w": 8,
-        "x": 0,
-        "y": 22
-      },
-      "id": 8,
-      "options": {
-        "alertThreshold": true,
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "11.5.0-80207",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, network, category))",
-          "hide": false,
-          "legendFormat": "p50: {{project}}, {{network}}, {{category}}",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, network, category))",
-          "legendFormat": "p95: {{project}}, {{network}}, {{category}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[5m])) by (le, project, network, category))",
-          "hide": false,
-          "legendFormat": "p99: {{project}}, {{network}}, {{category}}",
-          "range": true,
-          "refId": "B"
-        }
-      ],
-      "title": "Network-level resp. time",
       "type": "timeseries"
     },
     {
@@ -811,6 +658,7 @@
         "y": 22
       },
       "id": 14,
+      "interval": "1m",
       "options": {
         "alertThreshold": true,
         "legend": {
@@ -833,15 +681,428 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "sum(increase(erpc_network_failed_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project,network,error) > 0",
+          "expr": "sum(increase(erpc_network_failed_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (cluster_name,network,category,error) > 0",
           "instant": false,
           "interval": "",
-          "legendFormat": "{{project}}, {{network}}, {{error}}",
+          "legendFormat": "{{cluster_name}}, {{network}}, {{category}}, {{error}}",
           "range": true,
           "refId": "A"
         }
       ],
       "title": "Network-level Errors",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byValue",
+              "options": {
+                "op": "gte",
+                "reducer": "allIsZero",
+                "value": 0
+              }
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": true,
+                  "tooltip": true,
+                  "viz": false
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byValue",
+              "options": {
+                "op": "gte",
+                "reducer": "allIsNull",
+                "value": 0
+              }
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": true,
+                  "tooltip": true,
+                  "viz": false
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 8,
+        "x": 0,
+        "y": 34
+      },
+      "id": 8,
+      "interval": "1m",
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.5.0-80207",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (le, project, network, category))",
+          "hide": false,
+          "legendFormat": "{{project}}, {{network}}, {{category}}",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Network-level P99 Resp. time",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byValue",
+              "options": {
+                "op": "gte",
+                "reducer": "allIsZero",
+                "value": 0
+              }
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": true,
+                  "tooltip": true,
+                  "viz": false
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byValue",
+              "options": {
+                "op": "gte",
+                "reducer": "allIsNull",
+                "value": 0
+              }
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": true,
+                  "tooltip": true,
+                  "viz": false
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 8,
+        "x": 8,
+        "y": 34
+      },
+      "id": 44,
+      "interval": "1m",
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.5.0-80207",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (le, project, network, category))",
+          "legendFormat": "{{project}}, {{network}}, {{category}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Network-level P90 Resp. time",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byValue",
+              "options": {
+                "op": "gte",
+                "reducer": "allIsZero",
+                "value": 0
+              }
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": true,
+                  "tooltip": true,
+                  "viz": false
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byValue",
+              "options": {
+                "op": "gte",
+                "reducer": "allIsNull",
+                "value": 0
+              }
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": true,
+                  "tooltip": true,
+                  "viz": false
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 8,
+        "x": 16,
+        "y": 34
+      },
+      "id": 45,
+      "interval": "1m",
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.5.0-80207",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (le, project, network, category))",
+          "hide": false,
+          "legendFormat": "{{project}}, {{network}}, {{category}}",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Network-level P50 Resp. time",
       "type": "timeseries"
     },
     {
@@ -906,9 +1167,10 @@
         "h": 11,
         "w": 8,
         "x": 0,
-        "y": 34
+        "y": 46
       },
       "id": 9,
+      "interval": "1m",
       "options": {
         "alertThreshold": true,
         "legend": {
@@ -930,7 +1192,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_network_multiplexed_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, category)",
+          "expr": "sum(increase(erpc_network_multiplexed_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, category)",
           "legendFormat": "{{project}}, {{network}}, {{category}}",
           "range": true,
           "refId": "A"
@@ -944,7 +1206,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Total identical requests that are initiated towards a new upstream while the previous upstream is slow to respond",
+      "description": "When identical requests arrive at the same time they'll be merged, this number shows number of these requests",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -993,8 +1255,7 @@
                 "value": 80
               }
             ]
-          },
-          "unit": "short"
+          }
         },
         "overrides": []
       },
@@ -1002,9 +1263,10 @@
         "h": 11,
         "w": 8,
         "x": 8,
-        "y": 34
+        "y": 46
       },
-      "id": 25,
+      "id": 62,
+      "interval": "1m",
       "options": {
         "alertThreshold": true,
         "legend": {
@@ -1026,13 +1288,13 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_network_hedged_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, upstream) > 0",
-          "legendFormat": "{{project}}, {{network}}, {{upstream}}",
+          "expr": "sum(increase(erpc_network_multiplexed_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, category)",
+          "legendFormat": "{{project}}, {{network}}, {{category}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Hedged requests",
+      "title": "Network-level Multiplexed requests",
       "type": "timeseries"
     },
     {
@@ -1044,7 +1306,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "continuous-RdYlGr"
+            "mode": "continuous-RdYlGr",
+            "seriesBy": "last"
           },
           "custom": {
             "axisCenteredZero": false,
@@ -1053,7 +1316,7 @@
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "line",
-            "fillOpacity": 83,
+            "fillOpacity": 17,
             "gradientMode": "opacity",
             "hideFrom": {
               "legend": false,
@@ -1061,6 +1324,13 @@
               "viz": false
             },
             "lineInterpolation": "linear",
+            "lineStyle": {
+              "dash": [
+                0,
+                10
+              ],
+              "fill": "dot"
+            },
             "lineWidth": 1,
             "pointSize": 5,
             "scaleDistribution": {
@@ -1098,7 +1368,7 @@
         "h": 11,
         "w": 8,
         "x": 16,
-        "y": 34
+        "y": 46
       },
       "id": 33,
       "options": {
@@ -1122,7 +1392,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "1 - ((sum(increase(erpc_network_hedge_discards_total{attempt!=\"1\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, upstream)) / (sum(increase(erpc_network_hedged_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, upstream))) > 0",
+          "expr": "1 - ((sum(increase(erpc_network_hedge_discards_total{attempt!=\"1\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, upstream)) / (sum(increase(erpc_network_hedged_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, upstream))) > 0",
           "legendFormat": "{{project}}, {{network}}, {{upstream}}",
           "range": true,
           "refId": "A"
@@ -1132,16 +1402,246 @@
       "type": "timeseries"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Highest value for latest block polled from all upstreams across all replicas",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisGridShow": false,
+            "axisLabel": "",
+            "axisPlacement": "hidden",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineStyle": {
+              "dash": [
+                0,
+                10
+              ],
+              "fill": "dot"
+            },
+            "lineWidth": 1,
+            "pointSize": 7,
+            "scaleDistribution": {
+              "linearThreshold": 1,
+              "log": 10,
+              "type": "symlog"
+            },
+            "showPoints": "always",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "locale"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 57
+      },
+      "id": 25,
+      "interval": "1m",
+      "maxDataPoints": 20,
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "sortBy": "Last *",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "9.5.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "max(erpc_upstream_latest_block_number{upstream=\"*\",network!=\"\",network=~\"${network:regex}\"}) by (project, network)",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{project}}, {{network}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Highest Latest Block",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Highest value for latest block polled from all upstreams across all replicas",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisGridShow": false,
+            "axisLabel": "",
+            "axisPlacement": "hidden",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineStyle": {
+              "dash": [
+                0,
+                10
+              ],
+              "fill": "dot"
+            },
+            "lineWidth": 1,
+            "pointSize": 7,
+            "scaleDistribution": {
+              "linearThreshold": 1,
+              "log": 10,
+              "type": "symlog"
+            },
+            "showPoints": "always",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "locale"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 57
+      },
+      "id": 63,
+      "interval": "1m",
+      "maxDataPoints": 20,
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "sortBy": "Last *",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "9.5.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "max(erpc_upstream_finalized_block_number{upstream=\"*\",network!=\"\",network=~\"${network:regex}\"}) by (project, network)",
+          "format": "time_series",
+          "instant": false,
+          "legendFormat": "{{project}}, {{network}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Highest Finalized Block",
+      "type": "timeseries"
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 45
+        "y": 67
       },
       "id": 20,
       "panels": [],
-      "title": "Upstream-wide",
+      "title": "Upstream-level Requests",
       "type": "row"
     },
     {
@@ -1205,11 +1705,12 @@
       },
       "gridPos": {
         "h": 12,
-        "w": 8,
+        "w": 12,
         "x": 0,
-        "y": 46
+        "y": 68
       },
       "id": 4,
+      "interval": "1m",
       "options": {
         "alertThreshold": true,
         "legend": {
@@ -1231,14 +1732,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_upstream_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, upstream, attempt)",
+          "expr": "sum(increase(erpc_upstream_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, upstream, category, attempt)",
           "interval": "",
-          "legendFormat": "{{project}}, {{network}}, {{upstream}}, {{attempt}}",
+          "legendFormat": "{{project}}, {{network}}, {{upstream}}, {{category}}, attempt={{attempt}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Upstream-level requests",
+      "title": "Upstream-level Requests",
       "type": "timeseries"
     },
     {
@@ -1302,11 +1803,12 @@
       },
       "gridPos": {
         "h": 12,
-        "w": 8,
-        "x": 8,
-        "y": 46
+        "w": 12,
+        "x": 12,
+        "y": 68
       },
       "id": 29,
+      "interval": "1m",
       "options": {
         "alertThreshold": true,
         "legend": {
@@ -1328,110 +1830,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(erpc_upstream_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, upstream, attempt)",
+          "expr": "sum(rate(erpc_upstream_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, upstream, category)",
           "interval": "",
-          "legendFormat": "{{project}}, {{network}}, {{upstream}}, {{attempt}}",
+          "legendFormat": "{{project}}, {{network}}, {{upstream}}, {{category}}",
           "range": true,
           "refId": "A"
         }
       ],
       "title": "Upstream-level RPS",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 12,
-        "w": 8,
-        "x": 16,
-        "y": 46
-      },
-      "id": 26,
-      "options": {
-        "alertThreshold": true,
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "11.5.0-80207",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "avg(erpc_upstream_score_overall{network=\"*\"}) by (project, upstream, network)",
-          "format": "time_series",
-          "legendFormat": "{{project}}, {{upstream}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Scores",
       "type": "timeseries"
     },
     {
@@ -1497,7 +1903,7 @@
         "h": 12,
         "w": 8,
         "x": 0,
-        "y": 58
+        "y": 80
       },
       "id": 11,
       "options": {
@@ -1521,8 +1927,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_upstream_request_remote_rate_limited_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, upstream)",
-          "legendFormat": "{{project}}, {{network}}, {{upstream}}",
+          "expr": "sum(increase(erpc_upstream_request_remote_rate_limited_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, upstream, category)",
+          "legendFormat": "{{project}}, {{network}}, {{upstream}}, {{category}}",
           "range": true,
           "refId": "A"
         }
@@ -1593,7 +1999,7 @@
         "h": 12,
         "w": 8,
         "x": 8,
-        "y": 58
+        "y": 80
       },
       "id": 10,
       "options": {
@@ -1617,8 +2023,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_upstream_request_self_rate_limited_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, upstream)",
-          "legendFormat": "{{project}}, {{network}}, {{upstream}}",
+          "expr": "sum(increase(erpc_upstream_request_self_rate_limited_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, upstream, category)",
+          "legendFormat": "{{project}}, {{network}}, {{upstream}}, {{category}}",
           "range": true,
           "refId": "A"
         }
@@ -1631,7 +2037,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Dynamically tuned value for maxCount of different rate limit budgets",
+      "description": "Dynamically tuned value for maxCount of different rate limit budgets. NOTE This value is SUM of all replicas (in a multiple container setup)",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1689,7 +2095,7 @@
         "h": 12,
         "w": 8,
         "x": 16,
-        "y": 58
+        "y": 80
       },
       "id": 30,
       "options": {
@@ -1783,11 +2189,12 @@
       },
       "gridPos": {
         "h": 12,
-        "w": 12,
+        "w": 8,
         "x": 0,
-        "y": 70
+        "y": 92
       },
       "id": 27,
+      "interval": "1m",
       "options": {
         "alertThreshold": true,
         "legend": {
@@ -1809,35 +2216,13 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum(rate(erpc_upstream_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, upstream))",
-          "legendFormat": "p50: {{project}}, {{upstream}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(erpc_upstream_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, upstream))",
-          "legendFormat": "p95: {{project}}, {{upstream}}",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (le, project, upstream))",
-          "legendFormat": "p99: {{project}}, {{upstream}}",
+          "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (le, project, upstream, category))",
+          "legendFormat": "{{project}}, {{upstream}}, {{category}}",
           "range": true,
           "refId": "C"
         }
       ],
-      "title": "Upstream-level resp. time",
+      "title": "Upstream-level P99 Resp. time",
       "type": "timeseries"
     },
     {
@@ -1901,11 +2286,11 @@
       },
       "gridPos": {
         "h": 12,
-        "w": 12,
-        "x": 12,
-        "y": 70
+        "w": 8,
+        "x": 8,
+        "y": 92
       },
-      "id": 7,
+      "id": 46,
       "options": {
         "alertThreshold": true,
         "legend": {
@@ -1927,35 +2312,109 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum(rate(erpc_upstream_request_duration_seconds_bucket{network!=\"n/a\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, network, upstream, category))",
-          "legendFormat": "p50: {{project}}, {{network}}, {{upstream}}, {{category}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(erpc_upstream_request_duration_seconds_bucket{network!=\"n/a\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, network, upstream, category))",
-          "legendFormat": "p95: {{project}}, {{network}}, {{upstream}}, {{category}}",
+          "expr": "histogram_quantile(0.9, sum(rate(erpc_upstream_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (le, project, upstream, category))",
+          "legendFormat": "{{project}}, {{upstream}}, {{category}}",
           "range": true,
           "refId": "B"
+        }
+      ],
+      "title": "Upstream-level P90 Resp. time",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "s"
         },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 8,
+        "x": 16,
+        "y": 92
+      },
+      "id": 47,
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.5.0-80207",
+      "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket{network!=\"n/a\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (le, project, network, upstream, category))",
-          "legendFormat": "p99: {{project}}, {{network}}, {{upstream}}, {{category}}",
+          "expr": "histogram_quantile(0.50, sum(rate(erpc_upstream_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, upstream, category))",
+          "legendFormat": "{{project}}, {{upstream}}, {{category}}",
           "range": true,
-          "refId": "C"
+          "refId": "A"
         }
       ],
-      "title": "Method resp. time",
+      "title": "Upstream-level P50 Resp. time",
       "type": "timeseries"
     },
     {
@@ -2020,7 +2479,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 82
+        "y": 104
       },
       "id": 15,
       "options": {
@@ -2044,7 +2503,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_upstream_request_errors_total{severity=\"warning\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, upstream, error) > 0",
+          "expr": "sum(increase(erpc_upstream_request_errors_total{severity=\"warning\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, upstream, error) > 0",
           "interval": "",
           "legendFormat": "{{project}}, {{network}}, {{upstream}}, {{error}}",
           "range": true,
@@ -2113,10 +2572,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 18,
+        "h": 9,
         "w": 24,
         "x": 0,
-        "y": 94
+        "y": 116
       },
       "id": 24,
       "options": {
@@ -2140,9 +2599,9 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_upstream_request_errors_total{severity=\"critical\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, upstream, error) > 0",
+          "expr": "sum(increase(erpc_upstream_request_errors_total{severity=\"critical\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, upstream, category, error) > 0",
           "interval": "",
-          "legendFormat": "{{project}}, {{network}}, {{upstream}}, {{error}}",
+          "legendFormat": "{{project}}, {{network}}, {{category}}, {{upstream}}, {{error}}",
           "range": true,
           "refId": "A"
         }
@@ -2156,7 +2615,1342 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 112
+        "y": 125
+      },
+      "id": 53,
+      "panels": [],
+      "title": "Upstream Health",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 12,
+        "x": 0,
+        "y": 126
+      },
+      "id": 26,
+      "interval": "1m",
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.5.0-80207",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "avg(erpc_upstream_score_overall{network=\"*\",category=\"*\",upstream=~\"${upstream:regex}\"}) by (project, upstream)",
+          "format": "time_series",
+          "interval": "1m",
+          "legendFormat": "{{project}}, {{upstream}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Avg. Score by Upstream",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 12,
+        "x": 12,
+        "y": 126
+      },
+      "id": 50,
+      "interval": "1m",
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.5.0-80207",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "avg(erpc_upstream_score_overall{network!=\"*\",category!=\"*\",upstream=~\"${upstream:regex}\"}) by (project, upstream, category)",
+          "format": "time_series",
+          "interval": "1m",
+          "legendFormat": "{{project}}, {{upstream}}, {{category}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Avg. Score by Method",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "continuous-GrYlRd",
+            "seriesBy": "last"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "axisSoftMax": 1024,
+            "barAlignment": 0,
+            "drawStyle": "points",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineStyle": {
+              "fill": "solid"
+            },
+            "lineWidth": 1,
+            "pointSize": 6,
+            "scaleDistribution": {
+              "log": 2,
+              "type": "log"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 0,
+          "mappings": [],
+          "noValue": "0",
+          "thresholds": {
+            "mode": "percentage",
+            "steps": [
+              {
+                "color": "dark-green",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              },
+              {
+                "color": "yellow",
+                "value": 2
+              },
+              {
+                "color": "orange",
+                "value": 3
+              },
+              {
+                "color": "dark-orange",
+                "value": 4
+              },
+              {
+                "color": "light-red",
+                "value": 5
+              },
+              {
+                "color": "semi-dark-red",
+                "value": 10
+              },
+              {
+                "color": "dark-red",
+                "value": 20
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 20,
+        "w": 12,
+        "x": 0,
+        "y": 138
+      },
+      "id": 49,
+      "interval": "1m",
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [
+            "min",
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Mean",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.5.0-80207",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "avg(erpc_upstream_block_head_lag{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\"}) by (project, network, upstream) <= 5000",
+          "format": "time_series",
+          "instant": false,
+          "interval": "1m",
+          "legendFormat": "{{project}},  {{network}}, {{upstream}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Latest Block Lag by Upstream",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "A special lagging tracker showing only lags of above 5000 blocks which indicates node too far off.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "semi-dark-red",
+            "mode": "fixed",
+            "seriesBy": "last"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisGridShow": false,
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "points",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineStyle": {
+              "dash": [
+                0,
+                10
+              ],
+              "fill": "dot"
+            },
+            "lineWidth": 1,
+            "pointSize": 6,
+            "scaleDistribution": {
+              "log": 10,
+              "type": "log"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "percentage",
+            "steps": [
+              {
+                "color": "dark-green",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              },
+              {
+                "color": "#EAB839",
+                "value": 5
+              },
+              {
+                "color": "dark-orange",
+                "value": 10
+              },
+              {
+                "color": "semi-dark-red",
+                "value": 20
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 20,
+        "w": 12,
+        "x": 12,
+        "y": 138
+      },
+      "id": 59,
+      "interval": "1m",
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [
+            "min",
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Max",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.5.0-80207",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "avg(erpc_upstream_block_head_lag{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\"}) by (project, upstream, network) > 5000",
+          "format": "time_series",
+          "interval": "1m",
+          "legendFormat": "{{project}}, {{network}}, {{upstream}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Out-of-sync latest block lag by Upstream",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "filterable": true,
+            "inspect": false
+          },
+          "decimals": 0,
+          "mappings": [],
+          "noValue": "-",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "locale"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Time"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "upstream"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 363
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 15,
+        "w": 12,
+        "x": 0,
+        "y": 158
+      },
+      "id": 51,
+      "interval": "1m",
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "enablePagination": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": []
+      },
+      "pluginVersion": "9.5.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "avg(erpc_upstream_latest_block_number{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\"}) by (project, upstream, network)",
+          "format": "table",
+          "instant": true,
+          "interval": "1m",
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Latest Block by Upstream",
+      "transformations": [],
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "How many times we had to Poll for latest block number. This number can go up by integrity module if debounce config is too low.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 1,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 15,
+        "w": 12,
+        "x": 12,
+        "y": 158
+      },
+      "id": 52,
+      "interval": "1m",
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.5.0-80207",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(erpc_upstream_latest_block_polled_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, upstream)",
+          "format": "time_series",
+          "interval": "1m",
+          "legendFormat": "{{project}}, {{network}}, {{upstream}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Latest Block Polls",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Difference between lowest and highest finalized block as reported by upstreams. Min/Max/Mean are values across multiple replicas (if you have erpc in a multi-container setup)",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "continuous-GrYlRd",
+            "seriesBy": "last"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisGridShow": false,
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "points",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineStyle": {
+              "dash": [
+                0,
+                10
+              ],
+              "fill": "dot"
+            },
+            "lineWidth": 1,
+            "pointSize": 6,
+            "scaleDistribution": {
+              "log": 2,
+              "type": "log"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 0,
+          "mappings": [],
+          "max": 1024,
+          "thresholds": {
+            "mode": "percentage",
+            "steps": [
+              {
+                "color": "dark-green",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              },
+              {
+                "color": "#EAB839",
+                "value": 5
+              },
+              {
+                "color": "dark-orange",
+                "value": 10
+              },
+              {
+                "color": "semi-dark-red",
+                "value": 20
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 20,
+        "w": 12,
+        "x": 0,
+        "y": 173
+      },
+      "id": 54,
+      "interval": "1m",
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [
+            "min",
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Mean",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.5.0-80207",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "avg(erpc_upstream_finalization_lag{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\"}) by (project, upstream, network) <= 5000",
+          "format": "time_series",
+          "interval": "1m",
+          "legendFormat": "{{project}}, {{network}}, {{upstream}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Finalized Block Lag by Upstream",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "A special lagging tracker showing only lags of above 5000 blocks which indicates node too far off.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "semi-dark-red",
+            "mode": "fixed",
+            "seriesBy": "last"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisGridShow": false,
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "points",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineStyle": {
+              "dash": [
+                0,
+                10
+              ],
+              "fill": "dot"
+            },
+            "lineWidth": 1,
+            "pointSize": 6,
+            "scaleDistribution": {
+              "log": 10,
+              "type": "log"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "percentage",
+            "steps": [
+              {
+                "color": "dark-green",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              },
+              {
+                "color": "#EAB839",
+                "value": 5
+              },
+              {
+                "color": "dark-orange",
+                "value": 10
+              },
+              {
+                "color": "semi-dark-red",
+                "value": 20
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 20,
+        "w": 12,
+        "x": 12,
+        "y": 173
+      },
+      "id": 57,
+      "interval": "1m",
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [
+            "min",
+            "max",
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Max",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.5.0-80207",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "avg(erpc_upstream_finalization_lag{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\"}) by (project, upstream, network) > 5000",
+          "format": "time_series",
+          "interval": "1m",
+          "legendFormat": "{{project}}, {{network}}, {{upstream}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Out-of-sync Finalized Blocks by Upstream",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "locale"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Time"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 13,
+        "w": 12,
+        "x": 0,
+        "y": 193
+      },
+      "id": 55,
+      "interval": "1m",
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "network"
+          }
+        ]
+      },
+      "pluginVersion": "9.5.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "avg(erpc_upstream_finalized_block_number{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\"}) by (project, upstream, network)",
+          "format": "table",
+          "instant": true,
+          "interval": "1m",
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Finalized Block by Upstream",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "How many times we had to Poll for finalized block number. ",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 1,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 13,
+        "w": 12,
+        "x": 12,
+        "y": 193
+      },
+      "id": 56,
+      "interval": "1m",
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.5.0-80207",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(erpc_upstream_finalized_block_polled_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, upstream)",
+          "format": "time_series",
+          "interval": "1m",
+          "legendFormat": "{{project}}, {{network}}, {{upstream}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Finalized Block Polls",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "How many times upstream returned a stale latest block (compared to other nodes) for eth_getBlockByNumber(latest) and eth_blockNumber",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 13,
+        "w": 12,
+        "x": 0,
+        "y": 206
+      },
+      "id": 60,
+      "interval": "1m",
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.5.0-80207",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(erpc_upstream_stale_latest_block_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, upstream, category)    ",
+          "format": "time_series",
+          "interval": "1m",
+          "legendFormat": "{{project}}, {{network}}, {{upstream}}, {{category}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Stale latest block by Upstream",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "How many times upstream returned stale finalized block (compared to other nodes) for eth_getBlockByNumber(finalized) and eth_blockNumber",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 13,
+        "w": 12,
+        "x": 12,
+        "y": 206
+      },
+      "id": 61,
+      "interval": "1m",
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.5.0-80207",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(erpc_upstream_stale_finalized_block_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, upstream, category)    ",
+          "format": "time_series",
+          "interval": "1m",
+          "legendFormat": "{{project}}, {{network}}, {{upstream}}, {{category}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Stale finalized block by Upstream",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 219
       },
       "id": 21,
       "panels": [],
@@ -2224,7 +4018,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 113
+        "y": 220
       },
       "id": 17,
       "options": {
@@ -2248,7 +4042,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_cache_set_success_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, category, connector, policy, ttl)",
+          "expr": "sum(increase(erpc_cache_set_success_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, category, connector, policy, ttl)",
           "legendFormat": "{{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
           "range": true,
           "refId": "A"
@@ -2319,7 +4113,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 113
+        "y": 220
       },
       "id": 16,
       "options": {
@@ -2343,7 +4137,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_set_success_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, network, category, connector, policy, ttl))",
+          "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_set_success_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (le, project, network, category, connector, policy, ttl))",
           "legendFormat": "p50 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
           "range": true,
           "refId": "A"
@@ -2354,7 +4148,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_set_success_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, network, category, connector, policy, ttl))",
+          "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_set_success_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (le, project, network, category, connector, policy, ttl))",
           "hide": false,
           "legendFormat": "p95 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
           "range": true,
@@ -2425,7 +4219,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 123
+        "y": 230
       },
       "id": 36,
       "options": {
@@ -2449,8 +4243,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_cache_set_error_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, category, connector, policy, ttl)",
-          "legendFormat": "{{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
+          "expr": "sum(increase(erpc_cache_set_error_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, category, connector, policy, error, ttl)",
+          "legendFormat": "{{project}}, {{network}}, {{category}}, {{connector}}, {{error}}, {{policy}}, TTL={{ttl}}",
           "range": true,
           "refId": "A"
         }
@@ -2520,7 +4314,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 123
+        "y": 230
       },
       "id": 37,
       "options": {
@@ -2544,7 +4338,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_set_error_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, network, category, connector, policy, ttl))",
+          "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_set_error_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (le, project, network, category, connector, policy, ttl))",
           "legendFormat": "p50 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
           "range": true,
           "refId": "A"
@@ -2555,7 +4349,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_set_error_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, network, category, connector, policy, ttl))",
+          "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_set_error_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (le, project, network, category, connector, policy, ttl))",
           "hide": false,
           "legendFormat": "p95 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
           "range": true,
@@ -2626,7 +4420,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 133
+        "y": 240
       },
       "id": 38,
       "options": {
@@ -2650,8 +4444,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_cache_get_success_hit_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, category, connector, policy, ttl)",
-          "legendFormat": "{{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
+          "expr": "sum(increase(erpc_cache_get_success_hit_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (cluster_name, network, category, connector, policy, ttl)",
+          "legendFormat": "{{cluster_name}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
           "range": true,
           "refId": "A"
         }
@@ -2721,7 +4515,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 133
+        "y": 240
       },
       "id": 39,
       "options": {
@@ -2771,6 +4565,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
+      "description": "",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2827,7 +4622,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 143
+        "y": 250
       },
       "id": 42,
       "options": {
@@ -2851,7 +4646,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_cache_get_success_miss_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, category, connector, policy, ttl)",
+          "expr": "sum(increase(erpc_cache_get_success_miss_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, category, connector, policy, ttl)",
           "legendFormat": "{{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
           "range": true,
           "refId": "A"
@@ -2922,7 +4717,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 143
+        "y": 250
       },
       "id": 43,
       "options": {
@@ -3028,7 +4823,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 153
+        "y": 260
       },
       "id": 40,
       "options": {
@@ -3052,7 +4847,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_cache_get_error_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (project, network, category, connector, policy, ttl, error)",
+          "expr": "sum(increase(erpc_cache_get_error_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",error!=\"ErrRecordNotFound: record not found\"}[1m])) by (project, network, category, connector, policy, ttl, error)",
           "legendFormat": "{{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, {{error}}, TTL={{ttl}}",
           "range": true,
           "refId": "A"
@@ -3123,7 +4918,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 153
+        "y": 260
       },
       "id": 41,
       "options": {
@@ -3167,9 +4962,187 @@
       ],
       "title": "Cache GET error duration",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 270
+      },
+      "id": 64,
+      "panels": [],
+      "title": "Misc",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "These are issues that are most often edge-cases that are not covered within eRPC logic, and must be reported to the team.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byValue",
+              "options": {
+                "op": "gte",
+                "reducer": "allIsZero",
+                "value": 0
+              }
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": true,
+                  "tooltip": true,
+                  "viz": false
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byValue",
+              "options": {
+                "op": "gte",
+                "reducer": "allIsNull",
+                "value": 0
+              }
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": true,
+                  "tooltip": true,
+                  "viz": false
+                }
+              }
+            ]
+          },
+          {
+            "__systemRef": "hideSeriesFrom",
+            "matcher": {
+              "id": "byNames",
+              "options": {
+                "mode": "exclude",
+                "names": [
+                  "dev-us-west, evm:1868, eth_getBlockByNumber, ErrEndpointMissingData - -32014 - ErrJsonRpcExceptionInternal block not found with number 0xREDACTED"
+                ],
+                "prefix": "All except:",
+                "readOnly": true
+              }
+            },
+            "properties": [
+              {
+                "id": "custom.hideFrom",
+                "value": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": true
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 271
+      },
+      "id": 65,
+      "interval": "1m",
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.5.0-80207",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "sum(increase(erpc_unexpected_panic_total{}[1m])) by (scope, extra, error)",
+          "instant": false,
+          "interval": "",
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Unexpected panics",
+      "type": "timeseries"
     }
   ],
-  "refresh": false,
+  "refresh": "1m",
   "schemaVersion": 38,
   "style": "dark",
   "tags": [],
@@ -3177,7 +5150,7 @@
     "list": [
       {
         "current": {
-          "selected": true,
+          "selected": false,
           "text": "default",
           "value": "default"
         },
@@ -3258,7 +5231,7 @@
       {
         "allValue": ".*",
         "current": {
-          "selected": true,
+          "selected": false,
           "text": [
             "All"
           ],
@@ -3289,13 +5262,13 @@
     ]
   },
   "time": {
-    "from": "now-5m",
+    "from": "now-30m",
     "to": "now"
   },
   "timepicker": {},
   "timezone": "",
   "title": "eRPC Metrics",
   "uid": "erpc_metrics",
-  "version": 7,
+  "version": 36,
   "weekStart": ""
 }
