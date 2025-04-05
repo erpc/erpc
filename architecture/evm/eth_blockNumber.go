@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -59,7 +59,7 @@ func networkPreForward_eth_blockNumber(ctx context.Context, network common.Netwo
 		if upsId == "" {
 			upsId = "n/a"
 		}
-		health.MetricUpstreamStaleLatestBlock.WithLabelValues(
+		telemetry.MetricUpstreamStaleLatestBlock.WithLabelValues(
 			network.ProjectId(),
 			network.Id(),
 			upsId,

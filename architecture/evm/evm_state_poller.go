@@ -10,6 +10,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
@@ -282,7 +283,7 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 	defer span.End()
 	return e.latestBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		e.logger.Trace().Msg("fetching latest block number for evm state poller")
-		health.MetricUpstreamLatestBlockPolled.WithLabelValues(
+		telemetry.MetricUpstreamLatestBlockPolled.WithLabelValues(
 			e.projectId,
 			e.upstream.NetworkId(),
 			e.upstream.Config().Id,
@@ -337,7 +338,7 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 	}
 	return e.finalizedBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		e.logger.Trace().Msg("fetching finalized block number for evm state poller")
-		health.MetricUpstreamFinalizedBlockPolled.WithLabelValues(
+		telemetry.MetricUpstreamFinalizedBlockPolled.WithLabelValues(
 			e.projectId,
 			e.upstream.NetworkId(),
 			e.upstream.Config().Id,
