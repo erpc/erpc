@@ -419,7 +419,7 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 	var err error
 	var retryExceededErr retrypolicy.ExceededError
 
-	// Our own standard error is returned when failsafe execution is returned and for example retry policy 
+	// Our own standard error is returned when failsafe execution is returned and for example retry policy
 	// logic above decided it does not need to retry (e.g. reverted transaction error).
 	// Another case is an UpstreamExhausted error which is not going to be retried due to all errors being unretryable.
 	// In those cases we return the standard error object as is.

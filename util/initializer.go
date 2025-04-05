@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/rs/zerolog"
 )
 
@@ -35,6 +36,10 @@ const (
 	TaskTimedOut
 	TaskFailed
 )
+
+func (s TaskState) String() string {
+	return []string{"pending", "running", "succeeded", "timedOut", "failed"}[s]
+}
 
 type BootstrapTask struct {
 	Name        string
@@ -436,6 +441,15 @@ type TaskStatus struct {
 	Attempts    int
 }
 
+func (s *TaskStatus) MarshalJSON() ([]byte, error) {
+	return sonic.Marshal(map[string]interface{}{
+		"name":        s.Name,
+		"state":       s.State.String(),
+		"err":         s.Err,
+		"lastAttempt": s.LastAttempt,
+		"attempts":    s.Attempts,
+	})
+}
 func (i *Initializer) tasksStatus() []TaskStatus {
 	var statuses []TaskStatus
 	i.tasks.Range(func(key, value interface{}) bool {
@@ -462,6 +476,14 @@ type InitializerStatus struct {
 	State     InitializationState
 	LastError error
 	Tasks     []TaskStatus
+}
+
+func (s *InitializerStatus) MarshalJSON() ([]byte, error) {
+	return sonic.Marshal(map[string]interface{}{
+		"state":     s.State.String(),
+		"lastError": s.LastError,
+		"tasks":     s.Tasks,
+	})
 }
 
 // Start background auto-retry, if configured
