@@ -132,6 +132,10 @@ func (v *EnvioVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logge
 	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_chainId","params":[]}`, util.RandomID())))
 	resp, err := client.SendRequest(ctx, pr)
 	if err != nil {
+		// Consider "failed to verify certificate" as unsupported due to how Envios load-balancing in their K8S works
+		if strings.Contains(err.Error(), "failed to verify certificate") {
+			return false, nil
+		}
 		return false, err
 	}
 
