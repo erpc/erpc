@@ -3510,15 +3510,15 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 
 		// Verify the response
 		assert.Equal(t, http.StatusOK, statusCode, "Status code should be 200 OK")
-		
+
 		var response map[string]interface{}
 		err := json.Unmarshal([]byte(body), &response)
 		require.NoError(t, err, "Should be able to decode response")
-		
+
 		// Verify the result is an empty array, not an error
 		assert.Contains(t, response, "result", "Response should contain 'result' field")
 		assert.NotContains(t, response, "error", "Response should not contain 'error' field")
-		
+
 		// Verify the result is an empty array
 		result, ok := response["result"].([]interface{})
 		assert.True(t, ok, "Result should be an array")
