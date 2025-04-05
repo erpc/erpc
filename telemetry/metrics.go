@@ -1,4 +1,4 @@
-package health
+package telemetry
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
@@ -6,6 +6,12 @@ import (
 )
 
 var (
+	MetricUnexpectedPanicTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "unexpected_panic_total",
+		Help:      "Total number of unexpected panics.",
+	}, []string{"scope", "extra", "error"})
+
 	MetricUpstreamRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_total",
@@ -110,13 +116,13 @@ var (
 		Namespace: "erpc",
 		Name:      "upstream_stale_latest_block_total",
 		Help:      "Total number of times an upstream returned a stale (vs others) latest block number.",
-	}, []string{"project", "network", "upstream"})
+	}, []string{"project", "network", "upstream", "category"})
 
 	MetricUpstreamStaleFinalizedBlock = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_stale_finalized_block_total",
 		Help:      "Total number of times an upstream returned a stale (vs others) finalized block number.",
-	}, []string{"project", "network", "upstream"})
+	}, []string{"project", "network", "upstream", "category"})
 
 	MetricUpstreamEvmGetLogsStaleUpperBound = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",

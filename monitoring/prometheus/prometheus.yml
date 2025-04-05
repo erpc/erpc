@@ -15,7 +15,6 @@ scrape_configs:
     static_configs:
       - targets:
           - 'host.docker.internal:4001'
-          - 'REPLACE_SERVICE_ENDPOINT_HERE:REPLACE_SERVICE_PORT_HERE'
 
 alerting:
   alertmanagers:

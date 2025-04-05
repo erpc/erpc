@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -54,7 +54,6 @@ func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common
 	return enforceNonNullBlock(nr)
 }
 
-// enforceHighestBlock implements the original logic for ensuring we return the highest known block
 func enforceHighestBlock(ctx context.Context, network common.Network, nq *common.NormalizedRequest, nr *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
 	if re != nil {
 		return nr, re
@@ -96,10 +95,15 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			return nil, err
 		}
 		if highestBlockNumber > respBlockNumber {
-			health.MetricUpstreamStaleLatestBlock.WithLabelValues(
+			upsId := nr.UpstreamId()
+			if upsId == "" {
+				upsId = "n/a"
+			}
+			telemetry.MetricUpstreamStaleLatestBlock.WithLabelValues(
 				network.ProjectId(),
 				network.Id(),
-				nr.UpstreamId(),
+				upsId,
+				"eth_getBlockByNumber",
 			).Inc()
 			var itx bool
 			if len(rqj.Params) > 1 {
@@ -133,10 +137,15 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			return nil, err
 		}
 		if highestBlockNumber > respBlockNumber {
-			health.MetricUpstreamStaleFinalizedBlock.WithLabelValues(
+			upsId := nr.UpstreamId()
+			if upsId == "" {
+				upsId = "n/a"
+			}
+			telemetry.MetricUpstreamStaleFinalizedBlock.WithLabelValues(
 				network.ProjectId(),
 				network.Id(),
-				nr.UpstreamId(),
+				upsId,
+				"eth_getBlockByNumber",
 			).Inc()
 			request, err := BuildGetBlockByNumberRequest(highestBlockNumber, true)
 			if err != nil {

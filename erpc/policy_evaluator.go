@@ -9,6 +9,7 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 	"github.com/rs/zerolog"
 )
@@ -173,6 +174,11 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 
 	defer func() {
 		if r := recover(); r != nil {
+			telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+				"selection-policy-eval",
+				fmt.Sprintf("network:%s method:%s", p.networkId, method),
+				common.ErrorFingerprint(r),
+			).Inc()
 			p.logger.Error().Str("method", method).Interface("upstreams", metricsData).Interface("panic", r).Msg("panic in user-defined selection policy function")
 		}
 	}()

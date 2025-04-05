@@ -10,6 +10,7 @@ import (
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/failsafe-go/failsafe-go"
@@ -363,7 +364,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				hedges := exec.Hedges()
 				attempts := exec.Attempts()
 				if hedges > 0 {
-					health.MetricNetworkHedgedRequestTotal.WithLabelValues(n.projectId, n.networkId, u.Config().Id, method, fmt.Sprintf("%d", hedges)).Inc()
+					telemetry.MetricNetworkHedgedRequestTotal.WithLabelValues(n.projectId, n.networkId, u.Config().Id, method, fmt.Sprintf("%d", hedges)).Inc()
 				}
 
 				var r *common.NormalizedResponse
@@ -377,7 +378,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				isClientErr := common.IsClientError(err)
 				if hedges > 0 && common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled) {
 					ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
-					health.MetricNetworkHedgeDiscardsTotal.WithLabelValues(n.projectId, n.networkId, u.Config().Id, method, fmt.Sprintf("%d", attempts), fmt.Sprintf("%d", hedges)).Inc()
+					telemetry.MetricNetworkHedgeDiscardsTotal.WithLabelValues(n.projectId, n.networkId, u.Config().Id, method, fmt.Sprintf("%d", attempts), fmt.Sprintf("%d", hedges)).Inc()
 					err := common.NewErrUpstreamHedgeCancelled(u.Config().Id, err)
 					common.SetTraceSpanError(loopSpan, err)
 					return nil, err
@@ -494,7 +495,8 @@ func (n *Network) GetMethodMetrics(method string) common.TrackedMetrics {
 		return nil
 	}
 
-	return n.metricsTracker.GetNetworkMethodMetrics(n.networkId, method)
+	mt := n.metricsTracker.GetNetworkMethodMetrics(n.networkId, method)
+	return mt
 }
 
 func (n *Network) Config() *common.NetworkConfig {
@@ -550,7 +552,7 @@ func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, re
 	if vinf, exists := n.inFlightRequests.Load(mlxHash); exists {
 		inf := vinf.(*Multiplexer)
 		method, _ := req.Method()
-		health.MetricNetworkMultiplexedRequests.WithLabelValues(n.projectId, n.networkId, method).Inc()
+		telemetry.MetricNetworkMultiplexedRequests.WithLabelValues(n.projectId, n.networkId, method).Inc()
 
 		lg.Debug().Str("hash", mlxHash).Msgf("found identical request initiating multiplexer")
 
@@ -729,7 +731,7 @@ func (n *Network) acquireRateLimitPermit(req *common.NormalizedRequest) error {
 		for _, rule := range rules {
 			permit := rule.Limiter.TryAcquirePermit()
 			if !permit {
-				health.MetricNetworkRequestSelfRateLimited.WithLabelValues(
+				telemetry.MetricNetworkRequestSelfRateLimited.WithLabelValues(
 					n.projectId,
 					n.networkId,
 					method,

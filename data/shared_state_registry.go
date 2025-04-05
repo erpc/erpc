@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
@@ -112,6 +113,11 @@ func (r *sharedStateRegistry) buildInitialValueTask(counter *counterInt64) *util
 func (r *sharedStateRegistry) initCounterSync(counter *counterInt64) error {
 	defer func() {
 		if rc := recover(); rc != nil {
+			telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+				"counter-sync",
+				fmt.Sprintf("connector:%s cluster:%s", r.connector.Id(), r.clusterKey),
+				common.ErrorFingerprint(rc),
+			).Inc()
 			err := fmt.Errorf("panic in counter sync: %v", rc)
 			r.logger.Error().Interface("panic", rc).Str("key", counter.key).Msg("counter sync panic")
 			r.initializer.MarkTaskAsFailed(r.getCounterSyncTaskName(counter), err)

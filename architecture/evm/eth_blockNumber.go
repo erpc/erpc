@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -55,16 +55,21 @@ func networkPreForward_eth_blockNumber(ctx context.Context, network common.Netwo
 
 	// Step 4: if maxBlock is larger than forwardBlock, write that in the response
 	if highestBlock > blockNumber {
-		health.MetricUpstreamStaleLatestBlock.WithLabelValues(
+		upsId := resp.UpstreamId()
+		if upsId == "" {
+			upsId = "n/a"
+		}
+		telemetry.MetricUpstreamStaleLatestBlock.WithLabelValues(
 			network.ProjectId(),
 			network.Id(),
-			resp.UpstreamId(),
+			upsId,
+			"eth_blockNumber",
 		).Inc()
 		network.Logger().Debug().
 			Str("method", "eth_blockNumber").
 			Int64("knownHighestBlock", highestBlock).
 			Int64("responseBlockNumber", blockNumber).
-			Str("upstreamId", resp.UpstreamId()).
+			Str("upstreamId", upsId).
 			Msg("upstream returned older block than we known, falling back to highest known block")
 		hbk, err := common.NormalizeHex(highestBlock)
 		if err != nil {
