@@ -54,8 +54,8 @@ func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common
 	return enforceNonNullBlock(nr)
 }
 
-// enforceHighestBlock implements the original logic for ensuring we return the highest known block
 func enforceHighestBlock(ctx context.Context, network common.Network, nq *common.NormalizedRequest, nr *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
+	
 	if re != nil {
 		return nr, re
 	}
@@ -96,10 +96,15 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			return nil, err
 		}
 		if highestBlockNumber > respBlockNumber {
+			upsId := nr.UpstreamId()
+			if upsId == "" {
+				upsId = "n/a"
+			}
 			health.MetricUpstreamStaleLatestBlock.WithLabelValues(
 				network.ProjectId(),
 				network.Id(),
-				nr.UpstreamId(),
+				upsId,
+				"eth_getBlockByNumber",
 			).Inc()
 			var itx bool
 			if len(rqj.Params) > 1 {
@@ -133,10 +138,15 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			return nil, err
 		}
 		if highestBlockNumber > respBlockNumber {
+			upsId := nr.UpstreamId()
+			if upsId == "" {
+				upsId = "n/a"
+			}
 			health.MetricUpstreamStaleFinalizedBlock.WithLabelValues(
 				network.ProjectId(),
 				network.Id(),
-				nr.UpstreamId(),
+				upsId,
+				"eth_getBlockByNumber",
 			).Inc()
 			request, err := BuildGetBlockByNumberRequest(highestBlockNumber, true)
 			if err != nil {
