@@ -14,6 +14,7 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/util"
 	"github.com/failsafe-go/failsafe-go"
@@ -289,7 +290,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				u.networkId,
 				method,
 			)
-			health.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method, strconv.Itoa(exec.Attempts())).Inc()
+			telemetry.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method, strconv.Itoa(exec.Attempts())).Inc()
 			timer := u.metricsTracker.RecordUpstreamDurationStart(cfg.Id, u.networkId, method)
 			defer timer.ObserveDuration()
 
@@ -317,9 +318,9 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 			}
 			if errCall != nil {
 				if common.HasErrorCode(errCall, common.ErrCodeUpstreamRequestSkipped) {
-					health.MetricUpstreamSkippedTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method).Inc()
+					telemetry.MetricUpstreamSkippedTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method).Inc()
 				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointMissingData) {
-					health.MetricUpstreamMissingDataErrorTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method).Inc()
+					telemetry.MetricUpstreamMissingDataErrorTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method).Inc()
 				} else {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
 						u.recordRemoteRateLimit(u.networkId, method)
@@ -334,7 +335,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 							method,
 						)
 					}
-					health.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method, common.ErrorFingerprint(errCall), string(severity)).Inc()
+					telemetry.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method, common.ErrorFingerprint(errCall), string(severity)).Inc()
 				}
 
 				if exec != nil {
@@ -362,7 +363,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				}
 			} else {
 				if resp.IsResultEmptyish() {
-					health.MetricUpstreamEmptyResponseTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method).Inc()
+					telemetry.MetricUpstreamEmptyResponseTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method).Inc()
 				}
 			}
 

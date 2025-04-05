@@ -10,7 +10,7 @@ import (
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/prometheus/client_golang/prometheus"
@@ -130,7 +130,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	method, _ := nq.Method()
 
 	timer := prometheus.NewTimer(prometheus.ObserverFunc(func(v float64) {
-		health.MetricNetworkRequestDuration.WithLabelValues(
+		telemetry.MetricNetworkRequestDuration.WithLabelValues(
 			p.Config.Id,
 			network.networkId,
 			method,
@@ -138,7 +138,7 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 	}))
 	defer timer.ObserveDuration()
 
-	health.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.networkId, method).Inc()
+	telemetry.MetricNetworkRequestsReceived.WithLabelValues(p.Config.Id, network.networkId, method).Inc()
 	lg := p.Logger.With().
 		Str("component", "proxy").
 		Str("projectId", p.Config.Id).
@@ -171,13 +171,13 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		logsSpan.End()
 		_, metricsSpan := common.StartDetailSpan(finishCtx, "Project.SuccessMetrics")
 		defer metricsSpan.End()
-		health.MetricNetworkSuccessfulRequests.WithLabelValues(p.Config.Id, network.networkId, method, strconv.Itoa(resp.Attempts())).Inc()
+		telemetry.MetricNetworkSuccessfulRequests.WithLabelValues(p.Config.Id, network.networkId, method, strconv.Itoa(resp.Attempts())).Inc()
 		return resp, err
 	} else {
 		_, errSpan := common.StartDetailSpan(finishCtx, "Project.ErrorMetrics")
 		defer errSpan.End()
 		lg.Debug().Err(err).Object("request", nq).Msgf("failed to forward request for network")
-		health.MetricNetworkFailedRequests.WithLabelValues(network.projectId, network.networkId, method, strconv.Itoa(resp.Attempts()), common.ErrorFingerprint(err)).Inc()
+		telemetry.MetricNetworkFailedRequests.WithLabelValues(network.projectId, network.networkId, method, strconv.Itoa(resp.Attempts()), common.ErrorFingerprint(err)).Inc()
 	}
 
 	return nil, err
@@ -225,7 +225,7 @@ func (p *PreparedProject) acquireRateLimitPermit(req *common.NormalizedRequest) 
 		for _, rule := range rules {
 			permit := rule.Limiter.TryAcquirePermit()
 			if !permit {
-				health.MetricProjectRequestSelfRateLimited.WithLabelValues(
+				telemetry.MetricProjectRequestSelfRateLimited.WithLabelValues(
 					p.Config.Id,
 					method,
 				).Inc()

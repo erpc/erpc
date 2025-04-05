@@ -9,7 +9,7 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
-	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
@@ -114,7 +114,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		return nil, err
 	}
 	if len(policies) == 0 {
-		health.MetricCacheGetSkippedTotal.WithLabelValues(
+		telemetry.MetricCacheGetSkippedTotal.WithLabelValues(
 			c.projectId,
 			req.NetworkId(),
 			rpcReq.Method,
@@ -138,7 +138,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		jrr, err = c.doGet(policyCtx, connector, req, rpcReq)
 		if err != nil {
 			common.SetTraceSpanError(policySpan, err)
-			health.MetricCacheGetErrorTotal.WithLabelValues(
+			telemetry.MetricCacheGetErrorTotal.WithLabelValues(
 				c.projectId,
 				req.NetworkId(),
 				rpcReq.Method,
@@ -147,7 +147,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 				policy.GetTTL().String(),
 				common.ErrorSummary(err),
 			).Inc()
-			health.MetricCacheGetErrorDuration.WithLabelValues(
+			telemetry.MetricCacheGetErrorDuration.WithLabelValues(
 				c.projectId,
 				req.NetworkId(),
 				rpcReq.Method,
@@ -169,7 +169,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	}
 
 	if jrr == nil {
-		health.MetricCacheGetSuccessMissTotal.WithLabelValues(
+		telemetry.MetricCacheGetSuccessMissTotal.WithLabelValues(
 			c.projectId,
 			req.NetworkId(),
 			rpcReq.Method,
@@ -177,7 +177,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 			policy.String(),
 			policy.GetTTL().String(),
 		).Inc()
-		health.MetricCacheGetSuccessMissDuration.WithLabelValues(
+		telemetry.MetricCacheGetSuccessMissDuration.WithLabelValues(
 			c.projectId,
 			req.NetworkId(),
 			rpcReq.Method,
@@ -189,7 +189,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		return nil, nil
 	}
 
-	health.MetricCacheGetSuccessHitTotal.WithLabelValues(
+	telemetry.MetricCacheGetSuccessHitTotal.WithLabelValues(
 		c.projectId,
 		req.NetworkId(),
 		rpcReq.Method,
@@ -197,7 +197,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		policy.String(),
 		policy.GetTTL().String(),
 	).Inc()
-	health.MetricCacheGetSuccessHitDuration.WithLabelValues(
+	telemetry.MetricCacheGetSuccessHitDuration.WithLabelValues(
 		c.projectId,
 		req.NetworkId(),
 		rpcReq.Method,
@@ -339,7 +339,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 			shouldCache, err := shouldCacheResponse(lg, resp, rpcResp, policy)
 			if !shouldCache {
 				if err != nil {
-					health.MetricCacheSetErrorTotal.WithLabelValues(
+					telemetry.MetricCacheSetErrorTotal.WithLabelValues(
 						c.projectId,
 						req.NetworkId(),
 						rpcReq.Method,
@@ -348,7 +348,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 						ttl.String(),
 						common.ErrorSummary(err),
 					).Inc()
-					health.MetricCacheSetErrorDuration.WithLabelValues(
+					telemetry.MetricCacheSetErrorDuration.WithLabelValues(
 						c.projectId,
 						req.NetworkId(),
 						rpcReq.Method,
@@ -358,7 +358,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 						common.ErrorSummary(err),
 					).Observe(time.Since(start).Seconds())
 				} else {
-					health.MetricCacheSetSkippedTotal.WithLabelValues(
+					telemetry.MetricCacheSetSkippedTotal.WithLabelValues(
 						c.projectId,
 						req.NetworkId(),
 						rpcReq.Method,
@@ -380,7 +380,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 				errsMu.Lock()
 				errs = append(errs, err)
 				errsMu.Unlock()
-				health.MetricCacheSetErrorTotal.WithLabelValues(
+				telemetry.MetricCacheSetErrorTotal.WithLabelValues(
 					c.projectId,
 					req.NetworkId(),
 					rpcReq.Method,
@@ -389,7 +389,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 					ttl.String(),
 					common.ErrorSummary(err),
 				).Inc()
-				health.MetricCacheSetErrorDuration.WithLabelValues(
+				telemetry.MetricCacheSetErrorDuration.WithLabelValues(
 					c.projectId,
 					req.NetworkId(),
 					rpcReq.Method,
@@ -399,7 +399,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 					common.ErrorSummary(err),
 				).Observe(time.Since(start).Seconds())
 			} else {
-				health.MetricCacheSetSuccessTotal.WithLabelValues(
+				telemetry.MetricCacheSetSuccessTotal.WithLabelValues(
 					c.projectId,
 					req.NetworkId(),
 					rpcReq.Method,
@@ -407,7 +407,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 					policy.String(),
 					ttl.String(),
 				).Inc()
-				health.MetricCacheSetSuccessDuration.WithLabelValues(
+				telemetry.MetricCacheSetSuccessDuration.WithLabelValues(
 					c.projectId,
 					req.NetworkId(),
 					rpcReq.Method,

@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog/log"
 )
 
@@ -45,6 +47,11 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer func() {
 			if p := recover(); p != nil {
+				telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+					"timeout-handler",
+					"",
+					common.ErrorFingerprint(p),
+				).Inc()
 				panicChan <- p
 			}
 		}()
