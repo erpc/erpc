@@ -270,6 +270,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			wg.Add(1)
 			go func(index int, rawReq json.RawMessage, headers http.Header, queryArgs map[string][]string) {
 				defer func() {
+					defer wg.Done()
 					if rec := recover(); rec != nil {
 						telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
 							"request-handler",
@@ -281,7 +282,6 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 						responses[index] = processErrorBody(&lg, &startedAt, nil, fmt.Errorf(msg))
 					}
 				}()
-				defer wg.Done()
 
 				nq := common.NewNormalizedRequest(rawReq)
 				requestCtx := common.StartRequestSpan(httpCtx, nq)
