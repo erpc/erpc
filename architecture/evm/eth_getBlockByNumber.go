@@ -55,7 +55,6 @@ func networkPostForward_eth_getBlockByNumber(ctx context.Context, network common
 }
 
 func enforceHighestBlock(ctx context.Context, network common.Network, nq *common.NormalizedRequest, nr *common.NormalizedResponse, re error) (*common.NormalizedResponse, error) {
-	
 	if re != nil {
 		return nr, re
 	}

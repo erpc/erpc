@@ -804,3 +804,77 @@ func TestHttpJsonRpcClient_BatchRequests(t *testing.T) {
 	})
 
 }
+func TestHttpJsonRpcClient_CapacityExceededErrors(t *testing.T) {
+	logger := log.Logger
+
+	t.Run("Direct429Response", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		ups := common.NewFakeUpstream("rpc1")
+		ups.Config().Type = common.UpstreamTypeEvm
+		ups.Config().Endpoint = "http://rpc1.localhost:8545"
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", "rpc1", &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil)
+		assert.NoError(t, err)
+
+		// Set up a 429 response with an empty body
+		gock.New("http://rpc1.localhost:8545").
+			Post("/").
+			Reply(429).
+			BodyString("")
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
+		_, err = client.SendRequest(context.Background(), req)
+
+		// Verify the error
+		assert.Error(t, err)
+		
+		// Check that we got a capacity exceeded error
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded), "Expected ErrEndpointCapacityExceeded, got: %T: %v", err, err)
+		
+		// Verify the underlying JSON-RPC error code
+		capacityErr, ok := err.(*common.ErrEndpointCapacityExceeded)
+		assert.True(t, ok, "Expected ErrEndpointCapacityExceeded, got: %T", err)
+		
+		// Verify the status code was preserved in the details
+		cause, ok := capacityErr.Cause.(*common.ErrJsonRpcExceptionInternal)
+		assert.True(t, ok, "Expected ErrJsonRpcExceptionInternal, got: %T", capacityErr.Cause)
+		details := cause.Details
+		assert.Equal(t, 429, details["statusCode"])
+	})
+	
+	t.Run("429WithErrorMessage", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		ups := common.NewFakeUpstream("rpc1")
+		ups.Config().Type = common.UpstreamTypeEvm
+		ups.Config().Endpoint = "http://rpc1.localhost:8545"
+		client, err := NewGenericHttpJsonRpcClient(ctx, &logger, "prj1", "rpc1", &url.URL{Scheme: "http", Host: "rpc1.localhost:8545"}, ups.Config().JsonRpc, nil)
+		assert.NoError(t, err)
+
+		// Set up a 429 response with a rate limit error message
+		gock.New("http://rpc1.localhost:8545").
+			Post("/").
+			Reply(429).
+			BodyString(`{"jsonrpc":"2.0","id":1,"error":{"code":-32005,"message":"Rate limit exceeded"}}`)
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
+		_, err = client.SendRequest(context.Background(), req)
+
+		// Verify the error
+		assert.Error(t, err)
+		
+		// Check that we got a capacity exceeded error
+		assert.True(t, common.HasErrorCode(err, common.ErrCodeEndpointCapacityExceeded), "Expected ErrEndpointCapacityExceeded, got: %T: %v", err, err)
+		
+		// Verify the error message was preserved
+		assert.Contains(t, err.Error(), "Rate limit exceeded")
+	})
+}

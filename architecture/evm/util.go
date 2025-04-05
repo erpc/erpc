@@ -21,10 +21,12 @@ func IsMissingDataError(err error) bool {
 		strings.Contains(txt, "header not found") ||
 		strings.Contains(txt, "could not find block") ||
 		strings.Contains(txt, "unknown block") ||
+		strings.Contains(txt, "Unknown block") ||
 		strings.Contains(txt, "height must be less than or equal") ||
 		strings.Contains(txt, "invalid blockhash finalized") ||
 		strings.Contains(txt, "Expect block number from id") ||
 		strings.Contains(txt, "block not found") ||
+		strings.Contains(txt, "Block not found") ||
 		strings.Contains(txt, "block height passed is invalid") ||
 		// Usually happens on Avalanche when querying a pretty recent block:
 		strings.Contains(txt, "cannot query unfinalized") ||
