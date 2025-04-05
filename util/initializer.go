@@ -236,7 +236,7 @@ func (i *Initializer) waitForTasks(ctx context.Context, tasks ...*BootstrapTask)
 	if len(errs) > 0 {
 		total := len(tasks)
 		i.logger.Warn().Errs("tasks", errs).Msgf("initialization failed: %d/%d tasks failed", len(errs), total)
-		return fmt.Errorf("initialization failed: %d/%d tasks failed", len(errs), total)
+		return fmt.Errorf("initialization failed: %d/%d tasks failed: %v", len(errs), total, errs)
 	}
 	return nil
 }
