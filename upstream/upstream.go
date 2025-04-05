@@ -231,8 +231,8 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				if !rule.Limiter.TryAcquirePermit() {
 					lg.Debug().Str("budget", cfg.RateLimitBudget).Msgf("upstream-level rate limit '%v' exceeded", rule.Config)
 					u.metricsTracker.RecordUpstreamSelfRateLimited(
-						u.networkId,
 						cfg.Id,
+						u.networkId,
 						method,
 					)
 					err = common.NewErrUpstreamRateLimitRuleExceeded(

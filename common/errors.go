@@ -2188,7 +2188,7 @@ func ClassifySeverity(err error) Severity {
 	// Theoretically any cancellation must be intentional and must not be considered as a critical error.
 	// Upstream timeouts will be DeadlineExceeded errors or other forms of timeout errors which will be classified as SeverityCritical.
 	// This is considered warning (not info) because it still means the upstream was too slow to respond (in case of a hedge).
-	if HasErrorCode(err, ErrCodeEndpointRequestCanceled) {
+	if HasErrorCode(err, ErrCodeEndpointRequestCanceled) || errors.Is(err, context.Canceled) {
 		return SeverityWarning
 	}
 	return SeverityCritical
