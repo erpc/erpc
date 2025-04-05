@@ -21,7 +21,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -271,6 +271,11 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			go func(index int, rawReq json.RawMessage, headers http.Header, queryArgs map[string][]string) {
 				defer func() {
 					if rec := recover(); rec != nil {
+						telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+							"request-handler",
+							fmt.Sprintf("project:%s network:%s", architecture, chainId),
+							common.ErrorFingerprint(rec),
+						).Inc()
 						msg := fmt.Sprintf("unexpected server panic on per-request handler: %v stack: %s", rec, string(debug.Stack()))
 						lg.Error().Msgf(msg)
 						responses[index] = processErrorBody(&lg, &startedAt, nil, fmt.Errorf(msg))
@@ -479,6 +484,11 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			finalErrorOnce.Do(func() {
 				defer func() {
 					if rec := recover(); rec != nil {
+						telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+							"final-error-writer",
+							fmt.Sprintf("statusCode:%d", statusCode),
+							common.ErrorFingerprint(rec)+" via err:"+common.ErrorFingerprint(err),
+						).Inc()
 						s.logger.Error().Msgf("unexpected server panic on final error writer: %v -> %s", rec, debug.Stack())
 					}
 				}()
@@ -497,6 +507,11 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 		defer func() {
 			if rec := recover(); rec != nil {
+				telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+					"top-level-handler",
+					"",
+					common.ErrorFingerprint(rec),
+				).Inc()
 				msg := fmt.Sprintf("unexpected server panic on top-level handler: %v -> %s", rec, debug.Stack())
 				s.logger.Error().Msgf(msg)
 				writeFatalError(
@@ -689,7 +704,7 @@ func (s *HttpServer) handleCORS(httpCtx context.Context, w http.ResponseWriter, 
 		return true
 	}
 
-	health.MetricCORSRequestsTotal.WithLabelValues(r.URL.Path, origin).Inc()
+	telemetry.MetricCORSRequestsTotal.WithLabelValues(r.URL.Path, origin).Inc()
 
 	allowed := false
 	for _, allowedOrigin := range corsConfig.AllowedOrigins {
@@ -707,7 +722,7 @@ func (s *HttpServer) handleCORS(httpCtx context.Context, w http.ResponseWriter, 
 	// If disallowed origin, we can continue without CORS headers
 	if !allowed {
 		s.logger.Debug().Str("origin", origin).Msg("CORS request from disallowed origin, continuing without CORS headers")
-		health.MetricCORSDisallowedOriginTotal.WithLabelValues(r.URL.Path, origin).Inc()
+		telemetry.MetricCORSDisallowedOriginTotal.WithLabelValues(r.URL.Path, origin).Inc()
 
 		// If it's a preflight OPTIONS request, we can send a basic 204 with no CORS.
 		if r.Method == http.MethodOptions {
@@ -738,7 +753,7 @@ func (s *HttpServer) handleCORS(httpCtx context.Context, w http.ResponseWriter, 
 
 	// If it's a preflight request, return a 204 and don't continue to main handler.
 	if r.Method == http.MethodOptions {
-		health.MetricCORSPreflightRequestsTotal.WithLabelValues(r.URL.Path, origin).Inc()
+		telemetry.MetricCORSPreflightRequestsTotal.WithLabelValues(r.URL.Path, origin).Inc()
 		w.WriteHeader(http.StatusNoContent)
 		common.EnrichHTTPServerSpan(httpCtx, http.StatusNoContent, nil)
 		return false

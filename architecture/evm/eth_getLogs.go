@@ -10,7 +10,7 @@ import (
 	"sync"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel/attribute"
@@ -192,7 +192,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 			}
 		}
 		if latestBlock < toBlock {
-			health.MetricUpstreamEvmGetLogsStaleUpperBound.WithLabelValues(
+			telemetry.MetricUpstreamEvmGetLogsStaleUpperBound.WithLabelValues(
 				n.ProjectId(),
 				up.NetworkId(),
 				up.Config().Id,
@@ -217,7 +217,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		}
 		// If range is beyond the last available block, or too close to the last available block, skip the request for safety.
 		if fromBlock < (lastAvailableBlock + LowerBoundBlocksSafetyMargin) {
-			health.MetricUpstreamEvmGetLogsStaleLowerBound.WithLabelValues(
+			telemetry.MetricUpstreamEvmGetLogsStaleLowerBound.WithLabelValues(
 				n.ProjectId(),
 				up.NetworkId(),
 				up.Config().Id,
@@ -233,7 +233,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	// For better performance try to use byte merging (not JSON parsing/encoding)
 	if requestRange > 0 && cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsAutoSplittingRangeThreshold > 0 {
 		if requestRange > cfg.Evm.GetLogsAutoSplittingRangeThreshold {
-			health.MetricUpstreamEvmGetLogsRangeExceededAutoSplittingThreshold.WithLabelValues(
+			telemetry.MetricUpstreamEvmGetLogsRangeExceededAutoSplittingThreshold.WithLabelValues(
 				n.ProjectId(),
 				up.NetworkId(),
 				up.Config().Id,
@@ -429,7 +429,7 @@ func splitEthGetLogsRequest(r *common.NormalizedRequest) ([]ethGetLogsSubRequest
 	blockRange := tb - fb + 1
 	if blockRange > 1 {
 		if n != nil && u != nil && c != nil {
-			health.MetricUpstreamEvmGetLogsForcedSplits.WithLabelValues(
+			telemetry.MetricUpstreamEvmGetLogsForcedSplits.WithLabelValues(
 				n.ProjectId(),
 				u.NetworkId(),
 				c.Id,
@@ -448,7 +448,7 @@ func splitEthGetLogsRequest(r *common.NormalizedRequest) ([]ethGetLogsSubRequest
 	if ok && len(addresses) > 1 {
 		mid := len(addresses) / 2
 		if n != nil && u != nil && c != nil {
-			health.MetricUpstreamEvmGetLogsForcedSplits.WithLabelValues(
+			telemetry.MetricUpstreamEvmGetLogsForcedSplits.WithLabelValues(
 				n.ProjectId(),
 				u.NetworkId(),
 				c.Id,
@@ -466,7 +466,7 @@ func splitEthGetLogsRequest(r *common.NormalizedRequest) ([]ethGetLogsSubRequest
 	if ok && len(topics) > 1 {
 		mid := len(topics) / 2
 		if n != nil && u != nil && c != nil {
-			health.MetricUpstreamEvmGetLogsForcedSplits.WithLabelValues(
+			telemetry.MetricUpstreamEvmGetLogsForcedSplits.WithLabelValues(
 				n.ProjectId(),
 				u.NetworkId(),
 				c.Id,

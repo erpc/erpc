@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -99,7 +99,7 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			if upsId == "" {
 				upsId = "n/a"
 			}
-			health.MetricUpstreamStaleLatestBlock.WithLabelValues(
+			telemetry.MetricUpstreamStaleLatestBlock.WithLabelValues(
 				network.ProjectId(),
 				network.Id(),
 				upsId,
@@ -141,7 +141,7 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			if upsId == "" {
 				upsId = "n/a"
 			}
-			health.MetricUpstreamStaleFinalizedBlock.WithLabelValues(
+			telemetry.MetricUpstreamStaleFinalizedBlock.WithLabelValues(
 				network.ProjectId(),
 				network.Id(),
 				upsId,

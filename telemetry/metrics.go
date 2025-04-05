@@ -1,4 +1,4 @@
-package health
+package telemetry
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
@@ -6,6 +6,12 @@ import (
 )
 
 var (
+	MetricUnexpectedPanicTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "unexpected_panic_total",
+		Help:      "Total number of unexpected panics.",
+	}, []string{"scope", "extra", "error"})
+
 	MetricUpstreamRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_total",
