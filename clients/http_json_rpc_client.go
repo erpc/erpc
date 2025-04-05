@@ -33,11 +33,12 @@ type GenericHttpJsonRpcClient struct {
 
 	proxyPool *ProxyPool
 
-	projectId  string
-	upstreamId string
-	appCtx     context.Context
-	logger     *zerolog.Logger
-	httpClient *http.Client
+	projectId       string
+	upstreamId      string
+	appCtx          context.Context
+	logger          *zerolog.Logger
+	httpClient      *http.Client
+	isLogLevelTrace bool
 
 	enableGzip    bool
 	supportsBatch bool
@@ -67,12 +68,13 @@ func NewGenericHttpJsonRpcClient(
 	proxyPool *ProxyPool,
 ) (HttpJsonRpcClient, error) {
 	client := &GenericHttpJsonRpcClient{
-		Url:        parsedUrl,
-		appCtx:     appCtx,
-		logger:     logger,
-		projectId:  projectId,
-		upstreamId: upstreamId,
-		proxyPool:  proxyPool,
+		Url:             parsedUrl,
+		appCtx:          appCtx,
+		logger:          logger,
+		projectId:       projectId,
+		upstreamId:      upstreamId,
+		proxyPool:       proxyPool,
+		isLogLevelTrace: logger.GetLevel() == zerolog.TraceLevel,
 	}
 
 	// Default fallback transport (no proxy)
@@ -182,6 +184,9 @@ func (c *GenericHttpJsonRpcClient) shutdown() {
 func (c *GenericHttpJsonRpcClient) getHttpClient() *http.Client {
 	if c.proxyPool != nil {
 		client, err := c.proxyPool.GetClient()
+		if c.isLogLevelTrace {
+			c.logger.Trace().Str("proxyPool", c.proxyPool.ID).Str("ptr", fmt.Sprintf("%p", client.Transport)).Msgf("using client from proxy pool")
+		}
 		if err != nil {
 			c.logger.Error().Err(err).Msgf("failed to get client from proxy pool")
 			return c.httpClient
@@ -215,7 +220,7 @@ func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchReques
 		}
 	}
 
-	if c.logger.GetLevel() == zerolog.TraceLevel {
+	if c.isLogLevelTrace {
 		ids := make([]interface{}, 0, len(c.batchRequests))
 		for _, req := range c.batchRequests {
 			ids = append(ids, req.request.ID())
@@ -226,9 +231,8 @@ func (c *GenericHttpJsonRpcClient) queueRequest(id interface{}, req *batchReques
 			c.logger.Trace().Interface("id", req.request.ID()).Str("method", jrr.Method).Msgf("request in batch: %s", string(rqs))
 		}
 		c.logger.Trace().Interface("ids", ids).Msgf("current batch requests")
-	} else {
-		c.logger.Debug().Msgf("queuing request %+v for batch (current batch size: %d)", id, len(c.batchRequests))
 	}
+	c.logger.Debug().Msgf("queuing request %+v for batch (current batch size: %d)", id, len(c.batchRequests))
 
 	if len(c.batchRequests) == 1 {
 		c.logger.Trace().Interface("id", id).Msgf("starting batch timer")
@@ -256,7 +260,7 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 			} else {
 				msg = "context error on batch processing (ignoring batch requests if any)"
 			}
-			if c.logger.GetLevel() == zerolog.TraceLevel {
+			if c.isLogLevelTrace {
 				if !alreadyLocked {
 					c.batchMu.Lock()
 					alreadyLocked = false
@@ -279,7 +283,7 @@ func (c *GenericHttpJsonRpcClient) processBatch(alreadyLocked bool) {
 	if !alreadyLocked {
 		c.batchMu.Lock()
 	}
-	if c.logger.GetLevel() == zerolog.TraceLevel {
+	if c.isLogLevelTrace {
 		ids := make([]interface{}, 0, len(c.batchRequests))
 		for id := range c.batchRequests {
 			ids = append(ids, id)
@@ -415,7 +419,7 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 	searcher.ConcurrentRead = false
 	searcher.ValidateJSON = false
 
-	if c.logger.GetLevel() == zerolog.TraceLevel {
+	if c.isLogLevelTrace {
 		if len(bodyBytes) > 20*1024 {
 			c.logger.Trace().Str("head", util.Mem2Str(bodyBytes[:20*1024])).Str("tail", util.Mem2Str(bodyBytes[len(bodyBytes)-20*1024:])).Msgf("processing batch response from upstream (trimmed to first and last 20k)")
 		} else {
@@ -670,10 +674,10 @@ func (c *GenericHttpJsonRpcClient) prepareRequest(ctx context.Context, body []by
 		if err := gw.Close(); err != nil {
 			return nil, err
 		}
-		if c.logger.GetLevel() <= zerolog.TraceLevel {
+		if c.isLogLevelTrace {
 			compressedSize := buf.Len()
 			originalSize := len(body)
-			c.logger.Debug().
+			c.logger.Trace().
 				Int("originalSize", originalSize).
 				Int("compressedSize", compressedSize).
 				Float64("compressionRatio", float64(compressedSize)/float64(originalSize)).
@@ -731,7 +735,7 @@ func readResponseBody(resp *http.Response, expectedSize int) ([]byte, error) {
 func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *common.NormalizedResponse) error {
 	jr, err := nr.JsonRpcResponse()
 
-	if c.logger.GetLevel() == zerolog.TraceLevel {
+	if c.isLogLevelTrace {
 		if jr != nil {
 			maxTraceSize := 20 * 1024
 			if len(jr.Result) > maxTraceSize {
