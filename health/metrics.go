@@ -110,7 +110,7 @@ var (
 		Namespace: "erpc",
 		Name:      "upstream_stale_latest_block_total",
 		Help:      "Total number of times an upstream returned a stale (vs others) latest block number.",
-	}, []string{"project", "network", "upstream"})
+	}, []string{"project", "network", "upstream", "category"})
 
 	MetricUpstreamStaleFinalizedBlock = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",

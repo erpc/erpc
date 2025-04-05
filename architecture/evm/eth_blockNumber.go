@@ -55,16 +55,21 @@ func networkPreForward_eth_blockNumber(ctx context.Context, network common.Netwo
 
 	// Step 4: if maxBlock is larger than forwardBlock, write that in the response
 	if highestBlock > blockNumber {
+		upsId := resp.UpstreamId()
+		if upsId == "" {
+			upsId = "n/a"
+		}
 		health.MetricUpstreamStaleLatestBlock.WithLabelValues(
 			network.ProjectId(),
 			network.Id(),
-			resp.UpstreamId(),
+			upsId,
+			"eth_blockNumber",
 		).Inc()
 		network.Logger().Debug().
 			Str("method", "eth_blockNumber").
 			Int64("knownHighestBlock", highestBlock).
 			Int64("responseBlockNumber", blockNumber).
-			Str("upstreamId", resp.UpstreamId()).
+			Str("upstreamId", upsId).
 			Msg("upstream returned older block than we known, falling back to highest known block")
 		hbk, err := common.NormalizeHex(highestBlock)
 		if err != nil {
