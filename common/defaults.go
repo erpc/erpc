@@ -823,8 +823,15 @@ func convertUpstreamToProvider(upstream *UpstreamConfig) (*ProviderConfig, error
 	upsCfg.Endpoint = ""
 	upsCfg.Id = ""
 
+	id := upstream.Id
+	if id == "" {
+		id = util.RedactEndpoint(upstream.Endpoint)
+	} else {
+		id = fmt.Sprintf("%s-%s", id, util.RedactEndpoint(upstream.Endpoint))
+	}
+
 	cfg := &ProviderConfig{
-		Id:                 util.RedactEndpoint(upstream.Endpoint),
+		Id:                 id,
 		Vendor:             vendorName,
 		Settings:           settings,
 		UpstreamIdTemplate: "<PROVIDER>-<NETWORK>",
