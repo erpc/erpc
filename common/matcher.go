@@ -2,6 +2,7 @@ package common
 
 import (
 	"fmt"
+	"runtime/debug"
 	"strconv"
 	"strings"
 
@@ -61,7 +62,7 @@ func ValidatePattern(pattern string) error {
 			).Inc()
 			// Convert panic into error
 			if err, ok := r.(string); ok {
-				panic(fmt.Errorf("invalid pattern syntax: %s", err))
+				panic(fmt.Errorf("invalid pattern syntax: %s -> %s", err, string(debug.Stack())))
 			}
 			panic(r) // re-panic if it's not our error
 		}

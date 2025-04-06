@@ -746,7 +746,7 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 				c.logger.Trace().Int("statusCode", r.StatusCode).Str("head", util.Mem2Str(jr.Result[:maxTraceSize])).Str("tail", util.Mem2Str(jr.Result[tailStart:])).Msgf("processing json rpc response from upstream (trimmed to first and last 20k)")
 			} else {
 				if jr.Result != nil && len(jr.Result) > 0 {
-					if jr.Result[0] == '"' || jr.Result[0] == '{' || jr.Result[0] == '[' {
+					if common.IsSemiValidJson(jr.Result) {
 						c.logger.Trace().Int("statusCode", r.StatusCode).RawJSON("result", jr.Result).Interface("error", jr.Error).Msgf("processing json rpc response from upstream")
 					} else {
 						c.logger.Trace().Int("statusCode", r.StatusCode).Str("result", util.Mem2Str(jr.Result)).Interface("error", jr.Error).Msgf("processing malformed json-rpc result response from upstream")

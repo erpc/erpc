@@ -39,6 +39,10 @@ func ErrorSummary(err interface{}) string {
 		s = fmt.Sprintf("%s: %s", be.CodeChain(), cleanUpMessage(be.DeepestMessage()))
 	} else if e, ok := err.(error); ok {
 		s = cleanUpMessage(e.Error())
+	} else if str, ok := err.(string); ok {
+		s = cleanUpMessage(str)
+	} else {
+		s = cleanUpMessage(fmt.Sprintf("%v", err))
 	}
 
 	return s

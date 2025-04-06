@@ -370,11 +370,14 @@ func (r *RedisConnector) WatchCounterInt64(ctx context.Context, key string) (<-c
 		defer func() {
 			if rc := recover(); rc != nil {
 				telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
-					"watch-counter-int64",
+					"redis-watch-counter-int64",
 					fmt.Sprintf("connector:%s", r.id),
 					common.ErrorFingerprint(rc),
 				).Inc()
-				r.logger.Error().Interface("panic", rc).Str("key", key).Msg("panic in WatchCounterInt64")
+				r.logger.Error().
+					Interface("panic", rc).
+					Str("stack", string(debug.Stack())).
+					Msg("unexpected panic in redis WatchCounterInt64")
 			}
 		}()
 		// Get initial value
