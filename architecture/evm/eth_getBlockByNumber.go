@@ -69,6 +69,19 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 		return nr, re
 	}
 
+	logger := network.Logger().With().Str("method", "eth_getBlockByNumber").Logger()
+
+	// If response is from cache, skip enforcement otherwise there's no point in caching.
+	// As we'll definetely have higher latest block number vs what we have in cache.
+	// The correct way to deal with this situation is to set proper TTL for "realtime" cache policy.
+	if nr.FromCache() {
+		logger.Trace().
+			Object("request", nq).
+			Object("response", nr).
+			Msg("skipping enforcement of highest block number as response is from cache")
+		return nr, re
+	}
+
 	rqj, err := nq.JsonRpcRequest(ctx)
 	if err != nil {
 		return nil, err
@@ -95,16 +108,28 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			return nil, err
 		}
 		if highestBlockNumber > respBlockNumber {
-			upsId := nr.UpstreamId()
-			if upsId == "" {
-				upsId = "n/a"
+			logger.Debug().
+				Str("blockTag", bnp).
+				Object("request", nq).
+				Object("response", nr).
+				Interface("highestBlockNumber", highestBlockNumber).
+				Interface("respBlockNumber", respBlockNumber).
+				Interface("err", err).
+				Msg("enforcing highest latest block")
+			if respBlockNumber > 0 {
+				// When extracted block number is 0, it mostly means response is actually a json-rpc error
+				// therefore we better fetch the highest block number again.
+				upsId := nr.UpstreamId()
+				if upsId == "" {
+					upsId = "n/a"
+				}
+				telemetry.MetricUpstreamStaleLatestBlock.WithLabelValues(
+					network.ProjectId(),
+					network.Id(),
+					upsId,
+					"eth_getBlockByNumber",
+				).Inc()
 			}
-			telemetry.MetricUpstreamStaleLatestBlock.WithLabelValues(
-				network.ProjectId(),
-				network.Id(),
-				upsId,
-				"eth_getBlockByNumber",
-			).Inc()
 			var itx bool
 			if len(rqj.Params) > 1 {
 				itx, _ = rqj.Params[1].(bool)
@@ -119,8 +144,13 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			}
 			nq := common.NewNormalizedRequestFromJsonRpcRequest(request)
 			dr := nq.Directives().Clone()
-			// Exclude the current upstream from the request (as high likely it doesn't have this block)
-			dr.UseUpstream = fmt.Sprintf("!%s", nr.UpstreamId())
+			dr.SkipCacheRead = true
+			// In case a block number is extracted, it means the node actually has an older latest block.
+			// Therefore we exclude the current upstream from the request (as high likely it doesn't have this block).
+			// Otherwise we still allow the current upstream to be used in case json-rpc error was an intermittent issue.
+			if respBlockNumber > 0 {
+				dr.UseUpstream = fmt.Sprintf("!%s", nr.UpstreamId())
+			}
 			nq.SetDirectives(dr)
 			nq.SetNetwork(network)
 			nnr, err := network.Forward(ctx, nq)
@@ -137,17 +167,31 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			return nil, err
 		}
 		if highestBlockNumber > respBlockNumber {
-			upsId := nr.UpstreamId()
-			if upsId == "" {
-				upsId = "n/a"
+			logger.Debug().
+				Str("blockTag", bnp).
+				Interface("highestBlockNumber", highestBlockNumber).
+				Interface("respBlockNumber", respBlockNumber).
+				Interface("err", err).
+				Msg("enforcing highest finalized block")
+			if respBlockNumber > 0 {
+				// When extracted block number is 0, it mostly means response is actually a json-rpc error
+				// therefore we better fetch the highest block number again.
+				upsId := nr.UpstreamId()
+				if upsId == "" {
+					upsId = "n/a"
+				}
+				telemetry.MetricUpstreamStaleFinalizedBlock.WithLabelValues(
+					network.ProjectId(),
+					network.Id(),
+					upsId,
+					"eth_getBlockByNumber",
+				).Inc()
 			}
-			telemetry.MetricUpstreamStaleFinalizedBlock.WithLabelValues(
-				network.ProjectId(),
-				network.Id(),
-				upsId,
-				"eth_getBlockByNumber",
-			).Inc()
-			request, err := BuildGetBlockByNumberRequest(highestBlockNumber, true)
+			var itx bool
+			if len(rqj.Params) > 1 {
+				itx, _ = rqj.Params[1].(bool)
+			}
+			request, err := BuildGetBlockByNumberRequest(highestBlockNumber, itx)
 			if err != nil {
 				return nil, err
 			}
@@ -157,8 +201,14 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			}
 			nq := common.NewNormalizedRequestFromJsonRpcRequest(request)
 			dr := nq.Directives().Clone()
-			// Exclude the current upstream from the request (as high likely it doesn't have this block)
-			dr.UseUpstream = fmt.Sprintf("!%s", nr.UpstreamId())
+			dr.SkipCacheRead = true
+			if respBlockNumber > 0 {
+				// In case a block number is extracted, it means the node actually has an older latest block.
+				// Therefore we exclude the current upstream from the request (as high likely it doesn't have this block).
+				// Otherwise we still allow the current upstream to be used in case json-rpc error was an intermittent issue.
+				// Also, if response from cache we don't need to exclude the current upstream.
+				dr.UseUpstream = fmt.Sprintf("!%s", nr.UpstreamId())
+			}
 			nq.SetDirectives(dr)
 			nq.SetNetwork(network)
 			nnr, err := network.Forward(ctx, nq)

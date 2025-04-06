@@ -7,7 +7,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -323,30 +322,26 @@ func (r *NormalizedResponse) MarshalZerologObject(e *zerolog.Event) {
 		return
 	}
 
+	e.Bool("fromCache", r.fromCache)
+	e.Int("attempts", r.attempts)
+	e.Int("retries", r.retries)
+	e.Int("hedges", r.hedges)
+	e.Interface("evmBlockRef", r.evmBlockRef.Load())
+	e.Interface("evmBlockNumber", r.evmBlockNumber.Load())
+
+	if r.upstream != nil {
+		if r.upstream.Config() != nil {
+			e.Str("upstream", r.upstream.Config().Id)
+		} else {
+			e.Str("upstream", fmt.Sprintf("%p", r.upstream))
+		}
+	} else {
+		e.Str("upstream", "nil")
+	}
+
 	jrr := r.jsonRpcResponse.Load()
 	if jrr != nil {
-		e.Interface("id", jrr.ID())
-		if jrr.errBytes != nil && len(jrr.errBytes) > 0 {
-			if IsSemiValidJson(jrr.errBytes) {
-				e.RawJSON("error", jrr.errBytes)
-			} else {
-				e.Str("error", util.Mem2Str(jrr.errBytes))
-			}
-		}
-		if len(jrr.Result) < 300*1024 {
-			if IsSemiValidJson(jrr.Result) {
-				e.RawJSON("result", jrr.Result)
-			} else {
-				e.Str("result", util.Mem2Str(jrr.Result))
-			}
-		} else {
-			head := 150 * 1024
-			tail := len(jrr.Result) - head
-			if tail < head {
-				head = tail
-			}
-			e.Str("resultHead", util.Mem2Str(jrr.Result[:head])).Str("resultTail", util.Mem2Str(jrr.Result[tail:]))
-		}
+		e.Object("jsonRpc", jrr)
 	}
 }
 
