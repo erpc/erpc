@@ -185,7 +185,8 @@ func (c *GenericHttpJsonRpcClient) getHttpClient() *http.Client {
 	if c.proxyPool != nil {
 		client, err := c.proxyPool.GetClient()
 		if c.isLogLevelTrace {
-			c.logger.Trace().Str("proxyPool", c.proxyPool.ID).Str("ptr", fmt.Sprintf("%p", client.Transport)).Msgf("using client from proxy pool")
+			proxy, _ := client.Transport.(*http.Transport).Proxy(nil)
+			c.logger.Trace().Str("proxyPool", c.proxyPool.ID).Str("ptr", fmt.Sprintf("%p", client.Transport)).Str("proxy", proxy.String()).Msgf("using client from proxy pool")
 		}
 		if err != nil {
 			c.logger.Error().Err(err).Msgf("failed to get client from proxy pool")
