@@ -77,9 +77,7 @@ func (p *Provider) buildBaseUpstreamConfig(networkId string) (*common.UpstreamCo
 			continue
 		}
 		if matches {
-			// Make a shallow copy so we can tweak ID, etc., without mutating the original override object.
-			copied := *override
-			baseCfg = &copied
+			baseCfg = override.Copy()
 			break
 		}
 	}

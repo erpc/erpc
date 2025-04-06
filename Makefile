@@ -74,7 +74,7 @@ coverage:
 
 .PHONY: up
 up:
-	@docker compose up -d --force-recreate --remove-orphans
+	@docker compose up -d --force-recreate --build --remove-orphans
 
 .PHONY: down
 down:
