@@ -298,7 +298,9 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 			if resp != nil {
 				jrr, _ := resp.JsonRpcResponse()
 				if jrr != nil && jrr.Error == nil {
+					resp.SetUpstream(u)
 					req.SetLastValidResponse(resp)
+					req.SetLastUpstream(u)
 				}
 				if lg.GetLevel() == zerolog.TraceLevel {
 					lg.Debug().Err(errCall).Object("response", resp).Msgf("upstream request ended with response")

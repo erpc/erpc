@@ -88,7 +88,7 @@ func NewNormalizedRequestFromJsonRpcRequest(jsonRpcRequest *JsonRpcRequest) *Nor
 }
 
 func (r *NormalizedRequest) SetLastUpstream(upstream Upstream) *NormalizedRequest {
-	if r == nil {
+	if r == nil || upstream == nil {
 		return r
 	}
 	r.lastUpstream.Store(upstream)
@@ -106,7 +106,7 @@ func (r *NormalizedRequest) LastUpstream() Upstream {
 }
 
 func (r *NormalizedRequest) SetLastValidResponse(response *NormalizedResponse) {
-	if r == nil {
+	if r == nil || response == nil {
 		return
 	}
 	r.lastValidResponse.Store(response)
@@ -343,7 +343,7 @@ func (r *NormalizedRequest) EvmBlockRef() interface{} {
 }
 
 func (r *NormalizedRequest) SetEvmBlockRef(blockRef interface{}) {
-	if r == nil {
+	if r == nil || blockRef == nil {
 		return
 	}
 	r.evmBlockRef.Store(blockRef)
@@ -357,7 +357,7 @@ func (r *NormalizedRequest) EvmBlockNumber() interface{} {
 }
 
 func (r *NormalizedRequest) SetEvmBlockNumber(blockNumber interface{}) {
-	if r == nil {
+	if r == nil || blockNumber == nil {
 		return
 	}
 	r.evmBlockNumber.Store(blockNumber)

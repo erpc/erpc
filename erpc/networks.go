@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -147,7 +148,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		lg.Debug().Msgf("forwarding request for network")
 	}
 
-	// Add tracing for multiplexing
 	mlx, resp, err := n.handleMultiplexing(ctx, &lg, req, startTime)
 	if err != nil || resp != nil {
 		// When the original request is already fulfilled by multiplexer
@@ -397,10 +397,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					)
 				}
 
+				if r != nil {
+					r.SetUpstream(u)
+				}
+
 				if err == nil || isClientErr || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
-					if r != nil {
-						r.SetUpstream(u)
-					}
 					if err == nil {
 						loopSpan.SetStatus(codes.Ok, "")
 					} else {
@@ -445,6 +446,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			// 2) For pending txs we can accept the response, if after retries it is still pending.
 			// This avoids failing with "retry" error, when we actually do have a response but blockNumber is null since tx is pending.
 			resp = lvr
+			req.SetLastUpstream(resp.Upstream())
 		} else {
 			err = upstream.TranslateFailsafeError(common.ScopeNetwork, "", method, execErr, &startTime)
 			if mlx != nil {
@@ -469,6 +471,20 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		if n.cacheDal != nil {
 			resp.RLockWithTrace(ctx)
 			go (func(resp *common.NormalizedResponse, forwardSpan trace.Span) {
+				defer (func() {
+					if rec := recover(); rec != nil {
+						telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
+							"cache-set",
+							fmt.Sprintf("network:%s method:%s", n.networkId, method),
+							common.ErrorFingerprint(rec),
+						).Inc()
+						lg.Error().
+							Interface("panic", rec).
+							Str("stack", string(debug.Stack())).
+							Msgf("unexpected panic on cache-set")
+					}
+				})()
+
 				defer resp.RUnlock()
 				timeoutCtx, timeoutCtxCancel := context.WithTimeoutCause(n.appCtx, 10*time.Second, errors.New("cache driver timeout during set"))
 				defer timeoutCtxCancel()

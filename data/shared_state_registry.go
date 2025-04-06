@@ -3,6 +3,7 @@ package data
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -114,12 +115,16 @@ func (r *sharedStateRegistry) initCounterSync(counter *counterInt64) error {
 	defer func() {
 		if rc := recover(); rc != nil {
 			telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
-				"counter-sync",
+				"shared-state-counter-sync",
 				fmt.Sprintf("connector:%s cluster:%s", r.connector.Id(), r.clusterKey),
 				common.ErrorFingerprint(rc),
 			).Inc()
-			err := fmt.Errorf("panic in counter sync: %v", rc)
-			r.logger.Error().Interface("panic", rc).Str("key", counter.key).Msg("counter sync panic")
+			r.logger.Error().
+				Interface("panic", rc).
+				Str("stack", string(debug.Stack())).
+				Str("key", counter.key).
+				Msg("unexpected panic in shared state counter sync")
+			err := fmt.Errorf("unexpected panic in shared state counter sync: %v stack: %s", rc, string(debug.Stack()))
 			r.initializer.MarkTaskAsFailed(r.getCounterSyncTaskName(counter), err)
 		}
 	}()

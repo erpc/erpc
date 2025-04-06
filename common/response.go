@@ -95,7 +95,7 @@ func (r *NormalizedResponse) EvmBlockRef() interface{} {
 }
 
 func (r *NormalizedResponse) SetEvmBlockRef(blockRef interface{}) {
-	if r == nil {
+	if r == nil || blockRef == nil {
 		return
 	}
 	r.evmBlockRef.Store(blockRef)
@@ -109,7 +109,7 @@ func (r *NormalizedResponse) EvmBlockNumber() interface{} {
 }
 
 func (r *NormalizedResponse) SetEvmBlockNumber(blockNumber interface{}) {
-	if r == nil {
+	if r == nil || blockNumber == nil {
 		return
 	}
 	r.evmBlockNumber.Store(blockNumber)
@@ -161,6 +161,10 @@ func (r *NormalizedResponse) Upstream() Upstream {
 
 func (r *NormalizedResponse) UpstreamId() string {
 	if r == nil || r.upstream == nil {
+		return ""
+	}
+
+	if r.upstream.Config() == nil {
 		return ""
 	}
 
@@ -323,10 +327,18 @@ func (r *NormalizedResponse) MarshalZerologObject(e *zerolog.Event) {
 	if jrr != nil {
 		e.Interface("id", jrr.ID())
 		if jrr.errBytes != nil && len(jrr.errBytes) > 0 {
-			e.RawJSON("error", jrr.errBytes)
+			if IsSemiValidJson(jrr.errBytes) {
+				e.RawJSON("error", jrr.errBytes)
+			} else {
+				e.Str("error", util.Mem2Str(jrr.errBytes))
+			}
 		}
 		if len(jrr.Result) < 300*1024 {
-			e.RawJSON("result", jrr.Result)
+			if IsSemiValidJson(jrr.Result) {
+				e.RawJSON("result", jrr.Result)
+			} else {
+				e.Str("result", util.Mem2Str(jrr.Result))
+			}
 		} else {
 			head := 150 * 1024
 			tail := len(jrr.Result) - head
@@ -350,6 +362,13 @@ func CopyResponseForRequest(ctx context.Context, resp *NormalizedResponse, req *
 
 	r := NewNormalizedResponse()
 	r.WithRequest(req)
+	r.SetUpstream(resp.Upstream())
+	r.SetFromCache(resp.FromCache())
+	r.SetAttempts(resp.Attempts())
+	r.SetRetries(resp.Retries())
+	r.SetHedges(resp.Hedges())
+	r.SetEvmBlockRef(resp.EvmBlockRef())
+	r.SetEvmBlockNumber(resp.EvmBlockNumber())
 
 	if ejrr := resp.jsonRpcResponse.Load(); ejrr != nil {
 		// We need to use request ID because response ID can be different for multiplexed requests
