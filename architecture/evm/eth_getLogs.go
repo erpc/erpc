@@ -262,9 +262,13 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 				return true, nil, err
 			}
 
-			return true, common.NewNormalizedResponse().
+			mergedNR := common.NewNormalizedResponse().
 				WithRequest(r).
-				WithJsonRpcResponse(mergedResponse), nil
+				WithJsonRpcResponse(mergedResponse)
+			r.SetLastValidResponse(mergedNR)
+			mergedNR.SetUpstream(u)
+
+			return true, mergedNR, nil
 		}
 	}
 
