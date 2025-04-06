@@ -330,7 +330,11 @@ func (r *JsonRpcResponse) ensureCachedNode() error {
 		}
 		r.resultMu.RUnlock()
 		r.resultMu.Lock()
-		r.cachedNode = &n
+		// Copy 'n' onto the heap to avoid taking the address of a stack variable.
+		// This prevents 'r.cachedNode' from pointing to memory that becomes invalid
+		// once the function returns.
+		r.cachedNode = new(ast.Node)
+		*r.cachedNode = n
 		r.resultMu.Unlock()
 		return nil
 	}
