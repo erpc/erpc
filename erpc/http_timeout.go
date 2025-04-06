@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"path"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -52,6 +53,10 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					"",
 					common.ErrorFingerprint(p),
 				).Inc()
+				log.Error().
+					Interface("panic", p).
+					Str("stack", string(debug.Stack())).
+					Msgf("unexpected panic on timeout handler")
 				panicChan <- p
 			}
 		}()

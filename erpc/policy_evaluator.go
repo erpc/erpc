@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -173,13 +174,18 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 	defer p.evalMutex.Unlock()
 
 	defer func() {
-		if r := recover(); r != nil {
+		if rec := recover(); rec != nil {
 			telemetry.MetricUnexpectedPanicTotal.WithLabelValues(
 				"selection-policy-eval",
 				fmt.Sprintf("network:%s method:%s", p.networkId, method),
-				common.ErrorFingerprint(r),
+				common.ErrorFingerprint(rec),
 			).Inc()
-			p.logger.Error().Str("method", method).Interface("upstreams", metricsData).Interface("panic", r).Msg("panic in user-defined selection policy function")
+			p.logger.Error().
+				Str("method", method).
+				Interface("upstreams", metricsData).
+				Interface("panic", rec).
+				Str("stack", string(debug.Stack())).
+				Msg("unexpected panic in user-defined selection policy function")
 		}
 	}()
 

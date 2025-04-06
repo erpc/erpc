@@ -307,6 +307,13 @@ func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u co
 			return nil, err
 		}
 		nnr := common.NewNormalizedResponse().WithRequest(rq).WithJsonRpcResponse(jrr)
+		nnr.SetUpstream(u)
+		nnr.SetFromCache(rs.FromCache())
+		nnr.SetEvmBlockRef(rs.EvmBlockRef())
+		nnr.SetEvmBlockNumber(rs.EvmBlockNumber())
+		nnr.SetAttempts(rs.Attempts())
+		nnr.SetRetries(rs.Retries())
+		nnr.SetHedges(rs.Hedges())
 		rq.SetLastValidResponse(nnr)
 		return nnr, nil
 	}

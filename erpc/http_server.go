@@ -277,9 +277,12 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 							fmt.Sprintf("project:%s network:%s", architecture, chainId),
 							common.ErrorFingerprint(rec),
 						).Inc()
-						msg := fmt.Sprintf("unexpected server panic on per-request handler: %v stack: %s", rec, string(debug.Stack()))
-						lg.Error().Msgf(msg)
-						responses[index] = processErrorBody(&lg, &startedAt, nil, fmt.Errorf(msg))
+						lg.Error().
+							Interface("panic", rec).
+							Str("stack", string(debug.Stack())).
+							Msgf("unexpected server panic on per-request handler")
+						err := fmt.Errorf("unexpected server panic on per-request handler: %v stack: %s", rec, string(debug.Stack()))
+						responses[index] = processErrorBody(&lg, &startedAt, nil, err)
 					}
 				}()
 
@@ -489,7 +492,10 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 							fmt.Sprintf("statusCode:%d", statusCode),
 							common.ErrorFingerprint(rec)+" via err:"+common.ErrorFingerprint(err),
 						).Inc()
-						s.logger.Error().Msgf("unexpected server panic on final error writer: %v -> %s", rec, debug.Stack())
+						s.logger.Error().
+							Interface("panic", rec).
+							Str("stack", string(debug.Stack())).
+							Msgf("unexpected server panic on final error writer")
 					}
 				}()
 				w.WriteHeader(statusCode)
@@ -512,8 +518,10 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					"",
 					common.ErrorFingerprint(rec),
 				).Inc()
-				msg := fmt.Sprintf("unexpected server panic on top-level handler: %v -> %s", rec, debug.Stack())
-				s.logger.Error().Msgf(msg)
+				s.logger.Error().
+					Interface("panic", rec).
+					Str("stack", string(debug.Stack())).
+					Msgf("unexpected panic on top-level handler")
 				writeFatalError(
 					httpCtx,
 					http.StatusInternalServerError,
