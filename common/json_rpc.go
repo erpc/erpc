@@ -187,7 +187,9 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 			r.resultMu.Lock()
 			defer r.resultMu.Unlock()
 			r.Result = util.Str2Mem(rawResult)
-			r.cachedNode = &resultNode
+			// Copy to heap instead of storing local variable address
+			r.cachedNode = new(ast.Node)
+			*r.cachedNode = resultNode
 		} else {
 			return err
 		}

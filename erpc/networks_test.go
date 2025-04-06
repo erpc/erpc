@@ -6922,7 +6922,7 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 		// Let the state poller run and accumulate errors
 		time.Sleep(300 * time.Millisecond)
 
-		ups1 := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), "evm:123")[0]
+		ups1 := network.upstreamsRegistry.GetNetworkUpstreams(ctx, "evm:123")[0]
 
 		// Verify the upstream is marked as inactive due to high error rate
 		err := network.selectionPolicyEvaluator.AcquirePermit(&log.Logger, ups1, "eth_getBalance")
