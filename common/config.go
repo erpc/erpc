@@ -3,6 +3,7 @@ package common
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"os"
 	"time"
 
@@ -346,8 +347,62 @@ type UpstreamConfig struct {
 	Routing                      *RoutingConfig           `yaml:"routing,omitempty" json:"routing"`
 }
 
+func (c *UpstreamConfig) Copy() *UpstreamConfig {
+	if c == nil {
+		return nil
+	}
+
+	copied := &UpstreamConfig{}
+	*copied = *c
+
+	if c.Evm != nil {
+		copied.Evm = c.Evm.Copy()
+	}
+	if c.Failsafe != nil {
+		copied.Failsafe = c.Failsafe.Copy()
+	}
+	if c.JsonRpc != nil {
+		copied.JsonRpc = c.JsonRpc.Copy()
+	}
+	if c.Routing != nil {
+		copied.Routing = c.Routing.Copy()
+	}
+	if c.RateLimitAutoTune != nil {
+		copied.RateLimitAutoTune = c.RateLimitAutoTune.Copy()
+	}
+
+	if c.IgnoreMethods != nil {
+		copied.IgnoreMethods = make([]string, len(c.IgnoreMethods))
+		copy(copied.IgnoreMethods, c.IgnoreMethods)
+	}
+
+	if c.AllowMethods != nil {
+		copied.AllowMethods = make([]string, len(c.AllowMethods))
+		copy(copied.AllowMethods, c.AllowMethods)
+	}
+
+	return copied
+}
+
 type RoutingConfig struct {
 	ScoreMultipliers []*ScoreMultiplierConfig `yaml:"scoreMultipliers" json:"scoreMultipliers"`
+}
+
+func (c *RoutingConfig) Copy() *RoutingConfig {
+	if c == nil {
+		return nil
+	}
+
+	copied := &RoutingConfig{}
+
+	if c.ScoreMultipliers != nil {
+		copied.ScoreMultipliers = make([]*ScoreMultiplierConfig, len(c.ScoreMultipliers))
+		for i, multiplier := range c.ScoreMultipliers {
+			copied.ScoreMultipliers[i] = multiplier.Copy()
+		}
+	}
+
+	return copied
 }
 
 type ScoreMultiplierConfig struct {
@@ -360,6 +415,15 @@ type ScoreMultiplierConfig struct {
 	ThrottledRate   float64 `yaml:"throttledRate" json:"throttledRate"`
 	BlockHeadLag    float64 `yaml:"blockHeadLag" json:"blockHeadLag"`
 	FinalizationLag float64 `yaml:"finalizationLag" json:"finalizationLag"`
+}
+
+func (c *ScoreMultiplierConfig) Copy() *ScoreMultiplierConfig {
+	if c == nil {
+		return nil
+	}
+	copied := &ScoreMultiplierConfig{}
+	*copied = *c
+	return copied
 }
 
 func (u *UpstreamConfig) MarshalJSON() ([]byte, error) {
@@ -383,6 +447,17 @@ type RateLimitAutoTuneConfig struct {
 	MaxBudget          int      `yaml:"maxBudget" json:"maxBudget"`
 }
 
+func (c *RateLimitAutoTuneConfig) Copy() *RateLimitAutoTuneConfig {
+	if c == nil {
+		return nil
+	}
+
+	copied := &RateLimitAutoTuneConfig{}
+	*copied = *c
+
+	return copied
+}
+
 type JsonRpcUpstreamConfig struct {
 	SupportsBatch *bool             `yaml:"supportsBatch,omitempty" json:"supportsBatch"`
 	BatchMaxSize  int               `yaml:"batchMaxSize,omitempty" json:"batchMaxSize"`
@@ -390,6 +465,21 @@ type JsonRpcUpstreamConfig struct {
 	EnableGzip    *bool             `yaml:"enableGzip,omitempty" json:"enableGzip"`
 	Headers       map[string]string `yaml:"headers,omitempty" json:"headers"`
 	ProxyPool     string            `yaml:"proxyPool,omitempty" json:"proxyPool"`
+}
+
+func (c *JsonRpcUpstreamConfig) Copy() *JsonRpcUpstreamConfig {
+	if c == nil {
+		return nil
+	}
+
+	copied := &JsonRpcUpstreamConfig{}
+	*copied = *c
+
+	if c.Headers != nil {
+		maps.Copy(copied.Headers, c.Headers)
+	}
+
+	return copied
 }
 
 type EvmUpstreamConfig struct {
@@ -407,12 +497,54 @@ type EvmUpstreamConfig struct {
 	GetLogsMaxBlockRange int64 `yaml:"getLogsMaxBlockRange,omitempty" json:"-"`
 }
 
+func (c *EvmUpstreamConfig) Copy() *EvmUpstreamConfig {
+	if c == nil {
+		return nil
+	}
+
+	copied := &EvmUpstreamConfig{}
+	*copied = *c
+
+	return copied
+}
+
 type FailsafeConfig struct {
 	Retry          *RetryPolicyConfig          `yaml:"retry" json:"retry"`
 	CircuitBreaker *CircuitBreakerPolicyConfig `yaml:"circuitBreaker" json:"circuitBreaker"`
 	Timeout        *TimeoutPolicyConfig        `yaml:"timeout" json:"timeout"`
 	Hedge          *HedgePolicyConfig          `yaml:"hedge" json:"hedge"`
 	Consensus      *ConsensusPolicyConfig      `yaml:"consensus" json:"consensus"`
+}
+
+func (c *FailsafeConfig) Copy() *FailsafeConfig {
+	if c == nil {
+		return nil
+	}
+
+	copied := &FailsafeConfig{}
+	*copied = *c
+
+	if c.Retry != nil {
+		copied.Retry = c.Retry.Copy()
+	}
+
+	if c.CircuitBreaker != nil {
+		copied.CircuitBreaker = c.CircuitBreaker.Copy()
+	}
+
+	if c.Timeout != nil {
+		copied.Timeout = c.Timeout.Copy()
+	}
+
+	if c.Hedge != nil {
+		copied.Hedge = c.Hedge.Copy()
+	}
+
+	if c.Consensus != nil {
+		copied.Consensus = c.Consensus.Copy()
+	}
+
+	return copied
 }
 
 type RetryPolicyConfig struct {
@@ -423,6 +555,15 @@ type RetryPolicyConfig struct {
 	Jitter          Duration `yaml:"jitter,omitempty" json:"jitter" tstype:"Duration"`
 }
 
+func (c *RetryPolicyConfig) Copy() *RetryPolicyConfig {
+	if c == nil {
+		return nil
+	}
+	copied := &RetryPolicyConfig{}
+	*copied = *c
+	return copied
+}
+
 type CircuitBreakerPolicyConfig struct {
 	FailureThresholdCount    uint     `yaml:"failureThresholdCount" json:"failureThresholdCount"`
 	FailureThresholdCapacity uint     `yaml:"failureThresholdCapacity" json:"failureThresholdCapacity"`
@@ -431,8 +572,26 @@ type CircuitBreakerPolicyConfig struct {
 	SuccessThresholdCapacity uint     `yaml:"successThresholdCapacity" json:"successThresholdCapacity"`
 }
 
+func (c *CircuitBreakerPolicyConfig) Copy() *CircuitBreakerPolicyConfig {
+	if c == nil {
+		return nil
+	}
+	copied := &CircuitBreakerPolicyConfig{}
+	*copied = *c
+	return copied
+}
+
 type TimeoutPolicyConfig struct {
 	Duration Duration `yaml:"duration,omitempty" json:"duration" tstype:"Duration"`
+}
+
+func (c *TimeoutPolicyConfig) Copy() *TimeoutPolicyConfig {
+	if c == nil {
+		return nil
+	}
+	copied := &TimeoutPolicyConfig{}
+	*copied = *c
+	return copied
 }
 
 type HedgePolicyConfig struct {
@@ -441,6 +600,15 @@ type HedgePolicyConfig struct {
 	Quantile float64  `yaml:"quantile,omitempty" json:"quantile"`
 	MinDelay Duration `yaml:"minDelay,omitempty" json:"minDelay" tstype:"Duration"`
 	MaxDelay Duration `yaml:"maxDelay,omitempty" json:"maxDelay" tstype:"Duration"`
+}
+
+func (c *HedgePolicyConfig) Copy() *HedgePolicyConfig {
+	if c == nil {
+		return nil
+	}
+	copied := &HedgePolicyConfig{}
+	*copied = *c
+	return copied
 }
 
 type ConsensusFailureBehavior string
@@ -479,9 +647,32 @@ type ConsensusPolicyConfig struct {
 	PunishMisbehavior       *PunishMisbehaviorConfig         `yaml:"punishMisbehavior,omitempty" json:"punishMisbehavior"`
 }
 
+func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
+	if c == nil {
+		return nil
+	}
+	copied := &ConsensusPolicyConfig{}
+	*copied = *c
+
+	if c.PunishMisbehavior != nil {
+		copied.PunishMisbehavior = c.PunishMisbehavior.Copy()
+	}
+
+	return copied
+}
+
 type PunishMisbehaviorConfig struct {
 	DisputeThreshold int    `yaml:"disputeThreshold" json:"disputeThreshold"`
 	SitOutPenalty    string `yaml:"sitOutPenalty,omitempty" json:"sitOutPenalty"`
+}
+
+func (c *PunishMisbehaviorConfig) Copy() *PunishMisbehaviorConfig {
+	if c == nil {
+		return nil
+	}
+	copied := &PunishMisbehaviorConfig{}
+	*copied = *c
+	return copied
 }
 
 type RateLimiterConfig struct {
