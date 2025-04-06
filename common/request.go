@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 
 	"github.com/bytedance/sonic"
+	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 )
 
@@ -325,11 +326,35 @@ func (r *NormalizedRequest) Body() []byte {
 }
 
 func (r *NormalizedRequest) MarshalZerologObject(e *zerolog.Event) {
-	if r != nil {
-		if r.jsonRpcRequest != nil {
-			e.Object("jsonRpc", r.jsonRpcRequest)
-		} else if r.body != nil {
+	if r == nil {
+		return
+	}
+
+	if lu := r.lastUpstream.Load(); lu != nil {
+		if lup := lu.(Upstream); lup != nil {
+			if lup.Config() != nil {
+				e.Str("lastUpstream", lup.Config().Id)
+			} else {
+				e.Str("lastUpstream", fmt.Sprintf("%p", lup))
+			}
+		} else {
+			e.Str("lastUpstream", "nil")
+		}
+	} else {
+		e.Str("lastUpstream", "nil")
+	}
+
+	if r.network != nil {
+		e.Str("network", r.network.Id())
+	}
+
+	if r.jsonRpcRequest != nil {
+		e.Object("jsonRpc", r.jsonRpcRequest)
+	} else if r.body != nil {
+		if IsSemiValidJson(r.body) {
 			e.RawJSON("body", r.body)
+		} else {
+			e.Str("body", util.Mem2Str(r.body))
 		}
 	}
 }

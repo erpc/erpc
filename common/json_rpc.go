@@ -313,9 +313,36 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 	r.errMu.RLock()
 	defer r.errMu.RUnlock()
 
-	e.Interface("id", r.ID()).
-		Int("resultSize", len(r.Result)).
-		Interface("error", r.Error)
+	e.Interface("id", r.ID()).Int("resultSize", len(r.Result))
+
+	if r.errBytes != nil && len(r.errBytes) > 0 {
+		if IsSemiValidJson(r.errBytes) {
+			e.RawJSON("error", r.errBytes)
+		} else {
+			e.Str("error", util.Mem2Str(r.errBytes))
+		}
+	} else if r.Error != nil {
+		e.Interface("error", r.Error)
+	}
+
+	if r.Result != nil && len(r.Result) > 0 {
+		if len(r.Result) < 300*1024 {
+			if IsSemiValidJson(r.Result) {
+				e.RawJSON("result", r.Result)
+			} else {
+				e.Str("result", util.Mem2Str(r.Result))
+			}
+		} else {
+			head := 150 * 1024
+			tail := len(r.Result) - head
+			if tail < head {
+				head = tail
+			}
+			e.Str("resultHead", util.Mem2Str(r.Result[:head])).Str("resultTail", util.Mem2Str(r.Result[tail:]))
+		}
+	} else if r.resultWriter != nil {
+		e.Bool("resultWriterEmpty", r.resultWriter.IsResultEmptyish())
+	}
 }
 
 func (r *JsonRpcResponse) ensureCachedNode() error {
