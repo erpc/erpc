@@ -223,7 +223,7 @@ func TestSharedStateRegistry_GetCounterInt64_WatchSetup(t *testing.T) {
 	connector.On("WatchCounterInt64", mock.Anything, "my-dev/test").Return(updates, func() {}, nil)
 	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value").Return("5", nil)
 
-	counter := registry.GetCounterInt64("test")
+	counter := registry.GetCounterInt64("test", 1024)
 	assert.NotNil(t, counter)
 
 	// Simulate an update
@@ -249,7 +249,7 @@ func TestSharedStateRegistry_GetCounterInt64_WatchFailure(t *testing.T) {
 	connector.On("WatchCounterInt64", mock.Anything, "my-dev/test").
 		Return(nil, nil, errors.New("watch setup failed"))
 
-	counter := registry.GetCounterInt64("test")
+	counter := registry.GetCounterInt64("test", 1024)
 	assert.NotNil(t, counter)
 	counter.TryUpdate(context.Background(), 42)
 	assert.Equal(t, int64(42), counter.GetValue()) // Should still work with local value
