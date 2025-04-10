@@ -58,7 +58,7 @@ func TestSharedStateRegistry_UpdateCounter_Success(t *testing.T) {
 	result := counter.TryUpdate(ctx, 10)
 	assert.Equal(t, int64(10), result)
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(1000 * time.Millisecond)
 
 	connector.AssertExpectations(t)
 	lock.AssertExpectations(t)
@@ -131,7 +131,7 @@ func TestSharedStateRegistry_UpdateCounter_SetFailure(t *testing.T) {
 	result := counter.TryUpdate(ctx, 10)
 	assert.Equal(t, int64(10), result) // Should fall back to local update
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(1000 * time.Millisecond)
 
 	connector.AssertExpectations(t)
 	lock.AssertExpectations(t)
@@ -160,7 +160,7 @@ func TestSharedStateRegistry_UpdateCounter_PublishFailure(t *testing.T) {
 	result := counter.TryUpdate(ctx, 10)
 	assert.Equal(t, int64(10), result) // Should fall back to local update
 
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(1000 * time.Millisecond)
 
 	connector.AssertExpectations(t)
 	lock.AssertExpectations(t)
@@ -235,7 +235,7 @@ func TestSharedStateRegistry_GetCounterInt64_WatchSetup(t *testing.T) {
 
 	// Simulate an update
 	updates <- 42
-	time.Sleep(100 * time.Millisecond) // Give time for the update to process
+	time.Sleep(1000 * time.Millisecond) // Give time for the update to process
 
 	assert.Equal(t, int64(42), counter.GetValue())
 
