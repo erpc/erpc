@@ -35,11 +35,12 @@ func (v *baseSharedVariable) IsStale(staleness time.Duration) bool {
 
 type counterInt64 struct {
 	baseSharedVariable
-	registry *sharedStateRegistry
-	key      string
-	value    atomic.Int64
-	mu       sync.Mutex // still needed for complex operations
-	callback func(int64)
+	registry        *sharedStateRegistry
+	key             string
+	value           atomic.Int64
+	mu              sync.Mutex // still needed for complex operations
+	callback        func(int64)
+	maxAllowedDrift int64
 }
 
 func (c *counterInt64) GetValue() int64 {
@@ -73,6 +74,11 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 		currentValue := c.value.Load()
 		if newValue > currentValue {
 			c.setValue(newValue)
+		} else {
+			delta := currentValue - newValue
+			if delta > c.maxAllowedDrift {
+				c.setValue(newValue)
+			}
 		}
 		return c.value.Load()
 	}
@@ -94,6 +100,11 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 		currentValue := c.value.Load()
 		if newValue > currentValue {
 			c.setValue(newValue)
+		} else {
+			delta := currentValue - newValue
+			if delta > c.maxAllowedDrift {
+				c.setValue(newValue)
+			}
 		}
 		return c.value.Load()
 	}
@@ -108,6 +119,11 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 			currentValue := c.value.Load()
 			if newValue > currentValue {
 				c.setValue(newValue)
+			} else {
+				delta := currentValue - newValue
+				if delta > c.maxAllowedDrift {
+					c.setValue(newValue)
+				}
 			}
 			return c.value.Load()
 		}
@@ -118,12 +134,34 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 
 	// Use highest value among local, remote, and new
 	currentValue := c.value.Load()
-	highestValue := currentValue
-	if remoteValue > highestValue {
-		highestValue = remoteValue
+	value := currentValue
+	if remoteValue > value {
+		value = remoteValue
 	}
-	if newValue > highestValue {
-		highestValue = newValue
+	if newValue > value {
+		value = newValue
+
+		go func() {
+			// Only update remote if we're using the new value
+			setCtx, setCancel := context.WithCancel(c.registry.appCtx)
+			defer setCancel()
+			setCtx = trace.ContextWithSpanContext(setCtx, span.SpanContext())
+			err := c.registry.connector.Set(setCtx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
+			if err == nil {
+				err = c.registry.connector.PublishCounterInt64(setCtx, c.key, newValue)
+			}
+			if err != nil {
+				c.registry.logger.Warn().Err(err).
+					Str("key", c.key).
+					Int64("value", newValue).
+					Msg("failed to update remote value")
+			}
+		}()
+	} else {
+		delta := currentValue - newValue
+		if delta > c.maxAllowedDrift {
+			value = newValue
+		}
 
 		go func() {
 			// Only update remote if we're using the new value
@@ -143,8 +181,8 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 		}()
 	}
 
-	if highestValue > 0 {
-		c.setValue(highestValue)
+	if value > 0 {
+		c.setValue(value)
 	}
 
 	return c.value.Load()
