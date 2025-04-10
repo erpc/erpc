@@ -79,8 +79,9 @@ func NewEvmStatePoller(
 ) *EvmStatePoller {
 	lg := logger.With().Str("upstreamId", up.Config().Id).Str("component", "evmStatePoller").Logger()
 
-	lbs := sharedState.GetCounterInt64(fmt.Sprintf("latestBlock/%s", common.UniqueUpstreamKey(up)))
-	fbs := sharedState.GetCounterInt64(fmt.Sprintf("finalizedBlock/%s", common.UniqueUpstreamKey(up)))
+	// TODO: replace with integrity config
+	lbs := sharedState.GetCounterInt64(fmt.Sprintf("latestBlock/%s", common.UniqueUpstreamKey(up)), 1024)
+	fbs := sharedState.GetCounterInt64(fmt.Sprintf("finalizedBlock/%s", common.UniqueUpstreamKey(up)), 1024)
 
 	e := &EvmStatePoller{
 		projectId:            projectId,
