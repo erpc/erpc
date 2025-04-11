@@ -322,7 +322,7 @@ func TestSharedVariable(t *testing.T) {
 			Return("42", nil)
 
 		// Get the counter and verify initial setup
-		counter := registry.GetCounterInt64("counter1").(*counterInt64)
+		counter := registry.GetCounterInt64("counter1", 1024).(*counterInt64)
 		time.Sleep(100 * time.Millisecond) // Allow goroutine to start
 
 		// Verify initial value was fetched
@@ -356,7 +356,7 @@ func TestSharedVariable(t *testing.T) {
 		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/counter2", "value").
 			Return("0", nil)
 
-		counter := registry.GetCounterInt64("counter2")
+		counter := registry.GetCounterInt64("counter2", 1024)
 
 		// Setup callback
 		callbackCalled := make(chan int64, 1)
@@ -396,7 +396,7 @@ func TestSharedVariable(t *testing.T) {
 		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/counter3", "value").
 			Return("100", nil)
 
-		counter := registry.GetCounterInt64("counter3")
+		counter := registry.GetCounterInt64("counter3", 1024)
 		time.Sleep(100 * time.Millisecond)
 
 		// Verify initial value
@@ -432,7 +432,7 @@ func TestSharedVariable(t *testing.T) {
 		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/counter4", "value").
 			Return("42", nil)
 
-		counter := registry.GetCounterInt64("counter4")
+		counter := registry.GetCounterInt64("counter4", 1024)
 		time.Sleep(100 * time.Millisecond)
 
 		// Initial value check
@@ -464,7 +464,7 @@ func TestSharedVariable(t *testing.T) {
 		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/counter6", "value").
 			Return("", common.NewErrRecordNotFound("test/counter6", "value", "mock"))
 
-		counter := registry.GetCounterInt64("counter6")
+		counter := registry.GetCounterInt64("counter6", 1024)
 		time.Sleep(100 * time.Millisecond)
 
 		// Initial value should be 0
