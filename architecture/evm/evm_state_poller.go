@@ -54,13 +54,17 @@ type EvmStatePoller struct {
 
 	// Certain networks and nodes do not support "finalized" tag,
 	// therefore we must avoid sending redundant requests.
-	skipFinalizedCheck   bool
-	finalizedBlockShared data.CounterInt64SharedVariable
+	skipFinalizedCheck           bool
+	finalizedBlockFailureCount   int
+	finalizedBlockSuccessfulOnce bool
+	finalizedBlockShared         data.CounterInt64SharedVariable
 
 	// The reason to not use latestBlockTimestamp is to avoid thundering herd,
 	// when a node is actively syncing and timestamp is always way in the past.
-	skipLatestBlockCheck bool
-	latestBlockShared    data.CounterInt64SharedVariable
+	skipLatestBlockCheck      bool
+	latestBlockFailureCount   int
+	latestBlockSuccessfulOnce bool
+	latestBlockShared         data.CounterInt64SharedVariable
 
 	stateMu sync.RWMutex
 }
@@ -296,14 +300,31 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 				common.ErrCodeEndpointUnsupported,
 				common.ErrCodeEndpointMissingData,
 			) || common.IsClientError(err) {
-				e.setSkipLatestBlockCheck(true)
-				e.logger.Info().Err(err).Msg("upstream does not support fetching latest block number in evm state poller, will skip")
+				e.stateMu.Lock()
+				// Only skip after multiple consecutive failures if we've never had a success
+				if !e.latestBlockSuccessfulOnce {
+					e.latestBlockFailureCount++
+					if e.latestBlockFailureCount >= 10 {
+						e.skipLatestBlockCheck = true
+						e.logger.Warn().Err(err).Msgf("upstream does not support fetching latest block number in evm state poller after %d consecutive failures, will give up", e.latestBlockFailureCount)
+					} else {
+						e.logger.Debug().Err(err).Msgf("upstream does not seem to support fetching latest block number in evm state poller after %d consecutive failures, will retry again", e.latestBlockFailureCount)
+					}
+				}
+				e.stateMu.Unlock()
 				return 0, nil
 			} else {
 				e.logger.Warn().Err(err).Msg("failed to get latest block number in evm state poller")
 				return 0, err
 			}
 		}
+
+		// Mark as successful and reset failure counter
+		e.stateMu.Lock()
+		e.latestBlockSuccessfulOnce = true
+		e.latestBlockFailureCount = 0
+		e.stateMu.Unlock()
+
 		e.logger.Debug().
 			Int64("blockNumber", blockNum).
 			Msg("fetched latest block from upstream")
@@ -353,14 +374,30 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 				common.ErrCodeEndpointUnsupported,
 				common.ErrCodeEndpointMissingData,
 			) || common.IsClientError(err) {
-				e.setSkipFinalizedCheck(true)
-				e.logger.Info().Err(err).Msg("upstream does not support fetching finalized block number in evm state poller, will skip")
+				e.stateMu.Lock()
+				// Only skip after multiple consecutive failures if we've never had a success
+				if !e.finalizedBlockSuccessfulOnce {
+					e.finalizedBlockFailureCount++
+					if e.finalizedBlockFailureCount >= 10 {
+						e.skipFinalizedCheck = true
+						e.logger.Warn().Err(err).Msgf("upstream does not support fetching finalized block number in evm state poller after %d consecutive failures, will give up", e.finalizedBlockFailureCount)
+					} else {
+						e.logger.Debug().Err(err).Msgf("upstream does not seem to support fetching finalized block number in evm state poller after %d consecutive failures, will retry again", e.finalizedBlockFailureCount)
+					}
+				}
+				e.stateMu.Unlock()
 				return 0, nil
 			} else {
 				e.logger.Warn().Err(err).Msg("failed to get finalized block number in evm state poller")
 				return 0, err
 			}
 		}
+
+		// Mark as successful and reset failure counter
+		e.stateMu.Lock()
+		e.finalizedBlockSuccessfulOnce = true
+		e.finalizedBlockFailureCount = 0
+		e.stateMu.Unlock()
 
 		e.logger.Debug().
 			Int64("blockNumber", blockNum).
@@ -454,24 +491,11 @@ func (e *EvmStatePoller) shouldSkipLatestBlockCheck() bool {
 	return e.skipLatestBlockCheck
 }
 
-func (e *EvmStatePoller) setSkipLatestBlockCheck(skip bool) {
-	e.stateMu.Lock()
-	defer e.stateMu.Unlock()
-	e.skipLatestBlockCheck = skip
-}
-
 func (e *EvmStatePoller) shouldSkipFinalizedCheck() bool {
 	e.stateMu.RLock()
 	defer e.stateMu.RUnlock()
 
 	return e.skipFinalizedCheck
-}
-
-func (e *EvmStatePoller) setSkipFinalizedCheck(skip bool) {
-	e.stateMu.Lock()
-	defer e.stateMu.Unlock()
-
-	e.skipFinalizedCheck = skip
 }
 
 func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64, error) {
