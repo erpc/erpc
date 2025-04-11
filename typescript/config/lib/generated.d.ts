@@ -27,6 +27,7 @@ export interface Config {
     rateLimiters?: RateLimiterConfig;
     metrics?: MetricsConfig;
     proxyPools?: (ProxyPoolConfig | undefined)[];
+    tracing?: TracingConfig;
 }
 export interface ServerConfig {
     listenV4?: boolean;
@@ -40,6 +41,17 @@ export interface ServerConfig {
     enableGzip?: boolean;
     tls?: TLSConfig;
     aliasing?: AliasingConfig;
+}
+export type TracingProtocol = string;
+export declare const TracingProtocolHttp: TracingProtocol;
+export declare const TracingProtocolGrpc: TracingProtocol;
+export interface TracingConfig {
+    enabled?: boolean;
+    endpoint?: string;
+    protocol?: TracingProtocol;
+    sampleRate?: number;
+    detailed?: boolean;
+    tls?: TLSConfig;
 }
 export interface AdminConfig {
     auth?: AuthConfig;
@@ -253,7 +265,10 @@ export interface EvmUpstreamConfig {
     statePollerInterval?: Duration;
     statePollerDebounce?: Duration;
     maxAvailableRecentBlocks?: number;
-    getLogsMaxBlockRange?: number;
+    getLogsAutoSplittingRangeThreshold?: number;
+    getLogsMaxAllowedRange?: number;
+    getLogsMaxAllowedAddresses?: number;
+    getLogsMaxAllowedTopics?: number;
 }
 export interface FailsafeConfig {
     retry?: RetryPolicyConfig;
