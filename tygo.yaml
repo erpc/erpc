@@ -38,3 +38,5 @@ packages:
       - "runtime.go"
       - "upstream_fake.go"
       - "vendors.go"
+      - "tracing_core.go"
+      - "tracing_util.go"
