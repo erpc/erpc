@@ -129,7 +129,7 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 	if remoteValue > highestValue {
 		highestValue = remoteValue
 	}
-	if newValue > highestValue {
+	if newValue > highestValue || highestValue > newValue && (highestValue-newValue > c.maxAllowedDrift) {
 		highestValue = newValue
 
 		go func() {
