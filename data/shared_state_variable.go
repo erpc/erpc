@@ -194,6 +194,8 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 		currentValue := c.value.Load()
 		if newValue > currentValue {
 			c.setValue(newValue)
+		} else if currentValue > newValue && (currentValue-newValue > c.maxAllowedDrift) {
+			c.setValue(newValue)
 		}
 		return c.value.Load(), nil
 	}
@@ -223,6 +225,8 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 
 		currentValue := c.value.Load()
 		if newValue > currentValue {
+			c.setValue(newValue)
+		} else if currentValue > newValue && (currentValue-newValue > c.maxAllowedDrift) {
 			c.setValue(newValue)
 		}
 		return c.value.Load(), nil
