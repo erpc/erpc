@@ -72,10 +72,7 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 		defer c.mu.Unlock()
 
 		currentValue := c.value.Load()
-		// If newValue is less but drift is too large, accept newValue
 		if newValue > currentValue {
-			c.setValue(newValue)
-		} else if currentValue > newValue && (currentValue-newValue > c.maxAllowedDrift) {
 			c.setValue(newValue)
 		}
 		return c.value.Load()
@@ -84,8 +81,7 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 		unlockCtx, cancel := context.WithTimeout(context.Background(), c.registry.lockTtl)
 		defer cancel()
 		if err := lock.Unlock(unlockCtx); err != nil {
-			c.registry.logger.Warn().Err(err).Str("key", c.key).Int64("lock_ttl_ms", c.registry.lockTtl.Milliseconds()).
-				Msg("failed to unlock counter, so it will be expired after ttl")
+			c.registry.logger.Warn().Err(err).Str("key", c.key).Int64("lock_ttl_ms", c.registry.lockTtl.Milliseconds()).Msg("failed to unlock counter, so it will be expired after ttl")
 		}
 	}()
 
@@ -97,10 +93,7 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 		defer c.mu.Unlock()
 
 		currentValue := c.value.Load()
-		// If newValue is less but drift is too large, accept newValue
 		if newValue > currentValue {
-			c.setValue(newValue)
-		} else if currentValue > newValue && (currentValue-newValue > c.maxAllowedDrift) {
 			c.setValue(newValue)
 		}
 		return c.value.Load()
@@ -116,8 +109,6 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 			currentValue := c.value.Load()
 			if newValue > currentValue {
 				c.setValue(newValue)
-			} else if currentValue > newValue && (currentValue-newValue > c.maxAllowedDrift) {
-				c.setValue(newValue)
 			}
 			return c.value.Load()
 		}
@@ -126,34 +117,28 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Use highest value among local, remote, and new
 	currentValue := c.value.Load()
 	highestValue := currentValue
 	if remoteValue > highestValue {
 		highestValue = remoteValue
 	}
-
 	if newValue > highestValue {
 		highestValue = newValue
-	} else if currentValue > newValue && (currentValue-newValue > c.maxAllowedDrift) {
-		// If newValue is significantly lower, accept newValue
-		highestValue = newValue
-	}
 
-	// Update remote only if we actually changed to the newValue
-	if highestValue > currentValue || (currentValue > newValue && (currentValue-newValue > c.maxAllowedDrift)) {
 		go func() {
-			// Only update remote if we're using a new or forced-lower value
+			// Only update remote if we're using the new value
 			setCtx, setCancel := context.WithCancel(c.registry.appCtx)
 			defer setCancel()
 			setCtx = trace.ContextWithSpanContext(setCtx, span.SpanContext())
-			err := c.registry.connector.Set(setCtx, c.key, "value", fmt.Sprintf("%d", highestValue), nil)
+			err := c.registry.connector.Set(setCtx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
 			if err == nil {
-				err = c.registry.connector.PublishCounterInt64(setCtx, c.key, highestValue)
+				err = c.registry.connector.PublishCounterInt64(setCtx, c.key, newValue)
 			}
 			if err != nil {
 				c.registry.logger.Warn().Err(err).
 					Str("key", c.key).
-					Int64("value", highestValue).
+					Int64("value", newValue).
 					Msg("failed to update remote value")
 			}
 		}()
