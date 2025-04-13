@@ -88,9 +88,10 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 			tt.setupMocks(connector, lock)
 
 			counter := &counterInt64{
-				registry: registry,
-				key:      "test",
-				value:    atomic.Int64{},
+				registry:        registry,
+				key:             "test",
+				value:           atomic.Int64{},
+				maxAllowedDrift: 1024,
 			}
 			counter.value.Store(tt.initialValue)
 
@@ -184,9 +185,10 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 			tt.setupMocks(connector, lock)
 
 			counter := &counterInt64{
-				registry: registry,
-				key:      "test",
-				value:    atomic.Int64{},
+				registry:        registry,
+				key:             "test",
+				value:           atomic.Int64{},
+				maxAllowedDrift: 1024,
 				baseSharedVariable: baseSharedVariable{
 					lastUpdated: atomic.Int64{},
 				},
@@ -228,9 +230,10 @@ func TestCounterInt64_Concurrency(t *testing.T) {
 	connector.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil).Times(10)
 
 	counter := &counterInt64{
-		registry: registry,
-		key:      "test",
-		value:    atomic.Int64{},
+		registry:        registry,
+		key:             "test",
+		value:           atomic.Int64{},
+		maxAllowedDrift: 1024,
 	}
 	counter.value.Store(5)
 
@@ -252,7 +255,8 @@ func TestCounterInt64_Concurrency(t *testing.T) {
 
 func TestCounterInt64_GetValue(t *testing.T) {
 	counter := &counterInt64{
-		value: atomic.Int64{},
+		value:           atomic.Int64{},
+		maxAllowedDrift: 1024,
 	}
 	counter.value.Store(42)
 
@@ -292,6 +296,7 @@ func TestCounterInt64_IsStale(t *testing.T) {
 				baseSharedVariable: baseSharedVariable{
 					lastUpdated: atomic.Int64{},
 				},
+				maxAllowedDrift: 1024,
 			}
 			counter.lastUpdated.Store(tt.lastUpdate.UnixNano())
 			assert.Equal(t, tt.expected, counter.IsStale(tt.staleness))
