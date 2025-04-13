@@ -53,8 +53,9 @@ func NewSharedStateRegistry(
 func (r *sharedStateRegistry) GetCounterInt64(key string, maxAllowedDrift int64) CounterInt64SharedVariable {
 	fkey := fmt.Sprintf("%s/%s", r.clusterKey, key)
 	value, alreadySetup := r.variables.LoadOrStore(fkey, &counterInt64{
-		registry: r,
-		key:      fkey,
+		registry:        r,
+		key:             fkey,
+		maxAllowedDrift: maxAllowedDrift,
 	})
 	counter := value.(*counterInt64)
 
