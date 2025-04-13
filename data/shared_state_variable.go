@@ -261,7 +261,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 
 	// Update if new value is higher
 	currentValue = c.value.Load() // Re-read in case it changed
-	if newValue > currentValue {
+	if newValue > currentValue || currentValue > newValue && (currentValue-newValue > c.maxAllowedDrift) {
 		c.setValue(newValue)
 		go func() {
 			err := c.registry.connector.Set(c.registry.appCtx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
