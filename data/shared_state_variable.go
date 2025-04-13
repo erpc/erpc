@@ -97,6 +97,8 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 		currentValue := c.value.Load()
 		if newValue > currentValue {
 			c.setValue(newValue)
+		} else if currentValue > newValue && (currentValue-newValue > c.maxAllowedDrift) {
+			c.setValue(newValue)
 		}
 		return c.value.Load()
 	}
@@ -110,6 +112,8 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 
 			currentValue := c.value.Load()
 			if newValue > currentValue {
+				c.setValue(newValue)
+			} else if currentValue > newValue && (currentValue-newValue > c.maxAllowedDrift) {
 				c.setValue(newValue)
 			}
 			return c.value.Load()
