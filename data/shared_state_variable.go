@@ -125,12 +125,12 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 
 	// Use highest value among local, remote, and new
 	currentValue := c.value.Load()
-	highestValue := currentValue
-	if remoteValue > highestValue {
-		highestValue = remoteValue
+	value := currentValue
+	if remoteValue > value {
+		value = remoteValue
 	}
-	if newValue > highestValue || highestValue > newValue && (highestValue-newValue > c.maxAllowedDrift) {
-		highestValue = newValue
+	if newValue > value || value > newValue && (value-newValue > c.maxAllowedDrift) {
+		value = newValue
 
 		go func() {
 			// Only update remote if we're using the new value
@@ -150,8 +150,8 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 		}()
 	}
 
-	if highestValue > 0 {
-		c.setValue(highestValue)
+	if value > 0 {
+		c.setValue(value)
 	}
 
 	return c.value.Load()
