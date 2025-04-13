@@ -481,3 +481,143 @@ func TestSharedVariable(t *testing.T) {
 		assert.Equal(t, int64(100), counter.GetValue())
 	})
 }
+
+func TestCounterInt64_TryUpdate_DriftLogic(t *testing.T) {
+	tests := []struct {
+		name            string
+		setupMocks      func(conn *MockConnector, lock *MockLock)
+		initialValue    int64
+		updateValue     int64
+		maxAllowedDrift int64
+		expectedValue   int64
+	}{
+		{
+			name: "remote lock fails, fallback local, higher update => update",
+			setupMocks: func(conn *MockConnector, lock *MockLock) {
+				// No Set call is expected because we fail to lock remotely
+				conn.On("Lock", mock.Anything, "test", mock.Anything).
+					Return(nil, errors.New("lock failed"))
+			},
+			initialValue:    5,
+			updateValue:     10,
+			maxAllowedDrift: 1024,
+			expectedValue:   10,
+		},
+		{
+			name: "remote lock fails, fallback local, lower update within drift => no update",
+			setupMocks: func(conn *MockConnector, lock *MockLock) {
+				// No Set call is expected because we fail to lock remotely
+				conn.On("Lock", mock.Anything, "test", mock.Anything).
+					Return(nil, errors.New("lock failed"))
+			},
+			initialValue:    100,
+			updateValue:     95,
+			maxAllowedDrift: 10,  // difference = 5 => within drift
+			expectedValue:   100, // remains unchanged
+		},
+		{
+			name: "remote lock fails, fallback local, lower update exceeds drift => update",
+			setupMocks: func(conn *MockConnector, lock *MockLock) {
+				conn.On("Lock", mock.Anything, "test", mock.Anything).
+					Return(nil, errors.New("lock failed"))
+			},
+			initialValue:    100,
+			updateValue:     50,
+			maxAllowedDrift: 40, // difference = 50 => exceeds drift
+			expectedValue:   50,
+		},
+		{
+			name: "remote lock succeeds, remote higher => override local; no Set call for newValue",
+			setupMocks: func(conn *MockConnector, lock *MockLock) {
+				conn.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil)
+				lock.On("Unlock", mock.Anything).Return(nil)
+				conn.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").
+					Return("200", nil)
+				// We do NOT expect a Set call because remote is higher than newValue
+				// so no new remote update is performed.
+			},
+			initialValue:    100,
+			updateValue:     150,
+			maxAllowedDrift: 1024,
+			expectedValue:   200, // remote overrides local
+		},
+		{
+			name: "remote lock succeeds, remote is lower, new update is higher => triggers Set + Publish",
+			setupMocks: func(conn *MockConnector, lock *MockLock) {
+				conn.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil)
+				lock.On("Unlock", mock.Anything).Return(nil)
+				// Remote has 100, local has 100, newValue=150 => we do an update
+				conn.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").
+					Return("100", nil)
+				// Because newValue (150) is higher, the code will call connector.Set
+				conn.On("Set", mock.Anything, "test", "value", "150", mock.Anything).
+					Return(nil)
+				// And then PublishCounterInt64
+				conn.On("PublishCounterInt64", mock.Anything, "test", int64(150)).
+					Return(nil)
+			},
+			initialValue:    100,
+			updateValue:     150,
+			maxAllowedDrift: 1024,
+			expectedValue:   150,
+		},
+		{
+			name: "remote lock succeeds, remote is lower, newValue is also lower but within drift => no update",
+			setupMocks: func(conn *MockConnector, lock *MockLock) {
+				conn.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil)
+				lock.On("Unlock", mock.Anything).Return(nil)
+				conn.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").
+					Return("100", nil)
+				// No Set call because final local won't change (difference=5, within drift=10)
+			},
+			initialValue:    100,
+			updateValue:     95,
+			maxAllowedDrift: 10, // difference = 5 => within drift => no update
+			expectedValue:   100,
+		},
+		{
+			name: "remote lock succeeds, remote is lower, newValue is lower, exceeds drift => triggers Set + Publish",
+			setupMocks: func(conn *MockConnector, lock *MockLock) {
+				conn.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil)
+				lock.On("Unlock", mock.Anything).Return(nil)
+				conn.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").
+					Return("100", nil)
+				conn.On("Set", mock.Anything, "test", "value", "50", mock.Anything).
+					Return(nil)
+				conn.On("PublishCounterInt64", mock.Anything, "test", int64(50)).
+					Return(nil)
+			},
+			initialValue:    100,
+			updateValue:     50,
+			maxAllowedDrift: 40, // difference=50 => exceeds drift => do update
+			expectedValue:   50,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			registry, connector, _ := setupTest("my-dev")
+			lock := &MockLock{}
+			tt.setupMocks(connector, lock)
+
+			counter := &counterInt64{
+				registry:        registry,
+				key:             "test",
+				maxAllowedDrift: tt.maxAllowedDrift,
+			}
+			counter.value.Store(tt.initialValue)
+
+			actualValue := counter.TryUpdate(context.Background(), tt.updateValue)
+			assert.Equal(t, tt.expectedValue, actualValue,
+				"After TryUpdate(%d) with maxAllowedDrift=%d, value should be %d",
+				tt.updateValue, tt.maxAllowedDrift, tt.expectedValue,
+			)
+
+			// Give async goroutines (the Set/Publish calls) time to complete
+			time.Sleep(20 * time.Millisecond)
+
+			connector.AssertExpectations(t)
+			lock.AssertExpectations(t)
+		})
+	}
+}

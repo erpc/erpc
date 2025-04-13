@@ -123,13 +123,14 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Use highest value among local, remote, and new
 	currentValue := c.value.Load()
-	if remoteValue > currentValue {
-		c.setValue(remoteValue)
+	value := currentValue
+	if remoteValue > value {
+		value = remoteValue
 	}
-
-	if newValue > currentValue || currentValue > newValue && (currentValue-newValue > c.maxAllowedDrift) {
-		c.setValue(newValue)
+	if newValue > value || value > newValue && (value-newValue > c.maxAllowedDrift) {
+		value = newValue
 
 		go func() {
 			// Only update remote if we're using the new value
@@ -147,6 +148,10 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 					Msg("failed to update remote value")
 			}
 		}()
+	}
+
+	if value > 0 {
+		c.setValue(value)
 	}
 
 	return c.value.Load()
@@ -189,8 +194,6 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 		currentValue := c.value.Load()
 		if newValue > currentValue {
 			c.setValue(newValue)
-		} else if currentValue > newValue && (currentValue-newValue > c.maxAllowedDrift) {
-			c.setValue(newValue)
 		}
 		return c.value.Load(), nil
 	}
@@ -220,8 +223,6 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 
 		currentValue := c.value.Load()
 		if newValue > currentValue {
-			c.setValue(newValue)
-		} else if currentValue > newValue && (currentValue-newValue > c.maxAllowedDrift) {
 			c.setValue(newValue)
 		}
 		return c.value.Load(), nil
@@ -256,7 +257,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 
 	// Update if new value is higher
 	currentValue = c.value.Load() // Re-read in case it changed
-	if newValue > currentValue || currentValue > newValue && (currentValue-newValue > c.maxAllowedDrift) {
+	if newValue > currentValue {
 		c.setValue(newValue)
 		go func() {
 			err := c.registry.connector.Set(c.registry.appCtx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
