@@ -101,11 +101,11 @@ func NewEvmStatePoller(
 	})
 
 	// TODO: replace with tracker func
-	lbs.OnDrift(func(localVal, newVal, remoteVal int64) {
-		e.logger.Debug().Int64("localVal", localVal).Int64("newVal", newVal).Int64("remoteVal", remoteVal).Msg("latest block drifted")
+	lbs.OnDrift(func(currentVal, newVal int64) {
+		e.tracker.RecordBlockHeadDownDrift(e.upstream.Config().Id, e.upstream.NetworkId(), "latest", currentVal, newVal)
 	})
-	fbs.OnDrift(func(localVal, newVal, remoteVal int64) {
-		e.logger.Debug().Int64("localVal", localVal).Int64("newVal", newVal).Int64("remoteVal", remoteVal).Msg("finalized block drifted")
+	fbs.OnDrift(func(currentVal, newVal int64) {
+		e.tracker.RecordBlockHeadDownDrift(e.upstream.Config().Id, e.upstream.NetworkId(), "finalized", currentVal, newVal)
 	})
 
 	return e

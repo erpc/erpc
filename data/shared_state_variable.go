@@ -22,7 +22,7 @@ type CounterInt64SharedVariable interface {
 	TryUpdateIfStale(ctx context.Context, staleness time.Duration, getNewValue func(ctx context.Context) (int64, error)) (int64, error)
 	TryUpdate(ctx context.Context, newValue int64) int64
 	OnValue(callback func(int64))
-	OnDrift(callback func(localVal, newVal, remoteVal int64))
+	OnDrift(callback func(currentVal, newVal int64))
 }
 
 type baseSharedVariable struct {
@@ -42,7 +42,7 @@ type counterInt64 struct {
 	mu                sync.Mutex // still needed for complex operations
 	valueCallback     func(int64)
 	ignoreDownDriftOf int64
-	driftCallback     func(localVal, newVal, remoteVal int64)
+	driftCallback     func(localVal, newVal int64)
 }
 
 func (c *counterInt64) GetValue() int64 {
@@ -80,7 +80,7 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 			c.setValue(newValue)
 
 			if c.driftCallback != nil {
-				c.driftCallback(currentValue, newValue, newValue)
+				c.driftCallback(currentValue, newValue)
 			}
 		}
 		return c.value.Load()
@@ -107,7 +107,7 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 			c.setValue(newValue)
 
 			if c.driftCallback != nil {
-				c.driftCallback(currentValue, newValue, newValue)
+				c.driftCallback(currentValue, newValue)
 			}
 		}
 		return c.value.Load()
@@ -127,7 +127,7 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 				c.setValue(newValue)
 
 				if c.driftCallback != nil {
-					c.driftCallback(currentValue, newValue, newValue)
+					c.driftCallback(currentValue, newValue)
 				}
 			}
 			return c.value.Load()
@@ -147,7 +147,7 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 		value = newValue
 
 		if c.driftCallback != nil {
-			c.driftCallback(currentValue, newValue, remoteValue)
+			c.driftCallback(currentValue, newValue)
 		}
 
 		go func() {
@@ -216,7 +216,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 			c.setValue(newValue)
 
 			if c.driftCallback != nil {
-				c.driftCallback(currentValue, newValue, newValue)
+				c.driftCallback(currentValue, newValue)
 			}
 		}
 		return c.value.Load(), nil
@@ -252,7 +252,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 			c.setValue(newValue)
 
 			if c.driftCallback != nil {
-				c.driftCallback(currentValue, newValue, newValue)
+				c.driftCallback(currentValue, newValue)
 			}
 		}
 		return c.value.Load(), nil
@@ -291,7 +291,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 		c.setValue(newValue)
 
 		if c.driftCallback != nil {
-			c.driftCallback(currentValue, newValue, newValue)
+			c.driftCallback(currentValue, newValue)
 		}
 
 		go func() {
@@ -325,7 +325,7 @@ func (c *counterInt64) setValue(val int64) {
 	}
 }
 
-func (c *counterInt64) OnDrift(cb func(localVal, newVal, remoteVal int64)) {
+func (c *counterInt64) OnDrift(cb func(currentVal, newVal int64)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.driftCallback = cb

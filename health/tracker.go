@@ -57,6 +57,7 @@ type TrackedMetrics struct {
 	RequestsTotal          atomic.Int64     `json:"requestsTotal"`
 	BlockHeadLag           atomic.Int64     `json:"blockHeadLag"`
 	FinalizationLag        atomic.Int64     `json:"finalizationLag"`
+	BlockHeadDownDrift     atomic.Int64     `json:"blockHeadDownDrift"`
 	Cordoned               atomic.Bool      `json:"cordoned"`
 	CordonedReason         atomic.Value     `json:"cordonedReason"`
 }
@@ -477,4 +478,24 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 			return true
 		})
 	}
+}
+
+func (t *Tracker) RecordBlockHeadDownDrift(ups, network string, driftType string, currentVal, newVal int64) {
+	drift := currentVal - newVal
+
+	k := tripletKey{ups: ups, network: network}
+	tm := t.getMetrics(k)
+	tm.BlockHeadDownDrift.Store(drift)
+
+	t.logger.Debug().
+		Str("upstream", ups).
+		Str("network", network).
+		Int64("currentValue", currentVal).
+		Int64("newValue", newVal).
+		Int64("drift", drift).
+		Msgf("recording block drift in tracker")
+
+	telemetry.MetricBlockHeadDownDrift.
+		WithLabelValues(t.projectId, network, ups).
+		Set(float64(drift))
 }
