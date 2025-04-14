@@ -22,6 +22,7 @@ type CounterInt64SharedVariable interface {
 	TryUpdateIfStale(ctx context.Context, staleness time.Duration, getNewValue func(ctx context.Context) (int64, error)) (int64, error)
 	TryUpdate(ctx context.Context, newValue int64) int64
 	OnValue(callback func(int64))
+	OnDrift(callback func(localVal, newVal, remoteVal int64))
 }
 
 type baseSharedVariable struct {
@@ -39,8 +40,9 @@ type counterInt64 struct {
 	key               string
 	value             atomic.Int64
 	mu                sync.Mutex // still needed for complex operations
-	callback          func(int64)
+	valueCallback     func(int64)
 	ignoreDownDriftOf int64
+	driftCallback     func(localVal, newVal, remoteVal int64)
 }
 
 func (c *counterInt64) GetValue() int64 {
@@ -76,6 +78,10 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 			c.setValue(newValue)
 		} else if currentValue > newValue && (currentValue-newValue > c.ignoreDownDriftOf) {
 			c.setValue(newValue)
+
+			if c.driftCallback != nil {
+				c.driftCallback(currentValue, newValue, newValue)
+			}
 		}
 		return c.value.Load()
 	}
@@ -99,6 +105,10 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 			c.setValue(newValue)
 		} else if currentValue > newValue && (currentValue-newValue > c.ignoreDownDriftOf) {
 			c.setValue(newValue)
+
+			if c.driftCallback != nil {
+				c.driftCallback(currentValue, newValue, newValue)
+			}
 		}
 		return c.value.Load()
 	}
@@ -115,6 +125,10 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 				c.setValue(newValue)
 			} else if currentValue > newValue && (currentValue-newValue > c.ignoreDownDriftOf) {
 				c.setValue(newValue)
+
+				if c.driftCallback != nil {
+					c.driftCallback(currentValue, newValue, newValue)
+				}
 			}
 			return c.value.Load()
 		}
@@ -131,6 +145,10 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 	}
 	if newValue > value || value > newValue && (value-newValue > c.ignoreDownDriftOf) {
 		value = newValue
+
+		if c.driftCallback != nil {
+			c.driftCallback(currentValue, newValue, remoteValue)
+		}
 
 		go func() {
 			// Only update remote if we're using the new value
@@ -196,6 +214,10 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 			c.setValue(newValue)
 		} else if currentValue > newValue && (currentValue-newValue > c.ignoreDownDriftOf) {
 			c.setValue(newValue)
+
+			if c.driftCallback != nil {
+				c.driftCallback(currentValue, newValue, newValue)
+			}
 		}
 		return c.value.Load(), nil
 	}
@@ -228,6 +250,10 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 			c.setValue(newValue)
 		} else if currentValue > newValue && (currentValue-newValue > c.ignoreDownDriftOf) {
 			c.setValue(newValue)
+
+			if c.driftCallback != nil {
+				c.driftCallback(currentValue, newValue, newValue)
+			}
 		}
 		return c.value.Load(), nil
 	}
@@ -263,6 +289,11 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	currentValue = c.value.Load() // Re-read in case it changed
 	if newValue > currentValue || currentValue > newValue && (currentValue-newValue > c.ignoreDownDriftOf) {
 		c.setValue(newValue)
+
+		if c.driftCallback != nil {
+			c.driftCallback(currentValue, newValue, newValue)
+		}
+
 		go func() {
 			err := c.registry.connector.Set(c.registry.appCtx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
 			if err == nil {
@@ -283,13 +314,19 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 func (c *counterInt64) OnValue(cb func(int64)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.callback = cb
+	c.valueCallback = cb
 }
 
 func (c *counterInt64) setValue(val int64) {
 	c.value.Store(val)
 	c.lastUpdated.Store(time.Now().UnixNano())
-	if c.callback != nil {
-		c.callback(val)
+	if c.valueCallback != nil {
+		c.valueCallback(val)
 	}
+}
+
+func (c *counterInt64) OnDrift(cb func(localVal, newVal, remoteVal int64)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.driftCallback = cb
 }
