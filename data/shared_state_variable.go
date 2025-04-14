@@ -35,12 +35,12 @@ func (v *baseSharedVariable) IsStale(staleness time.Duration) bool {
 
 type counterInt64 struct {
 	baseSharedVariable
-	registry        *sharedStateRegistry
-	key             string
-	value           atomic.Int64
-	mu              sync.Mutex // still needed for complex operations
-	callback        func(int64)
-	maxAllowedDrift int64
+	registry          *sharedStateRegistry
+	key               string
+	value             atomic.Int64
+	mu                sync.Mutex // still needed for complex operations
+	callback          func(int64)
+	ignoreDownDriftOf int64
 }
 
 func (c *counterInt64) GetValue() int64 {
@@ -74,7 +74,7 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 		currentValue := c.value.Load()
 		if newValue > currentValue {
 			c.setValue(newValue)
-		} else if currentValue > newValue && (currentValue-newValue > c.maxAllowedDrift) {
+		} else if currentValue > newValue && (currentValue-newValue > c.ignoreDownDriftOf) {
 			c.setValue(newValue)
 		}
 		return c.value.Load()
@@ -97,7 +97,7 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 		currentValue := c.value.Load()
 		if newValue > currentValue {
 			c.setValue(newValue)
-		} else if currentValue > newValue && (currentValue-newValue > c.maxAllowedDrift) {
+		} else if currentValue > newValue && (currentValue-newValue > c.ignoreDownDriftOf) {
 			c.setValue(newValue)
 		}
 		return c.value.Load()
@@ -113,7 +113,7 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 			currentValue := c.value.Load()
 			if newValue > currentValue {
 				c.setValue(newValue)
-			} else if currentValue > newValue && (currentValue-newValue > c.maxAllowedDrift) {
+			} else if currentValue > newValue && (currentValue-newValue > c.ignoreDownDriftOf) {
 				c.setValue(newValue)
 			}
 			return c.value.Load()
@@ -129,7 +129,7 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 	if remoteValue > value {
 		value = remoteValue
 	}
-	if newValue > value || value > newValue && (value-newValue > c.maxAllowedDrift) {
+	if newValue > value || value > newValue && (value-newValue > c.ignoreDownDriftOf) {
 		value = newValue
 
 		go func() {
@@ -194,7 +194,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 		currentValue := c.value.Load()
 		if newValue > currentValue {
 			c.setValue(newValue)
-		} else if currentValue > newValue && (currentValue-newValue > c.maxAllowedDrift) {
+		} else if currentValue > newValue && (currentValue-newValue > c.ignoreDownDriftOf) {
 			c.setValue(newValue)
 		}
 		return c.value.Load(), nil
@@ -226,7 +226,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 		currentValue := c.value.Load()
 		if newValue > currentValue {
 			c.setValue(newValue)
-		} else if currentValue > newValue && (currentValue-newValue > c.maxAllowedDrift) {
+		} else if currentValue > newValue && (currentValue-newValue > c.ignoreDownDriftOf) {
 			c.setValue(newValue)
 		}
 		return c.value.Load(), nil
@@ -261,7 +261,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 
 	// Update if new value is higher
 	currentValue = c.value.Load() // Re-read in case it changed
-	if newValue > currentValue || currentValue > newValue && (currentValue-newValue > c.maxAllowedDrift) {
+	if newValue > currentValue || currentValue > newValue && (currentValue-newValue > c.ignoreDownDriftOf) {
 		c.setValue(newValue)
 		go func() {
 			err := c.registry.connector.Set(c.registry.appCtx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
