@@ -425,14 +425,8 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		common.InjectHTTPResponseTraceContext(httpCtx, w)
 
 		if isBatch {
-			bw := NewBatchResponseWriter(responses)
-			_, err = bw.WriteTo(w)
-
 			statusSet := false
 			for _, resp := range responses {
-				if r, ok := resp.(*common.NormalizedResponse); ok {
-					go r.Release()
-				}
 				statusCode := determineResponseStatusCode(resp)
 				if statusCode != http.StatusOK {
 					if !statusSet {
@@ -443,6 +437,14 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 			}
 			if !statusSet {
 				w.WriteHeader(http.StatusOK)
+			}
+
+			bw := NewBatchResponseWriter(responses)
+			_, err = bw.WriteTo(w)
+			for _, resp := range responses {
+				if r, ok := resp.(*common.NormalizedResponse); ok {
+					go r.Release()
+				}
 			}
 
 			if err != nil && !errors.Is(err, http.ErrHandlerTimeout) {
