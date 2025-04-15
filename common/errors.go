@@ -50,7 +50,8 @@ func ErrorSummary(err interface{}) string {
 
 func ErrorFingerprint(err interface{}) string {
 	summary := ErrorSummary(err)
-	summary = regexp.MustCompile(`[^a-zA-Z0-9\s_-]+`).ReplaceAllString(summary, "")
+	summary = regexp.MustCompile(`[^a-zA-Z0-9\s_\.-]+`).ReplaceAllString(summary, " ")
+	summary = multipleSpaces.ReplaceAllString(summary, " ")
 	if len(summary) > 256 {
 		summary = summary[:256]
 	}
@@ -63,6 +64,8 @@ var trieNodeErr = regexp.MustCompile(`trie node [a-fA-F0-9][a-fA-F0-9][a-fA-F0-9
 var revertAddr = regexp.MustCompile(`.*execution reverted.*`)
 var ipAddr = regexp.MustCompile(`\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}`)
 var ddg = regexp.MustCompile(`\d\d+`)
+var newlines = regexp.MustCompile(`[\r\n\t]+`)
+var multipleSpaces = regexp.MustCompile(`\s{2,}`)
 
 func cleanUpMessage(s string) string {
 	s = longHash.ReplaceAllString(s, "0xREDACTED")
@@ -71,6 +74,8 @@ func cleanUpMessage(s string) string {
 	s = revertAddr.ReplaceAllString(s, "execution reverted")
 	s = ipAddr.ReplaceAllString(s, "X.X.X.X")
 	s = ddg.ReplaceAllString(s, "XX")
+	s = newlines.ReplaceAllString(s, " ")
+	s = multipleSpaces.ReplaceAllString(s, " ")
 
 	if len(s) > 512 {
 		s = s[:512]
