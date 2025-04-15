@@ -6,10 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"path"
-	"runtime"
 	"runtime/debug"
-	"strings"
 	"sync"
 	"time"
 
@@ -146,8 +143,7 @@ func (tw *timeoutWriter) writeHeaderLocked(code int) {
 		return
 	case tw.wroteHeader:
 		if tw.req != nil {
-			caller := relevantCaller()
-			log.Trace().Msgf("http: superfluous response.WriteHeader call from %s (%s:%d)", caller.Function, path.Base(caller.File), caller.Line)
+			log.Trace().Msgf("http: superfluous response.WriteHeader call from: %s", string(debug.Stack()))
 		}
 	default:
 		tw.wroteHeader = true
@@ -159,21 +155,4 @@ func (tw *timeoutWriter) WriteHeader(code int) {
 	tw.mu.Lock()
 	defer tw.mu.Unlock()
 	tw.writeHeaderLocked(code)
-}
-
-func relevantCaller() runtime.Frame {
-	pc := make([]uintptr, 16)
-	n := runtime.Callers(1, pc)
-	frames := runtime.CallersFrames(pc[:n])
-	var frame runtime.Frame
-	for {
-		frame, more := frames.Next()
-		if !strings.HasPrefix(frame.Function, "net/http.") {
-			return frame
-		}
-		if !more {
-			break
-		}
-	}
-	return frame
 }
