@@ -23,7 +23,12 @@ Click the `Deploy on Railway` button below to get started. This will take you to
 
 ### Config customizaiton 
 
-  If you need further [customization](/config/projects/providers#repository), you can fork the [template's repository](https://github.com/erpc/railway-deployment). E.g. you can create an `erpc.yaml` file in your forked repository to add your own premium RPC endpoints, caching, customised network or upstream level failsafe configs, etc. 
+<Callout type="warning">
+  **Frontend / browser usage?** If you plan to consume eRPC from a frontend (e.g browser), be sure to set up 
+  the appropriate CORS headers in your [erpc.yaml](/config/projects/cors#config) configuration. 
+</Callout>
+
+  If you need further [customization](/config/example#full-config-example), you can fork the [template's repository](https://github.com/erpc/railway-deployment). E.g. you can create an `erpc.yaml` file in your forked repository to add your own premium RPC endpoints, caching, customised network or upstream level failsafe configs, etc. 
 
   After forking and adjustments, you can either connect your forked repository to your existing deployment or create a new service linked to this forked repository.
 
