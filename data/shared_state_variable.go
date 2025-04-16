@@ -49,6 +49,23 @@ func (c *counterInt64) GetValue() int64 {
 	return c.value.Load()
 }
 
+func (c *counterInt64) maybeUpdateValue(currentVal, newVal int64) bool {
+	// This function is designed to be called from within c.mu.Lock().
+	// It returns true if the local value was actually updated.
+	updated := false
+	if newVal > currentVal {
+		c.setValue(newVal)
+		updated = true
+	} else if currentVal > newVal && (currentVal-newVal > c.ignoreDownDriftOf) {
+		c.setValue(newVal)
+		if c.driftCallback != nil {
+			c.driftCallback(currentVal, newVal)
+		}
+		updated = true
+	}
+	return updated
+}
+
 func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 	ctx, span := common.StartSpan(ctx, "CounterInt64.TryUpdate",
 		trace.WithAttributes(
@@ -73,16 +90,8 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 
-		currentValue := c.value.Load()
-		if newValue > currentValue {
-			c.setValue(newValue)
-		} else if currentValue > newValue && (currentValue-newValue > c.ignoreDownDriftOf) {
-			c.setValue(newValue)
-
-			if c.driftCallback != nil {
-				c.driftCallback(currentValue, newValue)
-			}
-		}
+		currentVal := c.value.Load()
+		_ = c.maybeUpdateValue(currentVal, newValue)
 		return c.value.Load()
 	}
 	defer func() {
@@ -100,16 +109,8 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 
-		currentValue := c.value.Load()
-		if newValue > currentValue {
-			c.setValue(newValue)
-		} else if currentValue > newValue && (currentValue-newValue > c.ignoreDownDriftOf) {
-			c.setValue(newValue)
-
-			if c.driftCallback != nil {
-				c.driftCallback(currentValue, newValue)
-			}
-		}
+		currentVal := c.value.Load()
+		_ = c.maybeUpdateValue(currentVal, newValue)
 		return c.value.Load()
 	}
 
@@ -120,16 +121,8 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 			c.mu.Lock()
 			defer c.mu.Unlock()
 
-			currentValue := c.value.Load()
-			if newValue > currentValue {
-				c.setValue(newValue)
-			} else if currentValue > newValue && (currentValue-newValue > c.ignoreDownDriftOf) {
-				c.setValue(newValue)
-
-				if c.driftCallback != nil {
-					c.driftCallback(currentValue, newValue)
-				}
-			}
+			currentVal := c.value.Load()
+			_ = c.maybeUpdateValue(currentVal, newValue)
 			return c.value.Load()
 		}
 	}
@@ -139,17 +132,12 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 
 	// Use highest value among local, remote, and new
 	currentValue := c.value.Load()
-	value := currentValue
-	if remoteValue > value {
-		value = remoteValue
+
+	if remoteValue > currentValue {
+		c.setValue(remoteValue)
 	}
-	if newValue > value || value > newValue && (value-newValue > c.ignoreDownDriftOf) {
-		value = newValue
 
-		if c.driftCallback != nil {
-			c.driftCallback(currentValue, newValue)
-		}
-
+	if c.maybeUpdateValue(currentValue, newValue) {
 		go func() {
 			// Only update remote if we're using the new value
 			setCtx, setCancel := context.WithCancel(c.registry.appCtx)
@@ -166,10 +154,6 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 					Msg("failed to update remote value")
 			}
 		}()
-	}
-
-	if value > 0 {
-		c.setValue(value)
 	}
 
 	return c.value.Load()
@@ -208,17 +192,8 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 		if err != nil {
 			return c.value.Load(), err
 		}
-
-		currentValue := c.value.Load()
-		if newValue > currentValue {
-			c.setValue(newValue)
-		} else if currentValue > newValue && (currentValue-newValue > c.ignoreDownDriftOf) {
-			c.setValue(newValue)
-
-			if c.driftCallback != nil {
-				c.driftCallback(currentValue, newValue)
-			}
-		}
+		currentVal := c.value.Load()
+		_ = c.maybeUpdateValue(currentVal, newValue)
 		return c.value.Load(), nil
 	}
 	defer func() {
@@ -244,17 +219,8 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 		if err != nil {
 			return c.value.Load(), err
 		}
-
-		currentValue := c.value.Load()
-		if newValue > currentValue {
-			c.setValue(newValue)
-		} else if currentValue > newValue && (currentValue-newValue > c.ignoreDownDriftOf) {
-			c.setValue(newValue)
-
-			if c.driftCallback != nil {
-				c.driftCallback(currentValue, newValue)
-			}
-		}
+		currentVal := c.value.Load()
+		_ = c.maybeUpdateValue(currentVal, newValue)
 		return c.value.Load(), nil
 	}
 
@@ -285,15 +251,8 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 		return c.value.Load(), err
 	}
 
-	// Update if new value is higher
-	currentValue = c.value.Load() // Re-read in case it changed
-	if newValue > currentValue || currentValue > newValue && (currentValue-newValue > c.ignoreDownDriftOf) {
-		c.setValue(newValue)
-
-		if c.driftCallback != nil {
-			c.driftCallback(currentValue, newValue)
-		}
-
+	if c.maybeUpdateValue(currentValue, newValue) {
+		// Only publish if updated
 		go func() {
 			err := c.registry.connector.Set(c.registry.appCtx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
 			if err == nil {
