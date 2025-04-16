@@ -495,7 +495,7 @@ func (t *Tracker) RecordBlockHeadLargeDownDrift(ups, network string, driftType s
 		Int64("drift", drift).
 		Msgf("recording block drift in tracker")
 
-	telemetry.MetricBlockHeadDownDrift.
+	telemetry.MetricBlockHeadLargeDownDrift.
 		WithLabelValues(t.projectId, network, ups).
 		Set(float64(drift))
 }
