@@ -54,3 +54,23 @@ database: {
 ```
 </Tabs.Tab>
 </Tabs>
+
+### How do I set up CORS for frontend usage?
+
+If you’re deploying eRPC on Railway (or elsewhere) and plan to call it directly from a web application in the browser, you must enable CORS in your [erpc.yaml](/config/projects/cors#config). Below is a minimal example that allows requests from any origin:
+
+```yaml filename="erpc.yaml"
+projects:
+  - id: main
+    cors:
+      allowedOrigins: 
+        - "https://myapp.com"
+      allowedMethods: 
+        - "GET"
+        - "POST"
+        - "OPTIONS"
+      allowedHeaders:
+        - "Content-Type"
+      allowCredentials: false
+      maxAge: 300
+```
