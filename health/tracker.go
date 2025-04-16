@@ -480,7 +480,7 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 	}
 }
 
-func (t *Tracker) RecordBlockHeadDownDrift(ups, network string, driftType string, currentVal, newVal int64) {
+func (t *Tracker) RecordBlockHeadLargeDownDrift(ups, network string, driftType string, currentVal, newVal int64) {
 	drift := currentVal - newVal
 
 	k := tripletKey{ups: ups, network: network}
