@@ -19,6 +19,9 @@ import (
 
 const FullySyncedThreshold = 4
 
+// TODO: replace with integrity config
+const DefaultToleratedBlockHeadDownDrift = 1024
+
 var _ common.EvmStatePoller = &EvmStatePoller{}
 
 type EvmStatePoller struct {
@@ -79,9 +82,8 @@ func NewEvmStatePoller(
 ) *EvmStatePoller {
 	lg := logger.With().Str("upstreamId", up.Config().Id).Str("component", "evmStatePoller").Logger()
 
-	// TODO: replace with integrity config
-	lbs := sharedState.GetCounterInt64(fmt.Sprintf("latestBlock/%s", common.UniqueUpstreamKey(up)), 1024)
-	fbs := sharedState.GetCounterInt64(fmt.Sprintf("finalizedBlock/%s", common.UniqueUpstreamKey(up)), 1024)
+	lbs := sharedState.GetCounterInt64(fmt.Sprintf("latestBlock/%s", common.UniqueUpstreamKey(up)), DefaultToleratedBlockHeadDownDrift)
+	fbs := sharedState.GetCounterInt64(fmt.Sprintf("finalizedBlock/%s", common.UniqueUpstreamKey(up)), DefaultToleratedBlockHeadDownDrift)
 
 	e := &EvmStatePoller{
 		projectId:            projectId,
