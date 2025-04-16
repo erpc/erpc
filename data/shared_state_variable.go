@@ -132,17 +132,12 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 
 	// Use highest value among local, remote, and new
 	currentValue := c.value.Load()
-	value := currentValue
-	if remoteValue > value {
-		value = remoteValue
+
+	if remoteValue > currentValue {
+		c.setValue(remoteValue)
 	}
-	if newValue > value || value > newValue && (value-newValue > c.ignoreDownDriftOf) {
-		value = newValue
 
-		if c.driftCallback != nil {
-			c.driftCallback(currentValue, newValue)
-		}
-
+	if c.maybeUpdateValue(currentValue, newValue) {
 		go func() {
 			// Only update remote if we're using the new value
 			setCtx, setCancel := context.WithCancel(c.registry.appCtx)
@@ -159,10 +154,6 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 					Msg("failed to update remote value")
 			}
 		}()
-	}
-
-	if value > 0 {
-		c.setValue(value)
 	}
 
 	return c.value.Load()
