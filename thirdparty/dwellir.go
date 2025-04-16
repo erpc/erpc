@@ -66,6 +66,7 @@ var dwellirNetworkSubdomains = map[int64]string{
 	41455: "api-aleph-zero-evm-mainnet.n",
 	42161: "api-arbitrum-mainnet-archive.n",
 	42220: "api-celo-mainnet-archive.n",
+	43114: "api-avalanche-mainnet-archive.n", 
 	44787: "api-celo-alfajores-archive", // This domain will be migrated to a .n domain soon.
 	59144: "api-linea-mainnet-archive.n",
 	80002: "api-polygon-amoy.n",
@@ -121,63 +122,43 @@ func (v *DwellirVendor) GenerateConfigs(upstream *common.UpstreamConfig, setting
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
 
-	// Handle simple endpoint format: dwellir://API_KEY
-	if strings.HasPrefix(upstream.Endpoint, "dwellir://") {
-		apiKey := strings.TrimPrefix(upstream.Endpoint, "dwellir://")
-		if apiKey == "" {
-			return nil, fmt.Errorf("API key is missing in dwellir:// endpoint format")
-		}
-		// Store the API key in settings for potential later use (e.g., advanced config)
-		if upstream.Settings == nil {
-			upstream.Settings = make(map[string]interface{})
-		}
-		upstream.Settings["apiKey"] = apiKey
-		upstream.Endpoint = "" // Clear the simple endpoint, we'll generate specific ones
-	} else if upstream.Endpoint != "" {
-		// If a specific endpoint URL is already provided, use it directly.
-		// This allows users to bypass the provider logic if needed.
-		// We assume the user knows what they are doing and have included the API key in the URL.
+	// If a specific endpoint URL is already provided, use it directly.
+	// This allows users to bypass the provider logic if needed, assuming they've included credentials.
+	if upstream.Endpoint != "" {
 		return []*common.UpstreamConfig{upstream}, nil
 	}
 
-
+	// If endpoint is empty, generate it using the apiKey from the provider settings.
 	apiKey, ok := settings["apiKey"].(string)
 	if !ok || apiKey == "" {
-		// Try getting from upstream settings if simple format was used
-		if upstream.Settings != nil {
-			apiKey, ok = upstream.Settings["apiKey"].(string)
-		}
-		if !ok || apiKey == "" {
- 			return nil, fmt.Errorf("apiKey is required in dwellir settings (use settings.apiKey or dwellir://YOUR_API_KEY)")
-		}
+ 		return nil, fmt.Errorf("apiKey is required in dwellir provider settings")
 	}
 
-
-	// If endpoint is empty AND apiKey is provided (either via simple format or settings),
-	// generate endpoints for the specified network.
-	if upstream.Endpoint == "" {
-		if upstream.Evm == nil {
-			return nil, fmt.Errorf("dwellir vendor requires upstream.evm to be defined when dynamically generating endpoints")
-		}
-		chainID := upstream.Evm.ChainId
-		if chainID == 0 {
-			return nil, fmt.Errorf("dwellir vendor requires upstream.evm.chainId to be defined")
-		}
-		subdomain, ok := dwellirNetworkSubdomains[chainID]
-		if !ok {
-			return nil, fmt.Errorf("unsupported network chain ID for Dwellir: %d", chainID)
-		}
-
-		// Construct the URL: https://{subdomain}.dwellir.com/{apiKey}
-		dwellirURL := fmt.Sprintf("https://%s.%s/%s", subdomain, dwellirAPIBaseDomain, apiKey)
-		parsedURL, err := url.Parse(dwellirURL)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse generated Dwellir URL: %w", err)
-		}
-
-		upstream.Endpoint = parsedURL.String()
-		upstream.Type = common.UpstreamTypeEvm // Ensure type is set
+	if upstream.Evm == nil {
+		return nil, fmt.Errorf("dwellir vendor requires upstream.evm to be defined when dynamically generating endpoints")
 	}
+	chainID := upstream.Evm.ChainId
+	if chainID == 0 {
+		return nil, fmt.Errorf("dwellir vendor requires upstream.evm.chainId to be defined")
+	}
+	subdomain, ok := dwellirNetworkSubdomains[chainID]
+	if !ok {
+		return nil, fmt.Errorf("unsupported network chain ID for Dwellir: %d", chainID)
+	}
+
+	// Construct the URL: https://{subdomain}.dwellir.com/{apiKey}
+	dwellirURL := fmt.Sprintf("https://%s.%s/%s", subdomain, dwellirAPIBaseDomain, apiKey)
+	// Add specific path for Avalanche
+	if subdomain == "api-avalanche-mainnet-archive.n" { 
+		dwellirURL = fmt.Sprintf("%s/ext/bc/C/rpc", dwellirURL)
+	}
+	parsedURL, err := url.Parse(dwellirURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse generated Dwellir URL: %w", err)
+	}
+
+	upstream.Endpoint = parsedURL.String()
+	upstream.Type = common.UpstreamTypeEvm // Ensure type is set
 
 	return []*common.UpstreamConfig{upstream}, nil
 }
