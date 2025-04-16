@@ -17,6 +17,7 @@ Providers make it easy to add well-known third-parties RPC endpoints quickly. He
 - [`envio`](#envio) Accepts envio.dev rpc endpoint and automatically adds all chains by HyperRPC.
 - [`pimlico`](#pimlico) Accepts pimlico.io rpc endpoint for account-abstraction (ERC-4337) support.
 - [`etherspot`](#etherspot) Accepts etherspot.io rpc endpoint for account-abstraction (ERC-4337) support.
+- [`dwellir`](#dwellir) Accepts dwellir.com api key and automatically adds all their EVM chains.
 
 <Callout type='info'>
   eRPC supports **any EVM-compatible** JSON-RPC endpoint when using [`evm` type](/config/projects/upstreams). 
@@ -398,6 +399,58 @@ export default createConfig({
 </Tabs.Tab>
 </Tabs>
 
+#### `dwellir`
+
+Built for [Dwellir](https://www.dwellir.com/) 3rd-party provider to make it easier to import their supported EVM chains with just an API-KEY.
+
+You can obtain an API key by registering at [dashboard.dwellir.com/register](https://dashboard.dwellir.com/register).
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - id: my-dwellir
+        endpoint: dwellir://YOUR_DWELLIR_API_KEY
+        # Optional: Limit to specific chains if needed
+        # onlyNetworks:
+        #   - evm:1 # Ethereum Mainnet
+        #   - evm:137 # Polygon Mainnet
+        # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          id: "my-dwellir",
+          endpoint: "dwellir://YOUR_DWELLIR_API_KEY",
+          // Optional: Limit to specific chains if needed
+          // onlyNetworks: [
+          //   "evm:1", // Ethereum Mainnet
+          //   "evm:137", // Polygon Mainnet
+          // ],
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+
 ## Advanced config
 
 You can use dedicated `providers:` config to customize per-network configurations (e.g. different config for Alchemy eth-mainnet vs Alchemy polygon) as follows:
@@ -532,4 +585,7 @@ providers:
     settings:
       repositoryUrl: https://evm-public-endpoints.erpc.cloud
       recheckInterval: 1h # How often to recheck the repository for newly added RPC endpoints
+  - vendor: dwellir
+    settings:
+      apiKey: xxxxx
 ```
