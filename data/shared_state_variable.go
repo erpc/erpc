@@ -135,6 +135,7 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 
 	if remoteValue > currentValue {
 		c.setValue(remoteValue)
+		currentValue = remoteValue
 	}
 
 	if c.maybeUpdateValue(currentValue, newValue) {
