@@ -102,8 +102,8 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 	lg := r.logger.With().Str("projectId", prjCfg.Id).Logger()
 
 	var wsDuration time.Duration
-	if prjCfg.HealthCheck != nil && prjCfg.HealthCheck.ScoreMetricsWindowSize > 0 {
-		wsDuration = prjCfg.HealthCheck.ScoreMetricsWindowSize.Duration()
+	if prjCfg.ScoreMetricsWindowSize > 0 {
+		wsDuration = prjCfg.ScoreMetricsWindowSize.Duration()
 	} else {
 		wsDuration = 30 * time.Minute
 	}

@@ -114,9 +114,17 @@ func (u *UpstreamsRegistry) NewUpstream(cfg *common.UpstreamConfig) (*Upstream, 
 	)
 }
 
+func (u *UpstreamsRegistry) GetInitializer() *util.Initializer {
+	return u.initializer
+}
+
 func (u *UpstreamsRegistry) getNetworkMutex(networkId string) *sync.RWMutex {
 	mutex, _ := u.networkMu.LoadOrStore(networkId, &sync.RWMutex{})
 	return mutex.(*sync.RWMutex)
+}
+
+func (u *UpstreamsRegistry) GetProvidersRegistry() *thirdparty.ProvidersRegistry {
+	return u.providersRegistry
 }
 
 func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, networkId string) error {

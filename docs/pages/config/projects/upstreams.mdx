@@ -382,7 +382,7 @@ eRPC evaluates each upstream's performance using key metrics to decide the most 
 - **Block head lag**: Prefers upstreams with lower lag compared to the best-performing upstream.
 - **Finalization lag**: Prioritizes upstreams with lower finalization lag.
 
-Each upstream receives a **score** based on these metrics, calculated per method (e.g., `eth_blockNumber`, `eth_getLogs`) over a configurable time window (`windowSize`, default 30 minutes). Adjust the window size in `erpc.yaml` as shown:
+Each upstream receives a **score** based on these metrics, calculated per method (e.g., `eth_blockNumber`, `eth_getLogs`) over a configurable time window (`scoreMetricsWindowSize`, default 30 minutes). Adjust the window size in `erpc.yaml` as shown:
 
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
@@ -391,9 +391,8 @@ projects:
   # ...
   - id: main
     # ...
-    healthCheck:
-      scoreMetricsWindowSize: 1h
-      # ...
+    scoreMetricsWindowSize: 1h
+    # ...
 ```
 </Tabs.Tab>
   <Tabs.Tab>
@@ -406,9 +405,7 @@ export default createConfig({
     {
       id: "main",
       // ...
-      healthCheck: {
-        scoreMetricsWindowSize: "1h",
-      },
+      scoreMetricsWindowSize: "1h",
     },
   ],
 });

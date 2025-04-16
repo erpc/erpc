@@ -79,7 +79,7 @@ database:
           addr: YOUR_REDIS_ADDRESS_HERE
           password: YOUR_REDIS_PASSWORD_HERE
           db: XXX
-          connPoolSize: 128
+          connPoolSize: 8
           tls:
             enabled: false # or "true" if redis is configured with TLS
             certFile: /path/to/client.crt # Optional
@@ -113,7 +113,7 @@ export default createConfig({
             addr: "YOUR_REDIS_ADDRESS_HERE",
             password: "YOUR_REDIS_PASSWORD_HERE",
             db: 0,
-            connPoolSize: 128,
+            connPoolSize: 8,
             tls: {
               enabled: false // or "true" if redis is configured with TLS
               certFile: "/path/to/client.crt" // Optional

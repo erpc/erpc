@@ -228,7 +228,7 @@ export type UpstreamConfig = {
 
 // Upstream metrics
 export type UpstreamMetrics = {
-    // p90 rate of errors of last X minutes (X is based on `project.healthCheck.scoreMetricsWindowSize`)
+    // p90 rate of errors of last X minutes (X is based on `project.scoreMetricsWindowSize`)
     errorRate: number;
 
     // total errors of this upstream

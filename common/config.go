@@ -29,6 +29,7 @@ type Config struct {
 	LogLevel     string             `yaml:"logLevel,omitempty" json:"logLevel" tstype:"LogLevel"`
 	ClusterKey   string             `yaml:"clusterKey,omitempty" json:"clusterKey"`
 	Server       *ServerConfig      `yaml:"server,omitempty" json:"server"`
+	HealthCheck  *HealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
 	Admin        *AdminConfig       `yaml:"admin,omitempty" json:"admin"`
 	Database     *DatabaseConfig    `yaml:"database,omitempty" json:"database"`
 	Projects     []*ProjectConfig   `yaml:"projects,omitempty" json:"projects"`
@@ -90,6 +91,29 @@ type ServerConfig struct {
 	TLS          *TLSConfig      `yaml:"tls,omitempty" json:"tls"`
 	Aliasing     *AliasingConfig `yaml:"aliasing" json:"aliasing"`
 }
+
+type HealthCheckConfig struct {
+	Mode        HealthCheckMode `yaml:"mode,omitempty" json:"mode"`
+	Auth        *AuthConfig     `yaml:"auth,omitempty" json:"auth"`
+	DefaultEval string          `yaml:"defaultEval,omitempty" json:"defaultEval"`
+}
+
+type HealthCheckMode string
+
+const (
+	HealthCheckModeSimple  HealthCheckMode = "simple"
+	HealthCheckModeVerbose HealthCheckMode = "verbose"
+)
+
+const (
+	EvalAnyInitializedUpstreams = "any:initializedUpstreams"
+	EvalAnyErrorRateBelow90     = "any:errorRateBelow90"
+	EvalAllErrorRateBelow90     = "all:errorRateBelow90"
+	EvalAnyErrorRateBelow100    = "any:errorRateBelow100"
+	EvalAllErrorRateBelow100    = "all:errorRateBelow100"
+	EvalEvmAnyChainId           = "any:evm:eth_chainId"
+	EvalEvmAllChainId           = "all:evm:eth_chainId"
+)
 
 type TracingProtocol string
 
@@ -279,16 +303,17 @@ func (a *AwsAuthConfig) MarshalJSON() ([]byte, error) {
 }
 
 type ProjectConfig struct {
-	Id               string             `yaml:"id" json:"id"`
-	Auth             *AuthConfig        `yaml:"auth,omitempty" json:"auth"`
-	CORS             *CORSConfig        `yaml:"cors,omitempty" json:"cors"`
-	Providers        []*ProviderConfig  `yaml:"providers,omitempty" json:"providers"`
-	UpstreamDefaults *UpstreamConfig    `yaml:"upstreamDefaults,omitempty" json:"upstreamDefaults"`
-	Upstreams        []*UpstreamConfig  `yaml:"upstreams,omitempty" json:"upstreams"`
-	NetworkDefaults  *NetworkDefaults   `yaml:"networkDefaults,omitempty" json:"networkDefaults"`
-	Networks         []*NetworkConfig   `yaml:"networks,omitempty" json:"networks"`
-	RateLimitBudget  string             `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
-	HealthCheck      *HealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
+	Id                     string                              `yaml:"id" json:"id"`
+	Auth                   *AuthConfig                         `yaml:"auth,omitempty" json:"auth"`
+	CORS                   *CORSConfig                         `yaml:"cors,omitempty" json:"cors"`
+	Providers              []*ProviderConfig                   `yaml:"providers,omitempty" json:"providers"`
+	UpstreamDefaults       *UpstreamConfig                     `yaml:"upstreamDefaults,omitempty" json:"upstreamDefaults"`
+	Upstreams              []*UpstreamConfig                   `yaml:"upstreams,omitempty" json:"upstreams"`
+	NetworkDefaults        *NetworkDefaults                    `yaml:"networkDefaults,omitempty" json:"networkDefaults"`
+	Networks               []*NetworkConfig                    `yaml:"networks,omitempty" json:"networks"`
+	RateLimitBudget        string                              `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
+	ScoreMetricsWindowSize Duration                            `yaml:"scoreMetricsWindowSize" json:"scoreMetricsWindowSize" tstype:"Duration"`
+	DeprecatedHealthCheck  *DeprecatedProjectHealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
 }
 
 type NetworkDefaults struct {
@@ -708,7 +733,7 @@ type ProxyPoolConfig struct {
 	Urls []string `yaml:"urls" json:"urls"`
 }
 
-type HealthCheckConfig struct {
+type DeprecatedProjectHealthCheckConfig struct {
 	ScoreMetricsWindowSize Duration `yaml:"scoreMetricsWindowSize" json:"scoreMetricsWindowSize" tstype:"Duration"`
 }
 

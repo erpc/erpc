@@ -107,14 +107,14 @@ database:
           addr: localhost:6379
           password: "xxxxxxxxx"
           db: 0
-          connPoolSize: 128
+          connPoolSize: 8
       - id: redis-cache-momento
         driver: redis # Refer to "redis" driver docs below
         redis:
           addr: momento.aws.momentohq.com:6379
           password: "xxxxxxxxx"
           db: 0
-          connPoolSize: 128
+          connPoolSize: 8
       - id: postgres-cache
         driver: postgresql # Refer to "postgresql" driver docs below
         postgresql:
@@ -197,7 +197,7 @@ export default createConfig({
             addr: "localhost:6379",
             password: "xxxxxxxxx",
             db: 0,
-            connPoolSize: 128
+            connPoolSize: 8
           }
         },
         {
@@ -207,7 +207,7 @@ export default createConfig({
             addr: "momento.aws.momentohq.com:6379",
             password: "xxxxxxxxx",
             db: 0,
-            connPoolSize: 128
+            connPoolSize: 8
           }
         },
         {

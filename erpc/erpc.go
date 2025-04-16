@@ -105,9 +105,9 @@ func NewERPC(
 	}, nil
 }
 
-func (e *ERPC) AdminAuthenticate(ctx context.Context, nq *common.NormalizedRequest, ap *auth.AuthPayload) error {
+func (e *ERPC) AdminAuthenticate(ctx context.Context, method string, ap *auth.AuthPayload) error {
 	if e.adminAuthRegistry != nil {
-		err := e.adminAuthRegistry.Authenticate(ctx, nq, ap)
+		err := e.adminAuthRegistry.Authenticate(ctx, method, ap)
 		if err != nil {
 			return err
 		}
