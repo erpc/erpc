@@ -195,15 +195,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 		}
 
 		currentValue := c.value.Load()
-		if newValue > currentValue {
-			c.setValue(newValue)
-		} else if currentValue > newValue && (currentValue-newValue > c.ignoreDownDriftOf) {
-			c.setValue(newValue)
-
-			if c.driftCallback != nil {
-				c.driftCallback(currentValue, newValue)
-			}
-		}
+		_ = c.maybeUpdateValue(currentValue, newValue)
 		return c.value.Load(), nil
 	}
 	defer func() {
@@ -231,15 +223,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 		}
 
 		currentValue := c.value.Load()
-		if newValue > currentValue {
-			c.setValue(newValue)
-		} else if currentValue > newValue && (currentValue-newValue > c.ignoreDownDriftOf) {
-			c.setValue(newValue)
-
-			if c.driftCallback != nil {
-				c.driftCallback(currentValue, newValue)
-			}
-		}
+		_ = c.maybeUpdateValue(currentValue, newValue)
 		return c.value.Load(), nil
 	}
 
@@ -272,13 +256,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 
 	// Update if new value is higher
 	currentValue = c.value.Load() // Re-read in case it changed
-	if newValue > currentValue || currentValue > newValue && (currentValue-newValue > c.ignoreDownDriftOf) {
-		c.setValue(newValue)
-
-		if c.driftCallback != nil {
-			c.driftCallback(currentValue, newValue)
-		}
-
+	if c.maybeUpdateValue(currentValue, newValue) {
 		go func() {
 			err := c.registry.connector.Set(c.registry.appCtx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
 			if err == nil {
