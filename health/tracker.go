@@ -50,16 +50,16 @@ func (t *Timer) ObserveDuration() {
 // ------------------------------------
 
 type TrackedMetrics struct {
-	ResponseQuantiles      *QuantileTracker `json:"responseQuantiles"`
-	ErrorsTotal            atomic.Int64     `json:"errorsTotal"`
-	SelfRateLimitedTotal   atomic.Int64     `json:"selfRateLimitedTotal"`
-	RemoteRateLimitedTotal atomic.Int64     `json:"remoteRateLimitedTotal"`
-	RequestsTotal          atomic.Int64     `json:"requestsTotal"`
-	BlockHeadLag           atomic.Int64     `json:"blockHeadLag"`
-	FinalizationLag        atomic.Int64     `json:"finalizationLag"`
-	BlockHeadDownDrift     atomic.Int64     `json:"blockHeadDownDrift"`
-	Cordoned               atomic.Bool      `json:"cordoned"`
-	CordonedReason         atomic.Value     `json:"cordonedReason"`
+	ResponseQuantiles       *QuantileTracker `json:"responseQuantiles"`
+	ErrorsTotal             atomic.Int64     `json:"errorsTotal"`
+	SelfRateLimitedTotal    atomic.Int64     `json:"selfRateLimitedTotal"`
+	RemoteRateLimitedTotal  atomic.Int64     `json:"remoteRateLimitedTotal"`
+	RequestsTotal           atomic.Int64     `json:"requestsTotal"`
+	BlockHeadLag            atomic.Int64     `json:"blockHeadLag"`
+	FinalizationLag         atomic.Int64     `json:"finalizationLag"`
+	BlockHeadLargeDownDrift atomic.Int64     `json:"BlockHeadLargeDownDrift"`
+	Cordoned                atomic.Bool      `json:"cordoned"`
+	CordonedReason          atomic.Value     `json:"cordonedReason"`
 }
 
 func (m *TrackedMetrics) ErrorRate() float64 {
@@ -485,7 +485,7 @@ func (t *Tracker) RecordBlockHeadLargeDownDrift(ups, network string, driftType s
 
 	k := tripletKey{ups: ups, network: network}
 	tm := t.getMetrics(k)
-	tm.BlockHeadDownDrift.Store(drift)
+	tm.BlockHeadLargeDownDrift.Store(drift)
 
 	t.logger.Debug().
 		Str("upstream", ups).

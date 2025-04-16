@@ -102,7 +102,6 @@ func NewEvmStatePoller(
 		e.tracker.SetFinalizedBlockNumber(e.upstream.Config().Id, e.upstream.NetworkId(), value)
 	})
 
-	// TODO: replace with tracker func
 	lbs.OnLargeDownDrift(func(currentVal, newVal int64) {
 		e.tracker.RecordBlockHeadLargeDownDrift(e.upstream.Config().Id, e.upstream.NetworkId(), "latest", currentVal, newVal)
 	})

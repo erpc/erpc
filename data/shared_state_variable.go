@@ -36,13 +36,13 @@ func (v *baseSharedVariable) IsStale(staleness time.Duration) bool {
 
 type counterInt64 struct {
 	baseSharedVariable
-	registry          *sharedStateRegistry
-	key               string
-	value             atomic.Int64
-	mu                sync.Mutex // still needed for complex operations
-	valueCallback     func(int64)
-	ignoreDownDriftOf int64
-	driftCallback     func(localVal, newVal int64)
+	registry               *sharedStateRegistry
+	key                    string
+	value                  atomic.Int64
+	mu                     sync.Mutex // still needed for complex operations
+	valueCallback          func(int64)
+	ignoreDownDriftOf      int64
+	largeDownDriftCallback func(localVal, newVal int64)
 }
 
 func (c *counterInt64) GetValue() int64 {
@@ -58,8 +58,8 @@ func (c *counterInt64) maybeUpdateValue(currentVal, newVal int64) bool {
 		updated = true
 	} else if currentVal > newVal && (currentVal-newVal > c.ignoreDownDriftOf) {
 		c.setValue(newVal)
-		if c.driftCallback != nil {
-			c.driftCallback(currentVal, newVal)
+		if c.largeDownDriftCallback != nil {
+			c.largeDownDriftCallback(currentVal, newVal)
 		}
 		updated = true
 	}
@@ -291,5 +291,5 @@ func (c *counterInt64) setValue(val int64) {
 func (c *counterInt64) OnLargeDownDrift(cb func(currentVal, newVal int64)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.driftCallback = cb
+	c.largeDownDriftCallback = cb
 }
