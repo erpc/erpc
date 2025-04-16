@@ -19,7 +19,10 @@ import (
 
 const FullySyncedThreshold = 4
 
-// TODO: replace with integrity config
+// TODO: find a clean way to pass integrity config to evm pollers for lazy-loaded
+// networks (not statically configured in erpc.yaml). at the moment an "evm state poller"
+// might be initiated "before" a network is physically created and configured
+// (e.g. when a new network is lazy-loaded from a Repository Provider)
 const DefaultToleratedBlockHeadDownDrift = 1024
 
 var _ common.EvmStatePoller = &EvmStatePoller{}
