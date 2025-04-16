@@ -22,7 +22,7 @@ type CounterInt64SharedVariable interface {
 	TryUpdateIfStale(ctx context.Context, staleness time.Duration, getNewValue func(ctx context.Context) (int64, error)) (int64, error)
 	TryUpdate(ctx context.Context, newValue int64) int64
 	OnValue(callback func(int64))
-	OnDrift(callback func(currentVal, newVal int64))
+	OnLargeDownDrift(callback func(currentVal, newVal int64))
 }
 
 type baseSharedVariable struct {
@@ -325,7 +325,7 @@ func (c *counterInt64) setValue(val int64) {
 	}
 }
 
-func (c *counterInt64) OnDrift(cb func(currentVal, newVal int64)) {
+func (c *counterInt64) OnLargeDownDrift(cb func(currentVal, newVal int64)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.driftCallback = cb
