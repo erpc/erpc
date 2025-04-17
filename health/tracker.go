@@ -57,6 +57,7 @@ type TrackedMetrics struct {
 	RequestsTotal          atomic.Int64     `json:"requestsTotal"`
 	BlockHeadLag           atomic.Int64     `json:"blockHeadLag"`
 	FinalizationLag        atomic.Int64     `json:"finalizationLag"`
+	BlockHeadLargeRollback atomic.Int64     `json:"blockHeadLargeRollback"`
 	Cordoned               atomic.Bool      `json:"cordoned"`
 	CordonedReason         atomic.Value     `json:"cordonedReason"`
 }
@@ -479,4 +480,24 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 			return true
 		})
 	}
+}
+
+func (t *Tracker) RecordBlockHeadLargeRollback(ups, network, finality string, currentVal, newVal int64) {
+	rollback := currentVal - newVal
+
+	k := tripletKey{ups: ups, network: network}
+	tm := t.getMetrics(k)
+	tm.BlockHeadLargeRollback.Store(rollback)
+
+	t.logger.Debug().
+		Str("upstream", ups).
+		Str("network", network).
+		Int64("currentValue", currentVal).
+		Int64("newValue", newVal).
+		Int64("rollback", rollback).
+		Msgf("recording block rollback in tracker")
+
+	telemetry.MetricBlockHeadLargeRollback.
+		WithLabelValues(t.projectId, network, ups).
+		Set(float64(rollback))
 }
