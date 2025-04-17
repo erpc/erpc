@@ -480,7 +480,7 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 	}
 }
 
-func (t *Tracker) RecordBlockHeadLargeRollback(ups, network string, currentVal, newVal int64) {
+func (t *Tracker) RecordBlockHeadLargeRollback(ups, network, finality string, currentVal, newVal int64) {
 	rollback := currentVal - newVal
 
 	k := tripletKey{ups: ups, network: network}
