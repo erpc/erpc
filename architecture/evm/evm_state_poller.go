@@ -23,7 +23,7 @@ const FullySyncedThreshold = 4
 // networks (not statically configured in erpc.yaml). at the moment an "evm state poller"
 // might be initiated "before" a network is physically created and configured
 // (e.g. when a new network is lazy-loaded from a Repository Provider)
-const DefaultToleratedBlockHeadDownDrift = 1024
+const DefaultToleratedBlockHeadRollback = 1024
 
 var _ common.EvmStatePoller = &EvmStatePoller{}
 
@@ -85,8 +85,8 @@ func NewEvmStatePoller(
 ) *EvmStatePoller {
 	lg := logger.With().Str("upstreamId", up.Config().Id).Str("component", "evmStatePoller").Logger()
 
-	lbs := sharedState.GetCounterInt64(fmt.Sprintf("latestBlock/%s", common.UniqueUpstreamKey(up)), DefaultToleratedBlockHeadDownDrift)
-	fbs := sharedState.GetCounterInt64(fmt.Sprintf("finalizedBlock/%s", common.UniqueUpstreamKey(up)), DefaultToleratedBlockHeadDownDrift)
+	lbs := sharedState.GetCounterInt64(fmt.Sprintf("latestBlock/%s", common.UniqueUpstreamKey(up)), DefaultToleratedBlockHeadRollback)
+	fbs := sharedState.GetCounterInt64(fmt.Sprintf("finalizedBlock/%s", common.UniqueUpstreamKey(up)), DefaultToleratedBlockHeadRollback)
 
 	e := &EvmStatePoller{
 		projectId:            projectId,
@@ -105,11 +105,11 @@ func NewEvmStatePoller(
 		e.tracker.SetFinalizedBlockNumber(e.upstream.Config().Id, e.upstream.NetworkId(), value)
 	})
 
-	lbs.OnLargeDownDrift(func(currentVal, newVal int64) {
-		e.tracker.RecordBlockHeadLargeDownDrift(e.upstream.Config().Id, e.upstream.NetworkId(), "latest", currentVal, newVal)
+	lbs.OnLargeRollback(func(currentVal, newVal int64) {
+		e.tracker.RecordBlockHeadLargeRollback(e.upstream.Config().Id, e.upstream.NetworkId(), "latest", currentVal, newVal)
 	})
-	fbs.OnLargeDownDrift(func(currentVal, newVal int64) {
-		e.tracker.RecordBlockHeadLargeDownDrift(e.upstream.Config().Id, e.upstream.NetworkId(), "finalized", currentVal, newVal)
+	fbs.OnLargeRollback(func(currentVal, newVal int64) {
+		e.tracker.RecordBlockHeadLargeRollback(e.upstream.Config().Id, e.upstream.NetworkId(), "finalized", currentVal, newVal)
 	})
 
 	return e

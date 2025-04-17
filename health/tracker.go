@@ -50,16 +50,16 @@ func (t *Timer) ObserveDuration() {
 // ------------------------------------
 
 type TrackedMetrics struct {
-	ResponseQuantiles       *QuantileTracker `json:"responseQuantiles"`
-	ErrorsTotal             atomic.Int64     `json:"errorsTotal"`
-	SelfRateLimitedTotal    atomic.Int64     `json:"selfRateLimitedTotal"`
-	RemoteRateLimitedTotal  atomic.Int64     `json:"remoteRateLimitedTotal"`
-	RequestsTotal           atomic.Int64     `json:"requestsTotal"`
-	BlockHeadLag            atomic.Int64     `json:"blockHeadLag"`
-	FinalizationLag         atomic.Int64     `json:"finalizationLag"`
-	BlockHeadLargeDownDrift atomic.Int64     `json:"BlockHeadLargeDownDrift"`
-	Cordoned                atomic.Bool      `json:"cordoned"`
-	CordonedReason          atomic.Value     `json:"cordonedReason"`
+	ResponseQuantiles      *QuantileTracker `json:"responseQuantiles"`
+	ErrorsTotal            atomic.Int64     `json:"errorsTotal"`
+	SelfRateLimitedTotal   atomic.Int64     `json:"selfRateLimitedTotal"`
+	RemoteRateLimitedTotal atomic.Int64     `json:"remoteRateLimitedTotal"`
+	RequestsTotal          atomic.Int64     `json:"requestsTotal"`
+	BlockHeadLag           atomic.Int64     `json:"blockHeadLag"`
+	FinalizationLag        atomic.Int64     `json:"finalizationLag"`
+	BlockHeadLargeRollback atomic.Int64     `json:"blockHeadLargeRollback"`
+	Cordoned               atomic.Bool      `json:"cordoned"`
+	CordonedReason         atomic.Value     `json:"cordonedReason"`
 }
 
 func (m *TrackedMetrics) ErrorRate() float64 {
@@ -480,22 +480,22 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 	}
 }
 
-func (t *Tracker) RecordBlockHeadLargeDownDrift(ups, network string, driftType string, currentVal, newVal int64) {
-	drift := currentVal - newVal
+func (t *Tracker) RecordBlockHeadLargeRollback(ups, network string, currentVal, newVal int64) {
+	rollback := currentVal - newVal
 
 	k := tripletKey{ups: ups, network: network}
 	tm := t.getMetrics(k)
-	tm.BlockHeadLargeDownDrift.Store(drift)
+	tm.BlockHeadLargeRollback.Store(rollback)
 
 	t.logger.Debug().
 		Str("upstream", ups).
 		Str("network", network).
 		Int64("currentValue", currentVal).
 		Int64("newValue", newVal).
-		Int64("drift", drift).
-		Msgf("recording block drift in tracker")
+		Int64("rollback", rollback).
+		Msgf("recording block rollback in tracker")
 
-	telemetry.MetricBlockHeadLargeDownDrift.
+	telemetry.MetricBlockHeadLargeRollback.
 		WithLabelValues(t.projectId, network, ups).
-		Set(float64(drift))
+		Set(float64(rollback))
 }

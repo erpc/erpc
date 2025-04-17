@@ -88,10 +88,10 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 			tt.setupMocks(connector, lock)
 
 			counter := &counterInt64{
-				registry:          registry,
-				key:               "test",
-				value:             atomic.Int64{},
-				ignoreDownDriftOf: 1024,
+				registry:         registry,
+				key:              "test",
+				value:            atomic.Int64{},
+				ignoreRollbackOf: 1024,
 			}
 			counter.value.Store(tt.initialValue)
 
@@ -185,10 +185,10 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 			tt.setupMocks(connector, lock)
 
 			counter := &counterInt64{
-				registry:          registry,
-				key:               "test",
-				value:             atomic.Int64{},
-				ignoreDownDriftOf: 1024,
+				registry:         registry,
+				key:              "test",
+				value:            atomic.Int64{},
+				ignoreRollbackOf: 1024,
 				baseSharedVariable: baseSharedVariable{
 					lastUpdated: atomic.Int64{},
 				},
@@ -230,10 +230,10 @@ func TestCounterInt64_Concurrency(t *testing.T) {
 	connector.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil).Times(10)
 
 	counter := &counterInt64{
-		registry:          registry,
-		key:               "test",
-		value:             atomic.Int64{},
-		ignoreDownDriftOf: 1024,
+		registry:         registry,
+		key:              "test",
+		value:            atomic.Int64{},
+		ignoreRollbackOf: 1024,
 	}
 	counter.value.Store(5)
 
@@ -255,8 +255,8 @@ func TestCounterInt64_Concurrency(t *testing.T) {
 
 func TestCounterInt64_GetValue(t *testing.T) {
 	counter := &counterInt64{
-		value:             atomic.Int64{},
-		ignoreDownDriftOf: 1024,
+		value:            atomic.Int64{},
+		ignoreRollbackOf: 1024,
 	}
 	counter.value.Store(42)
 
@@ -296,7 +296,7 @@ func TestCounterInt64_IsStale(t *testing.T) {
 				baseSharedVariable: baseSharedVariable{
 					lastUpdated: atomic.Int64{},
 				},
-				ignoreDownDriftOf: 1024,
+				ignoreRollbackOf: 1024,
 			}
 			counter.lastUpdated.Store(tt.lastUpdate.UnixNano())
 			assert.Equal(t, tt.expected, counter.IsStale(tt.staleness))
@@ -482,14 +482,14 @@ func TestSharedVariable(t *testing.T) {
 	})
 }
 
-func TestCounterInt64_TryUpdate_DriftLogic(t *testing.T) {
+func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 	tests := []struct {
-		name              string
-		setupMocks        func(conn *MockConnector, lock *MockLock)
-		initialValue      int64
-		updateValue       int64
-		ignoreDownDriftOf int64
-		expectedValue     int64
+		name             string
+		setupMocks       func(conn *MockConnector, lock *MockLock)
+		initialValue     int64
+		updateValue      int64
+		ignoreRollbackOf int64
+		expectedValue    int64
 	}{
 		{
 			name: "remote lock fails, fallback local, higher update => update",
@@ -498,33 +498,33 @@ func TestCounterInt64_TryUpdate_DriftLogic(t *testing.T) {
 				conn.On("Lock", mock.Anything, "test", mock.Anything).
 					Return(nil, errors.New("lock failed"))
 			},
-			initialValue:      5,
-			updateValue:       10,
-			ignoreDownDriftOf: 1024,
-			expectedValue:     10,
+			initialValue:     5,
+			updateValue:      10,
+			ignoreRollbackOf: 1024,
+			expectedValue:    10,
 		},
 		{
-			name: "remote lock fails, fallback local, lower update within drift => no update",
+			name: "remote lock fails, fallback local, lower update within rollback range => no update",
 			setupMocks: func(conn *MockConnector, lock *MockLock) {
 				// No Set call is expected because we fail to lock remotely
 				conn.On("Lock", mock.Anything, "test", mock.Anything).
 					Return(nil, errors.New("lock failed"))
 			},
-			initialValue:      100,
-			updateValue:       95,
-			ignoreDownDriftOf: 10,  // difference = 5 => within drift
-			expectedValue:     100, // remains unchanged
+			initialValue:     100,
+			updateValue:      95,
+			ignoreRollbackOf: 10,  // difference = 5 => within rollback range
+			expectedValue:    100, // remains unchanged
 		},
 		{
-			name: "remote lock fails, fallback local, lower update exceeds drift => update",
+			name: "remote lock fails, fallback local, lower update exceeds rollback range => update",
 			setupMocks: func(conn *MockConnector, lock *MockLock) {
 				conn.On("Lock", mock.Anything, "test", mock.Anything).
 					Return(nil, errors.New("lock failed"))
 			},
-			initialValue:      100,
-			updateValue:       50,
-			ignoreDownDriftOf: 40, // difference = 50 => exceeds drift
-			expectedValue:     50,
+			initialValue:     100,
+			updateValue:      50,
+			ignoreRollbackOf: 40, // difference = 50 => exceeds rollback range
+			expectedValue:    50,
 		},
 		{
 			name: "remote lock succeeds, remote higher => override local; no Set call for newValue",
@@ -536,10 +536,10 @@ func TestCounterInt64_TryUpdate_DriftLogic(t *testing.T) {
 				// We do NOT expect a Set call because remote is higher than newValue
 				// so no new remote update is performed.
 			},
-			initialValue:      100,
-			updateValue:       150,
-			ignoreDownDriftOf: 1024,
-			expectedValue:     200, // remote overrides local
+			initialValue:     100,
+			updateValue:      150,
+			ignoreRollbackOf: 1024,
+			expectedValue:    200, // remote overrides local
 		},
 		{
 			name: "remote lock succeeds, remote is lower, new update is higher => triggers Set + Publish",
@@ -556,27 +556,27 @@ func TestCounterInt64_TryUpdate_DriftLogic(t *testing.T) {
 				conn.On("PublishCounterInt64", mock.Anything, "test", int64(150)).
 					Return(nil)
 			},
-			initialValue:      100,
-			updateValue:       150,
-			ignoreDownDriftOf: 1024,
-			expectedValue:     150,
+			initialValue:     100,
+			updateValue:      150,
+			ignoreRollbackOf: 1024,
+			expectedValue:    150,
 		},
 		{
-			name: "remote lock succeeds, remote is lower, newValue is also lower but within drift => no update",
+			name: "remote lock succeeds, remote is lower, newValue is also lower but within rollback range => no update",
 			setupMocks: func(conn *MockConnector, lock *MockLock) {
 				conn.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil)
 				lock.On("Unlock", mock.Anything).Return(nil)
 				conn.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").
 					Return("100", nil)
-				// No Set call because final local won't change (difference=5, within drift=10)
+				// No Set call because final local won't change (difference=5, within rollback range=10)
 			},
-			initialValue:      100,
-			updateValue:       95,
-			ignoreDownDriftOf: 10, // difference = 5 => within drift => no update
-			expectedValue:     100,
+			initialValue:     100,
+			updateValue:      95,
+			ignoreRollbackOf: 10, // difference = 5 => within rollback range => no update
+			expectedValue:    100,
 		},
 		{
-			name: "remote lock succeeds, remote is lower, newValue is lower, exceeds drift => triggers Set + Publish",
+			name: "remote lock succeeds, remote is lower, newValue is lower, exceeds rollback range => triggers Set + Publish",
 			setupMocks: func(conn *MockConnector, lock *MockLock) {
 				conn.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil)
 				lock.On("Unlock", mock.Anything).Return(nil)
@@ -587,10 +587,10 @@ func TestCounterInt64_TryUpdate_DriftLogic(t *testing.T) {
 				conn.On("PublishCounterInt64", mock.Anything, "test", int64(50)).
 					Return(nil)
 			},
-			initialValue:      100,
-			updateValue:       50,
-			ignoreDownDriftOf: 40, // difference=50 => exceeds drift => do update
-			expectedValue:     50,
+			initialValue:     100,
+			updateValue:      50,
+			ignoreRollbackOf: 40, // difference=50 => exceeds rollback range => do update
+			expectedValue:    50,
 		},
 	}
 
@@ -601,16 +601,16 @@ func TestCounterInt64_TryUpdate_DriftLogic(t *testing.T) {
 			tt.setupMocks(connector, lock)
 
 			counter := &counterInt64{
-				registry:          registry,
-				key:               "test",
-				ignoreDownDriftOf: tt.ignoreDownDriftOf,
+				registry:         registry,
+				key:              "test",
+				ignoreRollbackOf: tt.ignoreRollbackOf,
 			}
 			counter.value.Store(tt.initialValue)
 
 			actualValue := counter.TryUpdate(context.Background(), tt.updateValue)
 			assert.Equal(t, tt.expectedValue, actualValue,
-				"After TryUpdate(%d) with ignoreDownDriftOf=%d, value should be %d",
-				tt.updateValue, tt.ignoreDownDriftOf, tt.expectedValue,
+				"After TryUpdate(%d) with ignoreRollbackOf=%d, value should be %d",
+				tt.updateValue, tt.ignoreRollbackOf, tt.expectedValue,
 			)
 
 			// Give async goroutines (the Set/Publish calls) time to complete

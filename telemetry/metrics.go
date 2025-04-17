@@ -394,9 +394,9 @@ var (
 		Help:      "Total number of CORS requests from disallowed origins.",
 	}, []string{"project", "origin"})
 
-	MetricBlockHeadLargeDownDrift = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	MetricBlockHeadLargeRollback = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "erpc",
-		Name:      "block_head_large_down_drift",
-		Help:      "Number of times block head drifted downwards by a large number vs previous latest block returned by the same upstream.",
+		Name:      "block_head_large_rollback",
+		Help:      "Number of times block head rolled back by a large number vs previous latest block returned by the same upstream.",
 	}, []string{"project", "network", "upstream"})
 )

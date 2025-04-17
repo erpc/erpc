@@ -14,7 +14,7 @@ import (
 )
 
 type SharedStateRegistry interface {
-	GetCounterInt64(key string, ignoreDownDriftOf int64) CounterInt64SharedVariable
+	GetCounterInt64(key string, ignoreRollbackOf int64) CounterInt64SharedVariable
 }
 
 type sharedStateRegistry struct {
@@ -50,12 +50,12 @@ func NewSharedStateRegistry(
 	}, nil
 }
 
-func (r *sharedStateRegistry) GetCounterInt64(key string, ignoreDownDriftOf int64) CounterInt64SharedVariable {
+func (r *sharedStateRegistry) GetCounterInt64(key string, ignoreRollbackOf int64) CounterInt64SharedVariable {
 	fkey := fmt.Sprintf("%s/%s", r.clusterKey, key)
 	value, alreadySetup := r.variables.LoadOrStore(fkey, &counterInt64{
-		registry:          r,
-		key:               fkey,
-		ignoreDownDriftOf: ignoreDownDriftOf,
+		registry:         r,
+		key:              fkey,
+		ignoreRollbackOf: ignoreRollbackOf,
 	})
 	counter := value.(*counterInt64)
 
