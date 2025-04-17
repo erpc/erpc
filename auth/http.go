@@ -10,17 +10,20 @@ import (
 	"github.com/erpc/erpc/common"
 )
 
-func NewPayloadFromHttp(projectId string, nq *common.NormalizedRequest, headers http.Header, args url.Values) (*AuthPayload, error) {
-	method, _ := nq.Method()
+func NewPayloadFromHttp(method string, remoteAddr string, headers http.Header, args url.Values) (*AuthPayload, error) {
 	ap := &AuthPayload{
-		ProjectId: projectId,
-		Method:    method,
+		Method: method,
 	}
 
-	if token := args.Get("token"); token != "" {
+	if token := args.Get("token"); token != "" { // deprecated
 		ap.Type = common.AuthTypeSecret
 		ap.Secret = &SecretPayload{
 			Value: token,
+		}
+	} else if secret := args.Get("secret"); secret != "" {
+		ap.Type = common.AuthTypeSecret
+		ap.Secret = &SecretPayload{
+			Value: secret,
 		}
 	} else if tkn := headers.Get("X-ERPC-Secret-Token"); tkn != "" {
 		ap.Type = common.AuthTypeSecret
@@ -81,7 +84,7 @@ func NewPayloadFromHttp(projectId string, nq *common.NormalizedRequest, headers 
 		xff := headers.Get("X-Forwarded-For")
 		ap.Type = common.AuthTypeNetwork
 		ap.Network = &NetworkPayload{
-			Address:        xff,
+			Address:        remoteAddr,
 			ForwardProxies: strings.Split(xff, ","),
 		}
 	}

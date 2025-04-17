@@ -93,6 +93,8 @@ func (m *TrackedMetrics) MarshalJSON() ([]byte, error) {
 		"finalizationLag":        m.FinalizationLag.Load(),
 		"cordoned":               m.Cordoned.Load(),
 		"cordonedReason":         m.CordonedReason.Load(),
+		"errorRate":              m.ErrorRate(),
+		"throttledRate":          m.ThrottledRate(),
 	})
 }
 

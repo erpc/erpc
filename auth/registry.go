@@ -42,7 +42,7 @@ func NewAuthRegistry(logger *zerolog.Logger, projectId string, cfg *common.AuthC
 }
 
 // Authenticate checks the authentication payload against all registered strategies
-func (r *AuthRegistry) Authenticate(ctx context.Context, nq *common.NormalizedRequest, ap *AuthPayload) error {
+func (r *AuthRegistry) Authenticate(ctx context.Context, method string, ap *AuthPayload) error {
 	if ap == nil {
 		return common.NewErrAuthUnauthorized("", "auth payload is nil")
 	}
@@ -50,11 +50,6 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, nq *common.NormalizedRe
 	if len(r.strategies) == 0 {
 		// If no strategies are configured, allow all requests
 		return nil
-	}
-
-	method, err := nq.Method()
-	if err != nil {
-		return fmt.Errorf("failed to get method from request: %w", err)
 	}
 
 	var errs []error
@@ -74,7 +69,7 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, nq *common.NormalizedRe
 		}
 
 		// If authentication is passed then apply and consume the rate limit
-		if err := az.acquireRateLimitPermit(nq); err != nil {
+		if err := az.acquireRateLimitPermit(method); err != nil {
 			return err
 		}
 

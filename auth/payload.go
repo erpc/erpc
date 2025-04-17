@@ -3,13 +3,12 @@ package auth
 import "github.com/erpc/erpc/common"
 
 type AuthPayload struct {
-	ProjectId string
-	Method    string
-	Type      common.AuthType
-	Secret    *SecretPayload
-	Jwt       *JwtPayload
-	Siwe      *SiwePayload
-	Network   *NetworkPayload
+	Method  string
+	Type    common.AuthType
+	Secret  *SecretPayload
+	Jwt     *JwtPayload
+	Siwe    *SiwePayload
+	Network *NetworkPayload
 }
 
 type SecretPayload struct {

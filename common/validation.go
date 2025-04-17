@@ -13,6 +13,15 @@ func (c *Config) Validate() error {
 		if err := c.Server.Validate(); err != nil {
 			return err
 		}
+	} else {
+		return fmt.Errorf("server config is required")
+	}
+	if c.HealthCheck != nil {
+		if err := c.HealthCheck.Validate(); err != nil {
+			return err
+		}
+	} else {
+		return fmt.Errorf("healthCheck config is required")
 	}
 	if c.Metrics != nil {
 		if err := c.Metrics.Validate(); err != nil {
@@ -35,13 +44,14 @@ func (c *Config) Validate() error {
 				return err
 			}
 		}
+	} else {
+		return fmt.Errorf("projects config is required")
 	}
 	if c.RateLimiters != nil {
 		if err := c.RateLimiters.Validate(); err != nil {
 			return err
 		}
 	}
-
 	if c.ProxyPools != nil {
 		for _, pool := range c.ProxyPools {
 			if err := pool.Validate(); err != nil {
@@ -75,6 +85,15 @@ func (s *ServerConfig) Validate() error {
 	}
 	if s.MaxTimeout == nil || *s.MaxTimeout == 0 {
 		return fmt.Errorf("server.maxTimeout is required")
+	}
+	return nil
+}
+
+func (h *HealthCheckConfig) Validate() error {
+	if h.Auth != nil {
+		if err := h.Auth.Validate(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -438,15 +457,13 @@ func (p *ProjectConfig) Validate(c *Config) error {
 			return err
 		}
 	}
-	if p.HealthCheck != nil {
-		if err := p.HealthCheck.Validate(); err != nil {
-			return err
-		}
-	}
 	if p.RateLimitBudget != "" {
 		if !c.HasRateLimiterBudget(p.RateLimitBudget) {
 			return fmt.Errorf("project.*.rateLimitBudget '%s' does not exist in config.rateLimiters", p.RateLimitBudget)
 		}
+	}
+	if p.ScoreMetricsWindowSize == 0 {
+		return fmt.Errorf("project.*.scoreMetricsWindowSize is required")
 	}
 	return nil
 }
@@ -536,7 +553,7 @@ func (c *CORSConfig) Validate() error {
 	return nil
 }
 
-func (h *HealthCheckConfig) Validate() error {
+func (h *DeprecatedProjectHealthCheckConfig) Validate() error {
 	if h.ScoreMetricsWindowSize == 0 {
 		return fmt.Errorf("project.*.healthCheck.scoreMetricsWindowSize is required")
 	}

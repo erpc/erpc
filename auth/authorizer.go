@@ -103,7 +103,7 @@ func (a *Authorizer) shouldApplyToMethod(method string) bool {
 	return shouldApply
 }
 
-func (a *Authorizer) acquireRateLimitPermit(req *common.NormalizedRequest) error {
+func (a *Authorizer) acquireRateLimitPermit(method string) error {
 	if a.cfg.RateLimitBudget == "" {
 		return nil
 	}
@@ -116,10 +116,6 @@ func (a *Authorizer) acquireRateLimitPermit(req *common.NormalizedRequest) error
 		return nil
 	}
 
-	method, errMethod := req.Method()
-	if errMethod != nil {
-		return errMethod
-	}
 	lg := a.logger.With().Str("method", method).Logger()
 
 	rules, errRules := rlb.GetRulesByMethod(method)

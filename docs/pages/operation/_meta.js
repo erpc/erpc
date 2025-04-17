@@ -2,6 +2,9 @@ module.exports = {
 	"url": {
 		title: "URL",
 	},
+	"healthcheck": {
+		title: "Healthcheck",
+	},
 	"batch": {
 		title: "Batching",
 	},

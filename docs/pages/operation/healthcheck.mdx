@@ -1,0 +1,175 @@
+---
+description: Configure /healthcheck endpoint based on Upstreams status...
+---
+
+import { Callout } from "nextra/components";
+
+# Healthcheck
+
+eRPC has a built-in `/healthcheck` endpoint that can be used to check the health of the service within Kubernetes, Railway, etc.
+
+## Config
+
+You can configure healthcheck on top-level in `erpc.yaml` file:
+
+```yaml
+logLevel: debug
+healthcheck:
+  # (OPTIONAL) Mode can be "simple" (just returns OK/ERROR) or "verbose" (returns detailed JSON)
+  mode: verbose
+  
+  # (OPTIONAL) Default evaluation strategy to use when one isn't specified in the request
+  # See the "Evaluation Strategies" section below for options...
+  defaultEval: "any:initializedUpstreams"
+  
+  # (OPTIONAL) Authentication for the healthcheck endpoint
+  auth:
+    strategies:
+      - type: secret
+        secret:
+          value: <CHANGE-ME-OR-REMOVE-THIS-STRATEGY>
+      - type: network
+        network:
+          # To allow requests coming from the same host (localhost, 127.0.0.1, ::1)
+          allowLocalhost: true
+          # To allow requests coming from private networks
+          allowedCIDRs:
+          - "10.0.0.0/8"
+          - "172.16.0.0/12"
+          - "192.168.0.0/16"
+```
+
+## Evaluation Strategies
+
+The healthcheck endpoint supports different strategies to evaluate the health of your upstreams. You can specify the strategy in the configuration or by adding `?eval=strategy_name` to the URL.
+
+Available strategies:
+
+| Strategy | Description |
+|----------|-------------|
+| `any:initializedUpstreams` | Returns healthy if any upstreams are initialized (default) |
+| `any:errorRateBelow90` | Returns healthy if any upstream has an error rate below 90% |
+| `all:errorRateBelow90` | Returns healthy if all upstreams have an error rate below 90% |
+| `any:errorRateBelow100` | Returns healthy if any upstream has an error rate below 100% |
+| `all:errorRateBelow100` | Returns healthy if all upstreams have an error rate below 100% |
+| `any:evm:eth_chainId` | Returns healthy if any EVM upstream reports the expected chain ID |
+| `all:evm:eth_chainId` | Returns healthy if all EVM upstreams report the expected chain ID |
+
+* Error rate is read from [score tracking](/config/projects/upstreams#priority--selection-mechanism) component of each Upstream.
+* The `eth_chainId` evals will send an actual request to the upstreams (in parallel), thus ensure proper timeout is set for the healthcheck (e.g. on Kubernetes readinessProbe.timeoutSeconds).
+
+## Endpoints
+
+### Global healthcheck
+Check the health of all projects and their upstreams:
+
+```bash
+curl http://localhost:4000/healthcheck -v
+# < HTTP/1.1 200 OK
+# OK
+```
+
+<Callout type="info">
+The global healthcheck checks all active projects and all upstreams. For example even if 1 upstream (on any network) is healthy the `any:initializedUpstreams` strategy will return healthy.
+</Callout>
+
+### Project-specific healthcheck
+Check the health of a specific project and network:
+
+```bash
+curl http://localhost:4000/main/evm/1/healthcheck -v # OR http://localhost:4000/main/evm/1
+# < HTTP/1.1 200 OK
+# OK
+```
+
+<Callout type="info">
+For project-specific healthchecks, only the upstreams for the specified network are checked.
+</Callout>
+
+### Using a custom evaluation strategy
+
+You can specify which evaluation strategy to use via the query parameter:
+
+```bash
+# Check if any upstream has an error rate below 90%
+curl http://localhost:4000/healthcheck?eval=any:errorRateBelow90
+
+# Check if all EVM upstreams report the correct chain ID
+curl http://localhost:4000/main/evm/1/healthcheck?eval=all:evm:eth_chainId
+```
+
+<Callout type="info">
+The evaluation strategy can be specified in the [configuration](#config) as well, as shown above.
+</Callout>
+
+## Response Modes
+
+### Simple Mode (default)
+
+In simple mode, the healthcheck returns a plain text "OK" with a 200 status code if healthy, or an error JSON with a non-200 status code if unhealthy.
+
+```bash
+curl http://localhost:4000/healthcheck
+# OK
+```
+
+### Verbose Mode
+
+In verbose mode, the healthcheck returns a detailed JSON response with information about the status of each project and upstream:
+
+```bash
+curl http://localhost:4000/healthcheck
+# {
+#   "status": "OK",
+#   "message": "all systems operational",
+#   "details": {
+#     "main": {
+#       "status": "OK",
+#       "message": "3 / 3 upstreams have low error rates",
+#       "config": {
+#         "networks": 2,
+#         "upstreams": 3,
+#         "providers": 1
+#       },
+#       "upstreams": {
+#         "alchemy-mainnet": {
+#           "network": "evm:1",
+#           "metrics": { ... },
+#           "status": "OK"
+#         },
+#         ...
+#       }
+#     }
+#   }
+# }
+```
+
+## Authentication
+
+If you've configured authentication for the healthcheck endpoint, you'll need to include the appropriate credentials:
+
+```bash
+# Using a token in a query parameter
+curl "http://localhost:4000/healthcheck?secret=CHANGE_ME"
+
+# ... OR using a token in a header
+curl http://localhost:4000/healthcheck -H "X-ERPC-Secret-Token: CHANGE_ME"
+```
+
+## Aliasing healthcheck
+
+If you have configured domain aliasing, you can append the `/healthcheck` to the URL:
+
+```bash
+# When aliasing is NOT used:
+curl http://rpc.example.com/main/evm/42161/healthcheck -v
+
+# When only project is aliased:
+curl http://rpc.example.com/evm/42161/healthcheck -v
+
+# When only project and network architecture is aliased:
+curl http://evm-rpc.example.com/42161/healthcheck -v
+
+# When all project, network architecture and chain are aliased:
+curl http://eth-evm-rpc.example.com/healthcheck -v
+```

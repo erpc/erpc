@@ -54,6 +54,10 @@ func (manager *ClientRegistry) CreateClient(appCtx context.Context, ups common.U
 
 	cfg := ups.Config()
 
+	if cfg.Endpoint == "" {
+		return nil, fmt.Errorf("upstream endpoint is required")
+	}
+
 	parsedUrl, err := url.Parse(cfg.Endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse URL for upstream: %v", cfg.Id)

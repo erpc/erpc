@@ -86,8 +86,8 @@ spec:
           httpGet:
             path: /healthcheck
             port: 4000
-          initialDelaySeconds: 5
-          periodSeconds: 10
+          initialDelaySeconds: 10
+          periodSeconds: 60
         livenessProbe:
           httpGet:
             path: /healthcheck
