@@ -31,6 +31,12 @@ func (c *Config) SetDefaults() error {
 	if err := c.Server.SetDefaults(); err != nil {
 		return err
 	}
+	if c.HealthCheck == nil {
+		c.HealthCheck = &HealthCheckConfig{}
+	}
+	if err := c.HealthCheck.SetDefaults(); err != nil {
+		return err
+	}
 	if c.Tracing != nil {
 		if err := c.Tracing.SetDefaults(); err != nil {
 			return err
@@ -480,6 +486,17 @@ func (s *ServerConfig) SetDefaults() error {
 	return nil
 }
 
+func (h *HealthCheckConfig) SetDefaults() error {
+	if h.Mode == "" {
+		h.Mode = HealthCheckModeVerbose
+	}
+	if h.DefaultEval == "" {
+		h.DefaultEval = EvalAnyInitializedUpstreams
+	}
+
+	return nil
+}
+
 func (m *MetricsConfig) SetDefaults() error {
 	if m.Enabled == nil && !util.IsTest() {
 		m.Enabled = util.BoolPtr(true)
@@ -630,7 +647,7 @@ func (r *RedisConnectorConfig) SetDefaults() error {
 	r.Addr = strings.TrimPrefix(r.Addr, "rediss://")
 	r.Addr = strings.TrimPrefix(r.Addr, "redis://")
 	if r.ConnPoolSize == 0 {
-		r.ConnPoolSize = 128
+		r.ConnPoolSize = 8
 	}
 	if r.InitTimeout == 0 {
 		r.InitTimeout = Duration(5 * time.Second)
@@ -790,11 +807,13 @@ func (p *ProjectConfig) SetDefaults() error {
 			return fmt.Errorf("failed to set defaults for cors: %w", err)
 		}
 	}
-	if p.HealthCheck == nil {
-		p.HealthCheck = &HealthCheckConfig{}
-	}
-	if err := p.HealthCheck.SetDefaults(); err != nil {
-		return fmt.Errorf("failed to set defaults for health check: %w", err)
+	if p.ScoreMetricsWindowSize == 0 {
+		if p.DeprecatedHealthCheck != nil && p.DeprecatedHealthCheck.ScoreMetricsWindowSize != 0 {
+			log.Warn().Msg("projects.*.healthCheck.scoreMetricsWindowSize is deprecated; use projects.*.scoreMetricsWindowSize instead")
+			p.ScoreMetricsWindowSize = p.DeprecatedHealthCheck.ScoreMetricsWindowSize
+		} else {
+			p.ScoreMetricsWindowSize = Duration(30 * time.Minute)
+		}
 	}
 
 	return nil
@@ -1752,14 +1771,6 @@ func (c *CORSConfig) SetDefaults() error {
 	}
 	if c.MaxAge == 0 {
 		c.MaxAge = 3600
-	}
-
-	return nil
-}
-
-func (h *HealthCheckConfig) SetDefaults() error {
-	if h.ScoreMetricsWindowSize == 0 {
-		h.ScoreMetricsWindowSize = Duration(30 * time.Minute)
 	}
 
 	return nil

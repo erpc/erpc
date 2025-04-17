@@ -30,15 +30,24 @@ import (
 )
 
 type HttpServer struct {
-	appCtx context.Context
-	config *common.ServerConfig
-	admin  *common.AdminConfig
-	server *http.Server
-	erpc   *ERPC
-	logger *zerolog.Logger
+	appCtx                  context.Context
+	serverCfg               *common.ServerConfig
+	healthCheckCfg          *common.HealthCheckConfig
+	adminCfg                *common.AdminConfig
+	server                  *http.Server
+	erpc                    *ERPC
+	logger                  *zerolog.Logger
+	healthCheckAuthRegistry *auth.AuthRegistry
 }
 
-func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.ServerConfig, admin *common.AdminConfig, erpc *ERPC) *HttpServer {
+func NewHttpServer(
+	ctx context.Context,
+	logger *zerolog.Logger,
+	cfg *common.ServerConfig,
+	healthCheckCfg *common.HealthCheckConfig,
+	adminCfg *common.AdminConfig,
+	erpc *ERPC,
+) (*HttpServer, error) {
 	reqMaxTimeout := 150 * time.Second
 	if cfg.MaxTimeout != nil {
 		reqMaxTimeout = cfg.MaxTimeout.Duration()
@@ -53,11 +62,12 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 	}
 
 	srv := &HttpServer{
-		appCtx: ctx,
-		config: cfg,
-		admin:  admin,
-		erpc:   erpc,
-		logger: logger,
+		appCtx:         ctx,
+		serverCfg:      cfg,
+		healthCheckCfg: healthCheckCfg,
+		adminCfg:       adminCfg,
+		erpc:           erpc,
+		logger:         logger,
 	}
 
 	h := srv.createRequestHandler()
@@ -73,6 +83,14 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 		WriteTimeout: writeTimeout,
 	}
 
+	if healthCheckCfg != nil && healthCheckCfg.Auth != nil {
+		var err error
+		srv.healthCheckAuthRegistry, err = auth.NewAuthRegistry(logger, "healthcheck", healthCheckCfg.Auth, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create healthcheck auth registry: %w", err)
+		}
+	}
+
 	go func() {
 		<-ctx.Done()
 		if err := srv.Shutdown(logger); err != nil {
@@ -82,7 +100,7 @@ func NewHttpServer(ctx context.Context, logger *zerolog.Logger, cfg *common.Serv
 		}
 	}()
 
-	return srv
+	return srv, nil
 }
 
 func (s *HttpServer) createRequestHandler() http.Handler {
@@ -102,8 +120,8 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 		var err error
 
 		// Check aliasing rules
-		if s.config.Aliasing != nil {
-			for _, rule := range s.config.Aliasing.Rules {
+		if s.serverCfg.Aliasing != nil {
+			for _, rule := range s.serverCfg.Aliasing.Rules {
 				matched, err := common.WildcardMatch(rule.MatchDomain, host)
 				if err != nil {
 					s.logger.Error().Err(err).Interface("rule", rule).Msg("failed to match aliasing rule")
@@ -133,18 +151,19 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				w,
 				encoder,
 				writeFatalError,
+				true,
 			)
 			return
 		}
 
 		if isHealthCheck {
-			s.handleHealthCheck(httpCtx, w, &startedAt, projectId, encoder, writeFatalError)
+			s.handleHealthCheck(httpCtx, w, r, &startedAt, projectId, architecture, chainId, encoder, writeFatalError)
 			return
 		}
 
 		if isAdmin {
-			if s.admin != nil && s.admin.CORS != nil {
-				if !s.handleCORS(httpCtx, w, r, s.admin.CORS) || r.Method == http.MethodOptions {
+			if s.adminCfg != nil && s.adminCfg.CORS != nil {
+				if !s.handleCORS(httpCtx, w, r, s.adminCfg.CORS) || r.Method == http.MethodOptions {
 					return
 				}
 			}
@@ -167,6 +186,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				w,
 				encoder,
 				writeFatalError,
+				false,
 			)
 			return
 		}
@@ -182,6 +202,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				w,
 				encoder,
 				writeFatalError,
+				true,
 			)
 			return
 		}
@@ -206,6 +227,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					w,
 					encoder,
 					writeFatalError,
+					true,
 				)
 				return
 			}
@@ -228,6 +250,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				w,
 				encoder,
 				writeFatalError,
+				true,
 			)
 			return
 		}
@@ -251,6 +274,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					w,
 					encoder,
 					writeFatalError,
+					true,
 				)
 				common.SetTraceSpanError(parseRequestsSpan, err)
 				parseRequestsSpan.End()
@@ -282,7 +306,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 							Str("stack", string(debug.Stack())).
 							Msgf("unexpected server panic on per-request handler")
 						err := fmt.Errorf("unexpected server panic on per-request handler: %v stack: %s", rec, string(debug.Stack()))
-						responses[index] = processErrorBody(&lg, &startedAt, nil, err)
+						responses[index] = processErrorBody(&lg, &startedAt, nil, err, false)
 					}
 				}()
 
@@ -292,13 +316,13 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				nq.ApplyDirectivesFromHttp(headers, queryArgs)
 
 				if err := nq.Validate(); err != nil {
-					responses[index] = processErrorBody(&lg, &startedAt, nq, err)
+					responses[index] = processErrorBody(&lg, &startedAt, nq, err, true)
 					common.EndRequestSpan(requestCtx, nil, responses[index])
 					return
 				}
 
-				m, _ := nq.Method()
-				rlg := lg.With().Str("method", m).Logger()
+				method, _ := nq.Method()
+				rlg := lg.With().Str("method", method).Logger()
 
 				rlg.Trace().Interface("directives", nq.Directives()).Msgf("applied request directives")
 
@@ -306,35 +330,35 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				var err error
 
 				if project != nil {
-					ap, err = auth.NewPayloadFromHttp(project.Config.Id, nq, headers, queryArgs)
+					ap, err = auth.NewPayloadFromHttp(method, r.RemoteAddr, headers, queryArgs)
 				} else if isAdmin {
-					ap, err = auth.NewPayloadFromHttp("admin", nq, headers, queryArgs)
+					ap, err = auth.NewPayloadFromHttp(method, r.RemoteAddr, headers, queryArgs)
 				}
 				if err != nil {
-					responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
+					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, true)
 					common.EndRequestSpan(requestCtx, nil, err)
 					return
 				}
 
 				if isAdmin {
-					if err := s.erpc.AdminAuthenticate(requestCtx, nq, ap); err != nil {
-						responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
+					if err := s.erpc.AdminAuthenticate(requestCtx, method, ap); err != nil {
+						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, true)
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
 					}
 				} else {
-					if err := project.AuthenticateConsumer(requestCtx, nq, ap); err != nil {
-						responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
+					if err := project.AuthenticateConsumer(requestCtx, method, ap); err != nil {
+						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, true)
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
 					}
 				}
 
 				if isAdmin {
-					if s.admin != nil {
+					if s.adminCfg != nil {
 						resp, err := s.erpc.AdminHandleRequest(requestCtx, nq)
 						if err != nil {
-							responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
+							responses[index] = processErrorBody(&rlg, &startedAt, nq, err, true)
 							common.EndRequestSpan(requestCtx, nil, err)
 							return
 						}
@@ -350,6 +374,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 								"",
 								"admin is not enabled for this project",
 							),
+							false,
 						)
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
@@ -361,7 +386,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				if architecture == "" || chainId == "" {
 					var req map[string]interface{}
 					if err := common.SonicCfg.Unmarshal(rawReq, &req); err != nil {
-						responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(err))
+						responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(err), true)
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
 					}
@@ -380,14 +405,14 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				if architecture == "" || chainId == "" {
 					responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(fmt.Errorf(
 						"architecture and chain must be provided in URL (for example /<project>/evm/42161) or in request body (for example \"networkId\":\"evm:42161\") or configureed via domain aliasing",
-					)))
+					)), false)
 					common.EndRequestSpan(requestCtx, nil, err)
 					return
 				}
 
 				nw, err := project.GetNetwork(networkId)
 				if err != nil {
-					responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
+					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, false)
 					common.EndRequestSpan(requestCtx, nil, err)
 					return
 				}
@@ -395,7 +420,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 				resp, err := project.Forward(requestCtx, networkId, nq)
 				if err != nil {
-					responses[index] = processErrorBody(&rlg, &startedAt, nq, err)
+					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, false)
 					common.EndRequestSpan(requestCtx, nil, err)
 					return
 				}
@@ -699,6 +724,10 @@ func (s *HttpServer) parseUrlPath(
 		return "", "", "", false, false, common.NewErrInvalidUrlPath("architecture is not valid (must be 'evm')", ps)
 	}
 
+	if !isPost && !isOptions {
+		isHealthCheck = true
+	}
+
 	return projectId, architecture, chainId, isAdmin, isHealthCheck, nil
 }
 
@@ -828,7 +857,7 @@ type HttpJsonRpcErrorResponse struct {
 	Cause   error       `json:"-"`
 }
 
-func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.NormalizedRequest, err error) interface{} {
+func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.NormalizedRequest, err error, includeErrorDetails bool) interface{} {
 	if !common.IsNull(err) {
 		if nq != nil {
 			nq.RLock()
@@ -883,6 +912,8 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 		}
 		if jre.Details["data"] != nil {
 			errObj["data"] = jre.Details["data"]
+		} else if includeErrorDetails {
+			errObj["data"] = err
 		}
 		return &HttpJsonRpcErrorResponse{
 			Jsonrpc: jsonrpcVersion,
@@ -921,8 +952,9 @@ func handleErrorResponse(
 	w http.ResponseWriter,
 	encoder sonic.Encoder,
 	writeFatalError func(ctx context.Context, statusCode int, body error),
+	includeErrorDetails bool,
 ) {
-	resp := processErrorBody(logger, startedAt, nq, err)
+	resp := processErrorBody(logger, startedAt, nq, err, includeErrorDetails)
 	statusCode := determineResponseStatusCode(err)
 	w.WriteHeader(statusCode)
 	span := trace.SpanFromContext(httpCtx)
@@ -947,21 +979,21 @@ func (s *HttpServer) Start(logger *zerolog.Logger) error {
 	var ln4 net.Listener
 	var ln6 net.Listener
 
-	if s.config.HttpPort == nil {
+	if s.serverCfg.HttpPort == nil {
 		return fmt.Errorf("server.httpPort is not configured")
 	}
 
-	if s.config.HttpHostV4 != nil && s.config.ListenV4 != nil && *s.config.ListenV4 {
-		addrV4 := fmt.Sprintf("%s:%d", *s.config.HttpHostV4, *s.config.HttpPort)
-		logger.Info().Msgf("starting http server on port: %d IPv4: %s", *s.config.HttpPort, addrV4)
+	if s.serverCfg.HttpHostV4 != nil && s.serverCfg.ListenV4 != nil && *s.serverCfg.ListenV4 {
+		addrV4 := fmt.Sprintf("%s:%d", *s.serverCfg.HttpHostV4, *s.serverCfg.HttpPort)
+		logger.Info().Msgf("starting http server on port: %d IPv4: %s", *s.serverCfg.HttpPort, addrV4)
 		ln4, err = net.Listen("tcp4", addrV4)
 		if err != nil {
 			return fmt.Errorf("error listening on IPv4: %w", err)
 		}
 	}
-	if s.config.HttpHostV6 != nil && s.config.ListenV6 != nil && *s.config.ListenV6 {
-		addrV6 := fmt.Sprintf("%s:%d", *s.config.HttpHostV6, *s.config.HttpPort)
-		logger.Info().Msgf("starting http server on port: %d IPv6: %s", s.config.HttpPort, addrV6)
+	if s.serverCfg.HttpHostV6 != nil && s.serverCfg.ListenV6 != nil && *s.serverCfg.ListenV6 {
+		addrV6 := fmt.Sprintf("%s:%d", *s.serverCfg.HttpHostV6, *s.serverCfg.HttpPort)
+		logger.Info().Msgf("starting http server on port: %d IPv6: %s", s.serverCfg.HttpPort, addrV6)
 		ln6, err = net.Listen("tcp6", addrV6)
 		if err != nil {
 			if ln4 != nil {
@@ -987,21 +1019,21 @@ func (s *HttpServer) Start(logger *zerolog.Logger) error {
 	}
 
 	// Handle TLS configuration if enabled
-	if s.config.TLS != nil && s.config.TLS.Enabled {
+	if s.serverCfg.TLS != nil && s.serverCfg.TLS.Enabled {
 		tlsConfig := &tls.Config{
 			MinVersion: tls.VersionTLS12,
 		}
 
 		// Load certificate and key
-		cert, err := tls.LoadX509KeyPair(s.config.TLS.CertFile, s.config.TLS.KeyFile)
+		cert, err := tls.LoadX509KeyPair(s.serverCfg.TLS.CertFile, s.serverCfg.TLS.KeyFile)
 		if err != nil {
 			return fmt.Errorf("failed to load TLS certificate and key: %w", err)
 		}
 		tlsConfig.Certificates = []tls.Certificate{cert}
 
 		// Load CA if specified
-		if s.config.TLS.CAFile != "" {
-			caCert, err := os.ReadFile(s.config.TLS.CAFile)
+		if s.serverCfg.TLS.CAFile != "" {
+			caCert, err := os.ReadFile(s.serverCfg.TLS.CAFile)
 			if err != nil {
 				return fmt.Errorf("failed to read CA file: %w", err)
 			}
@@ -1013,7 +1045,7 @@ func (s *HttpServer) Start(logger *zerolog.Logger) error {
 			tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
 		}
 
-		tlsConfig.InsecureSkipVerify = s.config.TLS.InsecureSkipVerify
+		tlsConfig.InsecureSkipVerify = s.serverCfg.TLS.InsecureSkipVerify
 
 		// Wrap the listener with TLS
 		ln = tls.NewListener(ln, tlsConfig)

@@ -50,6 +50,7 @@ export interface Config {
   logLevel?: LogLevel;
   clusterKey?: string;
   server?: ServerConfig;
+  healthCheck?: HealthCheckConfig;
   admin?: AdminConfig;
   database?: DatabaseConfig;
   projects?: (ProjectConfig | undefined)[];
@@ -71,6 +72,21 @@ export interface ServerConfig {
   tls?: TLSConfig;
   aliasing?: AliasingConfig;
 }
+export interface HealthCheckConfig {
+  mode?: HealthCheckMode;
+  auth?: AuthConfig;
+  defaultEval?: string;
+}
+export type HealthCheckMode = string;
+export const HealthCheckModeSimple: HealthCheckMode = "simple";
+export const HealthCheckModeVerbose: HealthCheckMode = "verbose";
+export const EvalAnyInitializedUpstreams = "any:initializedUpstreams";
+export const EvalAnyErrorRateBelow90 = "any:errorRateBelow90";
+export const EvalAllErrorRateBelow90 = "all:errorRateBelow90";
+export const EvalAnyErrorRateBelow100 = "any:errorRateBelow100";
+export const EvalAllErrorRateBelow100 = "all:errorRateBelow100";
+export const EvalEvmAnyChainId = "any:evm:eth_chainId";
+export const EvalEvmAllChainId = "all:evm:eth_chainId";
 export type TracingProtocol = string;
 export const TracingProtocolHttp: TracingProtocol = "http";
 export const TracingProtocolGrpc: TracingProtocol = "grpc";
@@ -206,7 +222,8 @@ export interface ProjectConfig {
   networkDefaults?: NetworkDefaults;
   networks?: (NetworkConfig | undefined)[];
   rateLimitBudget?: string;
-  healthCheck?: HealthCheckConfig;
+  scoreMetricsWindowSize: Duration;
+  healthCheck?: DeprecatedProjectHealthCheckConfig;
 }
 export interface NetworkDefaults {
   rateLimitBudget?: string;
@@ -366,7 +383,7 @@ export interface ProxyPoolConfig {
   id: string;
   urls: string[];
 }
-export interface HealthCheckConfig {
+export interface DeprecatedProjectHealthCheckConfig {
   scoreMetricsWindowSize: Duration;
 }
 export interface NetworkConfig {

@@ -102,9 +102,9 @@ func (p *PreparedProject) GatherHealthInfo() (*ProjectHealthInfo, error) {
 	}, nil
 }
 
-func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, nq *common.NormalizedRequest, ap *auth.AuthPayload) error {
+func (p *PreparedProject) AuthenticateConsumer(ctx context.Context, method string, ap *auth.AuthPayload) error {
 	if p.consumerAuthRegistry != nil {
-		err := p.consumerAuthRegistry.Authenticate(ctx, nq, ap)
+		err := p.consumerAuthRegistry.Authenticate(ctx, method, ap)
 		if err != nil {
 			return err
 		}

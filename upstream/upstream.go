@@ -691,14 +691,20 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 			nid, err := u.EvmGetChainId(ctx)
 			if err != nil {
 				return common.NewErrUpstreamClientInitialization(
-					fmt.Errorf("failed to get chain id: %w", err),
+					&common.BaseError{
+						Code:  "ErrUpstreamChainIdDetectionFailed",
+						Cause: err,
+					},
 					cfg.Id,
 				)
 			}
 			cfg.Evm.ChainId, err = strconv.ParseInt(nid, 10, 64)
 			if err != nil {
 				return common.NewErrUpstreamClientInitialization(
-					fmt.Errorf("failed to parse chain id: %w", err),
+					&common.BaseError{
+						Code:  "ErrUpstreamChainIdDetectionFailed",
+						Cause: err,
+					},
 					cfg.Id,
 				)
 			}
@@ -791,15 +797,7 @@ func (u *Upstream) MarshalJSON() ([]byte, error) {
 		Id        string                            `json:"id"`
 		Metrics   map[string]*health.TrackedMetrics `json:"metrics"`
 		NetworkId string                            `json:"networkId"`
-		// ActiveNetworks []string                          `json:"activeNetworks"`
 	}
-
-	// var activeNetworks []string
-	// u.supportedNetworkIdsMu.RLock()
-	// for netId := range u.supportedNetworkIds {
-	// 	activeNetworks = append(activeNetworks, netId)
-	// }
-	// u.supportedNetworkIdsMu.RUnlock()
 
 	metrics := u.metricsTracker.GetUpstreamMetrics(u.config.Id)
 
@@ -807,7 +805,6 @@ func (u *Upstream) MarshalJSON() ([]byte, error) {
 		Id:        u.config.Id,
 		Metrics:   metrics,
 		NetworkId: u.NetworkId(),
-		// ActiveNetworks: activeNetworks,
 	}
 
 	return sonic.Marshal(uppub)

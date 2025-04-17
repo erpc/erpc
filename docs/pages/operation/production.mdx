@@ -56,3 +56,16 @@ The [shared state feature](/config/database/shared-state) allows your eRPC insta
 </Callout>
 
 The shared state feature requires minimal storage (less than 1MB per upstream) while significantly improving coordination between instances. For high-traffic deployments with multiple replicas, this pattern is strongly recommended.
+
+## Explicitly configure Chain ID
+
+Even though eRPC can automatically detect the chain ID, it's recommended to explicitly configure the chain ID in the project configuration. This ensures faster startup time and more resilient rollouts.
+
+There are mainly 2 places to configure the chain ID:
+
+* `networks.*.evm.chainId` under [Networks](/config/projects/networks) section
+* `upstreams.*.evm.chainId` under [Upstreams](/config/projects/upstreams) section
+
+## Healthcheck
+
+For a zero-downtime smooth rollout, configure [Healthcheck](/operation/healthcheck) in your orchestration platform (e.g. kubernetes).

@@ -93,15 +93,25 @@ func (s *NetworkStrategy) Authenticate(ctx context.Context, ap *AuthPayload) err
 	return common.NewErrAuthUnauthorized("network", fmt.Sprintf("IP %s is not allowed", clientIP.String()))
 }
 
+// determineClientIP extracts the actual client IP address from the NetworkPayload
+// by checking X-Forwarded-For headers and falling back to RemoteAddr if needed.
+// It uses the following algorithm:
+// 1. Process X-Forwarded-For from right to left (most recent proxy to original client)
+// 2. Return the first non-trusted-proxy IP (which should be the actual client)
+// 3. Fall back to RemoteAddr if no client IP can be determined
 func (s *NetworkStrategy) determineClientIP(np *NetworkPayload) net.IP {
 	// First, check the X-Forwarded-For header
 	for i := len(np.ForwardProxies) - 1; i >= 0; i-- {
-		ip := net.ParseIP(strings.TrimSpace(np.ForwardProxies[i]))
+		ipStr := strings.TrimSpace(np.ForwardProxies[i])
+		if ipStr == "" {
+			continue // Skip empty entries
+		}
+		ip := net.ParseIP(ipStr)
 		if ip == nil {
-			continue
+			continue // Skip invalid IPs
 		}
 		if !s.isTrustedProxy(ip) {
-			return ip
+			return ip // Found the client IP
 		}
 	}
 
