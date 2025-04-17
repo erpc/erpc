@@ -22,6 +22,7 @@ type CounterInt64SharedVariable interface {
 	TryUpdateIfStale(ctx context.Context, staleness time.Duration, getNewValue func(ctx context.Context) (int64, error)) (int64, error)
 	TryUpdate(ctx context.Context, newValue int64) int64
 	OnValue(callback func(int64))
+	OnLargeRollback(callback func(currentVal, newVal int64))
 }
 
 type baseSharedVariable struct {
@@ -35,15 +36,34 @@ func (v *baseSharedVariable) IsStale(staleness time.Duration) bool {
 
 type counterInt64 struct {
 	baseSharedVariable
-	registry *sharedStateRegistry
-	key      string
-	value    atomic.Int64
-	mu       sync.Mutex // still needed for complex operations
-	callback func(int64)
+	registry              *sharedStateRegistry
+	key                   string
+	value                 atomic.Int64
+	mu                    sync.Mutex // still needed for complex operations
+	valueCallback         func(int64)
+	ignoreRollbackOf      int64
+	largeRollbackCallback func(localVal, newVal int64)
 }
 
 func (c *counterInt64) GetValue() int64 {
 	return c.value.Load()
+}
+
+func (c *counterInt64) maybeUpdateValue(currentVal, newVal int64) bool {
+	// This function is designed to be called from within c.mu.Lock().
+	// It returns true if the local value was actually updated.
+	updated := false
+	if newVal > currentVal {
+		c.setValue(newVal)
+		updated = true
+	} else if currentVal > newVal && (currentVal-newVal > c.ignoreRollbackOf) {
+		c.setValue(newVal)
+		if c.largeRollbackCallback != nil {
+			c.largeRollbackCallback(currentVal, newVal)
+		}
+		updated = true
+	}
+	return updated
 }
 
 func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
@@ -71,9 +91,7 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 		defer c.mu.Unlock()
 
 		currentValue := c.value.Load()
-		if newValue > currentValue {
-			c.setValue(newValue)
-		}
+		_ = c.maybeUpdateValue(currentValue, newValue)
 		return c.value.Load()
 	}
 	defer func() {
@@ -92,9 +110,7 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 		defer c.mu.Unlock()
 
 		currentValue := c.value.Load()
-		if newValue > currentValue {
-			c.setValue(newValue)
-		}
+		_ = c.maybeUpdateValue(currentValue, newValue)
 		return c.value.Load()
 	}
 
@@ -106,9 +122,7 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 			defer c.mu.Unlock()
 
 			currentValue := c.value.Load()
-			if newValue > currentValue {
-				c.setValue(newValue)
-			}
+			_ = c.maybeUpdateValue(currentValue, remoteValue)
 			return c.value.Load()
 		}
 	}
@@ -118,13 +132,13 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 
 	// Use highest value among local, remote, and new
 	currentValue := c.value.Load()
-	highestValue := currentValue
-	if remoteValue > highestValue {
-		highestValue = remoteValue
-	}
-	if newValue > highestValue {
-		highestValue = newValue
 
+	if remoteValue > currentValue {
+		c.setValue(remoteValue)
+		currentValue = remoteValue
+	}
+
+	if c.maybeUpdateValue(currentValue, newValue) {
 		go func() {
 			// Only update remote if we're using the new value
 			setCtx, setCancel := context.WithCancel(c.registry.appCtx)
@@ -141,10 +155,6 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 					Msg("failed to update remote value")
 			}
 		}()
-	}
-
-	if highestValue > 0 {
-		c.setValue(highestValue)
 	}
 
 	return c.value.Load()
@@ -185,9 +195,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 		}
 
 		currentValue := c.value.Load()
-		if newValue > currentValue {
-			c.setValue(newValue)
-		}
+		_ = c.maybeUpdateValue(currentValue, newValue)
 		return c.value.Load(), nil
 	}
 	defer func() {
@@ -215,9 +223,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 		}
 
 		currentValue := c.value.Load()
-		if newValue > currentValue {
-			c.setValue(newValue)
-		}
+		_ = c.maybeUpdateValue(currentValue, newValue)
 		return c.value.Load(), nil
 	}
 
@@ -250,8 +256,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 
 	// Update if new value is higher
 	currentValue = c.value.Load() // Re-read in case it changed
-	if newValue > currentValue {
-		c.setValue(newValue)
+	if c.maybeUpdateValue(currentValue, newValue) {
 		go func() {
 			err := c.registry.connector.Set(c.registry.appCtx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
 			if err == nil {
@@ -272,13 +277,19 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 func (c *counterInt64) OnValue(cb func(int64)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.callback = cb
+	c.valueCallback = cb
 }
 
 func (c *counterInt64) setValue(val int64) {
 	c.value.Store(val)
 	c.lastUpdated.Store(time.Now().UnixNano())
-	if c.callback != nil {
-		c.callback(val)
+	if c.valueCallback != nil {
+		c.valueCallback(val)
 	}
+}
+
+func (c *counterInt64) OnLargeRollback(cb func(currentVal, newVal int64)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.largeRollbackCallback = cb
 }

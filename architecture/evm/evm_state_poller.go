@@ -19,6 +19,12 @@ import (
 
 const FullySyncedThreshold = 4
 
+// TODO: find a clean way to pass integrity config to evm pollers for lazy-loaded
+// networks (not statically configured in erpc.yaml). at the moment an "evm state poller"
+// might be initiated "before" a network is physically created and configured
+// (e.g. when a new network is lazy-loaded from a Repository Provider)
+const DefaultToleratedBlockHeadRollback = 1024
+
 var _ common.EvmStatePoller = &EvmStatePoller{}
 
 type EvmStatePoller struct {
@@ -79,8 +85,8 @@ func NewEvmStatePoller(
 ) *EvmStatePoller {
 	lg := logger.With().Str("upstreamId", up.Config().Id).Str("component", "evmStatePoller").Logger()
 
-	lbs := sharedState.GetCounterInt64(fmt.Sprintf("latestBlock/%s", common.UniqueUpstreamKey(up)))
-	fbs := sharedState.GetCounterInt64(fmt.Sprintf("finalizedBlock/%s", common.UniqueUpstreamKey(up)))
+	lbs := sharedState.GetCounterInt64(fmt.Sprintf("latestBlock/%s", common.UniqueUpstreamKey(up)), DefaultToleratedBlockHeadRollback)
+	fbs := sharedState.GetCounterInt64(fmt.Sprintf("finalizedBlock/%s", common.UniqueUpstreamKey(up)), DefaultToleratedBlockHeadRollback)
 
 	e := &EvmStatePoller{
 		projectId:            projectId,
@@ -97,6 +103,13 @@ func NewEvmStatePoller(
 	})
 	fbs.OnValue(func(value int64) {
 		e.tracker.SetFinalizedBlockNumber(e.upstream.Config().Id, e.upstream.NetworkId(), value)
+	})
+
+	lbs.OnLargeRollback(func(currentVal, newVal int64) {
+		e.tracker.RecordBlockHeadLargeRollback(e.upstream.Config().Id, e.upstream.NetworkId(), "latest", currentVal, newVal)
+	})
+	fbs.OnLargeRollback(func(currentVal, newVal int64) {
+		e.tracker.RecordBlockHeadLargeRollback(e.upstream.Config().Id, e.upstream.NetworkId(), "finalized", currentVal, newVal)
 	})
 
 	return e

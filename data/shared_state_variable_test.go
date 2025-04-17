@@ -88,9 +88,10 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 			tt.setupMocks(connector, lock)
 
 			counter := &counterInt64{
-				registry: registry,
-				key:      "test",
-				value:    atomic.Int64{},
+				registry:         registry,
+				key:              "test",
+				value:            atomic.Int64{},
+				ignoreRollbackOf: 1024,
 			}
 			counter.value.Store(tt.initialValue)
 
@@ -184,9 +185,10 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 			tt.setupMocks(connector, lock)
 
 			counter := &counterInt64{
-				registry: registry,
-				key:      "test",
-				value:    atomic.Int64{},
+				registry:         registry,
+				key:              "test",
+				value:            atomic.Int64{},
+				ignoreRollbackOf: 1024,
 				baseSharedVariable: baseSharedVariable{
 					lastUpdated: atomic.Int64{},
 				},
@@ -228,9 +230,10 @@ func TestCounterInt64_Concurrency(t *testing.T) {
 	connector.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil).Times(10)
 
 	counter := &counterInt64{
-		registry: registry,
-		key:      "test",
-		value:    atomic.Int64{},
+		registry:         registry,
+		key:              "test",
+		value:            atomic.Int64{},
+		ignoreRollbackOf: 1024,
 	}
 	counter.value.Store(5)
 
@@ -252,7 +255,8 @@ func TestCounterInt64_Concurrency(t *testing.T) {
 
 func TestCounterInt64_GetValue(t *testing.T) {
 	counter := &counterInt64{
-		value: atomic.Int64{},
+		value:            atomic.Int64{},
+		ignoreRollbackOf: 1024,
 	}
 	counter.value.Store(42)
 
@@ -292,6 +296,7 @@ func TestCounterInt64_IsStale(t *testing.T) {
 				baseSharedVariable: baseSharedVariable{
 					lastUpdated: atomic.Int64{},
 				},
+				ignoreRollbackOf: 1024,
 			}
 			counter.lastUpdated.Store(tt.lastUpdate.UnixNano())
 			assert.Equal(t, tt.expected, counter.IsStale(tt.staleness))
@@ -322,7 +327,7 @@ func TestSharedVariable(t *testing.T) {
 			Return("42", nil)
 
 		// Get the counter and verify initial setup
-		counter := registry.GetCounterInt64("counter1").(*counterInt64)
+		counter := registry.GetCounterInt64("counter1", 1024).(*counterInt64)
 		time.Sleep(100 * time.Millisecond) // Allow goroutine to start
 
 		// Verify initial value was fetched
@@ -356,7 +361,7 @@ func TestSharedVariable(t *testing.T) {
 		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/counter2", "value").
 			Return("0", nil)
 
-		counter := registry.GetCounterInt64("counter2")
+		counter := registry.GetCounterInt64("counter2", 1024)
 
 		// Setup callback
 		callbackCalled := make(chan int64, 1)
@@ -396,7 +401,7 @@ func TestSharedVariable(t *testing.T) {
 		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/counter3", "value").
 			Return("100", nil)
 
-		counter := registry.GetCounterInt64("counter3")
+		counter := registry.GetCounterInt64("counter3", 1024)
 		time.Sleep(100 * time.Millisecond)
 
 		// Verify initial value
@@ -432,7 +437,7 @@ func TestSharedVariable(t *testing.T) {
 		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/counter4", "value").
 			Return("42", nil)
 
-		counter := registry.GetCounterInt64("counter4")
+		counter := registry.GetCounterInt64("counter4", 1024)
 		time.Sleep(100 * time.Millisecond)
 
 		// Initial value check
@@ -464,7 +469,7 @@ func TestSharedVariable(t *testing.T) {
 		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/counter6", "value").
 			Return("", common.NewErrRecordNotFound("test/counter6", "value", "mock"))
 
-		counter := registry.GetCounterInt64("counter6")
+		counter := registry.GetCounterInt64("counter6", 1024)
 		time.Sleep(100 * time.Millisecond)
 
 		// Initial value should be 0
@@ -475,4 +480,144 @@ func TestSharedVariable(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 		assert.Equal(t, int64(100), counter.GetValue())
 	})
+}
+
+func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
+	tests := []struct {
+		name             string
+		setupMocks       func(conn *MockConnector, lock *MockLock)
+		initialValue     int64
+		updateValue      int64
+		ignoreRollbackOf int64
+		expectedValue    int64
+	}{
+		{
+			name: "remote lock fails, fallback local, higher update => update",
+			setupMocks: func(conn *MockConnector, lock *MockLock) {
+				// No Set call is expected because we fail to lock remotely
+				conn.On("Lock", mock.Anything, "test", mock.Anything).
+					Return(nil, errors.New("lock failed"))
+			},
+			initialValue:     5,
+			updateValue:      10,
+			ignoreRollbackOf: 1024,
+			expectedValue:    10,
+		},
+		{
+			name: "remote lock fails, fallback local, lower update within rollback range => no update",
+			setupMocks: func(conn *MockConnector, lock *MockLock) {
+				// No Set call is expected because we fail to lock remotely
+				conn.On("Lock", mock.Anything, "test", mock.Anything).
+					Return(nil, errors.New("lock failed"))
+			},
+			initialValue:     100,
+			updateValue:      95,
+			ignoreRollbackOf: 10,  // difference = 5 => within rollback range
+			expectedValue:    100, // remains unchanged
+		},
+		{
+			name: "remote lock fails, fallback local, lower update exceeds rollback range => update",
+			setupMocks: func(conn *MockConnector, lock *MockLock) {
+				conn.On("Lock", mock.Anything, "test", mock.Anything).
+					Return(nil, errors.New("lock failed"))
+			},
+			initialValue:     100,
+			updateValue:      50,
+			ignoreRollbackOf: 40, // difference = 50 => exceeds rollback range
+			expectedValue:    50,
+		},
+		{
+			name: "remote lock succeeds, remote higher => override local; no Set call for newValue",
+			setupMocks: func(conn *MockConnector, lock *MockLock) {
+				conn.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil)
+				lock.On("Unlock", mock.Anything).Return(nil)
+				conn.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").
+					Return("200", nil)
+				// We do NOT expect a Set call because remote is higher than newValue
+				// so no new remote update is performed.
+			},
+			initialValue:     100,
+			updateValue:      150,
+			ignoreRollbackOf: 1024,
+			expectedValue:    200, // remote overrides local
+		},
+		{
+			name: "remote lock succeeds, remote is lower, new update is higher => triggers Set + Publish",
+			setupMocks: func(conn *MockConnector, lock *MockLock) {
+				conn.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil)
+				lock.On("Unlock", mock.Anything).Return(nil)
+				// Remote has 100, local has 100, newValue=150 => we do an update
+				conn.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").
+					Return("100", nil)
+				// Because newValue (150) is higher, the code will call connector.Set
+				conn.On("Set", mock.Anything, "test", "value", "150", mock.Anything).
+					Return(nil)
+				// And then PublishCounterInt64
+				conn.On("PublishCounterInt64", mock.Anything, "test", int64(150)).
+					Return(nil)
+			},
+			initialValue:     100,
+			updateValue:      150,
+			ignoreRollbackOf: 1024,
+			expectedValue:    150,
+		},
+		{
+			name: "remote lock succeeds, remote is lower, newValue is also lower but within rollback range => no update",
+			setupMocks: func(conn *MockConnector, lock *MockLock) {
+				conn.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil)
+				lock.On("Unlock", mock.Anything).Return(nil)
+				conn.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").
+					Return("100", nil)
+				// No Set call because final local won't change (difference=5, within rollback range=10)
+			},
+			initialValue:     100,
+			updateValue:      95,
+			ignoreRollbackOf: 10, // difference = 5 => within rollback range => no update
+			expectedValue:    100,
+		},
+		{
+			name: "remote lock succeeds, remote is lower, newValue is lower, exceeds rollback range => triggers Set + Publish",
+			setupMocks: func(conn *MockConnector, lock *MockLock) {
+				conn.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil)
+				lock.On("Unlock", mock.Anything).Return(nil)
+				conn.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").
+					Return("100", nil)
+				conn.On("Set", mock.Anything, "test", "value", "50", mock.Anything).
+					Return(nil)
+				conn.On("PublishCounterInt64", mock.Anything, "test", int64(50)).
+					Return(nil)
+			},
+			initialValue:     100,
+			updateValue:      50,
+			ignoreRollbackOf: 40, // difference=50 => exceeds rollback range => do update
+			expectedValue:    50,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			registry, connector, _ := setupTest("my-dev")
+			lock := &MockLock{}
+			tt.setupMocks(connector, lock)
+
+			counter := &counterInt64{
+				registry:         registry,
+				key:              "test",
+				ignoreRollbackOf: tt.ignoreRollbackOf,
+			}
+			counter.value.Store(tt.initialValue)
+
+			actualValue := counter.TryUpdate(context.Background(), tt.updateValue)
+			assert.Equal(t, tt.expectedValue, actualValue,
+				"After TryUpdate(%d) with ignoreRollbackOf=%d, value should be %d",
+				tt.updateValue, tt.ignoreRollbackOf, tt.expectedValue,
+			)
+
+			// Give async goroutines (the Set/Publish calls) time to complete
+			time.Sleep(20 * time.Millisecond)
+
+			connector.AssertExpectations(t)
+			lock.AssertExpectations(t)
+		})
+	}
 }
