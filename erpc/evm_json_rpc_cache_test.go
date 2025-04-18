@@ -161,6 +161,8 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			policy,
 		})
 
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
 		err = cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
