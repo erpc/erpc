@@ -576,7 +576,7 @@ func (c *EvmJsonRpcCache) getFinalityState(ctx context.Context, req *common.Norm
 	if blockRef == "latest" || blockRef == "pending" {
 		finality = common.DataFinalityStateUnfinalized
 	} else if blockRef == "finalized" {
-		finality = common.DataFinalityStateFinalized
+		finality = common.DataFinalityStateRealtime
 	} else if resp != nil {
 		if blockNumber > 0 {
 			upstream := resp.Upstream()
