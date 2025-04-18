@@ -360,8 +360,7 @@ func parseCompositeBlockParam(param interface{}) (string, int64, error) {
 			// Named block tag (latest, pending, safe, finalized, earliest)
 			blockRef = v
 		} else {
-			// Fallback: treat any other non‑hex string as a generic reference
-			blockRef = v
+			return "", 0, errors.New("unsupported block reference: " + v)
 		}
 	case map[string]interface{}:
 		// Extract blockHash if present
