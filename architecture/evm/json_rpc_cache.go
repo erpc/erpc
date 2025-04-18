@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -573,9 +574,9 @@ func (c *EvmJsonRpcCache) getFinalityState(ctx context.Context, req *common.Norm
 
 	blockRef, blockNumber, _ := ExtractBlockReferenceFromRequest(ctx, req)
 
-	if blockRef == "latest" || blockRef == "pending" {
-		finality = common.DataFinalityStateUnfinalized
-	} else if blockRef == "finalized" {
+	// treat as realtime if it's a non‑empty, non‑hex string
+	// beacuse on every block these tags might be different values.
+	if blockRef != "" && !strings.HasPrefix(blockRef, "0x") {
 		finality = common.DataFinalityStateRealtime
 	} else if resp != nil {
 		if blockNumber > 0 {
