@@ -161,8 +161,6 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			policy,
 		})
 
-		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
 		err = cache.Set(context.Background(), req, resp)
 
 		assert.NoError(t, err)
@@ -581,6 +579,40 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)
 		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":{"number":"0xf","hash":"0xabc"}}`))
+		resp.SetUpstream(mockUpstreams[0])
+		req.SetLastValidResponse(resp)
+
+		ttl := time.Duration(5 * time.Second)
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl).Return(nil)
+
+		err = cache.Set(context.Background(), req, resp)
+
+		assert.NoError(t, err)
+		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl)
+	})
+
+	t.Run("CustomPolicyForFinalizedTag", func(t *testing.T) {
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
+		})
+
+		// Create a custom policy specifically for finalized block requests
+		finalizedPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:  "evm:123",
+			Method:   "eth_getBlockByNumber",
+			Params:   []interface{}{"finalized", "*"},
+			TTL:      common.Duration(5 * time.Second),
+			Finality: common.DataFinalityStateRealtime,
+		}, mockConnectors[0])
+		require.NoError(t, err)
+		cache.SetPolicies([]*data.CachePolicy{finalizedPolicy})
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["finalized",false],"id":1}`))
+		req.SetNetwork(mockNetwork)
+		req.SetCacheDal(cache)
+		resp := common.NewNormalizedResponse().
+			WithRequest(req).
+			WithBody(util.StringToReaderCloser(`{"result":{"number":"0x14","hash":"0xabc"}}`))
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(resp)
 
