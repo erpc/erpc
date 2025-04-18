@@ -507,12 +507,11 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			expectedPolicy *data.CachePolicy
 		}{
 			{
-				name:           "Latest Block Request",
-				method:         "eth_getBlockByNumber",
-				params:         `["latest",false]`,
-				result:         `"result":{"number":"0xf","hash":"0xabc"}`,
-				expectedCache:  true,
-				expectedPolicy: unfinalizedPolicy, // Should match unfinalized policy with 30s TTL
+				name:          "Latest Block Request",
+				method:        "eth_getBlockByNumber",
+				params:        `["latest",false]`,
+				result:        `"result":{"number":"0xf","hash":"0xabc"}`,
+				expectedCache: false,
 			},
 			{
 				name:           "Finalized Block Request",
@@ -523,12 +522,11 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				expectedPolicy: finalizedPolicy, // Should match finalized policy with no TTL
 			},
 			{
-				name:           "Pending Transaction Request",
-				method:         "eth_getTransactionByHash",
-				params:         `["0x123"]`,
-				result:         `"result":{"hash":"0x123","blockNumber":null}`,
-				expectedCache:  true,
-				expectedPolicy: unfinalizedPolicy, // Should match unfinalized policy with 30s TTL
+				name:          "Pending Transaction Request",
+				method:        "eth_getTransactionByHash",
+				params:        `["0x123"]`,
+				result:        `"result":{"hash":"0x123","blockNumber":null}`,
+				expectedCache: false,
 			},
 			{
 				name:           "Unknown Block Number Request",
@@ -574,7 +572,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			Method:   "eth_getBlockByNumber",
 			Params:   []interface{}{"latest", "*"},
 			TTL:      common.Duration(5 * time.Second),
-			Finality: common.DataFinalityStateUnfinalized,
+			Finality: common.DataFinalityStateRealtime,
 		}, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{latestBlockPolicy})
