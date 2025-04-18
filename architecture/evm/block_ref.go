@@ -10,6 +10,17 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
+// isBlockTag returns true if the provided string is one of the canonical
+// EVM block _tags_ whose meaning changes over time (case‑insensitive)
+func isBlockTag(s string) bool {
+	switch strings.ToLower(s) {
+	case "latest", "pending", "safe", "finalized", "earliest":
+		return true
+	default:
+		return false
+	}
+}
+
 // ExtractBlockReferenceFromRequest extracts any possible block reference and number from the request and from response if it exists.
 // This method is more 'complete' than ExtractBlockReferenceFromResponse() because we might not even have a response
 // in certain situations (for example, when we are using failsafe retries).
@@ -345,8 +356,11 @@ func parseCompositeBlockParam(param interface{}) (string, int64, error) {
 				}
 				blockNumber = bni
 			}
+		} else if isBlockTag(v) {
+			// Named block tag (latest, pending, safe, finalized, earliest)
+			blockRef = v
 		} else {
-			// Block tag ('latest', 'earliest', 'pending')
+			// Fallback: treat any other non‑hex string as a generic reference
 			blockRef = v
 		}
 	case map[string]interface{}:
