@@ -664,7 +664,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl)
 	})
 
-	t.Run("HitRealtimeCacheWithExactBlockNumber", func(t *testing.T) {
+	t.Run("ServeRealtimeCachedBlockWhenRequestedByNumber", func(t *testing.T) {
 		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
 		})
@@ -686,7 +686,6 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			Params:   []interface{}{"0xf", "*"},
 			Finality: common.DataFinalityStateFinalized,
 		}, mockConnectors[0])
-		require.NoError(t, err)
 		require.NoError(t, err)
 
 		cache.SetPolicies([]*data.CachePolicy{realtimePolicy, finalizedPolicy})
