@@ -522,12 +522,12 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				expectedPolicy: finalizedPolicy, // Should match finalized policy with no TTL
 			},
 			{
-				name:           "Pending Transaction Requests",
+				name:           "Pending Transaction Request",
 				method:         "eth_getTransactionByHash",
 				params:         `["0x123"]`,
 				result:         `"result":{"hash":"0x123","blockNumber":null}`,
 				expectedCache:  true,
-				expectedPolicy: unfinalizedPolicy,
+				expectedPolicy: unfinalizedPolicy, // Should match unfinalized policy with 30s TTL
 			},
 			{
 				name:           "Unknown Block Number Request",
