@@ -663,6 +663,66 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		assert.NoError(t, err)
 		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl)
 	})
+
+	t.Run("HitRealtimeCacheWithExactBlockNumber", func(t *testing.T) {
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
+		})
+
+		// Policy: cache “latest” requests with REALTIME finality for 5 s.
+		realtimePolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:  "evm:123",
+			Method:   "eth_getBlockByNumber",
+			Params:   []interface{}{"latest", "*"},
+			TTL:      common.Duration(2000 * time.Second), // intentionally long so it doesn't expire during the test
+			Finality: common.DataFinalityStateRealtime,
+		}, mockConnectors[0])
+		require.NoError(t, err)
+
+		// Policy: cache numeric block number requests with FINALIZED finality forever.
+		finalizedPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:  "evm:123",
+			Method:   "eth_getBlockByNumber",
+			Params:   []interface{}{"0xf", "*"},
+			Finality: common.DataFinalityStateFinalized,
+		}, mockConnectors[0])
+		require.NoError(t, err)
+		require.NoError(t, err)
+
+		cache.SetPolicies([]*data.CachePolicy{realtimePolicy, finalizedPolicy})
+
+		// 1) Simulate a “latest” request and store its response (block 0xf == 15).
+		reqLatest := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":1}`))
+		reqLatest.SetNetwork(mockNetwork)
+		reqLatest.SetCacheDal(cache)
+		respLatest := common.NewNormalizedResponse().
+			WithRequest(reqLatest).
+			WithBody(util.StringToReaderCloser(`{"result":{"number":"0xf","hash":"0xabc"}}`))
+		respLatest.SetUpstream(mockUpstreams[0])
+		reqLatest.SetLastValidResponse(respLatest)
+
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+		err = cache.Set(context.Background(), reqLatest, respLatest)
+		require.NoError(t, err)
+
+		// 2) Now the client asks for block 0xf explicitly.
+		reqExact := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0xf",false],"id":2}`))
+		reqExact.SetNetwork(mockNetwork)
+		reqExact.SetCacheDal(cache)
+
+		primaryKey := "evm:123:15" // the canonical key for block 0xf
+		cachedBody := `{"number":"0xf","hash":"0xabc"}`
+		mockConnectors[0].On("Get", mock.Anything, mock.Anything, primaryKey, mock.Anything, mock.Anything).Return(cachedBody, nil)
+
+		cachedResp, err := cache.Get(context.Background(), reqExact)
+		assert.NoError(t, err)
+		assert.NotNil(t, cachedResp)
+		assert.True(t, cachedResp.FromCache())
+
+		jrr, err := cachedResp.JsonRpcResponse()
+		assert.NoError(t, err)
+		assert.Equal(t, cachedBody, string(jrr.Result))
+	})
 }
 
 func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
