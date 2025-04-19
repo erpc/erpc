@@ -573,10 +573,15 @@ func (c *EvmJsonRpcCache) getFinalityState(ctx context.Context, req *common.Norm
 
 	blockRef, blockNumber, _ := ExtractBlockReferenceFromRequest(ctx, req)
 
-	if blockRef == "latest" || blockRef == "pending" {
+	// Decide finality from the block reference string:
+	//   • "*" wildcard entry: unfinalized (matches default policies)
+	//   • tag  (first char not a digit): realtime
+	if blockRef == "*" {
 		finality = common.DataFinalityStateUnfinalized
-	} else if blockRef == "finalized" {
-		finality = common.DataFinalityStateFinalized
+		return
+	} else if blockRef != "" && (blockRef[0] < '0' || blockRef[0] > '9') {
+		finality = common.DataFinalityStateRealtime
+		return
 	} else if resp != nil {
 		if blockNumber > 0 {
 			upstream := resp.Upstream()
