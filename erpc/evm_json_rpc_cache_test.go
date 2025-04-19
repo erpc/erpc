@@ -595,6 +595,41 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl)
 	})
 
+	t.Run("CacheWhenRequestEqualsFinalizedBlockNumber", func(t *testing.T) {
+		// Upstream has just advanced its finalized height to 0x14 (20 decimal).
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
+		})
+
+		// Policy that says: “cache any finalized eth_getBlockByNumber response forever”.
+		finalizedPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:  "evm:123",
+			Method:   "eth_getBlockByNumber",
+			Finality: common.DataFinalityStateFinalized,
+			TTL:      0, // forever
+		}, mockConnectors[0])
+		require.NoError(t, err)
+		cache.SetPolicies([]*data.CachePolicy{finalizedPolicy})
+
+		// Client immediately requests that same block (0x14).
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x14",false],"id":1}`))
+		req.SetNetwork(mockNetwork)
+		req.SetCacheDal(cache)
+		resp := common.NewNormalizedResponse().
+			WithRequest(req).
+			WithBody(util.StringToReaderCloser(`{"result":{"number":"0x14","hash":"0xfeed"}}`))
+		resp.SetUpstream(mockUpstreams[0])
+		req.SetLastValidResponse(resp)
+
+		// Expect the cache to store the entry under the FINALIZED policy
+		mockConnectors[0].On("Set", mock.Anything, "evm:123:20", mock.Anything, mock.Anything, finalizedPolicy.GetTTL()).Return(nil)
+
+		err = cache.Set(context.Background(), req, resp)
+
+		assert.NoError(t, err)
+		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:20", mock.Anything, mock.Anything, finalizedPolicy.GetTTL())
+	})
+
 	t.Run("CustomPolicyForFinalizedTag", func(t *testing.T) {
 		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
