@@ -522,11 +522,12 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				expectedPolicy: finalizedPolicy, // Should match finalized policy with no TTL
 			},
 			{
-				name:          "Pending Transaction Request",
-				method:        "eth_getTransactionByHash",
-				params:        `["0x123"]`,
-				result:        `"result":{"hash":"0x123","blockNumber":null}`,
-				expectedCache: false,
+				name:           "Pending Transaction Requests",
+				method:         "eth_getTransactionByHash",
+				params:         `["0x123"]`,
+				result:         `"result":{"hash":"0x123","blockNumber":null}`,
+				expectedCache:  true,
+				expectedPolicy: unfinalizedPolicy,
 			},
 			{
 				name:           "Unknown Block Number Request",
@@ -555,7 +556,8 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				if tc.expectedCache {
 					mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, tc.expectedPolicy.GetTTL())
 				} else {
-					mockConnectors[0].AssertNotCalled(t, "Set")
+					mockConnectors[0].AssertNotCalled(t, "Set",
+						mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 				}
 			})
 		}
