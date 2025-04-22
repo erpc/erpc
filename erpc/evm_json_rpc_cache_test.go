@@ -620,6 +620,14 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				expectedCache:  true, // Hash resolves to block 1 → finalized
 				expectedPolicy: finalizedPolicy,
 			},
+			{
+				name:           "TraceReplayTransaction_Cache",
+				method:         "trace_replayTransaction",
+				params:         `["0x123"]`,
+				result:         `"result":{"output":"0xdeadbeef"}`,
+				expectedCache:  true,
+				expectedPolicy: unknownPolicy, // falls under Unknown finality, 30 s TTL
+			},
 		}
 
 		for _, tc := range testCases {
