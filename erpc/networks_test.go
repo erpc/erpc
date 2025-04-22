@@ -7358,7 +7358,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 				return strings.Contains(body, "eth_getBalance")
 			}).
 			Reply(200).
-			JSON([]byte(`{"result":[{"value":0x1,"fromHost":"rpc1"}]}`))
+			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -7402,7 +7402,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 				return strings.Contains(body, "eth_getBalance")
 			}).
 			Reply(200).
-			JSON([]byte(`{"result":[{"value":0x1,"fromHost":"rpc1"}]}`))
+			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
 
 		gock.New("http://rpc2.localhost").
 			Post("").
@@ -7411,7 +7411,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 				return strings.Contains(body, "eth_getBalance")
 			}).
 			Reply(200).
-			JSON([]byte(`{"result":[{"value":0x1,"fromHost":"rpc2"}]}`))
+			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc2"}]}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -7455,7 +7455,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 				return strings.Contains(body, "eth_getBalance")
 			}).
 			Reply(200).
-			JSON([]byte(`{"result":[{"value":0x1,"fromHost":"rpc1"}]}`))
+			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -7499,7 +7499,7 @@ func TestNetwork_SkippingUpstreams(t *testing.T) {
 				return strings.Contains(body, "eth_getBalance")
 			}).
 			Reply(200).
-			JSON([]byte(`{"result":[{"value":0x1,"fromHost":"rpc1"}]}`))
+			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -7561,7 +7561,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 				return strings.Contains(body, "eth_getLogs")
 			}).
 			Reply(200).
-			JSON([]byte(`{"result":[{"value":0x1,"fromHost":"rpc1"}]}`))
+			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -7654,7 +7654,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 				return strings.Contains(body, "eth_getLogs")
 			}).
 			Reply(200).
-			JSON([]byte(`{"result":[{"value":0x1,"fromHost":"rpc1"}]}`))
+			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -7705,7 +7705,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 				return strings.Contains(body, "eth_getLogs")
 			}).
 			Reply(200).
-			JSON([]byte(`{"result":[{"value":0x1,"fromHost":"rpc2"}]}`))
+			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc2"}]}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -7797,7 +7797,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 				return strings.Contains(body, "eth_getLogs")
 			}).
 			Reply(200).
-			JSON([]byte(`{"result":[{"value":0x1,"fromHost":"rpc1"}]}`))
+			JSON([]byte(`{"result":[{"value":"0x1","fromHost":"rpc1"}]}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()

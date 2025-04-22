@@ -496,8 +496,6 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		}, mockConnectors[0])
 		require.NoError(t, err)
 
-		cache.SetPolicies([]*data.CachePolicy{finalizedPolicy, unknownPolicy, unfinalizedPolicy})
-
 		testCases := []struct {
 			name           string
 			method         string
@@ -507,41 +505,143 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			expectedPolicy *data.CachePolicy
 		}{
 			{
-				name:           "Latest Block Request",
-				method:         "eth_getBlockByNumber",
-				params:         `["latest",false]`,
-				result:         `"result":{"number":"0xf","hash":"0xabc"}`,
-				expectedCache:  true,
-				expectedPolicy: unfinalizedPolicy, // Should match unfinalized policy with 30s TTL
+				name:          "LatestTag_NoCache",
+				method:        "eth_getBlockByNumber",
+				params:        `["latest",false]`,
+				result:        `"result":{"number":"0xf","hash":"0xabc"}`,
+				expectedCache: false, // Realtime tag → no default rule caches it
 			},
 			{
-				name:           "Finalized Block Request",
+				name:           "FinalizedBlock_Cache",
 				method:         "eth_getBlockByNumber",
 				params:         `["0x5",false]`,
 				result:         `"result":{"number":"0x5","hash":"0xdef"}`,
-				expectedCache:  true,
-				expectedPolicy: finalizedPolicy, // Should match finalized policy with no TTL
+				expectedCache:  true, // Numeric height ≤ finalized tip
+				expectedPolicy: finalizedPolicy,
 			},
 			{
-				name:           "Pending Transaction Request",
+				name:          "FinalizedTag_NoCache",
+				method:        "eth_getBlockByNumber",
+				params:        `["finalized",false]`,
+				result:        `"result":{"number":"0xa","hash":"0xaaa"}`,
+				expectedCache: false, // Realtime tag → not cached
+			},
+			{
+				name:           "UnfinalizedBlock_Cache",
+				method:         "eth_getBlockByNumber",
+				params:         `["0x399",false]`,
+				result:         `"result":{"number":"0x399","hash":"0xdd"}`,
+				expectedCache:  true, // Height above tip → Unfinalized rule
+				expectedPolicy: unfinalizedPolicy,
+			},
+			{
+				name:           "PendingTx_Cache",
 				method:         "eth_getTransactionByHash",
 				params:         `["0x123"]`,
 				result:         `"result":{"hash":"0x123","blockNumber":null}`,
-				expectedCache:  true,
-				expectedPolicy: unfinalizedPolicy, // Should match unfinalized policy with 30s TTL
+				expectedCache:  true, // wildcard '*' → Unfinalized
+				expectedPolicy: unfinalizedPolicy,
 			},
 			{
-				name:           "Unknown Block Number Request",
+				name:           "UnknownAccount_Cache",
 				method:         "eth_getAccount",
 				params:         `["0xabc","0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"]`,
 				result:         `"result":{"balance":"0x123"}`,
+				expectedCache:  true, // Falls to Unknown rule (30 s TTL)
+				expectedPolicy: unknownPolicy,
+			},
+			{
+				name:          "EarliestTag_NoCache",
+				method:        "eth_getBlockByNumber",
+				params:        `["earliest",false]`,
+				result:        `"result":{"number":"0xa","hash":"0xaaa"}`,
+				expectedCache: false, // Realtime tag → no cache
+			},
+			{
+				name:          "SafeTag_NoCache",
+				method:        "eth_getBlockByNumber",
+				params:        `["safe",false]`,
+				result:        `"result":{"number":"0xa","hash":"0xaaa"}`,
+				expectedCache: false, // Realtime tag → no cache
+			},
+			{
+				name:           "StaticChainId_Cache",
+				method:         "eth_chainId",
+				params:         `[]`,
+				result:         `"result":"0x7b"`,
+				expectedCache:  true, // Static RPC → Finalized forever
+				expectedPolicy: finalizedPolicy,
+			},
+			{
+				name:           "ReceiptMined_Cache",
+				method:         "eth_getTransactionReceipt",
+				params:         `["0xbeef"]`,
+				result:         `"result":{"hash":"0xbeef","blockNumber":"0x5"}`,
+				expectedCache:  true, // Block 0x5 finalized
+				expectedPolicy: finalizedPolicy,
+			},
+			{
+				name:           "ReceiptPending_Cache",
+				method:         "eth_getTransactionReceipt",
+				params:         `["0xdead"]`,
+				result:         `"result":{"hash":"0xdead","blockNumber":null}`,
+				expectedCache:  true, // Pending ⇒ wildcard '*' ⇒ Unfinalized
+				expectedPolicy: unfinalizedPolicy,
+			},
+			{
+				name:           "HighBlockBalance_Cache",
+				method:         "eth_getBalance",
+				params:         `["0x123","0x399"]`,
+				result:         `"result":"0x0"`,
+				expectedCache:  true, // Height above tip → Unfinalized
+				expectedPolicy: unfinalizedPolicy,
+			},
+			{
+				name:           "LowBlockBalance_Cache",
+				method:         "eth_getBalance",
+				params:         `["0x123","0x5"]`,
+				result:         `"result":"0x0"`,
+				expectedCache:  true, // Height 0x5 finalized
+				expectedPolicy: finalizedPolicy,
+			},
+			{
+				name:           "LogsRange_Unfinalized_Cache",
+				method:         "eth_getLogs",
+				params:         `[{"fromBlock":"0x1","toBlock":"0x2"}]`,
+				result:         `"result":[{"address":"0xabc","data":"0x0"}]`,
+				expectedCache:  true, // Range gives '*' ⇒ Unfinalized
+				expectedPolicy: unfinalizedPolicy,
+			},
+			{
+				name:           "BlockByHash_Cache",
+				method:         "eth_getBlockByHash",
+				params:         `["0x6315fbbb83862798c81820bbaae8bfbc542b8abf73c130583f2b36521cf10624",false]`,
+				result:         `"result":{"hash":"0x6315fbbb83862798c81820bbaae8bfbc542b8abf73c130583f2b36521cf10624","number":"0x1"}`,
+				expectedCache:  true, // Hash resolves to block 1 → finalized
+				expectedPolicy: finalizedPolicy,
+			},
+			{
+				name:           "TraceReplayTransaction_Cache",
+				method:         "trace_replayTransaction",
+				params:         `["0x123"]`,
+				result:         `"result":{"output":"0xdeadbeef"}`,
 				expectedCache:  true,
-				expectedPolicy: unknownPolicy, // Should match unknown policy with 30s TTL
+				expectedPolicy: unknownPolicy, // falls under Unknown finality, 30 s TTL
 			},
 		}
 
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
+				// clear any connector call history from previous table row
+				mockConnectors[0].Calls = nil
+				mockConnectors[0].ExpectedCalls = nil
+				// Select policies per scenario:
+				policies := []*data.CachePolicy{finalizedPolicy, unfinalizedPolicy}
+				if tc.expectedPolicy == unknownPolicy {
+					policies = append(policies, unknownPolicy)
+				}
+				cache.SetPolicies(policies)
+
 				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"%s","params":%s,"id":1}`, tc.method, tc.params)))
 				req.SetNetwork(mockNetwork)
 				req.SetCacheDal(cache)
@@ -549,7 +649,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				resp.SetUpstream(mockUpstreams[0])
 				req.SetLastValidResponse(resp)
 
-				mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+				if tc.expectedCache {
+					mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+				}
 
 				err := cache.Set(context.Background(), req, resp)
 
@@ -557,7 +659,8 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				if tc.expectedCache {
 					mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, tc.expectedPolicy.GetTTL())
 				} else {
-					mockConnectors[0].AssertNotCalled(t, "Set")
+					mockConnectors[0].AssertNotCalled(t, "Set",
+						mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 				}
 			})
 		}
@@ -574,7 +677,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			Method:   "eth_getBlockByNumber",
 			Params:   []interface{}{"latest", "*"},
 			TTL:      common.Duration(5 * time.Second),
-			Finality: common.DataFinalityStateUnfinalized,
+			Finality: common.DataFinalityStateRealtime,
 		}, mockConnectors[0])
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{latestBlockPolicy})
@@ -593,6 +696,218 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 
 		assert.NoError(t, err)
 		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl)
+	})
+
+	t.Run("CustomPolicyForFinalizedTag", func(t *testing.T) {
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
+		})
+
+		// Create a custom policy specifically for finalized block requests
+		finalizedPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:  "evm:123",
+			Method:   "eth_getBlockByNumber",
+			Params:   []interface{}{"finalized", "*"},
+			TTL:      common.Duration(5 * time.Second),
+			Finality: common.DataFinalityStateRealtime,
+		}, mockConnectors[0])
+		require.NoError(t, err)
+		cache.SetPolicies([]*data.CachePolicy{finalizedPolicy})
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["finalized",false],"id":1}`))
+		req.SetNetwork(mockNetwork)
+		req.SetCacheDal(cache)
+		resp := common.NewNormalizedResponse().
+			WithRequest(req).
+			WithBody(util.StringToReaderCloser(`{"result":{"number":"0x14","hash":"0xabc"}}`))
+		resp.SetUpstream(mockUpstreams[0])
+		req.SetLastValidResponse(resp)
+
+		ttl := time.Duration(5 * time.Second)
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl).Return(nil)
+
+		err = cache.Set(context.Background(), req, resp)
+
+		assert.NoError(t, err)
+		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl)
+	})
+
+	t.Run("ServeFinalizedBlock_WhenRequestedByFinalizedBlockNumber", func(t *testing.T) {
+		// The upstream just marked block 0x14 (20 dec) as finalized.
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
+		})
+
+		// Default‑style Finalized wildcard policy.
+		finalizedDefault, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:   "*",
+			Method:    "*",
+			Finality:  common.DataFinalityStateFinalized,
+			TTL:       0, // forever
+			Connector: "mock1",
+		}, mockConnectors[0])
+		require.NoError(t, err)
+		cache.SetPolicies([]*data.CachePolicy{finalizedDefault})
+
+		// The client now requests that exact finalized block (0x14).
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x14",false],"id":1}`))
+		req.SetNetwork(mockNetwork)
+		req.SetCacheDal(cache)
+		resp := common.NewNormalizedResponse().
+			WithRequest(req).
+			WithBody(util.StringToReaderCloser(`{"result":{"number":"0x14","hash":"0xfeed"}}`))
+		resp.SetUpstream(mockUpstreams[0])
+		req.SetLastValidResponse(resp)
+
+		// Expect the cache to store under the default‑finalized policy’s TTL (0 — forever).
+		mockConnectors[0].On("Set", mock.Anything, "evm:123:20", mock.Anything, mock.Anything, finalizedDefault.GetTTL()).Return(nil)
+
+		err = cache.Set(context.Background(), req, resp)
+		assert.NoError(t, err)
+		mockConnectors[0].AssertCalled(t, "Set", mock.Anything, "evm:123:20", mock.Anything, mock.Anything, finalizedDefault.GetTTL())
+	})
+
+	t.Run("SkipCache_WhenRequestedByFinalizedTag_WithDefaultFinalizedPolicy", func(t *testing.T) {
+		// The upstream just marked block 0x14 (20 dec) as finalized
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
+		})
+
+		// Default‑style Finalized wildcard policy.
+		finalizedDefault, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:   "*",
+			Method:    "*",
+			Finality:  common.DataFinalityStateFinalized,
+			TTL:       0, // forever
+			Connector: "mock1",
+		}, mockConnectors[0])
+		require.NoError(t, err)
+		cache.SetPolicies([]*data.CachePolicy{finalizedDefault})
+
+		// 1) Simulate a finalized tag request and store its response (block 0xf == 15)
+		reqLatest := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["finalized",false],"id":1}`))
+		reqLatest.SetNetwork(mockNetwork)
+		reqLatest.SetCacheDal(cache)
+		respLatest := common.NewNormalizedResponse().
+			WithRequest(reqLatest).
+			WithBody(util.StringToReaderCloser(`{"result":{"number":"0xf","hash":"0xabc"}}`))
+		respLatest.SetUpstream(mockUpstreams[0])
+		reqLatest.SetLastValidResponse(respLatest)
+
+		err = cache.Set(context.Background(), reqLatest, respLatest)
+		require.NoError(t, err)
+		// The 'finalized' tag is classified as Realtime and should NOT match the
+		// default‑finalized policy, therefore nothing is written to cache.
+		mockConnectors[0].AssertNumberOfCalls(t, "Set", 0)
+
+		// 2/ client asks for block (0xf == 15) explicitly
+		reqExact := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0xf",false],"id":2}`))
+		reqExact.SetNetwork(mockNetwork)
+		reqExact.SetCacheDal(cache)
+
+		// Expect a lookup on the finalized‑policy key that returns “record not found”.
+		mockConnectors[0].
+			On("Get", mock.Anything, mock.Anything, "evm:123:15", mock.Anything, mock.Anything).
+			Return("", common.NewErrRecordNotFound("evm:123:15", "some‑key", "mock1")).Once()
+	})
+
+	t.Run("SkipCache_WhenRequestedByFinalizedTag_WithRealtimePolicy", func(t *testing.T) {
+		// The upstream just marked block 0x14 (20 dec) as finalized
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
+		})
+
+		// Realtime policy: cache “latest” for 5 min
+		realtimePolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:   "evm:123",
+			Method:    "eth_getBlockByNumber",
+			Params:    []interface{}{"latest", "*"},
+			TTL:       common.Duration(5 * time.Minute),
+			Finality:  common.DataFinalityStateRealtime,
+			Connector: "mock1",
+		}, mockConnectors[0])
+		require.NoError(t, err)
+
+		// Default‑style Finalized wildcard policy.
+		finalizedPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:   "*",
+			Method:    "*",
+			Finality:  common.DataFinalityStateFinalized,
+			TTL:       0,
+			Connector: "mock1",
+		}, mockConnectors[0])
+		require.NoError(t, err)
+
+		cache.SetPolicies([]*data.CachePolicy{realtimePolicy, finalizedPolicy})
+
+		// 1) write via “latest” (Realtime) – stored under evm:123:latest
+		reqLatest := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":1}`))
+		reqLatest.SetNetwork(mockNetwork)
+		reqLatest.SetCacheDal(cache)
+		respLatest := common.NewNormalizedResponse().
+			WithRequest(reqLatest).
+			WithBody(util.StringToReaderCloser(`{"result":{"number":"0xf","hash":"0xabc"}}`))
+		respLatest.SetUpstream(mockUpstreams[0])
+		reqLatest.SetLastValidResponse(respLatest)
+
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
+		err = cache.Set(context.Background(), reqLatest, respLatest)
+		require.NoError(t, err)
+		mockConnectors[0].AssertNumberOfCalls(t, "Set", 1)
+
+		// 2) numeric request for 0xf should MISS (entry not stored under evm:123:15)
+		reqExact := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0xf",false],"id":2}`))
+		reqExact.SetNetwork(mockNetwork)
+		reqExact.SetCacheDal(cache)
+
+		mockConnectors[0].
+			On("Get", mock.Anything, mock.Anything, "evm:123:15", mock.Anything, mock.Anything).
+			Return("", common.NewErrRecordNotFound("evm:123:15", "cache-key", "mock1")).Once()
+	})
+
+	t.Run("SkipCache_WhenFinalizedTagAfterNumericCache_WithDefaultFinalizedPolicy", func(t *testing.T) {
+		// upstream finalized height = 25 (0x19); we will write block 0x18 (24).
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 25, lstBn: 30},
+		})
+
+		// Default‑style Finalized wildcard policy.
+		finalizedPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:   "*",
+			Method:    "*",
+			Finality:  common.DataFinalityStateFinalized,
+			TTL:       0, // forever
+			Connector: "mock1",
+		}, mockConnectors[0])
+		require.NoError(t, err)
+		cache.SetPolicies([]*data.CachePolicy{finalizedPolicy})
+
+		// 1) numeric request → cached under pk evm:123:24
+		reqNum := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x18",false],"id":1}`))
+		reqNum.SetNetwork(mockNetwork)
+		reqNum.SetCacheDal(cache)
+		respNum := common.NewNormalizedResponse().
+			WithRequest(reqNum).
+			WithBody(util.StringToReaderCloser(`{"result":{"number":"0x18","hash":"0xbeef"}}`))
+		respNum.SetUpstream(mockUpstreams[0])
+		reqNum.SetLastValidResponse(respNum)
+
+		mockConnectors[0].On("Set", mock.Anything, "evm:123:24", mock.Anything, mock.Anything, finalizedPolicy.GetTTL()).Return(nil).Once()
+		err = cache.Set(context.Background(), reqNum, respNum)
+		require.NoError(t, err)
+		mockConnectors[0].AssertNumberOfCalls(t, "Set", 1)
+
+		// 2) “finalized” tag request must MISS the cache.
+		reqTag := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["finalized",false],"id":2}`))
+		reqTag.SetNetwork(mockNetwork)
+		reqTag.SetCacheDal(cache)
+
+		resp, err := cache.Get(context.Background(), reqTag)
+		assert.NoError(t, err)
+		assert.Nil(t, resp)
+
+		// Verify the connector was **not** touched.
+		mockConnectors[0].AssertNumberOfCalls(t, "Get", 0)
 	})
 }
 
