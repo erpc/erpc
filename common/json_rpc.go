@@ -691,16 +691,16 @@ func (r *JsonRpcRequest) PeekByPath(path ...interface{}) (interface{}, error) {
 func hashValue(h io.Writer, v interface{}) error {
 	switch t := v.(type) {
 	case bool:
-		_, err := h.Write(util.S2Bytes(fmt.Sprintf("%t", t)))
+		_, err := io.WriteString(h, fmt.Sprintf("%t", t))
 		return err
 	case int:
-		_, err := h.Write(util.S2Bytes(fmt.Sprintf("%d", t)))
+		_, err := io.WriteString(h, fmt.Sprintf("%d", t))
 		return err
 	case float64:
-		_, err := h.Write(util.S2Bytes(fmt.Sprintf("%f", t)))
+		_, err := io.WriteString(h, fmt.Sprintf("%f", t))
 		return err
 	case string:
-		_, err := h.Write(util.S2Bytes(strings.ToLower(t)))
+		_, err := io.WriteString(h, strings.ToLower(t))
 		return err
 	case []interface{}:
 		for _, i := range t {

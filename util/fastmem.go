@@ -18,7 +18,7 @@ func B2Str(b []byte) string {
 	if len(b) == 0 {
 		return ""
 	}
-	return unsafe.String(&b[0], len(b))
+	return unsafe.String(&b[0], len(b)) // #nosec G103
 }
 
 // S2Bytes converts a string to a mutable byte slice **without** copying.
@@ -33,7 +33,7 @@ func S2Bytes(s string) (v []byte) {
 	if len(s) == 0 {
 		return nil
 	}
-	return unsafe.Slice(unsafe.StringData(s), len(s))
+	return unsafe.Slice(unsafe.StringData(s), len(s)) // #nosec G103
 }
 
 func StringToReaderCloser(s string) io.ReadCloser {

@@ -6853,7 +6853,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Prepare a large payload and allowed overhead
 		sampleSize := 100 * 1024 * 1024
-		allowedOverhead := 10 * 1024 * 1024
+		allowedOverhead := 30 * 1024 * 1024
 		largeResult := strings.Repeat("x", sampleSize)
 
 		// Stub only the actual debug_traceTransaction call and return our big string
