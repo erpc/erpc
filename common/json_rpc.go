@@ -68,7 +68,7 @@ func NewJsonRpcResponseFromBytes(id []byte, resultRaw []byte, errBytes []byte) (
 	}
 
 	if len(errBytes) > 0 {
-		err := jr.ParseError(util.Mem2Str(errBytes))
+		err := jr.ParseError(util.B2Str(errBytes))
 		if err != nil {
 			return nil, err
 		}
@@ -168,7 +168,7 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 	}
 
 	// Parse the JSON data into an ast.Node
-	searcher := ast.NewSearcher(util.Mem2Str(data))
+	searcher := ast.NewSearcher(util.B2Str(data))
 	searcher.CopyReturn = false
 	searcher.ConcurrentRead = false
 	searcher.ValidateJSON = false
@@ -178,7 +178,7 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		if rawID, err := idNode.Raw(); err == nil {
 			r.idMu.Lock()
 			defer r.idMu.Unlock()
-			r.idBytes = util.Str2Mem(rawID)
+			r.idBytes = util.S2Bytes(rawID)
 		}
 	}
 
@@ -186,7 +186,7 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		if rawResult, err := resultNode.Raw(); err == nil {
 			r.resultMu.Lock()
 			defer r.resultMu.Unlock()
-			r.Result = util.Str2Mem(rawResult)
+			r.Result = util.S2Bytes(rawResult)
 			// Copy to heap instead of storing local variable address
 			r.cachedNode = new(ast.Node)
 			*r.cachedNode = resultNode
@@ -201,7 +201,7 @@ func (r *JsonRpcResponse) ParseFromStream(ctx []context.Context, reader io.Reade
 		} else {
 			return err
 		}
-	} else if err := r.ParseError(util.Mem2Str(data)); err != nil {
+	} else if err := r.ParseError(util.B2Str(data)); err != nil {
 		return err
 	}
 
@@ -237,7 +237,7 @@ func (r *JsonRpcResponse) ParseError(raw string) error {
 	// Check if the error is well-formed and has necessary fields
 	if rpcErr.Code != 0 || rpcErr.Message != "" {
 		r.Error = &rpcErr
-		r.errBytes = util.Str2Mem(raw)
+		r.errBytes = util.S2Bytes(raw)
 		return nil
 	}
 
@@ -319,7 +319,7 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 		if IsSemiValidJson(r.errBytes) {
 			e.RawJSON("error", r.errBytes)
 		} else {
-			e.Str("error", util.Mem2Str(r.errBytes))
+			e.Str("error", util.B2Str(r.errBytes))
 		}
 	} else if r.Error != nil {
 		e.Interface("error", r.Error)
@@ -330,7 +330,7 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 			if IsSemiValidJson(r.Result) {
 				e.RawJSON("result", r.Result)
 			} else {
-				e.Str("result", util.Mem2Str(r.Result))
+				e.Str("result", util.B2Str(r.Result))
 			}
 		} else {
 			head := 150 * 1024
@@ -338,7 +338,7 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 			if tail < head {
 				head = tail
 			}
-			e.Str("resultHead", util.Mem2Str(r.Result[:head])).Str("resultTail", util.Mem2Str(r.Result[tail:]))
+			e.Str("resultHead", util.B2Str(r.Result[:head])).Str("resultTail", util.B2Str(r.Result[tail:]))
 		}
 	} else if r.resultWriter != nil {
 		e.Bool("resultWriterEmpty", r.resultWriter.IsResultEmptyish())
@@ -348,7 +348,7 @@ func (r *JsonRpcResponse) MarshalZerologObject(e *zerolog.Event) {
 func (r *JsonRpcResponse) ensureCachedNode() error {
 	r.resultMu.RLock()
 	if r.cachedNode == nil {
-		srchr := ast.NewSearcher(util.Mem2Str(r.Result))
+		srchr := ast.NewSearcher(util.B2Str(r.Result))
 		srchr.ValidateJSON = false
 		srchr.ConcurrentRead = false
 		srchr.CopyReturn = false
@@ -691,16 +691,16 @@ func (r *JsonRpcRequest) PeekByPath(path ...interface{}) (interface{}, error) {
 func hashValue(h io.Writer, v interface{}) error {
 	switch t := v.(type) {
 	case bool:
-		_, err := h.Write(util.Str2Mem(fmt.Sprintf("%t", t)))
+		_, err := h.Write(util.S2Bytes(fmt.Sprintf("%t", t)))
 		return err
 	case int:
-		_, err := h.Write(util.Str2Mem(fmt.Sprintf("%d", t)))
+		_, err := h.Write(util.S2Bytes(fmt.Sprintf("%d", t)))
 		return err
 	case float64:
-		_, err := h.Write(util.Str2Mem(fmt.Sprintf("%f", t)))
+		_, err := h.Write(util.S2Bytes(fmt.Sprintf("%f", t)))
 		return err
 	case string:
-		_, err := h.Write(util.Str2Mem(strings.ToLower(t)))
+		_, err := h.Write(util.S2Bytes(strings.ToLower(t)))
 		return err
 	case []interface{}:
 		for _, i := range t {
@@ -717,7 +717,7 @@ func hashValue(h io.Writer, v interface{}) error {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			if _, err := h.Write(util.Str2Mem(k)); err != nil {
+			if _, err := h.Write(util.S2Bytes(k)); err != nil {
 				return err
 			}
 			err := hashValue(h, t[k])

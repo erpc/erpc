@@ -414,7 +414,7 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 		return
 	}
 
-	bodyStr := util.Mem2Str(bodyBytes)
+	bodyStr := util.B2Str(bodyBytes)
 	searcher := ast.NewSearcher(bodyStr)
 	searcher.CopyReturn = false
 	searcher.ConcurrentRead = false
@@ -422,7 +422,7 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 
 	if c.isLogLevelTrace {
 		if len(bodyBytes) > 20*1024 {
-			c.logger.Trace().Str("head", util.Mem2Str(bodyBytes[:20*1024])).Str("tail", util.Mem2Str(bodyBytes[len(bodyBytes)-20*1024:])).Msgf("processing batch response from upstream (trimmed to first and last 20k)")
+			c.logger.Trace().Str("head", util.B2Str(bodyBytes[:20*1024])).Str("tail", util.B2Str(bodyBytes[len(bodyBytes)-20*1024:])).Msgf("processing batch response from upstream (trimmed to first and last 20k)")
 		} else {
 			c.logger.Trace().RawJSON("response", bodyBytes).Msgf("processing batch response from upstream")
 		}
@@ -493,7 +493,7 @@ func (c *GenericHttpJsonRpcClient) processBatchResponse(requests map[interface{}
 			anyMissingId = true
 		}
 		if anyMissingId {
-			c.logger.Error().Str("response", util.Mem2Str(bodyBytes)).Msgf("some requests did not receive a response (matching ID)")
+			c.logger.Error().Str("response", util.B2Str(bodyBytes)).Msgf("some requests did not receive a response (matching ID)")
 		}
 	} else if rootNode.TypeSafe() == ast.V_OBJECT {
 		// Single object response
@@ -533,7 +533,7 @@ func getJsonRpcResponseFromNode(rootNode ast.Node) (*common.JsonRpcResponse, err
 		jrResp := &common.JsonRpcResponse{}
 
 		if rawID != "" {
-			err := jrResp.SetIDBytes(util.Str2Mem(rawID))
+			err := jrResp.SetIDBytes(util.S2Bytes(rawID))
 			if err != nil {
 				return nil, err
 			}
@@ -550,9 +550,9 @@ func getJsonRpcResponseFromNode(rootNode ast.Node) (*common.JsonRpcResponse, err
 	}
 
 	return common.NewJsonRpcResponseFromBytes(
-		util.Str2Mem(rawID),
-		util.Str2Mem(rawResult),
-		util.Str2Mem(rawError),
+		util.S2Bytes(rawID),
+		util.S2Bytes(rawResult),
+		util.S2Bytes(rawError),
 	)
 }
 
@@ -744,13 +744,13 @@ func (c *GenericHttpJsonRpcClient) normalizeJsonRpcError(r *http.Response, nr *c
 				if tailStart < maxTraceSize {
 					tailStart = maxTraceSize
 				}
-				c.logger.Trace().Int("statusCode", r.StatusCode).Str("head", util.Mem2Str(jr.Result[:maxTraceSize])).Str("tail", util.Mem2Str(jr.Result[tailStart:])).Msgf("processing json rpc response from upstream (trimmed to first and last 20k)")
+				c.logger.Trace().Int("statusCode", r.StatusCode).Str("head", util.B2Str(jr.Result[:maxTraceSize])).Str("tail", util.B2Str(jr.Result[tailStart:])).Msgf("processing json rpc response from upstream (trimmed to first and last 20k)")
 			} else {
 				if jr.Result != nil && len(jr.Result) > 0 {
 					if common.IsSemiValidJson(jr.Result) {
 						c.logger.Trace().Int("statusCode", r.StatusCode).RawJSON("result", jr.Result).Interface("error", jr.Error).Msgf("processing json rpc response from upstream")
 					} else {
-						c.logger.Trace().Int("statusCode", r.StatusCode).Str("result", util.Mem2Str(jr.Result)).Interface("error", jr.Error).Msgf("processing malformed json-rpc result response from upstream")
+						c.logger.Trace().Int("statusCode", r.StatusCode).Str("result", util.B2Str(jr.Result)).Interface("error", jr.Error).Msgf("processing malformed json-rpc result response from upstream")
 					}
 				} else {
 					c.logger.Trace().Int("statusCode", r.StatusCode).Interface("error", jr.Error).Msgf("processing empty json-rpc result response from upstream")

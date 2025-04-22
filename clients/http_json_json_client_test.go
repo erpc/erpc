@@ -68,10 +68,9 @@ func TestHttpJsonRpcClient_SingleRequests(t *testing.T) {
 			BodyString("")
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`))
-		_, err = client.SendRequest(context.Background(), req)
+		_, err = client.SendRequest(ctx, req)
 
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "504")
 		assert.Contains(t, err.Error(), "504")
 	})
 

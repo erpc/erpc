@@ -1,37 +1,41 @@
 package util
 
 import (
-	"bytes"
 	"io"
+	"strings"
 	"unsafe"
 )
 
-type GoSlice struct {
-	Ptr unsafe.Pointer
-	Len int
-	Cap int
-}
-
-type GoString struct {
-	Ptr unsafe.Pointer
-	Len int
-}
-
+// B2Str converts a byte slice to a read‑only string without allocation.
+//
+// WARNING: The caller must **guarantee** that `bs` will not be mutated for as
+// long as the returned string is alive, or a data race / memory corruption will
+// occur.
+//
 //go:nosplit
-func Mem2Str(v []byte) (s string) {
-	(*GoString)(unsafe.Pointer(&s)).Len = (*GoSlice)(unsafe.Pointer(&v)).Len // #nosec G103
-	(*GoString)(unsafe.Pointer(&s)).Ptr = (*GoSlice)(unsafe.Pointer(&v)).Ptr // #nosec G103
-	return
+//go:nocheckptr
+func B2Str(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	return unsafe.String(&b[0], len(b))
 }
 
+// S2Bytes converts a string to a mutable byte slice **without** copying.
+//
+// WARNING: Mutating the returned slice is *undefined behaviour* (strings are
+// immutable by spec).  Use this only for read‑only access or when you can
+// prove the string will never be reused elsewhere.
+//
 //go:nosplit
-func Str2Mem(s string) (v []byte) {
-	(*GoSlice)(unsafe.Pointer(&v)).Cap = (*GoString)(unsafe.Pointer(&s)).Len // #nosec G103
-	(*GoSlice)(unsafe.Pointer(&v)).Len = (*GoString)(unsafe.Pointer(&s)).Len // #nosec G103
-	(*GoSlice)(unsafe.Pointer(&v)).Ptr = (*GoString)(unsafe.Pointer(&s)).Ptr // #nosec G103
-	return
+//go:nocheckptr
+func S2Bytes(s string) (v []byte) {
+	if len(s) == 0 {
+		return nil
+	}
+	return unsafe.Slice(unsafe.StringData(s), len(s))
 }
 
-func StringToReaderCloser(b string) io.ReadCloser {
-	return io.NopCloser(bytes.NewBuffer(Str2Mem(b)))
+func StringToReaderCloser(s string) io.ReadCloser {
+	return io.NopCloser(strings.NewReader(s))
 }

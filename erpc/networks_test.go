@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -6841,6 +6842,95 @@ func TestNetwork_Forward(t *testing.T) {
 		// Assertions for the second request (client-side error, should not be retried)
 		assert.Nil(t, err2, "Expected no error for the second request")
 		assert.NotNil(t, resp2, "Expected non-nil response for the second request")
+	})
+
+	t.Run("ForwardWithMinimumMemoryAllocation", func(t *testing.T) {
+		// reset any previous gock state, and assert at the end that all mocks were exercised
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		// Prepare a large payload and allowed overhead
+		sampleSize := 100 * 1024 * 1024
+		allowedOverhead := 10 * 1024 * 1024
+		largeResult := strings.Repeat("x", sampleSize)
+
+		// Stub only the actual debug_traceTransaction call and return our big string
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), "debug_traceTransaction")
+			}).
+			Reply(200).
+			BodyString(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":"%s"}`, largeResult))
+
+		// build a minimal network with a single EVM upstream
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		upCfg := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc1",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
+		network := setupTestNetworkSimple(t, ctx, upCfg, nil)
+
+		// give the poller a moment to start up
+		time.Sleep(100 * time.Millisecond)
+
+		// seed the poller with our two known block heights
+		ups := network.upstreamsRegistry.GetNetworkUpstreams(ctx, "evm:123")[0]
+		poller := ups.EvmStatePoller()
+		poller.SuggestLatestBlock(9)
+		poller.SuggestFinalizedBlock(8)
+
+		// prepare the JSON‑RPC request
+		reqBody := []byte(`{
+			"jsonrpc":"2.0",
+			"method":"debug_traceTransaction",
+			"params":["0x1234567890abcdef1234567890abcdef12345678"],
+			"id":1
+		}`)
+		req := common.NewNormalizedRequest(reqBody)
+		req.SetNetwork(network)
+
+		// measure heap before invocation
+		var mBefore, mAfter runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&mBefore)
+
+		// do the forward
+		resp, err := network.Forward(ctx, req)
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+
+		// measure heap after
+		runtime.GC()
+		runtime.ReadMemStats(&mAfter)
+
+		used := mAfter.Alloc - mBefore.Alloc
+		t.Logf("Memory used for request: %.2f MB", float64(used)/(1024*1024))
+
+		// assert we stayed under sampleSize + overhead
+		maxAllowed := uint64(sampleSize + allowedOverhead)
+		if used > maxAllowed {
+			maxAllowedStr := fmt.Sprintf("%.2f MB", float64(maxAllowed)/(1024*1024))
+			usedStr := fmt.Sprintf("%.2f MB", float64(used)/(1024*1024))
+			t.Fatalf("Memory usage exceeded max of %s; used %s", maxAllowedStr, usedStr)
+		}
+
+		// finally, check the payload round‑tripped correctly
+		jrr, err := resp.JsonRpcResponse()
+		assert.NoError(t, err)
+		// plus 2 bytes of quotes around the string
+		expectedLen := sampleSize + 2
+		if len(jrr.Result) != expectedLen {
+			t.Fatalf("Expected result length %d, got %d", expectedLen, len(jrr.Result))
+		}
 	})
 }
 
