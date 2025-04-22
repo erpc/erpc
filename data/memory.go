@@ -87,7 +87,6 @@ func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey, value
 	m.logger.Debug().Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("writing to memory")
 
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
-
 	item := cacheItem{
 		value: value,
 	}

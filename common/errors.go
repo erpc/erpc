@@ -1242,7 +1242,7 @@ var NewErrJsonRpcRequestUnmarshal = func(cause error, body []byte) error {
 				Cause:   cause,
 				Details: map[string]interface{}{
 					"retryableTowardNetwork": false,
-					"body":                   util.Mem2Str(body),
+					"body":                   util.B2Str(body),
 				},
 			},
 		}
@@ -1253,7 +1253,7 @@ var NewErrJsonRpcRequestUnmarshal = func(cause error, body []byte) error {
 				Message: fmt.Sprintf("%s", cause),
 				Details: map[string]interface{}{
 					"retryableTowardNetwork": false,
-					"body":                   util.Mem2Str(body),
+					"body":                   util.B2Str(body),
 				},
 			},
 		}
@@ -1264,7 +1264,7 @@ var NewErrJsonRpcRequestUnmarshal = func(cause error, body []byte) error {
 			Message: "failed to unmarshal json-rpc request",
 			Details: map[string]interface{}{
 				"retryableTowardNetwork": false,
-				"body":                   util.Mem2Str(body),
+				"body":                   util.B2Str(body),
 			},
 		},
 	}

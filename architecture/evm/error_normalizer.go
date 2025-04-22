@@ -416,7 +416,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 	// but an EVM revert payload in jr.Result.
 	// -----------------------------------------------------------------------
 	if jr != nil && jr.Result != nil && len(jr.Result) > 0 {
-		dt := util.Mem2Str(jr.Result)
+		dt := util.B2Str(jr.Result)
 		// keccak256("Error(string)")
 		if len(dt) > 11 && dt[1:11] == "0x08c379a0" {
 			return common.NewErrEndpointExecutionException(

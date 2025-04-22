@@ -128,14 +128,20 @@ func AssertNoPendingMocks(t *testing.T, expected int) {
 	totalPending := len(gock.Pending())
 	totalExpected := expected + EvmBlockTrackerMocks
 	if totalPending != totalExpected {
-		t.Errorf("Expected %v mocks to be pending, got %v left", totalExpected, totalPending)
+		totalPendingUserMocks := 0
 		for _, pending := range gock.Pending() {
 			buff := pending.Response().BodyBuffer
+			if strings.Contains(string(buff), "expected mock") {
+				continue
+			}
+			totalPendingUserMocks++
 			if len(buff) > 1024 {
 				t.Errorf("Pending mock: %v -> %v", pending.Request().URLStruct.String(), string(pending.Response().BodyBuffer[:1024]))
 			} else {
 				t.Errorf("Pending mock: %v -> %v", pending.Request().URLStruct.String(), string(pending.Response().BodyBuffer))
 			}
 		}
+		totalExpectedUserMocks := totalExpected - EvmBlockTrackerMocks
+		t.Errorf("Expected %v mocks to be pending, got %v left", totalExpectedUserMocks, totalPendingUserMocks)
 	}
 }

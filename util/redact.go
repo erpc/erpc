@@ -10,7 +10,7 @@ import (
 func RedactEndpoint(endpoint string) string {
 	// Calculate hash of the entire original endpoint
 	hasher := sha256.New()
-	hasher.Write(Str2Mem(endpoint))
+	hasher.Write(S2Bytes(endpoint))
 	hash := hex.EncodeToString(hasher.Sum(nil))
 
 	// Parse the endpoint URL

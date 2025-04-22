@@ -11,7 +11,7 @@ tracing:
   enabled: true
   endpoint: "localhost:4317"  # OTLP endpoint (Jaeger, Tempo, etc.)
   protocol: "grpc"            # "grpc" or "http"
-  samplingRatio: 0.1          # Sample 10% of requests
+  sampleRate: 0.1          # Sample 10% of requests
   detailed: true              # Include detailed tracing information
   tls:
     enabled: false            # Enable TLS for secure connections
@@ -47,7 +47,7 @@ The included [`docker-compose.yml`](https://github.com/erpc/erpc/blob/main/docke
      enabled: true
      endpoint: "localhost:4317"
      protocol: "grpc"
-     samplingRatio: 1.0 # Sample all requests during development
+     sampleRate: 1.0 # Sample all requests during development
      detailed: true
    ```
 

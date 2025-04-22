@@ -241,14 +241,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
+      # Set up Docker Buildx (single‑arch, no cross‑qemu needed)
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-        with:
-          buildkitd-flags: --debug
-          driver-opts: network=host
 
       - name: Set up Docker tags
         id: tag_param
@@ -293,7 +288,7 @@ jobs:
         with:
           context: .
           push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           build-args: |
             VERSION=main
             COMMIT_SHA=${{ steps.short_sha.outputs.SHORT_SHA }}
@@ -307,7 +302,7 @@ jobs:
         with:
           context: .
           push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           build-args: |
             VERSION=${{ steps.version.outputs.VERSION }}
             COMMIT_SHA=${{ steps.short_sha.outputs.SHORT_SHA }}
