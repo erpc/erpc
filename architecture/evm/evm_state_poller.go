@@ -578,7 +578,7 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 			Code:    "ErrEvmStatePoller",
 			Message: "cannot parse syncing state result (must be boolean or object)",
 			Details: map[string]interface{}{
-				"result": util.Mem2Str(jrr.Result),
+				"result": util.B2Str(jrr.Result),
 			},
 		}
 	}
@@ -602,7 +602,7 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 		Code:    "ErrEvmStatePoller",
 		Message: "cannot parse syncing state result (must be boolean or object)",
 		Details: map[string]interface{}{
-			"result": util.Mem2Str(jrr.Result),
+			"result": util.B2Str(jrr.Result),
 		},
 	}
 }

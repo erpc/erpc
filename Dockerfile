@@ -27,6 +27,7 @@ ARG COMMIT_SHA
 # Set environment variables for Go build
 ENV CGO_ENABLED=0 \
     GOOS=linux \
+    GOARCH=amd64 \
     LDFLAGS="-w -s -X common.ErpcVersion=${VERSION} -X common.ErpcCommitSha=${COMMIT_SHA}"
 
 # Build the Go binary

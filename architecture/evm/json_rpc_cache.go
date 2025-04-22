@@ -379,7 +379,7 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 
 			ctx, cancel := context.WithTimeoutCause(ctx, 5*time.Second, errors.New("evm json-rpc cache driver timeout during set"))
 			defer cancel()
-			err = connector.Set(ctx, pk, rk, util.Mem2Str(rpcResp.Result), ttl)
+			err = connector.Set(ctx, pk, rk, util.B2Str(rpcResp.Result), ttl)
 			if err != nil {
 				errsMu.Lock()
 				errs = append(errs, err)
@@ -543,7 +543,7 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 	}
 
 	jrr := &common.JsonRpcResponse{
-		Result: util.Str2Mem(resultString),
+		Result: util.S2Bytes(resultString),
 	}
 	err = jrr.SetID(rpcReq.ID)
 	if err != nil {
