@@ -603,6 +603,13 @@ func (e *EvmStatePoller) executeMultiplexedPoll(
 	if loaded {
 		// Another goroutine is already fetching, wait for its result
 		e.logger.Trace().Str("operation", operationKey).Msg("multiplexer hit, waiting for existing poll result")
+		telemetry.MetricUpstreamMultiplexedPollsTotal.WithLabelValues(
+			e.projectId,
+			e.upstream.NetworkId(),
+			e.upstream.Config().Id,
+			operationKey,
+		).Inc()
+
 		select {
 		case <-mux.done:
 			// Result is ready

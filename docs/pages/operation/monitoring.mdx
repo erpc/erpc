@@ -131,6 +131,7 @@ Here is a list of some of the most important metrics:
 | erpc_upstream_latest_block_polled_total            | Counter   | Total number of times the latest block was pro-actively polled from an upstream.                                                                                                              |
 | erpc_upstream_finalized_block_polled_total         | Counter   | Total number of times the finalized block was pro-actively polled from an upstream.                                                                                                           |
 | erpc_network_request_received_total                | Counter   | Total number of requests received by the network.                                                                                                                                             |
+| erpc_upstream_multiplexed_polls_total             | Counter   | Total number of multiplexed poll operations for upstream state polling.
 | erpc_network_multiplexed_request_total             | Counter   | Total number of multiplexed requests received by the network.                                                                                                                                 |
 | erpc_network_failed_request_total                  | Counter   | Total number of failed requests received by the network.                                                                                                                                      |
 | erpc_network_request_self_rate_limited_total       | Counter   | Total number of self-imposed rate limited requests before sending to upstreams.                                                                                                               |
@@ -219,4 +220,7 @@ avg(erpc_upstream_score_overall) by (network, upstream)
 
 # CORS issues by origin
 sum(rate(erpc_cors_disallowed_origin_total{}[5m])) by (project, origin)
+
+# Multiplexed poll operations by finalized poll operation
+sum(rate(erpc_upstream_multiplexed_polls_total{operation="finalized"}[5m])) by (network, upstream)
 ```

@@ -166,6 +166,12 @@ var (
 		Help:      "Total number of self-imposed (locally) rate limited requests towards the network.",
 	}, []string{"project", "network", "category"})
 
+	MetricUpstreamMultiplexedPollsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_multiplexed_polls_total",
+		Help:      "Total number of multiplexed poll operations for upstream state polling.",
+	}, []string{"project", "network", "upstream", "operation"})
+
 	MetricNetworkRequestsReceived = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_request_received_total",
