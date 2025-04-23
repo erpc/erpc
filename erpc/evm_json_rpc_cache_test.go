@@ -3,15 +3,23 @@ package erpc
 import (
 	"context"
 	"fmt"
+
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/clients"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
@@ -626,7 +634,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				params:         `["0x123"]`,
 				result:         `"result":{"output":"0xdeadbeef"}`,
 				expectedCache:  true,
-				expectedPolicy: unknownPolicy, // falls under Unknown finality, 30 s TTL
+				expectedPolicy: unknownPolicy, // falls under Unknown finality, 30 s TTL
 			},
 		}
 
@@ -733,12 +741,12 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("ServeFinalizedBlock_WhenRequestedByFinalizedBlockNumber", func(t *testing.T) {
-		// The upstream just marked block 0x14 (20 dec) as finalized.
+		// The upstream just marked block 0x14 (20 dec) as finalized.
 		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
 		})
 
-		// Default‑style Finalized wildcard policy.
+		// Default-style Finalized wildcard policy.
 		finalizedDefault, err := data.NewCachePolicy(&common.CachePolicyConfig{
 			Network:   "*",
 			Method:    "*",
@@ -759,7 +767,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		resp.SetUpstream(mockUpstreams[0])
 		req.SetLastValidResponse(resp)
 
-		// Expect the cache to store under the default‑finalized policy’s TTL (0 — forever).
+		// Expect the cache to store under the default-finalized policy's TTL (0 — forever).
 		mockConnectors[0].On("Set", mock.Anything, "evm:123:20", mock.Anything, mock.Anything, finalizedDefault.GetTTL()).Return(nil)
 
 		err = cache.Set(context.Background(), req, resp)
@@ -768,12 +776,12 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("SkipCache_WhenRequestedByFinalizedTag_WithDefaultFinalizedPolicy", func(t *testing.T) {
-		// The upstream just marked block 0x14 (20 dec) as finalized
+		// The upstream just marked block 0x14 (20 dec) as finalized
 		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
 		})
 
-		// Default‑style Finalized wildcard policy.
+		// Default-style Finalized wildcard policy.
 		finalizedDefault, err := data.NewCachePolicy(&common.CachePolicyConfig{
 			Network:   "*",
 			Method:    "*",
@@ -797,27 +805,27 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		err = cache.Set(context.Background(), reqLatest, respLatest)
 		require.NoError(t, err)
 		// The 'finalized' tag is classified as Realtime and should NOT match the
-		// default‑finalized policy, therefore nothing is written to cache.
+		// default-finalized policy, therefore nothing is written to cache.
 		mockConnectors[0].AssertNumberOfCalls(t, "Set", 0)
 
-		// 2/ client asks for block (0xf == 15) explicitly
+		// 2/ client asks for block (0xf == 15) explicitly
 		reqExact := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0xf",false],"id":2}`))
 		reqExact.SetNetwork(mockNetwork)
 		reqExact.SetCacheDal(cache)
 
-		// Expect a lookup on the finalized‑policy key that returns “record not found”.
+		// Expect a lookup on the finalized-policy key that returns "record not found".
 		mockConnectors[0].
 			On("Get", mock.Anything, mock.Anything, "evm:123:15", mock.Anything, mock.Anything).
-			Return("", common.NewErrRecordNotFound("evm:123:15", "some‑key", "mock1")).Once()
+			Return("", common.NewErrRecordNotFound("evm:123:15", "some-key", "mock1")).Once()
 	})
 
 	t.Run("SkipCache_WhenRequestedByFinalizedTag_WithRealtimePolicy", func(t *testing.T) {
-		// The upstream just marked block 0x14 (20 dec) as finalized
+		// The upstream just marked block 0x14 (20 dec) as finalized
 		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
 		})
 
-		// Realtime policy: cache “latest” for 5 min
+		// Realtime policy: cache "latest" for 5 min
 		realtimePolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
 			Network:   "evm:123",
 			Method:    "eth_getBlockByNumber",
@@ -828,7 +836,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		}, mockConnectors[0])
 		require.NoError(t, err)
 
-		// Default‑style Finalized wildcard policy.
+		// Default-style Finalized wildcard policy.
 		finalizedPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
 			Network:   "*",
 			Method:    "*",
@@ -840,7 +848,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 
 		cache.SetPolicies([]*data.CachePolicy{realtimePolicy, finalizedPolicy})
 
-		// 1) write via “latest” (Realtime) – stored under evm:123:latest
+		// 1) write via "latest" (Realtime) – stored under evm:123:latest
 		reqLatest := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":1}`))
 		reqLatest.SetNetwork(mockNetwork)
 		reqLatest.SetCacheDal(cache)
@@ -866,12 +874,12 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("SkipCache_WhenFinalizedTagAfterNumericCache_WithDefaultFinalizedPolicy", func(t *testing.T) {
-		// upstream finalized height = 25 (0x19); we will write block 0x18 (24).
+		// upstream finalized height = 25 (0x19); we will write block 0x18 (24).
 		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 25, lstBn: 30},
 		})
 
-		// Default‑style Finalized wildcard policy.
+		// Default-style Finalized wildcard policy.
 		finalizedPolicy, err := data.NewCachePolicy(&common.CachePolicyConfig{
 			Network:   "*",
 			Method:    "*",
@@ -882,7 +890,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		require.NoError(t, err)
 		cache.SetPolicies([]*data.CachePolicy{finalizedPolicy})
 
-		// 1) numeric request → cached under pk evm:123:24
+		// 1) numeric request → cached under pk evm:123:24
 		reqNum := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x18",false],"id":1}`))
 		reqNum.SetNetwork(mockNetwork)
 		reqNum.SetCacheDal(cache)
@@ -897,7 +905,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		require.NoError(t, err)
 		mockConnectors[0].AssertNumberOfCalls(t, "Set", 1)
 
-		// 2) “finalized” tag request must MISS the cache.
+		// 2) "finalized" tag request must MISS the cache.
 		reqTag := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["finalized",false],"id":2}`))
 		reqTag.SetNetwork(mockNetwork)
 		reqTag.SetCacheDal(cache)
@@ -1634,4 +1642,714 @@ func TestEvmJsonRpcCache_ItemSizeLimits(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	logger := log.Logger
+
+	// Start a DynamoDB local container
+	req := testcontainers.ContainerRequest{
+		Image:        "amazon/dynamodb-local",
+		ExposedPorts: []string{"8000/tcp"},
+		WaitingFor:   wait.ForListeningPort("8000/tcp"),
+	}
+	ddbC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: req,
+		Started:          true,
+	})
+	if err != nil {
+		t.Fatalf("failed to start DynamoDB Local container: %v", err)
+	}
+	defer ddbC.Terminate(ctx)
+
+	host, err := ddbC.Host(ctx)
+	require.NoError(t, err)
+	port, err := ddbC.MappedPort(ctx, "8000")
+	require.NoError(t, err)
+
+	endpoint := fmt.Sprintf("http://%s:%s", host, port.Port())
+
+	// Create cache with DynamoDB connector for testing
+	cacheCfg := &common.CacheConfig{}
+	cacheCfg.SetDefaults()
+
+	// Create a DynamoDB connector config
+	dynamoDBCfg := &common.ConnectorConfig{
+		Id:     "dynamodb1",
+		Driver: "dynamodb",
+		DynamoDB: &common.DynamoDBConnectorConfig{
+			Endpoint:         endpoint,
+			Region:           "us-west-2",
+			Table:            "evm_cache_test",
+			PartitionKeyName: "pk",
+			RangeKeyName:     "rk",
+			ReverseIndexName: "rk-pk-index",
+			TTLAttributeName: "ttl",
+			InitTimeout:      common.Duration(5 * time.Second),
+			GetTimeout:       common.Duration(2 * time.Second),
+			SetTimeout:       common.Duration(2 * time.Second),
+			Auth: &common.AwsAuthConfig{
+				Mode:            "secret",
+				AccessKeyID:     "fakeKey",
+				SecretAccessKey: "fakeSecret",
+			},
+		},
+	}
+	cacheCfg.Connectors = []*common.ConnectorConfig{dynamoDBCfg}
+
+	// Create appropriate cache policies
+	cacheCfg.Policies = []*common.CachePolicyConfig{
+		{
+			Network:   "*",
+			Method:    "*",
+			Finality:  common.DataFinalityStateFinalized,
+			Connector: "dynamodb1",
+		},
+		{
+			Network:   "*",
+			Method:    "*",
+			Finality:  common.DataFinalityStateUnfinalized,
+			Connector: "dynamodb1",
+			TTL:       common.Duration(5 * time.Minute),
+		},
+		{
+			Network:   "*",
+			Method:    "*",
+			Finality:  common.DataFinalityStateRealtime,
+			Connector: "dynamodb1",
+			TTL:       common.Duration(30 * time.Second),
+		},
+	}
+
+	// Add method configs to ensure consistent behavior
+	cacheCfg.Methods = map[string]*common.CacheMethodConfig{
+		"eth_getBlockByNumber": {
+			Realtime: true, // This will make "latest" treated as realtime
+		},
+	}
+
+	cache, err := evm.NewEvmJsonRpcCache(ctx, &logger, cacheCfg)
+	require.NoError(t, err, "failed to create cache")
+
+	// Setup network and upstreams
+	mockNetwork := &Network{
+		networkId: "evm:123",
+		logger:    &logger,
+		cfg: &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm: &common.EvmNetworkConfig{
+				ChainId: 123,
+			},
+		},
+	}
+
+	// Create test upstreams with different finalized blocks
+	mockUpstream := createMockUpstream(t, ctx, 123, "upsA", common.EvmSyncingStateNotSyncing, 10, 15)
+
+	t.Run("BasicSetGet_WithMainIndex", func(t *testing.T) {
+		// Create a request for a finalized block
+		req := common.NewNormalizedRequest([]byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getBlockByNumber",
+			"params": ["0x5", false],
+			"id": 1
+		}`))
+		req.SetNetwork(mockNetwork)
+		req.SetCacheDal(cache)
+
+		// Create response
+		responseBody := `{"number":"0x5","hash":"0xabc","transactions":[]}`
+		resp := common.NewNormalizedResponse().
+			WithRequest(req).
+			WithBody(util.StringToReaderCloser(`{"result":` + responseBody + `}`))
+		resp.SetUpstream(mockUpstream)
+		req.SetLastValidResponse(resp)
+
+		// Set to cache
+		err := cache.Set(ctx, req, resp)
+		require.NoError(t, err, "failed to set cache")
+
+		// Get from cache
+		cachedResp, err := cache.Get(ctx, req)
+		require.NoError(t, err, "failed to get from cache")
+		require.NotNil(t, cachedResp, "cached response should not be nil")
+
+		// Verify response
+		jrr, err := cachedResp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Equal(t, responseBody, string(jrr.Result))
+		assert.True(t, cachedResp.FromCache(), "response should be marked as from cache")
+	})
+
+	t.Run("ReverseIndex_TransactionByHash", func(t *testing.T) {
+		// Create a request for a transaction by hash (no block number in request)
+		req := common.NewNormalizedRequest([]byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getTransactionByHash",
+			"params": ["0x123456789abcdef123456789abcdef123456789abcdef123456789abcdef1234"],
+			"id": 1
+		}`))
+		req.SetNetwork(mockNetwork)
+		req.SetCacheDal(cache)
+
+		// Create a response that includes a block number (transaction is mined)
+		responseBody := `{
+			"hash":"0x123456789abcdef123456789abcdef123456789abcdef123456789abcdef1234",
+			"blockNumber":"0x5",
+			"from":"0xabcdef1234567890abcdef1234567890abcdef12",
+			"to":"0x1234567890abcdef1234567890abcdef12345678",
+			"value":"0x1234",
+			"input":"0x"
+		}`
+		resp := common.NewNormalizedResponse().
+			WithRequest(req).
+			WithBody(util.StringToReaderCloser(`{"result":` + responseBody + `}`))
+		resp.SetUpstream(mockUpstream)
+		req.SetLastValidResponse(resp)
+
+		// Set to cache
+		err := cache.Set(ctx, req, resp)
+		require.NoError(t, err, "failed to set cache")
+
+		reqSecond := common.NewNormalizedRequest([]byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getTransactionByHash",
+			"params": ["0x123456789abcdef123456789abcdef123456789abcdef123456789abcdef1234"],
+			"id": 1
+		}`))
+		reqSecond.SetNetwork(mockNetwork)
+		reqSecond.SetCacheDal(cache)
+
+		// Get from cache
+		cachedResp, err := cache.Get(ctx, reqSecond)
+		require.NoError(t, err, "failed to get from cache")
+		require.NotNil(t, cachedResp, "cached response should not be nil")
+
+		// Verify response
+		jrr, err := cachedResp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Equal(t, responseBody, string(jrr.Result))
+		assert.True(t, cachedResp.FromCache(), "response should be marked as from cache")
+	})
+
+	t.Run("ReverseIndex_eth_getBlockReceipts_ByHash", func(t *testing.T) {
+		req := common.NewNormalizedRequest([]byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getBlockReceipts",
+			"params": [{"blockHash":"0x6c4383df1aa34eb63b01ea9e3d6ea80304ca8f44baa88c42816ac62b6a19563e"}],
+			"id": 1
+		}`))
+		req.SetNetwork(mockNetwork)
+		req.SetCacheDal(cache)
+
+		// Create a response that includes a block number (transaction is mined)
+		responseBody := `[{"blockHash":"0xa917fcc721a5465a484e9be17cda0cc5493933dd3bc70c9adbee192cb419c9d7","blockNumber":"0xc5043f","contractAddress":null,"cumulativeGasUsed":"0x26a7d","effectiveGasPrice":"0x0","from":"0xc4a675c5041e9687768ce154554d6cddd2540712","gasUsed":"0x26a7d","logs":[{"address":"0x1f573d6fb3f13d689ff844b4ce37794d79a7ff1c","topics":["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef","0x00000000000000000000000056178a0d5f301baf6cf3e1cd53d9863437345bf9","0x000000000000000000000000a57bd00134b2850b2a1c55860c9e9ea100fdd6cf"],"data":"0x0000000000000000000000000000000000000000000003a2a6d6da26e6902d28","blockNumber":"0xc5043f","transactionHash":"0x23e3362a76c8b9370dc65bac8eb1cda1d408ac238a466cfe690248025254bf52","transactionIndex":"0x0","blockHash":"0xa917fcc721a5465a484e9be17cda0cc5493933dd3bc70c9adbee192cb419c9d7","logIndex":"0x0","removed":false}]}]`
+		resp := common.NewNormalizedResponse().
+			WithRequest(req).
+			WithBody(util.StringToReaderCloser(`{"result":` + responseBody + `}`))
+		resp.SetUpstream(mockUpstream)
+		req.SetLastValidResponse(resp)
+
+		// Set to cache
+		err := cache.Set(ctx, req, resp)
+		require.NoError(t, err, "failed to set cache")
+
+		reqSecond := common.NewNormalizedRequest([]byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getBlockReceipts",
+			"params": [{"blockHash":"0x6c4383df1aa34eb63b01ea9e3d6ea80304ca8f44baa88c42816ac62b6a19563e"}],
+			"id": 1
+		}`))
+		reqSecond.SetNetwork(mockNetwork)
+		reqSecond.SetCacheDal(cache)
+
+		// Get from cache
+		cachedResp, err := cache.Get(ctx, reqSecond)
+		require.NoError(t, err, "failed to get from cache")
+		require.NotNil(t, cachedResp, "cached response should not be nil")
+
+		// Verify response
+		jrr, err := cachedResp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Equal(t, responseBody, string(jrr.Result))
+		assert.True(t, cachedResp.FromCache(), "response should be marked as from cache")
+	})
+
+	t.Run("TTL_Expiration", func(t *testing.T) {
+		// Create a request that will use the realtime policy with short TTL
+		req := common.NewNormalizedRequest([]byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getBlockByNumber",
+			"params": ["latest", false],
+			"id": 1
+		}`))
+		req.SetNetwork(mockNetwork)
+		req.SetCacheDal(cache)
+
+		responseBody := `{"number":"0xf","hash":"0xdef","transactions":[]}`
+		resp := common.NewNormalizedResponse().
+			WithRequest(req).
+			WithBody(util.StringToReaderCloser(`{"result":` + responseBody + `}`))
+		resp.SetUpstream(mockUpstream)
+		req.SetLastValidResponse(resp)
+
+		// Set to cache
+		err := cache.Set(ctx, req, resp)
+		require.NoError(t, err, "failed to set cache")
+
+		// Get from cache immediately should work
+		cachedResp, err := cache.Get(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, cachedResp, "should get result before TTL expiry")
+
+		// Verify the TTL was correctly set by examining the DynamoDB entry
+		sess, err := session.NewSession(&aws.Config{
+			Region:      aws.String("us-west-2"),
+			Endpoint:    aws.String(endpoint),
+			Credentials: credentials.NewStaticCredentials("fakeKey", "fakeSecret", ""),
+		})
+		require.NoError(t, err)
+
+		dynamoClient := dynamodb.New(sess)
+
+		// Get the cache key from the request
+		cacheKey, err := req.CacheHash(context.Background())
+		require.NoError(t, err)
+
+		result, err := dynamoClient.GetItem(&dynamodb.GetItemInput{
+			TableName: aws.String("evm_cache_test"),
+			Key: map[string]*dynamodb.AttributeValue{
+				"pk": {S: aws.String("evm:123:*")},
+				"rk": {S: aws.String(cacheKey)},
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, result.Item)
+
+		// Verify TTL is set
+		ttlAttr, exists := result.Item["ttl"]
+		assert.True(t, exists, "TTL attribute should exist")
+		assert.NotNil(t, ttlAttr.N, "TTL should be numeric")
+
+		ttlValue, err := strconv.ParseInt(*ttlAttr.N, 10, 64)
+		require.NoError(t, err)
+
+		// The TTL should be approximately 30 seconds from now
+		ttlTime := time.Unix(ttlValue, 0)
+		expectedExpiry := time.Now().Add(30 * time.Second)
+		assert.WithinDuration(t, expectedExpiry, ttlTime, 5*time.Second)
+	})
+
+	t.Run("MultipleMethods_DifferentBlocks", func(t *testing.T) {
+		// Test different methods with finalized and unfinalized blocks
+		testRequests := []struct {
+			name         string
+			requestJSON  string
+			responseJSON string
+			shouldCache  bool
+		}{
+			{
+				name: "FinalizedBlock",
+				requestJSON: `{
+					"jsonrpc": "2.0",
+					"method": "eth_getBlockByNumber",
+					"params": ["0x1", false],
+					"id": 1
+				}`,
+				responseJSON: `{"result":{"number":"0x1","hash":"0x111"}}`,
+				shouldCache:  true,
+			},
+			{
+				name: "LatestBlock",
+				requestJSON: `{
+					"jsonrpc": "2.0",
+					"method": "eth_getBlockByNumber",
+					"params": ["latest", false],
+					"id": 2
+				}`,
+				responseJSON: `{"result":{"number":"0xf","hash":"0x333"}}`,
+				shouldCache:  true,
+			},
+			{
+				name: "GetBalance",
+				requestJSON: `{
+					"jsonrpc": "2.0",
+					"method": "eth_getBalance",
+					"params": ["0xabc", "0x5"],
+					"id": 3
+				}`,
+				responseJSON: `{"result":"0x123abc"}`,
+				shouldCache:  true,
+			},
+		}
+
+		for _, tc := range testRequests {
+			t.Run(tc.name, func(t *testing.T) {
+				// Create request/response
+				req := common.NewNormalizedRequest([]byte(tc.requestJSON))
+				req.SetNetwork(mockNetwork)
+				req.SetCacheDal(cache)
+
+				resp := common.NewNormalizedResponse().
+					WithRequest(req).
+					WithBody(util.StringToReaderCloser(tc.responseJSON))
+				resp.SetUpstream(mockUpstream)
+				req.SetLastValidResponse(resp)
+
+				// Cache the response
+				err := cache.Set(ctx, req, resp)
+				require.NoError(t, err, "failed to set cache")
+
+				// Try to retrieve it
+				cachedResp, err := cache.Get(ctx, req)
+				require.NoError(t, err, "failed to get from cache")
+
+				if tc.shouldCache {
+					require.NotNil(t, cachedResp, "cached response should not be nil")
+					assert.True(t, cachedResp.FromCache(), "response should be from cache")
+				} else {
+					assert.Nil(t, cachedResp, "cached response should be nil (cache miss)")
+				}
+			})
+		}
+	})
+}
+
+func TestEvmJsonRpcCache_Redis(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	logger := log.Logger
+
+	// Start a Redis container for testing
+	redisC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: testcontainers.ContainerRequest{
+			Image:        "redis:alpine",
+			ExposedPorts: []string{"6379/tcp"},
+			WaitingFor:   wait.ForListeningPort("6379/tcp"),
+		},
+		Started: true,
+	})
+	if err != nil {
+		t.Fatalf("failed to start Redis container: %v", err)
+	}
+	defer redisC.Terminate(ctx)
+
+	host, err := redisC.Host(ctx)
+	require.NoError(t, err)
+	port, err := redisC.MappedPort(ctx, "6379")
+	require.NoError(t, err)
+
+	redisAddr := fmt.Sprintf("%s:%s", host, port.Port())
+
+	// Create cache with Redis connector for testing
+	cacheCfg := &common.CacheConfig{}
+	cacheCfg.SetDefaults()
+
+	// Create a Redis connector config
+	redisCfg := &common.ConnectorConfig{
+		Id:     "redis1",
+		Driver: "redis",
+		Redis: &common.RedisConnectorConfig{
+			Addr:         redisAddr,
+			DB:           0,
+			ConnPoolSize: 10,
+			InitTimeout:  common.Duration(5 * time.Second),
+			GetTimeout:   common.Duration(2 * time.Second),
+			SetTimeout:   common.Duration(2 * time.Second),
+		},
+	}
+	cacheCfg.Connectors = []*common.ConnectorConfig{redisCfg}
+
+	// Create appropriate cache policies
+	cacheCfg.Policies = []*common.CachePolicyConfig{
+		{
+			Network:   "*",
+			Method:    "*",
+			Finality:  common.DataFinalityStateFinalized,
+			Connector: "redis1",
+		},
+		{
+			Network:   "*",
+			Method:    "*",
+			Finality:  common.DataFinalityStateUnfinalized,
+			Connector: "redis1",
+			TTL:       common.Duration(5 * time.Minute),
+		},
+		{
+			Network:   "*",
+			Method:    "*",
+			Finality:  common.DataFinalityStateRealtime,
+			Connector: "redis1",
+			TTL:       common.Duration(30 * time.Second),
+		},
+	}
+
+	cache, err := evm.NewEvmJsonRpcCache(ctx, &logger, cacheCfg)
+	require.NoError(t, err, "failed to create cache")
+
+	// Setup network and upstreams
+	mockNetwork := &Network{
+		networkId: "evm:123",
+		logger:    &logger,
+		cfg: &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm: &common.EvmNetworkConfig{
+				ChainId: 123,
+			},
+		},
+	}
+
+	// Create test upstream with finalized blocks
+	mockUpstream := createMockUpstream(t, ctx, 123, "upsA", common.EvmSyncingStateNotSyncing, 10, 15)
+
+	// Run test scenarios
+	t.Run("RequestHasBlockNumber_ResponseHasBoth", func(t *testing.T) {
+		// Request contains only block number
+		// Response contains both block number and block hash
+		req := common.NewNormalizedRequest([]byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getBlockByNumber",
+			"params": ["0x5", false],
+			"id": 1
+		}`))
+		req.SetNetwork(mockNetwork)
+		req.SetCacheDal(cache)
+
+		// Create response with both block number and hash
+		responseBody := `{"number":"0x5","hash":"0xabc123","transactions":[]}`
+		resp := common.NewNormalizedResponse().
+			WithRequest(req).
+			WithBody(util.StringToReaderCloser(`{"result":` + responseBody + `}`))
+		resp.SetUpstream(mockUpstream)
+		req.SetLastValidResponse(resp)
+
+		// Set to cache
+		err := cache.Set(ctx, req, resp)
+		require.NoError(t, err, "failed to set cache")
+
+		// Get from cache using a fresh request object
+		reqGet := common.NewNormalizedRequest([]byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getBlockByNumber",
+			"params": ["0x5", false],
+			"id": 1
+		}`))
+		reqGet.SetNetwork(mockNetwork)
+		reqGet.SetCacheDal(cache)
+		cachedResp, err := cache.Get(ctx, req)
+		require.NoError(t, err, "failed to get from cache")
+		require.NotNil(t, cachedResp, "cached response should not be nil")
+
+		// Verify response
+		jrr, err := cachedResp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Equal(t, responseBody, string(jrr.Result))
+		assert.True(t, cachedResp.FromCache(), "response should be marked as from cache")
+
+		// Verify we can also get it by block hash
+		reqByHash := common.NewNormalizedRequest([]byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getBlockByHash",
+			"params": ["0xabc123", false],
+			"id": 2
+		}`))
+		reqByHash.SetNetwork(mockNetwork)
+		reqByHash.SetCacheDal(cache)
+
+		// This should miss because we stored it under block number, not hash
+		cachedResp, err = cache.Get(ctx, reqByHash)
+		require.NoError(t, err)
+		assert.Nil(t, cachedResp, "should not find response when querying by hash")
+	})
+
+	t.Run("RequestHasBlockHash_ResponseHasBoth", func(t *testing.T) {
+		// Request contains only block hash
+		// Response contains both block hash and block number
+		req := common.NewNormalizedRequest([]byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getBlockByHash",
+			"params": ["0xdef456", false],
+			"id": 1
+		}`))
+		req.SetNetwork(mockNetwork)
+		req.SetCacheDal(cache)
+
+		// Create response with both block hash and number
+		responseBody := `{"hash":"0xdef456","number":"0x8","transactions":[]}`
+		resp := common.NewNormalizedResponse().
+			WithRequest(req).
+			WithBody(util.StringToReaderCloser(`{"result":` + responseBody + `}`))
+		resp.SetUpstream(mockUpstream)
+		req.SetLastValidResponse(resp)
+
+		// Set to cache
+		err := cache.Set(ctx, req, resp)
+		require.NoError(t, err, "failed to set cache")
+
+		// Get from cache using a fresh request object
+		reqGet := common.NewNormalizedRequest([]byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getBlockByHash",
+			"params": ["0xdef456", false],
+			"id": 1
+		}`))
+		reqGet.SetNetwork(mockNetwork)
+		reqGet.SetCacheDal(cache)
+		cachedResp, err := cache.Get(ctx, reqGet)
+		require.NoError(t, err, "failed to get from cache")
+		require.NotNil(t, cachedResp, "cached response should not be nil")
+
+		// Verify response
+		jrr, err := cachedResp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Equal(t, responseBody, string(jrr.Result))
+		assert.True(t, cachedResp.FromCache(), "response should be marked as from cache")
+
+		// Verify we can't get it by block number
+		reqByNumber := common.NewNormalizedRequest([]byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getBlockByNumber",
+			"params": ["0x8", false],
+			"id": 2
+		}`))
+		reqByNumber.SetNetwork(mockNetwork)
+		reqByNumber.SetCacheDal(cache)
+
+		// This should miss because we stored it under block hash, not number
+		cachedResp, err = cache.Get(ctx, reqByNumber)
+		require.NoError(t, err)
+		assert.Nil(t, cachedResp, "should not find response when querying by number")
+	})
+
+	t.Run("RequestHasReference_ResponseHasNone", func(t *testing.T) {
+		// Request contains block number
+		// Response doesn't contain any block references
+		req := common.NewNormalizedRequest([]byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getBalance",
+			"params": ["0x123abc", "0x5"],
+			"id": 1
+		}`))
+		req.SetNetwork(mockNetwork)
+		req.SetCacheDal(cache)
+
+		// Create response without block references
+		responseBody := `"0x123456789abcdef"`
+		resp := common.NewNormalizedResponse().
+			WithRequest(req).
+			WithBody(util.StringToReaderCloser(`{"result":` + responseBody + `}`))
+		resp.SetUpstream(mockUpstream)
+		req.SetLastValidResponse(resp)
+
+		// Set to cache
+		err := cache.Set(ctx, req, resp)
+		require.NoError(t, err, "failed to set cache")
+
+		// Get from cache using a fresh request object
+		reqGet := common.NewNormalizedRequest([]byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getBalance",
+			"params": ["0x123abc", "0x5"],
+			"id": 1
+		}`))
+		reqGet.SetNetwork(mockNetwork)
+		reqGet.SetCacheDal(cache)
+		cachedResp, err := cache.Get(ctx, reqGet)
+		require.NoError(t, err, "failed to get from cache")
+		require.NotNil(t, cachedResp, "cached response should not be nil")
+
+		// Verify response
+		jrr, err := cachedResp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Equal(t, responseBody, string(jrr.Result))
+		assert.True(t, cachedResp.FromCache(), "response should be marked as from cache")
+	})
+
+	t.Run("RequestHasNoReference_ResponseHasReference", func(t *testing.T) {
+		// Request doesn't contain block hash or number
+		// Response contains block number or hash
+		req := common.NewNormalizedRequest([]byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getTransactionByHash",
+			"params": ["0xabcdef123456"],
+			"id": 1
+		}`))
+		req.SetNetwork(mockNetwork)
+		req.SetCacheDal(cache)
+
+		// Create response with block references
+		responseBody := `{"hash":"0xabcdef123456","blockHash":"0xfedcba654321","blockNumber":"0x5","from":"0x123","to":"0x456"}`
+		resp := common.NewNormalizedResponse().
+			WithRequest(req).
+			WithBody(util.StringToReaderCloser(`{"result":` + responseBody + `}`))
+		resp.SetUpstream(mockUpstream)
+		req.SetLastValidResponse(resp)
+
+		// Set to cache
+		err := cache.Set(ctx, req, resp)
+		require.NoError(t, err, "failed to set cache")
+
+		// Get from cache using a fresh request object
+		reqGet := common.NewNormalizedRequest([]byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getTransactionByHash",
+			"params": ["0xabcdef123456"],
+			"id": 1
+		}`))
+		reqGet.SetNetwork(mockNetwork)
+		reqGet.SetCacheDal(cache)
+		cachedResp, err := cache.Get(ctx, reqGet)
+		require.NoError(t, err, "failed to get from cache")
+		require.NotNil(t, cachedResp, "cached response should not be nil")
+
+		// Verify response
+		jrr, err := cachedResp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Equal(t, responseBody, string(jrr.Result))
+		assert.True(t, cachedResp.FromCache(), "response should be marked as from cache")
+	})
+}
+
+// Helper function to create a mock upstream for the DynamoDB tests
+func createMockUpstream(t *testing.T, ctx context.Context, chainId int64, upstreamId string,
+	syncState common.EvmSyncingState, finalizedBlock, latestBlock int64) *upstream.Upstream {
+
+	logger := log.Logger
+	clr := clients.NewClientRegistry(&logger, "prjA", nil)
+	vr := thirdparty.NewVendorsRegistry()
+	ssr, err := data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems: 100_000,
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	mt := health.NewTracker(&logger, "prjA", 100*time.Second)
+	rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &logger)
+	require.NoError(t, err)
+
+	mockUpstream, err := upstream.NewUpstream(ctx, "test", &common.UpstreamConfig{
+		Id:       upstreamId,
+		Endpoint: "http://rpc1.localhost",
+		Type:     common.UpstreamTypeEvm,
+		Evm: &common.EvmUpstreamConfig{
+			ChainId:             chainId,
+			StatePollerInterval: common.Duration(1 * time.Minute),
+		},
+	}, clr, rlr, vr, &logger, mt, ssr)
+	require.NoError(t, err)
+
+	poller := mockUpstream.EvmStatePoller()
+	poller.SuggestFinalizedBlock(finalizedBlock)
+	poller.SuggestLatestBlock(latestBlock)
+	poller.SetSyncingState(syncState)
+
+	return mockUpstream
 }
