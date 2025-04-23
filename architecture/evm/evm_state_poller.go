@@ -124,6 +124,7 @@ func NewEvmStatePoller(
 		tracker:              tracker,
 		latestBlockShared:    lbs,
 		finalizedBlockShared: fbs,
+		inFlightPolling:      &sync.Map{},
 	}
 
 	lbs.OnValue(func(value int64) {
