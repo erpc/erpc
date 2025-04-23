@@ -497,7 +497,7 @@ func (t *Tracker) RecordBlockHeadLargeRollback(ups, network, finality string, cu
 		Int64("rollback", rollback).
 		Msgf("recording block rollback in tracker")
 
-	telemetry.MetricBlockHeadLargeRollback.
+	telemetry.MetricUpstreamBlockHeadLargeRollback.
 		WithLabelValues(t.projectId, network, ups).
 		Set(float64(rollback))
 }

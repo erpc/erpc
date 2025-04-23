@@ -89,6 +89,8 @@ export default createConfig({
   blocks + 10m txs + 10m traces on Arbitrum needs 200GB of storage.
 </Callout>
 
+### Example
+
 The cache config allows you to define multiple connectors (storage backends) and policies for different finality states. Here's the basic structure:
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
 <Tab>
@@ -125,27 +127,6 @@ database:
     
     # Define caching policies for different network/method/finality states
     policies:
-      # Example: Cache all methods with finalized data including empty responses
-      - network: "*"
-        method: "*"
-        finality: finalized
-        empty: allow
-        connector: memory-cache
-        ttl: 0
-      # Example: Cache unfinalized data only for 5 seconds (getLogs of a recent block) except empty responses
-      - network: "*"
-        method: "*"
-        finality: unfinalized
-        empty: ignore
-        connector: memory-cache
-        ttl: 5s
-      # Example: Cache unknown finalization data (eth_trace*) only for 10 seconds
-      - network: "*"
-        method: "*"
-        finality: unknown
-        empty: ignore
-        connector: memory-cache
-        ttl: 10s
       # Example: Cache realtime data only for 2 seconds (eth_blockNumber, eth_gasPrice, etc) to reduce costs yet fresh enough data
       - network: "*"
         method: "*"
@@ -153,7 +134,29 @@ database:
         empty: ignore
         connector: memory-cache
         ttl: 2s
+      # Example: Cache unfinalized data only for 5 seconds (getLogs of a recent block) except empty responses
+      - network: "*"
+        method: "*"
+        finality: unfinalized
+        empty: ignore
+        connector: memory-cache
+        ttl: 10s
+      # Example: Cache unknown finalization data (eth_trace*) only forever
+      - network: "*"
+        method: "*"
+        finality: unknown
+        empty: ignore
+        connector: memory-cache
+        ttl: 0
+      # Example: Cache all methods with finalized data including empty responses
+      - network: "*"
+        method: "*"
+        finality: finalized
+        empty: allow
+        connector: memory-cache
+        ttl: 0
       
+      # Complex examples:
       - network: "*" # "network" supports * as wildcard and | as OR operator
         method: "eth_getLogs | trace_*" # "method" supports * as wildcard and | as OR operator
         finality: finalized
