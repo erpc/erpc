@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -469,6 +470,104 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 
 		if !found {
 			t.Error("Expected newly lazy-loaded EVM network with chainId=9999 to be added to project.Config.Networks, but not found")
+		}
+	})
+}
+
+func TestProject_NetworkAlias(t *testing.T) {
+	t.Run("NetworkAliasResolution", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
+
+		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
+			&common.RateLimiterConfig{},
+			&log.Logger,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		prjReg, err := NewProjectsRegistry(
+			ctx,
+			&log.Logger,
+			[]*common.ProjectConfig{
+				{
+					Id: "prjA",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+							Alias: "ethereum",
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Endpoint: "http://rpc1.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+						},
+					},
+				},
+			},
+			ssr,
+			nil,
+			rateLimitersRegistry,
+			thirdparty.NewVendorsRegistry(),
+			nil, // ProxyPoolRegistry
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = prjReg.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		prj, err := prjReg.GetProject("prjA")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Test getting network by alias
+		arch, chainId := prj.networksRegistry.ResolveAlias("ethereum")
+		if common.NetworkArchitecture(arch) != common.ArchitectureEvm || chainId != "1" {
+			t.Errorf("Expected architecture=evm, chainId=1 for alias 'ethereum', got arch=%s, chainId=%s", arch, chainId)
+		}
+
+		network, err := prj.networksRegistry.GetNetwork(fmt.Sprintf("%s:%s", arch, chainId))
+		if err != nil {
+			t.Fatalf("Failed to get network by ID: %v", err)
+		}
+		if network.Id() != "evm:1" {
+			t.Errorf("Expected network ID 'evm:1', got '%s'", network.Id())
+		}
+
+		// Test getting non-existent alias
+		arch, chainId = prj.networksRegistry.ResolveAlias("nonexistent")
+		if arch != "" || chainId != "" {
+			t.Errorf("Expected empty architecture and chainId for non-existent alias, got arch=%s, chainId=%s", arch, chainId)
 		}
 	})
 }

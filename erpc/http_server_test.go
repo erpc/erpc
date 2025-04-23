@@ -4070,7 +4070,19 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := &HttpServer{}
+			s := &HttpServer{
+				erpc: &ERPC{
+					projectsRegistry: &ProjectsRegistry{
+						preparedProjects: map[string]*PreparedProject{
+							"myproject": {
+								networksRegistry: &NetworksRegistry{
+									aliasToNetworkId: map[string]aliasEntry{},
+								},
+							},
+						},
+					},
+				},
+			}
 			r := &http.Request{
 				Method: tt.method,
 				URL: &url.URL{

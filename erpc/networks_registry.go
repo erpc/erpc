@@ -26,8 +26,14 @@ type NetworksRegistry struct {
 	evmJsonRpcCache      *evm.EvmJsonRpcCache
 	rateLimitersRegistry *upstream.RateLimitersRegistry
 	preparedNetworks     sync.Map // map[string]*Network
+	aliasToNetworkId     map[string]aliasEntry
 	initializer          *util.Initializer
 	logger               *zerolog.Logger
+}
+
+type aliasEntry struct {
+	architecture string
+	chainID      string
 }
 
 func NewNetworksRegistry(
@@ -48,6 +54,7 @@ func NewNetworksRegistry(
 		evmJsonRpcCache:      evmJsonRpcCache,
 		rateLimitersRegistry: rateLimitersRegistry,
 		preparedNetworks:     sync.Map{},
+		aliasToNetworkId:     map[string]aliasEntry{},
 		initializer:          util.NewInitializer(appCtx, &lg, nil),
 		logger:               logger,
 	}
@@ -107,6 +114,19 @@ func (nr *NetworksRegistry) Bootstrap(appCtx context.Context) error {
 	nr.project.cfgMu.RLock()
 	defer nr.project.cfgMu.RUnlock()
 
+	// Populate alias map for statically defined networks
+	for _, nwCfg := range nr.project.Config.Networks {
+		if nwCfg.Alias != "" {
+			parts := strings.Split(nwCfg.NetworkId(), ":")
+			if len(parts) == 2 {
+				nr.aliasToNetworkId[nwCfg.Alias] = aliasEntry{
+					architecture: parts[0],
+					chainID:      parts[1],
+				}
+				nr.logger.Debug().Str("alias", nwCfg.Alias).Str("networkId", nwCfg.NetworkId()).Msg("registered network alias")
+			}
+		}
+	}
 	nl := nr.project.Config.Networks
 	tasks := []*util.BootstrapTask{}
 	for _, nwCfg := range nl {
@@ -147,6 +167,13 @@ func (nr *NetworksRegistry) GetNetworks() []*Network {
 		return true
 	})
 	return networks
+}
+
+func (nr *NetworksRegistry) ResolveAlias(alias string) (string, string) {
+	if entry, ok := nr.aliasToNetworkId[alias]; ok {
+		return entry.architecture, entry.chainID
+	}
+	return "", ""
 }
 
 func (nr *NetworksRegistry) buildNetworkBootstrapTask(networkId string) *util.BootstrapTask {
