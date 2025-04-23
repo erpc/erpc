@@ -66,6 +66,7 @@ var ipAddr = regexp.MustCompile(`\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}`)
 var ddg = regexp.MustCompile(`\d\d+`)
 var newlines = regexp.MustCompile(`[\r\n\t]+`)
 var multipleSpaces = regexp.MustCompile(`\s{2,}`)
+var longAlphanumeric = regexp.MustCompile(`[a-zA-Z0-9-]{31,}`)
 
 func cleanUpMessage(s string) string {
 	s = longHash.ReplaceAllString(s, "0xREDACTED")
@@ -76,6 +77,7 @@ func cleanUpMessage(s string) string {
 	s = ddg.ReplaceAllString(s, "XX")
 	s = newlines.ReplaceAllString(s, " ")
 	s = multipleSpaces.ReplaceAllString(s, " ")
+	s = longAlphanumeric.ReplaceAllString(s, "XX")
 
 	if len(s) > 512 {
 		s = s[:512]

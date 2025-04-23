@@ -227,7 +227,7 @@ database:
       - id: dynamodb-cache
         driver: dynamodb
         dynamodb:
-          table: rpc_cache
+          table: erpc_json_rpc_cache
           region: eu-west-1
           initTimeout: 5s
           getTimeout: 1s
@@ -262,7 +262,7 @@ export default createConfig({
           id: "dynamodb-cache",
           driver: "dynamodb",
           dynamodb: {
-            table: "rpc_cache",
+            table: "erpc_json_rpc_cache",
             region: "eu-west-1",
             endpoint: "https://dynamodb.eu-west-1.amazonaws.com", // Optional
             initTimeout: "5s",
@@ -293,3 +293,25 @@ export default createConfig({
 ```
 </Tab>
 </Tabs>
+
+#### IAM Permissions
+
+Make sure the IAM role/user has the necessary permissions to create and/or access the DynamoDB table:
+
+* Table Management:
+  * `dynamodb:CreateTable` - For creating the table if it doesn't exist
+  * `dynamodb:DescribeTable` - For checking table existence and configuration
+  * `dynamodb:UpdateTable` - For adding the global secondary index
+  * `dynamodb:UpdateTimeToLive` - For configuring TTL attributes
+* Data Operations:
+  * `dynamodb:PutItem` - For storing data and creating locks
+  * `dynamodb:GetItem` - For retrieving data (certain cache queries such as eth_getBlockByNumber with a hex block number)
+  * `dynamodb:Query` - For querying with the reverse index (certain cache queries such as eth_getBlockReceipts by blockHash)
+  * `dynamodb:DeleteItem` - For removing locks
+  * `dynamodb:UpdateItem` - For counter operations with conditions
+
+<Callout type="info">
+  You can create the table and the reverse GSI index manually and avoid "Table management" permissions:
+  * Table name: `erpc_json_rpc_cache`
+  * Reverse GSI index name: `idx_requestKey_groupKey` with primary key `requestKey` and sort key `groupKey` and projection type `ALL`
+</Callout>

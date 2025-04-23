@@ -111,9 +111,6 @@ func (d *DynamoDBConnector) connectTask(ctx context.Context, cfg *common.DynamoD
 		return fmt.Errorf("missing table name for dynamodb connector")
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, d.initTimeout)
-	defer cancel()
-
 	err = createTableIfNotExists(ctx, d.logger, d.client, cfg)
 	if err != nil {
 		return err
@@ -272,6 +269,16 @@ func ensureGlobalSecondaryIndexes(
 
 	_, err = client.UpdateTableWithContext(ctx, &dynamodb.UpdateTableInput{
 		TableName: aws.String(cfg.Table),
+		AttributeDefinitions: []*dynamodb.AttributeDefinition{
+			{
+				AttributeName: aws.String(cfg.PartitionKeyName),
+				AttributeType: aws.String("S"),
+			},
+			{
+				AttributeName: aws.String(cfg.RangeKeyName),
+				AttributeType: aws.String("S"),
+			},
+		},
 		GlobalSecondaryIndexUpdates: []*dynamodb.GlobalSecondaryIndexUpdate{
 			{
 				Create: &dynamodb.CreateGlobalSecondaryIndexAction{
@@ -289,6 +296,7 @@ func ensureGlobalSecondaryIndexes(
 					Projection: &dynamodb.Projection{
 						ProjectionType: aws.String("ALL"),
 					},
+					// TODO Add capacity unit configuration based on the table's capacity type
 				},
 			},
 		},
@@ -387,31 +395,34 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 	var value string
 
 	if index == ConnectorReverseIndex {
-		var keyCondition string = ""
+		if rangeKey == "" || strings.HasSuffix(rangeKey, "*") {
+			err := fmt.Errorf("when using reverse index rangeKey must be a non-empty string and not contain wildcards (rangeKey: '%s', partitionKey: '%s')", rangeKey, partitionKey)
+			common.SetTraceSpanError(span, err)
+			return "", err
+		}
+		var keyCondition string = "#pkey = :pkey"
 		var exprAttrNames map[string]*string = map[string]*string{
-			"#pkey": aws.String(d.partitionKeyName),
+			"#pkey": aws.String(d.rangeKeyName),
 		}
 		var exprAttrValues map[string]*dynamodb.AttributeValue = map[string]*dynamodb.AttributeValue{
 			":pkey": {
-				S: aws.String(strings.TrimSuffix(partitionKey, "*")),
+				S: aws.String(rangeKey),
 			},
 		}
-		if strings.HasSuffix(partitionKey, "*") {
-			keyCondition = "begins_with(#pkey, :pkey)"
-		} else {
-			keyCondition = "#pkey = :pkey"
-		}
-		if rangeKey != "" {
-			if strings.HasSuffix(rangeKey, "*") {
+
+		// In the reverse index, the rangeKey is the HASH key and partitionKey is the RANGE key
+		if partitionKey != "" && partitionKey != "*" {
+			if strings.HasSuffix(partitionKey, "*") {
 				keyCondition += " AND begins_with(#rkey, :rkey)"
 			} else {
 				keyCondition += " AND #rkey = :rkey"
 			}
-			exprAttrNames["#rkey"] = aws.String(d.rangeKeyName)
+			exprAttrNames["#rkey"] = aws.String(d.partitionKeyName)
 			exprAttrValues[":rkey"] = &dynamodb.AttributeValue{
-				S: aws.String(strings.TrimSuffix(rangeKey, "*")),
+				S: aws.String(strings.TrimSuffix(partitionKey, "*")),
 			}
 		}
+
 		qi := &dynamodb.QueryInput{
 			TableName:                 aws.String(d.table),
 			IndexName:                 aws.String(d.reverseIndexName),

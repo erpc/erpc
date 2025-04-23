@@ -710,7 +710,7 @@ func (d *DynamoDBConnectorConfig) SetDefaults(scope connectorScope) error {
 		d.RangeKeyName = "requestKey"
 	}
 	if d.ReverseIndexName == "" {
-		d.ReverseIndexName = "idx_groupKey_requestKey"
+		d.ReverseIndexName = "idx_requestKey_groupKey"
 	}
 	if d.TTLAttributeName == "" {
 		d.TTLAttributeName = "ttl"

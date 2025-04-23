@@ -299,21 +299,12 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 		return p.getWithWildcard(ctx, index, partitionKey, rangeKey)
 	}
 
-	if index == ConnectorReverseIndex {
-		query = fmt.Sprintf(`
-            SELECT value FROM %s
-            WHERE range_key = $1 AND partition_key = $2
-            AND (expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'UTC')
-        `, p.table)
-		args = []interface{}{rangeKey, partitionKey}
-	} else {
-		query = fmt.Sprintf(`
-            SELECT value FROM %s
-            WHERE partition_key = $1 AND range_key = $2
-            AND (expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'UTC')
-        `, p.table)
-		args = []interface{}{partitionKey, rangeKey}
-	}
+	query = fmt.Sprintf(`
+		SELECT value FROM %s
+		WHERE partition_key = $1 AND range_key = $2
+		AND (expires_at IS NULL OR expires_at > NOW() AT TIME ZONE 'UTC')
+	`, p.table)
+	args = []interface{}{partitionKey, rangeKey}
 
 	p.logger.Debug().Str("query", query).Interface("args", args).Msg("getting item from postgres")
 
