@@ -306,13 +306,15 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 			e.upstream.Config().Id,
 		).Inc()
 		blockNum, err := e.fetchBlock(ctx, "latest")
-		if err != nil {
-			if common.HasErrorCode(err,
-				common.ErrCodeUpstreamRequestSkipped,
-				common.ErrCodeUpstreamMethodIgnored,
-				common.ErrCodeEndpointUnsupported,
-				common.ErrCodeEndpointMissingData,
-			) || common.IsClientError(err) {
+		if err != nil || blockNum == 0 {
+			if err == nil ||
+				common.HasErrorCode(err,
+					common.ErrCodeUpstreamRequestSkipped,
+					common.ErrCodeUpstreamMethodIgnored,
+					common.ErrCodeEndpointUnsupported,
+					common.ErrCodeEndpointMissingData,
+				) ||
+				common.IsClientError(err) {
 				e.stateMu.Lock()
 				// Only skip after multiple consecutive failures if we've never had a success
 				if !e.latestBlockSuccessfulOnce {
@@ -380,13 +382,14 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 
 		// Actually fetch from upstream
 		blockNum, err := e.fetchBlock(ctx, "finalized")
-		if err != nil {
-			if common.HasErrorCode(err,
-				common.ErrCodeUpstreamRequestSkipped,
-				common.ErrCodeUpstreamMethodIgnored,
-				common.ErrCodeEndpointUnsupported,
-				common.ErrCodeEndpointMissingData,
-			) || common.IsClientError(err) {
+		if err != nil || blockNum == 0 {
+			if err == nil ||
+				common.HasErrorCode(err,
+					common.ErrCodeUpstreamRequestSkipped,
+					common.ErrCodeUpstreamMethodIgnored,
+					common.ErrCodeEndpointUnsupported,
+					common.ErrCodeEndpointMissingData,
+				) || common.IsClientError(err) {
 				e.stateMu.Lock()
 				// Only skip after multiple consecutive failures if we've never had a success
 				if !e.finalizedBlockSuccessfulOnce {
@@ -525,6 +528,10 @@ func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64
 	}
 	if jrr == nil || jrr.Error != nil {
 		return 0, jrr.Error
+	}
+
+	if util.IsBytesEmptyish(jrr.Result) {
+		return 0, nil
 	}
 
 	numberStr, err := jrr.PeekStringByPath(ctx, "number")
