@@ -570,4 +570,101 @@ func TestProject_NetworkAlias(t *testing.T) {
 			t.Errorf("Expected empty architecture and chainId for non-existent alias, got arch=%s, chainId=%s", arch, chainId)
 		}
 	})
+
+	t.Run("DuplicateNetworkAliases", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+ 
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+ 
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
+ 
+		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
+			&common.RateLimiterConfig{},
+			&log.Logger,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+ 
+		// Create a project config with duplicate network aliases
+		prjReg, err := NewProjectsRegistry(
+			ctx,
+			&log.Logger,
+			[]*common.ProjectConfig{
+				{
+					Id: "prjDuplicateAlias",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+							Alias: "same_alias", // First use of the alias
+						},
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 137,
+							},
+							Alias: "same_alias", // Duplicate alias
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Endpoint: "http://rpc1.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+						},
+						{
+							Id:       "rpc2",
+							Endpoint: "http://rpc2.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 137,
+							},
+						},
+					},
+				},
+			},
+			ssr,
+			nil,
+			rateLimitersRegistry,
+			thirdparty.NewVendorsRegistry(),
+			nil, // ProxyPoolRegistry
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+ 
+		// Bootstrap should fail due to duplicate aliases
+		err = prjReg.Bootstrap(ctx)
+ 
+		// Verify that an error was returned
+		if err == nil {
+			t.Fatal("Expected an error due to duplicate network aliases, but got nil")
+		}
+ 
+		// Verify the error message contains information about the duplicate alias
+		expectedErrMsg := "alias same_alias already registered for network"
+		if !strings.Contains(err.Error(), expectedErrMsg) {
+			t.Errorf("Expected error message to contain '%s', but got: %s", expectedErrMsg, err.Error())
+		}
+	})
 }

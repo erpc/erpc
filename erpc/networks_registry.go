@@ -119,6 +119,9 @@ func (nr *NetworksRegistry) Bootstrap(appCtx context.Context) error {
 		if nwCfg.Alias != "" {
 			parts := strings.Split(nwCfg.NetworkId(), ":")
 			if len(parts) == 2 {
+				if _, ok := nr.aliasToNetworkId[nwCfg.Alias]; ok {
+					return fmt.Errorf("alias %s already registered for network %s", nwCfg.Alias, nwCfg.NetworkId())
+				}
 				nr.aliasToNetworkId[nwCfg.Alias] = aliasEntry{
 					architecture: parts[0],
 					chainID:      parts[1],
