@@ -36,6 +36,10 @@ projects:
           # DEFAULT: auto-detect - via eth_getBlockByNumber(finalized).
           fallbackFinalityDepth: 1024
 
+        # (OPTIONAL) A friendly alias for this network. This allows you to reference the network using the alias
+        # instead of the architecture/chainId format. For example, instead of using /main/evm/1, you can use /main/ethereum.
+        # The alias must contain only alphanumeric characters, dash, or underscore.
+        alias: ethereum
         # (OPTIONAL) Refer to "Selection Policy" section for more details.
         # Here are default values used for selectionPolicy if not explicitly defined:
         selectionPolicy:
@@ -395,13 +399,38 @@ export default createConfig({
 
 ### Architectures
 
-#### `evm`
+### `evm`
 
 This type of network are generic EVM-based chains that support JSON-RPC protocol.
 
-#### Roadmap
+## Network alias
 
-On some doc pages we like to share our ideas for related future implementations, feel free to open a PR if you're up for a challenge:
+You can define friendly aliases for your networks instead of the /architecture/chainId format. For example, instead of using `/main/evm/1`, you can use `/main/ethereum`:
 
-<br />
-- [ ] Add support for more architectures (Solana, etc)
+```yaml
+networks:
+ - architecture: evm
+   evm:
+     chainId: 1
+   alias: ethereum
+ - architecture: evm
+   evm:
+     chainId: 42161
+   alias: arbitrum
+ - architecture: evm
+   evm:
+     chainId: 137
+   alias: polygon
+```
+
+```bash
+POST http://localhost:4000/main/ethereum
+POST http://localhost:4000/main/arbitrum
+POST http://localhost:4000/main/polygon
+```
+
+* Aliases are only applicable to statically defined networks in your configuration. 
+
+<Callout type='info'>
+  The alias must contain only alphanumeric characters, dash, or underscore.
+</Callout>

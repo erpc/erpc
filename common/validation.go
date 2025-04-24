@@ -810,6 +810,12 @@ func (n *NetworkConfig) Validate(c *Config) error {
 			return fmt.Errorf("network.*.rateLimitBudget '%s' does not exist in config.rateLimiters", n.RateLimitBudget)
 		}
 	}
+	if n.Alias != "" {
+		// Check if alias contains only valid characters (alphanumeric, dash, underscore)
+		if !util.IsValidIdentifier(n.Alias) {
+			return fmt.Errorf("network.*.alias '%s' must contain only alphanumeric characters, dash, or underscore", n.Alias)
+		}
+	}
 	return nil
 }
 

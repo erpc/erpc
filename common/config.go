@@ -744,6 +744,7 @@ type NetworkConfig struct {
 	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm"`
 	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
+	Alias             string                   `yaml:"alias,omitempty" json:"alias"`
 }
 
 type DirectiveDefaultsConfig struct {

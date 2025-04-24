@@ -611,7 +611,13 @@ func (s *HttpServer) parseUrlPath(
 			projectId = segments[0]
 		case 2:
 			projectId = segments[0]
-			architecture = segments[1]
+			// Check if second segment is a network alias
+			if project, err := s.erpc.GetProject(projectId); err == nil {
+				architecture, chainId = project.networksRegistry.ResolveAlias(segments[1])
+			}
+			if architecture == "" {
+				architecture = segments[1]
+			}
 		case 3:
 			projectId = segments[0]
 			architecture = segments[1]
@@ -628,7 +634,13 @@ func (s *HttpServer) parseUrlPath(
 		// Case: Only projectId preselected
 		switch len(segments) {
 		case 1:
-			architecture = segments[0]
+			// Check if segment is a network alias
+			if project, err := s.erpc.GetProject(projectId); err == nil {
+				architecture, chainId = project.networksRegistry.ResolveAlias(segments[0])
+			}
+			if architecture == "" {
+				architecture = segments[0]
+			}
 		case 2:
 			architecture = segments[0]
 			chainId = segments[1]
