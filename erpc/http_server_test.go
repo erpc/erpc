@@ -7438,6 +7438,181 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 	})
 }
 
+func TestHttpServer_EvmStatePollerMultiplexing(t *testing.T) {
+	t.Run("ConcurrentRequestsUseMultiplexedStatePolls", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		gock.EnableNetworking()
+		gock.NetworkingFilter(func(req *http.Request) bool {
+			shouldMakeRealCall := strings.Split(req.URL.Host, ":")[0] == "localhost"
+			return shouldMakeRealCall
+		})
+
+		// Set up mocks for the state poller
+		// We'll count how many times the actual RPC calls are made to verify multiplexing
+		blockNumberCallCount := 0
+
+		// Mock eth_syncing call - only called once during poller initialization
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_syncing")
+			}).
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  false,
+			})
+
+		// Mock eth_getBlockByNumber("latest") - this should be called only once despite multiple client requests
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getBlockByNumber") &&
+					strings.Contains(string(body), "latest")
+			}).
+			Times(1).
+			ReplyFunc(func(r *gock.Response) {
+				blockNumberCallCount++
+				r.Status(200)
+				r.JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result": map[string]interface{}{
+						"number": "0x100",
+					},
+				})
+			})
+
+		// Mock eth_blockNumber - this is what client requests will call
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_blockNumber")
+			}).
+			Times(5). // We'll make 5 concurrent client requests
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  "0x100",
+			})
+
+		logger := log.Logger
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             1,
+								StatePollerInterval: common.Duration(100 * time.Millisecond),
+								StatePollerDebounce: common.Duration(1 * time.Second),
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+
+		ssr, err := data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
+		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
+		require.NoError(t, err)
+
+		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
+		require.NoError(t, err)
+
+		// Start the server on a random port
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		port := listener.Addr().(*net.TCPAddr).Port
+
+		go func() {
+			err := httpServer.server.Serve(listener)
+			if err != nil && err != http.ErrServerClosed {
+				t.Errorf("Server error: %v", err)
+			}
+		}()
+		defer httpServer.server.Shutdown(ctx)
+
+		// Wait for the server to start and poller to initialize
+		time.Sleep(200 * time.Millisecond)
+
+		// Make multiple concurrent requests that will trigger the state poller
+		baseURL := fmt.Sprintf("http://localhost:%d", port)
+
+		var wg sync.WaitGroup
+		concurrentRequests := 5
+		wg.Add(concurrentRequests)
+
+		for i := 0; i < concurrentRequests; i++ {
+			go func() {
+				defer wg.Done()
+
+				// Request eth_blockNumber which will use the state poller's latest block
+				body := strings.NewReader(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`)
+				req, err := http.NewRequest("POST", baseURL+"/test_project/evm/1", body)
+				require.NoError(t, err)
+				req.Header.Set("Content-Type", "application/json")
+
+				client := &http.Client{
+					Timeout: 2 * time.Second,
+				}
+				resp, err := client.Do(req)
+				require.NoError(t, err)
+				defer resp.Body.Close()
+
+				respBody, err := io.ReadAll(resp.Body)
+				require.NoError(t, err)
+
+				// Verify response is successful
+				assert.Equal(t, http.StatusOK, resp.StatusCode)
+				assert.Contains(t, string(respBody), "0x100")
+			}()
+		}
+
+		wg.Wait()
+
+		// Verify that the eth_getBlockByNumber RPC was only called once
+		// This confirms the state poller's multiplexer prevented redundant calls
+		assert.Equal(t, 1, blockNumberCallCount, "eth_getBlockByNumber should be called exactly once due to multiplexing")
+	})
+}
+
 func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 	func(body string, headers map[string]string, queryParams map[string]string) (int, string),
 	func(host string) (int, map[string]string, string),
