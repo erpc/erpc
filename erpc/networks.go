@@ -556,7 +556,7 @@ func (n *Network) acquireSelectionPolicyPermit(ctx context.Context, lg *zerolog.
 	return n.selectionPolicyEvaluator.AcquirePermit(lg, ups, method)
 }
 
-func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, req *common.NormalizedRequest, startTime time.Time) (*Multiplexer, *common.NormalizedResponse, error) {
+func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, req *common.NormalizedRequest, startTime time.Time) (*common.Multiplexer[*common.NormalizedResponse], *common.NormalizedResponse, error) {
 	mlxHash, err := req.CacheHash()
 	lg.Trace().Str("hash", mlxHash).Object("request", req).Msgf("checking if multiplexing is possible")
 	if err != nil || mlxHash == "" {
@@ -566,7 +566,7 @@ func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, re
 
 	// Check for existing multiplexer
 	if vinf, exists := n.inFlightRequests.Load(mlxHash); exists {
-		inf := vinf.(*Multiplexer)
+		inf := vinf.(*common.Multiplexer[*common.NormalizedResponse])
 		method, _ := req.Method()
 		telemetry.MetricNetworkMultiplexedRequests.WithLabelValues(n.projectId, n.networkId, method).Inc()
 
@@ -584,35 +584,31 @@ func (n *Network) handleMultiplexing(ctx context.Context, lg *zerolog.Logger, re
 		}
 	}
 
-	mlx := NewMultiplexer(mlxHash)
+	mlx := common.NewMultiplexer[*common.NormalizedResponse](mlxHash)
 	n.inFlightRequests.Store(mlxHash, mlx)
 
 	return mlx, nil, nil
 }
 
-func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, req *common.NormalizedRequest, startTime time.Time) (*common.NormalizedResponse, error) {
+func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *common.Multiplexer[*common.NormalizedResponse], req *common.NormalizedRequest, startTime time.Time) (*common.NormalizedResponse, error) {
 	ctx, span := common.StartSpan(ctx, "Network.WaitForMultiplexResult")
 	defer span.End()
-	// Check if result is already available
-	mlx.mu.RLock()
-	if mlx.resp != nil || mlx.err != nil {
-		mlx.mu.RUnlock()
-		resp, err := common.CopyResponseForRequest(ctx, mlx.resp, req)
-		if err != nil {
-			return nil, err
-		}
-		return resp, mlx.err
-	}
-	mlx.mu.RUnlock()
 
 	// Wait for result
 	select {
-	case <-mlx.done:
-		resp, err := common.CopyResponseForRequest(ctx, mlx.resp, req)
+	case <-mlx.Done():
+		resp, err := mlx.Result()
 		if err != nil {
 			return nil, err
 		}
-		return resp, mlx.err
+
+		// Copy response for the request
+		copiedResp, err := common.CopyResponseForRequest(ctx, resp, req)
+		if err != nil {
+			return nil, err
+		}
+		return copiedResp, nil
+
 	case <-ctx.Done():
 		n.cleanupMultiplexer(mlx)
 		err := ctx.Err()
@@ -623,8 +619,8 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *Multiplexer, 
 	}
 }
 
-func (n *Network) cleanupMultiplexer(mlx *Multiplexer) {
-	n.inFlightRequests.Delete(mlx.hash)
+func (n *Network) cleanupMultiplexer(mlx *common.Multiplexer[*common.NormalizedResponse]) {
+	n.inFlightRequests.Delete(mlx.Key())
 }
 
 func (n *Network) shouldHandleMethod(method string, upsList []*upstream.Upstream) error {
