@@ -74,7 +74,7 @@ export const options = {
       executor: 'constant-arrival-rate',
       rate: 100,
       timeUnit: '1s',
-      duration: '15s',
+      duration: '6m',
       preAllocatedVUs: 500,
       maxVUs: 500,
     },
@@ -279,6 +279,12 @@ export default async function () {
     statusCodeCounter.add(1, tags);
     responseSizes.add(res.body.length, tags);
 
+    if (__ENV.DEBUG) {
+      if (res.status >= 400) {
+        console.log(`Request: ${JSON.stringify(sampleReq)} Status Code: ${res.status} Response body: ${res.body} Tags: ${JSON.stringify(tags)}`);
+      }
+    }
+
     let parsedBody = null;
     try {
       parsedBody = JSON.parse(res.body);
@@ -302,11 +308,6 @@ export default async function () {
         return true;
       },
     }, tags);
-
-    // Add console output during the test
-    if (__ENV.DEBUG) {
-      console.log(`Tags: ${JSON.stringify(tags)}`);
-    }
   }
 }
 

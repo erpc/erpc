@@ -172,6 +172,12 @@ var (
 		Help:      "Total number of times the finalized block was pro-actively polled from an upstream.",
 	}, []string{"project", "network", "upstream"})
 
+	MetricUpstreamBlockHeadLargeRollback = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "upstream_block_head_large_rollback",
+		Help:      "Number of times block head rolled back by a large number vs previous latest block returned by the same upstream.",
+	}, []string{"project", "network", "upstream"})
+
 	MetricNetworkRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "network_request_self_rate_limited_total",
@@ -393,10 +399,4 @@ var (
 		Name:      "cors_disallowed_origin_total",
 		Help:      "Total number of CORS requests from disallowed origins.",
 	}, []string{"project", "origin"})
-
-	MetricBlockHeadLargeRollback = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Namespace: "erpc",
-		Name:      "block_head_large_rollback",
-		Help:      "Number of times block head rolled back by a large number vs previous latest block returned by the same upstream.",
-	}, []string{"project", "network", "upstream"})
 )

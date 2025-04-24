@@ -1,6 +1,6 @@
 import http from 'k6/http';
 import { check, randomSeed } from 'k6';
-import { Rate } from 'k6/metrics';
+import { Rate, Counter, Trend, Gauge } from 'k6/metrics';
 
 // Target URL (can be configured via environment variables)
 const ERPC_BASE_URL = __ENV.ERPC_BASE_URL || 'http://localhost:4000/main/evm/';
@@ -31,22 +31,22 @@ const CHAINS = {
       transactions: []
     }
   },
-  POLYGON: {
-    id: '137',
-    cached: {
-      latestBlock: null,
-      latestBlockTimestamp: 0,
-      transactions: []
-    }
-  },
-  ARBITRUM: {
-    id: '42161',
-    cached: {
-      latestBlock: null,
-      latestBlockTimestamp: 0,
-      transactions: []
-    }
-  }
+  // POLYGON: {
+  //   id: '137',
+  //   cached: {
+  //     latestBlock: null,
+  //     latestBlockTimestamp: 0,
+  //     transactions: []
+  //   }
+  // },
+  // ARBITRUM: {
+  //   id: '42161',
+  //   cached: {
+  //     latestBlock: null,
+  //     latestBlockTimestamp: 0,
+  //     transactions: []
+  //   }
+  // }
 };
 
 if (__ENV.RANDOM_SEED) {
@@ -58,11 +58,11 @@ export const options = {
   scenarios: {    
     constant_request_rate: {
       executor: 'constant-arrival-rate',
-      rate: 10,
+      rate: 2000,
       timeUnit: '1s',
       duration: '1m',
-      preAllocatedVUs: 500,
-      maxVUs: 500,
+      preAllocatedVUs: 1000,
+      maxVUs: 1000,
     },
   },
   ext: {
@@ -74,7 +74,10 @@ export const options = {
   },
 };
 
-const errorRate = new Rate('errors');
+const statusCodeCounter = new Counter('status_codes');
+const jsonRpcErrorCounter = new Counter('jsonrpc_errors');
+const parsingErrorsCounter = new Counter('parsing_errors');
+const responseSizes = new Trend('response_sizes');
 
 // Common ERC20 Transfer event topic
 const TRANSFER_EVENT_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
@@ -82,35 +85,6 @@ const TRANSFER_EVENT_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a116
 function getRandomChain() {
   const chains = Object.values(CHAINS);
   return chains[randomIntBetween(0, chains.length - 1)];
-}
-
-async function getLatestBlock(http, params, chain) {
-  const now = Date.now() / 1000;
-  if (chain.cached.latestBlock && (now - chain.cached.latestBlockTimestamp) < CONFIG.LATEST_BLOCK_CACHE_TTL) {
-    return chain.cached.latestBlock;
-  }
-
-  const payload = JSON.stringify({
-    jsonrpc: "2.0",
-    method: "eth_getBlockByNumber",
-    params: ["latest", false],
-    id: Math.floor(Math.random() * 100000000)
-  });
-
-  const res = await http.post(ERPC_BASE_URL + chain.id, payload, params);
-  if (res.status === 200) {
-    try {
-      const body = JSON.parse(res.body);
-      if (body.result) {
-        chain.cached.latestBlock = body.result;
-        chain.cached.latestBlockTimestamp = now;
-        return body.result;
-      }
-    } catch (e) {
-      console.error(`Failed to parse latest block response: ${e}`);
-    }
-  }
-  return null;
 }
 
 async function latestBlockWithLogs(http, params, chain) {
@@ -127,6 +101,9 @@ async function latestBlockWithLogs(http, params, chain) {
     }],
     id: Math.floor(Math.random() * 100000000)
   });
+  if (__ENV.DEBUG) {
+    console.log(`Request: ${payload}`);
+  }
   return http.post(ERPC_BASE_URL + chain.id, payload, params);
 }
 
@@ -141,10 +118,12 @@ function randomAccountBalances(http, params, chain) {
     params: [randomAddr, "latest"],
     id: Math.floor(Math.random() * 100000000)
   });
+  if (__ENV.DEBUG) {
+    console.log(`Request: ${payload}`);
+  }
   return http.post(ERPC_BASE_URL + chain.id, payload, params);
 }
 
-// Update getLatestBlock to cache transaction hashes
 async function getLatestBlock(http, params, chain) {
   const now = Date.now() / 1000;
   if (chain.cached.latestBlock && (now - chain.cached.latestBlockTimestamp) < CONFIG.LATEST_BLOCK_CACHE_TTL) {
@@ -158,6 +137,9 @@ async function getLatestBlock(http, params, chain) {
     id: Math.floor(Math.random() * 100000000)
   });
 
+  if (__ENV.DEBUG) {
+    console.log(`Request: ${payload}`);
+  }
   const res = await http.post(ERPC_BASE_URL + chain.id, payload, params);
   if (res.status === 200) {
     try {
@@ -178,7 +160,6 @@ async function getLatestBlock(http, params, chain) {
   return null;
 }
 
-// New function to get a random cached transaction
 function getRandomCachedTransaction(chain) {
   if (!chain.cached.transactions || chain.cached.transactions.length === 0) {
     return null;
@@ -186,12 +167,16 @@ function getRandomCachedTransaction(chain) {
   return chain.cached.transactions[randomIntBetween(0, chain.cached.transactions.length - 1)];
 }
 
-// New function to trace latest block transactions
 async function traceLatestTransaction(http, params, chain) {
-  const txHash = getRandomCachedTransaction(chain);
+  let txHash = getRandomCachedTransaction(chain);
   if (!txHash) {
     const latestBlock = await getLatestBlock(http, params, chain);
     if (!latestBlock) return null;
+    txHash = getRandomCachedTransaction(chain);
+  }
+
+  if (!txHash) {
+    return null;
   }
   
   // Standard Ethereum trace methods
@@ -219,6 +204,9 @@ async function traceLatestTransaction(http, params, chain) {
       id: Math.floor(Math.random() * 100000000)
     });
 
+    if (__ENV.DEBUG) {
+      console.log(`Request: ${tracePayload}`);
+    }
     const traceRes = await http.post(ERPC_BASE_URL + chain.id, tracePayload, params);
     if (traceRes.status === 200) {
       try {
@@ -235,10 +223,15 @@ async function traceLatestTransaction(http, params, chain) {
 }
 
 async function latestBlockReceipts(http, params, chain) {
-  const txHash = getRandomCachedTransaction(chain);
+  let txHash = getRandomCachedTransaction(chain);
   if (!txHash) {
     const latestBlock = await getLatestBlock(http, params, chain);
     if (!latestBlock) return null;
+    txHash = getRandomCachedTransaction(chain);
+  }
+
+  if (!txHash) {
+    return null;
   }
 
   const payload = JSON.stringify({
@@ -247,6 +240,9 @@ async function latestBlockReceipts(http, params, chain) {
     params: [txHash],
     id: Math.floor(Math.random() * 100000000)
   });
+  if (__ENV.DEBUG) {
+    console.log(`Request: ${payload}`);
+  }
   return http.post(ERPC_BASE_URL + chain.id, payload, params);
 }
 
@@ -264,6 +260,7 @@ export default async function () {
 
   // Randomly select traffic pattern based on weights
   const selectedChain = getRandomChain();
+  const tags = { chain: selectedChain.id };  
   const rand = Math.random() * 100;
   let cumulativeWeight = 0;
   let res;
@@ -293,29 +290,39 @@ export default async function () {
   // res = http.post(ERPC_BASE_URL, JSON.stringify(sampleReq), params);
 
   if (res) {
+    tags['status_code'] = res.status.toString();
+    statusCodeCounter.add(1, tags);
+    responseSizes.add(res.body.length, tags);
+
+    if (__ENV.DEBUG) {
+      if (res.status >= 400) {
+        console.log(`Status Code: ${res.status} Response body: ${res.body} Tags: ${JSON.stringify(tags)}`);
+      }
+    }
+
+    let parsedBody = null;
+    try {
+      parsedBody = JSON.parse(res.body);
+    } catch (e) {
+      parsingErrorsCounter.add(1, tags);
+      console.error(`Failed to parse response body: ${e}`);
+    }
+
+    if (parsedBody?.error?.code) {
+      tags['rpc_error_code'] = parsedBody.error.code.toString();
+      tags['rpc_error_message'] = parsedBody?.error?.message;
+      jsonRpcErrorCounter.add(1, tags);
+    }
+
     check(res, {
-      'status is 200': (r) => r.status === 200,
-      'response has no error': (r) => {
-        const size = r?.body?.length;
-        if (size > 1000000) {
-          console.log(`Large response body: ${size} bytes found: ${r?.request?.body} ====> ${r?.body?.substring(0, 100)}`);
-        }
-        try {
-          const body = JSON.parse(r.body);
-          return body && (body.error === undefined || body.error === null);
-        } catch (e) {
-          if (size > 200) {
-            const head = r.body.substring(0, 5000);
-            const tail = r.body.substring(size - 5000);
-            console.log(`Unmarshal error: "${e}" for ${size} bytes body: REQUEST=${r?.request?.body} ===> RESPONSE=${head}...${tail}`);
-          } else {
-            console.log(`Unmarshal error: "${e}" for ${size} bytes body: REQUEST=${r?.request?.body} ===> RESPONSE=${r.body}`);
-          }
+      'status is 2xx': (r) => r.status >= 200 && r.status < 300,
+      'response has no json-rpc error': (r) => {
+        if (parsedBody?.error?.code) {
           return false;
         }
+        return true;
       },
-    });
-
-    errorRate.add(res.status !== 200);
+    }, tags);
   }
 }
+
