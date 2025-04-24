@@ -27,31 +27,6 @@ const DefaultToleratedBlockHeadRollback = 1024
 
 var _ common.EvmStatePoller = &EvmStatePoller{}
 
-// helps prevent redundant concurrent polls for the same state
-type pollingMultiplexer struct {
-	result interface{}
-	err    error
-	done   chan struct{}
-	mu     sync.RWMutex
-	once   sync.Once
-}
-
-func newPollingMultiplexer() *pollingMultiplexer {
-	return &pollingMultiplexer{
-		done: make(chan struct{}),
-	}
-}
-
-func (m *pollingMultiplexer) Close(result interface{}, err error) {
-	m.once.Do(func() {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		m.result = result
-		m.err = err
-		close(m.done)
-	})
-}
-
 type EvmStatePoller struct {
 	Enabled bool
 
@@ -597,8 +572,8 @@ func (e *EvmStatePoller) executeMultiplexedPoll(
 	mapKey := fmt.Sprintf("%s/%s", e.upstream.Config().Id, operationKey)
 
 	// Try to load an existing multiplexer
-	existingMux, loaded := e.inFlightPolling.LoadOrStore(mapKey, newPollingMultiplexer())
-	mux := existingMux.(*pollingMultiplexer)
+	existingMux, loaded := e.inFlightPolling.LoadOrStore(mapKey, common.NewMultiplexer[interface{}](mapKey))
+	mux := existingMux.(*common.Multiplexer[interface{}])
 
 	if loaded {
 		// Another goroutine is already fetching, wait for its result
@@ -611,12 +586,11 @@ func (e *EvmStatePoller) executeMultiplexedPoll(
 		).Inc()
 
 		select {
-		case <-mux.done:
+		case <-mux.Done():
 			// Result is ready
-			mux.mu.RLock()
-			defer mux.mu.RUnlock()
+			result, err := mux.Result()
 			e.logger.Trace().Str("operation", operationKey).Msg("multiplexer finished waiting")
-			return mux.result, mux.err
+			return result, err
 		case <-ctx.Done():
 			// Context cancelled while waiting
 			e.logger.Warn().Str("operation", operationKey).Err(ctx.Err()).Msg("context cancelled while waiting for multiplexed poll")
