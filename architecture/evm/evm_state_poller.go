@@ -606,7 +606,7 @@ func (e *EvmStatePoller) executeMultiplexedPoll(
 		result, err := fetchFn(ctx)
 
 		// Close the multiplexer to signal completion to waiters
-		mux.Close(result, err)
+		mux.Close(ctx, result, err)
 		e.logger.Trace().Str("operation", operationKey).Msg("multiplexer poll finished and closed")
 
 		return result, err
