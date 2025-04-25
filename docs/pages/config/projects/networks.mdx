@@ -12,7 +12,9 @@ A network represents a chain (e.g., evm, solana, etc), and it is a logical group
   [Upstreams](/config/projects/upstreams) are configured separately, and on the first request to a network, the eRPC will automatically find any upstream that support that network.
 </Callout>
 
-You can configure failover behavior per network as follows:
+## Config
+
+You can optionally configure each network as follows:
 
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
@@ -274,7 +276,7 @@ export default createConfig({
 </Tabs.Tab>
 </Tabs>
 
-## Default config and lazy-loading
+### Defaults and lazy-loading
 
 Networks are lazy-loaded on first request for a network (if not explicitly defined in config). You can configure "networkDefaults" to set default values for all networks (both static or lazy-loaded):
 
@@ -397,13 +399,13 @@ export default createConfig({
   e.g. if a network only has "timeout" policy, it will **NOT** get hedge/retry from networkDefaults (those will be disabled).
 </Callout>
 
-### Architectures
+## Architectures
 
 ### `evm`
 
 This type of network are generic EVM-based chains that support JSON-RPC protocol.
 
-## Network alias
+## Name aliasing
 
 You can define friendly aliases for your networks instead of the /architecture/chainId format. For example, instead of using `/main/evm/1`, you can use `/main/ethereum`:
 

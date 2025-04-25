@@ -576,10 +576,10 @@ func TestProject_NetworkAlias(t *testing.T) {
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
 		defer util.AssertNoPendingMocks(t, 0)
- 
+
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
- 
+
 		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
@@ -591,7 +591,7 @@ func TestProject_NetworkAlias(t *testing.T) {
 		if err != nil {
 			panic(err)
 		}
- 
+
 		rateLimitersRegistry, err := upstream.NewRateLimitersRegistry(
 			&common.RateLimiterConfig{},
 			&log.Logger,
@@ -599,7 +599,7 @@ func TestProject_NetworkAlias(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
- 
+
 		// Create a project config with duplicate network aliases
 		prjReg, err := NewProjectsRegistry(
 			ctx,
@@ -652,15 +652,15 @@ func TestProject_NetworkAlias(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
- 
+
 		// Bootstrap should fail due to duplicate aliases
 		err = prjReg.Bootstrap(ctx)
- 
+
 		// Verify that an error was returned
 		if err == nil {
 			t.Fatal("Expected an error due to duplicate network aliases, but got nil")
 		}
- 
+
 		// Verify the error message contains information about the duplicate alias
 		expectedErrMsg := "alias same_alias already registered for network"
 		if !strings.Contains(err.Error(), expectedErrMsg) {
