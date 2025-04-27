@@ -150,7 +150,6 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 				subCtxErr := nctx.Err()
 				cancel()
 				if err != nil {
-					severity := common.ClassifySeverity(err)
 					if errors.Is(subCtxErr, context.DeadlineExceeded) {
 						e.logger.Warn().Err(err).
 							Msgf("failed to poll evm state due to sub-context timeout after %f seconds", timeout.Seconds())
@@ -158,6 +157,7 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 						e.logger.Info().Err(err).
 							Msgf("shutting down evm state poller due to context cancellation (e.g. app exiting)")
 					} else {
+						severity := common.ClassifySeverity(err)
 						if severity == common.SeverityCritical {
 							e.logger.Error().Err(err).Msgf("failed to poll evm state")
 						} else {
