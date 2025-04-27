@@ -55,7 +55,7 @@ func TestPolicyEvaluator(t *testing.T) {
 		mt.RecordUpstreamFailure("rpc1", "evm:123", "method1")
 
 		mt.RecordUpstreamRequest("rpc2", "evm:123", "method1")
-		mt.RecordUpstreamDuration("rpc2", "evm:123", "method1", 10*time.Millisecond)
+		mt.RecordUpstreamDuration("rpc2", "evm:123", "method1", 10*time.Millisecond, "none")
 
 		evaluator, err := NewPolicyEvaluator("evm:123", &logger, config, ntw.upstreamsRegistry, mt)
 		require.NoError(t, err)
