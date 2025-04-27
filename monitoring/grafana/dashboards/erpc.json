@@ -113,7 +113,7 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "histogram_quantile(0.9, sum by(le, network, upstream) (rate(erpc_upstream_request_duration_seconds_bucket{network!=\"n/a\",network!=\"\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m]))) > 0",
+          "expr": "histogram_quantile(0.9, sum by(le, network, upstream) (rate(erpc_upstream_request_duration_seconds_bucket{network!=\"n/a\",network!=\"\", network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",composite=\"none\"}[1m]))) > 0",
           "legendFormat": "{{network}} / {{upstream}}",
           "range": true,
           "refId": "A"
@@ -1445,7 +1445,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_upstream_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, upstream, category, attempt)",
+          "expr": "sum(increase(erpc_upstream_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",composite=\"none\"}[1m])) by (project, network, upstream, category, attempt)",
           "interval": "",
           "legendFormat": "{{project}}, {{network}}, {{upstream}}, {{category}}, attempt={{attempt}}",
           "range": true,
@@ -1543,7 +1543,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(erpc_upstream_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, upstream, category)",
+          "expr": "sum(rate(erpc_upstream_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",composite=\"none\"}[1m])) by (project, network, upstream, category)",
           "interval": "",
           "legendFormat": "{{project}}, {{network}}, {{upstream}}, {{category}}",
           "range": true,
@@ -1929,7 +1929,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (le, project, upstream, category))",
+          "expr": "histogram_quantile(0.99, sum(rate(erpc_upstream_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",composite=\"none\"}[1m])) by (le, project, upstream, category))",
           "legendFormat": "{{project}}, {{upstream}}, {{category}}",
           "range": true,
           "refId": "C"
@@ -2025,7 +2025,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum(rate(erpc_upstream_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (le, project, upstream, category))",
+          "expr": "histogram_quantile(0.9, sum(rate(erpc_upstream_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",composite=\"none\"}[1m])) by (le, project, upstream, category))",
           "legendFormat": "{{project}}, {{upstream}}, {{category}}",
           "range": true,
           "refId": "B"
@@ -2121,7 +2121,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.50, sum(rate(erpc_upstream_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, upstream, category))",
+          "expr": "histogram_quantile(0.50, sum(rate(erpc_upstream_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",composite=\"none\"}[30s])) by (le, project, upstream, category))",
           "legendFormat": "{{project}}, {{upstream}}, {{category}}",
           "range": true,
           "refId": "A"
@@ -2216,7 +2216,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_upstream_request_errors_total{severity=\"warning\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, upstream, error) > 0",
+          "expr": "sum(increase(erpc_upstream_request_errors_total{severity=\"warning\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",composite=\"none\"}[1m])) by (project, network, upstream, error) > 0",
           "interval": "",
           "legendFormat": "{{project}}, {{network}}, {{upstream}}, {{error}}",
           "range": true,
@@ -2312,7 +2312,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_upstream_request_errors_total{severity=\"critical\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, upstream, category, error) > 0",
+          "expr": "sum(increase(erpc_upstream_request_errors_total{severity=\"critical\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",composite=\"none\"}[1m])) by (project, network, upstream, category, error) > 0",
           "interval": "",
           "legendFormat": "{{project}}, {{network}}, {{category}}, {{upstream}}, {{error}}",
           "range": true,

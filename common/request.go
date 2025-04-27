@@ -14,6 +14,12 @@ import (
 	"github.com/rs/zerolog"
 )
 
+const (
+	CompositeTypeNone               = "none"
+	CompositeTypeLogsSplitOnError   = "logs-split-on-error"
+	CompositeTypeLogsSplitProactive = "logs-split-proactive"
+)
+
 const RequestContextKey ContextKey = "request"
 
 type RequestDirectives struct {
@@ -68,24 +74,31 @@ type NormalizedRequest struct {
 	lastUpstream      atomic.Value
 	evmBlockRef       atomic.Value
 	evmBlockNumber    atomic.Value
+
+	compositeType      atomic.Value // Type of composite request (e.g., "logs-split")
+	parentRequestId    atomic.Value // ID of the parent request (for sub-requests)
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {
-	return &NormalizedRequest{
+	nr := &NormalizedRequest{
 		body: body,
 		directives: &RequestDirectives{
 			RetryEmpty: true,
 		},
 	}
+	nr.compositeType.Store(CompositeTypeNone)
+	return nr
 }
 
 func NewNormalizedRequestFromJsonRpcRequest(jsonRpcRequest *JsonRpcRequest) *NormalizedRequest {
-	return &NormalizedRequest{
+	nr := &NormalizedRequest{
 		jsonRpcRequest: jsonRpcRequest,
 		directives: &RequestDirectives{
 			RetryEmpty: true,
 		},
 	}
+	nr.compositeType.Store(CompositeTypeNone)
+	return nr
 }
 
 func (r *NormalizedRequest) SetLastUpstream(upstream Upstream) *NormalizedRequest {
@@ -440,4 +453,43 @@ func (r *NormalizedRequest) Validate() error {
 	}
 
 	return nil
+}
+
+// IsCompositeRequest returns whether this request is a top-level composite request
+func (r *NormalizedRequest) IsCompositeRequest() bool {
+	if r == nil {
+		return false
+	}
+	return r.CompositeType() != CompositeTypeNone
+}
+
+func (r *NormalizedRequest) CompositeType() string {
+	if r == nil {
+		return ""
+	}
+	if ct := r.compositeType.Load(); ct != nil {
+		return ct.(string)
+	}
+	return ""
+}
+
+func (r *NormalizedRequest) SetCompositeType(compositeType string) {
+	if r == nil || compositeType == "" {
+		return
+	}
+	r.compositeType.Store(compositeType)
+}
+
+func (r *NormalizedRequest) ParentRequestId() interface{} {
+	if r == nil {
+		return nil
+	}
+	return r.parentRequestId.Load()
+}
+
+func (r *NormalizedRequest) SetParentRequestId(parentId interface{}) {
+	if r == nil || parentId == nil {
+		return
+	}
+	r.parentRequestId.Store(parentId)
 }

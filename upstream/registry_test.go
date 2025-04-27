@@ -825,8 +825,8 @@ func simulateRequestsWithLatency(tracker *health.Tracker, network, upstream, met
 		go func() {
 			defer wg.Done()
 			tracker.RecordUpstreamRequest(upstream, network, method)
-			tracker.RecordUpstreamDuration(upstream, network, method, time.Duration(latency*float64(time.Second)))
-			// timer := tracker.RecordUpstreamDurationStart(upstream, network, method)
+			tracker.RecordUpstreamDuration(upstream, network, method, time.Duration(latency*float64(time.Second)), "none")
+			// timer := tracker.RecordUpstreamDurationStart(upstream, network, method, "none")
 			// time.Sleep(time.Duration(latency * float64(time.Second)))
 			// timer.ObserveDuration()
 		}()

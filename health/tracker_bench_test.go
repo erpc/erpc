@@ -53,7 +53,7 @@ func BenchmarkRecordUpstreamDuration(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			tracker.RecordUpstreamDuration(ups, net, meth, duration)
+			tracker.RecordUpstreamDuration(ups, net, meth, duration, "none")
 		}
 	})
 }
@@ -76,7 +76,7 @@ func BenchmarkGetUpstreamMethodMetrics(b *testing.B) {
 
 	// Pre-warm the tracker with some data
 	tracker.RecordUpstreamRequest(ups, net, meth)
-	tracker.RecordUpstreamDuration(ups, net, meth, time.Millisecond*10)
+	tracker.RecordUpstreamDuration(ups, net, meth, time.Millisecond*10, "none")
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -111,7 +111,7 @@ func BenchmarkTrackerMixed(b *testing.B) {
 			case 2:
 				// Record a random duration (5ms–50ms)
 				dur := time.Duration(5+rng.Intn(45)) * time.Millisecond
-				tracker.RecordUpstreamDuration(ups, net, meth, dur)
+				tracker.RecordUpstreamDuration(ups, net, meth, dur, "none")
 			case 3:
 				// Read the metrics
 				_ = tracker.GetUpstreamMethodMetrics(ups, net, meth)
@@ -134,7 +134,7 @@ func BenchmarkRecordAndGetMetrics(b *testing.B) {
 
 			// Record some metrics
 			tracker.RecordUpstreamRequest(ups, network, method)
-			tracker.RecordUpstreamDuration(ups, network, method, 100*time.Millisecond)
+			tracker.RecordUpstreamDuration(ups, network, method, 100*time.Millisecond, "none")
 
 			// Then read them back
 			metrics := tracker.GetUpstreamMethodMetrics(ups, network, method)
@@ -191,7 +191,7 @@ func BenchmarkWriteHeavy(b *testing.B) {
 			// Do 9 writes for every read
 			if writes < 9 {
 				tracker.RecordUpstreamRequest(ups, network, method)
-				tracker.RecordUpstreamDuration(ups, network, method, 100*time.Millisecond)
+				tracker.RecordUpstreamDuration(ups, network, method, 100*time.Millisecond, "none")
 				writes++
 			} else {
 				_ = tracker.GetUpstreamMethodMetrics(ups, network, method)
@@ -222,7 +222,7 @@ func BenchmarkHighConcurrency(b *testing.B) {
 						// Mix of operations
 						tracker.RecordUpstreamRequest(ups, network, method)
 						_ = tracker.GetUpstreamMethodMetrics(ups, network, method)
-						tracker.RecordUpstreamDuration(ups, network, method, 100*time.Millisecond)
+						tracker.RecordUpstreamDuration(ups, network, method, 100*time.Millisecond, "none")
 					}
 				}()
 			}
@@ -268,7 +268,7 @@ func BenchmarkHotKeyAccess(b *testing.B) {
 			// All goroutines hammer the same key
 			tracker.RecordUpstreamRequest(hotUps, hotNetwork, hotMethod)
 			_ = tracker.GetUpstreamMethodMetrics(hotUps, hotNetwork, hotMethod)
-			tracker.RecordUpstreamDuration(hotUps, hotNetwork, hotMethod, 100*time.Millisecond)
+			tracker.RecordUpstreamDuration(hotUps, hotNetwork, hotMethod, 100*time.Millisecond, "none")
 		}
 	})
 }
@@ -285,7 +285,7 @@ func BenchmarkFullRequestFlow(b *testing.B) {
 			ups, network, method := getRandomTestData()
 
 			// Start timing
-			timer := tracker.RecordUpstreamDurationStart(ups, network, method)
+			timer := tracker.RecordUpstreamDurationStart(ups, network, method, "none")
 
 			// Record request
 			tracker.RecordUpstreamRequest(ups, network, method)
