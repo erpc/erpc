@@ -1,10 +1,5 @@
 package common
 
-const (
-	CompositeTypeNone     = "none"
-	CompositeTypeLogsSplit = "logs-split"
-)
-
 import (
 	"context"
 	"fmt"
@@ -17,6 +12,11 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
+)
+
+const (
+	CompositeTypeNone     = "none"
+	CompositeTypeLogsSplit = "logs-split"
 )
 
 const RequestContextKey ContextKey = "request"
