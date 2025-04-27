@@ -122,19 +122,6 @@ const (
 	TracingProtocolGrpc TracingProtocol = "grpc"
 )
 
-type CompressionType string
-
-const (
-	CompressionNone CompressionType = "none"
-	CompressionGzip CompressionType = "gzip"
-	CompressionZstd CompressionType = "zstd"
-)
-
-type CompressionConfig struct {
-	Type  CompressionType `yaml:"type"  json:"type"  tstype:"TsCompressionType"`
-	Level *int            `yaml:"level,omitempty" json:"level,omitempty"`
-}
-
 type TracingConfig struct {
 	Enabled    bool            `yaml:"enabled,omitempty" json:"enabled"`
 	Endpoint   string          `yaml:"endpoint,omitempty" json:"endpoint"`
@@ -207,14 +194,13 @@ const (
 )
 
 type ConnectorConfig struct {
-	Id          string                     `yaml:"id,omitempty" json:"id"`
-	Driver      ConnectorDriverType        `yaml:"driver" json:"driver" tstype:"TsConnectorDriverType"`
-	Memory      *MemoryConnectorConfig     `yaml:"memory,omitempty" json:"memory"`
-	Redis       *RedisConnectorConfig      `yaml:"redis,omitempty" json:"redis"`
-	DynamoDB    *DynamoDBConnectorConfig   `yaml:"dynamodb,omitempty" json:"dynamodb"`
-	PostgreSQL  *PostgreSQLConnectorConfig `yaml:"postgresql,omitempty" json:"postgresql"`
-	Mock        *MockConnectorConfig       `yaml:"-" json:"-"`
-	Compression *CompressionConfig         `yaml:"compression,omitempty" json:"compression,omitempty" tstype:"CompressionConfig | undefined"`
+	Id         string                     `yaml:"id,omitempty" json:"id"`
+	Driver     ConnectorDriverType        `yaml:"driver" json:"driver" tstype:"TsConnectorDriverType"`
+	Memory     *MemoryConnectorConfig     `yaml:"memory,omitempty" json:"memory"`
+	Redis      *RedisConnectorConfig      `yaml:"redis,omitempty" json:"redis"`
+	DynamoDB   *DynamoDBConnectorConfig   `yaml:"dynamodb,omitempty" json:"dynamodb"`
+	PostgreSQL *PostgreSQLConnectorConfig `yaml:"postgresql,omitempty" json:"postgresql"`
+	Mock       *MockConnectorConfig       `yaml:"-" json:"-"`
 }
 
 type MemoryConnectorConfig struct {
