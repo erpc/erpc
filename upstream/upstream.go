@@ -290,7 +290,11 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				u.networkId,
 				method,
 			)
-			telemetry.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method, strconv.Itoa(exec.Attempts())).Inc()
+			compositeType := "none"
+			if req.IsCompositeRequest() && req.CompositeType() != "" {
+				compositeType = req.CompositeType()
+			}
+			telemetry.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method, strconv.Itoa(exec.Attempts()), compositeType).Inc()
 			timer := u.metricsTracker.RecordUpstreamDurationStart(cfg.Id, u.networkId, method)
 			defer timer.ObserveDuration()
 
@@ -337,7 +341,11 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 							method,
 						)
 					}
-					telemetry.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method, common.ErrorFingerprint(errCall), string(severity)).Inc()
+					compositeType := "none"
+					if req.IsCompositeRequest() && req.CompositeType() != "" {
+						compositeType = req.CompositeType()
+					}
+					telemetry.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method, common.ErrorFingerprint(errCall), string(severity), compositeType).Inc()
 				}
 
 				if exec != nil {
