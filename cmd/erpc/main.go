@@ -148,7 +148,7 @@ func getConfig(
 ) (*common.Config, error) {
 	fs := afero.NewOsFs()
 	configPath := ""
-	possibleConfigs := []string{"./erpc.js", "./erpc.ts", "./erpc.yaml", "./erpc.yml"}
+	possibleConfigs := []string{"./erpc.js", "./erpc.ts", "./erpc.yaml", "./erpc.yml", "/root/erpc.yaml"}
 	requireConfig := cmd.Bool("require-config")
 
 	// Check for the config flag, if present, use that file

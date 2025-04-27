@@ -63,12 +63,19 @@ COPY package.json /temp/prod/package.json
 # Install every prod dependencies
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store cd /temp/prod && pnpm install --prod --frozen-lockfile
 
+# Create symlink stage
+FROM alpine:latest AS symlink
+RUN mkdir -p /root && ln -s /erpc-server /root/erpc-server
+
 # Final stage
 FROM gcr.io/distroless/static-debian12:nonroot AS final
 
 # Copy Go binary from go-builder
 COPY --from=go-builder /build/erpc-server /
 COPY --from=go-builder /build/erpc-server-pprof /
+
+# Copy symlinked directory
+COPY --from=symlink /root /root
 
 # Copy TypeScript package files from ts-dev and ts-prod
 COPY --from=ts-dev /temp/dev/typescript /typescript
