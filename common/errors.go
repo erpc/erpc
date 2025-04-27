@@ -15,6 +15,14 @@ import (
 	"github.com/rs/zerolog"
 )
 
+var errorLabelMode = "verbose"
+
+func SetErrorLabelMode(mode string) {
+	if mode == "compact" || mode == "verbose" {
+		errorLabelMode = mode
+	}
+}
+
 func IsNull(err interface{}) bool {
 	if err == nil || err == "" {
 		return true
@@ -36,13 +44,29 @@ func ErrorSummary(err interface{}) string {
 	s := "ErrUnknown"
 
 	if be, ok := err.(StandardError); ok {
-		s = fmt.Sprintf("%s: %s", be.CodeChain(), cleanUpMessage(be.DeepestMessage()))
+		if errorLabelMode == "compact" {
+			s = be.CodeChain()
+		} else {
+			s = fmt.Sprintf("%s: %s", be.CodeChain(), cleanUpMessage(be.DeepestMessage()))
+		}
 	} else if e, ok := err.(error); ok {
-		s = cleanUpMessage(e.Error())
+		if errorLabelMode == "compact" {
+			s = "GenericError"
+		} else {
+			s = cleanUpMessage(e.Error())
+		}
 	} else if str, ok := err.(string); ok {
-		s = cleanUpMessage(str)
+		if errorLabelMode == "compact" {
+			s = "StringError"
+		} else {
+			s = cleanUpMessage(str)
+		}
 	} else {
-		s = cleanUpMessage(fmt.Sprintf("%v", err))
+		if errorLabelMode == "compact" {
+			s = "UnknownError"
+		} else {
+			s = cleanUpMessage(fmt.Sprintf("%v", err))
+		}
 	}
 
 	return s

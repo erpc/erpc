@@ -510,6 +510,9 @@ func (m *MetricsConfig) SetDefaults() error {
 	if m.Port == nil {
 		m.Port = util.IntPtr(4001)
 	}
+	if m.ErrorLabelMode == nil {
+		m.ErrorLabelMode = util.StringPtr("verbose") // Default to verbose for backward compatibility
+	}
 
 	return nil
 }

@@ -3,6 +3,7 @@ package common
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/erpc/erpc/util"
@@ -121,6 +122,20 @@ func (m *MetricsConfig) Validate() error {
 			return fmt.Errorf("metrics.port is required when metrics.enabled is true")
 		}
 	}
+
+	if m.ErrorLabelMode != nil && *m.ErrorLabelMode != "verbose" && *m.ErrorLabelMode != "compact" {
+		return fmt.Errorf("metrics.errorLabelMode must be either 'verbose' or 'compact'")
+	}
+
+	if m.HistogramBuckets != nil && *m.HistogramBuckets != "" {
+		parts := strings.Split(*m.HistogramBuckets, ",")
+		for _, part := range parts {
+			if _, err := strconv.ParseFloat(strings.TrimSpace(part), 64); err != nil {
+				return fmt.Errorf("metrics.histogramBuckets contains invalid float value: %s", part)
+			}
+		}
+	}
+
 	return nil
 }
 

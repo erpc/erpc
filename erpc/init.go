@@ -10,6 +10,7 @@ import (
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
@@ -85,6 +86,16 @@ func Init(
 	}
 
 	if cfg.Metrics != nil && cfg.Metrics.Enabled != nil && *cfg.Metrics.Enabled {
+		if cfg.Metrics.ErrorLabelMode != nil {
+			common.SetErrorLabelMode(*cfg.Metrics.ErrorLabelMode)
+		}
+
+		if cfg.Metrics.HistogramBuckets != nil && *cfg.Metrics.HistogramBuckets != "" {
+			if err := telemetry.SetHistogramBuckets(*cfg.Metrics.HistogramBuckets); err != nil {
+				logger.Warn().Err(err).Msg("failed to set custom histogram buckets, using defaults")
+			}
+		}
+
 		if cfg.Metrics.Port == nil {
 			return fmt.Errorf("metrics.port is not configured")
 		}
