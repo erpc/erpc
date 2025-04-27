@@ -78,7 +78,7 @@ RUN pnpm install
 
 FROM ghcr.io/erpc/erpc:latest
 
-COPY --from=0 /root/node_modules /node_modules
+COPY --from=0 /node_modules /node_modules
 ```
 
 Then build the image:

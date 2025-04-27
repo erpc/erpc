@@ -11,7 +11,7 @@
 # Build stage for Go
 FROM golang:1.23-alpine AS go-builder
 
-WORKDIR /root
+WORKDIR /build
 
 # Copy go mod and sum files first for better layer caching
 COPY go.mod go.sum ./
@@ -67,8 +67,8 @@ RUN --mount=type=cache,id=pnpm,target=/pnpm/store cd /temp/prod && pnpm install 
 FROM gcr.io/distroless/static-debian12:nonroot AS final
 
 # Copy Go binary from go-builder
-COPY --from=go-builder /root/erpc-server /
-COPY --from=go-builder /root/erpc-server-pprof /
+COPY --from=go-builder /build/erpc-server /
+COPY --from=go-builder /build/erpc-server-pprof /
 
 # Copy TypeScript package files from ts-dev and ts-prod
 COPY --from=ts-dev /temp/dev/typescript /typescript
