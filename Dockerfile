@@ -64,25 +64,18 @@ COPY package.json /temp/prod/package.json
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store cd /temp/prod && pnpm install --prod --frozen-lockfile
 
 # Final stage
-FROM debian:stable AS final
-
-WORKDIR /root
-
-# Install CA certificates
-RUN apt-get update --allow-insecure-repositories \
-    && apt-get install -y debian-archive-keyring ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+FROM gcr.io/distroless/static-debian12:nonroot AS final
 
 # Copy Go binary from go-builder
-COPY --from=go-builder /root/erpc-server .
-COPY --from=go-builder /root/erpc-server-pprof .
+COPY --from=go-builder /root/erpc-server /
+COPY --from=go-builder /root/erpc-server-pprof /
 
 # Copy TypeScript package files from ts-dev and ts-prod
-COPY --from=ts-dev /temp/dev/typescript ./typescript
-COPY --from=ts-prod /temp/prod/node_modules ./node_modules
+COPY --from=ts-dev /temp/dev/typescript /typescript
+COPY --from=ts-prod /temp/prod/node_modules /node_modules
 
 # Expose ports
-EXPOSE 8080 6060
+EXPOSE 8080 6060 4000
 
 # Run the server
-CMD ["/root/erpc-server"]
+CMD ["/erpc-server"]
