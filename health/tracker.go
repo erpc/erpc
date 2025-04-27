@@ -33,12 +33,12 @@ type NetworkMetadata struct {
 }
 
 type Timer struct {
-	start        time.Time
-	network      string
-	ups          string
-	method       string
+	start         time.Time
+	network       string
+	ups           string
+	method        string
 	compositeType string
-	tracker      *Tracker
+	tracker       *Tracker
 }
 
 func (t *Timer) ObserveDuration() {
@@ -265,12 +265,12 @@ func (t *Tracker) RecordUpstreamDurationStart(ups, network, method string, compo
 		compositeType = "none"
 	}
 	return &Timer{
-		start:        time.Now(),
-		network:      network,
-		ups:          ups,
-		method:       method,
+		start:         time.Now(),
+		network:       network,
+		ups:           ups,
+		method:        method,
 		compositeType: compositeType,
-		tracker:      t,
+		tracker:       t,
 	}
 }
 

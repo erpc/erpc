@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	CompositeTypeNone     = "none"
+	CompositeTypeNone      = "none"
 	CompositeTypeLogsSplit = "logs-split"
 )
 
@@ -74,9 +74,9 @@ type NormalizedRequest struct {
 	evmBlockRef       atomic.Value
 	evmBlockNumber    atomic.Value
 
-	isCompositeRequest atomic.Bool      // Indicates if this is a top-level composite request
-	compositeType      atomic.Value     // Type of composite request (e.g., "logs-split")
-	parentRequestId    atomic.Value     // ID of the parent request (for sub-requests)
+	isCompositeRequest atomic.Bool  // Indicates if this is a top-level composite request
+	compositeType      atomic.Value // Type of composite request (e.g., "logs-split")
+	parentRequestId    atomic.Value // ID of the parent request (for sub-requests)
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {
