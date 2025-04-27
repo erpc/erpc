@@ -68,6 +68,10 @@ type NormalizedRequest struct {
 	lastUpstream      atomic.Value
 	evmBlockRef       atomic.Value
 	evmBlockNumber    atomic.Value
+
+	isCompositeRequest atomic.Bool      // Indicates if this is a top-level composite request
+	compositeType      atomic.Value     // Type of composite request (e.g., "logs-split")
+	parentRequestId    atomic.Value     // ID of the parent request (for sub-requests)
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {
@@ -440,4 +444,50 @@ func (r *NormalizedRequest) Validate() error {
 	}
 
 	return nil
+}
+
+// IsCompositeRequest returns whether this request is a top-level composite request
+func (r *NormalizedRequest) IsCompositeRequest() bool {
+	if r == nil {
+		return false
+	}
+	return r.isCompositeRequest.Load()
+}
+
+func (r *NormalizedRequest) SetIsCompositeRequest(isComposite bool) {
+	if r == nil {
+		return
+	}
+	r.isCompositeRequest.Store(isComposite)
+}
+
+func (r *NormalizedRequest) CompositeType() string {
+	if r == nil {
+		return ""
+	}
+	if ct := r.compositeType.Load(); ct != nil {
+		return ct.(string)
+	}
+	return ""
+}
+
+func (r *NormalizedRequest) SetCompositeType(compositeType string) {
+	if r == nil || compositeType == "" {
+		return
+	}
+	r.compositeType.Store(compositeType)
+}
+
+func (r *NormalizedRequest) ParentRequestId() interface{} {
+	if r == nil {
+		return nil
+	}
+	return r.parentRequestId.Load()
+}
+
+func (r *NormalizedRequest) SetParentRequestId(parentId interface{}) {
+	if r == nil || parentId == nil {
+		return
+	}
+	r.parentRequestId.Store(parentId)
 }
