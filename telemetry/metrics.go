@@ -10,20 +10,10 @@ import (
 )
 
 var DefaultHistogramBuckets = []float64{
-	0.005, // 5 ms
-	0.01,  // 10 ms
-	0.025, // 25 ms
 	0.05,  // 50 ms
-	0.1,   // 100 ms
-	0.25,  // 250 ms
 	0.5,   // 500 ms
-	1,     // 1 s
-	2.5,   // 2.5 s
 	5,     // 5 s
-	10,    // 10 s
 	30,    // 30 s
-	60,    // 60 s
-	300,   // 5 min
 }
 
 var (
@@ -43,22 +33,7 @@ var (
 		Namespace: "erpc",
 		Name:      "upstream_request_duration_seconds",
 		Help:      "Duration of actual requests towards upstreams.",
-		Buckets: []float64{
-			0.005, // 5 ms
-			0.01,  // 10 ms
-			0.025, // 25 ms
-			0.05,  // 50 ms
-			0.1,   // 100 ms
-			0.25,  // 250 ms
-			0.5,   // 500 ms
-			1,     // 1 s
-			2.5,   // 2.5 s
-			5,     // 5 s
-			10,    // 10 s
-			30,    // 30 s
-			60,    // 60 s
-			300,   // 5 min
-		},
+		Buckets:   DefaultHistogramBuckets,
 	}, []string{"project", "network", "upstream", "category", "composite"})
 
 	MetricUpstreamErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -245,22 +220,7 @@ var (
 		Namespace: "erpc",
 		Name:      "network_request_duration_seconds",
 		Help:      "Duration of requests for a network.",
-		Buckets: []float64{
-			0.005, // 5 ms
-			0.01,  // 10 ms
-			0.025, // 25 ms
-			0.05,  // 50 ms
-			0.1,   // 100 ms
-			0.25,  // 250 ms
-			0.5,   // 500 ms
-			1,     // 1 s
-			2.5,   // 2.5 s
-			5,     // 5 s
-			10,    // 10 s
-			30,    // 30 s
-			60,    // 60 s
-			300,   // 5 min
-		},
+		Buckets:   DefaultHistogramBuckets,
 	}, []string{"project", "network", "category"})
 
 	MetricProjectRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -291,16 +251,7 @@ var (
 		Namespace: "erpc",
 		Name:      "cache_set_success_duration_seconds",
 		Help:      "Duration of cache set operations.",
-		Buckets: []float64{
-			0.05, // 50 ms
-			0.1,  // 100 ms
-			0.25, // 250 ms
-			0.5,  // 500 ms
-			1,    // 1 s
-			5,    // 5 s
-			10,   // 10 s
-			30,   // 30 s
-		},
+		Buckets:   DefaultHistogramBuckets,
 	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
 
 	MetricCacheSetErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -313,16 +264,7 @@ var (
 		Namespace: "erpc",
 		Name:      "cache_set_error_duration_seconds",
 		Help:      "Duration of cache set errors.",
-		Buckets: []float64{
-			0.05, // 50 ms
-			0.1,  // 100 ms
-			0.25, // 250 ms
-			0.5,  // 500 ms
-			1,    // 1 s
-			5,    // 5 s
-			10,   // 10 s
-			30,   // 30 s
-		},
+		Buckets:   DefaultHistogramBuckets,
 	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
 
 	MetricCacheSetSkippedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -341,16 +283,7 @@ var (
 		Namespace: "erpc",
 		Name:      "cache_get_success_hit_duration_seconds",
 		Help:      "Duration of cache get hits.",
-		Buckets: []float64{
-			0.05, // 50 ms
-			0.1,  // 100 ms
-			0.25, // 250 ms
-			0.5,  // 500 ms
-			1,    // 1 s
-			5,    // 5 s
-			10,   // 10 s
-			30,   // 30 s
-		},
+		Buckets:   DefaultHistogramBuckets,
 	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
 
 	MetricCacheGetSuccessMissTotal = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -363,16 +296,7 @@ var (
 		Namespace: "erpc",
 		Name:      "cache_get_success_miss_duration_seconds",
 		Help:      "Duration of cache get misses.",
-		Buckets: []float64{
-			0.05, // 50 ms
-			0.1,  // 100 ms
-			0.25, // 250 ms
-			0.5,  // 500 ms
-			1,    // 1 s
-			5,    // 5 s
-			10,   // 10 s
-			30,   // 30 s
-		},
+		Buckets:   DefaultHistogramBuckets,
 	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
 
 	MetricCacheGetErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -385,16 +309,7 @@ var (
 		Namespace: "erpc",
 		Name:      "cache_get_error_duration_seconds",
 		Help:      "Duration of cache get errors.",
-		Buckets: []float64{
-			0.05, // 50 ms
-			0.1,  // 100 ms
-			0.25, // 250 ms
-			0.5,  // 500 ms
-			1,    // 1 s
-			5,    // 5 s
-			10,   // 10 s
-			30,   // 30 s
-		},
+		Buckets:   DefaultHistogramBuckets,
 	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
 
 	MetricCacheGetSkippedTotal = promauto.NewCounterVec(prometheus.CounterOpts{

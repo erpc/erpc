@@ -90,10 +90,13 @@ func Init(
 			common.SetErrorLabelMode(*cfg.Metrics.ErrorLabelMode)
 		}
 
+		bucketStr := ""
 		if cfg.Metrics.HistogramBuckets != nil && *cfg.Metrics.HistogramBuckets != "" {
-			if err := telemetry.SetHistogramBuckets(*cfg.Metrics.HistogramBuckets); err != nil {
-				logger.Warn().Err(err).Msg("failed to set custom histogram buckets, using defaults")
-			}
+			bucketStr = *cfg.Metrics.HistogramBuckets
+		}
+		
+		if err := telemetry.SetHistogramBuckets(bucketStr); err != nil {
+			logger.Warn().Err(err).Msg("failed to set histogram buckets, using defaults")
 		}
 
 		if cfg.Metrics.Port == nil {
