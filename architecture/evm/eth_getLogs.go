@@ -257,6 +257,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 				Int("subRequests", len(subRequests)).
 				Msg("eth_getLogs block range exceeded, splitting")
 
+			r.SetCompositeType(common.CompositeTypeLogsSplitProactive)
 			mergedResponse, err := executeGetLogsSubRequests(ctx, n, u, r, subRequests, r.Directives().SkipCacheRead)
 			if err != nil {
 				return true, nil, err
@@ -294,6 +295,7 @@ func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u co
 				logger.Warn().Err(err).Object("request", rq).Msg("could not split eth_getLogs request, returning original response")
 				return rs, re
 			}
+			rq.SetCompositeType(common.CompositeTypeLogsSplitOnError)
 			mergedResponse, err := executeGetLogsSubRequests(ctx, n, u, rq, subRequests, skipCacheRead)
 			if err != nil {
 				logger.Warn().Err(err).Object("request", rq).Msg("could not execute eth_getLogs sub-requests, returning original response")
@@ -517,8 +519,6 @@ func extractBlockRange(filter map[string]interface{}) (fromBlock, toBlock int64,
 
 func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.Upstream, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead bool) (*common.JsonRpcResponse, error) {
 	logger := u.Logger().With().Str("method", "eth_getLogs").Interface("id", r.ID()).Logger()
-
-	r.SetCompositeType(common.CompositeTypeLogsSplit)
 
 	wg := sync.WaitGroup{}
 	responses := make([]*common.JsonRpcResponse, 0)

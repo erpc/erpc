@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	CompositeTypeNone      = "none"
-	CompositeTypeLogsSplit = "logs-split"
+	CompositeTypeNone               = "none"
+	CompositeTypeLogsSplitOnError   = "logs-split-on-error"
+	CompositeTypeLogsSplitProactive = "logs-split-proactive"
 )
 
 const RequestContextKey ContextKey = "request"
