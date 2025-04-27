@@ -295,7 +295,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				compositeType = req.CompositeType()
 			}
 			telemetry.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method, strconv.Itoa(exec.Attempts()), compositeType).Inc()
-			timer := u.metricsTracker.RecordUpstreamDurationStart(cfg.Id, u.networkId, method)
+			timer := u.metricsTracker.RecordUpstreamDurationStart(cfg.Id, u.networkId, method, compositeType)
 			defer timer.ObserveDuration()
 
 			resp, errCall := jsonRpcClient.SendRequest(ctx, req)

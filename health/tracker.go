@@ -33,16 +33,17 @@ type NetworkMetadata struct {
 }
 
 type Timer struct {
-	start   time.Time
-	network string
-	ups     string
-	method  string
-	tracker *Tracker
+	start        time.Time
+	network      string
+	ups          string
+	method       string
+	compositeType string
+	tracker      *Tracker
 }
 
 func (t *Timer) ObserveDuration() {
 	duration := time.Since(t.start)
-	t.tracker.RecordUpstreamDuration(t.ups, t.network, t.method, duration)
+	t.tracker.RecordUpstreamDuration(t.ups, t.network, t.method, duration, t.compositeType)
 }
 
 // ------------------------------------
@@ -259,24 +260,31 @@ func (t *Tracker) RecordUpstreamRequest(ups, network, method string) {
 	}
 }
 
-func (t *Tracker) RecordUpstreamDurationStart(ups, network, method string) *Timer {
+func (t *Tracker) RecordUpstreamDurationStart(ups, network, method string, compositeType string) *Timer {
+	if compositeType == "" {
+		compositeType = "none"
+	}
 	return &Timer{
-		start:   time.Now(),
-		network: network,
-		ups:     ups,
-		method:  method,
-		tracker: t,
+		start:        time.Now(),
+		network:      network,
+		ups:          ups,
+		method:       method,
+		compositeType: compositeType,
+		tracker:      t,
 	}
 }
 
-func (t *Tracker) RecordUpstreamDuration(ups, network, method string, duration time.Duration) {
+func (t *Tracker) RecordUpstreamDuration(ups, network, method string, duration time.Duration, compositeType string) {
 	keys := t.getKeys(ups, network, method)
 	sec := duration.Seconds()
 	for _, k := range keys {
 		m := t.getMetrics(k)
 		m.ResponseQuantiles.Add(sec)
 	}
-	telemetry.MetricUpstreamRequestDuration.WithLabelValues(t.projectId, network, ups, method).Observe(sec)
+	if compositeType == "" {
+		compositeType = "none"
+	}
+	telemetry.MetricUpstreamRequestDuration.WithLabelValues(t.projectId, network, ups, method, compositeType).Observe(sec)
 }
 
 func (t *Tracker) RecordUpstreamFailure(ups, network, method string) {
