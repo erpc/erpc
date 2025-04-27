@@ -26,7 +26,7 @@ spec:
       - name: main
         image: "ghcr.io/erpc/erpc:latest"
         imagePullPolicy: Always
-        command: ["/root/erpc-server"]
+        command: ["/erpc-server"]
         resources:
           requests:
             memory: "3Gi"
@@ -39,7 +39,7 @@ spec:
             value: "some value"
         volumeMounts:
           - name: config-volume
-            mountPath: /root/erpc.yaml
+            mountPath: /erpc.yaml
             subPath: erpc.yaml
       volumes:
       - name: config-volume

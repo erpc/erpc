@@ -1482,7 +1482,7 @@ See [a complete config example](https://docs.erpc.cloud/config/example) for insp
 Use the Docker image:
 
 ```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
-docker run -v $(pwd)/erpc.yaml:/root/erpc.yaml -p 4000:4000 -p 4001:4001 ghcr.io/erpc/erpc:latest
+docker run -v $(pwd)/erpc.yaml:/erpc.yaml -p 4000:4000 -p 4001:4001 ghcr.io/erpc/erpc:latest
 ```
 
 ### Test the setup [Permalink for this section](https://docs.erpc.cloud/\#test-the-setup)
@@ -3494,7 +3494,7 @@ See the [complete config example](https://docs.erpc.cloud/config/example) for al
 Run the Docker container, mounting your configuration file:
 
 ```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
-docker run -v $(pwd)/erpc.yaml:/root/erpc.yaml \
+docker run -v $(pwd)/erpc.yaml:/erpc.yaml \
   -p 4000:4000 -p 4001:4001 \
   ghcr.io/erpc/erpc:latest
 ```
@@ -3542,7 +3542,7 @@ services:
       - "4000:4000"
       - "4001:4001"
     volumes:
-      - ./erpc.yaml:/root/erpc.yaml
+      - ./erpc.yaml:/erpc.yaml
     restart: unless-stopped
 ```
 
@@ -3557,9 +3557,9 @@ Create a custom Dockerfile that includes your dependencies:
 ```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
 FROM debian:12
 
-COPY package.json pnpm-lock.yaml /root/
-# COPY package.json package-lock.json /root/  # For npm
-# COPY package.json yarn.lock /root/          # For yarn
+COPY package.json pnpm-lock.yaml /
+# COPY package.json package-lock.json /  # For npm
+# COPY package.json yarn.lock /          # For yarn
 
 RUN pnpm install
 # RUN npm install   # For npm
@@ -3567,14 +3567,14 @@ RUN pnpm install
 
 FROM ghcr.io/erpc/erpc:latest
 
-COPY --from=0 /root/node_modules /root/node_modules
+COPY --from=0 /root/node_modules /node_modules
 ```
 
 Build and run your custom image:
 
 ```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
 docker build -t erpc-custom -f Dockerfile.custom .
-docker run -v $(pwd)/erpc.ts:/root/erpc.ts \
+docker run -v $(pwd)/erpc.ts:/erpc.ts \
   -p 4000:4000 -p 4001:4001 \
   erpc-custom
 ```
@@ -3585,9 +3585,9 @@ Alternatively, you can mount your local `package.json` and `node_modules` direct
 
 ```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
 docker run \
-  -v $(pwd)/package.json:/root/package.json \
-  -v $(pwd)/node_modules:/root/node_modules \
-  -v $(pwd)/erpc.ts:/root/erpc.ts \
+  -v $(pwd)/package.json:/package.json \
+  -v $(pwd)/node_modules:/node_modules \
+  -v $(pwd)/erpc.ts:/erpc.ts \
   -p 4000:4000 -p 4001:4001 \
   ghcr.io/erpc/erpc:latest
 ```
@@ -3603,9 +3603,9 @@ services:
       - "4000:4000"
       - "4001:4001"
     volumes:
-      - ./erpc.ts:/root/erpc.ts
-      - ./package.json:/root/package.json
-      - ./node_modules:/root/node_modules
+      - ./erpc.ts:/erpc.ts
+      - ./package.json:/package.json
+      - ./node_modules:/node_modules
     restart: unless-stopped
 ```
 
@@ -4183,7 +4183,7 @@ spec:
           name: metrics
         volumeMounts:
         - name: config
-          mountPath: /root/erpc.yaml
+          mountPath: /erpc.yaml
           subPath: erpc.yaml
         readinessProbe:
           httpGet:
