@@ -518,7 +518,6 @@ func extractBlockRange(filter map[string]interface{}) (fromBlock, toBlock int64,
 func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.Upstream, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead bool) (*common.JsonRpcResponse, error) {
 	logger := u.Logger().With().Str("method", "eth_getLogs").Interface("id", r.ID()).Logger()
 
-	r.SetIsCompositeRequest(true)
 	r.SetCompositeType(common.CompositeTypeLogsSplit)
 
 	wg := sync.WaitGroup{}

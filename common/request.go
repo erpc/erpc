@@ -74,7 +74,6 @@ type NormalizedRequest struct {
 	evmBlockRef       atomic.Value
 	evmBlockNumber    atomic.Value
 
-	isCompositeRequest atomic.Bool  // Indicates if this is a top-level composite request
 	compositeType      atomic.Value // Type of composite request (e.g., "logs-split")
 	parentRequestId    atomic.Value // ID of the parent request (for sub-requests)
 }
@@ -460,14 +459,7 @@ func (r *NormalizedRequest) IsCompositeRequest() bool {
 	if r == nil {
 		return false
 	}
-	return r.isCompositeRequest.Load()
-}
-
-func (r *NormalizedRequest) SetIsCompositeRequest(isComposite bool) {
-	if r == nil {
-		return
-	}
-	r.isCompositeRequest.Store(isComposite)
+	return r.CompositeType() != CompositeTypeNone
 }
 
 func (r *NormalizedRequest) CompositeType() string {
