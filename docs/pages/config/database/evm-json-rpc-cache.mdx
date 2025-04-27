@@ -586,6 +586,101 @@ export default createConfig({
 </Tab>
 </Tabs>
 
+## Compression
+
+You can enable compression for any connector to reduce storage size and potentially avoid size limitations. This is particularly useful for large JSON-RPC responses like blocks with many transactions or trace results.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+<Tab>
+```yaml filename="erpc.yaml"
+database:
+  evmJsonRpcCache:
+    connectors:
+      - id: "postgres-cache"
+        driver: "postgresql"
+        postgresql:
+          connectionUri: "postgres://user:password@localhost:5432/erpc"
+          table: "cache"
+        # Compression configuration
+        compression:
+          type: "zstd"  # Options: "none", "gzip", "zstd"
+          level: 3      # Compression level (higher = better compression but slower)
+```
+</Tab>
+<Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  database: {
+    evmJsonRpcCache: {
+      connectors: [{
+        id: "postgres-cache",
+        driver: "postgresql",
+        postgresql: {
+          connectionUri: "postgres://user:password@localhost:5432/erpc",
+          table: "cache"
+        },
+        // Compression configuration
+        compression: {
+          type: "zstd",  // "none" | "gzip" | "zstd"
+          level: 3       // Compression level
+        }
+      }]
+    }
+  }
+});
+```
+</Tab>
+</Tabs>
+
+### Compression Options
+
+- **Type**:
+  - `none`: No compression (default)
+  - `gzip`: Standard gzip compression (good compatibility)
+  - `zstd`: Zstandard compression (better performance and compression ratio)
+
+- **Level**:
+  - For `gzip`: 1-9 (1 = fastest, 9 = best compression)
+  - For `zstd`: 1-22 (1 = fastest, 22 = best compression)
+  - Default is 3 if not specified
+
+### Benefits and Trade-offs
+
+**Benefits:**
+- Significantly reduces storage requirements
+- Can reduce network transfer costs with remote databases
+- Works with all connector types
+
+**Trade-offs:**
+- Adds CPU overhead for compression/decompression (typically single-digit ms)
+- Slightly increases latency for cache operations
+- Very small responses may not benefit from compression
+
+### Recommended Settings
+
+For most use cases, we recommend:
+```yaml
+compression:
+  type: "zstd"
+  level: 3  # Good balance between speed and compression
+```
+
+For maximum compression (when storage is critical):
+```yaml
+compression:
+  type: "zstd"
+  level: 19  # Very high compression, but slower
+```
+
+For maximum speed (when CPU is critical):
+```yaml
+compression:
+  type: "zstd"
+  level: 1  # Fastest compression
+```
+
 ### Cacheable methods
 Methods are cached if they include a `blockNumber` or `blockHash` in the request or response, allowing cache invalidation during blockchain reorgs.
 If no blockNumber is present, caching is still viable if the method returns data unaffected by reorgs, like `eth_chainId`, or if the data won't change after a reorg, such as `eth_getTransactionReceipt`.
