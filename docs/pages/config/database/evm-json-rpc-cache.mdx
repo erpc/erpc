@@ -527,6 +527,65 @@ Make sure to properly test your dApps/indexer full flow to ensure unfinalized da
 
 For chains which do not support "finalized" block method, eRPC will consider last 1024 blocks unfinalized. This number can be configured via `network.evm.fallbackFinalityDepth`.
 
+## Size Limits
+ 
+The `minItemSize` and `maxItemSize` parameters allow you to control which responses are cached based on their size:
+ 
+- `minItemSize`: Only cache responses larger than this threshold (e.g., "1KB", "10KB")
+- `maxItemSize`: Only cache responses smaller than this threshold (e.g., "100KB", "1MB")
+ 
+These parameters are useful for:
+ 
+1. **Preventing database errors**: Some backends like PostgreSQL have size limitations for indexed values
+2. **Optimizing storage usage**: Avoid caching very large responses that might consume too much storage
+3. **Performance tuning**: Skip caching tiny responses where the overhead might exceed the benefit
+ 
+Example policy with size limits:
+ 
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+<Tab>
+```yaml filename="erpc.yaml"
+database:
+  evmJsonRpcCache:
+    policies:
+      # Cache only responses between 100 bytes and 8KB
+      - network: "*"
+        method: "eth_getBlockByNumber"
+        finality: finalized
+        minItemSize: "100B"
+        maxItemSize: "8KB"
+        connector: "postgres-cache"
+        ttl: 0
+```
+</Tab>
+<Tab>
+```ts filename="erpc.ts"
+import {
+  createConfig,
+  DataFinalityStateFinalized
+} from "@erpc-cloud/config";
+ 
+export default createConfig({
+  database: {
+    evmJsonRpcCache: {
+      policies: [
+        {
+          network: "*",
+          method: "eth_getBlockByNumber",
+          finality: DataFinalityStateFinalized,
+          minItemSize: "0B",
+          maxItemSize: "8KB",
+          connector: "postgres-cache",
+          ttl: 0
+        }
+      ]
+    }
+  }
+});
+```
+</Tab>
+</Tabs>
+
 ### Cacheable methods
 Methods are cached if they include a `blockNumber` or `blockHash` in the request or response, allowing cache invalidation during blockchain reorgs.
 If no blockNumber is present, caching is still viable if the method returns data unaffected by reorgs, like `eth_chainId`, or if the data won't change after a reorg, such as `eth_getTransactionReceipt`.

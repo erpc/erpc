@@ -149,7 +149,7 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 
 	// Create index for reverse lookups
 	_, err = conn.Exec(ctx, fmt.Sprintf(`
-		CREATE INDEX IF NOT EXISTS idx_reverse ON %s (partition_key, range_key) INCLUDE (value)
+		CREATE INDEX IF NOT EXISTS idx_reverse ON %s (partition_key, range_key)
 	`, cfg.Table))
 	if err != nil {
 		return fmt.Errorf("failed to create reverse index: %w", err)
