@@ -518,6 +518,9 @@ func extractBlockRange(filter map[string]interface{}) (fromBlock, toBlock int64,
 func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.Upstream, r *common.NormalizedRequest, subRequests []ethGetLogsSubRequest, skipCacheRead bool) (*common.JsonRpcResponse, error) {
 	logger := u.Logger().With().Str("method", "eth_getLogs").Interface("id", r.ID()).Logger()
 
+	r.SetIsCompositeRequest(true)
+	r.SetCompositeType("logs-split")
+
 	wg := sync.WaitGroup{}
 	responses := make([]*common.JsonRpcResponse, 0)
 	errs := make([]error, 0)
@@ -554,6 +557,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 			// TODO dr.UseUpstream = u.Config().Id should we force this (or opposite of it)?
 			sbnrq.SetDirectives(dr)
 			sbnrq.SetNetwork(n)
+			sbnrq.SetParentRequestId(r.ID())
 
 			rs, re := n.Forward(ctx, sbnrq)
 			if re != nil {
