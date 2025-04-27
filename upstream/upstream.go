@@ -290,8 +290,8 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				u.networkId,
 				method,
 			)
-			telemetry.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method, strconv.Itoa(exec.Attempts())).Inc()
-			timer := u.metricsTracker.RecordUpstreamDurationStart(cfg.Id, u.networkId, method)
+			telemetry.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method, strconv.Itoa(exec.Attempts()), req.CompositeType()).Inc()
+			timer := u.metricsTracker.RecordUpstreamDurationStart(cfg.Id, u.networkId, method, req.CompositeType())
 			defer timer.ObserveDuration()
 
 			resp, errCall := jsonRpcClient.SendRequest(ctx, req)
@@ -337,7 +337,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 							method,
 						)
 					}
-					telemetry.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method, common.ErrorFingerprint(errCall), string(severity)).Inc()
+					telemetry.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method, common.ErrorFingerprint(errCall), string(severity), req.CompositeType()).Inc()
 				}
 
 				if exec != nil {

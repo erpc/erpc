@@ -253,6 +253,11 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (f
 			var ok bool
 			req, ok = r.(*common.NormalizedRequest)
 			if ok && req != nil {
+				if req.IsCompositeRequest() {
+					logger.Debug().Str("method", method).Interface("id", req.ID()).Str("compositeType", req.CompositeType()).Msgf("ignoring hedge for composite request")
+					return false
+				}
+				
 				method, _ = req.Method()
 				if method != "" && evm.IsWriteMethod(method) {
 					logger.Debug().Str("method", method).Interface("id", req.ID()).Msgf("ignoring hedge for write request")
@@ -296,6 +301,10 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 	builder.HandleIf(func(result *common.NormalizedResponse, err error) bool {
 		// Node-level execution exceptions (e.g. reverted eth_call) -> No Retry
 		if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+			return false
+		}
+
+		if result != nil && result.Request() != nil && result.Request().IsCompositeRequest() {
 			return false
 		}
 
