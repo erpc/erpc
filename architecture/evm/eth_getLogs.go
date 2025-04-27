@@ -519,7 +519,7 @@ func executeGetLogsSubRequests(ctx context.Context, n common.Network, u common.U
 	logger := u.Logger().With().Str("method", "eth_getLogs").Interface("id", r.ID()).Logger()
 
 	r.SetIsCompositeRequest(true)
-	r.SetCompositeType("logs-split")
+	r.SetCompositeType(common.CompositeTypeLogsSplit)
 
 	wg := sync.WaitGroup{}
 	responses := make([]*common.JsonRpcResponse, 0)

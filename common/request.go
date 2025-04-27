@@ -1,5 +1,10 @@
 package common
 
+const (
+	CompositeTypeNone     = "none"
+	CompositeTypeLogsSplit = "logs-split"
+)
+
 import (
 	"context"
 	"fmt"
@@ -75,21 +80,25 @@ type NormalizedRequest struct {
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {
-	return &NormalizedRequest{
+	nr := &NormalizedRequest{
 		body: body,
 		directives: &RequestDirectives{
 			RetryEmpty: true,
 		},
 	}
+	nr.compositeType.Store(CompositeTypeNone)
+	return nr
 }
 
 func NewNormalizedRequestFromJsonRpcRequest(jsonRpcRequest *JsonRpcRequest) *NormalizedRequest {
-	return &NormalizedRequest{
+	nr := &NormalizedRequest{
 		jsonRpcRequest: jsonRpcRequest,
 		directives: &RequestDirectives{
 			RetryEmpty: true,
 		},
 	}
+	nr.compositeType.Store(CompositeTypeNone)
+	return nr
 }
 
 func (r *NormalizedRequest) SetLastUpstream(upstream Upstream) *NormalizedRequest {
