@@ -75,7 +75,7 @@ COPY --from=ts-dev /temp/dev/typescript /typescript
 COPY --from=ts-prod /temp/prod/node_modules /node_modules
 
 # Expose ports
-EXPOSE 8080 6060 4000
+EXPOSE 4000 4001 6060
 
 # Run the server
 CMD ["/erpc-server"]
