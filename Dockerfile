@@ -74,8 +74,8 @@ FROM gcr.io/distroless/static-debian12:nonroot AS final
 COPY --from=go-builder /build/erpc-server /
 COPY --from=go-builder /build/erpc-server-pprof /
 
-# Copy symlinked directory
-COPY --from=symlink /root /root
+# Copy symlinked directory with preserved symlinks
+COPY --from=symlink --link /root /root
 
 # Copy TypeScript package files from ts-dev and ts-prod
 COPY --from=ts-dev /temp/dev/typescript /typescript
