@@ -102,6 +102,9 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
 		require.NoError(t, err)
 
+		err = erpcInstance.Bootstrap(ctx)
+		require.NoError(t, err)
+
 		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
 		require.NoError(t, err)
 
@@ -240,6 +243,9 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			panic(err)
 		}
 		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
+		require.NoError(t, err)
+
+		err = erpcInstance.Bootstrap(ctx)
 		require.NoError(t, err)
 
 		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
@@ -382,6 +388,9 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			panic(err)
 		}
 		erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
+		require.NoError(t, err)
+
+		err = erpcInstance.Bootstrap(ctx)
 		require.NoError(t, err)
 
 		httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
@@ -7425,6 +7434,9 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 		panic(err)
 	}
 	erpcInstance, err := NewERPC(ctx, &logger, ssr, nil, cfg)
+	require.NoError(t, err)
+
+	err = erpcInstance.Bootstrap(ctx)
 	require.NoError(t, err)
 
 	httpServer, err := NewHttpServer(ctx, &logger, cfg.Server, cfg.HealthCheck, cfg.Admin, erpcInstance)
