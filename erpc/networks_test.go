@@ -956,6 +956,10 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		err = pup1.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
 		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
@@ -963,6 +967,10 @@ func TestNetwork_Forward(t *testing.T) {
 		pup1.Client = cl1
 
 		pup2, err := upr.NewUpstream(up2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = pup2.Bootstrap(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1003,9 +1011,6 @@ func TestNetwork_Forward(t *testing.T) {
 		poller := pup1.EvmStatePoller()
 		poller.SuggestLatestBlock(9)
 		poller.SuggestFinalizedBlock(8)
-
-		// TODO pup1.SetEvmSyncingState(common.EvmSyncingStateNotSyncing)
-		// TODO pup2.SetEvmSyncingState(common.EvmSyncingStateNotSyncing)
 
 		upstream.ReorderUpstreams(upr)
 
@@ -1153,6 +1158,10 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		err = pup1.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
 		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
@@ -1160,6 +1169,10 @@ func TestNetwork_Forward(t *testing.T) {
 		pup1.Client = cl1
 
 		pup2, err := upr.NewUpstream(up2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = pup2.Bootstrap(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1351,6 +1364,10 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		err = pup1.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
 		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
@@ -1358,6 +1375,10 @@ func TestNetwork_Forward(t *testing.T) {
 		pup1.Client = cl1
 
 		pup2, err := upr.NewUpstream(up2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = pup2.Bootstrap(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1536,6 +1557,10 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		err = pup1.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
 		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
@@ -1543,6 +1568,10 @@ func TestNetwork_Forward(t *testing.T) {
 		pup1.Client = cl1
 
 		pup2, err := upr.NewUpstream(up2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = pup2.Bootstrap(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1733,6 +1762,10 @@ func TestNetwork_Forward(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		err = pup1.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
 		cl1, err := clr.GetOrCreateClient(ctx, pup1)
 		if err != nil {
 			t.Fatal(err)
@@ -1740,6 +1773,10 @@ func TestNetwork_Forward(t *testing.T) {
 		pup1.Client = cl1
 
 		pup2, err := upr.NewUpstream(up2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = pup2.Bootstrap(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -8813,6 +8850,10 @@ func setupTestNetworkSimple(t *testing.T, ctx context.Context, upstreamConfig *c
 	if upstreamConfig.Id == "test" {
 		h, _ := common.HexToInt64("0x1273c18")
 		upsList := upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
+		err = upsList[0].Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
 		upsList[0].EvmStatePoller().SuggestFinalizedBlock(h)
 		upsList[0].EvmStatePoller().SuggestLatestBlock(h)
 	}
@@ -8925,6 +8966,10 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.C
 
 	fb1, _ := common.HexToInt64("0x11117777")
 	upsList := upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
+	err = upsList[0].Bootstrap(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	upsList[0].EvmStatePoller().SuggestFinalizedBlock(fb1)
 	lb1, _ := common.HexToInt64("0x11118888")
 	upsList[0].EvmStatePoller().SuggestLatestBlock(lb1)

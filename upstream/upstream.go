@@ -36,6 +36,7 @@ type Upstream struct {
 	networkId            string
 	supportedMethods     sync.Map
 	metricsTracker       *health.Tracker
+	sharedStateRegistry  data.SharedStateRegistry
 	timeoutDuration      *time.Duration
 	failsafeExecutor     failsafe.Executor[*common.NormalizedResponse]
 	rateLimitersRegistry *RateLimitersRegistry
@@ -77,6 +78,7 @@ func NewUpstream(
 		config:               cfg,
 		vendor:               vn,
 		metricsTracker:       mt,
+		sharedStateRegistry:  ssr,
 		timeoutDuration:      timeoutDuration,
 		failsafeExecutor:     failsafe.NewExecutor(policiesArray...),
 		rateLimitersRegistry: rlr,
@@ -102,10 +104,6 @@ func NewUpstream(
 		pup.Client = client
 	}
 
-	if pup.config.Type == common.UpstreamTypeEvm {
-		pup.evmStatePoller = evm.NewEvmStatePoller(projectId, appCtx, &lg, pup, mt, ssr)
-	}
-
 	lg.Debug().Msgf("prepared upstream")
 
 	return pup, nil
@@ -115,6 +113,10 @@ func (u *Upstream) Bootstrap(ctx context.Context) error {
 	err := u.detectFeatures(ctx)
 	if err != nil {
 		return err
+	}
+
+	if u.config.Type == common.UpstreamTypeEvm {
+		u.evmStatePoller = evm.NewEvmStatePoller(u.ProjectId, u.appCtx, u.logger, u, u.metricsTracker, u.sharedStateRegistry)
 	}
 
 	if u.evmStatePoller != nil {

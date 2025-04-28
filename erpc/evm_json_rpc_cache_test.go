@@ -37,7 +37,7 @@ type upsTestCfg struct {
 	lstBn   int64
 }
 
-func createCacheTestFixtures(upstreamConfigs []upsTestCfg) ([]*data.MockConnector, *Network, []*upstream.Upstream, *evm.EvmJsonRpcCache) {
+func createCacheTestFixtures(ctx context.Context, upstreamConfigs []upsTestCfg) ([]*data.MockConnector, *Network, []*upstream.Upstream, *evm.EvmJsonRpcCache) {
 	logger := log.Logger
 
 	mockConnector1 := data.NewMockConnector("mock1")
@@ -55,7 +55,7 @@ func createCacheTestFixtures(upstreamConfigs []upsTestCfg) ([]*data.MockConnecto
 
 	clr := clients.NewClientRegistry(&logger, "prjA", nil)
 	vr := thirdparty.NewVendorsRegistry()
-	ssr, err := data.NewSharedStateRegistry(context.Background(), &logger, &common.SharedStateConfig{
+	ssr, err := data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{
 		Connector: &common.ConnectorConfig{
 			Driver: "memory",
 			Memory: &common.MemoryConnectorConfig{
@@ -74,7 +74,7 @@ func createCacheTestFixtures(upstreamConfigs []upsTestCfg) ([]*data.MockConnecto
 		if err != nil {
 			panic(err)
 		}
-		mockUpstream, err := upstream.NewUpstream(context.Background(), "test", &common.UpstreamConfig{
+		mockUpstream, err := upstream.NewUpstream(ctx, "test", &common.UpstreamConfig{
 			Id:       cfg.id,
 			Endpoint: "http://rpc1.localhost",
 			Type:     common.UpstreamTypeEvm,
@@ -83,6 +83,11 @@ func createCacheTestFixtures(upstreamConfigs []upsTestCfg) ([]*data.MockConnecto
 				StatePollerInterval: common.Duration(1 * time.Minute),
 			},
 		}, clr, rlr, vr, &logger, mt, ssr)
+		if err != nil {
+			panic(err)
+		}
+
+		err = mockUpstream.Bootstrap(ctx)
 		if err != nil {
 			panic(err)
 		}
@@ -107,7 +112,9 @@ func createCacheTestFixtures(upstreamConfigs []upsTestCfg) ([]*data.MockConnecto
 
 func TestEvmJsonRpcCache_Set(t *testing.T) {
 	t.Run("DoNotCacheWhenEthGetTransactionByHashMissingBlockNumber", func(t *testing.T) {
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionByHash","params":["0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"],"id":1}`))
 		req.SetNetwork(mockNetwork)
@@ -123,7 +130,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("CacheIfBlockNumberIsFinalizedWhenBlockIsIrrelevantForPrimaryKey", func(t *testing.T) {
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getTransactionReceipt","params":["0xabc",false],"id":1}`))
 		req.SetNetwork(mockNetwork)
@@ -151,7 +160,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("CacheIfBlockNumberIsFinalizedWhenBlockIsUsedForPrimaryKey", func(t *testing.T) {
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x2",false],"id":1}`))
 		req.SetNetwork(mockNetwork)
@@ -178,7 +189,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("SkipWhenNoRefAndNoBlockNumberFound", func(t *testing.T) {
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
 		req.SetNetwork(mockNetwork)
@@ -194,7 +207,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("CacheIfBlockRefFoundWhetherBlockNumberExistsOrNot", func(t *testing.T) {
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
 		testCases := []struct {
 			name        string
@@ -254,7 +269,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("CacheResponseForFinalizedBlock", func(t *testing.T) {
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1",false],"id":1}`))
 		req.SetNetwork(mockNetwork)
@@ -281,7 +298,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("SkipCachingForUnfinalizedBlock", func(t *testing.T) {
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x399",false],"id":1}`))
 		req.SetNetwork(mockNetwork)
@@ -297,7 +316,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("ShouldNotCacheEmptyResponseIfNodeNotSynced", func(t *testing.T) {
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateSyncing, finBn: 10, lstBn: 15}})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateSyncing, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
 		req.SetNetwork(mockNetwork)
@@ -313,7 +334,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("ShouldNotCacheEmptyResponseIfUnknownSyncState", func(t *testing.T) {
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
 		req.SetNetwork(mockNetwork)
@@ -329,7 +352,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("ShouldNotCacheEmptyResponseIfBlockNotFinalized", func(t *testing.T) {
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x14"],"id":1}`))
 		req.SetNetwork(mockNetwork)
@@ -345,7 +370,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("ShouldNotCacheEmptyResponseIfCannotDetermineBlockNumber", func(t *testing.T) {
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","latest"],"id":1}`))
 		req.SetNetwork(mockNetwork)
@@ -361,7 +388,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("ShouldCacheEmptyResponseIfNodeSyncedAndBlockFinalized", func(t *testing.T) {
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
 		req.SetNetwork(mockNetwork)
@@ -388,7 +417,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("StoreOnAllMatchingConnectors", func(t *testing.T) {
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
 		})
 
@@ -429,7 +460,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("RespectFinalityStateWhenStoring", func(t *testing.T) {
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
 		})
 
@@ -472,7 +505,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 
 	t.Run("CachingBehaviorWithDefaultConfig", func(t *testing.T) {
 		// Create test fixtures with default config
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
 		})
 
@@ -555,7 +590,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				method:         "eth_getAccount",
 				params:         `["0xabc","0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"]`,
 				result:         `"result":{"balance":"0x123"}`,
-				expectedCache:  true, // Falls to Unknown rule (30 s TTL)
+				expectedCache:  true, // Falls to Unknown rule (30 s TTL)
 				expectedPolicy: unknownPolicy,
 			},
 			{
@@ -675,7 +710,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("CustomPolicyForLatestBlocks", func(t *testing.T) {
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
 		})
 
@@ -707,7 +744,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 	})
 
 	t.Run("CustomPolicyForFinalizedTag", func(t *testing.T) {
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
 		})
 
@@ -742,7 +781,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 
 	t.Run("ServeFinalizedBlock_WhenRequestedByFinalizedBlockNumber", func(t *testing.T) {
 		// The upstream just marked block 0x14 (20 dec) as finalized.
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
 		})
 
@@ -777,7 +818,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 
 	t.Run("SkipCache_WhenRequestedByFinalizedTag_WithDefaultFinalizedPolicy", func(t *testing.T) {
 		// The upstream just marked block 0x14 (20 dec) as finalized
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
 		})
 
@@ -821,7 +864,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 
 	t.Run("SkipCache_WhenRequestedByFinalizedTag_WithRealtimePolicy", func(t *testing.T) {
 		// The upstream just marked block 0x14 (20 dec) as finalized
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 20, lstBn: 25},
 		})
 
@@ -875,7 +920,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 
 	t.Run("SkipCache_WhenFinalizedTagAfterNumericCache_WithDefaultFinalizedPolicy", func(t *testing.T) {
 		// upstream finalized height = 25 (0x19); we will write block 0x18 (24).
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 25, lstBn: 30},
 		})
 
@@ -921,7 +968,9 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 
 func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 	t.Run("ShouldSetTTLWhenPolicyDefinesIt", func(t *testing.T) {
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
 		})
 
@@ -952,7 +1001,9 @@ func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 	})
 
 	t.Run("ShouldNotSetTTLWhenPolicyDoesNotDefineIt", func(t *testing.T) {
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123","0x5"],"id":1}`))
 		req.SetNetwork(mockNetwork)
@@ -968,7 +1019,9 @@ func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 	})
 
 	t.Run("ShouldRespectPolicyNetworkAndMethodMatching", func(t *testing.T) {
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}})
 
 		policy0, err0 := data.NewCachePolicy(&common.CachePolicyConfig{
 			Network: "evm:123",
@@ -1010,7 +1063,9 @@ func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 
 func TestEvmJsonRpcCache_Get(t *testing.T) {
 	t.Run("ReturnCachedResponseForFinalizedBlock", func(t *testing.T) {
-		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x1",false],"id":1}`))
 		req.SetNetwork(mockNetwork)
@@ -1039,7 +1094,9 @@ func TestEvmJsonRpcCache_Get(t *testing.T) {
 	})
 
 	t.Run("SkipCacheForUnfinalizedBlock", func(t *testing.T) {
-		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x32345",false],"id":1}`))
 		req.SetNetwork(mockNetwork)
@@ -1052,7 +1109,9 @@ func TestEvmJsonRpcCache_Get(t *testing.T) {
 	})
 
 	t.Run("CheckAllConnectorsInOrder", func(t *testing.T) {
-		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures([]upsTestCfg{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, _, cache := createCacheTestFixtures(ctx, []upsTestCfg{
 			{id: "upsA", syncing: common.EvmSyncingStateUnknown, finBn: 10, lstBn: 15},
 		})
 
@@ -1101,7 +1160,9 @@ func TestEvmJsonRpcCache_Get(t *testing.T) {
 
 func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
 	t.Run("ShouldNotCacheEmptyResponseWhenUpstreamIsNotSynced", func(t *testing.T) {
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateSyncing, finBn: 10, lstBn: 15}})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateSyncing, finBn: 10, lstBn: 15}})
 
 		req := common.NewNormalizedRequest([]byte(`{
 			"jsonrpc": "2.0",
@@ -1122,7 +1183,9 @@ func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
 	})
 
 	t.Run("ShouldNotCacheEmptyResponseWhenBlockNotFinalizedOnSpecificUpstream", func(t *testing.T) {
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 3, lstBn: 15},
 			{id: "upsB", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 16},
 		})
@@ -1141,7 +1204,9 @@ func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
 	})
 
 	t.Run("ShouldCacheEmptyResponseWhenBlockFinalizedOnSpecificUpstream", func(t *testing.T) {
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 3, lstBn: 15},
 			{id: "upsB", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 16},
 		})
@@ -1172,7 +1237,9 @@ func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
 	})
 
 	t.Run("ShouldCacheEmptyResponseWhenBlockFinalizedOnSpecificNonSyncedUpstream", func(t *testing.T) {
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 3, lstBn: 15},
 			{id: "upsB", syncing: common.EvmSyncingStateSyncing, finBn: 10, lstBn: 16},
 		})
@@ -1406,7 +1473,9 @@ func TestEvmJsonRpcCache_MatchParams(t *testing.T) {
 
 func TestEvmJsonRpcCache_EmptyStates(t *testing.T) {
 	t.Run("EmptyStateBehaviors", func(t *testing.T) {
-		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
 			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
 		})
 
@@ -1547,7 +1616,9 @@ func TestEvmJsonRpcCache_EmptyStates(t *testing.T) {
 }
 
 func TestEvmJsonRpcCache_ItemSizeLimits(t *testing.T) {
-	mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures([]upsTestCfg{
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
 		{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
 	})
 
@@ -2344,6 +2415,9 @@ func createMockUpstream(t *testing.T, ctx context.Context, chainId int64, upstre
 			StatePollerInterval: common.Duration(1 * time.Minute),
 		},
 	}, clr, rlr, vr, &logger, mt, ssr)
+	require.NoError(t, err)
+
+	err = mockUpstream.Bootstrap(ctx)
 	require.NoError(t, err)
 
 	poller := mockUpstream.EvmStatePoller()
