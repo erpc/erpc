@@ -105,7 +105,20 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		// "Capacity-exceeded / rate-limiting / billing" errors
 		//----------------------------------------------------------------
 
-		if r.StatusCode == 429 ||
+		if r.StatusCode == 402 ||
+			strings.Contains(msg, "reached the free tier") ||
+			strings.Contains(msg, "Monthly capacity limit") {
+			// Specific billing-tier exhaustion or subscription limit
+			return common.NewErrEndpointBillingIssue(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorCapacityExceeded,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+		} else if r.StatusCode == 429 ||
 			strings.Contains(msg, "requests limited to") ||
 			strings.Contains(msg, "has exceeded") ||
 			strings.Contains(msg, "Exceeded the quota") ||
@@ -118,18 +131,6 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "upgrade your tier") ||
 			strings.Contains(msg, "rate limited") {
 			return common.NewErrEndpointCapacityExceeded(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorCapacityExceeded,
-					err.Message,
-					nil,
-					details,
-				),
-			)
-		} else if strings.Contains(msg, "reached the free tier") ||
-			strings.Contains(msg, "Monthly capacity limit") {
-			// Specific billing-tier exhaustion or subscription limit
-			return common.NewErrEndpointBillingIssue(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
 					common.JsonRpcErrorCapacityExceeded,
