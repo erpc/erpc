@@ -318,6 +318,10 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 	defer span.End()
 	return e.latestBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		e.logger.Trace().Msg("fetching latest block number for evm state poller")
+		telemetry.MetricUpstreamLatestBlockPolled.WithLabelValues(
+			e.projectId,
+			e.upstream.NetworkId(),
+			e.upstream.Config().Id,
 		).Inc()
 
 		// Use multiplexer to fetch the block
@@ -330,12 +334,13 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 			blockNum, _ = result.(int64)
 		}
 
-		if err != nil {
-			if common.HasErrorCode(err,
-				common.ErrCodeUpstreamRequestSkipped,
-				common.ErrCodeUpstreamMethodIgnored,
-				common.ErrCodeEndpointUnsupported,
-				common.ErrCodeEndpointMissingData,
+		if err != nil || blockNum == 0 {
+			if err == nil ||
+				common.HasErrorCode(err,
+					common.ErrCodeUpstreamRequestSkipped,
+					common.ErrCodeUpstreamMethodIgnored,
+					common.ErrCodeEndpointUnsupported,
+					common.ErrCodeEndpointMissingData,
 			) || common.IsClientError(err) {
 				e.stateMu.Lock()
 				// Only skip after multiple consecutive failures if we've never had a success
