@@ -27,6 +27,31 @@ const DefaultToleratedBlockHeadRollback = 1024
 
 var _ common.EvmStatePoller = &EvmStatePoller{}
 
+// helps prevent redundant concurrent polls for the same state
+type pollingMultiplexer struct {
+	result interface{}
+	err    error
+	done   chan struct{}
+	mu     sync.RWMutex
+	once   sync.Once
+}
+
+func newPollingMultiplexer() *pollingMultiplexer {
+	return &pollingMultiplexer{
+		done: make(chan struct{}),
+	}
+}
+
+func (m *pollingMultiplexer) Close(result interface{}, err error) {
+	m.once.Do(func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.result = result
+		m.err = err
+		close(m.done)
+	})
+}
+
 type EvmStatePoller struct {
 	Enabled bool
 
@@ -73,6 +98,9 @@ type EvmStatePoller struct {
 	latestBlockShared         data.CounterInt64SharedVariable
 
 	stateMu sync.RWMutex
+
+	// Multiplexing for concurrent poll operations
+	inFlightPolling *sync.Map
 }
 
 func NewEvmStatePoller(
@@ -234,7 +262,16 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 			return
 		}
 
-		syncing, err := e.fetchSyncingState(ctx)
+		// Use multiplexer to fetch syncing state
+		result, err := e.executeMultiplexedPoll(ctx, "syncing", func(pollCtx context.Context) (interface{}, error) {
+			return e.fetchSyncingState(pollCtx)
+		})
+
+		syncing := false
+		if result != nil {
+			syncing, _ = result.(bool)
+		}
+
 		if err != nil {
 			if !e.skipSyncingCheck {
 				e.logger.Warn().Bool("syncingResult", syncing).Err(err).Msg("failed to get syncing state in evm state poller")
@@ -310,16 +347,24 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 			e.upstream.NetworkId(),
 			e.upstream.Config().Id,
 		).Inc()
-		blockNum, err := e.fetchBlock(ctx, "latest")
-		if err != nil || blockNum == 0 {
-			if err == nil ||
-				common.HasErrorCode(err,
-					common.ErrCodeUpstreamRequestSkipped,
-					common.ErrCodeUpstreamMethodIgnored,
-					common.ErrCodeEndpointUnsupported,
-					common.ErrCodeEndpointMissingData,
-				) ||
-				common.IsClientError(err) {
+
+		// Use multiplexer to fetch the block
+		result, err := e.executeMultiplexedPoll(ctx, "latest", func(pollCtx context.Context) (interface{}, error) {
+			return e.fetchBlock(pollCtx, "latest")
+		})
+
+		blockNum := int64(0)
+		if result != nil {
+			blockNum, _ = result.(int64)
+		}
+
+		if err != nil {
+			if common.HasErrorCode(err,
+				common.ErrCodeUpstreamRequestSkipped,
+				common.ErrCodeUpstreamMethodIgnored,
+				common.ErrCodeEndpointUnsupported,
+				common.ErrCodeEndpointMissingData,
+			) || common.IsClientError(err) {
 				e.stateMu.Lock()
 				// Only skip after multiple consecutive failures if we've never had a success
 				if !e.latestBlockSuccessfulOnce {
@@ -385,6 +430,7 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 			e.upstream.Config().Id,
 		).Inc()
 
+<<<<<<< HEAD
 		// Actually fetch from upstream
 		blockNum, err := e.fetchBlock(ctx, "finalized")
 		if err != nil || blockNum == 0 {
@@ -395,6 +441,25 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 					common.ErrCodeEndpointUnsupported,
 					common.ErrCodeEndpointMissingData,
 				) || common.IsClientError(err) {
+=======
+		// Use multiplexer to fetch the block
+		result, err := e.executeMultiplexedPoll(ctx, "finalized", func(pollCtx context.Context) (interface{}, error) {
+			return e.fetchBlock(pollCtx, "finalized")
+		})
+
+		blockNum := int64(0)
+		if result != nil {
+			blockNum, _ = result.(int64)
+		}
+
+		if err != nil {
+			if common.HasErrorCode(err,
+				common.ErrCodeUpstreamRequestSkipped,
+				common.ErrCodeUpstreamMethodIgnored,
+				common.ErrCodeEndpointUnsupported,
+				common.ErrCodeEndpointMissingData,
+			) || common.IsClientError(err) {
+>>>>>>> 2b2c028e (feat: implement polling multiplexer to optimize concurrent state polling in EvmStatePoller)
 				e.stateMu.Lock()
 				// Only skip after multiple consecutive failures if we've never had a success
 				if !e.finalizedBlockSuccessfulOnce {
@@ -517,6 +582,53 @@ func (e *EvmStatePoller) shouldSkipFinalizedCheck() bool {
 	defer e.stateMu.RUnlock()
 
 	return e.skipFinalizedCheck
+}
+
+// executeMultiplexedPoll handles concurrent requests for the same polling operation.
+// It ensures that only one actual poll function (e.g fetchFn) is executed for a given operationKey
+// while other concurrent callers wait for the result.
+func (e *EvmStatePoller) executeMultiplexedPoll(
+	ctx context.Context,
+	operationKey string,
+	fetchFn func(context.Context) (interface{}, error),
+) (interface{}, error) {
+	// Use a unique key per upstream and operation
+	mapKey := fmt.Sprintf("%s/%s", e.upstream.Config().Id, operationKey)
+
+	// Try to load an existing multiplexer
+	existingMux, loaded := e.inFlightPolling.LoadOrStore(mapKey, newPollingMultiplexer())
+	mux := existingMux.(*pollingMultiplexer)
+
+	if loaded {
+		// Another goroutine is already fetching, wait for its result
+		e.logger.Trace().Str("operation", operationKey).Msg("multiplexer hit, waiting for existing poll result")
+		select {
+		case <-mux.done:
+			// Result is ready
+			mux.mu.RLock()
+			defer mux.mu.RUnlock()
+			e.logger.Trace().Str("operation", operationKey).Msg("multiplexer finished waiting")
+			return mux.result, mux.err
+		case <-ctx.Done():
+			// Context cancelled while waiting
+			e.logger.Warn().Str("operation", operationKey).Err(ctx.Err()).Msg("context cancelled while waiting for multiplexed poll")
+			return nil, ctx.Err()
+		}
+	} else {
+		// This goroutine is the leader, execute the fetch function
+		e.logger.Trace().Str("operation", operationKey).Msg("multiplexer miss, executing poll")
+		// Ensure cleanup happens even if fetchFn panics
+		defer e.inFlightPolling.Delete(mapKey)
+
+		// Execute the actual poll
+		result, err := fetchFn(ctx)
+
+		// Close the multiplexer to signal completion to waiters
+		mux.Close(result, err)
+		e.logger.Trace().Str("operation", operationKey).Msg("multiplexer poll finished and closed")
+
+		return result, err
+	}
 }
 
 func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64, error) {
