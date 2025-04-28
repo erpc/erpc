@@ -37,42 +37,229 @@ func init() {
 
 func TestNetwork_Forward(t *testing.T) {
 
-	t.Run("ForwardHandles1000GetLogsBeyondLatest", func(t *testing.T) {
+	t.Run("ForwardThunderingHerdGetLogs", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 
-		// ---------------------------------------------------------------------
-		// Mock the state-poller’s eth_getBlockByNumber("latest") call → 0x9
-		// This will be called by the EvmStatePoller during its background polling
-		// ---------------------------------------------------------------------
+		//------------------------------------------------------------
+		// 1.  RPC stubs
+		//------------------------------------------------------------
+		const herd = 1_000
+		// First eth_getBlockByNumber("latest") during the herd – slow so the lock stays held
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Times(1).
+			Filter(func(r *http.Request) bool {
+				b := util.SafeReadBody(r)
+				return strings.Contains(b, `"eth_getBlockByNumber"`) &&
+					strings.Contains(b, `"latest"`)
+			}).
+			Reply(200).
+			Delay(300 * time.Millisecond).              // <- keeps leader busy
+			JSON([]byte(`{"result":{"number":"0xa"}}`)) // 10
+
+		// Subsequent "latest" polls – fast, unlimited
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				b := util.SafeReadBody(r)
+				return strings.Contains(b, `"eth_getBlockByNumber"`) &&
+					strings.Contains(b, `"latest"`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0xa"}}`))
+
+		// eth_getBlockByNumber("finalized")
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `"eth_getBlockByNumber"`) &&
+					strings.Contains(body, `"finalized"`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":null}`))
+
+		// eth_syncing
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), `"eth_syncing"`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":false}`))
+
+		//----------------------------------------------------------------------
+		// 2) Network / poller set-up
+		//----------------------------------------------------------------------
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+
+		upCfg := &common.UpstreamConfig{
+			Id:       "rpc1",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId:             123,
+				StatePollerInterval: common.Duration(0), // we’ll drive it manually
+				StatePollerDebounce: common.Duration(0), // TryUpdateIfStale → 1 s default
+			},
+		}
+
+		vr := thirdparty.NewVendorsRegistry()
+		pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
+		ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000,
+				},
+			},
+		})
+		upr := upstream.NewUpstreamsRegistry(
+			ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg},
+			ssr, rlr, vr, pr, nil, mt, 1*time.Second,
+		)
+		require.NoError(t, upr.Bootstrap(ctx))
+
+		ntwCfg := &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm: &common.EvmNetworkConfig{
+				ChainId: 123,
+				Integrity: &common.EvmIntegrityConfig{
+					EnforceHighestBlock: util.BoolPtr(true),
+				},
+			},
+		}
+		ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+		require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+		require.NoError(t, ntw.Bootstrap(ctx))
+
+		pup := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))[0]
+		poller := pup.EvmStatePoller()
+
+		// Bootstrap value
+		require.NoError(t, poller.Poll(ctx))
+		require.Equal(t, int64(10), poller.LatestBlock())
+
+		//----------------------------------------------------------------------
+		// 3) Sleep 1.1 s so the cached value becomes “stale”
+		//----------------------------------------------------------------------
+		time.Sleep(1100 * time.Millisecond) // TryUpdateIfStale default is 1 s
+
+		//----------------------------------------------------------------------
+		// 4) Fire 1 000 concurrent PollLatestBlockNumber calls directly
+		//    This bypasses forwarding and reproduces the thundering‑herd inside
+		//    CounterInt64SharedVariable.TryUpdateIfStale.
+		//----------------------------------------------------------------------
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(herd)
+		for i := 0; i < herd; i++ {
+			go func() {
+				defer wg.Done()
+				<-start // unleash all goroutines at once
+				_, _ = poller.PollLatestBlockNumber(ctx)
+			}()
+		}
+		close(start)
+		wg.Wait()
+
+		//----------------------------------------------------------------------
+		// 5) Inspect metrics: loads of polls, zero multiplexer hits
+		//----------------------------------------------------------------------
+		polled, err := telemetry.MetricUpstreamLatestBlockPolled.
+			GetMetricWithLabelValues("prjA", util.EvmNetworkId(123), "rpc1")
+		require.NoError(t, err)
+
+		muxHits, err := telemetry.MetricUpstreamMultiplexedPollsTotal.
+			GetMetricWithLabelValues("prjA", util.EvmNetworkId(123), "rpc1", "latest")
+		require.NoError(t, err)
+
+		t.Logf("MetricUpstreamLatestBlockPolled   : %.0f", testutil.ToFloat64(polled))
+		t.Logf("MetricUpstreamMultiplexedPollsTotal: %.0f", testutil.ToFloat64(muxHits))
+
+		require.GreaterOrEqual(t,
+			testutil.ToFloat64(polled),
+			float64(20), // at least 20 duplicate polls proves the herd
+			"expected thundering-herd duplicate polls",
+		)
+
+		require.Equal(t,
+			float64(0),
+			testutil.ToFloat64(muxHits),
+			"no goroutine hit executeMultiplexedPoll – proves herd bypassed mux",
+		)
+	})
+
+	t.Run("ForwardThunderingHerdSyncing", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		//------------------------------------------------------------
+		// 1.  RPC stubs
+		//------------------------------------------------------------
+
+		// eth_getBlockByNumber("latest") – fast, unlimited
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
 			Filter(func(r *http.Request) bool {
 				body := util.SafeReadBody(r)
 				return strings.Contains(body, `"eth_getBlockByNumber"`) &&
 					strings.Contains(body, `"latest"`)
 			}).
 			Reply(200).
-			JSON([]byte(`{"result":{"number":"0x9"}}`)) // Latest block is 9
+			JSON([]byte(`{"result":{"number":"0x9"}}`))
 
-		// Mock every eth_getLogs request → empty result
+		// eth_getBlockByNumber("finalized") – fast, unlimited
 		gock.New("http://rpc1.localhost").
 			Post("").
+			Persist().
 			Filter(func(r *http.Request) bool {
-				return strings.Contains(util.SafeReadBody(r), `"eth_getLogs"`)
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `"eth_getBlockByNumber"`) &&
+					strings.Contains(body, `"finalized"`)
 			}).
-			Times(1000).
 			Reply(200).
-			JSON([]byte(`{"result":[]}`))
+			JSON([]byte(`{"result":null}`))
 
+		// eth_syncing – first call fast (bootstrap)
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Times(1).
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), `"eth_syncing"`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":false}`))
+
+		// eth_syncing – second call *slow* (300 ms) → leader
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Times(1).
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), `"eth_syncing"`)
+			}).
+			Reply(200).
+			Delay(300 * time.Millisecond). // <- keeps leader busy
+			JSON([]byte(`{"result":false}`))
+
+		//------------------------------------------------------------
+		// 2.  Network / poller set-up
+		//------------------------------------------------------------
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		// ---------- Network setup ----------
-		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
-		require.NoError(t, err)
+		rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
 		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+
 		upCfg := &common.UpstreamConfig{
 			Id:       "rpc1",
 			Type:     common.UpstreamTypeEvm,
@@ -80,90 +267,62 @@ func TestNetwork_Forward(t *testing.T) {
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
 				StatePollerInterval: common.Duration(50 * time.Millisecond),
-				StatePollerDebounce: common.Duration(50 * time.Millisecond),
+				StatePollerDebounce: common.Duration(0), // no debounce needed
 			},
 		}
 		vr := thirdparty.NewVendorsRegistry()
-		pr, err := thirdparty.NewProvidersRegistry(&log.Logger, vr, []*common.ProviderConfig{}, nil)
-		require.NoError(t, err)
-		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+		pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
+		ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
 			Connector: &common.ConnectorConfig{Driver: "memory"},
 		})
-		require.NoError(t, err)
 		upr := upstream.NewUpstreamsRegistry(
-			ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg}, ssr, rlr, vr, pr, nil, mt, 1*time.Second,
+			ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg},
+			ssr, rlr, vr, pr, nil, mt, 1*time.Second,
 		)
+
 		ntwCfg := &common.NetworkConfig{
 			Architecture: common.ArchitectureEvm,
-			Evm: &common.EvmNetworkConfig{
-				ChainId: 123,
-				Integrity: &common.EvmIntegrityConfig{
-					EnforceHighestBlock: util.BoolPtr(true), // Ensure highest block check is enabled
-				},
-			},
+			Evm:          &common.EvmNetworkConfig{ChainId: 123},
 		}
-		ntw, err := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
-		require.NoError(t, err)
+		ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
 
-		err = upr.Bootstrap(ctx) // Bootstraps upstream and its poller
-		require.NoError(t, err)
-		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
-		require.NoError(t, err)
-		err = ntw.Bootstrap(ctx)
-		require.NoError(t, err)
-		// -----------------------------------------------------------
+		require.NoError(t, upr.Bootstrap(ctx))
+		require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+		require.NoError(t, ntw.Bootstrap(ctx))
 
-		// Allow time for the poller to run and update the latest block via mocked HTTP calls
-		time.Sleep(2000 * time.Millisecond)
+		poller := upr.
+			GetNetworkUpstreams(ctx, util.EvmNetworkId(123))[0].
+			EvmStatePoller()
 
-		// Get the upstream instance after bootstrap
-		upsList := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
-		require.NotEmpty(t, upsList, "No upstreams found for network")
-		pup := upsList[0] // pup is now defined
+		//------------------------------------------------------------
+		// 3.  Bootstrap call done; now hammer Poll() in parallel
+		//------------------------------------------------------------
+		const workers = 25
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(workers)
 
-		// Latest block should now be 9 (0x9) due to the poller
-		require.Equal(t, int64(9), pup.EvmStatePoller().LatestBlock(),
-			"state poller did not update latest block correctly")
+		for i := 0; i < workers; i++ {
+			go func() {
+				defer wg.Done()
+				<-start              // fire all at once
+				_ = poller.Poll(ctx) // each Poll triggers the "syncing" fetch
+			}()
+		}
+		close(start) // unleash the goroutines
+		wg.Wait()
 
-		// Metric proves PollLatestBlock ran at least once
-		metric, err := telemetry.MetricUpstreamLatestBlockPolled.
-			GetMetricWithLabelValues("prjA", util.EvmNetworkId(123), "rpc1")
+		//------------------------------------------------------------
+		// 4.  Assert: multiplexer recorded at least one waiter
+		//------------------------------------------------------------
+		polled, err := telemetry.MetricUpstreamMultiplexedPollsTotal.
+			GetMetricWithLabelValues("prjA", util.EvmNetworkId(123), "rpc1", "syncing")
 		require.NoError(t, err)
-		// instead of ≥1:
-		require.Equal(t,
+		require.GreaterOrEqual(t,
+			testutil.ToFloat64(polled),
 			float64(1),
-			testutil.ToFloat64(metric),
-			"expected exactly one latest‐block poll",
+			"expected at least one multiplexed poll hit for 'syncing'",
 		)
-
-		//  Send 1 000 distinct getLogs requests (original purpose)
-		for i := 0; i < 1000; i++ {
-			address := fmt.Sprintf("0x%040x", i+1) // vary address
-			fromBlk := fmt.Sprintf("0x%x", i%9)    // vary fromBlock
-			toBlk := "0x64"                        // 100 > latest(9) - this should trigger the check in getLogs preForward
-			payload := fmt.Sprintf(`{
-				"jsonrpc":"2.0","id":%d,"method":"eth_getLogs",
-				"params":[{
-					"address":"%s",
-					"fromBlock":"%s",
-					"toBlock":"%s"
-				}]
-			}`, i+1, address, fromBlk, toBlk)
-
-			fakeReq := common.NewNormalizedRequest([]byte(payload))
-			// The preForward hook will check if toBlock > latestBlock.
-			// Since 100 > 9, it might try to poll again if the value is stale.
-			_, err := ntw.Forward(ctx, fakeReq) // ntw is now defined
-			if err != nil {
-				// We might get an error if the block range check fails *after* polling
-				// (e.g., if the poller somehow got an older block temporarily).
-				// Or if the request itself fails for other reasons.
-				// For this test, we primarily care that the setup works and requests are sent.
-				// If the block range check *correctly* identifies toBlock > latestBlock,
-				// it should return an error *before* forwarding, which is also valid behavior.
-				// Let's accept the specific block range error or no error.
-			}
-		}
 	})
 
 	t.Run("ForwardCorrectlyRateLimitedOnNetworkLevel", func(t *testing.T) {
