@@ -15,6 +15,21 @@ import (
 	"github.com/rs/zerolog"
 )
 
+type LabelMode string
+
+const (
+	ErrorLabelModeVerbose LabelMode = "verbose"
+	ErrorLabelModeCompact LabelMode = "compact"
+)
+
+var errorLabelMode = ErrorLabelModeVerbose
+
+func SetErrorLabelMode(mode LabelMode) {
+	if mode == ErrorLabelModeCompact || mode == ErrorLabelModeVerbose {
+		errorLabelMode = mode
+	}
+}
+
 func IsNull(err interface{}) bool {
 	if err == nil || err == "" {
 		return true
@@ -36,13 +51,35 @@ func ErrorSummary(err interface{}) string {
 	s := "ErrUnknown"
 
 	if be, ok := err.(StandardError); ok {
-		s = fmt.Sprintf("%s: %s", be.CodeChain(), cleanUpMessage(be.DeepestMessage()))
+		if errorLabelMode == ErrorLabelModeCompact {
+			s = string(be.Base().Code)
+		} else {
+			s = fmt.Sprintf("%s: %s", be.CodeChain(), cleanUpMessage(be.DeepestMessage()))
+		}
 	} else if e, ok := err.(error); ok {
-		s = cleanUpMessage(e.Error())
+		if errorLabelMode == ErrorLabelModeCompact {
+			if errors.Is(e, context.DeadlineExceeded) {
+				s = "ContextDeadlineExceeded"
+			} else if errors.Is(e, context.Canceled) {
+				s = "ContextCanceled"
+			} else {
+				s = "GenericError"
+			}
+		} else {
+			s = cleanUpMessage(e.Error())
+		}
 	} else if str, ok := err.(string); ok {
-		s = cleanUpMessage(str)
+		if errorLabelMode == ErrorLabelModeCompact {
+			s = "StringError"
+		} else {
+			s = cleanUpMessage(str)
+		}
 	} else {
-		s = cleanUpMessage(fmt.Sprintf("%v", err))
+		if errorLabelMode == ErrorLabelModeCompact {
+			s = "UnknownError"
+		} else {
+			s = cleanUpMessage(fmt.Sprintf("%v", err))
+		}
 	}
 
 	return s
