@@ -10,11 +10,16 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 )
+
+func init() {
+	telemetry.SetHistogramBuckets("0.05,0.5,5,30")
+}
 
 func TestUpstreamsRegistry_Ordering(t *testing.T) {
 	logger := log.Logger

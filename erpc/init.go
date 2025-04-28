@@ -42,7 +42,18 @@ func Init(
 	}
 
 	//
-	// 2) Initialize eRPC
+	// 2) Set the right histogram buckets
+	//
+	bucketStr := ""
+	if cfg.Metrics != nil && cfg.Metrics.HistogramBuckets != "" {
+		bucketStr = cfg.Metrics.HistogramBuckets
+	}
+	if err := telemetry.SetHistogramBuckets(bucketStr); err != nil {
+		logger.Warn().Err(err).Msg("failed to set histogram buckets, using defaults")
+	}
+
+	//
+	// 3) Initialize eRPC
 	//
 	logger.Info().Msg("initializing eRPC core")
 	var evmJsonRpcCache *evm.EvmJsonRpcCache
@@ -67,7 +78,7 @@ func Init(
 	}
 
 	//
-	// 3) Expose Transports
+	// 4) Expose Transports
 	//
 	logger.Info().Msg("initializing transports")
 	if cfg.Server != nil {
@@ -84,21 +95,10 @@ func Init(
 			}
 		}()
 	}
-
 	if cfg.Metrics != nil && cfg.Metrics.Enabled != nil && *cfg.Metrics.Enabled {
-		if cfg.Metrics.ErrorLabelMode != nil {
-			common.SetErrorLabelMode(*cfg.Metrics.ErrorLabelMode)
+		if cfg.Metrics.ErrorLabelMode != "" {
+			common.SetErrorLabelMode(cfg.Metrics.ErrorLabelMode)
 		}
-
-		bucketStr := ""
-		if cfg.Metrics.HistogramBuckets != nil && *cfg.Metrics.HistogramBuckets != "" {
-			bucketStr = *cfg.Metrics.HistogramBuckets
-		}
-		
-		if err := telemetry.SetHistogramBuckets(bucketStr); err != nil {
-			logger.Warn().Err(err).Msg("failed to set histogram buckets, using defaults")
-		}
-
 		if cfg.Metrics.Port == nil {
 			return fmt.Errorf("metrics.port is not configured")
 		}

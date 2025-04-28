@@ -15,14 +15,16 @@ import (
 	"github.com/rs/zerolog"
 )
 
+type LabelMode string
+
 const (
-	ErrorLabelModeVerbose = "verbose"
-	ErrorLabelModeCompact = "compact"
+	ErrorLabelModeVerbose LabelMode = "verbose"
+	ErrorLabelModeCompact LabelMode = "compact"
 )
 
 var errorLabelMode = ErrorLabelModeVerbose
 
-func SetErrorLabelMode(mode string) {
+func SetErrorLabelMode(mode LabelMode) {
 	if mode == ErrorLabelModeCompact || mode == ErrorLabelModeVerbose {
 		errorLabelMode = mode
 	}
@@ -50,13 +52,19 @@ func ErrorSummary(err interface{}) string {
 
 	if be, ok := err.(StandardError); ok {
 		if errorLabelMode == ErrorLabelModeCompact {
-			s = be.CodeChain()
+			s = string(be.Base().Code)
 		} else {
 			s = fmt.Sprintf("%s: %s", be.CodeChain(), cleanUpMessage(be.DeepestMessage()))
 		}
 	} else if e, ok := err.(error); ok {
 		if errorLabelMode == ErrorLabelModeCompact {
-			s = "GenericError"
+			if errors.Is(e, context.DeadlineExceeded) {
+				s = "ContextDeadlineExceeded"
+			} else if errors.Is(e, context.Canceled) {
+				s = "ContextCanceled"
+			} else {
+				s = "GenericError"
+			}
 		} else {
 			s = cleanUpMessage(e.Error())
 		}

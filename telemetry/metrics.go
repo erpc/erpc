@@ -9,13 +9,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-var DefaultHistogramBuckets = []float64{
-	0.05,  // 50 ms
-	0.5,   // 500 ms
-	5,     // 5 s
-	30,    // 30 s
-}
-
 var (
 	MetricUnexpectedPanicTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
@@ -28,13 +21,6 @@ var (
 		Name:      "upstream_request_total",
 		Help:      "Total number of actual requests to upstreams.",
 	}, []string{"project", "network", "upstream", "category", "attempt", "composite"})
-
-	MetricUpstreamRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: "erpc",
-		Name:      "upstream_request_duration_seconds",
-		Help:      "Duration of actual requests towards upstreams.",
-		Buckets:   DefaultHistogramBuckets,
-	}, []string{"project", "network", "upstream", "category", "composite"})
 
 	MetricUpstreamErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
@@ -216,13 +202,6 @@ var (
 		Help:      "Total number of successful requests for a network.",
 	}, []string{"project", "network", "category", "attempt"})
 
-	MetricNetworkRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: "erpc",
-		Name:      "network_request_duration_seconds",
-		Help:      "Duration of requests for a network.",
-		Buckets:   DefaultHistogramBuckets,
-	}, []string{"project", "network", "category"})
-
 	MetricProjectRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "project_request_self_rate_limited_total",
@@ -247,24 +226,10 @@ var (
 		Help:      "Total number of cache set operations.",
 	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
 
-	MetricCacheSetSuccessDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: "erpc",
-		Name:      "cache_set_success_duration_seconds",
-		Help:      "Duration of cache set operations.",
-		Buckets:   DefaultHistogramBuckets,
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
-
 	MetricCacheSetErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_set_error_total",
 		Help:      "Total number of cache set errors.",
-	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
-
-	MetricCacheSetErrorDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: "erpc",
-		Name:      "cache_set_error_duration_seconds",
-		Help:      "Duration of cache set errors.",
-		Buckets:   DefaultHistogramBuckets,
 	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
 
 	MetricCacheSetSkippedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -279,37 +244,16 @@ var (
 		Help:      "Total number of cache get hits.",
 	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
 
-	MetricCacheGetSuccessHitDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: "erpc",
-		Name:      "cache_get_success_hit_duration_seconds",
-		Help:      "Duration of cache get hits.",
-		Buckets:   DefaultHistogramBuckets,
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
-
 	MetricCacheGetSuccessMissTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_get_success_miss_total",
 		Help:      "Total number of cache get misses.",
 	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
 
-	MetricCacheGetSuccessMissDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: "erpc",
-		Name:      "cache_get_success_miss_duration_seconds",
-		Help:      "Duration of cache get misses.",
-		Buckets:   DefaultHistogramBuckets,
-	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
-
 	MetricCacheGetErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cache_get_error_total",
 		Help:      "Total number of cache get errors.",
-	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
-
-	MetricCacheGetErrorDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: "erpc",
-		Name:      "cache_get_error_duration_seconds",
-		Help:      "Duration of cache get errors.",
-		Buckets:   DefaultHistogramBuckets,
 	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
 
 	MetricCacheGetSkippedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -337,25 +281,22 @@ var (
 	}, []string{"project", "origin"})
 )
 
-func ParseHistogramBuckets(bucketsStr string) ([]float64, error) {
-	if bucketsStr == "" {
-		return DefaultHistogramBuckets, nil
-	}
-
-	parts := strings.Split(bucketsStr, ",")
-	buckets := make([]float64, 0, len(parts))
-
-	for _, part := range parts {
-		value, err := strconv.ParseFloat(strings.TrimSpace(part), 64)
-		if err != nil {
-			return nil, err
-		}
-		buckets = append(buckets, value)
-	}
-
-	sort.Float64s(buckets)
-	return buckets, nil
+var DefaultHistogramBuckets = []float64{
+	0.05, // 50 ms
+	0.5,  // 500 ms
+	5,    // 5 s
+	30,   // 30 s
 }
+
+var (
+	MetricUpstreamRequestDuration,
+	MetricNetworkRequestDuration,
+	MetricCacheSetSuccessDuration,
+	MetricCacheSetErrorDuration,
+	MetricCacheGetSuccessHitDuration,
+	MetricCacheGetSuccessMissDuration,
+	MetricCacheGetErrorDuration *prometheus.HistogramVec
+)
 
 func SetHistogramBuckets(bucketsStr string) error {
 	buckets, err := ParseHistogramBuckets(bucketsStr)
@@ -363,6 +304,15 @@ func SetHistogramBuckets(bucketsStr string) error {
 		return err
 	}
 
+	if MetricUpstreamRequestDuration != nil {
+		prometheus.DefaultRegisterer.Unregister(MetricUpstreamRequestDuration)
+		prometheus.DefaultRegisterer.Unregister(MetricNetworkRequestDuration)
+		prometheus.DefaultRegisterer.Unregister(MetricCacheSetSuccessDuration)
+		prometheus.DefaultRegisterer.Unregister(MetricCacheSetErrorDuration)
+		prometheus.DefaultRegisterer.Unregister(MetricCacheGetSuccessHitDuration)
+		prometheus.DefaultRegisterer.Unregister(MetricCacheGetSuccessMissDuration)
+		prometheus.DefaultRegisterer.Unregister(MetricCacheGetErrorDuration)
+	}
 	MetricUpstreamRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "erpc",
 		Name:      "upstream_request_duration_seconds",
@@ -413,4 +363,24 @@ func SetHistogramBuckets(bucketsStr string) error {
 	}, []string{"project", "network", "category", "connector", "policy", "ttl", "error"})
 
 	return nil
+}
+
+func ParseHistogramBuckets(bucketsStr string) ([]float64, error) {
+	if bucketsStr == "" {
+		return DefaultHistogramBuckets, nil
+	}
+
+	parts := strings.Split(bucketsStr, ",")
+	buckets := make([]float64, 0, len(parts))
+
+	for _, part := range parts {
+		value, err := strconv.ParseFloat(strings.TrimSpace(part), 64)
+		if err != nil {
+			return nil, err
+		}
+		buckets = append(buckets, value)
+	}
+
+	sort.Float64s(buckets)
+	return buckets, nil
 }

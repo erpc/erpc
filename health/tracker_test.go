@@ -18,6 +18,8 @@ func TestTracker(t *testing.T) {
 	networkID := "evm:123"
 	windowSize := 2000 * time.Millisecond
 
+	telemetry.SetHistogramBuckets("0.05,0.5,5,30")
+
 	t.Run("BasicMetricsCollection", func(t *testing.T) {
 		tracker := NewTracker(&log.Logger, projectID, windowSize)
 
@@ -317,9 +319,19 @@ func simulateRequestMetricsWithLatency(tracker *Tracker, network, upstream, meth
 }
 
 func resetMetrics() {
-	telemetry.MetricUpstreamRequestTotal.Reset()
-	telemetry.MetricUpstreamRequestDuration.Reset()
-	telemetry.MetricUpstreamErrorTotal.Reset()
-	telemetry.MetricUpstreamSelfRateLimitedTotal.Reset()
-	telemetry.MetricUpstreamRemoteRateLimitedTotal.Reset()
+	if telemetry.MetricUpstreamRequestTotal != nil {
+		telemetry.MetricUpstreamRequestTotal.Reset()
+	}
+	if telemetry.MetricUpstreamRequestDuration != nil {
+		telemetry.MetricUpstreamRequestDuration.Reset()
+	}
+	if telemetry.MetricUpstreamErrorTotal != nil {
+		telemetry.MetricUpstreamErrorTotal.Reset()
+	}
+	if telemetry.MetricUpstreamSelfRateLimitedTotal != nil {
+		telemetry.MetricUpstreamSelfRateLimitedTotal.Reset()
+	}
+	if telemetry.MetricUpstreamRemoteRateLimitedTotal != nil {
+		telemetry.MetricUpstreamRemoteRateLimitedTotal.Reset()
+	}
 }

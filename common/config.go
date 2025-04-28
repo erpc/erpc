@@ -886,14 +886,14 @@ type NetworkStrategyConfig struct {
 }
 
 type MetricsConfig struct {
-	Enabled          *bool   `yaml:"enabled" json:"enabled"`
-	ListenV4         *bool   `yaml:"listenV4" json:"listenV4"`
-	HostV4           *string `yaml:"hostV4" json:"hostV4"`
-	ListenV6         *bool   `yaml:"listenV6" json:"listenV6"`
-	HostV6           *string `yaml:"hostV6" json:"hostV6"`
-	Port             *int    `yaml:"port" json:"port"`
-	ErrorLabelMode   *string `yaml:"errorLabelMode" json:"errorLabelMode"`
-	HistogramBuckets *string `yaml:"histogramBuckets" json:"histogramBuckets"`
+	Enabled          *bool     `yaml:"enabled" json:"enabled"`
+	ListenV4         *bool     `yaml:"listenV4" json:"listenV4"`
+	HostV4           *string   `yaml:"hostV4" json:"hostV4"`
+	ListenV6         *bool     `yaml:"listenV6" json:"listenV6"`
+	HostV6           *string   `yaml:"hostV6" json:"hostV6"`
+	Port             *int      `yaml:"port" json:"port"`
+	ErrorLabelMode   LabelMode `yaml:"errorLabelMode" json:"errorLabelMode"`
+	HistogramBuckets string    `yaml:"histogramBuckets" json:"histogramBuckets"`
 }
 
 // GetProjectConfig returns the project configuration by the specified project ID.
