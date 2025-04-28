@@ -165,7 +165,7 @@ func (v *RepositoryVendor) GenerateConfigs(upstream *common.UpstreamConfig, sett
 	return upsList, nil
 }
 
-func (v *RepositoryVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {
+func (v *RepositoryVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedRequest, resp *http.Response, jrr interface{}, details map[string]interface{}) error {
 	return nil
 }
 

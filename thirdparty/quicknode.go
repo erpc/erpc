@@ -32,7 +32,7 @@ func (v *QuicknodeVendor) GenerateConfigs(upstream *common.UpstreamConfig, setti
 	return []*common.UpstreamConfig{upstream}, nil
 }
 
-func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {
+func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedRequest, resp *http.Response, jrr interface{}, details map[string]interface{}) error {
 	bodyMap, ok := jrr.(*common.JsonRpcResponse)
 	if !ok {
 		return nil
@@ -46,8 +46,9 @@ func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr i
 			details["data"] = err.Data
 		}
 
-		if (code == -32614 && strings.Contains(msg, "eth_getLogs") && strings.Contains(msg, "limited")) ||
-			strings.Contains(msg, "eth_getLogs and eth_newFilter are limited") {
+		method, _ := req.Method()
+
+		if code == -32614 || (method == "eth_getLogs" && strings.Contains(msg, "limited to")) {
 			return common.NewErrEndpointRequestTooLarge(
 				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorEvmLargeRange, msg, nil, details),
 				common.EvmBlockRangeTooLarge,
@@ -79,11 +80,6 @@ func (v *QuicknodeVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr i
 		} else if strings.Contains(msg, "UNAUTHORIZED") {
 			return common.NewErrEndpointUnauthorized(
 				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorUnauthorized, msg, nil, details),
-			)
-		} else if code == -32011 {
-			return common.NewErrEndpointServerSideException(
-				common.NewErrJsonRpcExceptionInternal(code, common.JsonRpcErrorServerSideException, msg, nil, details),
-				nil,
 			)
 		} else if code == 3 {
 			return common.NewErrEndpointExecutionException(

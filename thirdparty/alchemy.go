@@ -114,7 +114,7 @@ func (v *AlchemyVendor) GenerateConfigs(upstream *common.UpstreamConfig, setting
 	return []*common.UpstreamConfig{upstream}, nil
 }
 
-func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {
+func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedRequest, resp *http.Response, jrr interface{}, details map[string]interface{}) error {
 	bodyMap, ok := jrr.(*common.JsonRpcResponse)
 	if !ok {
 		return nil
