@@ -341,7 +341,7 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 					common.ErrCodeUpstreamMethodIgnored,
 					common.ErrCodeEndpointUnsupported,
 					common.ErrCodeEndpointMissingData,
-			) || common.IsClientError(err) {
+				) || common.IsClientError(err) {
 				e.stateMu.Lock()
 				// Only skip after multiple consecutive failures if we've never had a success
 				if !e.latestBlockSuccessfulOnce {
@@ -401,20 +401,12 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 	}
 	return e.finalizedBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		e.logger.Trace().Msg("fetching finalized block number for evm state poller")
+		telemetry.MetricUpstreamFinalizedBlockPolled.WithLabelValues(
+			e.projectId,
+			e.upstream.NetworkId(),
+			e.upstream.Config().Id,
 		).Inc()
 
-<<<<<<< HEAD
-		// Actually fetch from upstream
-		blockNum, err := e.fetchBlock(ctx, "finalized")
-		if err != nil || blockNum == 0 {
-			if err == nil ||
-				common.HasErrorCode(err,
-					common.ErrCodeUpstreamRequestSkipped,
-					common.ErrCodeUpstreamMethodIgnored,
-					common.ErrCodeEndpointUnsupported,
-					common.ErrCodeEndpointMissingData,
-				) || common.IsClientError(err) {
-=======
 		// Use multiplexer to fetch the block
 		result, err := e.executeMultiplexedPoll(ctx, "finalized", func(pollCtx context.Context) (interface{}, error) {
 			return e.fetchBlock(pollCtx, "finalized")
@@ -425,14 +417,14 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 			blockNum, _ = result.(int64)
 		}
 
-		if err != nil {
-			if common.HasErrorCode(err,
-				common.ErrCodeUpstreamRequestSkipped,
-				common.ErrCodeUpstreamMethodIgnored,
-				common.ErrCodeEndpointUnsupported,
-				common.ErrCodeEndpointMissingData,
-			) || common.IsClientError(err) {
->>>>>>> 2b2c028e (feat: implement polling multiplexer to optimize concurrent state polling in EvmStatePoller)
+		if err != nil || blockNum == 0 {
+			if err == nil ||
+				common.HasErrorCode(err,
+					common.ErrCodeUpstreamRequestSkipped,
+					common.ErrCodeUpstreamMethodIgnored,
+					common.ErrCodeEndpointUnsupported,
+					common.ErrCodeEndpointMissingData,
+				) || common.IsClientError(err) {
 				e.stateMu.Lock()
 				// Only skip after multiple consecutive failures if we've never had a success
 				if !e.finalizedBlockSuccessfulOnce {
