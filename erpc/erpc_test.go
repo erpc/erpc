@@ -9,11 +9,16 @@ import (
 
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 )
+
+func init() {
+	telemetry.SetHistogramBuckets("0.05,0.5,5,30")
+}
 
 func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 	util.ResetGock()

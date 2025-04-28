@@ -75,8 +75,8 @@ type NormalizedRequest struct {
 	evmBlockRef       atomic.Value
 	evmBlockNumber    atomic.Value
 
-	compositeType      atomic.Value // Type of composite request (e.g., "logs-split")
-	parentRequestId    atomic.Value // ID of the parent request (for sub-requests)
+	compositeType   atomic.Value // Type of composite request (e.g., "logs-split")
+	parentRequestId atomic.Value // ID of the parent request (for sub-requests)
 }
 
 func NewNormalizedRequest(body []byte) *NormalizedRequest {

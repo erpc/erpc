@@ -257,7 +257,7 @@ func createHedgePolicy(logger *zerolog.Logger, cfg *common.HedgePolicyConfig) (f
 					logger.Debug().Str("method", method).Interface("id", req.ID()).Str("compositeType", req.CompositeType()).Msgf("ignoring hedge for composite request")
 					return false
 				}
-				
+
 				method, _ = req.Method()
 				if method != "" && evm.IsWriteMethod(method) {
 					logger.Debug().Str("method", method).Interface("id", req.ID()).Msgf("ignoring hedge for write request")
