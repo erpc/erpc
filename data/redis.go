@@ -82,6 +82,7 @@ func (r *RedisConnector) Id() string {
 func (r *RedisConnector) connectTask(ctx context.Context) error {
 	options := &redis.Options{
 		Addr:         r.cfg.Addr,
+		Username:     r.cfg.Username,
 		Password:     r.cfg.Password,
 		DB:           r.cfg.DB,
 		PoolSize:     r.cfg.ConnPoolSize,
