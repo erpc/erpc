@@ -53,7 +53,7 @@ export default createConfig({
 And then run eRPC with the config:
 
 ```bash
-docker run -v $(pwd)/erpc.ts:/root/erpc.ts -p 4000:4000 -p 4001:4001 ghcr.io/erpc/erpc:latest
+docker run -v $(pwd)/erpc.ts:/erpc.ts -p 4000:4000 -p 4001:4001 ghcr.io/erpc/erpc:latest
 ```
 
 ## Installing NPM dependencies
@@ -68,9 +68,9 @@ Create a `Dockerfile.custom` file:
 ```dockerfile
 FROM debian:12
 
-COPY package.json pnpm-lock.yaml /root/
-# COPY package.json package-lock.json /root/
-# COPY package.json yarn.lock /root/
+COPY package.json pnpm-lock.yaml /
+# COPY package.json package-lock.json /
+# COPY package.json yarn.lock /
 
 RUN pnpm install
 # RUN npm install
@@ -78,7 +78,7 @@ RUN pnpm install
 
 FROM ghcr.io/erpc/erpc:latest
 
-COPY --from=0 /root/node_modules /root/node_modules
+COPY --from=0 /node_modules /node_modules
 ```
 
 Then build the image:
@@ -92,7 +92,7 @@ In this case, you can use the `-v` flag to mount the package.json and node_modul
 
 ```bash
 docker run \
-    -v $(pwd)/package.json:/root/package.json \
-    -v $(pwd)/node_modules:/root/node_modules \
+    -v $(pwd)/package.json:/package.json \
+    -v $(pwd)/node_modules:/node_modules \
     -p 4000:4000 -p 4001:4001 ghcr.io/erpc/erpc:latest
 ```
