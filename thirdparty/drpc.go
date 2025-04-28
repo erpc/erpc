@@ -187,7 +187,7 @@ func (v *DrpcVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings c
 	return []*common.UpstreamConfig{upstream}, nil
 }
 
-func (v *DrpcVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {
+func (v *DrpcVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedRequest, resp *http.Response, jrr interface{}, details map[string]interface{}) error {
 	bodyMap, ok := jrr.(*common.JsonRpcResponse)
 	if !ok {
 		return nil

@@ -486,5 +486,5 @@ func getVendorSpecificErrorIfAny(
 		return nil
 	}
 
-	return vn.GetVendorSpecificErrorIfAny(rp, jr, details)
+	return vn.GetVendorSpecificErrorIfAny(req, rp, jr, details)
 }

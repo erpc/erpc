@@ -105,7 +105,7 @@ func (v *InfuraVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings
 	return []*common.UpstreamConfig{upstream}, nil
 }
 
-func (v *InfuraVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {
+func (v *InfuraVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedRequest, resp *http.Response, jrr interface{}, details map[string]interface{}) error {
 	bodyMap, ok := jrr.(*common.JsonRpcResponse)
 	if !ok {
 		return nil

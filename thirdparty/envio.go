@@ -209,7 +209,7 @@ func (v *EnvioVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings 
 	return []*common.UpstreamConfig{upstream}, nil
 }
 
-func (v *EnvioVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {
+func (v *EnvioVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedRequest, resp *http.Response, jrr interface{}, details map[string]interface{}) error {
 	return nil
 }
 
