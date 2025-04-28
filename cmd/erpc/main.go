@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/erpc/erpc/common"
@@ -160,8 +161,8 @@ func getConfig(
 		"/erpc.ts",
 		"/erpc.js",
 
-		"/root/erpc.yml",
 		"/root/erpc.yaml",
+		"/root/erpc.yml",
 		"/root/erpc.ts",
 		"/root/erpc.js",
 	}
@@ -180,7 +181,10 @@ func getConfig(
 			return nil, fmt.Errorf("failed to get current directory: %v", err)
 		}
 		for _, path := range possibleConfigs {
-			fullPath := filepath.Join(currentDir, path)
+			fullPath := path
+			if !strings.HasPrefix(path, "/") {
+				fullPath = filepath.Join(currentDir, path)
+			}
 			logger.Info().Msgf("looking for config file: %s", fullPath)
 			if _, err := fs.Stat(fullPath); err == nil {
 				configPath = path
