@@ -406,7 +406,6 @@ func (p *PostgreSQLConnectorConfig) Validate() error {
 
 func (p *RedisConnectorConfig) Validate() error {
 	if p.URI == "" {
-		// If URI is not provided, check that all individual connection parameters are provided
 		if p.Addr == "" {
 			return fmt.Errorf("database.*.connector.redis.addr is required when uri is not provided")
 		}
