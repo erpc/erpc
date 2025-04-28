@@ -2,6 +2,7 @@ package data
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"testing"
 	"time"
@@ -178,4 +179,130 @@ func TestRedisConnectorInitialization(t *testing.T) {
 		require.Equal(t, "recovered-value", val)
 	})
 
+}
+
+func TestRedisConnectorConfigurationMethods(t *testing.T) {
+	t.Run("connects using URI configuration", func(t *testing.T) {
+		m, err := miniredis.Run()
+		require.NoError(t, err)
+		defer m.Close()
+
+		// Set a test username and password in miniredis
+		m.RequireUserAuth("testuser", "testpass")
+
+		logger := zerolog.New(io.Discard)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Configure using URI
+		cfg := &common.RedisConnectorConfig{
+			URI:          fmt.Sprintf("redis://testuser:testpass@%s/0", m.Addr()),
+			ConnPoolSize: 5,
+			InitTimeout:  common.Duration(2 * time.Second),
+			GetTimeout:   common.Duration(2 * time.Second),
+			SetTimeout:   common.Duration(2 * time.Second),
+		}
+
+		connector, err := NewRedisConnector(ctx, &logger, "test-uri-connector", cfg)
+		require.NoError(t, err)
+
+		// Ensure the connector reports StateReady via its initializer
+		require.Eventually(t, func() bool {
+			return connector.initializer.State() == util.StateReady
+		}, 5*time.Second, 100*time.Millisecond, "connector should become ready")
+
+		// Try a simple SET/GET to verify readiness
+		err = connector.Set(ctx, "uriTest", "key1", "value1", nil)
+		require.NoError(t, err, "Set should succeed after successful initialization")
+
+		val, err := connector.Get(ctx, "", "uriTest", "key1")
+		require.NoError(t, err, "Get should succeed for existing key")
+		require.Equal(t, "value1", val)
+	})
+
+	t.Run("connects using individual parameters", func(t *testing.T) {
+		m, err := miniredis.Run()
+		require.NoError(t, err)
+		defer m.Close()
+
+		// Set a test username and password in miniredis
+		m.RequireUserAuth("testuser", "testpass")
+
+		logger := zerolog.New(io.Discard)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Configure using individual parameters
+		cfg := &common.RedisConnectorConfig{
+			Addr:         m.Addr(),
+			Username:     "testuser",
+			Password:     "testpass",
+			DB:           0,
+			ConnPoolSize: 5,
+			InitTimeout:  common.Duration(2 * time.Second),
+			GetTimeout:   common.Duration(2 * time.Second),
+			SetTimeout:   common.Duration(2 * time.Second),
+		}
+
+		connector, err := NewRedisConnector(ctx, &logger, "test-params-connector", cfg)
+		require.NoError(t, err)
+
+		// Ensure the connector reports StateReady via its initializer
+		require.Eventually(t, func() bool {
+			return connector.initializer.State() == util.StateReady
+		}, 5*time.Second, 100*time.Millisecond, "connector should become ready")
+
+		// Try a simple SET/GET to verify readiness
+		err = connector.Set(ctx, "paramsTest", "key1", "value1", nil)
+		require.NoError(t, err, "Set should succeed after successful initialization")
+
+		val, err := connector.Get(ctx, "", "paramsTest", "key1")
+		require.NoError(t, err, "Get should succeed for existing key")
+		require.Equal(t, "value1", val)
+	})
+
+	t.Run("URI takes precedence over individual parameters", func(t *testing.T) {
+		m, err := miniredis.Run()
+		require.NoError(t, err)
+		defer m.Close()
+
+		// Set up two different users in miniredis
+		m.RequireUserAuth("uri-user", "uri-pass")
+		m.RequireUserAuth("param-user", "param-pass")
+
+		logger := zerolog.New(io.Discard)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Configure with both URI and individual parameters
+		cfg := &common.RedisConnectorConfig{
+			// URI should take precedence
+			URI: fmt.Sprintf("redis://uri-user:uri-pass@%s/0", m.Addr()),
+			// These should be ignored
+			Addr:         m.Addr(),
+			Username:     "param-user",
+			Password:     "param-pass",
+			DB:           1,
+			ConnPoolSize: 5,
+			InitTimeout:  common.Duration(2 * time.Second),
+			GetTimeout:   common.Duration(2 * time.Second),
+			SetTimeout:   common.Duration(2 * time.Second),
+		}
+
+		connector, err := NewRedisConnector(ctx, &logger, "test-precedence-connector", cfg)
+		require.NoError(t, err)
+
+		// Ensure the connector reports StateReady via its initializer
+		require.Eventually(t, func() bool {
+			return connector.initializer.State() == util.StateReady
+		}, 5*time.Second, 100*time.Millisecond, "connector should become ready")
+
+		// If URI takes precedence, this should succeed because we're using uri-user
+		err = connector.Set(ctx, "precedenceTest", "key1", "value1", nil)
+		require.NoError(t, err, "Set should succeed if URI credentials are used")
+
+		val, err := connector.Get(ctx, "", "precedenceTest", "key1")
+		require.NoError(t, err, "Get should succeed if URI credentials are used")
+		require.Equal(t, "value1", val)
+	})
 }
