@@ -202,7 +202,7 @@ func (v *PimlicoVendor) GenerateConfigs(upstream *common.UpstreamConfig, setting
 	return []*common.UpstreamConfig{upstream}, nil
 }
 
-func (v *PimlicoVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {
+func (v *PimlicoVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedRequest, resp *http.Response, jrr interface{}, details map[string]interface{}) error {
 	return nil
 }
 

@@ -113,7 +113,7 @@ func (v *EtherspotVendor) GenerateConfigs(upstream *common.UpstreamConfig, setti
 	return []*common.UpstreamConfig{upstream}, nil
 }
 
-func (v *EtherspotVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {
+func (v *EtherspotVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedRequest, resp *http.Response, jrr interface{}, details map[string]interface{}) error {
 	return nil
 }
 

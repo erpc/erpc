@@ -106,7 +106,7 @@ func (v *ThirdwebVendor) GenerateConfigs(upstream *common.UpstreamConfig, settin
 	return []*common.UpstreamConfig{upstream}, nil
 }
 
-func (v *ThirdwebVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {
+func (v *ThirdwebVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedRequest, resp *http.Response, jrr interface{}, details map[string]interface{}) error {
 	return nil
 }
 

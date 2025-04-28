@@ -146,7 +146,7 @@ func (v *BlastApiVendor) GenerateConfigs(upstream *common.UpstreamConfig, settin
 	return []*common.UpstreamConfig{upstream}, nil
 }
 
-func (v *BlastApiVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {
+func (v *BlastApiVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedRequest, resp *http.Response, jrr interface{}, details map[string]interface{}) error {
 	bodyMap, ok := jrr.(*common.JsonRpcResponse)
 	if !ok {
 		return nil

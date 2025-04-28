@@ -165,7 +165,7 @@ func (v *DwellirVendor) GenerateConfigs(upstream *common.UpstreamConfig, setting
 
 // GetVendorSpecificErrorIfAny checks for Dwellir-specific errors.
 // Currently, it returns nil as Dwellir uses standard errors.
-func (v *DwellirVendor) GetVendorSpecificErrorIfAny(resp *http.Response, jrr interface{}, details map[string]interface{}) error {
+func (v *DwellirVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedRequest, resp *http.Response, jrr interface{}, details map[string]interface{}) error {
 	// TODO: Add Dwellir specific error handling if any patterns are identified later.
 	// Examples: Check resp.StatusCode, or specific codes/messages in jrr.(*common.JsonRpcResponse).Error
 	return nil
