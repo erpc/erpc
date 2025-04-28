@@ -80,15 +80,35 @@ func (r *RedisConnector) Id() string {
 
 // connectTask is the function that tries to establish a Redis connection (and pings to verify).
 func (r *RedisConnector) connectTask(ctx context.Context) error {
-	options := &redis.Options{
-		Addr:         r.cfg.Addr,
-		Username:     r.cfg.Username,
-		Password:     r.cfg.Password,
-		DB:           r.cfg.DB,
-		PoolSize:     r.cfg.ConnPoolSize,
-		DialTimeout:  r.initTimeout,
-		ReadTimeout:  r.getTimeout,
-		WriteTimeout: r.setTimeout,
+	var options *redis.Options
+	var err error
+
+	// URI is preferred and default connection behavior
+	if r.cfg.URI != "" {
+		r.logger.Debug().Str("uri", util.RedactEndpoint(r.cfg.URI)).Msg("attempting to connect to Redis using URI")
+		options, err = redis.ParseURL(r.cfg.URI)
+		if err != nil {
+			return fmt.Errorf("failed to parse Redis URI: %w", err)
+		}
+
+		options.DialTimeout = r.initTimeout
+		options.ReadTimeout = r.getTimeout
+		options.WriteTimeout = r.setTimeout
+
+		if r.cfg.ConnPoolSize > 0 {
+			options.PoolSize = r.cfg.ConnPoolSize
+		}
+	} else {
+		options = &redis.Options{
+			Addr:         r.cfg.Addr,
+			Username:     r.cfg.Username,
+			Password:     r.cfg.Password,
+			DB:           r.cfg.DB,
+			PoolSize:     r.cfg.ConnPoolSize,
+			DialTimeout:  r.initTimeout,
+			ReadTimeout:  r.getTimeout,
+			WriteTimeout: r.setTimeout,
+		}
 	}
 
 	if r.cfg.TLS != nil && r.cfg.TLS.Enabled {
@@ -99,13 +119,13 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 		options.TLSConfig = tlsConfig
 	}
 
-	r.logger.Debug().Str("addr", r.cfg.Addr).Msg("attempting to connect to Redis")
+	r.logger.Debug().Str("addr", options.Addr).Msg("attempting to connect to Redis")
 	client := redis.NewClient(options)
 
 	// Test the connection with Ping.
 	ctx, cancel := context.WithTimeout(ctx, r.initTimeout)
 	defer cancel()
-	_, err := client.Ping(ctx).Result()
+	_, err = client.Ping(ctx).Result()
 	if err != nil {
 		return fmt.Errorf("failed to connect to Redis: %w", err)
 	}

@@ -405,8 +405,14 @@ func (p *PostgreSQLConnectorConfig) Validate() error {
 }
 
 func (p *RedisConnectorConfig) Validate() error {
-	if p.Addr == "" {
-		return fmt.Errorf("database.*.connector.redis.addr is required")
+	if p.URI == "" {
+		// If URI is not provided, check that all individual connection parameters are provided
+		if p.Addr == "" {
+			return fmt.Errorf("database.*.connector.redis.addr is required when uri is not provided")
+		}
+		// Note: Username can be empty for default user, so we don't validate it
+		// Password can be empty for Redis instances without authentication
+		// DB defaults to 0 in the Redis client, so we don't need to validate it
 	}
 	if p.InitTimeout == 0 {
 		return fmt.Errorf("database.*.connector.redis.initTimeout is required")

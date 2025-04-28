@@ -230,6 +230,7 @@ type RedisConnectorConfig struct {
 	DB           int        `yaml:"db" json:"db"`
 	TLS          *TLSConfig `yaml:"tls" json:"tls"`
 	ConnPoolSize int        `yaml:"connPoolSize" json:"connPoolSize"`
+	URI          string     `yaml:"uri,omitempty" json:"uri"`
 	InitTimeout  Duration   `yaml:"initTimeout,omitempty" json:"initTimeout" tstype:"Duration"`
 	GetTimeout   Duration   `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
 	SetTimeout   Duration   `yaml:"setTimeout,omitempty" json:"setTimeout" tstype:"Duration"`
@@ -242,6 +243,7 @@ func (r *RedisConnectorConfig) MarshalJSON() ([]byte, error) {
 		"password":     "REDACTED",
 		"db":           r.DB,
 		"connPoolSize": r.ConnPoolSize,
+		"uri":          util.RedactEndpoint(r.URI),
 		"tls":          r.TLS,
 		"initTimeout":  r.InitTimeout.String(),
 		"getTimeout":   r.GetTimeout.String(),
