@@ -59,7 +59,7 @@ export default createConfig({
 Run the Docker container, mounting your configuration file:
 
 ```bash
-docker run -v $(pwd)/erpc.yaml:/root/erpc.yaml \
+docker run -v $(pwd)/erpc.yaml:/erpc.yaml \
   -p 4000:4000 -p 4001:4001 \
   ghcr.io/erpc/erpc:latest
 ```
@@ -109,7 +109,7 @@ services:
       - "4000:4000"
       - "4001:4001"
     volumes:
-      - ./erpc.yaml:/root/erpc.yaml
+      - ./erpc.yaml:/erpc.yaml
     restart: unless-stopped
 ```
 
@@ -124,9 +124,9 @@ Create a custom Dockerfile that includes your dependencies:
 ```dockerfile
 FROM debian:12
 
-COPY package.json pnpm-lock.yaml /root/
-# COPY package.json package-lock.json /root/  # For npm
-# COPY package.json yarn.lock /root/          # For yarn
+COPY package.json pnpm-lock.yaml /
+# COPY package.json package-lock.json /  # For npm
+# COPY package.json yarn.lock /          # For yarn
 
 RUN pnpm install
 # RUN npm install   # For npm
@@ -134,14 +134,14 @@ RUN pnpm install
 
 FROM ghcr.io/erpc/erpc:latest
 
-COPY --from=0 /root/node_modules /root/node_modules
+COPY --from=0 /node_modules /node_modules
 ```
 
 Build and run your custom image:
 
 ```bash
 docker build -t erpc-custom -f Dockerfile.custom .
-docker run -v $(pwd)/erpc.ts:/root/erpc.ts \
+docker run -v $(pwd)/erpc.ts:/erpc.ts \
   -p 4000:4000 -p 4001:4001 \
   erpc-custom
 ```
@@ -152,9 +152,9 @@ Alternatively, you can mount your local `package.json` and `node_modules` direct
 
 ```bash
 docker run \
-  -v $(pwd)/package.json:/root/package.json \
-  -v $(pwd)/node_modules:/root/node_modules \
-  -v $(pwd)/erpc.ts:/root/erpc.ts \
+  -v $(pwd)/package.json:/package.json \
+  -v $(pwd)/node_modules:/node_modules \
+  -v $(pwd)/erpc.ts:/erpc.ts \
   -p 4000:4000 -p 4001:4001 \
   ghcr.io/erpc/erpc:latest
 ```
@@ -170,9 +170,9 @@ services:
       - "4000:4000"
       - "4001:4001"
     volumes:
-      - ./erpc.ts:/root/erpc.ts
-      - ./package.json:/root/package.json
-      - ./node_modules:/root/node_modules
+      - ./erpc.ts:/erpc.ts
+      - ./package.json:/package.json
+      - ./node_modules:/node_modules
     restart: unless-stopped
 ```
 

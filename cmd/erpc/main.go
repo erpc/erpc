@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/erpc/erpc/common"
@@ -148,7 +149,22 @@ func getConfig(
 ) (*common.Config, error) {
 	fs := afero.NewOsFs()
 	configPath := ""
-	possibleConfigs := []string{"./erpc.js", "./erpc.ts", "./erpc.yaml", "./erpc.yml"}
+	possibleConfigs := []string{
+		"./erpc.yaml",
+		"./erpc.yml",
+		"./erpc.ts",
+		"./erpc.js",
+
+		"/erpc.yaml",
+		"/erpc.yml",
+		"/erpc.ts",
+		"/erpc.js",
+
+		"/root/erpc.yml",
+		"/root/erpc.yaml",
+		"/root/erpc.ts",
+		"/root/erpc.js",
+	}
 	requireConfig := cmd.Bool("require-config")
 
 	// Check for the config flag, if present, use that file
@@ -159,8 +175,14 @@ func getConfig(
 		configPath = cmd.Args().First()
 		requireConfig = true
 	} else { // Check for defaults config paths
+		currentDir, err := os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get current directory: %v", err)
+		}
 		for _, path := range possibleConfigs {
-			if _, err := fs.Stat(path); err == nil {
+			fullPath := filepath.Join(currentDir, path)
+			logger.Info().Msgf("looking for config file: %s", fullPath)
+			if _, err := fs.Stat(fullPath); err == nil {
 				configPath = path
 				break
 			}
