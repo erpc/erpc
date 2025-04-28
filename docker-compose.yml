@@ -1,4 +1,13 @@
 services:
+  # erpc:
+  #   platform: linux/amd64
+  #   image: ghcr.io/erpc/erpc:main
+  #   # build:
+  #   #   context: .
+  #   #   dockerfile: Dockerfile
+  #   volumes:
+  #     - ./erpc.yaml:/erpc.yaml
+
   monitoring:
     build: ./monitoring
     ports:

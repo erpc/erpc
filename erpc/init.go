@@ -130,5 +130,5 @@ func Init(
 		}()
 	}
 
-	return nil
+	return erpcInstance.Bootstrap(appCtx)
 }

@@ -18,6 +18,7 @@ type ERPC struct {
 	cfg               *common.Config
 	projectsRegistry  *ProjectsRegistry
 	adminAuthRegistry *auth.AuthRegistry
+	logger            *zerolog.Logger
 }
 
 func NewERPC(
@@ -85,11 +86,6 @@ func NewERPC(
 		}
 	}
 
-	err = projectRegistry.Bootstrap(appCtx)
-	if err != nil {
-		logger.Warn().Err(err).Msg("could not bootstrap projects on first attempt (will keep retrying in the background)")
-	}
-
 	// Shutdown tracing after appCtx is finished/cancelled
 	go func() {
 		<-appCtx.Done()
@@ -102,7 +98,17 @@ func NewERPC(
 		cfg:               cfg,
 		projectsRegistry:  projectRegistry,
 		adminAuthRegistry: adminAuthRegistry,
+		logger:            logger,
 	}, nil
+}
+
+func (e *ERPC) Bootstrap(ctx context.Context) error {
+	err := e.projectsRegistry.Bootstrap(ctx)
+	if err != nil {
+		e.logger.Warn().Err(err).Msg("could not bootstrap projects on first attempt (will keep retrying in the background)")
+	}
+
+	return nil
 }
 
 func (e *ERPC) AdminAuthenticate(ctx context.Context, method string, ap *auth.AuthPayload) error {

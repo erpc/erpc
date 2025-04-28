@@ -40,7 +40,7 @@ func NewClientRegistry(logger *zerolog.Logger, projectId string, proxyPoolRegist
 }
 
 func (manager *ClientRegistry) GetOrCreateClient(appCtx context.Context, ups common.Upstream) (ClientInterface, error) {
-	if client, ok := manager.clients.Load(ups.Config().Endpoint); ok {
+	if client, ok := manager.clients.Load(common.UniqueUpstreamKey(ups)); ok {
 		return client.(ClientInterface), nil
 	}
 
