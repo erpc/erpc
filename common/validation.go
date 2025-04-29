@@ -408,7 +408,7 @@ func (p *PostgreSQLConnectorConfig) Validate() error {
 func (c *RedisConnectorConfig) Validate() error {
 	URIProvided := strings.TrimSpace(c.URI) != ""
 	// Fail if BOTH uri and addr are provided
-	if !URIProvided && strings.TrimSpace(c.Addr) != "" {
+	if URIProvided && strings.TrimSpace(c.Addr) != "" {
 		return fmt.Errorf("redis connector: cannot provide both 'uri' and 'addr', use only one method")
 	}
 
