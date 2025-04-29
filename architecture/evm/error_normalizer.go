@@ -318,7 +318,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		// Note: do not move this check above "Not found" errors, as we want to
 		// avoid premature detection when message is only "not found" (e.g. from Tenderly)
 
-		if r.StatusCode == 415 || code == common.JsonRpcErrorUnsupportedException || // By HTTP status code or explicit JSON-RPC error code
+		if r.StatusCode == 415 || r.StatusCode == 405 ||
+			code == common.JsonRpcErrorUnsupportedException || // By HTTP status code or explicit JSON-RPC error code
 			code == -32004 || code == -32001 || // direct codes from upstream
 			strings.Contains(msg, "Unsupported method") ||
 			strings.Contains(msg, "not supported") ||
