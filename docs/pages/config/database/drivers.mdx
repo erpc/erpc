@@ -147,15 +147,12 @@ Examples:
 - `redis://redis.example.com:6379` - Connection without database number (defaults to 0)
 - `redis://redis.example.com:6379/0?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10` - Connection with timeouts and pool size
 
-#### Supported URI Query Parameters
-
 You can include these parameters directly in the URI:
 - `dial_timeout` - Timeout for initial connection (e.g., `5s`)
 - `read_timeout` - Timeout for read operations (e.g., `1s`)
 - `write_timeout` - Timeout for write operations (e.g., `2s`)
 - `pool_size` - Connection pool size (e.g., `10`)
 
-When these parameters are specified in the URI, they take precedence over the corresponding configuration fields.
 
 #### Configuration Notes
 
