@@ -223,6 +223,14 @@ func TestRedisConnectorConfigurationMethods(t *testing.T) {
 			checkConnect:  true,
 		},
 		{
+			name: "uri starts with invalid schema - invalid",
+			conn: common.RedisConnectorConfig{
+				URI: "postgres://user:pass@<addr>/0",
+			},
+			expectSuccess: false,
+			checkConnect:  false,
+		},
+		{
 			name: "uri only with 0 timeout in config and no timeout in uri - invalid",
 			conn: common.RedisConnectorConfig{
 				URI:         "redis://user:pass@<addr>/0",

@@ -438,6 +438,10 @@ func (c *RedisConnectorConfig) Validate() error {
 		if !AddrProvided {
 			return fmt.Errorf("redis connector: missing connection information – supply either 'uri' or at least 'addr'")
 		}
+	} else {
+		if !strings.HasPrefix(c.URI, "rediss://") && !strings.HasPrefix(c.URI, "redis://") {
+			return fmt.Errorf("redis connector: invalid URI scheme, must be 'rediss://' or 'redis://'")
+		}
 	}
 
 	// Fail if timeout not provided in config and also not provided in uri
