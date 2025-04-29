@@ -341,7 +341,8 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 					common.ErrCodeUpstreamMethodIgnored,
 					common.ErrCodeEndpointUnsupported,
 					common.ErrCodeEndpointMissingData,
-				) || common.IsClientError(err) {
+				) ||
+				common.IsClientError(err) {
 				e.stateMu.Lock()
 				// Only skip after multiple consecutive failures if we've never had a success
 				if !e.latestBlockSuccessfulOnce {
