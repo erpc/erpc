@@ -404,22 +404,27 @@ func (p *PostgreSQLConnectorConfig) Validate() error {
 	return nil
 }
 
-func (p *RedisConnectorConfig) Validate() error {
-	if p.URI == "" {
-		if p.Addr == "" {
-			return fmt.Errorf("database.*.connector.redis.addr is required when uri is not provided")
-		}
-		// Note: Username can be empty for default user, so we don't validate it
-		// Password can be empty for Redis instances without authentication
-		// DB defaults to 0 in the Redis client, so we don't need to validate it
+func (c *RedisConnectorConfig) Validate() error {
+	uriGiven := strings.TrimSpace(c.URI) != ""
+	addrGiven := strings.TrimSpace(c.Addr) != "" ||
+		strings.TrimSpace(c.Username) != "" || strings.TrimSpace(c.Password) != "" || c.DB != 0
+
+	switch {
+	case uriGiven && addrGiven:
+		return fmt.Errorf("redis connector: specify *either* URI or addr/username/password/db, not both")
+	case !uriGiven && !addrGiven:
+		return fmt.Errorf("redis connector: missing connection information – supply URI or addr/credentials/db")
+	case addrGiven && c.Addr == "":
+		return fmt.Errorf("redis connector: addr (host:port) is required when using discrete fields")
 	}
-	if p.InitTimeout == 0 {
+
+	if c.InitTimeout == 0 {
 		return fmt.Errorf("database.*.connector.redis.initTimeout is required")
 	}
-	if p.GetTimeout == 0 {
+	if c.GetTimeout == 0 {
 		return fmt.Errorf("database.*.connector.redis.getTimeout is required")
 	}
-	if p.SetTimeout == 0 {
+	if c.SetTimeout == 0 {
 		return fmt.Errorf("database.*.connector.redis.setTimeout is required")
 	}
 	return nil

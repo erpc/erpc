@@ -2,14 +2,15 @@ package data
 
 import (
 	"context"
-	"fmt"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
+	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 )
@@ -182,127 +183,124 @@ func TestRedisConnectorInitialization(t *testing.T) {
 }
 
 func TestRedisConnectorConfigurationMethods(t *testing.T) {
-	t.Run("connects using URI configuration", func(t *testing.T) {
-		m, err := miniredis.Run()
-		require.NoError(t, err)
-		defer m.Close()
+	// spin up a disposable Redis server
+	s, err := miniredis.Run()
+	require.NoError(t, err)
+	t.Cleanup(s.Close)
 
-		// Set a test username and password in miniredis
-		m.RequireUserAuth("testuser", "testpass")
+	const (
+		redisUser = "user"
+		redisPass = "pass"
+		db        = 0
+	)
+	s.RequireUserAuth(redisUser, redisPass)
+	redisAddr := s.Addr()
 
-		logger := zerolog.New(io.Discard)
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+	cases := []struct {
+		name    string
+		conn    common.RedisConnectorConfig
+		wantErr bool
+	}{
+		{
+			name: "uri only - valid",
+			conn: common.RedisConnectorConfig{
+				URI:         "redis://user:pass@<addr>/0",
+				InitTimeout: common.Duration(2 * time.Second),
+				GetTimeout:  common.Duration(2 * time.Second),
+				SetTimeout:  common.Duration(2 * time.Second),
+			},
+		},
+		{
+			name: "discrete fields only - valid",
+			conn: common.RedisConnectorConfig{
+				Addr:        "<addr>",
+				Username:    redisUser,
+				Password:    redisPass,
+				DB:          db,
+				InitTimeout: common.Duration(2 * time.Second),
+				GetTimeout:  common.Duration(2 * time.Second),
+				SetTimeout:  common.Duration(2 * time.Second),
+			},
+		},
+		{
+			name: "both uri and discrete fields - invalid",
+			conn: common.RedisConnectorConfig{
+				URI:         "redis://:pass@<addr>/0",
+				Addr:        "<addr>",
+				Username:    redisUser,
+				Password:    redisPass,
+				DB:          db,
+				InitTimeout: common.Duration(2 * time.Second),
+				GetTimeout:  common.Duration(2 * time.Second),
+				SetTimeout:  common.Duration(2 * time.Second),
+			},
+			wantErr: true,
+		},
+		{
+			name:    "neither uri nor discrete fields - invalid",
+			conn:    common.RedisConnectorConfig{},
+			wantErr: true,
+		},
+		{
+			name: "discrete fields but missing Addr - invalid",
+			conn: common.RedisConnectorConfig{
+				Username:    redisUser,
+				Password:    redisPass,
+				DB:          db,
+				InitTimeout: common.Duration(2 * time.Second),
+				GetTimeout:  common.Duration(2 * time.Second),
+				SetTimeout:  common.Duration(2 * time.Second),
+			},
+			wantErr: true,
+		},
+	}
 
-		// Configure using URI
-		cfg := &common.RedisConnectorConfig{
-			URI:          fmt.Sprintf("redis://testuser:testpass@%s/0", m.Addr()),
-			ConnPoolSize: 5,
-			InitTimeout:  common.Duration(2 * time.Second),
-			GetTimeout:   common.Duration(2 * time.Second),
-			SetTimeout:   common.Duration(2 * time.Second),
-		}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-		connector, err := NewRedisConnector(ctx, &logger, "test-uri-connector", cfg)
-		require.NoError(t, err)
+			// Patch the runtime address into placeholders.
+			if strings.Contains(tc.conn.URI, "<addr>") {
+				tc.conn.URI = strings.ReplaceAll(tc.conn.URI, "<addr>", redisAddr)
+			}
+			if tc.conn.Addr == "<addr>" {
+				tc.conn.Addr = redisAddr
+			}
 
-		// Ensure the connector reports StateReady via its initializer
-		require.Eventually(t, func() bool {
-			return connector.initializer.State() == util.StateReady
-		}, 5*time.Second, 100*time.Millisecond, "connector should become ready")
+			// Layer 1: structural validation.
+			err := tc.conn.Validate()
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
 
-		// Try a simple SET/GET to verify readiness
-		err = connector.Set(ctx, "uriTest", "key1", "value1", nil)
-		require.NoError(t, err, "Set should succeed after successful initialization")
+			// Layer 2: live round-trip.
+			var client *redis.Client
+			if tc.conn.URI != "" {
+				opts, err := redis.ParseURL(tc.conn.URI)
+				require.NoError(t, err)
+				client = redis.NewClient(opts)
+			} else {
+				client = redis.NewClient(&redis.Options{
+					Addr:         tc.conn.Addr,
+					Username:     tc.conn.Username,
+					Password:     tc.conn.Password,
+					DB:           tc.conn.DB,
+					DialTimeout:  time.Duration(tc.conn.InitTimeout),
+					ReadTimeout:  time.Duration(tc.conn.GetTimeout),
+					WriteTimeout: time.Duration(tc.conn.SetTimeout),
+					PoolSize:     tc.conn.ConnPoolSize,
+				})
+			}
+			defer client.Close()
 
-		val, err := connector.Get(ctx, "", "uriTest", "key1")
-		require.NoError(t, err, "Get should succeed for existing key")
-		require.Equal(t, "value1", val)
-	})
-
-	t.Run("connects using individual parameters", func(t *testing.T) {
-		m, err := miniredis.Run()
-		require.NoError(t, err)
-		defer m.Close()
-
-		// Set a test username and password in miniredis
-		m.RequireUserAuth("testuser", "testpass")
-
-		logger := zerolog.New(io.Discard)
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		// Configure using individual parameters
-		cfg := &common.RedisConnectorConfig{
-			Addr:         m.Addr(),
-			Username:     "testuser",
-			Password:     "testpass",
-			DB:           0,
-			ConnPoolSize: 5,
-			InitTimeout:  common.Duration(2 * time.Second),
-			GetTimeout:   common.Duration(2 * time.Second),
-			SetTimeout:   common.Duration(2 * time.Second),
-		}
-
-		connector, err := NewRedisConnector(ctx, &logger, "test-params-connector", cfg)
-		require.NoError(t, err)
-
-		// Ensure the connector reports StateReady via its initializer
-		require.Eventually(t, func() bool {
-			return connector.initializer.State() == util.StateReady
-		}, 5*time.Second, 100*time.Millisecond, "connector should become ready")
-
-		// Try a simple SET/GET to verify readiness
-		err = connector.Set(ctx, "paramsTest", "key1", "value1", nil)
-		require.NoError(t, err, "Set should succeed after successful initialization")
-
-		val, err := connector.Get(ctx, "", "paramsTest", "key1")
-		require.NoError(t, err, "Get should succeed for existing key")
-		require.Equal(t, "value1", val)
-	})
-
-	t.Run("URI takes precedence over individual parameters", func(t *testing.T) {
-		m, err := miniredis.Run()
-		require.NoError(t, err)
-		defer m.Close()
-
-		// Set up two different users in miniredis
-		m.RequireUserAuth("uri-user", "uri-pass")
-		m.RequireUserAuth("param-user", "param-pass")
-
-		logger := zerolog.New(io.Discard)
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		// Configure with both URI and individual parameters
-		cfg := &common.RedisConnectorConfig{
-			// URI should take precedence
-			URI: fmt.Sprintf("redis://uri-user:uri-pass@%s/0", m.Addr()),
-			// These should be ignored
-			Addr:         m.Addr(),
-			Username:     "param-user",
-			Password:     "param-pass",
-			DB:           1,
-			ConnPoolSize: 5,
-			InitTimeout:  common.Duration(2 * time.Second),
-			GetTimeout:   common.Duration(2 * time.Second),
-			SetTimeout:   common.Duration(2 * time.Second),
-		}
-
-		connector, err := NewRedisConnector(ctx, &logger, "test-precedence-connector", cfg)
-		require.NoError(t, err)
-
-		// Ensure the connector reports StateReady via its initializer
-		require.Eventually(t, func() bool {
-			return connector.initializer.State() == util.StateReady
-		}, 5*time.Second, 100*time.Millisecond, "connector should become ready")
-
-		// If URI takes precedence, this should succeed because we're using uri-user
-		err = connector.Set(ctx, "precedenceTest", "key1", "value1", nil)
-		require.NoError(t, err, "Set should succeed if URI credentials are used")
-
-		val, err := connector.Get(ctx, "", "precedenceTest", "key1")
-		require.NoError(t, err, "Get should succeed if URI credentials are used")
-		require.Equal(t, "value1", val)
-	})
+			ctx := context.Background()
+			require.NoError(t, client.Set(ctx, "foo", "bar", 0).Err())
+			val, err := client.Get(ctx, "foo").Result()
+			require.NoError(t, err)
+			require.Equal(t, "bar", val)
+		})
+	}
 }

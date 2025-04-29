@@ -639,9 +639,6 @@ func (m *MemoryConnectorConfig) SetDefaults() error {
 }
 
 func (r *RedisConnectorConfig) SetDefaults() error {
-	if r.Addr == "" {
-		r.Addr = "localhost:6379"
-	}
 	if strings.HasPrefix(r.Addr, "rediss://") {
 		r.TLS = &TLSConfig{
 			Enabled: true,
