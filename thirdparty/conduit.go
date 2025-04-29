@@ -85,6 +85,8 @@ func (v *ConduitVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 }
 
 func (v *ConduitVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
+	log.Debug().Interface("upstream", upstream).Interface("settings", settings).Msg("conduit GenerateConfigs called")
+	
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
@@ -101,9 +103,20 @@ func (v *ConduitVendor) GenerateConfigs(upstream *common.UpstreamConfig, setting
 	}
 	chainID := upstream.Evm.ChainId
 
-	apiKey, ok := settings["apiKey"].(string)
-	if !ok || apiKey == "" {
-		return nil, fmt.Errorf("apiKey is required in conduit settings")
+	apiKey := ""
+	if strings.HasPrefix(upstream.Endpoint, "conduit://") || strings.HasPrefix(upstream.Endpoint, "evm+conduit://") {
+		parts := strings.Split(upstream.Endpoint, "//")
+		if len(parts) == 2 {
+			apiKey = parts[1]
+		}
+	}
+
+	if apiKey == "" {
+		var ok bool
+		apiKey, ok = settings["apiKey"].(string)
+		if !ok || apiKey == "" {
+			return nil, fmt.Errorf("apiKey is required in conduit settings")
+		}
 	}
 
 	apiURL, ok := settings["apiUrl"].(string)
