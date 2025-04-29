@@ -441,8 +441,12 @@ func (c *RedisConnectorConfig) Validate() error {
 		}
 
 		var userInfo string
-		if UsernameProvided && PasswordProvided {
-			userInfo = c.Username + ":" + c.Password + "@"
+		if PasswordProvided {
+			if UsernameProvided {
+				userInfo = c.Username + ":" + c.Password + "@"
+			} else {
+				userInfo = ":" + c.Password + "@"
+			}
 		}
 		c.URI = fmt.Sprintf("redis://%s%s/%d", userInfo, c.Addr, c.DB)
 	}
