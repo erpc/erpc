@@ -430,7 +430,6 @@ func (c *RedisConnectorConfig) Validate() error {
 		return fmt.Errorf("redis connector: cannot provide both 'uri' and 'addr', use only one method")
 	}
 
-	// If URI is not provided, try to construct it from individual fields
 	if !URIProvided {
 		if UsernameProvided && !PasswordProvided {
 			return fmt.Errorf("redis connector: redis.username supplied without redis.password")
@@ -439,16 +438,6 @@ func (c *RedisConnectorConfig) Validate() error {
 		if !AddrProvided {
 			return fmt.Errorf("redis connector: missing connection information – supply either 'uri' or at least 'addr'")
 		}
-
-		var userInfo string
-		if PasswordProvided {
-			if UsernameProvided {
-				userInfo = c.Username + ":" + c.Password + "@"
-			} else {
-				userInfo = ":" + c.Password + "@"
-			}
-		}
-		c.URI = fmt.Sprintf("redis://%s%s/%d", userInfo, c.Addr, c.DB)
 	}
 
 	// Fail if timeout not provided in config and also not provided in uri
