@@ -44,7 +44,7 @@ func TestNetwork_Forward(t *testing.T) {
 		//------------------------------------------------------------
 		// 1.  RPC stubs
 		//------------------------------------------------------------
-		const herd = 1_000
+		const herd = 100_000
 		// First eth_getBlockByNumber("latest") during the herd – slow so the lock stays held
 		gock.New("http://rpc1.localhost").
 			Post("").
@@ -172,7 +172,7 @@ func TestNetwork_Forward(t *testing.T) {
 		wg.Wait()
 
 		//----------------------------------------------------------------------
-		// 5) Inspect metrics: loads of polls, zero multiplexer hits
+		// 5) Inspect metrics: single poll, zero multiplexer hits
 		//----------------------------------------------------------------------
 		polled, err := telemetry.MetricUpstreamLatestBlockPolled.
 			GetMetricWithLabelValues("prjA", util.EvmNetworkId(123), "rpc1")
@@ -185,10 +185,10 @@ func TestNetwork_Forward(t *testing.T) {
 		t.Logf("MetricUpstreamLatestBlockPolled   : %.0f", testutil.ToFloat64(polled))
 		t.Logf("MetricUpstreamMultiplexedPollsTotal: %.0f", testutil.ToFloat64(muxHits))
 
-		require.GreaterOrEqual(t,
+		require.Equal(t,
+			float64(2),
 			testutil.ToFloat64(polled),
-			float64(20), // at least 20 duplicate polls proves the herd
-			"expected thundering-herd duplicate polls",
+			"expected two polls (bootstrap + stale refresh)",
 		)
 
 		require.Equal(t,

@@ -50,18 +50,15 @@ func (c *counterInt64) GetValue() int64 {
 }
 
 func (c *counterInt64) maybeUpdateValue(currentVal, newVal int64) bool {
-	// This function is designed to be called from within c.mu.Lock().
-	// It returns true if the local value was actually updated.
 	updated := false
-	if newVal > currentVal {
+	switch {
+	case newVal > currentVal,
+		currentVal > newVal && (currentVal-newVal > c.ignoreRollbackOf):
 		c.setValue(newVal)
 		updated = true
-	} else if currentVal > newVal && (currentVal-newVal > c.ignoreRollbackOf) {
-		c.setValue(newVal)
-		if c.largeRollbackCallback != nil {
-			c.largeRollbackCallback(currentVal, newVal)
-		}
-		updated = true
+	default:
+		// Same value but we still “touch” it to break staleness
+		c.lastUpdated.Store(time.Now().UnixNano())
 	}
 	return updated
 }
@@ -180,6 +177,11 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	// Try remote lock first
 	lock, err := c.registry.connector.Lock(rctx, c.key, c.registry.lockTtl)
 	if err != nil {
+		if common.HasErrorCode(err, common.ErrCodeLockAlreadyHeld) {
+			// Someone else is updating – just return the (stale) value
+			// or spin-wait with back-off & read-only gets.
+			return c.value.Load(), nil
+		}
 		// Fallback to local lock if remote lock fails
 		c.mu.Lock()
 		defer c.mu.Unlock()

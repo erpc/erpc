@@ -2016,6 +2016,25 @@ func (e *ErrJsonRpcExceptionExternal) GetCause() error {
 }
 
 //
+// Locks
+//
+
+type ErrLockAlreadyHeld struct{ BaseError }
+
+const ErrCodeLockAlreadyHeld ErrorCode = "ErrLockAlreadyHeld"
+
+// Returned when a distributed lock is already held elsewhere
+var NewErrLockAlreadyHeld = func(cause error) error {
+	return &ErrLockAlreadyHeld{
+		BaseError{
+			Code:    ErrCodeLockAlreadyHeld,
+			Message: "distributed lock already held by another process",
+			Cause:   cause,
+		},
+	}
+}
+
+//
 // Store
 //
 
