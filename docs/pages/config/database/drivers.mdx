@@ -76,26 +76,9 @@ database:
       - id: redis-cache
         driver: redis
         redis:
-          # Preferred method: URI connection string
-          # Format: redis://[username]:[password]@[host][:port][/database]
-          # Default database is 0
-          uri: "redis://username:password@host:port/db"
-
-          # Alternative method: individual parameters
-          # addr: "redis.example.com:6379"
-          # username: "myuser" # Optional, for non-default users
-          # password: "mypassword"
-          # db: 0
-
-          # max wait to establish a connection
-          initTimeout: 5s
-          # max wait for reads
-          getTimeout: 1s
-          # max wait for writes
-          setTimeout: 2s
-          # upper limit on concurrent connections
-          connPoolSize: 8
-          # TLS configuration
+          # Connection URI (Required)
+          # Format: redis://[username]:[password]@[host][:port][/database][?dial_timeout=value1&read_timeout=value2&write_timeout=value3&pool_size=value4]
+          uri: "redis://username:password@host:port/db?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10"
           tls:
             enabled: false # or "true" if redis is configured with TLS
             certFile: /path/to/client.crt # Optional
@@ -123,26 +106,9 @@ export default createConfig({
           id: "redis-cache",
           driver: "redis",
           redis: {
-            // Preferred method: URI connection string
-            // Format: redis://[[username]:[password]@[host][:port][/database]
-            // Default database is 0
-            uri: "redis://username:password@host:port/db",
-
-            // Alternative method: individual parameters
-            // addr: "redis.example.com:6379",
-            // username: "myuser" # Optional, for non-default users,
-            // password: "mypassword",
-            // db: 0,
-
-            // max wait to establish a connection
-            initTimeout: "5s",
-            // max wait for reads
-            getTimeout: "1s",
-            // max wait for writes
-            setTimeout: "2s",
-            // upper limit on concurrent connections
-            connPoolSize: 8,
-            // TLS configuration
+            // Connection URI (Required)
+            // Format: redis://[[username]:[password]@[host][:port][/database][?dial_timeout=value1&read_timeout=value2&write_timeout=value3&pool_size=value4]
+            uri: "redis://username:password@host:port/db?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10",
             tls: {
               enabled: false // or "true" if redis is configured with TLS
               certFile: "/path/to/client.crt" // Optional
@@ -167,24 +133,36 @@ export default createConfig({
 </Tab>
 </Tabs>
 
+#### Redis URI Format
+
+The Redis URI format follows this pattern:
+```
+redis://[[username]:[password]@][host][:port][/database][?dial_timeout=value1&read_timeout=value2&write_timeout=value3&pool_size=value4]
+```
+
+Examples:
+- `redis://localhost:6379/0` - Basic connection to localhost
+- `redis://user:pass@redis.example.com:6379/0` - Connection with authentication
+- `redis://:password@redis.example.com:6379/0` - Connection with password only (no username)
+- `redis://redis.example.com:6379` - Connection without database number (defaults to 0)
+- `redis://redis.example.com:6379/0?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10` - Connection with timeouts and pool size
+
+#### Supported URI Query Parameters
+
+You can include these parameters directly in the URI:
+- `dial_timeout` - Timeout for initial connection (e.g., `5s`)
+- `read_timeout` - Timeout for read operations (e.g., `1s`)
+- `write_timeout` - Timeout for write operations (e.g., `2s`)
+- `pool_size` - Connection pool size (e.g., `10`)
+
+When these parameters are specified in the URI, they take precedence over the corresponding configuration fields.
+
 #### Configuration Notes
 
-- When using URI, these parameters are included in the URI string:
-  - `redis://[username]:[password]@[host][:port][/database]`
-  - Database is optional and defaults to 0
-
-- These parameters must be configured separately, even when using URI:
-  - Connection pool size
-  - TLS configuration
-  - Timeout settings (initTimeout, getTimeout, setTimeout)
-
-- You can either use URI or individual parameters, but explicit timeouts and connection pool size from the config will still be used.
-
-- Example of Redis config with eviction policy:
-  ```conf
-  maxmemory 2000mb
-  maxmemory-policy allkeys-lru
-  ```
+```conf
+maxmemory 2000mb
+maxmemory-policy allkeys-lru
+```
 
 ### PostgreSQL
 
