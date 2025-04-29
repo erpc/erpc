@@ -178,7 +178,7 @@ export default createConfig({
   - TLS configuration
   - Timeout settings (initTimeout, getTimeout, setTimeout)
 
-- If both URI and individual parameters are provided, the URI takes precedence for connection details, but explicit timeouts and connection pool size from the config will still be used.
+- You can either use URI or individual parameters, but explicit timeouts and connection pool size from the config will still be used.
 
 - Example of Redis config with eviction policy:
   ```conf
