@@ -22,9 +22,13 @@ const DefaultConduitRecheckInterval = 24 * time.Hour
 type ConduitNetwork struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
-	ChainID      int64  `json:"chainId"`
+	ChainID      string `json:"chainId"`
 	HttpEndpoint string `json:"httpEndpoint"`
 	WsEndpoint   string `json:"wsEndpoint"`
+}
+
+type ConduitResponse struct {
+	Endpoints []*ConduitNetwork `json:"endpoints"`
 }
 
 type ConduitVendor struct {
@@ -255,15 +259,20 @@ func (v *ConduitVendor) fetchConduitNetworks(ctx context.Context, apiURL string)
 		return nil, err
 	}
 
-	var networks []*ConduitNetwork
-	if err := common.SonicCfg.Unmarshal(bodyBytes, &networks); err != nil {
+	var response ConduitResponse
+	if err := common.SonicCfg.Unmarshal(bodyBytes, &response); err != nil {
 		return nil, fmt.Errorf("failed to parse Conduit API data: %w", err)
 	}
 
 	newData := make(map[int64]*ConduitNetwork)
-	for _, network := range networks {
-		if network.ChainID > 0 && network.HttpEndpoint != "" {
-			newData[network.ChainID] = network
+	for _, network := range response.Endpoints {
+		chainID, err := strconv.ParseInt(network.ChainID, 10, 64)
+		if err != nil {
+			log.Debug().Str("chainId", network.ChainID).Msg("skipping network with invalid chainId")
+			continue
+		}
+		if chainID > 0 && network.HttpEndpoint != "" {
+			newData[chainID] = network
 		}
 	}
 
