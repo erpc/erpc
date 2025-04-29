@@ -661,7 +661,17 @@ func (s *HttpServer) parseUrlPath(
 		// Case: ProjectId and architecture preselected
 		switch len(segments) {
 		case 1:
-			chainId = segments[0]
+			// Check if segment is a network alias
+			if project, err := s.erpc.GetProject(projectId); err == nil {
+				ar, ch := project.networksRegistry.ResolveAlias(segments[0])
+				if ar != "" && ch != "" {
+					architecture = ar
+					chainId = ch
+				}
+			}
+			if chainId == "" {
+				chainId = segments[0]
+			}
 			if chainId == "" && !isHealthCheck {
 				return "", "", "", false, false, common.NewErrInvalidUrlPath("for project-and-architecture alias must provide /<chainId>", ps)
 			}
