@@ -11,12 +11,11 @@ import (
 	"time"
 
 	"github.com/erpc/erpc/common"
-	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
 
-const DefaultConduitAPIURL = "https://api.conduit.xyz/public/network/all"
+const DefaultConduitNetworksUrl = "https://api.conduit.xyz/public/network/all"
 const DefaultConduitRecheckInterval = 24 * time.Hour
 
 type ConduitNetwork struct {
@@ -60,9 +59,9 @@ func (v *ConduitVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 		return false, err
 	}
 
-	apiURL, ok := settings["apiUrl"].(string)
-	if !ok || apiURL == "" {
-		apiURL = DefaultConduitAPIURL
+	networksUrl, ok := settings["networksUrl"].(string)
+	if !ok || networksUrl == "" {
+		networksUrl = DefaultConduitNetworksUrl
 	}
 
 	recheckInterval, ok := settings["recheckInterval"].(time.Duration)
@@ -70,12 +69,12 @@ func (v *ConduitVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 		recheckInterval = DefaultConduitRecheckInterval
 	}
 
-	err = v.ensureRemoteData(ctx, recheckInterval, apiURL)
+	err = v.ensureRemoteData(ctx, recheckInterval, networksUrl)
 	if err != nil {
 		return false, fmt.Errorf("unable to load remote data: %w", err)
 	}
 
-	networks, ok := v.remoteData[apiURL]
+	networks, ok := v.remoteData[networksUrl]
 	if !ok || networks == nil {
 		return false, nil
 	}
@@ -85,13 +84,14 @@ func (v *ConduitVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 }
 
 func (v *ConduitVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
-	log.Debug().Interface("upstream", upstream).Interface("settings", settings).Msg("conduit GenerateConfigs called")
-	
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
-	if upstream.AutoIgnoreUnsupportedMethods == nil {
-		upstream.AutoIgnoreUnsupportedMethods = util.BoolPtr(true)
+
+	// If a specific endpoint URL is already provided, use it directly.
+	// This allows users to bypass the provider logic if needed, assuming they've included credentials.
+	if upstream.Endpoint != "" {
+		return []*common.UpstreamConfig{upstream}, nil
 	}
 
 	if upstream.Evm == nil {
@@ -103,25 +103,18 @@ func (v *ConduitVendor) GenerateConfigs(upstream *common.UpstreamConfig, setting
 	}
 	chainID := upstream.Evm.ChainId
 
-	apiKey := ""
-	if strings.HasPrefix(upstream.Endpoint, "conduit://") || strings.HasPrefix(upstream.Endpoint, "evm+conduit://") {
-		parts := strings.Split(upstream.Endpoint, "//")
-		if len(parts) == 2 {
-			apiKey = parts[1]
-		}
+	if settings == nil {
+		settings = make(common.VendorSettings)
 	}
 
-	if apiKey == "" {
-		var ok bool
-		apiKey, ok = settings["apiKey"].(string)
-		if !ok || apiKey == "" {
-			return nil, fmt.Errorf("apiKey is required in conduit settings")
-		}
+	apiKey, ok := settings["apiKey"].(string)
+	if !ok || apiKey == "" {
+		return nil, fmt.Errorf("apiKey is required in conduit settings")
 	}
 
-	apiURL, ok := settings["apiUrl"].(string)
-	if !ok || apiURL == "" {
-		apiURL = DefaultConduitAPIURL
+	networksUrl, ok := settings["networksUrl"].(string)
+	if !ok || networksUrl == "" {
+		networksUrl = DefaultConduitNetworksUrl
 	}
 
 	recheckInterval, ok := settings["recheckInterval"].(time.Duration)
@@ -129,11 +122,11 @@ func (v *ConduitVendor) GenerateConfigs(upstream *common.UpstreamConfig, setting
 		recheckInterval = DefaultConduitRecheckInterval
 	}
 
-	if err := v.ensureRemoteData(context.Background(), recheckInterval, apiURL); err != nil {
+	if err := v.ensureRemoteData(context.Background(), recheckInterval, networksUrl); err != nil {
 		return nil, fmt.Errorf("unable to load remote data: %w", err)
 	}
 
-	networks, ok := v.remoteData[apiURL]
+	networks, ok := v.remoteData[networksUrl]
 	if !ok || networks == nil {
 		return nil, fmt.Errorf("network data not available")
 	}
@@ -151,7 +144,7 @@ func (v *ConduitVendor) GenerateConfigs(upstream *common.UpstreamConfig, setting
 	upsCfg.VendorName = v.Name()
 
 	log.Debug().Int64("chainId", chainID).Interface("upstream", upsCfg).Interface("settings", map[string]interface{}{
-		"apiUrl":          apiURL,
+		"networksUrl":     networksUrl,
 		"recheckInterval": recheckInterval,
 	}).Msg("generated upstream from conduit provider")
 
@@ -220,32 +213,32 @@ func (v *ConduitVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 	return false
 }
 
-func (v *ConduitVendor) ensureRemoteData(ctx context.Context, recheckInterval time.Duration, apiURL string) error {
+func (v *ConduitVendor) ensureRemoteData(ctx context.Context, recheckInterval time.Duration, networksUrl string) error {
 	v.remoteDataLock.Lock()
 	defer v.remoteDataLock.Unlock()
 
-	if ltm, ok := v.remoteDataLastFetchedAt[apiURL]; ok && time.Since(ltm) < recheckInterval {
+	if ltm, ok := v.remoteDataLastFetchedAt[networksUrl]; ok && time.Since(ltm) < recheckInterval {
 		return nil
 	}
 
-	newData, err := v.fetchConduitNetworks(ctx, apiURL)
+	newData, err := v.fetchConduitNetworks(ctx, networksUrl)
 	if err != nil {
-		if _, ok := v.remoteData[apiURL]; ok {
+		if _, ok := v.remoteData[networksUrl]; ok {
 			log.Warn().Err(err).Msg("could not refresh Conduit API data; will use stale data")
 			return nil
 		}
 		return err
 	}
 
-	v.remoteData[apiURL] = newData
-	v.remoteDataLastFetchedAt[apiURL] = time.Now()
+	v.remoteData[networksUrl] = newData
+	v.remoteDataLastFetchedAt[networksUrl] = time.Now()
 	return nil
 }
 
-func (v *ConduitVendor) fetchConduitNetworks(ctx context.Context, apiURL string) (map[int64]*ConduitNetwork, error) {
+func (v *ConduitVendor) fetchConduitNetworks(ctx context.Context, networksUrl string) (map[int64]*ConduitNetwork, error) {
 	rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(rctx, "GET", apiURL, nil)
+	req, err := http.NewRequestWithContext(rctx, "GET", networksUrl, nil)
 	if err != nil {
 		return nil, err
 	}
