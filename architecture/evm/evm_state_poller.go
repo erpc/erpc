@@ -318,10 +318,6 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 	defer span.End()
 	return e.latestBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		e.logger.Trace().Msg("fetching latest block number for evm state poller")
-		telemetry.MetricUpstreamLatestBlockPolled.WithLabelValues(
-			e.projectId,
-			e.upstream.NetworkId(),
-			e.upstream.Config().Id,
 		).Inc()
 
 		// Use multiplexer to fetch the block
@@ -400,10 +396,6 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 	}
 	return e.finalizedBlockShared.TryUpdateIfStale(ctx, dbi, func(ctx context.Context) (int64, error) {
 		e.logger.Trace().Msg("fetching finalized block number for evm state poller")
-		telemetry.MetricUpstreamFinalizedBlockPolled.WithLabelValues(
-			e.projectId,
-			e.upstream.NetworkId(),
-			e.upstream.Config().Id,
 		).Inc()
 
 <<<<<<< HEAD
@@ -563,54 +555,35 @@ func (e *EvmStatePoller) shouldSkipFinalizedCheck() bool {
 // executeMultiplexedPoll handles concurrent requests for the same polling operation.
 // It ensures that only one actual poll function (e.g fetchFn) is executed for a given operationKey
 // while other concurrent callers wait for the result.
+// NOTE: This implementation bypasses the multiplexing logic for testing purposes.
 func (e *EvmStatePoller) executeMultiplexedPoll(
 	ctx context.Context,
 	operationKey string,
 	fetchFn func(context.Context) (interface{}, error),
 ) (interface{}, error) {
-	// Use a unique key per upstream and operation
-	mapKey := fmt.Sprintf("%s/%s", e.upstream.Config().Id, operationKey)
+	e.logger.Trace().Str("operation", operationKey).Msg("executing poll (multiplexer bypassed)")
 
-	// Try to load an existing multiplexer
-	existingMux, loaded := e.inFlightPolling.LoadOrStore(mapKey, common.NewMultiplexer[interface{}](mapKey))
-	mux := existingMux.(*common.Multiplexer[interface{}])
-
-	if loaded {
-		// Another goroutine is already fetching, wait for its result
-		e.logger.Trace().Str("operation", operationKey).Msg("multiplexer hit, waiting for existing poll result")
-		telemetry.MetricUpstreamMultiplexedPollsTotal.WithLabelValues(
+	// Increment metric only when actually fetching
+	if operationKey == "latest" {
+		telemetry.MetricUpstreamLatestBlockPolled.WithLabelValues(
 			e.projectId,
 			e.upstream.NetworkId(),
 			e.upstream.Config().Id,
-			operationKey,
 		).Inc()
-
-		select {
-		case <-mux.Done():
-			// Result is ready
-			result, err := mux.Result()
-			e.logger.Trace().Str("operation", operationKey).Msg("multiplexer finished waiting")
-			return result, err
-		case <-ctx.Done():
-			// Context cancelled while waiting
-			e.logger.Warn().Str("operation", operationKey).Err(ctx.Err()).Msg("context cancelled while waiting for multiplexed poll")
-			return nil, ctx.Err()
-		}
-	} else {
-		// This goroutine is the leader, execute the fetch function
-		e.logger.Trace().Str("operation", operationKey).Msg("multiplexer miss, executing poll")
-		// Ensure cleanup happens even if fetchFn panics
-		defer e.inFlightPolling.Delete(mapKey)
-
-		// Execute the actual poll
-		result, err := fetchFn(ctx)
-
-		// Close the multiplexer to signal completion to waiters
-		mux.Close(ctx, result, err)
-		e.logger.Trace().Str("operation", operationKey).Msg("multiplexer poll finished and closed")
-
-		return result, err
+	} else if operationKey == "finalized" {
+		telemetry.MetricUpstreamFinalizedBlockPolled.WithLabelValues(
+			e.projectId,
+			e.upstream.NetworkId(),
+			e.upstream.Config().Id,
+		).Inc()
 	}
+
+	// Execute the actual poll directly
+	result, err := fetchFn(ctx)
+
+	e.logger.Trace().Str("operation", operationKey).Msg("poll finished (multiplexer bypassed)")
+
+	return result, err
 }
 
 func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64, error) {
