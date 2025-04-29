@@ -407,27 +407,12 @@ func (p *PostgreSQLConnectorConfig) Validate() error {
 
 func (c *RedisConnectorConfig) Validate() error {
 	URIProvided := strings.TrimSpace(c.URI) != ""
-	// Fail if BOTH uri and addr are provided
-	if URIProvided && strings.TrimSpace(c.Addr) != "" {
-		return fmt.Errorf("redis connector: cannot provide both 'uri' and 'addr', use only one method")
-	}
-
-	// If URI is not provided, try to construct it from individual fields
-	if !URIProvided {
-		if strings.TrimSpace(c.Password) == "" && strings.TrimSpace(c.Username) != "" {
-			return fmt.Errorf("redis connector: redis.username supplied without redis.password")
-		}
-
-		if strings.TrimSpace(c.Addr) == "" {
-			return fmt.Errorf("redis connector: missing connection information – supply either 'uri' or at least 'addr'")
-		}
-
-		var userInfo string
-		if c.Username != "" || c.Password != "" {
-			userInfo = c.Username + ":" + c.Password + "@"
-		}
-		c.URI = fmt.Sprintf("redis://%s%s/%d", userInfo, c.Addr, c.DB)
-	}
+	AddrProvided := strings.TrimSpace(c.Addr) != ""
+	UsernameProvided := strings.TrimSpace(c.Username) != ""
+	PasswordProvided := strings.TrimSpace(c.Password) != ""
+	InitTimeoutProvided := c.InitTimeout != 0
+	GetTimeoutProvided := c.GetTimeout != 0
+	SetTimeoutProvided := c.SetTimeout != 0
 
 	uriHas := func(key string) bool {
 		if !URIProvided {
@@ -440,13 +425,36 @@ func (c *RedisConnectorConfig) Validate() error {
 		return u.Query().Get(key) != ""
 	}
 
-	if c.InitTimeout == 0 && !uriHas("dial_timeout") {
+	// Fail if BOTH uri and addr are provided
+	if URIProvided && AddrProvided {
+		return fmt.Errorf("redis connector: cannot provide both 'uri' and 'addr', use only one method")
+	}
+
+	// If URI is not provided, try to construct it from individual fields
+	if !URIProvided {
+		if UsernameProvided && !PasswordProvided {
+			return fmt.Errorf("redis connector: redis.username supplied without redis.password")
+		}
+
+		if !AddrProvided {
+			return fmt.Errorf("redis connector: missing connection information – supply either 'uri' or at least 'addr'")
+		}
+
+		var userInfo string
+		if UsernameProvided && PasswordProvided {
+			userInfo = c.Username + ":" + c.Password + "@"
+		}
+		c.URI = fmt.Sprintf("redis://%s%s/%d", userInfo, c.Addr, c.DB)
+	}
+
+	// Fail if timeout not provided in config and also not provided in uri
+	if !InitTimeoutProvided && !uriHas("dial_timeout") {
 		return fmt.Errorf("database.*.connector.redis.initTimeout is required (or specify dial_timeout in 'uri')")
 	}
-	if c.GetTimeout == 0 && !uriHas("read_timeout") {
+	if !GetTimeoutProvided && !uriHas("read_timeout") {
 		return fmt.Errorf("database.*.connector.redis.getTimeout is required (or specify read_timeout in 'uri')")
 	}
-	if c.SetTimeout == 0 && !uriHas("write_timeout") {
+	if !SetTimeoutProvided && !uriHas("write_timeout") {
 		return fmt.Errorf("database.*.connector.redis.setTimeout is required (or specify write_timeout in 'uri')")
 	}
 
