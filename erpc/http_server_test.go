@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
-	// "github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/auth"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
@@ -4075,6 +4074,17 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 			wantChain:          "1",
 			wantErr:            false,
 		},
+		{
+			name:               "project and architecture preselected, network alias in path",
+			path:               "/arbitrum",
+			method:             "POST",
+			preSelectedProject: "myproject",
+			preSelectedArch:    "evm",
+			wantProject:        "myproject",
+			wantArch:           "evm",
+			wantChain:          "42161",
+			wantErr:            false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -4085,7 +4095,12 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 						preparedProjects: map[string]*PreparedProject{
 							"myproject": {
 								networksRegistry: &NetworksRegistry{
-									aliasToNetworkId: map[string]aliasEntry{},
+									aliasToNetworkId: map[string]aliasEntry{
+										"arbitrum": {
+											architecture: "evm",
+											chainID:      "42161",
+										},
+									},
 								},
 							},
 						},
@@ -4156,152 +4171,152 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 		wantBody     string
 		wantCacheHit bool
 	}{
-		// {
-		// 	name: "Basic healthcheck",
-		// 	setupServer: func(ctx context.Context) *HttpServer {
-		// 		pp := &PreparedProject{
-		// 			Config: &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-		// 			upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, nil, nil, mtk, 0*time.Second),
-		// 		}
-		// 		err := pp.upstreamsRegistry.Bootstrap(ctx)
-		// 		require.NoError(t, err)
-		// 		pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
-		// 		return &HttpServer{
-		// 			logger: logger,
-		// 			erpc: &ERPC{
-		// 				projectsRegistry: &ProjectsRegistry{
-		// 					preparedProjects: map[string]*PreparedProject{
-		// 						"test": pp,
-		// 					},
-		// 				},
-		// 			},
-		// 			healthCheckCfg: &common.HealthCheckConfig{
-		// 				Mode: common.HealthCheckModeSimple,
-		// 			},
-		// 		}
-		// 	},
-		// 	projectId:    "test",
-		// 	architecture: "",
-		// 	chainId:      "",
-		// 	request:      &http.Request{Method: "GET", URL: &url.URL{Path: "/healthcheck"}},
-		// 	wantStatus:   http.StatusOK,
-		// 	wantBody:     `OK`,
-		// },
-		// {
-		// 	name: "Project not found",
-		// 	setupServer: func(ctx context.Context) *HttpServer {
-		// 		return &HttpServer{
-		// 			logger: logger,
-		// 			erpc: &ERPC{
-		// 				projectsRegistry: &ProjectsRegistry{
-		// 					preparedProjects: map[string]*PreparedProject{},
-		// 				},
-		// 			},
-		// 			healthCheckCfg: &common.HealthCheckConfig{
-		// 				Mode: common.HealthCheckModeSimple,
-		// 			},
-		// 		}
-		// 	},
-		// 	projectId:    "nonexistent",
-		// 	architecture: "",
-		// 	chainId:      "",
-		// 	request:      &http.Request{Method: "GET", URL: &url.URL{Path: "/healthcheck"}},
-		// 	wantStatus:   http.StatusNotFound,
-		// 	wantBody:     "not configured",
-		// },
-		// {
-		// 	name: "Root healthcheck",
-		// 	setupServer: func(ctx context.Context) *HttpServer {
-		// 		pp := &PreparedProject{
-		// 			Config: &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-		// 			upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, nil, nil, mtk, 0*time.Second),
-		// 		}
-		// 		err := pp.upstreamsRegistry.Bootstrap(ctx)
-		// 		require.NoError(t, err)
-		// 		pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
-		// 		return &HttpServer{
-		// 			logger: logger,
-		// 			erpc: &ERPC{
-		// 				projectsRegistry: &ProjectsRegistry{
-		// 					preparedProjects: map[string]*PreparedProject{
-		// 						"test": pp,
-		// 					},
-		// 				},
-		// 			},
-		// 			healthCheckCfg: &common.HealthCheckConfig{
-		// 				Mode: common.HealthCheckModeSimple,
-		// 			},
-		// 		}
-		// 	},
-		// 	projectId:    "",
-		// 	architecture: "",
-		// 	chainId:      "",
-		// 	request:      &http.Request{Method: "GET", URL: &url.URL{Path: "/healthcheck"}},
-		// 	wantStatus:   http.StatusOK,
-		// 	wantBody:     `OK`,
-		// },
-		// {
-		// 	name: "Verbose mode healthcheck",
-		// 	setupServer: func(ctx context.Context) *HttpServer {
-		// 		pp := &PreparedProject{
-		// 			Config: &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-		// 			upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, nil, nil, mtk, 0*time.Second),
-		// 		}
-		// 		err := pp.upstreamsRegistry.Bootstrap(ctx)
-		// 		require.NoError(t, err)
-		// 		pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
-		// 		return &HttpServer{
-		// 			logger: logger,
-		// 			erpc: &ERPC{
-		// 				projectsRegistry: &ProjectsRegistry{
-		// 					preparedProjects: map[string]*PreparedProject{
-		// 						"test": pp,
-		// 					},
-		// 				},
-		// 			},
-		// 			healthCheckCfg: &common.HealthCheckConfig{
-		// 				Mode: common.HealthCheckModeVerbose,
-		// 			},
-		// 		}
-		// 	},
-		// 	projectId:    "test",
-		// 	architecture: "",
-		// 	chainId:      "",
-		// 	request:      &http.Request{Method: "GET", URL: &url.URL{Path: "/healthcheck"}},
-		// 	wantStatus:   http.StatusOK,
-		// 	wantBody:     `"status":"OK"`,
-		// },
-		// {
-		// 	name: "Eval strategy - any:initializedUpstreams - Success",
-		// 	setupServer: func(ctx context.Context) *HttpServer {
-		// 		pp := &PreparedProject{
-		// 			Config: &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
-		// 			upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, nil, nil, mtk, 0*time.Second),
-		// 		}
-		// 		err := pp.upstreamsRegistry.Bootstrap(ctx)
-		// 		require.NoError(t, err)
-		// 		pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
-		// 		return &HttpServer{
-		// 			logger: logger,
-		// 			erpc: &ERPC{
-		// 				projectsRegistry: &ProjectsRegistry{
-		// 					preparedProjects: map[string]*PreparedProject{
-		// 						"test": pp,
-		// 					},
-		// 				},
-		// 			},
-		// 			healthCheckCfg: &common.HealthCheckConfig{
-		// 				Mode: common.HealthCheckModeSimple,
-		// 			},
-		// 		}
-		// 	},
-		// 	projectId:    "test",
-		// 	architecture: "",
-		// 	chainId:      "",
-		// 	request:      &http.Request{Method: "GET", URL: &url.URL{RawQuery: "eval=any:initializedUpstreams", Path: "/healthcheck"}},
-		// 	wantStatus:   http.StatusOK,
-		// 	wantBody:     `OK`,
-		// },
+		{
+			name: "Basic healthcheck",
+			setupServer: func(ctx context.Context) *HttpServer {
+				pp := &PreparedProject{
+					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, nil, nil, mtk, 0*time.Second),
+				}
+				err := pp.upstreamsRegistry.Bootstrap(ctx)
+				require.NoError(t, err)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
+				return &HttpServer{
+					logger: logger,
+					erpc: &ERPC{
+						projectsRegistry: &ProjectsRegistry{
+							preparedProjects: map[string]*PreparedProject{
+								"test": pp,
+							},
+						},
+					},
+					healthCheckCfg: &common.HealthCheckConfig{
+						Mode: common.HealthCheckModeSimple,
+					},
+				}
+			},
+			projectId:    "test",
+			architecture: "",
+			chainId:      "",
+			request:      &http.Request{Method: "GET", URL: &url.URL{Path: "/healthcheck"}},
+			wantStatus:   http.StatusOK,
+			wantBody:     `OK`,
+		},
+		{
+			name: "Project not found",
+			setupServer: func(ctx context.Context) *HttpServer {
+				return &HttpServer{
+					logger: logger,
+					erpc: &ERPC{
+						projectsRegistry: &ProjectsRegistry{
+							preparedProjects: map[string]*PreparedProject{},
+						},
+					},
+					healthCheckCfg: &common.HealthCheckConfig{
+						Mode: common.HealthCheckModeSimple,
+					},
+				}
+			},
+			projectId:    "nonexistent",
+			architecture: "",
+			chainId:      "",
+			request:      &http.Request{Method: "GET", URL: &url.URL{Path: "/healthcheck"}},
+			wantStatus:   http.StatusNotFound,
+			wantBody:     "not configured",
+		},
+		{
+			name: "Root healthcheck",
+			setupServer: func(ctx context.Context) *HttpServer {
+				pp := &PreparedProject{
+					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, nil, nil, mtk, 0*time.Second),
+				}
+				err := pp.upstreamsRegistry.Bootstrap(ctx)
+				require.NoError(t, err)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
+				return &HttpServer{
+					logger: logger,
+					erpc: &ERPC{
+						projectsRegistry: &ProjectsRegistry{
+							preparedProjects: map[string]*PreparedProject{
+								"test": pp,
+							},
+						},
+					},
+					healthCheckCfg: &common.HealthCheckConfig{
+						Mode: common.HealthCheckModeSimple,
+					},
+				}
+			},
+			projectId:    "",
+			architecture: "",
+			chainId:      "",
+			request:      &http.Request{Method: "GET", URL: &url.URL{Path: "/healthcheck"}},
+			wantStatus:   http.StatusOK,
+			wantBody:     `OK`,
+		},
+		{
+			name: "Verbose mode healthcheck",
+			setupServer: func(ctx context.Context) *HttpServer {
+				pp := &PreparedProject{
+					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, nil, nil, mtk, 0*time.Second),
+				}
+				err := pp.upstreamsRegistry.Bootstrap(ctx)
+				require.NoError(t, err)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
+				return &HttpServer{
+					logger: logger,
+					erpc: &ERPC{
+						projectsRegistry: &ProjectsRegistry{
+							preparedProjects: map[string]*PreparedProject{
+								"test": pp,
+							},
+						},
+					},
+					healthCheckCfg: &common.HealthCheckConfig{
+						Mode: common.HealthCheckModeVerbose,
+					},
+				}
+			},
+			projectId:    "test",
+			architecture: "",
+			chainId:      "",
+			request:      &http.Request{Method: "GET", URL: &url.URL{Path: "/healthcheck"}},
+			wantStatus:   http.StatusOK,
+			wantBody:     `"status":"OK"`,
+		},
+		{
+			name: "Eval strategy - any:initializedUpstreams - Success",
+			setupServer: func(ctx context.Context) *HttpServer {
+				pp := &PreparedProject{
+					Config:            &common.ProjectConfig{Id: "test", Upstreams: []*common.UpstreamConfig{up1}},
+					upstreamsRegistry: upstream.NewUpstreamsRegistry(ctx, logger, "", []*common.UpstreamConfig{up1}, ssr, nil, vr, nil, nil, mtk, 0*time.Second),
+				}
+				err := pp.upstreamsRegistry.Bootstrap(ctx)
+				require.NoError(t, err)
+				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
+				return &HttpServer{
+					logger: logger,
+					erpc: &ERPC{
+						projectsRegistry: &ProjectsRegistry{
+							preparedProjects: map[string]*PreparedProject{
+								"test": pp,
+							},
+						},
+					},
+					healthCheckCfg: &common.HealthCheckConfig{
+						Mode: common.HealthCheckModeSimple,
+					},
+				}
+			},
+			projectId:    "test",
+			architecture: "",
+			chainId:      "",
+			request:      &http.Request{Method: "GET", URL: &url.URL{RawQuery: "eval=any:initializedUpstreams", Path: "/healthcheck"}},
+			wantStatus:   http.StatusOK,
+			wantBody:     `OK`,
+		},
 		{
 			name: "Eval strategy - any:initializedUpstreams - Failure",
 			setupServer: func(ctx context.Context) *HttpServer {
