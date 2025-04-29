@@ -2,6 +2,7 @@ package common
 
 import (
 	"fmt"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -405,28 +406,50 @@ func (p *PostgreSQLConnectorConfig) Validate() error {
 }
 
 func (c *RedisConnectorConfig) Validate() error {
-	uriGiven := strings.TrimSpace(c.URI) != ""
-	addrGiven := strings.TrimSpace(c.Addr) != "" ||
-		strings.TrimSpace(c.Username) != "" || strings.TrimSpace(c.Password) != "" || c.DB != 0
-
-	switch {
-	case uriGiven && addrGiven:
-		return fmt.Errorf("redis connector: specify *either* URI or addr/username/password/db, not both")
-	case !uriGiven && !addrGiven:
-		return fmt.Errorf("redis connector: missing connection information – supply URI or addr/credentials/db")
-	case addrGiven && c.Addr == "":
-		return fmt.Errorf("redis connector: addr (host:port) is required when using discrete fields")
+	URIProvided := strings.TrimSpace(c.URI) != ""
+	// Fail if BOTH uri and addr are provided
+	if strings.TrimSpace(c.URI) != "" && strings.TrimSpace(c.Addr) != "" {
+		return fmt.Errorf("redis connector: cannot provide both 'uri' and 'addr', use only one method")
 	}
 
-	if c.InitTimeout == 0 {
-		return fmt.Errorf("database.*.connector.redis.initTimeout is required")
+	// If URI is not provided, try to construct it from individual fields
+	if !URIProvided {
+		if strings.TrimSpace(c.Password) == "" && strings.TrimSpace(c.Username) != "" {
+			return fmt.Errorf("redis connector: redis.username supplied without redis.password")
+		}
+
+		if strings.TrimSpace(c.Addr) == "" {
+			return fmt.Errorf("redis connector: missing connection information – supply either 'uri' or at least 'addr'")
+		}
+
+		var userInfo string
+		if c.Username != "" || c.Password != "" {
+			userInfo = c.Username + ":" + c.Password + "@"
+		}
+		c.URI = fmt.Sprintf("redis://%s%s/%d", userInfo, c.Addr, c.DB)
 	}
-	if c.GetTimeout == 0 {
-		return fmt.Errorf("database.*.connector.redis.getTimeout is required")
+
+	uriHas := func(key string) bool {
+		if !URIProvided {
+			return false
+		}
+		u, err := url.Parse(c.URI)
+		if err != nil {
+			return false
+		}
+		return u.Query().Get(key) != ""
 	}
-	if c.SetTimeout == 0 {
-		return fmt.Errorf("database.*.connector.redis.setTimeout is required")
+
+	if c.InitTimeout == 0 && !uriHas("dial_timeout") {
+		return fmt.Errorf("database.*.connector.redis.initTimeout is required (or specify dial_timeout in 'uri')")
 	}
+	if c.GetTimeout == 0 && !uriHas("read_timeout") {
+		return fmt.Errorf("database.*.connector.redis.getTimeout is required (or specify read_timeout in 'uri')")
+	}
+	if c.SetTimeout == 0 && !uriHas("write_timeout") {
+		return fmt.Errorf("database.*.connector.redis.setTimeout is required (or specify write_timeout in 'uri')")
+	}
+
 	return nil
 }
 

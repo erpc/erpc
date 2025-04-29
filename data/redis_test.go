@@ -2,6 +2,7 @@ package data
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -197,18 +198,66 @@ func TestRedisConnectorConfigurationMethods(t *testing.T) {
 	redisAddr := s.Addr()
 
 	cases := []struct {
-		name    string
-		conn    common.RedisConnectorConfig
-		wantErr bool
+		name          string
+		conn          common.RedisConnectorConfig
+		expectSuccess bool
+		checkConnect  bool
 	}{
 		{
-			name: "uri only - valid",
+			name: "uri only with default timeout in config - valid",
 			conn: common.RedisConnectorConfig{
 				URI:         "redis://user:pass@<addr>/0",
 				InitTimeout: common.Duration(2 * time.Second),
 				GetTimeout:  common.Duration(2 * time.Second),
 				SetTimeout:  common.Duration(2 * time.Second),
 			},
+			expectSuccess: true,
+			checkConnect:  true,
+		},
+		{
+			name: "uri only with timeout - valid",
+			conn: common.RedisConnectorConfig{
+				URI: "redis://user:pass@<addr>/0?dial_timeout=1s&read_timeout=1s&write_timeout=1s",
+			},
+			expectSuccess: true,
+			checkConnect:  true,
+		},
+		{
+			name: "uri only with 0 timeout in config and no timeout in uri - invalid",
+			conn: common.RedisConnectorConfig{
+				URI:         "redis://user:pass@<addr>/0",
+				InitTimeout: common.Duration(0 * time.Second),
+				GetTimeout:  common.Duration(0 * time.Second),
+				SetTimeout:  common.Duration(0 * time.Second),
+			},
+			expectSuccess: false,
+			checkConnect:  false,
+		},
+		{
+			name: "construct URI from discrete fields uses DB 0 by default - valid",
+			conn: common.RedisConnectorConfig{
+				Addr:        "<addr>",
+				Username:    redisUser,
+				Password:    redisPass,
+				InitTimeout: common.Duration(2 * time.Second),
+				GetTimeout:  common.Duration(2 * time.Second),
+				SetTimeout:  common.Duration(2 * time.Second),
+			},
+			expectSuccess: true,
+			checkConnect:  true,
+		},
+		{
+			name: "discrete fields username without password - invalid",
+			conn: common.RedisConnectorConfig{
+				Addr:        "<addr>",
+				Username:    redisUser,
+				Password:    "",
+				InitTimeout: common.Duration(2 * time.Second),
+				GetTimeout:  common.Duration(2 * time.Second),
+				SetTimeout:  common.Duration(2 * time.Second),
+			},
+			expectSuccess: false,
+			checkConnect:  false,
 		},
 		{
 			name: "discrete fields only - valid",
@@ -221,6 +270,8 @@ func TestRedisConnectorConfigurationMethods(t *testing.T) {
 				GetTimeout:  common.Duration(2 * time.Second),
 				SetTimeout:  common.Duration(2 * time.Second),
 			},
+			expectSuccess: true,
+			checkConnect:  true,
 		},
 		{
 			name: "both uri and discrete fields - invalid",
@@ -234,12 +285,14 @@ func TestRedisConnectorConfigurationMethods(t *testing.T) {
 				GetTimeout:  common.Duration(2 * time.Second),
 				SetTimeout:  common.Duration(2 * time.Second),
 			},
-			wantErr: true,
+			expectSuccess: false,
+			checkConnect:  false,
 		},
 		{
-			name:    "neither uri nor discrete fields - invalid",
-			conn:    common.RedisConnectorConfig{},
-			wantErr: true,
+			name:          "neither uri nor discrete fields - invalid",
+			conn:          common.RedisConnectorConfig{},
+			expectSuccess: false,
+			checkConnect:  false,
 		},
 		{
 			name: "discrete fields but missing Addr - invalid",
@@ -251,7 +304,8 @@ func TestRedisConnectorConfigurationMethods(t *testing.T) {
 				GetTimeout:  common.Duration(2 * time.Second),
 				SetTimeout:  common.Duration(2 * time.Second),
 			},
-			wantErr: true,
+			expectSuccess: false,
+			checkConnect:  false,
 		},
 	}
 
@@ -268,34 +322,36 @@ func TestRedisConnectorConfigurationMethods(t *testing.T) {
 				tc.conn.Addr = redisAddr
 			}
 
-			// Layer 1: structural validation.
+			// Layer 1: validation
 			err := tc.conn.Validate()
-			if tc.wantErr {
+			if !tc.expectSuccess {
 				require.Error(t, err)
 				return
 			}
 			require.NoError(t, err)
 
-			// Layer 2: live round-trip.
-			var client *redis.Client
-			if tc.conn.URI != "" {
-				opts, err := redis.ParseURL(tc.conn.URI)
-				require.NoError(t, err)
-				client = redis.NewClient(opts)
-			} else {
-				client = redis.NewClient(&redis.Options{
-					Addr:         tc.conn.Addr,
-					Username:     tc.conn.Username,
-					Password:     tc.conn.Password,
-					DB:           tc.conn.DB,
-					DialTimeout:  time.Duration(tc.conn.InitTimeout),
-					ReadTimeout:  time.Duration(tc.conn.GetTimeout),
-					WriteTimeout: time.Duration(tc.conn.SetTimeout),
-					PoolSize:     tc.conn.ConnPoolSize,
-				})
+			// Layer 2: live round-trip
+			if !tc.checkConnect {
+				return
 			}
-			defer client.Close()
 
+			var client *redis.Client
+
+			uri := tc.conn.URI
+			if uri == "" {
+				// Synthesize redis://[user:pass@]addr/db
+				var userInfo string
+				if tc.conn.Username != "" || tc.conn.Password != "" {
+					userInfo = tc.conn.Username + ":" + tc.conn.Password + "@"
+				}
+				uri = fmt.Sprintf("redis://%s%s/%d", userInfo, tc.conn.Addr, tc.conn.DB)
+			}
+
+			opts, err := redis.ParseURL(uri)
+			require.NoError(t, err, "redis.ParseURL should handle the constructed URI")
+			client = redis.NewClient(opts)
+
+			// Live round-trip to prove it works.
 			ctx := context.Background()
 			require.NoError(t, client.Set(ctx, "foo", "bar", 0).Err())
 			val, err := client.Get(ctx, "foo").Result()
@@ -303,4 +359,5 @@ func TestRedisConnectorConfigurationMethods(t *testing.T) {
 			require.Equal(t, "bar", val)
 		})
 	}
+
 }

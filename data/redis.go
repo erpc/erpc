@@ -82,33 +82,42 @@ func (r *RedisConnector) Id() string {
 func (r *RedisConnector) connectTask(ctx context.Context) error {
 	var options *redis.Options
 	var err error
+	redisURI := strings.TrimSpace(r.cfg.URI)
 
-	// URI is preferred and default connection behavior
-	if r.cfg.URI != "" {
-		r.logger.Debug().Str("uri", util.RedactEndpoint(r.cfg.URI)).Msg("attempting to connect to Redis using URI")
-		options, err = redis.ParseURL(r.cfg.URI)
-		if err != nil {
-			return fmt.Errorf("failed to parse Redis URI: %w", err)
+	if redisURI == "" {
+		// Construct from discrete fields (addr, username, password, db)
+		if strings.TrimSpace(r.cfg.Addr) == "" {
+			return fmt.Errorf("missing Redis connection information: either 'uri' or 'addr' must be supplied")
 		}
 
-		options.DialTimeout = r.initTimeout
-		options.ReadTimeout = r.getTimeout
-		options.WriteTimeout = r.setTimeout
-
-		if r.cfg.ConnPoolSize > 0 {
-			options.PoolSize = r.cfg.ConnPoolSize
+		var userInfo string
+		if r.cfg.Username != "" || r.cfg.Password != "" {
+			userInfo = r.cfg.Username + ":" + r.cfg.Password + "@"
 		}
+		redisURI = fmt.Sprintf("redis://%s%s/%d", userInfo, r.cfg.Addr, r.cfg.DB)
+		r.logger.Debug().Str("uri", util.RedactEndpoint(redisURI)).Msg("constructed Redis URI from discrete config fields")
 	} else {
-		options = &redis.Options{
-			Addr:         r.cfg.Addr,
-			Username:     r.cfg.Username,
-			Password:     r.cfg.Password,
-			DB:           r.cfg.DB,
-			PoolSize:     r.cfg.ConnPoolSize,
-			DialTimeout:  r.initTimeout,
-			ReadTimeout:  r.getTimeout,
-			WriteTimeout: r.setTimeout,
-		}
+		r.logger.Debug().Str("uri", util.RedactEndpoint(redisURI)).Msg("attempting to connect to Redis using provided URI")
+	}
+
+	options, err = redis.ParseURL(redisURI)
+	if err != nil {
+		return fmt.Errorf("failed to parse Redis URI: %w", err)
+	}
+
+	// Config overrides win only when the URI (or query params) did not already
+	// set an explicit value.
+	if r.initTimeout > 0 && options.DialTimeout == 0 {
+		options.DialTimeout = r.initTimeout
+	}
+	if r.getTimeout > 0 && options.ReadTimeout == 0 {
+		options.ReadTimeout = r.getTimeout
+	}
+	if r.setTimeout > 0 && options.WriteTimeout == 0 {
+		options.WriteTimeout = r.setTimeout
+	}
+	if r.cfg.ConnPoolSize > 0 && options.PoolSize == 0 {
+		options.PoolSize = r.cfg.ConnPoolSize
 	}
 
 	if r.cfg.TLS != nil && r.cfg.TLS.Enabled {
