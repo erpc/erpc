@@ -94,7 +94,14 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 		if r.cfg.Username != "" || r.cfg.Password != "" {
 			userInfo = r.cfg.Username + ":" + r.cfg.Password + "@"
 		}
-		redisURI = fmt.Sprintf("redis://%s%s/%d", userInfo, r.cfg.Addr, r.cfg.DB)
+
+		// Use rediss:// prefix if TLS is enabled in config, otherwise redis://
+		scheme := "redis://"
+		if r.cfg.TLS != nil && r.cfg.TLS.Enabled {
+			scheme = "rediss://"
+		}
+
+		redisURI = fmt.Sprintf("%s%s%s/%d", scheme, userInfo, r.cfg.Addr, r.cfg.DB)
 		r.logger.Debug().Str("uri", util.RedactEndpoint(redisURI)).Msg("constructed Redis URI from discrete config fields")
 	} else {
 		r.logger.Debug().Str("uri", util.RedactEndpoint(redisURI)).Msg("attempting to connect to Redis using provided URI")
@@ -120,12 +127,38 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 		options.PoolSize = r.cfg.ConnPoolSize
 	}
 
-	if r.cfg.TLS != nil && r.cfg.TLS.Enabled {
-		tlsConfig, err := common.CreateTLSConfig(r.cfg.TLS)
+	/**
+	* if tls.enabled: true in config → build a tls.Config and
+	* apply or merge it.
+	*
+	* Otherwise, keep whatever came from the URI (rediss:// or none).
+	* redis.ParseURL("rediss://…") inserts a minimal tls.Config whose only special bit is
+	* InsecureSkipVerify = true (i.e. accept any server-cert)
+	 */
+	if cfgTLS := r.cfg.TLS; cfgTLS != nil && cfgTLS.Enabled {
+		tlsConfig, err := common.CreateTLSConfig(cfgTLS)
 		if err != nil {
 			return fmt.Errorf("failed to create TLS config: %w", err)
 		}
-		options.TLSConfig = tlsConfig
+
+		if options.TLSConfig == nil {
+			// URI was redis:// — take YAML config wholesale.
+			options.TLSConfig = tlsConfig
+			r.logger.Debug().Msg("enabled TLS via YAML configuration")
+		} else {
+			// URI was rediss:// — merge YAML extras onto the baseline.
+			if len(tlsConfig.Certificates) > 0 {
+				options.TLSConfig.Certificates = tlsConfig.Certificates
+				options.TLSConfig.InsecureSkipVerify = false
+			}
+			if tlsConfig.RootCAs != nil {
+				options.TLSConfig.RootCAs = tlsConfig.RootCAs
+				options.TLSConfig.InsecureSkipVerify = false
+			}
+			r.logger.Debug().Msg("merged YAML TLS certificates/CA into rediss:// config")
+		}
+	} else if options.TLSConfig != nil {
+		r.logger.Debug().Msg("using TLS configuration implied by rediss:// URI (verify against system CAs or InsecureSkipVerify)")
 	}
 
 	r.logger.Debug().Str("addr", options.Addr).Msg("attempting to connect to Redis")
@@ -136,6 +169,18 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 	defer cancel()
 	_, err = client.Ping(ctx).Result()
 	if err != nil {
+		if options.TLSConfig != nil && err != nil && strings.Contains(err.Error(), "certificate") {
+			errMsg := fmt.Sprintf("failed to connect to Redis with TLS enabled: %v.", err)
+			if !options.TLSConfig.InsecureSkipVerify && options.TLSConfig.RootCAs == nil {
+				errMsg += " Ensure the server certificate is valid and trusted by the system CAs, or provide a custom CA using 'tls.caFile'."
+			} else if !options.TLSConfig.InsecureSkipVerify && options.TLSConfig.RootCAs != nil {
+				errMsg += " Ensure the server certificate is valid and signed by the provided 'tls.caFile'."
+			}
+			if len(options.TLSConfig.Certificates) > 0 {
+				errMsg += " Also verify the client certificate and key ('tls.certFile', 'tls.keyFile') if used."
+			}
+			return fmt.Errorf(errMsg)
+		}
 		return fmt.Errorf("failed to connect to Redis: %w", err)
 	}
 
@@ -147,7 +192,7 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 	pool := goredis.NewPool(client)
 	r.redsync = redsync.New(pool)
 
-	r.logger.Info().Str("addr", r.cfg.Addr).Msg("successfully connected to Redis")
+	r.logger.Info().Str("addr", options.Addr).Msg("successfully connected to Redis") // Use options.Addr for logging consistency
 	return nil
 }
 

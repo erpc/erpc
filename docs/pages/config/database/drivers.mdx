@@ -133,6 +133,22 @@ export default createConfig({
 </Tab>
 </Tabs>
 
+
+#### TLS options
+
+When your Redis endpoint already uses **rediss://** (for example, Railway or Upstash), TLS is negotiated automatically and you can omit the entire `tls:` block.  
+Add the `tls:` section only when you need **mutual‑TLS** (client certificate/key) or your server uses a **private CA**:
+
+```yaml
+redis:
+  uri: redis://user:pass@redis.internal:6380/0
+  tls:
+    enabled: true
+    certFile: /secrets/redis-client.crt   # sent to server (mTLS)
+    keyFile:  /secrets/redis-client.key
+    caFile:   /secrets/redis-rootCA.pem   # trust this CA instead of system roots
+```
+
 #### Redis URI Format
 
 The Redis URI format follows this pattern:
