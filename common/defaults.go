@@ -2,8 +2,10 @@ package common
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -558,10 +560,10 @@ func (c *SharedStateConfig) SetDefaults(defClusterKey string) error {
 		return err
 	}
 	if c.FallbackTimeout == 0 {
-		c.FallbackTimeout = Duration(500 * time.Millisecond)
+		c.FallbackTimeout = Duration(10 * time.Second)
 	}
 	if c.LockTtl == 0 {
-		c.LockTtl = Duration(10 * time.Second)
+		c.LockTtl = Duration(30 * time.Second)
 	}
 	return nil
 }
@@ -639,16 +641,18 @@ func (m *MemoryConnectorConfig) SetDefaults() error {
 }
 
 func (r *RedisConnectorConfig) SetDefaults() error {
-	if r.Addr == "" {
-		r.Addr = "localhost:6379"
+	if r.URI != "" && r.Addr != "" {
+		return fmt.Errorf(
+			"redis connector: provide either 'uri' or 'addr/username/password/db', not both",
+		)
 	}
-	if strings.HasPrefix(r.Addr, "rediss://") {
-		r.TLS = &TLSConfig{
-			Enabled: true,
-		}
+
+	// URI is provided directly
+	if r.URI != "" {
+		return nil
 	}
-	r.Addr = strings.TrimPrefix(r.Addr, "rediss://")
-	r.Addr = strings.TrimPrefix(r.Addr, "redis://")
+
+	// Set default values for timeouts and connection pool size
 	if r.ConnPoolSize == 0 {
 		r.ConnPoolSize = 8
 	}
@@ -660,6 +664,48 @@ func (r *RedisConnectorConfig) SetDefaults() error {
 	}
 	if r.SetTimeout == 0 {
 		r.SetTimeout = Duration(2 * time.Second)
+	}
+
+	// URI needs to be constructed from individual fields
+
+	// Clean up Addr if it has scheme prefixes
+	r.Addr = strings.TrimPrefix(r.Addr, "rediss://")
+	r.Addr = strings.TrimPrefix(r.Addr, "redis://")
+
+	// Construct URI from discrete fields using net/url to ensure
+	// credentials and host parts are safely escaped.
+	if r.Addr != "" {
+		// Split host and port; if port is missing default to 6379.
+		host, port, err := net.SplitHostPort(r.Addr)
+		if err != nil {
+			host = r.Addr
+			port = "6379"
+		}
+
+		scheme := "redis"
+		if r.TLS != nil && r.TLS.Enabled {
+			scheme = "rediss"
+		}
+
+		u := &url.URL{
+			Scheme: scheme,
+			Host:   net.JoinHostPort(host, port),
+		}
+
+		// Add credentials, automatically URL‑encoded by url.URL.
+		if r.Username != "" || r.Password != "" {
+			u.User = url.UserPassword(r.Username, r.Password)
+		}
+
+		// Always include the database index (mirrors previous behaviour).
+		u.Path = "/" + strconv.Itoa(r.DB)
+
+		r.URI = u.String()
+
+		r.Addr = ""
+		r.Username = ""
+		r.Password = ""
+		r.DB = 0
 	}
 
 	return nil

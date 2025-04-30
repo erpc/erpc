@@ -2,13 +2,16 @@ package data
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
+	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 )
@@ -33,6 +36,9 @@ func TestRedisConnectorInitialization(t *testing.T) {
 			SetTimeout:   common.Duration(2 * time.Second),
 			TLS:          nil,
 		}
+
+		err = cfg.SetDefaults()
+		require.NoError(t, err, "failed to set defaults for redis config")
 
 		connector, err := NewRedisConnector(ctx, &logger, "test-connector", cfg)
 		// We expect no error from NewRedisConnector, because it should succeed on the first attempt.
@@ -66,6 +72,9 @@ func TestRedisConnectorInitialization(t *testing.T) {
 			GetTimeout:   common.Duration(500 * time.Millisecond),
 			SetTimeout:   common.Duration(500 * time.Millisecond),
 		}
+
+		err := cfg.SetDefaults()
+		require.NoError(t, err, "failed to set defaults for redis config")
 
 		connector, err := NewRedisConnector(ctx, &logger, "test-connector-invalid-addr", cfg)
 		// The constructor does not necessarily return an error if the first attempt fails;
@@ -105,6 +114,9 @@ func TestRedisConnectorInitialization(t *testing.T) {
 				CAFile:             "",
 			},
 		}
+
+		err := cfg.SetDefaults()
+		require.NoError(t, err, "failed to set defaults for redis config")
 
 		connector, err := NewRedisConnector(ctx, &logger, "test-bad-tls", cfg)
 		// We expect that the connector tries to create a TLS config and fails.
@@ -146,6 +158,9 @@ func TestRedisConnectorInitialization(t *testing.T) {
 			SetTimeout:   common.Duration(300 * time.Millisecond),
 		}
 
+		err = cfg.SetDefaults()
+		require.NoError(t, err, "failed to set defaults for redis config")
+
 		// This will fail its first internal connection attempt,
 		// but the constructor typically returns a connector with
 		// a "not-ready" initializer.
@@ -177,5 +192,201 @@ func TestRedisConnectorInitialization(t *testing.T) {
 		require.NoError(t, err, "Get should succeed for the newly-set key")
 		require.Equal(t, "recovered-value", val)
 	})
+
+}
+
+func TestRedisConnectorConfigurationMethods(t *testing.T) {
+	// spin up a disposable Redis server
+	s, err := miniredis.Run()
+	require.NoError(t, err)
+	t.Cleanup(s.Close)
+
+	const (
+		redisUser = "user"
+		redisPass = "pass"
+		db        = 0
+	)
+	s.RequireUserAuth(redisUser, redisPass)
+	redisAddr := s.Addr()
+
+	cases := []struct {
+		name          string
+		conn          common.RedisConnectorConfig
+		expectSuccess bool
+		checkConnect  bool
+	}{
+		{
+			name: "uri only with default timeout in config - valid",
+			conn: common.RedisConnectorConfig{
+				URI:         "redis://user:pass@<addr>/0",
+				InitTimeout: common.Duration(2 * time.Second),
+				GetTimeout:  common.Duration(2 * time.Second),
+				SetTimeout:  common.Duration(2 * time.Second),
+			},
+			expectSuccess: true,
+			checkConnect:  true,
+		},
+		{
+			name: "uri only with timeout - valid",
+			conn: common.RedisConnectorConfig{
+				URI: "redis://user:pass@<addr>/0?dial_timeout=1s&read_timeout=1s&write_timeout=1s",
+			},
+			expectSuccess: true,
+			checkConnect:  true,
+		},
+		{
+			name: "uri starts with invalid schema - invalid",
+			conn: common.RedisConnectorConfig{
+				URI: "postgres://user:pass@<addr>/0",
+			},
+			expectSuccess: false,
+			checkConnect:  false,
+		},
+		{
+			name: "uri only with 0 timeout in config and no timeout in uri - valid",
+			conn: common.RedisConnectorConfig{
+				URI:         "redis://user:pass@<addr>/0",
+				InitTimeout: common.Duration(0 * time.Second),
+				GetTimeout:  common.Duration(0 * time.Second),
+				SetTimeout:  common.Duration(0 * time.Second),
+			},
+			expectSuccess: true,
+			checkConnect:  true,
+		},
+		{
+			name: "construct URI from discrete fields uses DB 0 by default - valid",
+			conn: common.RedisConnectorConfig{
+				Addr:        "<addr>",
+				Username:    redisUser,
+				Password:    redisPass,
+				InitTimeout: common.Duration(2 * time.Second),
+				GetTimeout:  common.Duration(2 * time.Second),
+				SetTimeout:  common.Duration(2 * time.Second),
+			},
+			expectSuccess: true,
+			checkConnect:  true,
+		},
+		{
+			name: "discrete fields username without password - valid",
+			conn: common.RedisConnectorConfig{
+				Addr:        "<addr>",
+				Username:    redisUser,
+				Password:    "",
+				InitTimeout: common.Duration(2 * time.Second),
+				GetTimeout:  common.Duration(2 * time.Second),
+				SetTimeout:  common.Duration(2 * time.Second),
+			},
+			expectSuccess: true,
+			checkConnect:  false,
+		},
+		{
+			name: "discrete fields only - valid",
+			conn: common.RedisConnectorConfig{
+				Addr:        "<addr>",
+				Username:    redisUser,
+				Password:    redisPass,
+				DB:          db,
+				InitTimeout: common.Duration(2 * time.Second),
+				GetTimeout:  common.Duration(2 * time.Second),
+				SetTimeout:  common.Duration(2 * time.Second),
+			},
+			expectSuccess: true,
+			checkConnect:  true,
+		},
+		{
+			name: "both uri and discrete fields - invalid",
+			conn: common.RedisConnectorConfig{
+				URI:         "redis://:pass@<addr>/0",
+				Addr:        "<addr>",
+				Username:    redisUser,
+				Password:    redisPass,
+				DB:          db,
+				InitTimeout: common.Duration(2 * time.Second),
+				GetTimeout:  common.Duration(2 * time.Second),
+				SetTimeout:  common.Duration(2 * time.Second),
+			},
+			expectSuccess: false,
+			checkConnect:  false,
+		},
+		{
+			name:          "neither uri nor discrete fields - invalid",
+			conn:          common.RedisConnectorConfig{},
+			expectSuccess: false,
+			checkConnect:  false,
+		},
+		{
+			name: "discrete fields but missing Addr - invalid",
+			conn: common.RedisConnectorConfig{
+				Username:    redisUser,
+				Password:    redisPass,
+				DB:          db,
+				InitTimeout: common.Duration(2 * time.Second),
+				GetTimeout:  common.Duration(2 * time.Second),
+				SetTimeout:  common.Duration(2 * time.Second),
+			},
+			expectSuccess: false,
+			checkConnect:  false,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Patch the runtime address into placeholders.
+			if strings.Contains(tc.conn.URI, "<addr>") {
+				tc.conn.URI = strings.ReplaceAll(tc.conn.URI, "<addr>", redisAddr)
+			}
+			if tc.conn.Addr == "<addr>" {
+				tc.conn.Addr = redisAddr
+			}
+
+			// Apply defaulting logic so that URI is always populated before validation.
+			if err := tc.conn.SetDefaults(); err != nil {
+				if !tc.expectSuccess {
+					// For negative test‑cases, an error here is acceptable and we can return early.
+					return
+				}
+				require.NoError(t, err, "failed to set defaults for redis config")
+			}
+
+			// Layer 1: validation
+			err := tc.conn.Validate()
+			if !tc.expectSuccess {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+
+			// Layer 2: live round-trip
+			if !tc.checkConnect {
+				return
+			}
+
+			var client *redis.Client
+
+			uri := tc.conn.URI
+			if uri == "" {
+				// Synthesize redis://[user:pass@]addr/db
+				var userInfo string
+				if tc.conn.Username != "" || tc.conn.Password != "" {
+					userInfo = tc.conn.Username + ":" + tc.conn.Password + "@"
+				}
+				uri = fmt.Sprintf("redis://%s%s/%d", userInfo, tc.conn.Addr, tc.conn.DB)
+			}
+
+			opts, err := redis.ParseURL(uri)
+			require.NoError(t, err, "redis.ParseURL should handle the constructed URI")
+			client = redis.NewClient(opts)
+
+			// Live round-trip to prove it works.
+			ctx := context.Background()
+			require.NoError(t, client.Set(ctx, "foo", "bar", 0).Err())
+			val, err := client.Get(ctx, "foo").Result()
+			require.NoError(t, err)
+			require.Equal(t, "bar", val)
+		})
+	}
 
 }

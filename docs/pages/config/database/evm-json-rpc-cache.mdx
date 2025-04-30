@@ -106,17 +106,12 @@ database:
       - id: redis-cache-local
         driver: redis # Refer to "redis" driver docs below
         redis:
-          addr: localhost:6379
-          password: "xxxxxxxxx"
-          db: 0
-          connPoolSize: 8
+          uri: redis://username:password@host:port/db?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10
+          # uri: redis://:some-secret@global-shared-states-redis-master.redis.svc.cluster.local:6379/?pool_size=10
       - id: redis-cache-momento
         driver: redis # Refer to "redis" driver docs below
         redis:
-          addr: momento.aws.momentohq.com:6379
-          password: "xxxxxxxxx"
-          db: 0
-          connPoolSize: 8
+          uri: redis://username:password@momento.aws.momentohq.com:6379/db?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10
       - id: postgres-cache
         driver: postgresql # Refer to "postgresql" driver docs below
         postgresql:
@@ -197,20 +192,16 @@ export default createConfig({
           id: "redis-cache-local",
           driver: "redis", // Refer to "redis" driver docs below
           redis: {
-            addr: "localhost:6379",
-            password: "xxxxxxxxx",
-            db: 0,
-            connPoolSize: 8
+            // Example: redis://username:password@host:port/db?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10
+            uri: "redis://username:password@host:port/db?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10"
           }
         },
         {
           id: "redis-cache-momento",
           driver: "redis", // Refer to "redis" driver docs below
           redis: {
-            addr: "momento.aws.momentohq.com:6379",
-            password: "xxxxxxxxx",
-            db: 0,
-            connPoolSize: 8
+            // Example: redis://username:password@momento.aws.momentohq.com:6379/db?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10
+            uri: "redis://username:password@momento.aws.momentohq.com:6379/db?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10"
           }
         },
         {
