@@ -2134,7 +2134,7 @@ func TestEvmJsonRpcCache_Redis(t *testing.T) {
 	redisCfg := &common.ConnectorConfig{
 		Id:     "redis1",
 		Driver: "redis",
-		Redis:  redisInnerCfg, // Use the defaulted inner config
+		Redis:  redisInnerCfg,
 	}
 	cacheCfg.Connectors = []*common.ConnectorConfig{redisCfg}
 
