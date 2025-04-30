@@ -546,7 +546,7 @@ func (d *DynamoDBConnector) Lock(ctx context.Context, key string, ttl time.Durat
 
 	if err != nil {
 		if aerr, ok := err.(awserr.Error); ok && aerr.Code() == dynamodb.ErrCodeConditionalCheckFailedException {
-			err := fmt.Errorf("lock is held by another process")
+			err := common.NewErrLockAlreadyHeld(aerr)
 			common.SetTraceSpanError(span, err)
 			return nil, err
 		}

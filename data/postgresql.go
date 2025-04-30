@@ -383,7 +383,7 @@ func (p *PostgreSQLConnector) Lock(ctx context.Context, key string, ttl time.Dur
 
 	if !acquired {
 		_ = tx.Rollback(ctx)
-		err := fmt.Errorf("failed to acquire lock: already locked")
+		err := common.NewErrLockAlreadyHeld(fmt.Errorf("advisory lock already held"))
 		common.SetTraceSpanError(span, err)
 		return nil, err
 	}

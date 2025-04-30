@@ -335,7 +335,7 @@ func (r *RedisConnector) Lock(ctx context.Context, lockKey string, ttl time.Dura
 
 	if err := mutex.LockContext(ctx); err != nil {
 		common.SetTraceSpanError(span, err)
-		return nil, fmt.Errorf("failed to acquire lock: %w", err)
+		return nil, common.NewErrLockAlreadyHeld(err)
 	}
 
 	r.logger.Trace().Str("key", lockKey).Str("token", token).Msg("distributed lock acquired")

@@ -126,10 +126,26 @@ func (m *MemoryConnector) Lock(ctx context.Context, key string, ttl time.Duratio
 	value, _ := m.locks.LoadOrStore(key, &sync.Mutex{})
 	mutex := value.(*sync.Mutex)
 
-	mutex.Lock()
-	return &memoryLock{
-		mutex: mutex,
-	}, nil
+	// Try to lock with a timeout to detect contention
+	lockChan := make(chan struct{})
+	go func() {
+		mutex.Lock()
+		close(lockChan)
+	}()
+
+	select {
+	case <-lockChan:
+		// Successfully acquired the lock
+		return &memoryLock{
+			mutex: mutex,
+		}, nil
+	case <-time.After(100 * time.Millisecond):
+		// Lock is held by another goroutine
+		return nil, common.NewErrLockAlreadyHeld(fmt.Errorf("memory lock already held"))
+	case <-ctx.Done():
+		// Context cancelled while waiting
+		return nil, ctx.Err()
+	}
 }
 
 type memoryLock struct {
