@@ -179,7 +179,6 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	if err != nil {
 		if common.HasErrorCode(err, common.ErrCodeLockAlreadyHeld) {
 			// Someone else is updating – just return the (stale) value
-			// or spin-wait with back-off & read-only gets.
 			return c.value.Load(), nil
 		}
 		// Fallback to local lock if remote lock fails

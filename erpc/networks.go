@@ -620,7 +620,7 @@ func (n *Network) waitForMultiplexResult(ctx context.Context, mlx *common.Multip
 }
 
 func (n *Network) cleanupMultiplexer(mlx *common.Multiplexer[*common.NormalizedResponse]) {
-	n.inFlightRequests.Delete(mlx.Key())
+	n.inFlightRequests.Delete(mlx.Key)
 }
 
 func (n *Network) shouldHandleMethod(method string, upsList []*upstream.Upstream) error {
