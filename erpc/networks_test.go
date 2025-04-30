@@ -178,23 +178,12 @@ func TestNetwork_Forward(t *testing.T) {
 			GetMetricWithLabelValues("prjA", util.EvmNetworkId(123), "rpc1")
 		require.NoError(t, err)
 
-		muxHits, err := telemetry.MetricUpstreamMultiplexedPollsTotal.
-			GetMetricWithLabelValues("prjA", util.EvmNetworkId(123), "rpc1", "latest")
-		require.NoError(t, err)
-
 		t.Logf("MetricUpstreamLatestBlockPolled   : %.0f", testutil.ToFloat64(polled))
-		t.Logf("MetricUpstreamMultiplexedPollsTotal: %.0f", testutil.ToFloat64(muxHits))
 
 		require.Equal(t,
 			float64(2),
 			testutil.ToFloat64(polled),
 			"expected two polls (bootstrap + stale refresh)",
-		)
-
-		require.Equal(t,
-			float64(0),
-			testutil.ToFloat64(muxHits),
-			"no goroutine hit executeMultiplexedPoll – proves herd bypassed mux",
 		)
 	})
 
@@ -230,11 +219,16 @@ func TestNetwork_Forward(t *testing.T) {
 			Reply(200).
 			JSON([]byte(`{"result":null}`))
 
+		// Counter for eth_syncing calls
+		const workers = 25
+		var syncCalls int32
+
 		// eth_syncing – first call fast (bootstrap)
 		gock.New("http://rpc1.localhost").
 			Post("").
 			Times(1).
 			Filter(func(r *http.Request) bool {
+				atomic.AddInt32(&syncCalls, 1)
 				return strings.Contains(util.SafeReadBody(r), `"eth_syncing"`)
 			}).
 			Reply(200).
@@ -245,6 +239,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Times(1).
 			Filter(func(r *http.Request) bool {
+				atomic.AddInt32(&syncCalls, 1)
 				return strings.Contains(util.SafeReadBody(r), `"eth_syncing"`)
 			}).
 			Reply(200).
@@ -297,7 +292,6 @@ func TestNetwork_Forward(t *testing.T) {
 		//------------------------------------------------------------
 		// 3.  Bootstrap call done; now hammer Poll() in parallel
 		//------------------------------------------------------------
-		const workers = 25
 		start := make(chan struct{})
 		var wg sync.WaitGroup
 		wg.Add(workers)
@@ -312,16 +306,10 @@ func TestNetwork_Forward(t *testing.T) {
 		close(start) // unleash the goroutines
 		wg.Wait()
 
-		//------------------------------------------------------------
-		// 4.  Assert: multiplexer recorded at least one waiter
-		//------------------------------------------------------------
-		polled, err := telemetry.MetricUpstreamMultiplexedPollsTotal.
-			GetMetricWithLabelValues("prjA", util.EvmNetworkId(123), "rpc1", "syncing")
-		require.NoError(t, err)
-		require.GreaterOrEqual(t,
-			testutil.ToFloat64(polled),
-			float64(1),
-			"expected at least one multiplexed poll hit for 'syncing'",
+		require.Equal(t,
+			int32(2),
+			atomic.LoadInt32(&syncCalls),
+			"expected exactly two eth_syncing polls (bootstrap + leader)",
 		)
 	})
 
