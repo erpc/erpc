@@ -78,6 +78,7 @@ database:
         redis:
           # Connection URI (Required)
           # Format: redis://[username]:[password]@[host][:port][/database][?dial_timeout=value1&read_timeout=value2&write_timeout=value3&pool_size=value4]
+          # Example: redis://:some-secret@global-shared-states-redis-master.redis.svc.cluster.local:6379/?pool_size=10
           uri: "redis://username:password@host:port/db?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10"
           tls:
             enabled: false # or "true" if redis is configured with TLS
@@ -108,6 +109,7 @@ export default createConfig({
           redis: {
             // Connection URI (Required)
             // Format: redis://[[username]:[password]@[host][:port][/database][?dial_timeout=value1&read_timeout=value2&write_timeout=value3&pool_size=value4]
+            // Example: redis://:some-secret@global-shared-states-redis-master.redis.svc.cluster.local:6379/?pool_size=10
             uri: "redis://username:password@host:port/db?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10",
             tls: {
               enabled: false // or "true" if redis is configured with TLS

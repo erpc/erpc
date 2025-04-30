@@ -2,7 +2,6 @@ package common
 
 import (
 	"fmt"
-	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -414,26 +413,6 @@ func (c *RedisConnectorConfig) Validate() error {
 	// Enforce supported schemes.
 	if !strings.HasPrefix(uri, "rediss://") && !strings.HasPrefix(uri, "redis://") {
 		return fmt.Errorf("redis connector: invalid URI scheme, must be 'rediss://' or 'redis://'")
-	}
-
-	// Helper to test for a query parameter on the URI.
-	uriHas := func(key string) bool {
-		u, err := url.Parse(uri)
-		if err != nil {
-			return false
-		}
-		return u.Query().Get(key) != ""
-	}
-
-	// Each timeout must be present either as a field or as a URI query param.
-	if c.InitTimeout == 0 && !uriHas("dial_timeout") {
-		return fmt.Errorf("database.*.connector.redis.initTimeout is required (or specify dial_timeout in 'uri')")
-	}
-	if c.GetTimeout == 0 && !uriHas("read_timeout") {
-		return fmt.Errorf("database.*.connector.redis.getTimeout is required (or specify read_timeout in 'uri')")
-	}
-	if c.SetTimeout == 0 && !uriHas("write_timeout") {
-		return fmt.Errorf("database.*.connector.redis.setTimeout is required (or specify write_timeout in 'uri')")
 	}
 
 	return nil

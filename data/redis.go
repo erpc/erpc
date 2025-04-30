@@ -90,19 +90,14 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 		return fmt.Errorf("failed to parse Redis URI: %w", err)
 	}
 
-	// Config overrides win only when the URI (or query params) did not already
-	// set an explicit value.
-	if r.initTimeout > 0 && options.DialTimeout == 0 {
-		options.DialTimeout = r.initTimeout
+	if r.initTimeout == 0 && options.DialTimeout > 0 {
+		r.initTimeout = options.DialTimeout
 	}
-	if r.getTimeout > 0 && options.ReadTimeout == 0 {
-		options.ReadTimeout = r.getTimeout
+	if r.getTimeout == 0 && options.ReadTimeout > 0 {
+		r.getTimeout = options.ReadTimeout
 	}
-	if r.setTimeout > 0 && options.WriteTimeout == 0 {
-		options.WriteTimeout = r.setTimeout
-	}
-	if r.cfg.ConnPoolSize > 0 && options.PoolSize == 0 {
-		options.PoolSize = r.cfg.ConnPoolSize
+	if r.setTimeout == 0 && options.WriteTimeout > 0 {
+		r.setTimeout = options.WriteTimeout
 	}
 
 	/**

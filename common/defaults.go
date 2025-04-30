@@ -560,10 +560,10 @@ func (c *SharedStateConfig) SetDefaults(defClusterKey string) error {
 		return err
 	}
 	if c.FallbackTimeout == 0 {
-		c.FallbackTimeout = Duration(500 * time.Millisecond)
+		c.FallbackTimeout = Duration(10 * time.Second)
 	}
 	if c.LockTtl == 0 {
-		c.LockTtl = Duration(10 * time.Second)
+		c.LockTtl = Duration(30 * time.Second)
 	}
 	return nil
 }
@@ -647,6 +647,11 @@ func (r *RedisConnectorConfig) SetDefaults() error {
 		)
 	}
 
+	// URI is provided directly
+	if r.URI != "" {
+		return nil
+	}
+
 	// Set default values for timeouts and connection pool size
 	if r.ConnPoolSize == 0 {
 		r.ConnPoolSize = 8
@@ -659,11 +664,6 @@ func (r *RedisConnectorConfig) SetDefaults() error {
 	}
 	if r.SetTimeout == 0 {
 		r.SetTimeout = Duration(2 * time.Second)
-	}
-
-	// URI is provided directly
-	if r.URI != "" {
-		return nil
 	}
 
 	// URI needs to be constructed from individual fields
@@ -701,6 +701,11 @@ func (r *RedisConnectorConfig) SetDefaults() error {
 		u.Path = "/" + strconv.Itoa(r.DB)
 
 		r.URI = u.String()
+
+		r.Addr = ""
+		r.Username = ""
+		r.Password = ""
+		r.DB = 0
 	}
 
 	return nil
