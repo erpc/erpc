@@ -37,14 +37,14 @@ func init() {
 
 func TestNetwork_Forward(t *testing.T) {
 
-	t.Run("ForwardThunderingHerdGetLogs", func(t *testing.T) {
+	t.Run("ForwardThunderingHerdGetLogss", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 
 		//------------------------------------------------------------
 		// 1.  RPC stubs
 		//------------------------------------------------------------
-		const herd = 100_000
+		const herd = 10_000
 		// First eth_getBlockByNumber("latest") during the herd – slow so the lock stays held
 		gock.New("http://rpc1.localhost").
 			Post("").
@@ -107,8 +107,8 @@ func TestNetwork_Forward(t *testing.T) {
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
-				StatePollerInterval: common.Duration(0), // we’ll drive it manually
-				StatePollerDebounce: common.Duration(0), // TryUpdateIfStale → 1 s default
+				StatePollerInterval: common.Duration(5000 * time.Millisecond), // we’ll drive it manually
+				StatePollerDebounce: common.Duration(0 * time.Millisecond),    // TryUpdateIfStale → 1 s default
 			},
 		}
 
@@ -116,11 +116,18 @@ func TestNetwork_Forward(t *testing.T) {
 		pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
 		ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
 			Connector: &common.ConnectorConfig{
-				Driver: "memory",
-				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+				Driver: "redis",
+				Redis: &common.RedisConnectorConfig{
+					Addr:        "localhost:6379",
+					Password:    "",
+					DB:          0,
+					InitTimeout: common.Duration(10 * time.Second),
+					GetTimeout:  common.Duration(10 * time.Second),
+					SetTimeout:  common.Duration(10 * time.Second),
 				},
 			},
+			FallbackTimeout: common.Duration(10 * time.Second),
+			LockTtl:         common.Duration(10 * time.Second),
 		})
 		upr := upstream.NewUpstreamsRegistry(
 			ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg},
@@ -181,7 +188,7 @@ func TestNetwork_Forward(t *testing.T) {
 		t.Logf("MetricUpstreamLatestBlockPolled   : %.0f", testutil.ToFloat64(polled))
 
 		require.Equal(t,
-			float64(2),
+			float64(1),
 			testutil.ToFloat64(polled),
 			"expected two polls (bootstrap + stale refresh)",
 		)

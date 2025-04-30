@@ -8,29 +8,29 @@ services:
   #   volumes:
   #     - ./erpc.yaml:/erpc.yaml
 
-  monitoring:
-    build: ./monitoring
-    ports:
-      - "3000:3000"  # Grafana
-      - "9090:9090"  # Prometheus
-    environment:
-      - SERVICE_ENDPOINT=host.docker.internal
-      - SERVICE_PORT=4001
-    volumes:
-      - ./monitoring/prometheus:/etc/prometheus
-      - ./monitoring/grafana/grafana.ini:/etc/grafana/grafana.ini
-      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards
-      - prometheus_data:/prometheus
-      - grafana_data:/var/lib/grafana
-
-  # redis:
-  #   container_name: erpc-redis
-  #   image: redis:latest
-  #   restart: always
+  # monitoring:
+  #   build: ./monitoring
   #   ports:
-  #     - "6379:6379"
-  #   networks:
-  #     erpc:
+  #     - "3000:3000"  # Grafana
+  #     - "9090:9090"  # Prometheus
+  #   environment:
+  #     - SERVICE_ENDPOINT=host.docker.internal
+  #     - SERVICE_PORT=4001
+  #   volumes:
+  #     - ./monitoring/prometheus:/etc/prometheus
+  #     - ./monitoring/grafana/grafana.ini:/etc/grafana/grafana.ini
+  #     - ./monitoring/grafana/dashboards:/etc/grafana/dashboards
+  #     - prometheus_data:/prometheus
+  #     - grafana_data:/var/lib/grafana
+
+  redis:
+    container_name: erpc-redis
+    image: redis:latest
+    restart: always
+    ports:
+      - "6379:6379"
+    networks:
+      erpc:
 
   # jaeger:
   #   container_name: erpc-jaeger
