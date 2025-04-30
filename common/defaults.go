@@ -2,8 +2,10 @@ package common
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -664,20 +666,35 @@ func (r *RedisConnectorConfig) SetDefaults() error {
 	r.Addr = strings.TrimPrefix(r.Addr, "rediss://")
 	r.Addr = strings.TrimPrefix(r.Addr, "redis://")
 
-	// Construct URI from discrete fields
+	// Construct URI from discrete fields using net/url to ensure
+	// credentials and host parts are safely escaped.
 	if r.Addr != "" {
-		var userInfo string
-		if r.Username != "" || r.Password != "" {
-			userInfo = r.Username + ":" + r.Password + "@"
+		// Split host and port; if port is missing default to 6379.
+		host, port, err := net.SplitHostPort(r.Addr)
+		if err != nil {
+			host = r.Addr
+			port = "6379"
 		}
 
-		// Use rediss:// prefix if TLS is enabled in config, otherwise redis://
-		scheme := "redis://"
+		scheme := "redis"
 		if r.TLS != nil && r.TLS.Enabled {
-			scheme = "rediss://"
+			scheme = "rediss"
 		}
 
-		r.URI = fmt.Sprintf("%s%s%s/%d", scheme, userInfo, r.Addr, r.DB)
+		u := &url.URL{
+			Scheme: scheme,
+			Host:   net.JoinHostPort(host, port),
+		}
+
+		// Add credentials, automatically URL‑encoded by url.URL.
+		if r.Username != "" || r.Password != "" {
+			u.User = url.UserPassword(r.Username, r.Password)
+		}
+
+		// Always include the database index (mirrors previous behaviour).
+		u.Path = "/" + strconv.Itoa(r.DB)
+
+		r.URI = u.String()
 	}
 
 	return nil

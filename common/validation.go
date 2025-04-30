@@ -406,57 +406,33 @@ func (p *PostgreSQLConnectorConfig) Validate() error {
 }
 
 func (c *RedisConnectorConfig) Validate() error {
-	URIProvided := strings.TrimSpace(c.URI) != ""
-	AddrProvided := strings.TrimSpace(c.Addr) != ""
-	UsernameProvided := strings.TrimSpace(c.Username) != ""
-	PasswordProvided := strings.TrimSpace(c.Password) != ""
-	InitTimeoutProvided := c.InitTimeout != 0
-	GetTimeoutProvided := c.GetTimeout != 0
-	SetTimeoutProvided := c.SetTimeout != 0
-
-	// Check discrete fields first
-	if !URIProvided {
-		// If URI is not provided, we rely on discrete fields.
-
-		// Check if username is provided without password.
-		if UsernameProvided && !PasswordProvided {
-			return fmt.Errorf("redis connector: redis.username ('%s') supplied without redis.password", c.Username)
-		}
-		// Ensure Addr is provided if URI isn't
-		if !AddrProvided {
-			return fmt.Errorf("redis connector: missing connection information – supply either 'uri' or at least 'addr'")
-		}
-	} else {
-		// If URI is provided, ensure Addr is not also provided (redundant)
-		if AddrProvided {
-			return fmt.Errorf("redis connector: cannot provide both 'uri' and 'addr', use only one method")
-		}
-		// Validate URI scheme if URI is provided
-		if !strings.HasPrefix(c.URI, "rediss://") && !strings.HasPrefix(c.URI, "redis://") {
-			return fmt.Errorf("redis connector: invalid URI scheme, must be 'rediss://' or 'redis://'")
-		}
+	uri := strings.TrimSpace(c.URI)
+	if uri == "" {
+		return fmt.Errorf("database.*.connector.redis.uri is required")
 	}
 
+	// Enforce supported schemes.
+	if !strings.HasPrefix(uri, "rediss://") && !strings.HasPrefix(uri, "redis://") {
+		return fmt.Errorf("redis connector: invalid URI scheme, must be 'rediss://' or 'redis://'")
+	}
+
+	// Helper to test for a query parameter on the URI.
 	uriHas := func(key string) bool {
-		finalURI := c.URI
-		if finalURI == "" {
-			return false
-		}
-		u, err := url.Parse(finalURI)
+		u, err := url.Parse(uri)
 		if err != nil {
 			return false
 		}
 		return u.Query().Get(key) != ""
 	}
 
-	// Fail if timeout not provided in config fields AND also not provided in the final URI
-	if !InitTimeoutProvided && !uriHas("dial_timeout") {
+	// Each timeout must be present either as a field or as a URI query param.
+	if c.InitTimeout == 0 && !uriHas("dial_timeout") {
 		return fmt.Errorf("database.*.connector.redis.initTimeout is required (or specify dial_timeout in 'uri')")
 	}
-	if !GetTimeoutProvided && !uriHas("read_timeout") {
+	if c.GetTimeout == 0 && !uriHas("read_timeout") {
 		return fmt.Errorf("database.*.connector.redis.getTimeout is required (or specify read_timeout in 'uri')")
 	}
-	if !SetTimeoutProvided && !uriHas("write_timeout") {
+	if c.SetTimeout == 0 && !uriHas("write_timeout") {
 		return fmt.Errorf("database.*.connector.redis.setTimeout is required (or specify write_timeout in 'uri')")
 	}
 
