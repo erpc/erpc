@@ -234,7 +234,12 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if e.synced >= FullySyncedThreshold || e.skipSyncingCheck {
+		// Acquire read lock to safely check synced and skipSyncingCheck
+		e.stateMu.RLock()
+		shouldReturn := e.synced >= FullySyncedThreshold || e.skipSyncingCheck
+		e.stateMu.RUnlock() // Release lock after reading
+
+		if shouldReturn {
 			return
 		}
 
@@ -650,7 +655,10 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 			common.ErrCodeUpstreamMethodIgnored,
 			common.ErrCodeEndpointUnsupported,
 		) || common.IsClientError(err) {
+			// Acquire write lock before modifying shared state
+			e.stateMu.Lock()
 			e.skipSyncingCheck = true
+			e.stateMu.Unlock()
 		}
 		return false, err
 	}
