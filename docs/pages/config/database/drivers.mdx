@@ -76,18 +76,15 @@ database:
       - id: redis-cache
         driver: redis
         redis:
-          addr: YOUR_REDIS_ADDRESS_HERE
-          password: YOUR_REDIS_PASSWORD_HERE
-          db: XXX
-          connPoolSize: 8
+          # Connection URI (Required)
+          # Format: redis://[username]:[password]@[host][:port][/database][?dial_timeout=value1&read_timeout=value2&write_timeout=value3&pool_size=value4]
+          # Example: redis://:some-secret@global-shared-states-redis-master.redis.svc.cluster.local:6379/?pool_size=10
+          uri: "redis://username:password@host:port/db?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10"
           tls:
             enabled: false # or "true" if redis is configured with TLS
             certFile: /path/to/client.crt # Optional
             keyFile: /path/to/client.key # Optional
             caFile: /path/to/ca.crt # Optional
-          initTimeout: 5s
-          getTimeout: 1s
-          setTimeout: 2s
     policies:
       - network: "*"
         method: "*"
@@ -97,7 +94,7 @@ database:
 </Tab>
 <Tab>
 ```ts filename="erpc.ts"
-import { 
+import {
   createConfig,
   DataFinalityStateFinalized
 } from "@erpc-cloud/config";
@@ -110,19 +107,16 @@ export default createConfig({
           id: "redis-cache",
           driver: "redis",
           redis: {
-            addr: "YOUR_REDIS_ADDRESS_HERE",
-            password: "YOUR_REDIS_PASSWORD_HERE",
-            db: 0,
-            connPoolSize: 8,
+            // Connection URI (Required)
+            // Format: redis://[[username]:[password]@[host][:port][/database][?dial_timeout=value1&read_timeout=value2&write_timeout=value3&pool_size=value4]
+            // Example: redis://:some-secret@global-shared-states-redis-master.redis.svc.cluster.local:6379/?pool_size=10
+            uri: "redis://username:password@host:port/db?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10",
             tls: {
               enabled: false // or "true" if redis is configured with TLS
               certFile: "/path/to/client.crt" // Optional
               keyFile: "/path/to/client.key" // Optional
               caFile: "/path/to/ca.crt" // Optional
-            },
-            initTimeout: "5s",
-            getTimeout: "1s",
-            setTimeout: "2s"
+            }
           }
         }
       ],
@@ -141,7 +135,46 @@ export default createConfig({
 </Tab>
 </Tabs>
 
-Example of Redis config with eviction policy:
+
+#### TLS options
+
+When your Redis endpoint already uses **rediss://** (for example, Railway or Upstash), TLS is negotiated automatically and you can omit the entire `tls:` block.  
+Add the `tls:` section only when you need **mutual‑TLS** (client certificate/key) or your server uses a **private CA**:
+
+```yaml
+redis:
+  uri: rediss://user:pass@redis.internal:6380/0
+  tls:
+    enabled: true
+    certFile: /secrets/redis-client.crt   # sent to server (mTLS)
+    keyFile:  /secrets/redis-client.key
+    caFile:   /secrets/redis-rootCA.pem   # trust this CA instead of system roots
+```
+
+#### Redis URI Format
+
+The Redis URI format follows this pattern:
+```
+redis://[[username]:[password]@][host][:port][/database][?dial_timeout=value1&read_timeout=value2&write_timeout=value3&pool_size=value4]
+```
+
+Examples:
+- `redis://localhost:6379/0` - Basic connection to localhost
+- `redis://user:pass@redis.example.com:6379/0` - Connection with authentication
+- `redis://:password@redis.example.com:6379/0` - Connection with password only (no username)
+- `redis://redis.example.com:6379` - Connection without database number (defaults to 0)
+- `redis://redis.example.com:6379/0?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10` - Connection with timeouts and pool size
+- `redis://global-shared-states-redis-master.redis.svc.cluster.local:6379` - Kubernetes service deployed via [Bitnami charts](https://github.com/bitnami/charts/tree/master/bitnami/redis)
+
+You can include these parameters directly in the URI:
+- `dial_timeout` - Timeout for initial connection (e.g., `5s`)
+- `read_timeout` - Timeout for read operations (e.g., `1s`)
+- `write_timeout` - Timeout for write operations (e.g., `2s`)
+- `pool_size` - Connection pool size (e.g., `10`)
+
+
+#### Configuration Notes
+
 ```conf
 maxmemory 2000mb
 maxmemory-policy allkeys-lru

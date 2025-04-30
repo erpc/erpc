@@ -2118,20 +2118,23 @@ func TestEvmJsonRpcCache_Redis(t *testing.T) {
 
 	// Create cache with Redis connector for testing
 	cacheCfg := &common.CacheConfig{}
-	cacheCfg.SetDefaults()
 
 	// Create a Redis connector config
+	redisInnerCfg := &common.RedisConnectorConfig{
+		Addr:         redisAddr,
+		DB:           0,
+		ConnPoolSize: 10,
+		InitTimeout:  common.Duration(5 * time.Second),
+		GetTimeout:   common.Duration(2 * time.Second),
+		SetTimeout:   common.Duration(2 * time.Second),
+	}
+	err = redisInnerCfg.SetDefaults()
+	require.NoError(t, err, "failed to set defaults for redis inner config")
+
 	redisCfg := &common.ConnectorConfig{
 		Id:     "redis1",
 		Driver: "redis",
-		Redis: &common.RedisConnectorConfig{
-			Addr:         redisAddr,
-			DB:           0,
-			ConnPoolSize: 10,
-			InitTimeout:  common.Duration(5 * time.Second),
-			GetTimeout:   common.Duration(2 * time.Second),
-			SetTimeout:   common.Duration(2 * time.Second),
-		},
+		Redis:  redisInnerCfg,
 	}
 	cacheCfg.Connectors = []*common.ConnectorConfig{redisCfg}
 
@@ -2158,6 +2161,9 @@ func TestEvmJsonRpcCache_Redis(t *testing.T) {
 			TTL:       common.Duration(30 * time.Second),
 		},
 	}
+
+	err = cacheCfg.SetDefaults()
+	require.NoError(t, err, "failed to set defaults for cache config")
 
 	cache, err := evm.NewEvmJsonRpcCache(ctx, &logger, cacheCfg)
 	require.NoError(t, err, "failed to create cache")

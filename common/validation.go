@@ -404,19 +404,17 @@ func (p *PostgreSQLConnectorConfig) Validate() error {
 	return nil
 }
 
-func (p *RedisConnectorConfig) Validate() error {
-	if p.Addr == "" {
-		return fmt.Errorf("database.*.connector.redis.addr is required")
+func (c *RedisConnectorConfig) Validate() error {
+	uri := strings.TrimSpace(c.URI)
+	if uri == "" {
+		return fmt.Errorf("database.*.connector.redis.uri is required")
 	}
-	if p.InitTimeout == 0 {
-		return fmt.Errorf("database.*.connector.redis.initTimeout is required")
+
+	// Enforce supported schemes.
+	if !strings.HasPrefix(uri, "rediss://") && !strings.HasPrefix(uri, "redis://") {
+		return fmt.Errorf("redis connector: invalid URI scheme, must be 'rediss://' or 'redis://'")
 	}
-	if p.GetTimeout == 0 {
-		return fmt.Errorf("database.*.connector.redis.getTimeout is required")
-	}
-	if p.SetTimeout == 0 {
-		return fmt.Errorf("database.*.connector.redis.setTimeout is required")
-	}
+
 	return nil
 }
 
