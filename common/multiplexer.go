@@ -11,7 +11,7 @@ import (
 // It ensures that only one operation is executed while others wait for the result.
 // Type parameter T represents the result type of the operation.
 type Multiplexer[T any] struct {
-	key    string
+	Key    string
 	result T
 	err    error
 	done   chan struct{}
@@ -22,7 +22,7 @@ type Multiplexer[T any] struct {
 // NewMultiplexer creates a new multiplexer instance with the given key.
 func NewMultiplexer[T any](key string) *Multiplexer[T] {
 	return &Multiplexer[T]{
-		key:  key,
+		Key:  key,
 		done: make(chan struct{}),
 	}
 }
@@ -55,9 +55,4 @@ func (m *Multiplexer[T]) Result() (T, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.result, m.err
-}
-
-// Key returns the key associated with this multiplexer.
-func (m *Multiplexer[T]) Key() string {
-	return m.key
 }
