@@ -641,13 +641,9 @@ func (m *MemoryConnectorConfig) SetDefaults() error {
 }
 
 func (r *RedisConnectorConfig) SetDefaults() error {
-	if r.URI != "" && (r.Addr != "" ||
-		r.Username != "" ||
-		r.Password != "" ||
-		r.DB != 0) {
-
+	if r.URI != "" && r.Addr != "" {
 		return fmt.Errorf(
-			"redis connector: provide either 'uri' or discrete fields ('addr', 'username', 'password', 'db'), not both",
+			"redis connector: provide either 'uri' or 'addr/username/password/db', not both",
 		)
 	}
 
