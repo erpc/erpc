@@ -329,15 +329,7 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 			e.upstream.Config().Id,
 		).Inc()
 
-		// Use multiplexer to fetch the block
-		result, err := e.executeMultiplexedPoll(ctx, "latest", func(pollCtx context.Context) (interface{}, error) {
-			return e.fetchBlock(pollCtx, "latest")
-		})
-
-		blockNum := int64(0)
-		if result != nil {
-			blockNum, _ = result.(int64)
-		}
+		blockNum, err := e.fetchBlock(ctx, "latest")
 
 		if err != nil || blockNum == 0 {
 			if err == nil ||
@@ -413,15 +405,7 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 			e.upstream.Config().Id,
 		).Inc()
 
-		// Use multiplexer to fetch the block
-		result, err := e.executeMultiplexedPoll(ctx, "finalized", func(pollCtx context.Context) (interface{}, error) {
-			return e.fetchBlock(pollCtx, "finalized")
-		})
-
-		blockNum := int64(0)
-		if result != nil {
-			blockNum, _ = result.(int64)
-		}
+		blockNum, err := e.fetchBlock(ctx, "finalized")
 
 		if err != nil || blockNum == 0 {
 			if err == nil ||
