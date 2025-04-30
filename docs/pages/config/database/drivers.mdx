@@ -141,7 +141,7 @@ Add the `tls:` section only when you need **mutual‑TLS** (client certificate/k
 
 ```yaml
 redis:
-  uri: redis://user:pass@redis.internal:6380/0
+  uri: rediss://user:pass@redis.internal:6380/0
   tls:
     enabled: true
     certFile: /secrets/redis-client.crt   # sent to server (mTLS)
@@ -162,6 +162,7 @@ Examples:
 - `redis://:password@redis.example.com:6379/0` - Connection with password only (no username)
 - `redis://redis.example.com:6379` - Connection without database number (defaults to 0)
 - `redis://redis.example.com:6379/0?dial_timeout=5s&read_timeout=1s&write_timeout=2s&pool_size=10` - Connection with timeouts and pool size
+- `redis://global-shared-states-redis-master.redis.svc.cluster.local:6379` - Kubernetes service deployed via [Bitnami charts](https://github.com/bitnami/charts/tree/master/bitnami/redis)
 
 You can include these parameters directly in the URI:
 - `dial_timeout` - Timeout for initial connection (e.g., `5s`)
