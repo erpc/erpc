@@ -243,7 +243,10 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 		}
 
 		// Use multiplexer to fetch syncing state
-		result, err := e.executeMultiplexedPoll(ctx, "syncing", func(pollCtx context.Context) (interface{}, error) {
+		mapKey := fmt.Sprintf("%s/%s", e.upstream.Config().Id, "syncing")
+		e.logger.Trace().Msg("executing multiplexed poll for syncing state")
+
+		result, err := common.ExecuteMultiplexed(ctx, e.inFlightPolling, mapKey, func(pollCtx context.Context) (interface{}, error) {
 			return e.fetchSyncingState(pollCtx)
 		})
 
@@ -535,49 +538,7 @@ func (e *EvmStatePoller) shouldSkipFinalizedCheck() bool {
 	return e.skipFinalizedCheck
 }
 
-func (e *EvmStatePoller) executeMultiplexedPoll(
-	ctx context.Context,
-	operationKey string,
-	fetchFn func(context.Context) (interface{}, error),
-) (interface{}, error) {
-	// Use a unique key per upstream and operation
-	mapKey := fmt.Sprintf("%s/%s", e.upstream.Config().Id, operationKey)
-
-	// Try to load an existing multiplexer
-	existingMux, loaded := e.inFlightPolling.LoadOrStore(mapKey, common.NewMultiplexer[interface{}](mapKey))
-	mux := existingMux.(*common.Multiplexer[interface{}])
-
-	if loaded {
-		// Another goroutine is already fetching, wait for its result
-		e.logger.Trace().Str("operation", operationKey).Msg("multiplexer hit, waiting for existing poll result")
-
-		select {
-		case <-mux.Done():
-			// Result is ready
-			result, err := mux.Result()
-			e.logger.Trace().Str("operation", operationKey).Msg("multiplexer finished waiting")
-			return result, err
-		case <-ctx.Done():
-			// Context cancelled while waiting
-			e.logger.Warn().Str("operation", operationKey).Err(ctx.Err()).Msg("context cancelled while waiting for multiplexed poll")
-			return nil, ctx.Err()
-		}
-	} else {
-		// This goroutine is the leader, execute the fetch function
-		e.logger.Trace().Str("operation", operationKey).Msg("multiplexer miss, executing poll")
-		// Ensure cleanup happens even if fetchFn panics
-		defer e.inFlightPolling.Delete(mapKey)
-
-		// Execute the actual poll
-		result, err := fetchFn(ctx)
-
-		// Close the multiplexer to signal completion to waiters
-		mux.Close(ctx, result, err)
-		e.logger.Trace().Str("operation", operationKey).Msg("multiplexer poll finished and closed")
-
-		return result, err
-	}
-}
+		e.logger.Trace().Msg("multiplexed poll for syncing state completed")
 
 func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64, error) {
 	pr := common.NewNormalizedRequest([]byte(

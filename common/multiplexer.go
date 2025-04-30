@@ -56,3 +56,45 @@ func (m *Multiplexer[T]) Result() (T, error) {
 	defer m.mu.RUnlock()
 	return m.result, m.err
 }
+
+// ExecuteMultiplexed provides a generic way to multiplex operations with the same key.
+// It ensures that only one operation with the same key is executed at a time,
+// while other callers wait for the result.
+func ExecuteMultiplexed[T any](
+	ctx context.Context,
+	registry *sync.Map,
+	key string,
+	operation func(context.Context) (T, error),
+) (T, error) {
+	_, span := StartDetailSpan(ctx, "Multiplexer.ExecuteMultiplexed",
+		trace.WithAttributes(),
+	)
+	defer span.End()
+
+	// Try to load an existing multiplexer or create a new one
+	existingMux, loaded := registry.LoadOrStore(key, NewMultiplexer[T](key))
+	mux := existingMux.(*Multiplexer[T])
+
+	if loaded {
+		// Another goroutine is already executing the operation, wait for its result
+		select {
+		case <-mux.Done():
+			// Result is ready
+			return mux.Result()
+		case <-ctx.Done():
+			// Context cancelled while waiting
+			return *new(T), ctx.Err()
+		}
+	} else {
+		// This goroutine is the leader, execute the operation
+		defer registry.Delete(key)
+
+		// Execute the actual operation
+		result, err := operation(ctx)
+
+		// Close the multiplexer to signal completion to waiters
+		mux.Close(ctx, result, err)
+
+		return result, err
+	}
+}
