@@ -538,8 +538,6 @@ func (e *EvmStatePoller) shouldSkipFinalizedCheck() bool {
 	return e.skipFinalizedCheck
 }
 
-		e.logger.Trace().Msg("multiplexed poll for syncing state completed")
-
 func (e *EvmStatePoller) fetchBlock(ctx context.Context, blockTag string) (int64, error) {
 	pr := common.NewNormalizedRequest([]byte(
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"eth_getBlockByNumber","params":["%s",false]}`, util.RandomID(), blockTag),
