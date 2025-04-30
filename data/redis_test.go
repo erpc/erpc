@@ -37,6 +37,9 @@ func TestRedisConnectorInitialization(t *testing.T) {
 			TLS:          nil,
 		}
 
+		err = cfg.SetDefaults()
+		require.NoError(t, err, "failed to set defaults for redis config")
+
 		connector, err := NewRedisConnector(ctx, &logger, "test-connector", cfg)
 		// We expect no error from NewRedisConnector, because it should succeed on the first attempt.
 		require.NoError(t, err)
@@ -69,6 +72,9 @@ func TestRedisConnectorInitialization(t *testing.T) {
 			GetTimeout:   common.Duration(500 * time.Millisecond),
 			SetTimeout:   common.Duration(500 * time.Millisecond),
 		}
+
+		err := cfg.SetDefaults()
+		require.NoError(t, err, "failed to set defaults for redis config")
 
 		connector, err := NewRedisConnector(ctx, &logger, "test-connector-invalid-addr", cfg)
 		// The constructor does not necessarily return an error if the first attempt fails;
@@ -109,6 +115,9 @@ func TestRedisConnectorInitialization(t *testing.T) {
 			},
 		}
 
+		err := cfg.SetDefaults()
+		require.NoError(t, err, "failed to set defaults for redis config")
+
 		connector, err := NewRedisConnector(ctx, &logger, "test-bad-tls", cfg)
 		// We expect that the connector tries to create a TLS config and fails.
 		// Because the creation of TLS config is inside connectTask.
@@ -148,6 +157,9 @@ func TestRedisConnectorInitialization(t *testing.T) {
 			GetTimeout:   common.Duration(300 * time.Millisecond),
 			SetTimeout:   common.Duration(300 * time.Millisecond),
 		}
+
+		err = cfg.SetDefaults()
+		require.NoError(t, err, "failed to set defaults for redis config")
 
 		// This will fail its first internal connection attempt,
 		// but the constructor typically returns a connector with
