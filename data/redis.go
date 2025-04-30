@@ -82,31 +82,9 @@ func (r *RedisConnector) Id() string {
 func (r *RedisConnector) connectTask(ctx context.Context) error {
 	var options *redis.Options
 	var err error
+
 	redisURI := strings.TrimSpace(r.cfg.URI)
-
-	if redisURI == "" {
-		// Construct from discrete fields (addr, username, password, db)
-		if strings.TrimSpace(r.cfg.Addr) == "" {
-			return fmt.Errorf("missing Redis connection information: either 'uri' or 'addr' must be supplied")
-		}
-
-		var userInfo string
-		if r.cfg.Username != "" || r.cfg.Password != "" {
-			userInfo = r.cfg.Username + ":" + r.cfg.Password + "@"
-		}
-
-		// Use rediss:// prefix if TLS is enabled in config, otherwise redis://
-		scheme := "redis://"
-		if r.cfg.TLS != nil && r.cfg.TLS.Enabled {
-			scheme = "rediss://"
-		}
-
-		redisURI = fmt.Sprintf("%s%s%s/%d", scheme, userInfo, r.cfg.Addr, r.cfg.DB)
-		r.logger.Debug().Str("uri", util.RedactEndpoint(redisURI)).Msg("constructed Redis URI from discrete config fields")
-	} else {
-		r.logger.Debug().Str("uri", util.RedactEndpoint(redisURI)).Msg("attempting to connect to Redis using provided URI")
-	}
-
+	r.logger.Debug().Str("uri", util.RedactEndpoint(redisURI)).Msg("attempting to connect to Redis using provided URI")
 	options, err = redis.ParseURL(redisURI)
 	if err != nil {
 		return fmt.Errorf("failed to parse Redis URI: %w", err)

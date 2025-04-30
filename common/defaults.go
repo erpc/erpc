@@ -639,13 +639,7 @@ func (m *MemoryConnectorConfig) SetDefaults() error {
 }
 
 func (r *RedisConnectorConfig) SetDefaults() error {
-	if strings.HasPrefix(r.Addr, "rediss://") {
-		r.TLS = &TLSConfig{
-			Enabled: true,
-		}
-	}
-	r.Addr = strings.TrimPrefix(r.Addr, "rediss://")
-	r.Addr = strings.TrimPrefix(r.Addr, "redis://")
+	// Set default values for timeouts and connection pool size
 	if r.ConnPoolSize == 0 {
 		r.ConnPoolSize = 8
 	}
@@ -657,6 +651,33 @@ func (r *RedisConnectorConfig) SetDefaults() error {
 	}
 	if r.SetTimeout == 0 {
 		r.SetTimeout = Duration(2 * time.Second)
+	}
+
+	// URI is provided directly
+	if r.URI != "" {
+		return nil
+	}
+
+	// URI needs to be constructed from individual fields
+
+	// Clean up Addr if it has scheme prefixes
+	r.Addr = strings.TrimPrefix(r.Addr, "rediss://")
+	r.Addr = strings.TrimPrefix(r.Addr, "redis://")
+
+	// Construct URI from discrete fields
+	if r.Addr != "" {
+		var userInfo string
+		if r.Username != "" || r.Password != "" {
+			userInfo = r.Username + ":" + r.Password + "@"
+		}
+
+		// Use rediss:// prefix if TLS is enabled in config, otherwise redis://
+		scheme := "redis://"
+		if r.TLS != nil && r.TLS.Enabled {
+			scheme = "rediss://"
+		}
+
+		r.URI = fmt.Sprintf("%s%s%s/%d", scheme, userInfo, r.Addr, r.DB)
 	}
 
 	return nil
