@@ -13,8 +13,8 @@ var key = "test-key"
 func TestMultiplexer_NewMultiplexer(t *testing.T) {
 	m := NewMultiplexer[string](key)
 
-	if m.Key() != key {
-		t.Errorf("Expected key %s, got %s", key, m.Key())
+	if m.Key != key {
+		t.Errorf("Expected key %s, got %s", key, m.Key)
 	}
 
 	// Verify done channel is initialized but not closed
