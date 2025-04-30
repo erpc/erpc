@@ -589,7 +589,10 @@ func TestInitializer_MarkAsFailedUnblocksWaitThenRetries(t *testing.T) {
 	// 1) cause Wait() to unblock with an error.
 	// 2) trigger a third attempt if AutoRetry=true.
 	customErr := errors.New("manual fail to unblock waiters")
-	init.MarkTaskAsFailed(task.Name, customErr)
+	go func() {
+		time.Sleep(time.Millisecond * 5)
+		init.MarkTaskAsFailed(task.Name, customErr)
+	}()
 
 	unblockedErr := <-waitErrCh
 	require.Error(t, unblockedErr, "Wait() should be unblocked with an error when MarkTaskAsFailed is called")

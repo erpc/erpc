@@ -1141,6 +1141,13 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 			e.StatePollerInterval = Duration(30 * time.Second)
 		}
 	}
+	if e.StatePollerDebounce == 0 {
+		if defaults != nil && defaults.StatePollerDebounce != 0 {
+			e.StatePollerDebounce = defaults.StatePollerDebounce
+		} else {
+			e.StatePollerDebounce = Duration(5 * time.Second)
+		}
+	}
 	if e.NodeType == "" {
 		if defaults != nil && defaults.NodeType != "" {
 			e.NodeType = defaults.NodeType
