@@ -234,10 +234,9 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		// Acquire read lock to safely check synced and skipSyncingCheck
 		e.stateMu.RLock()
 		shouldReturn := e.synced >= FullySyncedThreshold || e.skipSyncingCheck
-		e.stateMu.RUnlock() // Release lock after reading
+		e.stateMu.RUnlock()
 
 		if shouldReturn {
 			return
@@ -328,9 +327,7 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 			e.upstream.NetworkId(),
 			e.upstream.Config().Id,
 		).Inc()
-
 		blockNum, err := e.fetchBlock(ctx, "latest")
-
 		if err != nil || blockNum == 0 {
 			if err == nil ||
 				common.HasErrorCode(err,
@@ -404,9 +401,8 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 			e.upstream.NetworkId(),
 			e.upstream.Config().Id,
 		).Inc()
-
+		// Actually fetch from upstream
 		blockNum, err := e.fetchBlock(ctx, "finalized")
-
 		if err != nil || blockNum == 0 {
 			if err == nil ||
 				common.HasErrorCode(err,
@@ -639,7 +635,6 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 			common.ErrCodeUpstreamMethodIgnored,
 			common.ErrCodeEndpointUnsupported,
 		) || common.IsClientError(err) {
-			// Acquire write lock before modifying shared state
 			e.stateMu.Lock()
 			e.skipSyncingCheck = true
 			e.stateMu.Unlock()
