@@ -641,6 +641,16 @@ func (m *MemoryConnectorConfig) SetDefaults() error {
 }
 
 func (r *RedisConnectorConfig) SetDefaults() error {
+	if r.URI != "" && (r.Addr != "" ||
+		r.Username != "" ||
+		r.Password != "" ||
+		r.DB != 0) {
+
+		return fmt.Errorf(
+			"redis connector: provide either 'uri' or discrete fields ('addr', 'username', 'password', 'db'), not both",
+		)
+	}
+
 	// Set default values for timeouts and connection pool size
 	if r.ConnPoolSize == 0 {
 		r.ConnPoolSize = 8

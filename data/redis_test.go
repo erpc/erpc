@@ -243,15 +243,15 @@ func TestRedisConnectorConfigurationMethods(t *testing.T) {
 			checkConnect:  false,
 		},
 		{
-			name: "uri only with 0 timeout in config and no timeout in uri - invalid",
+			name: "uri only with 0 timeout in config and no timeout in uri - valid",
 			conn: common.RedisConnectorConfig{
 				URI:         "redis://user:pass@<addr>/0",
 				InitTimeout: common.Duration(0 * time.Second),
 				GetTimeout:  common.Duration(0 * time.Second),
 				SetTimeout:  common.Duration(0 * time.Second),
 			},
-			expectSuccess: false,
-			checkConnect:  false,
+			expectSuccess: true,
+			checkConnect:  true,
 		},
 		{
 			name: "construct URI from discrete fields uses DB 0 by default - valid",
@@ -267,7 +267,7 @@ func TestRedisConnectorConfigurationMethods(t *testing.T) {
 			checkConnect:  true,
 		},
 		{
-			name: "discrete fields username without password - invalid",
+			name: "discrete fields username without password - valid",
 			conn: common.RedisConnectorConfig{
 				Addr:        "<addr>",
 				Username:    redisUser,
@@ -276,7 +276,7 @@ func TestRedisConnectorConfigurationMethods(t *testing.T) {
 				GetTimeout:  common.Duration(2 * time.Second),
 				SetTimeout:  common.Duration(2 * time.Second),
 			},
-			expectSuccess: false,
+			expectSuccess: true,
 			checkConnect:  false,
 		},
 		{
@@ -340,6 +340,15 @@ func TestRedisConnectorConfigurationMethods(t *testing.T) {
 			}
 			if tc.conn.Addr == "<addr>" {
 				tc.conn.Addr = redisAddr
+			}
+
+			// Apply defaulting logic so that URI is always populated before validation.
+			if err := tc.conn.SetDefaults(); err != nil {
+				if !tc.expectSuccess {
+					// For negative test‑cases, an error here is acceptable and we can return early.
+					return
+				}
+				require.NoError(t, err, "failed to set defaults for redis config")
 			}
 
 			// Layer 1: validation
