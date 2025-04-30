@@ -2,6 +2,7 @@ package data
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -126,26 +127,10 @@ func (m *MemoryConnector) Lock(ctx context.Context, key string, ttl time.Duratio
 	value, _ := m.locks.LoadOrStore(key, &sync.Mutex{})
 	mutex := value.(*sync.Mutex)
 
-	// Try to lock with a timeout to detect contention
-	lockChan := make(chan struct{})
-	go func() {
-		mutex.Lock()
-		close(lockChan)
-	}()
-
-	select {
-	case <-lockChan:
-		// Successfully acquired the lock
-		return &memoryLock{
-			mutex: mutex,
-		}, nil
-	case <-time.After(100 * time.Millisecond):
-		// Lock is held by another goroutine
-		return nil, common.NewErrLockAlreadyHeld(fmt.Errorf("memory lock already held"))
-	case <-ctx.Done():
-		// Context cancelled while waiting
-		return nil, ctx.Err()
+	if !mutex.TryLock() {
+		return nil, common.NewErrLockAlreadyHeld(errors.New("memory lock already held"))
 	}
+	return &memoryLock{mutex: mutex}, nil
 }
 
 type memoryLock struct {

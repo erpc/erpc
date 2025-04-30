@@ -3,6 +3,8 @@ package data
 import (
 	"context"
 	"io"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -80,4 +82,45 @@ func TestMemoryConnector_TTL(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, "value1", val)
 	})
+}
+
+func TestMemoryConnector_LockThunderingHerd(t *testing.T) {
+	logger := zerolog.New(io.Discard)
+	ctx := context.Background()
+	connector, err := NewMemoryConnector(ctx, &logger, "herd", &common.MemoryConnectorConfig{
+		MaxItems: 10,
+	})
+	require.NoError(t, err)
+
+	const goroutines = 100
+	var acquired int32
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	start := make(chan struct{})
+
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+
+			lock, err := connector.Lock(ctx, "herd-key", 100*time.Millisecond)
+			if err == nil {
+				atomic.AddInt32(&acquired, 1)
+				// Hold the lock briefly to give others a chance to collide
+				time.Sleep(20 * time.Millisecond)
+				_ = lock.Unlock(ctx)
+			} else {
+				require.True(t, common.HasErrorCode(err, common.ErrCodeLockAlreadyHeld))
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+
+	// Exactly one goroutine should have acquired the lock at any moment,
+	// but over the whole run we expect at least one successful acquire.
+	require.Equal(t, int32(1), acquired, "expected exactly one successful lock acquisition")
 }
