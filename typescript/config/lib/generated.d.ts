@@ -148,9 +148,11 @@ export interface TLSConfig {
 }
 export interface RedisConnectorConfig {
     addr: string;
+    username?: string;
     db: number;
     tls?: TLSConfig;
     connPoolSize: number;
+    uri?: string;
     initTimeout?: Duration;
     getTimeout?: Duration;
     setTimeout?: Duration;
@@ -372,6 +374,7 @@ export interface NetworkConfig {
     evm?: EvmNetworkConfig;
     selectionPolicy?: SelectionPolicyConfig;
     directiveDefaults?: DirectiveDefaultsConfig;
+    alias?: string;
 }
 export interface DirectiveDefaultsConfig {
     retryEmpty?: boolean;
@@ -436,6 +439,9 @@ export interface NetworkStrategyConfig {
     allowLocalhost: boolean;
     trustedProxies: string[];
 }
+export type LabelMode = string;
+export declare const ErrorLabelModeVerbose: LabelMode;
+export declare const ErrorLabelModeCompact: LabelMode;
 export interface MetricsConfig {
     enabled?: boolean;
     listenV4?: boolean;
@@ -443,6 +449,8 @@ export interface MetricsConfig {
     listenV6?: boolean;
     hostV6?: string;
     port?: number;
+    errorLabelMode: LabelMode;
+    histogramBuckets: string;
 }
 export type DataFinalityState = number;
 /**

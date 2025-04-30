@@ -15,13 +15,6 @@ import (
 	"github.com/rs/zerolog"
 )
 
-type LabelMode string
-
-const (
-	ErrorLabelModeVerbose LabelMode = "verbose"
-	ErrorLabelModeCompact LabelMode = "compact"
-)
-
 var errorLabelMode = ErrorLabelModeVerbose
 
 func SetErrorLabelMode(mode LabelMode) {

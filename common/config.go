@@ -889,6 +889,13 @@ type NetworkStrategyConfig struct {
 	TrustedProxies []string `yaml:"trustedProxies" json:"trustedProxies"`
 }
 
+type LabelMode string
+
+const (
+	ErrorLabelModeVerbose LabelMode = "verbose"
+	ErrorLabelModeCompact LabelMode = "compact"
+)
+
 type MetricsConfig struct {
 	Enabled          *bool     `yaml:"enabled" json:"enabled"`
 	ListenV4         *bool     `yaml:"listenV4" json:"listenV4"`
