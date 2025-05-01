@@ -1,11 +1,13 @@
 package consensus
 
 import (
-	// "time"
+	"os"
+	"time"
 
 	"github.com/erpc/erpc/common"
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/failsafe-go/failsafe-go/policy"
+	"github.com/rs/zerolog"
 )
 
 // If the execution is configured with a Context, a child context will be created for each attempt and outstanding
@@ -14,6 +16,10 @@ import (
 // R is the execution result type. This type is concurrency safe.
 type ConsensusPolicy[R any] interface {
 	failsafe.Policy[R]
+	WithRequiredParticipants(required int) ConsensusPolicy[R]
+	WithAgreementThreshold(threshold int) ConsensusPolicy[R]
+	WithTimeout(timeout time.Duration) ConsensusPolicy[R]
+	WithLogger(logger *zerolog.Logger) ConsensusPolicy[R]
 }
 
 // R is the execution result type. This type is not concurrency safe.
@@ -42,6 +48,7 @@ type config[R any] struct {
 	failureBehavior         common.ConsensusFailureBehavior
 	lowParticipantsBehavior common.ConsensusLowParticipantsBehavior
 	punishMisbehavior       *common.PunishMisbehaviorConfig
+	timeout                 time.Duration
 
 	onAgreement       func(event failsafe.ExecutionEvent[R])
 	onDispute         func(event failsafe.ExecutionEvent[R])
@@ -59,6 +66,7 @@ func NewConsensusPolicyBuilder[R any]() ConsensusPolicyBuilder[R] {
 
 type consensusPolicy[R any] struct {
 	*config[R]
+	logger *zerolog.Logger
 }
 
 var _ ConsensusPolicy[any] = &consensusPolicy[any]{}
@@ -117,20 +125,51 @@ func (c *config[R]) Build() ConsensusPolicy[R] {
 	hCopy := *c
 	if !c.BaseAbortablePolicy.IsConfigured() {
 		c.AbortIf(func(r R, err error) bool {
-			// TODO abort if consensus is reached
-			return true
+			// We'll let the executor handle the actual consensus check
+			return false
 		})
 	}
+	log := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout}).With().Timestamp().Logger()
+	lg := log.With().Str("component", "consensus").Logger()
 	return &consensusPolicy[R]{
-		config: &hCopy, // TODO copy base fields
+		config: &hCopy,
+		logger: &lg,
 	}
 }
 
-func (h *consensusPolicy[R]) ToExecutor(_ R) any {
-	he := &executor[R]{
+func (p *consensusPolicy[R]) WithRequiredParticipants(required int) ConsensusPolicy[R] {
+	pCopy := *p
+	pCopy.requiredParticipants = required
+	return &pCopy
+}
+
+func (p *consensusPolicy[R]) WithAgreementThreshold(threshold int) ConsensusPolicy[R] {
+	pCopy := *p
+	pCopy.agreementThreshold = threshold
+	return &pCopy
+}
+
+func (p *consensusPolicy[R]) WithTimeout(timeout time.Duration) ConsensusPolicy[R] {
+	pCopy := *p
+	pCopy.timeout = timeout
+	return &pCopy
+}
+
+func (p *consensusPolicy[R]) WithLogger(logger *zerolog.Logger) ConsensusPolicy[R] {
+	pCopy := *p
+	lg := logger.With().Str("component", "consensus").Logger()
+	pCopy.logger = &lg
+	return &pCopy
+}
+
+func (p *consensusPolicy[R]) ToExecutor(_ R) any {
+	return p.Build()
+}
+
+func (p *consensusPolicy[R]) Build() policy.Executor[R] {
+	return &executor[R]{
 		BaseExecutor:    &policy.BaseExecutor[R]{},
-		consensusPolicy: h,
+		consensusPolicy: p,
+		logger:          p.logger,
 	}
-	he.Executor = he
-	return he
 }

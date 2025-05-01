@@ -433,6 +433,15 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	defer req.RUnlock()
 
 	if execErr != nil {
+		// Don't override consensus errors with last valid response
+		if common.HasErrorCode(execErr, common.ErrCodeConsensusFailure, common.ErrCodeConsensusDispute, common.ErrCodeConsensusLowParticipants) {
+			err = upstream.TranslateFailsafeError(common.ScopeNetwork, "", method, execErr, &startTime)
+			if mlx != nil {
+				mlx.Close(ctx, nil, err)
+			}
+			return nil, err
+		}
+
 		lvr := req.LastValidResponse()
 		if lvr != nil && !lvr.IsObjectNull() {
 			// A valid response is a json-rpc response without "error" object.
