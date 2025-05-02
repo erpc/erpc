@@ -351,6 +351,11 @@ func (t *Tracker) GetNetworkMethodMetrics(network, method string) *TrackedMetric
 func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
 	t.logger.Trace().Str("upstreamId", ups).Str("networkId", network).Int64("value", blockNumber).Msg("updating latest block number in tracker")
 
+	if blockNumber <= 0 {
+		t.logger.Warn().Str("upstreamId", ups).Str("networkId", network).Int64("value", blockNumber).Msg("ignoring setting non-positive latest block number in tracker")
+		return
+	}
+
 	mdKey := duoKey{ups: ups, network: network}
 	ntwMdKey := duoKey{ups: "*", network: network}
 
@@ -377,7 +382,13 @@ func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
 	}
 
 	// 3) Recompute block head lag for this upstream
-	upsLag := ntwMeta.evmLatestBlockNumber.Load() - upsMeta.evmLatestBlockNumber.Load()
+	ntwBn := ntwMeta.evmLatestBlockNumber.Load()
+	if ntwBn <= 0 {
+		t.logger.Warn().Str("upstreamId", ups).Str("networkId", network).Int64("value", ntwBn).Msg("ignoring block head lag tracking for non-positive block number in tracker")
+		return
+	}
+
+	upsLag := ntwBn - upsMeta.evmLatestBlockNumber.Load()
 	telemetry.MetricUpstreamBlockHeadLag.
 		WithLabelValues(t.projectId, network, ups).
 		Set(float64(upsLag))
@@ -393,7 +404,12 @@ func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
 			if k.network == network {
 				tm := value.(*TrackedMetrics)
 				otherUpsMeta := t.getMetadata(duoKey{ups: k.ups, network: network})
-				otherLag := ntwMeta.evmLatestBlockNumber.Load() - otherUpsMeta.evmLatestBlockNumber.Load()
+				otherVal := otherUpsMeta.evmLatestBlockNumber.Load()
+				if otherVal <= 0 {
+					t.logger.Debug().Str("upstreamId", k.ups).Str("networkId", network).Int64("value", otherVal).Msg("ignoring block head lag tracking for non-positive block number in tracker")
+					return true
+				}
+				otherLag := ntwBn - otherVal
 				tm.BlockHeadLag.Store(otherLag)
 				telemetry.MetricUpstreamBlockHeadLag.
 					WithLabelValues(t.projectId, network, k.ups).
@@ -419,6 +435,11 @@ func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
 
 func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64) {
 	t.logger.Trace().Str("upstreamId", ups).Str("networkId", network).Int64("value", blockNumber).Msg("updating finalized block number in tracker")
+
+	if blockNumber <= 0 {
+		t.logger.Warn().Str("upstreamId", ups).Str("networkId", network).Int64("value", blockNumber).Msg("ignoring setting non-positive block number in finalized block tracker")
+		return
+	}
 
 	mdKey := duoKey{ups, network}
 	ntwMdKey := duoKey{"*", network}
@@ -448,6 +469,11 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 
 	// Recompute finalization lag for this upstream
 	ntwVal := ntwMeta.evmFinalizedBlockNumber.Load()
+	if ntwVal <= 0 {
+		t.logger.Warn().Str("upstreamId", ups).Str("networkId", network).Int64("value", ntwVal).Msg("ignoring finalization lag tracking for negative block number in tracker")
+		return
+	}
+
 	upsVal := upsMeta.evmFinalizedBlockNumber.Load()
 	upsLag := ntwVal - upsVal
 
@@ -466,7 +492,12 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 			if k.network == network {
 				tm := value.(*TrackedMetrics)
 				otherUpsMeta := t.getMetadata(duoKey{ups: k.ups, network: k.network})
-				otherLag := ntwVal - otherUpsMeta.evmFinalizedBlockNumber.Load()
+				otherVal := otherUpsMeta.evmFinalizedBlockNumber.Load()
+				if otherVal <= 0 {
+					t.logger.Debug().Str("upstreamId", k.ups).Str("networkId", network).Int64("value", otherVal).Msg("ignoring finalization lag tracking for non-positive block number in tracker")
+					return true
+				}
+				otherLag := ntwVal - otherVal
 				tm.FinalizationLag.Store(otherLag)
 				telemetry.MetricUpstreamFinalizationLag.
 					WithLabelValues(t.projectId, network, k.ups).
