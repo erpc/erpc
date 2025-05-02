@@ -223,6 +223,13 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Promote tag to docs-prod branch
+        if: success()
+        run: |
+          git fetch --prune
+          git branch -f docs-prod HEAD
+          git push origin +docs-prod
+
   # Always run on main push to update docker image
   docker-image:
     runs-on: large
