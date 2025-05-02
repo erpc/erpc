@@ -69,3 +69,20 @@ There are mainly 2 places to configure the chain ID:
 ## Healthcheck
 
 For a zero-downtime smooth rollout, configure [Healthcheck](/operation/healthcheck) in your orchestration platform (e.g. kubernetes).
+
+#### Example: Cilium/Envoy and zero-downtime deployments
+
+When using Cilium with Envoy (either Ingress or Gateway-API) we observed that keeping
+`waitBeforeShutdown` and `waitAfterShutdown` **both** at 30s (together with a readiness
+probe that fails in ≤ 10 s) eliminates `connection reset / refused` errors during
+rolling updates:
+
+```yaml
+server:
+  waitBeforeShutdown: 30s # pod is in draining mode
+  waitAfterShutdown:  30s # process stays alive until Envoy finishes
+```
+
+Shorter values let Envoy reuse a connection after the listener is gone or try to reach
+a pod that has already exited. Use these numbers as a safe starting point and adjust
+to match your own probe intervals.

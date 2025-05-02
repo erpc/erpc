@@ -23,14 +23,14 @@ const CONFIG = {
 
 // Update CHAINS structure to include transaction cache
 const CHAINS = {
-  ETH: {
-    id: '1',
-    cached: {
-      latestBlock: null,
-      latestBlockTimestamp: 0,
-      transactions: []
-    }
-  },
+  // ETH: {
+  //   id: '1',
+  //   cached: {
+  //     latestBlock: null,
+  //     latestBlockTimestamp: 0,
+  //     transactions: []
+  //   }
+  // },
   // POLYGON: {
   //   id: '137',
   //   cached: {
@@ -39,14 +39,14 @@ const CHAINS = {
   //     transactions: []
   //   }
   // },
-  // ARBITRUM: {
-  //   id: '42161',
-  //   cached: {
-  //     latestBlock: null,
-  //     latestBlockTimestamp: 0,
-  //     transactions: []
-  //   }
-  // }
+  ARBITRUM: {
+    id: '42161',
+    cached: {
+      latestBlock: null,
+      latestBlockTimestamp: 0,
+      transactions: []
+    }
+  }
 };
 
 if (__ENV.RANDOM_SEED) {
@@ -58,9 +58,9 @@ export const options = {
   scenarios: {    
     constant_request_rate: {
       executor: 'constant-arrival-rate',
-      rate: 100,
+      rate: 40,
       timeUnit: '1s',
-      duration: '1m',
+      duration: '10m',
       preAllocatedVUs: 100,
       maxVUs: 100,
     },
@@ -101,7 +101,7 @@ async function latestBlockWithLogs(http, params, chain) {
     }],
     id: Math.floor(Math.random() * 100000000)
   });
-  if (__ENV.DEBUG) {
+  if (__ENV.TRACE) {
     console.log(`Request: ${payload}`);
   }
   return http.post(ERPC_BASE_URL + chain.id, payload, params);
@@ -118,7 +118,7 @@ function randomAccountBalances(http, params, chain) {
     params: [randomAddr, "latest"],
     id: Math.floor(Math.random() * 100000000)
   });
-  if (__ENV.DEBUG) {
+  if (__ENV.TRACE) {
     console.log(`Request: ${payload}`);
   }
   return http.post(ERPC_BASE_URL + chain.id, payload, params);
@@ -137,7 +137,7 @@ async function getLatestBlock(http, params, chain) {
     id: Math.floor(Math.random() * 100000000)
   });
 
-  if (__ENV.DEBUG) {
+  if (__ENV.TRACE) {
     console.log(`Request: ${payload}`);
   }
   const res = await http.post(ERPC_BASE_URL + chain.id, payload, params);
@@ -204,7 +204,7 @@ async function traceLatestTransaction(http, params, chain) {
       id: Math.floor(Math.random() * 100000000)
     });
 
-    if (__ENV.DEBUG) {
+    if (__ENV.TRACE) {
       console.log(`Request: ${tracePayload}`);
     }
     const traceRes = await http.post(ERPC_BASE_URL + chain.id, tracePayload, params);
@@ -240,7 +240,7 @@ async function latestBlockReceipts(http, params, chain) {
     params: [txHash],
     id: Math.floor(Math.random() * 100000000)
   });
-  if (__ENV.DEBUG) {
+  if (__ENV.TRACE) {
     console.log(`Request: ${payload}`);
   }
   return http.post(ERPC_BASE_URL + chain.id, payload, params);
@@ -294,9 +294,9 @@ export default async function () {
     statusCodeCounter.add(1, tags);
     responseSizes.add(res.body.length, tags);
 
-    if (__ENV.DEBUG) {
+    if (__ENV.DEBUG || __ENV.TRACE) {
       if (res.status >= 400) {
-        console.log(`Status Code: ${res.status} Response body: ${res.body} Tags: ${JSON.stringify(tags)}`);
+        console.warn(`${new Date().toISOString()} Status Code: ${res.status} Response body: ${res.body} Tags: ${JSON.stringify(tags)}`);
       }
     }
 
@@ -305,7 +305,7 @@ export default async function () {
       parsedBody = JSON.parse(res.body);
     } catch (e) {
       parsingErrorsCounter.add(1, tags);
-      console.error(`Failed to parse response body: ${e}`);
+      console.error(`${new Date().toISOString()} Failed to parse response body: ${e} response body: ${res.body}`);
     }
 
     if (parsedBody?.error?.code) {
