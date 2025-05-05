@@ -99,7 +99,6 @@ func NewEvmStatePoller(
 		tracker:              tracker,
 		latestBlockShared:    lbs,
 		finalizedBlockShared: fbs,
-		inFlightPolling:      &sync.Map{},
 	}
 
 	lbs.OnValue(func(value int64) {
@@ -242,18 +241,7 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 			return
 		}
 
-		// Use multiplexer to fetch syncing state
-		mapKey := fmt.Sprintf("%s/%s", e.upstream.Config().Id, "syncing")
-		e.logger.Trace().Msg("executing multiplexed poll for syncing state")
-
-		result, err := common.ExecuteMultiplexed(ctx, e.inFlightPolling, mapKey, func(pollCtx context.Context) (interface{}, error) {
-			return e.fetchSyncingState(pollCtx)
-		})
-
-		syncing := false
-		if result != nil {
-			syncing, _ = result.(bool)
-		}
+		syncing, err := e.fetchSyncingState(ctx)
 
 		if err != nil {
 			if !e.skipSyncingCheck {
@@ -404,6 +392,7 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 			e.upstream.NetworkId(),
 			e.upstream.Config().Id,
 		).Inc()
+
 		// Actually fetch from upstream
 		blockNum, err := e.fetchBlock(ctx, "finalized")
 		if err != nil || blockNum == 0 {
