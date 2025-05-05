@@ -34,6 +34,10 @@ func (s *HttpServer) handleHealthCheck(
 	writeFatalError func(ctx context.Context, statusCode int, body error),
 ) {
 	logger := s.logger.With().Str("handler", "healthcheck").Str("projectId", projectId).Logger()
+	if s.draining.Load() {
+		http.Error(w, "shutting down", http.StatusServiceUnavailable)
+		return
+	}
 
 	if s.healthCheckAuthRegistry != nil {
 		headers := r.Header

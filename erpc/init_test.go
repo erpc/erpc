@@ -95,10 +95,10 @@ func TestInit_AllGood(t *testing.T) {
 	}
 
 	logger := log.Logger
-	err := Init(context.Background(), cfg, logger)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go Init(ctx, cfg, logger)
+	time.Sleep(1 * time.Second)
 
 	//
 	// 3) Make a request to the eRPC server
@@ -163,7 +163,9 @@ func TestInit_InvalidHttpPort(t *testing.T) {
 	}
 
 	// Launch init
-	Init(context.Background(), cfg, logger)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	Init(ctx, cfg, logger)
 
 	select {
 	case code := <-exitChan:

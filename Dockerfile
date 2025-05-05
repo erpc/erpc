@@ -32,7 +32,8 @@ ENV CGO_ENABLED=0 \
 
 # Build the Go binary
 RUN go build -v -ldflags="$LDFLAGS" -a -installsuffix cgo -o erpc-server ./cmd/erpc/main.go && \
-    go build -v -ldflags="$LDFLAGS" -a -installsuffix cgo -tags pprof -o erpc-server-pprof ./cmd/erpc/*.go
+    go build -v -ldflags="$LDFLAGS" -a -installsuffix cgo -tags pprof -o erpc-server-pprof ./cmd/erpc/*.go && \
+    go build -v -ldflags="-w -s" -a -installsuffix cgo -o sleep ./cmd/sleep/main.go
 
 # Global typescript related image
 FROM node:20-alpine AS ts-core
@@ -70,9 +71,10 @@ RUN mkdir -p /root && ln -s /erpc-server /root/erpc-server
 # Final stage
 FROM gcr.io/distroless/static-debian12:nonroot AS final
 
-# Copy Go binary from go-builder
+# Copy Go binaries from go-builder
 COPY --from=go-builder /build/erpc-server /
 COPY --from=go-builder /build/erpc-server-pprof /
+COPY --from=go-builder /build/sleep /
 
 # Copy symlinked directory with preserved symlinks
 COPY --from=symlink --link /root /root

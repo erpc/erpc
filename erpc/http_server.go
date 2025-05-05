@@ -16,6 +16,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -38,6 +39,7 @@ type HttpServer struct {
 	erpc                    *ERPC
 	logger                  *zerolog.Logger
 	healthCheckAuthRegistry *auth.AuthRegistry
+	draining                *atomic.Bool
 }
 
 func NewHttpServer(
@@ -61,13 +63,21 @@ func NewHttpServer(
 		writeTimeout = cfg.WriteTimeout.Duration()
 	}
 
+	draining := atomic.Bool{}
+	go func() {
+		<-ctx.Done()
+		draining.Store(true)
+		log.Info().Msg("entering draining mode → healthcheck will fail")
+	}()
+
 	srv := &HttpServer{
+		logger:         logger,
 		appCtx:         ctx,
 		serverCfg:      cfg,
 		healthCheckCfg: healthCheckCfg,
 		adminCfg:       adminCfg,
 		erpc:           erpc,
-		logger:         logger,
+		draining:       &draining,
 	}
 
 	h := srv.createRequestHandler()
@@ -93,6 +103,11 @@ func NewHttpServer(
 
 	go func() {
 		<-ctx.Done()
+		// wait for readiness probe to mark the pod NotReady
+		// ideally (period_seconds * failure_threshold) + safety margin (1s)
+		if srv.serverCfg.WaitBeforeShutdown != nil {
+			time.Sleep(srv.serverCfg.WaitBeforeShutdown.Duration())
+		}
 		if err := srv.Shutdown(logger); err != nil {
 			logger.Error().Msgf("http server forced to shutdown: %s", err)
 		} else {
