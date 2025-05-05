@@ -26,12 +26,12 @@ type CounterInt64SharedVariable interface {
 }
 
 type baseSharedVariable struct {
-	lastUpdated atomic.Int64 // Unix nanoseconds
+	lastProcessed atomic.Int64 // Unix nanoseconds
 }
 
 func (v *baseSharedVariable) IsStale(staleness time.Duration) bool {
-	lastUpdatedNano := v.lastUpdated.Load()
-	return time.Since(time.Unix(0, lastUpdatedNano)) > staleness
+	lastProcessedNano := v.lastProcessed.Load()
+	return time.Since(time.Unix(0, lastProcessedNano)) > staleness
 }
 
 type counterInt64 struct {
@@ -62,6 +62,10 @@ func (c *counterInt64) maybeUpdateValue(currentVal, newVal int64) bool {
 			c.largeRollbackCallback(currentVal, newVal)
 		}
 		updated = true
+	}
+	// Even when the value did not change, record the attempt so the debounce timer moves forward.
+	if !updated {
+		c.lastProcessed.Store(time.Now().UnixNano())
 	}
 	return updated
 }
@@ -195,6 +199,8 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 		c.registry.logger.Info().Str("key", c.key).Msg("getNewValue xxxx1")
 		newValue, err := getNewValue(ctx)
 		if err != nil {
+			// mark attempt so debounce interval is respected even on failure
+			c.lastProcessed.Store(time.Now().UnixNano())
 			return c.value.Load(), err
 		}
 
@@ -227,6 +233,8 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 		c.registry.logger.Info().Str("key", c.key).Msg("getNewValue xxxx2")
 		newValue, err := getNewValue(ctx)
 		if err != nil {
+			// mark attempt so debounce interval is respected even on failure
+			c.lastProcessed.Store(time.Now().UnixNano())
 			return c.value.Load(), err
 		}
 
@@ -238,6 +246,8 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	var remoteValue int64
 	if remoteVal != "" {
 		if _, err := fmt.Sscanf(remoteVal, "%d", &remoteValue); err != nil {
+			// ensure failures still refresh lastUpdated
+			c.lastProcessed.Store(time.Now().UnixNano())
 			return 0, fmt.Errorf("failed to parse remote value: %w", err)
 		}
 	}
@@ -263,6 +273,8 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	c.registry.logger.Info().Str("key", c.key).Msg("getNewValue xxxx3")
 	newValue, err := getNewValue(ctx)
 	if err != nil {
+		// mark attempt so debounce interval is respected even on failure
+		c.lastProcessed.Store(time.Now().UnixNano())
 		return c.value.Load(), err
 	}
 
@@ -294,7 +306,7 @@ func (c *counterInt64) OnValue(cb func(int64)) {
 
 func (c *counterInt64) setValue(val int64) {
 	c.value.Store(val)
-	c.lastUpdated.Store(time.Now().UnixNano())
+	c.lastProcessed.Store(time.Now().UnixNano())
 	if c.valueCallback != nil {
 		c.valueCallback(val)
 	}

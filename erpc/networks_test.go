@@ -107,8 +107,8 @@ func TestNetwork_Forward(t *testing.T) {
 			Endpoint: "http://rpc1.localhost",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
-				StatePollerInterval: common.Duration(1000 * time.Millisecond), // we’ll drive it manually
-				StatePollerDebounce: common.Duration(1000 * time.Millisecond), // TryUpdateIfStale → 1 s default
+				StatePollerInterval: common.Duration(5000 * time.Millisecond), // we’ll drive it manually
+				StatePollerDebounce: common.Duration(5000 * time.Millisecond), // TryUpdateIfStale → 1 s default
 			},
 		}
 
