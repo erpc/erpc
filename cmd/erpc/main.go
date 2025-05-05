@@ -51,6 +51,10 @@ func init() {
 func main() {
 	logger := log.With().Logger()
 
+	// Create a context that is cancelled on SIGINT/SIGTERM
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	// Define the flag for the config file
 	configFileFlag := &cli.StringFlag{
 		Name:     "config",
@@ -80,7 +84,7 @@ func main() {
 		},
 		Action: baseCliAction(logger, func(cfg *common.Config) error {
 			return erpc.Init(
-				context.Background(),
+				ctx,
 				cfg,
 				logger,
 			)
@@ -100,7 +104,7 @@ func main() {
 		// Legacy action being the start one directly, to ensure we fetch the potential first arg as config file
 		Action: baseCliAction(logger, func(cfg *common.Config) error {
 			return erpc.Init(
-				context.Background(),
+				ctx,
 				cfg,
 				logger,
 			)
@@ -111,15 +115,10 @@ func main() {
 			validateCmd,
 		},
 	}
-	if err := cmd.Run(context.Background(), os.Args); err != nil {
+	if err := cmd.Run(ctx, os.Args); err != nil {
 		logger.Error().Msgf("failed to start erpc: %v", err)
 		util.OsExit(util.ExitCodeERPCStartFailed)
 	}
-
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	recvSig := <-sig
-	logger.Warn().Msgf("caught signal: %v", recvSig)
 }
 
 // Base cli action func with init log + config loading

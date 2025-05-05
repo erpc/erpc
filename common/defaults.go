@@ -484,6 +484,14 @@ func (s *ServerConfig) SetDefaults() error {
 	if s.EnableGzip == nil {
 		s.EnableGzip = util.BoolPtr(true)
 	}
+	if s.WaitBeforeShutdown == nil {
+		d := Duration(10 * time.Second)
+		s.WaitBeforeShutdown = &d
+	}
+	if s.WaitAfterShutdown == nil {
+		d := Duration(10 * time.Second)
+		s.WaitAfterShutdown = &d
+	}
 
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sync/atomic"
 
 	"math/rand"
 	"net"
@@ -4090,6 +4091,7 @@ func TestHttpServer_ParseUrlPath(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := &HttpServer{
+				draining: &atomic.Bool{},
 				erpc: &ERPC{
 					projectsRegistry: &ProjectsRegistry{
 						preparedProjects: map[string]*PreparedProject{
@@ -4193,6 +4195,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					healthCheckCfg: &common.HealthCheckConfig{
 						Mode: common.HealthCheckModeSimple,
 					},
+					draining: &atomic.Bool{},
 				}
 			},
 			projectId:    "test",
@@ -4215,6 +4218,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					healthCheckCfg: &common.HealthCheckConfig{
 						Mode: common.HealthCheckModeSimple,
 					},
+					draining: &atomic.Bool{},
 				}
 			},
 			projectId:    "nonexistent",
@@ -4246,6 +4250,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					healthCheckCfg: &common.HealthCheckConfig{
 						Mode: common.HealthCheckModeSimple,
 					},
+					draining: &atomic.Bool{},
 				}
 			},
 			projectId:    "",
@@ -4277,6 +4282,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					healthCheckCfg: &common.HealthCheckConfig{
 						Mode: common.HealthCheckModeVerbose,
 					},
+					draining: &atomic.Bool{},
 				}
 			},
 			projectId:    "test",
@@ -4308,6 +4314,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					healthCheckCfg: &common.HealthCheckConfig{
 						Mode: common.HealthCheckModeSimple,
 					},
+					draining: &atomic.Bool{},
 				}
 			},
 			projectId:    "test",
@@ -4348,6 +4355,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					healthCheckCfg: &common.HealthCheckConfig{
 						Mode: common.HealthCheckModeSimple,
 					},
+					draining: &atomic.Bool{},
 				}
 			},
 			projectId:    "test",
@@ -4383,6 +4391,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					healthCheckCfg: &common.HealthCheckConfig{
 						Mode: common.HealthCheckModeSimple,
 					},
+					draining: &atomic.Bool{},
 				}
 			},
 			projectId:    "test",
@@ -4418,6 +4427,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					healthCheckCfg: &common.HealthCheckConfig{
 						Mode: common.HealthCheckModeSimple,
 					},
+					draining: &atomic.Bool{},
 				}
 			},
 			projectId:    "test",
@@ -4466,6 +4476,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					healthCheckCfg: &common.HealthCheckConfig{
 						Mode: common.HealthCheckModeSimple,
 					},
+					draining: &atomic.Bool{},
 				}
 			},
 			projectId:    "test",
@@ -4505,6 +4516,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					healthCheckCfg: &common.HealthCheckConfig{
 						Mode: common.HealthCheckModeSimple,
 					},
+					draining: &atomic.Bool{},
 				}
 			},
 			projectId:    "test",
@@ -4541,6 +4553,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 						Mode: common.HealthCheckModeSimple,
 					},
 					healthCheckAuthRegistry: authReg,
+					draining: &atomic.Bool{},
 				}
 			},
 			projectId:    "test",
@@ -4577,6 +4590,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 						Mode: common.HealthCheckModeSimple,
 					},
 					healthCheckAuthRegistry: authReg,
+					draining: &atomic.Bool{},
 				}
 			},
 			projectId:    "test",
@@ -4615,6 +4629,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					healthCheckCfg: &common.HealthCheckConfig{
 						Mode: common.HealthCheckModeSimple,
 					},
+					draining: &atomic.Bool{},
 				}
 			},
 			projectId:    "test",
@@ -4646,6 +4661,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 					healthCheckCfg: &common.HealthCheckConfig{
 						Mode: common.HealthCheckModeSimple,
 					},
+					draining: &atomic.Bool{},
 				}
 			},
 			projectId:    "test",
@@ -4678,6 +4694,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 						Mode:        common.HealthCheckModeSimple,
 						DefaultEval: common.EvalAnyInitializedUpstreams,
 					},
+					draining: &atomic.Bool{},
 				}
 			},
 			projectId:    "test",

@@ -79,17 +79,19 @@ func LoadConfig(fs afero.Fs, filename string) (*Config, error) {
 }
 
 type ServerConfig struct {
-	ListenV4     *bool           `yaml:"listenV4,omitempty" json:"listenV4"`
-	HttpHostV4   *string         `yaml:"httpHostV4,omitempty" json:"httpHostV4"`
-	ListenV6     *bool           `yaml:"listenV6,omitempty" json:"listenV6"`
-	HttpHostV6   *string         `yaml:"httpHostV6,omitempty" json:"httpHostV6"`
-	HttpPort     *int            `yaml:"httpPort,omitempty" json:"httpPort"`
-	MaxTimeout   *Duration       `yaml:"maxTimeout,omitempty" json:"maxTimeout" tstype:"Duration"`
-	ReadTimeout  *Duration       `yaml:"readTimeout,omitempty" json:"readTimeout" tstype:"Duration"`
-	WriteTimeout *Duration       `yaml:"writeTimeout,omitempty" json:"writeTimeout" tstype:"Duration"`
-	EnableGzip   *bool           `yaml:"enableGzip,omitempty" json:"enableGzip"`
-	TLS          *TLSConfig      `yaml:"tls,omitempty" json:"tls"`
-	Aliasing     *AliasingConfig `yaml:"aliasing" json:"aliasing"`
+	ListenV4           *bool           `yaml:"listenV4,omitempty" json:"listenV4"`
+	HttpHostV4         *string         `yaml:"httpHostV4,omitempty" json:"httpHostV4"`
+	ListenV6           *bool           `yaml:"listenV6,omitempty" json:"listenV6"`
+	HttpHostV6         *string         `yaml:"httpHostV6,omitempty" json:"httpHostV6"`
+	HttpPort           *int            `yaml:"httpPort,omitempty" json:"httpPort"`
+	MaxTimeout         *Duration       `yaml:"maxTimeout,omitempty" json:"maxTimeout" tstype:"Duration"`
+	ReadTimeout        *Duration       `yaml:"readTimeout,omitempty" json:"readTimeout" tstype:"Duration"`
+	WriteTimeout       *Duration       `yaml:"writeTimeout,omitempty" json:"writeTimeout" tstype:"Duration"`
+	EnableGzip         *bool           `yaml:"enableGzip,omitempty" json:"enableGzip"`
+	TLS                *TLSConfig      `yaml:"tls,omitempty" json:"tls"`
+	Aliasing           *AliasingConfig `yaml:"aliasing" json:"aliasing"`
+	WaitBeforeShutdown *Duration       `yaml:"waitBeforeShutdown,omitempty" json:"waitBeforeShutdown" tstype:"Duration"`
+	WaitAfterShutdown  *Duration       `yaml:"waitAfterShutdown,omitempty" json:"waitAfterShutdown" tstype:"Duration"`
 }
 
 type HealthCheckConfig struct {

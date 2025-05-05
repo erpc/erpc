@@ -130,5 +130,17 @@ func Init(
 		}()
 	}
 
-	return erpcInstance.Bootstrap(appCtx)
+	err = erpcInstance.Bootstrap(appCtx)
+	if err != nil {
+		return err
+	}
+
+	// Wait until the context is cancelled, then give the http server some time to finish draining.
+	<-appCtx.Done()
+	logger.Info().Msg("shutting down gracefully...")
+	if cfg.Server != nil && cfg.Server.WaitAfterShutdown != nil {
+		time.Sleep(cfg.Server.WaitAfterShutdown.Duration())
+	}
+
+	return nil
 }
