@@ -73,9 +73,6 @@ type EvmStatePoller struct {
 	latestBlockShared         data.CounterInt64SharedVariable
 
 	stateMu sync.RWMutex
-
-	// Multiplexing for concurrent poll operations
-	inFlightPolling *sync.Map
 }
 
 func NewEvmStatePoller(
