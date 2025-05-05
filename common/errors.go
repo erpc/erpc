@@ -2219,9 +2219,32 @@ func ClassifySeverity(err error) Severity {
 	if err == nil {
 		return SeverityInfo
 	}
-	if IsClientError(err) || HasErrorCode(err, ErrCodeEndpointExecutionException) {
+	if IsClientError(err) || HasErrorCode(err, ErrCodeEndpointExecutionException, ErrCodeUpstreamMethodIgnored) {
 		return SeverityInfo
 	}
+	if HasErrorCode(err, ErrCodeUpstreamRequestSkipped) {
+		se, ok := err.(StandardError)
+		if ok && HasErrorCode(se.GetCause(), ErrCodeUpstreamMethodIgnored) {
+			return SeverityInfo
+		}
+		return ClassifySeverity(se.GetCause())
+	}
+	if HasErrorCode(err, ErrCodeUpstreamsExhausted) {
+		if ex, ok := err.(*ErrUpstreamsExhausted); ok {
+			onlyIgnored := true
+			for _, e := range ex.Errors() {
+				if !(HasErrorCode(e, ErrCodeUpstreamRequestSkipped) &&
+					HasErrorCode(e.(StandardError).GetCause(), ErrCodeUpstreamMethodIgnored)) {
+					onlyIgnored = false
+					break
+				}
+			}
+			if onlyIgnored {
+				return SeverityInfo
+			}
+		}
+	}
+
 	if !IsRetryableTowardsUpstream(err) {
 		return SeverityWarning
 	}

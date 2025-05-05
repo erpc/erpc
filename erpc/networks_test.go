@@ -6975,6 +6975,31 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 }
 
+func TestClassifySeverity_SkippedIgnoredOnly(t *testing.T) {
+	req := common.NewNormalizedRequest([]byte(`{"method":"debug_traceTransaction","params":[]}`))
+
+	// The upstream returns "method ignored" and nothing else.
+	ers := &sync.Map{}
+	ers.Store("ups1", common.NewErrUpstreamMethodIgnored("debug_traceTransaction", "ups1"))
+
+	err := common.NewErrUpstreamsExhausted(
+		req,
+		ers,
+		"prjTest",
+		"evm:123",
+		"debug_traceTransaction",
+		10*time.Millisecond,
+		1, // attempts
+		0, // retries
+		0, // hedges
+	)
+
+	sev := common.ClassifySeverity(err)
+	if sev != common.SeverityInfo {
+		t.Fatalf("expected severity %s, got %s", common.SeverityInfo, sev)
+	}
+}
+
 func TestNetwork_SelectionScenarios(t *testing.T) {
 	t.Run("StatePollerContributesToErrorRateWhenNotResamplingExcludedUpstreams", func(t *testing.T) {
 		util.ResetGock()
