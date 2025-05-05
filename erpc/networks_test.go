@@ -6975,28 +6975,86 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 }
 
-func TestClassifySeverity_SkippedIgnoredOnly(t *testing.T) {
-	req := common.NewNormalizedRequest([]byte(`{"method":"debug_traceTransaction","params":[]}`))
+func TestClassifySeverity(t *testing.T) {
+	req := common.NewNormalizedRequest([]byte(`{"method":"debug_traceTransaction"}`))
 
-	// The upstream returns "method ignored" and nothing else.
-	ers := &sync.Map{}
-	ers.Store("ups1", common.NewErrUpstreamMethodIgnored("debug_traceTransaction", "ups1"))
+	mkSkipIgnored := func(id string) error {
+		return common.NewErrUpstreamRequestSkipped(
+			common.NewErrUpstreamMethodIgnored("debug_traceTransaction", id),
+			id,
+		)
+	}
+	mkSkipNodeMismatch := func(id string) error {
+		return common.NewErrUpstreamRequestSkipped(
+			common.NewErrUpstreamNodeTypeMismatch(nil,
+				common.EvmNodeTypeArchive,
+				common.EvmNodeTypeFull,
+			),
+			id,
+		)
+	}
+	mkNestedExhausted := func(errs ...error) error {
+		m := &sync.Map{}
+		for i, e := range errs {
+			m.Store(fmt.Sprintf("n%d", i), e)
+		}
+		return common.NewErrUpstreamsExhausted(
+			req, m, "prj", "evm:123", "debug_traceTransaction",
+			5*time.Millisecond, 1, 0, 0,
+		)
+	}
 
-	err := common.NewErrUpstreamsExhausted(
-		req,
-		ers,
-		"prjTest",
-		"evm:123",
-		"debug_traceTransaction",
-		10*time.Millisecond,
-		1, // attempts
-		0, // retries
-		0, // hedges
-	)
+	cases := []struct {
+		name string
+		err  error
+		exp  common.Severity
+	}{
+		{
+			"single skip → intentional method ignored",
+			mkSkipIgnored("ups1"),
+			common.SeverityInfo,
+		},
+		{
+			"single skip → non-intentional node type mismatch",
+			mkSkipNodeMismatch("ups1"),
+			common.SeverityWarning,
+		},
+		{
+			"exhausted – all skips intentional method ignored",
+			mkNestedExhausted(mkSkipIgnored("ups1"), mkSkipIgnored("ups2")),
+			common.SeverityInfo,
+		},
+		{
+			"nested exhausted – all skips intentional method ignored",
+			mkNestedExhausted(
+				mkSkipIgnored("leaf1"),
+				mkNestedExhausted(mkSkipIgnored("leaf2a"), mkSkipIgnored("leaf2b")),
+			),
+			common.SeverityInfo,
+		},
+		{
+			"mixed: some intentional method ignored, one timeout",
+			mkNestedExhausted(
+				mkSkipIgnored("ups1"),
+				common.NewErrEndpointRequestTimeout(300*time.Millisecond, context.DeadlineExceeded),
+			),
+			common.SeverityWarning,
+		},
+	}
 
-	sev := common.ClassifySeverity(err)
-	if sev != common.SeverityInfo {
-		t.Fatalf("expected severity %s, got %s", common.SeverityInfo, sev)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := common.ClassifySeverity(tc.err)
+			if tc.exp == common.SeverityInfo {
+				if got != common.SeverityInfo {
+					t.Fatalf("expected INFO, got %s", got)
+				}
+			} else {
+				if got == common.SeverityInfo {
+					t.Fatalf("expected non‑INFO severity, got INFO")
+				}
+			}
+		})
 	}
 }
 
