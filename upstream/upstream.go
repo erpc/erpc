@@ -201,6 +201,9 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 		if reason, skip := u.shouldSkip(ctx, req); skip {
 			span.SetAttributes(attribute.Bool("skipped", true))
 			span.SetAttributes(attribute.String("skipped_reason", reason.Error()))
+			if common.HasErrorCode(reason, common.ErrCodeUpstreamMethodIgnored) {
+				u.logger.Trace().Err(reason).Str("method", method).Msg("Skipping request: Method ignored by upstream config")
+			}
 			return nil, common.NewErrUpstreamRequestSkipped(reason, cfg.Id)
 		}
 	}
