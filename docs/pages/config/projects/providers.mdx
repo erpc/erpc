@@ -19,6 +19,7 @@ Providers make it easy to add well-known third-parties RPC endpoints quickly. He
 - [`etherspot`](#etherspot) Accepts etherspot.io rpc endpoint for account-abstraction (ERC-4337) support.
 - [`dwellir`](#dwellir) Accepts dwellir.com api key and automatically adds all their EVM chains.
 - [`conduit`](#conduit) Accepts conduit.xyz api key and automatically adds all their EVM chains.
+- [`tenderly`](#tenderly) Accepts tenderly.co api key and automatically adds all their EVM chains.
 
 <Callout type='info'>
   eRPC supports **any EVM-compatible** JSON-RPC endpoint when using [`evm` type](/config/projects/upstreams). 
@@ -614,4 +615,7 @@ providers:
       apiKey: xxxxx
       networksUrl: https://api.conduit.xyz/public/network/all # (optional) Endpoint to fetch all supported networks
       recheckInterval: 24h # (optional) How often to recheck the API for newly added networks (default: 24h)
+  - vendor: tenderly
+    settings:
+      apiKey: xxxxx # Your Tenderly API key
 ```
