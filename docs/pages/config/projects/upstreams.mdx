@@ -27,9 +27,6 @@ projects:
     upstreams:
       # (REQUIRED) Endpoint URL supports http(s) scheme along with custom schemes like "alchemy://" defined below in this docs.
       - endpoint: https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx
-      - endpoint: alchemy://your-api-key
-      - endpoint: tenderly://your-api-key
-      - endpoint: https://mainnet.gateway.tenderly.co/your-api-key
 
         # Each upstream can have an arbitrary group name which is used in metrics, as well as 
         # useful when writing an eval function in selectionPolicy below.
@@ -164,9 +161,6 @@ export default createConfig({
         // (REQUIRED) Endpoint URL supports http(s) scheme along with custom schemes like "alchemy://" defined below in this docs.
         {
           endpoint: "https://arbitrum-one.blastapi.io/xxxxxxx-xxxxxx-xxxxxxx",
-          endpoint: "alchemy://your-api-key",
-          endpoint: "tenderly://your-api-key",
-          endpoint: "https://mainnet.gateway.tenderly.co/your-api-key",
 
           /*
           * (OPTIONAL) Each upstream can have an arbitrary group name which is used in metrics, as well as 
