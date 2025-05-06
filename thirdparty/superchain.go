@@ -170,10 +170,6 @@ func (v *SuperchainVendor) GenerateConfigs(upstream *common.UpstreamConfig, sett
 	}
 	chainID := upstream.Evm.ChainId
 
-	if apiKey, ok := settings["apiKey"].(string); ok && apiKey == "public" {
-		settings["registryUrl"] = DefaultSuperchainRegistryURL
-	}
-
 	registryURL, ok := settings["registryUrl"].(string)
 	if !ok || registryURL == "" {
 		registryURL = DefaultSuperchainRegistryURL
