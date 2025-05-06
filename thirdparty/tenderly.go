@@ -16,6 +16,7 @@ var tenderlyNetworkNames = map[int64]string{
 	1:         "mainnet",
 	10:        "optimism",
 	100:       "gnosis",
+	130:       "unichain",
 	10200:     "chiado",
 	1088:      "metis",
 	1101:      "polygon-zkevm",
