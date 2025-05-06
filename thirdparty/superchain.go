@@ -18,6 +18,50 @@ import (
 const DefaultSuperchainRegistryURL = "https://raw.githubusercontent.com/ethereum-optimism/superchain-registry/main/chainList.json"
 const DefaultSuperchainRecheckInterval = 24 * time.Hour
 
+// converts a shorthand `superchain://` specification into a raw
+// URL that points to the JSON registry file.
+// Supported forms:
+//
+//	superchain://github.com/{org}/{repo}
+//	  -> https://raw.githubusercontent.com/{org}/{repo}/main/chainList.json
+//	superchain://github.com/{org}/{repo}/{branch}/{file}.json
+//	  -> https://raw.githubusercontent.com/{org}/{repo}/{branch}/{file}.json
+//
+// Any non‑GitHub spec is treated as a literal URL; if it lacks a scheme we prepend
+// `https://`.
+func parseSuperchainSpec(spec string) (string, error) {
+	// GitHub shorthand → raw.githubusercontent.com
+	if strings.HasPrefix(spec, "github.com/") {
+		parts := strings.Split(strings.TrimPrefix(spec, "github.com/"), "/")
+		if len(parts) < 2 {
+			return "", fmt.Errorf("invalid GitHub superchain spec: %s", spec)
+		}
+
+		org, repo := parts[0], parts[1]
+
+		// Only org/repo given → assume `main/chainList.json`
+		if len(parts) == 2 {
+			return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/main/chainList.json", org, repo), nil
+		}
+
+		// org/repo/...  → branch and optional path
+		branch := parts[2]
+		path := strings.Join(parts[3:], "/")
+		if path == "" {
+			path = "chainList.json"
+		}
+		return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", org, repo, branch, path), nil
+	}
+
+	// Already a full URL?
+	if strings.HasPrefix(spec, "http://") || strings.HasPrefix(spec, "https://") {
+		return spec, nil
+	}
+
+	// Fallback: prepend https scheme.
+	return "https://" + spec, nil
+}
+
 type SuperchainNetwork struct {
 	Name                 string   `json:"name"`
 	Identifier           string   `json:"identifier"`
@@ -67,6 +111,14 @@ func (v *SuperchainVendor) SupportsNetwork(ctx context.Context, logger *zerolog.
 		registryURL = DefaultSuperchainRegistryURL
 	}
 
+	if strings.HasPrefix(registryURL, "superchain://") {
+		spec := strings.TrimPrefix(registryURL, "superchain://")
+		registryURL, err = parseSuperchainSpec(spec)
+		if err != nil {
+			return false, err
+		}
+	}
+
 	recheckInterval, ok := settings["recheckInterval"].(time.Duration)
 	if !ok {
 		recheckInterval = DefaultSuperchainRecheckInterval
@@ -91,10 +143,22 @@ func (v *SuperchainVendor) GenerateConfigs(upstream *common.UpstreamConfig, sett
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
 
-	// If a specific endpoint URL is already provided, use it directly.
-	// This allows users to bypass the provider logic if needed, assuming they've included credentials.
 	if upstream.Endpoint != "" {
-		return []*common.UpstreamConfig{upstream}, nil
+		if strings.HasPrefix(upstream.Endpoint, "superchain://") || strings.HasPrefix(upstream.Endpoint, "evm+superchain://") {
+			spec := strings.TrimPrefix(strings.TrimPrefix(upstream.Endpoint, "evm+"), "superchain://")
+			parsedURL, err := parseSuperchainSpec(spec)
+			if err != nil {
+				return nil, err
+			}
+			if settings == nil {
+				settings = make(common.VendorSettings)
+			}
+			settings["registryUrl"] = parsedURL
+			// Clear the endpoint so the vendor generates upstreams from the registry data.
+			upstream.Endpoint = ""
+		} else {
+			return []*common.UpstreamConfig{upstream}, nil
+		}
 	}
 
 	if upstream.Evm == nil {
@@ -106,10 +170,6 @@ func (v *SuperchainVendor) GenerateConfigs(upstream *common.UpstreamConfig, sett
 	}
 	chainID := upstream.Evm.ChainId
 
-	if settings == nil {
-		settings = make(common.VendorSettings)
-	}
-
 	if apiKey, ok := settings["apiKey"].(string); ok && apiKey == "public" {
 		settings["registryUrl"] = DefaultSuperchainRegistryURL
 	}
@@ -117,6 +177,16 @@ func (v *SuperchainVendor) GenerateConfigs(upstream *common.UpstreamConfig, sett
 	registryURL, ok := settings["registryUrl"].(string)
 	if !ok || registryURL == "" {
 		registryURL = DefaultSuperchainRegistryURL
+	}
+
+	// Handle superchain:// shorthand provided via settings.
+	if strings.HasPrefix(registryURL, "superchain://") {
+		spec := strings.TrimPrefix(registryURL, "superchain://")
+		var err error
+		registryURL, err = parseSuperchainSpec(spec)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	recheckInterval, ok := settings["recheckInterval"].(time.Duration)
