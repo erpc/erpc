@@ -190,11 +190,11 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 				value:            atomic.Int64{},
 				ignoreRollbackOf: 1024,
 				baseSharedVariable: baseSharedVariable{
-					lastUpdated: atomic.Int64{},
+					lastProcessed: atomic.Int64{},
 				},
 			}
 			counter.value.Store(tt.initialValue)
-			counter.lastUpdated.Store(tt.lastUpdated.UnixNano())
+			counter.lastProcessed.Store(tt.lastUpdated.UnixNano())
 
 			getNewValue := func(ctx context.Context) (int64, error) {
 				if tt.expectedError != nil {
@@ -294,11 +294,11 @@ func TestCounterInt64_IsStale(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			counter := &counterInt64{
 				baseSharedVariable: baseSharedVariable{
-					lastUpdated: atomic.Int64{},
+					lastProcessed: atomic.Int64{},
 				},
 				ignoreRollbackOf: 1024,
 			}
-			counter.lastUpdated.Store(tt.lastUpdate.UnixNano())
+			counter.lastProcessed.Store(tt.lastUpdate.UnixNano())
 			assert.Equal(t, tt.expected, counter.IsStale(tt.staleness))
 		})
 	}
