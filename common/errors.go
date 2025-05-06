@@ -2219,7 +2219,9 @@ func ClassifySeverity(err error) Severity {
 	if err == nil {
 		return SeverityInfo
 	}
-	if IsClientError(err) || HasErrorCode(err, ErrCodeEndpointExecutionException, ErrCodeUpstreamMethodIgnored) {
+	if IsClientError(err) ||
+		HasErrorCode(err, ErrCodeEndpointExecutionException) ||
+		HasErrorCode(err, ErrCodeUpstreamMethodIgnored) {
 		return SeverityInfo
 	}
 	if HasErrorCode(err, ErrCodeUpstreamRequestSkipped) {
