@@ -190,13 +190,8 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 
 		// Double-check staleness under lock
 		if !c.IsStale(staleness) {
-			c.registry.logger.Info().Str("key", c.key).Msg("isNotStale xxxx1")
 			return c.value.Load(), nil
 		}
-
-		c.registry.logger.Info().Str("key", c.key).Msg("isStale xxxx1")
-
-		c.registry.logger.Info().Str("key", c.key).Msg("getNewValue xxxx1")
 		newValue, err := getNewValue(ctx)
 		if err != nil {
 			// mark attempt so debounce interval is respected even on failure
@@ -224,13 +219,8 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 		defer c.mu.Unlock()
 
 		if !c.IsStale(staleness) {
-			c.registry.logger.Info().Str("key", c.key).Msg("isNotStale xxxx2")
 			return c.value.Load(), nil
 		}
-
-		c.registry.logger.Info().Str("key", c.key).Msg("isStale xxxx2")
-
-		c.registry.logger.Info().Str("key", c.key).Msg("getNewValue xxxx2")
 		newValue, err := getNewValue(ctx)
 		if err != nil {
 			// mark attempt so debounce interval is respected even on failure
@@ -263,14 +253,10 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 
 	// Check staleness again under lock
 	if !c.IsStale(staleness) {
-		c.registry.logger.Info().Str("key", c.key).Msg("isNotStale xxxx3")
 		return c.value.Load(), nil
 	}
 
-	c.registry.logger.Info().Str("key", c.key).Msg("isStale xxxx3")
-
 	// Get new value
-	c.registry.logger.Info().Str("key", c.key).Msg("getNewValue xxxx3")
 	newValue, err := getNewValue(ctx)
 	if err != nil {
 		// mark attempt so debounce interval is respected even on failure
