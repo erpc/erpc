@@ -472,6 +472,45 @@ export default createConfig({
 </Tabs.Tab>
 </Tabs>
 
+#### `tenderly`
+
+Built for [Tenderly](https://tenderly.co) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - endpoint: tenderly://YOUR_TENDERLY_API_KEY
+        # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          endpoint: "tenderly://YOUR_TENDERLY_API_KEY",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+For production traffic consult with Tenderly team about the chains you are going to use and amount of traffic you expect to handle.
 
 ## Advanced config
 
