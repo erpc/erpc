@@ -4553,7 +4553,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 						Mode: common.HealthCheckModeSimple,
 					},
 					healthCheckAuthRegistry: authReg,
-					draining:                &atomic.Bool{},
+					draining: &atomic.Bool{},
 				}
 			},
 			projectId:    "test",
@@ -4590,7 +4590,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 						Mode: common.HealthCheckModeSimple,
 					},
 					healthCheckAuthRegistry: authReg,
-					draining:                &atomic.Bool{},
+					draining: &atomic.Bool{},
 				}
 			},
 			projectId:    "test",
