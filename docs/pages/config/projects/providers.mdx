@@ -484,7 +484,7 @@ projects:
   - id: main
     # ...
     upstreams:
-      - endpoint: superchain://public
+      - endpoint: superchain://github.com/ethereum-optimism/superchain-registry
         # ...
 ```
 </Tabs.Tab>
@@ -499,8 +499,13 @@ export default createConfig({
       // ...
       upstreams: [
         {
-          endpoint: "superchain://public",
+          endpoint: "superchain://github.com/ethereum-optimism/superchain-registry",
           // ...
+        },
+      ],
+    },
+  ],
+});
 ```
 </Tabs.Tab>
 </Tabs>
@@ -650,6 +655,6 @@ providers:
   - vendor: superchain
     settings:
       apiKey: public
-      registryUrl: https://raw.githubusercontent.com/ethereum-optimism/superchain-registry/main/chainList.json
+      registryUrl: https://github.com/ethereum-optimism/superchain-registry
       recheckInterval: 24h # (optional) How often to recheck the registry for newly added chains (default: 24h)
 ```
