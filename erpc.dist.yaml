@@ -94,9 +94,9 @@ projects:
             backoffFactor: 0.3
             jitter: 500ms
       - id: tenderly-chain-example-1
-        endpoint: tenderly://XXXX_YOUR_TENDERLY_API_KEY_HERE_XXXX
+        endpoint: https://mainnet.tenderly.co/xxxxxxxxxxxxxxxxxxxxxx
         rateLimitBudget: global
-         evm:
+        evm:
           chainId: 1
         failsafe:
           timeout:
