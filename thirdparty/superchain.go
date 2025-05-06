@@ -26,39 +26,74 @@ const DefaultSuperchainRecheckInterval = 24 * time.Hour
 //	  -> https://raw.githubusercontent.com/{org}/{repo}/main/chainList.json
 //	superchain://github.com/{org}/{repo}/{branch}/{file}.json
 //	  -> https://raw.githubusercontent.com/{org}/{repo}/{branch}/{file}.json
+//	github.com/{org}/{repo} (shorthand)
+//	  -> https://raw.githubusercontent.com/{org}/{repo}/main/chainList.json
+//	https://github.com/{org}/{repo} (full repo URL)
+//	  -> https://raw.githubusercontent.com/{org}/{repo}/main/chainList.json
 //
 // Any non‑GitHub spec is treated as a literal URL; if it lacks a scheme we prepend
-// `https://`.
+// `https://`. If it's already a raw.githubusercontent.com URL, it's returned as is.
 func parseSuperchainSpec(spec string) (string, error) {
-	// GitHub shorthand → raw.githubusercontent.com
-	if strings.HasPrefix(spec, "github.com/") {
-		parts := strings.Split(strings.TrimPrefix(spec, "github.com/"), "/")
+	// Handle GitHub URLs (shorthand, full repo URLs, but not yet raw content URLs)
+	if strings.HasPrefix(spec, "github.com/") || strings.HasPrefix(spec, "https://github.com/") || strings.HasPrefix(spec, "http://github.com/") {
+		// Avoid re-processing if it's already a raw content URL that somehow reached here
+		if strings.Contains(spec, "raw.githubusercontent.com") {
+			if strings.HasPrefix(spec, "http://") || strings.HasPrefix(spec, "https://") {
+				return spec, nil
+			}
+			// Should ideally not happen: a raw URL without a scheme. Prepend https.
+			return "https://" + spec, nil
+		}
+
+		var pathPart string
+		if strings.HasPrefix(spec, "https://github.com/") {
+			pathPart = strings.TrimPrefix(spec, "https://github.com/")
+		} else if strings.HasPrefix(spec, "http://github.com/") {
+			pathPart = strings.TrimPrefix(spec, "http://github.com/")
+		} else { // must be "github.com/"
+			pathPart = strings.TrimPrefix(spec, "github.com/")
+		}
+
+		parts := strings.Split(strings.Trim(pathPart, "/"), "/")
 		if len(parts) < 2 {
-			return "", fmt.Errorf("invalid GitHub superchain spec: %s", spec)
+			return "", fmt.Errorf("invalid GitHub superchain spec: '%s' (org/repo not found after prefix)", spec)
 		}
 
 		org, repo := parts[0], parts[1]
+		branch := "main"
+		jsonFile := "chainList.json"
 
-		// Only org/repo given → assume `main/chainList.json`
-		if len(parts) == 2 {
-			return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/main/chainList.json", org, repo), nil
+		if len(parts) > 2 { // Potential branch or full path
+			// Check if parts[2] looks like a common branch name or if it's part of a longer path ending in .json
+			// This logic assumes if more than org/repo is given, it might include branch and/or filename.
+			// Example: org/repo/my-branch
+			// Example: org/repo/my-branch/customList.json
+			// Example: org/repo/main/some/dir/customList.json (less common for this use case)
+			if len(parts) == 3 && !strings.HasSuffix(parts[2], ".json") { // org/repo/branch
+				branch = parts[2]
+			} else if len(parts) >= 3 { // org/repo/branch/file.json or org/repo/file.json (implicit main)
+				// Determine if parts[2] is a branch or part of the filename
+				// If parts[2] is not a .json file, assume it's a branch
+				if !strings.HasSuffix(parts[2], ".json") {
+					branch = parts[2]
+					if len(parts) > 3 {
+						jsonFile = strings.Join(parts[3:], "/")
+					}
+				} else {
+					// This means spec was like github.com/org/repo/somefile.json, assume main branch
+					jsonFile = strings.Join(parts[2:], "/")
+				}
+			}
 		}
-
-		// org/repo/...  → branch and optional path
-		branch := parts[2]
-		path := strings.Join(parts[3:], "/")
-		if path == "" {
-			path = "chainList.json"
-		}
-		return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", org, repo, branch, path), nil
+		return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", org, repo, branch, jsonFile), nil
 	}
 
-	// Already a full URL?
+	// Already a full URL (e.g. raw.githubusercontent.com or other custom registry)?
 	if strings.HasPrefix(spec, "http://") || strings.HasPrefix(spec, "https://") {
 		return spec, nil
 	}
 
-	// Fallback: prepend https scheme.
+	// Fallback: treat as a domain/path and prepend https scheme.
 	return "https://" + spec, nil
 }
 
@@ -111,12 +146,9 @@ func (v *SuperchainVendor) SupportsNetwork(ctx context.Context, logger *zerolog.
 		registryURL = DefaultSuperchainRegistryURL
 	}
 
-	if strings.HasPrefix(registryURL, "superchain://") {
-		spec := strings.TrimPrefix(registryURL, "superchain://")
-		registryURL, err = parseSuperchainSpec(spec)
-		if err != nil {
-			return false, err
-		}
+	finalRegistryURL, err := parseSuperchainSpec(registryURL)
+	if err != nil {
+		return false, fmt.Errorf("failed to parse superchain registry URL from source '%s': %w", registryURL, err)
 	}
 
 	recheckInterval, ok := settings["recheckInterval"].(time.Duration)
@@ -124,12 +156,12 @@ func (v *SuperchainVendor) SupportsNetwork(ctx context.Context, logger *zerolog.
 		recheckInterval = DefaultSuperchainRecheckInterval
 	}
 
-	err = v.ensureRemoteData(ctx, recheckInterval, registryURL)
+	err = v.ensureRemoteData(ctx, recheckInterval, finalRegistryURL)
 	if err != nil {
-		return false, fmt.Errorf("unable to load remote data: %w", err)
+		return false, fmt.Errorf("unable to load remote data using URL '%s': %w", finalRegistryURL, err)
 	}
 
-	networks, ok := v.remoteData[registryURL]
+	networks, ok := v.remoteData[finalRegistryURL]
 	if !ok || networks == nil {
 		return false, nil
 	}
@@ -175,14 +207,9 @@ func (v *SuperchainVendor) GenerateConfigs(upstream *common.UpstreamConfig, sett
 		registryURL = DefaultSuperchainRegistryURL
 	}
 
-	// Handle superchain:// shorthand provided via settings.
-	if strings.HasPrefix(registryURL, "superchain://") {
-		spec := strings.TrimPrefix(registryURL, "superchain://")
-		var err error
-		registryURL, err = parseSuperchainSpec(spec)
-		if err != nil {
-			return nil, err
-		}
+	finalRegistryURL, err := parseSuperchainSpec(registryURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse superchain registry URL from source '%s': %w", registryURL, err)
 	}
 
 	recheckInterval, ok := settings["recheckInterval"].(time.Duration)
@@ -190,18 +217,18 @@ func (v *SuperchainVendor) GenerateConfigs(upstream *common.UpstreamConfig, sett
 		recheckInterval = DefaultSuperchainRecheckInterval
 	}
 
-	if err := v.ensureRemoteData(context.Background(), recheckInterval, registryURL); err != nil {
-		return nil, fmt.Errorf("unable to load remote data: %w", err)
+	if err := v.ensureRemoteData(context.Background(), recheckInterval, finalRegistryURL); err != nil {
+		return nil, fmt.Errorf("unable to load remote data using URL '%s': %w", finalRegistryURL, err)
 	}
 
-	networks, ok := v.remoteData[registryURL]
+	networks, ok := v.remoteData[finalRegistryURL]
 	if !ok || networks == nil {
-		return nil, fmt.Errorf("network data not available")
+		return nil, fmt.Errorf("network data not available from registry '%s'", finalRegistryURL)
 	}
 
 	network, ok := networks[chainID]
 	if !ok || network == nil || len(network.RPC) == 0 {
-		return nil, fmt.Errorf("chain ID %d not found in remote data or has no RPC endpoints", chainID)
+		return nil, fmt.Errorf("chain ID %d not found in remote data from registry '%s' or has no RPC endpoints", chainID, finalRegistryURL)
 	}
 
 	// Generate a config for each RPC endpoint
@@ -223,7 +250,7 @@ func (v *SuperchainVendor) GenerateConfigs(upstream *common.UpstreamConfig, sett
 	}
 
 	log.Debug().Int64("chainId", chainID).Interface("upstreams", upsList).Interface("settings", map[string]interface{}{
-		"registryUrl":     registryURL,
+		"registryUrlUsed": finalRegistryURL,
 		"recheckInterval": recheckInterval,
 	}).Msg("generated upstreams from superchain provider")
 
