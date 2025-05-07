@@ -93,9 +93,9 @@ projects:
             backoffMaxDelay: 10s
             backoffFactor: 0.3
             jitter: 500ms
-      - id: tenderly-chain-example-1
-        endpoint: https://mainnet.tenderly.co/xxxxxxxxxxxxxxxxxxxxxx
-        rateLimitBudget: global
+      - id: tenderly-example-1
+        endpoint: tenderly://YOUR_TENDERLY_API_KEY
+        rateLimitBudget: global-tenderly
         evm:
           chainId: 1
         failsafe:
@@ -177,6 +177,11 @@ projects:
             jitter: 500ms
 rateLimiters:
   budgets:
+    - id: global-tenderly
+      rules:
+        - method: '*'
+          maxCount: 10000
+          period: 1s
     - id: default-budget
       rules:
         - method: '*'
