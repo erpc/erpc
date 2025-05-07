@@ -968,6 +968,14 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 		return VendorSettings{
 			"apiKey": endpoint.Host,
 		}, nil
+	case "superchain", "evm+superchain":
+		spec := endpoint.Host
+		if endpoint.Path != "" && endpoint.Path != "/" {
+			spec += endpoint.Path
+		}
+		return VendorSettings{
+			"registryUrl": spec,
+		}, nil
 	case "repository", "evm+repository":
 		return VendorSettings{
 			"repositoryUrl": "https://" + endpoint.Host + "/" + strings.TrimPrefix(endpoint.Path, "/") + "?" + endpoint.RawQuery,

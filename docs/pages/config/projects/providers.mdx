@@ -19,6 +19,7 @@ Providers make it easy to add well-known third-parties RPC endpoints quickly. He
 - [`etherspot`](#etherspot) Accepts etherspot.io rpc endpoint for account-abstraction (ERC-4337) support.
 - [`dwellir`](#dwellir) Accepts dwellir.com api key and automatically adds all their EVM chains.
 - [`conduit`](#conduit) Accepts conduit.xyz api key and automatically adds all their EVM chains.
+- [`superchain`](#superchain) Accepts superchain registry json file (e.g [github.com/ethereum-optimism/superchain-registry/main/chainList.json](https://github.com/ethereum-optimism/superchain-registry/blob/main/chainList.json)) and automatically adds all chains from it.
 
 <Callout type='info'>
   eRPC supports **any EVM-compatible** JSON-RPC endpoint when using [`evm` type](/config/projects/upstreams). 
@@ -471,6 +472,45 @@ export default createConfig({
 </Tabs.Tab>
 </Tabs>
 
+#### `superchain`
+
+This provider accepts superchain registry json file (e.g [github.com/ethereum-optimism/superchain-registry/main/chainList.json](https://github.com/ethereum-optimism/superchain-registry/blob/main/chainList.json)) and automatically adds all chains from it.
+
+**Note**: If you are using a github URL, you can simply use the shorthand of `superchain://github.com/org/repo/<branch>/chainList.json`. if your url includes `blob`, t will be automatically stripped.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - endpoint: superchain://github.com/ethereum-optimism/superchain-registry/main/chainList.json
+        # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          endpoint: "superchain://github.com/ethereum-optimism/superchain-registry/main/chainList.json",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 ## Advanced config
 
@@ -614,4 +654,8 @@ providers:
       apiKey: xxxxx
       networksUrl: https://api.conduit.xyz/public/network/all # (optional) Endpoint to fetch all supported networks
       recheckInterval: 24h # (optional) How often to recheck the API for newly added networks (default: 24h)
+  - vendor: superchain
+    settings:
+      registryUrl: "github.com/ethereum-optimism/superchain-registry/main/chainList.json"
+      recheckInterval: 24h # (optional) How often to recheck the registry for newly added chains (default: 24h)
 ```
