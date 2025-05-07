@@ -184,14 +184,6 @@ func getConfig(
 	endpoints := cmd.StringSlice("endpoint")
 	// configOverrides := cmd.StringMap("set")
 
-	if len(endpoints) > 0 {
-		for _, ep := range endpoints {
-			if _, err := url.ParseRequestURI(ep); err != nil {
-				return nil, fmt.Errorf("invalid endpoint URL format: %s (%w)", ep, err)
-			}
-		}
-	}
-
 	// Check for the config flag, if present, use that file
 	if configFile := cmd.String("config"); len(configFile) > 1 {
 		configPath = configFile
@@ -223,6 +215,11 @@ func getConfig(
 	// If endpoints are provided via command line, use them
 	if len(endpoints) > 0 {
 		logger.Info().Msgf("using %d endpoints provided via command line", len(endpoints))
+		for _, ep := range endpoints {
+			if _, err := url.ParseRequestURI(ep); err != nil {
+				return nil, fmt.Errorf("invalid endpoint URL format: %s (%w)", ep, err)
+			}
+		}
 		opts.Endpoints = endpoints
 	}
 
@@ -241,10 +238,6 @@ func getConfig(
 			return nil, fmt.Errorf("failed to set defaults for config: %v", err)
 		}
 	}
-
-	// for keyPath, value := range configOverrides {
-	// 	// TODO walk the map based on KeyPath and set the value
-	// }
 
 	if lvl := os.Getenv("LOG_LEVEL"); lvl != "" {
 		// Allow overriding the log level from the environment variable
