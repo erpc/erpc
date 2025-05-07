@@ -3,6 +3,7 @@ package consensus
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -23,21 +24,39 @@ var _ policy.ExecutionInternal[*common.NormalizedResponse] = &mockExecution{}
 func TestConsensusExecutor(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name                    string
-		requiredParticipants    int
-		agreementThreshold      int
-		disputeBehavior         *common.ConsensusDisputeBehavior
-		lowParticipantsBehavior *common.ConsensusLowParticipantsBehavior
-		failureBehavior         *common.ConsensusFailureBehavior
-		responses               []*common.NormalizedResponse
-		expectedError           *string
-		expectedResult          []*common.NormalizedResponse
+		name                     string
+		requiredParticipants     int
+		agreementThreshold       int
+		disputeBehavior          *common.ConsensusDisputeBehavior
+		lowParticipantsBehavior  *common.ConsensusLowParticipantsBehavior
+		failureBehavior          *common.ConsensusFailureBehavior
+		disputeThreshold         int
+		responses                []*common.NormalizedResponse
+		expectedError            *string
+		expectedResult           []*common.NormalizedResponse
+		expectedPunishedUpsteams []string
 	}{
 		{
-			name:                 "successful consensus",
+			name:                 "successful consensus, misbehaving upstreams are punished if there is a clear majority",
 			requiredParticipants: 3,
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorReturnError),
+			disputeThreshold:     1,
+			responses: []*common.NormalizedResponse{
+				createResponse("result1", "upstream1", 1),
+				createResponse("result1", "upstream2", 1),
+				createResponse("result1", "upstream3", 1),
+			},
+			expectedError:            nil,
+			expectedResult:           []*common.NormalizedResponse{createResponse("result1", "upstream1", 1)},
+			expectedPunishedUpsteams: []string{},
+		},
+		{
+			name:                 "successful consensus, misbehaving upstreams are punished if there is a clear majority",
+			requiredParticipants: 3,
+			agreementThreshold:   2,
+			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorReturnError),
+			disputeThreshold:     1,
 			responses: []*common.NormalizedResponse{
 				createResponse("result1", "upstream1", 1),
 				createResponse("result1", "upstream2", 1),
@@ -45,12 +64,36 @@ func TestConsensusExecutor(t *testing.T) {
 			},
 			expectedError:  nil,
 			expectedResult: []*common.NormalizedResponse{createResponse("result1", "upstream1", 1)},
+			expectedPunishedUpsteams: []string{
+				"upstream3",
+			},
+		},
+		{
+			name:                 "dispute with return error, misbehaving upstreams are punished if there is a clear majority",
+			requiredParticipants: 5,
+			agreementThreshold:   4,
+			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorReturnError),
+			disputeThreshold:     1,
+			responses: []*common.NormalizedResponse{
+				createResponse("result1", "upstream1", 1),
+				createResponse("result1", "upstream2", 1),
+				createResponse("result1", "upstream3", 1),
+				createResponse("result4", "upstream4", 1),
+				createResponse("result5", "upstream5", 1),
+			},
+			expectedError:  pointer("ErrConsensusDispute: not enough agreement among responses"),
+			expectedResult: nil,
+			expectedPunishedUpsteams: []string{
+				"upstream4",
+				"upstream5",
+			},
 		},
 		{
 			name:                 "dispute with return error",
 			requiredParticipants: 3,
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorReturnError),
+			disputeThreshold:     1,
 			responses: []*common.NormalizedResponse{
 				createResponse("result1", "upstream1", 1),
 				createResponse("result2", "upstream2", 1),
@@ -64,6 +107,7 @@ func TestConsensusExecutor(t *testing.T) {
 			requiredParticipants: 3,
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorAcceptAnyValidResult),
+			disputeThreshold:     1,
 			responses: []*common.NormalizedResponse{
 				createResponse("result1", "upstream1", 1),
 				createResponse("result2", "upstream2", 1),
@@ -81,6 +125,7 @@ func TestConsensusExecutor(t *testing.T) {
 			requiredParticipants: 3,
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorPreferBlockHeadLeader),
+			disputeThreshold:     1,
 			responses: []*common.NormalizedResponse{
 				createResponse("result1", "upstream1", 1),
 				createResponse("result2", "upstream2", 1),
@@ -94,6 +139,7 @@ func TestConsensusExecutor(t *testing.T) {
 			requiredParticipants: 3,
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorOnlyBlockHeadLeader),
+			disputeThreshold:     1,
 			responses: []*common.NormalizedResponse{
 				createResponse("result1", "upstream1", 1),
 				createResponse("result2", "upstream2", 1),
@@ -107,6 +153,7 @@ func TestConsensusExecutor(t *testing.T) {
 			requiredParticipants: 3,
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorOnlyBlockHeadLeader),
+			disputeThreshold:     1,
 			responses: []*common.NormalizedResponse{
 				createResponse("result1", "upstream1", 1),
 				createResponse("result2", "upstream2", 1),
@@ -120,6 +167,7 @@ func TestConsensusExecutor(t *testing.T) {
 			requiredParticipants:    3,
 			agreementThreshold:      2,
 			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorReturnError),
+			disputeThreshold:        1,
 			responses: []*common.NormalizedResponse{
 				createResponse("result1", "upstream1", 1),
 				createResponse("result1", "upstream1", 1),
@@ -133,6 +181,7 @@ func TestConsensusExecutor(t *testing.T) {
 			requiredParticipants:    3,
 			agreementThreshold:      2,
 			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorAcceptAnyValidResult),
+			disputeThreshold:        1,
 			responses: []*common.NormalizedResponse{
 				createResponse("result1", "upstream1", 1),
 				createResponse("result1", "upstream1", 1),
@@ -146,6 +195,7 @@ func TestConsensusExecutor(t *testing.T) {
 			requiredParticipants:    3,
 			agreementThreshold:      2,
 			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader),
+			disputeThreshold:        1,
 			responses: []*common.NormalizedResponse{
 				createResponse("result1", "upstream1", 1),
 				createResponse("result1", "upstream1", 1),
@@ -159,6 +209,7 @@ func TestConsensusExecutor(t *testing.T) {
 			requiredParticipants:    3,
 			agreementThreshold:      2,
 			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader),
+			disputeThreshold:        1,
 			responses: []*common.NormalizedResponse{
 				createResponse("result1", "upstream1", 2),
 				createResponse("result1", "upstream1", 2),
@@ -188,57 +239,104 @@ func TestConsensusExecutor(t *testing.T) {
 				lowParticipantsBehavior = *tt.lowParticipantsBehavior
 			}
 
+			log := zerolog.New(zerolog.NewTestWriter(t))
+
 			// Create consensus policy
 			policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
 				WithRequiredParticipants(tt.requiredParticipants).
 				WithAgreementThreshold(tt.agreementThreshold).
 				WithDisputeBehavior(disputeBehavior).
 				WithLowParticipantsBehavior(lowParticipantsBehavior).
+				WithLogger(&log).
+				WithPunishMisbehavior(&common.PunishMisbehaviorConfig{
+					DisputeThreshold: tt.disputeThreshold,
+					DisputeWindow:    common.Duration(10 * time.Second),
+					SitOutPenalty:    common.Duration(500 * time.Millisecond),
+				}).
 				Build()
-
-			// Create logger
-			logger := zerolog.New(zerolog.NewTestWriter(t))
 
 			// Create executor
 			executor := &executor[*common.NormalizedResponse]{
 				consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
-				logger:          &logger,
 			}
 
-			// Execute consensus, this mimicks the actual execution of the policy as defined in networks.go
-			var i atomic.Int32
-			result := executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
-				currentIndex := i.Add(1) - 1
-				if currentIndex >= int32(len(tt.responses)) {
-					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
-						Error: errors.New("no more responses"),
+			times := 1
+			// if the expected punished upstreams are set, we need to repeat until we exceed the dispute threshold
+			if tt.expectedPunishedUpsteams != nil {
+				times = tt.disputeThreshold + 1
+			}
+
+			// Track punished upstreams
+			punishedUpstreams := make(map[string]*common.FakeUpstream)
+
+			for range times {
+				// Execute consensus, this mimicks the actual execution of the policy as defined in networks.go
+				var i atomic.Int32
+				result := executor.Apply(func(exec failsafe.Execution[*common.NormalizedResponse]) *failsafeCommon.PolicyResult[*common.NormalizedResponse] {
+					currentIndex := i.Add(1) - 1
+					if currentIndex >= int32(len(tt.responses)) {
+						return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+							Error: errors.New("no more responses"),
+						}
 					}
-				}
 
-				return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
-					Result: tt.responses[currentIndex],
-				}
-			})(mockExec)
+					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
+						Result: tt.responses[currentIndex],
+					}
+				})(mockExec)
 
-			// Verify results
-			if tt.expectedError != nil {
-				assert.EqualError(t, result.Error, *tt.expectedError)
-			} else {
-				require.NoError(t, result.Error)
-				actualJrr, err := result.Result.JsonRpcResponse()
-				require.NoError(t, err)
-				require.NotNil(t, actualJrr)
-
-				var execptedJrrString []string
-				for _, expectedResult := range tt.expectedResult {
-					jrr, err := expectedResult.JsonRpcResponse()
+				// Verify results
+				if tt.expectedError != nil {
+					assert.EqualError(t, result.Error, *tt.expectedError)
+				} else {
+					require.NoError(t, result.Error)
+					actualJrr, err := result.Result.JsonRpcResponse()
 					require.NoError(t, err)
-					require.NotNil(t, jrr)
+					require.NotNil(t, actualJrr)
 
-					execptedJrrString = append(execptedJrrString, string(jrr.Result))
+					var execptedJrrString []string
+					for _, expectedResult := range tt.expectedResult {
+						jrr, err := expectedResult.JsonRpcResponse()
+						require.NoError(t, err)
+						require.NotNil(t, jrr)
+
+						execptedJrrString = append(execptedJrrString, string(jrr.Result))
+					}
+
+					assert.Contains(t, execptedJrrString, string(actualJrr.Result))
 				}
+			}
 
-				assert.Contains(t, execptedJrrString, string(actualJrr.Result))
+			// Check upstream punishment state
+			for _, response := range tt.responses {
+				fake, ok := response.Upstream().(*common.FakeUpstream)
+				require.True(t, ok)
+
+				cordonedReason, cordoned := fake.CordonedReason()
+
+				if slices.Contains(tt.expectedPunishedUpsteams, fake.Config().Id) {
+					punishedUpstreams[fake.Config().Id] = fake
+					assert.True(t, cordoned, "expected upstream %s to be cordoned", fake.Config().Id)
+					assert.Equal(t, "misbehaving in consensus", cordonedReason, "expected upstream %s to be cordoned for misbehaving in consensus", fake.Config().Id)
+				} else {
+					assert.False(t, cordoned, "expected upstream %s to not be cordoned", fake.Config().Id)
+					assert.Equal(t, "", cordonedReason, "expected upstream %s to not be cordoned", fake.Config().Id)
+				}
+			}
+
+			// Verify that all expected punished upstreams were actually punished
+			require.Equal(t, len(tt.expectedPunishedUpsteams), len(punishedUpstreams), "expected %d punished upstreams, got %d", len(tt.expectedPunishedUpsteams), len(punishedUpstreams))
+			require.Equal(t, (len(tt.responses) - len(tt.expectedPunishedUpsteams)), len(tt.responses)-len(punishedUpstreams), "expected %d unpunished upstreams, got %d", len(tt.expectedPunishedUpsteams), len(punishedUpstreams))
+
+			// After the sit out penalty, the upstream should be uncordoned and routable again.
+			if len(punishedUpstreams) > 0 {
+				assert.EventuallyWithT(t, func(c *assert.CollectT) {
+					for _, upstream := range punishedUpstreams {
+						cordonedReason, cordoned := upstream.CordonedReason()
+						assert.False(c, cordoned, "expected upstream %s to be uncordoned after sit out penalty", upstream.Config().Id)
+						assert.Equal(c, "", cordonedReason, "expected upstream %s to be uncordoned with no reason after sit out penalty", upstream.Config().Id)
+					}
+				}, time.Second*2, time.Millisecond*100)
 			}
 		})
 	}

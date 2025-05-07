@@ -14,6 +14,8 @@ type FakeUpstream struct {
 	config         *UpstreamConfig
 	network        Network
 	evmStatePoller EvmStatePoller
+	cordoned       bool
+	cordonedReason string
 }
 
 func NewFakeUpstream(id string, opts ...func(*FakeUpstream)) Upstream {
@@ -83,6 +85,21 @@ func (u *FakeUpstream) EvmStatePoller() EvmStatePoller {
 
 func (u *FakeUpstream) Forward(ctx context.Context, nq *NormalizedRequest, skipSyncingCheck bool) (*NormalizedResponse, error) {
 	return nil, nil
+}
+
+func (u *FakeUpstream) Cordon(method string, reason string) {
+	u.cordoned = true
+	u.cordonedReason = reason
+
+}
+
+func (u *FakeUpstream) Uncordon(method string) {
+	u.cordoned = false
+	u.cordonedReason = ""
+}
+
+func (u *FakeUpstream) CordonedReason() (string, bool) {
+	return u.cordonedReason, u.cordoned
 }
 
 type FakeEvmStatePoller struct {

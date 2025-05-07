@@ -10,14 +10,13 @@ import (
 	"github.com/failsafe-go/failsafe-go"
 	failsafeCommon "github.com/failsafe-go/failsafe-go/common"
 	"github.com/failsafe-go/failsafe-go/policy"
-	"github.com/rs/zerolog"
+	"github.com/failsafe-go/failsafe-go/ratelimiter"
 )
 
 // executor is a policy.Executor that handles failures according to a ConsensusPolicy.
 type executor[R any] struct {
 	*policy.BaseExecutor[R]
 	*consensusPolicy[R]
-	logger *zerolog.Logger
 }
 
 var _ policy.Executor[any] = &executor[any]{}
@@ -27,12 +26,6 @@ type execResult[R any] struct {
 	err      error
 	index    int
 	upstream common.Upstream
-}
-
-type upstreamStatus struct {
-	disputeCount int
-	punished     bool
-	sitOutUntil  time.Time
 }
 
 // resultToHash converts a result to a string representation for comparison
@@ -68,10 +61,6 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 		// Track responses for consensus checking
 		responses := make([]*execResult[R], 0, e.requiredParticipants)
 		responseMu := sync.Mutex{}
-
-		// Track misbehaving upstreams
-		misbehavingCount := make(map[int]int)
-		misbehavingMu := sync.Mutex{}
 
 		// Track used upstreams to ensure we don't use the same one twice
 		usedUpstreams := make(map[string]struct{})
@@ -182,6 +171,9 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 					})
 				}
 
+				// Track misbehaving upstreams
+				e.trackMisbehavingUpstreams(responses, resultCounts, mostCommonResultHash, parentExecution)
+
 				// Convert mostCommonResult back to type R
 				var finalResult R
 				for _, r := range responses {
@@ -241,7 +233,7 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 				}
 
 				// Track misbehaving upstreams
-				e.trackMisbehavingUpstreams(responses, mostCommonResultHash, misbehavingCount, &misbehavingMu, exec)
+				e.trackMisbehavingUpstreams(responses, resultCounts, mostCommonResultHash, parentExecution)
 
 				// Handle dispute according to behavior
 				switch e.disputeBehavior {
@@ -280,40 +272,89 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 	}
 }
 
-func (e *executor[R]) trackMisbehavingUpstreams(responses []*execResult[R], mostCommonResultHash string, misbehavingCount map[int]int, misbehavingMu *sync.Mutex, exec failsafe.Execution[R]) {
-	misbehavingMu.Lock()
-	defer misbehavingMu.Unlock()
+func (e *executor[R]) createRateLimiter(upstreamId string) ratelimiter.RateLimiter[any] {
+	// Try to get existing limiter
+	if limiter, ok := e.misbehavingUpstreamsLimiter.Load(upstreamId); ok {
+		return limiter.(ratelimiter.RateLimiter[any])
+	}
 
-	for _, r := range responses {
-		if r.err == nil {
-			resultHash := e.resultToHash(r.result, exec)
-			if resultHash != mostCommonResultHash {
-				misbehavingCount[r.index]++
-				if e.punishMisbehavior != nil && misbehavingCount[r.index] >= e.punishMisbehavior.DisputeThreshold {
-					upstreamStatus := &upstreamStatus{
-						disputeCount: misbehavingCount[r.index],
-						punished:     true,
-					}
+	e.logger.Info().
+		Str("upstream", upstreamId).
+		Int("dispute_threshold", e.punishMisbehavior.DisputeThreshold).
+		Str("dispute_window", e.punishMisbehavior.DisputeWindow.String()).
+		Msg("creating new dispute limiter")
 
-					if e.punishMisbehavior.SitOutPenalty != "" {
-						duration, err := time.ParseDuration(e.punishMisbehavior.SitOutPenalty)
-						if err == nil {
-							upstreamStatus.sitOutUntil = time.Now().Add(duration)
-						}
-					}
+	limiter := ratelimiter.
+		BurstyBuilder[any](uint(e.punishMisbehavior.DisputeThreshold), e.punishMisbehavior.DisputeWindow.Duration()).
+		Build()
 
-					e.logger.Debug().
-						Int("upstream", r.index).
-						Int("dispute_count", upstreamStatus.disputeCount).
-						Bool("punished", upstreamStatus.punished).
-						Time("sit_out_until", upstreamStatus.sitOutUntil).
-						Msg("upstream marked as punished")
+	// Store the limiter
+	e.misbehavingUpstreamsLimiter.Store(upstreamId, limiter)
+	return limiter
+}
 
-					// TODO: punished upstreams should be persisted to state.
-				}
+func (e *executor[R]) trackMisbehavingUpstreams(responses []*execResult[R], resultCounts map[string]int, mostCommonResultHash string, execution policy.ExecutionInternal[R]) {
+	// Count total valid responses
+	totalValidResponses := 0
+	for _, count := range resultCounts {
+		totalValidResponses += count
+	}
+
+	// Only proceed with punishment if we have a clear majority (>50%)
+	mostCommonCount := resultCounts[mostCommonResultHash]
+	if mostCommonCount <= totalValidResponses/2 {
+		return
+	}
+
+	for _, response := range responses {
+		if response.err != nil {
+			continue
+		}
+
+		upstream := response.upstream
+		if upstream == nil {
+			continue
+		}
+
+		resultHash := e.resultToHash(response.result, execution)
+		if resultHash == "" {
+			continue
+		}
+
+		// If this result doesn't match the most common result, punish the upstream
+		if resultHash != mostCommonResultHash {
+			limiter := e.createRateLimiter(upstream.Config().Id)
+			if !limiter.TryAcquirePermit() {
+				e.handleMisbehavingUpstream(upstream, upstream.Config().Id)
 			}
 		}
 	}
+}
+
+func (e *executor[R]) handleMisbehavingUpstream(upstream common.Upstream, upstreamId string) {
+	// First check if we're the first to handle this upstream
+	if _, loaded := e.misbehavingUpstreamsSitoutTimer.LoadOrStore(upstreamId, nil); loaded {
+		e.logger.Debug().
+			Str("upstream", upstreamId).
+			Msg("upstream already in sitout, skipping")
+		return
+	}
+
+	e.logger.Warn().
+		Str("upstream", upstreamId).
+		Msg("misbehaviour limit exhausted, punishing upstream")
+
+	// We're the first to handle this upstream, cordon it
+	upstream.Cordon("*", "misbehaving in consensus")
+
+	// Now create and store the timer
+	timer := time.AfterFunc(e.punishMisbehavior.SitOutPenalty.Duration(), func() {
+		upstream.Uncordon("*")
+		e.misbehavingUpstreamsSitoutTimer.Delete(upstreamId)
+	})
+
+	// Store the actual timer
+	e.misbehavingUpstreamsSitoutTimer.Store(upstreamId, timer)
 }
 
 func (e *executor[R]) handleReturnError(resultChan chan<- *failsafeCommon.PolicyResult[R], exec failsafe.Execution[R], errFn func() error) {

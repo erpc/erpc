@@ -691,8 +691,9 @@ func (c *ConsensusPolicyConfig) Copy() *ConsensusPolicyConfig {
 }
 
 type PunishMisbehaviorConfig struct {
-	DisputeThreshold int    `yaml:"disputeThreshold" json:"disputeThreshold"`
-	SitOutPenalty    string `yaml:"sitOutPenalty,omitempty" json:"sitOutPenalty"`
+	DisputeThreshold int      `yaml:"disputeThreshold" json:"disputeThreshold"`
+	DisputeWindow    Duration `yaml:"disputeWindow,omitempty" json:"disputeWindow" tstype:"Duration"`
+	SitOutPenalty    Duration `yaml:"sitOutPenalty,omitempty" json:"sitOutPenalty" tstype:"Duration"`
 }
 
 func (c *PunishMisbehaviorConfig) Copy() *PunishMisbehaviorConfig {

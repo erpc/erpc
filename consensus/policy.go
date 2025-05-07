@@ -1,7 +1,7 @@
 package consensus
 
 import (
-	"os"
+	"sync"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -20,6 +20,7 @@ type ConsensusPolicy[R any] interface {
 
 // R is the execution result type. This type is not concurrency safe.
 type ConsensusPolicyBuilder[R any] interface {
+	WithLogger(logger *zerolog.Logger) ConsensusPolicyBuilder[R]
 	WithRequiredParticipants(requiredParticipants int) ConsensusPolicyBuilder[R]
 	WithAgreementThreshold(agreementThreshold int) ConsensusPolicyBuilder[R]
 	WithDisputeBehavior(disputeBehavior common.ConsensusDisputeBehavior) ConsensusPolicyBuilder[R]
@@ -42,6 +43,7 @@ type config[R any] struct {
 	lowParticipantsBehavior common.ConsensusLowParticipantsBehavior
 	punishMisbehavior       *common.PunishMisbehaviorConfig
 	timeout                 time.Duration
+	logger                  *zerolog.Logger
 
 	onAgreement       func(event failsafe.ExecutionEvent[R])
 	onDispute         func(event failsafe.ExecutionEvent[R])
@@ -58,7 +60,9 @@ func NewConsensusPolicyBuilder[R any]() ConsensusPolicyBuilder[R] {
 
 type consensusPolicy[R any] struct {
 	*config[R]
-	logger *zerolog.Logger
+	logger                          *zerolog.Logger
+	misbehavingUpstreamsLimiter     sync.Map // [string, *ratelimiter.Limiter]
+	misbehavingUpstreamsSitoutTimer sync.Map // [string, *time.Timer]
 }
 
 var _ ConsensusPolicy[any] = &consensusPolicy[any]{}
@@ -88,6 +92,11 @@ func (c *config[R]) WithLowParticipantsBehavior(lowParticipantsBehavior common.C
 	return c
 }
 
+func (c *config[R]) WithLogger(logger *zerolog.Logger) ConsensusPolicyBuilder[R] {
+	c.logger = logger
+	return c
+}
+
 func (c *config[R]) OnAgreement(listener func(failsafe.ExecutionEvent[R])) ConsensusPolicyBuilder[R] {
 	c.onAgreement = listener
 	return c
@@ -111,11 +120,14 @@ func (c *config[R]) Build() ConsensusPolicy[R] {
 			return false
 		})
 	}
-	log := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout}).With().Timestamp().Logger()
-	lg := log.With().Str("component", "consensus").Logger()
+
+	log := c.logger.With().Str("component", "consensus").Logger()
+
 	return &consensusPolicy[R]{
-		config: &hCopy,
-		logger: &lg,
+		config:                          &hCopy,
+		logger:                          &log,
+		misbehavingUpstreamsLimiter:     sync.Map{},
+		misbehavingUpstreamsSitoutTimer: sync.Map{},
 	}
 }
 
@@ -152,6 +164,5 @@ func (p *consensusPolicy[R]) Build() policy.Executor[R] {
 	return &executor[R]{
 		BaseExecutor:    &policy.BaseExecutor[R]{},
 		consensusPolicy: p,
-		logger:          p.logger,
 	}
 }

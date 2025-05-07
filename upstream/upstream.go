@@ -811,3 +811,11 @@ func (u *Upstream) MarshalJSON() ([]byte, error) {
 
 	return sonic.Marshal(uppub)
 }
+
+func (u *Upstream) Cordon(method string, reason string) {
+	u.metricsTracker.Cordon(u.config.Id, u.NetworkId(), method, reason)
+}
+
+func (u *Upstream) Uncordon(method string) {
+	u.metricsTracker.Uncordon(u.config.Id, u.NetworkId(), method)
+}
