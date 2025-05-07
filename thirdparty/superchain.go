@@ -18,37 +18,18 @@ import (
 const DefaultSuperchainRegistryURL = "https://raw.githubusercontent.com/ethereum-optimism/superchain-registry/main/chainList.json"
 const DefaultSuperchainRecheckInterval = 24 * time.Hour
 
-// converts a shorthand `superchain://` specification into a raw
-// URL that points to the JSON registry file.
-// Supported forms:
+// Acceptable formats:
 //
-//		superchain://github.com/{org}/{repo}
-//		  -> https://raw.githubusercontent.com/{org}/{repo}/main/chainList.json
-//		superchain://github.com/{org}/{repo}/{branch}/{file}.json
-//		  -> https://raw.githubusercontent.com/{org}/{repo}/{branch}/{file}.json
-//	 https://github.com/{org}/{repo}/blob/{branch}/{file}.json (UI link)
-//	   -> https://raw.githubusercontent.com/{org}/{repo}/{branch}/{file}.json
-//	 https://raw.githubusercontent.com/{org}/{repo}/blob/{branch}/{file}.json (raw URL with stray blob)
-//	   -> https://raw.githubusercontent.com/{org}/{repo}/{branch}/{file}.json
-//		github.com/{org}/{repo} (shorthand)
-//		  -> https://raw.githubusercontent.com/{org}/{repo}/main/chainList.json
-//		https://github.com/{org}/{repo} (full repo URL)
-//		  -> https://raw.githubusercontent.com/{org}/{repo}/main/chainList.json
-//
-// Any non‑GitHub spec is treated as a literal URL; if it lacks a scheme we prepend
-// `https://`. If it's already a raw.githubusercontent.com URL, it's returned as is.
+//	superchain://github.com/{org}/{repo}
+//	superchain://github.com/{org}/{repo}/{branch}/{file}.json
+//	https://github.com/{org}/{repo}/blob/{branch}/{file}.json
+//	https://raw.githubusercontent.com/{org}/{repo}/blob/{branch}/{file}.json
+//	github.com/{org}/{repo}
+//	https://github.com/{org}/{repo}
+//	https://mysuperchain.com/chainList.json
 func parseSuperchainSpec(spec string) (string, error) {
 	// Handle GitHub URLs (shorthand, full repo URLs, but not yet raw content URLs)
 	if strings.HasPrefix(spec, "github.com/") || strings.HasPrefix(spec, "https://github.com/") || strings.HasPrefix(spec, "http://github.com/") {
-		// Avoid re-processing if it's already a raw content URL that somehow reached here
-		if strings.Contains(spec, "raw.githubusercontent.com") {
-			if strings.HasPrefix(spec, "http://") || strings.HasPrefix(spec, "https://") {
-				return spec, nil
-			}
-			// Should ideally not happen: a raw URL without a scheme. Prepend https.
-			return "https://" + spec, nil
-		}
-
 		var pathPart string
 		if strings.HasPrefix(spec, "https://github.com/") {
 			pathPart = strings.TrimPrefix(spec, "https://github.com/")
@@ -81,7 +62,7 @@ func parseSuperchainSpec(spec string) (string, error) {
 			// This logic assumes if more than org/repo is given, it might include branch and/or filename.
 			// Example: org/repo/my-branch
 			// Example: org/repo/my-branch/customList.json
-			// Example: org/repo/main/some/dir/customList.json (less common for this use case)
+			// Example: org/repo/main/some/dir/customList.json
 			if len(parts) == 3 && !strings.HasSuffix(parts[2], ".json") { // org/repo/branch
 				branch = parts[2]
 			} else if len(parts) >= 3 { // org/repo/branch/file.json or org/repo/file.json (implicit main)
@@ -99,17 +80,6 @@ func parseSuperchainSpec(spec string) (string, error) {
 			}
 		}
 		return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", org, repo, branch, jsonFile), nil
-	}
-
-	// Handle the (incorrect) case where someone copies a GitHub UI URL but swaps
-	// `github.com` for `raw.githubusercontent.com` without removing the `/blob/`
-	// or `/tree/` segment, e.g.:
-	//   https://raw.githubusercontent.com/org/repo/blob/main/chainList.json
-	// Convert it to the proper raw URL by stripping the artificial segment.
-	if strings.HasPrefix(spec, "https://raw.githubusercontent.com/") || strings.HasPrefix(spec, "http://raw.githubusercontent.com/") {
-		clean := strings.Replace(spec, "/blob/", "/", 1)
-		clean = strings.Replace(clean, "/tree/", "/", 1)
-		return clean, nil
 	}
 
 	// Already a full URL (e.g. raw.githubusercontent.com or other custom registry)?
