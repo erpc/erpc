@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -182,6 +183,14 @@ func getConfig(
 	requireConfig := cmd.Bool("require-config")
 	endpoints := cmd.StringSlice("endpoint")
 	// configOverrides := cmd.StringMap("set")
+
+	if len(endpoints) > 0 {
+		for _, ep := range endpoints {
+			if _, err := url.ParseRequestURI(ep); err != nil {
+				return nil, fmt.Errorf("invalid endpoint URL format: %s (%w)", ep, err)
+			}
+		}
+	}
 
 	// Check for the config flag, if present, use that file
 	if configFile := cmd.String("config"); len(configFile) > 1 {
