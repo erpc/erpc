@@ -16,10 +16,6 @@ import (
 // R is the execution result type. This type is concurrency safe.
 type ConsensusPolicy[R any] interface {
 	failsafe.Policy[R]
-	WithRequiredParticipants(required int) ConsensusPolicy[R]
-	WithAgreementThreshold(threshold int) ConsensusPolicy[R]
-	WithTimeout(timeout time.Duration) ConsensusPolicy[R]
-	WithLogger(logger *zerolog.Logger) ConsensusPolicy[R]
 }
 
 // R is the execution result type. This type is not concurrency safe.
@@ -28,11 +24,9 @@ type ConsensusPolicyBuilder[R any] interface {
 	WithAgreementThreshold(agreementThreshold int) ConsensusPolicyBuilder[R]
 	WithDisputeBehavior(disputeBehavior common.ConsensusDisputeBehavior) ConsensusPolicyBuilder[R]
 	WithPunishMisbehavior(cfg *common.PunishMisbehaviorConfig) ConsensusPolicyBuilder[R]
-	WithFailureBehavior(failureBehavior common.ConsensusFailureBehavior) ConsensusPolicyBuilder[R]
 	WithLowParticipantsBehavior(lowParticipantsBehavior common.ConsensusLowParticipantsBehavior) ConsensusPolicyBuilder[R]
 	OnAgreement(listener func(failsafe.ExecutionEvent[R])) ConsensusPolicyBuilder[R]
 	OnDispute(listener func(failsafe.ExecutionEvent[R])) ConsensusPolicyBuilder[R]
-	OnFailure(listener func(failsafe.ExecutionEvent[R])) ConsensusPolicyBuilder[R]
 	OnLowParticipants(listener func(failsafe.ExecutionEvent[R])) ConsensusPolicyBuilder[R]
 
 	// Build returns a new ConsensusPolicy using the builder's configuration.
@@ -45,14 +39,12 @@ type config[R any] struct {
 	requiredParticipants    int
 	agreementThreshold      int
 	disputeBehavior         common.ConsensusDisputeBehavior
-	failureBehavior         common.ConsensusFailureBehavior
 	lowParticipantsBehavior common.ConsensusLowParticipantsBehavior
 	punishMisbehavior       *common.PunishMisbehaviorConfig
 	timeout                 time.Duration
 
 	onAgreement       func(event failsafe.ExecutionEvent[R])
 	onDispute         func(event failsafe.ExecutionEvent[R])
-	onFailure         func(event failsafe.ExecutionEvent[R])
 	onLowParticipants func(event failsafe.ExecutionEvent[R])
 }
 
@@ -91,11 +83,6 @@ func (c *config[R]) WithPunishMisbehavior(cfg *common.PunishMisbehaviorConfig) C
 	return c
 }
 
-func (c *config[R]) WithFailureBehavior(failureBehavior common.ConsensusFailureBehavior) ConsensusPolicyBuilder[R] {
-	c.failureBehavior = failureBehavior
-	return c
-}
-
 func (c *config[R]) WithLowParticipantsBehavior(lowParticipantsBehavior common.ConsensusLowParticipantsBehavior) ConsensusPolicyBuilder[R] {
 	c.lowParticipantsBehavior = lowParticipantsBehavior
 	return c
@@ -108,11 +95,6 @@ func (c *config[R]) OnAgreement(listener func(failsafe.ExecutionEvent[R])) Conse
 
 func (c *config[R]) OnDispute(listener func(failsafe.ExecutionEvent[R])) ConsensusPolicyBuilder[R] {
 	c.onDispute = listener
-	return c
-}
-
-func (c *config[R]) OnFailure(listener func(failsafe.ExecutionEvent[R])) ConsensusPolicyBuilder[R] {
-	c.onFailure = listener
 	return c
 }
 

@@ -188,18 +188,12 @@ func TestConsensusExecutor(t *testing.T) {
 				lowParticipantsBehavior = *tt.lowParticipantsBehavior
 			}
 
-			failureBehavior := common.ConsensusFailureBehaviorReturnError
-			if tt.failureBehavior != nil {
-				failureBehavior = *tt.failureBehavior
-			}
-
 			// Create consensus policy
 			policy := NewConsensusPolicyBuilder[*common.NormalizedResponse]().
 				WithRequiredParticipants(tt.requiredParticipants).
 				WithAgreementThreshold(tt.agreementThreshold).
 				WithDisputeBehavior(disputeBehavior).
 				WithLowParticipantsBehavior(lowParticipantsBehavior).
-				WithFailureBehavior(failureBehavior).
 				Build()
 
 			// Create logger

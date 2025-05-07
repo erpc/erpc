@@ -152,31 +152,6 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 				Interface("response_counts", resultCounts).
 				Msg("consensus check")
 
-			// Handle failures if we have any errors
-			// TODO: this doesn't seem like the best way to use failureBehaviour... Can this just be removed?
-			if errorCount > 0 {
-				e.logger.Debug().
-					Int("error_count", errorCount).
-					Msg("handling failures")
-
-				if e.onFailure != nil {
-					e.onFailure(failsafe.ExecutionEvent[R]{
-						ExecutionAttempt: exec,
-					})
-				}
-
-				switch e.failureBehavior {
-				case common.ConsensusFailureBehaviorReturnError:
-					e.handleReturnError(resultChan, exec, func() error {
-						return common.NewErrConsensusFailure("execution failed")
-					})
-					return
-				case common.ConsensusFailureBehaviorAcceptAnyValidResult:
-				case common.ConsensusFailureBehaviorPreferBlockHeadLeader:
-				case common.ConsensusFailureBehaviorOnlyBlockHeadLeader:
-				}
-			}
-
 			// Find the most common result
 			var mostCommonResultHash string
 			mostCommonResultCount := 0
@@ -345,11 +320,7 @@ func (e *executor[R]) handleReturnError(resultChan chan<- *failsafeCommon.Policy
 	e.logger.Debug().
 		Str("source", "error").
 		Msg("sending error result")
-	if e.onFailure != nil {
-		e.onFailure(failsafe.ExecutionEvent[R]{
-			ExecutionAttempt: exec,
-		})
-	}
+
 	resultChan <- &failsafeCommon.PolicyResult[R]{
 		Error: errFn(),
 	}
@@ -375,11 +346,6 @@ func (e *executor[R]) handleAcceptAnyValid(resultChan chan<- *failsafeCommon.Pol
 			Result: finalResult,
 		}
 	} else {
-		if e.onFailure != nil {
-			e.onFailure(failsafe.ExecutionEvent[R]{
-				ExecutionAttempt: exec,
-			})
-		}
 		resultChan <- &failsafeCommon.PolicyResult[R]{
 			Error: errFn(),
 		}
@@ -451,11 +417,7 @@ func (e *executor[R]) handleOnlyBlockHeadLeader(resultChan chan<- *failsafeCommo
 	e.logger.Debug().
 		Str("source", "only_block_head_error").
 		Msg("sending no block head leader error")
-	if e.onFailure != nil {
-		e.onFailure(failsafe.ExecutionEvent[R]{
-			ExecutionAttempt: exec,
-		})
-	}
+
 	resultChan <- &failsafeCommon.PolicyResult[R]{
 		Error: errFn(),
 	}
