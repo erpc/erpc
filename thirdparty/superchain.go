@@ -98,31 +98,21 @@ func parseSuperchainSpec(spec string) (string, error) {
 }
 
 type SuperchainNetwork struct {
-	Name                 string   `json:"name"`
-	Identifier           string   `json:"identifier"`
-	ChainID              int64    `json:"chainId"`
-	RPC                  []string `json:"rpc"`
-	Explorers            []string `json:"explorers"`
-	SuperchainLevel      int      `json:"superchainLevel"`
-	GovernedByOptimism   bool     `json:"governedByOptimism"`
-	DataAvailabilityType string   `json:"dataAvailabilityType"`
-	Parent               struct {
-		Type  string `json:"type"`
-		Chain string `json:"chain"`
-	} `json:"parent"`
+	ChainID int64    `json:"chainId"`
+	RPC     []string `json:"rpc"`
 }
 
 type SuperchainVendor struct {
 	common.Vendor
 
 	remoteDataLock          sync.Mutex
-	remoteData              map[string]map[int64]*SuperchainNetwork
+	remoteData              map[string]map[int64][]string
 	remoteDataLastFetchedAt map[string]time.Time
 }
 
 func CreateSuperchainVendor() common.Vendor {
 	return &SuperchainVendor{
-		remoteData:              make(map[string]map[int64]*SuperchainNetwork),
+		remoteData:              make(map[string]map[int64][]string),
 		remoteDataLastFetchedAt: make(map[string]time.Time),
 	}
 }
@@ -166,8 +156,8 @@ func (v *SuperchainVendor) SupportsNetwork(ctx context.Context, logger *zerolog.
 		return false, nil
 	}
 
-	network, exists := networks[chainID]
-	return exists && network != nil && len(network.RPC) > 0, nil
+	rpcs, exists := networks[chainID]
+	return exists && len(rpcs) > 0, nil
 }
 
 func (v *SuperchainVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
@@ -226,14 +216,14 @@ func (v *SuperchainVendor) GenerateConfigs(upstream *common.UpstreamConfig, sett
 		return nil, fmt.Errorf("network data not available from registry '%s'", finalRegistryURL)
 	}
 
-	network, ok := networks[chainID]
-	if !ok || network == nil || len(network.RPC) == 0 {
+	rpcs, ok := networks[chainID]
+	if !ok || len(rpcs) == 0 {
 		return nil, fmt.Errorf("chain ID %d not found in remote data from registry '%s' or has no RPC endpoints", chainID, finalRegistryURL)
 	}
 
 	// Generate a config for each RPC endpoint
 	upsList := []*common.UpstreamConfig{}
-	for i, rpcURL := range network.RPC {
+	for i, rpcURL := range rpcs {
 		upsCfg := upstream.Copy()
 		upsCfg.Type = common.UpstreamTypeEvm
 		upsCfg.Endpoint = rpcURL
@@ -243,16 +233,20 @@ func (v *SuperchainVendor) GenerateConfigs(upstream *common.UpstreamConfig, sett
 		if upsCfg.Id != "" {
 			upsCfg.Id = fmt.Sprintf("%s-%d", upsCfg.Id, i)
 		} else {
-			upsCfg.Id = fmt.Sprintf("superchain-%s-%d", network.Identifier, i)
+			upsCfg.Id = fmt.Sprintf("superchain-%d-%d", chainID, i)
 		}
 
 		upsList = append(upsList, upsCfg)
 	}
 
-	log.Debug().Int64("chainId", chainID).Interface("upstreams", upsList).Interface("settings", map[string]interface{}{
-		"registryUrlUsed": finalRegistryURL,
-		"recheckInterval": recheckInterval,
-	}).Msg("generated upstreams from superchain provider")
+	log.Debug().
+		Int64("chainId", chainID).
+		Int("rpcCount", len(rpcs)).
+		Interface("upstreams", upsList).
+		Interface("settings", map[string]interface{}{
+			"registryUrlUsed": finalRegistryURL,
+			"recheckInterval": recheckInterval,
+		}).Msg("generated upstreams from superchain provider")
 
 	return upsList, nil
 }
@@ -295,7 +289,7 @@ func (v *SuperchainVendor) ensureRemoteData(ctx context.Context, recheckInterval
 	return nil
 }
 
-func (v *SuperchainVendor) fetchSuperchainNetworks(ctx context.Context, registryURL string) (map[int64]*SuperchainNetwork, error) {
+func (v *SuperchainVendor) fetchSuperchainNetworks(ctx context.Context, registryURL string) (map[int64][]string, error) {
 	rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(rctx, "GET", registryURL, nil)
@@ -325,15 +319,18 @@ func (v *SuperchainVendor) fetchSuperchainNetworks(ctx context.Context, registry
 		return nil, err
 	}
 
-	var networks []*SuperchainNetwork
-	if err := common.SonicCfg.Unmarshal(bodyBytes, &networks); err != nil {
+	var entries []struct {
+		ChainID int64    `json:"chainId"`
+		RPC     []string `json:"rpc"`
+	}
+	if err := common.SonicCfg.Unmarshal(bodyBytes, &entries); err != nil {
 		return nil, fmt.Errorf("failed to parse Superchain registry data: %w", err)
 	}
 
-	newData := make(map[int64]*SuperchainNetwork)
-	for _, network := range networks {
-		if network.ChainID > 0 && len(network.RPC) > 0 {
-			newData[network.ChainID] = network
+	newData := make(map[int64][]string)
+	for _, e := range entries {
+		if e.ChainID > 0 && len(e.RPC) > 0 {
+			newData[e.ChainID] = e.RPC
 		}
 	}
 
