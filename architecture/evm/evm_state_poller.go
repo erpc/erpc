@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
 	"sync"
 	"time"
 
@@ -175,18 +174,6 @@ func (e *EvmStatePoller) Bootstrap(ctx context.Context) error {
 		e.logger.Info().Msgf("bootstrapped evm state poller to track upstream latest/finalized blocks and syncing states")
 	}
 
-	go func() {
-		for {
-			if ctx.Err() != nil {
-				return
-			}
-			time.Sleep(time.Duration(50+rand.Intn(100)) * time.Millisecond)
-			go func() {
-				e.Poll(e.appCtx)
-			}()
-		}
-	}()
-
 	return err
 }
 
@@ -227,67 +214,67 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 	}()
 
 	// Fetch finalized block (if upstream supports)
-	// wg.Add(1)
-	// go func() {
-	// 	defer wg.Done()
-	// 	_, err := e.PollFinalizedBlockNumber(ctx)
-	// 	if err != nil {
-	// 		e.logger.Debug().Err(err).Msg("failed to get finalized block number in evm state poller")
-	// 		ermu.Lock()
-	// 		errs = append(errs, err)
-	// 		ermu.Unlock()
-	// 	}
-	// }()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, err := e.PollFinalizedBlockNumber(ctx)
+		if err != nil {
+			e.logger.Debug().Err(err).Msg("failed to get finalized block number in evm state poller")
+			ermu.Lock()
+			errs = append(errs, err)
+			ermu.Unlock()
+		}
+	}()
 
 	// Fetch "syncing" state
-	// wg.Add(1)
-	// go func() {
-	// 	defer wg.Done()
-	// 	if e.synced >= FullySyncedThreshold || e.skipSyncingCheck {
-	// 		return
-	// 	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if e.synced >= FullySyncedThreshold || e.skipSyncingCheck {
+			return
+		}
 
-	// 	syncing, err := e.fetchSyncingState(ctx)
-	// 	if err != nil {
-	// 		if !e.skipSyncingCheck {
-	// 			e.logger.Warn().Bool("syncingResult", syncing).Err(err).Msg("failed to get syncing state in evm state poller")
-	// 			ermu.Lock()
-	// 			errs = append(errs, err)
-	// 			ermu.Unlock()
-	// 		} else {
-	// 			e.logger.Info().Bool("syncingResult", syncing).Err(err).Msg("upstream does not support eth_syncing method for evm state poller, will skip")
-	// 		}
-	// 		return
-	// 	}
+		syncing, err := e.fetchSyncingState(ctx)
+		if err != nil {
+			if !e.skipSyncingCheck {
+				e.logger.Warn().Bool("syncingResult", syncing).Err(err).Msg("failed to get syncing state in evm state poller")
+				ermu.Lock()
+				errs = append(errs, err)
+				ermu.Unlock()
+			} else {
+				e.logger.Info().Bool("syncingResult", syncing).Err(err).Msg("upstream does not support eth_syncing method for evm state poller, will skip")
+			}
+			return
+		}
 
-	// 	e.logger.Debug().Bool("syncingResult", syncing).Msg("fetched syncing state")
+		e.logger.Debug().Bool("syncingResult", syncing).Msg("fetched syncing state")
 
-	// 	e.stateMu.Lock()
-	// 	defer e.stateMu.Unlock()
-	// 	if syncing {
-	// 		e.synced = 1
-	// 	} else {
-	// 		e.synced++
-	// 	}
+		e.stateMu.Lock()
+		defer e.stateMu.Unlock()
+		if syncing {
+			e.synced = 1
+		} else {
+			e.synced++
+		}
 
-	// 	upsCfg := e.upstream.Config()
-	// 	if upsCfg.Evm == nil {
-	// 		upsCfg.Evm = &common.EvmUpstreamConfig{}
-	// 	}
+		upsCfg := e.upstream.Config()
+		if upsCfg.Evm == nil {
+			upsCfg.Evm = &common.EvmUpstreamConfig{}
+		}
 
-	// 	// By default, we don't know if the node is syncing or not.
-	// 	e.syncingState = common.EvmSyncingStateUnknown
+		// By default, we don't know if the node is syncing or not.
+		e.syncingState = common.EvmSyncingStateUnknown
 
-	// 	// if we have received enough consecutive "synced" responses, we can assume it's fully synced.
-	// 	if e.synced >= FullySyncedThreshold {
-	// 		e.syncingState = common.EvmSyncingStateNotSyncing
-	// 		e.logger.Info().Bool("syncingResult", syncing).Msg("node is marked as fully synced")
-	// 	} else if e.synced >= 0 && syncing {
-	// 		e.syncingState = common.EvmSyncingStateSyncing
-	// 		// If we have received at least one response (syncing or not-syncing) we explicitly assume it's syncing.
-	// 		e.logger.Debug().Bool("syncingResult", syncing).Msgf("node is marked as still syncing %d out of %d confirmations done so far", e.synced, FullySyncedThreshold)
-	// 	}
-	// }()
+		// if we have received enough consecutive "synced" responses, we can assume it's fully synced.
+		if e.synced >= FullySyncedThreshold {
+			e.syncingState = common.EvmSyncingStateNotSyncing
+			e.logger.Info().Bool("syncingResult", syncing).Msg("node is marked as fully synced")
+		} else if e.synced >= 0 && syncing {
+			e.syncingState = common.EvmSyncingStateSyncing
+			// If we have received at least one response (syncing or not-syncing) we explicitly assume it's syncing.
+			e.logger.Debug().Bool("syncingResult", syncing).Msgf("node is marked as still syncing %d out of %d confirmations done so far", e.synced, FullySyncedThreshold)
+		}
+	}()
 
 	wg.Wait()
 

@@ -97,6 +97,8 @@ func TestSharedStateRegistry_UpdateCounter_GetFailure(t *testing.T) {
 	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
 	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value").
 		Return("", errors.New("get failed"))
+	connector.On("Set", mock.Anything, "my-dev/test", "value", mock.Anything, mock.Anything).Return(nil)
+	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", mock.Anything).Return(nil)
 
 	counter := &counterInt64{
 		registry:         registry,

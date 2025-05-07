@@ -142,7 +142,7 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 	defer cancel()
 	_, err = client.Ping(ctx).Result()
 	if err != nil {
-		if options.TLSConfig != nil && err != nil && strings.Contains(err.Error(), "certificate") {
+		if options.TLSConfig != nil && strings.Contains(err.Error(), "certificate") {
 			errMsg := fmt.Sprintf("failed to connect to Redis with TLS enabled: %v.", err)
 			if !options.TLSConfig.InsecureSkipVerify && options.TLSConfig.RootCAs == nil {
 				errMsg += " Ensure the server certificate is valid and trusted by the system CAs, or provide a custom CA using 'tls.caFile'."

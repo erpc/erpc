@@ -134,10 +134,9 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 		return c.value.Load(), nil
 	}
 
+	// Lock remotely if possible in best-effort mode
 	rctx, cancel := context.WithTimeout(ctx, c.registry.fallbackTimeout)
 	defer cancel()
-
-	// Lock remotely if possible in best-effort mode
 	unlock := c.tryAcquireLock(rctx)
 	if unlock != nil {
 		// If remote lock was acquired, we need to unlock it after the whole operation is complete
