@@ -235,15 +235,10 @@ func TestMain_Validate_RealConfigFile(t *testing.T) {
 func TestMain_Start_WithEndpointsWaitForLazyLoading(t *testing.T) {
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
+
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
-
-	// Add info log
-	// zerolog.SetGlobalLevel(zerolog.InfoLevel)
-	// Capture logs
-	// var logBuf strings.Builder
-	// log.Logger = zerolog.New(&logBuf)
 
 	fs := afero.NewOsFs()
 	f, err := afero.TempFile(fs, "", "erpc.yaml")
