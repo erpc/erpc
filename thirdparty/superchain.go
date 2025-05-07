@@ -22,14 +22,18 @@ const DefaultSuperchainRecheckInterval = 24 * time.Hour
 // URL that points to the JSON registry file.
 // Supported forms:
 //
-//	superchain://github.com/{org}/{repo}
-//	  -> https://raw.githubusercontent.com/{org}/{repo}/main/chainList.json
-//	superchain://github.com/{org}/{repo}/{branch}/{file}.json
-//	  -> https://raw.githubusercontent.com/{org}/{repo}/{branch}/{file}.json
-//	github.com/{org}/{repo} (shorthand)
-//	  -> https://raw.githubusercontent.com/{org}/{repo}/main/chainList.json
-//	https://github.com/{org}/{repo} (full repo URL)
-//	  -> https://raw.githubusercontent.com/{org}/{repo}/main/chainList.json
+//		superchain://github.com/{org}/{repo}
+//		  -> https://raw.githubusercontent.com/{org}/{repo}/main/chainList.json
+//		superchain://github.com/{org}/{repo}/{branch}/{file}.json
+//		  -> https://raw.githubusercontent.com/{org}/{repo}/{branch}/{file}.json
+//	 https://github.com/{org}/{repo}/blob/{branch}/{file}.json (UI link)
+//	   -> https://raw.githubusercontent.com/{org}/{repo}/{branch}/{file}.json
+//	 https://raw.githubusercontent.com/{org}/{repo}/blob/{branch}/{file}.json (raw URL with stray blob)
+//	   -> https://raw.githubusercontent.com/{org}/{repo}/{branch}/{file}.json
+//		github.com/{org}/{repo} (shorthand)
+//		  -> https://raw.githubusercontent.com/{org}/{repo}/main/chainList.json
+//		https://github.com/{org}/{repo} (full repo URL)
+//		  -> https://raw.githubusercontent.com/{org}/{repo}/main/chainList.json
 //
 // Any non‑GitHub spec is treated as a literal URL; if it lacks a scheme we prepend
 // `https://`. If it's already a raw.githubusercontent.com URL, it's returned as is.
@@ -55,6 +59,15 @@ func parseSuperchainSpec(spec string) (string, error) {
 		}
 
 		parts := strings.Split(strings.Trim(pathPart, "/"), "/")
+
+		// If the path is copy‑pasted from a GitHub UI URL it will contain a
+		// "blob" or "tree" component (e.g. org/repo/blob/main/file.json).
+		// Remove that artificial segment so we end up with org/repo/<branch>/file.json.
+		if len(parts) >= 3 && (parts[2] == "blob" || parts[2] == "tree") {
+			// Drop the "blob" / "tree" element.
+			parts = append(parts[:2], parts[3:]...)
+		}
+
 		if len(parts) < 2 {
 			return "", fmt.Errorf("invalid GitHub superchain spec: '%s' (org/repo not found after prefix)", spec)
 		}
@@ -86,6 +99,17 @@ func parseSuperchainSpec(spec string) (string, error) {
 			}
 		}
 		return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", org, repo, branch, jsonFile), nil
+	}
+
+	// Handle the (incorrect) case where someone copies a GitHub UI URL but swaps
+	// `github.com` for `raw.githubusercontent.com` without removing the `/blob/`
+	// or `/tree/` segment, e.g.:
+	//   https://raw.githubusercontent.com/org/repo/blob/main/chainList.json
+	// Convert it to the proper raw URL by stripping the artificial segment.
+	if strings.HasPrefix(spec, "https://raw.githubusercontent.com/") || strings.HasPrefix(spec, "http://raw.githubusercontent.com/") {
+		clean := strings.Replace(spec, "/blob/", "/", 1)
+		clean = strings.Replace(clean, "/tree/", "/", 1)
+		return clean, nil
 	}
 
 	// Already a full URL (e.g. raw.githubusercontent.com or other custom registry)?
