@@ -246,7 +246,12 @@ func TestMain_Start_WithEndpointsWaitForLazyLoading(t *testing.T) {
 	// log.Logger = zerolog.New(&logBuf)
 
 	localPort := 4000
-	localBaseUrl := fmt.Sprintf("http://localhost:%d", localPort)
+	var localBaseUrl string
+	if os.Getenv("FORCE_TEST_LISTEN_V4") == "true" {
+		localBaseUrl = fmt.Sprintf("http://127.0.0.1:%d", localPort)
+	} else {
+		localBaseUrl = fmt.Sprintf("http://localhost:%d", localPort)
+	}
 
 	// Set up args with endpoints
 	os.Setenv("FORCE_TEST_LISTEN_V4", "true")
