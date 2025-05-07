@@ -577,7 +577,7 @@ func TestInitializer_MarkAsFailedUnblocksWaitThenRetries(t *testing.T) {
 	require.Error(t, err, "First attempt ExecuteTasks() should have timeout error")
 
 	// Give the task time to get into RUNNING state with second attempt.
-	time.Sleep(time.Millisecond * 150)
+	time.Sleep(time.Millisecond * 80)
 
 	// We'll have a goroutine that waits on the task. It should block until the task is forcibly failed.
 	waitErrCh := make(chan error)

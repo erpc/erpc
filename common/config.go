@@ -41,7 +41,7 @@ type Config struct {
 
 // LoadConfig loads the configuration from the specified file.
 // It supports both YAML and TypeScript (.ts) files.
-func LoadConfig(fs afero.Fs, filename string) (*Config, error) {
+func LoadConfig(fs afero.Fs, filename string, opts *DefaultOptions) (*Config, error) {
 	data, err := afero.ReadFile(fs, filename)
 	if err != nil {
 		return nil, err
@@ -65,7 +65,7 @@ func LoadConfig(fs afero.Fs, filename string) (*Config, error) {
 		}
 	}
 
-	err = cfg.SetDefaults()
+	err = cfg.SetDefaults(opts)
 	if err != nil {
 		return nil, err
 	}

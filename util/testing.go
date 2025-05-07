@@ -51,6 +51,15 @@ func SetupMocksForEvmStatePoller() {
 		Persist().
 		Filter(func(request *http.Request) bool {
 			body := SafeReadBody(request)
+			return strings.Contains(body, "eth_chainId")
+		}).
+		Reply(200).
+		JSON([]byte(`{"result":"0x7b","_note":"detectFeatures expected mock for eth_chainId"}`))
+	gock.New("http://rpc1.localhost").
+		Post("").
+		Persist().
+		Filter(func(request *http.Request) bool {
+			body := SafeReadBody(request)
 			return strings.Contains(body, "eth_getBlockByNumber") && strings.Contains(body, "latest")
 		}).
 		Reply(200).
@@ -72,6 +81,14 @@ func SetupMocksForEvmStatePoller() {
 		}).
 		Reply(200).
 		JSON([]byte(`{"result":false,"_note":"evm state poller expected mock for eth_syncing"}`))
+	gock.New("http://rpc2.localhost").
+		Post("").
+		Persist().
+		Filter(func(request *http.Request) bool {
+			return strings.Contains(SafeReadBody(request), "eth_chainId")
+		}).
+		Reply(200).
+		JSON([]byte(`{"result":"0x7b","_note":"detectFeatures expected mock for eth_chainId"}`))
 	gock.New("http://rpc2.localhost").
 		Post("").
 		Persist().

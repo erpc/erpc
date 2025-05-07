@@ -8,7 +8,7 @@ import (
 
 func TestLoadConfig_FailToReadFile(t *testing.T) {
 	fs := afero.NewMemMapFs()
-	_, err := LoadConfig(fs, "nonexistent.yaml")
+	_, err := LoadConfig(fs, "nonexistent.yaml", &DefaultOptions{})
 	if err == nil {
 		t.Error("expected error, got nil")
 	}
@@ -22,7 +22,7 @@ func TestLoadConfig_InvalidYaml(t *testing.T) {
 	}
 	cfg.WriteString("invalid yaml")
 
-	_, err = LoadConfig(fs, cfg.Name())
+	_, err = LoadConfig(fs, cfg.Name(), &DefaultOptions{})
 	if err == nil {
 		t.Error("expected error, got nil")
 	}
@@ -38,7 +38,7 @@ func TestLoadConfig_ValidYaml(t *testing.T) {
 logLevel: DEBUG
 `)
 
-	_, err = LoadConfig(fs, cfg.Name())
+	_, err = LoadConfig(fs, cfg.Name(), &DefaultOptions{})
 	if err != nil {
 		t.Error(err)
 	}
