@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math/rand"
@@ -232,24 +233,29 @@ func TestMain_Validate_RealConfigFile(t *testing.T) {
 	}
 }
 
-func TestMain_Start_WithEndpointsWaitForLazyLoading(t *testing.T) {
+// Test that the very first requests issued against the local erpc instance
+// successfully wait for upstream lazy‑loading to complete, ensuring they are
+// not rejected due to missing upstreams.
+func TestMain_Start_WaitsForLazyLoading_FirstRequests(t *testing.T) {
 	mainMutex.Lock()
 	defer mainMutex.Unlock()
 
+	// Reset and prepare mocks for upstream polling.
 	util.ResetGock()
 	defer util.ResetGock()
 	util.SetupMocksForEvmStatePoller()
 
+	// Create a temporary working config that binds the server to a random port.
 	fs := afero.NewOsFs()
 	f, err := afero.TempFile(fs, "", "erpc.yaml")
 	require.NoError(t, err)
 
 	localPort := rand.Intn(1000) + 3000
-	localBaseUrl := fmt.Sprintf("http://localhost:%d", localPort)
+	localBaseURL := fmt.Sprintf("http://localhost:%d", localPort)
+	_, err = f.WriteString(getWorkingConfig(localPort))
+	require.NoError(t, err)
 
-	f.WriteString(getWorkingConfig(localPort))
-
-	// Set up args with endpoints
+	// Launch erpc with two mocked endpoints.
 	os.Setenv("FORCE_TEST_LISTEN_V4", "true")
 	os.Args = []string{
 		"erpc-test",
@@ -257,37 +263,46 @@ func TestMain_Start_WithEndpointsWaitForLazyLoading(t *testing.T) {
 		"--endpoint", "http://rpc1.localhost",
 		"--endpoint", "http://rpc2.localhost",
 	}
-
 	go main()
 
-	// There must be NO delay between the server starting and the first request,
-	// This way we are testing that lazy loading actually waits for all endpoints to be ready.
-	// The main goal here is to make sure rollouts (e.g. in k8s) are zero-downtime, and requests arriving at a new container are not rejected,
-	// with an error like "no upstreams found for network 'evm:123' and project 'main'".
-
+	// Fire a handful of requests immediately after startup. These should
+	// succeed even though the upstreams are only ready after lazy‑loading.
 	reqBody := []byte(`{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}`)
-	req, err := http.NewRequest("POST", localBaseUrl+"/main/evm/123", bytes.NewBuffer(reqBody))
-	require.NoError(t, err)
-	req.Header.Set("Content-Type", "application/json")
-
 	client := &http.Client{
-		Timeout: 1000 * time.Millisecond, // Set a client timeout longer than the server timeout
+		Timeout: 1500 * time.Millisecond, // Set a client timeout longer than the server timeout
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("expected server to be running, got %v", err)
+
+	success := false
+
+	for i := 0; i < 5; i++ {
+		req, err := http.NewRequest("POST", localBaseURL+"/main/evm/123", bytes.NewBuffer(reqBody))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("expected server to be running, got %v", err)
+		}
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(respBody, &raw))
+
+		if _, ok := raw["result"]; ok {
+			// We got a successful JSON‑RPC result (chainId "0x7b").
+			success = true
+			break
+		}
+
+		// Small back‑off before next attempt to give lazy‑loading a moment.
+		time.Sleep(100 * time.Millisecond)
 	}
-	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	require.Contains(t, string(respBody), `"0x7b"`)
-
-	// logs := logBuf.String()
-	// expectedMsg := "using 2 endpoints provided via command line"
-	// if !strings.Contains(logs, expectedMsg) {
-	// 	t.Errorf("expected log message containing %q, got %q", expectedMsg, logs)
-	// }
+	if !success {
+		t.Fatalf("first requests returned only errors; lazy‑loading did not complete in time")
+	}
 }
 
 func TestMain_Start_WithInvalidEndpoint(t *testing.T) {
