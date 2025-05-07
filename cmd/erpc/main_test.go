@@ -245,18 +245,20 @@ func TestMain_Start_WithEndpointsWaitForLazyLoading(t *testing.T) {
 	// var logBuf strings.Builder
 	// log.Logger = zerolog.New(&logBuf)
 
-	localPort := 4000
-	var localBaseUrl string
-	if os.Getenv("FORCE_TEST_LISTEN_V4") == "true" {
-		localBaseUrl = fmt.Sprintf("http://127.0.0.1:%d", localPort)
-	} else {
-		localBaseUrl = fmt.Sprintf("http://localhost:%d", localPort)
-	}
+	fs := afero.NewOsFs()
+	f, err := afero.TempFile(fs, "", "erpc.yaml")
+	require.NoError(t, err)
+
+	localPort := rand.Intn(1000) + 3000
+	localBaseUrl := fmt.Sprintf("http://localhost:%d", localPort)
+
+	f.WriteString(getWorkingConfig(localPort))
 
 	// Set up args with endpoints
 	os.Setenv("FORCE_TEST_LISTEN_V4", "true")
 	os.Args = []string{
 		"erpc-test",
+		"--config", f.Name(),
 		"--endpoint", "http://rpc1.localhost",
 		"--endpoint", "http://rpc2.localhost",
 	}
