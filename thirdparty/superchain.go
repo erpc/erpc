@@ -20,12 +20,10 @@ const DefaultSuperchainRecheckInterval = 24 * time.Hour
 
 // Acceptable formats:
 //
-//	superchain://github.com/{org}/{repo}
-//	superchain://github.com/{org}/{repo}/{branch}/{file}.json
-//	https://github.com/{org}/{repo}/blob/{branch}/{file}.json
-//	https://raw.githubusercontent.com/{org}/{repo}/blob/{branch}/{file}.json
 //	github.com/{org}/{repo}
-//	https://github.com/{org}/{repo}
+//	github.com/{org}/{repo}/{branch}/{file}.json
+//	github.com/{org}/{repo}/blob/{branch}/{file}.json
+//	https://raw.githubusercontent.com/{org}/{repo}/{branch}/{file}.json
 //	https://mysuperchain.com/chainList.json
 func parseSuperchainSpec(spec string) (string, error) {
 	// Handle GitHub URLs (shorthand, full repo URLs, but not yet raw content URLs)
