@@ -44,6 +44,8 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 				l.On("Unlock", mock.Anything).Return(nil)
 				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").
 					Return("", errors.New("get failed"))
+				c.On("Set", mock.Anything, "test", "value", "10", mock.Anything).
+					Return(errors.New("set failed"))
 			},
 			initialValue:   5,
 			updateValue:    10,
@@ -83,6 +85,9 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
 			registry, connector, _ := setupTest("my-dev")
 			lock := &MockLock{}
 			tt.setupMocks(connector, lock)
@@ -95,7 +100,7 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 			}
 			counter.value.Store(tt.initialValue)
 
-			result := counter.TryUpdate(context.Background(), tt.updateValue)
+			result := counter.TryUpdate(ctx, tt.updateValue)
 			assert.Equal(t, tt.expectedValue, result)
 			time.Sleep(10 * time.Millisecond)
 			connector.AssertExpectations(t)
@@ -130,11 +135,26 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 			expectedCalls: 0,
 		},
 		{
-			name: "stale value updates successfully",
+			name: "stale local value same as remote unstales local value",
 			setupMocks: func(c *MockConnector, l *MockLock) {
 				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
 				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").Return("5", nil)
+			},
+			initialValue:  5,
+			staleness:     time.Second,
+			updateValue:   5,
+			lastUpdated:   time.Now().Add(-2 * time.Second),
+			expectedValue: 5,
+			expectedError: nil,
+			expectedCalls: 1,
+		},
+		{
+			name: "stale value updates successfully",
+			setupMocks: func(c *MockConnector, l *MockLock) {
+				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
+				l.On("Unlock", mock.Anything).Return(nil)
+				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").Return("4", nil)
 				c.On("Set", mock.Anything, "test", "value", "10", mock.Anything).Return(nil)
 				c.On("PublishCounterInt64", mock.Anything, "test", int64(10)).Return(nil)
 			},
@@ -166,7 +186,7 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 			setupMocks: func(c *MockConnector, l *MockLock) {
 				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
-				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").Return("5", nil)
+				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").Return("4", nil)
 			},
 			initialValue:  5,
 			staleness:     time.Second,
@@ -180,6 +200,9 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
 			registry, connector, _ := setupTest("my-dev")
 			lock := &MockLock{}
 			tt.setupMocks(connector, lock)
@@ -203,7 +226,7 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 				return tt.updateValue, nil
 			}
 
-			result, err := counter.TryUpdateIfStale(context.Background(), tt.staleness, getNewValue)
+			result, err := counter.TryUpdateIfStale(ctx, tt.staleness, getNewValue)
 
 			if tt.expectedError != nil {
 				assert.Error(t, err)
@@ -219,6 +242,9 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 }
 
 func TestCounterInt64_Concurrency(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	registry, connector, _ := setupTest("my-dev")
 	lock := &MockLock{}
 
@@ -243,7 +269,7 @@ func TestCounterInt64_Concurrency(t *testing.T) {
 		wg.Add(1)
 		go func(val int64) {
 			defer wg.Done()
-			counter.TryUpdate(context.Background(), val)
+			counter.TryUpdate(ctx, val)
 		}(int64(i + 10))
 	}
 
@@ -306,14 +332,17 @@ func TestCounterInt64_IsStale(t *testing.T) {
 
 func TestSharedVariable(t *testing.T) {
 	t.Run("basic remote sync updates local value", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
 		connector := NewMockConnector("test")
 		registry := &sharedStateRegistry{
-			appCtx:          context.Background(),
+			appCtx:          ctx,
 			clusterKey:      "test",
 			logger:          &log.Logger,
 			connector:       connector,
 			fallbackTimeout: time.Second,
-			initializer:     util.NewInitializer(context.Background(), &log.Logger, nil),
+			initializer:     util.NewInitializer(ctx, &log.Logger, nil),
 		}
 
 		updates := make(chan int64, 10)
@@ -342,14 +371,17 @@ func TestSharedVariable(t *testing.T) {
 	})
 
 	t.Run("callback is triggered on remote updates", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
 		connector := NewMockConnector("test")
 		registry := &sharedStateRegistry{
-			appCtx:          context.Background(),
+			appCtx:          ctx,
 			clusterKey:      "test",
 			logger:          &log.Logger,
 			connector:       connector,
 			fallbackTimeout: time.Second,
-			initializer:     util.NewInitializer(context.Background(), &log.Logger, nil),
+			initializer:     util.NewInitializer(ctx, &log.Logger, nil),
 		}
 
 		updates := make(chan int64, 10)
@@ -382,14 +414,17 @@ func TestSharedVariable(t *testing.T) {
 	})
 
 	t.Run("lower remote values are ignored", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
 		connector := NewMockConnector("test")
 		registry := &sharedStateRegistry{
-			appCtx:          context.Background(),
+			appCtx:          ctx,
 			clusterKey:      "test",
 			logger:          &log.Logger,
 			connector:       connector,
 			fallbackTimeout: time.Second,
-			initializer:     util.NewInitializer(context.Background(), &log.Logger, nil),
+			initializer:     util.NewInitializer(ctx, &log.Logger, nil),
 		}
 
 		updates := make(chan int64, 10)
@@ -416,14 +451,17 @@ func TestSharedVariable(t *testing.T) {
 	})
 
 	t.Run("handles watch channel closure gracefully", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
 		connector := NewMockConnector("test")
 		registry := &sharedStateRegistry{
-			appCtx:          context.Background(),
+			appCtx:          ctx,
 			clusterKey:      "test",
 			logger:          &log.Logger,
 			connector:       connector,
 			fallbackTimeout: time.Second,
-			initializer:     util.NewInitializer(context.Background(), &log.Logger, nil),
+			initializer:     util.NewInitializer(ctx, &log.Logger, nil),
 		}
 
 		updates := make(chan int64, 10)
@@ -450,14 +488,17 @@ func TestSharedVariable(t *testing.T) {
 	})
 
 	t.Run("handles initial fetch error gracefully", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
 		connector := NewMockConnector("test")
 		registry := &sharedStateRegistry{
-			appCtx:          context.Background(),
+			appCtx:          ctx,
 			clusterKey:      "test",
 			logger:          &log.Logger,
 			connector:       connector,
 			fallbackTimeout: time.Second,
-			initializer:     util.NewInitializer(context.Background(), &log.Logger, nil),
+			initializer:     util.NewInitializer(ctx, &log.Logger, nil),
 		}
 
 		updates := make(chan int64, 10)
@@ -596,6 +637,9 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
 			registry, connector, _ := setupTest("my-dev")
 			lock := &MockLock{}
 			tt.setupMocks(connector, lock)
@@ -607,7 +651,7 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 			}
 			counter.value.Store(tt.initialValue)
 
-			actualValue := counter.TryUpdate(context.Background(), tt.updateValue)
+			actualValue := counter.TryUpdate(ctx, tt.updateValue)
 			assert.Equal(t, tt.expectedValue, actualValue,
 				"After TryUpdate(%d) with ignoreRollbackOf=%d, value should be %d",
 				tt.updateValue, tt.ignoreRollbackOf, tt.expectedValue,

@@ -500,10 +500,16 @@ func (r *RedisConnector) getCurrentValue(ctx context.Context, key string) (int64
 	return value, nil
 }
 
+var _ DistributedLock = &redisLock{}
+
 type redisLock struct {
 	connector *RedisConnector
 	key       string
 	mutex     *redsync.Mutex
+}
+
+func (l *redisLock) IsNil() bool {
+	return l == nil || l.mutex == nil
 }
 
 func (l *redisLock) Unlock(ctx context.Context) error {

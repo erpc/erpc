@@ -42,9 +42,15 @@ type DynamoDBConnector struct {
 	statePollInterval time.Duration
 }
 
+var _ DistributedLock = &dynamoLock{}
+
 type dynamoLock struct {
 	connector *DynamoDBConnector
 	lockKey   string
+}
+
+func (l *dynamoLock) IsNil() bool {
+	return l == nil || l.connector == nil
 }
 
 func NewDynamoDBConnector(

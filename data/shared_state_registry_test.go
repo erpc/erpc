@@ -18,6 +18,10 @@ type MockLock struct {
 	mock.Mock
 }
 
+func (m *MockLock) IsNil() bool {
+	return m == nil
+}
+
 func (m *MockLock) Unlock(ctx context.Context) error {
 	args := m.Called(ctx)
 	return args.Error(0)

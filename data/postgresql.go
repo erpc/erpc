@@ -47,11 +47,17 @@ type pgxListener struct {
 	watchers []chan int64
 }
 
+var _ DistributedLock = &postgresLock{}
+
 type postgresLock struct {
 	conn   *pgxpool.Pool
 	lockID int64
 	logger *zerolog.Logger
 	tx     pgx.Tx
+}
+
+func (l *postgresLock) IsNil() bool {
+	return l == nil || l.conn == nil
 }
 
 func NewPostgreSQLConnector(
