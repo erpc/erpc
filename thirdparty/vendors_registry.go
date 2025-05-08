@@ -23,6 +23,7 @@ func NewVendorsRegistry() *VendorsRegistry {
 	r.Register(CreateThirdwebVendor())
 	r.Register(CreateRepositoryVendor())
 	r.Register(CreateSuperchainVendor())
+	r.Register(CreateTenderlyVendor())
 
 	return r
 }

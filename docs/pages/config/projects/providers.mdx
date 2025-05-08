@@ -512,6 +512,46 @@ export default createConfig({
 </Tabs.Tab>
 </Tabs>
 
+#### `tenderly`
+
+Built for [Tenderly](https://tenderly.co) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - endpoint: tenderly://YOUR_TENDERLY_API_KEY
+        # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          endpoint: "tenderly://YOUR_TENDERLY_API_KEY",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+For production traffic consult with Tenderly team about the chains you are going to use and amount of traffic you expect to handle.
+
 ## Advanced config
 
 You can use dedicated `providers:` config to customize per-network configurations (e.g. different config for Alchemy eth-mainnet vs Alchemy polygon) as follows:
@@ -658,4 +698,7 @@ providers:
     settings:
       registryUrl: "github.com/ethereum-optimism/superchain-registry/main/chainList.json"
       recheckInterval: 24h # (optional) How often to recheck the registry for newly added chains (default: 24h)
+  - vendor: tenderly
+    settings:
+      apiKey: xxxxx # Your Tenderly API key
 ```
