@@ -105,8 +105,14 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 
 	// Compare local vs new value
 	if c.processNewValue(newValue) && unlock != nil {
-		// Only update remote if local value was updated AND remote lock was acquired
-		c.updateRemoteUpdate(span, newValue)
+		// Only update remote if local value was updated AND remote lock was acquired.
+		// We create a new context so the 'set' timeout restarts here (not and punished by slow lock/get).
+		pctx, cancel := context.WithTimeout(ctx, c.registry.fallbackTimeout)
+		defer cancel()
+		// The reason we don't run this within a "goroutine" is because we want to do this while "lock" is held.
+		// The reason we don't care about errors (such as deadline exceeded) is because remote updates are best-effort,
+		// as we don't want to block the usual flow of the program.
+		c.updateRemoteUpdate(pctx, newValue)
 	}
 
 	return c.value.Load()
@@ -156,9 +162,16 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 		return c.value.Load(), err
 	}
 
-	// Update and publish if new value is applicable AND remote lock was acquired
+	// Process the new value locally
 	if c.processNewValue(newValue) && unlock != nil {
-		c.updateRemoteUpdate(span, newValue)
+		// Only update remote if local value was updated AND remote lock was acquired.
+		// We create a new context so the 'set' timeout restarts here (not and punished by slow lock/get).
+		pctx, cancel := context.WithTimeout(ctx, c.registry.fallbackTimeout)
+		defer cancel()
+		// The reason we don't run this within a "goroutine" is because we want to do this while "lock" is held.
+		// The reason we don't care about errors (such as deadline exceeded) is because remote updates are best-effort,
+		// as we don't want to block the usual flow of the program.
+		c.updateRemoteUpdate(pctx, newValue)
 	}
 
 	// Return the final value from local storage, no matter how it was updated.
@@ -216,13 +229,10 @@ func (c *counterInt64) tryGetRemoteValue(ctx context.Context) int64 {
 	return 0
 }
 
-func (c *counterInt64) updateRemoteUpdate(span trace.Span, newValue int64) {
-	setCtx, setCancel := context.WithCancel(c.registry.appCtx)
-	defer setCancel()
-	setCtx = trace.ContextWithSpanContext(setCtx, span.SpanContext())
-	err := c.registry.connector.Set(setCtx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
+func (c *counterInt64) updateRemoteUpdate(ctx context.Context, newValue int64) {
+	err := c.registry.connector.Set(ctx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
 	if err == nil {
-		err = c.registry.connector.PublishCounterInt64(setCtx, c.key, newValue)
+		err = c.registry.connector.PublishCounterInt64(ctx, c.key, newValue)
 	}
 	if err != nil {
 		c.registry.logger.Warn().Err(err).
