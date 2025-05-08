@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,7 +21,12 @@ const (
 	connectorScopeCache       connectorScope = "cache"
 )
 
-func (c *Config) SetDefaults() error {
+// DefaultOptions is used to pass env-provided or args-provided options to the config defaults initializer
+type DefaultOptions struct {
+	Endpoints []string
+}
+
+func (c *Config) SetDefaults(opts *DefaultOptions) error {
 	if c.LogLevel == "" {
 		c.LogLevel = "INFO"
 	}
@@ -66,7 +72,7 @@ func (c *Config) SetDefaults() error {
 
 	if c.Projects != nil {
 		for _, project := range c.Projects {
-			if err := project.SetDefaults(); err != nil {
+			if err := project.SetDefaults(opts); err != nil {
 				return err
 			}
 		}
@@ -101,11 +107,11 @@ func (c *Config) SetDefaults() error {
 							BackoffFactor:   1.0,
 						},
 						Timeout: &TimeoutPolicyConfig{
-							Duration: Duration(60 * time.Second),
+							Duration: Duration(120 * time.Second),
 						},
 						Hedge: &HedgePolicyConfig{
-							Delay:    Duration(0),
-							MaxCount: 3,
+							Quantile: 0.7,
+							MaxCount: 2,
 						},
 					},
 				},
@@ -119,20 +125,13 @@ func (c *Config) SetDefaults() error {
 							Delay:       Duration(500 * time.Millisecond),
 						},
 						Timeout: &TimeoutPolicyConfig{
-							Duration: Duration(30 * time.Second),
-						},
-						CircuitBreaker: &CircuitBreakerPolicyConfig{
-							FailureThresholdCount:    8,
-							FailureThresholdCapacity: 10,
-							HalfOpenAfter:            Duration(5 * time.Minute),
-							SuccessThresholdCount:    5,
-							SuccessThresholdCapacity: 5,
+							Duration: Duration(60 * time.Second),
 						},
 					},
 				},
 			},
 		}
-		err := c.Projects[0].SetDefaults()
+		err := c.Projects[0].SetDefaults(opts)
 		if err != nil {
 			return err
 		}
@@ -456,7 +455,7 @@ func (c *TracingConfig) SetDefaults() error {
 
 func (s *ServerConfig) SetDefaults() error {
 	if s.ListenV4 == nil {
-		if !util.IsTest() {
+		if !util.IsTest() || os.Getenv("FORCE_TEST_LISTEN_V4") == "true" {
 			s.ListenV4 = util.BoolPtr(true)
 		}
 	}
@@ -788,7 +787,48 @@ func (d *DynamoDBConnectorConfig) SetDefaults(scope connectorScope) error {
 	return nil
 }
 
-func (p *ProjectConfig) SetDefaults() error {
+func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
+	if p.NetworkDefaults != nil {
+		if err := p.NetworkDefaults.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for network defaults: %w", err)
+		}
+	}
+	if p.UpstreamDefaults != nil {
+		if err := p.UpstreamDefaults.SetDefaults(nil); err != nil {
+			return fmt.Errorf("failed to set defaults for upstream defaults: %w", err)
+		}
+	}
+	if len(p.Providers) == 0 && len(p.Upstreams) == 0 {
+		if len(opts.Endpoints) > 0 {
+			for _, endpoint := range opts.Endpoints {
+				upstream := &UpstreamConfig{
+					Endpoint: endpoint,
+				}
+				if err := upstream.SetDefaults(p.UpstreamDefaults); err != nil {
+					return fmt.Errorf("failed to set defaults for upstream: %w", err)
+				}
+				p.Upstreams = append(p.Upstreams, upstream)
+			}
+		} else {
+			log.Warn().Msg("no providers or upstreams found in project; will use default 'public' endpoints repository")
+			repositoryCfg := &ProviderConfig{
+				Id:     "public",
+				Vendor: "repository",
+				// Let the vendor use the default repository URL
+			}
+			if err := repositoryCfg.SetDefaults(p.UpstreamDefaults); err != nil {
+				return fmt.Errorf("failed to set defaults for repository provider: %w", err)
+			}
+			envioCfg := &ProviderConfig{
+				Id:     "envio",
+				Vendor: "envio",
+			}
+			if err := envioCfg.SetDefaults(p.UpstreamDefaults); err != nil {
+				return fmt.Errorf("failed to set defaults for envio provider: %w", err)
+			}
+			p.Providers = append(p.Providers, repositoryCfg, envioCfg)
+		}
+	}
 	if p.Providers == nil {
 		p.Providers = []*ProviderConfig{}
 	}
@@ -818,40 +858,11 @@ func (p *ProjectConfig) SetDefaults() error {
 			}
 		}
 	}
-	if len(p.Providers) == 0 && len(p.Upstreams) == 0 {
-		log.Warn().Msg("no providers or upstreams found in project; will use default 'public' endpoints repository")
-		repositoryCfg := &ProviderConfig{
-			Id:     "public",
-			Vendor: "repository",
-			// Let the vendor use the default repository URL
-		}
-		if err := repositoryCfg.SetDefaults(nil); err != nil {
-			return fmt.Errorf("failed to set defaults for repository provider: %w", err)
-		}
-		envioCfg := &ProviderConfig{
-			Id:     "envio",
-			Vendor: "envio",
-		}
-		if err := envioCfg.SetDefaults(nil); err != nil {
-			return fmt.Errorf("failed to set defaults for envio provider: %w", err)
-		}
-		p.Providers = append(p.Providers, repositoryCfg, envioCfg)
-	}
 	if p.Networks != nil {
 		for _, network := range p.Networks {
 			if err := network.SetDefaults(p.Upstreams, p.NetworkDefaults); err != nil {
 				return fmt.Errorf("failed to set defaults for network: %w", err)
 			}
-		}
-	}
-	if p.NetworkDefaults != nil {
-		if err := p.NetworkDefaults.SetDefaults(); err != nil {
-			return fmt.Errorf("failed to set defaults for network defaults: %w", err)
-		}
-	}
-	if p.UpstreamDefaults != nil {
-		if err := p.UpstreamDefaults.SetDefaults(nil); err != nil {
-			return fmt.Errorf("failed to set defaults for upstream defaults: %w", err)
 		}
 	}
 	if p.Auth != nil {

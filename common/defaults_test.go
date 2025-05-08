@@ -143,7 +143,7 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 				},
 			},
 		}
-		err := cfg.SetDefaults()
+		err := cfg.SetDefaults(&DefaultOptions{})
 		assert.Nil(t, err)
 		assert.Len(t, cfg.Projects[0].Upstreams, 2)
 		assert.Len(t, cfg.Projects[0].Providers, 1)
@@ -169,7 +169,7 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 			},
 		}
 
-		err := cfg.SetDefaults()
+		err := cfg.SetDefaults(&DefaultOptions{})
 		assert.Nil(t, err, "SetDefaults should not return an error")
 
 		// Verify that the alchemy upstream has been converted to a provider
@@ -231,7 +231,7 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 		}
 
 		// Apply defaults
-		err := cfg.SetDefaults()
+		err := cfg.SetDefaults(&DefaultOptions{})
 		assert.Nil(t, err, "SetDefaults should not return an error")
 
 		// Verify failsafe retry is only applied to the first upstream
