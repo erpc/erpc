@@ -39,7 +39,7 @@ func ConfigureTestLogger() {
 }
 
 const (
-	EvmBlockTrackerMocks = 6
+	EvmBlockTrackerMocks = 8
 )
 
 func SetupMocksForEvmStatePoller() {
