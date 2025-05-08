@@ -968,9 +968,6 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 		return VendorSettings{
 			"apiKey": endpoint.Host,
 		}, nil
-	case "tenderly", "evm+tenderly":
-		return VendorSettings{
-			"apiKey": endpoint.Host,
 	case "superchain", "evm+superchain":
 		spec := endpoint.Host
 		if endpoint.Path != "" && endpoint.Path != "/" {
@@ -978,6 +975,10 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 		}
 		return VendorSettings{
 			"registryUrl": spec,
+		}, nil
+	case "tenderly", "evm+tenderly":
+		return VendorSettings{
+			"apiKey": endpoint.Host,
 		}, nil
 	case "repository", "evm+repository":
 		return VendorSettings{
