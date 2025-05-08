@@ -14,7 +14,6 @@ import (
 	"github.com/erpc/erpc/util"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
 )
 
@@ -396,9 +395,12 @@ func TestRedisConnectorConfigurationMethods(t *testing.T) {
 func TestRedisDistributedLocking(t *testing.T) {
 	// Common setup for Redis connector for locking tests
 	setupConnector := func(t *testing.T) (context.Context, *RedisConnector, *miniredis.Miniredis) {
-		s, err := miniredis.Run()
-		require.NoError(t, err)
+		// Use NewMiniRedis to have more control over its lifecycle and time for testing TTLs
+		s := miniredis.NewMiniRedis()
+		err := s.Start() // Start the server; it will pick a random available port
+		require.NoError(t, err, "failed to start miniredis server")
 
+		logger := zerolog.New(io.Discard)
 		ctx, cancel := context.WithCancel(context.Background())
 		t.Cleanup(cancel)
 		t.Cleanup(s.Close)
@@ -413,7 +415,7 @@ func TestRedisDistributedLocking(t *testing.T) {
 		err = cfg.SetDefaults()
 		require.NoError(t, err, "failed to set defaults for redis config")
 
-		connector, err := NewRedisConnector(ctx, &log.Logger, "test-lock-connector", cfg)
+		connector, err := NewRedisConnector(ctx, &logger, "test-lock-connector", cfg)
 		require.NoError(t, err)
 		require.Eventually(t, func() bool {
 			return connector.initializer.State() == util.StateReady
@@ -448,11 +450,15 @@ func TestRedisDistributedLocking(t *testing.T) {
 		require.NoError(t, err, "failed to acquire first lock for simulation")
 		require.NotNil(t, firstLock, "first lock for simulation should not be nil")
 
-		// Attempt to acquire the lock, this should wait until firstLockTTL expires
+		// Fast-forward miniredis time to ensure the first lock expires
+		fastForwardDuration := firstLockTTL + 1*time.Millisecond // Ensure TTL is passed
+		t.Logf("Fast-forwarding miniredis time by %v to expire first lock (TTL: %v)", fastForwardDuration, firstLockTTL)
+		s.FastForward(fastForwardDuration)
+
+		// Attempt to acquire the lock, this should now succeed quickly as the first lock is expired
 		start := time.Now()
-		// The context for the second lock attempt should have a timeout longer than firstLockTTL
-		// plus some buffer for processing and retry intervals.
-		secondLockAttemptCtx, secondLockAttemptCancel := context.WithTimeout(ctx, firstLockTTL+connector.cfg.LockRetryInterval.Duration()*5)
+		// The context for the second lock attempt can be shorter now
+		secondLockAttemptCtx, secondLockAttemptCancel := context.WithTimeout(ctx, connector.cfg.LockRetryInterval.Duration()*3) // Allow for a couple of retries
 		defer secondLockAttemptCancel()
 
 		lock, err := connector.Lock(secondLockAttemptCtx, lockKey, 5*time.Second)
@@ -460,8 +466,12 @@ func TestRedisDistributedLocking(t *testing.T) {
 
 		require.NoError(t, err, "should eventually acquire lock")
 		require.NotNil(t, lock, "lock should not be nil after waiting")
-		require.GreaterOrEqual(t, timeToAcquire, firstLockTTL-connector.cfg.LockRetryInterval.Duration(),
-			"should have waited for approximately the first lock's TTL. Got %v, expected around %v", timeToAcquire, firstLockTTL)
+
+		// After FastForward, the lock should be acquired quickly, on the first or second attempt by redsync.
+		// So, timeToAcquire should be less than, say, 2 * LockRetryInterval.
+		maxExpectedAcquisitionTime := connector.cfg.LockRetryInterval.Duration() * 2
+		require.LessOrEqual(t, timeToAcquire, maxExpectedAcquisitionTime,
+			"lock should have been acquired quickly after FastForward. Got %v, expected less than %v", timeToAcquire, maxExpectedAcquisitionTime)
 
 		// It's tricky to assert the exact key name redsync uses, so we check if ANY lock key exists for our prefix
 		keys := s.Keys()
@@ -541,28 +551,62 @@ func TestRedisDistributedLocking(t *testing.T) {
 		require.LessOrEqual(t, timeSpent.Milliseconds(), int64(300), "should not wait much longer after cancellation")
 	})
 
-	t.Run("LockAcquisitionWithSimulatedExpiredLock", func(t *testing.T) {
+	t.Run("LockAcquisitionWithExpiredLock", func(t *testing.T) {
 		ctx, connector, s := setupConnector(t)
-		lockKey := "test-lock-expired"
-		lockInternalKey := "lock:" + lockKey // Redsync prepends "lock:"
+		lockKey := "test-lock-actually-expired"
+		shortHoldTTL := 150 * time.Millisecond
+		lockInternalKeyPrefix := "lock:" // Redsync prepends "lock:"
 
-		// Manually set an "expired" lock in miniredis. Redsync does not use Redis TTL for the lock value itself,
-		// but rather for the key. Redsync's mechanism relies on trying to acquire it.
-		// So, we just place a key to simulate it was there.
-		// Redsync should still be able to acquire the lock because its SET NX will work.
-		s.Set(lockInternalKey, "some-old-value") // No TTL needed for this simulation
+		// 1. Acquire the lock with a short TTL using the connector
+		firstLockCtx, firstLockCancel := context.WithTimeout(ctx, 2*time.Second) // Generous timeout for first acquisition
+		defer firstLockCancel()
+		lock1, err := connector.Lock(firstLockCtx, lockKey, shortHoldTTL)
+		require.NoError(t, err, "Failed to acquire initial short-lived lock")
+		require.NotNil(t, lock1, "Initial short-lived lock should not be nil")
 
-		lock, err := connector.Lock(ctx, lockKey, 5*time.Second)
-		require.NoError(t, err, "should acquire lock even if an old key existed (redsync handles this)")
-		require.NotNil(t, lock, "lock should not be nil")
+		// Store the value redsync set for the first lock to compare later (optional, but good verification)
+		var firstLockValue string
+		keys := s.Keys()
+		for _, k := range keys {
+			if strings.HasPrefix(k, lockInternalKeyPrefix+lockKey) {
+				firstLockValue, _ = s.Get(k)
+				break
+			}
+		}
+		require.NotEmpty(t, firstLockValue, "Could not find the value of the first lock in miniredis")
 
-		// Verify the lock value was updated by redsync (it uses a random value)
-		newValue, err := s.Get(lockInternalKey)
-		require.NoError(t, err)
-		require.NotEqual(t, "some-old-value", newValue, "lock value should have been updated by redsync")
+		// 2. Do NOT unlock lock1. Fast-forward miniredis time past the lock's TTL.
+		// Add a small millisecond buffer to ensure TTL is definitely passed.
+		fastForwardDuration := shortHoldTTL + 1*time.Millisecond
+		t.Logf("Fast-forwarding miniredis time by %v (lock TTL was %v)", fastForwardDuration, shortHoldTTL)
+		s.FastForward(fastForwardDuration)
 
-		err = lock.Unlock(ctx)
-		require.NoError(t, err, "unlock should succeed")
+		// 3. Attempt to acquire the lock again. It should succeed because the first one expired.
+		secondLockCtx, secondLockCancel := context.WithTimeout(ctx, 2*time.Second) // Generous timeout for second acquisition
+		defer secondLockCancel()
+		lock2, err := connector.Lock(secondLockCtx, lockKey, 5*time.Second) // New, longer TTL for the second lock
+		require.NoError(t, err, "Should acquire lock after the first one expired")
+		require.NotNil(t, lock2, "Second lock should not be nil")
+
+		// 4. Verify the lock value in Redis has changed (redsync sets a new random value)
+		var secondLockValue string
+		keys = s.Keys() // Re-fetch keys in case miniredis state changed
+		for _, k := range keys {
+			if strings.HasPrefix(k, lockInternalKeyPrefix+lockKey) {
+				secondLockValue, _ = s.Get(k)
+				break
+			}
+		}
+		require.NotEmpty(t, secondLockValue, "Could not find the value of the second lock in miniredis")
+		require.NotEqual(t, firstLockValue, secondLockValue, "Lock value in Redis should have changed after re-acquisition")
+
+		// 5. Unlock the second lock
+		err = lock2.Unlock(ctx)
+		require.NoError(t, err, "Unlock of the second lock should succeed")
+
+		// Try to unlock the first lock (it should have expired, redsync's unlock might error or do nothing, either is fine)
+		// This is more of a cleanup attempt, the core test is above.
+		_ = lock1.Unlock(context.Background()) // Use background context as original might be done
 	})
 
 	t.Run("MultipleLockAttemptsWithConcurrentUnlock", func(t *testing.T) {
