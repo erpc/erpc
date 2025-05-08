@@ -8,7 +8,7 @@ require (
 	github.com/DataDog/sketches-go v1.4.6
 	github.com/IGLOU-EU/go-wildcard/v2 v2.0.2
 	github.com/aws/aws-sdk-go v1.55.5
-	github.com/bytedance/sonic v1.12.3
+	github.com/bytedance/sonic v1.13.2
 	github.com/ethereum/go-ethereum v1.14.13
 	github.com/evanw/esbuild v0.24.0
 	github.com/failsafe-go/failsafe-go v0.6.8
@@ -47,11 +47,10 @@ require (
 	github.com/alicebob/gopher-json v0.0.0-20230218143504-906a9b012302 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bits-and-blooms/bitset v1.17.0 // indirect
-	github.com/bytedance/sonic/loader v0.2.1 // indirect
+	github.com/bytedance/sonic/loader v0.2.4 // indirect
 	github.com/cenkalti/backoff/v4 v4.2.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/cloudwego/base64x v0.1.4 // indirect
-	github.com/cloudwego/iasm v0.2.0 // indirect
+	github.com/cloudwego/base64x v0.1.5 // indirect
 	github.com/containerd/containerd v1.7.18 // indirect
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/containerd/platforms v0.2.1 // indirect
