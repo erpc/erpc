@@ -3,7 +3,6 @@ package data
 import (
 	"context"
 	"fmt"
-	"io"
 	"testing"
 	"time"
 
@@ -11,7 +10,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/util"
-	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,7 +23,6 @@ func init() {
 
 func TestDynamoDBConnectorInitialization(t *testing.T) {
 	t.Run("succeeds immediately with valid config (real container)", func(t *testing.T) {
-		logger := zerolog.New(io.Discard)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -67,7 +64,7 @@ func TestDynamoDBConnectorInitialization(t *testing.T) {
 		}
 
 		// Creating the connector should succeed immediately
-		connector, err := NewDynamoDBConnector(ctx, &logger, "test-dynamo-connector", cfg)
+		connector, err := NewDynamoDBConnector(ctx, &log.Logger, "test-dynamo-connector", cfg)
 		require.NoError(t, err, "expected no error from NewDynamoDBConnector with a valid local container")
 
 		if connector.initializer != nil {
@@ -85,7 +82,6 @@ func TestDynamoDBConnectorInitialization(t *testing.T) {
 	})
 
 	t.Run("fails on first attempt with invalid endpoint, but returns connector anyway", func(t *testing.T) {
-		logger := zerolog.New(io.Discard)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -110,7 +106,7 @@ func TestDynamoDBConnectorInitialization(t *testing.T) {
 
 		// We expect the connector constructor to return with no fatal error,
 		//    but the connector won't be ready.
-		connector, err := NewDynamoDBConnector(ctx, &logger, "test-dynamo-invalid-endpoint", cfg)
+		connector, err := NewDynamoDBConnector(ctx, &log.Logger, "test-dynamo-invalid-endpoint", cfg)
 		require.NoError(t, err, "Constructor does not necessarily return an error even if the first attempt fails")
 
 		if connector.initializer != nil {
@@ -128,7 +124,6 @@ func TestDynamoDBConnectorInitialization(t *testing.T) {
 }
 
 func TestDynamoDBConnectorReverseIndex(t *testing.T) {
-	logger := log.Logger
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -171,7 +166,7 @@ func TestDynamoDBConnectorReverseIndex(t *testing.T) {
 		},
 	}
 
-	connector, err := NewDynamoDBConnector(ctx, &logger, "test-reverse-index", cfg)
+	connector, err := NewDynamoDBConnector(ctx, &log.Logger, "test-reverse-index", cfg)
 	require.NoError(t, err, "failed to create DynamoDB connector")
 
 	// Wait for connector to be fully initialized

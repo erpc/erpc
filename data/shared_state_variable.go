@@ -54,7 +54,7 @@ func (c *counterInt64) processNewValue(newVal int64) bool {
 	// It returns true if the local value was actually updated.
 	currentValue := c.value.Load()
 	updated := false
-	if newVal >= currentValue {
+	if newVal > currentValue {
 		c.setValue(newVal)
 		updated = true
 	} else if currentValue > newVal && (currentValue-newVal > c.ignoreRollbackOf) {

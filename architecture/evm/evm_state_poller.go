@@ -289,6 +289,7 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 // Respects the debounce interval if configured (if the last poll happened too recently, it reuses the cached value).
 func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, error) {
 	if e.shouldSkipLatestBlockCheck() {
+		e.logger.Trace().Msg("skipping latest block number poll as it is not supported by the upstream")
 		return 0, nil
 	}
 	dbi := e.debounceInterval
@@ -296,6 +297,7 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		// We must have some debounce interval to avoid thundering herd
 		dbi = 1 * time.Second
 	}
+	e.logger.Trace().Int64("debounceMs", dbi.Milliseconds()).Msg("attempt to poll latest block number")
 	ctx, span := common.StartDetailSpan(ctx, "EvmStatePoller.PollLatestBlockNumber",
 		trace.WithAttributes(
 			attribute.String("upstream.id", e.upstream.Config().Id),

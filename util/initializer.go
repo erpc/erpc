@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -345,7 +344,6 @@ func (i *Initializer) State() InitializationState {
 		Int("running", running).
 		Int("succeeded", succeeded).
 		Int("failed", failed).
-		Str("stack", string(debug.Stack())).
 		Msg("calculating initialization state")
 
 	if total == succeeded {
