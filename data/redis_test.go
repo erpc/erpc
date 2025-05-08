@@ -2,6 +2,7 @@ package data
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/erpc/erpc/util"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
 )
 
@@ -85,7 +87,7 @@ func TestRedisConnectorInitialization(t *testing.T) {
 		err = connector.checkReady()
 		require.Error(t, err)
 
-		// The connector’s initializer should NOT be ready if it failed to connect.
+		// The connector's initializer should NOT be ready if it failed to connect.
 		state := connector.initializer.State()
 		require.NotEqual(t, util.StateReady, state, "connector should not be in ready state")
 
@@ -178,7 +180,7 @@ func TestRedisConnectorInitialization(t *testing.T) {
 		require.NoError(t, err, "Could not rebind miniredis to the original address")
 		defer m2.Close()
 
-		//require.Eventually loop and check whether the connector’s initializer has transitioned to READY.
+		//require.Eventually loop and check whether the connector's initializer has transitioned to READY.
 		require.Eventually(t, func() bool {
 			return connector.initializer.State() == util.StateReady
 		}, 5*time.Second, 200*time.Millisecond,
@@ -389,4 +391,225 @@ func TestRedisConnectorConfigurationMethods(t *testing.T) {
 		})
 	}
 
+}
+
+func TestRedisDistributedLocking(t *testing.T) {
+	// Common setup for Redis connector for locking tests
+	setupConnector := func(t *testing.T) (context.Context, *RedisConnector, *miniredis.Miniredis) {
+		s, err := miniredis.Run()
+		require.NoError(t, err)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		t.Cleanup(s.Close)
+
+		cfg := &common.RedisConnectorConfig{
+			Addr:              s.Addr(),
+			InitTimeout:       common.Duration(2 * time.Second),
+			GetTimeout:        common.Duration(2 * time.Second),
+			SetTimeout:        common.Duration(2 * time.Second),
+			LockRetryInterval: common.Duration(50 * time.Millisecond), // For faster tests
+		}
+		err = cfg.SetDefaults()
+		require.NoError(t, err, "failed to set defaults for redis config")
+
+		connector, err := NewRedisConnector(ctx, &log.Logger, "test-lock-connector", cfg)
+		require.NoError(t, err)
+		require.Eventually(t, func() bool {
+			return connector.initializer.State() == util.StateReady
+		}, 3*time.Second, 100*time.Millisecond, "connector did not become ready")
+
+		return ctx, connector, s
+	}
+
+	t.Run("SuccessfulImmediateLockAcquisition", func(t *testing.T) {
+		ctx, connector, _ := setupConnector(t)
+		lockKey := "test-lock-immediate"
+		lockTTL := 5 * time.Second
+
+		lock, err := connector.Lock(ctx, lockKey, lockTTL)
+		require.NoError(t, err, "should acquire lock without issues")
+		require.NotNil(t, lock, "lock should not be nil")
+
+		err = lock.Unlock(ctx)
+		require.NoError(t, err, "unlock should succeed")
+	})
+
+	t.Run("LockAcquisitionAfterWaitingHeldByAnotherProcess", func(t *testing.T) {
+		ctx, connector, s := setupConnector(t)
+		lockKey := "test-lock-wait"
+		firstLockTTL := 200 * time.Millisecond // Short TTL for the first lock
+
+		// Simulate another process holding the lock by acquiring it first
+		// We use the connector itself to acquire the first lock to ensure it's set correctly by redsync
+		firstLockAttemptCtx, firstLockAttemptCancel := context.WithTimeout(ctx, 5*time.Second)
+		defer firstLockAttemptCancel()
+		firstLock, err := connector.Lock(firstLockAttemptCtx, lockKey, firstLockTTL)
+		require.NoError(t, err, "failed to acquire first lock for simulation")
+		require.NotNil(t, firstLock, "first lock for simulation should not be nil")
+
+		// Attempt to acquire the lock, this should wait until firstLockTTL expires
+		start := time.Now()
+		// The context for the second lock attempt should have a timeout longer than firstLockTTL
+		// plus some buffer for processing and retry intervals.
+		secondLockAttemptCtx, secondLockAttemptCancel := context.WithTimeout(ctx, firstLockTTL+connector.cfg.LockRetryInterval.Duration()*5)
+		defer secondLockAttemptCancel()
+
+		lock, err := connector.Lock(secondLockAttemptCtx, lockKey, 5*time.Second)
+		timeToAcquire := time.Since(start)
+
+		require.NoError(t, err, "should eventually acquire lock")
+		require.NotNil(t, lock, "lock should not be nil after waiting")
+		require.GreaterOrEqual(t, timeToAcquire, firstLockTTL-connector.cfg.LockRetryInterval.Duration(),
+			"should have waited for approximately the first lock's TTL. Got %v, expected around %v", timeToAcquire, firstLockTTL)
+
+		// It's tricky to assert the exact key name redsync uses, so we check if ANY lock key exists for our prefix
+		keys := s.Keys()
+		foundLockKey := false
+		for _, k := range keys {
+			if strings.HasPrefix(k, "lock:"+lockKey) {
+				foundLockKey = true
+				break
+			}
+		}
+		require.True(t, foundLockKey, "a lock key should exist in redis for %s", lockKey)
+
+		err = lock.Unlock(ctx)
+		require.NoError(t, err, "unlock should succeed")
+
+		// Unlock the first lock (even if it expired, good practice)
+		_ = firstLock.Unlock(ctx)
+	})
+
+	t.Run("LockAcquisitionTimesOutDueToParentContext", func(t *testing.T) {
+		ctx, connector, _ := setupConnector(t)
+		lockKey := "test-lock-timeout"
+
+		// Acquire a lock that will be held for a long time
+		holdingLockCtx, holdingLockCancel := context.WithTimeout(ctx, 10*time.Second)
+		defer holdingLockCancel()
+		longHoldLock, err := connector.Lock(holdingLockCtx, lockKey, 10*time.Second) // Held for 10s
+		require.NoError(t, err, "failed to acquire long-hold lock")
+		defer func() { _ = longHoldLock.Unlock(context.Background()) }() // Ensure cleanup
+
+		// Attempt to acquire the lock with a short timeout in the parent context
+		attemptTimeout := 200 * time.Millisecond
+		attemptCtx, attemptCancel := context.WithTimeout(ctx, attemptTimeout)
+		defer attemptCancel()
+
+		start := time.Now()
+		lock, err := connector.Lock(attemptCtx, lockKey, 5*time.Second) // Try to get for 5s, but parent ctx is shorter
+		timeSpent := time.Since(start)
+
+		require.Error(t, err, "lock acquisition should time out due to parent context")
+		require.Nil(t, lock, "lock should be nil on timeout")
+		require.True(t, errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), context.DeadlineExceeded.Error()), "error should be context.DeadlineExceeded or wrap it")
+
+		// Check that timeSpent is close to attemptTimeout, not the lock's internal retries or TTL
+		require.InDelta(t, attemptTimeout.Milliseconds(), timeSpent.Milliseconds(), float64(connector.cfg.LockRetryInterval.Duration().Milliseconds()*2), "time spent should be close to parent context timeout")
+	})
+
+	t.Run("ContextCancellationDuringLockAcquisition", func(t *testing.T) {
+		ctx, connector, _ := setupConnector(t)
+		lockKey := "test-lock-cancel"
+
+		// Acquire a lock that will be held
+		holdingLockCtx, holdingLockCancel := context.WithTimeout(ctx, 10*time.Second)
+		defer holdingLockCancel()
+		holdingLock, err := connector.Lock(holdingLockCtx, lockKey, 10*time.Second)
+		require.NoError(t, err, "failed to acquire holding lock")
+		defer func() { _ = holdingLock.Unlock(context.Background()) }()
+
+		// Attempt to acquire with a context that will be cancelled
+		cancelCtx, cancelFunc := context.WithCancel(ctx)
+
+		go func() {
+			time.Sleep(150 * time.Millisecond) // Cancel after a short delay, while Lock is trying
+			cancelFunc()
+		}()
+
+		start := time.Now()
+		lock, err := connector.Lock(cancelCtx, lockKey, 5*time.Second)
+		timeSpent := time.Since(start)
+
+		require.Error(t, err, "lock acquisition should be cancelled")
+		require.Nil(t, lock, "lock should be nil on cancellation")
+		require.True(t, errors.Is(err, context.Canceled) || strings.Contains(err.Error(), context.Canceled.Error()), "error should be context.Canceled or wrap it")
+
+		// Time spent should be around the cancellation time, not full Lock TTL or many retries
+		require.GreaterOrEqual(t, timeSpent.Milliseconds(), int64(100), "should have waited some time before cancellation")
+		require.LessOrEqual(t, timeSpent.Milliseconds(), int64(300), "should not wait much longer after cancellation")
+	})
+
+	t.Run("LockAcquisitionWithSimulatedExpiredLock", func(t *testing.T) {
+		ctx, connector, s := setupConnector(t)
+		lockKey := "test-lock-expired"
+		lockInternalKey := "lock:" + lockKey // Redsync prepends "lock:"
+
+		// Manually set an "expired" lock in miniredis. Redsync does not use Redis TTL for the lock value itself,
+		// but rather for the key. Redsync's mechanism relies on trying to acquire it.
+		// So, we just place a key to simulate it was there.
+		// Redsync should still be able to acquire the lock because its SET NX will work.
+		s.Set(lockInternalKey, "some-old-value") // No TTL needed for this simulation
+
+		lock, err := connector.Lock(ctx, lockKey, 5*time.Second)
+		require.NoError(t, err, "should acquire lock even if an old key existed (redsync handles this)")
+		require.NotNil(t, lock, "lock should not be nil")
+
+		// Verify the lock value was updated by redsync (it uses a random value)
+		newValue, err := s.Get(lockInternalKey)
+		require.NoError(t, err)
+		require.NotEqual(t, "some-old-value", newValue, "lock value should have been updated by redsync")
+
+		err = lock.Unlock(ctx)
+		require.NoError(t, err, "unlock should succeed")
+	})
+
+	t.Run("MultipleLockAttemptsWithConcurrentUnlock", func(t *testing.T) {
+		ctx, connector, _ := setupConnector(t)
+		lockKey := "test-lock-concurrent"
+
+		// Goroutine 1 acquires the lock
+		lock1Ctx, lock1Cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer lock1Cancel()
+		lock1, err := connector.Lock(lock1Ctx, lockKey, 10*time.Second) // Hold for longer than unlock delay
+		require.NoError(t, err, "goroutine 1 failed to acquire lock")
+		require.NotNil(t, lock1)
+
+		unlockDone := make(chan struct{})
+		// Goroutine 1 unlocks after a delay
+		go func() {
+			defer close(unlockDone)
+			time.Sleep(250 * time.Millisecond)
+			err := lock1.Unlock(ctx)
+			require.NoError(t, err, "goroutine 1 failed to unlock")
+		}()
+
+		// Goroutine 2 attempts to acquire the same lock
+		// This context should be long enough to wait for the unlock + retry interval
+		lock2AttemptCtx, lock2AttemptCancel := context.WithTimeout(ctx, 2*time.Second)
+		defer lock2AttemptCancel()
+
+		start := time.Now()
+		lock2, err := connector.Lock(lock2AttemptCtx, lockKey, 5*time.Second)
+		timeToAcquire := time.Since(start)
+
+		require.NoError(t, err, "goroutine 2 failed to acquire lock")
+		require.NotNil(t, lock2, "goroutine 2 lock should not be nil")
+
+		// Goroutine 2 should have waited for Goroutine 1 to unlock
+		// Allow for one retry interval tolerance
+		expectedWait := 250*time.Millisecond - connector.cfg.LockRetryInterval.Duration()
+		if expectedWait < 0 {
+			expectedWait = 0
+		}
+		require.GreaterOrEqual(t, timeToAcquire, expectedWait,
+			"goroutine 2 should have waited for unlock. Waited %v, expected ~%v", timeToAcquire, 250*time.Millisecond)
+
+		// Wait for unlock to complete to avoid race on t.Cleanup
+		<-unlockDone
+
+		err = lock2.Unlock(ctx)
+		require.NoError(t, err, "goroutine 2 failed to unlock")
+	})
 }

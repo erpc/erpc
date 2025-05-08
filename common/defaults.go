@@ -672,6 +672,9 @@ func (r *RedisConnectorConfig) SetDefaults() error {
 	if r.SetTimeout == 0 {
 		r.SetTimeout = Duration(2 * time.Second)
 	}
+	if r.LockRetryInterval == 0 {
+		r.LockRetryInterval = Duration(300 * time.Millisecond)
+	}
 
 	// URI needs to be constructed from individual fields
 
