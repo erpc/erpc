@@ -40,11 +40,18 @@ type DynamoDBConnector struct {
 	getTimeout        time.Duration
 	setTimeout        time.Duration
 	statePollInterval time.Duration
+	lockRetryInterval time.Duration
 }
+
+var _ DistributedLock = &dynamoLock{}
 
 type dynamoLock struct {
 	connector *DynamoDBConnector
 	lockKey   string
+}
+
+func (l *dynamoLock) IsNil() bool {
+	return l == nil || l.connector == nil
 }
 
 func NewDynamoDBConnector(
@@ -68,6 +75,7 @@ func NewDynamoDBConnector(
 		getTimeout:        cfg.GetTimeout.Duration(),
 		setTimeout:        cfg.SetTimeout.Duration(),
 		statePollInterval: cfg.StatePollInterval.Duration(),
+		lockRetryInterval: cfg.LockRetryInterval.Duration(),
 	}
 
 	// create an Initializer to handle (re)connecting
@@ -506,7 +514,6 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 
 	return value, nil
 }
-
 func (d *DynamoDBConnector) Lock(ctx context.Context, key string, ttl time.Duration) (DistributedLock, error) {
 	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.Lock",
 		trace.WithAttributes(
@@ -523,44 +530,100 @@ func (d *DynamoDBConnector) Lock(ctx context.Context, key string, ttl time.Durat
 	}
 
 	lockKey := fmt.Sprintf("%s:lock", key)
-	expiryTime := time.Now().Add(ttl).Unix()
 
-	_, err := d.client.PutItemWithContext(ctx, &dynamodb.PutItemInput{
-		TableName: aws.String(d.table),
-		Item: map[string]*dynamodb.AttributeValue{
-			d.partitionKeyName: {S: aws.String(lockKey)},
-			d.rangeKeyName:     {S: aws.String("lock")},
-			"expiry":           {N: aws.String(fmt.Sprintf("%d", expiryTime))},
-		},
-		ConditionExpression: aws.String(
-			"attribute_not_exists(#pk) OR #expiry < :now",
-		),
-		ExpressionAttributeNames: map[string]*string{
-			"#pk":     aws.String(d.partitionKeyName),
-			"#expiry": aws.String("expiry"),
-		},
-		ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
-			":now": {N: aws.String(fmt.Sprintf("%d", time.Now().Unix()))},
-		},
-	})
+	// The 'ttl' parameter defines how long the lock will be held if acquired.
+	// The overall acquisition timeout is governed by the parent 'ctx'.
 
-	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok && aerr.Code() == dynamodb.ErrCodeConditionalCheckFailedException {
-			err := fmt.Errorf("lock is held by another process")
+	for {
+		// Check if the parent context is already done (e.g., request cancelled or timed out)
+		// This check is done at the beginning of each attempt and before waiting for retry.
+		select {
+		case <-ctx.Done():
+			err := fmt.Errorf("lock acquisition cancelled or timed out for key '%s': %w", key, ctx.Err())
 			common.SetTraceSpanError(span, err)
 			return nil, err
+		default:
+			// Continue with lock acquisition attempt
 		}
-		err := fmt.Errorf("failed to acquire lock: %w", err)
-		common.SetTraceSpanError(span, err)
-		return nil, err
+
+		// Calculate expiry time for the lock item itself IF it's acquired in this attempt.
+		// This 'ttl' is the duration the lock will be held.
+		lockItemExpiryTime := time.Now().Add(ttl).Unix()
+
+		// Context for the individual PutItem attempt.
+		// This is bounded by the connector's configured SetTimeout and the parent context 'ctx'.
+		// If 'ctx' finishes, PutItemWithContext will be interrupted.
+		putAttemptCtx, putAttemptCancel := context.WithTimeout(ctx, d.setTimeout)
+
+		_, err := d.client.PutItemWithContext(putAttemptCtx, &dynamodb.PutItemInput{
+			TableName: aws.String(d.table),
+			Item: map[string]*dynamodb.AttributeValue{
+				d.partitionKeyName: {S: aws.String(lockKey)},
+				d.rangeKeyName:     {S: aws.String("lock")}, // Using a fixed value for the range key of lock items
+				"expiry":           {N: aws.String(fmt.Sprintf("%d", lockItemExpiryTime))},
+			},
+			ConditionExpression: aws.String(
+				"attribute_not_exists(#pk) OR #expiry < :now",
+			),
+			ExpressionAttributeNames: map[string]*string{
+				"#pk":     aws.String(d.partitionKeyName),
+				"#expiry": aws.String("expiry"),
+			},
+			ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
+				":now": {N: aws.String(fmt.Sprintf("%d", time.Now().Unix()))},
+			},
+		})
+		putAttemptCancel() // Release resources for this attempt's context immediately
+
+		if err == nil {
+			// Lock acquired successfully
+			d.logger.Debug().Str("lockKey", lockKey).Dur("ttl", ttl).Msg("distributed lock acquired")
+			return &dynamoLock{
+				connector: d,
+				lockKey:   lockKey,
+			}, nil
+		}
+
+		// If an error occurred, check if it's a known AWS error we should retry on
+		retryableError := false
+		if aerr, ok := err.(awserr.Error); ok {
+			switch aerr.Code() {
+			case dynamodb.ErrCodeConditionalCheckFailedException:
+				d.logger.Debug().Str("lockKey", lockKey).Dur("retryInterval", d.lockRetryInterval).
+					Msg("lock currently held or contention, will retry")
+				retryableError = true
+			case dynamodb.ErrCodeProvisionedThroughputExceededException,
+				dynamodb.ErrCodeInternalServerError,    // Often retryable for DynamoDB
+				dynamodb.ErrCodeLimitExceededException: // Covers various limits, potentially including some throttling
+				d.logger.Warn().Err(aerr).Str("lockKey", lockKey).Str("errorCode", aerr.Code()).
+					Dur("retryInterval", d.lockRetryInterval).
+					Msg("DynamoDB capacity/limit/server error during lock acquisition, will retry")
+				retryableError = true
+			default:
+				// Non-retryable AWS error for lock acquisition logic
+				d.logger.Error().Err(aerr).Str("lockKey", lockKey).Str("errorCode", aerr.Code()).
+					Msg("non-retryable AWS error during lock acquisition attempt")
+			}
+		}
+
+		if retryableError {
+			// Wait for d.lockRetryInterval before retrying, but also respect parent context cancellation.
+			select {
+			case <-time.After(d.lockRetryInterval):
+				// Continue to the next iteration of the loop to retry
+			case <-ctx.Done(): // Parent context was cancelled/timed out while waiting
+				wrappedErr := fmt.Errorf("lock acquisition timed out while waiting to retry for key '%s': %w", key, ctx.Err())
+				common.SetTraceSpanError(span, wrappedErr)
+				return nil, wrappedErr
+			}
+		} else {
+			// An unexpected or non-retryable error occurred during the PutItem attempt
+			wrappedErr := fmt.Errorf("failed to acquire lock for key '%s' during attempt: %w", key, err)
+			common.SetTraceSpanError(span, wrappedErr)
+			return nil, wrappedErr
+		}
+		// If a retryableError occurred and context wasn't done, the loop continues.
 	}
-
-	d.logger.Debug().Str("lockKey", lockKey).Dur("ttl", ttl).Msg("distributed lock acquired")
-
-	return &dynamoLock{
-		connector: d,
-		lockKey:   lockKey,
-	}, nil
 }
 
 func (l *dynamoLock) Unlock(ctx context.Context) error {

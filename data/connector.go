@@ -16,6 +16,7 @@ const (
 
 type DistributedLock interface {
 	Unlock(ctx context.Context) error
+	IsNil() bool
 }
 
 type Connector interface {

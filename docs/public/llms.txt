@@ -1468,10 +1468,10 @@ Auto-split+batch for getLogs limits
 
 ### Create configuration [Permalink for this section](https://docs.erpc.cloud/\#create-configuration)
 
-Create your [`erpc.yaml`](https://docs.erpc.cloud/config/example) configuration file based on the `erpc.yaml.dist` file:
+Create your [`erpc.yaml`](https://docs.erpc.cloud/config/example) configuration file based on the `erpc.dist.yaml` file:
 
 ```nx-border-black nx-border-opacity-[0.04] nx-bg-opacity-[0.03] nx-bg-black nx-break-words nx-rounded-md nx-border nx-py-0.5 nx-px-[.25em] nx-text-[.9em] dark:nx-border-white/10 dark:nx-bg-white/10
-cp erpc.yaml.dist erpc.yaml
+cp erpc.dist.yaml erpc.yaml
 code erpc.yaml
 ```
 

@@ -103,7 +103,7 @@ func (r *sharedStateRegistry) buildInitialValueTask(counter *counterInt64) *util
 			if v > 0 {
 				counter.mu.Lock()
 				defer counter.mu.Unlock()
-				if v > counter.value.Load() {
+				if v > counter.value {
 					counter.setValue(v)
 				}
 			}
@@ -155,7 +155,7 @@ func (r *sharedStateRegistry) initCounterSync(counter *counterInt64) error {
 				}
 
 				counter.mu.Lock()
-				currentValue := counter.value.Load()
+				currentValue := counter.value
 				if newValue > currentValue {
 					r.logger.Debug().Str("key", counter.key).Int64("currentValue", currentValue).Int64("newValue", newValue).Msg("received new value from shared state")
 					counter.setValue(newValue)

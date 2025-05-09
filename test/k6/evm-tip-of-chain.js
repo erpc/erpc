@@ -7,10 +7,10 @@ const ERPC_BASE_URL = __ENV.ERPC_BASE_URL || 'http://localhost:4000/main/evm/';
 
 // Traffic pattern weights (in percentage, should sum to 100)
 const TRAFFIC_PATTERNS = {
-  LATEST_BLOCK_WITH_LOGS: 30,        // Get latest block and its transfer logs
-  LATEST_BLOCK_RECEIPTS: 30,         // Get receipts from latest block's transactions
-  LATEST_BLOCK_TRACES: 25,           // Get traces from latest block's transactions
-  RANDOM_ACCOUNT_BALANCES: 15,       // Get random account balances
+  LATEST_BLOCK_WITH_LOGS: 100,        // Get latest block and its transfer logs
+  LATEST_BLOCK_RECEIPTS: 0,         // Get receipts from latest block's transactions
+  LATEST_BLOCK_TRACES: 0,           // Get traces from latest block's transactions
+  RANDOM_ACCOUNT_BALANCES: 0,       // Get random account balances
 };
 
 // Configuration
@@ -91,12 +91,16 @@ async function latestBlockWithLogs(http, params, chain) {
   const latestBlock = await getLatestBlock(http, params, chain);
   if (!latestBlock) return null;
 
+  const decimalBlockNumber = parseInt(latestBlock.number, 16);
+  const randomShift = randomIntBetween(0, 1000);
+  const randomToLimit = randomIntBetween(0, randomShift);
+
   const payload = JSON.stringify({
     jsonrpc: "2.0",
     method: "eth_getLogs",
     params: [{
-      fromBlock: latestBlock.number,
-      toBlock: latestBlock.number,
+      fromBlock: decimalBlockNumber - randomShift,
+      toBlock: decimalBlockNumber - randomShift + randomToLimit,
       topics: [TRANSFER_EVENT_TOPIC]
     }],
     id: Math.floor(Math.random() * 100000000)

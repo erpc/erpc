@@ -132,8 +132,14 @@ func (m *MemoryConnector) Lock(ctx context.Context, key string, ttl time.Duratio
 	}, nil
 }
 
+var _ DistributedLock = &memoryLock{}
+
 type memoryLock struct {
 	mutex *sync.Mutex
+}
+
+func (l *memoryLock) IsNil() bool {
+	return l == nil || l.mutex == nil
 }
 
 func (l *memoryLock) Unlock(ctx context.Context) error {

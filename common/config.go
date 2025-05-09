@@ -226,16 +226,17 @@ type TLSConfig struct {
 }
 
 type RedisConnectorConfig struct {
-	Addr         string     `yaml:"addr" json:"addr"`
-	Username     string     `yaml:"username,omitempty" json:"username"`
-	Password     string     `yaml:"password" json:"-"`
-	DB           int        `yaml:"db" json:"db"`
-	TLS          *TLSConfig `yaml:"tls" json:"tls"`
-	ConnPoolSize int        `yaml:"connPoolSize" json:"connPoolSize"`
-	URI          string     `yaml:"uri,omitempty" json:"uri"`
-	InitTimeout  Duration   `yaml:"initTimeout,omitempty" json:"initTimeout" tstype:"Duration"`
-	GetTimeout   Duration   `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
-	SetTimeout   Duration   `yaml:"setTimeout,omitempty" json:"setTimeout" tstype:"Duration"`
+	Addr              string     `yaml:"addr" json:"addr"`
+	Username          string     `yaml:"username,omitempty" json:"username"`
+	Password          string     `yaml:"password" json:"-"`
+	DB                int        `yaml:"db" json:"db"`
+	TLS               *TLSConfig `yaml:"tls" json:"tls"`
+	ConnPoolSize      int        `yaml:"connPoolSize" json:"connPoolSize"`
+	URI               string     `yaml:"uri,omitempty" json:"uri"`
+	InitTimeout       Duration   `yaml:"initTimeout,omitempty" json:"initTimeout" tstype:"Duration"`
+	GetTimeout        Duration   `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
+	SetTimeout        Duration   `yaml:"setTimeout,omitempty" json:"setTimeout" tstype:"Duration"`
+	LockRetryInterval Duration   `yaml:"lockRetryInterval,omitempty" json:"lockRetryInterval" tstype:"Duration"`
 }
 
 func (r *RedisConnectorConfig) MarshalJSON() ([]byte, error) {
@@ -266,6 +267,7 @@ type DynamoDBConnectorConfig struct {
 	GetTimeout        Duration       `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
 	SetTimeout        Duration       `yaml:"setTimeout,omitempty" json:"setTimeout" tstype:"Duration"`
 	StatePollInterval Duration       `yaml:"statePollInterval,omitempty" json:"statePollInterval" tstype:"Duration"`
+	LockRetryInterval Duration       `yaml:"lockRetryInterval,omitempty" json:"lockRetryInterval" tstype:"Duration"`
 }
 
 type PostgreSQLConnectorConfig struct {

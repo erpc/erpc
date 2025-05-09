@@ -3,8 +3,8 @@ package data
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -26,43 +26,55 @@ type CounterInt64SharedVariable interface {
 }
 
 type baseSharedVariable struct {
-	lastUpdated atomic.Int64 // Unix nanoseconds
+	lastProcessed time.Time
 }
 
 func (v *baseSharedVariable) IsStale(staleness time.Duration) bool {
-	lastUpdatedNano := v.lastUpdated.Load()
-	return time.Since(time.Unix(0, lastUpdatedNano)) > staleness
+	if v.lastProcessed.IsZero() {
+		return true
+	}
+	return time.Since(v.lastProcessed) > staleness
 }
 
 type counterInt64 struct {
 	baseSharedVariable
 	registry              *sharedStateRegistry
 	key                   string
-	value                 atomic.Int64
-	mu                    sync.Mutex // still needed for complex operations
+	value                 int64
+	mu                    sync.RWMutex
 	valueCallback         func(int64)
 	ignoreRollbackOf      int64
 	largeRollbackCallback func(localVal, newVal int64)
 }
 
 func (c *counterInt64) GetValue() int64 {
-	return c.value.Load()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.value
 }
 
-func (c *counterInt64) maybeUpdateValue(currentVal, newVal int64) bool {
+func (c *counterInt64) processNewValue(newVal int64) bool {
 	// This function is designed to be called from within c.mu.Lock().
 	// It returns true if the local value was actually updated.
+	currentValue := c.value
 	updated := false
-	if newVal > currentVal {
+	if newVal > currentValue {
 		c.setValue(newVal)
 		updated = true
-	} else if currentVal > newVal && (currentVal-newVal > c.ignoreRollbackOf) {
+	} else if currentValue > newVal && (currentValue-newVal > c.ignoreRollbackOf) {
 		c.setValue(newVal)
 		if c.largeRollbackCallback != nil {
-			c.largeRollbackCallback(currentVal, newVal)
+			c.largeRollbackCallback(currentValue, newVal)
 		}
 		updated = true
 	}
+
+	// We have just consulted a fresh source; refresh the timestamp
+	// so the value is considered fresh for the debounce window even
+	// when it did not change.
+	c.lastProcessed = time.Now()
+
+	c.registry.logger.Trace().Str("key", c.key).Str("ptr", fmt.Sprintf("%p", c)).Int64("currentValue", currentValue).Int64("newVal", newVal).Bool("updated", updated).Msg("processed new value")
 	return updated
 }
 
@@ -73,94 +85,48 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 		),
 	)
 	defer span.End()
-
 	if common.IsTracingDetailed {
 		span.SetAttributes(
 			attribute.Int64("new_value", newValue),
 		)
 	}
 
-	rctx, cancel := context.WithTimeout(ctx, c.registry.fallbackTimeout)
-	defer cancel()
-
-	// Try remote lock first
-	lock, err := c.registry.connector.Lock(rctx, c.key, c.registry.lockTtl)
-	if err != nil {
-		// Fallback to local lock if remote lock fails
-		c.mu.Lock()
-		defer c.mu.Unlock()
-
-		currentValue := c.value.Load()
-		_ = c.maybeUpdateValue(currentValue, newValue)
-		return c.value.Load()
-	}
-	defer func() {
-		unlockCtx, cancel := context.WithTimeout(context.Background(), c.registry.lockTtl)
-		defer cancel()
-		if err := lock.Unlock(unlockCtx); err != nil {
-			c.registry.logger.Warn().Err(err).Str("key", c.key).Int64("lock_ttl_ms", c.registry.lockTtl.Milliseconds()).Msg("failed to unlock counter, so it will be expired after ttl")
-		}
-	}()
-
-	// Get remote value
-	remoteVal, err := c.registry.connector.Get(rctx, ConnectorMainIndex, c.key, "value")
-	if err != nil && !common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
-		// Fallback to local update on error
-		c.mu.Lock()
-		defer c.mu.Unlock()
-
-		currentValue := c.value.Load()
-		_ = c.maybeUpdateValue(currentValue, newValue)
-		return c.value.Load()
-	}
-
-	var remoteValue int64
-	if remoteVal != "" {
-		if _, err := fmt.Sscanf(remoteVal, "%d", &remoteValue); err != nil {
-			// Fallback to local update on parse error
-			c.mu.Lock()
-			defer c.mu.Unlock()
-
-			currentValue := c.value.Load()
-			_ = c.maybeUpdateValue(currentValue, remoteValue)
-			return c.value.Load()
-		}
-	}
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Use highest value among local, remote, and new
-	currentValue := c.value.Load()
+	rctx, cancel := context.WithTimeout(ctx, c.registry.fallbackTimeout)
+	defer cancel()
 
-	if remoteValue > currentValue {
-		c.setValue(remoteValue)
-		currentValue = remoteValue
+	// Try remote lock as a best effort
+	unlock := c.tryAcquireLock(rctx)
+	if unlock != nil {
+		// If remote lock was acquired, we need to unlock it after the whole operation is complete
+		defer unlock()
+
+		// Get current remote value if it exists
+		remoteVal := c.tryGetRemoteValue(rctx)
+		if remoteVal > 0 {
+			// Use highest value local vs remote if applicable
+			c.processNewValue(remoteVal)
+		}
 	}
 
-	if c.maybeUpdateValue(currentValue, newValue) {
-		go func() {
-			// Only update remote if we're using the new value
-			setCtx, setCancel := context.WithCancel(c.registry.appCtx)
-			defer setCancel()
-			setCtx = trace.ContextWithSpanContext(setCtx, span.SpanContext())
-			err := c.registry.connector.Set(setCtx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
-			if err == nil {
-				err = c.registry.connector.PublishCounterInt64(setCtx, c.key, newValue)
-			}
-			if err != nil {
-				c.registry.logger.Warn().Err(err).
-					Str("key", c.key).
-					Int64("value", newValue).
-					Msg("failed to update remote value")
-			}
-		}()
+	// Compare local vs new value
+	if c.processNewValue(newValue) && unlock != nil {
+		// Only update remote if local value was updated AND remote lock was acquired.
+		// We create a new context so the 'set' timeout restarts here (not and punished by slow lock/get).
+		pctx, cancel := context.WithTimeout(ctx, c.registry.fallbackTimeout)
+		defer cancel()
+		// The reason we don't run this within a "goroutine" is because we want to do this while "lock" is held.
+		// The reason we don't care about errors (such as deadline exceeded) is because remote updates are best-effort,
+		// as we don't want to block the usual flow of the program.
+		c.updateRemoteUpdate(pctx, newValue)
 	}
 
-	return c.value.Load()
+	return c.value
 }
 
-func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Duration, getNewValue func(ctx context.Context) (int64, error)) (int64, error) {
+func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Duration, executeNewValueFn func(ctx context.Context) (int64, error)) (int64, error) {
 	ctx, span := common.StartSpan(ctx, "CounterInt64.TryUpdateIfStale",
 		trace.WithAttributes(
 			attribute.String("key", c.key),
@@ -170,108 +136,61 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	defer span.End()
 
 	// Quick check if value is not stale using atomic read
+	c.mu.RLock()
 	if !c.IsStale(staleness) {
-		return c.value.Load(), nil
+		defer c.mu.RUnlock()
+		return c.value, nil
 	}
-
-	rctx, cancel := context.WithTimeout(ctx, c.registry.fallbackTimeout)
-	defer cancel()
-
-	// Try remote lock first
-	lock, err := c.registry.connector.Lock(rctx, c.key, c.registry.lockTtl)
-	if err != nil {
-		// Fallback to local lock if remote lock fails
-		c.mu.Lock()
-		defer c.mu.Unlock()
-
-		// Double-check staleness under lock
-		if !c.IsStale(staleness) {
-			return c.value.Load(), nil
-		}
-
-		newValue, err := getNewValue(ctx)
-		if err != nil {
-			return c.value.Load(), err
-		}
-
-		currentValue := c.value.Load()
-		_ = c.maybeUpdateValue(currentValue, newValue)
-		return c.value.Load(), nil
-	}
-	defer func() {
-		unlockCtx, cancel := context.WithTimeout(context.Background(), c.registry.lockTtl)
-		defer cancel()
-		if err := lock.Unlock(unlockCtx); err != nil {
-			c.registry.logger.Warn().Err(err).Str("key", c.key).Msg("failed to unlock counter")
-		}
-	}()
-
-	// Get remote value
-	remoteVal, err := c.registry.connector.Get(rctx, ConnectorMainIndex, c.key, "value")
-	if err != nil && !common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
-		// Fallback to local update on error
-		c.mu.Lock()
-		defer c.mu.Unlock()
-
-		if !c.IsStale(staleness) {
-			return c.value.Load(), nil
-		}
-
-		newValue, err := getNewValue(ctx)
-		if err != nil {
-			return c.value.Load(), err
-		}
-
-		currentValue := c.value.Load()
-		_ = c.maybeUpdateValue(currentValue, newValue)
-		return c.value.Load(), nil
-	}
-
-	var remoteValue int64
-	if remoteVal != "" {
-		if _, err := fmt.Sscanf(remoteVal, "%d", &remoteValue); err != nil {
-			return 0, fmt.Errorf("failed to parse remote value: %w", err)
-		}
-	}
+	c.mu.RUnlock()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Update local value if remote is higher
-	currentValue := c.value.Load()
-	if remoteValue > currentValue {
-		c.setValue(remoteValue)
-	}
-
-	// Check staleness again under lock
+	// Double-check staleness under lock
 	if !c.IsStale(staleness) {
-		return c.value.Load(), nil
+		return c.value, nil
 	}
 
-	// Get new value
-	newValue, err := getNewValue(ctx)
+	// Lock remotely if possible in best-effort mode
+	rctx, cancel := context.WithTimeout(ctx, c.registry.fallbackTimeout)
+	defer cancel()
+	unlock := c.tryAcquireLock(rctx)
+	if unlock != nil {
+		// If remote lock was acquired, we need to unlock it after the whole operation is complete
+		defer unlock()
+
+		// Get existing remote value in case it is already updated by another instance
+		if val := c.tryGetRemoteValue(rctx); val > 0 {
+			if c.processNewValue(val) {
+				return c.value, nil
+			}
+		}
+	}
+
+	// Refresh the new value via user-defined func because local value is stale AND remote value is not up-to-date
+	c.registry.logger.Trace().Str("key", c.key).Str("ptr", fmt.Sprintf("%p", c)).Int64("c.value", c.value).Bool("unlockable", unlock != nil).Msg("refreshing new value via user-defined func because local value is stale AND remote value is not up-to-date")
+	newValue, err := executeNewValueFn(ctx)
 	if err != nil {
-		return c.value.Load(), err
+		// Avoid thundering herd in case of errors (wait equal to debounce window)
+		c.lastProcessed = time.Now()
+		return c.value, err
+	}
+	c.registry.logger.Trace().Str("key", c.key).Str("ptr", fmt.Sprintf("%p", c)).Bool("unlockable", unlock != nil).Int64("newValue", newValue).Msg("received new value from user-defined func")
+
+	// Process the new value locally
+	if c.processNewValue(newValue) && unlock != nil {
+		// Only update remote if local value was updated AND remote lock was acquired.
+		// We create a new context so the 'set' timeout restarts here (not and punished by slow lock/get).
+		pctx, cancel := context.WithTimeout(ctx, c.registry.fallbackTimeout)
+		defer cancel()
+		// The reason we don't run this within a "goroutine" is because we want to do this while "lock" is held.
+		// The reason we don't care about errors (such as deadline exceeded) is because remote updates are best-effort,
+		// as we don't want to block the usual flow of the program.
+		c.updateRemoteUpdate(pctx, newValue)
 	}
 
-	// Update if new value is higher
-	currentValue = c.value.Load() // Re-read in case it changed
-	if c.maybeUpdateValue(currentValue, newValue) {
-		go func() {
-			err := c.registry.connector.Set(c.registry.appCtx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
-			if err == nil {
-				err = c.registry.connector.PublishCounterInt64(c.registry.appCtx, c.key, newValue)
-			}
-			if err != nil {
-				c.registry.logger.Warn().Err(err).
-					Str("key", c.key).
-					Int64("value", newValue).
-					Msg("failed to update remote value")
-			}
-		}()
-	}
-
-	return c.value.Load(), nil
+	// Return the final value from local storage, no matter how it was updated.
+	return c.value, nil
 }
 
 func (c *counterInt64) OnValue(cb func(int64)) {
@@ -280,16 +199,60 @@ func (c *counterInt64) OnValue(cb func(int64)) {
 	c.valueCallback = cb
 }
 
+func (c *counterInt64) OnLargeRollback(cb func(currentVal, newVal int64)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.largeRollbackCallback = cb
+}
+
 func (c *counterInt64) setValue(val int64) {
-	c.value.Store(val)
-	c.lastUpdated.Store(time.Now().UnixNano())
+	c.value = val
 	if c.valueCallback != nil {
 		c.valueCallback(val)
 	}
 }
 
-func (c *counterInt64) OnLargeRollback(cb func(currentVal, newVal int64)) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.largeRollbackCallback = cb
+func (c *counterInt64) tryAcquireLock(ctx context.Context) func() {
+	lock, err := c.registry.connector.Lock(ctx, c.key, c.registry.lockTtl)
+	if err != nil {
+		c.registry.logger.Warn().Err(err).Str("key", c.key).Msg("failed to remotely lock counter will only use local lock")
+	}
+	if lock != nil && !lock.IsNil() {
+		return func() {
+			unlockCtx, cancel := context.WithTimeout(c.registry.appCtx, c.registry.lockTtl)
+			defer cancel()
+			if err := lock.Unlock(unlockCtx); err != nil {
+				c.registry.logger.Warn().Err(err).Str("key", c.key).Int64("lock_ttl_ms", c.registry.lockTtl.Milliseconds()).Msg("failed to unlock counter, so it will be expired after ttl")
+			}
+		}
+	}
+	return nil
+}
+
+func (c *counterInt64) tryGetRemoteValue(ctx context.Context) int64 {
+	remoteVal, err := c.registry.connector.Get(ctx, ConnectorMainIndex, c.key, "value")
+	if err != nil {
+		c.registry.logger.Warn().Err(err).Str("key", c.key).Msg("failed to get remote counter value")
+	} else {
+		remoteValueInt, err := strconv.ParseInt(remoteVal, 0, 0)
+		if err != nil {
+			c.registry.logger.Warn().Err(err).Str("key", c.key).Msg("failed to parse remote counter value")
+		} else {
+			return remoteValueInt
+		}
+	}
+	return 0
+}
+
+func (c *counterInt64) updateRemoteUpdate(ctx context.Context, newValue int64) {
+	err := c.registry.connector.Set(ctx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
+	if err == nil {
+		err = c.registry.connector.PublishCounterInt64(ctx, c.key, newValue)
+	}
+	if err != nil {
+		c.registry.logger.Warn().Err(err).
+			Str("key", c.key).
+			Int64("value", newValue).
+			Msg("failed to update remote counter value")
+	}
 }

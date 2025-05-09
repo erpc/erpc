@@ -14,7 +14,6 @@ import (
 	"github.com/erpc/erpc/util"
 	"github.com/go-redsync/redsync/v4"
 	"github.com/go-redsync/redsync/v4/redis/goredis/v9"
-	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
@@ -142,7 +141,7 @@ func (r *RedisConnector) connectTask(ctx context.Context) error {
 	defer cancel()
 	_, err = client.Ping(ctx).Result()
 	if err != nil {
-		if options.TLSConfig != nil && err != nil && strings.Contains(err.Error(), "certificate") {
+		if options.TLSConfig != nil && strings.Contains(err.Error(), "certificate") {
 			errMsg := fmt.Sprintf("failed to connect to Redis with TLS enabled: %v.", err)
 			if !options.TLSConfig.InsecureSkipVerify && options.TLSConfig.RootCAs == nil {
 				errMsg += " Ensure the server certificate is valid and trusted by the system CAs, or provide a custom CA using 'tls.caFile'."
@@ -308,6 +307,8 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 
 // Lock attempts to acquire a distributed lock for the specified key.
 // It uses SET NX with an expiration TTL. Returns a DistributedLock instance on success.
+// The method will attempt to acquire the lock for the duration of the provided context, retrying periodically.
+// If acquired, the lock will be held in Redis for the 'ttl' duration.
 func (r *RedisConnector) Lock(ctx context.Context, lockKey string, ttl time.Duration) (DistributedLock, error) {
 	ctx, span := common.StartSpan(ctx, "RedisConnector.Lock",
 		trace.WithAttributes(
@@ -322,23 +323,43 @@ func (r *RedisConnector) Lock(ctx context.Context, lockKey string, ttl time.Dura
 		return nil, err
 	}
 
-	// Generate a unique token for this specific lock operation
-	token := uuid.New().String()
-	ctx, cancel := context.WithTimeout(ctx, r.setTimeout)
-	defer cancel()
+	// ttl parameter is now primarily for the lock's expiry in Redis.
+	// The acquisition timeout is governed by the deadline of the parent 'ctx'.
+	retryInterval := 500 * time.Millisecond
+	if r.cfg != nil && r.cfg.LockRetryInterval.Duration() > 0 {
+		retryInterval = r.cfg.LockRetryInterval.Duration()
+	}
+
+	// Set a large number of tries to ensure redsync retries for a significant duration,
+	// effectively bounded by the parent context's deadline.
+	const maxRetries = 10_000
 
 	mutex := r.redsync.NewMutex(
 		fmt.Sprintf("lock:%s", lockKey),
-		redsync.WithExpiry(ttl),
-		redsync.WithTries(1), // Only try once to match original behavior
+		redsync.WithExpiry(ttl),               // Lock key in Redis expires after ttl
+		redsync.WithRetryDelay(retryInterval), // Wait this long between retries
+		redsync.WithTries(maxRetries),         // Attempt this many times (or until context is done)
 	)
 
+	r.logger.Debug().Str("key", lockKey).Dur("ttl", ttl).Dur("retryInterval", retryInterval).Int("max_tries", maxRetries).Msg("attempting to acquire distributed lock")
+
+	// LockContext will use the parent ctx. It will retry according to Tries and RetryDelay,
+	// but will stop early if ctx's deadline is met or ctx is cancelled.
 	if err := mutex.LockContext(ctx); err != nil {
 		common.SetTraceSpanError(span, err)
-		return nil, fmt.Errorf("failed to acquire lock: %w", err)
+		// Check if the error is due to the parent context being done
+		if ctx.Err() != nil { // Parent context was cancelled or timed out
+			r.logger.Warn().Err(err).Str("key", lockKey).Msgf("failed to acquire lock; parent context cancelled or deadline exceeded: %v", ctx.Err())
+			// Return the parent context's error, as it's the root cause for stopping.
+			// Redsync's error (err) might be a generic "context done" or more specific.
+			return nil, fmt.Errorf("failed to acquire lock for key '%s': %w", lockKey, ctx.Err())
+		}
+		// If ctx.Err() is nil, but LockContext failed, it's another redsync error (e.g. Tries exhausted before context, connection issue)
+		r.logger.Warn().Err(err).Str("key", lockKey).Msg("failed to acquire lock")
+		return nil, fmt.Errorf("failed to acquire lock for key '%s': %w", lockKey, err)
 	}
 
-	r.logger.Trace().Str("key", lockKey).Str("token", token).Msg("distributed lock acquired")
+	r.logger.Info().Str("key", lockKey).Dur("ttl", ttl).Msg("distributed lock acquired")
 
 	return &redisLock{
 		connector: r,
@@ -500,10 +521,16 @@ func (r *RedisConnector) getCurrentValue(ctx context.Context, key string) (int64
 	return value, nil
 }
 
+var _ DistributedLock = &redisLock{}
+
 type redisLock struct {
 	connector *RedisConnector
 	key       string
 	mutex     *redsync.Mutex
+}
+
+func (l *redisLock) IsNil() bool {
+	return l == nil || l.mutex == nil
 }
 
 func (l *redisLock) Unlock(ctx context.Context) error {

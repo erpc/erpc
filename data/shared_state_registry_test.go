@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +15,10 @@ import (
 
 type MockLock struct {
 	mock.Mock
+}
+
+func (m *MockLock) IsNil() bool {
+	return m == nil
 }
 
 func (m *MockLock) Unlock(ctx context.Context) error {
@@ -50,10 +53,9 @@ func TestSharedStateRegistry_UpdateCounter_Success(t *testing.T) {
 	counter := &counterInt64{
 		registry:         registry,
 		key:              "my-dev/test",
-		value:            atomic.Int64{},
+		value:            5,
 		ignoreRollbackOf: 1024,
 	}
-	counter.value.Store(5)
 
 	result := counter.TryUpdate(ctx, 10)
 	assert.Equal(t, int64(10), result)
@@ -73,10 +75,9 @@ func TestSharedStateRegistry_UpdateCounter_LockFailure(t *testing.T) {
 	counter := &counterInt64{
 		registry:         registry,
 		key:              "my-dev/test",
-		value:            atomic.Int64{},
+		value:            5,
 		ignoreRollbackOf: 1024,
 	}
-	counter.value.Store(5)
 
 	result := counter.TryUpdate(ctx, 10)
 	assert.Equal(t, int64(10), result) // Should fall back to local update
@@ -93,14 +94,15 @@ func TestSharedStateRegistry_UpdateCounter_GetFailure(t *testing.T) {
 	connector.On("Lock", mock.Anything, "my-dev/test", mock.Anything).Return(lock, nil)
 	connector.On("Get", mock.Anything, ConnectorMainIndex, "my-dev/test", "value").
 		Return("", errors.New("get failed"))
+	connector.On("Set", mock.Anything, "my-dev/test", "value", mock.Anything, mock.Anything).Return(nil)
+	connector.On("PublishCounterInt64", mock.Anything, "my-dev/test", mock.Anything).Return(nil)
 
 	counter := &counterInt64{
 		registry:         registry,
 		key:              "my-dev/test",
-		value:            atomic.Int64{},
+		value:            5,
 		ignoreRollbackOf: 1024,
 	}
-	counter.value.Store(5)
 
 	result := counter.TryUpdate(ctx, 10)
 	assert.Equal(t, int64(10), result) // Should fall back to local update
@@ -123,10 +125,9 @@ func TestSharedStateRegistry_UpdateCounter_SetFailure(t *testing.T) {
 	counter := &counterInt64{
 		registry:         registry,
 		key:              "my-dev/test",
-		value:            atomic.Int64{},
+		value:            5,
 		ignoreRollbackOf: 1024,
 	}
-	counter.value.Store(5)
 
 	result := counter.TryUpdate(ctx, 10)
 	assert.Equal(t, int64(10), result) // Should fall back to local update
@@ -152,10 +153,9 @@ func TestSharedStateRegistry_UpdateCounter_PublishFailure(t *testing.T) {
 	counter := &counterInt64{
 		registry:         registry,
 		key:              "my-dev/test",
-		value:            atomic.Int64{},
+		value:            5,
 		ignoreRollbackOf: 1024,
 	}
-	counter.value.Store(5)
 
 	result := counter.TryUpdate(ctx, 10)
 	assert.Equal(t, int64(10), result) // Should fall back to local update
@@ -178,10 +178,9 @@ func TestSharedStateRegistry_UpdateCounter_RemoteHigherValue(t *testing.T) {
 	counter := &counterInt64{
 		registry:         registry,
 		key:              "my-dev/test",
-		value:            atomic.Int64{},
+		value:            5,
 		ignoreRollbackOf: 1024,
 	}
-	counter.value.Store(5)
 
 	result := counter.TryUpdate(ctx, 10)
 	assert.Equal(t, int64(15), result) // Should use higher remote value
@@ -204,10 +203,9 @@ func TestSharedStateRegistry_UpdateCounter_ConcurrentUpdates(t *testing.T) {
 	counter := &counterInt64{
 		registry:         registry,
 		key:              "my-dev/test",
-		value:            atomic.Int64{},
+		value:            5,
 		ignoreRollbackOf: 1024,
 	}
-	counter.value.Store(5)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 10; i++ {
@@ -220,7 +218,7 @@ func TestSharedStateRegistry_UpdateCounter_ConcurrentUpdates(t *testing.T) {
 
 	wg.Wait()
 
-	assert.Equal(t, int64(19), counter.value.Load())
+	assert.Equal(t, int64(19), counter.value)
 }
 
 func TestSharedStateRegistry_GetCounterInt64_WatchSetup(t *testing.T) {

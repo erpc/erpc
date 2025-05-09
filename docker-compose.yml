@@ -23,14 +23,14 @@ services:
       - prometheus_data:/prometheus
       - grafana_data:/var/lib/grafana
 
-  # redis:
-  #   container_name: erpc-redis
-  #   image: redis:latest
-  #   restart: always
-  #   ports:
-  #     - "6379:6379"
-  #   networks:
-  #     erpc:
+  redis:
+    container_name: erpc-redis
+    image: redis:latest
+    restart: always
+    ports:
+      - "6379:6379"
+    networks:
+      erpc:
 
   # jaeger:
   #   container_name: erpc-jaeger
