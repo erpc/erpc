@@ -50,10 +50,16 @@ type EvmStatePoller struct {
 	// we haven't received enough "synced" responses to assume it's fully synced.
 	synced       int8
 	syncingState common.EvmSyncingState
+	syncMu       sync.Mutex
 
 	// Certain upstreams do not support calling such method, therefore we must avoid sending redundant requests.
 	// We will return "nil" as status for syncing which means we don't know for certain.
 	skipSyncingCheck bool
+
+	// Track consecutive failures when querying eth_syncing so we can automatically
+	// stop querying after a threshold (similar to latest/finalized block logic).
+	syncingFailureCount   int
+	syncingSuccessfulOnce bool
 
 	// Avoid making redundant calls based on a networks block time
 	// i.e. latest/finalized block is not going to change within the debounce interval
@@ -223,13 +229,36 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if e.synced >= FullySyncedThreshold || e.skipSyncingCheck {
+		e.syncMu.Lock()
+		defer e.syncMu.Unlock()
+
+		e.stateMu.RLock()
+		skip := e.skipSyncingCheck
+		e.stateMu.RUnlock()
+		if e.synced >= FullySyncedThreshold || skip {
 			return
 		}
 
 		syncing, err := e.fetchSyncingState(ctx)
 		if err != nil {
-			if !e.skipSyncingCheck {
+			// Handle consecutive failures to determine if we should stop querying eth_syncing
+			e.stateMu.Lock()
+			// Only apply the failure threshold logic if we have never had a successful response.
+			if !e.syncingSuccessfulOnce {
+				e.syncingFailureCount++
+				if e.syncingFailureCount >= 10 {
+					e.skipSyncingCheck = true
+					e.syncingState = common.EvmSyncingStateUnknown
+					e.logger.Warn().Err(err).
+						Msgf("upstream does not support fetching syncing state in evm state poller after %d consecutive failures, will give up", e.syncingFailureCount)
+				} else {
+					e.logger.Debug().Err(err).
+						Msgf("upstream does not seem to support fetching syncing state in evm state poller after %d consecutive failures, will retry again", e.syncingFailureCount)
+				}
+			}
+			e.stateMu.Unlock()
+
+			if !skip {
 				e.logger.Warn().Bool("syncingResult", syncing).Err(err).Msg("failed to get syncing state in evm state poller")
 				ermu.Lock()
 				errs = append(errs, err)
@@ -267,6 +296,10 @@ func (e *EvmStatePoller) Poll(ctx context.Context) error {
 			// If we have received at least one response (syncing or not-syncing) we explicitly assume it's syncing.
 			e.logger.Debug().Bool("syncingResult", syncing).Msgf("node is marked as still syncing %d out of %d confirmations done so far", e.synced, FullySyncedThreshold)
 		}
+
+		// Mark as successful and reset failure counter
+		e.syncingSuccessfulOnce = true
+		e.syncingFailureCount = 0
 	}()
 
 	wg.Wait()
@@ -564,7 +597,9 @@ func (e *EvmStatePoller) fetchSyncingState(ctx context.Context) (bool, error) {
 			common.ErrCodeUpstreamMethodIgnored,
 			common.ErrCodeEndpointUnsupported,
 		) || common.IsClientError(err) {
+			e.stateMu.Lock()
 			e.skipSyncingCheck = true
+			e.stateMu.Unlock()
 		}
 		return false, err
 	}

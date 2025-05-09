@@ -527,10 +527,13 @@ func TestCounterInt64_IsStale(t *testing.T) {
 func TestCounterInt64_SetValueUpdatesLastUpdated(t *testing.T) {
 	counter := &counterInt64{
 		ignoreRollbackOf: 1024,
+		registry:         &sharedStateRegistry{
+			logger: &log.Logger,
+		},
 	}
 
 	// Simulate a write originating from the remote sync by calling setValue directly.
-	counter.setValue(123)
+	counter.processNewValue(123)
 
 	// Immediately after the write the counter must not be considered stale for any reasonable staleness window.
 	assert.False(t, counter.IsStale(time.Second), "counter should not be stale right after setValue call")

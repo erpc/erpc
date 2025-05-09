@@ -8870,8 +8870,8 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
 		mt := health.NewTracker(&log.Logger, "prjA", 5*time.Second)
 
-		pollerInterval := 5000 * time.Millisecond
-		pollerDebounce := 5000 * time.Millisecond
+		pollerInterval := 2000 * time.Millisecond
+		pollerDebounce := 1000 * time.Millisecond
 
 		fsCfg := &common.FailsafeConfig{
 			Retry: &common.RetryPolicyConfig{
@@ -8926,7 +8926,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		// 3.  Wait until the value becomes stale (> debounce), then unleash
 		//     a burst of concurrent PollLatestBlockNumber() calls.
 		// ------------------------------------------------------------------
-		time.Sleep(pollerDebounce + 200*time.Millisecond) // let cache go stale
+		time.Sleep((pollerDebounce * 2) + 200*time.Millisecond) // let cache go stale
 
 		start := make(chan struct{})
 		var wg sync.WaitGroup
@@ -8956,8 +8956,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		require.NoError(t, err)
 		metricValue := promUtil.ToFloat64(polledMetric)
 		//
-		// Metric counts successful cache refreshes (bootstrap + final success).
-		// It should *not* increase for each failed attempt, so we expect exactly 2.
+		// Metric counts successful cache refreshes (bootstrap + one failed attempt + final success).
 		//
 		assert.Equal(t, float64(3), metricValue)
 
@@ -8967,7 +8966,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		// No pending or unmatched mocks remain
 		assert.False(t, gock.HasUnmatchedRequest(), "Unexpected gock requests")
 		// finalized & syncing mocks are persistent, so they remain pending
-		require.Equal(t, 2, len(gock.Pending()), "expected only the two persistent mocks to remain")
+		require.Equal(t, 2, len(gock.Pending()), "expected only the 2 persistent mocks to remain")
 	})
 
 	t.Run("ForwardThunderingHerdGetLatestBlockWithoutErrors", func(t *testing.T) {

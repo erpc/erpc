@@ -138,7 +138,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	// Quick check if value is not stale using atomic read
 	c.mu.RLock()
 	if !c.IsStale(staleness) {
-		c.mu.RUnlock()
+		defer c.mu.RUnlock()
 		return c.value, nil
 	}
 	c.mu.RUnlock()
