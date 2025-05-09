@@ -70,6 +70,7 @@ var dwellirNetworkSubdomains = map[int64]string{
 	44787:     "api-celo-alfajores-archive", // This domain will be migrated to a .n domain soon.
 	59144:     "api-linea-mainnet-archive.n",
 	80002:     "api-polygon-amoy.n",
+	80069:     "api-berachain-bepolia.n",
 	80094:     "api-berachain-mainnet.n",
 	81457:     "api-blast-mainnet-archive.n",
 	84532:     "api-base-sepolia-archive.n",
