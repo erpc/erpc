@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -680,4 +681,83 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 			lock.AssertExpectations(t)
 		})
 	}
+}
+
+func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdEqualValue(t *testing.T) {
+	ctx := context.Background()
+	registry, connector, _ := setupTest("my-dev")
+
+	// We expect a single lock attempt during the first refresh.
+	connector.On("Lock", mock.Anything, "test", mock.Anything).
+		Return(nil, errors.New("lock failed")).Once()
+
+	counter := &counterInt64{
+		registry:         registry,
+		key:              "test",
+		value:            5,
+		ignoreRollbackOf: 1024,
+	}
+	// Force it to look stale.
+	counter.lastProcessed = time.Now().Add(-2 * time.Second)
+
+	var calls int32
+	refreshFn := func(ctx context.Context) (int64, error) {
+		atomic.AddInt32(&calls, 1)
+		return 5, nil // identical value
+	}
+
+	staleness := time.Second
+
+	// First attempt – should call refreshFn.
+	val, err := counter.TryUpdateIfStale(ctx, staleness, refreshFn)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(5), val)
+
+	// Second attempt inside debounce window – should *not* call refreshFn again.
+	val, err = counter.TryUpdateIfStale(ctx, staleness, refreshFn)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(5), val)
+	assert.Equal(t, int32(1), calls, "refreshFn should be invoked exactly once")
+
+	connector.AssertExpectations(t)
+}
+
+func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdOnError(t *testing.T) {
+	ctx := context.Background()
+	registry, connector, _ := setupTest("my-dev")
+
+	connector.On("Lock", mock.Anything, "test", mock.Anything).
+		Return(nil, errors.New("lock failed")).Once()
+
+	counter := &counterInt64{
+		registry:         registry,
+		key:              "test",
+		value:            5,
+		ignoreRollbackOf: 1024,
+	}
+	counter.lastProcessed = time.Now().Add(-2 * time.Second) // force stale
+
+	var calls int32
+	refreshErr := errors.New("upstream failure")
+	refreshFn := func(ctx context.Context) (int64, error) {
+		atomic.AddInt32(&calls, 1)
+		return 0, refreshErr
+	}
+
+	staleness := time.Second
+
+	// First call should execute refreshFn and propagate the error.
+	val, err := counter.TryUpdateIfStale(ctx, staleness, refreshFn)
+	assert.Equal(t, refreshErr, err)
+	assert.Equal(t, int64(5), val)
+
+	// Second call within debounce window – no second refresh, therefore no error.
+	val, err = counter.TryUpdateIfStale(ctx, staleness, refreshFn)
+	assert.NoError(t, err)
+	assert.Equal(t, int64(5), val)
+
+	// Only one refresh attempt overall.
+	assert.Equal(t, int32(1), calls, "refreshFn should be invoked exactly once despite the error")
+
+	connector.AssertExpectations(t)
 }
