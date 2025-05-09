@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -27,32 +26,37 @@ type CounterInt64SharedVariable interface {
 }
 
 type baseSharedVariable struct {
-	lastUpdated atomic.Int64 // Unix nanoseconds
+	lastProcessed time.Time
 }
 
 func (v *baseSharedVariable) IsStale(staleness time.Duration) bool {
-	return time.Since(time.Unix(0, v.lastUpdated.Load())) > staleness
+	if v.lastProcessed.IsZero() {
+		return true
+	}
+	return time.Since(v.lastProcessed) > staleness
 }
 
 type counterInt64 struct {
 	baseSharedVariable
 	registry              *sharedStateRegistry
 	key                   string
-	value                 atomic.Int64
-	mu                    sync.Mutex // still needed for complex operations
+	value                 int64
+	mu                    sync.RWMutex
 	valueCallback         func(int64)
 	ignoreRollbackOf      int64
 	largeRollbackCallback func(localVal, newVal int64)
 }
 
 func (c *counterInt64) GetValue() int64 {
-	return c.value.Load()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.value
 }
 
 func (c *counterInt64) processNewValue(newVal int64) bool {
 	// This function is designed to be called from within c.mu.Lock().
 	// It returns true if the local value was actually updated.
-	currentValue := c.value.Load()
+	currentValue := c.value
 	updated := false
 	if newVal > currentValue {
 		c.setValue(newVal)
@@ -64,9 +68,13 @@ func (c *counterInt64) processNewValue(newVal int64) bool {
 		}
 		updated = true
 	}
-	if updated {
-		c.lastUpdated.Store(time.Now().UnixNano())
-	}
+
+	// We have just consulted a fresh source; refresh the timestamp
+	// so the value is considered fresh for the debounce window even
+	// when it did not change.
+	c.lastProcessed = time.Now()
+
+	c.registry.logger.Trace().Str("key", c.key).Str("ptr", fmt.Sprintf("%p", c)).Int64("currentValue", currentValue).Int64("newVal", newVal).Bool("updated", updated).Msg("processed new value")
 	return updated
 }
 
@@ -115,7 +123,7 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 		c.updateRemoteUpdate(pctx, newValue)
 	}
 
-	return c.value.Load()
+	return c.value
 }
 
 func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Duration, executeNewValueFn func(ctx context.Context) (int64, error)) (int64, error) {
@@ -128,16 +136,19 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	defer span.End()
 
 	// Quick check if value is not stale using atomic read
+	c.mu.RLock()
 	if !c.IsStale(staleness) {
-		return c.value.Load(), nil
+		c.mu.RUnlock()
+		return c.value, nil
 	}
+	c.mu.RUnlock()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	// Double-check staleness under lock
 	if !c.IsStale(staleness) {
-		return c.value.Load(), nil
+		return c.value, nil
 	}
 
 	// Lock remotely if possible in best-effort mode
@@ -151,16 +162,20 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 		// Get existing remote value in case it is already updated by another instance
 		if val := c.tryGetRemoteValue(rctx); val > 0 {
 			if c.processNewValue(val) {
-				return c.value.Load(), nil
+				return c.value, nil
 			}
 		}
 	}
 
 	// Refresh the new value via user-defined func because local value is stale AND remote value is not up-to-date
+	c.registry.logger.Trace().Str("key", c.key).Str("ptr", fmt.Sprintf("%p", c)).Int64("c.value", c.value).Bool("unlockable", unlock != nil).Msg("refreshing new value via user-defined func because local value is stale AND remote value is not up-to-date")
 	newValue, err := executeNewValueFn(ctx)
 	if err != nil {
-		return c.value.Load(), err
+		// Avoid thundering herd in case of errors (wait equal to debounce window)
+		c.lastProcessed = time.Now()
+		return c.value, err
 	}
+	c.registry.logger.Trace().Str("key", c.key).Str("ptr", fmt.Sprintf("%p", c)).Bool("unlockable", unlock != nil).Int64("newValue", newValue).Msg("received new value from user-defined func")
 
 	// Process the new value locally
 	if c.processNewValue(newValue) && unlock != nil {
@@ -175,7 +190,7 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	}
 
 	// Return the final value from local storage, no matter how it was updated.
-	return c.value.Load(), nil
+	return c.value, nil
 }
 
 func (c *counterInt64) OnValue(cb func(int64)) {
@@ -191,7 +206,7 @@ func (c *counterInt64) OnLargeRollback(cb func(currentVal, newVal int64)) {
 }
 
 func (c *counterInt64) setValue(val int64) {
-	c.value.Store(val)
+	c.value = val
 	if c.valueCallback != nil {
 		c.valueCallback(val)
 	}

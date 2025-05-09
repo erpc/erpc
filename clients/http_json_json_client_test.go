@@ -19,6 +19,10 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func init() {
+	util.ConfigureTestLogger()
+}
+
 func TestHttpJsonRpcClient_SingleRequests(t *testing.T) {
 	logger := log.Logger
 

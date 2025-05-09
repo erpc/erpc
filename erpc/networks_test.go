@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"runtime"
@@ -8835,6 +8836,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 				return isLatest
 			}).
 			Reply(200).
+			Delay(1000 * time.Millisecond).
 			JSON([]byte(`{"result":{"number":"0x14"}}`)) // Block 20
 
 		// eth_getBlockByNumber("finalized") – always OK
@@ -8866,9 +8868,9 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		defer cancel()
 
 		rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
-		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+		mt := health.NewTracker(&log.Logger, "prjA", 5*time.Second)
 
-		pollerInterval := 2000 * time.Millisecond
+		pollerInterval := 5000 * time.Millisecond
 		pollerDebounce := 5000 * time.Millisecond
 
 		fsCfg := &common.FailsafeConfig{
@@ -8933,6 +8935,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
+				time.Sleep(time.Duration(rand.Intn(1000)) * time.Millisecond)
 				_, _ = poller.PollLatestBlockNumber(ctx)
 			}()
 		}
