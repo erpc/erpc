@@ -43,7 +43,7 @@ export type ConnectorConfig = {
 /**
  * Supported upstream type
  */
-export type UpstreamType = "evm" | "evm+alchemy" | "evm+drpc" | "evm+blastapi" | "evm+envio" | "evm+etherspot" | "evm+infura" | "evm+pimlico" | "evm+thirdweb" | "evm+tenderly";
+export type UpstreamType = "evm" | "evm+alchemy" | "evm+blastapi" | "evm+conduit" | "evm+drpc" | "evm+dwellir" | "evm+envio" | "evm+etherspot" | "evm+infura" | "evm+pimlico" | "evm+quicknode" | "evm+llama" | "evm+thirdweb" | "evm+repository" | "evm+superchain" | "evm+tenderly";
 /**
  * Supported auth type
  */
