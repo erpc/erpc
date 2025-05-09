@@ -42,6 +42,8 @@ export interface ServerConfig {
     enableGzip?: boolean;
     tls?: TLSConfig;
     aliasing?: AliasingConfig;
+    waitBeforeShutdown?: Duration;
+    waitAfterShutdown?: Duration;
 }
 export interface HealthCheckConfig {
     mode?: HealthCheckMode;
@@ -156,6 +158,7 @@ export interface RedisConnectorConfig {
     initTimeout?: Duration;
     getTimeout?: Duration;
     setTimeout?: Duration;
+    lockRetryInterval?: Duration;
 }
 export interface DynamoDBConnectorConfig {
     table?: string;
@@ -170,6 +173,7 @@ export interface DynamoDBConnectorConfig {
     getTimeout?: Duration;
     setTimeout?: Duration;
     statePollInterval?: Duration;
+    lockRetryInterval?: Duration;
 }
 export interface PostgreSQLConnectorConfig {
     connectionUri: string;
