@@ -247,6 +247,7 @@ func getConfig(
 		} else {
 			cfg.LogLevel = level.String()
 		}
+		zerolog.SetGlobalLevel(level)
 	}
 
 	return cfg, nil
