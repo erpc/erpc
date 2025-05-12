@@ -2,7 +2,6 @@ package erpc
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -13,7 +12,6 @@ import (
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
-	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 )
@@ -214,12 +212,7 @@ func TestNetwork_Consensus(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt // Create new variable for parallel test
 		t.Run(tt.name, func(t *testing.T) {
-			// Configure debug logging
-			zerolog.SetGlobalLevel(zerolog.DebugLevel)
-			log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339})
-
 			util.ResetGock()
 			defer util.ResetGock()
 			util.SetupMocksForEvmStatePoller()
