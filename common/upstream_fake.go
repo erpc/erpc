@@ -2,6 +2,7 @@ package common
 
 import (
 	"context"
+	"sync"
 
 	"github.com/rs/zerolog"
 )
@@ -16,6 +17,7 @@ type FakeUpstream struct {
 	evmStatePoller EvmStatePoller
 	cordoned       bool
 	cordonedReason string
+	cordonMu       sync.RWMutex
 }
 
 func NewFakeUpstream(id string, opts ...func(*FakeUpstream)) Upstream {
@@ -88,17 +90,22 @@ func (u *FakeUpstream) Forward(ctx context.Context, nq *NormalizedRequest, skipS
 }
 
 func (u *FakeUpstream) Cordon(method string, reason string) {
+	u.cordonMu.Lock()
+	defer u.cordonMu.Unlock()
 	u.cordoned = true
 	u.cordonedReason = reason
-
 }
 
 func (u *FakeUpstream) Uncordon(method string) {
+	u.cordonMu.Lock()
+	defer u.cordonMu.Unlock()
 	u.cordoned = false
 	u.cordonedReason = ""
 }
 
 func (u *FakeUpstream) CordonedReason() (string, bool) {
+	u.cordonMu.RLock()
+	defer u.cordonMu.RUnlock()
 	return u.cordonedReason, u.cordoned
 }
 

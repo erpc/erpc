@@ -154,7 +154,7 @@ func TestNetwork_Consensus(t *testing.T) {
 			expectedMsg:   pointer("not enough agreement among responses"),
 		},
 		{
-			name: "failure error",
+			name: "error response on upstreams",
 			upstreams: []*common.UpstreamConfig{
 				{
 					Id:       "test1",
@@ -208,8 +208,8 @@ func TestNetwork_Consensus(t *testing.T) {
 				},
 			},
 			expectedCalls: []int{1, 1, 1}, // Each upstream called once
-			expectedError: pointer(common.ErrCodeConsensusFailure),
-			expectedMsg:   pointer("execution failed"),
+			expectedError: pointer(common.ErrCodeConsensusDispute),
+			expectedMsg:   pointer("not enough agreement among responses"),
 		},
 	}
 
