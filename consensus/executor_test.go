@@ -30,7 +30,7 @@ func TestConsensusExecutor(t *testing.T) {
 		disputeBehavior          *common.ConsensusDisputeBehavior
 		lowParticipantsBehavior  *common.ConsensusLowParticipantsBehavior
 		failureBehavior          *common.ConsensusFailureBehavior
-		disputeThreshold         int
+		disputeThreshold         uint
 		responses                []*common.NormalizedResponse
 		expectedError            *string
 		expectedResult           []*common.NormalizedResponse
@@ -260,7 +260,7 @@ func TestConsensusExecutor(t *testing.T) {
 				consensusPolicy: policy.(*consensusPolicy[*common.NormalizedResponse]),
 			}
 
-			times := 1
+			var times uint = 1
 			// if the expected punished upstreams are set, we need to repeat until we exceed the dispute threshold
 			if tt.expectedPunishedUpsteams != nil {
 				times = tt.disputeThreshold + 1

@@ -1,7 +1,7 @@
 package consensus
 
 import (
-	"crypto/md5"
+	"crypto/md5" //#nosec G501 -- Permit import of md5 for fast hashing responses
 	"fmt"
 	"sync"
 	"time"
@@ -45,7 +45,7 @@ func (e *executor[R]) resultToRawString(result R, exec failsafe.Execution[R]) st
 
 // hashResult creates an MD5 hash of a string
 func hashResult(s string) string {
-	return fmt.Sprintf("%x", md5.Sum([]byte(s)))
+	return fmt.Sprintf("%x", md5.Sum([]byte(s))) //#nosec G401 -- Permit usage of md5 for fast hashing, not used for security
 }
 
 func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.PolicyResult[R]) func(failsafe.Execution[R]) *failsafeCommon.PolicyResult[R] {
@@ -280,12 +280,12 @@ func (e *executor[R]) createRateLimiter(upstreamId string) ratelimiter.RateLimit
 
 	e.logger.Info().
 		Str("upstream", upstreamId).
-		Int("dispute_threshold", e.punishMisbehavior.DisputeThreshold).
+		Int("dispute_threshold", int(e.punishMisbehavior.DisputeThreshold)).
 		Str("dispute_window", e.punishMisbehavior.DisputeWindow.String()).
 		Msg("creating new dispute limiter")
 
 	limiter := ratelimiter.
-		BurstyBuilder[any](uint(e.punishMisbehavior.DisputeThreshold), e.punishMisbehavior.DisputeWindow.Duration()).
+		BurstyBuilder[any](e.punishMisbehavior.DisputeThreshold, e.punishMisbehavior.DisputeWindow.Duration()).
 		Build()
 
 	// Store the limiter
