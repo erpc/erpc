@@ -3,7 +3,6 @@ package consensus
 import (
 	"context"
 	"errors"
-	"slices"
 	"testing"
 	"time"
 
@@ -24,16 +23,20 @@ var _ policy.ExecutionInternal[*common.NormalizedResponse] = &mockExecution{}
 func TestConsensusExecutor(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name                     string
-		requiredParticipants     int
-		agreementThreshold       int
-		disputeBehavior          *common.ConsensusDisputeBehavior
-		lowParticipantsBehavior  *common.ConsensusLowParticipantsBehavior
-		failureBehavior          *common.ConsensusFailureBehavior
-		disputeThreshold         uint
-		responses                []*common.NormalizedResponse
+		name                    string
+		requiredParticipants    int
+		agreementThreshold      int
+		disputeBehavior         *common.ConsensusDisputeBehavior
+		lowParticipantsBehavior *common.ConsensusLowParticipantsBehavior
+		failureBehavior         *common.ConsensusFailureBehavior
+		disputeThreshold        uint
+		responses               []*struct {
+			response                  string
+			upstreamId                string
+			upstreamLatestBlockNumber int64
+		}
 		expectedError            *string
-		expectedResult           []*common.NormalizedResponse
+		expectedResult           []string
 		expectedPunishedUpsteams []string
 	}{
 		{
@@ -42,13 +45,17 @@ func TestConsensusExecutor(t *testing.T) {
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorReturnError),
 			disputeThreshold:     1,
-			responses: []*common.NormalizedResponse{
-				createResponse("result1", "upstream1", 1),
-				createResponse("result1", "upstream2", 1),
-				createResponse("result1", "upstream3", 1),
+			responses: []*struct {
+				response                  string
+				upstreamId                string
+				upstreamLatestBlockNumber int64
+			}{
+				{"result1", "upstream1", 1},
+				{"result1", "upstream2", 1},
+				{"result1", "upstream3", 1},
 			},
 			expectedError:            nil,
-			expectedResult:           []*common.NormalizedResponse{createResponse("result1", "upstream1", 1)},
+			expectedResult:           []string{"result1"},
 			expectedPunishedUpsteams: []string{},
 		},
 		{
@@ -57,13 +64,17 @@ func TestConsensusExecutor(t *testing.T) {
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorReturnError),
 			disputeThreshold:     1,
-			responses: []*common.NormalizedResponse{
-				createResponse("result1", "upstream1", 1),
-				createResponse("result1", "upstream2", 1),
-				createResponse("result2", "upstream3", 1),
+			responses: []*struct {
+				response                  string
+				upstreamId                string
+				upstreamLatestBlockNumber int64
+			}{
+				{"result1", "upstream1", 1},
+				{"result1", "upstream2", 1},
+				{"result2", "upstream3", 1},
 			},
 			expectedError:  nil,
-			expectedResult: []*common.NormalizedResponse{createResponse("result1", "upstream1", 1)},
+			expectedResult: []string{"result1"},
 			expectedPunishedUpsteams: []string{
 				"upstream3",
 			},
@@ -74,12 +85,16 @@ func TestConsensusExecutor(t *testing.T) {
 			agreementThreshold:   4,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorReturnError),
 			disputeThreshold:     1,
-			responses: []*common.NormalizedResponse{
-				createResponse("result1", "upstream1", 1),
-				createResponse("result1", "upstream2", 1),
-				createResponse("result1", "upstream3", 1),
-				createResponse("result4", "upstream4", 1),
-				createResponse("result5", "upstream5", 1),
+			responses: []*struct {
+				response                  string
+				upstreamId                string
+				upstreamLatestBlockNumber int64
+			}{
+				{"result1", "upstream1", 1},
+				{"result1", "upstream2", 1},
+				{"result1", "upstream3", 1},
+				{"result4", "upstream4", 1},
+				{"result5", "upstream5", 1},
 			},
 			expectedError:  pointer("ErrConsensusDispute: not enough agreement among responses"),
 			expectedResult: nil,
@@ -94,10 +109,14 @@ func TestConsensusExecutor(t *testing.T) {
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorReturnError),
 			disputeThreshold:     1,
-			responses: []*common.NormalizedResponse{
-				createResponse("result1", "upstream1", 1),
-				createResponse("result2", "upstream2", 1),
-				createResponse("result3", "upstream3", 1),
+			responses: []*struct {
+				response                  string
+				upstreamId                string
+				upstreamLatestBlockNumber int64
+			}{
+				{"result1", "upstream1", 1},
+				{"result2", "upstream2", 1},
+				{"result3", "upstream3", 1},
 			},
 			expectedError:  pointer("ErrConsensusDispute: not enough agreement among responses"),
 			expectedResult: nil,
@@ -108,16 +127,20 @@ func TestConsensusExecutor(t *testing.T) {
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorAcceptAnyValidResult),
 			disputeThreshold:     1,
-			responses: []*common.NormalizedResponse{
-				createResponse("result1", "upstream1", 1),
-				createResponse("result2", "upstream2", 1),
-				createResponse("result3", "upstream3", 1),
+			responses: []*struct {
+				response                  string
+				upstreamId                string
+				upstreamLatestBlockNumber int64
+			}{
+				{"result1", "upstream1", 1},
+				{"result2", "upstream2", 1},
+				{"result3", "upstream3", 1},
 			},
 			expectedError: nil,
-			expectedResult: []*common.NormalizedResponse{
-				createResponse("result1", "upstream1", 1),
-				createResponse("result2", "upstream2", 1),
-				createResponse("result3", "upstream3", 1),
+			expectedResult: []string{
+				"result1",
+				"result2",
+				"result3",
 			},
 		},
 		{
@@ -126,13 +149,17 @@ func TestConsensusExecutor(t *testing.T) {
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorPreferBlockHeadLeader),
 			disputeThreshold:     1,
-			responses: []*common.NormalizedResponse{
-				createResponse("result1", "upstream1", 1),
-				createResponse("result2", "upstream2", 1),
-				createResponse("result3", "upstream3", 3),
+			responses: []*struct {
+				response                  string
+				upstreamId                string
+				upstreamLatestBlockNumber int64
+			}{
+				{"result1", "upstream1", 1},
+				{"result2", "upstream2", 1},
+				{"result3", "upstream3", 3},
 			},
 			expectedError:  nil,
-			expectedResult: []*common.NormalizedResponse{createResponse("result3", "upstream3", 3)},
+			expectedResult: []string{"result3"},
 		},
 		{
 			name:                 "dispute with only block head leader",
@@ -140,13 +167,17 @@ func TestConsensusExecutor(t *testing.T) {
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorOnlyBlockHeadLeader),
 			disputeThreshold:     1,
-			responses: []*common.NormalizedResponse{
-				createResponse("result1", "upstream1", 1),
-				createResponse("result2", "upstream2", 1),
-				createResponse("result3", "upstream3", 3),
+			responses: []*struct {
+				response                  string
+				upstreamId                string
+				upstreamLatestBlockNumber int64
+			}{
+				{"result1", "upstream1", 1},
+				{"result2", "upstream2", 1},
+				{"result3", "upstream3", 3},
 			},
 			expectedError:  nil,
-			expectedResult: []*common.NormalizedResponse{createResponse("result3", "upstream3", 3)},
+			expectedResult: []string{"result3"},
 		},
 		{
 			name:                 "dispute with only block head leader",
@@ -154,13 +185,17 @@ func TestConsensusExecutor(t *testing.T) {
 			agreementThreshold:   2,
 			disputeBehavior:      pointer(common.ConsensusDisputeBehaviorOnlyBlockHeadLeader),
 			disputeThreshold:     1,
-			responses: []*common.NormalizedResponse{
-				createResponse("result1", "upstream1", 1),
-				createResponse("result2", "upstream2", 1),
-				createResponse("result3", "upstream3", 3),
+			responses: []*struct {
+				response                  string
+				upstreamId                string
+				upstreamLatestBlockNumber int64
+			}{
+				{"result1", "upstream1", 1},
+				{"result2", "upstream2", 1},
+				{"result3", "upstream3", 3},
 			},
 			expectedError:  nil,
-			expectedResult: []*common.NormalizedResponse{createResponse("result3", "upstream3", 3)},
+			expectedResult: []string{"result3"},
 		},
 		{
 			name:                    "low participants with return error",
@@ -168,10 +203,14 @@ func TestConsensusExecutor(t *testing.T) {
 			agreementThreshold:      2,
 			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorReturnError),
 			disputeThreshold:        1,
-			responses: []*common.NormalizedResponse{
-				createResponse("result1", "upstream1", 1),
-				createResponse("result1", "upstream1", 1),
-				createResponse("result1", "upstream1", 1),
+			responses: []*struct {
+				response                  string
+				upstreamId                string
+				upstreamLatestBlockNumber int64
+			}{
+				{"result1", "upstream1", 1},
+				{"result1", "upstream1", 1},
+				{"result1", "upstream1", 1},
 			},
 			expectedError:  pointer("ErrConsensusLowParticipants: not enough participants"),
 			expectedResult: nil,
@@ -182,13 +221,17 @@ func TestConsensusExecutor(t *testing.T) {
 			agreementThreshold:      2,
 			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorAcceptAnyValidResult),
 			disputeThreshold:        1,
-			responses: []*common.NormalizedResponse{
-				createResponse("result1", "upstream1", 1),
-				createResponse("result1", "upstream1", 1),
-				createResponse("result1", "upstream1", 1),
+			responses: []*struct {
+				response                  string
+				upstreamId                string
+				upstreamLatestBlockNumber int64
+			}{
+				{"result1", "upstream1", 1},
+				{"result1", "upstream1", 1},
+				{"result1", "upstream1", 1},
 			},
 			expectedError:  nil,
-			expectedResult: []*common.NormalizedResponse{createResponse("result1", "upstream1", 1)},
+			expectedResult: []string{"result1"},
 		},
 		{
 			name:                    "low participants with prefer block head leader fallback",
@@ -196,13 +239,17 @@ func TestConsensusExecutor(t *testing.T) {
 			agreementThreshold:      2,
 			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader),
 			disputeThreshold:        1,
-			responses: []*common.NormalizedResponse{
-				createResponse("result1", "upstream1", 1),
-				createResponse("result1", "upstream1", 1),
-				createResponse("result1", "upstream1", 1),
+			responses: []*struct {
+				response                  string
+				upstreamId                string
+				upstreamLatestBlockNumber int64
+			}{
+				{"result1", "upstream1", 1},
+				{"result1", "upstream1", 1},
+				{"result1", "upstream1", 1},
 			},
 			expectedError:  nil,
-			expectedResult: []*common.NormalizedResponse{createResponse("result1", "upstream1", 1)},
+			expectedResult: []string{"result1"},
 		},
 		{
 			name:                    "low participants with prefer block head leader",
@@ -210,13 +257,17 @@ func TestConsensusExecutor(t *testing.T) {
 			agreementThreshold:      2,
 			lowParticipantsBehavior: pointer(common.ConsensusLowParticipantsBehaviorPreferBlockHeadLeader),
 			disputeThreshold:        1,
-			responses: []*common.NormalizedResponse{
-				createResponse("result1", "upstream1", 2),
-				createResponse("result1", "upstream1", 2),
-				createResponse("result2", "upstream2", 1),
+			responses: []*struct {
+				response                  string
+				upstreamId                string
+				upstreamLatestBlockNumber int64
+			}{
+				{"result1", "upstream1", 2},
+				{"result1", "upstream1", 2},
+				{"result2", "upstream2", 1},
 			},
 			expectedError:  nil,
-			expectedResult: []*common.NormalizedResponse{createResponse("result1", "upstream1", 2)},
+			expectedResult: []string{"result1"},
 		},
 	}
 
@@ -224,9 +275,24 @@ func TestConsensusExecutor(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			upstreams := make(map[string]common.Upstream)
+			responses := make([]*common.NormalizedResponse, len(tt.responses))
+			for i, response := range tt.responses {
+				if _, ok := upstreams[response.upstreamId]; !ok {
+					upstreams[response.upstreamId] = common.NewFakeUpstream(response.upstreamId, common.WithEvmStatePoller(common.NewFakeEvmStatePoller(response.upstreamLatestBlockNumber, response.upstreamLatestBlockNumber)))
+				}
+
+				responses[i] = createResponse(response.response, upstreams[response.upstreamId])
+			}
+
+			expectedResponses := make([]*common.NormalizedResponse, len(tt.expectedResult))
+			for i, expectedResult := range tt.expectedResult {
+				expectedResponses[i] = createResponse(expectedResult, upstreams[tt.responses[i].upstreamId])
+			}
+
 			// Create mock execution
 			mockExec := &mockExecution{
-				responses: tt.responses,
+				responses: responses,
 			}
 
 			disputeBehavior := common.ConsensusDisputeBehaviorReturnError
@@ -281,7 +347,7 @@ func TestConsensusExecutor(t *testing.T) {
 					}
 
 					return &failsafeCommon.PolicyResult[*common.NormalizedResponse]{
-						Result: tt.responses[currentIndex],
+						Result: responses[currentIndex],
 					}
 				})(mockExec)
 
@@ -295,7 +361,7 @@ func TestConsensusExecutor(t *testing.T) {
 					require.NotNil(t, actualJrr)
 
 					var execptedJrrString []string
-					for _, expectedResult := range tt.expectedResult {
+					for _, expectedResult := range expectedResponses {
 						jrr, err := expectedResult.JsonRpcResponse()
 						require.NoError(t, err)
 						require.NotNil(t, jrr)
@@ -308,13 +374,18 @@ func TestConsensusExecutor(t *testing.T) {
 			}
 
 			// Check upstream punishment state
-			for _, response := range tt.responses {
+			expectedPunishedUpstreams := make(map[string]struct{})
+			for _, id := range tt.expectedPunishedUpsteams {
+				expectedPunishedUpstreams[id] = struct{}{}
+			}
+
+			for _, response := range responses {
 				fake, ok := response.Upstream().(*common.FakeUpstream)
 				require.True(t, ok)
 
 				cordonedReason, cordoned := fake.CordonedReason()
 
-				if slices.Contains(tt.expectedPunishedUpsteams, fake.Config().Id) {
+				if _, shouldBePunished := expectedPunishedUpstreams[fake.Config().Id]; shouldBePunished {
 					punishedUpstreams[fake.Config().Id] = fake
 					assert.True(t, cordoned, "expected upstream %s to be cordoned", fake.Config().Id)
 					assert.Equal(t, "misbehaving in consensus", cordonedReason, "expected upstream %s to be cordoned for misbehaving in consensus", fake.Config().Id)
@@ -343,16 +414,14 @@ func TestConsensusExecutor(t *testing.T) {
 }
 
 // Helper function to create normalized responses
-func createResponse(result string, upstreamId string, upstreamLatestBlockNumber int64) *common.NormalizedResponse {
+func createResponse(result string, upstream common.Upstream) *common.NormalizedResponse {
 	jrr, err := common.NewJsonRpcResponse(1, result, nil)
 	if err != nil {
 		panic(err)
 	}
 	return common.NewNormalizedResponse().
 		WithJsonRpcResponse(jrr).
-		SetUpstream(
-			common.NewFakeUpstream(upstreamId, common.WithEvmStatePoller(common.NewFakeEvmStatePoller(upstreamLatestBlockNumber, upstreamLatestBlockNumber))),
-		)
+		SetUpstream(upstream)
 }
 
 // Mock execution that returns pre-defined responses

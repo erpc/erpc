@@ -63,7 +63,7 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 		responseMu := sync.Mutex{}
 
 		// Track used upstreams to ensure we don't use the same one twice
-		usedUpstreams := make(map[string]struct{})
+		usedUpstreams := make(map[common.Upstream]struct{})
 		usedUpstreamsMu := sync.Mutex{}
 
 		for execIdx := range e.requiredParticipants {
@@ -86,12 +86,12 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 					if ups := resp.Upstream(); ups != nil {
 						// Check if this upstream has already been used
 						usedUpstreamsMu.Lock()
-						if _, used := usedUpstreams[ups.Config().Id]; used {
+						if _, used := usedUpstreams[ups]; used {
 							usedUpstreamsMu.Unlock()
 							e.logger.Debug().Int("request", execIdx).Str("upstream", ups.Config().Id).Msg("skipping already used upstream")
 							return
 						}
-						usedUpstreams[ups.Config().Id] = struct{}{}
+						usedUpstreams[ups] = struct{}{}
 						usedUpstreamsMu.Unlock()
 
 						upstream = ups
