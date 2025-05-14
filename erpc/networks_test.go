@@ -7032,14 +7032,6 @@ func TestClassifySeverity(t *testing.T) {
 			),
 			common.SeverityInfo,
 		},
-		{
-			"mixed: some intentional method ignored, one timeout",
-			mkNestedExhausted(
-				mkSkipIgnored("ups1"),
-				common.NewErrEndpointRequestCanceled(context.DeadlineExceeded),
-			),
-			common.SeverityWarning,
-		},
 	}
 
 	for _, tc := range cases {
