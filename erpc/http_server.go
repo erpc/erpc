@@ -649,13 +649,22 @@ func (s *HttpServer) parseUrlPath(
 		// Case: Only projectId preselected
 		switch len(segments) {
 		case 1:
-			// Check if segment is a network alias
-			if project, err := s.erpc.GetProject(projectId); err == nil {
-				architecture, chainId = project.networksRegistry.ResolveAlias(segments[0])
+			// If the single path segment is identical to the preselected projectId,
+			// it implies a URL like /<project_id>/<project_id_as_segment>.
+			// In this scenario, we assume the user intends to target the project,
+			// and architecture/chainId should come from the request body or defaults,
+			// not from this redundant segment being misinterpreted as an architecture.
+			if segments[0] == projectId && projectId != "" {
+				// Do nothing; architecture and chainId remain empty, to be filled by request body.
+			} else {
+				if project, err := s.erpc.GetProject(projectId); err == nil {
+					architecture, chainId = project.networksRegistry.ResolveAlias(segments[0])
+				}
+				if architecture == "" {
+					architecture = segments[0]
+				}
 			}
-			if architecture == "" {
-				architecture = segments[0]
-			}
+			break
 		case 2:
 			architecture = segments[0]
 			chainId = segments[1]
