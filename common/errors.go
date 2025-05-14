@@ -2233,16 +2233,22 @@ func ClassifySeverity(err error) Severity {
 	}
 	if HasErrorCode(err, ErrCodeUpstreamsExhausted) {
 		if ex, ok := err.(*ErrUpstreamsExhausted); ok {
-			onlyIgnored := true
-			for _, e := range ex.Errors() {
-				if !(HasErrorCode(e, ErrCodeUpstreamRequestSkipped) &&
-					HasErrorCode(e.(StandardError).GetCause(), ErrCodeUpstreamMethodIgnored)) {
-					onlyIgnored = false
-					break
+			errs := ex.Errors()
+			// Only downgrade to INFO when *all* upstream errors are intentional
+			// method‑ignored skips, **and** we actually have at least one error
+			// to inspect. When the list is empty we treat it as a real failure.
+			if len(errs) > 0 {
+				onlyIgnored := true
+				for _, e := range errs {
+					if !(HasErrorCode(e, ErrCodeUpstreamRequestSkipped) &&
+						HasErrorCode(e.(StandardError).GetCause(), ErrCodeUpstreamMethodIgnored)) {
+						onlyIgnored = false
+						break
+					}
 				}
-			}
-			if onlyIgnored {
-				return SeverityInfo
+				if onlyIgnored {
+					return SeverityInfo
+				}
 			}
 		}
 	}
