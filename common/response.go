@@ -345,6 +345,19 @@ func (r *NormalizedResponse) MarshalZerologObject(e *zerolog.Event) {
 	}
 }
 
+func (r *NormalizedResponse) Hash(ctx ...context.Context) (string, error) {
+	if r == nil {
+		return "", nil
+	}
+
+	jrr, err := r.JsonRpcResponse(ctx...)
+	if err != nil {
+		return "", err
+	}
+
+	return jrr.CanonicalHash(ctx...)
+}
+
 // CopyResponseForRequest creates a copy of the response for another request
 // We use references for underlying Result and Error fields to save memory.
 func CopyResponseForRequest(ctx context.Context, resp *NormalizedResponse, req *NormalizedRequest) (*NormalizedResponse, error) {

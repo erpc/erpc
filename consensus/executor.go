@@ -1,8 +1,6 @@
 package consensus
 
 import (
-	"crypto/md5" //#nosec G501 -- Permit import of md5 for fast hashing responses
-	"fmt"
 	"sync"
 	"time"
 
@@ -29,23 +27,23 @@ type execResult[R any] struct {
 }
 
 // resultToHash converts a result to a string representation for comparison
-func (e *executor[R]) resultToHash(result R, exec failsafe.Execution[R]) string {
-	return hashResult(e.resultToRawString(result, exec))
+func (e *executor[R]) resultToHash(result R, exec failsafe.Execution[R]) (string, error) {
+	return e.resultToJsonRpcResponse(result, exec).CanonicalHash()
 }
 
 // resultToRawString converts a result to its raw string representation
-func (e *executor[R]) resultToRawString(result R, exec failsafe.Execution[R]) string {
-	if resp, ok := any(result).(*common.NormalizedResponse); ok {
-		if jr, err := resp.JsonRpcResponse(exec.Context()); err == nil {
-			return string(jr.Result)
-		}
+func (e *executor[R]) resultToJsonRpcResponse(result R, exec failsafe.Execution[R]) *common.JsonRpcResponse {
+	resp, ok := any(result).(*common.NormalizedResponse)
+	if !ok {
+		return nil
 	}
-	return fmt.Sprintf("%+v", result)
-}
 
-// hashResult creates an MD5 hash of a string
-func hashResult(s string) string {
-	return fmt.Sprintf("%x", md5.Sum([]byte(s))) //#nosec G401 -- Permit usage of md5 for fast hashing, not used for security
+	jr, err := resp.JsonRpcResponse(exec.Context())
+	if err != nil {
+		return nil
+	}
+
+	return jr
 }
 
 func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.PolicyResult[R]) func(failsafe.Execution[R]) *failsafeCommon.PolicyResult[R] {
@@ -126,7 +124,13 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 					continue
 				}
 				// Extract just the response data for comparison
-				resultHash := e.resultToHash(r.result, exec)
+				resultHash, err := e.resultToHash(r.result, exec)
+				if err != nil {
+					e.logger.Error().
+						Err(err).
+						Msg("error converting result to hash")
+					continue
+				}
 				resultCounts[resultHash]++
 				e.logger.Debug().
 					Str("result_hash", resultHash).
@@ -178,7 +182,13 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *failsafeCommon.
 				var finalResult R
 				for _, r := range responses {
 					if r.err == nil {
-						resultHash := e.resultToHash(r.result, exec)
+						resultHash, err := e.resultToHash(r.result, exec)
+						if err != nil {
+							e.logger.Error().
+								Err(err).
+								Msg("error converting result to hash")
+							continue
+						}
 						if resultHash == mostCommonResultHash {
 							finalResult = r.result
 							break
@@ -280,7 +290,7 @@ func (e *executor[R]) createRateLimiter(upstreamId string) ratelimiter.RateLimit
 
 	e.logger.Info().
 		Str("upstream", upstreamId).
-		Int("dispute_threshold", int(e.punishMisbehavior.DisputeThreshold)).
+		Uint("dispute_threshold", e.punishMisbehavior.DisputeThreshold).
 		Str("dispute_window", e.punishMisbehavior.DisputeWindow.String()).
 		Msg("creating new dispute limiter")
 
@@ -316,7 +326,13 @@ func (e *executor[R]) trackMisbehavingUpstreams(responses []*execResult[R], resu
 			continue
 		}
 
-		resultHash := e.resultToHash(response.result, execution)
+		resultHash, err := e.resultToHash(response.result, execution)
+		if err != nil {
+			e.logger.Error().
+				Err(err).
+				Msg("error converting result to hash")
+			continue
+		}
 		if resultHash == "" {
 			continue
 		}
