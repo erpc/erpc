@@ -67,10 +67,10 @@ func TestDynamoDBConnectorInitialization(t *testing.T) {
 		connector, err := NewDynamoDBConnector(ctx, &log.Logger, "test-dynamo-connector", cfg)
 		require.NoError(t, err, "expected no error from NewDynamoDBConnector with a valid local container")
 
-		if connector.initializer != nil {
-			state := connector.initializer.State()
-			require.Equal(t, util.StateReady, state, "connector should be in ready state")
-		}
+		// Wait for connector to be fully initialized
+		require.Eventually(t, func() bool {
+			return connector.initializer.State() == util.StateReady
+		}, 10*time.Second, 100*time.Millisecond, "connector should be in ready state")
 
 		// Try a simple SET/GET to confirm real operation
 		err = connector.Set(ctx, "testPK", "testRK", "hello-dynamo", nil)

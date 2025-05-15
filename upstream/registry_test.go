@@ -26,7 +26,7 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 	projectID := "test-project"
 	networkID := "evm:123"
 	method := "eth_call"
-	windowSize := 300 * time.Millisecond
+	windowSize := 1000 * time.Millisecond
 
 	t.Run("RefreshScoresForRequests", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())

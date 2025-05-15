@@ -8238,6 +8238,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 
 		upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
 		upsList[0].Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x10000000 // Large range to avoid auto-splitting since we want error-based splitting
+		upsList[0].Config().Evm.GetLogsSplitOnError = util.BoolPtr(true)
 
 		req := common.NewNormalizedRequest(requestBytes)
 		resp, err := network.Forward(ctx, req)
