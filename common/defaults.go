@@ -117,7 +117,7 @@ func (c *Config) SetDefaults(opts *DefaultOptions) error {
 				},
 				UpstreamDefaults: &UpstreamConfig{
 					Evm: &EvmUpstreamConfig{
-						GetLogsAutoSplittingRangeThreshold: 100,
+						GetLogsAutoSplittingRangeThreshold: 5000,
 					},
 					Failsafe: &FailsafeConfig{
 						Retry: &RetryPolicyConfig{
@@ -1244,6 +1244,14 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 			case EvmNodeTypeFull:
 				e.MaxAvailableRecentBlocks = 128
 			}
+		}
+	}
+
+	if e.GetLogsSplitOnError == nil {
+		if defaults != nil && defaults.GetLogsSplitOnError != nil {
+			e.GetLogsSplitOnError = defaults.GetLogsSplitOnError
+		} else {
+			e.GetLogsSplitOnError = util.BoolPtr(false)
 		}
 	}
 

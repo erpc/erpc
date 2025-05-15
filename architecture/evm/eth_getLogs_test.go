@@ -534,7 +534,7 @@ func TestUpstreamPostForward_eth_getLogs(t *testing.T) {
 			expectSplit: false,
 		},
 		{
-			name: "request_too_large_error",
+			name: "auto_split_request_too_large_error",
 			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
 				n := new(mockNetwork)
 				u := new(mockEvmUpstream)
@@ -558,6 +558,7 @@ func TestUpstreamPostForward_eth_getLogs(t *testing.T) {
 				u.On("Config").Return(&common.UpstreamConfig{
 					Evm: &common.EvmUpstreamConfig{
 						GetLogsMaxBlockRange: 10,
+						GetLogsSplitOnError:  util.BoolPtr(true),
 					},
 				})
 
@@ -565,6 +566,28 @@ func TestUpstreamPostForward_eth_getLogs(t *testing.T) {
 			},
 			inputError:  common.NewErrEndpointRequestTooLarge(errors.New("too large"), common.EvmBlockRangeTooLarge),
 			expectSplit: true,
+		},
+		{
+			name: "not_splitting_request_too_large_error",
+			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
+				n := new(mockNetwork)
+				u := new(mockEvmUpstream)
+				r := createTestRequest(map[string]interface{}{
+					"fromBlock": "0x1",
+					"toBlock":   "0x2",
+				})
+				n.On("Id").Return("evm:123")
+				u.On("Config").Return(&common.UpstreamConfig{
+					Evm: &common.EvmUpstreamConfig{
+						GetLogsMaxBlockRange: 10,
+						GetLogsSplitOnError:  util.BoolPtr(false),
+					},
+				})
+
+				return n, u, r
+			},
+			inputError:  common.NewErrEndpointRequestTooLarge(errors.New("too large"), common.EvmBlockRangeTooLarge),
+			expectSplit: false,
 		},
 	}
 

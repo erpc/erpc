@@ -285,26 +285,29 @@ func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u co
 	))
 	defer span.End()
 
-	if re != nil {
-		if common.HasErrorCode(re, common.ErrCodeEndpointRequestTooLarge) {
-			logger := u.Logger().With().Str("method", "eth_getLogs").Interface("id", rq.ID()).Logger()
-			// Split the request in half, first on block range, if 1 block then on addresses, if 1 address then on topics
-			subRequests, err := splitEthGetLogsRequest(rq)
-			// TODO Update the evmGetLogsMaxRange accordingly?
-			if err != nil {
-				logger.Warn().Err(err).Object("request", rq).Msg("could not split eth_getLogs request, returning original response")
-				return rs, re
-			}
-			rq.SetCompositeType(common.CompositeTypeLogsSplitOnError)
-			mergedResponse, err := executeGetLogsSubRequests(ctx, n, u, rq, subRequests, skipCacheRead)
-			if err != nil {
-				logger.Warn().Err(err).Object("request", rq).Msg("could not execute eth_getLogs sub-requests, returning original response")
-				return rs, re
-			}
+	if re != nil && u != nil {
+		cfg := u.Config()
+		if cfg != nil && cfg.Evm != nil && cfg.Evm.GetLogsSplitOnError != nil && *cfg.Evm.GetLogsSplitOnError {
+			if common.HasErrorCode(re, common.ErrCodeEndpointRequestTooLarge) {
+				logger := u.Logger().With().Str("method", "eth_getLogs").Interface("id", rq.ID()).Logger()
+				// Split the request in half, first on block range, if 1 block then on addresses, if 1 address then on topics
+				subRequests, err := splitEthGetLogsRequest(rq)
+				// TODO Update the evmGetLogsMaxRange accordingly?
+				if err != nil {
+					logger.Warn().Err(err).Object("request", rq).Msg("could not split eth_getLogs request, returning original response")
+					return rs, re
+				}
+				rq.SetCompositeType(common.CompositeTypeLogsSplitOnError)
+				mergedResponse, err := executeGetLogsSubRequests(ctx, n, u, rq, subRequests, skipCacheRead)
+				if err != nil {
+					logger.Warn().Err(err).Object("request", rq).Msg("could not execute eth_getLogs sub-requests, returning original response")
+					return rs, re
+				}
 
-			return common.NewNormalizedResponse().
-				WithRequest(rq).
-				WithJsonRpcResponse(mergedResponse), nil
+				return common.NewNormalizedResponse().
+					WithRequest(rq).
+					WithJsonRpcResponse(mergedResponse), nil
+			}
 		}
 	} else if rs != nil && rs.IsResultEmptyish(ctx) {
 		// This is to normalize empty logs responses (e.g. instead of returning "null")
