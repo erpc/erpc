@@ -167,7 +167,7 @@ func (r *NormalizedResponse) UpstreamId() string {
 		return ""
 	}
 
-	return r.upstream.Config().Id
+	return r.upstream.Id()
 }
 
 func (r *NormalizedResponse) SetUpstream(upstream Upstream) *NormalizedResponse {
@@ -331,7 +331,7 @@ func (r *NormalizedResponse) MarshalZerologObject(e *zerolog.Event) {
 
 	if r.upstream != nil {
 		if r.upstream.Config() != nil {
-			e.Str("upstream", r.upstream.Config().Id)
+			e.Str("upstream", r.upstream.Id())
 		} else {
 			e.Str("upstream", fmt.Sprintf("%p", r.upstream))
 		}

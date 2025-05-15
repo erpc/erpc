@@ -36,8 +36,8 @@ var dwellirNetworkSubdomains = map[int64]string{
 	747:       "api-flow-evm-gateway-mainnet.n",
 	943:       "api-pulsechain-testnet-v4", // This domain will be migrated to a .n domain soon.
 	945:       "api-bittensor-testnet.n",
-	964:       "api-bittensor-mainnet",             // This domain will be migrated to a .n domain soon.
-	996:       "api-bifrost-polkadot",              // This domain will be migrated to a .n domain soon.
+	964:       "api-bittensor-mainnet", // This domain will be migrated to a .n domain soon.
+	996:       "api-bifrost-polkadot",  // This domain will be migrated to a .n domain soon.
 	1101:      "api-polygon-zkevm-mainnet.n",
 	1135:      "api-lisk-mainnet.n",
 	1284:      "api-moonbeam.n",

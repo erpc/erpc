@@ -22,7 +22,7 @@ func ReorderUpstreams(reg *UpstreamsRegistry, preferredOrder ...string) {
 		for _, methodMap := range reg.sortedUpstreams {
 			for _, upsSlice := range methodMap {
 				for _, upstream := range upsSlice {
-					allUpstreamIDsMap[upstream.Config().Id] = struct{}{}
+					allUpstreamIDsMap[upstream.Id()] = struct{}{}
 				}
 			}
 		}
@@ -30,7 +30,7 @@ func ReorderUpstreams(reg *UpstreamsRegistry, preferredOrder ...string) {
 		// Gather from networkUpstreams
 		for _, upsSlice := range reg.networkUpstreams {
 			for _, upstream := range upsSlice {
-				allUpstreamIDsMap[upstream.Config().Id] = struct{}{}
+				allUpstreamIDsMap[upstream.Id()] = struct{}{}
 			}
 		}
 
@@ -89,7 +89,7 @@ func reorderSliceOfUpstreams(
 
 	withMeta := make([]upsPlusOrigIdx, len(upsSlice))
 	for i, ups := range upsSlice {
-		id := ups.Config().Id
+		id := ups.Id()
 		pos, ok := preferredIndex[id]
 		if !ok {
 			withMeta[i] = upsPlusOrigIdx{Up: ups, OrigIdx: i, Pos: -1, InOrder: false}

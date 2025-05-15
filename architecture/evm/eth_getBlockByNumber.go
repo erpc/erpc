@@ -119,14 +119,12 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			if respBlockNumber > 0 {
 				// When extracted block number is 0, it mostly means response is actually a json-rpc error
 				// therefore we better fetch the highest block number again.
-				upsId := nr.UpstreamId()
-				if upsId == "" {
-					upsId = "n/a"
-				}
+				ups := nr.Upstream()
 				telemetry.MetricUpstreamStaleLatestBlock.WithLabelValues(
 					network.ProjectId(),
+					ups.VendorName(),
 					network.Id(),
-					upsId,
+					ups.Id(),
 					"eth_getBlockByNumber",
 				).Inc()
 			}
@@ -176,15 +174,12 @@ func enforceHighestBlock(ctx context.Context, network common.Network, nq *common
 			if respBlockNumber > 0 {
 				// When extracted block number is 0, it mostly means response is actually a json-rpc error
 				// therefore we better fetch the highest block number again.
-				upsId := nr.UpstreamId()
-				if upsId == "" {
-					upsId = "n/a"
-				}
+				ups := nr.Upstream()
 				telemetry.MetricUpstreamStaleFinalizedBlock.WithLabelValues(
 					network.ProjectId(),
+					ups.VendorName(),
 					network.Id(),
-					upsId,
-					"eth_getBlockByNumber",
+					ups.Id(),
 				).Inc()
 			}
 			var itx bool

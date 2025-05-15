@@ -21,6 +21,14 @@ func NewFakeUpstream(id string) Upstream {
 	}
 }
 
+func (u *FakeUpstream) Id() string {
+	return u.id
+}
+
+func (u *FakeUpstream) VendorName() string {
+	return u.config.VendorName
+}
+
 func (u *FakeUpstream) Config() *UpstreamConfig {
 	return u.config
 }

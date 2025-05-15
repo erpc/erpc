@@ -21,6 +21,19 @@ func init() {
 	telemetry.SetHistogramBuckets("0.05,0.5,5,30")
 }
 
+func getUpsByID(upsList []*Upstream, ids ...string) []*Upstream {
+	var ups []*Upstream
+	for _, id := range ids {
+		for _, u := range upsList {
+			if u.Id() == id {
+				ups = append(ups, u)
+				break
+			}
+		}
+	}
+	return ups
+}
+
 func TestUpstreamsRegistry_Ordering(t *testing.T) {
 	logger := log.Logger
 	projectID := "test-project"
@@ -32,11 +45,12 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
-		_, _ = registry.GetSortedUpstreams(ctx, networkID, method)
+		l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+		upsList := getUpsByID(l, "upstream-a", "upstream-b", "upstream-c")
 
-		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 20)
-		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 30)
-		simulateRequests(metricsTracker, networkID, "upstream-c", method, 100, 10)
+		simulateRequests(metricsTracker, upsList[0], method, 100, 20)
+		simulateRequests(metricsTracker, upsList[1], method, 100, 30)
+		simulateRequests(metricsTracker, upsList[2], method, 100, 10)
 
 		registry.RefreshUpstreamNetworkMethodScores()
 
@@ -48,11 +62,12 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
-		_, _ = registry.GetSortedUpstreams(ctx, networkID, method)
+		l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+		upsList := getUpsByID(l, "upstream-a", "upstream-b", "upstream-c")
 
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method, 10, 0.20)
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", method, 10, 0.70)
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-c", method, 10, 0.02)
+		simulateRequestsWithLatency(metricsTracker, upsList[0], method, 10, 0.20)
+		simulateRequestsWithLatency(metricsTracker, upsList[1], method, 10, 0.70)
+		simulateRequestsWithLatency(metricsTracker, upsList[2], method, 10, 0.02)
 
 		registry.RefreshUpstreamNetworkMethodScores()
 
@@ -64,11 +79,12 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 10*time.Hour)
-		_, _ = registry.GetSortedUpstreams(ctx, networkID, method)
+		l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+		upsList := getUpsByID(l, "upstream-a", "upstream-b", "upstream-c")
 
-		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 30)
-		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 80)
-		simulateRequests(metricsTracker, networkID, "upstream-c", method, 100, 10)
+		simulateRequests(metricsTracker, upsList[0], method, 100, 30)
+		simulateRequests(metricsTracker, upsList[1], method, 100, 80)
+		simulateRequests(metricsTracker, upsList[2], method, 100, 10)
 
 		registry.RefreshUpstreamNetworkMethodScores()
 
@@ -80,14 +96,15 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 10*time.Hour)
-		_, _ = registry.GetSortedUpstreams(ctx, networkID, method)
+		l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+		upsList := getUpsByID(l, "upstream-a", "upstream-b", "upstream-c")
 
-		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 0)
-		metricsTracker.SetLatestBlockNumber("upstream-a", networkID, 4000090)
-		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 0)
-		metricsTracker.SetLatestBlockNumber("upstream-b", networkID, 4000100)
-		simulateRequests(metricsTracker, networkID, "upstream-c", method, 100, 0)
-		metricsTracker.SetLatestBlockNumber("upstream-c", networkID, 3005020)
+		simulateRequests(metricsTracker, upsList[0], method, 100, 0)
+		metricsTracker.SetLatestBlockNumber(upsList[0], 4000090)
+		simulateRequests(metricsTracker, upsList[1], method, 100, 0)
+		metricsTracker.SetLatestBlockNumber(upsList[1], 4000100)
+		simulateRequests(metricsTracker, upsList[2], method, 100, 0)
+		metricsTracker.SetLatestBlockNumber(upsList[2], 3005020)
 
 		registry.RefreshUpstreamNetworkMethodScores()
 
@@ -102,14 +119,15 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, 10*time.Hour)
-		_, _ = registry.GetSortedUpstreams(ctx, networkID, method)
+		l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+		upsList := getUpsByID(l, "upstream-a", "upstream-b", "upstream-c")
 
-		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 0)
-		metricsTracker.SetFinalizedBlockNumber("upstream-a", networkID, 4000090)
-		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 0)
-		metricsTracker.SetFinalizedBlockNumber("upstream-b", networkID, 3005020)
-		simulateRequests(metricsTracker, networkID, "upstream-c", method, 100, 0)
-		metricsTracker.SetFinalizedBlockNumber("upstream-c", networkID, 4000100)
+		simulateRequests(metricsTracker, upsList[0], method, 100, 0)
+		metricsTracker.SetFinalizedBlockNumber(upsList[0], 4000090)
+		simulateRequests(metricsTracker, upsList[1], method, 100, 0)
+		metricsTracker.SetFinalizedBlockNumber(upsList[1], 3005020)
+		simulateRequests(metricsTracker, upsList[2], method, 100, 0)
+		metricsTracker.SetFinalizedBlockNumber(upsList[2], 4000100)
 
 		registry.RefreshUpstreamNetworkMethodScores()
 
@@ -124,11 +142,12 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
-		_, _ = registry.GetSortedUpstreams(ctx, networkID, method)
+		l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+		upsList := getUpsByID(l, "upstream-a", "upstream-b", "upstream-c")
 
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method, 10, 0.05)
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", method, 10, 0.03)
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-c", method, 10, 0.01)
+		simulateRequestsWithLatency(metricsTracker, upsList[0], method, 10, 0.05)
+		simulateRequestsWithLatency(metricsTracker, upsList[1], method, 10, 0.03)
+		simulateRequestsWithLatency(metricsTracker, upsList[2], method, 10, 0.01)
 
 		expectedOrder := []string{"upstream-c", "upstream-b", "upstream-a"}
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
@@ -139,12 +158,13 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
-		_, _ = registry.GetSortedUpstreams(ctx, networkID, method)
+		l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+		upsList := getUpsByID(l, "upstream-a", "upstream-b", "upstream-c")
 
 		// Initial phase
-		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 30)
-		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 80)
-		simulateRequests(metricsTracker, networkID, "upstream-c", method, 100, 10)
+		simulateRequests(metricsTracker, upsList[0], method, 100, 30)
+		simulateRequests(metricsTracker, upsList[1], method, 100, 80)
+		simulateRequests(metricsTracker, upsList[2], method, 100, 10)
 
 		expectedOrder := []string{"upstream-c", "upstream-a", "upstream-b"}
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
@@ -153,9 +173,9 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		time.Sleep(windowSize + 10*time.Millisecond)
 
 		// Second phase
-		simulateRequests(metricsTracker, networkID, "upstream-a", method, 100, 30)
-		simulateRequests(metricsTracker, networkID, "upstream-b", method, 100, 10)
-		simulateRequests(metricsTracker, networkID, "upstream-c", method, 100, 80)
+		simulateRequests(metricsTracker, upsList[0], method, 100, 30)
+		simulateRequests(metricsTracker, upsList[1], method, 100, 10)
+		simulateRequests(metricsTracker, upsList[2], method, 100, 80)
 
 		expectedOrder = []string{"upstream-b", "upstream-a", "upstream-c"}
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
@@ -166,13 +186,14 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 		method := "eth_call"
-		_, _ = registry.GetSortedUpstreams(ctx, networkID, method)
+		l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+		upsList := getUpsByID(l, "upstream-a", "upstream-b", "upstream-c")
 
 		time.Sleep(100 * time.Millisecond)
 
-		simulateRequestsWithRateLimiting(metricsTracker, networkID, "upstream-a", method, 100, 30, 30)
-		simulateRequestsWithRateLimiting(metricsTracker, networkID, "upstream-b", method, 100, 15, 15)
-		simulateRequestsWithRateLimiting(metricsTracker, networkID, "upstream-c", method, 100, 5, 5)
+		simulateRequestsWithRateLimiting(metricsTracker, upsList[0], method, 100, 30, 30)
+		simulateRequestsWithRateLimiting(metricsTracker, upsList[1], method, 100, 15, 15)
+		simulateRequestsWithRateLimiting(metricsTracker, upsList[2], method, 100, 5, 5)
 
 		expectedOrder := []string{"upstream-c", "upstream-b", "upstream-a"}
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
@@ -183,11 +204,12 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		defer cancel()
 		registry, metricsTracker := createTestRegistry(ctx, projectID, &logger, windowSize)
 		method := "eth_call"
-		_, _ = registry.GetSortedUpstreams(ctx, networkID, method)
+		l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+		upsList := getUpsByID(l, "upstream-a", "upstream-b", "upstream-c")
 
-		simulateRequests(metricsTracker, networkID, "upstream-a", method, 1000, 0)
-		simulateRequests(metricsTracker, networkID, "upstream-b", method, 20000, 0)
-		simulateRequests(metricsTracker, networkID, "upstream-c", method, 10, 0)
+		simulateRequests(metricsTracker, upsList[0], method, 1000, 0)
+		simulateRequests(metricsTracker, upsList[1], method, 20000, 0)
+		simulateRequests(metricsTracker, upsList[2], method, 10, 0)
 
 		expectedOrder := []string{"upstream-c", "upstream-a", "upstream-b"}
 		checkUpstreamScoreOrder(t, registry, networkID, method, expectedOrder)
@@ -200,18 +222,19 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 
 		methodGetLogs := "eth_getLogs"
 		methodTraceTransaction := "eth_traceTransaction"
-		_, _ = registry.GetSortedUpstreams(ctx, networkID, methodGetLogs)
+		l, _ := registry.GetSortedUpstreams(ctx, networkID, methodGetLogs)
+		upsList := getUpsByID(l, "upstream-a", "upstream-b", "upstream-c")
 		_, _ = registry.GetSortedUpstreams(ctx, networkID, methodTraceTransaction)
 
 		// Simulate performance for eth_getLogs
-		simulateRequests(metricsTracker, networkID, "upstream-a", methodGetLogs, 100, 10)
-		simulateRequests(metricsTracker, networkID, "upstream-b", methodGetLogs, 100, 30)
-		simulateRequests(metricsTracker, networkID, "upstream-c", methodGetLogs, 100, 20)
+		simulateRequests(metricsTracker, upsList[0], methodGetLogs, 100, 10)
+		simulateRequests(metricsTracker, upsList[1], methodGetLogs, 100, 30)
+		simulateRequests(metricsTracker, upsList[2], methodGetLogs, 100, 20)
 
 		// Simulate performance for eth_traceTransaction
-		simulateRequests(metricsTracker, networkID, "upstream-a", methodTraceTransaction, 100, 20)
-		simulateRequests(metricsTracker, networkID, "upstream-b", methodTraceTransaction, 100, 10)
-		simulateRequests(metricsTracker, networkID, "upstream-c", methodTraceTransaction, 100, 30)
+		simulateRequests(metricsTracker, upsList[0], methodTraceTransaction, 100, 20)
+		simulateRequests(metricsTracker, upsList[1], methodTraceTransaction, 100, 10)
+		simulateRequests(metricsTracker, upsList[2], methodTraceTransaction, 100, 30)
 
 		expectedOrderGetLogs := []string{"upstream-a", "upstream-c", "upstream-b"}
 		checkUpstreamScoreOrder(t, registry, networkID, methodGetLogs, expectedOrderGetLogs)
@@ -227,23 +250,25 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 
 		method1 := "eth_call"
 		method2 := "eth_getBalance"
-		_, _ = registry.GetSortedUpstreams(ctx, networkID, method1)
-		_, _ = registry.GetSortedUpstreams(ctx, networkID, method2)
+		l1, _ := registry.GetSortedUpstreams(ctx, networkID, method1)
+		l2, _ := registry.GetSortedUpstreams(ctx, networkID, method2)
+		upsList1 := getUpsByID(l1, "upstream-a", "upstream-b", "upstream-c")
+		upsList2 := getUpsByID(l2, "upstream-a", "upstream-b", "upstream-c")
 
 		// Phase 1: Initial performance
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method1, 5, 0.01)
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-c", method1, 5, 0.3)
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", method1, 5, 0.8)
+		simulateRequestsWithLatency(metricsTracker, upsList1[0], method1, 5, 0.01)
+		simulateRequestsWithLatency(metricsTracker, upsList1[2], method1, 5, 0.3)
+		simulateRequestsWithLatency(metricsTracker, upsList1[1], method1, 5, 0.8)
 
 		expectedOrderMethod1Phase1 := []string{"upstream-a", "upstream-c", "upstream-b"}
 		checkUpstreamScoreOrder(t, registry, networkID, method1, expectedOrderMethod1Phase1)
 
-		// Wait so that ltency averages are cycled out
+		// Wait so that latency averages are cycled out
 		time.Sleep(windowSize)
 
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-c", method2, 5, 0.01)
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", method2, 5, 0.03)
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method2, 5, 0.05)
+		simulateRequestsWithLatency(metricsTracker, upsList2[2], method2, 5, 0.01)
+		simulateRequestsWithLatency(metricsTracker, upsList2[1], method2, 5, 0.03)
+		simulateRequestsWithLatency(metricsTracker, upsList2[0], method2, 5, 0.05)
 
 		expectedOrderMethod2Phase1 := []string{"upstream-c", "upstream-b", "upstream-a"}
 		checkUpstreamScoreOrder(t, registry, networkID, method2, expectedOrderMethod2Phase1)
@@ -252,18 +277,18 @@ func TestUpstreamsRegistry_Ordering(t *testing.T) {
 		time.Sleep(windowSize)
 
 		// Phase 2: Performance changes
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", method1, 5, 0.01)
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-c", method1, 5, 0.03)
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method1, 5, 0.05)
+		simulateRequestsWithLatency(metricsTracker, upsList1[1], method1, 5, 0.01)
+		simulateRequestsWithLatency(metricsTracker, upsList1[2], method1, 5, 0.03)
+		simulateRequestsWithLatency(metricsTracker, upsList1[0], method1, 5, 0.05)
 
 		expectedOrderMethod1Phase2 := []string{"upstream-b", "upstream-c", "upstream-a"}
 		checkUpstreamScoreOrder(t, registry, networkID, method1, expectedOrderMethod1Phase2)
 
 		time.Sleep(windowSize)
 
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-a", method2, 5, 0.01)
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-c", method2, 5, 0.03)
-		simulateRequestsWithLatency(metricsTracker, networkID, "upstream-b", method2, 5, 0.05)
+		simulateRequestsWithLatency(metricsTracker, upsList2[0], method2, 5, 0.01)
+		simulateRequestsWithLatency(metricsTracker, upsList2[2], method2, 5, 0.03)
+		simulateRequestsWithLatency(metricsTracker, upsList2[1], method2, 5, 0.05)
 
 		expectedOrderMethod2Phase2 := []string{"upstream-a", "upstream-c", "upstream-b"}
 		checkUpstreamScoreOrder(t, registry, networkID, method2, expectedOrderMethod2Phase2)
@@ -315,14 +340,15 @@ func TestUpstreamsRegistry_Scoring(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			registry, metricsTracker := createTestRegistry(ctx, projectID, &log.Logger, scenario.windowSize)
-			_, _ = registry.GetSortedUpstreams(ctx, networkID, method)
+			l, _ := registry.GetSortedUpstreams(ctx, networkID, method)
+			upsList := getUpsByID(l, "upstream-a", "upstream-b", "upstream-c")
 
-			for _, upstream := range scenario.upstreamConfig {
+			for idx, upstream := range scenario.upstreamConfig {
 				successfulRequests := int(float64(upstream.requestCount) * upstream.successRate)
 				failedRequests := upstream.requestCount - successfulRequests
 
-				simulateRequestsWithLatency(metricsTracker, networkID, upstream.id, method, successfulRequests, upstream.latency)
-				simulateFailedRequests(metricsTracker, networkID, upstream.id, method, failedRequests)
+				simulateRequestsWithLatency(metricsTracker, upsList[idx], method, successfulRequests, upstream.latency)
+				simulateFailedRequests(metricsTracker, upsList[idx], method, failedRequests)
 			}
 
 			checkUpstreamScoreOrder(t, registry, networkID, method, scenario.expectedOrder)
@@ -802,35 +828,35 @@ func createTestRegistry(ctx context.Context, projectID string, logger *zerolog.L
 	return registry, metricsTracker
 }
 
-func simulateRequests(tracker *health.Tracker, network, upstream, method string, total, errors int) {
+func simulateRequests(tracker *health.Tracker, upstream common.Upstream, method string, total, errors int) {
 	for i := 0; i < total; i++ {
-		tracker.RecordUpstreamRequest(upstream, network, method)
+		tracker.RecordUpstreamRequest(upstream, method)
 		if i < errors {
-			tracker.RecordUpstreamFailure(upstream, network, method)
+			tracker.RecordUpstreamFailure(upstream, method)
 		}
 	}
 }
 
-func simulateRequestsWithRateLimiting(tracker *health.Tracker, network, upstream, method string, total, selfLimited, remoteLimited int) {
+func simulateRequestsWithRateLimiting(tracker *health.Tracker, upstream common.Upstream, method string, total, selfLimited, remoteLimited int) {
 	for i := 0; i < total; i++ {
-		tracker.RecordUpstreamRequest(upstream, network, method)
+		tracker.RecordUpstreamRequest(upstream, method)
 		if i < selfLimited {
-			tracker.RecordUpstreamSelfRateLimited(upstream, network, method)
+			tracker.RecordUpstreamSelfRateLimited(upstream, method)
 		}
 		if i >= selfLimited && i < selfLimited+remoteLimited {
-			tracker.RecordUpstreamRemoteRateLimited(upstream, network, method)
+			tracker.RecordUpstreamRemoteRateLimited(upstream, method)
 		}
 	}
 }
 
-func simulateRequestsWithLatency(tracker *health.Tracker, network, upstream, method string, total int, latency float64) {
+func simulateRequestsWithLatency(tracker *health.Tracker, upstream common.Upstream, method string, total int, latency float64) {
 	wg := sync.WaitGroup{}
 	for i := 0; i < total; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			tracker.RecordUpstreamRequest(upstream, network, method)
-			tracker.RecordUpstreamDuration(upstream, network, method, time.Duration(latency*float64(time.Second)), "none")
+			tracker.RecordUpstreamRequest(upstream, method)
+			tracker.RecordUpstreamDuration(upstream, method, time.Duration(latency*float64(time.Second)), "none")
 			// timer := tracker.RecordUpstreamDurationStart(upstream, network, method, "none")
 			// time.Sleep(time.Duration(latency * float64(time.Second)))
 			// timer.ObserveDuration()
@@ -839,10 +865,10 @@ func simulateRequestsWithLatency(tracker *health.Tracker, network, upstream, met
 	wg.Wait()
 }
 
-func simulateFailedRequests(tracker *health.Tracker, network, upstream, method string, count int) {
+func simulateFailedRequests(tracker *health.Tracker, upstream common.Upstream, method string, count int) {
 	for i := 0; i < count; i++ {
-		tracker.RecordUpstreamRequest(upstream, network, method)
-		tracker.RecordUpstreamFailure(upstream, network, method)
+		tracker.RecordUpstreamRequest(upstream, method)
+		tracker.RecordUpstreamFailure(upstream, method)
 	}
 }
 
@@ -868,7 +894,7 @@ func checkUpstreamScoreOrder(t *testing.T, registry *UpstreamsRegistry, networkI
 	assert.NoError(t, err)
 	registry.RLockUpstreams()
 	for i, ups := range sortedUpstreams {
-		assert.Equal(t, expectedOrder[i], ups.Config().Id)
+		assert.Equal(t, expectedOrder[i], ups.Id())
 	}
 	registry.RUnlockUpstreams()
 }

@@ -23,10 +23,12 @@ const (
 type UpstreamType string
 
 type Upstream interface {
+	Id() string
+	VendorName() string
+	NetworkId() string
 	Config() *UpstreamConfig
 	Logger() *zerolog.Logger
 	Vendor() Vendor
-	NetworkId() string
 	Forward(ctx context.Context, nq *NormalizedRequest, byPassMethodExclusion bool) (*NormalizedResponse, error)
 }
 

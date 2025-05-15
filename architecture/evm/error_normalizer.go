@@ -155,6 +155,7 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.HasPrefix(msg, "finalized is not a supported") ||
 			strings.HasPrefix(msg, "pending is not a supported") ||
 			strings.HasPrefix(msg, "safe is not a supported") ||
+			strings.HasPrefix(msg, "not a supported commitment") ||
 			strings.HasPrefix(msg, "malformed blocknumber") {
 
 			// by default, we retry this type of client-side exception as other upstreams might

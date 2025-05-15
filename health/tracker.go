@@ -34,8 +34,7 @@ type NetworkMetadata struct {
 
 type Timer struct {
 	start         time.Time
-	network       string
-	ups           string
+	upstream      common.Upstream
 	method        string
 	compositeType string
 	tracker       *Tracker
@@ -43,7 +42,7 @@ type Timer struct {
 
 func (t *Timer) ObserveDuration() {
 	duration := time.Since(t.start)
-	t.tracker.RecordUpstreamDuration(t.ups, t.network, t.method, duration, t.compositeType)
+	t.tracker.RecordUpstreamDuration(t.upstream, t.method, duration, t.compositeType)
 }
 
 // ------------------------------------
@@ -165,14 +164,16 @@ func (t *Tracker) resetMetricsLoop(ctx context.Context) {
 }
 
 // For real-time aggregator updates, we store expansions of the key:
-func (t *Tracker) getKeys(ups, network, method string) []tripletKey {
+func (t *Tracker) getKeys(upstream common.Upstream, method string) []tripletKey {
 	// same expansions as before
+	id := upstream.Id()
+	net := upstream.NetworkId()
 	return []tripletKey{
-		{ups, network, method},
-		{ups, network, "*"},
-		{ups, "*", "*"},
-		{"*", network, method},
-		{"*", network, "*"},
+		{id, net, method},
+		{id, net, "*"},
+		{id, "*", "*"},
+		{"*", net, method},
+		{"*", net, "*"},
 	}
 }
 
@@ -209,39 +210,55 @@ func (t *Tracker) getMetrics(k tripletKey) *TrackedMetrics {
 // Cordon / Uncordon
 // --------------------
 
-func (t *Tracker) Cordon(ups, network, method, reason string) {
-	t.logger.Debug().Str("upstream", ups).
-		Str("network", network).
+func (t *Tracker) Cordon(upstream common.Upstream, method, reason string) {
+	lg := upstream.Logger()
+	lg.Debug().
 		Str("method", method).
 		Str("reason", reason).
 		Msg("cordoning upstream to disable routing")
 
-	tm := t.getMetrics(tripletKey{ups, network, method})
+	id := upstream.Id()
+	net := upstream.NetworkId()
+	vendor := upstream.VendorName()
+
+	tm := t.getMetrics(tripletKey{id, net, method})
 	tm.Cordoned.Store(true)
 	tm.CordonedReason.Store(reason)
 
-	telemetry.MetricUpstreamCordoned.WithLabelValues(t.projectId, network, ups, method).Set(1)
+	telemetry.MetricUpstreamCordoned.WithLabelValues(t.projectId, vendor, net, id, method).Set(1)
 }
 
-func (t *Tracker) Uncordon(ups, network, method string) {
-	tm := t.getMetrics(tripletKey{ups, network, method})
+func (t *Tracker) Uncordon(upstream common.Upstream, method string) {
+	lg := upstream.Logger()
+	lg.Debug().
+		Str("method", method).
+		Msg("uncordoning upstream to enable routing")
+
+	id := upstream.Id()
+	net := upstream.NetworkId()
+	vendor := upstream.VendorName()
+
+	tm := t.getMetrics(tripletKey{id, net, method})
 	tm.Cordoned.Store(false)
 	tm.CordonedReason.Store("")
 
-	telemetry.MetricUpstreamCordoned.WithLabelValues(t.projectId, network, ups, method).Set(0)
+	telemetry.MetricUpstreamCordoned.WithLabelValues(t.projectId, vendor, net, id, method).Set(0)
 }
 
 // IsCordoned checks if (ups, network, method) or (ups, network, "*") is cordoned.
-func (t *Tracker) IsCordoned(ups, network, method string) bool {
+func (t *Tracker) IsCordoned(upstream common.Upstream, method string) bool {
+	id := upstream.Id()
+	net := upstream.NetworkId()
+
 	// If the entire upstream for that network is cordoned, treat it as cordoned
-	if val, ok := t.metrics.Load(tripletKey{ups, network, "*"}); ok {
+	if val, ok := t.metrics.Load(tripletKey{id, net, "*"}); ok {
 		tm := val.(*TrackedMetrics)
 		if tm.Cordoned.Load() {
 			return true
 		}
 	}
 	// Then check the exact method
-	if val, ok := t.metrics.Load(tripletKey{ups, network, method}); ok {
+	if val, ok := t.metrics.Load(tripletKey{id, net, method}); ok {
 		tm := val.(*TrackedMetrics)
 		return tm.Cordoned.Load()
 	}
@@ -252,30 +269,29 @@ func (t *Tracker) IsCordoned(ups, network, method string) bool {
 // Basic Request & Failure Tracking
 // ------------------------------------
 
-func (t *Tracker) RecordUpstreamRequest(ups, network, method string) {
-	keys := t.getKeys(ups, network, method)
+func (t *Tracker) RecordUpstreamRequest(upstream common.Upstream, method string) {
+	keys := t.getKeys(upstream, method)
 	for _, k := range keys {
 		m := t.getMetrics(k)
 		m.RequestsTotal.Add(1)
 	}
 }
 
-func (t *Tracker) RecordUpstreamDurationStart(ups, network, method string, compositeType string) *Timer {
+func (t *Tracker) RecordUpstreamDurationStart(upstream common.Upstream, method string, compositeType string) *Timer {
 	if compositeType == "" {
 		compositeType = "none"
 	}
 	return &Timer{
 		start:         time.Now(),
-		network:       network,
-		ups:           ups,
+		upstream:      upstream,
 		method:        method,
 		compositeType: compositeType,
 		tracker:       t,
 	}
 }
 
-func (t *Tracker) RecordUpstreamDuration(ups, network, method string, duration time.Duration, compositeType string) {
-	keys := t.getKeys(ups, network, method)
+func (t *Tracker) RecordUpstreamDuration(upstream common.Upstream, method string, duration time.Duration, compositeType string) {
+	keys := t.getKeys(upstream, method)
 	sec := duration.Seconds()
 	for _, k := range keys {
 		m := t.getMetrics(k)
@@ -284,41 +300,52 @@ func (t *Tracker) RecordUpstreamDuration(ups, network, method string, duration t
 	if compositeType == "" {
 		compositeType = "none"
 	}
-	telemetry.MetricUpstreamRequestDuration.WithLabelValues(t.projectId, network, ups, method, compositeType).Observe(sec)
+	id := upstream.Id()
+	net := upstream.NetworkId()
+	vendor := upstream.VendorName()
+	telemetry.MetricUpstreamRequestDuration.WithLabelValues(t.projectId, vendor, net, id, method, compositeType).Observe(sec)
 }
 
-func (t *Tracker) RecordUpstreamFailure(ups, network, method string) {
-	keys := t.getKeys(ups, network, method)
+func (t *Tracker) RecordUpstreamFailure(upstream common.Upstream, method string) {
+	keys := t.getKeys(upstream, method)
 	for _, k := range keys {
 		m := t.getMetrics(k)
 		m.ErrorsTotal.Add(1)
 	}
 }
 
-func (t *Tracker) RecordUpstreamSelfRateLimited(ups, network, method string) {
-	keys := t.getKeys(ups, network, method)
+func (t *Tracker) RecordUpstreamSelfRateLimited(upstream common.Upstream, method string) {
+	keys := t.getKeys(upstream, method)
 	for _, k := range keys {
 		m := t.getMetrics(k)
 		m.SelfRateLimitedTotal.Add(1)
 	}
-	telemetry.MetricUpstreamSelfRateLimitedTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
+	id := upstream.Id()
+	net := upstream.NetworkId()
+	vendor := upstream.VendorName()
+	telemetry.MetricUpstreamSelfRateLimitedTotal.WithLabelValues(t.projectId, vendor, net, id, method).Inc()
 }
 
-func (t *Tracker) RecordUpstreamRemoteRateLimited(ups, network, method string) {
-	keys := t.getKeys(ups, network, method)
+func (t *Tracker) RecordUpstreamRemoteRateLimited(upstream common.Upstream, method string) {
+	keys := t.getKeys(upstream, method)
 	for _, k := range keys {
 		m := t.getMetrics(k)
 		m.RemoteRateLimitedTotal.Add(1)
 	}
-	telemetry.MetricUpstreamRemoteRateLimitedTotal.WithLabelValues(t.projectId, network, ups, method).Inc()
+	id := upstream.Id()
+	net := upstream.NetworkId()
+	vendor := upstream.VendorName()
+	telemetry.MetricUpstreamRemoteRateLimitedTotal.WithLabelValues(t.projectId, vendor, net, id, method).Inc()
 }
 
 // --------------------------------------------
 // Accessors
 // --------------------------------------------
 
-func (t *Tracker) GetUpstreamMethodMetrics(ups, network, method string) *TrackedMetrics {
-	return t.getMetrics(tripletKey{ups, network, method})
+func (t *Tracker) GetUpstreamMethodMetrics(upstream common.Upstream, method string) *TrackedMetrics {
+	id := upstream.Id()
+	net := upstream.NetworkId()
+	return t.getMetrics(tripletKey{id, net, method})
 }
 
 func (t *Tracker) GetUpstreamMetrics(upsId string) map[string]*TrackedMetrics {
@@ -348,16 +375,20 @@ func (t *Tracker) GetNetworkMethodMetrics(network, method string) *TrackedMetric
 // Block Number & Lag Tracking
 // --------------------------------------------
 
-func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
-	t.logger.Trace().Str("upstreamId", ups).Str("networkId", network).Int64("value", blockNumber).Msg("updating latest block number in tracker")
+func (t *Tracker) SetLatestBlockNumber(upstream common.Upstream, blockNumber int64) {
+	id := upstream.Id()
+	net := upstream.NetworkId()
+	vendor := upstream.VendorName()
+	lg := upstream.Logger().With().Str("networkId", net).Logger()
 
+	lg.Trace().Int64("value", blockNumber).Msg("updating latest block number in tracker")
 	if blockNumber <= 0 {
-		t.logger.Warn().Str("upstreamId", ups).Str("networkId", network).Int64("value", blockNumber).Msg("ignoring setting non-positive latest block number in tracker")
+		lg.Warn().Int64("value", blockNumber).Msg("ignoring setting non-positive latest block number in tracker")
 		return
 	}
 
-	mdKey := duoKey{ups: ups, network: network}
-	ntwMdKey := duoKey{ups: "*", network: network}
+	mdKey := duoKey{id, net}
+	ntwMdKey := duoKey{"*", net}
 
 	// 1) Possibly update the network-level highest block head
 	ntwMeta := t.getMetadata(ntwMdKey)
@@ -366,7 +397,7 @@ func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
 	if blockNumber > oldNtwVal {
 		ntwMeta.evmLatestBlockNumber.Store(blockNumber)
 		telemetry.MetricUpstreamLatestBlockNumber.
-			WithLabelValues(t.projectId, network, "*").
+			WithLabelValues(t.projectId, "*", net, "*").
 			Set(float64(blockNumber))
 		needsGlobalUpdate = true
 	}
@@ -377,20 +408,20 @@ func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
 	if blockNumber > oldUpsVal {
 		upsMeta.evmLatestBlockNumber.Store(blockNumber)
 		telemetry.MetricUpstreamLatestBlockNumber.
-			WithLabelValues(t.projectId, network, ups).
+			WithLabelValues(t.projectId, vendor, net, id).
 			Set(float64(blockNumber))
 	}
 
 	// 3) Recompute block head lag for this upstream
 	ntwBn := ntwMeta.evmLatestBlockNumber.Load()
 	if ntwBn <= 0 {
-		t.logger.Warn().Str("upstreamId", ups).Str("networkId", network).Int64("value", ntwBn).Msg("ignoring block head lag tracking for non-positive block number in tracker")
+		lg.Warn().Int64("value", ntwBn).Msg("ignoring block head lag tracking for non-positive block number in tracker")
 		return
 	}
 
 	upsLag := ntwBn - upsMeta.evmLatestBlockNumber.Load()
 	telemetry.MetricUpstreamBlockHeadLag.
-		WithLabelValues(t.projectId, network, ups).
+		WithLabelValues(t.projectId, vendor, net, id).
 		Set(float64(upsLag))
 
 	// 4) Update the TrackedMetrics.BlockHeadLag fields
@@ -401,18 +432,18 @@ func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
 			if !ok {
 				return true
 			}
-			if k.network == network {
+			if k.network == net {
 				tm := value.(*TrackedMetrics)
-				otherUpsMeta := t.getMetadata(duoKey{ups: k.ups, network: network})
+				otherUpsMeta := t.getMetadata(duoKey{ups: k.ups, network: net})
 				otherVal := otherUpsMeta.evmLatestBlockNumber.Load()
 				if otherVal <= 0 {
-					t.logger.Debug().Str("upstreamId", k.ups).Str("networkId", network).Int64("value", otherVal).Msg("ignoring block head lag tracking for non-positive block number in tracker")
+					lg.Debug().Str("otherUpstreamId", k.ups).Int64("value", otherVal).Msg("ignoring block head lag tracking for non-positive block number in tracker")
 					return true
 				}
 				otherLag := ntwBn - otherVal
 				tm.BlockHeadLag.Store(otherLag)
 				telemetry.MetricUpstreamBlockHeadLag.
-					WithLabelValues(t.projectId, network, k.ups).
+					WithLabelValues(t.projectId, vendor, net, k.ups).
 					Set(float64(otherLag))
 			}
 			return true
@@ -424,7 +455,7 @@ func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
 			if !ok {
 				return true
 			}
-			if k.ups == ups && k.network == network {
+			if k.ups == id && k.network == net {
 				tm := value.(*TrackedMetrics)
 				tm.BlockHeadLag.Store(upsLag)
 			}
@@ -433,16 +464,29 @@ func (t *Tracker) SetLatestBlockNumber(ups, network string, blockNumber int64) {
 	}
 }
 
-func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64) {
-	t.logger.Trace().Str("upstreamId", ups).Str("networkId", network).Int64("value", blockNumber).Msg("updating finalized block number in tracker")
+func (t *Tracker) SetLatestBlockNumberForNetwork(network string, blockNumber int64) {
+	ntwMdKey := duoKey{"*", network}
+	ntwMeta := t.getMetadata(ntwMdKey)
+	ntwMeta.evmLatestBlockNumber.Store(blockNumber)
+	telemetry.MetricUpstreamLatestBlockNumber.WithLabelValues(t.projectId, "*", network, "*").Set(float64(blockNumber))
+}
+
+func (t *Tracker) SetFinalizedBlockNumber(upstream common.Upstream, blockNumber int64) {
+	lg := upstream.Logger().With().Str("networkId", upstream.NetworkId()).Logger()
+
+	lg.Trace().Int64("value", blockNumber).Msg("updating finalized block number in tracker")
 
 	if blockNumber <= 0 {
-		t.logger.Warn().Str("upstreamId", ups).Str("networkId", network).Int64("value", blockNumber).Msg("ignoring setting non-positive block number in finalized block tracker")
+		lg.Warn().Int64("value", blockNumber).Msg("ignoring setting non-positive block number in finalized block tracker")
 		return
 	}
 
-	mdKey := duoKey{ups, network}
-	ntwMdKey := duoKey{"*", network}
+	id := upstream.Id()
+	net := upstream.NetworkId()
+	vendor := upstream.VendorName()
+
+	mdKey := duoKey{id, net}
+	ntwMdKey := duoKey{"*", net}
 
 	upsMeta := t.getMetadata(mdKey)
 	ntwMeta := t.getMetadata(ntwMdKey)
@@ -453,7 +497,7 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 	if blockNumber > oldNtwVal {
 		ntwMeta.evmFinalizedBlockNumber.Store(blockNumber)
 		telemetry.MetricUpstreamFinalizedBlockNumber.
-			WithLabelValues(t.projectId, network, "*").
+			WithLabelValues(t.projectId, "*", net, "*").
 			Set(float64(blockNumber))
 		needsGlobalUpdate = true
 	}
@@ -463,14 +507,14 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 	if blockNumber > oldUpsVal {
 		upsMeta.evmFinalizedBlockNumber.Store(blockNumber)
 		telemetry.MetricUpstreamFinalizedBlockNumber.
-			WithLabelValues(t.projectId, network, ups).
+			WithLabelValues(t.projectId, vendor, net, id).
 			Set(float64(blockNumber))
 	}
 
 	// Recompute finalization lag for this upstream
 	ntwVal := ntwMeta.evmFinalizedBlockNumber.Load()
 	if ntwVal <= 0 {
-		t.logger.Warn().Str("upstreamId", ups).Str("networkId", network).Int64("value", ntwVal).Msg("ignoring finalization lag tracking for negative block number in tracker")
+		lg.Warn().Int64("value", ntwVal).Msg("ignoring finalization lag tracking for negative block number in tracker")
 		return
 	}
 
@@ -479,7 +523,7 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 
 	// Update Prometheus for this upstream
 	telemetry.MetricUpstreamFinalizationLag.
-		WithLabelValues(t.projectId, network, ups).
+		WithLabelValues(t.projectId, vendor, net, id).
 		Set(float64(upsLag))
 
 	// Update the finalization lag across the network if needed
@@ -489,18 +533,18 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 			if !ok {
 				return true
 			}
-			if k.network == network {
+			if k.network == net {
 				tm := value.(*TrackedMetrics)
-				otherUpsMeta := t.getMetadata(duoKey{ups: k.ups, network: k.network})
+				otherUpsMeta := t.getMetadata(duoKey{ups: k.ups, network: net})
 				otherVal := otherUpsMeta.evmFinalizedBlockNumber.Load()
 				if otherVal <= 0 {
-					t.logger.Debug().Str("upstreamId", k.ups).Str("networkId", network).Int64("value", otherVal).Msg("ignoring finalization lag tracking for non-positive block number in tracker")
+					lg.Debug().Str("otherUpstreamId", k.ups).Int64("value", otherVal).Msg("ignoring finalization lag tracking for non-positive block number in tracker")
 					return true
 				}
 				otherLag := ntwVal - otherVal
 				tm.FinalizationLag.Store(otherLag)
 				telemetry.MetricUpstreamFinalizationLag.
-					WithLabelValues(t.projectId, network, k.ups).
+					WithLabelValues(t.projectId, vendor, net, k.ups).
 					Set(float64(otherLag))
 			}
 			return true
@@ -512,7 +556,7 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 			if !ok {
 				return true
 			}
-			if k.ups == ups && k.network == network {
+			if k.ups == id && k.network == net {
 				tm := value.(*TrackedMetrics)
 				tm.FinalizationLag.Store(upsLag)
 			}
@@ -521,22 +565,32 @@ func (t *Tracker) SetFinalizedBlockNumber(ups, network string, blockNumber int64
 	}
 }
 
-func (t *Tracker) RecordBlockHeadLargeRollback(ups, network, finality string, currentVal, newVal int64) {
+func (t *Tracker) SetFinalizedBlockNumberForNetwork(network string, blockNumber int64) {
+	ntwMdKey := duoKey{"*", network}
+	ntwMeta := t.getMetadata(ntwMdKey)
+	ntwMeta.evmFinalizedBlockNumber.Store(blockNumber)
+	telemetry.MetricUpstreamFinalizedBlockNumber.WithLabelValues(t.projectId, "*", network, "*").Set(float64(blockNumber))
+}
+
+func (t *Tracker) RecordBlockHeadLargeRollback(upstream common.Upstream, finality string, currentVal, newVal int64) {
 	rollback := currentVal - newVal
 
-	k := tripletKey{ups: ups, network: network}
+	id := upstream.Id()
+	net := upstream.NetworkId()
+	vendor := upstream.VendorName()
+
+	k := tripletKey{ups: id, network: net}
 	tm := t.getMetrics(k)
 	tm.BlockHeadLargeRollback.Store(rollback)
 
-	t.logger.Debug().
-		Str("upstream", ups).
-		Str("network", network).
+	lg := upstream.Logger().With().Str("networkId", net).Logger()
+	lg.Debug().
 		Int64("currentValue", currentVal).
 		Int64("newValue", newVal).
 		Int64("rollback", rollback).
 		Msgf("recording block rollback in tracker")
 
 	telemetry.MetricUpstreamBlockHeadLargeRollback.
-		WithLabelValues(t.projectId, network, ups).
+		WithLabelValues(t.projectId, vendor, net, id).
 		Set(float64(rollback))
 }

@@ -153,6 +153,6 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 	expectedOrder := []string{"rpc2", "rpc1"}
 	assert.NoError(t, err)
 	for i, ups := range sortedUpstreams {
-		assert.Equal(t, expectedOrder[i], ups.Config().Id)
+		assert.Equal(t, expectedOrder[i], ups.Id())
 	}
 }

@@ -6476,15 +6476,15 @@ func TestNetwork_Forward(t *testing.T) {
 
 		sortedUpstreamsGetLogs, err := upstreamsRegistry.GetSortedUpstreams(context.TODO(), networkID, "eth_getLogs")
 		assert.NoError(t, err)
-		assert.Equal(t, "upstream-c", sortedUpstreamsGetLogs[0].Config().Id, "Expected upstream-c to be preferred for eth_getLogs in Phase 1")
+		assert.Equal(t, "upstream-c", sortedUpstreamsGetLogs[0].Id(), "Expected upstream-c to be preferred for eth_getLogs in Phase 1")
 
 		sortedUpstreamsTraceTransaction, err := upstreamsRegistry.GetSortedUpstreams(context.TODO(), networkID, "eth_traceTransaction")
 		assert.NoError(t, err)
-		assert.Equal(t, "upstream-b", sortedUpstreamsTraceTransaction[0].Config().Id, "Expected upstream-b to be preferred for eth_traceTransaction in Phase 1")
+		assert.Equal(t, "upstream-b", sortedUpstreamsTraceTransaction[0].Id(), "Expected upstream-b to be preferred for eth_traceTransaction in Phase 1")
 
 		sortedUpstreamsCall, err := upstreamsRegistry.GetSortedUpstreams(context.TODO(), networkID, "eth_call")
 		assert.NoError(t, err)
-		assert.Equal(t, "upstream-a", sortedUpstreamsCall[0].Config().Id, "Expected upstream-a to be preferred for eth_call in Phase 1")
+		assert.Equal(t, "upstream-a", sortedUpstreamsCall[0].Id(), "Expected upstream-a to be preferred for eth_call in Phase 1")
 	})
 
 	t.Run("ForwardEnvioUnsupportedNetwork", func(t *testing.T) {
@@ -7062,7 +7062,7 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 			"Expected upstream to be excluded by policy")
 
 		// Verify metrics show high error rate from state poller requests
-		metrics := network.metricsTracker.GetUpstreamMethodMetrics("rpc1", "evm:123", "*")
+		metrics := network.metricsTracker.GetUpstreamMethodMetrics(ups1, "*")
 		assert.True(t, metrics.ErrorRate() > 0.7,
 			"Expected error rate above 70%% due to state poller failures, got %.2f%%",
 			metrics.ErrorRate()*100)
@@ -7075,7 +7075,7 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 		assert.NoError(t, err, "Upstream should be active after error rate improves")
 
 		// Verify metrics show improved error rate
-		metrics = network.metricsTracker.GetUpstreamMethodMetrics("rpc1", "evm:123", "*")
+		metrics = network.metricsTracker.GetUpstreamMethodMetrics(ups1, "*")
 		assert.True(t, metrics.ErrorRate() < 0.7,
 			"Expected error rate below 70%% after successful requests, got %.2f%%",
 			metrics.ErrorRate()*100)
@@ -8882,9 +8882,10 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 
 		//   -- upstream will retry --
 		upCfg := &common.UpstreamConfig{
-			Id:       "rpc1",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc1.localhost",
+			Id:         "rpc1",
+			Type:       common.UpstreamTypeEvm,
+			Endpoint:   "http://rpc1.localhost",
+			VendorName: "vendorA",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
 				StatePollerInterval: common.Duration(pollerInterval),
@@ -8953,7 +8954,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		// Metric counts successful cache refreshes (bootstrap + final success).
 		// It should *not* increase for each failed attempt, so we expect exactly 2.
 		polledMetric, err := telemetry.MetricUpstreamLatestBlockPolled.
-			GetMetricWithLabelValues("prjA", util.EvmNetworkId(123), "rpc1")
+			GetMetricWithLabelValues("prjA", "vendorA", util.EvmNetworkId(123), "rpc1")
 		require.NoError(t, err)
 		metricValue := promUtil.ToFloat64(polledMetric)
 		//
@@ -9036,9 +9037,10 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
 		upCfg := &common.UpstreamConfig{
-			Id:       "rpc1",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc1.localhost",
+			Id:         "rpc1",
+			Type:       common.UpstreamTypeEvm,
+			Endpoint:   "http://rpc1.localhost",
+			VendorName: "vendorA",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
 				StatePollerInterval: common.Duration(5000 * time.Millisecond), // we’ll drive it manually
@@ -9116,7 +9118,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		// 5) Inspect metrics: single poll, zero multiplexer hits
 		//----------------------------------------------------------------------
 		polled, err := telemetry.MetricUpstreamLatestBlockPolled.
-			GetMetricWithLabelValues("prjA", util.EvmNetworkId(123), "rpc1")
+			GetMetricWithLabelValues("prjA", "vendorA", util.EvmNetworkId(123), "rpc1")
 		require.NoError(t, err)
 
 		t.Logf("MetricUpstreamLatestBlockPolled   : %.0f", promUtil.ToFloat64(polled))
@@ -9197,9 +9199,10 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
 
 		upCfg := &common.UpstreamConfig{
-			Id:       "rpc1",
-			Type:     common.UpstreamTypeEvm,
-			Endpoint: "http://rpc1.localhost",
+			Id:         "rpc1",
+			Type:       common.UpstreamTypeEvm,
+			Endpoint:   "http://rpc1.localhost",
+			VendorName: "vendorA",
 			Evm: &common.EvmUpstreamConfig{
 				ChainId:             123,
 				StatePollerInterval: common.Duration(50 * time.Millisecond),
@@ -9407,7 +9410,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.C
 		pr,
 		nil,
 		metricsTracker,
-		1*time.Second,
+		120*time.Second,
 	)
 
 	fsCfg := &common.FailsafeConfig{

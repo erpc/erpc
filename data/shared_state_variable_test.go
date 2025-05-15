@@ -527,7 +527,7 @@ func TestCounterInt64_IsStale(t *testing.T) {
 func TestCounterInt64_SetValueUpdatesLastUpdated(t *testing.T) {
 	counter := &counterInt64{
 		ignoreRollbackOf: 1024,
-		registry:         &sharedStateRegistry{
+		registry: &sharedStateRegistry{
 			logger: &log.Logger,
 		},
 	}

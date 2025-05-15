@@ -9,80 +9,87 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
 	"github.com/rs/zerolog/log"
 )
 
 var (
-	testUpstreams = []string{"ups1", "ups2", "ups3", "ups4"}
-	testNetworks  = []string{"eth", "polygon", "bsc", "arbitrum"}
-	testMethods   = []string{"eth_call", "eth_getBalance", "eth_getBlockByNumber", "eth_getLogs"}
+	testUpstreams = []common.Upstream{
+		common.NewFakeUpstream("ups1"),
+		common.NewFakeUpstream("ups2"),
+		common.NewFakeUpstream("ups3"),
+		common.NewFakeUpstream("ups4"),
+	}
+	testNetworks = []string{"eth", "polygon", "bsc", "arbitrum"}
+	testMethods  = []string{"eth_call", "eth_getBalance", "eth_getBlockByNumber", "eth_getLogs"}
 )
 
 func init() {
 	util.ConfigureTestLogger()
+	telemetry.SetHistogramBuckets("0.001,0.005,0.01")
 }
 
 // Helper to get random test data
-func getRandomTestData() (string, string, string) {
+func getRandomTestData() (common.Upstream, string) {
 	return testUpstreams[rand.Intn(len(testUpstreams))],
-		testNetworks[rand.Intn(len(testNetworks))],
 		testMethods[rand.Intn(len(testMethods))]
 }
 
 func BenchmarkRecordUpstreamRequest(b *testing.B) {
 	tracker := health.NewTracker(&log.Logger, "benchProj", time.Minute)
-	ups, net, meth := getRandomTestData()
+	ups, meth := getRandomTestData()
 
 	b.ResetTimer()
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			tracker.RecordUpstreamRequest(ups, net, meth)
+			tracker.RecordUpstreamRequest(ups, meth)
 		}
 	})
 }
 
 func BenchmarkRecordUpstreamDuration(b *testing.B) {
 	tracker := health.NewTracker(&log.Logger, "benchProj", time.Minute)
-	ups, net, meth := getRandomTestData()
+	ups, meth := getRandomTestData()
 
 	duration := 100 * time.Millisecond
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			tracker.RecordUpstreamDuration(ups, net, meth, duration, "none")
+			tracker.RecordUpstreamDuration(ups, meth, duration, "none")
 		}
 	})
 }
 
 func BenchmarkRecordUpstreamFailure(b *testing.B) {
 	tracker := health.NewTracker(&log.Logger, "benchProj", time.Minute)
-	ups, net, meth := getRandomTestData()
+	ups, meth := getRandomTestData()
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			tracker.RecordUpstreamFailure(ups, net, meth)
+			tracker.RecordUpstreamFailure(ups, meth)
 		}
 	})
 }
 
 func BenchmarkGetUpstreamMethodMetrics(b *testing.B) {
 	tracker := health.NewTracker(&log.Logger, "benchProj", time.Minute)
-	ups, net, meth := getRandomTestData()
+	ups, meth := getRandomTestData()
 
 	// Pre-warm the tracker with some data
-	tracker.RecordUpstreamRequest(ups, net, meth)
-	tracker.RecordUpstreamDuration(ups, net, meth, time.Millisecond*10, "none")
+	tracker.RecordUpstreamRequest(ups, meth)
+	tracker.RecordUpstreamDuration(ups, meth, time.Millisecond*10, "none")
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			// Hot path: read the metrics
-			_ = tracker.GetUpstreamMethodMetrics(ups, net, meth)
+			_ = tracker.GetUpstreamMethodMetrics(ups, meth)
 		}
 	})
 }
@@ -96,25 +103,25 @@ func BenchmarkTrackerMixed(b *testing.B) {
 		// Create a local RNG to avoid data races on the global rand source
 		rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 		for pb.Next() {
-			// Pick a random upstream, network, and method
-			ups, net, meth := getRandomTestData()
+			// Pick a random upstream and method
+			ups, meth := getRandomTestData()
 
-			// Randomly pick one of the main “hot” operations
+			// Randomly pick one of the main "hot" operations
 			action := rng.Intn(4) // possible values: 0..3
 			switch action {
 			case 0:
 				// Record a request
-				tracker.RecordUpstreamRequest(ups, net, meth)
+				tracker.RecordUpstreamRequest(ups, meth)
 			case 1:
 				// Record a failure
-				tracker.RecordUpstreamFailure(ups, net, meth)
+				tracker.RecordUpstreamFailure(ups, meth)
 			case 2:
 				// Record a random duration (5ms–50ms)
 				dur := time.Duration(5+rng.Intn(45)) * time.Millisecond
-				tracker.RecordUpstreamDuration(ups, net, meth, dur, "none")
+				tracker.RecordUpstreamDuration(ups, meth, dur, "none")
 			case 3:
 				// Read the metrics
-				_ = tracker.GetUpstreamMethodMetrics(ups, net, meth)
+				_ = tracker.GetUpstreamMethodMetrics(ups, meth)
 			}
 		}
 	})
@@ -130,14 +137,14 @@ func BenchmarkRecordAndGetMetrics(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			ups, network, method := getRandomTestData()
+			ups, method := getRandomTestData()
 
 			// Record some metrics
-			tracker.RecordUpstreamRequest(ups, network, method)
-			tracker.RecordUpstreamDuration(ups, network, method, 100*time.Millisecond, "none")
+			tracker.RecordUpstreamRequest(ups, method)
+			tracker.RecordUpstreamDuration(ups, method, 100*time.Millisecond, "none")
 
 			// Then read them back
-			metrics := tracker.GetUpstreamMethodMetrics(ups, network, method)
+			metrics := tracker.GetUpstreamMethodMetrics(ups, method)
 			if metrics == nil {
 				b.Fatal("expected metrics to exist")
 			}
@@ -153,23 +160,23 @@ func BenchmarkReadHeavy(b *testing.B) {
 
 	// Pre-populate some data
 	for i := 0; i < 1000; i++ {
-		ups, network, method := getRandomTestData()
-		tracker.RecordUpstreamRequest(ups, network, method)
+		ups, method := getRandomTestData()
+		tracker.RecordUpstreamRequest(ups, method)
 	}
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		reads := 0
 		for pb.Next() {
-			ups, network, method := getRandomTestData()
+			ups, method := getRandomTestData()
 
 			// Do 9 reads for every write
 			if reads < 9 {
-				_ = tracker.GetUpstreamMethodMetrics(ups, network, method)
-				_ = tracker.GetNetworkMethodMetrics(network, method)
+				_ = tracker.GetUpstreamMethodMetrics(ups, method)
+				_ = tracker.GetNetworkMethodMetrics(ups.NetworkId(), method)
 				reads++
 			} else {
-				tracker.RecordUpstreamRequest(ups, network, method)
+				tracker.RecordUpstreamRequest(ups, method)
 				reads = 0
 			}
 		}
@@ -186,15 +193,15 @@ func BenchmarkWriteHeavy(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		writes := 0
 		for pb.Next() {
-			ups, network, method := getRandomTestData()
+			ups, method := getRandomTestData()
 
 			// Do 9 writes for every read
 			if writes < 9 {
-				tracker.RecordUpstreamRequest(ups, network, method)
-				tracker.RecordUpstreamDuration(ups, network, method, 100*time.Millisecond, "none")
+				tracker.RecordUpstreamRequest(ups, method)
+				tracker.RecordUpstreamDuration(ups, method, 100*time.Millisecond, "none")
 				writes++
 			} else {
-				_ = tracker.GetUpstreamMethodMetrics(ups, network, method)
+				_ = tracker.GetUpstreamMethodMetrics(ups, method)
 				writes = 0
 			}
 		}
@@ -217,12 +224,12 @@ func BenchmarkHighConcurrency(b *testing.B) {
 				go func() {
 					defer wg.Done()
 					for j := 0; j < b.N; j++ {
-						ups, network, method := getRandomTestData()
+						ups, method := getRandomTestData()
 
 						// Mix of operations
-						tracker.RecordUpstreamRequest(ups, network, method)
-						_ = tracker.GetUpstreamMethodMetrics(ups, network, method)
-						tracker.RecordUpstreamDuration(ups, network, method, 100*time.Millisecond, "none")
+						tracker.RecordUpstreamRequest(ups, method)
+						_ = tracker.GetUpstreamMethodMetrics(ups, method)
+						tracker.RecordUpstreamDuration(ups, method, 100*time.Millisecond, "none")
 					}
 				}()
 			}
@@ -241,10 +248,10 @@ func BenchmarkBlockNumberUpdates(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		var blockNum int64
 		for pb.Next() {
-			ups, network, _ := getRandomTestData()
+			ups, _ := getRandomTestData()
 			blockNum++
-			tracker.SetLatestBlockNumber(ups, network, blockNum)
-			tracker.SetFinalizedBlockNumber(ups, network, blockNum-100)
+			tracker.SetLatestBlockNumber(ups, blockNum)
+			tracker.SetFinalizedBlockNumber(ups, blockNum-100)
 		}
 	})
 }
@@ -257,18 +264,17 @@ func BenchmarkHotKeyAccess(b *testing.B) {
 
 	// Use fixed keys to create contention
 	const (
-		hotUps     = "hot-ups"
-		hotNetwork = "hot-network"
-		hotMethod  = "hot-method"
+		hotMethod = "hot-method"
 	)
+	hotUps := common.NewFakeUpstream("hot-ups")
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			// All goroutines hammer the same key
-			tracker.RecordUpstreamRequest(hotUps, hotNetwork, hotMethod)
-			_ = tracker.GetUpstreamMethodMetrics(hotUps, hotNetwork, hotMethod)
-			tracker.RecordUpstreamDuration(hotUps, hotNetwork, hotMethod, 100*time.Millisecond, "none")
+			tracker.RecordUpstreamRequest(hotUps, hotMethod)
+			_ = tracker.GetUpstreamMethodMetrics(hotUps, hotMethod)
+			tracker.RecordUpstreamDuration(hotUps, hotMethod, 100*time.Millisecond, "none")
 		}
 	})
 }
@@ -282,13 +288,13 @@ func BenchmarkFullRequestFlow(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			ups, network, method := getRandomTestData()
+			ups, method := getRandomTestData()
 
 			// Start timing
-			timer := tracker.RecordUpstreamDurationStart(ups, network, method, "none")
+			timer := tracker.RecordUpstreamDurationStart(ups, method, "none")
 
 			// Record request
-			tracker.RecordUpstreamRequest(ups, network, method)
+			tracker.RecordUpstreamRequest(ups, method)
 
 			// Simulate some work
 			time.Sleep(time.Millisecond)
@@ -296,18 +302,18 @@ func BenchmarkFullRequestFlow(b *testing.B) {
 			// Randomly record different types of outcomes
 			switch rand.Intn(4) {
 			case 0:
-				tracker.RecordUpstreamFailure(ups, network, method)
+				tracker.RecordUpstreamFailure(ups, method)
 			case 1:
-				tracker.RecordUpstreamSelfRateLimited(ups, network, method)
+				tracker.RecordUpstreamSelfRateLimited(ups, method)
 			case 2:
-				tracker.RecordUpstreamRemoteRateLimited(ups, network, method)
+				tracker.RecordUpstreamRemoteRateLimited(ups, method)
 			}
 
 			// End timing
 			timer.ObserveDuration()
 
 			// Get metrics
-			metrics := tracker.GetUpstreamMethodMetrics(ups, network, method)
+			metrics := tracker.GetUpstreamMethodMetrics(ups, method)
 			if metrics == nil {
 				b.Fatal("expected metrics to exist")
 			}
@@ -324,15 +330,15 @@ func BenchmarkConcurrentCordonOperations(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			ups, network, method := getRandomTestData()
+			ups, method := getRandomTestData()
 
 			if rand.Float32() < 0.5 {
-				tracker.Cordon(ups, network, method, "test reason")
+				tracker.Cordon(ups, method, "test reason")
 			} else {
-				tracker.Uncordon(ups, network, method)
+				tracker.Uncordon(ups, method)
 			}
 
-			_ = tracker.IsCordoned(ups, network, method)
+			_ = tracker.IsCordoned(ups, method)
 		}
 	})
 }
