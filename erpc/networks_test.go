@@ -6975,6 +6975,81 @@ func TestNetwork_Forward(t *testing.T) {
 	})
 }
 
+func TestClassifySeverity(t *testing.T) {
+	req := common.NewNormalizedRequest([]byte(`{"method":"debug_traceTransaction"}`))
+
+	mkSkipIgnored := func(id string) error {
+		return common.NewErrUpstreamRequestSkipped(
+			common.NewErrUpstreamMethodIgnored("debug_traceTransaction", id),
+			id,
+		)
+	}
+	mkSkipNodeMismatch := func(id string) error {
+		return common.NewErrUpstreamRequestSkipped(
+			common.NewErrUpstreamNodeTypeMismatch(nil,
+				common.EvmNodeTypeArchive,
+				common.EvmNodeTypeFull,
+			),
+			id,
+		)
+	}
+	mkNestedExhausted := func(errs ...error) error {
+		m := &sync.Map{}
+		for i, e := range errs {
+			m.Store(fmt.Sprintf("n%d", i), e)
+		}
+		return common.NewErrUpstreamsExhausted(
+			req, m, "prj", "evm:123", "debug_traceTransaction",
+			5*time.Millisecond, 1, 0, 0,
+		)
+	}
+
+	cases := []struct {
+		name string
+		err  error
+		exp  common.Severity
+	}{
+		{
+			"single skip → intentional method ignored",
+			mkSkipIgnored("ups1"),
+			common.SeverityInfo,
+		},
+		{
+			"single skip → non-intentional node type mismatch",
+			mkSkipNodeMismatch("ups1"),
+			common.SeverityWarning,
+		},
+		{
+			"exhausted – all skips intentional method ignored",
+			mkNestedExhausted(mkSkipIgnored("ups1"), mkSkipIgnored("ups2")),
+			common.SeverityInfo,
+		},
+		{
+			"nested exhausted – all skips intentional method ignored",
+			mkNestedExhausted(
+				mkSkipIgnored("leaf1"),
+				mkNestedExhausted(mkSkipIgnored("leaf2a"), mkSkipIgnored("leaf2b")),
+			),
+			common.SeverityInfo,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := common.ClassifySeverity(tc.err)
+			if tc.exp == common.SeverityInfo {
+				if got != common.SeverityInfo {
+					t.Fatalf("expected INFO, got %s", got)
+				}
+			} else {
+				if got == common.SeverityInfo {
+					t.Fatalf("expected non‑INFO severity, got INFO")
+				}
+			}
+		})
+	}
+}
+
 func TestNetwork_SelectionScenarios(t *testing.T) {
 	t.Run("StatePollerContributesToErrorRateWhenNotResamplingExcludedUpstreams", func(t *testing.T) {
 		util.ResetGock()
