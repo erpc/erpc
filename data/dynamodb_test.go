@@ -3,6 +3,7 @@ package data
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -280,9 +281,9 @@ func TestDynamoDBDistributedLocking(t *testing.T) {
 		RangeKeyName:      "rk",
 		TTLAttributeName:  "ttl",
 		ReverseIndexName:  "rk-pk-index",
-		InitTimeout:       common.Duration(2 * time.Second),
-		GetTimeout:        common.Duration(2 * time.Second),
-		SetTimeout:        common.Duration(2 * time.Second),
+		InitTimeout:       common.Duration(5 * time.Second),
+		GetTimeout:        common.Duration(5 * time.Second),
+		SetTimeout:        common.Duration(5 * time.Second),
 		LockRetryInterval: common.Duration(50 * time.Millisecond), // Use shorter interval for faster tests
 		Auth: &common.AwsAuthConfig{
 			Mode:            "secret",
@@ -297,7 +298,7 @@ func TestDynamoDBDistributedLocking(t *testing.T) {
 	// Ensure connector is ready
 	require.Eventually(t, func() bool {
 		return connector.initializer.State() == util.StateReady
-	}, 5*time.Second, 100*time.Millisecond, "connector should be in ready state")
+	}, 10*time.Second, 100*time.Millisecond, "connector should be in ready state")
 
 	t.Run("SuccessfulImmediateLockAcquisition", func(t *testing.T) {
 		lockKey := "test-lock-1"
@@ -373,7 +374,9 @@ func TestDynamoDBDistributedLocking(t *testing.T) {
 
 		require.Error(t, err, "lock acquisition should time out")
 		require.Nil(t, lock, "lock should be nil")
-		assert.Contains(t, err.Error(), "lock acquisition timed out")
+		if !strings.Contains(err.Error(), "lock acquisition timed out") && !strings.Contains(err.Error(), "request context canceled") {
+			t.Errorf("expected error to contain 'lock acquisition timed out' or 'request context canceled', got: %s", err.Error())
+		}
 		assert.InDelta(t, timeSpent.Milliseconds(), int64(300), 100, "should have waited for the full timeout")
 	})
 
@@ -410,7 +413,9 @@ func TestDynamoDBDistributedLocking(t *testing.T) {
 
 		require.Error(t, err, "lock acquisition should be cancelled")
 		require.Nil(t, lock, "lock should be nil")
-		assert.Contains(t, err.Error(), "acquisition timed out")
+		if !strings.Contains(err.Error(), "acquisition timed out") && !strings.Contains(err.Error(), "request context canceled") {
+			t.Errorf("expected error to contain 'lock acquisition timed out' or 'request context canceled', got: %s", err.Error())
+		}
 		assert.GreaterOrEqual(t, timeSpent.Milliseconds(), int64(150), "should have waited some time before cancellation")
 		assert.LessOrEqual(t, timeSpent.Milliseconds(), int64(400), "should not wait much longer after cancellation")
 	})

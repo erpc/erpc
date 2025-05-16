@@ -106,17 +106,17 @@ func NewEvmStatePoller(
 	}
 
 	lbs.OnValue(func(value int64) {
-		e.tracker.SetLatestBlockNumber(e.upstream.Config().Id, e.upstream.NetworkId(), value)
+		e.tracker.SetLatestBlockNumber(e.upstream, value)
 	})
 	fbs.OnValue(func(value int64) {
-		e.tracker.SetFinalizedBlockNumber(e.upstream.Config().Id, e.upstream.NetworkId(), value)
+		e.tracker.SetFinalizedBlockNumber(e.upstream, value)
 	})
 
 	lbs.OnLargeRollback(func(currentVal, newVal int64) {
-		e.tracker.RecordBlockHeadLargeRollback(e.upstream.Config().Id, e.upstream.NetworkId(), "latest", currentVal, newVal)
+		e.tracker.RecordBlockHeadLargeRollback(e.upstream, "latest", currentVal, newVal)
 	})
 	fbs.OnLargeRollback(func(currentVal, newVal int64) {
-		e.tracker.RecordBlockHeadLargeRollback(e.upstream.Config().Id, e.upstream.NetworkId(), "finalized", currentVal, newVal)
+		e.tracker.RecordBlockHeadLargeRollback(e.upstream, "finalized", currentVal, newVal)
 	})
 
 	return e
@@ -326,7 +326,7 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 	e.logger.Trace().Int64("debounceMs", dbi.Milliseconds()).Msg("attempt to poll latest block number")
 	ctx, span := common.StartDetailSpan(ctx, "EvmStatePoller.PollLatestBlockNumber",
 		trace.WithAttributes(
-			attribute.String("upstream.id", e.upstream.Config().Id),
+			attribute.String("upstream.id", e.upstream.Id()),
 			attribute.String("network.id", e.upstream.NetworkId()),
 		),
 	)
@@ -335,8 +335,9 @@ func (e *EvmStatePoller) PollLatestBlockNumber(ctx context.Context) (int64, erro
 		e.logger.Trace().Str("ptr", fmt.Sprintf("%p", e)).Str("stack", string(debug.Stack())).Msg("fetching latest block number for evm state poller")
 		telemetry.MetricUpstreamLatestBlockPolled.WithLabelValues(
 			e.projectId,
+			e.upstream.VendorName(),
 			e.upstream.NetworkId(),
-			e.upstream.Config().Id,
+			e.upstream.Id(),
 		).Inc()
 		blockNum, err := e.fetchBlock(ctx, "latest")
 		if err != nil || blockNum == 0 {
@@ -395,7 +396,7 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 	}
 	ctx, span := common.StartDetailSpan(ctx, "EvmStatePoller.PollFinalizedBlockNumber",
 		trace.WithAttributes(
-			attribute.String("upstream.id", e.upstream.Config().Id),
+			attribute.String("upstream.id", e.upstream.Id()),
 			attribute.String("network.id", e.upstream.NetworkId()),
 		),
 	)
@@ -409,8 +410,9 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 		e.logger.Trace().Msg("fetching finalized block number for evm state poller")
 		telemetry.MetricUpstreamFinalizedBlockPolled.WithLabelValues(
 			e.projectId,
+			e.upstream.VendorName(),
 			e.upstream.NetworkId(),
-			e.upstream.Config().Id,
+			e.upstream.Id(),
 		).Inc()
 
 		// Actually fetch from upstream
@@ -452,7 +454,7 @@ func (e *EvmStatePoller) PollFinalizedBlockNumber(ctx context.Context) (int64, e
 			Int64("blockNumber", blockNum).
 			Msg("fetched finalized block")
 
-		e.tracker.SetFinalizedBlockNumber(e.upstream.Config().Id, e.upstream.NetworkId(), blockNum)
+		e.tracker.SetFinalizedBlockNumber(e.upstream, blockNum)
 
 		return blockNum, nil
 	})

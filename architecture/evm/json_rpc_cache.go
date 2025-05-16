@@ -221,7 +221,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
 	upsId := "n/a"
 	if resp != nil && resp.Upstream() != nil {
-		upsId = resp.Upstream().Config().Id
+		upsId = resp.Upstream().Id()
 	}
 	ctx, span := common.StartSpan(ctx, "Cache.Set", trace.WithAttributes(
 		attribute.String("upstream.id", upsId),

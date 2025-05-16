@@ -346,7 +346,7 @@ func (r *NormalizedRequest) MarshalZerologObject(e *zerolog.Event) {
 	if lu := r.lastUpstream.Load(); lu != nil {
 		if lup := lu.(Upstream); lup != nil {
 			if lup.Config() != nil {
-				e.Str("lastUpstream", lup.Config().Id)
+				e.Str("lastUpstream", lup.Id())
 			} else {
 				e.Str("lastUpstream", fmt.Sprintf("%p", lup))
 			}
@@ -358,7 +358,7 @@ func (r *NormalizedRequest) MarshalZerologObject(e *zerolog.Event) {
 	}
 
 	if r.network != nil {
-		e.Str("network", r.network.Id())
+		e.Str("networkId", r.network.Id())
 	}
 
 	if r.jsonRpcRequest != nil {

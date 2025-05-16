@@ -328,8 +328,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				// We need to use write-lock here because "i" is being updated.
 				req.LockWithTrace(loopCtx)
 				u := upsList[i]
-				loopSpan.SetAttributes(attribute.String("upstream.id", u.Config().Id))
-				ulg := lg.With().Str("upstreamId", u.Config().Id).Logger()
+				loopSpan.SetAttributes(attribute.String("upstream.id", u.Id()))
+				ulg := lg.With().Str("upstreamId", u.Id()).Logger()
 				ulg.Trace().Int("index", i).Int("upstreams", ln).Msgf("attempt to forward request to next upstream")
 				i++
 				if i >= ln {
@@ -364,7 +364,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				hedges := exec.Hedges()
 				attempts := exec.Attempts()
 				if hedges > 0 {
-					telemetry.MetricNetworkHedgedRequestTotal.WithLabelValues(n.projectId, n.networkId, u.Config().Id, method, fmt.Sprintf("%d", hedges)).Inc()
+					telemetry.MetricNetworkHedgedRequestTotal.WithLabelValues(n.projectId, n.networkId, u.Id(), method, fmt.Sprintf("%d", hedges)).Inc()
 				}
 
 				var r *common.NormalizedResponse
@@ -378,8 +378,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				isClientErr := common.IsClientError(err)
 				if hedges > 0 && common.HasErrorCode(err, common.ErrCodeEndpointRequestCanceled) {
 					ulg.Debug().Err(err).Msgf("discarding hedged request to upstream")
-					telemetry.MetricNetworkHedgeDiscardsTotal.WithLabelValues(n.projectId, n.networkId, u.Config().Id, method, fmt.Sprintf("%d", attempts), fmt.Sprintf("%d", hedges)).Inc()
-					err := common.NewErrUpstreamHedgeCancelled(u.Config().Id, err)
+					telemetry.MetricNetworkHedgeDiscardsTotal.WithLabelValues(n.projectId, n.networkId, u.Id(), method, fmt.Sprintf("%d", attempts), fmt.Sprintf("%d", hedges)).Inc()
+					err := common.NewErrUpstreamHedgeCancelled(u.Id(), err)
 					common.SetTraceSpanError(loopSpan, err)
 					return nil, err
 				}

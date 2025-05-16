@@ -173,12 +173,12 @@ func (s *HttpServer) handleHealthCheck(
 		upstreamsDetails := make(map[string]map[string]any)
 
 		for _, ups := range filteredUpstreams {
-			upstreamsDetails[ups.Config().Id] = map[string]any{
+			upstreamsDetails[ups.Id()] = map[string]any{
 				"network": ups.NetworkId(),
 			}
 			if !s.isSimpleMode() {
-				mts := metricsTracker.GetUpstreamMethodMetrics(ups.Config().Id, "*", "*")
-				upstreamsDetails[ups.Config().Id]["metrics"] = mts
+				mts := metricsTracker.GetUpstreamMethodMetrics(ups, "*")
+				upstreamsDetails[ups.Id()]["metrics"] = mts
 			}
 		}
 
@@ -214,8 +214,7 @@ func (s *HttpServer) handleHealthCheck(
 			belowThresholdErrorRates := []float64{}
 
 			for _, ups := range filteredUpstreams {
-				cfg := ups.Config()
-				mts := metricsTracker.GetUpstreamMethodMetrics(cfg.Id, "*", "*")
+				mts := metricsTracker.GetUpstreamMethodMetrics(ups, "*")
 				if mts != nil && mts.RequestsTotal.Load() > 0 {
 					errorRate := float64(mts.ErrorsTotal.Load()) / float64(mts.RequestsTotal.Load())
 					allErrorRates = append(allErrorRates, errorRate)
@@ -365,7 +364,7 @@ func checkEvmChainId(ctx context.Context, upstreams []*upstream.Upstream, upstre
 
 			expectedChainId := ups.Config().Evm.ChainId
 			mu.Lock()
-			upstreamResult := upstreamsDetails[ups.Config().Id]
+			upstreamResult := upstreamsDetails[ups.Id()]
 			upstreamResult["expectedChainId"] = expectedChainId
 			mu.Unlock()
 

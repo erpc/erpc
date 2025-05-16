@@ -16,7 +16,7 @@ scrape_configs:
       - targets:
           - 'host.docker.internal:4001'
           # This option is used when running the grafana/prometheus via Railway
-          - 'REPLACE_SERVICE_ENDPOINT_HERE:REPLACE_SERVICE_PORT_HERE' 
+          - 'host.docker.internal:4001' 
 
 alerting:
   alertmanagers:

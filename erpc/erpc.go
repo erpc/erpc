@@ -158,7 +158,7 @@ func (e *ERPC) AdminHandleRequest(ctx context.Context, nq *common.NormalizedRequ
 				}
 				upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.Id())
 				for _, u := range upstreams {
-					ntw.Upstreams = append(ntw.Upstreams, &taxonomyUpstream{Id: u.Config().Id})
+					ntw.Upstreams = append(ntw.Upstreams, &taxonomyUpstream{Id: u.Id()})
 				}
 				networks = append(networks, ntw)
 			}

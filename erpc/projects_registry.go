@@ -164,7 +164,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 	upstreamsRegistry.OnUpstreamRegistered(func(ups *upstream.Upstream) error {
 		ntwId := ups.NetworkId()
 		if ntwId == "" {
-			return fmt.Errorf("upstream %s has no network id set yet", ups.Config().Id)
+			return fmt.Errorf("upstream %s has no network id set yet", ups.Id())
 		}
 		ntw, err := pp.networksRegistry.GetNetwork(ntwId)
 		if err != nil {

@@ -2973,15 +2973,18 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 		defer shutdown()
 
 		wg := &sync.WaitGroup{}
+		relChan := make(chan struct{})
 		for i := 0; i < 10; i++ {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
+				<-relChan
 				statusCode, body := sendRequest(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBalance","params":[{"fromBlock":"0x0","toBlock":"0x0"}],"id":%d}`, i), nil, nil)
 				assert.Equal(t, http.StatusOK, statusCode)
 				assert.Contains(t, body, "0x123456")
 			}(i)
 		}
+		close(relChan)
 		wg.Wait()
 	})
 
@@ -4375,7 +4378,8 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 				_ = pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
 
-				metrics := mtk.GetUpstreamMethodMetrics("test-upstream", "*", "*")
+				up := pp.upstreamsRegistry.GetAllUpstreams()[0]
+				metrics := mtk.GetUpstreamMethodMetrics(up, "*")
 				metrics.RequestsTotal.Store(100)
 				metrics.ErrorsTotal.Store(5) // 5% error rate
 
@@ -4411,7 +4415,8 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 				_ = pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
 
-				metrics := mtk.GetUpstreamMethodMetrics("test-upstream", "*", "*")
+				up := pp.upstreamsRegistry.GetAllUpstreams()[0]
+				metrics := mtk.GetUpstreamMethodMetrics(up, "*")
 				metrics.RequestsTotal.Store(100)
 				metrics.ErrorsTotal.Store(99) // 99% error rate
 
@@ -4456,11 +4461,13 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 				_ = pp.upstreamsRegistry.Bootstrap(ctx)
 				pp.networksRegistry = NewNetworksRegistry(pp, ctx, pp.upstreamsRegistry, nil, nil, nil, logger)
 
-				metrics := mtk.GetUpstreamMethodMetrics("test-upstream", "*", "*")
+				ups1 := pp.upstreamsRegistry.GetAllUpstreams()[0]
+				metrics := mtk.GetUpstreamMethodMetrics(ups1, "*")
 				metrics.RequestsTotal.Store(100)
 				metrics.ErrorsTotal.Store(5) // 5% error rate
 
-				metricsBad := mtk.GetUpstreamMethodMetrics("bad-upstream", "*", "*")
+				upsBad := pp.upstreamsRegistry.GetAllUpstreams()[1]
+				metricsBad := mtk.GetUpstreamMethodMetrics(upsBad, "*")
 				metricsBad.RequestsTotal.Store(100)
 				metricsBad.ErrorsTotal.Store(99) // 99% error rate
 
@@ -5721,7 +5728,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		statusCode, body := sendRequest(requestBody, nil, nil)
 
-		assert.Equal(t, http.StatusOK, statusCode)
+		assert.Equal(t, http.StatusOK, statusCode, "should return 200 OK body: %s", body)
 
 		var respObject map[string]interface{}
 		err := sonic.UnmarshalString(body, &respObject)

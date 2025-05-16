@@ -146,7 +146,7 @@ func createCircuitBreakerPolicy(logger *zerolog.Logger, cfg *common.CircuitBreak
 					lg = lg.Object("request", rq)
 					up := rq.LastUpstream()
 					if up != nil {
-						lg = lg.Str("upstreamId", up.Config().Id)
+						lg = lg.Str("upstreamId", up.Id())
 						cfg := up.Config()
 						if cfg.Evm != nil {
 							if ups, ok := up.(common.EvmUpstream); ok {

@@ -7,10 +7,10 @@ const ERPC_BASE_URL = __ENV.ERPC_BASE_URL || 'http://localhost:4000/main/evm/';
 
 // Traffic pattern weights (in percentage, should sum to 100)
 const TRAFFIC_PATTERNS = {
-  LATEST_BLOCK_WITH_LOGS: 100,        // Get latest block and its transfer logs
-  LATEST_BLOCK_RECEIPTS: 0,         // Get receipts from latest block's transactions
-  LATEST_BLOCK_TRACES: 0,           // Get traces from latest block's transactions
-  RANDOM_ACCOUNT_BALANCES: 0,       // Get random account balances
+  LATEST_BLOCK_WITH_LOGS: 50,        // Get latest block and its transfer logs
+  LATEST_BLOCK_RECEIPTS: 30,         // Get receipts from latest block's transactions
+  LATEST_BLOCK_TRACES: 10,           // Get traces from latest block's transactions
+  RANDOM_ACCOUNT_BALANCES: 10,       // Get random account balances
 };
 
 // Configuration
