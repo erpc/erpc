@@ -58,6 +58,16 @@ func NewPayloadFromHttp(method string, remoteAddr string, headers http.Header, a
 				}
 			}
 		}
+	} else if apiKeyVal := headers.Get("X-API-Key"); apiKeyVal != "" {
+		ap.Type = common.AuthTypeApiKey
+		ap.ApiKey = &ApiKeyPayload{
+			Value: apiKeyVal,
+		}
+	} else if apiKeyVal := args.Get("apiKey"); apiKeyVal != "" {
+		ap.Type = common.AuthTypeApiKey
+		ap.ApiKey = &ApiKeyPayload{
+			Value: apiKeyVal,
+		}
 	} else if jwt := args.Get("jwt"); jwt != "" {
 		ap.Type = common.AuthTypeJwt
 		ap.Jwt = &JwtPayload{

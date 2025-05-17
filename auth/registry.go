@@ -10,7 +10,6 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// AuthRegistry holds the authentication strategies for a project
 type AuthRegistry struct {
 	projectId            string
 	rateLimitersRegistry *upstream.RateLimitersRegistry
@@ -42,14 +41,14 @@ func NewAuthRegistry(logger *zerolog.Logger, projectId string, cfg *common.AuthC
 }
 
 // Authenticate checks the authentication payload against all registered strategies
-func (r *AuthRegistry) Authenticate(ctx context.Context, method string, ap *AuthPayload) error {
+func (r *AuthRegistry) Authenticate(ctx context.Context, method string, ap *AuthPayload) (context.Context, error) {
 	if ap == nil {
-		return common.NewErrAuthUnauthorized("", "auth payload is nil")
+		return ctx, common.NewErrAuthUnauthorized("", "auth payload is nil")
 	}
 
 	if len(r.strategies) == 0 {
 		// If no strategies are configured, allow all requests
-		return nil
+		return ctx, nil
 	}
 
 	var errs []error
@@ -70,21 +69,26 @@ func (r *AuthRegistry) Authenticate(ctx context.Context, method string, ap *Auth
 
 		// If authentication is passed then apply and consume the rate limit
 		if err := az.acquireRateLimitPermit(method); err != nil {
-			return err
+			return ctx, err
+		}
+
+		// Extract API key ID if available and store in context
+		if apiKeyID := az.getAPIKeyID(ap); apiKeyID != "" {
+			ctx = context.WithValue(ctx, common.ApiKeyIDContextKey, apiKeyID)
 		}
 
 		// If a strategy succeeds, we consider the request authenticated
-		return nil
+		return ctx, nil
 	}
 
 	if len(errs) == 1 {
-		return errs[0]
+		return ctx, errs[0]
 	}
 
 	if len(errs) == 0 {
-		return common.NewErrAuthUnauthorized("", "no auth strategy matched make sure correct headers or query strings are provided")
+		return ctx, common.NewErrAuthUnauthorized("", "no auth strategy matched make sure correct headers or query strings are provided")
 	}
 
 	// If no strategy matched or succeeded, consider the request unauthorized
-	return common.NewErrAuthUnauthorized("", errors.Join(errs...).Error())
+	return ctx, common.NewErrAuthUnauthorized("", errors.Join(errs...).Error())
 }

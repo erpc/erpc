@@ -54,6 +54,14 @@ func NewAuthorizer(logger *zerolog.Logger, projectId string, cfg *common.AuthStr
 		if err != nil {
 			return nil, err
 		}
+	case common.AuthTypeApiKey:
+		if cfg.ApiKey == nil {
+			return nil, common.NewErrInvalidConfig("API key strategy config is nil")
+		}
+		strategy, err = NewApiKeyStrategy(cfg.ApiKey)
+		if err != nil {
+			return nil, err
+		}
 	default:
 		return nil, common.NewErrInvalidConfig(fmt.Sprintf("unknown auth strategy type: %s", cfg.Type))
 	}
@@ -146,4 +154,14 @@ func (a *Authorizer) acquireRateLimitPermit(method string) error {
 	}
 
 	return nil
+}
+
+func (a *Authorizer) getAPIKeyID(ap *AuthPayload) string {
+	// Only API key strategy can provide an ID
+	if a.cfg.Type == common.AuthTypeApiKey {
+		if apiKeyStrategy, ok := a.strategy.(*ApiKeyStrategy); ok {
+			return apiKeyStrategy.GetKeyID(ap)
+		}
+	}
+	return ""
 }
