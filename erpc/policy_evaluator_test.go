@@ -1793,40 +1793,6 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	var pup1, pup2, pup3 *upstream.Upstream
-	if len(upstreamConfigs) > 0 {
-		pup1, err = upr.NewUpstream(upstreamConfigs[0])
-		if err != nil {
-			t.Fatal(err)
-		}
-		err = pup1.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if len(upstreamConfigs) > 1 {
-		pup2, err = upr.NewUpstream(upstreamConfigs[1])
-		if err != nil {
-			t.Fatal(err)
-		}
-		err = pup2.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if len(upstreamConfigs) > 2 {
-		pup3, err = upr.NewUpstream(upstreamConfigs[2])
-		if err != nil {
-			t.Fatal(err)
-		}
-		err = pup3.Bootstrap(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
 	ntw, err := NewNetwork(
 		ctx,
 		&log.Logger,
@@ -1844,6 +1810,18 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 	)
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	upsList := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+	var pup1, pup2, pup3 *upstream.Upstream
+	for _, up := range upsList {
+		if up.Id() == "rpc1" {
+			pup1 = up
+		} else if up.Id() == "rpc2" {
+			pup2 = up
+		} else if up.Id() == "rpc3" {
+			pup3 = up
+		}
 	}
 
 	return ntw, pup1, pup2, pup3

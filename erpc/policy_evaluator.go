@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
-	"strings"
 	"sync"
 	"time"
 
@@ -111,13 +110,9 @@ func (p *PolicyEvaluator) evaluateUpstreams() error {
 		// Get all metrics to find unique methods
 		allMetrics := make(map[string]bool)
 		for _, ups := range upsList {
-			metrics := p.metricsTracker.GetUpstreamMetrics(ups.Id())
-			for key := range metrics {
-				// Split network:method into parts
-				parts := strings.SplitN(key, common.KeySeparator, 2)
-				if len(parts) == 2 && parts[0] == p.networkId {
-					allMetrics[parts[1]] = true
-				}
+			metrics := p.metricsTracker.GetUpstreamMetrics(ups)
+			for method := range metrics {
+				allMetrics[method] = true
 			}
 		}
 
