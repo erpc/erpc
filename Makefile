@@ -1,5 +1,3 @@
-+GOARCH ?= amd64
-
 .PHONY: help
 help:
 	@echo
@@ -43,10 +41,8 @@ run-k6-evm-historical-randomized:
 
 .PHONY: build
 build:
-	@CGO_ENABLED=0 GOARCH=$(GOARCH) \
-		go build -ldflags="-w -s" -o ./bin/erpc-server ./cmd/erpc/main.go
-	@CGO_ENABLED=0 GOARCH=$(GOARCH) \
-		go build -ldflags="-w -s" -tags pprof -o ./bin/erpc-server-pprof ./cmd/erpc/*.go
+	@CGO_ENABLED=0 go build -ldflags="-w -s" -o ./bin/erpc-server ./cmd/erpc/main.go
+	@CGO_ENABLED=0 go build -ldflags="-w -s" -tags pprof -o ./bin/erpc-server-pprof ./cmd/erpc/*.go
 
 .PHONY: test
 test:
