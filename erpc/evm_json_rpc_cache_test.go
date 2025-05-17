@@ -1805,6 +1805,9 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 	cache, err := evm.NewEvmJsonRpcCache(ctx, &logger, cacheCfg)
 	require.NoError(t, err, "failed to create cache")
 
+	// Wait for connector to be fully initialized
+	time.Sleep(5 * time.Second)
+
 	// Setup network and upstreams
 	mockNetwork := &Network{
 		networkId: "evm:123",

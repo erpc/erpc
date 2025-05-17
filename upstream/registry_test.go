@@ -364,7 +364,7 @@ func TestUpstreamsRegistry_DynamicScenarios(t *testing.T) {
 
 	type upstreamMetrics struct {
 		totalRequests   float64
-		p90Latency      float64
+		p90latency      float64
 		errorRate       float64
 		throttledRate   float64
 		blockHeadLag    float64
@@ -484,7 +484,7 @@ func TestUpstreamsRegistry_DynamicScenarios(t *testing.T) {
 					"*",
 					"*",
 					ups.totalRequests,
-					ups.p90Latency,
+					ups.p90latency,
 					ups.errorRate,
 					ups.throttledRate,
 					ups.blockHeadLag,
@@ -518,7 +518,7 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 		priorityMultiplier *common.ScoreMultiplierConfig
 		metrics            struct {
 			totalRequests   float64
-			p90Latency      float64
+			p90latency      float64
 			errorRate       float64
 			throttledRate   float64
 			blockHeadLag    float64
@@ -553,10 +553,10 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 						ErrorRate: 8.0, // Heavily penalize errors
 					},
 					metrics: struct {
-						totalRequests, p90Latency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
+						totalRequests, p90latency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
 					}{
 						totalRequests: 1000,
-						p90Latency:    0.2,
+						p90latency:    0.2,
 						errorRate:     0.01, // Very low error rate
 						throttledRate: 0.01,
 					},
@@ -570,10 +570,10 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 						ErrorRate: 2.0,
 					},
 					metrics: struct {
-						totalRequests, p90Latency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
+						totalRequests, p90latency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
 					}{
 						totalRequests: 800,
-						p90Latency:    0.15, // Actually faster
+						p90latency:    0.15, // Actually faster
 						errorRate:     0.02,
 						throttledRate: 0.02,
 					},
@@ -599,10 +599,10 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 						P90Latency: 2.0, // Latency less important for historical data
 					},
 					metrics: struct {
-						totalRequests, p90Latency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
+						totalRequests, p90latency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
 					}{
 						totalRequests: 500,
-						p90Latency:    0.5, // Slower but more reliable
+						p90latency:    0.5, // Slower but more reliable
 						errorRate:     0.01,
 						throttledRate: 0.01,
 					},
@@ -616,10 +616,10 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 						P90Latency: 2.0,
 					},
 					metrics: struct {
-						totalRequests, p90Latency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
+						totalRequests, p90latency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
 					}{
 						totalRequests: 200,
-						p90Latency:    0.2,
+						p90latency:    0.2,
 						errorRate:     0.05, // Higher error rate for historical queries
 						throttledRate: 0.02,
 					},
@@ -645,10 +645,10 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 						P90Latency: 8.0, // Heavily weight latency
 					},
 					metrics: struct {
-						totalRequests, p90Latency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
+						totalRequests, p90latency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
 					}{
 						totalRequests: 1000,
-						p90Latency:    0.05, // Very fast
+						p90latency:    0.05, // Very fast
 						errorRate:     0.02,
 						throttledRate: 0.01,
 					},
@@ -662,10 +662,10 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 						P90Latency: 8.0, // Same latency weight
 					},
 					metrics: struct {
-						totalRequests, p90Latency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
+						totalRequests, p90latency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
 					}{
 						totalRequests: 1000,
-						p90Latency:    0.2,  // Slower
+						p90latency:    0.2,  // Slower
 						errorRate:     0.01, // Slightly better error rate
 						throttledRate: 0.01,
 					},
@@ -691,10 +691,10 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 						BlockHeadLag: 5.0, // Heavily weight block lag
 					},
 					metrics: struct {
-						totalRequests, p90Latency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
+						totalRequests, p90latency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
 					}{
 						totalRequests: 1000,
-						p90Latency:    0.1,
+						p90latency:    0.1,
 						errorRate:     0.02,
 						throttledRate: 0.01,
 						blockHeadLag:  0.4, // Small lag
@@ -709,10 +709,10 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 						BlockHeadLag: 5.0, // Same block lag weight
 					},
 					metrics: struct {
-						totalRequests, p90Latency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
+						totalRequests, p90latency, errorRate, throttledRate, blockHeadLag, finalizationLag float64
 					}{
 						totalRequests: 1000,
-						p90Latency:    0.1,
+						p90latency:    0.1,
 						errorRate:     0.01,
 						throttledRate: 0.01,
 						blockHeadLag:  0.8, // Larger lag
@@ -747,7 +747,7 @@ func TestUpstreamsRegistry_Multiplier(t *testing.T) {
 					scenario.networkId,
 					scenario.method,
 					ups.metrics.totalRequests,
-					ups.metrics.p90Latency,
+					ups.metrics.p90latency,
 					ups.metrics.errorRate,
 					ups.metrics.throttledRate,
 					ups.metrics.blockHeadLag,

@@ -288,7 +288,7 @@ jobs:
         with:
           context: .
           push: true
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           build-args: |
             VERSION=main
             COMMIT_SHA=${{ steps.short_sha.outputs.SHORT_SHA }}
@@ -302,7 +302,7 @@ jobs:
         with:
           context: .
           push: true
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           build-args: |
             VERSION=${{ steps.version.outputs.VERSION }}
             COMMIT_SHA=${{ steps.short_sha.outputs.SHORT_SHA }}
