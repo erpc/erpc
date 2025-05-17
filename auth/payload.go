@@ -9,6 +9,7 @@ type AuthPayload struct {
 	Jwt     *JwtPayload
 	Siwe    *SiwePayload
 	Network *NetworkPayload
+	ApiKey  *ApiKeyPayload
 }
 
 type SecretPayload struct {
@@ -27,4 +28,9 @@ type SiwePayload struct {
 type NetworkPayload struct {
 	Address        string
 	ForwardProxies []string
+}
+
+type ApiKeyPayload struct {
+	Value string
+	Id    string
 }
