@@ -846,6 +846,7 @@ const (
 	AuthTypeJwt     AuthType = "jwt"
 	AuthTypeSiwe    AuthType = "siwe"
 	AuthTypeNetwork AuthType = "network"
+	AuthTypeApiKey  AuthType = "apiKey"
 )
 
 type AuthConfig struct {
@@ -862,6 +863,7 @@ type AuthStrategyConfig struct {
 	Secret  *SecretStrategyConfig  `yaml:"secret,omitempty" json:"secret,omitempty"`
 	Jwt     *JwtStrategyConfig     `yaml:"jwt,omitempty" json:"jwt,omitempty"`
 	Siwe    *SiweStrategyConfig    `yaml:"siwe,omitempty" json:"siwe,omitempty"`
+	ApiKey  *ApiKeyStrategyConfig  `yaml:"apiKey,omitempty" json:"apiKey,omitempty"`
 }
 
 type SecretStrategyConfig struct {
@@ -892,6 +894,24 @@ type NetworkStrategyConfig struct {
 	AllowedCIDRs   []string `yaml:"allowedCIDRs" json:"allowedCIDRs"`
 	AllowLocalhost bool     `yaml:"allowLocalhost" json:"allowLocalhost"`
 	TrustedProxies []string `yaml:"trustedProxies" json:"trustedProxies"`
+}
+
+type ApiKeyConfig struct {
+	Value    string            `yaml:"value" json:"value"`
+	Id       string            `yaml:"id" json:"id"`
+	Metadata map[string]string `yaml:"metadata,omitempty" json:"metadata"`
+}
+
+func (s *ApiKeyConfig) MarshalJSON() ([]byte, error) {
+	return sonic.Marshal(map[string]interface{}{
+		"value":    "REDACTED",
+		"id":       s.Id,
+		"metadata": s.Metadata,
+	})
+}
+
+type ApiKeyStrategyConfig struct {
+	Keys []*ApiKeyConfig `yaml:"keys" json:"keys"`
 }
 
 type LabelMode string
