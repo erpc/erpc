@@ -155,3 +155,13 @@ func (a *Authorizer) acquireRateLimitPermit(method string) error {
 
 	return nil
 }
+
+func (a *Authorizer) getAPIKeyID(ap *AuthPayload) string {
+	// Only API key strategy can provide an ID
+	if a.cfg.Type == common.AuthTypeApiKey {
+		if apiKeyStrategy, ok := a.strategy.(*ApiKeyStrategy); ok {
+			return apiKeyStrategy.GetKeyID(ap)
+		}
+	}
+	return ""
+}

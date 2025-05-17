@@ -2,51 +2,48 @@ package auth
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/erpc/erpc/common"
 )
 
 type ApiKeyStrategy struct {
-	cfg  *common.ApiKeyStrategyConfig
-	keys map[string]*common.ApiKeyConfig
+	cfg        *common.ApiKeyStrategyConfig
+	keyToIDMap map[string]string
 }
 
-func NewApiKeyStrategy(cfg *common.ApiKeyStrategyConfig) (AuthStrategy, error) {
-	if cfg == nil || len(cfg.Keys) == 0 {
-		return nil, common.NewErrInvalidConfig("API key strategy config is nil or no keys are defined")
+func NewApiKeyStrategy(cfg *common.ApiKeyStrategyConfig) (*ApiKeyStrategy, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("API key strategy config is nil")
 	}
-	keysMap := make(map[string]*common.ApiKeyConfig, len(cfg.Keys))
-	for _, keyCfg := range cfg.Keys {
-		if keyCfg.Value == "" {
-			return nil, common.NewErrInvalidConfig("API key config has an empty value")
-		}
-		if keyCfg.Id == "" {
-			return nil, common.NewErrInvalidConfig("API key config must have an 'id'")
-		}
-		keysMap[keyCfg.Value] = keyCfg
+
+	keyToIDMap := make(map[string]string, len(cfg.Keys))
+	for _, key := range cfg.Keys {
+		keyToIDMap[key.Value] = key.Id
 	}
+
 	return &ApiKeyStrategy{
-		cfg:  cfg,
-		keys: keysMap,
+		cfg:        cfg,
+		keyToIDMap: keyToIDMap,
 	}, nil
 }
 
 func (s *ApiKeyStrategy) Supports(ap *AuthPayload) bool {
-	return ap.Type == common.AuthTypeApiKey && ap.ApiKey != nil
+	return ap.ApiKey.Value != ""
 }
 
 func (s *ApiKeyStrategy) Authenticate(ctx context.Context, ap *AuthPayload) error {
-	if ap.ApiKey == nil || ap.ApiKey.Value == "" {
-		return common.NewErrAuthUnauthorized(string(common.AuthTypeApiKey), "API key not provided")
+	for _, key := range s.cfg.Keys {
+		if key.Value == ap.ApiKey.Value {
+			return nil
+		}
 	}
+	return common.NewErrAuthUnauthorized("apiKey", "invalid API key")
+}
 
-	keyConfig, found := s.keys[ap.ApiKey.Value]
-	if !found {
-		return common.NewErrAuthUnauthorized(string(common.AuthTypeApiKey), "invalid API key")
+func (s *ApiKeyStrategy) GetKeyID(ap *AuthPayload) string {
+	if id, exists := s.keyToIDMap[ap.ApiKey.Value]; exists {
+		return id
 	}
-
-	// API key is valid, store its ID in the payload for later use (e.g., metrics)
-	ap.ApiKey.Id = keyConfig.Id
-
-	return nil
+	return ""
 }

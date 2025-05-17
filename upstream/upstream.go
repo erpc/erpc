@@ -324,7 +324,9 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				u,
 				method,
 			)
-			telemetry.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, strconv.Itoa(exec.Attempts()), req.CompositeType()).Inc()
+
+			apiKeyID := common.GetAPIKeyIDFromContext(ctx)
+			telemetry.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, strconv.Itoa(exec.Attempts()), req.CompositeType(), apiKeyID).Inc()
 			timer := u.metricsTracker.RecordUpstreamDurationStart(u, method, req.CompositeType())
 			defer timer.ObserveDuration()
 
@@ -370,7 +372,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 							method,
 						)
 					}
-					telemetry.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, common.ErrorFingerprint(errCall), string(severity), req.CompositeType()).Inc()
+					telemetry.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, common.ErrorFingerprint(errCall), string(severity), req.CompositeType(), apiKeyID).Inc()
 				}
 
 				if exec != nil {

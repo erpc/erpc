@@ -2,6 +2,7 @@ package common
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"maps"
 	"os"
@@ -16,6 +17,19 @@ import (
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v3"
 )
+
+type contextKey string
+
+const (
+	ApiKeyIDContextKey contextKey = "api_key_id"
+)
+
+func GetAPIKeyIDFromContext(ctx context.Context) string {
+	if val, ok := ctx.Value(ApiKeyIDContextKey).(string); ok {
+		return val
+	}
+	return ""
+}
 
 var (
 	ErpcVersion   = "dev"
