@@ -865,7 +865,7 @@ func (u *Upstream) MarshalJSON() ([]byte, error) {
 		NetworkId string                            `json:"networkId"`
 	}
 
-	metrics := u.metricsTracker.GetUpstreamMetrics(u.config.Id)
+	metrics := u.metricsTracker.GetUpstreamMetrics(u)
 
 	uppub := upstreamPublic{
 		Id:        u.config.Id,

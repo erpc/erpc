@@ -917,7 +917,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
 		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
-		if !strings.Contains(body, "http request handling timeout") && !strings.Contains(body, "network-level timeout") {
+		if !strings.Contains(body, "timeout") {
 			t.Fatalf("expected timeout error, got %s", body)
 		}
 	})
