@@ -99,9 +99,19 @@ func (arl *RateLimitAutoTuner) adjustBudget(method string) {
 			var newMaxCount uint
 			if errorRate > arl.errorRateThreshold {
 				newMaxCount = uint(math.Ceil(float64(currentMax) * arl.decreaseFactor))
+				if int(newMaxCount) < arl.minBudget {
+					newMaxCount = uint(arl.minBudget)
+				}
 			} else if errorRate == 0 {
 				newMaxCount = uint(math.Ceil(float64(currentMax) * arl.increaseFactor))
+				if int(newMaxCount) > arl.maxBudget {
+					newMaxCount = uint(arl.maxBudget)
+				}
 			} else {
+				continue
+			}
+
+			if newMaxCount == currentMax {
 				continue
 			}
 
