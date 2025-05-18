@@ -10,15 +10,15 @@ const ERPC_BASE_URL = __ENV.ERPC_BASE_URL || 'http://localhost:4000/main/evm/';
 const TRANSFER_EVENT_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 
 const CHAINS = {
-  ETH: {
-    id: '1',
-    blockMin: 0x1006F40,
-    blockMax: 0x1406F40,
-    cached: {
-      latestBlock: null,
-      latestBlockTimestamp: 0
-    }
-  },
+  // ETH: {
+  //   id: '1',
+  //   blockMin: 0x1006F40,
+  //   blockMax: 0x1406F40,
+  //   cached: {
+  //     latestBlock: null,
+  //     latestBlockTimestamp: 0
+  //   }
+  // },
   // ABS: {
   //   id: '11124',
   //   blockMin: 0x194920,
@@ -37,15 +37,15 @@ const CHAINS = {
   //     latestBlockTimestamp: 0
   //   }
   // },
-  // ARBITRUM: {
-  //   id: '42161',
-  //   blockMin: 0x10E1A300,
-  //   blockMax: 0x11E1A300,
-  //   cached: {
-  //     latestBlock: null,
-  //     latestBlockTimestamp: 0
-  //   }
-  // }
+  ARBITRUM: {
+    id: '42161',
+    blockMin: 0x10E1A300,
+    blockMax: 0x11E1A300,
+    cached: {
+      latestBlock: null,
+      latestBlockTimestamp: 0
+    }
+  }
 };
 
 if (__ENV.RANDOM_SEED) {
@@ -54,10 +54,10 @@ if (__ENV.RANDOM_SEED) {
 
 // Traffic pattern weights (in percentage, should sum to 100)
 const TRAFFIC_PATTERNS = {
-  RANDOM_HISTORICAL_BLOCKS: 15,      // Fetch random blocks from history
-  RANDOM_LOG_RANGES: 15,             // Get logs for random block ranges
-  RANDOM_HISTORICAL_RECEIPTS: 15,    // Get random transaction receipts from history
-  TRACE_RANDOM_TRANSACTIONS: 10,     // Trace random transactions with various methods
+  RANDOM_HISTORICAL_BLOCKS: 10,      // Fetch random blocks from history
+  RANDOM_LOG_RANGES: 60,             // Get logs for random block ranges
+  RANDOM_HISTORICAL_RECEIPTS: 10,    // Get random transaction receipts from history
+  TRACE_RANDOM_TRANSACTIONS: 20,     // Trace random transactions with various methods
 };
 
 // Configuration
@@ -74,9 +74,9 @@ export const options = {
       executor: 'constant-arrival-rate',
       rate: 100,
       timeUnit: '1s',
-      duration: '6m',
-      preAllocatedVUs: 500,
-      maxVUs: 500,
+      duration: '30m',
+      preAllocatedVUs: 200,
+      maxVUs: 200,
     },
   },
 };
