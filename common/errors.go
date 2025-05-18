@@ -841,6 +841,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		cbOpen := 0
 		billing := 0
 		skips := 0
+		ignores := 0
 		other := 0
 		client := 0
 		transport := 0
@@ -891,7 +892,10 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			} else if HasErrorCode(e, ErrCodeUpstreamNodeTypeMismatch) {
 				nodeTypeMismatch++
 				continue
-			} else if HasErrorCode(e, ErrCodeUpstreamMethodIgnored, ErrCodeUpstreamRequestSkipped) {
+			} else if HasErrorCode(e, ErrCodeUpstreamMethodIgnored) {
+				ignores++
+				continue
+			} else if HasErrorCode(e, ErrCodeUpstreamRequestSkipped) {
 				skips++
 				continue
 			} else if HasErrorCode(e, ErrCodeEndpointRequestTooLarge) {
@@ -927,6 +931,18 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		if transport > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d upstream transport errors", transport))
 		}
+		if excluded > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d upstream excluded by policy", excluded))
+		}
+		if ignores > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d upstream ignored", ignores))
+		}
+		if skips > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d upstream skipped", skips))
+		}
+		if tooLarge > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d upstream too large complaints", tooLarge))
+		}
 		if cancelled > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d hedges cancelled", cancelled))
 		}
@@ -936,17 +952,8 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		if unsynced > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d syncing nodes", unsynced))
 		}
-		if excluded > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d upstream excluded by policy", excluded))
-		}
 		if nodeTypeMismatch > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d node type mismatches", nodeTypeMismatch))
-		}
-		if skips > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d upstream skipped", skips))
-		}
-		if tooLarge > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d too-large requests", tooLarge))
 		}
 		if other > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d other upstream errors", other))
@@ -1837,7 +1844,8 @@ var NewErrEndpointMissingData = func(cause error) error {
 }
 
 func (e *ErrEndpointMissingData) ErrorStatusCode() int {
-	return http.StatusServiceUnavailable
+	// Many clients expect status code 200 but error body for "missing data" error variations
+	return http.StatusOK
 }
 
 type ErrUpstreamNodeTypeMismatch struct{ BaseError }
@@ -1871,7 +1879,7 @@ var NewErrEndpointRequestTooLarge = func(cause error, complaint TooLargeComplain
 	return &ErrEndpointRequestTooLarge{
 		BaseError{
 			Code:    ErrCodeEndpointRequestTooLarge,
-			Message: "remote endpoint complained about large request (e.g. block range, number of addresses, etc)",
+			Message: "remote endpoint complained about too large request (e.g. block range, number of addresses, etc)",
 			Cause:   cause,
 			Details: map[string]interface{}{
 				"complaint": complaint,
