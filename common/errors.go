@@ -241,6 +241,20 @@ func (e *BaseError) GetCause() error {
 
 func (e BaseError) MarshalJSON() ([]byte, error) {
 	type Alias BaseError
+
+	if e.Code == "" || e.Code == "ErrUnknown" || e.Code == "ErrGeneric" {
+		if e.Cause != nil {
+			return SonicCfg.Marshal(&struct {
+				Alias
+				Cause interface{} `json:"cause"`
+			}{
+				Alias: (Alias)(e),
+				Cause: e.Cause.Error(),
+			})
+		}
+		return SonicCfg.Marshal(e.Message)
+	}
+
 	cause := e.Cause
 	if cs, ok := cause.(interface{ Unwrap() []error }); ok {
 		// Handle joined errors
@@ -282,10 +296,9 @@ func (e BaseError) MarshalJSON() ([]byte, error) {
 
 	return SonicCfg.Marshal(&struct {
 		Alias
-		Cause interface{} `json:"cause"`
+		Cause interface{} `json:"-"`
 	}{
 		Alias: (Alias)(e),
-		Cause: nil,
 	})
 }
 
@@ -797,14 +810,20 @@ func (e *ErrUpstreamsExhausted) ErrorStatusCode() int {
 				if be, ok := e.(StandardError); ok {
 					sc := be.ErrorStatusCode()
 					if sc != 503 {
-						fsc = sc
+						if sc < fsc {
+							// To prefer 2xx over 4xx, and 4xx over 5xx
+							fsc = sc
+						}
 					}
 				} else if nje, ok := e.(interface{ Unwrap() []error }); ok {
 					for _, e := range nje.Unwrap() {
 						if be, ok := e.(StandardError); ok {
 							sc := be.ErrorStatusCode()
 							if sc != 503 {
-								fsc = sc
+								if sc < fsc {
+									// To prefer 2xx over 4xx, and 4xx over 5xx
+									fsc = sc
+								}
 							}
 						}
 					}
@@ -935,7 +954,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			reasons = append(reasons, fmt.Sprintf("%d upstream excluded by policy", excluded))
 		}
 		if ignores > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d upstream ignored", ignores))
+			reasons = append(reasons, fmt.Sprintf("%d upstream method ignored", ignores))
 		}
 		if skips > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d upstream skipped", skips))
@@ -1144,7 +1163,7 @@ var NewErrUpstreamMethodIgnored = func(method string, upstreamId string) error {
 }
 
 func (e *ErrUpstreamMethodIgnored) ErrorStatusCode() int {
-	return http.StatusUnsupportedMediaType
+	return http.StatusNotAcceptable
 }
 
 type ErrUpstreamSyncing struct{ BaseError }
@@ -1665,7 +1684,7 @@ var NewErrEndpointUnsupported = func(cause error) error {
 }
 
 func (e *ErrEndpointUnsupported) ErrorStatusCode() int {
-	return http.StatusUnsupportedMediaType
+	return http.StatusNotAcceptable
 }
 
 type ErrEndpointClientSideException struct{ BaseError }
@@ -1808,7 +1827,7 @@ var NewErrEndpointCapacityExceeded = func(cause error) error {
 }
 
 func (e *ErrEndpointCapacityExceeded) ErrorStatusCode() int {
-	return 429
+	return http.StatusTooManyRequests
 }
 
 type ErrEndpointBillingIssue struct{ BaseError }

@@ -737,6 +737,37 @@ func hashValue(h io.Writer, v interface{}) error {
 // TranslateToJsonRpcException is mainly responsible to translate internal eRPC errors (not those coming from upstreams) to
 // a proper json-rpc error with correct numeric code.
 func TranslateToJsonRpcException(err error) error {
+	if erx, ok := err.(*ErrUpstreamsExhausted); ok {
+		// single-pass scan to detect the dominant (most frequent) StandardError code
+		var (
+			counts   = make(map[ErrorCode]int) // code -> occurrences
+			maxCount int
+			domErr   error
+		)
+		for _, cause := range erx.Errors() {
+			se, ok := cause.(StandardError)
+			if !ok {
+				continue
+			}
+			c := se.Base().Code
+			if counts[c] == 0 {
+				// keep the first error for each code so we don't have to iterate again later
+				// we store it only the first time we see the code which guarantees we return the earliest error
+				if domErr == nil { // fast path when first iteration becomes dominant by default
+					domErr = cause
+				}
+			}
+			counts[c]++
+			if counts[c] > maxCount {
+				maxCount = counts[c]
+				domErr = cause // we want the first error with the dominant code; since we update only when count is strictly greater, the earliest error for that code is kept in domErr.
+			}
+		}
+		if domErr != nil {
+			err = domErr
+		}
+	}
+
 	if HasErrorCode(err, ErrCodeJsonRpcExceptionInternal) {
 		return err
 	}

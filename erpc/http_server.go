@@ -321,7 +321,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 							Str("stack", string(debug.Stack())).
 							Msgf("unexpected server panic on per-request handler")
 						err := fmt.Errorf("unexpected server panic on per-request handler: %v stack: %s", rec, string(debug.Stack()))
-						responses[index] = processErrorBody(&lg, &startedAt, nil, err, false)
+						responses[index] = processErrorBody(&lg, &startedAt, nil, err, s.serverCfg.IncludeErrorDetails)
 					}
 				}()
 
@@ -389,7 +389,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 								"",
 								"admin is not enabled for this project",
 							),
-							false,
+							s.serverCfg.IncludeErrorDetails,
 						)
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
@@ -420,14 +420,14 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				if architecture == "" || chainId == "" {
 					responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(fmt.Errorf(
 						"architecture and chain must be provided in URL (for example /<project>/evm/42161) or in request body (for example \"networkId\":\"evm:42161\") or configureed via domain aliasing",
-					)), false)
+					)), s.serverCfg.IncludeErrorDetails)
 					common.EndRequestSpan(requestCtx, nil, err)
 					return
 				}
 
 				nw, err := project.GetNetwork(networkId)
 				if err != nil {
-					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, false)
+					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
 					common.EndRequestSpan(requestCtx, nil, err)
 					return
 				}
@@ -435,7 +435,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 				resp, err := project.Forward(requestCtx, networkId, nq)
 				if err != nil {
-					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, false)
+					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
 					common.EndRequestSpan(requestCtx, nil, err)
 					return
 				}
@@ -921,6 +921,20 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 		}
 	}
 
+	// This is a special attempt to extract execution errors first (e.g. execution reverted):
+	exe := &common.ErrEndpointExecutionException{}
+	if errors.As(err, &exe) {
+		err = exe
+	}
+
+	// To simplify client's life if there's only one upstream error, we can use that as the error
+	// instead of Exhausted error which obfuscates underlying errors.
+	if ex, ok := err.(*common.ErrUpstreamsExhausted); ok {
+		if len(ex.Errors()) == 1 {
+			err = ex.Errors()[0]
+		}
+	}
+
 	err = common.TranslateToJsonRpcException(err)
 	var jsonrpcVersion string = "2.0"
 	var reqId interface{} = nil
@@ -930,11 +944,6 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 			jsonrpcVersion = jrr.JSONRPC
 			reqId = jrr.ID
 		}
-	}
-	// This is a special attempt to extract execution errors first (e.g. execution reverted):
-	exe := &common.ErrEndpointExecutionException{}
-	if errors.As(err, &exe) {
-		err = exe
 	}
 	jre := &common.ErrJsonRpcExceptionInternal{}
 	if errors.As(err, &jre) {
@@ -973,9 +982,23 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 	}
 }
 
-func decideErrorStatusCode(err error) int {
+func decideErrorStatusCode(err interface{}) int {
 	if e, ok := err.(common.StandardError); ok {
 		return e.ErrorStatusCode()
+	}
+	if e, ok := err.(interface{ Unwrap() []error }); ok {
+		errs := e.Unwrap()
+		if len(errs) > 0 {
+			statusCode := http.StatusServiceUnavailable
+			for _, err := range errs {
+				if e, ok := err.(common.StandardError); ok {
+					if st := e.ErrorStatusCode(); st < statusCode {
+						statusCode = st
+					}
+				}
+			}
+			return statusCode
+		}
 	}
 	return http.StatusInternalServerError
 }

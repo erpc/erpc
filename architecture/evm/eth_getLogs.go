@@ -166,7 +166,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 
 	statePoller := up.EvmStatePoller()
 	if statePoller == nil || statePoller.IsObjectNull() {
-		return true, nil, common.NewErrUpstreamRequestSkipped(
+		return true, nil, common.NewErrUpstreamInitialization(
 			fmt.Errorf("upstream evm state poller is not available"),
 			up.Id(),
 		)
@@ -198,9 +198,8 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 				up.NetworkId(),
 				up.Id(),
 			).Inc()
-			return true, nil, common.NewErrUpstreamRequestSkipped(
-				fmt.Errorf("upstream latest block %d is less than toBlock %d", latestBlock, toBlock),
-				up.Id(),
+			return true, nil, common.NewErrEndpointMissingData(
+				fmt.Errorf("getLogs block not found (toBlock %d) as upstream latest known block is %d (maybe statePollerDebounce is larger than block-time of this chain)", toBlock, latestBlock),
 			)
 		}
 	} else {
@@ -224,9 +223,8 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 				up.NetworkId(),
 				up.Id(),
 			).Inc()
-			return true, nil, common.NewErrUpstreamRequestSkipped(
-				fmt.Errorf("requested fromBlock %d is < than upstream latest block %d minus max available recent blocks %d plus safety margin %d", fromBlock, latestBlock, cfg.Evm.MaxAvailableRecentBlocks, LowerBoundBlocksSafetyMargin),
-				up.Id(),
+			return true, nil, common.NewErrEndpointMissingData(
+				fmt.Errorf("getLogs block not found (fromBlock %d) as upstream latest known block is %d minus max available recent blocks %d plus safety margin %d (maybe statePollerDebounce is larger than block-time of this chain)", fromBlock, latestBlock, cfg.Evm.MaxAvailableRecentBlocks, LowerBoundBlocksSafetyMargin),
 			)
 		}
 	}

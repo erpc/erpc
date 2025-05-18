@@ -767,7 +767,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
 		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
-		assert.Contains(t, body, "1 upstream timeout")
+		assert.Contains(t, body, "timeout policy exceeded on upstream-level")
 	})
 
 	t.Run("UpstreamRequestTimeoutBatchingDisabled", func(t *testing.T) {
@@ -844,7 +844,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
 		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
-		assert.Contains(t, body, "1 upstream timeout")
+		assert.Contains(t, body, "timeout policy exceeded on upstream-level")
 	})
 
 	t.Run("SameTimeoutLowForServerAndNetwork", func(t *testing.T) {
@@ -1070,7 +1070,7 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x123"],"id":1}`, nil, nil)
 
 		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
-		assert.Contains(t, body, "1 upstream timeout")
+		assert.Contains(t, body, "timeout policy")
 	})
 }
 
@@ -2225,7 +2225,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 					})
 
 				statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"unsupported_method","params":[],"id":1}`, nil, nil)
-				assert.Equal(t, http.StatusUnsupportedMediaType, statusCode)
+				assert.Equal(t, http.StatusNotAcceptable, statusCode)
 
 				var errorResponse map[string]interface{}
 				err := sonic.Unmarshal([]byte(body), &errorResponse)
@@ -2298,7 +2298,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 					})
 
 				statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"ignored_method","params":[],"id":1}`, nil, nil)
-				assert.Equal(t, http.StatusUnsupportedMediaType, statusCode)
+				assert.Equal(t, http.StatusNotAcceptable, statusCode)
 
 				var errorResponse map[string]interface{}
 				err := sonic.Unmarshal([]byte(body), &errorResponse)
@@ -3666,7 +3666,7 @@ func TestHttpServer_IntegrationTests(t *testing.T) {
 		defer shutdown()
 
 		statusCode, _ := sendRequest(`{"jsonrpc":"2.0","method":"trace_transaction","params":[],"id":111}`, nil, nil)
-		assert.Equal(t, http.StatusUnsupportedMediaType, statusCode)
+		assert.Equal(t, http.StatusNotAcceptable, statusCode)
 	})
 
 	t.Run("ReturnCorrectCORS", func(t *testing.T) {
@@ -5466,7 +5466,7 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 		assert.Contains(t, respObject, "error")
 		errorObj := respObject["error"].(map[string]interface{})
 		assert.Equal(t, float64(-32603), errorObj["code"].(float64))
-		assert.Contains(t, errorObj["message"].(string), "server error")
+		assert.Contains(t, errorObj["message"].(string), "Server error")
 	})
 
 	t.Run("FailSplitIfOneOfSubRequestsFailsMissingData", func(t *testing.T) {
@@ -5571,9 +5571,7 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 
 		// Make the request and verify it fails
 		statusCode, body := sendRequest(fullRangeRequest, nil, nil)
-
-		// Verify response indicates failure
-		assert.Equal(t, http.StatusServiceUnavailable, statusCode)
+		assert.Equal(t, http.StatusOK, statusCode)
 
 		// Parse the error response
 		var respObject map[string]interface{}
@@ -5583,8 +5581,8 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 		// Verify error structure
 		assert.Contains(t, respObject, "error")
 		errorObj := respObject["error"].(map[string]interface{})
-		assert.Equal(t, float64(-32603), errorObj["code"].(float64))
-		assert.Contains(t, errorObj["message"].(string), "missing data")
+		assert.Equal(t, float64(-32014), errorObj["code"].(float64))
+		assert.Contains(t, errorObj["message"].(string), "missing")
 	})
 }
 
@@ -6141,7 +6139,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 
 		statusCode, body := sendRequest(requestBody, nil, nil)
 
-		assert.Equal(t, http.StatusServiceUnavailable, statusCode)
+		assert.Equal(t, http.StatusOK, statusCode)
 
 		var respObject map[string]interface{}
 		err := sonic.UnmarshalString(body, &respObject)
