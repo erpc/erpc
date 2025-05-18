@@ -7767,7 +7767,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		assert.Error(t, err)
 		assert.Nil(t, resp)
 
-		assert.Contains(t, err.Error(), "less than toBlock")
+		assert.Contains(t, err.Error(), "getLogs block not found")
 	})
 
 	t.Run("AvoidLatestBlockUpdateWhenRangeEndIsLowerThanLatestBlock", func(t *testing.T) {
@@ -7907,7 +7907,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		// Verify that the request was skipped with appropriate error
 		assert.Error(t, err)
 		assert.Nil(t, resp)
-		assert.Contains(t, err.Error(), "is < than upstream latest block")
+		assert.Contains(t, err.Error(), "getLogs block not found")
 
 		assert.True(t, len(gock.Pending()) == 0, "Expected no pending mocks")
 	})
