@@ -861,6 +861,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		billing := 0
 		skips := 0
 		ignores := 0
+		auth := 0
 		other := 0
 		client := 0
 		transport := 0
@@ -920,6 +921,9 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			} else if HasErrorCode(e, ErrCodeEndpointRequestTooLarge) {
 				tooLarge++
 				continue
+			} else if HasErrorCode(e, ErrCodeEndpointUnauthorized) {
+				auth++
+				continue
 			} else {
 				other++
 			}
@@ -962,20 +966,23 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		if tooLarge > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d upstream too large complaints", tooLarge))
 		}
+		if auth > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d upstream unauthorized", auth))
+		}
+		if unsynced > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d upstream not synced", unsynced))
+		}
+		if other > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d upstream unknown errors", other))
+		}
+		if nodeTypeMismatch > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d node type mismatches", nodeTypeMismatch))
+		}
 		if cancelled > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d hedges cancelled", cancelled))
 		}
 		if client > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d user errors", client))
-		}
-		if unsynced > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d syncing nodes", unsynced))
-		}
-		if nodeTypeMismatch > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d node type mismatches", nodeTypeMismatch))
-		}
-		if other > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d other upstream errors", other))
 		}
 
 		return strings.Join(reasons, ", ")
@@ -1174,7 +1181,7 @@ var NewErrUpstreamSyncing = func(upstreamId string) error {
 	return &ErrUpstreamSyncing{
 		BaseError{
 			Code:    ErrCodeUpstreamSyncing,
-			Message: "upstream is syncing",
+			Message: "upstream is syncing and should not serve requests",
 			Details: map[string]interface{}{
 				"upstreamId": upstreamId,
 			},
