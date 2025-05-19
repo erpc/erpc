@@ -87,11 +87,11 @@ export const options = {
   scenarios: {    
     constant_request_rate: {
       executor: 'constant-arrival-rate',
-      rate: 100,
+      rate: 300,
       timeUnit: '1s',
       duration: '30m',
       preAllocatedVUs: 200,
-      maxVUs: 200,
+      maxVUs: 500,
     },
   },
 };
@@ -336,7 +336,7 @@ export default async function () {
       parsedBody = JSON.parse(res.body);
     } catch (e) {
       parsingErrorsCounter.add(1, tags);
-      console.error(`Failed to parse response body: ${e}`);
+      console.error(`Failed to parse response body: ${e} body: ${res.body}`);
     }
 
     if (parsedBody?.error?.code) {
