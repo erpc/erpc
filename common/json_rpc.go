@@ -757,6 +757,10 @@ func TranslateToJsonRpcException(err error) error {
 					domErr = cause
 				}
 			}
+			if c == ErrCodeUpstreamMethodIgnored {
+				// most often this error is not interesting nor significant vs other errors
+				continue
+			}
 			counts[c]++
 			if counts[c] > maxCount {
 				maxCount = counts[c]

@@ -92,7 +92,7 @@ type ServerConfig struct {
 	Aliasing            *AliasingConfig `yaml:"aliasing" json:"aliasing"`
 	WaitBeforeShutdown  *Duration       `yaml:"waitBeforeShutdown,omitempty" json:"waitBeforeShutdown" tstype:"Duration"`
 	WaitAfterShutdown   *Duration       `yaml:"waitAfterShutdown,omitempty" json:"waitAfterShutdown" tstype:"Duration"`
-	IncludeErrorDetails bool            `yaml:"includeErrorDetails,omitempty" json:"includeErrorDetails"`
+	IncludeErrorDetails *bool           `yaml:"includeErrorDetails,omitempty" json:"includeErrorDetails"`
 }
 
 type HealthCheckConfig struct {
