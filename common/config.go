@@ -527,7 +527,7 @@ type EvmUpstreamConfig struct {
 	GetLogsMaxAllowedAddresses         int64       `yaml:"getLogsMaxAllowedAddresses,omitempty" json:"getLogsMaxAllowedAddresses"`
 	GetLogsMaxAllowedTopics            int64       `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
 	GetLogsSplitOnError                *bool       `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
-
+	SkipWhenSyncing                    *bool       `yaml:"skipWhenSyncing,omitempty" json:"skipWhenSyncing"`
 	// TODO: remove deprecated alias (backward compat): maps to GetLogsAutoSplittingRangeThreshold
 	GetLogsMaxBlockRange int64 `yaml:"getLogsMaxBlockRange,omitempty" json:"-"`
 }

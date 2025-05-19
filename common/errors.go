@@ -803,27 +803,25 @@ func (e *ErrUpstreamsExhausted) ErrorStatusCode() int {
 		if be, ok := e.Cause.(StandardError); ok {
 			return be.ErrorStatusCode()
 		}
-		// if it's an array of errors (Unwrap)
+		// TODO We shouldn't really need this code path, and instead
+		// we should try to find the "most significant" error when sending the result
+		// back to the client, as it's already done in http_server.go.
+		// Refactor to properly handle upstream exhaustion errors (and their nested versions),
+		// then remove ErrorStatusCode() on UpstreamsExhausted altogether as it shouldn't be ever called.
 		if joinedErr, ok := e.Cause.(interface{ Unwrap() []error }); ok {
 			fsc := 503
 			for _, e := range joinedErr.Unwrap() {
 				if be, ok := e.(StandardError); ok {
 					sc := be.ErrorStatusCode()
-					if sc != 503 {
-						if sc < fsc {
-							// To prefer 2xx over 4xx, and 4xx over 5xx
-							fsc = sc
-						}
+					if sc != 503 && sc != 500 {
+						fsc = sc
 					}
 				} else if nje, ok := e.(interface{ Unwrap() []error }); ok {
 					for _, e := range nje.Unwrap() {
 						if be, ok := e.(StandardError); ok {
 							sc := be.ErrorStatusCode()
-							if sc != 503 {
-								if sc < fsc {
-									// To prefer 2xx over 4xx, and 4xx over 5xx
-									fsc = sc
-								}
+							if sc != 503 && sc != 500 {
+								fsc = sc
 							}
 						}
 					}

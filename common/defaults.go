@@ -1289,6 +1289,14 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 		}
 	}
 
+	if e.SkipWhenSyncing == nil {
+		if defaults != nil && defaults.SkipWhenSyncing != nil {
+			e.SkipWhenSyncing = defaults.SkipWhenSyncing
+		} else {
+			e.SkipWhenSyncing = util.BoolPtr(false)
+		}
+	}
+
 	return nil
 }
 

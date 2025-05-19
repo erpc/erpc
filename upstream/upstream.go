@@ -793,7 +793,7 @@ func (u *Upstream) guessVendorName() string {
 func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest) (reason error, skip bool) {
 	method, _ := req.Method()
 
-	if u.config.Evm != nil {
+	if u.config.Evm != nil && u.config.Evm.SkipWhenSyncing != nil && *u.config.Evm.SkipWhenSyncing {
 		if u.EvmSyncingState() == common.EvmSyncingStateSyncing {
 			return common.NewErrUpstreamSyncing(u.config.Id), true
 		}
