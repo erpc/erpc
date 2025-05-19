@@ -738,7 +738,8 @@ func hashValue(h io.Writer, v interface{}) error {
 // a proper json-rpc error with correct numeric code.
 func TranslateToJsonRpcException(err error) error {
 	if erx, ok := err.(*ErrUpstreamsExhausted); ok {
-		// single-pass scan to detect the dominant (most frequent) StandardError code
+		// Scan an UpstreamsExhausted error to detect the most frequent error among upstreams
+		// This selection helps provide somewhat user-friendly error message vs just saying that "all upstreams failed"
 		var (
 			counts   = make(map[ErrorCode]int) // code -> occurrences
 			maxCount int
@@ -757,8 +758,8 @@ func TranslateToJsonRpcException(err error) error {
 					domErr = cause
 				}
 			}
-			if c == ErrCodeUpstreamMethodIgnored {
-				// most often this error is not interesting nor significant vs other errors
+			if c == ErrCodeUpstreamRequestSkipped || HasErrorCode(cause, ErrCodeEndpointUnsupported) {
+				// most often these errors are not interesting nor significant vs other errors
 				continue
 			}
 			counts[c]++

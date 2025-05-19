@@ -249,29 +249,14 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		//----------------------------------------------------------------
-		// "Unauthorized" errors
-		//----------------------------------------------------------------
-
-		if r.StatusCode == 401 || r.StatusCode == 403 || strings.Contains(msg, "not allowed to access") {
-			return common.NewErrEndpointUnauthorized(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorUnauthorized,
-					err.Message,
-					nil,
-					details,
-				),
-			)
-		}
-
-		//----------------------------------------------------------------
 		// "Not found" or "disabled" errors (missing data or unsupported)
 		//----------------------------------------------------------------
 
 		if strings.Contains(msg, "not found") ||
 			strings.Contains(msg, "does not exist") ||
 			strings.Contains(msg, "not available") ||
-			strings.Contains(msg, "is disabled") {
+			strings.Contains(msg, "is disabled") ||
+			strings.Contains(msg, "is not available") {
 
 			if strings.Contains(msg, "Method") || strings.Contains(msg, "method") ||
 				strings.Contains(msg, "Module") || strings.Contains(msg, "module") {
@@ -403,6 +388,22 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			).WithRetryableTowardNetwork(false)
+		}
+
+		//----------------------------------------------------------------
+		// "Unauthorized" errors
+		//----------------------------------------------------------------
+
+		if r.StatusCode == 401 || r.StatusCode == 403 || strings.Contains(msg, "not allowed to access") {
+			return common.NewErrEndpointUnauthorized(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorUnauthorized,
+					err.Message,
+					nil,
+					details,
+				),
+			)
 		}
 
 		//----------------------------------------------------------------

@@ -1049,6 +1049,12 @@ func decideErrorStatusCode(err interface{}) int {
 		return se.ErrorStatusCode()
 	}
 
+	// TODO refactor the logic so we can eliminate this code path.
+	// this is needed because in some scenarios one or more UpstreamsExhausted errors are wrapped
+	// in another UpstreamsExhausted error (e.g. getLogs splits where 1 or more sub-requests fail).
+	// In such case "err" will be an UpstreamsExhausted which carries multiple status codes.
+	// Probably best place to resolve this is in TranslateToJsonRpcException so that
+	// nested UpstreamsExhausted errors are resolved to 1 "most significant" error.
 	if ue, ok := err.(interface{ Unwrap() []error }); ok {
 		bestCode := http.StatusServiceUnavailable // sensible default / fallback
 
