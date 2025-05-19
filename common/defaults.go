@@ -491,6 +491,9 @@ func (s *ServerConfig) SetDefaults() error {
 		d := Duration(10 * time.Second)
 		s.WaitAfterShutdown = &d
 	}
+	if s.IncludeErrorDetails == nil {
+		s.IncludeErrorDetails = util.BoolPtr(true)
+	}
 
 	return nil
 }

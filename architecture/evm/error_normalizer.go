@@ -67,7 +67,6 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "exceeds the range") ||
 			strings.Contains(msg, "max block range") ||
 			strings.Contains(msg, "Max range") ||
-			strings.Contains(msg, "limited to") ||
 			strings.Contains(msg, "response size should not") ||
 			strings.Contains(msg, "returned more than") ||
 			strings.Contains(msg, "exceeds max results") ||
@@ -77,7 +76,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "query exceeds limit") ||
 			strings.Contains(msg, "limit the query to") ||
 			strings.Contains(msg, "maximum block range") ||
-			strings.Contains(msg, "range limit exceeded") {
+			strings.Contains(msg, "range limit exceeded") ||
+			strings.Contains(msg, "eth_getLogs is limited") {
 			return common.NewErrEndpointRequestTooLarge(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -107,7 +107,9 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 
 		if r.StatusCode == 402 ||
 			strings.Contains(msg, "reached the free tier") ||
-			strings.Contains(msg, "Monthly capacity limit") {
+			strings.Contains(msg, "Monthly capacity limit") ||
+			strings.Contains(msg, "limit for your current plan") ||
+			strings.Contains(msg, "/billing") {
 			// Specific billing-tier exhaustion or subscription limit
 			return common.NewErrEndpointBillingIssue(
 				common.NewErrJsonRpcExceptionInternal(

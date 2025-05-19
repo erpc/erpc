@@ -1182,6 +1182,10 @@ var NewErrUpstreamSyncing = func(upstreamId string) error {
 	}
 }
 
+func (e *ErrUpstreamSyncing) ErrorStatusCode() int {
+	return http.StatusUnprocessableEntity
+}
+
 type ErrUpstreamGetLogsExceededMaxAllowedRange struct{ BaseError }
 
 const ErrCodeUpstreamGetLogsExceededMaxAllowedRange ErrorCode = "ErrUpstreamGetLogsExceededMaxAllowedRange"

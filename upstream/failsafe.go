@@ -448,7 +448,13 @@ func TranslateFailsafeError(scope common.Scope, upstreamId string, method string
 		if ler != nil {
 			translatedCause = TranslateFailsafeError(scope, "", "", ler, startTime)
 		}
-		err = common.NewErrFailsafeRetryExceeded(scope, translatedCause, startTime)
+		if exr, ok := translatedCause.(*common.ErrUpstreamsExhausted); ok {
+			// In this case we already have a grouping of all errors encountered via upstreams,
+			// also this means errors are not due to other reasons (like self-imposed rate limiting).
+			err = exr
+		} else {
+			err = common.NewErrFailsafeRetryExceeded(scope, translatedCause, startTime)
+		}
 	} else if errors.Is(execErr, timeout.ErrExceeded) {
 		// Simply translate the failsafe library timeout error type to our own standard error type.
 		// And keep the original error as "cause" so it can be logged.
