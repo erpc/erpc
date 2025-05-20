@@ -2,6 +2,7 @@ package evm
 
 import (
 	"context"
+	"strings"
 
 	"github.com/erpc/erpc/common"
 )
@@ -19,11 +20,13 @@ func HandleNetworkPreForward(ctx context.Context, network common.Network, nq *co
 		return false, nil, err
 	}
 
-	switch method {
-	case "eth_blockNumber":
+	switch strings.ToLower(method) {
+	case "eth_blocknumber":
 		return networkPreForward_eth_blockNumber(ctx, network, nq)
 	case "eth_call":
 		return networkPreForward_eth_call(ctx, network, nq)
+	case "eth_chainid":
+		return networkPreForward_eth_chainId(ctx, network, nq)
 	default:
 		return false, nil, nil
 	}
@@ -40,8 +43,8 @@ func HandleNetworkPostForward(ctx context.Context, network common.Network, nq *c
 		return nr, err
 	}
 
-	switch method {
-	case "eth_getBlockByNumber":
+	switch strings.ToLower(method) {
+	case "eth_getblockbynumber":
 		return networkPostForward_eth_getBlockByNumber(ctx, network, nq, nr, re)
 	default:
 		return nr, re
@@ -57,8 +60,8 @@ func HandleUpstreamPreForward(ctx context.Context, n common.Network, u common.Up
 		return false, nil, err
 	}
 
-	switch method {
-	case "eth_getLogs":
+	switch strings.ToLower(method) {
+	case "eth_getlogs":
 		return upstreamPreForward_eth_getLogs(ctx, n, u, r)
 	default:
 		return false, nil, nil
@@ -74,8 +77,8 @@ func HandleUpstreamPostForward(ctx context.Context, n common.Network, u common.U
 		return rs, err
 	}
 
-	switch method {
-	case "eth_getLogs":
+	switch strings.ToLower(method) {
+	case "eth_getlogs":
 		return upstreamPostForward_eth_getLogs(ctx, n, u, rq, rs, re, skipCacheRead)
 	}
 
