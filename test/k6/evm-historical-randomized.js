@@ -40,26 +40,26 @@ const CHAINS = {
   //     blockHashSamplePool: []
   //   }
   // },
-  // ARBITRUM: {
-  //   id: '42161',
-  //   blockMin: 0x10E1A300,
-  //   blockMax: 0x11E1A300,
-  //   cached: {
-  //     latestBlock: null,
-  //     latestBlockTimestamp: 0,
-  //     blockHashSamplePool: []
-  //   }
-  // },
-  BASE: {
-    id: '8453',
-    blockMin: 0x1312D00,
-    blockMax: 0x1D05E9C,
+  ARBITRUM: {
+    id: '42161',
+    blockMin: 0x9000000,
+    blockMax: 0x11000000,
     cached: {
       latestBlock: null,
       latestBlockTimestamp: 0,
       blockHashSamplePool: []
     }
-  }
+  },
+  // BASE: {
+  //   id: '8453',
+  //   blockMin: 0x1312D00,
+  //   blockMax: 0x1D05E9C,
+  //   cached: {
+  //     latestBlock: null,
+  //     latestBlockTimestamp: 0,
+  //     blockHashSamplePool: []
+  //   }
+  // }
 };
 
 if (__ENV.RANDOM_SEED) {
@@ -68,11 +68,11 @@ if (__ENV.RANDOM_SEED) {
 
 // Traffic pattern weights (in percentage, should sum to 100)
 const TRAFFIC_PATTERNS = {
-  RANDOM_HISTORICAL_BLOCKS: 0,      // Fetch random blocks from history
-  RANDOM_LOG_RANGES: 30,             // Get logs for random block ranges
-  RANDOM_HISTORICAL_RECEIPTS: 0,    // Get random transaction receipts from history
+  RANDOM_HISTORICAL_BLOCKS: 30,      // Fetch random blocks from history
+  RANDOM_LOG_RANGES: 60,             // Get logs for random block ranges
+  RANDOM_HISTORICAL_RECEIPTS: 10,    // Get random transaction receipts from history
   RANDOM_TRACE_TRANSACTIONS: 0,     // Trace random transactions with various methods
-  RANDOM_BLOCK_BY_HASH: 70,         // Get random block by hash
+  RANDOM_BLOCK_BY_HASH: 0,         // Get random block by hash
 };
 
 // Configuration
@@ -87,11 +87,11 @@ export const options = {
   scenarios: {    
     constant_request_rate: {
       executor: 'constant-arrival-rate',
-      rate: 300,
+      rate: 200,
       timeUnit: '1s',
       duration: '30m',
       preAllocatedVUs: 200,
-      maxVUs: 500,
+      maxVUs: 1000,
     },
   },
 };
@@ -336,7 +336,7 @@ export default async function () {
       parsedBody = JSON.parse(res.body);
     } catch (e) {
       parsingErrorsCounter.add(1, tags);
-      console.error(`Failed to parse response body: ${e} body: ${res.body}`);
+      console.error(`Failed to parse response body: ${e} body: ${res.body?.slice(0, 100)}(.........)${res.body?.slice(-100)}`);
     }
 
     if (parsedBody?.error?.code) {

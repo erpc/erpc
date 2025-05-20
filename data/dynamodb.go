@@ -30,7 +30,8 @@ type DynamoDBConnector struct {
 	id                string
 	logger            *zerolog.Logger
 	initializer       *util.Initializer
-	client            *dynamodb.DynamoDB
+	writeClient       *dynamodb.DynamoDB
+	readClient        *dynamodb.DynamoDB
 	table             string
 	ttlAttributeName  string
 	partitionKeyName  string
@@ -52,6 +53,23 @@ type dynamoLock struct {
 
 func (l *dynamoLock) IsNil() bool {
 	return l == nil || l.connector == nil
+}
+
+var sharedReadClient = &http.Client{
+	Transport: &http.Transport{
+		MaxIdleConns:        2048,
+		MaxIdleConnsPerHost: 2048,
+		MaxConnsPerHost:     0, // unlimited, let MaxIdle… guard memory
+		IdleConnTimeout:     120 * time.Second,
+	},
+}
+var sharedWriteClient = &http.Client{
+	Transport: &http.Transport{
+		MaxIdleConns:        256,
+		MaxIdleConnsPerHost: 256,
+		MaxConnsPerHost:     0, // unlimited, let MaxIdle… guard memory
+		IdleConnTimeout:     120 * time.Second,
+	},
 }
 
 func NewDynamoDBConnector(
@@ -100,18 +118,17 @@ func (d *DynamoDBConnector) connectTask(ctx context.Context, cfg *common.DynamoD
 		return err
 	}
 
-	d.client = dynamodb.New(sess, &aws.Config{
-		Endpoint: aws.String(cfg.Endpoint),
-		HTTPClient: &http.Client{
-			Timeout: d.setTimeout,
-			Transport: &http.Transport{
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 100,
-				MaxConnsPerHost:     100,
-				IdleConnTimeout:     120 * time.Second,
-			},
-		},
-		MaxRetries: aws.Int(3),
+	d.writeClient = dynamodb.New(sess, &aws.Config{
+		Endpoint:   aws.String(cfg.Endpoint),
+		HTTPClient: sharedWriteClient,
+		MaxRetries: aws.Int(cfg.MaxRetries),
+		Region:     aws.String(cfg.Region),
+	})
+
+	d.readClient = dynamodb.New(sess, &aws.Config{
+		Endpoint:   aws.String(cfg.Endpoint),
+		HTTPClient: sharedReadClient,
+		MaxRetries: aws.Int(cfg.MaxRetries),
 		Region:     aws.String(cfg.Region),
 	})
 
@@ -119,12 +136,12 @@ func (d *DynamoDBConnector) connectTask(ctx context.Context, cfg *common.DynamoD
 		return fmt.Errorf("missing table name for dynamodb connector")
 	}
 
-	err = createTableIfNotExists(ctx, d.logger, d.client, cfg)
+	err = createTableIfNotExists(ctx, d.logger, d.writeClient, cfg)
 	if err != nil {
 		return err
 	}
 
-	err = ensureGlobalSecondaryIndexes(ctx, d.logger, d.client, cfg)
+	err = ensureGlobalSecondaryIndexes(ctx, d.logger, d.writeClient, cfg)
 	if err != nil {
 		return err
 	}
@@ -335,7 +352,7 @@ func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, val
 		)
 	}
 
-	if d.client == nil {
+	if d.writeClient == nil {
 		err := fmt.Errorf("DynamoDB client not initialized yet")
 		common.SetTraceSpanError(span, err)
 		return err
@@ -370,7 +387,7 @@ func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, val
 		}
 	}
 
-	_, err := d.client.PutItemWithContext(ctx, &dynamodb.PutItemInput{
+	_, err := d.writeClient.PutItemWithContext(ctx, &dynamodb.PutItemInput{
 		TableName: aws.String(d.table),
 		Item:      item,
 	})
@@ -394,7 +411,7 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 		)
 	}
 
-	if d.client == nil {
+	if d.readClient == nil {
 		err := fmt.Errorf("DynamoDB client not initialized yet")
 		common.SetTraceSpanError(span, err)
 		return "", err
@@ -443,7 +460,7 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 		defer cancel()
 
 		d.logger.Debug().Str("index", d.reverseIndexName).Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("getting item from dynamodb")
-		result, err := d.client.QueryWithContext(ctx, qi)
+		result, err := d.readClient.QueryWithContext(ctx, qi)
 		if err != nil {
 			common.SetTraceSpanError(span, err)
 			return "", err
@@ -476,7 +493,7 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 			},
 		}
 		d.logger.Debug().Str("index", "n/a").Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("getting item from dynamodb")
-		result, err := d.client.GetItemWithContext(ctx, &dynamodb.GetItemInput{
+		result, err := d.readClient.GetItemWithContext(ctx, &dynamodb.GetItemInput{
 			TableName: aws.String(d.table),
 			Key:       ky,
 		})
@@ -523,7 +540,7 @@ func (d *DynamoDBConnector) Lock(ctx context.Context, key string, ttl time.Durat
 	)
 	defer span.End()
 
-	if d.client == nil {
+	if d.writeClient == nil {
 		err := fmt.Errorf("DynamoDB client not initialized yet")
 		common.SetTraceSpanError(span, err)
 		return nil, err
@@ -555,7 +572,7 @@ func (d *DynamoDBConnector) Lock(ctx context.Context, key string, ttl time.Durat
 		// If 'ctx' finishes, PutItemWithContext will be interrupted.
 		putAttemptCtx, putAttemptCancel := context.WithTimeout(ctx, d.setTimeout)
 
-		_, err := d.client.PutItemWithContext(putAttemptCtx, &dynamodb.PutItemInput{
+		_, err := d.writeClient.PutItemWithContext(putAttemptCtx, &dynamodb.PutItemInput{
 			TableName: aws.String(d.table),
 			Item: map[string]*dynamodb.AttributeValue{
 				d.partitionKeyName: {S: aws.String(lockKey)},
@@ -634,7 +651,7 @@ func (l *dynamoLock) Unlock(ctx context.Context) error {
 	)
 	defer span.End()
 
-	_, err := l.connector.client.DeleteItemWithContext(ctx, &dynamodb.DeleteItemInput{
+	_, err := l.connector.writeClient.DeleteItemWithContext(ctx, &dynamodb.DeleteItemInput{
 		TableName: aws.String(l.connector.table),
 		Key: map[string]*dynamodb.AttributeValue{
 			l.connector.partitionKeyName: {S: aws.String(l.lockKey)},
@@ -652,7 +669,7 @@ func (l *dynamoLock) Unlock(ctx context.Context) error {
 }
 
 func (d *DynamoDBConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan int64, func(), error) {
-	if d.client == nil {
+	if d.readClient == nil {
 		return nil, nil, fmt.Errorf("DynamoDB client not initialized yet")
 	}
 
@@ -709,7 +726,7 @@ func (d *DynamoDBConnector) getSimpleValue(ctx context.Context, key string) (int
 	)
 	defer span.End()
 
-	result, err := d.client.GetItemWithContext(ctx, &dynamodb.GetItemInput{
+	result, err := d.readClient.GetItemWithContext(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(d.table),
 		Key: map[string]*dynamodb.AttributeValue{
 			d.partitionKeyName: {S: aws.String(key)},
@@ -753,11 +770,11 @@ func (d *DynamoDBConnector) PublishCounterInt64(ctx context.Context, key string,
 		)
 	}
 
-	if d.client == nil {
+	if d.writeClient == nil {
 		return fmt.Errorf("DynamoDB client not initialized yet")
 	}
 
-	_, err := d.client.UpdateItemWithContext(ctx, &dynamodb.UpdateItemInput{
+	_, err := d.writeClient.UpdateItemWithContext(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(d.table),
 		Key: map[string]*dynamodb.AttributeValue{
 			d.partitionKeyName: {S: aws.String(key)},

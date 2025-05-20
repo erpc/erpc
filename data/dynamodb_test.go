@@ -323,7 +323,7 @@ func TestDynamoDBDistributedLocking(t *testing.T) {
 		formattedLockKey := fmt.Sprintf("%s:lock", lockKey)
 		lockExpiryTime := time.Now().Add(lockExpiry).Unix()
 
-		_, err := connector.client.PutItem(&dynamodb.PutItemInput{
+		_, err := connector.writeClient.PutItem(&dynamodb.PutItemInput{
 			TableName: aws.String(connector.table),
 			Item: map[string]*dynamodb.AttributeValue{
 				connector.partitionKeyName: {S: aws.String(formattedLockKey)},
@@ -355,7 +355,7 @@ func TestDynamoDBDistributedLocking(t *testing.T) {
 		formattedLockKey := fmt.Sprintf("%s:lock", lockKey)
 		lockExpiryTime := time.Now().Add(100 * time.Second).Unix() // Won't expire during our test
 
-		_, err := connector.client.PutItem(&dynamodb.PutItemInput{
+		_, err := connector.writeClient.PutItem(&dynamodb.PutItemInput{
 			TableName: aws.String(connector.table),
 			Item: map[string]*dynamodb.AttributeValue{
 				connector.partitionKeyName: {S: aws.String(formattedLockKey)},
@@ -387,7 +387,7 @@ func TestDynamoDBDistributedLocking(t *testing.T) {
 		formattedLockKey := fmt.Sprintf("%s:lock", lockKey)
 		lockExpiryTime := time.Now().Add(5 * time.Second).Unix()
 
-		_, err := connector.client.PutItem(&dynamodb.PutItemInput{
+		_, err := connector.writeClient.PutItem(&dynamodb.PutItemInput{
 			TableName: aws.String(connector.table),
 			Item: map[string]*dynamodb.AttributeValue{
 				connector.partitionKeyName: {S: aws.String(formattedLockKey)},
@@ -427,7 +427,7 @@ func TestDynamoDBDistributedLocking(t *testing.T) {
 		formattedLockKey := fmt.Sprintf("%s:lock", lockKey)
 		expiredLockTime := time.Now().Add(-60 * time.Second).Unix() // Expired 1 minute ago
 
-		_, err := connector.client.PutItem(&dynamodb.PutItemInput{
+		_, err := connector.writeClient.PutItem(&dynamodb.PutItemInput{
 			TableName: aws.String(connector.table),
 			Item: map[string]*dynamodb.AttributeValue{
 				connector.partitionKeyName: {S: aws.String(formattedLockKey)},

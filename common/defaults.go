@@ -886,7 +886,7 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 			log.Warn().Msg("projects.*.healthCheck.scoreMetricsWindowSize is deprecated; use projects.*.scoreMetricsWindowSize instead")
 			p.ScoreMetricsWindowSize = p.DeprecatedHealthCheck.ScoreMetricsWindowSize
 		} else {
-			p.ScoreMetricsWindowSize = Duration(30 * time.Minute)
+			p.ScoreMetricsWindowSize = Duration(10 * time.Minute)
 		}
 	}
 
