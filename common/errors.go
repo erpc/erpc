@@ -1209,6 +1209,10 @@ var NewErrUpstreamGetLogsExceededMaxAllowedRange = func(upstreamId string, reque
 	}
 }
 
+func (e *ErrUpstreamGetLogsExceededMaxAllowedRange) ErrorStatusCode() int {
+	return http.StatusRequestEntityTooLarge
+}
+
 type ErrUpstreamGetLogsExceededMaxAllowedAddresses struct{ BaseError }
 
 const ErrCodeUpstreamGetLogsExceededMaxAllowedAddresses ErrorCode = "ErrUpstreamGetLogsExceededMaxAllowedAddresses"
@@ -1227,6 +1231,10 @@ var NewErrUpstreamGetLogsExceededMaxAllowedAddresses = func(upstreamId string, r
 	}
 }
 
+func (e *ErrUpstreamGetLogsExceededMaxAllowedAddresses) ErrorStatusCode() int {
+	return http.StatusRequestEntityTooLarge
+}
+
 type ErrUpstreamGetLogsExceededMaxAllowedTopics struct{ BaseError }
 
 const ErrCodeUpstreamGetLogsExceededMaxAllowedTopics ErrorCode = "ErrUpstreamGetLogsExceededMaxAllowedTopics"
@@ -1243,6 +1251,10 @@ var NewErrUpstreamGetLogsExceededMaxAllowedTopics = func(upstreamId string, requ
 			},
 		},
 	}
+}
+
+func (e *ErrUpstreamGetLogsExceededMaxAllowedTopics) ErrorStatusCode() int {
+	return http.StatusRequestEntityTooLarge
 }
 
 type ErrUpstreamNotAllowed struct{ BaseError }
