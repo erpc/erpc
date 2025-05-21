@@ -83,7 +83,7 @@ func (v *OnFinalityVendor) GenerateConfigs(upstream *common.UpstreamConfig, sett
 			if !ok {
 				return nil, fmt.Errorf("unsupported network chain ID for OnFinality: %d", chainID)
 			}
-			onfinalityURL := fmt.Sprintf("https://%s.api.onfinality.io/rpc?apikey=%s", netName, apiKey)
+			onfinalityURL := fmt.Sprintf("https://%s.api.onfinality.io/rpc?apikey=%s", netName, url.QueryEscape(apiKey))
 			parsedURL, err := url.Parse(onfinalityURL)
 			if err != nil {
 				return nil, err
