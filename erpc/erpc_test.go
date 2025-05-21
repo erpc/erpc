@@ -180,11 +180,6 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 
 	sortedUpstreams, err := nw.upstreamsRegistry.GetSortedUpstreams(context.Background(), "evm:123", "eth_getTransactionReceipt")
 
-	s0 := nw.upstreamsRegistry.GetMetricsTracker().GetUpstreamMethodMetrics(sortedUpstreams[0], "eth_getTransactionReceipt")
-	t.Logf("sortedUpstreams %s: rqs=%v errs=%v errRate=%v", sortedUpstreams[0].Id(), s0.RequestsTotal.Load(), s0.ErrorsTotal.Load(), s0.ErrorRate())
-	s1 := nw.upstreamsRegistry.GetMetricsTracker().GetUpstreamMethodMetrics(sortedUpstreams[1], "eth_getTransactionReceipt")
-	t.Logf("sortedUpstreams %s: rqs=%v errs=%v errRate=%v", sortedUpstreams[1].Id(), s1.RequestsTotal.Load(), s1.ErrorsTotal.Load(), s1.ErrorRate())
-
 	expectedOrder := []string{"rpc2", "rpc1"}
 	assert.NoError(t, err)
 	for i, ups := range sortedUpstreams {
