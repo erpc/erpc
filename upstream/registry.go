@@ -647,12 +647,12 @@ func (u *UpstreamsRegistry) updateScoresAndSort(ctx context.Context, networkId, 
 		totalRequests = append(totalRequests, float64(metrics.RequestsTotal.Load()))
 	}
 
-	normRespLatencies := normalizeValues(respLatencies)
+	normRespLatencies := normalizeValuesLog(respLatencies)
 	normErrorRates := normalizeValues(errorRates)
 	normThrottledRates := normalizeValues(throttledRates)
 	normTotalRequests := normalizeValues(totalRequests)
-	normBlockHeadLags := normalizeValues(blockHeadLags)
-	normFinalizationLags := normalizeValues(finalizationLags)
+	normBlockHeadLags := normalizeValuesLog(blockHeadLags)
+	normFinalizationLags := normalizeValuesLog(finalizationLags)
 	for i, ups := range upsList {
 		upsId := ups.Id()
 		score := u.calculateScore(
@@ -760,6 +760,74 @@ func normalizeValues(values []float64) []float64 {
 			normalized[i] = 0
 		}
 	}
+	return normalized
+}
+
+func normalizeValuesLog(values []float64) []float64 {
+	if len(values) == 0 {
+		return []float64{}
+	}
+
+	// Find the true min and max values in the input slice.
+	// Assumes values are non-negative based on typical use for latencies, lags etc.
+	dataMin := values[0]
+	dataMax := values[0]
+	for i := 1; i < len(values); i++ {
+		if values[i] < dataMin {
+			dataMin = values[i]
+		}
+		if values[i] > dataMax {
+			dataMax = values[i]
+		}
+	}
+
+	normalized := make([]float64, len(values))
+
+	if dataMin == dataMax {
+		// If all values are the same
+		if dataMin == 0.0 {
+			// All values are 0, result is all 0s (implicitly done by make).
+		} else {
+			// All values are a positive constant C, result is all 1s.
+			// This makes behavior consistent with normalizeValues.
+			for i := range normalized {
+				normalized[i] = 1.0
+			}
+		}
+		return normalized
+	}
+
+	// Apply log(v+1) transformation and scale to [0, 1]
+	// log(dataMin+1) will be the minimum of the log-transformed values.
+	// log(dataMax+1) will be the maximum of the log-transformed values.
+	logMinOffset := math.Log(dataMin + 1.0)
+	logMaxOffset := math.Log(dataMax + 1.0)
+	denom := logMaxOffset - logMinOffset
+
+	// Since dataMin < dataMax, dataMin+1 < dataMax+1,
+	// so logMinOffset < logMaxOffset, and denom > 0.
+	// Thus, no division by zero here.
+
+	for i, v := range values {
+		if v < 0 {
+			// This case should ideally not happen for metrics like latency.
+			// If it can, specific handling might be needed.
+			// For now, map negative values to 0 to avoid math.Log errors with v+1.0 <= 0.
+			normalized[i] = 0.0
+			continue
+		}
+		logVOffset := math.Log(v + 1.0)
+		norm := (logVOffset - logMinOffset) / denom
+
+		// Clamp to [0, 1] as a safeguard against potential floating-point inaccuracies.
+		if norm < 0.0 {
+			norm = 0.0
+		} else if norm > 1.0 {
+			norm = 1.0
+		}
+		normalized[i] = norm
+	}
+
 	return normalized
 }
 

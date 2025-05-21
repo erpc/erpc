@@ -75,8 +75,8 @@ var sharedWriteClient = &http.Client{
 }
 
 func init() {
-	http2.ConfigureTransport(sharedReadClient.Transport.(*http.Transport))
-	http2.ConfigureTransport(sharedWriteClient.Transport.(*http.Transport))
+	_ = http2.ConfigureTransport(sharedReadClient.Transport.(*http.Transport))
+	_ = http2.ConfigureTransport(sharedWriteClient.Transport.(*http.Transport))
 }
 
 func NewDynamoDBConnector(
