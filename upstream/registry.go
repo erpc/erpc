@@ -673,6 +673,16 @@ func (u *UpstreamsRegistry) updateScoresAndSort(ctx context.Context, networkId, 
 				upsc[networkId][method] = score
 			}
 		}
+		ups.logger.Trace().
+			Str("method", method).
+			Float64("score", score).
+			Float64("normalizedTotalRequests", normTotalRequests[i]).
+			Float64("normalizedRespLatency", normRespLatencies[i]).
+			Float64("normalizedErrorRate", normErrorRates[i]).
+			Float64("normalizedThrottledRate", normThrottledRates[i]).
+			Float64("normalizedBlockHeadLag", normBlockHeadLags[i]).
+			Float64("normalizedFinalizationLag", normFinalizationLags[i]).
+			Msg("score updated")
 		telemetry.MetricUpstreamScoreOverall.WithLabelValues(u.prjId, ups.VendorName(), networkId, upsId, method).Set(score)
 	}
 

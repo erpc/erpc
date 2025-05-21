@@ -302,22 +302,6 @@ func (e BaseError) MarshalJSON() ([]byte, error) {
 	})
 }
 
-func (e *BaseError) Is(err error) bool {
-	var is bool
-
-	if be, ok := err.(*BaseError); ok {
-		is = e.Code == be.Code
-	} else if be, ok := err.(StandardError); ok {
-		is = strings.Contains(be.CodeChain(), string(e.Code))
-	}
-
-	if !is && e.Cause != nil {
-		is = errors.Is(e.Cause, err)
-	}
-
-	return is
-}
-
 func (e *BaseError) HasCode(codes ...ErrorCode) bool {
 	for _, code := range codes {
 		if e.Code == code {
@@ -842,7 +826,7 @@ func (e *ErrUpstreamsExhausted) CodeChain() string {
 
 	s := e.SummarizeCauses()
 	if s != "" {
-		return codeChain + " (" + s + ")"
+		return codeChain
 	}
 
 	return codeChain
@@ -916,7 +900,7 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			} else if HasErrorCode(e, ErrCodeUpstreamRequestSkipped) {
 				skips++
 				continue
-			} else if HasErrorCode(e, ErrCodeEndpointRequestTooLarge) {
+			} else if HasErrorCode(e, ErrCodeEndpointRequestTooLarge, ErrCodeUpstreamGetLogsExceededMaxAllowedRange, ErrCodeUpstreamGetLogsExceededMaxAllowedAddresses, ErrCodeUpstreamGetLogsExceededMaxAllowedTopics) {
 				tooLarge++
 				continue
 			} else if HasErrorCode(e, ErrCodeEndpointUnauthorized) {
@@ -2251,6 +2235,9 @@ func IsClientError(err error) bool {
 		err,
 		ErrCodeEndpointClientSideException,
 		ErrCodeJsonRpcRequestUnmarshal,
+		ErrCodeUpstreamGetLogsExceededMaxAllowedRange,
+		ErrCodeUpstreamGetLogsExceededMaxAllowedAddresses,
+		ErrCodeUpstreamGetLogsExceededMaxAllowedTopics,
 	))
 }
 
