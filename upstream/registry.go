@@ -630,11 +630,16 @@ func (u *UpstreamsRegistry) updateScoresAndSort(ctx context.Context, networkId, 
 	_, span := common.StartDetailSpan(ctx, "UpstreamsRegistry.UpdateScoresAndSort")
 	defer span.End()
 
-	var p90Latencies, errorRates, totalRequests, throttledRates, blockHeadLags, finalizationLags []float64
+	var respLatencies, errorRates, totalRequests, throttledRates, blockHeadLags, finalizationLags []float64
 
 	for _, ups := range upsList {
+		qn := 0.70
+		cfg := ups.Config()
+		if cfg != nil && cfg.Routing != nil && cfg.Routing.ScoreLatencyQuantile != 0 {
+			qn = cfg.Routing.ScoreLatencyQuantile
+		}
 		metrics := u.metricsTracker.GetUpstreamMethodMetrics(ups, method)
-		p90Latencies = append(p90Latencies, metrics.ResponseQuantiles.GetQuantile(0.90).Seconds())
+		respLatencies = append(respLatencies, metrics.ResponseQuantiles.GetQuantile(qn).Seconds())
 		blockHeadLags = append(blockHeadLags, float64(metrics.BlockHeadLag.Load()))
 		finalizationLags = append(finalizationLags, float64(metrics.FinalizationLag.Load()))
 		errorRates = append(errorRates, metrics.ErrorRate())
@@ -642,7 +647,7 @@ func (u *UpstreamsRegistry) updateScoresAndSort(ctx context.Context, networkId, 
 		totalRequests = append(totalRequests, float64(metrics.RequestsTotal.Load()))
 	}
 
-	normP90Latencies := normalizeValues(p90Latencies)
+	normRespLatencies := normalizeValues(respLatencies)
 	normErrorRates := normalizeValues(errorRates)
 	normThrottledRates := normalizeValues(throttledRates)
 	normTotalRequests := normalizeValues(totalRequests)
@@ -655,7 +660,7 @@ func (u *UpstreamsRegistry) updateScoresAndSort(ctx context.Context, networkId, 
 			networkId,
 			method,
 			normTotalRequests[i],
-			normP90Latencies[i],
+			normRespLatencies[i],
 			normErrorRates[i],
 			normThrottledRates[i],
 			normBlockHeadLags[i],
@@ -680,7 +685,7 @@ func (u *UpstreamsRegistry) calculateScore(
 	networkId,
 	method string,
 	normTotalRequests,
-	normP90Latency,
+	normRespLatency,
 	normErrorRate,
 	normThrottledRate,
 	normBlockHeadLag,
@@ -695,9 +700,9 @@ func (u *UpstreamsRegistry) calculateScore(
 		score += expCurve(1-normTotalRequests) * mul.TotalRequests
 	}
 
-	// Higher score for lower p90 latency
-	if mul.P90Latency > 0 {
-		score += expCurve(1-normP90Latency) * mul.P90Latency
+	// Higher score for lower latency
+	if mul.RespLatency > 0 {
+		score += expCurve(1-normRespLatency) * mul.RespLatency
 	}
 
 	// Higher score for lower error rate

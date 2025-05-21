@@ -154,30 +154,37 @@ func (p *PreparedProject) Forward(ctx context.Context, networkId string, nq *com
 		common.SetTraceSpanError(span, err)
 	}
 
-	finishCtx, finishSpan := common.StartDetailSpan(ctx, "Project.FinishForward")
-	defer finishSpan.End()
-
-	if err == nil || common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
-		_, logsSpan := common.StartDetailSpan(finishCtx, "Project.Logs")
-		if err != nil {
-			lg.Info().Err(err).Msgf("finished forwarding request for network with some client-side exception")
+	if err == nil {
+		telemetry.MetricNetworkSuccessfulRequests.WithLabelValues(
+			p.Config.Id,
+			network.networkId,
+			method,
+			strconv.Itoa(resp.Attempts()),
+		).Inc()
+		if lg.GetLevel() == zerolog.TraceLevel {
+			lg.Info().Object("response", resp).Msgf("successfully forwarded request for network")
 		} else {
-			if lg.GetLevel() == zerolog.TraceLevel {
-				lg.Info().Object("response", resp).Msgf("successfully forwarded request for network")
-			} else {
-				lg.Info().Msgf("successfully forwarded request for network")
-			}
+			lg.Info().Msgf("successfully forwarded request for network")
 		}
-		logsSpan.End()
-		_, metricsSpan := common.StartDetailSpan(finishCtx, "Project.SuccessMetrics")
-		defer metricsSpan.End()
-		telemetry.MetricNetworkSuccessfulRequests.WithLabelValues(p.Config.Id, network.networkId, method, strconv.Itoa(resp.Attempts())).Inc()
 		return resp, err
 	} else {
-		_, errSpan := common.StartDetailSpan(finishCtx, "Project.ErrorMetrics")
-		defer errSpan.End()
-		lg.Debug().Err(err).Object("request", nq).Msgf("failed to forward request for network")
-		telemetry.MetricNetworkFailedRequests.WithLabelValues(network.projectId, network.networkId, method, strconv.Itoa(resp.Attempts()), common.ErrorFingerprint(err)).Inc()
+		if common.IsClientError(err) || common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
+			lg.Info().Err(err).Msgf("finished forwarding request for network with some client-side exception")
+		} else {
+			if lg.GetLevel() <= zerolog.DebugLevel {
+				lg.Info().Err(err).Object("request", nq).Msgf("failed to forward request for network")
+			} else {
+				lg.Info().Err(err).Msgf("failed to forward request for network")
+			}
+		}
+		telemetry.MetricNetworkFailedRequests.WithLabelValues(
+			network.projectId,
+			network.networkId,
+			method,
+			strconv.Itoa(resp.Attempts()),
+			common.ErrorFingerprint(err),
+			string(common.ClassifySeverity(err)),
+		).Inc()
 	}
 
 	return nil, err

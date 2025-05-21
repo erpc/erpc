@@ -420,7 +420,8 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 }
 
 type RoutingConfig struct {
-	ScoreMultipliers []*ScoreMultiplierConfig `yaml:"scoreMultipliers" json:"scoreMultipliers"`
+	ScoreMultipliers     []*ScoreMultiplierConfig `yaml:"scoreMultipliers" json:"scoreMultipliers"`
+	ScoreLatencyQuantile float64                  `yaml:"scoreLatencyQuantile,omitempty" json:"scoreLatencyQuantile"`
 }
 
 func (c *RoutingConfig) Copy() *RoutingConfig {
@@ -445,11 +446,14 @@ type ScoreMultiplierConfig struct {
 	Method          string  `yaml:"method" json:"method"`
 	Overall         float64 `yaml:"overall" json:"overall"`
 	ErrorRate       float64 `yaml:"errorRate" json:"errorRate"`
-	P90Latency      float64 `yaml:"p90latency" json:"p90latency"`
+	RespLatency     float64 `yaml:"respLatency" json:"respLatency"`
 	TotalRequests   float64 `yaml:"totalRequests" json:"totalRequests"`
 	ThrottledRate   float64 `yaml:"throttledRate" json:"throttledRate"`
 	BlockHeadLag    float64 `yaml:"blockHeadLag" json:"blockHeadLag"`
 	FinalizationLag float64 `yaml:"finalizationLag" json:"finalizationLag"`
+
+	// @deprecated use RespLatency instead
+	DeprecatedP90Latency float64 `yaml:"p90latency" json:"p90latency"`
 }
 
 func (c *ScoreMultiplierConfig) Copy() *ScoreMultiplierConfig {

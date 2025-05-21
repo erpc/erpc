@@ -793,6 +793,9 @@ func (r *RoutingConfig) Validate() error {
 			}
 		}
 	}
+	if r.ScoreLatencyQuantile < 0 || r.ScoreLatencyQuantile > 1 {
+		return fmt.Errorf("upstream.*.routing.scoreLatencyQuantile must be between 0 and 1")
+	}
 	return nil
 }
 
@@ -865,8 +868,8 @@ func (p *ScoreMultiplierConfig) Validate() error {
 	if p.ErrorRate < 0 {
 		return fmt.Errorf("priorityMultipliers.*.errorRate multiplier must be greater than or equal to 0")
 	}
-	if p.P90Latency < 0 {
-		return fmt.Errorf("priorityMultipliers.*.p90latency multiplier must be greater than or equal to 0")
+	if p.RespLatency < 0 {
+		return fmt.Errorf("priorityMultipliers.*.respLatency multiplier must be greater than or equal to 0")
 	}
 	if p.TotalRequests < 0 {
 		return fmt.Errorf("priorityMultipliers.*.totalRequests multiplier must be greater than or equal to 0")

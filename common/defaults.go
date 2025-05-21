@@ -1653,6 +1653,9 @@ func (r *RoutingConfig) SetDefaults() error {
 			}
 		}
 	}
+	if r.ScoreLatencyQuantile == 0 {
+		r.ScoreLatencyQuantile = 0.70
+	}
 
 	return nil
 }
@@ -1661,8 +1664,8 @@ var DefaultScoreMultiplier = &ScoreMultiplierConfig{
 	Network: "*",
 	Method:  "*",
 
-	ErrorRate:       8.0,
-	P90Latency:      4.0,
+	ErrorRate:       4.0,
+	RespLatency:     8.0,
 	TotalRequests:   1.0,
 	ThrottledRate:   3.0,
 	BlockHeadLag:    2.0,
@@ -1681,8 +1684,11 @@ func (s *ScoreMultiplierConfig) SetDefaults() error {
 	if s.ErrorRate == 0 {
 		s.ErrorRate = DefaultScoreMultiplier.ErrorRate
 	}
-	if s.P90Latency == 0 {
-		s.P90Latency = DefaultScoreMultiplier.P90Latency
+	if s.DeprecatedP90Latency > 0 {
+		s.RespLatency = s.DeprecatedP90Latency
+	}
+	if s.RespLatency == 0 {
+		s.RespLatency = DefaultScoreMultiplier.RespLatency
 	}
 	if s.TotalRequests == 0 {
 		s.TotalRequests = DefaultScoreMultiplier.TotalRequests

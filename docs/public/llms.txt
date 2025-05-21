@@ -1820,7 +1820,7 @@ upstreams:
 
           # (OPTIONAL) Default multiplier values:
           errorRate: 8.0       # Penalize higher error rates by increasing this value.
-          p90latency: 4.0      # Penalize higher latency by increasing this value.
+          respLatency: 4.0      # Penalize higher latency by increasing this value.
           totalRequests: 1.0   # Give more weight to upstreams with fewer requests.
           throttledRate: 3.0   # Penalize higher throttled requests by increasing this value.
           blockHeadLag: 2.0    # Penalize nodes lagging in block head updates by increasing this value.

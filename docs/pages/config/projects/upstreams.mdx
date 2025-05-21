@@ -431,6 +431,10 @@ export default createConfig({
 
 Upstreams are ranked by score, controlling selection order. You can adjust this ranking by setting multipliers at different levels: overall, per network or method, or for specific metrics (e.g., error rate, block lag).
 
+<Callout type='info'>
+  For every value the higher the value, the more important it is. For example respLatency: 8 means you care about this more than errorRate: 4
+</Callout>
+
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
@@ -439,9 +443,13 @@ upstreams:
   - id: my-alchemy
     # ...
     routing:
+      # (OPTIONAL) The quantile to use for latency scoring. e.g. "70%" means to ignore 30% of the slowest requests.
+      # DEFAULT: 0.70
+      scoreLatencyQuantile: 0.70
+
+      # (OPTIONAL) The score multipliers to give upstreams different priority.
       scoreMultipliers:
-        - network: '*' # Relevant when upstream supports multiple networks (default: all networks)
-          method: '*' # Method(s) where you want to apply these multipliers (default: all methods)
+        - method: '*' # Method(s) where you want to apply these multipliers (default: all methods)
           # method: 'eth_*|alchemy_*' means apply these multipliers to all methods starting with "eth_" or "alchemy_"
 
           # (OPTIONAL) Adjusts the overall score scale.
@@ -449,11 +457,11 @@ upstreams:
           overall: 1.0
           
           # (OPTIONAL) Default multiplier values:
-          errorRate: 8.0       # Penalize higher error rates by increasing this value.
-          p90latency: 4.0      # Penalize higher latency by increasing this value.
-          totalRequests: 1.0   # Give more weight to upstreams with fewer requests.
+          respLatency: 8.0     # Penalize higher latency by increasing this value (according to scoreLatencyQuantile).
+          errorRate: 4.0       # Penalize higher error rates by increasing this value.
           throttledRate: 3.0   # Penalize higher throttled requests by increasing this value.
           blockHeadLag: 2.0    # Penalize nodes lagging in block head updates by increasing this value.
+          totalRequests: 1.0   # Give more weight to upstreams with fewer requests.
           finalizationLag: 1.0 # Penalize nodes lagging in finalization by increasing this value.
 ```
 </Tabs.Tab>
@@ -480,7 +488,7 @@ export default createConfig({
 
             // (OPTIONAL) Default multiplier values:
             errorRate: 8.0,       // Penalize higher error rates by increasing this value.
-            p90latency: 4.0,      // Penalize higher latency by increasing this value.
+            respLatency: 4.0,      // Penalize higher latency by increasing this value.
             totalRequests: 1.0,   // Give more weight to upstreams with fewer requests.
             throttledRate: 3.0,   // Penalize higher throttled requests by increasing this value.
             blockHeadLag: 2.0,    // Penalize nodes lagging in block head updates by increasing this value.
