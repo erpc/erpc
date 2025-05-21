@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/erpc/erpc/common"
@@ -18,6 +19,7 @@ import (
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/net/http2"
 )
 
 const (
@@ -70,6 +72,11 @@ var sharedWriteClient = &http.Client{
 		MaxConnsPerHost:     0, // unlimited, let MaxIdle… guard memory
 		IdleConnTimeout:     120 * time.Second,
 	},
+}
+
+func init() {
+	http2.ConfigureTransport(sharedReadClient.Transport.(*http.Transport))
+	http2.ConfigureTransport(sharedWriteClient.Transport.(*http.Transport))
 }
 
 func NewDynamoDBConnector(
@@ -448,19 +455,25 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 			}
 		}
 
+		// We only need the first matching item and only its "value" attribute.
 		qi := &dynamodb.QueryInput{
 			TableName:                 aws.String(d.table),
 			IndexName:                 aws.String(d.reverseIndexName),
 			KeyConditionExpression:    aws.String(keyCondition),
 			ExpressionAttributeNames:  exprAttrNames,
 			ExpressionAttributeValues: exprAttrValues,
+			Limit:                     aws.Int64(1),       // return at most one item
+			ProjectionExpression:      aws.String("#val"), // only return the value attribute
+			Select:                    aws.String("SPECIFIC_ATTRIBUTES"),
 		}
+		// Add alias for value attribute in ProjectionExpression
+		qi.ExpressionAttributeNames["#val"] = aws.String("value")
 
 		ctx, cancel := context.WithTimeout(ctx, d.getTimeout)
 		defer cancel()
 
 		d.logger.Debug().Str("index", d.reverseIndexName).Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("getting item from dynamodb")
-		result, err := d.readClient.QueryWithContext(ctx, qi)
+		result, err := d.readClient.QueryWithContext(ctx, qi, request.WithResponseReadTimeout(d.getTimeout))
 		if err != nil {
 			common.SetTraceSpanError(span, err)
 			return "", err
