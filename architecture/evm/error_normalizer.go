@@ -131,7 +131,9 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "No server available") ||
 			strings.Contains(msg, "reached the quota") ||
 			strings.Contains(msg, "upgrade your tier") ||
-			strings.Contains(msg, "rate limited") {
+			strings.Contains(msg, "rate limited") ||
+			strings.Contains(msg, "rate limit") ||
+			strings.Contains(msg, "too many requests") {
 			return common.NewErrEndpointCapacityExceeded(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -394,7 +396,10 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		// "Unauthorized" errors
 		//----------------------------------------------------------------
 
-		if r.StatusCode == 401 || r.StatusCode == 403 || strings.Contains(msg, "not allowed to access") {
+		if r.StatusCode == 401 || r.StatusCode == 403 ||
+			strings.Contains(msg, "not allowed to access") ||
+			strings.Contains(msg, "invalid api key") ||
+			strings.Contains(msg, "unauthorized") {
 			return common.NewErrEndpointUnauthorized(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
