@@ -1,7 +1,7 @@
 logLevel: warn
 database:
   evmJsonRpcCache:
-    connectors: 
+    connectors:
       - id: memory-cache
         driver: memory
       - id: postgres-cache
@@ -17,7 +17,7 @@ database:
         dynamodb:
           region: DC1
           endpoint: http://localhost:8067
-          
+
     policies:
       - network: "*"
         method: "*"
@@ -107,6 +107,14 @@ projects:
             backoffMaxDelay: 10s
             backoffFactor: 0.3
             jitter: 500ms
+      - id: onfinality-multi-chain-example-1
+        endpoint: onfinality://YOUR_ONFINALITY_API_KEY
+        rateLimitBudget: global-onfinality
+        evm:
+          chainId: 1
+        failsafe:
+          timeout:
+            duration: 15s
       - id: infura-multi-chain-example-1
         endpoint: infura://${YOUR_INFURA_API_KEY}
         rateLimitBudget: default-budget
@@ -178,6 +186,11 @@ projects:
 rateLimiters:
   budgets:
     - id: global-tenderly
+      rules:
+        - method: '*'
+          maxCount: 10000
+          period: 1s
+    - id: global-onfinality
       rules:
         - method: '*'
           maxCount: 10000

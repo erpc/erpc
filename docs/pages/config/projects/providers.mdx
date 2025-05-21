@@ -552,6 +552,44 @@ export default createConfig({
 
 For production traffic consult with Tenderly team about the chains you are going to use and amount of traffic you expect to handle.
 
+#### `Onfinality`
+
+Built for [OnFinality](https://onfinality.io/) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - endpoint: onfinality://YOUR_ONFINALITY_API_KEY
+        # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          endpoint: "onfinality://YOUR_ONFINALITY_API_KEY",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
 ## Advanced config
 
 You can use dedicated `providers:` config to customize per-network configurations (e.g. different config for Alchemy eth-mainnet vs Alchemy polygon) as follows:
@@ -701,4 +739,7 @@ providers:
   - vendor: tenderly
     settings:
       apiKey: xxxxx # Your Tenderly API key
+  - vendor: onfinality
+    settings:
+      apiKey: xxxxx # Your OnFinality API key
 ```
