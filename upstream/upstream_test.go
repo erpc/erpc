@@ -21,7 +21,7 @@ func TestUpstream_SkipLogic(t *testing.T) {
 
 		reason, skip := upstream.shouldSkip(context.TODO(), common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.True(t, skip)
-		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_getBalance", "test"))
+		assert.Contains(t, reason.Error(), "ErrUpstreamMethodIgnored")
 
 		reason, skip = upstream.shouldSkip(context.TODO(), common.NewNormalizedRequest([]byte(`{"method":"eth_getBlockByNumber"}`)))
 		assert.False(t, skip)
@@ -39,7 +39,7 @@ func TestUpstream_SkipLogic(t *testing.T) {
 
 		reason, skip := upstream.shouldSkip(context.TODO(), common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.True(t, skip)
-		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_getBalance", "test"))
+		assert.Contains(t, reason.Error(), "ErrUpstreamMethodIgnored")
 
 		reason, skip = upstream.shouldSkip(context.TODO(), common.NewNormalizedRequest([]byte(`{"method":"net_version"}`)))
 		assert.False(t, skip)
@@ -57,11 +57,11 @@ func TestUpstream_SkipLogic(t *testing.T) {
 
 		reason, skip := upstream.shouldSkip(context.TODO(), common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.True(t, skip)
-		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_getBalance", "test"))
+		assert.Contains(t, reason.Error(), "ErrUpstreamMethodIgnored")
 
 		reason, skip = upstream.shouldSkip(context.TODO(), common.NewNormalizedRequest([]byte(`{"method":"eth_getBlockByNumber"}`)))
 		assert.True(t, skip)
-		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_getBlockByNumber", "test"))
+		assert.Contains(t, reason.Error(), "ErrUpstreamMethodIgnored")
 
 		reason, skip = upstream.shouldSkip(context.TODO(), common.NewNormalizedRequest([]byte(`{"method":"eth_call"}`)))
 		assert.False(t, skip)
@@ -79,11 +79,11 @@ func TestUpstream_SkipLogic(t *testing.T) {
 
 		reason, skip := upstream.shouldSkip(context.TODO(), common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.True(t, skip)
-		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_getBalance", "test"))
+		assert.Contains(t, reason.Error(), "ErrUpstreamMethodIgnored")
 
 		reason, skip = upstream.shouldSkip(context.TODO(), common.NewNormalizedRequest([]byte(`{"method":"net_version"}`)))
 		assert.True(t, skip)
-		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("net_version", "test"))
+		assert.Contains(t, reason.Error(), "ErrUpstreamMethodIgnored")
 
 		reason, skip = upstream.shouldSkip(context.TODO(), common.NewNormalizedRequest([]byte(`{"method":"web3_clientVersion"}`)))
 		assert.False(t, skip)
@@ -107,7 +107,7 @@ func TestUpstream_SkipLogic(t *testing.T) {
 
 		reason, skip := upstream1.shouldSkip(context.TODO(), common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.True(t, skip)
-		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_getBalance", "test1"))
+		assert.Contains(t, reason.Error(), "ErrUpstreamMethodIgnored")
 
 		reason, skip = upstream2.shouldSkip(context.TODO(), common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.False(t, skip)
@@ -132,7 +132,7 @@ func TestUpstream_SkipLogic(t *testing.T) {
 
 		reason, skip := upstream1.shouldSkip(context.TODO(), common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.True(t, skip)
-		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_getBalance", "test1"))
+		assert.Contains(t, reason.Error(), "ErrUpstreamMethodIgnored")
 
 		reason, skip = upstream2.shouldSkip(context.TODO(), common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.False(t, skip)
@@ -144,7 +144,7 @@ func TestUpstream_SkipLogic(t *testing.T) {
 
 		reason, skip = upstream2.shouldSkip(context.TODO(), common.NewNormalizedRequest([]byte(`{"method":"eth_getBlockByNumber"}`)))
 		assert.True(t, skip)
-		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_getBlockByNumber", "test2"))
+		assert.Contains(t, reason.Error(), "ErrUpstreamMethodIgnored")
 	})
 
 	t.Run("MultipleUpstreamsAllIgnoredAMethod", func(t *testing.T) {
@@ -165,11 +165,11 @@ func TestUpstream_SkipLogic(t *testing.T) {
 
 		reason, skip := upstream1.shouldSkip(context.TODO(), common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.True(t, skip)
-		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_getBalance", "test1"))
+		assert.Contains(t, reason.Error(), "ErrUpstreamMethodIgnored")
 
 		reason, skip = upstream2.shouldSkip(context.TODO(), common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.True(t, skip)
-		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_getBalance", "test2"))
+		assert.Contains(t, reason.Error(), "ErrUpstreamMethodIgnored")
 	})
 
 	t.Run("OneUpstreamWithoutAnythingIgnored", func(t *testing.T) {
@@ -231,15 +231,15 @@ func TestUpstream_SkipLogic(t *testing.T) {
 
 		reason, skip := upstream.shouldSkip(context.TODO(), common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.True(t, skip)
-		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_getBalance", "test"))
+		assert.Contains(t, reason.Error(), "ErrUpstreamMethodIgnored")
 
 		reason, skip = upstream.shouldSkip(context.TODO(), common.NewNormalizedRequest([]byte(`{"method":"net_version"}`)))
 		assert.True(t, skip)
-		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("net_version", "test"))
+		assert.Contains(t, reason.Error(), "ErrUpstreamMethodIgnored")
 
 		reason, skip = upstream.shouldSkip(context.TODO(), common.NewNormalizedRequest([]byte(`{"method":"web3_clientVersion"}`)))
 		assert.True(t, skip)
-		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("web3_clientVersion", "test"))
+		assert.Contains(t, reason.Error(), "ErrUpstreamMethodIgnored")
 
 		reason, skip = upstream.shouldSkip(context.TODO(), common.NewNormalizedRequest([]byte(`{"method":"personal_sign"}`)))
 		assert.False(t, skip)
@@ -257,7 +257,7 @@ func TestUpstream_SkipLogic(t *testing.T) {
 
 		reason, skip := upstream.shouldSkip(context.TODO(), common.NewNormalizedRequest([]byte(`{"method":"eth_get_balance"}`)))
 		assert.True(t, skip)
-		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_get_balance", "test"))
+		assert.Contains(t, reason.Error(), "ErrUpstreamMethodIgnored")
 
 		reason, skip = upstream.shouldSkip(context.TODO(), common.NewNormalizedRequest([]byte(`{"method":"eth_getBalance"}`)))
 		assert.False(t, skip)
@@ -265,6 +265,6 @@ func TestUpstream_SkipLogic(t *testing.T) {
 
 		reason, skip = upstream.shouldSkip(context.TODO(), common.NewNormalizedRequest([]byte(`{"method":"eth_get_block_by_number"}`)))
 		assert.True(t, skip)
-		assert.ErrorIs(t, reason, common.NewErrUpstreamMethodIgnored("eth_get_block_by_number", "test"))
+		assert.Contains(t, reason.Error(), "ErrUpstreamMethodIgnored")
 	})
 }

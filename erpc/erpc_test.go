@@ -60,6 +60,21 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 						JsonRpc: &common.JsonRpcUpstreamConfig{
 							SupportsBatch: &common.FALSE,
 						},
+						Routing: &common.RoutingConfig{
+							ScoreMultipliers: []*common.ScoreMultiplierConfig{
+								{
+									Network:         "*",
+									Method:          "*",
+									Overall:         1,
+									ErrorRate:       5,
+									RespLatency:     0,
+									TotalRequests:   0,
+									BlockHeadLag:    0,
+									FinalizationLag: 0,
+									ThrottledRate:   0,
+								},
+							},
+						},
 					},
 					{
 						Id:       "rpc2",
@@ -70,6 +85,21 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 						},
 						JsonRpc: &common.JsonRpcUpstreamConfig{
 							SupportsBatch: &common.FALSE,
+						},
+						Routing: &common.RoutingConfig{
+							ScoreMultipliers: []*common.ScoreMultiplierConfig{
+								{
+									Network:         "*",
+									Method:          "*",
+									Overall:         1,
+									ErrorRate:       5,
+									RespLatency:     0,
+									TotalRequests:   0,
+									BlockHeadLag:    0,
+									FinalizationLag: 0,
+									ThrottledRate:   0,
+								},
+							},
 						},
 					},
 				},
@@ -149,6 +179,11 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 	cancel2()
 
 	sortedUpstreams, err := nw.upstreamsRegistry.GetSortedUpstreams(context.Background(), "evm:123", "eth_getTransactionReceipt")
+
+	s0 := nw.upstreamsRegistry.GetMetricsTracker().GetUpstreamMethodMetrics(sortedUpstreams[0], "eth_getTransactionReceipt")
+	t.Logf("sortedUpstreams %s: rqs=%v errs=%v errRate=%v", sortedUpstreams[0].Id(), s0.RequestsTotal.Load(), s0.ErrorsTotal.Load(), s0.ErrorRate())
+	s1 := nw.upstreamsRegistry.GetMetricsTracker().GetUpstreamMethodMetrics(sortedUpstreams[1], "eth_getTransactionReceipt")
+	t.Logf("sortedUpstreams %s: rqs=%v errs=%v errRate=%v", sortedUpstreams[1].Id(), s1.RequestsTotal.Load(), s1.ErrorsTotal.Load(), s1.ErrorRate())
 
 	expectedOrder := []string{"rpc2", "rpc1"}
 	assert.NoError(t, err)
