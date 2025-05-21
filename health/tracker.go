@@ -56,9 +56,9 @@ type Timer struct {
 	tracker       *Tracker
 }
 
-func (t *Timer) ObserveDuration() {
+func (t *Timer) ObserveDuration(isSuccess bool) {
 	duration := time.Since(t.start)
-	t.tracker.RecordUpstreamDuration(t.upstream, t.method, duration, t.compositeType)
+	t.tracker.RecordUpstreamDuration(t.upstream, t.method, duration, isSuccess, t.compositeType)
 }
 
 // ------------------------------------
@@ -303,16 +303,20 @@ func (t *Tracker) RecordUpstreamDurationStart(upstream common.Upstream, method s
 	}
 }
 
-func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d time.Duration, comp string) {
+func (t *Tracker) RecordUpstreamDuration(up common.Upstream, method string, d time.Duration, isSuccess bool, comp string) {
 	if comp == "" {
 		comp = "none"
 	}
 	sec := d.Seconds()
-	for _, k := range t.getUpsKeys(up, method) {
-		t.getUpsMetrics(k).ResponseQuantiles.Add(sec)
-	}
-	for _, nk := range t.getNtwKeys(up, method) {
-		t.getNtwMetrics(nk).ResponseQuantiles.Add(sec)
+	if isSuccess {
+		// We must calculate response time quantiles for successful requests only,
+		// Otherwise we might falsely attribute "best latency" to an upstream that's just failing fast.
+		for _, k := range t.getUpsKeys(up, method) {
+			t.getUpsMetrics(k).ResponseQuantiles.Add(sec)
+		}
+		for _, nk := range t.getNtwKeys(up, method) {
+			t.getNtwMetrics(nk).ResponseQuantiles.Add(sec)
+		}
 	}
 	telemetry.MetricUpstreamRequestDuration.
 		WithLabelValues(t.projectId, up.VendorName(), up.NetworkId(), up.Id(), method, comp).

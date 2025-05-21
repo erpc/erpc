@@ -194,7 +194,7 @@ var (
 		Namespace: "erpc",
 		Name:      "network_failed_request_total",
 		Help:      "Total number of failed requests for a network.",
-	}, []string{"project", "network", "category", "attempt", "error"})
+	}, []string{"project", "network", "category", "attempt", "error", "severity"})
 
 	MetricNetworkSuccessfulRequests = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",

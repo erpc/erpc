@@ -311,7 +311,7 @@ func simulateRequestMetricsWithLatency(tracker *Tracker, upstream common.Upstrea
 		go func() {
 			defer wg.Done()
 			tracker.RecordUpstreamRequest(upstream, method)
-			tracker.RecordUpstreamDuration(upstream, method, time.Duration(latency*float64(time.Second)), "none")
+			tracker.RecordUpstreamDuration(upstream, method, time.Duration(latency*float64(time.Second)), true, "none")
 		}()
 	}
 	wg.Wait()

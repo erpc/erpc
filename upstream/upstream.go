@@ -326,15 +326,18 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 			)
 			telemetry.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, strconv.Itoa(exec.Attempts()), req.CompositeType()).Inc()
 			timer := u.metricsTracker.RecordUpstreamDurationStart(u, method, req.CompositeType())
-			defer timer.ObserveDuration()
 
 			resp, errCall := jsonRpcClient.SendRequest(ctx, req)
+			isSuccess := false
 			if resp != nil {
 				jrr, _ := resp.JsonRpcResponse()
 				if jrr != nil && jrr.Error == nil {
 					resp.SetUpstream(u)
 					req.SetLastValidResponse(resp)
 					req.SetLastUpstream(u)
+					isSuccess = true
+				} else {
+					isSuccess = false
 				}
 				if lg.GetLevel() == zerolog.TraceLevel {
 					lg.Debug().Err(errCall).Object("response", resp).Msgf("upstream request ended with response")
@@ -353,6 +356,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				}
 			}
 			if errCall != nil {
+				isSuccess = false
 				if common.HasErrorCode(errCall, common.ErrCodeUpstreamRequestSkipped) {
 					telemetry.MetricUpstreamSkippedTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method).Inc()
 				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointMissingData) {
@@ -373,6 +377,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 					telemetry.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, common.ErrorFingerprint(errCall), string(severity), req.CompositeType()).Inc()
 				}
 
+				timer.ObserveDuration(false)
 				if exec != nil {
 					return nil, common.NewErrUpstreamRequest(
 						errCall,
@@ -402,7 +407,10 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				}
 			}
 
-			u.recordRequestSuccess(method)
+			timer.ObserveDuration(isSuccess)
+			if isSuccess {
+				u.recordRequestSuccess(method)
+			}
 
 			return resp, nil
 		}
@@ -834,6 +842,9 @@ func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest
 			return common.NewErrUpstreamNodeTypeMismatch(fmt.Errorf("block number (%d) in request will not yield result for a fullNodeType upstream since it is not recent enough (must be >= %d", bn, lb-u.config.Evm.MaxAvailableRecentBlocks), common.EvmNodeTypeArchive, common.EvmNodeTypeFull), true
 		}
 	}
+
+	// TODO if block number is extracted from request, check against evm poller's latest block number (force-refresh if stale) and skip if block is after upstream's latest block
+	// TODO then we can remove the similar "eth_getLogs upper-bound" check in eth_getLogs.go PreForward hook.
 
 	return nil, false
 }

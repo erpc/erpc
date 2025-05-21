@@ -73,6 +73,7 @@ export interface ServerConfig {
   aliasing?: AliasingConfig;
   waitBeforeShutdown?: Duration;
   waitAfterShutdown?: Duration;
+  includeErrorDetails?: boolean;
 }
 export interface HealthCheckConfig {
   mode?: HealthCheckMode;
@@ -199,6 +200,7 @@ export interface DynamoDBConnectorConfig {
   initTimeout?: Duration;
   getTimeout?: Duration;
   setTimeout?: Duration;
+  maxRetries?: number /* int */;
   statePollInterval?: Duration;
   lockRetryInterval?: Duration;
 }
@@ -279,11 +281,15 @@ export interface ScoreMultiplierConfig {
   method: string;
   overall: number /* float64 */;
   errorRate: number /* float64 */;
-  p90latency: number /* float64 */;
+  respLatency: number /* float64 */;
   totalRequests: number /* float64 */;
   throttledRate: number /* float64 */;
   blockHeadLag: number /* float64 */;
   finalizationLag: number /* float64 */;
+  /**
+   * @deprecated use RespLatency instead
+   */
+  p90latency: number /* float64 */;
 }
 export type Alias = UpstreamConfig;
 export interface RateLimitAutoTuneConfig {
@@ -313,6 +319,8 @@ export interface EvmUpstreamConfig {
   getLogsMaxAllowedRange?: number /* int64 */;
   getLogsMaxAllowedAddresses?: number /* int64 */;
   getLogsMaxAllowedTopics?: number /* int64 */;
+  getLogsSplitOnError?: boolean;
+  skipWhenSyncing?: boolean;
 }
 export interface FailsafeConfig {
   retry?: RetryPolicyConfig;
