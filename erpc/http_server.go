@@ -951,16 +951,11 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 	jre := &common.ErrJsonRpcExceptionInternal{}
 	if errors.As(err, &jre) {
 		message := jre.Message
-		deepestMessage := jre.DeepestMessage()
-		if message != deepestMessage {
-			message = fmt.Sprintf("%s: %s", message, deepestMessage)
-		}
 		errObj := map[string]interface{}{
 			"code":    jre.NormalizedCode(),
 			"message": message,
 		}
-
-		//Append "data" field, ref: https://www.jsonrpc.org/specification#:~:text=A%20Primitive%20or%20Structured%20value%20that%20contains%20additional%20information%20about%20the%20error.
+		// Append "data" field, ref: https://www.jsonrpc.org/specification#:~:text=A%20Primitive%20or%20Structured%20value%20that%20contains%20additional%20information%20about%20the%20error.
 		if jre.Details["data"] != nil {
 			errObj["data"] = jre.Details["data"]
 		} else if includeErrorDetails != nil && *includeErrorDetails {
