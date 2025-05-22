@@ -106,36 +106,10 @@ func (v *OnFinalityVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedReq
 	}
 
 	err := bodyMap.Error
-	if code := err.Code; code != 0 {
-		msg := err.Message
-		if err.Data != "" {
-			details["data"] = err.Data
-		}
-
-		if strings.Contains(msg, "invalid api key") || strings.Contains(msg, "unauthorized") {
-			return common.NewErrEndpointUnauthorized(
-				common.NewErrJsonRpcExceptionInternal(
-					code,
-					common.JsonRpcErrorUnauthorized,
-					msg,
-					nil,
-					details,
-				),
-			)
-		} else if strings.Contains(msg, "rate limit") || strings.Contains(msg, "too many requests") {
-			return common.NewErrEndpointCapacityExceeded(
-				common.NewErrJsonRpcExceptionInternal(
-					code,
-					common.JsonRpcErrorCapacityExceeded,
-					msg,
-					nil,
-					details,
-				),
-			)
-		}
+	if err.Data != "" {
+		details["data"] = err.Data
 	}
 
-	// Other errors can be properly handled by generic error handling
 	return nil
 }
 
