@@ -1463,7 +1463,12 @@ var NewErrFailsafeRetryExceeded = func(scope Scope, cause error, startTime *time
 }
 
 func (e *ErrFailsafeRetryExceeded) ErrorStatusCode() int {
-	return 503
+	if e.Cause != nil {
+		if se, ok := e.Cause.(StandardError); ok {
+			return se.ErrorStatusCode()
+		}
+	}
+	return http.StatusServiceUnavailable
 }
 
 func (e *ErrFailsafeRetryExceeded) DeepestMessage() string {

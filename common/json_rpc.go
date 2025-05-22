@@ -773,10 +773,16 @@ func TranslateToJsonRpcException(err error) error {
 		}
 	}
 
+	// If the error already has a json-rpc representation in the chain, return it as is
+	// e.g. when it is based on response from upstream
 	if HasErrorCode(err, ErrCodeJsonRpcExceptionInternal) {
 		return err
 	}
 
+
+	//
+	// When error is an internal eRPC error, we need to translate it to a json-rpc error
+	//
 	if HasErrorCode(
 		err,
 		ErrCodeAuthRateLimitRuleExceeded,
@@ -792,7 +798,6 @@ func TranslateToJsonRpcException(err error) error {
 			nil,
 		)
 	}
-
 	if HasErrorCode(
 		err,
 		ErrCodeAuthUnauthorized,
@@ -805,7 +810,6 @@ func TranslateToJsonRpcException(err error) error {
 			nil,
 		)
 	}
-
 	if HasErrorCode(err, ErrCodeUpstreamMethodIgnored) {
 		return NewErrJsonRpcExceptionInternal(
 			0,
@@ -815,7 +819,6 @@ func TranslateToJsonRpcException(err error) error {
 			nil,
 		)
 	}
-
 	if HasErrorCode(err, ErrCodeJsonRpcRequestUnmarshal) {
 		return NewErrJsonRpcExceptionInternal(
 			0,
@@ -825,7 +828,6 @@ func TranslateToJsonRpcException(err error) error {
 			nil,
 		)
 	}
-
 	if HasErrorCode(err, ErrCodeInvalidRequest, ErrCodeInvalidUrlPath) {
 		return NewErrJsonRpcExceptionInternal(
 			0,
@@ -835,7 +837,15 @@ func TranslateToJsonRpcException(err error) error {
 			nil,
 		)
 	}
-
+	if HasErrorCode(err, ErrCodeUpstreamGetLogsExceededMaxAllowedRange, ErrCodeUpstreamGetLogsExceededMaxAllowedAddresses, ErrCodeUpstreamGetLogsExceededMaxAllowedTopics) {
+		return NewErrJsonRpcExceptionInternal(
+			0,
+			JsonRpcErrorEvmLargeRange,
+			"allowed block range threshold exceeded for eth_getLogs",
+			err,
+			nil,
+		)
+	}
 	var msg = "internal server error"
 	if se, ok := err.(StandardError); ok {
 		msg = se.DeepestMessage()
