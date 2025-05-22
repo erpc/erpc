@@ -263,19 +263,33 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 	defer cancel()
 
 	if strings.Contains(key, "*") {
-		keys, err := r.client.Keys(ctx, key).Result()
-		if err != nil {
-			r.logger.Warn().Err(err).Str("pattern", key).Msg("failed to KEYS in Redis, marking connection lost")
-			r.markConnectionAsLostIfNecessary(err)
-			common.SetTraceSpanError(span, err)
-			return "", err
+		var cursor uint64
+		var foundKey string
+		for {
+			var keys []string
+			var err error
+			keys, cursor, err = r.client.Scan(ctx, cursor, key, 10).Result()
+			if err != nil {
+				r.logger.Warn().Err(err).Str("pattern", key).Msg("failed to SCAN in Redis, marking connection lost")
+				r.markConnectionAsLostIfNecessary(err)
+				common.SetTraceSpanError(span, err)
+				return "", err
+			}
+			if len(keys) > 0 {
+				foundKey = keys[0] // Use the first match
+				break
+			}
+			if cursor == 0 { // Iteration complete
+				break
+			}
 		}
-		if len(keys) == 0 {
+
+		if foundKey == "" {
 			err := common.NewErrRecordNotFound(partitionKey, rangeKey, RedisDriverName)
 			common.SetTraceSpanError(span, err)
 			return "", err
 		}
-		key = keys[0]
+		key = foundKey
 	}
 
 	r.logger.Trace().Str("key", key).Msg("getting item from Redis")
