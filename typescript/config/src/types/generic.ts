@@ -100,7 +100,8 @@ import type {
     | "evm+thirdweb"
     | "evm+repository"
     | "evm+superchain"
-    | "evm+tenderly";
+    | "evm+tenderly"
+    | "evm+onfinality";
   
   /**
    * Supported auth type
