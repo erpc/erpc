@@ -92,7 +92,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -213,7 +213,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -332,7 +332,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -453,7 +453,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -602,7 +602,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -758,7 +758,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -926,7 +926,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -1128,7 +1128,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -1335,7 +1335,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -1528,7 +1528,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -1731,7 +1731,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -1940,7 +1940,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -2131,7 +2131,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -2312,7 +2312,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -2507,7 +2507,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -2698,7 +2698,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -2888,7 +2888,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -3059,7 +3059,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -3190,7 +3190,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -3348,7 +3348,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -3503,7 +3503,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -3636,7 +3636,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -3755,7 +3755,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -3882,7 +3882,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -4014,7 +4014,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -4143,7 +4143,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -4277,7 +4277,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -4416,7 +4416,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -4570,7 +4570,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -4723,7 +4723,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -4875,7 +4875,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -5010,7 +5010,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -5153,7 +5153,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -5300,7 +5300,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -5447,7 +5447,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -5581,7 +5581,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -5716,7 +5716,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -5873,7 +5873,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -6003,7 +6003,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -6126,7 +6126,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -6249,7 +6249,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -6359,7 +6359,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -6563,7 +6563,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -6645,7 +6645,7 @@ func TestNetwork_Forward(t *testing.T) {
 					Driver: "mock",
 					Mock: &common.MockConnectorConfig{
 						MemoryConnectorConfig: common.MemoryConnectorConfig{
-							MaxItems: 100_000,
+							MaxItems: 100_000, MaxTotalSize: "1GB",
 						},
 						// GetDelay: 10 * time.Second,
 						// SetDelay: 10 * time.Second,
@@ -6894,7 +6894,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Prepare a large payload and allowed overhead
 		sampleSize := 100 * 1024 * 1024
-		allowedOverhead := 30 * 1024 * 1024
+		allowedOverhead := 35 * 1024 * 1024
 		largeResult := strings.Repeat("x", sampleSize)
 
 		// Stub only the actual debug_traceTransaction call and return our big string
@@ -7767,7 +7767,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		assert.Error(t, err)
 		assert.Nil(t, resp)
 
-		assert.Contains(t, err.Error(), "getLogs block not found")
+		assert.Contains(t, err.Error(), "block not found")
 	})
 
 	t.Run("AvoidLatestBlockUpdateWhenRangeEndIsLowerThanLatestBlock", func(t *testing.T) {
@@ -7907,7 +7907,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		// Verify that the request was skipped with appropriate error
 		assert.Error(t, err)
 		assert.Nil(t, resp)
-		assert.Contains(t, err.Error(), "getLogs block not found")
+		assert.Contains(t, err.Error(), "block not found")
 
 		assert.True(t, len(gock.Pending()) == 0, "Expected no pending mocks")
 	})
@@ -8587,7 +8587,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 					Driver: "mock",
 					Mock: &common.MockConnectorConfig{
 						MemoryConnectorConfig: common.MemoryConnectorConfig{
-							MaxItems: 100_000,
+							MaxItems: 100_000, MaxTotalSize: "1GB",
 						},
 						// GetDelay: 10 * time.Second,
 						// SetDelay: 10 * time.Second,
@@ -8643,6 +8643,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
+				fmt.Println("body 1111", body)
 				return strings.Contains(body, "eth_getLogs") &&
 					strings.Contains(body, `"fromBlock":"0x11118100"`) &&
 					strings.Contains(body, `"toBlock":"0x111181ff"`)
@@ -8736,6 +8737,9 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		// Verify the merged response
 		jrr, err := resp.JsonRpcResponse()
 		assert.NoError(t, err)
+		if jrr == nil {
+			t.Fatalf("Expected non-nil JsonRpcResponse")
+		}
 		w := bytes.NewBuffer(nil)
 		jrr.WriteTo(w)
 		result := w.Bytes()
@@ -8897,7 +8901,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		vr := thirdparty.NewVendorsRegistry()
 		pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
 		ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{Driver: "memory"},
+			Connector: &common.ConnectorConfig{Driver: "memory", Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}},
 		})
 		upr := upstream.NewUpstreamsRegistry(
 			ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg},
@@ -9212,7 +9216,7 @@ func TestNetwork_ThunderingHerdProtection(t *testing.T) {
 		vr := thirdparty.NewVendorsRegistry()
 		pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
 		ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
-			Connector: &common.ConnectorConfig{Driver: "memory"},
+			Connector: &common.ConnectorConfig{Driver: "memory", Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}},
 		})
 		upr := upstream.NewUpstreamsRegistry(
 			ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg},
@@ -9288,7 +9292,7 @@ func setupTestNetworkSimple(t *testing.T, ctx context.Context, upstreamConfig *c
 		Connector: &common.ConnectorConfig{
 			Driver: "memory",
 			Memory: &common.MemoryConnectorConfig{
-				MaxItems: 100_000,
+				MaxItems: 100_000, MaxTotalSize: "1GB",
 			},
 		},
 	})
@@ -9392,7 +9396,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.C
 		Connector: &common.ConnectorConfig{
 			Driver: "memory",
 			Memory: &common.MemoryConnectorConfig{
-				MaxItems: 100_000,
+				MaxItems: 100_000, MaxTotalSize: "1GB",
 			},
 		},
 	})

@@ -1765,7 +1765,7 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 		Connector: &common.ConnectorConfig{
 			Driver: "memory",
 			Memory: &common.MemoryConnectorConfig{
-				MaxItems: 100_000,
+				MaxItems: 100_000, MaxTotalSize: "1GB",
 			},
 		},
 	})

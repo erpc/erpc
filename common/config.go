@@ -207,7 +207,8 @@ type ConnectorConfig struct {
 }
 
 type MemoryConnectorConfig struct {
-	MaxItems int `yaml:"maxItems" json:"maxItems"`
+	MaxItems     int    `yaml:"maxItems" json:"maxItems"`
+	MaxTotalSize string `yaml:"maxTotalSize" json:"maxTotalSize"`
 }
 
 type MockConnectorConfig struct {

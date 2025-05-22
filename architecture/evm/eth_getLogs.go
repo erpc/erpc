@@ -199,7 +199,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 				up.Id(),
 			).Inc()
 			return true, nil, common.NewErrEndpointMissingData(
-				fmt.Errorf("getLogs block not found (toBlock %d) as upstream latest known block is %d (maybe statePollerDebounce is larger than block-time of this chain)", toBlock, latestBlock),
+				fmt.Errorf("block not found, because requested block (toBlock %d) is beyond the latest known block (%d) on the upstream node, ensure statePollerDebounce is low enough and or the requested block is older than the current chain head", toBlock, latestBlock),
 			)
 		}
 	} else {
@@ -209,14 +209,15 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	// Check if the log range start is higher than node's max available block range,
 	// if not, skip the request.
 	if cfg != nil && cfg.Evm != nil && cfg.Evm.MaxAvailableRecentBlocks > 0 {
-		lastAvailableBlock := latestBlock - cfg.Evm.MaxAvailableRecentBlocks
+		firstAvailableBlock := latestBlock - cfg.Evm.MaxAvailableRecentBlocks
 		if common.IsTracingDetailed {
 			span.SetAttributes(
-				attribute.Int64("last_available_block", lastAvailableBlock),
+				attribute.Int64("first_available_block", firstAvailableBlock),
 			)
 		}
 		// If range is beyond the last available block, or too close to the last available block, skip the request for safety.
-		if fromBlock < (lastAvailableBlock + LowerBoundBlocksSafetyMargin) {
+		firstAvailableBlock = firstAvailableBlock - LowerBoundBlocksSafetyMargin
+		if fromBlock < firstAvailableBlock {
 			telemetry.MetricUpstreamEvmGetLogsStaleLowerBound.WithLabelValues(
 				n.ProjectId(),
 				up.VendorName(),
@@ -224,7 +225,7 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 				up.Id(),
 			).Inc()
 			return true, nil, common.NewErrEndpointMissingData(
-				fmt.Errorf("getLogs block not found (fromBlock %d) as upstream latest known block is %d minus max available recent blocks %d plus safety margin %d (maybe statePollerDebounce is larger than block-time of this chain)", fromBlock, latestBlock, cfg.Evm.MaxAvailableRecentBlocks, LowerBoundBlocksSafetyMargin),
+				fmt.Errorf("block not found, because (fromBlock %d) is before the first available block (%d) on the upstream node, ensure the requested block is within supported non-pruned range", fromBlock, firstAvailableBlock),
 			)
 		}
 	}
