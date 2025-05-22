@@ -16,7 +16,7 @@ func TestMemoryConnector_TTL(t *testing.T) {
 	logger := zerolog.New(io.Discard)
 	ctx := context.Background()
 	connector, err := NewMemoryConnector(ctx, &logger, "test", &common.MemoryConnectorConfig{
-		MaxItems: 100,
+		MaxItems: 100_000, MaxTotalSize: "1GB",
 	})
 	require.NoError(t, err)
 
@@ -26,6 +26,8 @@ func TestMemoryConnector_TTL(t *testing.T) {
 		ttl := 100 * time.Millisecond
 		err := connector.Set(ctx, "pk1", "rk1", "value1", &ttl)
 		require.NoError(t, err)
+
+		time.Sleep(30 * time.Millisecond)
 
 		// Verify item exists immediately
 		val, err := connector.Get(ctx, "", "pk1", "rk1")
@@ -41,39 +43,13 @@ func TestMemoryConnector_TTL(t *testing.T) {
 		require.True(t, common.HasErrorCode(err, common.ErrCodeRecordNotFound))
 	})
 
-	t.Run("cleanup removes expired items", func(t *testing.T) {
-		// Set multiple items with different TTLs
-		ttl1 := 50 * time.Millisecond
-		ttl2 := 200 * time.Millisecond
-		err := connector.Set(ctx, "pk2", "rk1", "value1", &ttl1)
-		require.NoError(t, err)
-		err = connector.Set(ctx, "pk2", "rk2", "value2", &ttl2)
-		require.NoError(t, err)
-
-		// Wait for first TTL to expire
-		time.Sleep(100 * time.Millisecond)
-
-		// Force cleanup
-		connector.cleanupExpired()
-
-		// Verify first item is gone but second remains
-		_, err = connector.Get(ctx, "", "pk2", "rk1")
-		require.Error(t, err)
-		require.True(t, common.HasErrorCode(err, common.ErrCodeRecordNotFound))
-
-		val, err := connector.Get(ctx, "", "pk2", "rk2")
-		require.NoError(t, err)
-		require.Equal(t, "value2", val)
-	})
-
 	t.Run("item without TTL doesn't expire", func(t *testing.T) {
 		// Set item with no TTL
 		err := connector.Set(ctx, "pk3", "rk1", "value1", nil)
 		require.NoError(t, err)
 
-		// Wait and force cleanup
+		// Wait a bit (less than typical eviction times for a non-full cache)
 		time.Sleep(100 * time.Millisecond)
-		connector.cleanupExpired()
 
 		// Verify item still exists
 		val, err := connector.Get(ctx, "", "pk3", "rk1")

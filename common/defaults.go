@@ -555,7 +555,7 @@ func (c *SharedStateConfig) SetDefaults(defClusterKey string) error {
 			Id:     "memory",
 			Driver: DriverMemory,
 			Memory: &MemoryConnectorConfig{
-				MaxItems: 100_000,
+				MaxItems: 100_000, MaxTotalSize: "1GB",
 			},
 		}
 	} else {
@@ -645,6 +645,9 @@ func (c *ConnectorConfig) SetDefaults(scope connectorScope) error {
 func (m *MemoryConnectorConfig) SetDefaults() error {
 	if m.MaxItems == 0 {
 		m.MaxItems = 100000
+	}
+	if m.MaxTotalSize == "" {
+		m.MaxTotalSize = "1GB"
 	}
 
 	return nil

@@ -573,26 +573,21 @@ func (c *EvmJsonRpcCache) getFinalityState(ctx context.Context, req *common.Norm
 
 	blockRef, blockNumber, _ := ExtractBlockReferenceFromRequest(ctx, req)
 
-	// Decide finality from the block reference string:
-	//   • "*" wildcard entry: unfinalized (matches default policies)
-	//   • tag  (first char not a digit): realtime
-	if blockRef == "*" {
+	if blockRef == "*" && blockNumber == 0 {
 		finality = common.DataFinalityStateUnfinalized
 		return
-	} else if blockRef != "" && (blockRef[0] < '0' || blockRef[0] > '9') {
+	} else if blockRef != "" && blockRef != "*" && (blockRef[0] < '0' || blockRef[0] > '9') {
 		finality = common.DataFinalityStateRealtime
 		return
-	} else if resp != nil {
-		if blockNumber > 0 {
-			upstream := resp.Upstream()
-			if upstream != nil {
-				if ups, ok := upstream.(common.EvmUpstream); ok {
-					if isFinalized, err := ups.EvmIsBlockFinalized(blockNumber); err == nil {
-						if isFinalized {
-							finality = common.DataFinalityStateFinalized
-						} else {
-							finality = common.DataFinalityStateUnfinalized
-						}
+	} else if blockNumber > 0 && resp != nil {
+		upstream := resp.Upstream()
+		if upstream != nil {
+			if ups, ok := upstream.(common.EvmUpstream); ok {
+				if isFinalized, err := ups.EvmIsBlockFinalized(blockNumber); err == nil {
+					if isFinalized {
+						finality = common.DataFinalityStateFinalized
+					} else {
+						finality = common.DataFinalityStateUnfinalized
 					}
 				}
 			}

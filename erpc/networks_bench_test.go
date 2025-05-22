@@ -62,7 +62,7 @@ func BenchmarkNetworkForward_SimpleSuccess(b *testing.B) {
 		Connector: &common.ConnectorConfig{
 			Driver: "memory",
 			Memory: &common.MemoryConnectorConfig{
-				MaxItems: 100_000,
+				MaxItems: 100_000, MaxTotalSize: "1GB",
 			},
 		},
 	})
@@ -167,7 +167,7 @@ func BenchmarkNetworkForward_MethodIgnoreCase(b *testing.B) {
 		Connector: &common.ConnectorConfig{
 			Driver: "memory",
 			Memory: &common.MemoryConnectorConfig{
-				MaxItems: 100_000,
+				MaxItems: 100_000, MaxTotalSize: "1GB",
 			},
 		},
 	})
@@ -279,7 +279,7 @@ func BenchmarkNetworkForward_RetryFailures(b *testing.B) {
 		Connector: &common.ConnectorConfig{
 			Driver: "memory",
 			Memory: &common.MemoryConnectorConfig{
-				MaxItems: 100_000,
+				MaxItems: 100_000, MaxTotalSize: "1GB",
 			},
 		},
 	})
@@ -395,7 +395,7 @@ func BenchmarkNetworkForward_ConcurrentEthGetLogsIntegrityEnabled(b *testing.B) 
 		Connector: &common.ConnectorConfig{
 			Driver: "memory",
 			Memory: &common.MemoryConnectorConfig{
-				MaxItems: 100_000,
+				MaxItems: 100_000, MaxTotalSize: "1GB",
 			},
 		},
 	})

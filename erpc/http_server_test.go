@@ -92,7 +92,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -235,7 +235,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -380,7 +380,7 @@ func TestHttpServer_RaceTimeouts(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -1914,7 +1914,7 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 								Id:     "mock",
 								Driver: common.DriverMemory,
 								Memory: &common.MemoryConnectorConfig{
-									MaxItems: 1000,
+									MaxItems: 100_000, MaxTotalSize: "1GB",
 								},
 							},
 						},
@@ -4150,7 +4150,7 @@ func TestHttpServer_HandleHealthCheck(t *testing.T) {
 		Connector: &common.ConnectorConfig{
 			Driver: common.DriverMemory,
 			Memory: &common.MemoryConnectorConfig{
-				MaxItems: 1000,
+				MaxItems: 100_000, MaxTotalSize: "1GB",
 			},
 		},
 	})
@@ -6166,7 +6166,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 						Driver: "mock",
 						Mock: &common.MockConnectorConfig{
 							MemoryConnectorConfig: common.MemoryConnectorConfig{
-								MaxItems: 100_000,
+								MaxItems: 100_000, MaxTotalSize: "1GB",
 							},
 							GetDelay: 100 * time.Minute,
 							SetDelay: 100 * time.Minute,
@@ -6336,7 +6336,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 						Driver: "mock",
 						Mock: &common.MockConnectorConfig{
 							MemoryConnectorConfig: common.MemoryConnectorConfig{
-								MaxItems: 100_000,
+								MaxItems: 100_000, MaxTotalSize: "1GB",
 							},
 							GetErrorRate: 1,
 							SetErrorRate: 1,
@@ -7462,7 +7462,7 @@ func createServerTestFixtures(cfg *common.Config, t *testing.T) (
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})

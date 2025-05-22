@@ -228,7 +228,7 @@ func extractRefFromJsonRpcRequest(ctx context.Context, cacheDal common.CacheDAL,
 					if bref != "" {
 						if blockRef == "" {
 							blockRef = bref
-						} else {
+						} else if blockRef != bref {
 							// This special case is when a method has multiple block parameters (eth_getLogs)
 							// We can't use a specific block reference because later if reorg invalidation is added
 							// it is not easy to check if this cache entry includes that reorged block.
