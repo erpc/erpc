@@ -131,7 +131,6 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "No server available") ||
 			strings.Contains(msg, "reached the quota") ||
 			strings.Contains(msg, "upgrade your tier") ||
-			strings.Contains(msg, "rate limited") ||
 			strings.Contains(msg, "rate limit") ||
 			strings.Contains(msg, "too many requests") {
 			return common.NewErrEndpointCapacityExceeded(
