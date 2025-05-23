@@ -137,47 +137,6 @@ func (v *AlchemyVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedReques
 					details,
 				),
 			)
-		} else if strings.Contains(msg, "Monthly capacity limit exceeded") {
-			return common.NewErrEndpointBillingIssue(
-				common.NewErrJsonRpcExceptionInternal(
-					code,
-					common.JsonRpcErrorCapacityExceeded,
-					msg,
-					nil,
-					details,
-				),
-			)
-		} else if strings.Contains(msg, "limit exceeded") {
-			return common.NewErrEndpointCapacityExceeded(
-				common.NewErrJsonRpcExceptionInternal(
-					code,
-					common.JsonRpcErrorCapacityExceeded,
-					msg,
-					nil,
-					details,
-				),
-			)
-		} else if strings.Contains(msg, "transaction not found") || strings.Contains(msg, "cannot find transaction") {
-			return common.NewErrEndpointMissingData(
-				common.NewErrJsonRpcExceptionInternal(
-					code,
-					common.JsonRpcErrorMissingData,
-					msg,
-					nil,
-					details,
-				),
-			)
-		} else if code >= -32000 && code <= -32099 {
-			return common.NewErrEndpointServerSideException(
-				common.NewErrJsonRpcExceptionInternal(
-					code,
-					common.JsonRpcErrorServerSideException,
-					msg,
-					nil,
-					details,
-				),
-				nil,
-			)
 		} else if code >= -32099 && code <= -32599 || code >= -32603 && code <= -32699 || code >= -32701 && code <= -32768 {
 			// For invalid request errors (codes above), there is a high chance that the error is due to a mistake that the user
 			// has done, and retrying another upstream would not help.

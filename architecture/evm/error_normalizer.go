@@ -132,7 +132,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "reached the quota") ||
 			strings.Contains(msg, "upgrade your tier") ||
 			strings.Contains(msg, "rate limit") ||
-			strings.Contains(msg, "too many requests") {
+			strings.Contains(msg, "too many requests") ||
+			strings.Contains(msg, "limit exceeded") {
 			return common.NewErrEndpointCapacityExceeded(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -148,18 +149,18 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		// "Block tag" errors (pending/finalized/safe not supported)
 		//----------------------------------------------------------------
 
-		if strings.HasPrefix(msg, "pending block is not available") ||
-			strings.HasPrefix(msg, "pending block not found") ||
-			strings.HasPrefix(msg, "Pending block not found") ||
-			strings.HasPrefix(msg, "safe block not found") ||
-			strings.HasPrefix(msg, "Safe block not found") ||
-			strings.HasPrefix(msg, "finalized block not found") ||
-			strings.HasPrefix(msg, "Finalized block not found") ||
-			strings.HasPrefix(msg, "finalized is not a supported") ||
-			strings.HasPrefix(msg, "pending is not a supported") ||
-			strings.HasPrefix(msg, "safe is not a supported") ||
-			strings.HasPrefix(msg, "not a supported commitment") ||
-			strings.HasPrefix(msg, "malformed blocknumber") {
+		if strings.Contains(msg, "pending block is not available") ||
+			strings.Contains(msg, "pending block not found") ||
+			strings.Contains(msg, "Pending block not found") ||
+			strings.Contains(msg, "safe block not found") ||
+			strings.Contains(msg, "Safe block not found") ||
+			strings.Contains(msg, "finalized block not found") ||
+			strings.Contains(msg, "Finalized block not found") ||
+			strings.Contains(msg, "finalized is not a supported") ||
+			strings.Contains(msg, "pending is not a supported") ||
+			strings.Contains(msg, "safe is not a supported") ||
+			strings.Contains(msg, "not a supported commitment") ||
+			strings.Contains(msg, "malformed blocknumber") {
 
 			// by default, we retry this type of client-side exception as other upstreams might
 			// have/support this specific block tag data.
@@ -376,7 +377,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "Invalid Request") ||
 			strings.Contains(msg, "validation errors") ||
 			strings.Contains(msg, "invalid argument") ||
-			strings.Contains(msg, "invalid params") {
+			strings.Contains(msg, "invalid params") ||
+			strings.Contains(msg, "Bad request input parameters") {
 
 			// For specific invalid args/params errors, there is a high chance that the error is due to a mistake that the user
 			// has done, and retrying another upstream would not help.
