@@ -80,7 +80,7 @@ func CreateBlockPiVendor() common.Vendor {
 }
 
 func (v *BlockPiVendor) Name() string {
-	return "BlockPi"
+	return "blockpi"
 }
 
 func (v *BlockPiVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger, settings common.VendorSettings, networkId string) (bool, error) {
@@ -143,40 +143,15 @@ func (v *BlockPiVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedReques
 	}
 
 	err := bodyMap.Error
-	if code := err.Code; code != 0 {
-		msg := err.Message
-		if err.Data != "" {
-			details["data"] = err.Data
-		}
-
-		if code == -32600 && (strings.Contains(msg, "be authenticated") || strings.Contains(msg, "access key")) {
-			return common.NewErrEndpointUnauthorized(
-				common.NewErrJsonRpcExceptionInternal(
-					code,
-					common.JsonRpcErrorUnauthorized,
-					msg,
-					nil,
-					details,
-				),
-			)
-		} else if strings.Contains(msg, "limit exceeded") || strings.Contains(msg, "rate limit") {
-			return common.NewErrEndpointCapacityExceeded(
-				common.NewErrJsonRpcExceptionInternal(
-					code,
-					common.JsonRpcErrorCapacityExceeded,
-					msg,
-					nil,
-					details,
-				),
-			)
-		}
+	if err.Data != "" {
+		details["data"] = err.Data
 	}
 
 	return nil
 }
 
 func (v *BlockPiVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
-	if strings.HasPrefix(ups.Endpoint, "BlockPi://") || strings.HasPrefix(ups.Endpoint, "evm+BlockPi://") {
+	if strings.HasPrefix(ups.Endpoint, "blockpi://") || strings.HasPrefix(ups.Endpoint, "evm+blockpi://") {
 		return true
 	}
 
