@@ -161,6 +161,7 @@ export interface ConnectorConfig {
 }
 export interface MemoryConnectorConfig {
   maxItems: number /* int */;
+  maxTotalSize: string;
 }
 export interface MockConnectorConfig {
   memoryconnectorconfig: MemoryConnectorConfig;
@@ -275,6 +276,7 @@ export interface UpstreamConfig {
 }
 export interface RoutingConfig {
   scoreMultipliers: (ScoreMultiplierConfig | undefined)[];
+  scoreLatencyQuantile?: number /* float64 */;
 }
 export interface ScoreMultiplierConfig {
   network: string;
