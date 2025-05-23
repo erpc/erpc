@@ -909,7 +909,7 @@ func convertUpstreamToProvider(upstream *UpstreamConfig) (*ProviderConfig, error
 	vendorName := strings.Replace(endpoint.Scheme, "evm+", "", 1)
 	settings, err := buildProviderSettings(vendorName, endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build provider settings: %w", err)
+		return nil, fmt.Errorf("failed to convert upstream to provider '%s': %w", vendorName, err)
 	}
 
 	// Create a copy of upstream config to apply to provider-created upstreams,
