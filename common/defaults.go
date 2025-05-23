@@ -859,7 +859,7 @@ func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
 				return fmt.Errorf("failed to set defaults for upstream: %w", err)
 			}
 			if provider, err := convertUpstreamToProvider(upstream); err != nil {
-				return fmt.Errorf("failed to convert upstream to provider: %w", err)
+				return fmt.Errorf("failed to convert upstream (id: %s) to provider: %w", upstream.Id, err)
 			} else if provider != nil {
 				p.Providers = append(p.Providers, provider)
 				p.Upstreams = slices.Delete(p.Upstreams, i, i+1)
@@ -909,7 +909,7 @@ func convertUpstreamToProvider(upstream *UpstreamConfig) (*ProviderConfig, error
 	vendorName := strings.Replace(endpoint.Scheme, "evm+", "", 1)
 	settings, err := buildProviderSettings(vendorName, endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build provider settings: %w", err)
+		return nil, fmt.Errorf("failed to convert upstream (id: %s) to provider: %w", upstream.Id, err)
 	}
 
 	// Create a copy of upstream config to apply to provider-created upstreams,
