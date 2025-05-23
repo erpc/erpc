@@ -274,8 +274,10 @@ func (m *MemoryConnector) decompressValue(compressedValue string) (string, error
 	decoder := decoderInterface.(*zstd.Decoder)
 	defer m.decoderPool.Put(decoder)
 
-	// Reset decoder with the compressed data
-	decoder.Reset(strings.NewReader(compressedValue))
+	// Reset decoder with the compressed data and handle error
+	if err := decoder.Reset(strings.NewReader(compressedValue)); err != nil {
+		return "", fmt.Errorf("failed to reset zstd decoder: %w", err)
+	}
 
 	// Read all decompressed data
 	decompressed, err := io.ReadAll(decoder)
@@ -362,7 +364,33 @@ func (m *MemoryConnector) collectAndEmitMetrics() {
 	currentSetsRejected := metrics.SetsRejected()
 
 	// Calculate current cost (memory usage) and emit as gauge
-	currentCost := int64(metrics.CostAdded() - metrics.CostEvicted())
+	costAdded := metrics.CostAdded()
+	costEvicted := metrics.CostEvicted()
+
+	// Safe conversion to avoid integer overflow
+	var currentCost int64
+	if costAdded >= costEvicted {
+		diff := costAdded - costEvicted
+		if diff > uint64(math.MaxInt64) {
+			// Cap at MaxInt64 to prevent overflow
+			currentCost = math.MaxInt64
+			m.logger.Warn().
+				Uint64("costAdded", costAdded).
+				Uint64("costEvicted", costEvicted).
+				Uint64("diff", diff).
+				Msg("Current cost exceeds int64 capacity, capping to MaxInt64")
+		} else {
+			currentCost = int64(diff) // #nosec G115
+		}
+	} else {
+		// This shouldn't happen in normal operation, but handle gracefully
+		m.logger.Warn().
+			Uint64("costAdded", costAdded).
+			Uint64("costEvicted", costEvicted).
+			Msg("Cost evicted exceeds cost added, setting current cost to 0")
+		currentCost = 0
+	}
+
 	telemetry.MetricRistrettoCacheCurrentCost.WithLabelValues(m.id).Set(float64(currentCost))
 
 	// Calculate deltas for sets failed and emit as counter
