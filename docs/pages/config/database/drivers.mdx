@@ -23,6 +23,8 @@ database:
         memory:
           maxItems: 10000
           maxTotalSize: "1GB"
+          # For debugging purposes, you can enable metrics collection (expect 10% performance hit)
+          emitMetrics: false
     policies:
       - network: "*"
         method: "*"
@@ -46,7 +48,9 @@ export default createConfig({
           driver: "memory", 
           memory: {
             maxItems: 10000,
-            maxTotalSize: "1GB"
+            maxTotalSize: "1GB",
+            // For debugging purposes, you can enable metrics collection (expect 10% performance hit)
+            emitMetrics: false
           }
         }
       ],

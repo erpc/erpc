@@ -779,7 +779,6 @@ func TranslateToJsonRpcException(err error) error {
 		return err
 	}
 
-
 	//
 	// When error is an internal eRPC error, we need to translate it to a json-rpc error
 	//

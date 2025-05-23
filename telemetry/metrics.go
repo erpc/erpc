@@ -279,6 +279,18 @@ var (
 		Name:      "cors_disallowed_origin_total",
 		Help:      "Total number of CORS requests from disallowed origins.",
 	}, []string{"project", "origin"})
+
+	MetricRistrettoCacheCurrentCost = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "erpc",
+		Name:      "ristretto_cache_current_cost",
+		Help:      "Current total cost (memory usage) of Ristretto cache.",
+	}, []string{"connector"})
+
+	MetricRistrettoCacheSetsFailedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "ristretto_cache_sets_failed_total",
+		Help:      "Total number of set operations that failed (dropped or rejected) in Ristretto cache.",
+	}, []string{"connector"})
 )
 
 var DefaultHistogramBuckets = []float64{

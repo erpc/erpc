@@ -1448,9 +1448,9 @@ var NewErrFailsafeRetryExceeded = func(scope Scope, cause error, startTime *time
 	}
 	var msg string
 	if duration > 0 {
-		msg = fmt.Sprintf("failsafe retry policy exceeded on %s-level after %s", scope, duration)
+		msg = fmt.Sprintf("gave up retrying on %s-level after %s", scope, duration)
 	} else {
-		msg = fmt.Sprintf("failsafe retry policy exceeded on %s-level", scope)
+		msg = fmt.Sprintf("gave up retrying on %s-level", scope)
 	}
 	return &ErrFailsafeRetryExceeded{
 		BaseError{
