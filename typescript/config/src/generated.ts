@@ -162,6 +162,7 @@ export interface ConnectorConfig {
 export interface MemoryConnectorConfig {
   maxItems: number /* int */;
   maxTotalSize: string;
+  emitMetrics?: boolean;
 }
 export interface MockConnectorConfig {
   memoryconnectorconfig: MemoryConnectorConfig;
