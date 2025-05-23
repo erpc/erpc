@@ -25,7 +25,7 @@ func NewVendorsRegistry() *VendorsRegistry {
 	r.Register(CreateSuperchainVendor())
 	r.Register(CreateTenderlyVendor())
 	r.Register(CreateOnFinalityVendor())
-	r.Register(CreateBlockPIVendor())
+	r.Register(CreateBlockPiVendor())
 	return r
 }
 
