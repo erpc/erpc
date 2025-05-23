@@ -101,7 +101,8 @@ import type {
     | "evm+repository"
     | "evm+superchain"
     | "evm+tenderly"
-    | "evm+onfinality";
+    | "evm+onfinality"
+    | "evm+blockpi";
   
   /**
    * Supported auth type
