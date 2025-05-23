@@ -11,6 +11,7 @@ import (
 	"github.com/dgraph-io/ristretto/v2"
 	"github.com/dustin/go-humanize"
 	"github.com/erpc/erpc/common"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/rs/zerolog"
 )
 
@@ -21,10 +22,19 @@ const (
 var _ Connector = (*MemoryConnector)(nil)
 
 type MemoryConnector struct {
-	id     string
-	logger *zerolog.Logger
-	cache  *ristretto.Cache[string, cacheItem]
-	locks  sync.Map // map[string]*sync.Mutex
+	id           string
+	logger       *zerolog.Logger
+	cache        *ristretto.Cache[string, cacheItem]
+	locks        sync.Map // map[string]*sync.Mutex
+	emitMetrics  bool
+	
+	// Previous metric values for calculating deltas
+	prevMetrics struct {
+		setsDropped  uint64
+		setsRejected uint64
+	}
+	metricsMutex sync.RWMutex
+	stopMetrics  context.CancelFunc
 }
 
 type cacheItem struct {
@@ -61,11 +71,14 @@ func NewMemoryConnector(
 		maxCost = int64(maxTotalSizeBytes)
 	}
 
+	// Determine if metrics should be enabled
+	enableMetrics := cfg.EmitMetrics != nil && *cfg.EmitMetrics
+
 	ristrettoCfg := &ristretto.Config[string, cacheItem]{
 		NumCounters: int64(3 * cfg.MaxItems), // number of keys to track frequency of.
 		MaxCost:     maxCost,                 // maximum cost of cache.
 		BufferItems: 64,                      // number of keys per Get buffer.
-		Metrics:     false,                   // set to true to track metrics
+		Metrics:     enableMetrics,           // enable metrics based on config
 	}
 
 	cache, err := ristretto.NewCache(ristrettoCfg)
@@ -74,9 +87,18 @@ func NewMemoryConnector(
 	}
 
 	c := &MemoryConnector{
-		id:     id,
-		logger: &lg,
-		cache:  cache,
+		id:          id,
+		logger:      &lg,
+		cache:       cache,
+		emitMetrics: enableMetrics,
+	}
+
+	// Start metrics collection goroutine if enabled
+	if enableMetrics {
+		metricsCtx, cancel := context.WithCancel(ctx)
+		c.stopMetrics = cancel
+		go c.metricsCollectionLoop(metricsCtx)
+		lg.Info().Msg("Ristretto metrics collection enabled")
 	}
 
 	return c, nil
@@ -179,5 +201,76 @@ func (m *MemoryConnector) WatchCounterInt64(ctx context.Context, key string) (<-
 // PublishCounterInt64 is a no-op for memory connector since distributed pub/sub
 // is unnecessary when all operations are in-memory within the same process.
 func (m *MemoryConnector) PublishCounterInt64(ctx context.Context, key string, value int64) error {
+	return nil
+}
+
+// metricsCollectionLoop runs in a background goroutine to periodically collect
+// and emit Ristretto cache metrics to Prometheus.
+func (m *MemoryConnector) metricsCollectionLoop(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second) // Collect metrics every 30 seconds
+	defer ticker.Stop()
+
+	m.logger.Debug().Msg("Starting Ristretto metrics collection loop")
+
+	for {
+		select {
+		case <-ctx.Done():
+			m.logger.Debug().Msg("Stopping Ristretto metrics collection loop")
+			return
+		case <-ticker.C:
+			m.collectAndEmitMetrics()
+		}
+	}
+}
+
+// collectAndEmitMetrics reads the current Ristretto metrics, calculates deltas
+// from previous values, and emits them to Prometheus.
+func (m *MemoryConnector) collectAndEmitMetrics() {
+	if !m.emitMetrics || m.cache == nil || m.cache.Metrics == nil {
+		return
+	}
+
+	m.metricsMutex.Lock()
+	defer m.metricsMutex.Unlock()
+
+	metrics := m.cache.Metrics
+
+	// Get current metric values
+	currentSetsDropped := metrics.SetsDropped()
+	currentSetsRejected := metrics.SetsRejected()
+
+	// Calculate current cost (memory usage) and emit as gauge
+	currentCost := int64(metrics.CostAdded() - metrics.CostEvicted())
+	telemetry.MetricRistrettoCacheCurrentCost.WithLabelValues(m.id).Set(float64(currentCost))
+
+	// Calculate deltas for sets failed and emit as counter
+	setsDroppedDelta := currentSetsDropped - m.prevMetrics.setsDropped
+	setsRejectedDelta := currentSetsRejected - m.prevMetrics.setsRejected
+	totalSetsFailedDelta := setsDroppedDelta + setsRejectedDelta
+	
+	if totalSetsFailedDelta > 0 {
+		telemetry.MetricRistrettoCacheSetsFailedTotal.WithLabelValues(m.id).Add(float64(totalSetsFailedDelta))
+	}
+
+	// Store current values for next iteration
+	m.prevMetrics.setsDropped = currentSetsDropped
+	m.prevMetrics.setsRejected = currentSetsRejected
+
+	m.logger.Debug().
+		Int64("currentCost", currentCost).
+		Uint64("setsDropped", currentSetsDropped).
+		Uint64("setsRejected", currentSetsRejected).
+		Uint64("setsFailedDelta", totalSetsFailedDelta).
+		Msg("Emitted Ristretto cache metrics")
+}
+
+// Close cleans up resources including stopping the metrics collection goroutine
+func (m *MemoryConnector) Close() error {
+	if m.stopMetrics != nil {
+		m.stopMetrics()
+	}
+	if m.cache != nil {
+		m.cache.Close()
+	}
 	return nil
 }
