@@ -2960,9 +2960,9 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 			Filter(func(request *http.Request) bool {
 				return strings.Contains(util.SafeReadBody(request), "eth_getBalance")
 			}).
-			Times(2).
+			Times(3).
 			Reply(200).
-			Delay(3000 * time.Millisecond).
+			Delay(4000 * time.Millisecond).
 			JSON(map[string]interface{}{
 				"jsonrpc": "2.0",
 				"id":      1,
