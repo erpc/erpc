@@ -1,6 +1,7 @@
 package common
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -522,6 +523,80 @@ func (r *JsonRpcResponse) IsResultEmptyish(ctx ...context.Context) bool {
 	}
 
 	return true
+}
+
+func (r *JsonRpcResponse) CanonicalHash(ctx ...context.Context) (string, error) {
+	if r == nil {
+		return "", nil
+	}
+
+	r.resultMu.RLock()
+	defer r.resultMu.RUnlock()
+
+	var obj interface{}
+	err := json.Unmarshal(r.Result, &obj)
+	if err != nil {
+		return "", err
+	}
+
+	canonical, err := canonicalize(obj)
+	if err != nil {
+		return "", err
+	}
+
+	println(string(canonical))
+
+	b := sha256.Sum256(canonical)
+
+	return fmt.Sprintf("%x", b), nil
+}
+
+func canonicalize(v interface{}) ([]byte, error) {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		keys := make([]string, 0, len(val))
+		for k := range val {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+
+		var buf bytes.Buffer
+		buf.WriteByte('{')
+		for i, k := range keys {
+			kj, _ := json.Marshal(k)
+			vj, err := canonicalize(val[k])
+			if err != nil {
+				return nil, err
+			}
+			buf.Write(kj)
+			buf.WriteByte(':')
+			buf.Write(vj)
+			if i < len(keys)-1 {
+				buf.WriteByte(',')
+			}
+		}
+		buf.WriteByte('}')
+		return buf.Bytes(), nil
+
+	case []interface{}:
+		var buf bytes.Buffer
+		buf.WriteByte('[')
+		for i, item := range val {
+			b, err := canonicalize(item)
+			if err != nil {
+				return nil, err
+			}
+			buf.Write(b)
+			if i < len(val)-1 {
+				buf.WriteByte(',')
+			}
+		}
+		buf.WriteByte(']')
+		return buf.Bytes(), nil
+
+	default:
+		return json.Marshal(val)
+	}
 }
 
 //
