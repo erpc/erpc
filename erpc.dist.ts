@@ -47,6 +47,9 @@ export default createConfig({
                     endpoint: `alchemy://${process.env.ALCHEMY_API_KEY}`
                 },
                 {
+                    endpoint: `chainstack://${process.env.CHAINSTACK_API_KEY}`
+                },
+                {
                     endpoint: `${process.env.CUSTOM_RPC_1}`
                 }
             ]

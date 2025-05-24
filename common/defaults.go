@@ -1000,6 +1000,10 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 		return VendorSettings{
 			"apiKey": endpoint.Host,
 		}, nil
+	case "chainstack", "evm+chainstack":
+		return VendorSettings{
+			"apiKey": endpoint.Host,
+		}, nil
 	case "onfinality", "evm+onfinality":
 		return VendorSettings{
 			"apiKey": endpoint.Host,
