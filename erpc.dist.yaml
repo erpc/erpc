@@ -107,6 +107,20 @@ projects:
             backoffMaxDelay: 10s
             backoffFactor: 0.3
             jitter: 500ms
+      - id: chainstack-example-1
+        endpoint: chainstack://YOUR_CHAINSTACK_API_KEY
+        rateLimitBudget: global-chainstack
+        evm:
+          chainId: 1
+        failsafe:
+          timeout:
+            duration: 15s
+          retry:
+            maxAttempts: 2
+            delay: 1000ms
+            backoffMaxDelay: 10s
+            backoffFactor: 0.3
+            jitter: 500ms
       - id: onfinality-multi-chain-example-1
         endpoint: onfinality://YOUR_ONFINALITY_API_KEY
         rateLimitBudget: global-onfinality
@@ -186,6 +200,11 @@ projects:
 rateLimiters:
   budgets:
     - id: global-tenderly
+      rules:
+        - method: '*'
+          maxCount: 10000
+          period: 1s
+    - id: global-chainstack
       rules:
         - method: '*'
           maxCount: 10000

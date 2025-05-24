@@ -20,6 +20,7 @@ Providers make it easy to add well-known third-parties RPC endpoints quickly. He
 - [`dwellir`](#dwellir) Accepts dwellir.com api key and automatically adds all their EVM chains.
 - [`conduit`](#conduit) Accepts conduit.xyz api key and automatically adds all their EVM chains.
 - [`superchain`](#superchain) Accepts superchain registry json file (e.g [github.com/ethereum-optimism/superchain-registry/main/chainList.json](https://github.com/ethereum-optimism/superchain-registry/blob/main/chainList.json)) and automatically adds all chains from it.
+- [`chainstack`](#chainstack) Accepts chainstack.com api key and automatically adds all their EVM chains.
 
 <Callout type='info'>
   eRPC supports **any EVM-compatible** JSON-RPC endpoint when using [`evm` type](/config/projects/upstreams). 
@@ -552,6 +553,46 @@ export default createConfig({
 
 For production traffic consult with Tenderly team about the chains you are going to use and amount of traffic you expect to handle.
 
+#### `chainstack`
+
+Built for [Chainstack](https://chainstack.com) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - endpoint: chainstack://YOUR_CHAINSTACK_API_KEY
+        # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          endpoint: "chainstack://YOUR_CHAINSTACK_API_KEY",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+Chainstack supports a wide range of EVM-compatible networks. For production traffic, ensure your Chainstack subscription plan supports the expected load and number of networks you plan to use.
+
 #### `Onfinality`
 
 Built for [Onfinality](https://onfinality.io/) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
@@ -739,6 +780,9 @@ providers:
   - vendor: tenderly
     settings:
       apiKey: xxxxx # Your Tenderly API key
+  - vendor: chainstack
+    settings:
+      apiKey: xxxxx # Your Chainstack API key
   - vendor: onfinality
     settings:
       apiKey: xxxxx # Your OnFinality API key
