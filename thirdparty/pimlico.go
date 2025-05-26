@@ -116,7 +116,12 @@ func (v *PimlicoVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 		return true, nil
 	}
 
-	client, err := v.getOrCreateClient(ctx, logger, chainId, nil)
+	parsedURL, err := v.generateUrl(chainId)
+	if err != nil {
+		return false, err
+	}
+
+	client, err := v.getOrCreateClient(ctx, logger, chainId, parsedURL)
 	if err != nil {
 		return false, err
 	}
@@ -210,6 +215,15 @@ func (v *PimlicoVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 	return strings.HasPrefix(ups.Endpoint, "pimlico") ||
 		strings.HasPrefix(ups.Endpoint, "evm+pimlico") ||
 		strings.Contains(ups.Endpoint, "pimlico.io")
+}
+
+func (v *PimlicoVendor) generateUrl(chainId int64) (*url.URL, error) {
+	pimlicoUrl := fmt.Sprintf("https://api.pimlico.io/v2/%d", chainId)
+	parsedURL, err := url.Parse(pimlicoUrl)
+	if err != nil {
+		return nil, err
+	}
+	return parsedURL, nil
 }
 
 func (v *PimlicoVendor) getOrCreateClient(ctx context.Context, logger *zerolog.Logger, chainId int64, parsedURL *url.URL) (clients.HttpJsonRpcClient, error) {
