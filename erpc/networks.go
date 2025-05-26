@@ -123,7 +123,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	startTime := time.Now()
 	req.SetNetwork(n)
 	req.SetCacheDal(n.cacheDal)
-	req.ApplyDirectiveDefaults(n.cfg.DirectiveDefaults)
 
 	method, _ := req.Method()
 	lg := n.logger.With().Str("method", method).Interface("id", req.ID()).Str("ptr", fmt.Sprintf("%p", req)).Logger()

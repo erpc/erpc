@@ -1072,6 +1072,123 @@ func TestHttpServer_ManualTimeoutScenarios(t *testing.T) {
 		assert.Equal(t, http.StatusGatewayTimeout, statusCode)
 		assert.Contains(t, body, "timeout policy")
 	})
+
+	t.Run("ShouldNotRetryWhenRetryEmptyDisabled", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id:              "test_project",
+					NetworkDefaults: &common.NetworkDefaults{
+						// RetryEmpty left nil -> default false
+					},
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Retry: &common.RetryPolicyConfig{
+									MaxAttempts: 8,
+									Delay:       common.Duration(100 * time.Millisecond),
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Retry: &common.RetryPolicyConfig{
+									MaxAttempts: 3,
+									Delay:       common.Duration(100 * time.Millisecond),
+								},
+							},
+						},
+						{
+							Id:       "rpc2",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc2.localhost",
+							Evm: &common.EvmUpstreamConfig{
+								ChainId: 1,
+							},
+							JsonRpc: &common.JsonRpcUpstreamConfig{
+								SupportsBatch: &common.FALSE,
+							},
+							Failsafe: &common.FailsafeConfig{
+								Retry: &common.RetryPolicyConfig{
+									MaxAttempts: 3,
+									Delay:       common.Duration(100 * time.Millisecond),
+								},
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+
+		// Expect only the first upstream to be called once
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Times(1).
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getLogs")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  []interface{}{},
+			})
+
+		// Set up test fixtures
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		requestBody := `{
+			"jsonrpc": "2.0",
+			"method": "eth_getLogs",
+			"params": [{
+				"fromBlock": "0x1ab771",
+				"toBlock": "0x1ab7d5",
+				"topics": ["0xbccc00b713f54173962e7de6098f643d8ebf53d488d71f4b2a5171496d038f9e"]
+			}],
+			"id": 1
+		}`
+
+		statusCode, body := sendRequest(requestBody, nil, nil)
+
+		assert.Equal(t, http.StatusOK, statusCode, "Status code should be 200 OK")
+
+		var response map[string]interface{}
+		err := json.Unmarshal([]byte(body), &response)
+		require.NoError(t, err, "Should be able to decode response")
+
+		assert.Contains(t, response, "result", "Response should contain 'result' field")
+		assert.NotContains(t, response, "error", "Response should not contain 'error' field")
+
+		result, ok := response["result"].([]interface{})
+		assert.True(t, ok, "Result should be an array")
+		assert.Empty(t, result, "Result should be an empty array")
+	})
 }
 
 func TestHttpServer_HedgedRequests(t *testing.T) {
@@ -2742,13 +2859,16 @@ func TestHttpServer_SingleUpstream(t *testing.T) {
 						}
 						bodyStr := string(bodyBytes)
 						if !strings.Contains(bodyStr, "\"id\"") {
-							t.Fatalf("No id found in request")
+							fmt.Printf("ERROR: No id found in request")
+							return false, nil
 						}
 						if !strings.Contains(bodyStr, "\"jsonrpc\"") {
-							t.Fatalf("No jsonrpc found in request")
+							fmt.Printf("ERROR: No jsonrpc found in request")
+							return false, nil
 						}
 						if !strings.Contains(bodyStr, "\"method\"") {
-							t.Fatalf("No method found in request")
+							fmt.Printf("ERROR: No method found in request")
+							return false, nil
 						}
 						return true, nil
 					}).
@@ -3476,6 +3596,8 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 			},
 			RateLimiters: &common.RateLimiterConfig{},
 		}
+		err := cfg.SetDefaults(nil)
+		require.NoError(t, err)
 
 		// Mock the first upstream to return an empty result array
 		gock.New("http://rpc1.localhost").
@@ -3530,7 +3652,7 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 		assert.Equal(t, http.StatusOK, statusCode, "Status code should be 200 OK")
 
 		var response map[string]interface{}
-		err := json.Unmarshal([]byte(body), &response)
+		err = json.Unmarshal([]byte(body), &response)
 		require.NoError(t, err, "Should be able to decode response")
 
 		// Verify the result is an empty array, not an error
@@ -3538,6 +3660,120 @@ func TestHttpServer_MultipleUpstreams(t *testing.T) {
 		assert.NotContains(t, response, "error", "Response should not contain 'error' field")
 
 		// Verify the result is an empty array
+		result, ok := response["result"].([]interface{})
+		assert.True(t, ok, "Result should be an array")
+		assert.Empty(t, result, "Result should be an empty array")
+	})
+
+	t.Run("ShouldNotRetryWhenRetryEmptyDisabled", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 1)
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					// NOTE: RetryEmpty is NOT enabled here (defaults to false)
+					NetworkDefaults: &common.NetworkDefaults{
+						DirectiveDefaults: &common.DirectiveDefaultsConfig{},
+					},
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: common.ArchitectureEvm,
+							Evm:          &common.EvmNetworkConfig{ChainId: 1},
+							Failsafe: &common.FailsafeConfig{
+								Retry: &common.RetryPolicyConfig{MaxAttempts: 8, Delay: common.Duration(100 * time.Millisecond)},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc1.localhost",
+							Evm:      &common.EvmUpstreamConfig{ChainId: 1},
+							JsonRpc:  &common.JsonRpcUpstreamConfig{SupportsBatch: &common.FALSE},
+							Failsafe: &common.FailsafeConfig{
+								Retry: &common.RetryPolicyConfig{MaxAttempts: 3, Delay: common.Duration(100 * time.Millisecond)},
+							},
+						},
+						{
+							Id:       "rpc2",
+							Type:     common.UpstreamTypeEvm,
+							Endpoint: "http://rpc2.localhost",
+							Evm:      &common.EvmUpstreamConfig{ChainId: 1},
+							JsonRpc:  &common.JsonRpcUpstreamConfig{SupportsBatch: &common.FALSE},
+							Failsafe: &common.FailsafeConfig{
+								Retry: &common.RetryPolicyConfig{MaxAttempts: 3, Delay: common.Duration(100 * time.Millisecond)},
+							},
+						},
+					},
+				},
+			},
+			RateLimiters: &common.RateLimiterConfig{},
+		}
+
+		// Mock only the first upstream (rpc1) to respond with empty array.
+		gock.New("http://rpc1.localhost").
+			Post("/").
+			Times(1).
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getLogs")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  []interface{}{},
+			})
+
+		gock.New("http://rpc2.localhost").
+			Post("/").
+			Times(1).
+			Filter(func(request *http.Request) bool {
+				body := util.SafeReadBody(request)
+				return strings.Contains(string(body), "eth_getLogs")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  []interface{}{},
+			})
+
+		// Set up fixtures
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+
+		requestBody := `{
+			"jsonrpc": "2.0",
+			"method": "eth_getLogs",
+			"params": [{
+				"fromBlock": "0x1ab771",
+				"toBlock": "0x1ab7d5",
+				"topics": ["0xbccc00b713f54173962e7de6098f643d8ebf53d488d71f4b2a5171496d038f9e"]
+			}],
+			"id": 1
+		}`
+
+		statusCode, body := sendRequest(requestBody, nil, nil)
+
+		assert.Equal(t, http.StatusOK, statusCode, "Status code should be 200 OK")
+
+		var response map[string]interface{}
+		err := json.Unmarshal([]byte(body), &response)
+		require.NoError(t, err, "Should be able to decode response")
+
+		// Should still return empty array
+		assert.Contains(t, response, "result", "Response should contain 'result' field")
+		assert.NotContains(t, response, "error", "Response should not contain 'error' field")
+
 		result, ok := response["result"].([]interface{})
 		assert.True(t, ok, "Result should be an array")
 		assert.Empty(t, result, "Result should be an empty array")
@@ -5700,7 +5936,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 				},
 			})
 
-		// 6. Mock “rpc2” returning the newer block
+		// 6. Mock "rpc2" returning the newer block
 		gock.New("http://rpc2.localhost").
 			Post("").
 			Filter(func(req *http.Request) bool {
@@ -7110,7 +7346,7 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 			})
 
 		// The server sees that the poller says the highest finalized is 0x105, so it triggers a second request
-		// to a different upstream (i.e. "!rpc1") for block 0x105.
+		// to a different upstream ("!rpc1") for block 0x105.
 		// We mock that request:
 		gock.New("http://rpc2.localhost").
 			Post("").

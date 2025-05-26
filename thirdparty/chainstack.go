@@ -13,39 +13,39 @@ import (
 )
 
 var chainstackNetworkNames = map[int64]string{
-	1:         "ethereum-mainnet",
-	11155111:  "ethereum-sepolia",
-	17000:     "ethereum-holesky",
-	560048:    "ethereum-hoodi",
-	56:        "bsc-mainnet",
-	97:        "bsc-testnet",
-	42161:     "arbitrum-mainnet",
-	421614:    "arbitrum-sepolia",
-	8453:      "base-mainnet",
-	84532:     "base-sepolia",
-	146:       "sonic-mainnet",
-	57054:     "sonic-blaze",
-	137:       "polygon-mainnet",
-	80002:     "polygon-amoy",
-	10:        "optimism-mainnet",
-	11155420:  "optimism-sepolia",
-	43114:     "avalanche-mainnet",
-	43113:     "avalanche-fuji",
-	2020:      "ronin-mainnet",
-	2021:      "ronin-saigon",
-	324:       "zksync-mainnet",
-	300:       "zksync-sepolia",
-	534352:    "scroll-mainnet",
-	534351:    "scroll-sepolia",
-	23294:     "oasis-sapphire-mainnet",
-	23295:     "oasis-sapphire-testnet",
-	42220:     "celo-mainnet",
-	8217:      "kaia-mainnet",
-	1001:      "kaia-kairos",
-	100:       "gnosis-mainnet",
-	17049341:  "gnosis-chiado",
-	25:        "cronos-mainnet",
-	250:       "fantom-mainnet",
+	1:        "ethereum-mainnet",
+	11155111: "ethereum-sepolia",
+	17000:    "ethereum-holesky",
+	560048:   "ethereum-hoodi",
+	56:       "bsc-mainnet",
+	97:       "bsc-testnet",
+	42161:    "arbitrum-mainnet",
+	421614:   "arbitrum-sepolia",
+	8453:     "base-mainnet",
+	84532:    "base-sepolia",
+	146:      "sonic-mainnet",
+	57054:    "sonic-blaze",
+	137:      "polygon-mainnet",
+	80002:    "polygon-amoy",
+	10:       "optimism-mainnet",
+	11155420: "optimism-sepolia",
+	43114:    "avalanche-mainnet",
+	43113:    "avalanche-fuji",
+	2020:     "ronin-mainnet",
+	2021:     "ronin-saigon",
+	324:      "zksync-mainnet",
+	300:      "zksync-sepolia",
+	534352:   "scroll-mainnet",
+	534351:   "scroll-sepolia",
+	23294:    "oasis-sapphire-mainnet",
+	23295:    "oasis-sapphire-testnet",
+	42220:    "celo-mainnet",
+	8217:     "kaia-mainnet",
+	1001:     "kaia-kairos",
+	100:      "gnosis-mainnet",
+	17049341: "gnosis-chiado",
+	25:       "cronos-mainnet",
+	250:      "fantom-mainnet",
 }
 
 type ChainstackVendor struct {
@@ -91,14 +91,14 @@ func (v *ChainstackVendor) GenerateConfigs(upstream *common.UpstreamConfig, sett
 			if !ok {
 				return nil, fmt.Errorf("unsupported network chain ID for Chainstack: %d", chainID)
 			}
-			
+
 			var chainstackURL string
 			if chainID == 43114 || chainID == 43113 { // Avalanche networks need special path
 				chainstackURL = fmt.Sprintf("https://%s.core.chainstack.com/ext/bc/C/rpc/%s", netName, apiKey)
 			} else {
 				chainstackURL = fmt.Sprintf("https://%s.core.chainstack.com/%s", netName, apiKey)
 			}
-			
+
 			parsedURL, err := url.Parse(chainstackURL)
 			if err != nil {
 				return nil, err
@@ -135,4 +135,4 @@ func (v *ChainstackVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 	}
 
 	return strings.Contains(ups.Endpoint, ".core.chainstack.com")
-} 
+}
