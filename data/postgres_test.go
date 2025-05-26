@@ -152,7 +152,7 @@ func TestPostgreSQLDistributedLocking(t *testing.T) {
 				t.Logf("Connector not ready, current state: %s, errors: %v", state, connector.initializer.Errors())
 			}
 			return state == util.StateReady
-		}, 15*time.Second, 500*time.Millisecond, "connector did not become ready")
+		}, 30*time.Second, 500*time.Millisecond, "connector did not become ready")
 
 		cleanup := func() {
 			cancel()

@@ -24,9 +24,9 @@ const RequestContextKey ContextKey = "request"
 
 type RequestDirectives struct {
 	// Instruct the proxy to retry if response from the upstream appears to be empty
-	// indicating a missing data or non-synced data (empty array for logs, null for block, null for tx receipt, etc).
-	// This value is "true" by default which means more requests for such cases will be sent.
-	// You can override this directive via Headers if you expect results to be empty and fine with eventual consistency (i.e. receiving empty results intermittently).
+	// indicating missing or non-synced data (empty array for logs, null for block, null for tx receipt, etc).
+	// By default this value is "false" – meaning empty responses will NOT be retried unless explicitly
+	// enabled via project/network directive defaults or incoming HTTP header / query parameter.
 	RetryEmpty bool `json:"retryEmpty"`
 
 	// Instruct the proxy to retry if response from the upstream appears to be a pending tx,
@@ -43,10 +43,10 @@ type RequestDirectives struct {
 	// Instruct the proxy to forward the request to a specific upstream(s) only.
 	// Value can use "*" star char as a wildcard to target multiple upstreams.
 	// For example "alchemy" or "my-own-*", etc.
-	UseUpstream string `json:"useUpstream"`
+	UseUpstream string `json:"useUpstream,omitempty"`
 
 	// Instruct the proxy to bypass method exclusion checks.
-	ByPassMethodExclusion bool `json:"byPassMethodExclusion"`
+	ByPassMethodExclusion bool `json:"-"`
 }
 
 func (d *RequestDirectives) Clone() *RequestDirectives {
@@ -83,7 +83,7 @@ func NewNormalizedRequest(body []byte) *NormalizedRequest {
 	nr := &NormalizedRequest{
 		body: body,
 		directives: &RequestDirectives{
-			RetryEmpty: true,
+			RetryEmpty: false,
 		},
 	}
 	nr.compositeType.Store(CompositeTypeNone)
@@ -94,7 +94,7 @@ func NewNormalizedRequestFromJsonRpcRequest(jsonRpcRequest *JsonRpcRequest) *Nor
 	nr := &NormalizedRequest{
 		jsonRpcRequest: jsonRpcRequest,
 		directives: &RequestDirectives{
-			RetryEmpty: true,
+			RetryEmpty: false,
 		},
 	}
 	nr.compositeType.Store(CompositeTypeNone)
@@ -215,17 +215,27 @@ func (r *NormalizedRequest) ApplyDirectivesFromHttp(headers http.Header, queryAr
 		r.directives = &RequestDirectives{}
 	}
 
-	r.directives.RetryEmpty = headers.Get("X-ERPC-Retry-Empty") != "false"
-	r.directives.RetryPending = headers.Get("X-ERPC-Retry-Pending") == "true"
-	r.directives.SkipCacheRead = headers.Get("X-ERPC-Skip-Cache-Read") == "true"
-	r.directives.UseUpstream = headers.Get("X-ERPC-Use-Upstream")
+	// Headers have precedence over directive defaults, but should only override when explicitly provided.
+	if hv := headers.Get("X-ERPC-Retry-Empty"); hv != "" {
+		r.directives.RetryEmpty = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
+	if hv := headers.Get("X-ERPC-Retry-Pending"); hv != "" {
+		r.directives.RetryPending = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
+	if hv := headers.Get("X-ERPC-Skip-Cache-Read"); hv != "" {
+		r.directives.SkipCacheRead = strings.ToLower(strings.TrimSpace(hv)) == "true"
+	}
+	if hv := headers.Get("X-ERPC-Use-Upstream"); hv != "" {
+		r.directives.UseUpstream = hv
+	}
 
+	// Query parameters come after headers so they can still override when explicitly present in URL.
 	if useUpstream := queryArgs.Get("use-upstream"); useUpstream != "" {
 		r.directives.UseUpstream = strings.TrimSpace(useUpstream)
 	}
 
 	if retryEmpty := queryArgs.Get("retry-empty"); retryEmpty != "" {
-		r.directives.RetryEmpty = strings.ToLower(strings.TrimSpace(retryEmpty)) != "false"
+		r.directives.RetryEmpty = strings.ToLower(strings.TrimSpace(retryEmpty)) == "true"
 	}
 
 	if retryPending := queryArgs.Get("retry-pending"); retryPending != "" {
@@ -233,7 +243,7 @@ func (r *NormalizedRequest) ApplyDirectivesFromHttp(headers http.Header, queryAr
 	}
 
 	if skipCacheRead := queryArgs.Get("skip-cache-read"); skipCacheRead != "" {
-		r.directives.SkipCacheRead = strings.ToLower(strings.TrimSpace(skipCacheRead)) != "false"
+		r.directives.SkipCacheRead = strings.ToLower(strings.TrimSpace(skipCacheRead)) == "true"
 	}
 }
 

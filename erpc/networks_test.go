@@ -1197,6 +1197,9 @@ func TestNetwork_Forward(t *testing.T) {
 					ChainId: 123,
 				},
 				Failsafe: fsCfg,
+				DirectiveDefaults: &common.DirectiveDefaultsConfig{
+					RetryEmpty: &common.TRUE,
+				},
 			},
 			rlr,
 			upr,
@@ -1226,6 +1229,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
+		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -1451,7 +1455,7 @@ func TestNetwork_Forward(t *testing.T) {
 		assert.Equal(t, "\"0x123\"", strings.ToLower(string(jrr.Result)))
 	})
 
-	t.Run("ForwardretriesOnInvalidArgumentCodeClientError", func(t *testing.T) {
+	t.Run("ForwardRetriesOnInvalidArgumentCodeClientError", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
@@ -1801,6 +1805,9 @@ func TestNetwork_Forward(t *testing.T) {
 					ChainId: 123,
 				},
 				Failsafe: fsCfg,
+				DirectiveDefaults: &common.DirectiveDefaultsConfig{
+					RetryEmpty: &common.TRUE,
+				},
 			},
 			rlr,
 			upr,
@@ -1828,6 +1835,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
+		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -2002,6 +2010,9 @@ func TestNetwork_Forward(t *testing.T) {
 					ChainId: 123,
 				},
 				Failsafe: fsCfg,
+				DirectiveDefaults: &common.DirectiveDefaultsConfig{
+					RetryEmpty: &common.TRUE,
+				},
 			},
 			rlr,
 			upr,
@@ -2019,6 +2030,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
+		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -2193,6 +2205,9 @@ func TestNetwork_Forward(t *testing.T) {
 					ChainId: 123,
 				},
 				Failsafe: fsCfg,
+				DirectiveDefaults: &common.DirectiveDefaultsConfig{
+					RetryEmpty: &common.TRUE,
+				},
 			},
 			rlr,
 			upr,
@@ -2210,6 +2225,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
+		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -2376,6 +2392,9 @@ func TestNetwork_Forward(t *testing.T) {
 					ChainId: 123,
 				},
 				Failsafe: fsCfg,
+				DirectiveDefaults: &common.DirectiveDefaultsConfig{
+					RetryEmpty: &common.TRUE,
+				},
 			},
 			rlr,
 			upr,
@@ -2593,6 +2612,7 @@ func TestNetwork_Forward(t *testing.T) {
 			"id": 1
 		}`))
 
+		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 		resp, err := ntw.Forward(ctx, fakeReq)
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
@@ -5652,7 +5672,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 	})
 
-	t.Run("ForwardEthGetLogsEmptyArrayResponseSuccess", func(t *testing.T) {
+	t.Run("ForwardEthGetLogsEmptyArrayResponseSuccessWithRetryOnEmpty", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
@@ -5669,6 +5689,160 @@ func TestNetwork_Forward(t *testing.T) {
 			Post("").
 			Reply(200).
 			JSON([]byte(`{"result":[{"logIndex":444,"fromHost":"rpc2"}]}`))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
+		fsCfg := &common.FailsafeConfig{
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 2,
+			},
+		}
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+			Budgets: []*common.RateLimitBudgetConfig{},
+		}, &log.Logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+		up1 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc1",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
+		up2 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc2",
+			Endpoint: "http://rpc2.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000, MaxTotalSize: "1GB",
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
+		upr := upstream.NewUpstreamsRegistry(
+			ctx,
+			&log.Logger,
+			"prjA",
+			[]*common.UpstreamConfig{up1, up2},
+			ssr,
+			rlr,
+			vr,
+			pr,
+			nil,
+			mt,
+			1*time.Second,
+		)
+		err = upr.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1, err := upr.NewUpstream(up1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1.Client = cl1
+
+		pup2, err := upr.NewUpstream(up2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup2.Client = cl2
+
+		ntw, err := NewNetwork(
+			ctx,
+			&log.Logger,
+			"prjA",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+				},
+				Failsafe: fsCfg,
+				DirectiveDefaults: &common.DirectiveDefaultsConfig{
+					RetryEmpty: &common.TRUE,
+				},
+			},
+			rlr,
+			upr,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		upstream.ReorderUpstreams(upr)
+
+		fakeReq := common.NewNormalizedRequest(requestBytes)
+		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+		resp, err := ntw.Forward(ctx, fakeReq)
+
+		if err != nil {
+			t.Fatalf("Expected nil error, got %v", err)
+		}
+
+		jrr, err := resp.JsonRpcResponse()
+		if err != nil {
+			t.Fatalf("Failed to get JSON-RPC response: %v", err)
+		}
+
+		if jrr.Result == nil {
+			t.Fatalf("Expected non-nil result")
+		}
+
+		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
+		if err != nil || fromHost != "rpc2" {
+			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
+		}
+	})
+
+	t.Run("ForwardEthGetLogsEmptyArrayResponseSuccessWithoutRetryOnEmpty", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		var requestBytes = []byte(`{"jsonrpc": "2.0","method": "eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Reply(200).
+			JSON([]byte(`{"result":[],"fromHost": "rpc1"}`))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -5801,9 +5975,8 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
-		if err != nil || fromHost != "rpc2" {
-			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
+		if jrr.Result[0] != '[' || jrr.Result[1] != ']' {
+			t.Fatalf("Expected result to be an array")
 		}
 	})
 
@@ -5916,6 +6089,9 @@ func TestNetwork_Forward(t *testing.T) {
 						MaxAttempts: 2,
 					},
 				},
+				DirectiveDefaults: &common.DirectiveDefaultsConfig{
+					RetryEmpty: &common.TRUE,
+				},
 			},
 			rlr,
 			upr,
@@ -5930,6 +6106,7 @@ func TestNetwork_Forward(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 
 		fakeReq := common.NewNormalizedRequest(requestBytes)
+		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {

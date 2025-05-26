@@ -328,8 +328,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				nq := common.NewNormalizedRequest(rawReq)
 				requestCtx := common.StartRequestSpan(httpCtx, nq)
 
-				nq.ApplyDirectivesFromHttp(headers, queryArgs)
-
+				// Validate the raw JSON-RPC payload early
 				if err := nq.Validate(); err != nil {
 					responses[index] = processErrorBody(&lg, &startedAt, nq, err, &common.TRUE)
 					common.EndRequestSpan(requestCtx, nil, responses[index])
@@ -338,8 +337,6 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 
 				method, _ := nq.Method()
 				rlg := lg.With().Str("method", method).Logger()
-
-				rlg.Trace().Interface("directives", nq.Directives()).Msgf("applied request directives")
 
 				var ap *auth.AuthPayload
 				var err error
@@ -432,6 +429,10 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					return
 				}
 				nq.SetNetwork(nw)
+
+				nq.ApplyDirectiveDefaults(nw.Config().DirectiveDefaults)
+				nq.ApplyDirectivesFromHttp(headers, queryArgs)
+				rlg.Trace().Interface("directives", nq.Directives()).Msgf("applied request directives")
 
 				resp, err := project.Forward(requestCtx, networkId, nq)
 				if err != nil {
