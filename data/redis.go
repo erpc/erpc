@@ -21,8 +21,8 @@ import (
 )
 
 const (
-	RedisDriverName    = "redis"
-	reverseIndexPrefix = "rvi"
+	RedisDriverName         = "redis"
+	redisReverseIndexPrefix = "rvi"
 )
 
 var _ Connector = &RedisConnector{}
@@ -176,6 +176,9 @@ func (r *RedisConnector) markConnectionAsLostIfNecessary(err error) {
 	if err == nil {
 		return
 	}
+	if err == redis.Nil || err == redis.TxFailedErr {
+		return
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || common.HasErrorCode(err, common.ErrCodeRecordNotFound) {
 		return
 	}
@@ -239,6 +242,20 @@ func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey, value 
 		common.SetTraceSpanError(span, err)
 		return err
 	}
+
+	/**
+	 * TODO Find a better way to store a reverse index for cache entries with unknown block ref (*):
+	 */
+	if strings.HasPrefix(partitionKey, "evm:") && !strings.HasSuffix(partitionKey, "*") {
+		// Maintain a reverse index for fast wildcard lookups (idx_reverse) similar to Memory connector.
+		// Only index EVM partition keys that are not already wildcarded.
+		reverseKey := fmt.Sprintf("%s#%s", redisReverseIndexPrefix, rangeKey)
+		// Best-effort: log on error but do not fail the primary SET.
+		if err := r.client.Set(ctx, reverseKey, partitionKey, duration).Err(); err != nil {
+			r.logger.Warn().Err(err).Str("key", reverseKey).Msg("failed to SET reverse index in Redis")
+		}
+	}
+
 	return nil
 }
 
@@ -258,39 +275,30 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 		return "", err
 	}
 
+	// If the caller specifies the special index "idx_reverse" and the partitionKey contains a wildcard
+	// we attempt to resolve the concrete partition key through the reverse index (to avoid SCAN).
+	if index == ConnectorReverseIndex && strings.HasSuffix(partitionKey, "*") {
+		revKey := fmt.Sprintf("%s#%s", redisReverseIndexPrefix, rangeKey)
+		lookupCtx, lookupCancel := context.WithTimeout(ctx, r.getTimeout)
+		revPartitionKey, revErr := r.client.Get(lookupCtx, revKey).Result()
+		lookupCancel()
+		if revErr != nil {
+			r.logger.Debug().Err(revErr).Str("key", revKey).Msg("failed to GET reverse index in Redis, marking connection lost")
+			r.markConnectionAsLostIfNecessary(revErr)
+			common.SetTraceSpanError(span, revErr)
+		}
+		// Replace wildcard partitionKey with the resolved concrete value if found
+		// otherwise we will continue with the original partitionKey for lookup.
+		if revPartitionKey != "" {
+			partitionKey = revPartitionKey
+		}
+	}
+
+	// Construct the final key and continue with the regular retrieval path.
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
+
 	ctx, cancel := context.WithTimeout(ctx, r.getTimeout)
 	defer cancel()
-
-	if strings.Contains(key, "*") {
-		var cursor uint64
-		var foundKey string
-		for {
-			var keys []string
-			var err error
-			keys, cursor, err = r.client.Scan(ctx, cursor, key, 10).Result()
-			if err != nil {
-				r.logger.Warn().Err(err).Str("pattern", key).Msg("failed to SCAN in Redis, marking connection lost")
-				r.markConnectionAsLostIfNecessary(err)
-				common.SetTraceSpanError(span, err)
-				return "", err
-			}
-			if len(keys) > 0 {
-				foundKey = keys[0] // Use the first match
-				break
-			}
-			if cursor == 0 { // Iteration complete
-				break
-			}
-		}
-
-		if foundKey == "" {
-			err := common.NewErrRecordNotFound(partitionKey, rangeKey, RedisDriverName)
-			common.SetTraceSpanError(span, err)
-			return "", err
-		}
-		key = foundKey
-	}
 
 	r.logger.Trace().Str("key", key).Msg("getting item from Redis")
 	value, err := r.client.Get(ctx, key).Result()

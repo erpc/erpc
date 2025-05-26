@@ -657,3 +657,48 @@ func TestRedisDistributedLocking(t *testing.T) {
 		require.NoError(t, err, "goroutine 2 failed to unlock")
 	})
 }
+
+func TestRedisReverseIndexLookup(t *testing.T) {
+	m, err := miniredis.Run()
+	require.NoError(t, err)
+	defer m.Close()
+
+	logger := zerolog.New(io.Discard)
+	ctx := context.Background()
+
+	cfg := &common.RedisConnectorConfig{
+		Addr:        m.Addr(),
+		InitTimeout: common.Duration(2 * time.Second),
+		GetTimeout:  common.Duration(2 * time.Second),
+		SetTimeout:  common.Duration(2 * time.Second),
+	}
+	err = cfg.SetDefaults()
+	require.NoError(t, err)
+
+	connector, err := NewRedisConnector(ctx, &logger, "test-reverse-index", cfg)
+	require.NoError(t, err)
+
+	// Wait until the connector is ready
+	require.Eventually(t, func() bool {
+		return connector.initializer.State() == util.StateReady
+	}, 3*time.Second, 100*time.Millisecond, "connector did not become ready")
+
+	rangeKey := "eth_getTransactionReceipt:d49fc9409c70839c9c3251e4ff36babf30adfc3c41d6425d878032077896f7c8"
+	concretePartitionKey := "evm:1:latest"
+	wildcardPartitionKey := "evm:1:*"
+	value := "tx-receipt-value"
+
+	// Store the value using the concrete partition key. This should also create the reverse index entry.
+	err = connector.Set(ctx, concretePartitionKey, rangeKey, value, nil)
+	require.NoError(t, err)
+
+	// Verify that the reverse index key exists in Redis
+	reverseIndexKey := fmt.Sprintf("%s#%s", redisReverseIndexPrefix, rangeKey)
+	exists := m.Exists(reverseIndexKey)
+	require.True(t, exists, "reverse index key should exist: %s", reverseIndexKey)
+
+	// Retrieve the value using the wildcard partition key via idx_reverse index.
+	got, err := connector.Get(ctx, "idx_reverse", wildcardPartitionKey, rangeKey)
+	require.NoError(t, err)
+	require.Equal(t, value, got)
+}
