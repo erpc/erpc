@@ -19,8 +19,10 @@ Providers make it easy to add well-known third-parties RPC endpoints quickly. He
 - [`etherspot`](#etherspot) Accepts etherspot.io rpc endpoint for account-abstraction (ERC-4337) support.
 - [`dwellir`](#dwellir) Accepts dwellir.com api key and automatically adds all their EVM chains.
 - [`conduit`](#conduit) Accepts conduit.xyz api key and automatically adds all their EVM chains.
-- [`superchain`](#superchain) Accepts superchain registry json file (e.g [github.com/ethereum-optimism/superchain-registry/main/chainList.json](https://github.com/ethereum-optimism/superchain-registry/blob/main/chainList.json)) and automatically adds all chains from it.
+- [`superchain`](#superchain) Accepts [superchain registry](https://github.com/ethereum-optimism/superchain-registry/blob/main/chainList.json) and automatically adds all chains from it.
 - [`chainstack`](#chainstack) Accepts chainstack.com api key and automatically adds all their EVM chains.
+- [`onfinality`](#onfinality) Accepts onfinality.io api key and automatically adds all their EVM chains.
+- [`tenderly`](#tenderly) Accepts tenderly.co api key and automatically adds all their EVM chains.
 
 <Callout type='info'>
   eRPC supports **any EVM-compatible** JSON-RPC endpoint when using [`evm` type](/config/projects/upstreams). 
@@ -593,7 +595,7 @@ export default createConfig({
 
 Chainstack supports a wide range of EVM-compatible networks. For production traffic, ensure your Chainstack subscription plan supports the expected load and number of networks you plan to use.
 
-#### `Onfinality`
+#### `onfinality`
 
 Built for [Onfinality](https://onfinality.io/) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
 
