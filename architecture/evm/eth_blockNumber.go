@@ -36,6 +36,17 @@ func networkPreForward_eth_blockNumber(ctx context.Context, network common.Netwo
 		return true, nil, err
 	}
 
+	// If response is from cache, skip enforcement otherwise there's no point in caching.
+	// As we'll definetely have higher latest block number vs what we have in cache.
+	// The correct way to deal with this situation is to set proper TTL for "realtime" cache policy.
+	if resp != nil && resp.FromCache() {
+		network.Logger().Trace().
+			Object("request", nq).
+			Object("response", resp).
+			Msg("skipping enforcement of highest block number as response is from cache")
+		return true, resp, nil
+	}
+
 	// Step 2: parse the block number from the existing response
 	blockRef, blockNumber, err := ExtractBlockReferenceFromResponse(ctx, resp)
 	if err != nil {
@@ -56,19 +67,30 @@ func networkPreForward_eth_blockNumber(ctx context.Context, network common.Netwo
 	// Step 4: if maxBlock is larger than forwardBlock, write that in the response
 	if highestBlock > blockNumber {
 		ups := resp.Upstream()
-		telemetry.MetricUpstreamStaleLatestBlock.WithLabelValues(
-			network.ProjectId(),
-			ups.VendorName(),
-			network.Id(),
-			ups.Id(),
-			"eth_blockNumber",
-		).Inc()
-		network.Logger().Debug().
-			Str("method", "eth_blockNumber").
-			Int64("knownHighestBlock", highestBlock).
-			Int64("responseBlockNumber", blockNumber).
-			Str("upstreamId", ups.Id()).
-			Msg("upstream returned older block than we known, falling back to highest known block")
+		if ups != nil {
+			telemetry.MetricUpstreamStaleLatestBlock.WithLabelValues(
+				network.ProjectId(),
+				ups.VendorName(),
+				network.Id(),
+				ups.Id(),
+				"eth_blockNumber",
+			).Inc()
+			network.Logger().Debug().
+				Str("method", "eth_blockNumber").
+				Int64("knownHighestBlock", highestBlock).
+				Int64("responseBlockNumber", blockNumber).
+				Str("upstreamId", ups.Id()).
+				Msg("upstream returned older block than we known, falling back to highest known block")
+		} else {
+			// This usually shouldn't happen except when reading from cache which is already ignored above.
+			network.Logger().Debug().
+				Str("method", "eth_blockNumber").
+				Int64("knownHighestBlock", highestBlock).
+				Int64("responseBlockNumber", blockNumber).
+				Object("request", nq).
+				Object("response", resp).
+				Msg("upstream returned older block than we known, falling back to highest known block")
+		}
 		hbk, err := common.NormalizeHex(highestBlock)
 		if err != nil {
 			common.SetTraceSpanError(span, err)
