@@ -421,6 +421,40 @@ func (c *CacheConfig) SetDefaults() error {
 		c.Methods = mergedMethods
 	}
 
+	// Set compression defaults
+	if c.Compression == nil {
+		c.Compression = &CompressionConfig{}
+	}
+	if err := c.Compression.SetDefaults(); err != nil {
+		return fmt.Errorf("failed to set defaults for compression: %w", err)
+	}
+
+	return nil
+}
+
+func (c *CompressionConfig) SetDefaults() error {
+	// Enable compression by default
+	if c.Enabled == nil {
+		c.Enabled = util.BoolPtr(true)
+	}
+
+	// Default to zstd algorithm
+	if c.Algorithm == "" {
+		c.Algorithm = "zstd"
+	}
+
+	// Default to fastest compression for optimal performance
+	if c.ZstdLevel == "" {
+		c.ZstdLevel = "fastest"
+	}
+
+	// Default threshold of 1KB based on real-world experience
+	// JSON-RPC responses smaller than 1KB typically don't benefit much from compression
+	// due to the overhead, while larger responses (blocks, logs, traces) see significant savings
+	if c.Threshold == 0 {
+		c.Threshold = 1024
+	}
+
 	return nil
 }
 

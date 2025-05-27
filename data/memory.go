@@ -1,10 +1,8 @@
 package data
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"math"
 	"strings"
 	"sync"
@@ -14,7 +12,6 @@ import (
 	"github.com/dustin/go-humanize"
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/telemetry"
-	"github.com/klauspost/compress/zstd"
 	"github.com/rs/zerolog"
 )
 
@@ -31,13 +28,6 @@ type MemoryConnector struct {
 	cache       *ristretto.Cache[string, string]
 	locks       sync.Map // map[string]*sync.Mutex
 	emitMetrics bool
-
-	// Compression settings
-	enableCompression    bool
-	compressionThreshold int
-	// Thread-safe pools for zstd encoder/decoder
-	encoderPool *sync.Pool
-	decoderPool *sync.Pool
 
 	// Previous metric values for calculating deltas
 	prevMetrics struct {
@@ -80,41 +70,6 @@ func NewMemoryConnector(
 	// Determine if metrics should be enabled
 	enableMetrics := cfg.EmitMetrics != nil && *cfg.EmitMetrics
 
-	// Enable compression by default with optimal threshold for EVM RPC responses
-	enableCompression := true
-	compressionThreshold := 512 // Compress values larger than 512 bytes
-
-	// Initialize thread-safe pools for zstd encoder/decoder
-	var encoderPool *sync.Pool
-	var decoderPool *sync.Pool
-
-	if enableCompression {
-		// Pool of zstd encoders (thread-safe)
-		encoderPool = &sync.Pool{
-			New: func() interface{} {
-				// Use SpeedFastest for optimal caching performance
-				encoder, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedFastest))
-				if err != nil {
-					lg.Error().Err(err).Msg("failed to create zstd encoder in pool")
-					return nil
-				}
-				return encoder
-			},
-		}
-
-		// Pool of zstd decoders (thread-safe)
-		decoderPool = &sync.Pool{
-			New: func() interface{} {
-				decoder, err := zstd.NewReader(nil)
-				if err != nil {
-					lg.Error().Err(err).Msg("failed to create zstd decoder in pool")
-					return nil
-				}
-				return decoder
-			},
-		}
-	}
-
 	ristrettoCfg := &ristretto.Config[string, string]{
 		NumCounters: int64(3 * cfg.MaxItems), // number of keys to track frequency of.
 		MaxCost:     maxCost,                 // maximum cost of cache.
@@ -128,14 +83,10 @@ func NewMemoryConnector(
 	}
 
 	c := &MemoryConnector{
-		id:                   id,
-		logger:               &lg,
-		cache:                cache,
-		emitMetrics:          enableMetrics,
-		enableCompression:    enableCompression,
-		compressionThreshold: compressionThreshold,
-		encoderPool:          encoderPool,
-		decoderPool:          decoderPool,
+		id:          id,
+		logger:      &lg,
+		cache:       cache,
+		emitMetrics: enableMetrics,
 	}
 
 	// Start metrics collection goroutine if enabled
@@ -144,10 +95,6 @@ func NewMemoryConnector(
 		c.stopMetrics = cancel
 		go c.metricsCollectionLoop(metricsCtx)
 		lg.Info().Msg("Ristretto metrics collection enabled")
-	}
-
-	if enableCompression {
-		lg.Info().Int("threshold", compressionThreshold).Msg("Zstd compression enabled for cache values (thread-safe)")
 	}
 
 	return c, nil
@@ -162,29 +109,14 @@ func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey, value
 
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
 
-	// Compress value if compression is enabled and beneficial
-	storeValue, isCompressed := m.compressValue(value)
-
-	cost := int64(len(storeValue)) // Cost is the size of the stored value in bytes
+	cost := int64(len(value)) // Cost is the size of the stored value in bytes
 	// Ristretto's Set might drop the item if the cache is full and the item isn't valuable enough.
 	// It returns true if the item was added, false otherwise. We don't explicitly check this boolean
 	// as per Ristretto's design philosophy (popular items will eventually get in).
 	if ttl != nil && *ttl > 0 {
-		m.cache.SetWithTTL(key, storeValue, cost, *ttl)
+		m.cache.SetWithTTL(key, value, cost, *ttl)
 	} else {
-		m.cache.Set(key, storeValue, cost)
-	}
-
-	// Log compression stats for debugging
-	if isCompressed {
-		originalSize := len(value)
-		compressedSize := len(storeValue) - 5 // Subtract prefix length
-		savings := float64(originalSize-compressedSize) / float64(originalSize) * 100
-		m.logger.Debug().
-			Int("originalSize", originalSize).
-			Int("compressedSize", compressedSize).
-			Float64("savings", savings).
-			Msg("Compressed cache value")
+		m.cache.Set(key, value, cost)
 	}
 
 	/**
@@ -219,80 +151,7 @@ func (m *MemoryConnector) Get(ctx context.Context, index, partitionKey, rangeKey
 		return "", common.NewErrRecordNotFound(partitionKey, rangeKey, MemoryDriverName)
 	}
 
-	// Check if value is compressed and decompress if needed
-	if strings.HasPrefix(item, "ZSTD:") {
-		decompressed, err := m.decompressValue(item[5:]) // Remove "ZSTD:" prefix
-		if err != nil {
-			m.logger.Error().Err(err).Msg("failed to decompress cached value")
-			return "", fmt.Errorf("failed to decompress cached value: %w", err)
-		}
-		return decompressed, nil
-	}
-
 	return item, nil
-}
-
-// compressValue compresses a string value using zstd if it's larger than the threshold
-func (m *MemoryConnector) compressValue(value string) (string, bool) {
-	if !m.enableCompression || len(value) < m.compressionThreshold {
-		return value, false
-	}
-
-	// Get encoder from pool
-	encoderInterface := m.encoderPool.Get()
-	if encoderInterface == nil {
-		m.logger.Warn().Msg("failed to get encoder from pool, storing uncompressed")
-		return value, false
-	}
-	encoder := encoderInterface.(*zstd.Encoder)
-	defer m.encoderPool.Put(encoder)
-
-	// Compress using the pooled encoder
-	var buf bytes.Buffer
-	encoder.Reset(&buf)
-
-	if _, err := encoder.Write([]byte(value)); err != nil {
-		m.logger.Warn().Err(err).Msg("failed to compress value, storing uncompressed")
-		return value, false
-	}
-
-	if err := encoder.Close(); err != nil {
-		m.logger.Warn().Err(err).Msg("failed to close zstd encoder, storing uncompressed")
-		return value, false
-	}
-
-	compressed := buf.Bytes()
-
-	// Only use compression if it actually saves space (accounting for prefix)
-	if len(compressed)+5 < len(value) { // +5 for "ZSTD:" prefix
-		return "ZSTD:" + string(compressed), true
-	}
-
-	return value, false
-}
-
-// decompressValue decompresses a zstd-compressed string value
-func (m *MemoryConnector) decompressValue(compressedValue string) (string, error) {
-	// Get decoder from pool
-	decoderInterface := m.decoderPool.Get()
-	if decoderInterface == nil {
-		return "", fmt.Errorf("failed to get decoder from pool")
-	}
-	decoder := decoderInterface.(*zstd.Decoder)
-	defer m.decoderPool.Put(decoder)
-
-	// Reset decoder with the compressed data and handle error
-	if err := decoder.Reset(strings.NewReader(compressedValue)); err != nil {
-		return "", fmt.Errorf("failed to reset zstd decoder: %w", err)
-	}
-
-	// Read all decompressed data
-	decompressed, err := io.ReadAll(decoder)
-	if err != nil {
-		return "", fmt.Errorf("failed to decompress value: %w", err)
-	}
-
-	return string(decompressed), nil
 }
 
 func (m *MemoryConnector) Lock(ctx context.Context, key string, ttl time.Duration) (DistributedLock, error) {

@@ -241,6 +241,37 @@ func (c *CacheConfig) Validate() error {
 			return err
 		}
 	}
+	if c.Compression != nil {
+		if err := c.Compression.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *CompressionConfig) Validate() error {
+	if c.Algorithm != "" && c.Algorithm != "zstd" {
+		return fmt.Errorf("cache.*.compression.algorithm must be 'zstd' (currently the only supported algorithm)")
+	}
+
+	if c.ZstdLevel != "" {
+		validLevels := []string{"fastest", "default", "better", "best"}
+		found := false
+		for _, level := range validLevels {
+			if c.ZstdLevel == level {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("cache.*.compression.zstdLevel must be one of: fastest, default, better, best")
+		}
+	}
+
+	if c.Threshold < 0 {
+		return fmt.Errorf("cache.*.compression.threshold must be greater than or equal to 0")
+	}
+
 	return nil
 }
 

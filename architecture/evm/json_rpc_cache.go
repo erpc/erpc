@@ -1,9 +1,12 @@
 package evm
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,6 +14,7 @@ import (
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/util"
+	"github.com/klauspost/compress/zstd"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -21,10 +25,18 @@ type EvmJsonRpcCache struct {
 	policies  []*data.CachePolicy
 	methods   map[string]*common.CacheMethodConfig
 	logger    *zerolog.Logger
+
+	// Compression settings
+	compressionEnabled   bool
+	compressionThreshold int
+	compressionLevel     zstd.EncoderLevel
+	encoderPool          *sync.Pool
+	decoderPool          *sync.Pool
 }
 
 const (
 	JsonRpcCacheContext common.ContextKey = "jsonRpcCache"
+	compressionPrefix                     = "ZSTD:"
 )
 
 func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common.CacheConfig) (*EvmJsonRpcCache, error) {
@@ -55,21 +67,86 @@ func NewEvmJsonRpcCache(ctx context.Context, logger *zerolog.Logger, cfg *common
 		policies = append(policies, policy)
 	}
 
-	return &EvmJsonRpcCache{
+	cache := &EvmJsonRpcCache{
 		policies: policies,
 		methods:  cfg.Methods,
 		logger:   logger,
-	}, nil
+	}
+
+	// Initialize compression if configured
+	if cfg.Compression != nil && cfg.Compression.Enabled != nil && *cfg.Compression.Enabled {
+		cache.compressionEnabled = true
+
+		// Set compression threshold (default to 512 bytes if not specified)
+		cache.compressionThreshold = 512
+		if cfg.Compression.Threshold > 0 {
+			cache.compressionThreshold = cfg.Compression.Threshold
+		}
+
+		// Set compression level
+		cache.compressionLevel = zstd.SpeedFastest // Default for optimal caching performance
+		if cfg.Compression.ZstdLevel != "" {
+			switch strings.ToLower(cfg.Compression.ZstdLevel) {
+			case "fastest":
+				cache.compressionLevel = zstd.SpeedFastest
+			case "default":
+				cache.compressionLevel = zstd.SpeedDefault
+			case "better":
+				cache.compressionLevel = zstd.SpeedBetterCompression
+			case "best":
+				cache.compressionLevel = zstd.SpeedBestCompression
+			default:
+				logger.Warn().Str("level", cfg.Compression.ZstdLevel).Msg("unknown compression level, using 'fastest'")
+			}
+		}
+
+		// Initialize encoder pool
+		cache.encoderPool = &sync.Pool{
+			New: func() interface{} {
+				encoder, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(cache.compressionLevel))
+				if err != nil {
+					logger.Error().Err(err).Msg("failed to create zstd encoder in pool")
+					return nil
+				}
+				return encoder
+			},
+		}
+
+		// Initialize decoder pool
+		cache.decoderPool = &sync.Pool{
+			New: func() interface{} {
+				decoder, err := zstd.NewReader(nil)
+				if err != nil {
+					logger.Error().Err(err).Msg("failed to create zstd decoder in pool")
+					return nil
+				}
+				return decoder
+			},
+		}
+
+		logger.Info().
+			Bool("enabled", cache.compressionEnabled).
+			Int("threshold", cache.compressionThreshold).
+			Str("level", cache.compressionLevel.String()).
+			Msg("cache compression configured")
+	}
+
+	return cache, nil
 }
 
 func (c *EvmJsonRpcCache) WithProjectId(projectId string) *EvmJsonRpcCache {
 	lg := c.logger.With().Str("projectId", projectId).Logger()
 	lg.Debug().Msgf("cloning EvmJsonRpcCache for project")
 	return &EvmJsonRpcCache{
-		logger:    &lg,
-		policies:  c.policies,
-		methods:   c.methods,
-		projectId: projectId,
+		logger:               &lg,
+		policies:             c.policies,
+		methods:              c.methods,
+		projectId:            projectId,
+		compressionEnabled:   c.compressionEnabled,
+		compressionThreshold: c.compressionThreshold,
+		compressionLevel:     c.compressionLevel,
+		encoderPool:          c.encoderPool,
+		decoderPool:          c.decoderPool,
 	}
 }
 
@@ -377,9 +454,42 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 				return
 			}
 
+			// Compress the value before storing if compression is enabled
+			valueToStore := util.B2Str(rpcResp.Result)
+			telemetry.MetricCacheSetOriginalBytes.WithLabelValues(
+				c.projectId,
+				req.NetworkId(),
+				rpcReq.Method,
+				connector.Id(),
+				policy.String(),
+				ttl.String(),
+			).Add(float64(len(valueToStore)))
+			if c.compressionEnabled {
+				compressedValue, isCompressed := c.compressValue(valueToStore)
+				if isCompressed {
+					originalSize := len(valueToStore)
+					compressedSize := len(compressedValue) - len(compressionPrefix)
+					savings := float64(originalSize-compressedSize) / float64(originalSize) * 100
+					lg.Debug().
+						Int("originalSize", originalSize).
+						Int("compressedSize", compressedSize).
+						Float64("savings", savings).
+						Msg("compressed cache value")
+					telemetry.MetricCacheSetCompressedBytes.WithLabelValues(
+						c.projectId,
+						req.NetworkId(),
+						rpcReq.Method,
+						connector.Id(),
+						policy.String(),
+						ttl.String(),
+					).Add(float64(len(compressedValue) - len(compressionPrefix)))
+				}
+				valueToStore = compressedValue
+			}
+
 			ctx, cancel := context.WithTimeoutCause(ctx, 5*time.Second, errors.New("evm json-rpc cache driver timeout during set"))
 			defer cancel()
-			err = connector.Set(ctx, pk, rk, util.B2Str(rpcResp.Result), ttl)
+			err = connector.Set(ctx, pk, rk, valueToStore, ttl)
 			if err != nil {
 				errsMu.Lock()
 				errs = append(errs, err)
@@ -542,6 +652,20 @@ func (c *EvmJsonRpcCache) doGet(ctx context.Context, connector data.Connector, r
 		return nil, err
 	}
 
+	// Decompress the value if it's compressed
+	if c.compressionEnabled && strings.HasPrefix(resultString, compressionPrefix) {
+		decompressed, err := c.decompressValue(resultString)
+		if err != nil {
+			c.logger.Error().Err(err).Msg("failed to decompress cached value")
+			return nil, fmt.Errorf("failed to decompress cached value: %w", err)
+		}
+		resultString = decompressed
+		c.logger.Debug().
+			Int("compressedSize", len(resultString)-len(compressionPrefix)).
+			Int("decompressedSize", len(decompressed)).
+			Msg("decompressed cache value")
+	}
+
 	jrr := &common.JsonRpcResponse{
 		Result: util.S2Bytes(resultString),
 	}
@@ -644,4 +768,75 @@ func generateKeysForJsonRpcRequest(
 	} else {
 		return fmt.Sprintf("%s:nil", req.NetworkId()), cacheKey, nil
 	}
+}
+
+// compressValue compresses a string value using zstd if compression is enabled and beneficial
+func (c *EvmJsonRpcCache) compressValue(value string) (string, bool) {
+	if !c.compressionEnabled || len(value) < c.compressionThreshold {
+		return value, false
+	}
+
+	// Get encoder from pool
+	encoderInterface := c.encoderPool.Get()
+	if encoderInterface == nil {
+		c.logger.Warn().Msg("failed to get encoder from pool, storing uncompressed")
+		return value, false
+	}
+	encoder := encoderInterface.(*zstd.Encoder)
+	defer c.encoderPool.Put(encoder)
+
+	// Compress using the pooled encoder
+	var buf bytes.Buffer
+	encoder.Reset(&buf)
+
+	if _, err := encoder.Write([]byte(value)); err != nil {
+		c.logger.Warn().Err(err).Msg("failed to compress value, storing uncompressed")
+		return value, false
+	}
+
+	if err := encoder.Close(); err != nil {
+		c.logger.Warn().Err(err).Msg("failed to close zstd encoder, storing uncompressed")
+		return value, false
+	}
+
+	compressed := buf.Bytes()
+
+	// Only use compression if it actually saves space (accounting for prefix)
+	if len(compressed)+len(compressionPrefix) < len(value) {
+		return compressionPrefix + string(compressed), true
+	}
+
+	return value, false
+}
+
+// decompressValue decompresses a zstd-compressed string value
+func (c *EvmJsonRpcCache) decompressValue(compressedValue string) (string, error) {
+	if !strings.HasPrefix(compressedValue, compressionPrefix) {
+		// Not compressed, return as-is
+		return compressedValue, nil
+	}
+
+	// Remove compression prefix
+	compressedData := compressedValue[len(compressionPrefix):]
+
+	// Get decoder from pool
+	decoderInterface := c.decoderPool.Get()
+	if decoderInterface == nil {
+		return "", fmt.Errorf("failed to get decoder from pool")
+	}
+	decoder := decoderInterface.(*zstd.Decoder)
+	defer c.decoderPool.Put(decoder)
+
+	// Reset decoder with the compressed data
+	if err := decoder.Reset(strings.NewReader(compressedData)); err != nil {
+		return "", fmt.Errorf("failed to reset zstd decoder: %w", err)
+	}
+
+	// Read all decompressed data
+	decompressed, err := io.ReadAll(decoder)
+	if err != nil {
+		return "", fmt.Errorf("failed to decompress value: %w", err)
+	}
+
+	return string(decompressed), nil
 }
