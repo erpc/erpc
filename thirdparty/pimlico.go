@@ -116,7 +116,17 @@ func (v *PimlicoVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 		return true, nil
 	}
 
-	client, err := v.getOrCreateClient(ctx, logger, chainId, nil)
+	apiKey, ok := settings["apiKey"].(string)
+	if !ok || apiKey == "" {
+		return false, fmt.Errorf("apiKey is required in pimlico settings (set to 'public' for public endpoint)")
+	}
+
+	parsedURL, err := v.generateUrl(chainId, apiKey)
+	if err != nil {
+		return false, err
+	}
+
+	client, err := v.getOrCreateClient(ctx, logger, chainId, parsedURL)
 	if err != nil {
 		return false, err
 	}
@@ -163,13 +173,7 @@ func (v *PimlicoVendor) GenerateConfigs(upstream *common.UpstreamConfig, setting
 			if chainID == 0 {
 				return nil, fmt.Errorf("pimlico vendor requires upstream.evm.chainId to be defined")
 			}
-			var pimlicoURL string
-			if apiKey == "public" {
-				pimlicoURL = fmt.Sprintf("https://public.pimlico.io/v2/%d/rpc", chainID)
-			} else {
-				pimlicoURL = fmt.Sprintf("https://api.pimlico.io/v2/%d/rpc?apikey=%s", chainID, apiKey)
-			}
-			parsedURL, err := url.Parse(pimlicoURL)
+			parsedURL, err := v.generateUrl(chainID, apiKey)
 			if err != nil {
 				return nil, err
 			}
@@ -210,6 +214,20 @@ func (v *PimlicoVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 	return strings.HasPrefix(ups.Endpoint, "pimlico") ||
 		strings.HasPrefix(ups.Endpoint, "evm+pimlico") ||
 		strings.Contains(ups.Endpoint, "pimlico.io")
+}
+
+func (v *PimlicoVendor) generateUrl(chainID int64, apiKey string) (*url.URL, error) {
+	var pimlicoURL string
+	if apiKey == "public" {
+		pimlicoURL = fmt.Sprintf("https://public.pimlico.io/v2/%d/rpc", chainID)
+	} else {
+		pimlicoURL = fmt.Sprintf("https://api.pimlico.io/v2/%d/rpc?apikey=%s", chainID, apiKey)
+	}
+	parsedURL, err := url.Parse(pimlicoURL)
+	if err != nil {
+		return nil, err
+	}
+	return parsedURL, nil
 }
 
 func (v *PimlicoVendor) getOrCreateClient(ctx context.Context, logger *zerolog.Logger, chainId int64, parsedURL *url.URL) (clients.HttpJsonRpcClient, error) {
