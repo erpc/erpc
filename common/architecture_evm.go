@@ -2,6 +2,8 @@ package common
 
 import (
 	"context"
+	"fmt"
+	"strings"
 )
 
 const (
@@ -12,8 +14,49 @@ type EvmUpstream interface {
 	Upstream
 	EvmGetChainId(ctx context.Context) (string, error)
 	EvmIsBlockFinalized(blockNumber int64) (bool, error)
+	EvmAssertBlockAvailability(ctx context.Context, forMethod string, confidence AvailbilityConfidence, blockNumber int64) (bool, error)
 	EvmSyncingState() EvmSyncingState
 	EvmStatePoller() EvmStatePoller
+}
+
+type AvailbilityConfidence int
+
+const (
+	AvailbilityConfidenceBlockHead AvailbilityConfidence = 1
+	AvailbilityConfidenceFinalized AvailbilityConfidence = 2
+)
+
+func (c AvailbilityConfidence) String() string {
+	switch c {
+	case AvailbilityConfidenceBlockHead:
+		return "blockHead"
+	case AvailbilityConfidenceFinalized:
+		return "finalizedBlock"
+	default:
+		return fmt.Sprintf("unknown(%d)", c)
+	}
+}
+
+func (c AvailbilityConfidence) MarshalJSON() ([]byte, error) {
+	return SonicCfg.Marshal(c.String())
+}
+
+func (c *AvailbilityConfidence) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	var s string
+	if err := unmarshal(&s); err != nil {
+		return err
+	}
+
+	switch strings.ToLower(s) {
+	case "blockHead", "1":
+		*c = AvailbilityConfidenceBlockHead
+		return nil
+	case "finalizedBlock", "2":
+		*c = AvailbilityConfidenceFinalized
+		return nil
+	}
+
+	return fmt.Errorf("invalid availability confidence: %s", s)
 }
 
 type EvmNodeType string

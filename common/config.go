@@ -598,11 +598,13 @@ func (c *FailsafeConfig) Copy() *FailsafeConfig {
 }
 
 type RetryPolicyConfig struct {
-	MaxAttempts     int      `yaml:"maxAttempts" json:"maxAttempts"`
-	Delay           Duration `yaml:"delay,omitempty" json:"delay" tstype:"Duration"`
-	BackoffMaxDelay Duration `yaml:"backoffMaxDelay,omitempty" json:"backoffMaxDelay" tstype:"Duration"`
-	BackoffFactor   float32  `yaml:"backoffFactor,omitempty" json:"backoffFactor"`
-	Jitter          Duration `yaml:"jitter,omitempty" json:"jitter" tstype:"Duration"`
+	MaxAttempts           int                   `yaml:"maxAttempts" json:"maxAttempts"`
+	Delay                 Duration              `yaml:"delay,omitempty" json:"delay" tstype:"Duration"`
+	BackoffMaxDelay       Duration              `yaml:"backoffMaxDelay,omitempty" json:"backoffMaxDelay" tstype:"Duration"`
+	BackoffFactor         float32               `yaml:"backoffFactor,omitempty" json:"backoffFactor"`
+	Jitter                Duration              `yaml:"jitter,omitempty" json:"jitter" tstype:"Duration"`
+	EmptyResultConfidence AvailbilityConfidence `yaml:"emptyResultConfidence,omitempty" json:"emptyResultConfidence"`
+	EmptyResultIgnore     []string              `yaml:"emptyResultIgnore,omitempty" json:"emptyResultIgnore"`
 }
 
 func (c *RetryPolicyConfig) Copy() *RetryPolicyConfig {

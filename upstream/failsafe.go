@@ -14,6 +14,7 @@ import (
 	"github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/failsafe-go/failsafe-go/timeout"
 	"github.com/rs/zerolog"
+	"slices"
 )
 
 func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity string, fsCfg *common.FailsafeConfig) (map[string]failsafe.Policy[*common.NormalizedResponse], error) {
@@ -298,6 +299,17 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 		builder = builder.WithJitter(cfg.Jitter.Duration())
 	}
 
+	// Use default values if not set
+	emptyResultConfidence := cfg.EmptyResultConfidence
+	if emptyResultConfidence == 0 {
+		emptyResultConfidence = common.AvailbilityConfidenceFinalized
+	}
+
+	emptyResultIgnore := cfg.EmptyResultIgnore
+	if emptyResultIgnore == nil {
+		emptyResultIgnore = []string{"eth_getLogs", "eth_call"}
+	}
+
 	builder.HandleIf(func(result *common.NormalizedResponse, err error) bool {
 		// Node-level execution exceptions (e.g. reverted eth_call) -> No Retry
 		if common.HasErrorCode(err, common.ErrCodeEndpointExecutionException) {
@@ -306,6 +318,15 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 
 		if result != nil && result.Request() != nil && result.Request().IsCompositeRequest() {
 			return false
+		}
+
+		// Must not retry any 'write' methods
+		if result != nil {
+			if req := result.Request(); req != nil {
+				if method, _ := req.Method(); method != "" && evm.IsWriteMethod(method) {
+					return false
+				}
+			}
 		}
 
 		// We are only short-circuiting retry if the error is not retryable towards the upstream or network
@@ -321,26 +342,35 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 
 		if scope == common.ScopeNetwork && result != nil && !result.IsObjectNull() {
 			req := result.Request()
+			if req == nil {
+				// If there's no request, we can't check directives or block availability
+				// Only retry if there's an error
+				return err != nil
+			}
 			rds := req.Directives()
 
 			// Retry empty responses on network-level to give a chance for another upstream to
 			// try fetching the data as the current upstream is less likely to have the data ready on the next retry attempt.
-			if rds.RetryEmpty {
+			if rds != nil && rds.RetryEmpty {
 				isEmpty := result.IsResultEmptyish()
 				if isEmpty {
-					// no Retry-Empty directive + "empty" response -> No Retry
-					if !rds.RetryEmpty {
-						return false
-					}
 					ups := result.Upstream()
-					// has Retry-Empty directive + "empty" response + node is archive and synced + block is finalized -> No Retry
-					if err == nil && rds.RetryEmpty && isEmpty {
-						if ups.Config().Type == common.UpstreamTypeEvm && ups.Config().Evm != nil && ups.Config().Evm.NodeType == common.EvmNodeTypeArchive {
+					// has Retry-Empty directive + "empty" response + upstream can handle the block -> No Retry
+					if err == nil && ups != nil {
+						upCfg := ups.Config()
+						if upCfg != nil && upCfg.Type == common.UpstreamTypeEvm && upCfg.Evm != nil {
 							if ups, ok := ups.(common.EvmUpstream); ok {
 								if ups.EvmSyncingState() == common.EvmSyncingStateNotSyncing {
 									_, bn, ebn := evm.ExtractBlockReferenceFromRequest(context.TODO(), req)
 									if ebn == nil && bn > 0 {
-										if isFinalized, err := ups.EvmIsBlockFinalized(bn); err == nil && isFinalized {
+										method, _ := req.Method()
+										// Check if method is in ignore list - if so, do NOT retry
+										if slices.Contains(emptyResultIgnore, method) {
+											return false
+										}
+										// Use EvmAssertBlockAvailability to check if the upstream can handle the block
+										if avail, err := ups.EvmAssertBlockAvailability(context.TODO(), method, emptyResultConfidence, bn); err == nil && avail {
+											// If the upstream can handle the block and returned empty, don't retry
 											return false
 										}
 									}
@@ -348,6 +378,7 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 							}
 						}
 					}
+					// Empty response and RetryEmpty is true, but block is not available or other conditions not met -> Retry
 					return true
 				}
 			}
@@ -370,15 +401,6 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 							}
 						}
 					}
-				}
-			}
-		}
-
-		// Must not retry any 'write' methods
-		if result != nil {
-			if req := result.Request(); req != nil {
-				if method, _ := req.Method(); method != "" && evm.IsWriteMethod(method) {
-					return false
 				}
 			}
 		}
