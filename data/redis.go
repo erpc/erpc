@@ -204,7 +204,7 @@ func (r *RedisConnector) checkReady() error {
 }
 
 // Set stores a key-value pair in Redis with an optional TTL. Returns early if Redis is not ready.
-func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey, value string, ttl *time.Duration) error {
+func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration) error {
 	ctx, span := common.StartSpan(ctx, "RedisConnector.Set")
 	defer span.End()
 
@@ -223,7 +223,7 @@ func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey, value 
 
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
 	if len(value) < 1024 {
-		r.logger.Debug().Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Str("value", value).Msg("writing value to Redis")
+		r.logger.Debug().Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Int("len", len(value)).Msg("writing value to Redis")
 	} else {
 		r.logger.Debug().Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Int("len", len(value)).Msg("writing value to Redis")
 	}
@@ -264,7 +264,7 @@ func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey, value 
 }
 
 // Get retrieves a value from Redis. If wildcard, retrieves the first matching key. Returns early if not ready.
-func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) (string, error) {
+func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) ([]byte, error) {
 	ctx, span := common.StartSpan(ctx, "RedisConnector.Get",
 		trace.WithAttributes(
 			attribute.String("index", index),
@@ -276,7 +276,7 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 
 	if err := r.checkReady(); err != nil {
 		common.SetTraceSpanError(span, err)
-		return "", err
+		return nil, err
 	}
 
 	// If the caller specifies the special index "idx_reverse" and the partitionKey contains a wildcard
@@ -305,19 +305,19 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 	defer cancel()
 
 	r.logger.Trace().Str("key", key).Msg("getting item from Redis")
-	value, err := r.client.Get(ctx, key).Result()
+	value, err := r.client.Get(ctx, key).Bytes()
 	if err == redis.Nil {
 		err = common.NewErrRecordNotFound(partitionKey, rangeKey, RedisDriverName)
 		common.SetTraceSpanError(span, err)
-		return "", err
+		return nil, err
 	} else if err != nil {
 		r.logger.Warn().Err(err).Str("key", key).Msg("failed to GET in Redis")
 		r.markConnectionAsLostIfNecessary(err)
 		common.SetTraceSpanError(span, err)
-		return "", err
+		return nil, err
 	}
 	if len(value) < 1024 {
-		r.logger.Debug().Str("key", key).Str("value", value).Msg("received item from Redis")
+		r.logger.Debug().Str("key", key).Int("len", len(value)).Msg("received item from Redis")
 	} else {
 		r.logger.Debug().Str("key", key).Int("len", len(value)).Msg("received item from Redis")
 	}
@@ -537,7 +537,7 @@ func (r *RedisConnector) getCurrentValue(ctx context.Context, key string) (int64
 		return 0, err
 	}
 
-	value, err := strconv.ParseInt(val, 10, 64)
+	value, err := strconv.ParseInt(string(val), 10, 64)
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 		return 0, err

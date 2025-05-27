@@ -234,7 +234,7 @@ func (c *counterInt64) tryGetRemoteValue(ctx context.Context) int64 {
 	if err != nil {
 		c.registry.logger.Warn().Err(err).Str("key", c.key).Msg("failed to get remote counter value")
 	} else {
-		remoteValueInt, err := strconv.ParseInt(remoteVal, 0, 0)
+		remoteValueInt, err := strconv.ParseInt(string(remoteVal), 0, 0)
 		if err != nil {
 			c.registry.logger.Warn().Err(err).Str("key", c.key).Msg("failed to parse remote counter value")
 		} else {
@@ -245,7 +245,7 @@ func (c *counterInt64) tryGetRemoteValue(ctx context.Context) int64 {
 }
 
 func (c *counterInt64) updateRemoteUpdate(ctx context.Context, newValue int64) {
-	err := c.registry.connector.Set(ctx, c.key, "value", fmt.Sprintf("%d", newValue), nil)
+	err := c.registry.connector.Set(ctx, c.key, "value", []byte(fmt.Sprintf("%d", newValue)), nil)
 	if err == nil {
 		err = c.registry.connector.PublishCounterInt64(ctx, c.key, newValue)
 	}

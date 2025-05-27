@@ -25,7 +25,7 @@ var _ Connector = (*MemoryConnector)(nil)
 type MemoryConnector struct {
 	id          string
 	logger      *zerolog.Logger
-	cache       *ristretto.Cache[string, string]
+	cache       *ristretto.Cache[string, []byte]
 	locks       sync.Map // map[string]*sync.Mutex
 	emitMetrics bool
 
@@ -70,7 +70,7 @@ func NewMemoryConnector(
 	// Determine if metrics should be enabled
 	enableMetrics := cfg.EmitMetrics != nil && *cfg.EmitMetrics
 
-	ristrettoCfg := &ristretto.Config[string, string]{
+	ristrettoCfg := &ristretto.Config[string, []byte]{
 		NumCounters: int64(3 * cfg.MaxItems), // number of keys to track frequency of.
 		MaxCost:     maxCost,                 // maximum cost of cache.
 		BufferItems: 64,                      // number of keys per Get buffer.
@@ -104,8 +104,8 @@ func (m *MemoryConnector) Id() string {
 	return m.id
 }
 
-func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey, value string, ttl *time.Duration) error {
-	m.logger.Debug().Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("writing to memory (ristretto)")
+func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration) error {
+	m.logger.Debug().Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Int("len", len(value)).Msg("writing to memory (ristretto)")
 
 	key := fmt.Sprintf("%s:%s", partitionKey, rangeKey)
 
@@ -126,20 +126,20 @@ func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey, value
 		parts := strings.SplitAfterN(partitionKey, ":", 3)
 		if len(parts) >= 2 {
 			wildcardPartitionKey := parts[0] + parts[1] + "*"
-			m.cache.Set(memoryReverseIndexPrefix+"#"+wildcardPartitionKey+"#"+rangeKey, partitionKey, int64(len(partitionKey)))
+			m.cache.Set(memoryReverseIndexPrefix+"#"+wildcardPartitionKey+"#"+rangeKey, []byte(partitionKey), int64(len(partitionKey)))
 		}
 	}
 
 	return nil
 }
 
-func (m *MemoryConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) (string, error) {
+func (m *MemoryConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) ([]byte, error) {
 	if index == ConnectorReverseIndex && strings.HasSuffix(partitionKey, "*") {
 		fullKey, found := m.cache.Get(memoryReverseIndexPrefix + "#" + partitionKey + "#" + rangeKey)
 		// Replace wildcard partitionKey with the resolved concrete value if found
 		// otherwise we will continue with the original partitionKey for lookup.
-		if found && fullKey != "" {
-			partitionKey = fullKey
+		if found && fullKey != nil {
+			partitionKey = string(fullKey)
 		}
 	}
 
@@ -148,7 +148,7 @@ func (m *MemoryConnector) Get(ctx context.Context, index, partitionKey, rangeKey
 
 	item, found := m.cache.Get(key)
 	if !found {
-		return "", common.NewErrRecordNotFound(partitionKey, rangeKey, MemoryDriverName)
+		return nil, common.NewErrRecordNotFound(partitionKey, rangeKey, MemoryDriverName)
 	}
 
 	return item, nil

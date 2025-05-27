@@ -38,7 +38,7 @@ func TestSharedVariable(t *testing.T) {
 			Return(updates, cleanup, nil)
 
 		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/counter1", "value").
-			Return("42", nil)
+			Return([]byte("42"), nil)
 
 		// Get the counter and verify initial setup
 		counter := registry.GetCounterInt64("counter1", 1024).(*counterInt64)
@@ -76,7 +76,7 @@ func TestSharedVariable(t *testing.T) {
 			Return(updates, cleanup, nil)
 
 		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/counter2", "value").
-			Return("0", nil)
+			Return([]byte("0"), nil)
 
 		counter := registry.GetCounterInt64("counter2", 1024)
 
@@ -119,7 +119,7 @@ func TestSharedVariable(t *testing.T) {
 			Return(updates, cleanup, nil)
 
 		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/counter3", "value").
-			Return("100", nil)
+			Return([]byte("100"), nil)
 
 		counter := registry.GetCounterInt64("counter3", 1024)
 		time.Sleep(100 * time.Millisecond)
@@ -158,7 +158,7 @@ func TestSharedVariable(t *testing.T) {
 			Return(updates, cleanup, nil)
 
 		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/counter4", "value").
-			Return("42", nil)
+			Return([]byte("42"), nil)
 
 		counter := registry.GetCounterInt64("counter4", 1024)
 		time.Sleep(100 * time.Millisecond)
@@ -193,7 +193,7 @@ func TestSharedVariable(t *testing.T) {
 			Return(updates, cleanup, nil)
 
 		connector.On("Get", mock.Anything, ConnectorMainIndex, "test/counter6", "value").
-			Return("", common.NewErrRecordNotFound("test/counter6", "value", "mock"))
+			Return([]byte(""), common.NewErrRecordNotFound("test/counter6", "value", "mock"))
 
 		counter := registry.GetCounterInt64("counter6", 1024)
 		time.Sleep(100 * time.Millisecond)
@@ -236,8 +236,8 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
 				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").
-					Return("", errors.New("get failed"))
-				c.On("Set", mock.Anything, "test", "value", "10", mock.Anything).
+					Return([]byte(""), errors.New("get failed"))
+				c.On("Set", mock.Anything, "test", "value", []byte("10"), mock.Anything).
 					Return(errors.New("set failed"))
 			},
 			initialValue:   5,
@@ -251,7 +251,7 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 			setupMocks: func(c *MockConnector, l *MockLock) {
 				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
-				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").Return("15", nil)
+				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").Return([]byte("15"), nil)
 			},
 			initialValue:   5,
 			updateValue:    10,
@@ -264,8 +264,8 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 			setupMocks: func(c *MockConnector, l *MockLock) {
 				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
-				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").Return("5", nil)
-				c.On("Set", mock.Anything, "test", "value", "10", mock.Anything).Return(nil)
+				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").Return([]byte("5"), nil)
+				c.On("Set", mock.Anything, "test", "value", []byte("10"), mock.Anything).Return(nil)
 				c.On("PublishCounterInt64", mock.Anything, "test", int64(10)).Return(nil)
 			},
 			initialValue:   5,
@@ -332,7 +332,7 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 			setupMocks: func(c *MockConnector, l *MockLock) {
 				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
-				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").Return("5", nil)
+				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").Return([]byte("5"), nil)
 			},
 			initialValue:  5,
 			staleness:     time.Second,
@@ -347,8 +347,8 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 			setupMocks: func(c *MockConnector, l *MockLock) {
 				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
-				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").Return("4", nil)
-				c.On("Set", mock.Anything, "test", "value", "10", mock.Anything).Return(nil)
+				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").Return([]byte("4"), nil)
+				c.On("Set", mock.Anything, "test", "value", []byte("10"), mock.Anything).Return(nil)
 				c.On("PublishCounterInt64", mock.Anything, "test", int64(10)).Return(nil)
 			},
 			initialValue:  5,
@@ -364,7 +364,7 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 			setupMocks: func(c *MockConnector, l *MockLock) {
 				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
-				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").Return("15", nil)
+				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").Return([]byte("15"), nil)
 			},
 			initialValue:  5,
 			staleness:     time.Second,
@@ -379,7 +379,7 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 			setupMocks: func(c *MockConnector, l *MockLock) {
 				c.On("Lock", mock.Anything, "test", mock.Anything).Return(l, nil)
 				l.On("Unlock", mock.Anything).Return(nil)
-				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").Return("4", nil)
+				c.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").Return([]byte("4"), nil)
 			},
 			initialValue:  5,
 			staleness:     time.Second,
@@ -444,7 +444,7 @@ func TestCounterInt64_Concurrency(t *testing.T) {
 	// Setup mocks for multiple concurrent calls
 	connector.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil).Times(10)
 	lock.On("Unlock", mock.Anything).Return(nil).Times(10)
-	connector.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").Return("5", nil).Times(10)
+	connector.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").Return([]byte("5"), nil).Times(10)
 	connector.On("Set", mock.Anything, "test", "value", mock.Anything, mock.Anything).Return(nil).Times(10)
 	connector.On("PublishCounterInt64", mock.Anything, "test", mock.Anything).Return(nil).Times(10)
 
@@ -593,7 +593,7 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 				conn.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil)
 				lock.On("Unlock", mock.Anything).Return(nil)
 				conn.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").
-					Return("200", nil)
+					Return([]byte("200"), nil)
 				// We do NOT expect a Set call because remote is higher than newValue
 				// so no new remote update is performed.
 			},
@@ -609,9 +609,9 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 				lock.On("Unlock", mock.Anything).Return(nil)
 				// Remote has 100, local has 100, newValue=150 => we do an update
 				conn.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").
-					Return("100", nil)
+					Return([]byte("100"), nil)
 				// Because newValue (150) is higher, the code will call connector.Set
-				conn.On("Set", mock.Anything, "test", "value", "150", mock.Anything).
+				conn.On("Set", mock.Anything, "test", "value", []byte("150"), mock.Anything).
 					Return(nil)
 				// And then PublishCounterInt64
 				conn.On("PublishCounterInt64", mock.Anything, "test", int64(150)).
@@ -628,7 +628,7 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 				conn.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil)
 				lock.On("Unlock", mock.Anything).Return(nil)
 				conn.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").
-					Return("100", nil)
+					Return([]byte("100"), nil)
 				// No Set call because final local won't change (difference=5, within rollback range=10)
 			},
 			initialValue:     100,
@@ -642,8 +642,8 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 				conn.On("Lock", mock.Anything, "test", mock.Anything).Return(lock, nil)
 				lock.On("Unlock", mock.Anything).Return(nil)
 				conn.On("Get", mock.Anything, ConnectorMainIndex, "test", "value").
-					Return("100", nil)
-				conn.On("Set", mock.Anything, "test", "value", "50", mock.Anything).
+					Return([]byte("100"), nil)
+				conn.On("Set", mock.Anything, "test", "value", []byte("50"), mock.Anything).
 					Return(nil)
 				conn.On("PublishCounterInt64", mock.Anything, "test", int64(50)).
 					Return(nil)

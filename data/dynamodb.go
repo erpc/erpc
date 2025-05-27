@@ -347,7 +347,7 @@ func (d *DynamoDBConnector) Id() string {
 	return d.id
 }
 
-func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, value string, ttl *time.Duration) error {
+func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration) error {
 	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.Set")
 	defer span.End()
 
@@ -368,7 +368,7 @@ func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, val
 	if len(value) > 1024 {
 		d.logger.Debug().Int("len", len(value)).Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Interface("ttl", ttl).Msg("putting item in dynamodb")
 	} else {
-		d.logger.Debug().Str("value", value).Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Interface("ttl", ttl).Msg("putting item in dynamodb")
+		d.logger.Debug().Int("len", len(value)).Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Interface("ttl", ttl).Msg("putting item in dynamodb")
 	}
 
 	item := map[string]*dynamodb.AttributeValue{
@@ -379,7 +379,7 @@ func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, val
 			S: aws.String(rangeKey),
 		},
 		"value": {
-			S: aws.String(value),
+			B: value, // Using Binary attribute type
 		},
 	}
 
@@ -406,7 +406,7 @@ func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, val
 	return err
 }
 
-func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) (string, error) {
+func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) ([]byte, error) {
 	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.Get")
 	defer span.End()
 
@@ -421,16 +421,16 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 	if d.readClient == nil {
 		err := fmt.Errorf("DynamoDB client not initialized yet")
 		common.SetTraceSpanError(span, err)
-		return "", err
+		return nil, err
 	}
 
-	var value string
+	var value []byte
 
 	if index == ConnectorReverseIndex {
 		if rangeKey == "" || strings.HasSuffix(rangeKey, "*") {
 			err := fmt.Errorf("when using reverse index rangeKey must be a non-empty string and not contain wildcards (rangeKey: '%s', partitionKey: '%s')", rangeKey, partitionKey)
 			common.SetTraceSpanError(span, err)
-			return "", err
+			return nil, err
 		}
 		var keyCondition string = "#pkey = :pkey"
 		var exprAttrNames map[string]*string = map[string]*string{
@@ -476,12 +476,12 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 		result, err := d.readClient.QueryWithContext(ctx, qi, request.WithResponseReadTimeout(d.getTimeout))
 		if err != nil {
 			common.SetTraceSpanError(span, err)
-			return "", err
+			return nil, err
 		}
 		if len(result.Items) == 0 {
 			err := common.NewErrRecordNotFound(partitionKey, rangeKey, DynamoDBDriverName)
 			common.SetTraceSpanError(span, err)
-			return "", err
+			return nil, err
 		}
 
 		// Check if the item has expired
@@ -491,11 +491,19 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 			if err == nil && now > expirationTime {
 				err := common.NewErrRecordExpired(partitionKey, rangeKey, DynamoDBDriverName, now, expirationTime)
 				common.SetTraceSpanError(span, err)
-				return "", err
+				return nil, err
 			}
 		}
 
-		value = *result.Items[0]["value"].S
+		// Backward compatibility: check both B and S attributes
+		if result.Items[0]["value"].B != nil {
+			value = result.Items[0]["value"].B
+		} else if result.Items[0]["value"].S != nil {
+			// Legacy string value - treat as final decompressed value
+			value = []byte(*result.Items[0]["value"].S)
+		} else {
+			return nil, fmt.Errorf("value attribute is neither binary nor string")
+		}
 	} else {
 		ky := map[string]*dynamodb.AttributeValue{
 			d.partitionKeyName: {
@@ -513,13 +521,13 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 
 		if err != nil {
 			common.SetTraceSpanError(span, err)
-			return "", err
+			return nil, err
 		}
 
 		if result.Item == nil {
 			err := common.NewErrRecordNotFound(partitionKey, rangeKey, DynamoDBDriverName)
 			common.SetTraceSpanError(span, err)
-			return "", err
+			return nil, err
 		}
 
 		// Check if the item has expired
@@ -529,11 +537,19 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 			if err == nil && now > expirationTime {
 				err := common.NewErrRecordExpired(partitionKey, rangeKey, DynamoDBDriverName, now, expirationTime)
 				common.SetTraceSpanError(span, err)
-				return "", err
+				return nil, err
 			}
 		}
 
-		value = *result.Item["value"].S
+		// Backward compatibility: check both B and S attributes
+		if result.Item["value"].B != nil {
+			value = result.Item["value"].B
+		} else if result.Item["value"].S != nil {
+			// Legacy string value - treat as final decompressed value
+			value = []byte(*result.Item["value"].S)
+		} else {
+			return nil, fmt.Errorf("value attribute is neither binary nor string")
+		}
 	}
 
 	if common.IsTracingDetailed {
@@ -544,6 +560,7 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 
 	return value, nil
 }
+
 func (d *DynamoDBConnector) Lock(ctx context.Context, key string, ttl time.Duration) (DistributedLock, error) {
 	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.Lock",
 		trace.WithAttributes(
