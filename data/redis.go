@@ -249,10 +249,14 @@ func (r *RedisConnector) Set(ctx context.Context, partitionKey, rangeKey, value 
 	if strings.HasPrefix(partitionKey, "evm:") && !strings.HasSuffix(partitionKey, "*") {
 		// Maintain a reverse index for fast wildcard lookups (idx_reverse) similar to Memory connector.
 		// Only index EVM partition keys that are not already wildcarded.
-		reverseKey := fmt.Sprintf("%s#%s", redisReverseIndexPrefix, rangeKey)
-		// Best-effort: log on error but do not fail the primary SET.
-		if err := r.client.Set(ctx, reverseKey, partitionKey, duration).Err(); err != nil {
-			r.logger.Warn().Err(err).Str("key", reverseKey).Msg("failed to SET reverse index in Redis")
+		parts := strings.SplitAfterN(partitionKey, ":", 3)
+		if len(parts) >= 2 {
+			wildcardPartitionKey := parts[0] + parts[1] + "*"
+			reverseKey := fmt.Sprintf("%s#%s#%s", redisReverseIndexPrefix, wildcardPartitionKey, rangeKey)
+			// Best-effort: log on error but do not fail the primary SET.
+			if err := r.client.Set(ctx, reverseKey, partitionKey, duration).Err(); err != nil {
+				r.logger.Warn().Err(err).Str("key", reverseKey).Msg("failed to SET reverse index in Redis")
+			}
 		}
 	}
 
@@ -278,7 +282,7 @@ func (r *RedisConnector) Get(ctx context.Context, index, partitionKey, rangeKey 
 	// If the caller specifies the special index "idx_reverse" and the partitionKey contains a wildcard
 	// we attempt to resolve the concrete partition key through the reverse index (to avoid SCAN).
 	if index == ConnectorReverseIndex && strings.HasSuffix(partitionKey, "*") {
-		revKey := fmt.Sprintf("%s#%s", redisReverseIndexPrefix, rangeKey)
+		revKey := fmt.Sprintf("%s#%s#%s", redisReverseIndexPrefix, partitionKey, rangeKey)
 		lookupCtx, lookupCancel := context.WithTimeout(ctx, r.getTimeout)
 		revPartitionKey, revErr := r.client.Get(lookupCtx, revKey).Result()
 		lookupCancel()

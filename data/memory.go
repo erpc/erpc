@@ -191,7 +191,11 @@ func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey, value
 	 * TODO Find a better way to store a reverse index for cache entries with unknown block ref (*):
 	 */
 	if strings.HasPrefix(partitionKey, "evm:") && !strings.HasSuffix(partitionKey, "*") {
-		m.cache.Set(memoryReverseIndexPrefix+"#"+rangeKey, partitionKey, int64(len(partitionKey)))
+		parts := strings.SplitAfterN(partitionKey, ":", 3)
+		if len(parts) >= 2 {
+			wildcardPartitionKey := parts[0] + parts[1] + "*"
+			m.cache.Set(memoryReverseIndexPrefix+"#"+wildcardPartitionKey+"#"+rangeKey, partitionKey, int64(len(partitionKey)))
+		}
 	}
 
 	return nil
@@ -199,7 +203,7 @@ func (m *MemoryConnector) Set(ctx context.Context, partitionKey, rangeKey, value
 
 func (m *MemoryConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) (string, error) {
 	if index == ConnectorReverseIndex && strings.HasSuffix(partitionKey, "*") {
-		fullKey, found := m.cache.Get(memoryReverseIndexPrefix + "#" + rangeKey)
+		fullKey, found := m.cache.Get(memoryReverseIndexPrefix + "#" + partitionKey + "#" + rangeKey)
 		// Replace wildcard partitionKey with the resolved concrete value if found
 		// otherwise we will continue with the original partitionKey for lookup.
 		if found && fullKey != "" {

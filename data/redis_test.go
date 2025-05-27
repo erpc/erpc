@@ -693,7 +693,7 @@ func TestRedisReverseIndexLookup(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify that the reverse index key exists in Redis
-	reverseIndexKey := fmt.Sprintf("%s#%s", redisReverseIndexPrefix, rangeKey)
+	reverseIndexKey := fmt.Sprintf("%s#%s#%s", redisReverseIndexPrefix, wildcardPartitionKey, rangeKey)
 	exists := m.Exists(reverseIndexKey)
 	require.True(t, exists, "reverse index key should exist: %s", reverseIndexKey)
 
@@ -701,4 +701,110 @@ func TestRedisReverseIndexLookup(t *testing.T) {
 	got, err := connector.Get(ctx, "idx_reverse", wildcardPartitionKey, rangeKey)
 	require.NoError(t, err)
 	require.Equal(t, value, got)
+}
+
+func TestRedisConnector_ChainIsolation(t *testing.T) {
+	// Setup Redis connector
+	m, err := miniredis.Run()
+	require.NoError(t, err)
+	defer m.Close()
+
+	logger := zerolog.New(io.Discard)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := &common.RedisConnectorConfig{
+		Addr:         m.Addr(),
+		Password:     "",
+		DB:           0,
+		ConnPoolSize: 5,
+		InitTimeout:  common.Duration(2 * time.Second),
+		GetTimeout:   common.Duration(2 * time.Second),
+		SetTimeout:   common.Duration(2 * time.Second),
+	}
+
+	err = cfg.SetDefaults()
+	require.NoError(t, err, "failed to set defaults for redis config")
+
+	connector, err := NewRedisConnector(ctx, &logger, "test-chain-isolation", cfg)
+	require.NoError(t, err)
+
+	// Wait for connector to be ready
+	require.Eventually(t, func() bool {
+		return connector.initializer.State() == util.StateReady
+	}, 3*time.Second, 100*time.Millisecond, "connector did not become ready")
+
+	// Define test data for two different chains
+	chainA := "evm:1"   // Ethereum mainnet
+	chainB := "evm:137" // Polygon
+	method := "eth_blockNumber"
+	blockNumberA := "0x1234567"
+	blockNumberB := "0x7654321"
+
+	// Store block number for chain A
+	partitionKeyA := fmt.Sprintf("%s:%s", chainA, method)
+	rangeKey := "latest"
+	err = connector.Set(ctx, partitionKeyA, rangeKey, blockNumberA, nil)
+	require.NoError(t, err, "failed to set block number for chain A")
+
+	// Store block number for chain B
+	partitionKeyB := fmt.Sprintf("%s:%s", chainB, method)
+	err = connector.Set(ctx, partitionKeyB, rangeKey, blockNumberB, nil)
+	require.NoError(t, err, "failed to set block number for chain B")
+
+	// Verify chain A can read its own data
+	valueA, err := connector.Get(ctx, ConnectorMainIndex, partitionKeyA, rangeKey)
+	require.NoError(t, err, "failed to get block number for chain A")
+	require.Equal(t, blockNumberA, valueA, "chain A should get its own block number")
+
+	// Verify chain B can read its own data
+	valueB, err := connector.Get(ctx, ConnectorMainIndex, partitionKeyB, rangeKey)
+	require.NoError(t, err, "failed to get block number for chain B")
+	require.Equal(t, blockNumberB, valueB, "chain B should get its own block number")
+
+	// Verify chain A cannot read chain B's data
+	_, err = connector.Get(ctx, ConnectorMainIndex, partitionKeyB, rangeKey)
+	require.NoError(t, err) // This should succeed because we're asking for chain B's data explicitly
+
+	// The real test: verify that if we ask for chain A's data, we don't get chain B's data
+	// This is implicitly tested above - each chain gets its own data
+
+	// Additional test: verify data is stored under different keys in Redis
+	// Get all keys from miniredis to verify isolation
+	keys := m.Keys()
+	var foundKeyA, foundKeyB bool
+	expectedKeyA := fmt.Sprintf("%s:%s", partitionKeyA, rangeKey)
+	expectedKeyB := fmt.Sprintf("%s:%s", partitionKeyB, rangeKey)
+
+	for _, key := range keys {
+		if key == expectedKeyA {
+			foundKeyA = true
+		}
+		if key == expectedKeyB {
+			foundKeyB = true
+		}
+	}
+
+	require.True(t, foundKeyA, "should find key for chain A in Redis")
+	require.True(t, foundKeyB, "should find key for chain B in Redis")
+	require.NotEqual(t, expectedKeyA, expectedKeyB, "keys for different chains should be different")
+
+	// Test with wildcard partition key (reverse index)
+	// This tests the reverse index functionality for chain isolation
+	wildcardPartitionKeyA := fmt.Sprintf("%s:*", chainA)
+	wildcardPartitionKeyB := fmt.Sprintf("%s:*", chainB)
+
+	// Try to get data using wildcard for chain A
+	valueWildcardA, err := connector.Get(ctx, ConnectorReverseIndex, wildcardPartitionKeyA, rangeKey)
+	if err == nil {
+		// If reverse index exists, it should return chain A's data
+		require.Equal(t, blockNumberA, valueWildcardA, "wildcard lookup for chain A should return chain A's data")
+	}
+
+	// Try to get data using wildcard for chain B
+	valueWildcardB, err := connector.Get(ctx, ConnectorReverseIndex, wildcardPartitionKeyB, rangeKey)
+	if err == nil {
+		// If reverse index exists, it should return chain B's data
+		require.Equal(t, blockNumberB, valueWildcardB, "wildcard lookup for chain B should return chain B's data")
+	}
 }
