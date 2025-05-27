@@ -2,9 +2,9 @@
 import type { Checksums } from "../types";
 
 export const CHECKSUMS: Checksums = {
-  "darwin_arm64": "019485017a20fa864a8938841e7fa62be97e29c1bffafbaabba999f3d6bccdff",
-  "darwin_x86_64": "87fbe5f3aa8e009e61dafa7b908e6bc2877b3691dd3e4fa52c4ec25bd398e4ed",
-  "linux_arm64": "704aa33f4ac7036263505ef36f4d70d4cea0fde0808f1f3d3c935b0035fe6621",
-  "linux_x86_64": "32aa0ae54563b80d254be2757dc9d11ec82839a1cbdedc0ed10fe772e8320f32",
-  "windows_x86_64": "5bcf8f569c399db656afed2aa3c15edf1e760e86b04b7c4cb7c50d7c342a1ecb"
+  "darwin_arm64": "f9c4ee198bda26f8ab7a2797e4ff0680c83f4cb5ac266daa1f449c6a0beb5bbb",
+  "darwin_x86_64": "051254a074fe57c0f8c1c7ef70151ed7c01fd02b729f73af89c3639e640e5329",
+  "linux_arm64": "ba576b763343b1649b023de65c470059cc7239b41f4b02fe0d30f68ff521664f",
+  "linux_x86_64": "12d5d1feba3667519f5cd0538b3538e6996b51757ce6646019506774c393b583",
+  "windows_x86_64": "35c89ed4720aacce04bfd34641767ae362d5502aa97a1469f48b78a9fa3656bb"
 };
