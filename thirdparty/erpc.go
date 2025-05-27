@@ -90,7 +90,7 @@ func (v *ErpcVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger
 	return cid == chainId, nil
 }
 
-func (v *ErpcVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
+func (v *ErpcVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
