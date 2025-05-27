@@ -26,7 +26,7 @@ func TestMemoryConnector_TTL(t *testing.T) {
 	t.Run("item expires after TTL", func(t *testing.T) {
 		// Set item with 100ms TTL
 		ttl := 100 * time.Millisecond
-		err := connector.Set(ctx, "pk1", "rk1", "value1", &ttl)
+		err := connector.Set(ctx, "pk1", "rk1", []byte("value1"), &ttl)
 		require.NoError(t, err)
 
 		time.Sleep(30 * time.Millisecond)
@@ -34,7 +34,7 @@ func TestMemoryConnector_TTL(t *testing.T) {
 		// Verify item exists immediately
 		val, err := connector.Get(ctx, "", "pk1", "rk1")
 		require.NoError(t, err)
-		require.Equal(t, "value1", val)
+		require.Equal(t, []byte("value1"), val)
 
 		// Wait for TTL to expire
 		time.Sleep(150 * time.Millisecond)
@@ -47,7 +47,7 @@ func TestMemoryConnector_TTL(t *testing.T) {
 
 	t.Run("item without TTL doesn't expire", func(t *testing.T) {
 		// Set item with no TTL
-		err := connector.Set(ctx, "pk3", "rk1", "value1", nil)
+		err := connector.Set(ctx, "pk3", "rk1", []byte("value1"), nil)
 		require.NoError(t, err)
 
 		// Wait a bit (less than typical eviction times for a non-full cache)
@@ -56,7 +56,7 @@ func TestMemoryConnector_TTL(t *testing.T) {
 		// Verify item still exists
 		val, err := connector.Get(ctx, "", "pk3", "rk1")
 		require.NoError(t, err)
-		require.Equal(t, "value1", val)
+		require.Equal(t, []byte("value1"), val)
 	})
 }
 
@@ -97,7 +97,7 @@ func TestMemoryConnector_Metrics(t *testing.T) {
 		require.NotNil(t, connector.cache.Metrics)
 
 		// Perform some cache operations to generate metrics
-		err = connector.Set(ctx, "pk1", "rk1", "value1", nil)
+		err = connector.Set(ctx, "pk1", "rk1", []byte("value1"), nil)
 		require.NoError(t, err)
 
 		// Wait for Ristretto's eventual consistency
@@ -105,7 +105,7 @@ func TestMemoryConnector_Metrics(t *testing.T) {
 
 		val, err := connector.Get(ctx, "", "pk1", "rk1")
 		require.NoError(t, err)
-		require.Equal(t, "value1", val)
+		require.Equal(t, []byte("value1"), val)
 
 		// Try to get a non-existent key to generate a miss
 		_, err = connector.Get(ctx, "", "pk1", "nonexistent")
@@ -162,8 +162,8 @@ func TestMemoryConnector_ChainIsolation(t *testing.T) {
 	chainA := "evm:1"   // Ethereum mainnet
 	chainB := "evm:137" // Polygon
 	method := "eth_blockNumber"
-	blockNumberA := "0x1234567"
-	blockNumberB := "0x7654321"
+	blockNumberA := []byte("0x1234567")
+	blockNumberB := []byte("0x7654321")
 
 	// Store block number for chain A
 	partitionKeyA := fmt.Sprintf("%s:%s", chainA, method)
@@ -224,8 +224,8 @@ func TestMemoryConnector_ChainIsolation(t *testing.T) {
 	// Additional verification: Store data with same range key but different partition keys
 	// to ensure they don't overwrite each other
 	testRangeKey := "test-isolation"
-	testValueA := "value-for-chain-A"
-	testValueB := "value-for-chain-B"
+	testValueA := []byte("value-for-chain-A")
+	testValueB := []byte("value-for-chain-B")
 
 	err = connector.Set(ctx, partitionKeyA, testRangeKey, testValueA, nil)
 	require.NoError(t, err)

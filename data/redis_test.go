@@ -50,12 +50,12 @@ func TestRedisConnectorInitialization(t *testing.T) {
 		require.Equal(t, util.StateReady, state, "connector should be in ready state")
 
 		// Try a simple SET/GET to verify readiness.
-		err = connector.Set(ctx, "testPK", "testRK", "hello", nil)
+		err = connector.Set(ctx, "testPK", "testRK", []byte("hello"), nil)
 		require.NoError(t, err, "Set should succeed after successful initialization")
 
 		val, err := connector.Get(ctx, "", "testPK", "testRK")
 		require.NoError(t, err, "Get should succeed for existing key")
-		require.Equal(t, "hello", val)
+		require.Equal(t, []byte("hello"), val)
 	})
 
 	t.Run("fails on first attempt with invalid address, but returns connector anyway", func(t *testing.T) {
@@ -91,7 +91,7 @@ func TestRedisConnectorInitialization(t *testing.T) {
 		require.NotEqual(t, util.StateReady, state, "connector should not be in ready state")
 
 		// Attempting to call Set or Get here should result in an error because checkReady will fail.
-		err = connector.Set(ctx, "testPK", "testRK", "value", nil)
+		err = connector.Set(ctx, "testPK", "testRK", []byte("value"), nil)
 		require.Error(t, err, "should fail because redis is not connected")
 
 		// The same for Get
@@ -186,12 +186,12 @@ func TestRedisConnectorInitialization(t *testing.T) {
 			"Connector did not become READY within the expected timeframe")
 
 		// At this point, the connector should be ready. Let's confirm by doing a Set/Get.
-		err = connector.Set(ctx, "eventual", "rk", "recovered-value", nil)
+		err = connector.Set(ctx, "eventual", "rk", []byte("recovered-value"), nil)
 		require.NoError(t, err, "Set should succeed if the connector is truly ready")
 
 		val, err := connector.Get(ctx, "", "eventual", "rk")
 		require.NoError(t, err, "Get should succeed for the newly-set key")
-		require.Equal(t, "recovered-value", val)
+		require.Equal(t, []byte("recovered-value"), val)
 	})
 
 }
@@ -686,7 +686,7 @@ func TestRedisReverseIndexLookup(t *testing.T) {
 	rangeKey := "eth_getTransactionReceipt:d49fc9409c70839c9c3251e4ff36babf30adfc3c41d6425d878032077896f7c8"
 	concretePartitionKey := "evm:1:latest"
 	wildcardPartitionKey := "evm:1:*"
-	value := "tx-receipt-value"
+	value := []byte("tx-receipt-value")
 
 	// Store the value using the concrete partition key. This should also create the reverse index entry.
 	err = connector.Set(ctx, concretePartitionKey, rangeKey, value, nil)
@@ -738,8 +738,8 @@ func TestRedisConnector_ChainIsolation(t *testing.T) {
 	chainA := "evm:1"   // Ethereum mainnet
 	chainB := "evm:137" // Polygon
 	method := "eth_blockNumber"
-	blockNumberA := "0x1234567"
-	blockNumberB := "0x7654321"
+	blockNumberA := []byte("0x1234567")
+	blockNumberB := []byte("0x7654321")
 
 	// Store block number for chain A
 	partitionKeyA := fmt.Sprintf("%s:%s", chainA, method)

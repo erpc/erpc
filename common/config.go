@@ -163,9 +163,17 @@ type SharedStateConfig struct {
 }
 
 type CacheConfig struct {
-	Connectors []*ConnectorConfig            `yaml:"connectors,omitempty" json:"connectors" tstype:"TsConnectorConfig[]"`
-	Policies   []*CachePolicyConfig          `yaml:"policies,omitempty" json:"policies"`
-	Methods    map[string]*CacheMethodConfig `yaml:"methods,omitempty" json:"methods"`
+	Connectors  []*ConnectorConfig            `yaml:"connectors,omitempty" json:"connectors" tstype:"TsConnectorConfig[]"`
+	Policies    []*CachePolicyConfig          `yaml:"policies,omitempty" json:"policies"`
+	Methods     map[string]*CacheMethodConfig `yaml:"methods,omitempty" json:"methods"`
+	Compression *CompressionConfig            `yaml:"compression,omitempty" json:"compression"`
+}
+
+type CompressionConfig struct {
+	Enabled   *bool  `yaml:"enabled,omitempty" json:"enabled"`
+	Algorithm string `yaml:"algorithm,omitempty" json:"algorithm"` // "zstd" for now, can be extended
+	ZstdLevel string `yaml:"zstdLevel,omitempty" json:"zstdLevel"` // "fastest", "default", "better", "best"
+	Threshold int    `yaml:"threshold,omitempty" json:"threshold"` // Minimum size in bytes to compress
 }
 
 type CacheMethodConfig struct {

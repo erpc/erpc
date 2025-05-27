@@ -1,6 +1,7 @@
 package data
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -26,7 +27,7 @@ func TestMemoryConnector_ZstdCompression(t *testing.T) {
 
 	t.Run("small values are not compressed", func(t *testing.T) {
 		smallValue := `{"jsonrpc":"2.0","result":"0x1bc16d674ec80000","id":1}`
-		err := connector.Set(ctx, "test", "small", smallValue, nil)
+		err := connector.Set(ctx, "test", "small", []byte(smallValue), nil)
 		require.NoError(t, err)
 
 		// Wait for Ristretto to process the write
@@ -35,7 +36,7 @@ func TestMemoryConnector_ZstdCompression(t *testing.T) {
 		// Verify value is stored and retrieved correctly
 		retrieved, err := connector.Get(ctx, "", "test", "small")
 		require.NoError(t, err)
-		require.Equal(t, smallValue, retrieved)
+		require.Equal(t, []byte(smallValue), retrieved)
 	})
 
 	t.Run("large values are compressed transparently", func(t *testing.T) {
@@ -43,7 +44,7 @@ func TestMemoryConnector_ZstdCompression(t *testing.T) {
 		largeValue := createLargeEvmResponse()
 		require.Greater(t, len(largeValue), 512, "Test value should be larger than compression threshold")
 
-		err := connector.Set(ctx, "test", "large", largeValue, nil)
+		err := connector.Set(ctx, "test", "large", []byte(largeValue), nil)
 		require.NoError(t, err)
 
 		// Wait for Ristretto to process the write
@@ -52,7 +53,7 @@ func TestMemoryConnector_ZstdCompression(t *testing.T) {
 		// Verify value is stored and retrieved correctly (compression is transparent)
 		retrieved, err := connector.Get(ctx, "", "test", "large")
 		require.NoError(t, err)
-		require.Equal(t, largeValue, retrieved)
+		require.Equal(t, []byte(largeValue), retrieved)
 	})
 
 	t.Run("mixed size values work correctly", func(t *testing.T) {
@@ -69,7 +70,7 @@ func TestMemoryConnector_ZstdCompression(t *testing.T) {
 
 		// Store all values
 		for _, tc := range testCases {
-			err := connector.Set(ctx, "mixed", tc.key, tc.value, nil)
+			err := connector.Set(ctx, "mixed", tc.key, []byte(tc.value), nil)
 			require.NoError(t, err)
 		}
 
@@ -80,7 +81,7 @@ func TestMemoryConnector_ZstdCompression(t *testing.T) {
 		for _, tc := range testCases {
 			retrieved, err := connector.Get(ctx, "", "mixed", tc.key)
 			require.NoError(t, err)
-			require.Equal(t, tc.value, retrieved, "Value mismatch for key: %s", tc.key)
+			require.Equal(t, []byte(tc.value), retrieved, "Value mismatch for key: %s", tc.key)
 		}
 	})
 
@@ -88,7 +89,7 @@ func TestMemoryConnector_ZstdCompression(t *testing.T) {
 		largeValue := createLargeEvmResponse()
 		ttl := 100 * time.Second
 
-		err := connector.Set(ctx, "test", "ttl", largeValue, &ttl)
+		err := connector.Set(ctx, "test", "ttl", []byte(largeValue), &ttl)
 		require.NoError(t, err)
 
 		// Wait for Ristretto to process the write
@@ -97,7 +98,7 @@ func TestMemoryConnector_ZstdCompression(t *testing.T) {
 		// Verify value is stored and retrieved correctly
 		retrieved, err := connector.Get(ctx, "", "test", "ttl")
 		require.NoError(t, err)
-		require.Equal(t, largeValue, retrieved)
+		require.Equal(t, []byte(largeValue), retrieved)
 	})
 }
 
@@ -118,7 +119,7 @@ func TestMemoryConnector_CompressionBenefits(t *testing.T) {
 	originalSize := len(evmResponse)
 
 	// Store the value
-	err = connector.Set(ctx, "evm", "block", evmResponse, nil)
+	err = connector.Set(ctx, "evm", "block", []byte(evmResponse), nil)
 	require.NoError(t, err)
 
 	// Wait for Ristretto to process the write
@@ -127,7 +128,7 @@ func TestMemoryConnector_CompressionBenefits(t *testing.T) {
 	// Retrieve and verify
 	retrieved, err := connector.Get(ctx, "", "evm", "block")
 	require.NoError(t, err)
-	require.Equal(t, evmResponse, retrieved)
+	require.Equal(t, []byte(evmResponse), retrieved)
 
 	t.Logf("Original EVM response size: %d bytes", originalSize)
 	t.Logf("✅ Compression is transparent - no API changes needed")
@@ -178,7 +179,7 @@ func TestMemoryConnector_ConcurrentCompression(t *testing.T) {
 					key := fmt.Sprintf("%s_w%d_op%d", testCase.key, workerID, j)
 
 					// Set operation
-					if err := connector.Set(ctx, "concurrent", key, testCase.value, nil); err != nil {
+					if err := connector.Set(ctx, "concurrent", key, []byte(testCase.value), nil); err != nil {
 						errChan <- fmt.Errorf("worker %d operation %d set failed: %w", workerID, j, err)
 					}
 
@@ -215,7 +216,7 @@ func TestMemoryConnector_ConcurrentCompression(t *testing.T) {
 					}
 
 					// Verify data integrity
-					if retrieved != testCase.value {
+					if !bytes.Equal(retrieved, []byte(testCase.value)) {
 						errChan <- fmt.Errorf("worker %d operation %d data mismatch for key %s", workerID, j, key)
 					}
 				}

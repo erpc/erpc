@@ -262,6 +262,18 @@ var (
 		Help:      "Total number of cache get skips (i.e. no matching policy found).",
 	}, []string{"project", "network", "category"})
 
+	MetricCacheSetOriginalBytes = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "cache_set_original_bytes_total",
+		Help:      "Total number of original (uncompressed) bytes for cache set operations.",
+	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+
+	MetricCacheSetCompressedBytes = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "cache_set_compressed_bytes_total",
+		Help:      "Total number of compressed bytes for cache set operations.",
+	}, []string{"project", "network", "category", "connector", "policy", "ttl"})
+
 	MetricCORSRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
 		Name:      "cors_requests_total",

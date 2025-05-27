@@ -183,8 +183,8 @@ func (r *sharedStateRegistry) fetchValue(ctx context.Context, key string) (int64
 	}
 
 	var remoteValue int64
-	if remoteVal != "" {
-		if _, err := fmt.Sscanf(remoteVal, "%d", &remoteValue); err != nil {
+	if remoteVal != nil && len(remoteVal) > 0 {
+		if _, err := fmt.Sscanf(string(remoteVal), "%d", &remoteValue); err != nil {
 			return 0, err
 		}
 	}

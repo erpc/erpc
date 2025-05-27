@@ -74,12 +74,12 @@ func TestDynamoDBConnectorInitialization(t *testing.T) {
 		}, 10*time.Second, 100*time.Millisecond, "connector should be in ready state")
 
 		// Try a simple SET/GET to confirm real operation
-		err = connector.Set(ctx, "testPK", "testRK", "hello-dynamo", nil)
+		err = connector.Set(ctx, "testPK", "testRK", []byte("hello-dynamo"), nil)
 		require.NoError(t, err, "Set should succeed after successful initialization")
 
 		val, err := connector.Get(ctx, "", "testPK", "testRK")
 		require.NoError(t, err, "Get should succeed for existing key")
-		require.Equal(t, "hello-dynamo", val)
+		require.Equal(t, []byte("hello-dynamo"), val)
 	})
 
 	t.Run("fails on first attempt with invalid endpoint, but returns connector anyway", func(t *testing.T) {
@@ -116,7 +116,7 @@ func TestDynamoDBConnectorInitialization(t *testing.T) {
 		}
 
 		// 4) Verify that calls to Set/Get fail because the DynamoDB client is not connected
-		err = connector.Set(ctx, "testPK", "testRK", "value", nil)
+		err = connector.Set(ctx, "testPK", "testRK", []byte("value"), nil)
 		require.Error(t, err, "Set should fail because DynamoDB is not connected (invalid endpoint)")
 
 		_, err = connector.Get(ctx, "", "testPK", "testRK")
@@ -190,7 +190,7 @@ func TestDynamoDBConnectorReverseIndex(t *testing.T) {
 	}
 
 	for _, data := range testData {
-		err = connector.Set(ctx, data.pk, data.rk, data.value, nil)
+		err = connector.Set(ctx, data.pk, data.rk, []byte(data.value), nil)
 		require.NoError(t, err, "failed to insert test data")
 	}
 
@@ -241,7 +241,7 @@ func TestDynamoDBConnectorReverseIndex(t *testing.T) {
 				}
 			} else {
 				require.NoError(t, err, "unexpected error")
-				require.Equal(t, tc.expectedValue, value, "unexpected result value")
+				require.Equal(t, []byte(tc.expectedValue), value, "unexpected result value")
 			}
 		})
 	}

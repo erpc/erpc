@@ -25,13 +25,16 @@ func (m *MockConnector) Id() string {
 }
 
 // Get mocks the Get method of the Connector interface
-func (m *MockConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) (string, error) {
+func (m *MockConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) ([]byte, error) {
 	args := m.Called(ctx, index, partitionKey, rangeKey)
-	return args.String(0), args.Error(1)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]byte), args.Error(1)
 }
 
 // Set mocks the Set method of the Connector interface
-func (m *MockConnector) Set(ctx context.Context, partitionKey, rangeKey, value string, ttl *time.Duration) error {
+func (m *MockConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration) error {
 	args := m.Called(ctx, partitionKey, rangeKey, value, ttl)
 	return args.Error(0)
 }
@@ -92,7 +95,7 @@ func NewMockMemoryConnector(ctx context.Context, logger *zerolog.Logger, id stri
 }
 
 // Set overrides the base Set method to include a fake delay
-func (m *MockMemoryConnector) Set(ctx context.Context, partitionKey, rangeKey, value string, ttl *time.Duration) error {
+func (m *MockMemoryConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -105,14 +108,14 @@ func (m *MockMemoryConnector) Set(ctx context.Context, partitionKey, rangeKey, v
 }
 
 // Get overrides the base Get method to include a fake delay
-func (m *MockMemoryConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) (string, error) {
+func (m *MockMemoryConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) ([]byte, error) {
 	select {
 	case <-ctx.Done():
-		return "", ctx.Err()
+		return nil, ctx.Err()
 	case <-time.After(m.fakeGetDelay):
 	}
 	if rand.Float64() < m.getErrorRate || m.getErrorRate == 1 {
-		return "", errors.New("fake random GET error")
+		return nil, errors.New("fake random GET error")
 	}
 	return m.MemoryConnector.Get(ctx, index, partitionKey, rangeKey)
 }
