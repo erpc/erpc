@@ -100,6 +100,7 @@ import type {
     | "evm+thirdweb"
     | "evm+repository"
     | "evm+superchain"
+    | "evm+chainstack"
     | "evm+tenderly"
     | "evm+onfinality";
   
