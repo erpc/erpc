@@ -1068,6 +1068,22 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 		return VendorSettings{
 			"apiKey": endpoint.Host,
 		}, nil
+	case "erpc", "evm+erpc":
+		settings := VendorSettings{
+			"endpoint": "https://" + endpoint.Host + "/" + strings.TrimPrefix(endpoint.Path, "/"),
+		}
+
+		if endpoint.RawQuery != "" {
+			params, err := url.ParseQuery(endpoint.RawQuery)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse erpc query parameters: %w", err)
+			}
+
+			if secret := params.Get("secret"); secret != "" {
+				settings["secret"] = secret
+			}
+		}
+		return settings, nil
 	case "repository", "evm+repository":
 		return VendorSettings{
 			"repositoryUrl": "https://" + endpoint.Host + "/" + strings.TrimPrefix(endpoint.Path, "/") + "?" + endpoint.RawQuery,

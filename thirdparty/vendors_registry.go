@@ -26,6 +26,7 @@ func NewVendorsRegistry() *VendorsRegistry {
 	r.Register(CreateTenderlyVendor())
 	r.Register(CreateChainstackVendor())
 	r.Register(CreateOnFinalityVendor())
+	r.Register(CreateErpcVendor())
 
 	return r
 }
