@@ -143,3 +143,104 @@ func TestChainstackNode_ResilientDecoding(t *testing.T) {
 	assert.Equal(t, "test-key", node.Details.AuthKey)
 	assert.True(t, node.Configuration.Archive)
 }
+
+func TestChainstackFilterParams(t *testing.T) {
+	vendor := CreateChainstackVendor().(*ChainstackVendor)
+
+	tests := []struct {
+		name     string
+		settings common.VendorSettings
+		expected *ChainstackFilterParams
+	}{
+		{
+			name: "no filters",
+			settings: common.VendorSettings{
+				"apiKey": "test-key",
+			},
+			expected: &ChainstackFilterParams{},
+		},
+		{
+			name: "all filters",
+			settings: common.VendorSettings{
+				"apiKey":       "test-key",
+				"project":      "proj-123",
+				"organization": "org-456",
+				"region":       "us-east-1",
+				"provider":     "aws",
+				"type":         "dedicated",
+			},
+			expected: &ChainstackFilterParams{
+				Project:      "proj-123",
+				Organization: "org-456",
+				Region:       "us-east-1",
+				Provider:     "aws",
+				Type:         "dedicated",
+			},
+		},
+		{
+			name: "partial filters",
+			settings: common.VendorSettings{
+				"apiKey":  "test-key",
+				"project": "proj-123",
+				"type":    "shared",
+			},
+			expected: &ChainstackFilterParams{
+				Project: "proj-123",
+				Type:    "shared",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := vendor.extractFilterParams(tt.settings)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestChainstackCacheKey(t *testing.T) {
+	vendor := CreateChainstackVendor().(*ChainstackVendor)
+
+	tests := []struct {
+		name     string
+		apiKey   string
+		params   *ChainstackFilterParams
+		expected string
+	}{
+		{
+			name:     "no filters",
+			apiKey:   "test-key",
+			params:   &ChainstackFilterParams{},
+			expected: "test-key",
+		},
+		{
+			name:   "all filters",
+			apiKey: "test-key",
+			params: &ChainstackFilterParams{
+				Project:      "proj-123",
+				Organization: "org-456",
+				Region:       "us-east-1",
+				Provider:     "aws",
+				Type:         "dedicated",
+			},
+			expected: "test-key_p:proj-123_o:org-456_r:us-east-1_pr:aws_t:dedicated",
+		},
+		{
+			name:   "partial filters",
+			apiKey: "test-key",
+			params: &ChainstackFilterParams{
+				Project: "proj-123",
+				Type:    "shared",
+			},
+			expected: "test-key_p:proj-123_t:shared",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := vendor.getCacheKey(tt.apiKey, tt.params)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}

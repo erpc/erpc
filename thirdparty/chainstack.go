@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,7 +24,7 @@ type ChainstackVendor struct {
 
 	// local cache of nodes data
 	nodesDataLock          sync.RWMutex
-	nodesData              map[string][]*ChainstackNode // key is apiKey
+	nodesData              map[string][]*ChainstackNode // key is apiKey + filter params hash
 	nodesDataLastFetchedAt map[string]time.Time
 }
 
@@ -47,6 +48,14 @@ type ChainstackNodeDetails struct {
 type ChainstackNodesResponse struct {
 	Next    *string           `json:"next"`
 	Results []json.RawMessage `json:"results"`
+}
+
+type ChainstackFilterParams struct {
+	Project      string `json:"project,omitempty"`
+	Organization string `json:"organization,omitempty"`
+	Region       string `json:"region,omitempty"`
+	Provider     string `json:"provider,omitempty"`
+	Type         string `json:"type,omitempty"`
 }
 
 const DefaultChainstackRecheckInterval = 1 * time.Hour
@@ -83,14 +92,16 @@ func (v *ChainstackVendor) SupportsNetwork(ctx context.Context, logger *zerolog.
 		recheckInterval = interval
 	}
 
-	err = v.ensureRefreshNodes(ctx, logger, apiKey, recheckInterval)
+	filterParams := v.extractFilterParams(settings)
+	err = v.ensureRefreshNodes(ctx, logger, apiKey, filterParams, recheckInterval)
 	if err != nil {
 		logger.Warn().Err(err).Msg("failed to refresh Chainstack nodes, falling back to static network names")
 		return false, err
 	}
 
+	cacheKey := v.getCacheKey(apiKey, filterParams)
 	v.nodesDataLock.RLock()
-	nodes := v.nodesData[apiKey]
+	nodes := v.nodesData[cacheKey]
 	v.nodesDataLock.RUnlock()
 
 	for _, node := range nodes {
@@ -127,14 +138,16 @@ func (v *ChainstackVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 			recheckInterval = interval
 		}
 
-		err := v.ensureRefreshNodes(ctx, &log.Logger, apiKey, recheckInterval)
+		filterParams := v.extractFilterParams(settings)
+		err := v.ensureRefreshNodes(ctx, &log.Logger, apiKey, filterParams, recheckInterval)
 		if err != nil {
 			log.Warn().Err(err).Msg("failed to refresh Chainstack nodes, falling back to static endpoint generation")
 			return nil, err
 		}
 
+		cacheKey := v.getCacheKey(apiKey, filterParams)
 		v.nodesDataLock.RLock()
-		nodes := v.nodesData[apiKey]
+		nodes := v.nodesData[cacheKey]
 		v.nodesDataLock.RUnlock()
 
 		var upstreams []*common.UpstreamConfig
@@ -163,21 +176,66 @@ func (v *ChainstackVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 	}
 }
 
-func (v *ChainstackVendor) ensureRefreshNodes(ctx context.Context, logger *zerolog.Logger, apiKey string, recheckInterval time.Duration) error {
+func (v *ChainstackVendor) extractFilterParams(settings common.VendorSettings) *ChainstackFilterParams {
+	params := &ChainstackFilterParams{}
+
+	if project, ok := settings["project"].(string); ok {
+		params.Project = project
+	}
+	if organization, ok := settings["organization"].(string); ok {
+		params.Organization = organization
+	}
+	if region, ok := settings["region"].(string); ok {
+		params.Region = region
+	}
+	if provider, ok := settings["provider"].(string); ok {
+		params.Provider = provider
+	}
+	if nodeType, ok := settings["type"].(string); ok {
+		params.Type = nodeType
+	}
+
+	return params
+}
+
+func (v *ChainstackVendor) getCacheKey(apiKey string, params *ChainstackFilterParams) string {
+	// Create a unique cache key based on API key and filter parameters
+	key := apiKey
+	if params.Project != "" {
+		key += "_p:" + params.Project
+	}
+	if params.Organization != "" {
+		key += "_o:" + params.Organization
+	}
+	if params.Region != "" {
+		key += "_r:" + params.Region
+	}
+	if params.Provider != "" {
+		key += "_pr:" + params.Provider
+	}
+	if params.Type != "" {
+		key += "_t:" + params.Type
+	}
+	return key
+}
+
+func (v *ChainstackVendor) ensureRefreshNodes(ctx context.Context, logger *zerolog.Logger, apiKey string, filterParams *ChainstackFilterParams, recheckInterval time.Duration) error {
+	cacheKey := v.getCacheKey(apiKey, filterParams)
+
 	v.nodesDataLock.Lock()
 	defer v.nodesDataLock.Unlock()
 
 	// Check if we've fetched recently
-	if lastFetch, ok := v.nodesDataLastFetchedAt[apiKey]; ok && time.Since(lastFetch) < recheckInterval {
+	if lastFetch, ok := v.nodesDataLastFetchedAt[cacheKey]; ok && time.Since(lastFetch) < recheckInterval {
 		return nil
 	}
 
 	// Fetch nodes from API
-	nodes, err := v.fetchNodes(ctx, apiKey)
+	nodes, err := v.fetchNodes(ctx, apiKey, filterParams)
 	if err != nil {
 		// Keep stale data if fetch fails
-		if _, hasData := v.nodesData[apiKey]; hasData {
-			log.Warn().Err(err).Msg("could not refresh Chainstack nodes data; will use stale data")
+		if _, hasData := v.nodesData[cacheKey]; hasData {
+			logger.Warn().Err(err).Msg("could not refresh Chainstack nodes data; will use stale data")
 			return nil
 		}
 		return err
@@ -190,15 +248,41 @@ func (v *ChainstackVendor) ensureRefreshNodes(ctx context.Context, logger *zerol
 	}
 
 	// Update cache
-	v.nodesData[apiKey] = nodes
-	v.nodesDataLastFetchedAt[apiKey] = time.Now()
+	v.nodesData[cacheKey] = nodes
+	v.nodesDataLastFetchedAt[cacheKey] = time.Now()
 
 	return nil
 }
 
-func (v *ChainstackVendor) fetchNodes(ctx context.Context, apiKey string) ([]*ChainstackNode, error) {
+func (v *ChainstackVendor) fetchNodes(ctx context.Context, apiKey string, filterParams *ChainstackFilterParams) ([]*ChainstackNode, error) {
 	var allNodes []*ChainstackNode
-	nextURL := "https://api.chainstack.com/v1/nodes/"
+
+	// Build initial URL with query parameters
+	baseURL := "https://api.chainstack.com/v1/nodes/"
+	params := url.Values{}
+
+	if filterParams != nil {
+		if filterParams.Project != "" {
+			params.Set("project", filterParams.Project)
+		}
+		if filterParams.Organization != "" {
+			params.Set("organization", filterParams.Organization)
+		}
+		if filterParams.Region != "" {
+			params.Set("region", filterParams.Region)
+		}
+		if filterParams.Provider != "" {
+			params.Set("provider", filterParams.Provider)
+		}
+		if filterParams.Type != "" {
+			params.Set("type", filterParams.Type)
+		}
+	}
+
+	nextURL := baseURL
+	if len(params) > 0 {
+		nextURL = baseURL + "?" + params.Encode()
+	}
 
 	httpClient := &http.Client{
 		Timeout: 30 * time.Second,

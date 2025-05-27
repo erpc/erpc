@@ -1001,9 +1001,35 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 			"apiKey": endpoint.Host,
 		}, nil
 	case "chainstack", "evm+chainstack":
-		return VendorSettings{
+		settings := VendorSettings{
 			"apiKey": endpoint.Host,
-		}, nil
+		}
+
+		// Parse query parameters for additional filters
+		if endpoint.RawQuery != "" {
+			params, err := url.ParseQuery(endpoint.RawQuery)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse chainstack query parameters: %w", err)
+			}
+
+			if project := params.Get("project"); project != "" {
+				settings["project"] = project
+			}
+			if organization := params.Get("organization"); organization != "" {
+				settings["organization"] = organization
+			}
+			if region := params.Get("region"); region != "" {
+				settings["region"] = region
+			}
+			if provider := params.Get("provider"); provider != "" {
+				settings["provider"] = provider
+			}
+			if nodeType := params.Get("type"); nodeType != "" {
+				settings["type"] = nodeType
+			}
+		}
+
+		return settings, nil
 	case "onfinality", "evm+onfinality":
 		return VendorSettings{
 			"apiKey": endpoint.Host,
