@@ -162,7 +162,7 @@ func (v *PimlicoVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 	return cid == chainId, nil
 }
 
-func (v *PimlicoVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
+func (v *PimlicoVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}

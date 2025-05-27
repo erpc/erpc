@@ -559,6 +559,10 @@ For production traffic consult with Tenderly team about the chains you are going
 
 Built for [Chainstack](https://chainstack.com) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
 
+<Callout type='info'>
+  This key must be created using [Platform API key](https://docs.chainstack.com/reference/platform-api-getting-started) settings page.
+</Callout>
+
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
@@ -567,7 +571,7 @@ projects:
   - id: main
     # ...
     upstreams:
-      - endpoint: chainstack://YOUR_CHAINSTACK_API_KEY
+      - endpoint: chainstack://YOUR_CHAINSTACK_PLATFORM_API_KEY
         # ...
 ```
 </Tabs.Tab>
@@ -788,4 +792,8 @@ providers:
   - vendor: onfinality
     settings:
       apiKey: xxxxx # Your OnFinality API key
+  - vendor: chainstack
+    settings:
+      apiKey: xxxxx # Your Chainstack API key
+      recheckInterval: 1h # (optional) How often to recheck the API for newly added networks (default: 1h)
 ```

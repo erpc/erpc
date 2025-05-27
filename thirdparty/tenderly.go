@@ -80,7 +80,7 @@ func (v *TenderlyVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Lo
 	return ok, nil
 }
 
-func (v *TenderlyVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
+func (v *TenderlyVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}

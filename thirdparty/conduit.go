@@ -83,7 +83,7 @@ func (v *ConduitVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 	return exists && network != nil && network.HttpEndpoint != "", nil
 }
 
-func (v *ConduitVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
+func (v *ConduitVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
