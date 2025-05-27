@@ -152,7 +152,7 @@ func (v *SuperchainVendor) SupportsNetwork(ctx context.Context, logger *zerolog.
 	return exists && len(rpcs) > 0, nil
 }
 
-func (v *SuperchainVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
+func (v *SuperchainVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}

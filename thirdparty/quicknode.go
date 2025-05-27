@@ -1,11 +1,13 @@
 package thirdparty
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/erpc/erpc/common"
+	"github.com/rs/zerolog"
 )
 
 type QuicknodeVendor struct {
@@ -20,7 +22,7 @@ func (v *QuicknodeVendor) Name() string {
 	return "quicknode"
 }
 
-func (v *QuicknodeVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
+func (v *QuicknodeVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}

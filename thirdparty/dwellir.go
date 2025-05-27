@@ -118,7 +118,7 @@ func (v *DwellirVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 	return ok, nil
 }
 
-func (v *DwellirVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
+func (v *DwellirVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}

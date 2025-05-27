@@ -469,7 +469,7 @@ func (u *UpstreamsRegistry) buildProviderBootstrapTask(
 				return err
 			}
 
-			upsCfgs, err := provider.GenerateUpstreamConfigs(networkId)
+			upsCfgs, err := provider.GenerateUpstreamConfigs(ctx, &lg, networkId)
 			if err != nil {
 				return err
 			}

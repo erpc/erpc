@@ -559,6 +559,10 @@ For production traffic consult with Tenderly team about the chains you are going
 
 Built for [Chainstack](https://chainstack.com) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
 
+<Callout type='info'>
+  This key must be created using [Platform API key](https://docs.chainstack.com/reference/platform-api-getting-started) settings page.
+</Callout>
+
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
@@ -567,7 +571,12 @@ projects:
   - id: main
     # ...
     upstreams:
-      - endpoint: chainstack://YOUR_CHAINSTACK_API_KEY
+      # Simple usage with just API key
+      - endpoint: chainstack://YOUR_CHAINSTACK_PLATFORM_API_KEY
+        # ...
+      
+      # With query parameters for filtering
+      - endpoint: chainstack://YOUR_CHAINSTACK_PLATFORM_API_KEY?project=PROJECT_ID&organization=ORG_ID&region=us-east-1&provider=aws&type=dedicated
         # ...
 ```
 </Tabs.Tab>
@@ -582,7 +591,13 @@ export default createConfig({
       // ...
       upstreams: [
         {
+          // Simple usage with just API key
           endpoint: "chainstack://YOUR_CHAINSTACK_API_KEY",
+          // ...
+        },
+        {
+          // With query parameters for filtering
+          endpoint: "chainstack://YOUR_CHAINSTACK_API_KEY?project=PROJECT_ID&organization=ORG_ID&region=us-east-1&provider=aws&type=dedicated",
           // ...
         },
       ],
@@ -594,6 +609,13 @@ export default createConfig({
 </Tabs>
 
 Chainstack supports a wide range of EVM-compatible networks. For production traffic, ensure your Chainstack subscription plan supports the expected load and number of networks you plan to use.
+
+**Supported filter parameters:**
+- `project`: Filter by project ID
+- `organization`: Filter by organization ID  
+- `region`: Filter by region (e.g., `asia-southeast1`, `ap-southeast-1`, `us-west-2`, `us-east-1`, `uksouth`, `eu3`)
+- `provider`: Filter by cloud provider (e.g., `aws`, `azure`, `gcloud`, `vzo`)
+- `type`: Filter by node type (e.g., `shared`, `dedicated`)
 
 #### `onfinality`
 
@@ -785,6 +807,12 @@ providers:
   - vendor: chainstack
     settings:
       apiKey: xxxxx # Your Chainstack API key
+      recheckInterval: 1h # (optional) How often to recheck the API for newly added networks (default: 1h)
+      project: xxxxx # (optional) Filter by project ID
+      organization: xxxxx # (optional) Filter by organization ID
+      region: us-east-1 # (optional) Filter by region (asia-southeast1, ap-southeast-1, us-west-2, us-east-1, uksouth, eu3)
+      provider: aws # (optional) Filter by cloud provider (aws, azure, gcloud, vzo)
+      type: dedicated # (optional) Filter by node type (shared, dedicated)
   - vendor: onfinality
     settings:
       apiKey: xxxxx # Your OnFinality API key

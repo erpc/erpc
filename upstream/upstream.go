@@ -91,7 +91,7 @@ func NewUpstream(
 	pup.initRateLimitAutoTuner()
 
 	if vn != nil {
-		cfgs, err := vn.GenerateConfigs(cfg, nil)
+		cfgs, err := vn.GenerateConfigs(appCtx, &lg, cfg, nil)
 		if err != nil {
 			return nil, err
 		}

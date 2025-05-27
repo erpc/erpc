@@ -73,7 +73,7 @@ func (v *EtherspotVendor) SupportsNetwork(ctx context.Context, logger *zerolog.L
 	return ok, nil
 }
 
-func (v *EtherspotVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
+func (v *EtherspotVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}
