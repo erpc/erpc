@@ -101,6 +101,13 @@ export interface CacheConfig {
     methods?: {
         [key: string]: CacheMethodConfig | undefined;
     };
+    compression?: CompressionConfig;
+}
+export interface CompressionConfig {
+    enabled?: boolean;
+    algorithm?: string;
+    zstdLevel?: string;
+    threshold?: number;
 }
 export interface CacheMethodConfig {
     reqRefs: any[][];

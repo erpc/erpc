@@ -2683,7 +2683,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 			})
 
 		// Create random data that doesn't compress well
-		randomData := generateRandomString(200)
+		randomData := generateRandomString(100)
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x5",false],"id":1}`))
 		req.SetNetwork(mockNetwork)
 		req.SetCacheDal(cache)

@@ -9,6 +9,7 @@ import { Callout, Tabs, Tab } from "nextra/components";
 Providers make it easy to add well-known third-parties RPC endpoints quickly. Here are the supported providers:
 
 - [`repository`](#repository) A special provider to automatically add "public" RPC endpoints for 2,000+ EVM chains.
+- [`erpc`](#erpc) Accepts erpc.cloud endpoint and automatically adds all their EVM chains.
 - [`alchemy`](#alchemy) Accepts alchemy.com api key and automatically adds all their EVM chains.
 - [`drpc`](#drpc) Accepts drpc.org api key and automatically adds all their EVM chains.
 - [`blastapi`](#blastapi) Accepts blastapi.io api key and automatically adds all their EVM chains.
@@ -141,6 +142,52 @@ export default createConfig({
         {
           endpoint: "drpc://YOUR_DRPC_API_KEY",
           // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+#### `erpc`
+
+Built for [eRPC Cloud](https://erpc.cloud) endpoints to make it easier to connect to eRPC-hosted RPC services. You don't have to pass chainId as that will be automatically detected based on the request you send.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+
+      # With project and architecture specified
+      - endpoint: erpc://xxx.aws.erpc.cloud/project/evm
+
+      # With authentication secret (optional)
+      - endpoint: erpc://xxx.aws.erpc.cloud/project/evm?secret=xxxxx
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        // With project and architecture specified
+        {
+          endpoint: "erpc://xxx.aws.erpc.cloud/project/evm",
+        },
+        // With authentication secret (optional)
+        {
+          endpoint: "erpc://xxx.aws.erpc.cloud/project/evm?secret=xxxxx",
         },
       ],
     },
@@ -770,6 +817,10 @@ providers:
   - vendor: envio
     settings:
       rootDomain: rpc.hypersync.xyz
+  - vendor: erpc
+    settings:
+      endpoint: xxx.aws.erpc.cloud/project/evm
+      secret: xxxxx # Optional authentication secret
   - vendor: etherspot
     settings:
       apiKey: xxxxx

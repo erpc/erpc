@@ -128,6 +128,13 @@ export interface CacheConfig {
   connectors?: TsConnectorConfig[];
   policies?: (CachePolicyConfig | undefined)[];
   methods?: { [key: string]: CacheMethodConfig | undefined};
+  compression?: CompressionConfig;
+}
+export interface CompressionConfig {
+  enabled?: boolean;
+  algorithm?: string; // "zstd" for now, can be extended
+  zstdLevel?: string; // "fastest", "default", "better", "best"
+  threshold?: number /* int */; // Minimum size in bytes to compress
 }
 export interface CacheMethodConfig {
   reqRefs: any[][];
