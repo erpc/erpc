@@ -169,24 +169,22 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 	}
 
 	// Check if the upstream can handle the requested block range
-	// This includes checking latest block availability and force-polling if needed
-	canHandleFromBlock, err := up.EvmAssertBlockAvailability(ctx, "eth_getLogs", common.AvailbilityConfidenceBlockHead, fromBlock)
+	available, err := up.EvmAssertBlockAvailability(ctx, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, toBlock)
 	if err != nil {
 		return true, nil, err
 	}
-	if !canHandleFromBlock {
-		return true, nil, common.NewErrEndpointMissingData(
-			fmt.Errorf("block not found, because (fromBlock %d) is not available on the upstream node, ensure the requested block is within supported range", fromBlock),
-		)
-	}
-
-	canHandleToBlock, err := up.EvmAssertBlockAvailability(ctx, "eth_getLogs", common.AvailbilityConfidenceBlockHead, toBlock)
-	if err != nil {
-		return true, nil, err
-	}
-	if !canHandleToBlock {
+	if !available {
 		return true, nil, common.NewErrEndpointMissingData(
 			fmt.Errorf("block not found, because requested block (toBlock %d) is not available on the upstream node, ensure statePollerDebounce is low enough and or the requested block is older than the current chain head", toBlock),
+		)
+	}
+	available, err = up.EvmAssertBlockAvailability(ctx, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, fromBlock)
+	if err != nil {
+		return true, nil, err
+	}
+	if !available {
+		return true, nil, common.NewErrEndpointMissingData(
+			fmt.Errorf("block not found, because (fromBlock %d) is not available on the upstream node, ensure the requested block is within supported range", fromBlock),
 		)
 	}
 

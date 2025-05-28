@@ -301,7 +301,7 @@ func (m *mockEvmStatePoller) IsObjectNull() bool                            { re
 func TestUpstream_EvmCanHandleBlock(t *testing.T) {
 	t.Run("NilUpstream", func(t *testing.T) {
 		var upstream *Upstream
-		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 100)
+		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 100)
 		assert.False(t, canHandle)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "upstream or config is nil")
@@ -309,7 +309,7 @@ func TestUpstream_EvmCanHandleBlock(t *testing.T) {
 
 	t.Run("NilConfig", func(t *testing.T) {
 		upstream := &Upstream{}
-		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 100)
+		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 100)
 		assert.False(t, canHandle)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "upstream or config is nil")
@@ -322,7 +322,7 @@ func TestUpstream_EvmCanHandleBlock(t *testing.T) {
 			},
 			logger: &zerolog.Logger{},
 		}
-		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 100)
+		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 100)
 		assert.False(t, canHandle)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "upstream evm state poller is not available")
@@ -336,7 +336,7 @@ func TestUpstream_EvmCanHandleBlock(t *testing.T) {
 			logger:         &zerolog.Logger{},
 			evmStatePoller: &mockEvmStatePoller{isNull: true},
 		}
-		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 100)
+		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 100)
 		assert.False(t, canHandle)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "upstream evm state poller is not available")
@@ -351,10 +351,9 @@ func TestUpstream_EvmCanHandleBlock(t *testing.T) {
 			logger:         &zerolog.Logger{},
 			evmStatePoller: &mockEvmStatePoller{latestBlock: 0},
 		}
-		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 100)
+		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 100)
 		assert.False(t, canHandle)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "upstream latest block is not available")
+		assert.NoError(t, err)
 	})
 
 	t.Run("BlockBeyondLatest", func(t *testing.T) {
@@ -366,7 +365,7 @@ func TestUpstream_EvmCanHandleBlock(t *testing.T) {
 			logger:         &zerolog.Logger{},
 			evmStatePoller: &mockEvmStatePoller{latestBlock: 1000},
 		}
-		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 1001)
+		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 1001)
 		assert.False(t, canHandle)
 		assert.NoError(t, err)
 	})
@@ -379,7 +378,7 @@ func TestUpstream_EvmCanHandleBlock(t *testing.T) {
 			logger:         &zerolog.Logger{},
 			evmStatePoller: &mockEvmStatePoller{latestBlock: 1000},
 		}
-		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 100)
+		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 100)
 		assert.False(t, canHandle)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "upstream is not an EVM type")
@@ -398,20 +397,20 @@ func TestUpstream_EvmCanHandleBlock(t *testing.T) {
 		}
 
 		// Archive node should handle all blocks up to latest
-		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 1)
+		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 1)
 		assert.True(t, canHandle)
 		assert.NoError(t, err)
 
-		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 500)
+		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 500)
 		assert.True(t, canHandle)
 		assert.NoError(t, err)
 
-		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 1000)
+		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 1000)
 		assert.True(t, canHandle)
 		assert.NoError(t, err)
 
 		// But not beyond latest
-		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 1001)
+		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 1001)
 		assert.False(t, canHandle)
 		assert.NoError(t, err)
 	})
@@ -431,29 +430,29 @@ func TestUpstream_EvmCanHandleBlock(t *testing.T) {
 
 		// Full node should handle recent blocks
 		// First available block = 1000 - 128 = 872
-		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 872)
+		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 872)
 		assert.True(t, canHandle)
 		assert.NoError(t, err)
 
-		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 900)
+		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 900)
 		assert.True(t, canHandle)
 		assert.NoError(t, err)
 
-		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 1000)
+		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 1000)
 		assert.True(t, canHandle)
 		assert.NoError(t, err)
 
 		// But not old blocks
-		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 871)
+		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 871)
 		assert.False(t, canHandle)
 		assert.NoError(t, err)
 
-		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 1)
+		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 1)
 		assert.False(t, canHandle)
 		assert.NoError(t, err)
 
 		// And not beyond latest
-		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 1001)
+		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 1001)
 		assert.False(t, canHandle)
 		assert.NoError(t, err)
 	})
@@ -472,20 +471,20 @@ func TestUpstream_EvmCanHandleBlock(t *testing.T) {
 		}
 
 		// Without MaxAvailableRecentBlocks, assume it can handle all blocks up to latest
-		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 1)
+		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 1)
 		assert.True(t, canHandle)
 		assert.NoError(t, err)
 
-		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 500)
+		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 500)
 		assert.True(t, canHandle)
 		assert.NoError(t, err)
 
-		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 1000)
+		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 1000)
 		assert.True(t, canHandle)
 		assert.NoError(t, err)
 
 		// But not beyond latest
-		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 1001)
+		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 1001)
 		assert.False(t, canHandle)
 		assert.NoError(t, err)
 	})
@@ -505,11 +504,11 @@ func TestUpstream_EvmCanHandleBlock(t *testing.T) {
 
 		// Test exact boundary
 		// First available block = 1000 - 100 = 900
-		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 900)
+		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 900)
 		assert.True(t, canHandle)
 		assert.NoError(t, err)
 
-		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 899)
+		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 899)
 		assert.False(t, canHandle)
 		assert.NoError(t, err)
 	})
@@ -528,7 +527,7 @@ func TestUpstream_EvmCanHandleBlock(t *testing.T) {
 		}
 
 		// Unknown node type without MaxAvailableRecentBlocks should assume it can handle all blocks up to latest
-		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 500)
+		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 500)
 		assert.True(t, canHandle)
 		assert.NoError(t, err)
 	})
@@ -549,7 +548,7 @@ func TestUpstream_EvmCanHandleBlock(t *testing.T) {
 
 		// Request block 1050 which is beyond initial latest (1000)
 		// This should trigger force-polling
-		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 1050)
+		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, true, 1050)
 		assert.False(t, canHandle) // Still false because mock doesn't update on poll
 		assert.NoError(t, err)
 
@@ -560,7 +559,7 @@ func TestUpstream_EvmCanHandleBlock(t *testing.T) {
 		}
 		upstream.evmStatePoller = mockPollerWithUpdate
 
-		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 1050)
+		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, true, 1050)
 		assert.True(t, canHandle) // Should be true after force-polling
 		assert.NoError(t, err)
 	})
@@ -618,7 +617,7 @@ func TestUpstream_EvmCanHandleBlock_Metrics(t *testing.T) {
 		}
 
 		// Request block beyond latest - should increment upper bound metric
-		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 1001)
+		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 1001)
 		assert.False(t, canHandle)
 		assert.NoError(t, err)
 
@@ -644,7 +643,7 @@ func TestUpstream_EvmCanHandleBlock_Metrics(t *testing.T) {
 
 		// Request block before available range - should increment lower bound metric
 		// First available block = 1000 - 100 = 900
-		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, 899)
+		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceBlockHead, false, 899)
 		assert.False(t, canHandle)
 		assert.NoError(t, err)
 
@@ -668,7 +667,7 @@ func TestUpstream_EvmCanHandleBlock_Metrics(t *testing.T) {
 		}
 
 		// Request block beyond latest with empty method - should not increment metrics
-		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "", common.AvailbilityConfidenceBlockHead, 1001)
+		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "", common.AvailbilityConfidenceBlockHead, false, 1001)
 		assert.False(t, canHandle)
 		assert.NoError(t, err)
 
@@ -691,17 +690,17 @@ func TestUpstream_EvmAssertBlockAvailability_Finalized(t *testing.T) {
 		}
 
 		// Block is finalized - should be available
-		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceFinalized, 850)
+		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceFinalized, false, 850)
 		assert.True(t, canHandle)
 		assert.NoError(t, err)
 
 		// Block at finalized boundary - should be available
-		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceFinalized, 900)
+		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceFinalized, false, 900)
 		assert.True(t, canHandle)
 		assert.NoError(t, err)
 
 		// Block not finalized yet - should not be available
-		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceFinalized, 901)
+		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceFinalized, false, 901)
 		assert.False(t, canHandle)
 		assert.NoError(t, err)
 	})
@@ -721,17 +720,17 @@ func TestUpstream_EvmAssertBlockAvailability_Finalized(t *testing.T) {
 
 		// Block is finalized and within range - should be available
 		// First available block = 1000 - 128 = 872
-		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceFinalized, 880)
+		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceFinalized, false, 880)
 		assert.True(t, canHandle)
 		assert.NoError(t, err)
 
 		// Block is finalized but before available range - should not be available
-		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceFinalized, 850)
+		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceFinalized, false, 850)
 		assert.False(t, canHandle)
 		assert.NoError(t, err)
 
 		// Block not finalized - should not be available
-		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceFinalized, 950)
+		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceFinalized, false, 950)
 		assert.False(t, canHandle)
 		assert.NoError(t, err)
 	})
@@ -751,11 +750,11 @@ func TestUpstream_EvmAssertBlockAvailability_Finalized(t *testing.T) {
 
 		// Test exact boundary
 		// First available block = 1000 - 100 = 900
-		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceFinalized, 900)
+		canHandle, err := upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceFinalized, false, 900)
 		assert.True(t, canHandle)
 		assert.NoError(t, err)
 
-		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceFinalized, 899)
+		canHandle, err = upstream.EvmAssertBlockAvailability(context.Background(), "test_method", common.AvailbilityConfidenceFinalized, false, 899)
 		assert.False(t, canHandle)
 		assert.NoError(t, err)
 	})

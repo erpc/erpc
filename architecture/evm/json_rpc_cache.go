@@ -706,7 +706,7 @@ func (c *EvmJsonRpcCache) getFinalityState(ctx context.Context, req *common.Norm
 		upstream := resp.Upstream()
 		if upstream != nil {
 			if ups, ok := upstream.(common.EvmUpstream); ok {
-				if isFinalized, err := ups.EvmIsBlockFinalized(blockNumber); err == nil {
+				if isFinalized, err := ups.EvmIsBlockFinalized(ctx, blockNumber, false); err == nil {
 					if isFinalized {
 						finality = common.DataFinalityStateFinalized
 					} else {

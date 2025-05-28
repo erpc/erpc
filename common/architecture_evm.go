@@ -13,8 +13,8 @@ const (
 type EvmUpstream interface {
 	Upstream
 	EvmGetChainId(ctx context.Context) (string, error)
-	EvmIsBlockFinalized(blockNumber int64) (bool, error)
-	EvmAssertBlockAvailability(ctx context.Context, forMethod string, confidence AvailbilityConfidence, blockNumber int64) (bool, error)
+	EvmIsBlockFinalized(ctx context.Context, blockNumber int64, forceFreshIfStale bool) (bool, error)
+	EvmAssertBlockAvailability(ctx context.Context, forMethod string, confidence AvailbilityConfidence, forceFreshIfStale bool, blockNumber int64) (bool, error)
 	EvmSyncingState() EvmSyncingState
 	EvmStatePoller() EvmStatePoller
 }
@@ -48,10 +48,10 @@ func (c *AvailbilityConfidence) UnmarshalYAML(unmarshal func(interface{}) error)
 	}
 
 	switch strings.ToLower(s) {
-	case "blockHead", "1":
+	case "blockhead", "1":
 		*c = AvailbilityConfidenceBlockHead
 		return nil
-	case "finalizedBlock", "2":
+	case "finalizedblock", "2":
 		*c = AvailbilityConfidenceFinalized
 		return nil
 	}

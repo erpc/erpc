@@ -730,9 +730,6 @@ func (r *RetryPolicyConfig) Validate() error {
 	if r.BackoffMaxDelay == 0 {
 		return fmt.Errorf("upstream.*.failsafe.retry.backoffMaxDelay is required")
 	}
-	if r.EmptyResultConfidence == 0 {
-		return fmt.Errorf("upstream.*.failsafe.retry.emptyResultConfidence is required")
-	}
 	return nil
 }
 

@@ -29,8 +29,8 @@ func (m *mockUpstreamForRetry) EvmSyncingState() common.EvmSyncingState {
 	return args.Get(0).(common.EvmSyncingState)
 }
 
-func (m *mockUpstreamForRetry) EvmAssertBlockAvailability(ctx context.Context, forMethod string, confidence common.AvailbilityConfidence, blockNumber int64) (bool, error) {
-	args := m.Called(ctx, forMethod, confidence, blockNumber)
+func (m *mockUpstreamForRetry) EvmAssertBlockAvailability(ctx context.Context, forMethod string, confidence common.AvailbilityConfidence, forceRefreshIfStale bool, blockNumber int64) (bool, error) {
+	args := m.Called(ctx, forMethod, confidence, forceRefreshIfStale, blockNumber)
 	return args.Bool(0), args.Error(1)
 }
 
@@ -56,7 +56,7 @@ func (m *mockUpstreamForRetry) EvmStatePoller() common.EvmStatePoller {
 	return nil
 }
 
-func (m *mockUpstreamForRetry) EvmIsBlockFinalized(blockNumber int64) (bool, error) {
+func (m *mockUpstreamForRetry) EvmIsBlockFinalized(ctx context.Context, blockNumber int64, forceFreshIfStale bool) (bool, error) {
 	return false, nil
 }
 
@@ -168,7 +168,7 @@ func TestRetryPolicy_EmptyResultWithConfidence(t *testing.T) {
 				Evm:  &common.EvmUpstreamConfig{},
 			}).Maybe()
 			mockUpstream.On("EvmSyncingState").Return(common.EvmSyncingStateNotSyncing).Maybe()
-			mockUpstream.On("EvmAssertBlockAvailability", mock.Anything, "eth_getBlockByNumber", tt.confidence, int64(100)).Return(tt.blockAvailable, nil).Maybe()
+			mockUpstream.On("EvmAssertBlockAvailability", mock.Anything, "eth_getBlockByNumber", tt.confidence, false, int64(100)).Return(tt.blockAvailable, nil).Maybe()
 
 			// Create mock response
 			mockResp := createMockResponse(true, req, mockUpstream)
@@ -250,7 +250,7 @@ func TestRetryPolicy_EmptyResultWithIgnore(t *testing.T) {
 				}
 			}
 			if shouldCheckAvailability {
-				mockUpstream.On("EvmAssertBlockAvailability", mock.Anything, tt.method, common.AvailbilityConfidenceBlockHead, int64(100)).Return(true, nil).Maybe()
+				mockUpstream.On("EvmAssertBlockAvailability", mock.Anything, tt.method, common.AvailbilityConfidenceBlockHead, false, int64(100)).Return(true, nil).Maybe()
 			}
 
 			// Create mock response
@@ -356,7 +356,7 @@ func TestRetryPolicy_EdgeCases(t *testing.T) {
 			Evm:  &common.EvmUpstreamConfig{},
 		}).Maybe()
 		mockUpstream.On("EvmSyncingState").Return(common.EvmSyncingStateNotSyncing).Maybe()
-		mockUpstream.On("EvmAssertBlockAvailability", mock.Anything, "eth_getBlockByNumber", common.AvailbilityConfidenceFinalized, int64(100)).
+		mockUpstream.On("EvmAssertBlockAvailability", mock.Anything, "eth_getBlockByNumber", common.AvailbilityConfidenceFinalized, false, int64(100)).
 			Return(false, errors.New("availability check failed")).Maybe()
 
 		mockResp := createMockResponse(true, req, mockUpstream)
@@ -417,7 +417,7 @@ func TestRetryPolicy_CombinedConfidenceAndIgnore(t *testing.T) {
 		attempts, _ := executeRetryPolicy(t, cfg, common.ScopeNetwork, mockResp, nil)
 		assert.Equal(t, 1, attempts, "Method in ignore list should NOT retry empty response")
 		mockUpstream.AssertExpectations(t)
-		mockUpstream.AssertNotCalled(t, "EvmAssertBlockAvailability", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+		mockUpstream.AssertNotCalled(t, "EvmAssertBlockAvailability", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("MethodNotInIgnoreList_UsesConfidence", func(t *testing.T) {
@@ -436,7 +436,7 @@ func TestRetryPolicy_CombinedConfidenceAndIgnore(t *testing.T) {
 			Evm:  &common.EvmUpstreamConfig{},
 		}).Maybe()
 		mockUpstream.On("EvmSyncingState").Return(common.EvmSyncingStateNotSyncing).Maybe()
-		mockUpstream.On("EvmAssertBlockAvailability", mock.Anything, "eth_getBlockByNumber", common.AvailbilityConfidenceFinalized, int64(100)).
+		mockUpstream.On("EvmAssertBlockAvailability", mock.Anything, "eth_getBlockByNumber", common.AvailbilityConfidenceFinalized, false, int64(100)).
 			Return(true, nil).Maybe()
 
 		mockResp := createMockResponse(true, req, mockUpstream)
@@ -485,7 +485,7 @@ func TestRetryPolicy_MaxAttemptsRespected(t *testing.T) {
 		Evm:  &common.EvmUpstreamConfig{},
 	}).Maybe()
 	mockUpstream.On("EvmSyncingState").Return(common.EvmSyncingStateNotSyncing).Maybe()
-	mockUpstream.On("EvmAssertBlockAvailability", mock.Anything, "eth_getBlockByNumber", common.AvailbilityConfidenceBlockHead, int64(100)).
+	mockUpstream.On("EvmAssertBlockAvailability", mock.Anything, "eth_getBlockByNumber", common.AvailbilityConfidenceBlockHead, false, int64(100)).
 		Return(false, nil).Maybe() // Block not available, should retry
 
 	mockResp := createMockResponse(true, req, mockUpstream)
@@ -527,7 +527,7 @@ func TestRetryPolicy_Debug(t *testing.T) {
 		Evm:  &common.EvmUpstreamConfig{},
 	}).Maybe()
 	mockUpstream.On("EvmSyncingState").Return(common.EvmSyncingStateNotSyncing).Maybe()
-	mockUpstream.On("EvmAssertBlockAvailability", mock.Anything, "eth_getBlockByNumber", common.AvailbilityConfidenceFinalized, int64(100)).Return(true, nil).Maybe()
+	mockUpstream.On("EvmAssertBlockAvailability", mock.Anything, "eth_getBlockByNumber", common.AvailbilityConfidenceFinalized, false, int64(100)).Return(true, nil).Maybe()
 
 	// Create mock response
 	mockResp := createMockResponse(true, req, mockUpstream)
@@ -635,6 +635,7 @@ func TestRetryPolicy_EmptyWithEvmUpstream(t *testing.T) {
 	cfg := &common.RetryPolicyConfig{
 		MaxAttempts:           3,
 		EmptyResultConfidence: common.AvailbilityConfidenceFinalized,
+		EmptyResultIgnore:     []string{},
 	}
 
 	// Create mock request with block number
@@ -661,7 +662,7 @@ func TestRetryPolicy_EmptyWithEvmUpstream(t *testing.T) {
 	})
 
 	assert.Equal(t, 3, attempts, "Should retry empty response when upstream is syncing")
-	mockUpstream.AssertNotCalled(t, "EvmAssertBlockAvailability", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	mockUpstream.AssertNotCalled(t, "EvmAssertBlockAvailability", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 
 	// Test with EVM upstream that is NOT syncing and block is available
 	mockUpstream2 := new(mockUpstreamForRetry)
@@ -670,7 +671,7 @@ func TestRetryPolicy_EmptyWithEvmUpstream(t *testing.T) {
 		Evm:  &common.EvmUpstreamConfig{},
 	})
 	mockUpstream2.On("EvmSyncingState").Return(common.EvmSyncingStateNotSyncing)
-	mockUpstream2.On("EvmAssertBlockAvailability", mock.Anything, "eth_getBlockByNumber", common.AvailbilityConfidenceFinalized, int64(100)).Return(true, nil)
+	mockUpstream2.On("EvmAssertBlockAvailability", mock.Anything, "eth_getBlockByNumber", common.AvailbilityConfidenceFinalized, false, int64(100)).Return(true, nil)
 
 	emptyResp2 := createMockResponse(true, req, mockUpstream2)
 

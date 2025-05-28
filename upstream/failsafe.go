@@ -369,7 +369,7 @@ func createRetryPolicy(scope common.Scope, cfg *common.RetryPolicyConfig) (fails
 											return false
 										}
 										// Use EvmAssertBlockAvailability to check if the upstream can handle the block
-										if avail, err := ups.EvmAssertBlockAvailability(context.TODO(), method, emptyResultConfidence, bn); err == nil && avail {
+										if avail, err := ups.EvmAssertBlockAvailability(context.TODO(), method, emptyResultConfidence, false, bn); err == nil && avail {
 											// If the upstream can handle the block and returned empty, don't retry
 											return false
 										}
