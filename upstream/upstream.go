@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"strconv"
@@ -363,7 +364,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 					telemetry.MetricUpstreamMissingDataErrorTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method).Inc()
 				} else {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
-						u.recordRemoteRateLimit(u.networkId, method)
+						u.recordRemoteRateLimit(method)
 					}
 					severity := common.ClassifySeverity(errCall)
 					if severity == common.SeverityCritical {
@@ -534,11 +535,22 @@ func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 }
 
 // TODO move to evm package
-func (u *Upstream) EvmIsBlockFinalized(blockNumber int64) (bool, error) {
+func (u *Upstream) EvmIsBlockFinalized(ctx context.Context, blockNumber int64, forceFreshIfStale bool) (bool, error) {
 	if u.evmStatePoller == nil {
 		return false, fmt.Errorf("evm state poller not initialized yet")
 	}
-	return u.evmStatePoller.IsBlockFinalized(blockNumber)
+	isFinalized, err := u.evmStatePoller.IsBlockFinalized(blockNumber)
+	if err != nil {
+		return false, err
+	}
+	if !isFinalized && forceFreshIfStale {
+		newFinalizedBlock, err := u.evmStatePoller.PollFinalizedBlockNumber(ctx)
+		if err != nil {
+			return false, err
+		}
+		return newFinalizedBlock >= blockNumber, nil
+	}
+	return isFinalized, nil
 }
 
 // TODO move to evm package?
@@ -568,6 +580,161 @@ func (u *Upstream) EvmFinalizedBlock() (int64, error) {
 // TODO move to evm package?
 func (u *Upstream) EvmStatePoller() common.EvmStatePoller {
 	return u.evmStatePoller
+}
+
+// TODO move to evm package?
+// EvmAssertBlockAvailability checks if the upstream is supposed to have the data for a certain block number.
+// For full nodes it will check the first available block number, and for archive nodes it will check if the block is less than the latest block number.
+// If the requested block is beyond the current latest block, it will force-poll the latest block number once.
+// This method also increments appropriate metrics when the upstream cannot handle the block.
+func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod string, confidence common.AvailbilityConfidence, forceFreshIfStale bool, blockNumber int64) (bool, error) {
+	if u == nil || u.config == nil {
+		return false, fmt.Errorf("upstream or config is nil")
+	}
+
+	// Get the state poller
+	statePoller := u.EvmStatePoller()
+	if statePoller == nil || statePoller.IsObjectNull() {
+		return false, fmt.Errorf("upstream evm state poller is not available")
+	}
+
+	cfg := u.config
+	if cfg.Type != common.UpstreamTypeEvm || cfg.Evm == nil {
+		// If not an EVM upstream, we can't determine block handling capability
+		return false, fmt.Errorf("upstream is not an EVM type")
+	}
+
+	if confidence == common.AvailbilityConfidenceFinalized {
+		//
+		// UPPER BOUND: Check if the block is finalized
+		//
+		isFinalized, err := u.EvmIsBlockFinalized(ctx, blockNumber, forceFreshIfStale)
+		if err != nil {
+			return false, fmt.Errorf("failed to check if block is finalized: %w", err)
+		}
+		if !isFinalized {
+			// Block is not finalized yet
+			telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
+				u.ProjectId,
+				u.VendorName(),
+				u.NetworkId(),
+				u.Id(),
+				forMethod,
+				confidence.String(),
+			).Inc()
+			return false, nil
+		}
+
+		//
+		// LOWER BOUND: For full nodes, also check if the block is within the available range
+		//
+		if cfg.Evm.MaxAvailableRecentBlocks > 0 {
+			// First check with current data
+			available, err := u.assertUpstreamLowerBound(ctx, statePoller, blockNumber, cfg.Evm.MaxAvailableRecentBlocks, forMethod, confidence)
+			if err != nil {
+				return false, err
+			}
+			if !available {
+				// If it can't handle, return immediately
+				return false, nil
+			}
+		}
+
+		// Block is finalized and within range (or archive node)
+		return true, nil
+	} else if confidence == common.AvailbilityConfidenceBlockHead {
+		//
+		// UPPER BOUND: Check if block is before the latest block
+		//
+		latestBlock := statePoller.LatestBlock()
+		// If the requested block is beyond the current latest block, try force-polling once
+		if blockNumber > latestBlock && forceFreshIfStale {
+			var err error
+			latestBlock, err = statePoller.PollLatestBlockNumber(ctx)
+			if err != nil {
+				return false, fmt.Errorf("failed to poll latest block number: %w", err)
+			}
+		}
+		// Check if the requested block is still beyond the latest known block
+		if blockNumber > latestBlock {
+			// Upper bound issue - block is beyond latest
+			telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
+				u.ProjectId,
+				u.VendorName(),
+				u.NetworkId(),
+				u.Id(),
+				forMethod,
+				confidence.String(),
+			).Inc()
+			return false, nil
+		}
+
+		//
+		// LOWER BOUND: For full nodes, check if the block is within the available range
+		//
+		if cfg.Evm.MaxAvailableRecentBlocks > 0 {
+			available, err := u.assertUpstreamLowerBound(ctx, statePoller, blockNumber, cfg.Evm.MaxAvailableRecentBlocks, forMethod, confidence)
+			if err != nil {
+				return false, err
+			}
+			if !available {
+				return false, nil
+			}
+		}
+
+		// If MaxAvailableRecentBlocks is not configured, assume the node can handle the block if it's <= latest
+		return blockNumber <= latestBlock, nil
+	} else {
+		return false, fmt.Errorf("unsupported block availability confidence: %s", confidence)
+	}
+}
+
+// assertUpstreamLowerBound checks if a full node can handle a block based on its lower bound.
+// It returns whether the block is within the available range and records metrics if not.
+func (u *Upstream) assertUpstreamLowerBound(ctx context.Context, statePoller common.EvmStatePoller, blockNumber int64, maxAvailableRecentBlocks int64, forMethod string, confidence common.AvailbilityConfidence) (available bool, err error) {
+	latestBlock := statePoller.LatestBlock()
+	firstAvailableBlock := latestBlock - maxAvailableRecentBlocks
+	available = blockNumber >= firstAvailableBlock
+
+	if !available {
+		telemetry.MetricUpstreamStaleLowerBound.WithLabelValues(
+			u.ProjectId,
+			u.VendorName(),
+			u.NetworkId(),
+			u.Id(),
+			forMethod,
+			confidence.String(),
+		).Inc()
+		return false, nil
+	}
+
+	// Only poll if near boundary
+	// If we assume it is available, we need to poll a fresh latest block to check against potential pruning on full nodes
+	shouldPoll := latestBlock > 0 && blockNumber > 0 && math.Abs(float64(blockNumber-(latestBlock-maxAvailableRecentBlocks))) <= 10
+	if shouldPoll {
+		latestBlock, err = statePoller.PollLatestBlockNumber(ctx)
+		if err != nil {
+			return false, fmt.Errorf("failed to poll latest block number: %w", err)
+		}
+		if latestBlock <= 0 {
+			return false, fmt.Errorf("upstream latest block is not available")
+		}
+	}
+
+	firstAvailableBlock = latestBlock - maxAvailableRecentBlocks
+	available = blockNumber >= firstAvailableBlock
+	if !available {
+		telemetry.MetricUpstreamStaleLowerBound.WithLabelValues(
+			u.ProjectId,
+			u.VendorName(),
+			u.NetworkId(),
+			u.Id(),
+			forMethod,
+			confidence.String(),
+		).Inc()
+	}
+
+	return available, nil
 }
 
 func (u *Upstream) IgnoreMethod(method string) {
@@ -658,7 +825,7 @@ func (u *Upstream) recordRequestSuccess(method string) {
 	}
 }
 
-func (u *Upstream) recordRemoteRateLimit(netId, method string) {
+func (u *Upstream) recordRemoteRateLimit(method string) {
 	u.metricsTracker.RecordUpstreamRemoteRateLimited(
 		u,
 		method,

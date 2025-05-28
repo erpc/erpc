@@ -848,6 +848,8 @@ func TranslateToJsonRpcException(err error) error {
 	var msg = "internal server error"
 	if se, ok := err.(StandardError); ok {
 		msg = se.DeepestMessage()
+	} else {
+		msg = err.Error()
 	}
 
 	return NewErrJsonRpcExceptionInternal(

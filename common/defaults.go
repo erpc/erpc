@@ -1623,6 +1623,14 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 			r.Jitter = Duration(0 * time.Millisecond)
 		}
 	}
+	// Only set EmptyResultConfidence if provided through defaults
+	if r.EmptyResultConfidence == 0 && defaults != nil && defaults.EmptyResultConfidence != 0 {
+		r.EmptyResultConfidence = defaults.EmptyResultConfidence
+	}
+	// Only set EmptyResultIgnore if provided through defaults
+	if r.EmptyResultIgnore == nil && defaults != nil && defaults.EmptyResultIgnore != nil {
+		r.EmptyResultIgnore = defaults.EmptyResultIgnore
+	}
 
 	return nil
 }
