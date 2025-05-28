@@ -103,7 +103,8 @@ import type {
     | "evm+chainstack"
     | "evm+tenderly"
     | "evm+onfinality"
-    | "evm+erpc";
+    | "evm+erpc"
+    | "evm+blockpi";
   
   /**
    * Supported auth type
