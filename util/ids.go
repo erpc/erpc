@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 func EvmNetworkId(chainId interface{}) string {
@@ -23,4 +24,18 @@ func IsValidNetworkId(s string) bool {
 		return err == nil
 	}
 	return false
+}
+
+var counters = make(map[string]int)
+var countersMutex = sync.Mutex{}
+
+func IncrementAndGetIndex(parts ...string) string {
+	countersMutex.Lock()
+	defer countersMutex.Unlock()
+	counterKey := strings.Join(parts, "</@/>")
+	if _, ok := counters[counterKey]; !ok {
+		counters[counterKey] = 0
+	}
+	counters[counterKey]++
+	return strconv.Itoa(counters[counterKey])
 }
