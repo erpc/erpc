@@ -363,7 +363,7 @@ var DefaultSpecialCacheMethods = map[string]*CacheMethodConfig{
 		ReqRefs:  ArbitraryBlock,
 		RespRefs: BlockNumberOrBlockHashParam,
 	},
-	"alchemy_getTransactionReceipt": {
+	"alchemy_getTransactionReceipts": {
 		ReqRefs:  ArbitraryBlock,
 		RespRefs: BlockNumberOrBlockHashParam,
 	},
