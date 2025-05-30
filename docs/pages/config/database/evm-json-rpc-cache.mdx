@@ -821,6 +821,9 @@ database:
       eth_getTransactionReceipt:
         reqRefs: [["*"]]
         respRefs: [[blockNumber], [blockHash]]
+      alchemy_getTransactionReceipts:
+        reqRefs: [["*"]]
+        respRefs: [[blockNumber], [blockHash]]
       eth_getTransactionByHash:
         reqRefs: [["*"]]
         respRefs: [[blockNumber], [blockHash]]
