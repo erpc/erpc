@@ -7739,6 +7739,384 @@ func TestHttpServer_EvmGetBlockByNumber(t *testing.T) {
 		// Only the poller calls plus the single user request are used; no fallback or second request is triggered.
 		assert.Equal(t, 1, len(gock.Pending()), "unexpected pending requests")
 	})
+
+	t.Run("Should Handle Successful Consensus", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: "evm",
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+								Integrity: &common.EvmIntegrityConfig{
+									EnforceHighestBlock: util.BoolPtr(true),
+								},
+							},
+							Failsafe: &common.FailsafeConfig{
+								Consensus: &common.ConsensusPolicyConfig{
+									RequiredParticipants:    3,
+									AgreementThreshold:      2,
+									FailureBehavior:         common.ConsensusFailureBehaviorReturnError,
+									DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+									LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Endpoint: "http://rpc1.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             1,
+								StatePollerInterval: common.Duration(10 * time.Second),
+							},
+						},
+						{
+							Id:       "rpc2",
+							Endpoint: "http://rpc2.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             1,
+								StatePollerInterval: common.Duration(10 * time.Second),
+							},
+						},
+						{
+							Id:       "rpc3",
+							Endpoint: "http://rpc3.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             1,
+								StatePollerInterval: common.Duration(10 * time.Second),
+							},
+						},
+					},
+				},
+			},
+		}
+
+		// Mock poller calls: "eth_syncing" => false, then "latest" => 0x300, just so the poller
+		// has some known state. We won't use it because the block tag is invalid, so the hook shouldn't apply.
+		for _, rpc := range cfg.Projects[0].Upstreams {
+			gock.New(rpc.Endpoint).
+				Post("").
+				Persist().
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_syncing")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{"result": false})
+
+			gock.New(rpc.Endpoint).
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBlockByNumber") &&
+						strings.Contains(util.SafeReadBody(request), `"latest"`)
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"result": map[string]interface{}{
+						"number": "0x300",
+					},
+				})
+		}
+
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+		userRequest := `{
+			"jsonrpc": "2.0",
+			"id": 5010,
+			"method": "eth_getBlockByNumber",
+			"params": ["0x300", true]
+		}`
+
+		for _, rpc := range cfg.Projects[0].Upstreams {
+			gock.New(rpc.Endpoint).
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, `"id":5010`) &&
+						strings.Contains(body, `"eth_getBlockByNumber"`) &&
+						strings.Contains(body, `"0x300"`)
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      5050,
+					"result": map[string]interface{}{
+						"number": "0x300",
+						"hash":   "0xhash_for_consensus",
+					},
+				})
+		}
+
+		statusCode, respBody := sendRequest(userRequest, nil, nil)
+		assert.Equal(t, http.StatusOK, statusCode, "status code should indicate success")
+
+		var respObj map[string]interface{}
+		err := sonic.UnmarshalString(respBody, &respObj)
+		require.NoError(t, err, "should parse response body")
+
+		result, ok := respObj["result"].(map[string]interface{})
+		assert.True(t, ok, "result should be present")
+		assert.Equal(t, "0x300", result["number"], "the block number should match the upstream's response")
+		assert.Equal(t, "0xhash_for_consensus", result["hash"], "the block hash should match upstream exactly")
+	})
+	t.Run("Should Handle Consensus Failure due to Low Participants", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: "evm",
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+								Integrity: &common.EvmIntegrityConfig{
+									EnforceHighestBlock: util.BoolPtr(true),
+								},
+							},
+							Failsafe: &common.FailsafeConfig{
+								Consensus: &common.ConsensusPolicyConfig{
+									RequiredParticipants:    3,
+									AgreementThreshold:      2,
+									FailureBehavior:         common.ConsensusFailureBehaviorReturnError,
+									DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+									LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Endpoint: "http://rpc1.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             1,
+								StatePollerInterval: common.Duration(10 * time.Second),
+							},
+						},
+					},
+				},
+			},
+		}
+
+		// Mock poller calls: "eth_syncing" => false, then "latest" => 0x300, just so the poller
+		// has some known state. We won't use it because the block tag is invalid, so the hook shouldn't apply.
+		for _, rpc := range cfg.Projects[0].Upstreams {
+			gock.New(rpc.Endpoint).
+				Post("").
+				Persist().
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_syncing")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{"result": false})
+
+			gock.New(rpc.Endpoint).
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBlockByNumber") &&
+						strings.Contains(util.SafeReadBody(request), `"latest"`)
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"result": map[string]interface{}{
+						"number": "0x300",
+					},
+				})
+		}
+
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+		userRequest := `{
+			"jsonrpc": "2.0",
+			"id": 5010,
+			"method": "eth_getBlockByNumber",
+			"params": ["0x300", true]
+		}`
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			// Due to consensus policy implementation currently, we will send 3 requests
+			// to the same upstream but then fail with low participants as opposed to short circuiting.
+			Times(3).
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `"id":5010`) &&
+					strings.Contains(body, `"eth_getBlockByNumber"`) &&
+					strings.Contains(body, `"0x300"`)
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      5050,
+				"result": map[string]interface{}{
+					"number": "0x300",
+					"hash":   "0xhash_for_consensus",
+				},
+			})
+
+		statusCode, respBody := sendRequest(userRequest, nil, nil)
+		assert.Equal(t, http.StatusInternalServerError, statusCode, "status code should indicate failure")
+
+		var respObj map[string]interface{}
+		err := sonic.UnmarshalString(respBody, &respObj)
+		require.NoError(t, err, "should parse response body")
+
+		errResp, ok := respObj["error"].(map[string]interface{})
+		assert.True(t, ok, "error should be present")
+		assert.Equal(t, float64(-32603), errResp["code"], "error code should be -32603")
+		assert.Equal(t, "not enough participants", errResp["message"], "error message should be 'not enough participants'")
+	})
+
+	t.Run("Should Handle Consensus Failure due to Dispute", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		cfg := &common.Config{
+			Server: &common.ServerConfig{
+				MaxTimeout: common.Duration(5 * time.Second).Ptr(),
+			},
+			Projects: []*common.ProjectConfig{
+				{
+					Id: "test_project",
+					Networks: []*common.NetworkConfig{
+						{
+							Architecture: "evm",
+							Evm: &common.EvmNetworkConfig{
+								ChainId: 1,
+								Integrity: &common.EvmIntegrityConfig{
+									EnforceHighestBlock: util.BoolPtr(true),
+								},
+							},
+							Failsafe: &common.FailsafeConfig{
+								Consensus: &common.ConsensusPolicyConfig{
+									RequiredParticipants:    3,
+									AgreementThreshold:      2,
+									FailureBehavior:         common.ConsensusFailureBehaviorReturnError,
+									DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
+									LowParticipantsBehavior: common.ConsensusLowParticipantsBehaviorReturnError,
+								},
+							},
+						},
+					},
+					Upstreams: []*common.UpstreamConfig{
+						{
+							Id:       "rpc1",
+							Endpoint: "http://rpc1.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             1,
+								StatePollerInterval: common.Duration(10 * time.Second),
+							},
+						},
+						{
+							Id:       "rpc2",
+							Endpoint: "http://rpc2.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             1,
+								StatePollerInterval: common.Duration(10 * time.Second),
+							},
+						},
+						{
+							Id:       "rpc3",
+							Endpoint: "http://rpc3.localhost",
+							Type:     common.UpstreamTypeEvm,
+							Evm: &common.EvmUpstreamConfig{
+								ChainId:             1,
+								StatePollerInterval: common.Duration(10 * time.Second),
+							},
+						},
+					},
+				},
+			},
+		}
+
+		// Mock poller calls: "eth_syncing" => false, then "latest" => 0x300, just so the poller
+		// has some known state. We won't use it because the block tag is invalid, so the hook shouldn't apply.
+		for _, rpc := range cfg.Projects[0].Upstreams {
+			gock.New(rpc.Endpoint).
+				Post("").
+				Persist().
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_syncing")
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{"result": false})
+
+			gock.New(rpc.Endpoint).
+				Post("").
+				Filter(func(request *http.Request) bool {
+					return strings.Contains(util.SafeReadBody(request), "eth_getBlockByNumber") &&
+						strings.Contains(util.SafeReadBody(request), `"latest"`)
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"result": map[string]interface{}{
+						"number": "0x300",
+					},
+				})
+		}
+
+		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
+		defer shutdown()
+		userRequest := `{
+			"jsonrpc": "2.0",
+			"id": 5010,
+			"method": "eth_getBlockByNumber",
+			"params": ["0x300", true]
+		}`
+
+		for idx, rpc := range cfg.Projects[0].Upstreams {
+			gock.New(rpc.Endpoint).
+				Post("").
+				Filter(func(r *http.Request) bool {
+					body := util.SafeReadBody(r)
+					return strings.Contains(body, `"id":5010`) &&
+						strings.Contains(body, `"eth_getBlockByNumber"`) &&
+						strings.Contains(body, `"0x300"`)
+				}).
+				Reply(200).
+				JSON(map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      5050,
+					"result": map[string]interface{}{
+						"number": "0x300",
+						"hash":   fmt.Sprintf("0xhash_for_consensus_%d", idx),
+					},
+				})
+		}
+
+		statusCode, respBody := sendRequest(userRequest, nil, nil)
+		assert.Equal(t, http.StatusInternalServerError, statusCode, "status code should indicate failure")
+
+		var respObj map[string]interface{}
+		err := sonic.UnmarshalString(respBody, &respObj)
+		require.NoError(t, err, "should parse response body")
+
+		errResp, ok := respObj["error"].(map[string]interface{})
+		assert.True(t, ok, "error should be present")
+		assert.Equal(t, float64(-32603), errResp["code"], "error code should be -32603")
+		assert.Equal(t, "not enough agreement among responses", errResp["message"], "error message should be 'not enough agreement among responses'")
+	})
 }
 
 func createServerTestFixtures(cfg *common.Config, t *testing.T) (

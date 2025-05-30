@@ -2274,3 +2274,42 @@ func ClassifySeverity(err error) Severity {
 	}
 	return SeverityCritical
 }
+
+type ErrConsensusDispute struct{ BaseError }
+
+const ErrCodeConsensusDispute ErrorCode = "ErrConsensusDispute"
+
+var NewErrConsensusDispute = func(message string) error {
+	return &ErrConsensusDispute{
+		BaseError{
+			Code:    ErrCodeConsensusDispute,
+			Message: message,
+		},
+	}
+}
+
+type ErrConsensusLowParticipants struct{ BaseError }
+
+const ErrCodeConsensusLowParticipants ErrorCode = "ErrConsensusLowParticipants"
+
+var NewErrConsensusLowParticipants = func(message string) error {
+	return &ErrConsensusLowParticipants{
+		BaseError{
+			Code:    ErrCodeConsensusLowParticipants,
+			Message: message,
+		},
+	}
+}
+
+type ErrConsensusFailure struct{ BaseError }
+
+const ErrCodeConsensusFailure ErrorCode = "ErrConsensusFailure"
+
+var NewErrConsensusFailure = func(message string) error {
+	return &ErrConsensusFailure{
+		BaseError{
+			Code:    ErrCodeConsensusFailure,
+			Message: message,
+		},
+	}
+}

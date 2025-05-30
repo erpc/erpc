@@ -435,8 +435,8 @@ func createConsensusPolicy(logger *zerolog.Logger, cfg *common.ConsensusPolicyCo
 	builder = builder.WithAgreementThreshold(cfg.AgreementThreshold)
 	builder = builder.WithDisputeBehavior(cfg.DisputeBehavior)
 	builder = builder.WithPunishMisbehavior(cfg.PunishMisbehavior)
-	builder = builder.WithFailureBehavior(cfg.FailureBehavior)
 	builder = builder.WithLowParticipantsBehavior(cfg.LowParticipantsBehavior)
+	builder = builder.WithLogger(logger)
 
 	builder.OnAgreement(func(event failsafe.ExecutionEvent[*common.NormalizedResponse]) {
 		logger.Debug().Msg("spawning additional consensus request")
