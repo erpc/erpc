@@ -1,5 +1,6 @@
 import type {
     DynamoDBConnectorConfig,
+    EvmNetworkConfig,
     AuthStrategyConfig as GenAuthStrategyConfig,
     JwtStrategyConfig,
     MemoryConnectorConfig,
@@ -137,3 +138,7 @@ import type {
         }
     );
   
+  /**
+    * Network defaults override (chainId isn't needed for defaults config)
+    */
+  export type EvmNetworkConfigForDefaults = Omit<EvmNetworkConfig, "chainId">;
