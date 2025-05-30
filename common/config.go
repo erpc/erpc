@@ -332,7 +332,7 @@ type ProjectConfig struct {
 	NetworkDefaults        *NetworkDefaults                    `yaml:"networkDefaults,omitempty" json:"networkDefaults"`
 	Networks               []*NetworkConfig                    `yaml:"networks,omitempty" json:"networks"`
 	RateLimitBudget        string                              `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
-	ScoreMetricsWindowSize Duration                            `yaml:"scoreMetricsWindowSize" json:"scoreMetricsWindowSize" tstype:"Duration"`
+	ScoreMetricsWindowSize Duration                            `yaml:"scoreMetricsWindowSize,omitempty" json:"scoreMetricsWindowSize" tstype:"Duration"`
 	DeprecatedHealthCheck  *DeprecatedProjectHealthCheckConfig `yaml:"healthCheck,omitempty" json:"healthCheck"`
 }
 
@@ -341,7 +341,7 @@ type NetworkDefaults struct {
 	Failsafe          *FailsafeConfig          `yaml:"failsafe,omitempty" json:"failsafe"`
 	SelectionPolicy   *SelectionPolicyConfig   `yaml:"selectionPolicy,omitempty" json:"selectionPolicy"`
 	DirectiveDefaults *DirectiveDefaultsConfig `yaml:"directiveDefaults,omitempty" json:"directiveDefaults"`
-	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm"`
+	Evm               *EvmNetworkConfig        `yaml:"evm,omitempty" json:"evm" tstype:"TsEvmNetworkConfigForDefaults"`
 }
 
 type CORSConfig struct {
@@ -926,8 +926,8 @@ type MetricsConfig struct {
 	ListenV6         *bool     `yaml:"listenV6" json:"listenV6"`
 	HostV6           *string   `yaml:"hostV6" json:"hostV6"`
 	Port             *int      `yaml:"port" json:"port"`
-	ErrorLabelMode   LabelMode `yaml:"errorLabelMode" json:"errorLabelMode"`
-	HistogramBuckets string    `yaml:"histogramBuckets" json:"histogramBuckets"`
+	ErrorLabelMode   LabelMode `yaml:"errorLabelMode,omitempty" json:"errorLabelMode"`
+	HistogramBuckets string    `yaml:"histogramBuckets,omitempty" json:"histogramBuckets"`
 }
 
 // GetProjectConfig returns the project configuration by the specified project ID.

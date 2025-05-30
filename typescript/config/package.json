@@ -16,7 +16,8 @@
   },
   "files": [
     "lib",
-    "src/*.ts"
+    "src/*.ts",
+    "src/types/*.ts"
   ],
   "exports": {
     ".": {
