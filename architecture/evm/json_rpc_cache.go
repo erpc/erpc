@@ -436,6 +436,9 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 						ttl.String(),
 						common.ErrorSummary(err),
 					).Observe(time.Since(start).Seconds())
+					errsMu.Lock()
+					errs = append(errs, err)
+					errsMu.Unlock()
 				} else {
 					telemetry.MetricCacheSetSkippedTotal.WithLabelValues(
 						c.projectId,
@@ -446,9 +449,6 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 						ttl.String(),
 					).Inc()
 				}
-				errsMu.Lock()
-				errs = append(errs, err)
-				errsMu.Unlock()
 				return
 			}
 
