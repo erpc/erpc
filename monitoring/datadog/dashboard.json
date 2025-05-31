@@ -1,77 +1,7 @@
 {
   "title": "eRPC Metrics",
-  "description": "Monitoring for eRPC",
+  "description": "Comprehensive monitoring for eRPC",
   "widgets": [
-    {
-      "id": 1000000001,
-      "definition": {
-        "title": "Overall",
-        "type": "group",
-        "layout_type": "ordered",
-        "widgets": [
-          {
-            "id": 1000000002,
-            "definition": {
-              "title": "P90 Response Time (Avg)",
-              "title_size": "16",
-              "title_align": "left",
-              "show_legend": true,
-              "legend_layout": "auto",
-              "legend_columns": [
-                "avg",
-                "min",
-                "max",
-                "value",
-                "sum"
-              ],
-              "time": {},
-              "type": "timeseries",
-              "requests": [
-                {
-                  "response_format": "timeseries",
-                  "queries": [
-                    {
-                      "name": "sum",
-                      "data_source": "metrics",
-                      "query": "sum:erpc.erpc_upstream_request_duration_seconds.sum{*} by {network,upstream,category}"
-                    },
-                    {
-                      "name": "count",
-                      "data_source": "metrics",
-                      "query": "sum:erpc.erpc_upstream_request_duration_seconds.count{*} by {network,upstream,category}"
-                    }
-                  ],
-                  "formulas": [
-                    {
-                      "alias": "Average Response Time",
-                      "formula": "sum / count"
-                    }
-                  ],
-                  "style": {
-                    "palette": "dog_classic",
-                    "line_type": "solid",
-                    "line_width": "normal"
-                  },
-                  "display_type": "line"
-                }
-              ]
-            },
-            "layout": {
-              "x": 0,
-              "y": 0,
-              "width": 12,
-              "height": 4
-            }
-          }
-        ]
-      },
-      "layout": {
-        "x": 0,
-        "y": 0,
-        "width": 12,
-        "height": 5
-      }
-    },
     {
       "id": 1000000003,
       "definition": {
@@ -102,7 +32,7 @@
                     {
                       "name": "query1",
                       "data_source": "metrics",
-                      "query": "sum:erpc.erpc_network_request_received.count{*} by {project,network,category}.as_count()"
+                      "query": "sum:erpc.erpc_network_request_received.count{$network,$env,$client_name,$cluster_key,$category} by {network,category}.as_count()"
                     }
                   ],
                   "formulas": [
@@ -123,13 +53,13 @@
               "x": 0,
               "y": 0,
               "width": 6,
-              "height": 4
+              "height": 3
             }
           },
           {
             "id": 1000000005,
             "definition": {
-              "title": "Network-level RPS",
+              "title": "Network-level incoming RPS",
               "title_size": "16",
               "title_align": "left",
               "show_legend": true,
@@ -149,7 +79,7 @@
                     {
                       "name": "query1",
                       "data_source": "metrics",
-                      "query": "sum:erpc.erpc_network_request_received.count{*} by {project,network,category}.as_rate()"
+                      "query": "sum:erpc.erpc_network_request_received.count{$network,$env,$client_name,$cluster_key,$category,!$ignore_network} by {network,category}.as_rate()"
                     }
                   ],
                   "formulas": [
@@ -163,7 +93,7 @@
                     "line_type": "solid",
                     "line_width": "normal"
                   },
-                  "display_type": "area"
+                  "display_type": "bars"
                 }
               ]
             },
@@ -171,60 +101,13 @@
               "x": 6,
               "y": 0,
               "width": 6,
-              "height": 4
-            }
-          },
-          {
-            "id": 1000000006,
-            "definition": {
-              "title": "Network self-imposed Rate-limited requests",
-              "title_size": "16",
-              "title_align": "left",
-              "show_legend": true,
-              "legend_layout": "auto",
-              "legend_columns": [
-                "avg",
-                "min",
-                "max",
-                "value",
-                "sum"
-              ],
-              "type": "timeseries",
-              "requests": [
-                {
-                  "response_format": "timeseries",
-                  "queries": [
-                    {
-                      "name": "query1",
-                      "data_source": "metrics",
-                      "query": "sum:erpc.erpc_network_request_self_rate_limited.count{*} by {project,network}.as_rate()"
-                    }
-                  ],
-                  "formulas": [
-                    {
-                      "formula": "query1"
-                    }
-                  ],
-                  "style": {
-                    "palette": "dog_classic",
-                    "line_type": "solid",
-                    "line_width": "normal"
-                  },
-                  "display_type": "line"
-                }
-              ]
-            },
-            "layout": {
-              "x": 0,
-              "y": 4,
-              "width": 6,
-              "height": 4
+              "height": 3
             }
           },
           {
             "id": 1000000007,
             "definition": {
-              "title": "Network-level Errors",
+              "title": "Network-level Critical Errors",
               "title_size": "16",
               "title_align": "left",
               "show_legend": true,
@@ -244,7 +127,7 @@
                     {
                       "name": "query1",
                       "data_source": "metrics",
-                      "query": "sum:erpc.erpc_network_failed_request.count{*} by {cluster_name,network,category,error}.as_count()"
+                      "query": "sum:erpc.erpc_network_failed_request.count{$network,$env,$client_name,$cluster_key,$category,!$ignore_network ,severity:critical} by {error,category,network}.as_count()"
                     }
                   ],
                   "formulas": [
@@ -257,227 +140,21 @@
                     "line_type": "solid",
                     "line_width": "normal"
                   },
-                  "display_type": "line"
-                }
-              ]
-            },
-            "layout": {
-              "x": 6,
-              "y": 4,
-              "width": 6,
-              "height": 4
-            }
-          },
-          {
-            "id": 1000000008,
-            "definition": {
-              "title": "Network-level P99 Resp. time (Avg)",
-              "title_size": "16",
-              "title_align": "left",
-              "show_legend": true,
-              "legend_layout": "auto",
-              "legend_columns": [
-                "avg",
-                "min",
-                "max",
-                "value",
-                "sum"
-              ],
-              "type": "timeseries",
-              "requests": [
-                {
-                  "response_format": "timeseries",
-                  "queries": [
-                    {
-                      "name": "sum",
-                      "data_source": "metrics",
-                      "query": "sum:erpc.erpc_network_request_duration_seconds.sum{*} by {project,network,category}"
-                    },
-                    {
-                      "name": "count",
-                      "data_source": "metrics",
-                      "query": "sum:erpc.erpc_network_request_duration_seconds.count{*} by {project,network,category}"
-                    }
-                  ],
-                  "formulas": [
-                    {
-                      "formula": "sum / count",
-                      "alias": "Average Response Time"
-                    }
-                  ],
-                  "style": {
-                    "palette": "dog_classic",
-                    "line_type": "solid",
-                    "line_width": "normal"
-                  },
-                  "display_type": "line"
+                  "display_type": "bars"
                 }
               ]
             },
             "layout": {
               "x": 0,
-              "y": 8,
-              "width": 4,
-              "height": 4
-            }
-          },
-          {
-            "id": 1000000009,
-            "definition": {
-              "title": "Network-level P90 Resp. time (Avg)",
-              "title_size": "16",
-              "title_align": "left",
-              "show_legend": true,
-              "legend_layout": "auto",
-              "legend_columns": [
-                "avg",
-                "min",
-                "max",
-                "value",
-                "sum"
-              ],
-              "type": "timeseries",
-              "requests": [
-                {
-                  "response_format": "timeseries",
-                  "queries": [
-                    {
-                      "name": "sum",
-                      "data_source": "metrics",
-                      "query": "sum:erpc.erpc_network_request_duration_seconds.sum{*} by {project,network,category}"
-                    },
-                    {
-                      "name": "count",
-                      "data_source": "metrics",
-                      "query": "sum:erpc.erpc_network_request_duration_seconds.count{*} by {project,network,category}"
-                    }
-                  ],
-                  "formulas": [
-                    {
-                      "formula": "sum / count",
-                      "alias": "Average Response Time"
-                    }
-                  ],
-                  "style": {
-                    "palette": "dog_classic",
-                    "line_type": "solid",
-                    "line_width": "normal"
-                  },
-                  "display_type": "line"
-                }
-              ]
-            },
-            "layout": {
-              "x": 4,
-              "y": 8,
-              "width": 4,
-              "height": 4
-            }
-          },
-          {
-            "id": 1000000010,
-            "definition": {
-              "title": "Network-level P50 Resp. time (Avg)",
-              "title_size": "16",
-              "title_align": "left",
-              "show_legend": true,
-              "legend_layout": "auto",
-              "legend_columns": [
-                "avg",
-                "min",
-                "max",
-                "value",
-                "sum"
-              ],
-              "type": "timeseries",
-              "requests": [
-                {
-                  "response_format": "timeseries",
-                  "queries": [
-                    {
-                      "name": "sum",
-                      "data_source": "metrics",
-                      "query": "sum:erpc.erpc_network_request_duration_seconds.sum{*} by {project,network,category}"
-                    },
-                    {
-                      "name": "count",
-                      "data_source": "metrics",
-                      "query": "sum:erpc.erpc_network_request_duration_seconds.count{*} by {project,network,category}"
-                    }
-                  ],
-                  "formulas": [
-                    {
-                      "formula": "sum / count",
-                      "alias": "Average Response Time"
-                    }
-                  ],
-                  "style": {
-                    "palette": "dog_classic",
-                    "line_type": "solid",
-                    "line_width": "normal"
-                  },
-                  "display_type": "line"
-                }
-              ]
-            },
-            "layout": {
-              "x": 8,
-              "y": 8,
-              "width": 4,
-              "height": 4
-            }
-          },
-          {
-            "id": 1000000011,
-            "definition": {
-              "title": "Highest Latest Block",
-              "title_size": "16",
-              "title_align": "left",
-              "show_legend": true,
-              "legend_layout": "auto",
-              "legend_columns": [
-                "avg",
-                "min",
-                "max",
-                "value",
-                "sum"
-              ],
-              "type": "timeseries",
-              "requests": [
-                {
-                  "response_format": "timeseries",
-                  "queries": [
-                    {
-                      "name": "query1",
-                      "data_source": "metrics",
-                      "query": "max:erpc.erpc_upstream_latest_block_number{*} by {project,network}"
-                    }
-                  ],
-                  "formulas": [
-                    {
-                      "formula": "query1"
-                    }
-                  ],
-                  "style": {
-                    "palette": "dog_classic",
-                    "line_type": "solid",
-                    "line_width": "normal"
-                  },
-                  "display_type": "line"
-                }
-              ]
-            },
-            "layout": {
-              "x": 0,
-              "y": 12,
+              "y": 3,
               "width": 6,
-              "height": 4
+              "height": 3
             }
           },
           {
-            "id": 1000000012,
+            "id": 1575428629551325,
             "definition": {
-              "title": "Highest Finalized Block",
+              "title": "Network hedges RPS",
               "title_size": "16",
               "title_align": "left",
               "show_legend": true,
@@ -497,7 +174,7 @@
                     {
                       "name": "query1",
                       "data_source": "metrics",
-                      "query": "max:erpc.erpc_upstream_finalized_block_number{*} by {project,network}"
+                      "query": "sum:erpc.erpc_network_hedged_request.count{$network,$env,$client_name,$cluster_key,$category,!$ignore_network} by {network,category}.as_rate()"
                     }
                   ],
                   "formulas": [
@@ -507,27 +184,375 @@
                   ],
                   "style": {
                     "palette": "dog_classic",
+                    "order_by": "values",
                     "line_type": "solid",
                     "line_width": "normal"
                   },
-                  "display_type": "line"
+                  "display_type": "bars"
                 }
               ]
             },
             "layout": {
               "x": 6,
-              "y": 12,
+              "y": 3,
               "width": 6,
-              "height": 4
+              "height": 3
+            }
+          },
+          {
+            "id": 3084103047838223,
+            "definition": {
+              "title": "Network-level Warnings",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_network_failed_request.count{$network,$env,$client_name,$cluster_key,$category,!$ignore_network ,severity:warning} by {error,category,network}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "bars"
+                }
+              ]
+            },
+            "layout": {
+              "x": 0,
+              "y": 6,
+              "width": 6,
+              "height": 3
+            }
+          },
+          {
+            "id": 432529104585579,
+            "definition": {
+              "title": "Network-level Low-prio notices",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_network_failed_request.count{$network,$env,$client_name,$cluster_key,$category,!$ignore_network ,severity:info} by {error,category,network}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "bars"
+                }
+              ]
+            },
+            "layout": {
+              "x": 6,
+              "y": 6,
+              "width": 6,
+              "height": 3
             }
           }
         ]
       },
       "layout": {
         "x": 0,
-        "y": 5,
+        "y": 0,
         "width": 12,
-        "height": 17
+        "height": 10
+      }
+    },
+    {
+      "id": 1000000001,
+      "definition": {
+        "title": "Response Times",
+        "show_title": true,
+        "type": "group",
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "id": 7721019813757828,
+            "definition": {
+              "title": "Final resp. time for Network/Method",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "sum",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_network_request_duration_seconds.sum{$network,$client_name,$cluster_key,$env, $category, $ignore_network} by {network,category}"
+                    },
+                    {
+                      "name": "count",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_network_request_duration_seconds.count{$network,$client_name,$cluster_key,$env, $category, $ignore_network} by {network,category}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "alias": "Average Response Time",
+                      "number_format": {
+                        "unit": {
+                          "type": "canonical_unit",
+                          "unit_name": "second"
+                        }
+                      },
+                      "formula": "sum / count"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "line"
+                }
+              ]
+            },
+            "layout": {
+              "x": 0,
+              "y": 0,
+              "width": 6,
+              "height": 3
+            }
+          },
+          {
+            "id": 1000000018,
+            "definition": {
+              "title": "Upstream resp. time by Network/Method",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "sum",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_upstream_request_duration_seconds.sum{$network,$client_name,$cluster_key,$env,$category, $vendor} by {category,network}"
+                    },
+                    {
+                      "name": "count",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_upstream_request_duration_seconds.count{$network,$client_name,$cluster_key,$env,$category, $vendor} by {category,network}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "alias": "Average Response Time",
+                      "number_format": {
+                        "unit": {
+                          "type": "canonical_unit",
+                          "unit_name": "second"
+                        }
+                      },
+                      "formula": "sum / count"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "line"
+                }
+              ]
+            },
+            "layout": {
+              "x": 6,
+              "y": 0,
+              "width": 6,
+              "height": 3
+            }
+          },
+          {
+            "id": 1636966658471284,
+            "definition": {
+              "title": "Upstream resp. time by Vendor/Network",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "sum",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_upstream_request_duration_seconds.sum{$network,$env,$client_name,$cluster_key,$category, $vendor, $ignore_vendor, $ignore_network} by {network,vendor}"
+                    },
+                    {
+                      "name": "count",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_upstream_request_duration_seconds.count{$network,$env,$client_name,$cluster_key,$category, $vendor, $ignore_vendor, $ignore_network} by {network,vendor}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "alias": "Average Response Time",
+                      "number_format": {
+                        "unit": {
+                          "type": "canonical_unit",
+                          "unit_name": "second"
+                        }
+                      },
+                      "formula": "sum / count"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "line"
+                }
+              ]
+            },
+            "layout": {
+              "x": 0,
+              "y": 3,
+              "width": 6,
+              "height": 3
+            }
+          },
+          {
+            "id": 1000000002,
+            "definition": {
+              "title": "Upstream resp. time by Vendor/Method",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "sum",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_upstream_request_duration_seconds.sum{$network,$env,$client_name,$cluster_key,$category ,$vendor, $ignore_vendor, $ignore_network} by {category,vendor}"
+                    },
+                    {
+                      "name": "count",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_upstream_request_duration_seconds.count{$network,$env,$client_name,$cluster_key,$category ,$vendor, $ignore_vendor, $ignore_network} by {category,vendor}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "alias": "Average Response Time",
+                      "number_format": {
+                        "unit": {
+                          "type": "canonical_unit",
+                          "unit_name": "second"
+                        }
+                      },
+                      "formula": "sum / count"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "line"
+                }
+              ]
+            },
+            "layout": {
+              "x": 6,
+              "y": 3,
+              "width": 6,
+              "height": 3
+            }
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 10,
+        "width": 12,
+        "height": 7
       }
     },
     {
@@ -540,7 +565,7 @@
           {
             "id": 1000000014,
             "definition": {
-              "title": "Upstream-level Requests",
+              "title": "Upstream Requests by Method",
               "title_size": "16",
               "title_align": "left",
               "show_legend": true,
@@ -560,7 +585,7 @@
                     {
                       "name": "query1",
                       "data_source": "metrics",
-                      "query": "sum:erpc.erpc_upstream_request.count{*} by {project,network,upstream,category}.as_count()"
+                      "query": "sum:erpc.erpc_upstream_request.count{$network,$env,$client_name,$cluster_key,$category, $vendor} by {network,category,vendor}.as_count()"
                     }
                   ],
                   "formulas": [
@@ -570,10 +595,11 @@
                   ],
                   "style": {
                     "palette": "dog_classic",
+                    "order_by": "values",
                     "line_type": "solid",
                     "line_width": "normal"
                   },
-                  "display_type": "line"
+                  "display_type": "bars"
                 }
               ]
             },
@@ -587,7 +613,7 @@
           {
             "id": 1000000015,
             "definition": {
-              "title": "Upstream-level RPS",
+              "title": "Upstream RPS by Method",
               "title_size": "16",
               "title_align": "left",
               "show_legend": true,
@@ -607,7 +633,7 @@
                     {
                       "name": "query1",
                       "data_source": "metrics",
-                      "query": "sum:erpc.erpc_upstream_request.count{*} by {project,network,upstream,category}.as_rate()"
+                      "query": "sum:erpc.erpc_upstream_request.count{$network,$client_name,$cluster_key,$env,$category,!$ignore_vendor,!$ignore_network, $vendor} by {network,vendor,category}.as_rate()"
                     }
                   ],
                   "formulas": [
@@ -617,10 +643,11 @@
                   ],
                   "style": {
                     "palette": "dog_classic",
+                    "order_by": "values",
                     "line_type": "solid",
                     "line_width": "normal"
                   },
-                  "display_type": "line"
+                  "display_type": "bars"
                 }
               ]
             },
@@ -632,9 +659,9 @@
             }
           },
           {
-            "id": 1000000016,
+            "id": 2634497935862167,
             "definition": {
-              "title": "Upstream-level Remote rate-limited Requests",
+              "title": "Vendor Requests",
               "title_size": "16",
               "title_align": "left",
               "show_legend": true,
@@ -654,7 +681,7 @@
                     {
                       "name": "query1",
                       "data_source": "metrics",
-                      "query": "sum:erpc.erpc_upstream_request_remote_rate_limited.count{*} by {project,network,upstream,category}.as_count()"
+                      "query": "sum:erpc.erpc_upstream_request.count{$network,$env,$client_name,$cluster_key,$category, $vendor} by {vendor}.as_count()"
                     }
                   ],
                   "formulas": [
@@ -664,6 +691,258 @@
                   ],
                   "style": {
                     "palette": "dog_classic",
+                    "order_by": "values",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "bars"
+                }
+              ]
+            },
+            "layout": {
+              "x": 0,
+              "y": 4,
+              "width": 6,
+              "height": 4
+            }
+          },
+          {
+            "id": 6118999567876503,
+            "definition": {
+              "title": "Vendor RPS",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_upstream_request.count{$network,$client_name,$cluster_key,$env,$category,!$ignore_vendor,!$ignore_network, $vendor} by {vendor}.as_rate()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "order_by": "values",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "bars"
+                }
+              ]
+            },
+            "layout": {
+              "x": 6,
+              "y": 4,
+              "width": 6,
+              "height": 4
+            }
+          },
+          {
+            "id": 1000000022,
+            "definition": {
+              "title": "Upstream-level critical errors",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_upstream_request_errors.count{severity:critical,$network,$env,$client_name,$cluster_key,$category, $vendor} by {network,category,error,vendor}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "order_by": "values",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "bars"
+                }
+              ]
+            },
+            "layout": {
+              "x": 0,
+              "y": 8,
+              "width": 6,
+              "height": 4
+            }
+          },
+          {
+            "id": 1000000021,
+            "definition": {
+              "title": "Upstream-level warning errors",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_upstream_request_errors.count{severity:warning,$network,$client_name,$cluster_key,$env,$category,!$ignore_network, $vendor} by {network,error,category,vendor}.as_rate()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "order_by": "values",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "bars"
+                }
+              ]
+            },
+            "layout": {
+              "x": 6,
+              "y": 8,
+              "width": 6,
+              "height": 4
+            }
+          },
+          {
+            "id": 3881600647009927,
+            "definition": {
+              "title": "Upstream-level missing data errors",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_upstream_request_missing_data_error.count{$network,$client_name,$cluster_key,$env,$category,!$ignore_network, $vendor} by {network,category,client_name,cluster_key,vendor}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "order_by": "values",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "bars"
+                }
+              ]
+            },
+            "layout": {
+              "x": 0,
+              "y": 12,
+              "width": 6,
+              "height": 4
+            }
+          },
+          {
+            "id": 6679082873725424,
+            "definition": {
+              "title": "Upstream-level critical rate",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_upstream_request_errors.count{severity:critical,$network,$env,$client_name,$cluster_key,$category, $vendor} by {network,vendor}.as_count()"
+                    },
+                    {
+                      "name": "query2",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_upstream_request.count{$network,$env,$client_name,$cluster_key,$category, $vendor} by {network,vendor}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "number_format": {
+                        "unit": {
+                          "type": "canonical_unit",
+                          "unit_name": "percent"
+                        }
+                      },
+                      "formula": "(query1 / query2) * 100"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "order_by": "values",
                     "line_type": "solid",
                     "line_width": "normal"
                   },
@@ -672,8 +951,104 @@
               ]
             },
             "layout": {
+              "x": 6,
+              "y": 12,
+              "width": 6,
+              "height": 4
+            }
+          },
+          {
+            "id": 7317191428090703,
+            "definition": {
+              "title": "Upstream-level empty responses",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_upstream_request_empty_response.count{$network,$client_name,$cluster_key,$env,$category,!$ignore_network, $vendor} by {network,category,client_name,cluster_key,vendor}.as_rate()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "order_by": "values",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "bars"
+                }
+              ]
+            },
+            "layout": {
               "x": 0,
-              "y": 4,
+              "y": 16,
+              "width": 6,
+              "height": 4
+            }
+          },
+          {
+            "id": 6436676233242771,
+            "definition": {
+              "title": "Upstream-level WRONG empty responses",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_upstream_wrong_empty_response.count{$network,$client_name,$cluster_key,$env,$category,!$ignore_network, $vendor} by {network,category,client_name,cluster_key,vendor}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "order_by": "values",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "bars"
+                }
+              ]
+            },
+            "layout": {
+              "x": 6,
+              "y": 16,
               "width": 6,
               "height": 4
             }
@@ -701,7 +1076,54 @@
                     {
                       "name": "query1",
                       "data_source": "metrics",
-                      "query": "sum:erpc.erpc_upstream_request_self_rate_limited.count{*} by {project,network,upstream,category}.as_count()"
+                      "query": "sum:erpc.erpc_upstream_request_self_rate_limited.count{$network,$env,$client_name,$cluster_key,$category, $vendor} by {network,vendor,category}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "line"
+                }
+              ]
+            },
+            "layout": {
+              "x": 0,
+              "y": 20,
+              "width": 6,
+              "height": 3
+            }
+          },
+          {
+            "id": 1000000016,
+            "definition": {
+              "title": "Upstream-level Remote rate-limited Requests",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_upstream_request_remote_rate_limited.count{$network,$env,$client_name,$cluster_key,$category, $vendor} by {network,vendor,category}.as_count()"
                     }
                   ],
                   "formulas": [
@@ -720,174 +1142,173 @@
             },
             "layout": {
               "x": 6,
+              "y": 20,
+              "width": 6,
+              "height": 3
+            }
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 17,
+        "width": 12,
+        "height": 24
+      }
+    },
+    {
+      "id": 3425675515769619,
+      "definition": {
+        "title": "eth_getLogs",
+        "show_title": true,
+        "type": "group",
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "id": 6212383701362510,
+            "definition": {
+              "title": "getLogs Splits via Threshold",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_upstream_evm_get_logs_range_exceeded_auto_splitting_threshold.count{$network,$env,$client_name,$cluster_key, $vendor} by {network,vendor}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "bars"
+                }
+              ]
+            },
+            "layout": {
+              "x": 0,
+              "y": 0,
+              "width": 6,
+              "height": 4
+            }
+          },
+          {
+            "id": 7325396145518657,
+            "definition": {
+              "title": "getLogs Splits via TooLargeError",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_upstream_evm_get_logs_forced_splits.count{$network,$env,$client_name,$cluster_key} by {network,upstream}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "bars"
+                }
+              ]
+            },
+            "layout": {
+              "x": 6,
+              "y": 0,
+              "width": 6,
+              "height": 4
+            }
+          },
+          {
+            "id": 3355077574741644,
+            "definition": {
+              "title": "getLogs upper-bound exceeded requests",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_upstream_evm_get_logs_stale_upper_bound.count{$network,$env,$client_name,$cluster_key, $vendor} by {network,vendor}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "bars"
+                }
+              ]
+            },
+            "layout": {
+              "x": 0,
               "y": 4,
               "width": 6,
               "height": 4
             }
           },
           {
-            "id": 1000000018,
+            "id": 4624787377044679,
             "definition": {
-              "title": "Upstream-level P99 Resp. time (Avg)",
-              "title_size": "16",
-              "title_align": "left",
-              "show_legend": true,
-              "legend_layout": "auto",
-              "legend_columns": [
-                "avg",
-                "min",
-                "max",
-                "value",
-                "sum"
-              ],
-              "type": "timeseries",
-              "requests": [
-                {
-                  "response_format": "timeseries",
-                  "queries": [
-                    {
-                      "name": "sum",
-                      "data_source": "metrics",
-                      "query": "sum:erpc.erpc_upstream_request_duration_seconds.sum{*} by {project,upstream,category}"
-                    },
-                    {
-                      "name": "count",
-                      "data_source": "metrics",
-                      "query": "sum:erpc.erpc_upstream_request_duration_seconds.count{*} by {project,upstream,category}"
-                    }
-                  ],
-                  "formulas": [
-                    {
-                      "formula": "sum / count",
-                      "alias": "Average Response Time"
-                    }
-                  ],
-                  "style": {
-                    "palette": "dog_classic",
-                    "line_type": "solid",
-                    "line_width": "normal"
-                  },
-                  "display_type": "line"
-                }
-              ]
-            },
-            "layout": {
-              "x": 0,
-              "y": 8,
-              "width": 4,
-              "height": 4
-            }
-          },
-          {
-            "id": 1000000019,
-            "definition": {
-              "title": "Upstream-level P90 Resp. time (Avg)",
-              "title_size": "16",
-              "title_align": "left",
-              "show_legend": true,
-              "legend_layout": "auto",
-              "legend_columns": [
-                "avg",
-                "min",
-                "max",
-                "value",
-                "sum"
-              ],
-              "type": "timeseries",
-              "requests": [
-                {
-                  "response_format": "timeseries",
-                  "queries": [
-                    {
-                      "name": "sum",
-                      "data_source": "metrics",
-                      "query": "sum:erpc.erpc_upstream_request_duration_seconds.sum{*} by {project,upstream,category}"
-                    },
-                    {
-                      "name": "count",
-                      "data_source": "metrics",
-                      "query": "sum:erpc.erpc_upstream_request_duration_seconds.count{*} by {project,upstream,category}"
-                    }
-                  ],
-                  "formulas": [
-                    {
-                      "formula": "sum / count",
-                      "alias": "Average Response Time"
-                    }
-                  ],
-                  "style": {
-                    "palette": "dog_classic",
-                    "line_type": "solid",
-                    "line_width": "normal"
-                  },
-                  "display_type": "line"
-                }
-              ]
-            },
-            "layout": {
-              "x": 4,
-              "y": 8,
-              "width": 4,
-              "height": 4
-            }
-          },
-          {
-            "id": 1000000020,
-            "definition": {
-              "title": "Upstream-level P50 Resp. time (Avg)",
-              "title_size": "16",
-              "title_align": "left",
-              "show_legend": true,
-              "legend_layout": "auto",
-              "legend_columns": [
-                "avg",
-                "min",
-                "max",
-                "value",
-                "sum"
-              ],
-              "type": "timeseries",
-              "requests": [
-                {
-                  "response_format": "timeseries",
-                  "queries": [
-                    {
-                      "name": "sum",
-                      "data_source": "metrics",
-                      "query": "sum:erpc.erpc_upstream_request_duration_seconds.sum{*} by {project,upstream,category}"
-                    },
-                    {
-                      "name": "count",
-                      "data_source": "metrics",
-                      "query": "sum:erpc.erpc_upstream_request_duration_seconds.count{*} by {project,upstream,category}"
-                    }
-                  ],
-                  "formulas": [
-                    {
-                      "formula": "sum / count",
-                      "alias": "Average Response Time"
-                    }
-                  ],
-                  "style": {
-                    "palette": "dog_classic",
-                    "line_type": "solid",
-                    "line_width": "normal"
-                  },
-                  "display_type": "line"
-                }
-              ]
-            },
-            "layout": {
-              "x": 8,
-              "y": 8,
-              "width": 4,
-              "height": 4
-            }
-          },
-          {
-            "id": 1000000021,
-            "definition": {
-              "title": "Upstream-level warning errors",
+              "title": "getLogs lower out of bounds",
               "title_size": "16",
               "title_align": "left",
               "show_legend": true,
@@ -907,7 +1328,7 @@
                     {
                       "name": "query1",
                       "data_source": "metrics",
-                      "query": "sum:erpc.erpc_upstream_request_errors.count{severity:warning} by {project,network,upstream,error}.as_count()"
+                      "query": "sum:erpc.erpc_upstream_evm_get_logs_stale_lower_bound.count{$network,$env,$client_name,$cluster_key, $vendor} by {network,upstream}.as_count()"
                     }
                   ],
                   "formulas": [
@@ -920,61 +1341,14 @@
                     "line_type": "solid",
                     "line_width": "normal"
                   },
-                  "display_type": "line"
+                  "display_type": "bars"
                 }
               ]
             },
             "layout": {
-              "x": 0,
-              "y": 12,
-              "width": 12,
-              "height": 4
-            }
-          },
-          {
-            "id": 1000000022,
-            "definition": {
-              "title": "Upstream-level critical errors",
-              "title_size": "16",
-              "title_align": "left",
-              "show_legend": true,
-              "legend_layout": "auto",
-              "legend_columns": [
-                "avg",
-                "min",
-                "max",
-                "value",
-                "sum"
-              ],
-              "type": "timeseries",
-              "requests": [
-                {
-                  "response_format": "timeseries",
-                  "queries": [
-                    {
-                      "name": "query1",
-                      "data_source": "metrics",
-                      "query": "sum:erpc.erpc_upstream_request_errors.count{severity:critical} by {project,network,upstream,category,error}.as_count()"
-                    }
-                  ],
-                  "formulas": [
-                    {
-                      "formula": "query1"
-                    }
-                  ],
-                  "style": {
-                    "palette": "dog_classic",
-                    "line_type": "solid",
-                    "line_width": "normal"
-                  },
-                  "display_type": "line"
-                }
-              ]
-            },
-            "layout": {
-              "x": 0,
-              "y": 16,
-              "width": 12,
+              "x": 6,
+              "y": 4,
+              "width": 6,
               "height": 4
             }
           }
@@ -982,9 +1356,9 @@
       },
       "layout": {
         "x": 0,
-        "y": 22,
+        "y": 41,
         "width": 12,
-        "height": 21
+        "height": 9
       }
     },
     {
@@ -995,9 +1369,9 @@
         "layout_type": "ordered",
         "widgets": [
           {
-            "id": 1000000024,
+            "id": 1000000011,
             "definition": {
-              "title": "Avg. Score by Upstream",
+              "title": "Highest Latest Block",
               "title_size": "16",
               "title_align": "left",
               "show_legend": true,
@@ -1017,7 +1391,7 @@
                     {
                       "name": "query1",
                       "data_source": "metrics",
-                      "query": "avg:erpc.erpc_upstream_score_overall{*} by {project,upstream}"
+                      "query": "max:erpc.erpc_upstream_latest_block_number{$network,$env,$client_name,$cluster_key} by {network}"
                     }
                   ],
                   "formulas": [
@@ -1042,9 +1416,9 @@
             }
           },
           {
-            "id": 1000000025,
+            "id": 1000000012,
             "definition": {
-              "title": "Avg. Score by Method",
+              "title": "Highest Finalized Block",
               "title_size": "16",
               "title_align": "left",
               "show_legend": true,
@@ -1064,7 +1438,7 @@
                     {
                       "name": "query1",
                       "data_source": "metrics",
-                      "query": "avg:erpc.erpc_upstream_score_overall{*} by {project,upstream,category}"
+                      "query": "max:erpc.erpc_upstream_finalized_block_number{$network,$env,$client_name,$cluster_key} by {project,network}"
                     }
                   ],
                   "formulas": [
@@ -1085,6 +1459,160 @@
               "x": 6,
               "y": 0,
               "width": 6,
+              "height": 4
+            }
+          },
+          {
+            "id": 6945152525033680,
+            "definition": {
+              "title": "Score by Vendor",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "queries": [
+                    {
+                      "data_source": "metrics",
+                      "name": "query1",
+                      "query": "avg:erpc.erpc_upstream_score_overall{$network,$env,$client_name,$cluster_key,$vendor,$ignore_vendor, $category} by {vendor}"
+                    }
+                  ],
+                  "response_format": "timeseries",
+                  "style": {
+                    "palette": "dog_classic",
+                    "order_by": "values",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "line"
+                }
+              ],
+              "yaxis": {
+                "include_zero": false,
+                "scale": "linear",
+                "min": "auto",
+                "max": "auto"
+              }
+            },
+            "layout": {
+              "x": 0,
+              "y": 4,
+              "width": 4,
+              "height": 4
+            }
+          },
+          {
+            "id": 1000000024,
+            "definition": {
+              "title": "Score by Method",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "avg:erpc.erpc_upstream_score_overall{$network,$env,$client_name,$cluster_key, $vendor, $ignore_vendor, $category} by {vendor,category}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "line"
+                }
+              ],
+              "yaxis": {
+                "include_zero": false
+              }
+            },
+            "layout": {
+              "x": 4,
+              "y": 4,
+              "width": 4,
+              "height": 4
+            }
+          },
+          {
+            "id": 5134862994002776,
+            "definition": {
+              "title": "Top Score Vendors",
+              "title_size": "16",
+              "title_align": "left",
+              "type": "toplist",
+              "requests": [
+                {
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "avg:erpc.erpc_upstream_score_overall{$network,$env,$client_name,$cluster_key, $vendor, $ignore_vendor, $category} by {vendor,category}",
+                      "aggregator": "sum"
+                    }
+                  ],
+                  "response_format": "scalar",
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "sort": {
+                    "count": 10,
+                    "order_by": [
+                      {
+                        "type": "formula",
+                        "index": 0,
+                        "order": "desc"
+                      }
+                    ]
+                  }
+                }
+              ],
+              "style": {
+                "display": {
+                  "type": "stacked",
+                  "legend": "automatic"
+                },
+                "palette": "dog_classic"
+              }
+            },
+            "layout": {
+              "x": 8,
+              "y": 4,
+              "width": 4,
               "height": 4
             }
           },
@@ -1111,7 +1639,7 @@
                     {
                       "name": "query1",
                       "data_source": "metrics",
-                      "query": "avg:erpc.erpc_upstream_block_head_lag{!network:} by {project,network,upstream}"
+                      "query": "avg:erpc.erpc_upstream_block_head_lag{!network:,$network,$env,$client_name,$cluster_key, $vendor} by {network,vendor}"
                     }
                   ],
                   "formulas": [
@@ -1130,7 +1658,7 @@
             },
             "layout": {
               "x": 0,
-              "y": 4,
+              "y": 8,
               "width": 6,
               "height": 4
             }
@@ -1158,7 +1686,7 @@
                     {
                       "name": "query1",
                       "data_source": "metrics",
-                      "query": "avg:erpc.erpc_upstream_block_head_lag{!network:} by {upstream,network}"
+                      "query": "avg:erpc.erpc_upstream_block_head_lag{!network:,$network,$env,$client_name,$cluster_key ,!vendor:N/A, $vendor} by {vendor,network}"
                     }
                   ],
                   "formulas": [
@@ -1177,15 +1705,15 @@
             },
             "layout": {
               "x": 6,
-              "y": 4,
+              "y": 8,
               "width": 6,
               "height": 4
             }
           },
           {
-            "id": 1000000028,
+            "id": 3087873490578338,
             "definition": {
-              "title": "Latest Block by Upstream",
+              "title": "Top Block lagging Vendors",
               "title_size": "16",
               "title_align": "left",
               "type": "toplist",
@@ -1194,9 +1722,10 @@
                   "response_format": "scalar",
                   "queries": [
                     {
-                      "name": "query1",
+                      "name": "query2",
                       "data_source": "metrics",
-                      "query": "avg:erpc.erpc_upstream_latest_block_number{!network:, !upstream:} by {project,upstream,network}"
+                      "query": "avg:erpc.erpc_upstream_block_head_lag{!network:,!upstream:,$network,$env,$client_name,$cluster_key, $vendor} by {vendor}",
+                      "aggregator": "avg"
                     }
                   ],
                   "style": {
@@ -1204,18 +1733,18 @@
                   },
                   "formulas": [
                     {
-                      "formula": "query1"
+                      "formula": "query2"
                     }
                   ],
                   "sort": {
+                    "count": 100,
                     "order_by": [
                       {
-                        "type": "group",
-                        "name": "network",
-                        "order": "asc"
+                        "type": "formula",
+                        "index": 0,
+                        "order": "desc"
                       }
-                    ],
-                    "count": 100
+                    ]
                   }
                 }
               ],
@@ -1227,15 +1756,66 @@
             },
             "layout": {
               "x": 0,
-              "y": 8,
-              "width": 6,
+              "y": 12,
+              "width": 3,
               "height": 4
             }
           },
           {
-            "id": 1000000029,
+            "id": 1000000028,
             "definition": {
-              "title": "Latest Block Polls",
+              "title": "Top Block lagging Vendors (by Chain)",
+              "title_size": "16",
+              "title_align": "left",
+              "type": "toplist",
+              "requests": [
+                {
+                  "response_format": "scalar",
+                  "queries": [
+                    {
+                      "name": "query2",
+                      "data_source": "metrics",
+                      "query": "avg:erpc.erpc_upstream_block_head_lag{!network:,!upstream:,$network,$env,$client_name,$cluster_key, $vendor} by {network,vendor}",
+                      "aggregator": "avg"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic"
+                  },
+                  "formulas": [
+                    {
+                      "formula": "query2"
+                    }
+                  ],
+                  "sort": {
+                    "count": 100,
+                    "order_by": [
+                      {
+                        "type": "formula",
+                        "index": 0,
+                        "order": "desc"
+                      }
+                    ]
+                  }
+                }
+              ],
+              "style": {
+                "display": {
+                  "type": "flat"
+                }
+              }
+            },
+            "layout": {
+              "x": 3,
+              "y": 12,
+              "width": 3,
+              "height": 5
+            }
+          },
+          {
+            "id": 6532263195237223,
+            "definition": {
+              "title": "Latest Block Polls (per-second)",
               "title_size": "16",
               "title_align": "left",
               "show_legend": true,
@@ -1255,7 +1835,7 @@
                     {
                       "name": "query1",
                       "data_source": "metrics",
-                      "query": "sum:erpc.erpc_upstream_latest_block_polled.count{*} by {project,network,upstream}.as_count()"
+                      "query": "sum:erpc.erpc_upstream_latest_block_polled.count{$network,$env,$cluster_key,$client_name, $vendor} by {network,vendor}.as_rate()"
                     }
                   ],
                   "formulas": [
@@ -1274,7 +1854,7 @@
             },
             "layout": {
               "x": 6,
-              "y": 8,
+              "y": 12,
               "width": 6,
               "height": 4
             }
@@ -1283,9 +1863,10 @@
       },
       "layout": {
         "x": 0,
-        "y": 43,
+        "y": 50,
         "width": 12,
-        "height": 13
+        "height": 18,
+        "is_column_break": true
       }
     },
     {
@@ -1318,18 +1899,18 @@
                     {
                       "name": "query1",
                       "data_source": "metrics",
-                      "query": "sum:erpc.erpc_cache_set_success.count{*} by {project,network,category,connector,policy,ttl}.as_count()"
+                      "query": "sum:erpc.erpc_cache_set_success.count{$network,$client_name,$cluster_key,$env,$connector,$category} by {network,category,connector}.as_count()"
                     }
                   ],
                   "formulas": [
                     {
-                      "formula": "query1",
                       "number_format": {
                         "unit": {
                           "type": "canonical_unit",
                           "unit_name": "set"
                         }
-                      }
+                      },
+                      "formula": "query1"
                     }
                   ],
                   "style": {
@@ -1371,18 +1952,24 @@
                     {
                       "name": "sum",
                       "data_source": "metrics",
-                      "query": "sum:erpc.erpc_cache_set_success_duration_seconds.sum{*} by {project,network,category,connector,policy,ttl}"
+                      "query": "sum:erpc.erpc_cache_set_success_duration_seconds.sum{$network,$connector,$env,$client_name,$cluster_key,$category} by {network,category,connector}"
                     },
                     {
                       "name": "count",
                       "data_source": "metrics",
-                      "query": "sum:erpc.erpc_cache_set_success_duration_seconds.count{*} by {project,network,category,connector,policy,ttl}"
+                      "query": "sum:erpc.erpc_cache_set_success_duration_seconds.count{$network,$connector,$env,$client_name,$cluster_key,$category} by {network,category,connector}"
                     }
                   ],
                   "formulas": [
                     {
-                      "formula": "sum / count",
-                      "alias": "Average Duration"
+                      "alias": "Average Duration",
+                      "number_format": {
+                        "unit": {
+                          "type": "canonical_unit",
+                          "unit_name": "second"
+                        }
+                      },
+                      "formula": "sum / count"
                     }
                   ],
                   "style": {
@@ -1397,53 +1984,6 @@
             "layout": {
               "x": 6,
               "y": 0,
-              "width": 6,
-              "height": 4
-            }
-          },
-          {
-            "id": 1000000033,
-            "definition": {
-              "title": "Cache SET error total",
-              "title_size": "16",
-              "title_align": "left",
-              "show_legend": true,
-              "legend_layout": "auto",
-              "legend_columns": [
-                "avg",
-                "min",
-                "max",
-                "value",
-                "sum"
-              ],
-              "type": "timeseries",
-              "requests": [
-                {
-                  "response_format": "timeseries",
-                  "queries": [
-                    {
-                      "name": "query1",
-                      "data_source": "metrics",
-                      "query": "sum:erpc.erpc_cache_set_error.count{*} by {project,network,category,connector,policy,error,ttl}.as_count()"
-                    }
-                  ],
-                  "formulas": [
-                    {
-                      "formula": "query1"
-                    }
-                  ],
-                  "style": {
-                    "palette": "dog_classic",
-                    "line_type": "solid",
-                    "line_width": "normal"
-                  },
-                  "display_type": "bars"
-                }
-              ]
-            },
-            "layout": {
-              "x": 0,
-              "y": 4,
               "width": 6,
               "height": 4
             }
@@ -1471,11 +2011,17 @@
                     {
                       "name": "query1",
                       "data_source": "metrics",
-                      "query": "sum:erpc.erpc_cache_get_success_hit.count{*} by {project,network,category,connector,policy,ttl}.as_count()"
+                      "query": "sum:erpc.erpc_cache_get_success_hit.count{$network,$connector,$env,$client_name,$cluster_key,$category} by {network,category,connector}.as_count()"
                     }
                   ],
                   "formulas": [
                     {
+                      "number_format": {
+                        "unit": {
+                          "type": "canonical_unit",
+                          "unit_name": "hit"
+                        }
+                      },
                       "formula": "query1"
                     }
                   ],
@@ -1485,6 +2031,65 @@
                     "line_width": "normal"
                   },
                   "display_type": "bars"
+                }
+              ]
+            },
+            "layout": {
+              "x": 0,
+              "y": 4,
+              "width": 6,
+              "height": 4
+            }
+          },
+          {
+            "id": 7219814279851748,
+            "definition": {
+              "title": "Cache GET success-hit duration (Avg)",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "sum",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_cache_get_success_hit_duration_seconds.sum{$connector,$env,$client_name,$cluster_key,$category} by {connector}.as_count()"
+                    },
+                    {
+                      "name": "count",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_cache_get_success_hit_duration_seconds.count{$connector,$env,$client_name,$cluster_key,$category} by {connector}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "alias": "Average Duration",
+                      "number_format": {
+                        "unit": {
+                          "type": "canonical_unit",
+                          "unit_name": "second"
+                        }
+                      },
+                      "formula": "sum / count"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "line"
                 }
               ]
             },
@@ -1518,12 +2123,136 @@
                     {
                       "name": "query1",
                       "data_source": "metrics",
-                      "query": "sum:erpc.erpc_cache_get_success_miss.count{*} by {project,network,category,connector,policy,ttl}.as_count()"
+                      "query": "sum:erpc.erpc_cache_get_success_miss.count{$network,$connector,$env,$client_name,$cluster_key,$category} by {network,category,connector}.as_count()"
                     }
                   ],
                   "formulas": [
                     {
+                      "number_format": {
+                        "unit": {
+                          "type": "canonical_unit",
+                          "unit_name": "miss"
+                        }
+                      },
                       "formula": "query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "bars"
+                }
+              ]
+            },
+            "layout": {
+              "x": 0,
+              "y": 8,
+              "width": 6,
+              "height": 4
+            }
+          },
+          {
+            "id": 4018882365735320,
+            "definition": {
+              "title": "Cache GET success-miss duration (Avg)",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "sum",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_cache_get_success_miss_duration_seconds.sum{$network,$connector,$env,$client_name,$cluster_key,$category} by {connector}.as_count()"
+                    },
+                    {
+                      "name": "count",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_cache_get_success_miss_duration_seconds.count{$network,$connector,$env,$client_name,$cluster_key,$category} by {connector}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "alias": "Average Duration",
+                      "number_format": {
+                        "unit": {
+                          "type": "canonical_unit",
+                          "unit_name": "second"
+                        }
+                      },
+                      "formula": "sum / count"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "line"
+                }
+              ]
+            },
+            "layout": {
+              "x": 6,
+              "y": 8,
+              "width": 6,
+              "height": 4
+            }
+          },
+          {
+            "id": 298699803438279,
+            "definition": {
+              "title": "Cache Hit Efficiency",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "hit",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_cache_get_success_hit.count{$network,$connector,$env,$client_name,$cluster_key,$category} by {category,connector,network}.as_count()"
+                    },
+                    {
+                      "name": "miss",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_cache_get_success_miss.count{$network,$connector,$env,$client_name,$cluster_key,$category} by {category,connector,network}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "alias": "Hit Efficiency",
+                      "number_format": {
+                        "unit": {
+                          "type": "canonical_unit",
+                          "unit_name": "percent"
+                        }
+                      },
+                      "formula": "(hit / (hit + miss)) * 100"
                     }
                   ],
                   "style": {
@@ -1537,8 +2266,114 @@
             },
             "layout": {
               "x": 0,
-              "y": 8,
+              "y": 12,
               "width": 6,
+              "height": 4
+            }
+          },
+          {
+            "id": 1000000033,
+            "definition": {
+              "title": "Cache SET skips",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_cache_set_skipped.count{$network,$connector,$env,$client_name,$cluster_key,$category} by {network,category,connector}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "number_format": {
+                        "unit": {
+                          "type": "canonical_unit",
+                          "unit_name": "error"
+                        }
+                      },
+                      "formula": "query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "bars"
+                }
+              ]
+            },
+            "layout": {
+              "x": 6,
+              "y": 12,
+              "width": 3,
+              "height": 4
+            }
+          },
+          {
+            "id": 5804885391569210,
+            "definition": {
+              "title": "Cache GET skips",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_cache_get_skipped.count{$network,$connector,$env,$client_name,$cluster_key,$category} by {network,category}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "number_format": {
+                        "unit": {
+                          "type": "canonical_unit",
+                          "unit_name": "error"
+                        }
+                      },
+                      "formula": "query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "bars"
+                }
+              ]
+            },
+            "layout": {
+              "x": 9,
+              "y": 12,
+              "width": 3,
               "height": 4
             }
           },
@@ -1565,11 +2400,17 @@
                     {
                       "name": "query1",
                       "data_source": "metrics",
-                      "query": "sum:erpc.erpc_cache_get_error.count{*} by {project,network,category,connector,policy,ttl,error}.as_count()"
+                      "query": "sum:erpc.erpc_cache_get_error.count{$network,!error:errrecordnotfound:_record_not_found,!error:errrecordexpired:_record_expired,$connector,$env,$client_name,$cluster_key,$category} by {network,category,connector,error}.as_count()"
                     }
                   ],
                   "formulas": [
                     {
+                      "number_format": {
+                        "unit": {
+                          "type": "canonical_unit",
+                          "unit_name": "error"
+                        }
+                      },
                       "formula": "query1"
                     }
                   ],
@@ -1578,24 +2419,130 @@
                     "line_type": "solid",
                     "line_width": "normal"
                   },
-                  "display_type": "line"
+                  "display_type": "bars"
+                }
+              ]
+            },
+            "layout": {
+              "x": 0,
+              "y": 16,
+              "width": 6,
+              "height": 4
+            }
+          },
+          {
+            "id": 277614448978566,
+            "definition": {
+              "title": "Cache SET error total",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_cache_set_error.count{$network,$connector,$env,$client_name,$cluster_key,$category} by {network,category,connector,error}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "number_format": {
+                        "unit": {
+                          "type": "canonical_unit",
+                          "unit_name": "error"
+                        }
+                      },
+                      "formula": "query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "bars"
                 }
               ]
             },
             "layout": {
               "x": 6,
-              "y": 8,
+              "y": 16,
               "width": 6,
               "height": 4
+            }
+          },
+          {
+            "id": 353236342307295,
+            "definition": {
+              "title": "Memory cache usage",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "sum:erpc.erpc_ristretto_cache_current_cost{$connector,$env,$client_name,$cluster_key} by {connector}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "number_format": {
+                        "unit": {
+                          "type": "canonical_unit",
+                          "unit_name": "byte_in_bits_family"
+                        }
+                      },
+                      "formula": "query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "bars"
+                }
+              ]
+            },
+            "layout": {
+              "x": 0,
+              "y": 20,
+              "width": 12,
+              "height": 2
             }
           }
         ]
       },
       "layout": {
         "x": 0,
-        "y": 56,
+        "y": 68,
         "width": 12,
-        "height": 13
+        "height": 23
       }
     },
     {
@@ -1628,11 +2575,17 @@
                     {
                       "name": "query1",
                       "data_source": "metrics",
-                      "query": "sum:erpc.erpc_unexpected_panic.count{*} by {scope,extra,error}.as_count()"
+                      "query": "sum:erpc.erpc_unexpected_panic.count{$network} by {scope,extra,error,cluster_key}.as_count()"
                     }
                   ],
                   "formulas": [
                     {
+                      "number_format": {
+                        "unit": {
+                          "type": "canonical_unit",
+                          "unit_name": "error"
+                        }
+                      },
                       "formula": "query1"
                     }
                   ],
@@ -1641,7 +2594,7 @@
                     "line_type": "solid",
                     "line_width": "normal"
                   },
-                  "display_type": "line"
+                  "display_type": "bars"
                 }
               ]
             },
@@ -1656,13 +2609,360 @@
       },
       "layout": {
         "x": 0,
-        "y": 69,
+        "y": 91,
         "width": 12,
         "height": 5
       }
+    },
+    {
+      "id": 8107563891728928,
+      "definition": {
+        "title": "CPU and Memory",
+        "show_title": true,
+        "type": "group",
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "id": 6476737428266882,
+            "definition": {
+              "title": "CPU Usage by Deployment",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "avg:kubernetes.cpu.usage.total{cluster_name:us-west-2-aws,service:erpc} by {kube_deployment}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "order_by": "values",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "line"
+                }
+              ]
+            },
+            "layout": {
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 3
+            }
+          },
+          {
+            "id": 7259929616602738,
+            "definition": {
+              "title": "Nodes CPU Usage",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "avg:system.cpu.idle{cluster_name:us-west-2-aws} by {host}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "alias": "CPU",
+                      "number_format": {
+                        "unit": {
+                          "type": "canonical_unit",
+                          "unit_name": "percent"
+                        }
+                      },
+                      "formula": "100 - query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "order_by": "values",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "line"
+                }
+              ],
+              "yaxis": {
+                "include_zero": true,
+                "min": "0",
+                "max": "100"
+              }
+            },
+            "layout": {
+              "x": 0,
+              "y": 3,
+              "width": 6,
+              "height": 4
+            }
+          },
+          {
+            "id": 7705695376357392,
+            "definition": {
+              "title": "CPU Usage by Node/Pod",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "max:kubernetes.cpu.usage.total{cluster_name:us-west-2-aws} by {pod_name,kube_node}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "order_by": "values",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "line"
+                }
+              ]
+            },
+            "layout": {
+              "x": 6,
+              "y": 3,
+              "width": 6,
+              "height": 4
+            }
+          },
+          {
+            "id": 2077653987746843,
+            "definition": {
+              "title": "Nodes Memory Usage",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "avg:system.mem.used{cluster_name:us-west-2-aws} by {host}"
+                    },
+                    {
+                      "name": "query2",
+                      "data_source": "metrics",
+                      "query": "avg:system.mem.total{cluster_name:us-west-2-aws} by {host}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "number_format": {
+                        "unit": {
+                          "type": "canonical_unit",
+                          "unit_name": "percent"
+                        }
+                      },
+                      "alias": "Used Memory",
+                      "formula": "(query1 / query2) * 100"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "order_by": "values",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "line"
+                }
+              ],
+              "yaxis": {
+                "include_zero": true,
+                "min": "auto",
+                "max": "auto"
+              }
+            },
+            "layout": {
+              "x": 0,
+              "y": 7,
+              "width": 6,
+              "height": 4
+            }
+          },
+          {
+            "id": 521119598599621,
+            "definition": {
+              "title": "Memory Usage by Node/Pod",
+              "title_size": "16",
+              "title_align": "left",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "legend_columns": [
+                "avg",
+                "min",
+                "max",
+                "value",
+                "sum"
+              ],
+              "type": "timeseries",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "query1",
+                      "data_source": "metrics",
+                      "query": "max:kubernetes.memory.usage{cluster_name:us-west-2-aws} by {pod_name,kube_node}"
+                    }
+                  ],
+                  "formulas": [
+                    {
+                      "formula": "query1"
+                    }
+                  ],
+                  "style": {
+                    "palette": "dog_classic",
+                    "order_by": "values",
+                    "line_type": "solid",
+                    "line_width": "normal"
+                  },
+                  "display_type": "line"
+                }
+              ]
+            },
+            "layout": {
+              "x": 6,
+              "y": 7,
+              "width": 6,
+              "height": 4
+            }
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 96,
+        "width": 12,
+        "height": 12
+      }
     }
   ],
-  "template_variables": [],
+  "template_variables": [
+    {
+      "name": "env",
+      "prefix": "env",
+      "available_values": [],
+      "default": "*"
+    },
+    {
+      "name": "client_name",
+      "prefix": "client_name",
+      "available_values": [],
+      "default": "*"
+    },
+    {
+      "name": "network",
+      "prefix": "network",
+      "available_values": [],
+      "default": "*"
+    },
+    {
+      "name": "cluster_key",
+      "prefix": "cluster_key",
+      "available_values": [],
+      "default": "*"
+    },
+    {
+      "name": "category",
+      "prefix": "category",
+      "available_values": [],
+      "default": "*"
+    },
+    {
+      "name": "connector",
+      "prefix": "connector",
+      "available_values": [],
+      "default": "*"
+    },
+    {
+      "name": "ignore_vendor",
+      "prefix": "vendor",
+      "available_values": [],
+      "default": "*"
+    },
+    {
+      "name": "ignore_network",
+      "prefix": "network",
+      "available_values": [],
+      "default": "*"
+    },
+    {
+      "name": "vendor",
+      "prefix": "vendor",
+      "available_values": [],
+      "default": "*"
+    },
+    {
+      "name": "project",
+      "prefix": "project",
+      "available_values": [],
+      "default": "*"
+    }
+  ],
   "layout_type": "ordered",
   "notify_list": [],
   "reflow_type": "fixed"

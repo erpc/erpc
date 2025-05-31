@@ -288,10 +288,9 @@ func TestCounterInt64_TryUpdate_LocalFallback(t *testing.T) {
 			counter := &counterInt64{
 				registry:         registry,
 				key:              "test",
-				value:            0,
 				ignoreRollbackOf: 1024,
 			}
-			counter.value = tt.initialValue
+			counter.value.Store(tt.initialValue)
 
 			result := counter.TryUpdate(ctx, tt.updateValue)
 			assert.Equal(t, tt.expectedValue, result)
@@ -403,13 +402,12 @@ func TestCounterInt64_TryUpdateIfStale(t *testing.T) {
 			counter := &counterInt64{
 				registry:         registry,
 				key:              "test",
-				value:            0,
 				ignoreRollbackOf: 1024,
 				baseSharedVariable: baseSharedVariable{
 					lastProcessed: time.Time{},
 				},
 			}
-			counter.value = tt.initialValue
+			counter.value.Store(tt.initialValue)
 			counter.lastProcessed = tt.lastProcessed
 
 			getNewValue := func(ctx context.Context) (int64, error) {
@@ -451,10 +449,9 @@ func TestCounterInt64_Concurrency(t *testing.T) {
 	counter := &counterInt64{
 		registry:         registry,
 		key:              "test",
-		value:            0,
 		ignoreRollbackOf: 1024,
 	}
-	counter.value = 5
+	counter.value.Store(5)
 
 	// Run multiple goroutines updating the counter
 	var wg sync.WaitGroup
@@ -474,9 +471,9 @@ func TestCounterInt64_Concurrency(t *testing.T) {
 
 func TestCounterInt64_GetValue(t *testing.T) {
 	counter := &counterInt64{
-		value:            42,
 		ignoreRollbackOf: 1024,
 	}
+	counter.value.Store(42)
 
 	assert.Equal(t, int64(42), counter.GetValue())
 }
@@ -669,7 +666,7 @@ func TestCounterInt64_TryUpdate_RollbackLogic(t *testing.T) {
 				key:              "test",
 				ignoreRollbackOf: tt.ignoreRollbackOf,
 			}
-			counter.value = tt.initialValue
+			counter.value.Store(tt.initialValue)
 
 			actualValue := counter.TryUpdate(ctx, tt.updateValue)
 			assert.Equal(t, tt.expectedValue, actualValue,
@@ -697,9 +694,9 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdEqualValue(t *testing.T) 
 	counter := &counterInt64{
 		registry:         registry,
 		key:              "test",
-		value:            5,
 		ignoreRollbackOf: 1024,
 	}
+	counter.value.Store(5) // Initialize with value 5
 	// Force it to look stale.
 	counter.lastProcessed = time.Now().Add(-2 * time.Second)
 
@@ -735,9 +732,9 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdOnError(t *testing.T) {
 	counter := &counterInt64{
 		registry:         registry,
 		key:              "test",
-		value:            5,
 		ignoreRollbackOf: 1024,
 	}
+	counter.value.Store(5)                                   // Initialize with value 5
 	counter.lastProcessed = time.Now().Add(-2 * time.Second) // force stale
 
 	var calls int32
@@ -763,4 +760,149 @@ func TestCounterInt64_TryUpdateIfStale_NoThunderingHerdOnError(t *testing.T) {
 	assert.Equal(t, int32(1), calls, "refreshFn should be invoked exactly once despite the error")
 
 	connector.AssertExpectations(t)
+}
+
+func TestCounterInt64_ReaderStarvation(t *testing.T) {
+	t.Run("GetValue NOT blocked by long-running TryUpdateIfStale", func(t *testing.T) {
+		counter := &counterInt64{
+			ignoreRollbackOf: 1024,
+			baseSharedVariable: baseSharedVariable{
+				lastProcessed: time.Now().Add(-2 * time.Second), // Make it stale
+			},
+		}
+		counter.value.Store(42)
+
+		// Track timing of GetValue calls
+		getValueDurations := make([]time.Duration, 0)
+		getValueMu := sync.Mutex{}
+
+		// Start multiple readers in goroutines
+		var readersWg sync.WaitGroup
+		for i := 0; i < 10; i++ {
+			readersWg.Add(1)
+			go func() {
+				defer readersWg.Done()
+				// Wait a bit to ensure the writer gets the lock first
+				time.Sleep(10 * time.Millisecond)
+
+				start := time.Now()
+				val := counter.GetValue()
+				duration := time.Since(start)
+
+				getValueMu.Lock()
+				getValueDurations = append(getValueDurations, duration)
+				getValueMu.Unlock()
+
+				// The value might be 42 or 100 depending on when GetValue runs
+				assert.Contains(t, []int64{42, 100}, val)
+			}()
+		}
+
+		// Start a slow update that will hold the write lock
+		var updateWg sync.WaitGroup
+		updateWg.Add(1)
+		go func() {
+			defer updateWg.Done()
+			// Directly test the mutex contention without mocks
+			counter.updateMu.Lock()
+			defer counter.updateMu.Unlock()
+
+			// Simulate long-running operation while holding the lock
+			time.Sleep(500 * time.Millisecond)
+			counter.value.Store(100)
+		}()
+
+		// Wait for all operations to complete
+		updateWg.Wait()
+		readersWg.Wait()
+
+		// Check that readers were NOT blocked
+		blockedReaders := 0
+		totalTime := time.Duration(0)
+		for _, duration := range getValueDurations {
+			totalTime += duration
+			if duration > 10*time.Millisecond {
+				blockedReaders++
+			}
+		}
+
+		avgTime := totalTime / time.Duration(len(getValueDurations))
+		t.Logf("Blocked readers: %d out of 10", blockedReaders)
+		t.Logf("Average GetValue time: %v", avgTime)
+
+		// With atomic operations, GetValue should be fast and not blocked
+		assert.LessOrEqual(t, blockedReaders, 1, "Expected at most 1 reader to show any delay, but %d were delayed", blockedReaders)
+		assert.Less(t, avgTime, 1*time.Millisecond, "Expected average GetValue time to be under 1ms, but was %v", avgTime)
+	})
+
+	t.Run("GetValue performance remains fast under concurrent updates", func(t *testing.T) {
+		counter := &counterInt64{
+			ignoreRollbackOf: 1024,
+		}
+		counter.value.Store(42)
+
+		// Measure baseline GetValue performance (no contention)
+		start := time.Now()
+		iterations := 100000
+		for i := 0; i < iterations; i++ {
+			counter.GetValue()
+		}
+		baselineDuration := time.Since(start)
+		baselinePerOp := baselineDuration.Nanoseconds() / int64(iterations)
+
+		// Now measure with concurrent writers
+		stopCh := make(chan struct{})
+
+		// Start writers that continuously update
+		for i := 0; i < 5; i++ {
+			go func() {
+				for {
+					select {
+					case <-stopCh:
+						return
+					default:
+						counter.updateMu.Lock()
+						// Simulate some work while holding lock
+						counter.value.Store(counter.value.Load() + 1)
+						time.Sleep(1 * time.Millisecond)
+						counter.updateMu.Unlock()
+					}
+				}
+			}()
+		}
+
+		// Give writers time to start
+		time.Sleep(50 * time.Millisecond)
+
+		// Measure GetValue performance under contention
+		start = time.Now()
+		for i := 0; i < iterations; i++ {
+			counter.GetValue()
+		}
+		contentionDuration := time.Since(start)
+		contentionPerOp := contentionDuration.Nanoseconds() / int64(iterations)
+
+		close(stopCh)
+
+		// Calculate slowdown
+		var slowdownFactor float64
+		if baselinePerOp > 0 {
+			slowdownFactor = float64(contentionPerOp) / float64(baselinePerOp)
+		} else {
+			// If baseline is too fast to measure, just check absolute time
+			slowdownFactor = 1.0
+		}
+
+		t.Logf("Baseline per op: %dns", baselinePerOp)
+		t.Logf("Under contention per op: %dns", contentionPerOp)
+		t.Logf("Slowdown factor: %.2fx", slowdownFactor)
+
+		// With atomic operations, GetValue should remain fast even under write contention
+		// Allow up to 10x slowdown due to CPU cache effects, but it should be much better than the 40,000x we saw before
+		assert.Less(t, slowdownFactor, 10.0, "GetValue should not be significantly slower under load: %.2fx slower", slowdownFactor)
+
+		// Also check absolute performance - should be under 1000ns per operation even under load
+		// (increased from 100ns to account for CI environment variations)
+		assert.Less(t, contentionPerOp, int64(1000), "GetValue should be fast even under contention: %dns per op", contentionPerOp)
+	})
 }

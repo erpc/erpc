@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/common"
@@ -26,10 +27,13 @@ type CounterInt64SharedVariable interface {
 }
 
 type baseSharedVariable struct {
-	lastProcessed time.Time
+	lastProcessed   time.Time
+	lastProcessedMu sync.RWMutex
 }
 
 func (v *baseSharedVariable) IsStale(staleness time.Duration) bool {
+	v.lastProcessedMu.RLock()
+	defer v.lastProcessedMu.RUnlock()
 	if v.lastProcessed.IsZero() {
 		return true
 	}
@@ -40,42 +44,57 @@ type counterInt64 struct {
 	baseSharedVariable
 	registry              *sharedStateRegistry
 	key                   string
-	value                 int64
-	mu                    sync.RWMutex
+	value                 atomic.Int64
+	updateMu              sync.Mutex
 	valueCallback         func(int64)
 	ignoreRollbackOf      int64
 	largeRollbackCallback func(localVal, newVal int64)
+	callbackMu            sync.RWMutex
 }
 
 func (c *counterInt64) GetValue() int64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.value
+	return c.value.Load()
 }
 
 func (c *counterInt64) processNewValue(newVal int64) bool {
-	// This function is designed to be called from within c.mu.Lock().
+	// This function is designed to be called from within c.updateMu.Lock().
 	// It returns true if the local value was actually updated.
-	currentValue := c.value
+	currentValue := c.value.Load()
 	updated := false
 	if newVal > currentValue {
-		c.setValue(newVal)
+		c.value.Store(newVal)
 		updated = true
+		c.triggerValueCallback(newVal)
 	} else if currentValue > newVal && (currentValue-newVal > c.ignoreRollbackOf) {
-		c.setValue(newVal)
-		if c.largeRollbackCallback != nil {
-			c.largeRollbackCallback(currentValue, newVal)
-		}
+		c.value.Store(newVal)
 		updated = true
+		c.triggerValueCallback(newVal)
+		c.callbackMu.RLock()
+		cb := c.largeRollbackCallback
+		c.callbackMu.RUnlock()
+		if cb != nil {
+			cb(currentValue, newVal)
+		}
 	}
 
 	// We have just consulted a fresh source; refresh the timestamp
 	// so the value is considered fresh for the debounce window even
 	// when it did not change.
+	c.lastProcessedMu.Lock()
 	c.lastProcessed = time.Now()
+	c.lastProcessedMu.Unlock()
 
 	c.registry.logger.Trace().Str("key", c.key).Str("ptr", fmt.Sprintf("%p", c)).Int64("currentValue", currentValue).Int64("newVal", newVal).Bool("updated", updated).Msg("processed new value")
 	return updated
+}
+
+func (c *counterInt64) triggerValueCallback(val int64) {
+	c.callbackMu.RLock()
+	cb := c.valueCallback
+	c.callbackMu.RUnlock()
+	if cb != nil {
+		cb(val)
+	}
 }
 
 func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
@@ -91,8 +110,8 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 		)
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.updateMu.Lock()
+	defer c.updateMu.Unlock()
 
 	rctx, cancel := context.WithTimeout(ctx, c.registry.fallbackTimeout)
 	defer cancel()
@@ -123,7 +142,7 @@ func (c *counterInt64) TryUpdate(ctx context.Context, newValue int64) int64 {
 		c.updateRemoteUpdate(pctx, newValue)
 	}
 
-	return c.value
+	return c.value.Load()
 }
 
 func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Duration, executeNewValueFn func(ctx context.Context) (int64, error)) (int64, error) {
@@ -136,19 +155,16 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	defer span.End()
 
 	// Quick check if value is not stale using atomic read
-	c.mu.RLock()
 	if !c.IsStale(staleness) {
-		defer c.mu.RUnlock()
-		return c.value, nil
+		return c.value.Load(), nil
 	}
-	c.mu.RUnlock()
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.updateMu.Lock()
+	defer c.updateMu.Unlock()
 
 	// Double-check staleness under lock
 	if !c.IsStale(staleness) {
-		return c.value, nil
+		return c.value.Load(), nil
 	}
 
 	// Lock remotely if possible in best-effort mode
@@ -162,18 +178,25 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 		// Get existing remote value in case it is already updated by another instance
 		if val := c.tryGetRemoteValue(rctx); val > 0 {
 			if c.processNewValue(val) {
-				return c.value, nil
+				return c.value.Load(), nil
 			}
 		}
 	}
 
 	// Refresh the new value via user-defined func because local value is stale AND remote value is not up-to-date
-	c.registry.logger.Trace().Str("key", c.key).Str("ptr", fmt.Sprintf("%p", c)).Int64("c.value", c.value).Bool("unlockable", unlock != nil).Msg("refreshing new value via user-defined func because local value is stale AND remote value is not up-to-date")
+	c.registry.logger.Trace().
+		Str("key", c.key).
+		Str("ptr", fmt.Sprintf("%p", c)).
+		Int64("c.value", c.value.Load()).
+		Bool("unlockable", unlock != nil).
+		Msg("refreshing new value via user-defined func because local value is stale AND remote value is not up-to-date")
 	newValue, err := executeNewValueFn(ctx)
 	if err != nil {
 		// Avoid thundering herd in case of errors (wait equal to debounce window)
+		c.lastProcessedMu.Lock()
 		c.lastProcessed = time.Now()
-		return c.value, err
+		c.lastProcessedMu.Unlock()
+		return c.value.Load(), err
 	}
 	c.registry.logger.Trace().Str("key", c.key).Str("ptr", fmt.Sprintf("%p", c)).Bool("unlockable", unlock != nil).Int64("newValue", newValue).Msg("received new value from user-defined func")
 
@@ -190,26 +213,19 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 	}
 
 	// Return the final value from local storage, no matter how it was updated.
-	return c.value, nil
+	return c.value.Load(), nil
 }
 
 func (c *counterInt64) OnValue(cb func(int64)) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.callbackMu.Lock()
+	defer c.callbackMu.Unlock()
 	c.valueCallback = cb
 }
 
 func (c *counterInt64) OnLargeRollback(cb func(currentVal, newVal int64)) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.callbackMu.Lock()
+	defer c.callbackMu.Unlock()
 	c.largeRollbackCallback = cb
-}
-
-func (c *counterInt64) setValue(val int64) {
-	c.value = val
-	if c.valueCallback != nil {
-		c.valueCallback(val)
-	}
 }
 
 func (c *counterInt64) tryAcquireLock(ctx context.Context) func() {
