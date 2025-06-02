@@ -45,10 +45,10 @@ func BuildGetLogsRequest(fromBlock, toBlock int64, address interface{}, topics i
 	return jrq, nil
 }
 
-func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u common.Upstream, r *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
+func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u common.Upstream, nrq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
 	up, ok := u.(common.EvmUpstream)
 	if !ok {
-		log.Warn().Interface("upstream", u).Object("request", r).Msg("passed upstream is not a common.EvmUpstream")
+		log.Warn().Interface("upstream", u).Object("request", nrq).Msg("passed upstream is not a common.EvmUpstream")
 		return false, nil, nil
 	}
 
@@ -62,15 +62,15 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		return false, nil, nil
 	}
 	ctx, span := common.StartDetailSpan(ctx, "Upstream.PreForwardHook.eth_getLogs", trace.WithAttributes(
-		attribute.String("request.id", fmt.Sprintf("%v", r.ID())),
+		attribute.String("request.id", fmt.Sprintf("%v", nrq.ID())),
 		attribute.String("network.id", n.Id()),
 		attribute.String("upstream.id", up.Id()),
 	))
 	defer span.End()
 
-	logger := up.Logger().With().Str("method", "eth_getLogs").Interface("id", r.ID()).Logger()
+	logger := up.Logger().With().Str("method", "eth_getLogs").Interface("id", nrq.ID()).Logger()
 
-	jrq, err := r.JsonRpcRequest(ctx)
+	jrq, err := nrq.JsonRpcRequest(ctx)
 	if err != nil {
 		return true, nil, err
 	}
@@ -217,19 +217,18 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 				Int("subRequests", len(subRequests)).
 				Msg("eth_getLogs block range exceeded, splitting")
 
-			r.SetCompositeType(common.CompositeTypeLogsSplitProactive)
-			mergedResponse, err := executeGetLogsSubRequests(ctx, n, u, r, subRequests, r.Directives().SkipCacheRead)
+			nrq.SetCompositeType(common.CompositeTypeLogsSplitProactive)
+			mergedResponse, err := executeGetLogsSubRequests(ctx, n, u, nrq, subRequests, nrq.Directives().SkipCacheRead)
 			if err != nil {
 				return true, nil, err
 			}
 
-			mergedNR := common.NewNormalizedResponse().
-				WithRequest(r).
-				WithJsonRpcResponse(mergedResponse)
-			r.SetLastValidResponse(mergedNR)
-			mergedNR.SetUpstream(u)
+			nrs := common.NewNormalizedResponse().WithRequest(nrq).WithJsonRpcResponse(mergedResponse)
+			nrs.SetUpstream(u)
 
-			return true, mergedNR, nil
+			nrq.SetLastValidResponse(ctx, nrs)
+
+			return true, nrs, nil
 		}
 	}
 
@@ -276,14 +275,14 @@ func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u co
 			return nil, err
 		}
 		nnr := common.NewNormalizedResponse().WithRequest(rq).WithJsonRpcResponse(jrr)
-		nnr.SetUpstream(u)
 		nnr.SetFromCache(rs.FromCache())
 		nnr.SetEvmBlockRef(rs.EvmBlockRef())
 		nnr.SetEvmBlockNumber(rs.EvmBlockNumber())
 		nnr.SetAttempts(rs.Attempts())
 		nnr.SetRetries(rs.Retries())
 		nnr.SetHedges(rs.Hedges())
-		rq.SetLastValidResponse(nnr)
+		nnr.SetUpstream(u)
+		rq.SetLastValidResponse(ctx, nnr)
 		return nnr, nil
 	}
 

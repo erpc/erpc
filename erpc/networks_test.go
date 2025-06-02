@@ -2453,6 +2453,242 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 	})
 
+	t.Run("RetryEmptyAndUseLastNonEmptyResponse", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		// Mock sequence:
+		// 1. First upstream returns empty result (0x0)
+		// 2. Second upstream returns non-empty result
+		// The non-empty result from second upstream should be preserved
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				b := util.SafeReadBody(request)
+				return strings.Contains(b, "eth_getBalance")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":null}`))
+
+		gock.New("http://rpc2.localhost").
+			Post("").
+			Filter(func(request *http.Request) bool {
+				b := util.SafeReadBody(request)
+				return strings.Contains(b, "eth_getBalance")
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"blockNumber":"0x1234567890","fromHost":"rpc2"}}`))
+
+		// Set up a context and a cancellation function
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Initialize various components for the test environment
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
+		fsCfg := &common.FailsafeConfig{
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 4, // Allow up to 4 attempts (1 initial + 3 retries)
+			},
+		}
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+			Budgets: []*common.RateLimitBudgetConfig{},
+		}, &log.Logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+
+		// Set up upstream configurations
+		up1 := &common.UpstreamConfig{
+			Id:       "rpc1",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
+		up2 := &common.UpstreamConfig{
+			Id:       "rpc2",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://rpc2.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
+		up3 := &common.UpstreamConfig{
+			Id:       "rpc3",
+			Type:     common.UpstreamTypeEvm,
+			Endpoint: "http://rpc3.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
+
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000, MaxTotalSize: "1GB",
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
+		// Initialize the upstreams registry
+		upr := upstream.NewUpstreamsRegistry(
+			ctx,
+			&log.Logger,
+			"prjA",
+			[]*common.UpstreamConfig{up1, up2, up3},
+			ssr,
+			rlr,
+			vr,
+			pr,
+			nil,
+			mt,
+			0,
+		)
+		err = upr.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		upstream.ReorderUpstreams(upr)
+
+		// Create and register clients for all upstreams
+		pup1, err := upr.NewUpstream(up1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1.Client = cl1
+
+		pup2, err := upr.NewUpstream(up2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup2.Client = cl2
+
+		pup3, err := upr.NewUpstream(up3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl3, err := clr.GetOrCreateClient(ctx, pup3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup3.Client = cl3
+
+		// Set up the network configuration with RetryEmpty directive
+		ntw, err := NewNetwork(
+			ctx,
+			&log.Logger,
+			"prjA",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+				},
+				Failsafe: fsCfg,
+				DirectiveDefaults: &common.DirectiveDefaultsConfig{
+					RetryEmpty: &common.TRUE,
+				},
+			},
+			rlr,
+			upr,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Bootstrap the network and make the simulated request
+		ntw.Bootstrap(ctx)
+		time.Sleep(100 * time.Millisecond)
+
+		upstream.ReorderUpstreams(upr)
+
+		// Create a fake request with RetryEmpty directive
+		fakeReq := common.NewNormalizedRequest([]byte(`{
+				"jsonrpc": "2.0",
+				"method": "eth_getBalance",
+				"params": ["0x742d35Cc6634C0532925a3b844Bc9e7595f8fA49", "latest"],
+				"id": 1
+			}`))
+		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+		resp, err := ntw.Forward(ctx, fakeReq)
+
+		if err != nil {
+			t.Fatalf("Expected nil error, got %v", err)
+		}
+
+		// Parse and validate the JSON-RPC response
+		jrr, err := resp.JsonRpcResponse()
+		if err != nil {
+			t.Fatalf("Failed to get JSON-RPC response: %v", err)
+		}
+
+		if jrr.Result == nil {
+			t.Fatalf("Expected non-nil result")
+		}
+
+		// The response should be the non-empty result from the second upstream
+		result, err := jrr.PeekStringByPath(context.TODO(), "blockNumber")
+		if err != nil {
+			t.Fatalf("Failed to get result: %v", err)
+		}
+		if result != "0x1234567890" {
+			t.Errorf("Expected result to be %q, got %q", "0x1234567890", result)
+		}
+
+		fromHost, err := jrr.PeekStringByPath(context.TODO(), "fromHost")
+		if err != nil {
+			t.Fatalf("Failed to get fromHost from result: %v", err)
+		}
+		if fromHost != "rpc2" {
+			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
+		}
+
+		// Verify that the request's lastValidResponse was set correctly
+		lastValidResp := fakeReq.LastValidResponse()
+		if lastValidResp == nil {
+			t.Fatalf("Expected lastValidResponse to be set")
+		}
+		
+		// Verify that the last upstream is set to the one with non-empty response
+		lastUpstream := fakeReq.LastUpstream()
+		if lastUpstream == nil {
+			t.Fatalf("Expected lastUpstream to be set")
+		}
+		if lastUpstream.Config().Id != "rpc2" {
+			t.Errorf("Expected lastUpstream to be rpc2, got %s", lastUpstream.Config().Id)
+		}
+	})
+
 	t.Run("RetryPendingDirectiveFromDefaults", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()

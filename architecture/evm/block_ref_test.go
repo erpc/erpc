@@ -394,6 +394,9 @@ func TestExtractBlockReference(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
 			var blkRef string
 			var blkNum int64
 			var err error
@@ -404,7 +407,7 @@ func TestExtractBlockReference(t *testing.T) {
 				nrq := common.NewNormalizedRequestFromJsonRpcRequest(tt.request)
 				nrq.SetCacheDal(cacheDal)
 				nrs := common.NewNormalizedResponse().WithJsonRpcResponse(tt.response).WithRequest(nrq)
-				nrq.SetLastValidResponse(nrs)
+				nrq.SetLastValidResponse(ctx, nrs)
 
 				blkRef, blkNum, err = ExtractBlockReferenceFromRequest(context.TODO(), nrq)
 			}

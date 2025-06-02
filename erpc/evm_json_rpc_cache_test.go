@@ -122,7 +122,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetCacheDal(cache)
 		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":{"hash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","blockNumber":null}}`))
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		err := cache.Set(context.Background(), req, resp)
 
@@ -140,7 +140,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetCacheDal(cache)
 		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":{"hash":"0xabc","blockNumber":"0x2"}}`))
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
 			Network:  "evm:123",
@@ -170,7 +170,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetCacheDal(cache)
 		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":{"hash":"0xabc","number":"0x2"}}`))
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
 			Network: "evm:123",
@@ -199,7 +199,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetCacheDal(cache)
 		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":"0x1234"}`))
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		err := cache.Set(context.Background(), req, resp)
 
@@ -245,7 +245,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				req.SetCacheDal(cache)
 				resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(tc.result))
 				resp.SetUpstream(mockUpstreams[0])
-				req.SetLastValidResponse(resp)
+				req.SetLastValidResponse(ctx, resp)
 
 				policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
 					Network:  "evm:123",
@@ -279,7 +279,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetCacheDal(cache)
 		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":{"number":"0x1","hash":"0xabc"}}`))
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
 			Network: "evm:123",
@@ -308,7 +308,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetCacheDal(cache)
 		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":{"number":"0x399","hash":"0xdef"}}`))
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		err := cache.Set(context.Background(), req, resp)
 
@@ -326,7 +326,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetCacheDal(cache)
 		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		err := cache.Set(context.Background(), req, resp)
 
@@ -344,7 +344,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetCacheDal(cache)
 		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		err := cache.Set(context.Background(), req, resp)
 
@@ -362,7 +362,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetCacheDal(cache)
 		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		err := cache.Set(context.Background(), req, resp)
 
@@ -380,7 +380,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetCacheDal(cache)
 		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		err := cache.Set(context.Background(), req, resp)
 
@@ -398,7 +398,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetCacheDal(cache)
 		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
 			Network: "evm:123",
@@ -429,7 +429,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetCacheDal(cache)
 		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":{"hash":"0x123","blockNumber":"0x1"}}`))
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		// Create two policies with different connectors and finality states
 		policy1, err := data.NewCachePolicy(&common.CachePolicyConfig{
@@ -472,7 +472,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetCacheDal(cache)
 		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":{"hash":"0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","blockNumber":"0x1"}}`))
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		// Create policies with different finality states
 		policy1, err := data.NewCachePolicy(&common.CachePolicyConfig{
@@ -699,7 +699,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				req.SetCacheDal(cache)
 				resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,%s}`, tc.result)))
 				resp.SetUpstream(mockUpstreams[0])
-				req.SetLastValidResponse(resp)
+				req.SetLastValidResponse(ctx, resp)
 
 				if tc.expectedCache {
 					mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
@@ -741,7 +741,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		req.SetCacheDal(cache)
 		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":{"number":"0xf","hash":"0xabc"}}`))
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		ttl := time.Duration(5 * time.Second)
 		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl).Return(nil)
@@ -777,7 +777,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			WithRequest(req).
 			WithBody(util.StringToReaderCloser(`{"result":{"number":"0x14","hash":"0xabc"}}`))
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		ttl := time.Duration(5 * time.Second)
 		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl).Return(nil)
@@ -815,7 +815,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			WithRequest(req).
 			WithBody(util.StringToReaderCloser(`{"result":{"number":"0x14","hash":"0xfeed"}}`))
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		// Expect the cache to store under the default-finalized policy's TTL (0 — forever).
 		mockConnectors[0].On("Set", mock.Anything, "evm:123:20", mock.Anything, mock.Anything, finalizedDefault.GetTTL()).Return(nil)
@@ -852,7 +852,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			WithRequest(reqLatest).
 			WithBody(util.StringToReaderCloser(`{"result":{"number":"0xf","hash":"0xabc"}}`))
 		respLatest.SetUpstream(mockUpstreams[0])
-		reqLatest.SetLastValidResponse(respLatest)
+		reqLatest.SetLastValidResponse(ctx, respLatest)
 
 		err = cache.Set(context.Background(), reqLatest, respLatest)
 		require.NoError(t, err)
@@ -910,7 +910,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			WithRequest(reqLatest).
 			WithBody(util.StringToReaderCloser(`{"result":{"number":"0xf","hash":"0xabc"}}`))
 		respLatest.SetUpstream(mockUpstreams[0])
-		reqLatest.SetLastValidResponse(respLatest)
+		reqLatest.SetLastValidResponse(ctx, respLatest)
 
 		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
 		err = cache.Set(context.Background(), reqLatest, respLatest)
@@ -954,7 +954,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 			WithRequest(reqNum).
 			WithBody(util.StringToReaderCloser(`{"result":{"number":"0x18","hash":"0xbeef"}}`))
 		respNum.SetUpstream(mockUpstreams[0])
-		reqNum.SetLastValidResponse(respNum)
+		reqNum.SetLastValidResponse(ctx, respNum)
 
 		mockConnectors[0].On("Set", mock.Anything, "evm:123:24", mock.Anything, mock.Anything, finalizedPolicy.GetTTL()).Return(nil).Once()
 		err = cache.Set(context.Background(), reqNum, respNum)
@@ -1007,7 +1007,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		respBody := `[{"address":"0x123","topics":["0xabc"],"data":"0xdef"}]`
 		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(fmt.Sprintf(`{"result":%s}`, respBody)))
 		resp.SetUpstream(mockUpstreams[0]) // associate with an upstream that has finalized block info
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		// Expect Set to be called on the connector
 		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
@@ -1057,7 +1057,7 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		respBody := `[{"address":"0x456","topics":["0xdef"],"data":"0xghi"}]`
 		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(fmt.Sprintf(`{"result":%s}`, respBody)))
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
 
@@ -1098,7 +1098,7 @@ func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 		req.SetCacheDal(cache)
 		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, &ttl).Return(nil)
 
@@ -1118,7 +1118,7 @@ func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 		req.SetCacheDal(cache)
 		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		err := cache.Set(context.Background(), req, resp)
 
@@ -1156,7 +1156,7 @@ func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
 		req.SetCacheDal(cache)
 		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(`{"result":"0x0"}`))
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 		mockConnectors[1].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
@@ -1283,7 +1283,7 @@ func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
 
 		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":null}`)).WithRequest(req)
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		err := cache.Set(context.Background(), req, resp)
 		assert.NoError(t, err)
@@ -1303,7 +1303,7 @@ func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
 		req.SetCacheDal(cache)
 		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":null}`)).WithRequest(req)
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		err := cache.Set(context.Background(), req, resp)
 
@@ -1324,7 +1324,7 @@ func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
 		req.SetCacheDal(cache)
 		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":null}`)).WithRequest(req)
 		resp.SetUpstream(mockUpstreams[1])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
 			Network: "evm:123",
@@ -1357,7 +1357,7 @@ func TestEvmJsonRpcCache_FinalityAndRetry(t *testing.T) {
 		req.SetCacheDal(cache)
 		resp := common.NewNormalizedResponse().WithBody(util.StringToReaderCloser(`{"result":null}`)).WithRequest(req)
 		resp.SetUpstream(mockUpstreams[1])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		err := cache.Set(context.Background(), req, resp)
 
@@ -1690,7 +1690,7 @@ func TestEvmJsonRpcCache_EmptyStates(t *testing.T) {
 					WithBody(util.StringToReaderCloser(tc.response)).
 					WithRequest(req)
 				resp.SetUpstream(mockUpstreams[0])
-				req.SetLastValidResponse(resp)
+				req.SetLastValidResponse(ctx, resp)
 
 				// Reset mock and set expectations
 				mockConnectors[0].ExpectedCalls = nil
@@ -1804,7 +1804,7 @@ func TestEvmJsonRpcCache_ItemSizeLimits(t *testing.T) {
 				WithBody(util.StringToReaderCloser(fmt.Sprintf(`{"result":"%s"}`, responseBody))).
 				WithRequest(req)
 			resp.SetUpstream(mockUpstreams[0])
-			req.SetLastValidResponse(resp)
+			req.SetLastValidResponse(ctx, resp)
 
 			mockConnectors[0].ExpectedCalls = nil
 			if tc.shouldCache {
@@ -1948,7 +1948,7 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 			WithRequest(req).
 			WithBody(util.StringToReaderCloser(`{"result":` + responseBody + `}`))
 		resp.SetUpstream(mockUpstream)
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		// Set to cache
 		err := cache.Set(ctx, req, resp)
@@ -1990,7 +1990,7 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 			WithRequest(req).
 			WithBody(util.StringToReaderCloser(`{"result":` + responseBody + `}`))
 		resp.SetUpstream(mockUpstream)
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		// Set to cache
 		err := cache.Set(ctx, req, resp)
@@ -2033,7 +2033,7 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 			WithRequest(req).
 			WithBody(util.StringToReaderCloser(`{"result":` + responseBody + `}`))
 		resp.SetUpstream(mockUpstream)
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		// Set to cache
 		err := cache.Set(ctx, req, resp)
@@ -2076,7 +2076,7 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 			WithRequest(req).
 			WithBody(util.StringToReaderCloser(`{"result":` + responseBody + `}`))
 		resp.SetUpstream(mockUpstream)
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		// Set to cache
 		err := cache.Set(ctx, req, resp)
@@ -2179,7 +2179,7 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 					WithRequest(req).
 					WithBody(util.StringToReaderCloser(tc.responseJSON))
 				resp.SetUpstream(mockUpstream)
-				req.SetLastValidResponse(resp)
+				req.SetLastValidResponse(ctx, resp)
 
 				// Cache the response
 				err := cache.Set(ctx, req, resp)
@@ -2313,7 +2313,7 @@ func TestEvmJsonRpcCache_Redis(t *testing.T) {
 			WithRequest(req).
 			WithBody(util.StringToReaderCloser(`{"result":` + responseBody + `}`))
 		resp.SetUpstream(mockUpstream)
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		// Set to cache
 		err := cache.Set(ctx, req, resp)
@@ -2372,7 +2372,7 @@ func TestEvmJsonRpcCache_Redis(t *testing.T) {
 			WithRequest(req).
 			WithBody(util.StringToReaderCloser(`{"result":` + responseBody + `}`))
 		resp.SetUpstream(mockUpstream)
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		// Set to cache
 		err := cache.Set(ctx, req, resp)
@@ -2431,7 +2431,7 @@ func TestEvmJsonRpcCache_Redis(t *testing.T) {
 			WithRequest(req).
 			WithBody(util.StringToReaderCloser(`{"result":` + responseBody + `}`))
 		resp.SetUpstream(mockUpstream)
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		// Set to cache
 		err := cache.Set(ctx, req, resp)
@@ -2475,7 +2475,7 @@ func TestEvmJsonRpcCache_Redis(t *testing.T) {
 			WithRequest(req).
 			WithBody(util.StringToReaderCloser(`{"result":` + responseBody + `}`))
 		resp.SetUpstream(mockUpstream)
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		// Set to cache
 		err := cache.Set(ctx, req, resp)
@@ -2585,7 +2585,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 			WithRequest(req).
 			WithBody(util.StringToReaderCloser(`{"result":{"data":"` + largeData + `"}}`))
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
 			Network:  "evm:123",
@@ -2645,7 +2645,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 			WithRequest(req).
 			WithBody(util.StringToReaderCloser(`{"result":"` + smallData + `"}`))
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
 			Network:  "evm:123",
@@ -2692,7 +2692,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 			WithRequest(req).
 			WithBody(util.StringToReaderCloser(`{"result":"` + randomData + `"}`))
 		resp.SetUpstream(mockUpstreams[0])
-		req.SetLastValidResponse(resp)
+		req.SetLastValidResponse(ctx, resp)
 
 		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
 			Network:  "evm:123",
@@ -2846,7 +2846,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 					WithRequest(req).
 					WithBody(util.StringToReaderCloser(tc.responseData))
 				resp.SetUpstream(mockUpstreams[0])
-				req.SetLastValidResponse(resp)
+				req.SetLastValidResponse(ctx, resp)
 
 				policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
 					Network:  "evm:123",
@@ -2920,7 +2920,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 					WithRequest(req).
 					WithBody(util.StringToReaderCloser(`{"result":{"data":"` + largeData + `"}}`))
 				resp.SetUpstream(mockUpstreams[0])
-				req.SetLastValidResponse(resp)
+				req.SetLastValidResponse(ctx, resp)
 
 				err := cache.Set(ctx, req, resp)
 				assert.NoError(t, err)
@@ -2975,7 +2975,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 					WithRequest(req).
 					WithBody(util.StringToReaderCloser(`{"result":"` + largeData + `"}`))
 				resp.SetUpstream(mockUpstreams[0])
-				req.SetLastValidResponse(resp)
+				req.SetLastValidResponse(ctx, resp)
 
 				// Should not panic or error even under high concurrency
 				err := cache.Set(ctx, req, resp)
@@ -3065,7 +3065,7 @@ func TestEvmJsonRpcCache_Compression(t *testing.T) {
 					WithRequest(req).
 					WithBody(util.StringToReaderCloser(`{"result":"` + testData + `"}`))
 				resp.SetUpstream(mockUpstreams[0])
-				req.SetLastValidResponse(resp)
+				req.SetLastValidResponse(ctx, resp)
 
 				policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
 					Network:  "evm:123",

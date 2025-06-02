@@ -119,11 +119,24 @@ func (r *NormalizedRequest) LastUpstream() Upstream {
 	return nil
 }
 
-func (r *NormalizedRequest) SetLastValidResponse(response *NormalizedResponse) {
-	if r == nil || response == nil {
-		return
+func (r *NormalizedRequest) SetLastValidResponse(ctx context.Context, nrs *NormalizedResponse) bool {
+	if r == nil || nrs == nil {
+		return false
 	}
-	r.lastValidResponse.Store(response)
+	prevLV := r.lastValidResponse.Load()
+	prevIsEmpty := prevLV == nil || prevLV.IsObjectNull(ctx) || prevLV.IsResultEmptyish(ctx)
+	newIsEmpty := nrs.IsObjectNull(ctx) || nrs.IsResultEmptyish(ctx)
+	if prevIsEmpty || !newIsEmpty {
+		r.lastValidResponse.Store(nrs)
+		if !nrs.IsObjectNull(ctx) {
+			ups := nrs.Upstream()
+			if ups != nil {
+				r.SetLastUpstream(ups)
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func (r *NormalizedRequest) LastValidResponse() *NormalizedResponse {
