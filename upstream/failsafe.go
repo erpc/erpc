@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
@@ -14,7 +15,6 @@ import (
 	"github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/failsafe-go/failsafe-go/timeout"
 	"github.com/rs/zerolog"
-	"slices"
 )
 
 func CreateFailSafePolicies(logger *zerolog.Logger, scope common.Scope, entity string, fsCfg *common.FailsafeConfig) (map[string]failsafe.Policy[*common.NormalizedResponse], error) {

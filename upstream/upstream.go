@@ -180,6 +180,13 @@ func (u *Upstream) Config() *common.UpstreamConfig {
 	return u.config
 }
 
+func (u *Upstream) MetricsTracker() *health.Tracker {
+	if u == nil {
+		return nil
+	}
+	return u.metricsTracker
+}
+
 func (u *Upstream) Logger() *zerolog.Logger {
 	return u.logger
 }
@@ -198,12 +205,12 @@ func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
 	}
 }
 
-func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, byPassMethodExclusion bool) (*common.NormalizedResponse, error) {
+func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, byPassMethodExclusion bool) (*common.NormalizedResponse, error) {
 	// TODO Should we move byPassMethodExclusion to directives? How do we prevent clients from setting it?
 	startTime := time.Now()
 	cfg := u.Config()
 
-	method, err := req.Method()
+	method, err := nrq.Method()
 	ctx, span := common.StartSpan(ctx, "Upstream.Forward",
 		trace.WithAttributes(
 			attribute.String("network.id", u.networkId),
@@ -215,7 +222,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 
 	if common.IsTracingDetailed {
 		span.SetAttributes(
-			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
+			attribute.String("request.id", fmt.Sprintf("%v", nrq.ID())),
 		)
 	}
 
@@ -233,7 +240,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 		)
 	}
 	if !byPassMethodExclusion {
-		if reason, skip := u.shouldSkip(ctx, req); skip {
+		if reason, skip := u.shouldSkip(ctx, nrq); skip {
 			span.SetAttributes(attribute.Bool("skipped", true))
 			span.SetAttributes(attribute.String("skipped_reason", reason.Error()))
 			return nil, common.NewErrUpstreamRequestSkipped(reason, cfg.Id)
@@ -255,7 +262,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 		}
 	}
 
-	lg := u.logger.With().Str("method", method).Str("networkId", u.networkId).Interface("id", req.ID()).Logger()
+	lg := u.logger.With().Str("method", method).Str("networkId", u.networkId).Interface("id", nrq.ID()).Logger()
 
 	if limitersBudget != nil {
 		lg.Trace().Str("budget", cfg.RateLimitBudget).Msgf("checking upstream-level rate limiters budget")
@@ -289,8 +296,8 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 	//
 	// Prepare and normalize the request object
 	//
-	req.SetLastUpstream(u)
-	err = u.prepareRequest(ctx, req)
+	nrq.SetLastUpstream(u)
+	err = u.prepareRequest(ctx, nrq)
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 		return nil, err
@@ -325,23 +332,22 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				u,
 				method,
 			)
-			telemetry.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, strconv.Itoa(exec.Attempts()), req.CompositeType()).Inc()
-			timer := u.metricsTracker.RecordUpstreamDurationStart(u, method, req.CompositeType())
+			telemetry.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, strconv.Itoa(exec.Attempts()), nrq.CompositeType()).Inc()
+			timer := u.metricsTracker.RecordUpstreamDurationStart(u, method, nrq.CompositeType())
 
-			resp, errCall := jsonRpcClient.SendRequest(ctx, req)
+			nrs, errCall := jsonRpcClient.SendRequest(ctx, nrq)
 			isSuccess := false
-			if resp != nil {
-				jrr, _ := resp.JsonRpcResponse()
+			if nrs != nil {
+				nrs.SetUpstream(u)
+				jrr, _ := nrs.JsonRpcResponse()
 				if jrr != nil && jrr.Error == nil {
-					resp.SetUpstream(u)
-					req.SetLastValidResponse(resp)
-					req.SetLastUpstream(u)
+					nrq.SetLastValidResponse(ctx, nrs)
 					isSuccess = true
 				} else {
 					isSuccess = false
 				}
 				if lg.GetLevel() == zerolog.TraceLevel {
-					lg.Debug().Err(errCall).Object("response", resp).Msgf("upstream request ended with response")
+					lg.Debug().Err(errCall).Object("response", nrs).Msgf("upstream request ended with response")
 				} else {
 					lg.Debug().Err(errCall).Msgf("upstream request ended with non-nil response")
 				}
@@ -375,7 +381,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 							method,
 						)
 					}
-					telemetry.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, common.ErrorFingerprint(errCall), string(severity), req.CompositeType()).Inc()
+					telemetry.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, common.ErrorFingerprint(errCall), string(severity), nrq.CompositeType()).Inc()
 				}
 
 				timer.ObserveDuration(false)
@@ -403,7 +409,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 					)
 				}
 			} else {
-				if resp.IsResultEmptyish() {
+				if nrs.IsResultEmptyish() {
 					telemetry.MetricUpstreamEmptyResponseTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method).Inc()
 				}
 			}
@@ -413,7 +419,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				u.recordRequestSuccess(method)
 			}
 
-			return resp, nil
+			return nrs, nil
 		}
 
 		executor := u.failsafeExecutor
@@ -433,7 +439,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 
 				if common.IsTracingDetailed {
 					execSpan.SetAttributes(
-						attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
+						attribute.String("request.id", fmt.Sprintf("%v", nrq.ID())),
 					)
 				}
 
