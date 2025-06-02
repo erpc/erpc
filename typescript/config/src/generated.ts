@@ -9,6 +9,7 @@ import type {
   NetworkArchitecture as TsNetworkArchitecture,
   AuthType as TsAuthType,
   AuthStrategyConfig as TsAuthStrategyConfig,
+  EvmNetworkConfigForDefaults as TsEvmNetworkConfigForDefaults,
   SelectionPolicyEvalFunction
 } from "./types"
 
@@ -18,6 +19,9 @@ import type {
 export const UpstreamTypeEvm: UpstreamType = "evm";
 export type EvmUpstream = 
     Upstream;
+export type AvailbilityConfidence = number /* int */;
+export const AvailbilityConfidenceBlockHead: AvailbilityConfidence = 1;
+export const AvailbilityConfidenceFinalized: AvailbilityConfidence = 2;
 export type EvmNodeType = string;
 export const EvmNodeTypeUnknown: EvmNodeType = "unknown";
 export const EvmNodeTypeFull: EvmNodeType = "full";
@@ -239,7 +243,7 @@ export interface ProjectConfig {
   networkDefaults?: NetworkDefaults;
   networks?: (NetworkConfig | undefined)[];
   rateLimitBudget?: string;
-  scoreMetricsWindowSize: Duration;
+  scoreMetricsWindowSize?: Duration;
   healthCheck?: DeprecatedProjectHealthCheckConfig;
 }
 export interface NetworkDefaults {
@@ -247,7 +251,7 @@ export interface NetworkDefaults {
   failsafe?: FailsafeConfig;
   selectionPolicy?: SelectionPolicyConfig;
   directiveDefaults?: DirectiveDefaultsConfig;
-  evm?: EvmNetworkConfig;
+  evm?: TsEvmNetworkConfigForDefaults;
 }
 export interface CORSConfig {
   allowedOrigins: string[];
@@ -345,6 +349,8 @@ export interface RetryPolicyConfig {
   backoffMaxDelay?: Duration;
   backoffFactor?: number /* float32 */;
   jitter?: Duration;
+  emptyResultConfidence?: AvailbilityConfidence;
+  emptyResultIgnore?: string[];
 }
 export interface CircuitBreakerPolicyConfig {
   failureThresholdCount: number /* uint */;
@@ -490,8 +496,8 @@ export interface MetricsConfig {
   listenV6?: boolean;
   hostV6?: string;
   port?: number /* int */;
-  errorLabelMode: LabelMode;
-  histogramBuckets: string;
+  errorLabelMode?: LabelMode;
+  histogramBuckets?: string;
 }
 
 //////////
