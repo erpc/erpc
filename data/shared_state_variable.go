@@ -42,14 +42,14 @@ func (v *baseSharedVariable) IsStale(staleness time.Duration) bool {
 
 type counterInt64 struct {
 	baseSharedVariable
-	registry              *sharedStateRegistry
-	key                   string
-	value                 atomic.Int64
-	updateMu              sync.Mutex
-	valueCallback         func(int64)
-	ignoreRollbackOf      int64
-	largeRollbackCallback func(localVal, newVal int64)
-	callbackMu            sync.RWMutex
+	registry               *sharedStateRegistry
+	key                    string
+	value                  atomic.Int64
+	updateMu               sync.Mutex
+	valueCallbacks         []func(int64)
+	ignoreRollbackOf       int64
+	largeRollbackCallbacks []func(localVal, newVal int64)
+	callbackMu             sync.RWMutex
 }
 
 func (c *counterInt64) GetValue() int64 {
@@ -70,10 +70,13 @@ func (c *counterInt64) processNewValue(newVal int64) bool {
 		updated = true
 		c.triggerValueCallback(newVal)
 		c.callbackMu.RLock()
-		cb := c.largeRollbackCallback
+		callbacks := make([]func(localVal, newVal int64), len(c.largeRollbackCallbacks))
+		copy(callbacks, c.largeRollbackCallbacks)
 		c.callbackMu.RUnlock()
-		if cb != nil {
-			cb(currentValue, newVal)
+		for _, cb := range callbacks {
+			if cb != nil {
+				cb(currentValue, newVal)
+			}
 		}
 	}
 
@@ -90,10 +93,14 @@ func (c *counterInt64) processNewValue(newVal int64) bool {
 
 func (c *counterInt64) triggerValueCallback(val int64) {
 	c.callbackMu.RLock()
-	cb := c.valueCallback
+	callbacks := make([]func(int64), len(c.valueCallbacks))
+	copy(callbacks, c.valueCallbacks)
 	c.callbackMu.RUnlock()
-	if cb != nil {
-		cb(val)
+
+	for _, cb := range callbacks {
+		if cb != nil {
+			cb(val)
+		}
 	}
 }
 
@@ -219,13 +226,13 @@ func (c *counterInt64) TryUpdateIfStale(ctx context.Context, staleness time.Dura
 func (c *counterInt64) OnValue(cb func(int64)) {
 	c.callbackMu.Lock()
 	defer c.callbackMu.Unlock()
-	c.valueCallback = cb
+	c.valueCallbacks = append(c.valueCallbacks, cb)
 }
 
 func (c *counterInt64) OnLargeRollback(cb func(currentVal, newVal int64)) {
 	c.callbackMu.Lock()
 	defer c.callbackMu.Unlock()
-	c.largeRollbackCallback = cb
+	c.largeRollbackCallbacks = append(c.largeRollbackCallbacks, cb)
 }
 
 func (c *counterInt64) tryAcquireLock(ctx context.Context) func() {
