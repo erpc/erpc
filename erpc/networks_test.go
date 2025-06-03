@@ -2678,7 +2678,7 @@ func TestNetwork_Forward(t *testing.T) {
 		if lastValidResp == nil {
 			t.Fatalf("Expected lastValidResponse to be set")
 		}
-		
+
 		// Verify that the last upstream is set to the one with non-empty response
 		lastUpstream := fakeReq.LastUpstream()
 		if lastUpstream == nil {
@@ -7884,7 +7884,6 @@ func TestNetwork_InFlightRequests(t *testing.T) {
 		assert.Equal(t, 0, inFlightCount, "in-flight requests map should be empty after request completion")
 	})
 }
-
 func TestNetwork_SkippingUpstreams(t *testing.T) {
 
 	t.Run("NotSkippedRecentBlockNumberForFullNodeUpstream", func(t *testing.T) {
@@ -9884,4 +9883,277 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.C
 	upsList[1].EvmStatePoller().SuggestLatestBlock(lb2)
 
 	return network
+}
+
+func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
+	t.Run("EvmHighestLatestBlockNumber_ExcludesSyncingNodeFromHighestBlock", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Create two upstreams with different syncing states
+		up1 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "syncing-node",
+			Endpoint: "http://syncing.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
+
+		up2 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "synced-node",
+			Endpoint: "http://synced.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
+
+		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		require.NoError(t, err)
+
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000, MaxTotalSize: "1GB",
+				},
+			},
+		})
+		require.NoError(t, err)
+
+		upstreamsRegistry := upstream.NewUpstreamsRegistry(
+			ctx,
+			&log.Logger,
+			"test",
+			[]*common.UpstreamConfig{up1, up2},
+			ssr,
+			rateLimitersRegistry,
+			vr,
+			pr,
+			nil,
+			metricsTracker,
+			1*time.Second,
+		)
+
+		networkConfig := &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm: &common.EvmNetworkConfig{
+				ChainId: 123,
+			},
+		}
+
+		network, err := NewNetwork(
+			ctx,
+			&log.Logger,
+			"test",
+			networkConfig,
+			rateLimitersRegistry,
+			upstreamsRegistry,
+			metricsTracker,
+		)
+		require.NoError(t, err)
+
+		err = upstreamsRegistry.Bootstrap(ctx)
+		require.NoError(t, err)
+		time.Sleep(100 * time.Millisecond)
+
+		err = network.Bootstrap(ctx)
+		require.NoError(t, err)
+		time.Sleep(100 * time.Millisecond)
+
+		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+		require.Len(t, upsList, 2)
+
+		// Bootstrap both upstreams
+		err = upsList[0].Bootstrap(ctx)
+		require.NoError(t, err)
+		err = upsList[1].Bootstrap(ctx)
+		require.NoError(t, err)
+
+		// Find the specific upstreams by ID
+		var syncingUpstream, syncedUpstream *upstream.Upstream
+		for _, ups := range upsList {
+			if ups.Id() == "syncing-node" {
+				syncingUpstream = ups
+			} else if ups.Id() == "synced-node" {
+				syncedUpstream = ups
+			}
+		}
+		require.NotNil(t, syncingUpstream)
+		require.NotNil(t, syncedUpstream)
+
+		// Set up block numbers - syncing node has higher block number
+		syncingUpstream.EvmStatePoller().SuggestLatestBlock(2000) // Higher block
+		syncedUpstream.EvmStatePoller().SuggestLatestBlock(1000)  // Lower block
+
+		// Set syncing states
+		syncingUpstream.EvmStatePoller().SetSyncingState(common.EvmSyncingStateSyncing)
+		syncedUpstream.EvmStatePoller().SetSyncingState(common.EvmSyncingStateNotSyncing)
+
+		// Should return the highest block from non-syncing nodes only
+		highest := network.EvmHighestLatestBlockNumber(ctx)
+
+		assert.Equal(t, int64(1000), highest, "Should exclude syncing node and return highest from synced nodes only")
+	})
+
+	t.Run("EvmHighestLatestBlockNumber_ExcludesSelectionPolicyExcludedNodeFromHighestBlock", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Create eval function that excludes nodes with high error rate
+		evalFn, err := common.CompileFunction(`
+			(upstreams) => {
+				return upstreams.filter(u => u.metrics.errorRate < 0.5);
+			}
+		`)
+		require.NoError(t, err)
+
+		selectionPolicy := &common.SelectionPolicyConfig{
+			EvalInterval:     common.Duration(50 * time.Millisecond),
+			EvalFunction:     evalFn,
+			ResampleInterval: common.Duration(100 * time.Millisecond),
+			ResampleCount:    1,
+		}
+
+		// Create two upstreams
+		up1 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "excluded-node",
+			Endpoint: "http://excluded.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
+
+		up2 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "included-node",
+			Endpoint: "http://included.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
+
+		rateLimitersRegistry, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		metricsTracker := health.NewTracker(&log.Logger, "test", time.Minute)
+
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		require.NoError(t, err)
+
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000, MaxTotalSize: "1GB",
+				},
+			},
+		})
+		require.NoError(t, err)
+
+		upstreamsRegistry := upstream.NewUpstreamsRegistry(
+			ctx,
+			&log.Logger,
+			"test",
+			[]*common.UpstreamConfig{up1, up2},
+			ssr,
+			rateLimitersRegistry,
+			vr,
+			pr,
+			nil,
+			metricsTracker,
+			1*time.Second,
+		)
+
+		networkConfig := &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm: &common.EvmNetworkConfig{
+				ChainId: 123,
+			},
+			SelectionPolicy: selectionPolicy,
+		}
+
+		network, err := NewNetwork(
+			ctx,
+			&log.Logger,
+			"test",
+			networkConfig,
+			rateLimitersRegistry,
+			upstreamsRegistry,
+			metricsTracker,
+		)
+		require.NoError(t, err)
+
+		err = upstreamsRegistry.Bootstrap(ctx)
+		require.NoError(t, err)
+		time.Sleep(100 * time.Millisecond)
+
+		err = network.Bootstrap(ctx)
+		require.NoError(t, err)
+		time.Sleep(100 * time.Millisecond)
+
+		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
+		require.Len(t, upsList, 2)
+
+		// Bootstrap both upstreams
+		err = upsList[0].Bootstrap(ctx)
+		require.NoError(t, err)
+		err = upsList[1].Bootstrap(ctx)
+		require.NoError(t, err)
+
+		// Find the specific upstreams by ID
+		var excludedUpstream, includedUpstream *upstream.Upstream
+		for _, ups := range upsList {
+			if ups.Id() == "excluded-node" {
+				excludedUpstream = ups
+			} else if ups.Id() == "included-node" {
+				includedUpstream = ups
+			}
+		}
+		require.NotNil(t, excludedUpstream)
+		require.NotNil(t, includedUpstream)
+
+		// Set up block numbers - excluded node has higher block number
+		excludedUpstream.EvmStatePoller().SuggestLatestBlock(3000) // Higher block
+		includedUpstream.EvmStatePoller().SuggestLatestBlock(2000) // Lower block
+
+		// Create metrics to make excluded upstream have high error rate
+		metricsTracker.RecordUpstreamRequest(excludedUpstream, "*")
+		metricsTracker.RecordUpstreamFailure(excludedUpstream, "*")
+		metricsTracker.RecordUpstreamRequest(excludedUpstream, "*")
+		metricsTracker.RecordUpstreamFailure(excludedUpstream, "*")
+
+		// Create good metrics for included upstream
+		metricsTracker.RecordUpstreamRequest(includedUpstream, "*")
+		metricsTracker.RecordUpstreamDuration(includedUpstream, "*", 10*time.Millisecond, true, "none")
+
+		// Wait for selection policy to evaluate
+		time.Sleep(150 * time.Millisecond)
+
+		// Should return the highest block from policy-included nodes only
+		highest := network.EvmHighestLatestBlockNumber(ctx)
+
+		assert.Equal(t, int64(2000), highest, "Should exclude policy-excluded node and return highest from included nodes only")
+	})
 }
