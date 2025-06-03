@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
-	"strings"
 	"sync"
 	"time"
 
@@ -111,13 +110,9 @@ func (p *PolicyEvaluator) evaluateUpstreams() error {
 		// Get all metrics to find unique methods
 		allMetrics := make(map[string]bool)
 		for _, ups := range upsList {
-			metrics := p.metricsTracker.GetUpstreamMetrics(ups.Config().Id)
-			for key := range metrics {
-				// Split network:method into parts
-				parts := strings.SplitN(key, common.KeySeparator, 2)
-				if len(parts) == 2 && parts[0] == p.networkId {
-					allMetrics[parts[1]] = true
-				}
+			metrics := p.metricsTracker.GetUpstreamMetrics(ups)
+			for method := range metrics {
+				allMetrics[method] = true
 			}
 		}
 
@@ -140,11 +135,9 @@ func (p *PolicyEvaluator) evaluateUpstreams() error {
 func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upstream) error {
 	metricsData := make([]metricData, len(upsList))
 	for i, ups := range upsList {
-		upsId := ups.Config().Id
-		metrics := p.metricsTracker.GetUpstreamMethodMetrics(upsId, p.networkId, method)
-
+		metrics := p.metricsTracker.GetUpstreamMethodMetrics(ups, method)
 		metricsData[i] = metricData{
-			"id":     upsId,
+			"id":     ups.Id(),
 			"config": ups.Config(),
 			"metrics": map[string]interface{}{
 				"errorRate":          metrics.ErrorRate(),
@@ -240,7 +233,7 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 	stateMap := p.getStateMap(method)
 
 	for _, ups := range upsList {
-		id := ups.Config().Id
+		id := ups.Id()
 		state, exists := stateMap[id]
 		if !exists {
 			state = &upstreamState{
@@ -269,9 +262,9 @@ func (p *PolicyEvaluator) evaluateMethod(method string, upsList []*upstream.Upst
 
 		// Update tracker state
 		if !state.isActive {
-			p.metricsTracker.Cordon(id, p.networkId, method, "excluded by selection policy")
+			p.metricsTracker.Cordon(ups, method, "excluded by selection policy")
 		} else {
-			p.metricsTracker.Uncordon(id, p.networkId, method)
+			p.metricsTracker.Uncordon(ups, method)
 		}
 
 		state.mu.Unlock()
@@ -293,26 +286,26 @@ func (p *PolicyEvaluator) getStateMap(method string) map[string]*upstreamState {
 func (p *PolicyEvaluator) AcquirePermit(logger *zerolog.Logger, ups *upstream.Upstream, method string) error {
 	// First check method-specific state if enabled
 	if p.config.EvalPerMethod {
-		if permit := p.checkPermitForMethod(ups.Config().Id, method); permit {
+		if permit := p.checkPermitForMethod(ups.Id(), method); permit {
 			return nil
 		}
 		// If method-specific check failed, fall back to checking global (*) method state
-		if permit := p.checkPermitForMethod(ups.Config().Id, "*"); permit {
+		if permit := p.checkPermitForMethod(ups.Id(), "*"); permit {
 			return nil
 		}
 	} else {
 		// Only check global state
-		if permit := p.checkPermitForMethod(ups.Config().Id, "*"); permit {
+		if permit := p.checkPermitForMethod(ups.Id(), "*"); permit {
 			return nil
 		}
 	}
 
 	logger.Debug().
-		Str("upstreamId", ups.Config().Id).
+		Str("upstreamId", ups.Id()).
 		Str("method", method).
 		Msg("upstream excluded by selection policy")
 
-	return common.NewErrUpstreamExcludedByPolicy(ups.Config().Id)
+	return common.NewErrUpstreamExcludedByPolicy(ups.Id())
 }
 
 func (p *PolicyEvaluator) checkPermitForMethod(upstreamId string, method string) bool {

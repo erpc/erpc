@@ -67,7 +67,6 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "exceeds the range") ||
 			strings.Contains(msg, "max block range") ||
 			strings.Contains(msg, "Max range") ||
-			strings.Contains(msg, "limited to") ||
 			strings.Contains(msg, "response size should not") ||
 			strings.Contains(msg, "returned more than") ||
 			strings.Contains(msg, "exceeds max results") ||
@@ -77,7 +76,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "query exceeds limit") ||
 			strings.Contains(msg, "limit the query to") ||
 			strings.Contains(msg, "maximum block range") ||
-			strings.Contains(msg, "range limit exceeded") {
+			strings.Contains(msg, "range limit exceeded") ||
+			strings.Contains(msg, "eth_getLogs is limited") {
 			return common.NewErrEndpointRequestTooLarge(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -107,7 +107,9 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 
 		if r.StatusCode == 402 ||
 			strings.Contains(msg, "reached the free tier") ||
-			strings.Contains(msg, "Monthly capacity limit") {
+			strings.Contains(msg, "Monthly capacity limit") ||
+			strings.Contains(msg, "limit for your current plan") ||
+			strings.Contains(msg, "/billing") {
 			// Specific billing-tier exhaustion or subscription limit
 			return common.NewErrEndpointBillingIssue(
 				common.NewErrJsonRpcExceptionInternal(
@@ -129,7 +131,9 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "No server available") ||
 			strings.Contains(msg, "reached the quota") ||
 			strings.Contains(msg, "upgrade your tier") ||
-			strings.Contains(msg, "rate limited") {
+			strings.Contains(msg, "rate limit") ||
+			strings.Contains(msg, "too many requests") ||
+			strings.Contains(msg, "limit exceeded") {
 			return common.NewErrEndpointCapacityExceeded(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
@@ -145,17 +149,18 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		// "Block tag" errors (pending/finalized/safe not supported)
 		//----------------------------------------------------------------
 
-		if strings.HasPrefix(msg, "pending block is not available") ||
-			strings.HasPrefix(msg, "pending block not found") ||
-			strings.HasPrefix(msg, "Pending block not found") ||
-			strings.HasPrefix(msg, "safe block not found") ||
-			strings.HasPrefix(msg, "Safe block not found") ||
-			strings.HasPrefix(msg, "finalized block not found") ||
-			strings.HasPrefix(msg, "Finalized block not found") ||
-			strings.HasPrefix(msg, "finalized is not a supported") ||
-			strings.HasPrefix(msg, "pending is not a supported") ||
-			strings.HasPrefix(msg, "safe is not a supported") ||
-			strings.HasPrefix(msg, "malformed blocknumber") {
+		if strings.Contains(msg, "pending block is not available") ||
+			strings.Contains(msg, "pending block not found") ||
+			strings.Contains(msg, "Pending block not found") ||
+			strings.Contains(msg, "safe block not found") ||
+			strings.Contains(msg, "Safe block not found") ||
+			strings.Contains(msg, "finalized block not found") ||
+			strings.Contains(msg, "Finalized block not found") ||
+			strings.Contains(msg, "finalized is not a supported") ||
+			strings.Contains(msg, "pending is not a supported") ||
+			strings.Contains(msg, "safe is not a supported") ||
+			strings.Contains(msg, "not a supported commitment") ||
+			strings.Contains(msg, "malformed blocknumber") {
 
 			// by default, we retry this type of client-side exception as other upstreams might
 			// have/support this specific block tag data.
@@ -246,29 +251,14 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		}
 
 		//----------------------------------------------------------------
-		// "Unauthorized" errors
-		//----------------------------------------------------------------
-
-		if r.StatusCode == 401 || r.StatusCode == 403 || strings.Contains(msg, "not allowed to access") {
-			return common.NewErrEndpointUnauthorized(
-				common.NewErrJsonRpcExceptionInternal(
-					int(code),
-					common.JsonRpcErrorUnauthorized,
-					err.Message,
-					nil,
-					details,
-				),
-			)
-		}
-
-		//----------------------------------------------------------------
 		// "Not found" or "disabled" errors (missing data or unsupported)
 		//----------------------------------------------------------------
 
 		if strings.Contains(msg, "not found") ||
 			strings.Contains(msg, "does not exist") ||
 			strings.Contains(msg, "not available") ||
-			strings.Contains(msg, "is disabled") {
+			strings.Contains(msg, "is disabled") ||
+			strings.Contains(msg, "is not available") {
 
 			if strings.Contains(msg, "Method") || strings.Contains(msg, "method") ||
 				strings.Contains(msg, "Module") || strings.Contains(msg, "module") {
@@ -387,7 +377,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			strings.Contains(msg, "Invalid Request") ||
 			strings.Contains(msg, "validation errors") ||
 			strings.Contains(msg, "invalid argument") ||
-			strings.Contains(msg, "invalid params") {
+			strings.Contains(msg, "invalid params") ||
+			strings.Contains(msg, "Bad request input parameters") {
 
 			// For specific invalid args/params errors, there is a high chance that the error is due to a mistake that the user
 			// has done, and retrying another upstream would not help.
@@ -400,6 +391,25 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 					details,
 				),
 			).WithRetryableTowardNetwork(false)
+		}
+
+		//----------------------------------------------------------------
+		// "Unauthorized" errors
+		//----------------------------------------------------------------
+
+		if r.StatusCode == 401 || r.StatusCode == 403 ||
+			strings.Contains(msg, "not allowed to access") ||
+			strings.Contains(msg, "invalid api key") ||
+			strings.Contains(msg, "unauthorized") {
+			return common.NewErrEndpointUnauthorized(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorUnauthorized,
+					err.Message,
+					nil,
+					details,
+				),
+			)
 		}
 
 		//----------------------------------------------------------------

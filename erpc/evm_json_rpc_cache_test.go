@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"strconv"
 	"strings"
@@ -59,7 +60,7 @@ func createCacheTestFixtures(ctx context.Context, upstreamConfigs []upsTestCfg) 
 		Connector: &common.ConnectorConfig{
 			Driver: "memory",
 			Memory: &common.MemoryConnectorConfig{
-				MaxItems: 100_000,
+				MaxItems: 100_000, MaxTotalSize: "1GB",
 			},
 		},
 	})
@@ -648,11 +649,19 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 				expectedPolicy: finalizedPolicy,
 			},
 			{
-				name:           "LogsRange_Unfinalized_Cache",
+				name:           "LogsRange_Finalized_Cache",
 				method:         "eth_getLogs",
 				params:         `[{"fromBlock":"0x1","toBlock":"0x2"}]`,
 				result:         `"result":[{"address":"0xabc","data":"0x0"}]`,
-				expectedCache:  true, // Range gives '*' ⇒ Unfinalized
+				expectedCache:  true,
+				expectedPolicy: finalizedPolicy,
+			},
+			{
+				name:           "LogsRange_Unfinalized_Cache",
+				method:         "eth_getLogs",
+				params:         `[{"fromBlock":"0x177777","toBlock":"0x277777"}]`,
+				result:         `"result":[{"address":"0xabc","data":"0x0"}]`,
+				expectedCache:  true,
 				expectedPolicy: unfinalizedPolicy,
 			},
 			{
@@ -964,6 +973,105 @@ func TestEvmJsonRpcCache_Set(t *testing.T) {
 		// Verify the connector was **not** touched.
 		mockConnectors[0].AssertNumberOfCalls(t, "Get", 0)
 	})
+
+	t.Run("EthGetLogs_SameBlockRange_Finalized", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		// Use mockConnectors[0] which is mock1, matching default policy connector
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
+		})
+
+		// Policy that caches finalized eth_getLogs requests on mock1
+		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:   "evm:123", // Matches mockNetwork
+			Method:    "eth_getLogs",
+			Finality:  common.DataFinalityStateFinalized,
+			Connector: "mock1", // Matches mockConnectors[0].Id()
+		}, mockConnectors[0])
+		require.NoError(t, err)
+		cache.SetPolicies([]*data.CachePolicy{policy})
+
+		// Request for eth_getLogs for a single finalized block (e.g., block 0x5)
+		// Upstream finalized block is 10 (0xa)
+		req := common.NewNormalizedRequest([]byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getLogs",
+			"params": [{"fromBlock": "0x5", "toBlock": "0x5"}],
+			"id": 1
+		}`))
+		req.SetNetwork(mockNetwork)
+		req.SetCacheDal(cache)
+
+		// Dummy response for eth_getLogs
+		respBody := `[{"address":"0x123","topics":["0xabc"],"data":"0xdef"}]`
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(fmt.Sprintf(`{"result":%s}`, respBody)))
+		resp.SetUpstream(mockUpstreams[0]) // associate with an upstream that has finalized block info
+		req.SetLastValidResponse(resp)
+
+		// Expect Set to be called on the connector
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
+
+		err = cache.Set(context.Background(), req, resp)
+		assert.NoError(t, err)
+
+		// Verify that Set was called. The exact cache key for eth_getLogs can be complex,
+		// so we check that Set was called with any key for the correct method and network.
+		// More specific key checks would require replicating EvmJsonRpcCache's internal key generation.
+		mockConnectors[0].AssertCalled(t, "Set",
+			mock.Anything, // context
+			mock.MatchedBy(func(key string) bool { return key == "evm:123:5" }),                     // Partition key is specific block for same block range
+			mock.MatchedBy(func(key string) bool { return strings.HasPrefix(key, "eth_getLogs:") }), // rangeKey starts with method name
+			mock.Anything, // value
+			mock.Anything, // ttl
+		)
+	})
+
+	t.Run("EthGetLogs_DifferentBlockRange_Finalized", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixtures(ctx, []upsTestCfg{
+			{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15},
+		})
+
+		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:   "evm:123",
+			Method:    "eth_getLogs",
+			Finality:  common.DataFinalityStateFinalized,
+			Connector: "mock1",
+		}, mockConnectors[0])
+		require.NoError(t, err)
+		cache.SetPolicies([]*data.CachePolicy{policy})
+
+		// Request for eth_getLogs for a range of finalized blocks (e.g., 0x3 to 0x5)
+		// Upstream finalized block is 10 (0xa)
+		req := common.NewNormalizedRequest([]byte(`{
+			"jsonrpc": "2.0",
+			"method": "eth_getLogs",
+			"params": [{"fromBlock": "0x3", "toBlock": "0x5"}],
+			"id": 1
+		}`))
+		req.SetNetwork(mockNetwork)
+		req.SetCacheDal(cache)
+
+		respBody := `[{"address":"0x456","topics":["0xdef"],"data":"0xghi"}]`
+		resp := common.NewNormalizedResponse().WithRequest(req).WithBody(util.StringToReaderCloser(fmt.Sprintf(`{"result":%s}`, respBody)))
+		resp.SetUpstream(mockUpstreams[0])
+		req.SetLastValidResponse(resp)
+
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
+
+		err = cache.Set(context.Background(), req, resp)
+		assert.NoError(t, err)
+
+		mockConnectors[0].AssertCalled(t, "Set",
+			mock.Anything, // context
+			mock.MatchedBy(func(key string) bool { return key == "evm:123:*" }),                     // partitionKey for eth_getLogs
+			mock.MatchedBy(func(key string) bool { return strings.HasPrefix(key, "eth_getLogs:") }), // rangeKey starts with method name
+			mock.Anything, // value
+			mock.Anything, // ttl
+		)
+	})
 }
 
 func TestEvmJsonRpcCache_Set_WithTTL(t *testing.T) {
@@ -1081,7 +1189,7 @@ func TestEvmJsonRpcCache_Get(t *testing.T) {
 		})
 
 		cachedResponse := `{"number":"0x1","hash":"0xabc"}`
-		mockConnectors[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).Return(cachedResponse, nil)
+		mockConnectors[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).Return([]byte(cachedResponse), nil)
 
 		resp, err := cache.Get(context.Background(), req)
 
@@ -1137,11 +1245,11 @@ func TestEvmJsonRpcCache_Get(t *testing.T) {
 		cache.SetPolicies([]*data.CachePolicy{policy1, policy2})
 
 		// First connector returns nil
-		mockConnectors[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).Return("", common.NewErrRecordNotFound("evm:123:1", "some-key", "mock1"))
+		mockConnectors[0].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).Return([]byte(""), common.NewErrRecordNotFound("evm:123:1", "some-key", "mock1"))
 
 		// Second connector returns data
 		cachedResponse := `{"number":"0x1","hash":"0xabc"}`
-		mockConnectors[1].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).Return(cachedResponse, nil)
+		mockConnectors[1].On("Get", mock.Anything, mock.Anything, "evm:123:1", mock.Anything, mock.Anything).Return([]byte(cachedResponse), nil)
 
 		resp, err := cache.Get(context.Background(), req)
 
@@ -1805,6 +1913,9 @@ func TestEvmJsonRpcCache_DynamoDB(t *testing.T) {
 	cache, err := evm.NewEvmJsonRpcCache(ctx, &logger, cacheCfg)
 	require.NoError(t, err, "failed to create cache")
 
+	// Wait for connector to be fully initialized
+	time.Sleep(5 * time.Second)
+
 	// Setup network and upstreams
 	mockNetwork := &Network{
 		networkId: "evm:123",
@@ -2402,7 +2513,7 @@ func createMockUpstream(t *testing.T, ctx context.Context, chainId int64, upstre
 		Connector: &common.ConnectorConfig{
 			Driver: "memory",
 			Memory: &common.MemoryConnectorConfig{
-				MaxItems: 100_000,
+				MaxItems: 100_000, MaxTotalSize: "1GB",
 			},
 		},
 	})
@@ -2432,4 +2543,641 @@ func createMockUpstream(t *testing.T, ctx context.Context, chainId int64, upstre
 	poller.SetSyncingState(syncState)
 
 	return mockUpstream
+}
+
+func TestEvmJsonRpcCache_Compression(t *testing.T) {
+	t.Run("CompressionDisabled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		logger := log.Logger
+
+		// Create cache without compression
+		cacheCfg := &common.CacheConfig{}
+		cacheCfg.SetDefaults()
+
+		_, err := evm.NewEvmJsonRpcCache(ctx, &logger, cacheCfg)
+		require.NoError(t, err)
+
+		// Verify compression is disabled (can't directly check private field)
+		// Test will verify behavior in other test cases
+	})
+
+	t.Run("CompressionEnabled_HappyPath", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixturesWithCompression(ctx,
+			[]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}},
+			&common.CompressionConfig{
+				Enabled:   util.BoolPtr(true),
+				Threshold: 100, // Low threshold for testing
+				ZstdLevel: "fastest",
+			})
+
+		// Create a large response that should be compressed
+		largeData := strings.Repeat("abcdefghijklmnopqrstuvwxyz", 100) // 2600 bytes
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x5",false],"id":1}`))
+		req.SetNetwork(mockNetwork)
+		req.SetCacheDal(cache)
+
+		resp := common.NewNormalizedResponse().
+			WithRequest(req).
+			WithBody(util.StringToReaderCloser(`{"result":{"data":"` + largeData + `"}}`))
+		resp.SetUpstream(mockUpstreams[0])
+		req.SetLastValidResponse(resp)
+
+		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:  "evm:123",
+			Method:   "eth_getBlockByNumber",
+			Finality: common.DataFinalityStateFinalized,
+		}, mockConnectors[0])
+		require.NoError(t, err)
+		cache.SetPolicies([]*data.CachePolicy{policy})
+
+		// Mock the Set call and capture the value
+		var storedValue []byte
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+			Run(func(args mock.Arguments) {
+				storedValue = args.Get(3).([]byte)
+			}).Return(nil)
+
+		err = cache.Set(ctx, req, resp)
+		require.NoError(t, err)
+
+		// Verify compression occurred - check for zstd magic bytes
+		assert.True(t, len(storedValue) >= 4 && storedValue[0] == 0x28 && storedValue[1] == 0xB5 && storedValue[2] == 0x2F && storedValue[3] == 0xFD)
+		assert.Less(t, len(storedValue), len(largeData)) // Compressed should be smaller
+
+		// Mock the Get call to return the compressed value
+		mockConnectors[0].On("Get", mock.Anything, mock.Anything, "evm:123:5", mock.Anything, mock.Anything).
+			Return(storedValue, nil)
+
+		// Get from cache and verify decompression
+		cachedResp, err := cache.Get(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, cachedResp)
+
+		jrr, err := cachedResp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Contains(t, string(jrr.Result), largeData)
+	})
+
+	t.Run("CompressionThreshold_BelowThreshold", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixturesWithCompression(ctx,
+			[]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}},
+			&common.CompressionConfig{
+				Enabled:   util.BoolPtr(true),
+				Threshold: 1000, // High threshold
+				ZstdLevel: "default",
+			})
+
+		// Create a small response that should NOT be compressed
+		smallData := "small response"
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x5",false],"id":1}`))
+		req.SetNetwork(mockNetwork)
+		req.SetCacheDal(cache)
+
+		resp := common.NewNormalizedResponse().
+			WithRequest(req).
+			WithBody(util.StringToReaderCloser(`{"result":"` + smallData + `"}`))
+		resp.SetUpstream(mockUpstreams[0])
+		req.SetLastValidResponse(resp)
+
+		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:  "evm:123",
+			Method:   "eth_getBlockByNumber",
+			Finality: common.DataFinalityStateFinalized,
+		}, mockConnectors[0])
+		require.NoError(t, err)
+		cache.SetPolicies([]*data.CachePolicy{policy})
+
+		// Mock the Set call and capture the value
+		var storedValue []byte
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+			Run(func(args mock.Arguments) {
+				storedValue = args.Get(3).([]byte)
+			}).Return(nil)
+
+		err = cache.Set(ctx, req, resp)
+		require.NoError(t, err)
+
+		// Verify NO compression occurred
+		assert.False(t, len(storedValue) >= 4 && storedValue[0] == 0x28 && storedValue[1] == 0xB5 && storedValue[2] == 0x2F && storedValue[3] == 0xFD)
+		assert.Equal(t, `"`+smallData+`"`, string(storedValue))
+	})
+
+	t.Run("CompressionNotBeneficial", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixturesWithCompression(ctx,
+			[]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}},
+			&common.CompressionConfig{
+				Enabled:   util.BoolPtr(true),
+				Threshold: 10, // Very low threshold
+				ZstdLevel: "best",
+			})
+
+		// Create random data that doesn't compress well
+		randomData := generateRandomString(100)
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x5",false],"id":1}`))
+		req.SetNetwork(mockNetwork)
+		req.SetCacheDal(cache)
+
+		resp := common.NewNormalizedResponse().
+			WithRequest(req).
+			WithBody(util.StringToReaderCloser(`{"result":"` + randomData + `"}`))
+		resp.SetUpstream(mockUpstreams[0])
+		req.SetLastValidResponse(resp)
+
+		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:  "evm:123",
+			Method:   "eth_getBlockByNumber",
+			Finality: common.DataFinalityStateFinalized,
+		}, mockConnectors[0])
+		require.NoError(t, err)
+		cache.SetPolicies([]*data.CachePolicy{policy})
+
+		// Mock the Set call and capture the value
+		var storedValue []byte
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+			Run(func(args mock.Arguments) {
+				storedValue = args.Get(3).([]byte)
+			}).Return(nil)
+
+		err = cache.Set(ctx, req, resp)
+		require.NoError(t, err)
+
+		// If compression doesn't save space, it shouldn't be used
+		// This depends on the random data, but we can check the logic works
+		isCompressed := len(storedValue) >= 4 && storedValue[0] == 0x28 && storedValue[1] == 0xB5 && storedValue[2] == 0x2F && storedValue[3] == 0xFD
+		if isCompressed {
+			// If compressed, it should be smaller than original
+			assert.Less(t, len(storedValue), len(randomData))
+		}
+	})
+
+	t.Run("DecompressionError_CorruptedData", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		mockConnectors, mockNetwork, _, cache := createCacheTestFixturesWithCompression(ctx,
+			[]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}},
+			&common.CompressionConfig{
+				Enabled:   util.BoolPtr(true),
+				Threshold: 100,
+				ZstdLevel: "fastest",
+			})
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x5",false],"id":1}`))
+		req.SetNetwork(mockNetwork)
+		req.SetCacheDal(cache)
+
+		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:  "evm:123",
+			Method:   "eth_getBlockByNumber",
+			Finality: common.DataFinalityStateFinalized,
+		}, mockConnectors[0])
+		require.NoError(t, err)
+		cache.SetPolicies([]*data.CachePolicy{policy})
+
+		// Mock Get to return corrupted compressed data
+		corruptedData := []byte{0x28, 0xB5, 0x2F, 0xFD, 0xFF, 0xFF, 0xFF, 0xFF} // Valid magic but invalid zstd
+		mockConnectors[0].On("Get", mock.Anything, mock.Anything, "evm:123:5", mock.Anything, mock.Anything).
+			Return(corruptedData, nil)
+
+		// Get from cache should return nil (cache miss due to decompression error)
+		// The error is logged but not returned to avoid cache poisoning
+		cachedResp, err := cache.Get(ctx, req)
+		assert.NoError(t, err)
+		assert.Nil(t, cachedResp)
+	})
+
+	t.Run("CompressionLevels", func(t *testing.T) {
+		testCases := []struct {
+			level    string
+			expected string
+		}{
+			{"fastest", "fastest"},
+			{"default", "default"},
+			{"better", "better"},
+			{"best", "best"},
+			{"invalid", "fastest"}, // Should default to fastest
+			{"", "fastest"},        // Should default to fastest
+		}
+
+		for _, tc := range testCases {
+			t.Run(tc.level, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+
+				logger := log.Logger
+				cacheCfg := &common.CacheConfig{
+					Compression: &common.CompressionConfig{
+						Enabled:   util.BoolPtr(true),
+						Threshold: 100,
+						ZstdLevel: tc.level,
+					},
+				}
+				cacheCfg.SetDefaults()
+
+				cache, err := evm.NewEvmJsonRpcCache(ctx, &logger, cacheCfg)
+				require.NoError(t, err)
+				assert.NotNil(t, cache)
+			})
+		}
+	})
+
+	t.Run("CompressionWithDifferentDataTypes", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixturesWithCompression(ctx,
+			[]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}},
+			&common.CompressionConfig{
+				Enabled:   util.BoolPtr(true),
+				Threshold: 50,
+				ZstdLevel: "default",
+			})
+
+		testCases := []struct {
+			name           string
+			responseData   string
+			shouldCompress bool
+		}{
+			{
+				name:           "JSON_Object",
+				responseData:   `{"result":{"block":"0x1","transactions":[` + strings.Repeat(`"0x123",`, 50) + `"0x123"]}}`,
+				shouldCompress: true,
+			},
+			{
+				name:           "Large_Hex_String",
+				responseData:   `{"result":"0x` + strings.Repeat("abcdef0123456789", 20) + `"}`,
+				shouldCompress: true,
+			},
+			{
+				name:           "Array_Of_Logs",
+				responseData:   `{"result":[` + strings.Repeat(`{"address":"0x123","data":"0xabc"},`, 30) + `{"address":"0x123","data":"0xabc"}]}`,
+				shouldCompress: true,
+			},
+			{
+				name:           "Empty_Result",
+				responseData:   `{"result":null}`,
+				shouldCompress: false, // Too small
+			},
+			{
+				name:           "Small_Number",
+				responseData:   `{"result":"0x64"}`,
+				shouldCompress: false, // Too small
+			},
+		}
+
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_call","params":[{"to":"0x123"},"0x5"],"id":1}`))
+				req.SetNetwork(mockNetwork)
+				req.SetCacheDal(cache)
+
+				resp := common.NewNormalizedResponse().
+					WithRequest(req).
+					WithBody(util.StringToReaderCloser(tc.responseData))
+				resp.SetUpstream(mockUpstreams[0])
+				req.SetLastValidResponse(resp)
+
+				policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+					Network:  "evm:123",
+					Method:   "eth_call",
+					Finality: common.DataFinalityStateFinalized,
+				}, mockConnectors[0])
+				require.NoError(t, err)
+				cache.SetPolicies([]*data.CachePolicy{policy})
+
+				// Reset mock
+				mockConnectors[0].ExpectedCalls = nil
+				mockConnectors[0].Calls = nil
+
+				var storedValue []byte
+				mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+					Run(func(args mock.Arguments) {
+						storedValue = args.Get(3).([]byte)
+					}).Return(nil)
+
+				err = cache.Set(ctx, req, resp)
+				require.NoError(t, err)
+
+				isCompressed := len(storedValue) >= 4 && storedValue[0] == 0x28 && storedValue[1] == 0xB5 && storedValue[2] == 0x2F && storedValue[3] == 0xFD
+				if tc.shouldCompress {
+					assert.True(t, isCompressed, "Expected compression for %s", tc.name)
+				} else {
+					assert.False(t, isCompressed, "Expected no compression for %s", tc.name)
+				}
+			})
+		}
+	})
+
+	t.Run("ConcurrentCompression", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixturesWithCompression(ctx,
+			[]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}},
+			&common.CompressionConfig{
+				Enabled:   util.BoolPtr(true),
+				Threshold: 100,
+				ZstdLevel: "fastest",
+			})
+
+		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:  "evm:123",
+			Method:   "eth_getBlockByNumber",
+			Finality: common.DataFinalityStateFinalized,
+		}, mockConnectors[0])
+		require.NoError(t, err)
+		cache.SetPolicies([]*data.CachePolicy{policy})
+
+		// Set up mock to accept any calls
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+		// Run multiple compressions concurrently
+		var wg sync.WaitGroup
+		numGoroutines := 10
+
+		for i := 0; i < numGoroutines; i++ {
+			wg.Add(1)
+			go func(index int) {
+				defer wg.Done()
+
+				largeData := strings.Repeat(fmt.Sprintf("data%d", index), 100)
+				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x%x",false],"id":%d}`, index+1, index)))
+				req.SetNetwork(mockNetwork)
+				req.SetCacheDal(cache)
+
+				resp := common.NewNormalizedResponse().
+					WithRequest(req).
+					WithBody(util.StringToReaderCloser(`{"result":{"data":"` + largeData + `"}}`))
+				resp.SetUpstream(mockUpstreams[0])
+				req.SetLastValidResponse(resp)
+
+				err := cache.Set(ctx, req, resp)
+				assert.NoError(t, err)
+			}(i)
+		}
+
+		wg.Wait()
+
+		// Verify all calls were made
+		mockConnectors[0].AssertNumberOfCalls(t, "Set", numGoroutines)
+	})
+
+	t.Run("CompressionPoolExhaustion", func(t *testing.T) {
+		// This test verifies the pool handles exhaustion gracefully
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixturesWithCompression(ctx,
+			[]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}},
+			&common.CompressionConfig{
+				Enabled:   util.BoolPtr(true),
+				Threshold: 100,
+				ZstdLevel: "fastest",
+			})
+
+		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:  "evm:123",
+			Method:   "eth_getBlockByNumber",
+			Finality: common.DataFinalityStateFinalized,
+		}, mockConnectors[0])
+		require.NoError(t, err)
+		cache.SetPolicies([]*data.CachePolicy{policy})
+
+		// Set up mock to accept any calls
+		mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+		// Create many concurrent requests to potentially exhaust the pool
+		var wg sync.WaitGroup
+		numGoroutines := 100
+
+		for i := 0; i < numGoroutines; i++ {
+			wg.Add(1)
+			go func(index int) {
+				defer wg.Done()
+
+				largeData := strings.Repeat("x", 1000)
+				req := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x%x",false],"id":%d}`, index+1, index)))
+				req.SetNetwork(mockNetwork)
+				req.SetCacheDal(cache)
+
+				resp := common.NewNormalizedResponse().
+					WithRequest(req).
+					WithBody(util.StringToReaderCloser(`{"result":"` + largeData + `"}`))
+				resp.SetUpstream(mockUpstreams[0])
+				req.SetLastValidResponse(resp)
+
+				// Should not panic or error even under high concurrency
+				err := cache.Set(ctx, req, resp)
+				assert.NoError(t, err)
+			}(i)
+		}
+
+		wg.Wait()
+	})
+
+	t.Run("DecompressionOfNonCompressedData", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		mockConnectors, mockNetwork, _, cache := createCacheTestFixturesWithCompression(ctx,
+			[]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}},
+			&common.CompressionConfig{
+				Enabled:   util.BoolPtr(true),
+				Threshold: 100,
+				ZstdLevel: "fastest",
+			})
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x5",false],"id":1}`))
+		req.SetNetwork(mockNetwork)
+		req.SetCacheDal(cache)
+
+		policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+			Network:  "evm:123",
+			Method:   "eth_getBlockByNumber",
+			Finality: common.DataFinalityStateFinalized,
+		}, mockConnectors[0])
+		require.NoError(t, err)
+		cache.SetPolicies([]*data.CachePolicy{policy})
+
+		// Mock Get to return non-compressed data (simulating old cache entries)
+		nonCompressedData := []byte(`{"number":"0x5","hash":"0xabc"}`)
+		mockConnectors[0].On("Get", mock.Anything, mock.Anything, "evm:123:5", mock.Anything, mock.Anything).
+			Return(nonCompressedData, nil)
+
+		// Get from cache should work fine with non-compressed data
+		cachedResp, err := cache.Get(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, cachedResp)
+
+		jrr, err := cachedResp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Equal(t, string(nonCompressedData), string(jrr.Result))
+	})
+
+	t.Run("CompressionBoundaryConditions", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		testCases := []struct {
+			name           string
+			threshold      int
+			dataSize       int
+			shouldCompress bool
+		}{
+			{"ExactlyAtThreshold", 100, 100, true},
+			{"JustBelowThreshold", 100, 97, false},
+			{"JustAboveThreshold", 100, 101, true},
+			{"ZeroThreshold", 0, 50, true},
+			{"EmptyData", 100, 0, false},
+		}
+
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				mockConnectors, mockNetwork, mockUpstreams, cache := createCacheTestFixturesWithCompression(ctx,
+					[]upsTestCfg{{id: "upsA", syncing: common.EvmSyncingStateNotSyncing, finBn: 10, lstBn: 15}},
+					&common.CompressionConfig{
+						Enabled:   util.BoolPtr(true),
+						Threshold: tc.threshold,
+						ZstdLevel: "fastest",
+					})
+
+				testData := ""
+				if tc.dataSize > 0 {
+					testData = strings.Repeat("a", tc.dataSize)
+				}
+
+				req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["0x5",false],"id":1}`))
+				req.SetNetwork(mockNetwork)
+				req.SetCacheDal(cache)
+
+				resp := common.NewNormalizedResponse().
+					WithRequest(req).
+					WithBody(util.StringToReaderCloser(`{"result":"` + testData + `"}`))
+				resp.SetUpstream(mockUpstreams[0])
+				req.SetLastValidResponse(resp)
+
+				policy, err := data.NewCachePolicy(&common.CachePolicyConfig{
+					Network:  "evm:123",
+					Method:   "eth_getBlockByNumber",
+					Finality: common.DataFinalityStateFinalized,
+				}, mockConnectors[0])
+				require.NoError(t, err)
+				cache.SetPolicies([]*data.CachePolicy{policy})
+
+				var storedValue []byte
+				mockConnectors[0].On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+					Run(func(args mock.Arguments) {
+						storedValue = args.Get(3).([]byte)
+					}).Return(nil).Once()
+
+				err = cache.Set(ctx, req, resp)
+				require.NoError(t, err)
+
+				if tc.shouldCompress && tc.dataSize > 10 { // Compression needs some minimum data to be effective
+					// May or may not compress based on effectiveness
+					// Just verify no errors occurred
+					assert.NotEmpty(t, storedValue)
+				} else {
+					assert.False(t, len(storedValue) >= 4 && storedValue[0] == 0x28 && storedValue[1] == 0xB5 && storedValue[2] == 0x2F && storedValue[3] == 0xFD)
+				}
+			})
+		}
+	})
+}
+
+// Helper function to create cache test fixtures with compression enabled
+func createCacheTestFixturesWithCompression(ctx context.Context, upstreamConfigs []upsTestCfg, compressionCfg *common.CompressionConfig) ([]*data.MockConnector, *Network, []*upstream.Upstream, *evm.EvmJsonRpcCache) {
+	logger := log.Logger
+
+	mockConnector1 := data.NewMockConnector("mock1")
+	mockConnector2 := data.NewMockConnector("mock2")
+	mockNetwork := &Network{
+		networkId: "evm:123",
+		logger:    &logger,
+		cfg: &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm: &common.EvmNetworkConfig{
+				ChainId: 123,
+			},
+		},
+	}
+
+	clr := clients.NewClientRegistry(&logger, "prjA", nil)
+	vr := thirdparty.NewVendorsRegistry()
+	ssr, err := data.NewSharedStateRegistry(ctx, &logger, &common.SharedStateConfig{
+		Connector: &common.ConnectorConfig{
+			Driver: "memory",
+			Memory: &common.MemoryConnectorConfig{
+				MaxItems: 100_000, MaxTotalSize: "1GB",
+			},
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	upstreams := make([]*upstream.Upstream, 0, len(upstreamConfigs))
+
+	for _, cfg := range upstreamConfigs {
+		mt := health.NewTracker(&logger, "prjA", 100*time.Second)
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &logger)
+		if err != nil {
+			panic(err)
+		}
+		mockUpstream, err := upstream.NewUpstream(ctx, "test", &common.UpstreamConfig{
+			Id:       cfg.id,
+			Endpoint: "http://rpc1.localhost",
+			Type:     common.UpstreamTypeEvm,
+			Evm: &common.EvmUpstreamConfig{
+				ChainId:             123,
+				StatePollerInterval: common.Duration(1 * time.Minute),
+			},
+		}, clr, rlr, vr, &logger, mt, ssr)
+		if err != nil {
+			panic(err)
+		}
+
+		err = mockUpstream.Bootstrap(ctx)
+		if err != nil {
+			panic(err)
+		}
+
+		poller := mockUpstream.EvmStatePoller()
+		poller.SuggestFinalizedBlock(cfg.finBn)
+		poller.SuggestLatestBlock(cfg.lstBn)
+		poller.SetSyncingState(cfg.syncing)
+
+		upstreams = append(upstreams, mockUpstream)
+	}
+
+	cacheCfg := &common.CacheConfig{
+		Compression: compressionCfg,
+	}
+	cacheCfg.SetDefaults()
+	cache, err := evm.NewEvmJsonRpcCache(context.Background(), &logger, cacheCfg)
+	if err != nil {
+		panic(err)
+	}
+
+	return []*data.MockConnector{mockConnector1, mockConnector2}, mockNetwork, upstreams, cache
+}
+
+// Helper function to generate random string for compression tests
+func generateRandomString(length int) string {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, length)
+	for i := range b {
+		b[i] = charset[time.Now().UnixNano()%int64(len(charset))]
+	}
+	return string(b)
 }

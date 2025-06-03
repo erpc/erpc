@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -88,7 +91,7 @@ func NewUpstream(
 	pup.initRateLimitAutoTuner()
 
 	if vn != nil {
-		cfgs, err := vn.GenerateConfigs(cfg, nil)
+		cfgs, err := vn.GenerateConfigs(appCtx, &lg, cfg, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -97,6 +100,17 @@ func NewUpstream(
 		}
 		pup.config = cfgs[0]
 	}
+
+	if pup.config.VendorName == "" {
+		if vn != nil {
+			pup.config.VendorName = vn.Name()
+		} else {
+			pup.config.VendorName = pup.guessVendorName()
+		}
+	}
+
+	lg = pup.logger.With().Str("vendorName", pup.VendorName()).Logger()
+	pup.logger = &lg
 
 	if client, err := cr.GetOrCreateClient(appCtx, pup); err != nil {
 		return nil, err
@@ -131,6 +145,33 @@ func (u *Upstream) Bootstrap(ctx context.Context) error {
 	return nil
 }
 
+func (u *Upstream) Id() string {
+	if u == nil {
+		return ""
+	}
+	return u.config.Id
+}
+
+func (u *Upstream) NetworkId() string {
+	if u == nil {
+		return ""
+	}
+	return u.networkId
+}
+
+func (u *Upstream) VendorName() string {
+	if u == nil {
+		return "nil"
+	}
+	if u.vendor != nil {
+		return u.vendor.Name()
+	}
+	if u.config != nil {
+		return u.config.VendorName
+	}
+	return "n/a"
+}
+
 func (u *Upstream) Config() *common.UpstreamConfig {
 	if u == nil {
 		return nil
@@ -147,13 +188,6 @@ func (u *Upstream) Vendor() common.Vendor {
 		return nil
 	}
 	return u.vendor
-}
-
-func (u *Upstream) NetworkId() string {
-	if u == nil {
-		return ""
-	}
-	return u.networkId
 }
 
 func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
@@ -234,8 +268,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				if !rule.Limiter.TryAcquirePermit() {
 					lg.Debug().Str("budget", cfg.RateLimitBudget).Msgf("upstream-level rate limit '%v' exceeded", rule.Config)
 					u.metricsTracker.RecordUpstreamSelfRateLimited(
-						cfg.Id,
-						u.networkId,
+						u,
 						method,
 					)
 					err = common.NewErrUpstreamRateLimitRuleExceeded(
@@ -288,21 +321,23 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 			exec failsafe.Execution[*common.NormalizedResponse],
 		) (*common.NormalizedResponse, error) {
 			u.metricsTracker.RecordUpstreamRequest(
-				cfg.Id,
-				u.networkId,
+				u,
 				method,
 			)
-			telemetry.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method, strconv.Itoa(exec.Attempts()), req.CompositeType()).Inc()
-			timer := u.metricsTracker.RecordUpstreamDurationStart(cfg.Id, u.networkId, method, req.CompositeType())
-			defer timer.ObserveDuration()
+			telemetry.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, strconv.Itoa(exec.Attempts()), req.CompositeType()).Inc()
+			timer := u.metricsTracker.RecordUpstreamDurationStart(u, method, req.CompositeType())
 
 			resp, errCall := jsonRpcClient.SendRequest(ctx, req)
+			isSuccess := false
 			if resp != nil {
 				jrr, _ := resp.JsonRpcResponse()
 				if jrr != nil && jrr.Error == nil {
 					resp.SetUpstream(u)
 					req.SetLastValidResponse(resp)
 					req.SetLastUpstream(u)
+					isSuccess = true
+				} else {
+					isSuccess = false
 				}
 				if lg.GetLevel() == zerolog.TraceLevel {
 					lg.Debug().Err(errCall).Object("response", resp).Msgf("upstream request ended with response")
@@ -321,10 +356,11 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				}
 			}
 			if errCall != nil {
+				isSuccess = false
 				if common.HasErrorCode(errCall, common.ErrCodeUpstreamRequestSkipped) {
-					telemetry.MetricUpstreamSkippedTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method).Inc()
+					telemetry.MetricUpstreamSkippedTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method).Inc()
 				} else if common.HasErrorCode(errCall, common.ErrCodeEndpointMissingData) {
-					telemetry.MetricUpstreamMissingDataErrorTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method).Inc()
+					telemetry.MetricUpstreamMissingDataErrorTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method).Inc()
 				} else {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
 						u.recordRemoteRateLimit(u.networkId, method)
@@ -334,14 +370,14 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 						// We only consider a subset of errors in metrics tracker (which is used for score calculation)
 						// so that we only penalize upstreams for internal issues (not rate limits, or client-side, or method support issues, etc.)
 						u.metricsTracker.RecordUpstreamFailure(
-							cfg.Id,
-							u.networkId,
+							u,
 							method,
 						)
 					}
-					telemetry.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method, common.ErrorFingerprint(errCall), string(severity), req.CompositeType()).Inc()
+					telemetry.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, common.ErrorFingerprint(errCall), string(severity), req.CompositeType()).Inc()
 				}
 
+				timer.ObserveDuration(false)
 				if exec != nil {
 					return nil, common.NewErrUpstreamRequest(
 						errCall,
@@ -367,11 +403,14 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				}
 			} else {
 				if resp.IsResultEmptyish() {
-					telemetry.MetricUpstreamEmptyResponseTotal.WithLabelValues(u.ProjectId, u.networkId, cfg.Id, method).Inc()
+					telemetry.MetricUpstreamEmptyResponseTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method).Inc()
 				}
 			}
 
-			u.recordRequestSuccess(method)
+			timer.ObserveDuration(isSuccess)
+			if isSuccess {
+				u.recordRequestSuccess(method)
+			}
 
 			return resp, nil
 		}
@@ -621,8 +660,7 @@ func (u *Upstream) recordRequestSuccess(method string) {
 
 func (u *Upstream) recordRemoteRateLimit(netId, method string) {
 	u.metricsTracker.RecordUpstreamRemoteRateLimited(
-		u.config.Id,
-		netId,
+		u,
 		method,
 	)
 
@@ -726,10 +764,44 @@ func (u *Upstream) detectFeatures(ctx context.Context) error {
 	return nil
 }
 
+func (u *Upstream) guessVendorName() string {
+	endpoint := u.config.Endpoint
+	if endpoint == "" {
+		return ""
+	}
+
+	pu, err := url.Parse(endpoint)
+	if err != nil {
+		return ""
+	}
+
+	// Strip the port if present and get only the hostname part.
+	host := pu.Hostname()
+
+	// If the host is an IP address, return it as-is (no root domain concept).
+	if ip := net.ParseIP(host); ip != nil {
+		return host
+	}
+
+	parts := strings.Split(host, ".")
+	if len(parts) <= 2 {
+		return host
+	}
+
+	// Return last two segments as a naive root domain (example.com).
+	rooDomain := strings.Join(parts[len(parts)-2:], ".")
+	if len(rooDomain) < 5 {
+		// Above is a simple heuristic and might not work for multi-level TLDs like co.uk.
+		return strings.Join(parts[len(parts)-3:], ".")
+	}
+
+	return rooDomain
+}
+
 func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest) (reason error, skip bool) {
 	method, _ := req.Method()
 
-	if u.config.Evm != nil {
+	if u.config.Evm != nil && u.config.Evm.SkipWhenSyncing != nil && *u.config.Evm.SkipWhenSyncing {
 		if u.EvmSyncingState() == common.EvmSyncingStateSyncing {
 			return common.NewErrUpstreamSyncing(u.config.Id), true
 		}
@@ -771,6 +843,9 @@ func (u *Upstream) shouldSkip(ctx context.Context, req *common.NormalizedRequest
 		}
 	}
 
+	// TODO if block number is extracted from request, check against evm poller's latest block number (force-refresh if stale) and skip if block is after upstream's latest block
+	// TODO then we can remove the similar "eth_getLogs upper-bound" check in eth_getLogs.go PreForward hook.
+
 	return nil, false
 }
 
@@ -801,7 +876,7 @@ func (u *Upstream) MarshalJSON() ([]byte, error) {
 		NetworkId string                            `json:"networkId"`
 	}
 
-	metrics := u.metricsTracker.GetUpstreamMetrics(u.config.Id)
+	metrics := u.metricsTracker.GetUpstreamMetrics(u)
 
 	uppub := upstreamPublic{
 		Id:        u.config.Id,

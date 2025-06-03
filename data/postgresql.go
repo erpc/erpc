@@ -47,11 +47,17 @@ type pgxListener struct {
 	watchers []chan int64
 }
 
+var _ DistributedLock = &postgresLock{}
+
 type postgresLock struct {
 	conn   *pgxpool.Pool
 	lockID int64
 	logger *zerolog.Logger
 	tx     pgx.Tx
+}
+
+func (l *postgresLock) IsNil() bool {
+	return l == nil || l.conn == nil
 }
 
 func NewPostgreSQLConnector(
@@ -129,13 +135,53 @@ func (p *PostgreSQLConnector) connectTask(ctx context.Context, cfg *common.Postg
 		CREATE TABLE IF NOT EXISTS %s (
 			partition_key TEXT,
 			range_key TEXT,
-			value TEXT,
+			value BYTEA,
 			expires_at TIMESTAMP WITH TIME ZONE,
 			PRIMARY KEY (partition_key, range_key)
 		)
 	`, cfg.Table))
 	if err != nil {
 		return fmt.Errorf("failed to create table: %w", err)
+	}
+
+	// Migrate existing TEXT column to BYTEA if needed
+	var dataType string
+	err = conn.QueryRow(ctx, `
+		SELECT data_type 
+		FROM information_schema.columns 
+		WHERE table_name = $1 AND column_name = 'value'
+	`, cfg.Table).Scan(&dataType)
+
+	if err == nil && dataType == "text" {
+		// Migration needed
+		p.logger.Info().Msg("migrating value column from TEXT to BYTEA")
+
+		// Add temporary column
+		_, err = conn.Exec(ctx, fmt.Sprintf(`
+			ALTER TABLE %s ADD COLUMN IF NOT EXISTS value_new BYTEA
+		`, cfg.Table))
+		if err != nil {
+			return fmt.Errorf("failed to add temporary column: %w", err)
+		}
+
+		// Copy data (converting text to bytea)
+		_, err = conn.Exec(ctx, fmt.Sprintf(`
+			UPDATE %s SET value_new = value::bytea WHERE value IS NOT NULL
+		`, cfg.Table))
+		if err != nil {
+			return fmt.Errorf("failed to migrate data: %w", err)
+		}
+
+		// Drop old column and rename new one
+		_, err = conn.Exec(ctx, fmt.Sprintf(`
+			ALTER TABLE %s DROP COLUMN value;
+			ALTER TABLE %s RENAME COLUMN value_new TO value;
+		`, cfg.Table, cfg.Table))
+		if err != nil {
+			return fmt.Errorf("failed to complete migration: %w", err)
+		}
+
+		p.logger.Info().Msg("successfully migrated value column to BYTEA")
 	}
 
 	// Add expires_at column if it doesn't exist
@@ -207,7 +253,7 @@ func (p *PostgreSQLConnector) Id() string {
 	return p.id
 }
 
-func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey, value string, ttl *time.Duration) error {
+func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration) error {
 	ctx, span := common.StartSpan(ctx, "PostgreSQLConnector.Set")
 	defer span.End()
 
@@ -229,7 +275,7 @@ func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey, v
 	}
 
 	if len(value) < 1024 {
-		p.logger.Debug().Str("value", value).Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("writing to postgres")
+		p.logger.Debug().Int("length", len(value)).Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("writing to postgres")
 	} else {
 		p.logger.Debug().Int("length", len(value)).Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("writing to postgres")
 	}
@@ -268,7 +314,7 @@ func (p *PostgreSQLConnector) Set(ctx context.Context, partitionKey, rangeKey, v
 	return err
 }
 
-func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) (string, error) {
+func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) ([]byte, error) {
 	ctx, span := common.StartSpan(ctx, "PostgreSQLConnector.Get")
 	defer span.End()
 
@@ -286,7 +332,7 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 	if p.conn == nil {
 		err := fmt.Errorf("PostgreSQLConnector not connected yet")
 		common.SetTraceSpanError(span, err)
-		return "", err
+		return nil, err
 	}
 
 	var query string
@@ -308,7 +354,7 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 
 	p.logger.Debug().Str("query", query).Interface("args", args).Msg("getting item from postgres")
 
-	var value string
+	var value []byte
 	err := p.conn.QueryRow(ctx, query, args...).Scan(&value)
 
 	if err != nil {
@@ -319,7 +365,7 @@ func (p *PostgreSQLConnector) Get(ctx context.Context, index, partitionKey, rang
 	if err == pgx.ErrNoRows {
 		err := common.NewErrRecordNotFound(partitionKey, rangeKey, PostgreSQLDriverName)
 		common.SetTraceSpanError(span, err)
-		return "", err
+		return nil, err
 	}
 
 	if common.IsTracingDetailed {
@@ -376,13 +422,13 @@ func (p *PostgreSQLConnector) Lock(ctx context.Context, key string, ttl time.Dur
 
 	if err != nil {
 		p.handleConnectionFailure(err)
-		_ = tx.Rollback(ctx)
+		go tx.Rollback(context.Background())
 		common.SetTraceSpanError(span, err)
 		return nil, fmt.Errorf("failed to acquire advisory lock: %w", err)
 	}
 
 	if !acquired {
-		_ = tx.Rollback(ctx)
+		go tx.Rollback(context.Background())
 		err := fmt.Errorf("failed to acquire lock: already locked")
 		common.SetTraceSpanError(span, err)
 		return nil, err
@@ -648,7 +694,7 @@ func (p *PostgreSQLConnector) getCurrentValue(ctx context.Context, key string) (
 		return 0, err
 	}
 
-	value, err := strconv.ParseInt(val, 10, 64)
+	value, err := strconv.ParseInt(string(val), 10, 64)
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 		return 0, err
@@ -658,7 +704,7 @@ func (p *PostgreSQLConnector) getCurrentValue(ctx context.Context, key string) (
 	return value, nil
 }
 
-func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, index, partitionKey, rangeKey string) (string, error) {
+func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, index, partitionKey, rangeKey string) ([]byte, error) {
 	ctx, span := common.StartDetailSpan(ctx, "PostgreSQLConnector.getWithWildcard",
 		trace.WithAttributes(
 			attribute.String("index", index),
@@ -695,16 +741,16 @@ func (p *PostgreSQLConnector) getWithWildcard(ctx context.Context, index, partit
 
 	p.logger.Debug().Str("query", query).Interface("args", args).Msg("getting item from postgres with wildcard")
 
-	var value string
+	var value []byte
 	err := p.conn.QueryRow(ctx, query, args...).Scan(&value)
 
 	if err == pgx.ErrNoRows {
 		err := common.NewErrRecordNotFound(partitionKey, rangeKey, PostgreSQLDriverName)
 		common.SetTraceSpanError(span, err)
-		return "", err
+		return nil, err
 	} else if err != nil {
 		common.SetTraceSpanError(span, err)
-		return "", err
+		return nil, err
 	}
 
 	if common.IsTracingDetailed {

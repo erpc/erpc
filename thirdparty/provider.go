@@ -43,12 +43,12 @@ func (p *Provider) SupportsNetwork(ctx context.Context, networkId string) (bool,
 	return p.vendor.SupportsNetwork(ctx, p.logger, p.config.Settings, networkId)
 }
 
-func (p *Provider) GenerateUpstreamConfigs(networkId string) ([]*common.UpstreamConfig, error) {
+func (p *Provider) GenerateUpstreamConfigs(ctx context.Context, logger *zerolog.Logger, networkId string) ([]*common.UpstreamConfig, error) {
 	upsCfg, err := p.buildBaseUpstreamConfig(networkId)
 	if err != nil {
 		return nil, err
 	}
-	upsCfgs, err := p.vendor.GenerateConfigs(upsCfg, p.config.Settings)
+	upsCfgs, err := p.vendor.GenerateConfigs(ctx, logger, upsCfg, p.config.Settings)
 	if err != nil {
 		return nil, err
 	}

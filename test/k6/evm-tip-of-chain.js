@@ -7,10 +7,10 @@ const ERPC_BASE_URL = __ENV.ERPC_BASE_URL || 'http://localhost:4000/main/evm/';
 
 // Traffic pattern weights (in percentage, should sum to 100)
 const TRAFFIC_PATTERNS = {
-  LATEST_BLOCK_WITH_LOGS: 30,        // Get latest block and its transfer logs
-  LATEST_BLOCK_RECEIPTS: 30,         // Get receipts from latest block's transactions
-  LATEST_BLOCK_TRACES: 25,           // Get traces from latest block's transactions
-  RANDOM_ACCOUNT_BALANCES: 15,       // Get random account balances
+  LATEST_BLOCK_WITH_LOGS: 60,        // Get latest block and its transfer logs
+  LATEST_BLOCK_RECEIPTS: 20,         // Get receipts from latest block's transactions
+  LATEST_BLOCK_TRACES: 10,           // Get traces from latest block's transactions
+  RANDOM_ACCOUNT_BALANCES: 10,       // Get random account balances
 };
 
 // Configuration
@@ -23,14 +23,14 @@ const CONFIG = {
 
 // Update CHAINS structure to include transaction cache
 const CHAINS = {
-  ETH: {
-    id: '1',
-    cached: {
-      latestBlock: null,
-      latestBlockTimestamp: 0,
-      transactions: []
-    }
-  },
+  // ETH: {
+  //   id: '1',
+  //   cached: {
+  //     latestBlock: null,
+  //     latestBlockTimestamp: 0,
+  //     transactions: []
+  //   }
+  // },
   // POLYGON: {
   //   id: '137',
   //   cached: {
@@ -39,14 +39,14 @@ const CHAINS = {
   //     transactions: []
   //   }
   // },
-  // ARBITRUM: {
-  //   id: '42161',
-  //   cached: {
-  //     latestBlock: null,
-  //     latestBlockTimestamp: 0,
-  //     transactions: []
-  //   }
-  // }
+  ARBITRUM: {
+    id: '42161',
+    cached: {
+      latestBlock: null,
+      latestBlockTimestamp: 0,
+      transactions: []
+    }
+  }
 };
 
 if (__ENV.RANDOM_SEED) {
@@ -60,9 +60,9 @@ export const options = {
       executor: 'constant-arrival-rate',
       rate: 100,
       timeUnit: '1s',
-      duration: '1m',
-      preAllocatedVUs: 100,
-      maxVUs: 100,
+      duration: '30m',
+      preAllocatedVUs: 200,
+      maxVUs: 200,
     },
   },
   ext: {
@@ -91,17 +91,21 @@ async function latestBlockWithLogs(http, params, chain) {
   const latestBlock = await getLatestBlock(http, params, chain);
   if (!latestBlock) return null;
 
+  const decimalBlockNumber = parseInt(latestBlock.number, 16);
+  const randomShift = randomIntBetween(0, 1000);
+  const randomToLimit = randomIntBetween(0, randomShift);
+
   const payload = JSON.stringify({
     jsonrpc: "2.0",
     method: "eth_getLogs",
     params: [{
-      fromBlock: latestBlock.number,
-      toBlock: latestBlock.number,
+      fromBlock: '0x' + Math.max(0, decimalBlockNumber - randomShift).toString(16),
+      toBlock: '0x' + Math.max(0, decimalBlockNumber - randomShift + randomToLimit).toString(16),
       topics: [TRANSFER_EVENT_TOPIC]
     }],
     id: Math.floor(Math.random() * 100000000)
   });
-  if (__ENV.DEBUG) {
+  if (__ENV.TRACE) {
     console.log(`Request: ${payload}`);
   }
   return http.post(ERPC_BASE_URL + chain.id, payload, params);
@@ -118,7 +122,7 @@ function randomAccountBalances(http, params, chain) {
     params: [randomAddr, "latest"],
     id: Math.floor(Math.random() * 100000000)
   });
-  if (__ENV.DEBUG) {
+  if (__ENV.TRACE) {
     console.log(`Request: ${payload}`);
   }
   return http.post(ERPC_BASE_URL + chain.id, payload, params);
@@ -137,7 +141,7 @@ async function getLatestBlock(http, params, chain) {
     id: Math.floor(Math.random() * 100000000)
   });
 
-  if (__ENV.DEBUG) {
+  if (__ENV.TRACE) {
     console.log(`Request: ${payload}`);
   }
   const res = await http.post(ERPC_BASE_URL + chain.id, payload, params);
@@ -204,7 +208,7 @@ async function traceLatestTransaction(http, params, chain) {
       id: Math.floor(Math.random() * 100000000)
     });
 
-    if (__ENV.DEBUG) {
+    if (__ENV.TRACE) {
       console.log(`Request: ${tracePayload}`);
     }
     const traceRes = await http.post(ERPC_BASE_URL + chain.id, tracePayload, params);
@@ -240,7 +244,7 @@ async function latestBlockReceipts(http, params, chain) {
     params: [txHash],
     id: Math.floor(Math.random() * 100000000)
   });
-  if (__ENV.DEBUG) {
+  if (__ENV.TRACE) {
     console.log(`Request: ${payload}`);
   }
   return http.post(ERPC_BASE_URL + chain.id, payload, params);
@@ -294,9 +298,9 @@ export default async function () {
     statusCodeCounter.add(1, tags);
     responseSizes.add(res.body.length, tags);
 
-    if (__ENV.DEBUG) {
+    if (__ENV.DEBUG || __ENV.TRACE) {
       if (res.status >= 400) {
-        console.log(`Status Code: ${res.status} Response body: ${res.body} Tags: ${JSON.stringify(tags)}`);
+        console.warn(`${new Date().toISOString()} Status Code: ${res.status} Response body: ${res.body} Tags: ${JSON.stringify(tags)}`);
       }
     }
 
@@ -305,7 +309,7 @@ export default async function () {
       parsedBody = JSON.parse(res.body);
     } catch (e) {
       parsingErrorsCounter.add(1, tags);
-      console.error(`Failed to parse response body: ${e}`);
+      console.error(`${new Date().toISOString()} Failed to parse response body: ${e} response body: ${res.body}`);
     }
 
     if (parsedBody?.error?.code) {

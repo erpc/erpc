@@ -71,6 +71,9 @@ export interface ServerConfig {
   enableGzip?: boolean;
   tls?: TLSConfig;
   aliasing?: AliasingConfig;
+  waitBeforeShutdown?: Duration;
+  waitAfterShutdown?: Duration;
+  includeErrorDetails?: boolean;
 }
 export interface HealthCheckConfig {
   mode?: HealthCheckMode;
@@ -125,6 +128,13 @@ export interface CacheConfig {
   connectors?: TsConnectorConfig[];
   policies?: (CachePolicyConfig | undefined)[];
   methods?: { [key: string]: CacheMethodConfig | undefined};
+  compression?: CompressionConfig;
+}
+export interface CompressionConfig {
+  enabled?: boolean;
+  algorithm?: string; // "zstd" for now, can be extended
+  zstdLevel?: string; // "fastest", "default", "better", "best"
+  threshold?: number /* int */; // Minimum size in bytes to compress
 }
 export interface CacheMethodConfig {
   reqRefs: any[][];
@@ -158,6 +168,8 @@ export interface ConnectorConfig {
 }
 export interface MemoryConnectorConfig {
   maxItems: number /* int */;
+  maxTotalSize: string;
+  emitMetrics?: boolean;
 }
 export interface MockConnectorConfig {
   memoryconnectorconfig: MemoryConnectorConfig;
@@ -183,6 +195,7 @@ export interface RedisConnectorConfig {
   initTimeout?: Duration;
   getTimeout?: Duration;
   setTimeout?: Duration;
+  lockRetryInterval?: Duration;
 }
 export interface DynamoDBConnectorConfig {
   table?: string;
@@ -196,7 +209,9 @@ export interface DynamoDBConnectorConfig {
   initTimeout?: Duration;
   getTimeout?: Duration;
   setTimeout?: Duration;
+  maxRetries?: number /* int */;
   statePollInterval?: Duration;
+  lockRetryInterval?: Duration;
 }
 export interface PostgreSQLConnectorConfig {
   connectionUri: string;
@@ -269,17 +284,22 @@ export interface UpstreamConfig {
 }
 export interface RoutingConfig {
   scoreMultipliers: (ScoreMultiplierConfig | undefined)[];
+  scoreLatencyQuantile?: number /* float64 */;
 }
 export interface ScoreMultiplierConfig {
   network: string;
   method: string;
   overall: number /* float64 */;
   errorRate: number /* float64 */;
-  p90latency: number /* float64 */;
+  respLatency: number /* float64 */;
   totalRequests: number /* float64 */;
   throttledRate: number /* float64 */;
   blockHeadLag: number /* float64 */;
   finalizationLag: number /* float64 */;
+  /**
+   * @deprecated use RespLatency instead
+   */
+  p90latency: number /* float64 */;
 }
 export type Alias = UpstreamConfig;
 export interface RateLimitAutoTuneConfig {
@@ -309,6 +329,8 @@ export interface EvmUpstreamConfig {
   getLogsMaxAllowedRange?: number /* int64 */;
   getLogsMaxAllowedAddresses?: number /* int64 */;
   getLogsMaxAllowedTopics?: number /* int64 */;
+  getLogsSplitOnError?: boolean;
+  skipWhenSyncing?: boolean;
 }
 export interface FailsafeConfig {
   retry?: RetryPolicyConfig;

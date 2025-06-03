@@ -87,13 +87,24 @@ import type {
   export type UpstreamType =
     | "evm"
     | "evm+alchemy"
-    | "evm+drpc"
     | "evm+blastapi"
+    | "evm+conduit"
+    | "evm+drpc"
+    | "evm+dwellir"
     | "evm+envio"
     | "evm+etherspot"
     | "evm+infura"
     | "evm+pimlico"
-    | "evm+thirdweb";
+    | "evm+quicknode"
+    | "evm+llama"
+    | "evm+thirdweb"
+    | "evm+repository"
+    | "evm+superchain"
+    | "evm+chainstack"
+    | "evm+tenderly"
+    | "evm+onfinality"
+    | "evm+erpc"
+    | "evm+blockpi";
   
   /**
    * Supported auth type

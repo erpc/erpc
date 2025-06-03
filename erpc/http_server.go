@@ -16,6 +16,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -38,6 +39,7 @@ type HttpServer struct {
 	erpc                    *ERPC
 	logger                  *zerolog.Logger
 	healthCheckAuthRegistry *auth.AuthRegistry
+	draining                *atomic.Bool
 }
 
 func NewHttpServer(
@@ -61,13 +63,21 @@ func NewHttpServer(
 		writeTimeout = cfg.WriteTimeout.Duration()
 	}
 
+	draining := atomic.Bool{}
+	go func() {
+		<-ctx.Done()
+		draining.Store(true)
+		log.Info().Msg("entering draining mode → healthcheck will fail")
+	}()
+
 	srv := &HttpServer{
+		logger:         logger,
 		appCtx:         ctx,
 		serverCfg:      cfg,
 		healthCheckCfg: healthCheckCfg,
 		adminCfg:       adminCfg,
 		erpc:           erpc,
-		logger:         logger,
+		draining:       &draining,
 	}
 
 	h := srv.createRequestHandler()
@@ -93,6 +103,11 @@ func NewHttpServer(
 
 	go func() {
 		<-ctx.Done()
+		// wait for readiness probe to mark the pod NotReady
+		// ideally (period_seconds * failure_threshold) + safety margin (1s)
+		if srv.serverCfg.WaitBeforeShutdown != nil {
+			time.Sleep(srv.serverCfg.WaitBeforeShutdown.Duration())
+		}
 		if err := srv.Shutdown(logger); err != nil {
 			logger.Error().Msgf("http server forced to shutdown: %s", err)
 		} else {
@@ -151,7 +166,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				w,
 				encoder,
 				writeFatalError,
-				true,
+				&common.TRUE,
 			)
 			return
 		}
@@ -186,7 +201,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				w,
 				encoder,
 				writeFatalError,
-				false,
+				s.serverCfg.IncludeErrorDetails,
 			)
 			return
 		}
@@ -202,7 +217,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				w,
 				encoder,
 				writeFatalError,
-				true,
+				&common.TRUE,
 			)
 			return
 		}
@@ -227,7 +242,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					w,
 					encoder,
 					writeFatalError,
-					true,
+					&common.TRUE,
 				)
 				return
 			}
@@ -250,7 +265,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				w,
 				encoder,
 				writeFatalError,
-				true,
+				&common.TRUE,
 			)
 			return
 		}
@@ -274,7 +289,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					w,
 					encoder,
 					writeFatalError,
-					true,
+					&common.TRUE,
 				)
 				common.SetTraceSpanError(parseRequestsSpan, err)
 				parseRequestsSpan.End()
@@ -306,25 +321,22 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 							Str("stack", string(debug.Stack())).
 							Msgf("unexpected server panic on per-request handler")
 						err := fmt.Errorf("unexpected server panic on per-request handler: %v stack: %s", rec, string(debug.Stack()))
-						responses[index] = processErrorBody(&lg, &startedAt, nil, err, false)
+						responses[index] = processErrorBody(&lg, &startedAt, nil, err, s.serverCfg.IncludeErrorDetails)
 					}
 				}()
 
 				nq := common.NewNormalizedRequest(rawReq)
 				requestCtx := common.StartRequestSpan(httpCtx, nq)
 
-				nq.ApplyDirectivesFromHttp(headers, queryArgs)
-
+				// Validate the raw JSON-RPC payload early
 				if err := nq.Validate(); err != nil {
-					responses[index] = processErrorBody(&lg, &startedAt, nq, err, true)
+					responses[index] = processErrorBody(&lg, &startedAt, nq, err, &common.TRUE)
 					common.EndRequestSpan(requestCtx, nil, responses[index])
 					return
 				}
 
 				method, _ := nq.Method()
 				rlg := lg.With().Str("method", method).Logger()
-
-				rlg.Trace().Interface("directives", nq.Directives()).Msgf("applied request directives")
 
 				var ap *auth.AuthPayload
 				var err error
@@ -335,20 +347,20 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					ap, err = auth.NewPayloadFromHttp(method, r.RemoteAddr, headers, queryArgs)
 				}
 				if err != nil {
-					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, true)
+					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
 					common.EndRequestSpan(requestCtx, nil, err)
 					return
 				}
 
 				if isAdmin {
 					if err := s.erpc.AdminAuthenticate(requestCtx, method, ap); err != nil {
-						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, true)
+						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
 					}
 				} else {
 					if err := project.AuthenticateConsumer(requestCtx, method, ap); err != nil {
-						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, true)
+						responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
 					}
@@ -358,7 +370,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 					if s.adminCfg != nil {
 						resp, err := s.erpc.AdminHandleRequest(requestCtx, nq)
 						if err != nil {
-							responses[index] = processErrorBody(&rlg, &startedAt, nq, err, true)
+							responses[index] = processErrorBody(&rlg, &startedAt, nq, err, &common.TRUE)
 							common.EndRequestSpan(requestCtx, nil, err)
 							return
 						}
@@ -374,7 +386,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 								"",
 								"admin is not enabled for this project",
 							),
-							false,
+							s.serverCfg.IncludeErrorDetails,
 						)
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
@@ -386,7 +398,7 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				if architecture == "" || chainId == "" {
 					var req map[string]interface{}
 					if err := common.SonicCfg.Unmarshal(rawReq, &req); err != nil {
-						responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(err), true)
+						responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(err), &common.TRUE)
 						common.EndRequestSpan(requestCtx, nil, err)
 						return
 					}
@@ -405,22 +417,26 @@ func (s *HttpServer) createRequestHandler() http.Handler {
 				if architecture == "" || chainId == "" {
 					responses[index] = processErrorBody(&rlg, &startedAt, nq, common.NewErrInvalidRequest(fmt.Errorf(
 						"architecture and chain must be provided in URL (for example /<project>/evm/42161) or in request body (for example \"networkId\":\"evm:42161\") or configureed via domain aliasing",
-					)), false)
+					)), s.serverCfg.IncludeErrorDetails)
 					common.EndRequestSpan(requestCtx, nil, err)
 					return
 				}
 
 				nw, err := project.GetNetwork(networkId)
 				if err != nil {
-					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, false)
+					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
 					common.EndRequestSpan(requestCtx, nil, err)
 					return
 				}
 				nq.SetNetwork(nw)
 
+				nq.ApplyDirectiveDefaults(nw.Config().DirectiveDefaults)
+				nq.ApplyDirectivesFromHttp(headers, queryArgs)
+				rlg.Trace().Interface("directives", nq.Directives()).Msgf("applied request directives")
+
 				resp, err := project.Forward(requestCtx, networkId, nq)
 				if err != nil {
-					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, false)
+					responses[index] = processErrorBody(&rlg, &startedAt, nq, err, s.serverCfg.IncludeErrorDetails)
 					common.EndRequestSpan(requestCtx, nil, err)
 					return
 				}
@@ -879,7 +895,8 @@ type HttpJsonRpcErrorResponse struct {
 	Cause   error       `json:"-"`
 }
 
-func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.NormalizedRequest, err error, includeErrorDetails bool) interface{} {
+func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.NormalizedRequest, origErr error, includeErrorDetails *bool) interface{} {
+	err := origErr
 	if !common.IsNull(err) {
 		if nq != nil {
 			nq.RLock()
@@ -906,37 +923,50 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 		}
 	}
 
-	err = common.TranslateToJsonRpcException(err)
-	var jsonrpcVersion string = "2.0"
-	var reqId interface{} = nil
-	if nq != nil {
-		jrr, _ := nq.JsonRpcRequest()
-		if jrr != nil {
-			jsonrpcVersion = jrr.JSONRPC
-			reqId = jrr.ID
-		}
-	}
 	// This is a special attempt to extract execution errors first (e.g. execution reverted):
 	exe := &common.ErrEndpointExecutionException{}
 	if errors.As(err, &exe) {
 		err = exe
 	}
+
+	// To simplify client's life if there's only one upstream error, we can use that as the error
+	// instead of Exhausted error which obfuscates underlying errors.
+	if ex, ok := err.(*common.ErrUpstreamsExhausted); ok {
+		if len(ex.Errors()) == 1 {
+			err = ex.Errors()[0]
+		}
+	}
+
+	err = common.TranslateToJsonRpcException(err)
+	var jsonrpcVersion string = "2.0"
+	var reqId interface{} = nil
+	var method string = ""
+	if nq != nil {
+		jrr, _ := nq.JsonRpcRequest()
+		if jrr != nil {
+			jsonrpcVersion = jrr.JSONRPC
+			reqId = jrr.ID
+			method = jrr.Method
+		}
+	}
 	jre := &common.ErrJsonRpcExceptionInternal{}
 	if errors.As(err, &jre) {
 		message := jre.Message
-		deepestMessage := jre.DeepestMessage()
-		if message != deepestMessage {
-			message = fmt.Sprintf("%s: %s", message, deepestMessage)
-		}
 		errObj := map[string]interface{}{
 			"code":    jre.NormalizedCode(),
 			"message": message,
 		}
+		// Append "data" field, ref: https://www.jsonrpc.org/specification#:~:text=A%20Primitive%20or%20Structured%20value%20that%20contains%20additional%20information%20about%20the%20error.
 		if jre.Details["data"] != nil {
 			errObj["data"] = jre.Details["data"]
-		} else if includeErrorDetails {
-			errObj["data"] = err
+		} else if includeErrorDetails != nil && *includeErrorDetails {
+			if method != "eth_call" {
+				// For eth_calls clients expect "data" to be string for revert reason.
+				// TODO Move this logic to "evm" package.
+				errObj["data"] = origErr
+			}
 		}
+
 		return &HttpJsonRpcErrorResponse{
 			Jsonrpc: jsonrpcVersion,
 			Id:      reqId,
@@ -958,10 +988,87 @@ func processErrorBody(logger *zerolog.Logger, startedAt *time.Time, nq *common.N
 	}
 }
 
-func decideErrorStatusCode(err error) int {
-	if e, ok := err.(common.StandardError); ok {
-		return e.ErrorStatusCode()
+// statusCodeOrderPreference is a list of status code ranges that are preferred in the order of preference.
+// This is used when multiple upstreams return different status codes for various reasons.
+// We try to pick the "most likely relevant" one based on the status code ranges.
+var statusCodeOrderPreference = []struct {
+	min int
+	max int
+}{
+	{200, 299}, // Successful response from at least one upstream.
+	{429, 429}, // Too Many Requests (rate limiting).
+	{500, 599}, // Upstream/server errors.
+	{405, 428}, // Method/headers/pre-condition related client errors.
+	{430, 499}, // Remaining 4xx client errors.
+	{400, 400}, // Bad Request – generic validation failure.
+	{401, 404}, // Unauthorized / Payment Required / Not Found.
+	{300, 399}, // Redirection responses (should rarely occur).
+}
+
+// preferredStatusCode returns the code that should win between current and cand according to
+// statusCodeOrderPreference.  Lower preference index wins; if both codes fall in the same
+// preference bucket, the numerically smaller code wins (e.g. 200 beats 204, 400 beats 422, etc.).
+// The comparison is allocation-free and intended for hot-path usage.
+func preferredStatusCode(current, cand int) int {
+	if current == cand {
+		return current
 	}
+
+	prefIdx := func(code int) int {
+		for idx, rng := range statusCodeOrderPreference {
+			if code >= rng.min && code <= rng.max {
+				return idx
+			}
+		}
+		// If somehow outside all ranges, treat as lowest priority (after redirects).
+		return len(statusCodeOrderPreference)
+	}
+
+	idxCur := prefIdx(current)
+	idxNew := prefIdx(cand)
+
+	if idxNew < idxCur {
+		return cand
+	}
+	if idxNew > idxCur {
+		return current
+	}
+	// Same bucket – choose smaller numerical code.
+	if cand < current {
+		return cand
+	}
+	return current
+}
+
+func decideErrorStatusCode(err interface{}) int {
+	if se, ok := err.(common.StandardError); ok {
+		return se.ErrorStatusCode()
+	}
+
+	// TODO refactor the logic so we can eliminate this code path.
+	// this is needed because in some scenarios one or more UpstreamsExhausted errors are wrapped
+	// in another UpstreamsExhausted error (e.g. getLogs splits where 1 or more sub-requests fail).
+	// In such case "err" will be an UpstreamsExhausted which carries multiple status codes.
+	// Probably best place to resolve this is in TranslateToJsonRpcException so that
+	// nested UpstreamsExhausted errors are resolved to 1 "most significant" error.
+	if ue, ok := err.(interface{ Unwrap() []error }); ok {
+		bestCode := http.StatusServiceUnavailable // sensible default / fallback
+
+		for _, innerErr := range ue.Unwrap() {
+			se, ok := innerErr.(common.StandardError)
+			if !ok {
+				continue
+			}
+			bestCode = preferredStatusCode(bestCode, se.ErrorStatusCode())
+			// Early exit: cannot get better than 2xx in first bucket.
+			if bestCode >= 200 && bestCode <= 299 {
+				return bestCode
+			}
+		}
+
+		return bestCode
+	}
+
 	return http.StatusInternalServerError
 }
 
@@ -974,7 +1081,7 @@ func handleErrorResponse(
 	w http.ResponseWriter,
 	encoder sonic.Encoder,
 	writeFatalError func(ctx context.Context, statusCode int, body error),
-	includeErrorDetails bool,
+	includeErrorDetails *bool,
 ) {
 	resp := processErrorBody(logger, startedAt, nq, err, includeErrorDetails)
 	statusCode := determineResponseStatusCode(err)

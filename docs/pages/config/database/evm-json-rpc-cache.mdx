@@ -43,6 +43,13 @@ database:
         respRefs: [][]any # Optional - array of path to potential palce of block number/hash in response.result
         finalized: bool # Optional - this method always returns finalized data (e.g. eth_chainId)
         realtime: bool # Optional - this method always returns realtime data (e.g. eth_gasPrice)
+    
+    # Optional compression configuration
+    compression:
+      enabled: bool # Optional (default: true) - Enable/disable compression
+      algorithm: string # Optional (default: "zstd") - Compression algorithm
+      zstdLevel: string # Optional (default: "fastest") - Compression level: "fastest", "default", "better", "best"
+      threshold: int # Optional (default: 1024) - Minimum size in bytes to compress
 ```
 </Tab>
 <Tab>
@@ -76,7 +83,14 @@ export default createConfig({
         maxItemSize?: string, // e.g. "1KB", "1MB"
         connector: string,
         ttl: string // 100ms, 5s, 1m, ...
-      }]
+      }],
+      // Optional compression configuration
+      compression?: {
+        enabled?: boolean, // default: true
+        algorithm?: string, // default: "zstd"
+        zstdLevel?: string, // default: "fastest" - options: "fastest", "default", "better", "best"
+        threshold?: number // default: 1024 - minimum size in bytes to compress
+      }
     }
   }
 });
@@ -87,6 +101,100 @@ export default createConfig({
 <Callout type="info">
   Make sure the storage requirements meet your usage, for example caching 70m
   blocks + 10m txs + 10m traces on Arbitrum needs 200GB of storage.
+</Callout>
+
+### Compression
+
+The cache system includes built-in compression support to reduce storage requirements and improve performance. By default, compression is **enabled** using the zstd algorithm.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+<Tab>
+```yaml filename="erpc.yaml"
+database:
+  evmJsonRpcCache:
+    compression:
+      # Enable or disable compression (default: true)
+      enabled: true
+      
+      # Compression algorithm (currently only "zstd" is supported)
+      algorithm: "zstd"
+      
+      # Compression level (default: "fastest")
+      # - "fastest": Best performance, lower compression ratio (~50-70% savings)
+      # - "default": Balanced performance and compression (~60-80% savings)
+      # - "better": Better compression, slower performance (~70-85% savings)
+      # - "best": Best compression ratio, slowest performance (~75-90% savings)
+      zstdLevel: "fastest"
+      
+      # Minimum size threshold in bytes (default: 1024)
+      # Only compress values larger than this threshold
+      threshold: 1024
+```
+</Tab>
+<Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  database: {
+    evmJsonRpcCache: {
+      compression: {
+        // Enable or disable compression (default: true)
+        enabled: true,
+        
+        // Compression algorithm (currently only "zstd" is supported)
+        algorithm: "zstd",
+        
+        // Compression level (default: "fastest")
+        // - "fastest": Best performance, lower compression ratio (~50-70% savings)
+        // - "default": Balanced performance and compression (~60-80% savings)
+        // - "better": Better compression, slower performance (~70-85% savings)
+        // - "best": Best compression ratio, slowest performance (~75-90% savings)
+        zstdLevel: "fastest",
+        
+        // Minimum size threshold in bytes (default: 1024)
+        // Only compress values larger than this threshold
+        threshold: 1024
+      }
+    }
+  }
+});
+```
+</Tab>
+</Tabs>
+
+#### Compression Benefits
+
+- **Storage Savings**: JSON-RPC responses compress very well, typically achieving 50-90% reduction in storage size
+- **Network Efficiency**: Reduced data transfer when using remote cache backends like Redis
+- **Cost Reduction**: Lower storage costs for cloud-based cache backends
+- **Transparent Operation**: Compression/decompression happens automatically without affecting cache connectors
+
+#### Compression Levels
+
+Choose the compression level based on your performance requirements:
+
+| Level | Performance | Compression Ratio | Use Case |
+|-------|------------|-------------------|----------|
+| `fastest` | Best | ~50-70% | Default, recommended for most use cases |
+| `default` | Good | ~60-80% | Balanced option |
+| `better` | Moderate | ~70-85% | When storage is more important than speed |
+| `best` | Slowest | ~75-90% | Maximum compression, archival use |
+
+#### Threshold Configuration
+
+The `threshold` parameter (default: 1024 bytes) determines the minimum size for compression:
+
+- Small responses below the threshold are stored uncompressed to avoid overhead
+- Typical JSON-RPC responses like block data, logs, and traces benefit significantly from compression
+- Adjust based on your data patterns and performance requirements
+
+<Callout type="info">
+  Compression is particularly effective for:
+  - Large block responses (eth_getBlockByNumber with full transactions)
+  - Transaction receipts with many logs
+  - Trace data (debug_traceTransaction, trace_block)
+  - eth_getLogs responses with many events
 </Callout>
 
 ### Example

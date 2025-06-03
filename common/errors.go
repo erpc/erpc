@@ -241,6 +241,20 @@ func (e *BaseError) GetCause() error {
 
 func (e BaseError) MarshalJSON() ([]byte, error) {
 	type Alias BaseError
+
+	if e.Code == "" || e.Code == "ErrUnknown" || e.Code == "ErrGeneric" {
+		if e.Cause != nil {
+			return SonicCfg.Marshal(&struct {
+				Alias
+				Cause interface{} `json:"cause"`
+			}{
+				Alias: (Alias)(e),
+				Cause: e.Cause.Error(),
+			})
+		}
+		return SonicCfg.Marshal(e.Message)
+	}
+
 	cause := e.Cause
 	if cs, ok := cause.(interface{ Unwrap() []error }); ok {
 		// Handle joined errors
@@ -282,27 +296,10 @@ func (e BaseError) MarshalJSON() ([]byte, error) {
 
 	return SonicCfg.Marshal(&struct {
 		Alias
-		Cause interface{} `json:"cause"`
+		Cause interface{} `json:"-"`
 	}{
 		Alias: (Alias)(e),
-		Cause: nil,
 	})
-}
-
-func (e *BaseError) Is(err error) bool {
-	var is bool
-
-	if be, ok := err.(*BaseError); ok {
-		is = e.Code == be.Code
-	} else if be, ok := err.(StandardError); ok {
-		is = strings.Contains(be.CodeChain(), string(e.Code))
-	}
-
-	if !is && e.Cause != nil {
-		is = errors.Is(e.Cause, err)
-	}
-
-	return is
 }
 
 func (e *BaseError) HasCode(codes ...ErrorCode) bool {
@@ -790,20 +787,24 @@ func (e *ErrUpstreamsExhausted) ErrorStatusCode() int {
 		if be, ok := e.Cause.(StandardError); ok {
 			return be.ErrorStatusCode()
 		}
-		// if it's an array of errors (Unwrap)
+		// TODO We shouldn't really need this code path, and instead
+		// we should try to find the "most significant" error when sending the result
+		// back to the client, as it's already done in http_server.go.
+		// Refactor to properly handle upstream exhaustion errors (and their nested versions),
+		// then remove ErrorStatusCode() on UpstreamsExhausted altogether as it shouldn't be ever called.
 		if joinedErr, ok := e.Cause.(interface{ Unwrap() []error }); ok {
 			fsc := 503
 			for _, e := range joinedErr.Unwrap() {
 				if be, ok := e.(StandardError); ok {
 					sc := be.ErrorStatusCode()
-					if sc != 503 {
+					if sc != 503 && sc != 500 {
 						fsc = sc
 					}
 				} else if nje, ok := e.(interface{ Unwrap() []error }); ok {
 					for _, e := range nje.Unwrap() {
 						if be, ok := e.(StandardError); ok {
 							sc := be.ErrorStatusCode()
-							if sc != 503 {
+							if sc != 503 && sc != 500 {
 								fsc = sc
 							}
 						}
@@ -825,7 +826,7 @@ func (e *ErrUpstreamsExhausted) CodeChain() string {
 
 	s := e.SummarizeCauses()
 	if s != "" {
-		return codeChain + " (" + s + ")"
+		return codeChain
 	}
 
 	return codeChain
@@ -841,6 +842,8 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		cbOpen := 0
 		billing := 0
 		skips := 0
+		ignores := 0
+		auth := 0
 		other := 0
 		client := 0
 		transport := 0
@@ -891,11 +894,17 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 			} else if HasErrorCode(e, ErrCodeUpstreamNodeTypeMismatch) {
 				nodeTypeMismatch++
 				continue
-			} else if HasErrorCode(e, ErrCodeUpstreamMethodIgnored, ErrCodeUpstreamRequestSkipped) {
+			} else if HasErrorCode(e, ErrCodeUpstreamMethodIgnored) {
+				ignores++
+				continue
+			} else if HasErrorCode(e, ErrCodeUpstreamRequestSkipped) {
 				skips++
 				continue
-			} else if HasErrorCode(e, ErrCodeEndpointRequestTooLarge) {
+			} else if HasErrorCode(e, ErrCodeEndpointRequestTooLarge, ErrCodeUpstreamGetLogsExceededMaxAllowedRange, ErrCodeUpstreamGetLogsExceededMaxAllowedAddresses, ErrCodeUpstreamGetLogsExceededMaxAllowedTopics) {
 				tooLarge++
+				continue
+			} else if HasErrorCode(e, ErrCodeEndpointUnauthorized) {
+				auth++
 				continue
 			} else {
 				other++
@@ -927,29 +936,35 @@ func (e *ErrUpstreamsExhausted) SummarizeCauses() string {
 		if transport > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d upstream transport errors", transport))
 		}
-		if cancelled > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d hedges cancelled", cancelled))
-		}
-		if client > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d user errors", client))
-		}
-		if unsynced > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d syncing nodes", unsynced))
-		}
 		if excluded > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d upstream excluded by policy", excluded))
 		}
-		if nodeTypeMismatch > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d node type mismatches", nodeTypeMismatch))
+		if ignores > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d upstream method ignored", ignores))
 		}
 		if skips > 0 {
 			reasons = append(reasons, fmt.Sprintf("%d upstream skipped", skips))
 		}
 		if tooLarge > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d too-large requests", tooLarge))
+			reasons = append(reasons, fmt.Sprintf("%d upstream too large complaints", tooLarge))
+		}
+		if auth > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d upstream unauthorized", auth))
+		}
+		if unsynced > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d upstream not synced", unsynced))
 		}
 		if other > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d other upstream errors", other))
+			reasons = append(reasons, fmt.Sprintf("%d upstream unknown errors", other))
+		}
+		if nodeTypeMismatch > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d node type mismatches", nodeTypeMismatch))
+		}
+		if cancelled > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d hedges cancelled", cancelled))
+		}
+		if client > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d user errors", client))
 		}
 
 		return strings.Join(reasons, ", ")
@@ -1137,7 +1152,7 @@ var NewErrUpstreamMethodIgnored = func(method string, upstreamId string) error {
 }
 
 func (e *ErrUpstreamMethodIgnored) ErrorStatusCode() int {
-	return http.StatusUnsupportedMediaType
+	return http.StatusNotAcceptable
 }
 
 type ErrUpstreamSyncing struct{ BaseError }
@@ -1148,12 +1163,16 @@ var NewErrUpstreamSyncing = func(upstreamId string) error {
 	return &ErrUpstreamSyncing{
 		BaseError{
 			Code:    ErrCodeUpstreamSyncing,
-			Message: "upstream is syncing",
+			Message: "upstream is syncing and should not serve requests",
 			Details: map[string]interface{}{
 				"upstreamId": upstreamId,
 			},
 		},
 	}
+}
+
+func (e *ErrUpstreamSyncing) ErrorStatusCode() int {
+	return http.StatusUnprocessableEntity
 }
 
 type ErrUpstreamGetLogsExceededMaxAllowedRange struct{ BaseError }
@@ -1174,6 +1193,10 @@ var NewErrUpstreamGetLogsExceededMaxAllowedRange = func(upstreamId string, reque
 	}
 }
 
+func (e *ErrUpstreamGetLogsExceededMaxAllowedRange) ErrorStatusCode() int {
+	return http.StatusRequestEntityTooLarge
+}
+
 type ErrUpstreamGetLogsExceededMaxAllowedAddresses struct{ BaseError }
 
 const ErrCodeUpstreamGetLogsExceededMaxAllowedAddresses ErrorCode = "ErrUpstreamGetLogsExceededMaxAllowedAddresses"
@@ -1192,6 +1215,10 @@ var NewErrUpstreamGetLogsExceededMaxAllowedAddresses = func(upstreamId string, r
 	}
 }
 
+func (e *ErrUpstreamGetLogsExceededMaxAllowedAddresses) ErrorStatusCode() int {
+	return http.StatusRequestEntityTooLarge
+}
+
 type ErrUpstreamGetLogsExceededMaxAllowedTopics struct{ BaseError }
 
 const ErrCodeUpstreamGetLogsExceededMaxAllowedTopics ErrorCode = "ErrUpstreamGetLogsExceededMaxAllowedTopics"
@@ -1208,6 +1235,10 @@ var NewErrUpstreamGetLogsExceededMaxAllowedTopics = func(upstreamId string, requ
 			},
 		},
 	}
+}
+
+func (e *ErrUpstreamGetLogsExceededMaxAllowedTopics) ErrorStatusCode() int {
+	return http.StatusRequestEntityTooLarge
 }
 
 type ErrUpstreamNotAllowed struct{ BaseError }
@@ -1417,9 +1448,9 @@ var NewErrFailsafeRetryExceeded = func(scope Scope, cause error, startTime *time
 	}
 	var msg string
 	if duration > 0 {
-		msg = fmt.Sprintf("failsafe retry policy exceeded on %s-level after %s", scope, duration)
+		msg = fmt.Sprintf("gave up retrying on %s-level after %s", scope, duration)
 	} else {
-		msg = fmt.Sprintf("failsafe retry policy exceeded on %s-level", scope)
+		msg = fmt.Sprintf("gave up retrying on %s-level", scope)
 	}
 	return &ErrFailsafeRetryExceeded{
 		BaseError{
@@ -1432,7 +1463,12 @@ var NewErrFailsafeRetryExceeded = func(scope Scope, cause error, startTime *time
 }
 
 func (e *ErrFailsafeRetryExceeded) ErrorStatusCode() int {
-	return 503
+	if e.Cause != nil {
+		if se, ok := e.Cause.(StandardError); ok {
+			return se.ErrorStatusCode()
+		}
+	}
+	return http.StatusServiceUnavailable
 }
 
 func (e *ErrFailsafeRetryExceeded) DeepestMessage() string {
@@ -1658,7 +1694,7 @@ var NewErrEndpointUnsupported = func(cause error) error {
 }
 
 func (e *ErrEndpointUnsupported) ErrorStatusCode() int {
-	return http.StatusUnsupportedMediaType
+	return http.StatusNotAcceptable
 }
 
 type ErrEndpointClientSideException struct{ BaseError }
@@ -1801,7 +1837,7 @@ var NewErrEndpointCapacityExceeded = func(cause error) error {
 }
 
 func (e *ErrEndpointCapacityExceeded) ErrorStatusCode() int {
-	return 429
+	return http.StatusTooManyRequests
 }
 
 type ErrEndpointBillingIssue struct{ BaseError }
@@ -1837,7 +1873,8 @@ var NewErrEndpointMissingData = func(cause error) error {
 }
 
 func (e *ErrEndpointMissingData) ErrorStatusCode() int {
-	return http.StatusServiceUnavailable
+	// Many clients expect status code 200 but error body for "missing data" error variations
+	return http.StatusOK
 }
 
 type ErrUpstreamNodeTypeMismatch struct{ BaseError }
@@ -1871,7 +1908,7 @@ var NewErrEndpointRequestTooLarge = func(cause error, complaint TooLargeComplain
 	return &ErrEndpointRequestTooLarge{
 		BaseError{
 			Code:    ErrCodeEndpointRequestTooLarge,
-			Message: "remote endpoint complained about large request (e.g. block range, number of addresses, etc)",
+			Message: "remote endpoint complained about too large request (e.g. block range, number of addresses, etc)",
 			Cause:   cause,
 			Details: map[string]interface{}{
 				"complaint": complaint,
@@ -2203,6 +2240,9 @@ func IsClientError(err error) bool {
 		err,
 		ErrCodeEndpointClientSideException,
 		ErrCodeJsonRpcRequestUnmarshal,
+		ErrCodeUpstreamGetLogsExceededMaxAllowedRange,
+		ErrCodeUpstreamGetLogsExceededMaxAllowedAddresses,
+		ErrCodeUpstreamGetLogsExceededMaxAllowedTopics,
 	))
 }
 

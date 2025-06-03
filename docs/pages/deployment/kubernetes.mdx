@@ -64,12 +64,16 @@ spec:
       - name: erpc
         image: ghcr.io/erpc/erpc:latest
         resources:
+          # CPU limits removed as they can cause throttling issues
           requests:
-            cpu: "0.5"
             memory: "256Mi"
           limits:
-            cpu: "1"
-            memory: "512Mi"
+            memory: "2Gi"
+        env:
+        - name: GOGC
+          value: "40"
+        - name: GOMEMLIMIT
+          value: "1900MiB"
         envFrom:
         - secretRef:
             name: erpc-secrets
@@ -82,22 +86,37 @@ spec:
         - name: config
           mountPath: /erpc.yaml
           subPath: erpc.yaml
+        startupProbe:
+          httpGet:
+            path: /healthcheck
+            port: 4000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 6
         readinessProbe:
           httpGet:
             path: /healthcheck
             port: 4000
           initialDelaySeconds: 10
-          periodSeconds: 60
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 2
+          successThreshold: 1
         livenessProbe:
-          httpGet:
-            path: /healthcheck
+          tcpSocket:
             port: 4000
-          initialDelaySeconds: 5
+          initialDelaySeconds: 30
           periodSeconds: 10
+          timeoutSeconds: 1
+          failureThreshold: 3
+          successThreshold: 1
       volumes:
       - name: config
         configMap:
           name: erpc-config
+      # This must be same or greater than server.maxTimeout in erpc.yaml
+      terminationGracePeriodSeconds: 180
 ```
 
 ### Service

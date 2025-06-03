@@ -60,6 +60,21 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 						JsonRpc: &common.JsonRpcUpstreamConfig{
 							SupportsBatch: &common.FALSE,
 						},
+						Routing: &common.RoutingConfig{
+							ScoreMultipliers: []*common.ScoreMultiplierConfig{
+								{
+									Network:         "*",
+									Method:          "*",
+									Overall:         1,
+									ErrorRate:       5,
+									RespLatency:     0,
+									TotalRequests:   0,
+									BlockHeadLag:    0,
+									FinalizationLag: 0,
+									ThrottledRate:   0,
+								},
+							},
+						},
 					},
 					{
 						Id:       "rpc2",
@@ -70,6 +85,21 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 						},
 						JsonRpc: &common.JsonRpcUpstreamConfig{
 							SupportsBatch: &common.FALSE,
+						},
+						Routing: &common.RoutingConfig{
+							ScoreMultipliers: []*common.ScoreMultiplierConfig{
+								{
+									Network:         "*",
+									Method:          "*",
+									Overall:         1,
+									ErrorRate:       5,
+									RespLatency:     0,
+									TotalRequests:   0,
+									BlockHeadLag:    0,
+									FinalizationLag: 0,
+									ThrottledRate:   0,
+								},
+							},
 						},
 					},
 				},
@@ -104,7 +134,7 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 		Connector: &common.ConnectorConfig{
 			Driver: "memory",
 			Memory: &common.MemoryConnectorConfig{
-				MaxItems: 100_000,
+				MaxItems: 100_000, MaxTotalSize: "1GB",
 			},
 		},
 	})
@@ -153,6 +183,6 @@ func TestErpc_UpstreamsRegistryCorrectPriorityChange(t *testing.T) {
 	expectedOrder := []string{"rpc2", "rpc1"}
 	assert.NoError(t, err)
 	for i, ups := range sortedUpstreams {
-		assert.Equal(t, expectedOrder[i], ups.Config().Id)
+		assert.Equal(t, expectedOrder[i], ups.Id())
 	}
 }

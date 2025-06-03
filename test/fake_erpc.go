@@ -164,10 +164,12 @@ func executeStressTest(config StressTestConfig) (*StressTestResult, error) {
 	}
 
 	// Initialize eRPC
-	err = initializeERPC(erpcConfig)
-	if err != nil {
-		return nil, err
-	}
+	go func() {
+		err = initializeERPC(erpcConfig)
+		if err != nil {
+			log.Error().Err(err).Msg("Error initializing eRPC")
+		}
+	}()
 
 	// Wait for servers to start
 	time.Sleep(1 * time.Second)

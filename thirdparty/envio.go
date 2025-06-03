@@ -54,7 +54,6 @@ var envioKnownSupportedChains = map[int64]struct{}{
 	1088:       {}, // Metis
 	17864:      {}, // Mev Commit
 	1284:       {}, // Moonbeam
-	245022934:  {}, // Neon Evm
 	10:         {}, // Optimism
 	11155420:   {}, // Optimism Sepolia
 	137:        {}, // Polygon
@@ -162,7 +161,7 @@ func (v *EnvioVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logge
 	return cid == chainId, nil
 }
 
-func (v *EnvioVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
+func (v *EnvioVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}

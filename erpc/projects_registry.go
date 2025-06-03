@@ -101,12 +101,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 
 	lg := r.logger.With().Str("projectId", prjCfg.Id).Logger()
 
-	var wsDuration time.Duration
-	if prjCfg.ScoreMetricsWindowSize > 0 {
-		wsDuration = prjCfg.ScoreMetricsWindowSize.Duration()
-	} else {
-		wsDuration = 30 * time.Minute
-	}
+	wsDuration := prjCfg.ScoreMetricsWindowSize.Duration()
 	metricsTracker := health.NewTracker(&lg, prjCfg.Id, wsDuration)
 	providersRegistry, err := thirdparty.NewProvidersRegistry(
 		&lg,
@@ -164,7 +159,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 	upstreamsRegistry.OnUpstreamRegistered(func(ups *upstream.Upstream) error {
 		ntwId := ups.NetworkId()
 		if ntwId == "" {
-			return fmt.Errorf("upstream %s has no network id set yet", ups.Config().Id)
+			return fmt.Errorf("upstream %s has no network id set yet", ups.Id())
 		}
 		ntw, err := pp.networksRegistry.GetNetwork(ntwId)
 		if err != nil {

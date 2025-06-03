@@ -36,9 +36,9 @@ var dwellirNetworkSubdomains = map[int64]string{
 	747:       "api-flow-evm-gateway-mainnet.n",
 	943:       "api-pulsechain-testnet-v4", // This domain will be migrated to a .n domain soon.
 	945:       "api-bittensor-testnet.n",
-	964:       "api-bittensor-mainnet",             // This domain will be migrated to a .n domain soon.
-	996:       "api-bifrost-polkadot",              // This domain will be migrated to a .n domain soon.
-	1101:      "api-polygon-zkevm-mainnet-archive", // This domain will be migrated to a .n domain soon.
+	964:       "api-bittensor-mainnet", // This domain will be migrated to a .n domain soon.
+	996:       "api-bifrost-polkadot",  // This domain will be migrated to a .n domain soon.
+	1101:      "api-polygon-zkevm-mainnet.n",
 	1135:      "api-lisk-mainnet.n",
 	1284:      "api-moonbeam.n",
 	1285:      "api-moonriver.n",
@@ -70,6 +70,7 @@ var dwellirNetworkSubdomains = map[int64]string{
 	44787:     "api-celo-alfajores-archive", // This domain will be migrated to a .n domain soon.
 	59144:     "api-linea-mainnet-archive.n",
 	80002:     "api-polygon-amoy.n",
+	80069:     "api-berachain-bepolia.n",
 	80094:     "api-berachain-mainnet.n",
 	81457:     "api-blast-mainnet-archive.n",
 	84532:     "api-base-sepolia-archive.n",
@@ -117,7 +118,7 @@ func (v *DwellirVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Log
 	return ok, nil
 }
 
-func (v *DwellirVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
+func (v *DwellirVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	if upstream.JsonRpc == nil {
 		upstream.JsonRpc = &common.JsonRpcUpstreamConfig{}
 	}

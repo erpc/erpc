@@ -154,7 +154,7 @@ func (v *DrpcVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logger
 	return ok, nil
 }
 
-func (v *DrpcVendor) GenerateConfigs(upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
+func (v *DrpcVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger, upstream *common.UpstreamConfig, settings common.VendorSettings) ([]*common.UpstreamConfig, error) {
 	// Intentionally not ignore missing method exceptions because dRPC sometimes routes to nodes that don't support the method
 	// but it doesn't mean that method is actually not supported, i.e. on next retry to dRPC it might work.
 	upstream.AutoIgnoreUnsupportedMethods = &common.FALSE

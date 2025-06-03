@@ -42,6 +42,9 @@ export interface ServerConfig {
     enableGzip?: boolean;
     tls?: TLSConfig;
     aliasing?: AliasingConfig;
+    waitBeforeShutdown?: Duration;
+    waitAfterShutdown?: Duration;
+    includeErrorDetails?: boolean;
 }
 export interface HealthCheckConfig {
     mode?: HealthCheckMode;
@@ -98,6 +101,13 @@ export interface CacheConfig {
     methods?: {
         [key: string]: CacheMethodConfig | undefined;
     };
+    compression?: CompressionConfig;
+}
+export interface CompressionConfig {
+    enabled?: boolean;
+    algorithm?: string;
+    zstdLevel?: string;
+    threshold?: number;
 }
 export interface CacheMethodConfig {
     reqRefs: any[][];
@@ -131,6 +141,8 @@ export interface ConnectorConfig {
 }
 export interface MemoryConnectorConfig {
     maxItems: number;
+    maxTotalSize: string;
+    emitMetrics?: boolean;
 }
 export interface MockConnectorConfig {
     memoryconnectorconfig: MemoryConnectorConfig;
@@ -156,6 +168,7 @@ export interface RedisConnectorConfig {
     initTimeout?: Duration;
     getTimeout?: Duration;
     setTimeout?: Duration;
+    lockRetryInterval?: Duration;
 }
 export interface DynamoDBConnectorConfig {
     table?: string;
@@ -169,7 +182,9 @@ export interface DynamoDBConnectorConfig {
     initTimeout?: Duration;
     getTimeout?: Duration;
     setTimeout?: Duration;
+    maxRetries?: number;
     statePollInterval?: Duration;
+    lockRetryInterval?: Duration;
 }
 export interface PostgreSQLConnectorConfig {
     connectionUri: string;
@@ -246,17 +261,22 @@ export interface UpstreamConfig {
 }
 export interface RoutingConfig {
     scoreMultipliers: (ScoreMultiplierConfig | undefined)[];
+    scoreLatencyQuantile?: number;
 }
 export interface ScoreMultiplierConfig {
     network: string;
     method: string;
     overall: number;
     errorRate: number;
-    p90latency: number;
+    respLatency: number;
     totalRequests: number;
     throttledRate: number;
     blockHeadLag: number;
     finalizationLag: number;
+    /**
+     * @deprecated use RespLatency instead
+     */
+    p90latency: number;
 }
 export type Alias = UpstreamConfig;
 export interface RateLimitAutoTuneConfig {
@@ -288,6 +308,8 @@ export interface EvmUpstreamConfig {
     getLogsMaxAllowedRange?: number;
     getLogsMaxAllowedAddresses?: number;
     getLogsMaxAllowedTopics?: number;
+    getLogsSplitOnError?: boolean;
+    skipWhenSyncing?: boolean;
 }
 export interface FailsafeConfig {
     retry?: RetryPolicyConfig;

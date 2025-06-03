@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,7 +21,12 @@ const (
 	connectorScopeCache       connectorScope = "cache"
 )
 
-func (c *Config) SetDefaults() error {
+// DefaultOptions is used to pass env-provided or args-provided options to the config defaults initializer
+type DefaultOptions struct {
+	Endpoints []string
+}
+
+func (c *Config) SetDefaults(opts *DefaultOptions) error {
 	if c.LogLevel == "" {
 		c.LogLevel = "INFO"
 	}
@@ -66,7 +72,7 @@ func (c *Config) SetDefaults() error {
 
 	if c.Projects != nil {
 		for _, project := range c.Projects {
-			if err := project.SetDefaults(); err != nil {
+			if err := project.SetDefaults(opts); err != nil {
 				return err
 			}
 		}
@@ -101,17 +107,17 @@ func (c *Config) SetDefaults() error {
 							BackoffFactor:   1.0,
 						},
 						Timeout: &TimeoutPolicyConfig{
-							Duration: Duration(60 * time.Second),
+							Duration: Duration(120 * time.Second),
 						},
 						Hedge: &HedgePolicyConfig{
-							Delay:    Duration(0),
-							MaxCount: 3,
+							Quantile: 0.7,
+							MaxCount: 2,
 						},
 					},
 				},
 				UpstreamDefaults: &UpstreamConfig{
 					Evm: &EvmUpstreamConfig{
-						GetLogsAutoSplittingRangeThreshold: 100,
+						GetLogsAutoSplittingRangeThreshold: 5000,
 					},
 					Failsafe: &FailsafeConfig{
 						Retry: &RetryPolicyConfig{
@@ -119,20 +125,13 @@ func (c *Config) SetDefaults() error {
 							Delay:       Duration(500 * time.Millisecond),
 						},
 						Timeout: &TimeoutPolicyConfig{
-							Duration: Duration(30 * time.Second),
-						},
-						CircuitBreaker: &CircuitBreakerPolicyConfig{
-							FailureThresholdCount:    8,
-							FailureThresholdCapacity: 10,
-							HalfOpenAfter:            Duration(5 * time.Minute),
-							SuccessThresholdCount:    5,
-							SuccessThresholdCapacity: 5,
+							Duration: Duration(60 * time.Second),
 						},
 					},
 				},
 			},
 		}
-		err := c.Projects[0].SetDefaults()
+		err := c.Projects[0].SetDefaults(opts)
 		if err != nil {
 			return err
 		}
@@ -422,6 +421,40 @@ func (c *CacheConfig) SetDefaults() error {
 		c.Methods = mergedMethods
 	}
 
+	// Set compression defaults
+	if c.Compression == nil {
+		c.Compression = &CompressionConfig{}
+	}
+	if err := c.Compression.SetDefaults(); err != nil {
+		return fmt.Errorf("failed to set defaults for compression: %w", err)
+	}
+
+	return nil
+}
+
+func (c *CompressionConfig) SetDefaults() error {
+	// Enable compression by default
+	if c.Enabled == nil {
+		c.Enabled = util.BoolPtr(true)
+	}
+
+	// Default to zstd algorithm
+	if c.Algorithm == "" {
+		c.Algorithm = "zstd"
+	}
+
+	// Default to fastest compression for optimal performance
+	if c.ZstdLevel == "" {
+		c.ZstdLevel = "fastest"
+	}
+
+	// Default threshold of 1KB based on real-world experience
+	// JSON-RPC responses smaller than 1KB typically don't benefit much from compression
+	// due to the overhead, while larger responses (blocks, logs, traces) see significant savings
+	if c.Threshold == 0 {
+		c.Threshold = 1024
+	}
+
 	return nil
 }
 
@@ -456,7 +489,7 @@ func (c *TracingConfig) SetDefaults() error {
 
 func (s *ServerConfig) SetDefaults() error {
 	if s.ListenV4 == nil {
-		if !util.IsTest() {
+		if !util.IsTest() || os.Getenv("FORCE_TEST_LISTEN_V4") == "true" {
 			s.ListenV4 = util.BoolPtr(true)
 		}
 	}
@@ -483,6 +516,17 @@ func (s *ServerConfig) SetDefaults() error {
 	}
 	if s.EnableGzip == nil {
 		s.EnableGzip = util.BoolPtr(true)
+	}
+	if s.WaitBeforeShutdown == nil {
+		d := Duration(10 * time.Second)
+		s.WaitBeforeShutdown = &d
+	}
+	if s.WaitAfterShutdown == nil {
+		d := Duration(10 * time.Second)
+		s.WaitAfterShutdown = &d
+	}
+	if s.IncludeErrorDetails == nil {
+		s.IncludeErrorDetails = util.BoolPtr(true)
 	}
 
 	return nil
@@ -545,7 +589,7 @@ func (c *SharedStateConfig) SetDefaults(defClusterKey string) error {
 			Id:     "memory",
 			Driver: DriverMemory,
 			Memory: &MemoryConnectorConfig{
-				MaxItems: 100_000,
+				MaxItems: 100_000, MaxTotalSize: "1GB",
 			},
 		}
 	} else {
@@ -636,6 +680,9 @@ func (m *MemoryConnectorConfig) SetDefaults() error {
 	if m.MaxItems == 0 {
 		m.MaxItems = 100000
 	}
+	if m.MaxTotalSize == "" {
+		m.MaxTotalSize = "1GB"
+	}
 
 	return nil
 }
@@ -664,6 +711,9 @@ func (r *RedisConnectorConfig) SetDefaults() error {
 	}
 	if r.SetTimeout == 0 {
 		r.SetTimeout = Duration(2 * time.Second)
+	}
+	if r.LockRetryInterval == 0 {
+		r.LockRetryInterval = Duration(300 * time.Millisecond)
 	}
 
 	// URI needs to be constructed from individual fields
@@ -780,7 +830,48 @@ func (d *DynamoDBConnectorConfig) SetDefaults(scope connectorScope) error {
 	return nil
 }
 
-func (p *ProjectConfig) SetDefaults() error {
+func (p *ProjectConfig) SetDefaults(opts *DefaultOptions) error {
+	if p.NetworkDefaults != nil {
+		if err := p.NetworkDefaults.SetDefaults(); err != nil {
+			return fmt.Errorf("failed to set defaults for network defaults: %w", err)
+		}
+	}
+	if p.UpstreamDefaults != nil {
+		if err := p.UpstreamDefaults.SetDefaults(nil); err != nil {
+			return fmt.Errorf("failed to set defaults for upstream defaults: %w", err)
+		}
+	}
+	if len(p.Providers) == 0 && len(p.Upstreams) == 0 {
+		if len(opts.Endpoints) > 0 {
+			for _, endpoint := range opts.Endpoints {
+				upstream := &UpstreamConfig{
+					Endpoint: endpoint,
+				}
+				if err := upstream.SetDefaults(p.UpstreamDefaults); err != nil {
+					return fmt.Errorf("failed to set defaults for upstream: %w", err)
+				}
+				p.Upstreams = append(p.Upstreams, upstream)
+			}
+		} else {
+			log.Warn().Msg("no providers or upstreams found in project; will use default 'public' endpoints repository")
+			repositoryCfg := &ProviderConfig{
+				Id:     "public",
+				Vendor: "repository",
+				// Let the vendor use the default repository URL
+			}
+			if err := repositoryCfg.SetDefaults(p.UpstreamDefaults); err != nil {
+				return fmt.Errorf("failed to set defaults for repository provider: %w", err)
+			}
+			envioCfg := &ProviderConfig{
+				Id:     "envio",
+				Vendor: "envio",
+			}
+			if err := envioCfg.SetDefaults(p.UpstreamDefaults); err != nil {
+				return fmt.Errorf("failed to set defaults for envio provider: %w", err)
+			}
+			p.Providers = append(p.Providers, repositoryCfg, envioCfg)
+		}
+	}
 	if p.Providers == nil {
 		p.Providers = []*ProviderConfig{}
 	}
@@ -802,7 +893,7 @@ func (p *ProjectConfig) SetDefaults() error {
 				return fmt.Errorf("failed to set defaults for upstream: %w", err)
 			}
 			if provider, err := convertUpstreamToProvider(upstream); err != nil {
-				return fmt.Errorf("failed to convert upstream to provider: %w", err)
+				return fmt.Errorf("failed to convert upstream (id: %s) to provider: %w", upstream.Id, err)
 			} else if provider != nil {
 				p.Providers = append(p.Providers, provider)
 				p.Upstreams = slices.Delete(p.Upstreams, i, i+1)
@@ -810,40 +901,11 @@ func (p *ProjectConfig) SetDefaults() error {
 			}
 		}
 	}
-	if len(p.Providers) == 0 && len(p.Upstreams) == 0 {
-		log.Warn().Msg("no providers or upstreams found in project; will use default 'public' endpoints repository")
-		repositoryCfg := &ProviderConfig{
-			Id:     "public",
-			Vendor: "repository",
-			// Let the vendor use the default repository URL
-		}
-		if err := repositoryCfg.SetDefaults(nil); err != nil {
-			return fmt.Errorf("failed to set defaults for repository provider: %w", err)
-		}
-		envioCfg := &ProviderConfig{
-			Id:     "envio",
-			Vendor: "envio",
-		}
-		if err := envioCfg.SetDefaults(nil); err != nil {
-			return fmt.Errorf("failed to set defaults for envio provider: %w", err)
-		}
-		p.Providers = append(p.Providers, repositoryCfg, envioCfg)
-	}
 	if p.Networks != nil {
 		for _, network := range p.Networks {
 			if err := network.SetDefaults(p.Upstreams, p.NetworkDefaults); err != nil {
 				return fmt.Errorf("failed to set defaults for network: %w", err)
 			}
-		}
-	}
-	if p.NetworkDefaults != nil {
-		if err := p.NetworkDefaults.SetDefaults(); err != nil {
-			return fmt.Errorf("failed to set defaults for network defaults: %w", err)
-		}
-	}
-	if p.UpstreamDefaults != nil {
-		if err := p.UpstreamDefaults.SetDefaults(nil); err != nil {
-			return fmt.Errorf("failed to set defaults for upstream defaults: %w", err)
 		}
 	}
 	if p.Auth != nil {
@@ -861,7 +923,7 @@ func (p *ProjectConfig) SetDefaults() error {
 			log.Warn().Msg("projects.*.healthCheck.scoreMetricsWindowSize is deprecated; use projects.*.scoreMetricsWindowSize instead")
 			p.ScoreMetricsWindowSize = p.DeprecatedHealthCheck.ScoreMetricsWindowSize
 		} else {
-			p.ScoreMetricsWindowSize = Duration(30 * time.Minute)
+			p.ScoreMetricsWindowSize = Duration(10 * time.Minute)
 		}
 	}
 
@@ -881,7 +943,7 @@ func convertUpstreamToProvider(upstream *UpstreamConfig) (*ProviderConfig, error
 	vendorName := strings.Replace(endpoint.Scheme, "evm+", "", 1)
 	settings, err := buildProviderSettings(vendorName, endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build provider settings: %w", err)
+		return nil, fmt.Errorf("failed to convert upstream (id: %s) to provider: %w", upstream.Id, err)
 	}
 
 	// Create a copy of upstream config to apply to provider-created upstreams,
@@ -960,6 +1022,72 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 		return VendorSettings{
 			"apiKey": endpoint.Host,
 		}, nil
+	case "superchain", "evm+superchain":
+		spec := endpoint.Host
+		if endpoint.Path != "" && endpoint.Path != "/" {
+			spec += endpoint.Path
+		}
+		return VendorSettings{
+			"registryUrl": spec,
+		}, nil
+	case "tenderly", "evm+tenderly":
+		return VendorSettings{
+			"apiKey": endpoint.Host,
+		}, nil
+	case "chainstack", "evm+chainstack":
+		settings := VendorSettings{
+			"apiKey": endpoint.Host,
+		}
+
+		// Parse query parameters for additional filters
+		if endpoint.RawQuery != "" {
+			params, err := url.ParseQuery(endpoint.RawQuery)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse chainstack query parameters: %w", err)
+			}
+
+			if project := params.Get("project"); project != "" {
+				settings["project"] = project
+			}
+			if organization := params.Get("organization"); organization != "" {
+				settings["organization"] = organization
+			}
+			if region := params.Get("region"); region != "" {
+				settings["region"] = region
+			}
+			if provider := params.Get("provider"); provider != "" {
+				settings["provider"] = provider
+			}
+			if nodeType := params.Get("type"); nodeType != "" {
+				settings["type"] = nodeType
+			}
+		}
+
+		return settings, nil
+	case "onfinality", "evm+onfinality":
+		return VendorSettings{
+			"apiKey": endpoint.Host,
+		}, nil
+	case "blockpi", "evm+blockpi":
+		return VendorSettings{
+			"apiKey": endpoint.Host,
+		}, nil
+	case "erpc", "evm+erpc":
+		settings := VendorSettings{
+			"endpoint": "https://" + endpoint.Host + "/" + strings.TrimPrefix(endpoint.Path, "/"),
+		}
+
+		if endpoint.RawQuery != "" {
+			params, err := url.ParseQuery(endpoint.RawQuery)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse erpc query parameters: %w", err)
+			}
+
+			if secret := params.Get("secret"); secret != "" {
+				settings["secret"] = secret
+			}
+		}
+		return settings, nil
 	case "repository", "evm+repository":
 		return VendorSettings{
 			"repositoryUrl": "https://" + endpoint.Host + "/" + strings.TrimPrefix(endpoint.Path, "/") + "?" + endpoint.RawQuery,
@@ -1213,6 +1341,14 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 		}
 	}
 
+	if e.GetLogsSplitOnError == nil {
+		if defaults != nil && defaults.GetLogsSplitOnError != nil {
+			e.GetLogsSplitOnError = defaults.GetLogsSplitOnError
+		} else {
+			e.GetLogsSplitOnError = util.BoolPtr(false)
+		}
+	}
+
 	// TODO: remove deprecated alias (backward compat): maps to GetLogsAutoSplittingRangeThreshold
 	if e.GetLogsAutoSplittingRangeThreshold == 0 {
 		if e.GetLogsMaxBlockRange > 0 {
@@ -1241,6 +1377,14 @@ func (e *EvmUpstreamConfig) SetDefaults(defaults *EvmUpstreamConfig) error {
 	if e.GetLogsMaxAllowedTopics == 0 {
 		if defaults != nil && defaults.GetLogsMaxAllowedTopics != 0 {
 			e.GetLogsMaxAllowedTopics = defaults.GetLogsMaxAllowedTopics
+		}
+	}
+
+	if e.SkipWhenSyncing == nil {
+		if defaults != nil && defaults.SkipWhenSyncing != nil {
+			e.SkipWhenSyncing = defaults.SkipWhenSyncing
+		} else {
+			e.SkipWhenSyncing = util.BoolPtr(false)
 		}
 	}
 
@@ -1600,6 +1744,9 @@ func (r *RoutingConfig) SetDefaults() error {
 			}
 		}
 	}
+	if r.ScoreLatencyQuantile == 0 {
+		r.ScoreLatencyQuantile = 0.70
+	}
 
 	return nil
 }
@@ -1608,8 +1755,8 @@ var DefaultScoreMultiplier = &ScoreMultiplierConfig{
 	Network: "*",
 	Method:  "*",
 
-	ErrorRate:       8.0,
-	P90Latency:      4.0,
+	ErrorRate:       4.0,
+	RespLatency:     8.0,
 	TotalRequests:   1.0,
 	ThrottledRate:   3.0,
 	BlockHeadLag:    2.0,
@@ -1628,8 +1775,11 @@ func (s *ScoreMultiplierConfig) SetDefaults() error {
 	if s.ErrorRate == 0 {
 		s.ErrorRate = DefaultScoreMultiplier.ErrorRate
 	}
-	if s.P90Latency == 0 {
-		s.P90Latency = DefaultScoreMultiplier.P90Latency
+	if s.DeprecatedP90Latency > 0 {
+		s.RespLatency = s.DeprecatedP90Latency
+	}
+	if s.RespLatency == 0 {
+		s.RespLatency = DefaultScoreMultiplier.RespLatency
 	}
 	if s.TotalRequests == 0 {
 		s.TotalRequests = DefaultScoreMultiplier.TotalRequests

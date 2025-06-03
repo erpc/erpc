@@ -70,6 +70,11 @@ projects:
           # (OPTIONAL) getLogsMaxAllowedTopics limits the maximum number of topics for eth_getLogs requests.
           # This is used to reject getLogs request if the number of topics is beyond the limit and returns an error to the caller of eRPC.
           getLogsMaxAllowedTopics: 10000
+          # (OPTIONAL) getLogsSplitOnError is used to split the getLogs request if upstream complains about the range being too large,
+          # or if the request timeouts due to too many addresses/topics.
+          # Set to true to enable this behavior.
+          # DEFAULT: false
+          getLogsSplitOnError: false
 
         # (OPTIONAL) Defines which budget to use when hadnling requests of this upstream (e.g. to limit total RPS)
         # Since budgets can be applied to multiple upstreams they all consume from the same budget.
@@ -208,6 +213,11 @@ export default createConfig({
             // (OPTIONAL) getLogsMaxAllowedTopics limits the maximum number of topics for eth_getLogs requests.
             // This is used to reject getLogs request if the number of topics is beyond the limit and returns an error to the caller of eRPC.
             getLogsMaxAllowedTopics: 10000,
+            // (OPTIONAL) getLogsSplitOnError is used to split the getLogs request if upstream complains about the range being too large,
+            // or if the request timeouts due to too many addresses/topics.
+            // Set to true to enable this behavior.
+            // DEFAULT: false
+            getLogsSplitOnError: false
           },
 
           /**
@@ -421,6 +431,10 @@ export default createConfig({
 
 Upstreams are ranked by score, controlling selection order. You can adjust this ranking by setting multipliers at different levels: overall, per network or method, or for specific metrics (e.g., error rate, block lag).
 
+<Callout type='info'>
+  For every value the higher the value, the more important it is. For example respLatency: 8 means you care about this more than errorRate: 4
+</Callout>
+
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
 ```yaml filename="erpc.yaml"
@@ -429,9 +443,13 @@ upstreams:
   - id: my-alchemy
     # ...
     routing:
+      # (OPTIONAL) The quantile to use for latency scoring. e.g. "70%" means to ignore 30% of the slowest requests.
+      # DEFAULT: 0.70
+      scoreLatencyQuantile: 0.70
+
+      # (OPTIONAL) The score multipliers to give upstreams different priority.
       scoreMultipliers:
-        - network: '*' # Relevant when upstream supports multiple networks (default: all networks)
-          method: '*' # Method(s) where you want to apply these multipliers (default: all methods)
+        - method: '*' # Method(s) where you want to apply these multipliers (default: all methods)
           # method: 'eth_*|alchemy_*' means apply these multipliers to all methods starting with "eth_" or "alchemy_"
 
           # (OPTIONAL) Adjusts the overall score scale.
@@ -439,11 +457,11 @@ upstreams:
           overall: 1.0
           
           # (OPTIONAL) Default multiplier values:
-          errorRate: 8.0       # Penalize higher error rates by increasing this value.
-          p90latency: 4.0      # Penalize higher latency by increasing this value.
-          totalRequests: 1.0   # Give more weight to upstreams with fewer requests.
+          respLatency: 8.0     # Penalize higher latency by increasing this value (according to scoreLatencyQuantile).
+          errorRate: 4.0       # Penalize higher error rates by increasing this value.
           throttledRate: 3.0   # Penalize higher throttled requests by increasing this value.
           blockHeadLag: 2.0    # Penalize nodes lagging in block head updates by increasing this value.
+          totalRequests: 1.0   # Give more weight to upstreams with fewer requests.
           finalizationLag: 1.0 # Penalize nodes lagging in finalization by increasing this value.
 ```
 </Tabs.Tab>
@@ -470,7 +488,7 @@ export default createConfig({
 
             // (OPTIONAL) Default multiplier values:
             errorRate: 8.0,       // Penalize higher error rates by increasing this value.
-            p90latency: 4.0,      // Penalize higher latency by increasing this value.
+            respLatency: 4.0,      // Penalize higher latency by increasing this value.
             totalRequests: 1.0,   // Give more weight to upstreams with fewer requests.
             throttledRate: 3.0,   // Penalize higher throttled requests by increasing this value.
             blockHeadLag: 2.0,    // Penalize nodes lagging in block head updates by increasing this value.
@@ -598,6 +616,11 @@ projects:
           # (OPTIONAL) getLogsMaxAllowedTopics limits the maximum number of topics for eth_getLogs requests.
           # This is used to reject getLogs request if the number of topics is beyond the limit and returns an error to the caller of eRPC.
           getLogsMaxAllowedTopics: 10000
+          # (OPTIONAL) getLogsSplitOnError is used to split the getLogs request if upstream complains about the range being too large,
+          # or if the request timeouts due to too many addresses/topics.
+          # Set to true to enable this behavior.
+          # DEFAULT: false
+          getLogsSplitOnError: false
         # ...
 ```
 </Tabs.Tab>
@@ -649,6 +672,11 @@ export default createConfig({
             // (OPTIONAL) getLogsMaxAllowedTopics limits the maximum number of topics for eth_getLogs requests.
             // This is used to reject getLogs request if the number of topics is beyond the limit and returns an error to the caller of eRPC.
             getLogsMaxAllowedTopics: 10000,
+            // (OPTIONAL) getLogsSplitOnError is used to split the getLogs request if upstream complains about the range being too large,
+            // or if the request timeouts due to too many addresses/topics.
+            // Set to true to enable this behavior.
+            // DEFAULT: false
+            getLogsSplitOnError: false
           },
           // ...
         },
@@ -661,7 +689,7 @@ export default createConfig({
 </Tabs.Tab>
 </Tabs>
 
-#### `eth_getLogs` max range automatic splitting
+#### `eth_getLogs` proactive auto-splitting
 
 Certain providers have a limit on the maximum block range for `eth_getLogs` requests. If the range is too high, eRPC will automatically split the request into smaller sub-requests.
 
@@ -704,15 +732,50 @@ export default createConfig({
 
 Additionally eRPC has integrity checks for eth_getLogs you can read more about in the [Integrity](/config/failsafe/integrity#eth_getLogs-behavior) section.
 
-<Callout type='info'>
-  If an RPC node complains about "**too many results**" eRPC will automatically split the request (first on block range, then on address filter, then on topics filter) and retry until it works, then merges the results automatically.
-</Callout>
+#### `eth_getLogs` auto-split on error
 
-#### `eth_getLogs` max allowed range
+If an RPC node complains about "**too many results**" eRPC will automatically split the request (first on block range, then on address filter, then on topics filter) and retry until it works, then merges the results automatically.
 
-Certain providers have a limit on the maximum block range for `eth_getLogs` requests. If the range is beyond the limit, eRPC will reject the request and will not be split further.
+To enable this behavior, set the `getLogsSplitOnError` in the upstream config:
 
-To set this limit, use the `getLogsMaxAllowedRange` config:
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+upstreams:
+  - id: my-infura
+    evm:
+      # (OPTIONAL) getLogsSplitOnError is used to split the getLogs request if upstream complains about the range being too large,
+      # or if the request timeouts due to too many addresses/topics.
+      # Set to true to enable this behavior.
+      # DEFAULT: false
+      getLogsSplitOnError: true
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  upstreams: [
+    {
+      id: "my-infura",
+      evm: {
+        // (OPTIONAL) getLogsSplitOnError is used to split the getLogs request if upstream complains about the range being too large,
+        // or if the request timeouts due to too many addresses/topics.
+        // Set to true to enable this behavior.
+        // DEFAULT: false
+        getLogsSplitOnError: true,
+      },
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+#### `eth_getLogs` max allowed block range
+
+To enforce a maximum block range for `eth_getLogs` requests towards your eRPC instance, and return an error to the user use `getLogsMaxAllowedRange` config:
 
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
@@ -747,9 +810,7 @@ export default createConfig({
 
 #### `eth_getLogs` max allowed addresses
 
-Certain providers have a limit on the maximum number of addresses for `eth_getLogs` requests. If the number of addresses is beyond the limit, eRPC will reject the request and will not be split further.
-
-To set this limit, use the `getLogsMaxAllowedAddresses` config:
+To enforce a maximum number of addresses allowed for `eth_getLogs` requests towards your eRPC instance, and return an error to the user use `getLogsMaxAllowedAddresses` config:
 
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
@@ -784,9 +845,7 @@ export default createConfig({
 
 #### `eth_getLogs` max allowed topics
 
-Certain providers have a limit on the maximum number of topics for `eth_getLogs` requests. If the number of topics is beyond the limit, eRPC will reject the request and will not be split further.
-
-To set this limit, use the `getLogsMaxAllowedTopics` config:
+To enforce a maximum number of topics allowed for `eth_getLogs` requests towards your eRPC instance, and return an error to the user use `getLogsMaxAllowedTopics` config:
 
 <Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
   <Tabs.Tab>
@@ -818,9 +877,6 @@ export default createConfig({
 ```
 </Tabs.Tab>
 </Tabs>
-
-
-
 
 ## Compression
 

@@ -14,6 +14,25 @@ You can configure healthcheck on top-level in `erpc.yaml` file:
 
 ```yaml
 logLevel: debug
+server:
+  # ...
+  # (OPTIONAL) For zero-downtime deployments, wait before shutting down the server.
+  # During this period active requests are still being processed but no new requests are accepted.
+  # Because readiness /healthcheck endpoint will start returning unhealthy after receiving SIGTERM,
+  # so that Kubernetes (or any other orchestrator) removes the old pod from list of available endpoints.
+  #
+  # You usually need two separate delays:
+  #   waitBeforeShutdown – after the pod receives SIGTERM it is marked **NotReady** (via healthcheck) but
+  #                        the listener keeps running for this duration. Existing
+  #                        requests can finish, new ones are rejected. Set it to at
+  #                        least (readinessProbe.periodSeconds × readinessProbe.failureThreshold) + 1s.
+  #   waitAfterShutdown  – once the HTTP server is fully stopped we keep the process
+  #                        alive for this duration so load-balancers (Envoy, kube-proxy…)
+  #                        can gracefully close any still-open TCP connections.
+  waitBeforeShutdown: 30s
+  waitAfterShutdown: 30s
+  # ...
+
 healthCheck:
   # (OPTIONAL) Mode can be "simple" (just returns OK/ERROR) or "verbose" (returns detailed JSON)
   mode: verbose
@@ -39,6 +58,50 @@ healthCheck:
           - "192.168.0.0/16"
 ```
 
+<Callout type="info">
+It is recommended to use healthcheck endpoint for **readiness probe only**. For liveness probe use TCP healthcheck on the port specified in `server.httpPort` (4000 by default).
+</Callout>
+
+### Readiness and Liveness
+
+For zero-downtime deployments and general health tracking, configure readiness and liveness probes in your orchestrator's deployment configuration.
+
+For example in Kubernetes:
+
+```yaml
+# Allow up to 1 minute to startup if there are too many upstreams or they are slow.
+startupProbe:
+  httpGet:
+    path: /healthcheck
+    port: 4000
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 6
+
+# Readiness fails after 20 seconds max, after receiving SIGTERM.
+# Great for zero-downtime deployments, and good enough for general health tracking.
+readinessProbe:
+  httpGet:
+    path: /healthcheck
+    port: 4000
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 5
+  failureThreshold: 2
+  successThreshold: 1
+
+# Liveness checks if http server is running, otherwise it means eRPC itself is dead.
+livenessProbe:
+  tcpSocket:
+    port: 4000
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 1
+  failureThreshold: 3
+  successThreshold: 1
+```
+
 ## Evaluation Strategies
 
 The healthcheck endpoint supports different strategies to evaluate the health of your upstreams. You can specify the strategy in the configuration or by adding `?eval=strategy_name` to the URL.
@@ -55,7 +118,7 @@ Available strategies:
 | `any:evm:eth_chainId` | Returns healthy if any EVM upstream reports the expected chain ID |
 | `all:evm:eth_chainId` | Returns healthy if all EVM upstreams report the expected chain ID |
 
-* Error rate is read from [score tracking](/config/projects/upstreams#priority--selection-mechanism) component of each Upstream.
+* Error rate is read from [score tracking](/config/projects/upstreams#priority--selection-mechanism) component of each Upstream and it is a fast memory-access operation.
 * The `eth_chainId` evals will send an actual request to the upstreams (in parallel), thus ensure proper timeout is set for the healthcheck (e.g. on Kubernetes readinessProbe.timeoutSeconds).
 
 ## Endpoints

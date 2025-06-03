@@ -1,5 +1,3 @@
-+GOARCH ?= amd64
-
 .PHONY: help
 help:
 	@echo
@@ -35,18 +33,16 @@ run-fake-rpcs:
 
 .PHONY: run-k6-evm-tip-of-chain
 run-k6-evm-tip-of-chain:
-	@k6 run ./test/k6/evm-tip-of-chain.js
+	@k6 run --insecure-skip-tls-verify ./test/k6/evm-tip-of-chain.js
 
 .PHONY: run-k6-evm-historical-randomized
 run-k6-evm-historical-randomized:
-	@k6 run --summary-export=summary.json ./test/k6/evm-historical-randomized.js
+	@k6 run --insecure-skip-tls-verify --summary-export=summary.json ./test/k6/evm-historical-randomized.js
 
 .PHONY: build
 build:
-	@CGO_ENABLED=0 GOARCH=$(GOARCH) \
-		go build -ldflags="-w -s" -o ./bin/erpc-server ./cmd/erpc/main.go
-	@CGO_ENABLED=0 GOARCH=$(GOARCH) \
-		go build -ldflags="-w -s" -tags pprof -o ./bin/erpc-server-pprof ./cmd/erpc/*.go
+	@CGO_ENABLED=0 go build -ldflags="-w -s" -o ./bin/erpc-server ./cmd/erpc/main.go
+	@CGO_ENABLED=0 go build -ldflags="-w -s" -tags pprof -o ./bin/erpc-server-pprof ./cmd/erpc/*.go
 
 .PHONY: test
 test:

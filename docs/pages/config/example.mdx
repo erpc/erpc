@@ -118,6 +118,8 @@ server:
   readTimeout: 10s
   writeTimeout: 20s
   enableGzip: true
+  waitBeforeShutdown: 30s
+  waitAfterShutdown: 30s
   tls:
     enabled: false
     certFile: "/path/to/cert.pem"
@@ -433,6 +435,8 @@ export default createConfig({
     httpPort: 4000,
     maxTimeout: "30s",
     enableGzip: true,
+    waitBeforeShutdown: "30s",
+    waitAfterShutdown: "30s",
     tls: {
       enabled: false,
       certFile: "/path/to/cert.pem",

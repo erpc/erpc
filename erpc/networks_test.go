@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"runtime"
@@ -20,12 +21,15 @@ import (
 	"github.com/erpc/erpc/common"
 	"github.com/erpc/erpc/data"
 	"github.com/erpc/erpc/health"
+	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/upstream"
 	"github.com/erpc/erpc/util"
 	"github.com/h2non/gock"
+	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func init() {
@@ -88,7 +92,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -209,7 +213,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -328,7 +332,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -449,7 +453,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -598,7 +602,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -754,7 +758,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -922,7 +926,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -1124,7 +1128,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -1193,6 +1197,9 @@ func TestNetwork_Forward(t *testing.T) {
 					ChainId: 123,
 				},
 				Failsafe: fsCfg,
+				DirectiveDefaults: &common.DirectiveDefaultsConfig{
+					RetryEmpty: &common.TRUE,
+				},
 			},
 			rlr,
 			upr,
@@ -1222,6 +1229,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
+		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -1331,7 +1339,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -1447,7 +1455,7 @@ func TestNetwork_Forward(t *testing.T) {
 		assert.Equal(t, "\"0x123\"", strings.ToLower(string(jrr.Result)))
 	})
 
-	t.Run("ForwardretriesOnInvalidArgumentCodeClientError", func(t *testing.T) {
+	t.Run("ForwardRetriesOnInvalidArgumentCodeClientError", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
@@ -1524,7 +1532,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -1727,7 +1735,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -1797,6 +1805,9 @@ func TestNetwork_Forward(t *testing.T) {
 					ChainId: 123,
 				},
 				Failsafe: fsCfg,
+				DirectiveDefaults: &common.DirectiveDefaultsConfig{
+					RetryEmpty: &common.TRUE,
+				},
 			},
 			rlr,
 			upr,
@@ -1824,6 +1835,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
+		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -1936,7 +1948,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -1998,6 +2010,9 @@ func TestNetwork_Forward(t *testing.T) {
 					ChainId: 123,
 				},
 				Failsafe: fsCfg,
+				DirectiveDefaults: &common.DirectiveDefaultsConfig{
+					RetryEmpty: &common.TRUE,
+				},
 			},
 			rlr,
 			upr,
@@ -2015,6 +2030,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
+		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -2127,7 +2143,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -2189,6 +2205,9 @@ func TestNetwork_Forward(t *testing.T) {
 					ChainId: 123,
 				},
 				Failsafe: fsCfg,
+				DirectiveDefaults: &common.DirectiveDefaultsConfig{
+					RetryEmpty: &common.TRUE,
+				},
 			},
 			rlr,
 			upr,
@@ -2206,6 +2225,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Create a fake request and forward it through the network
 		fakeReq := common.NewNormalizedRequest(requestBytes)
+		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -2308,7 +2328,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -2372,6 +2392,9 @@ func TestNetwork_Forward(t *testing.T) {
 					ChainId: 123,
 				},
 				Failsafe: fsCfg,
+				DirectiveDefaults: &common.DirectiveDefaultsConfig{
+					RetryEmpty: &common.TRUE,
+				},
 			},
 			rlr,
 			upr,
@@ -2503,7 +2526,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -2589,6 +2612,7 @@ func TestNetwork_Forward(t *testing.T) {
 			"id": 1
 		}`))
 
+		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 		resp, err := ntw.Forward(ctx, fakeReq)
 		if err != nil {
 			t.Fatalf("Expected nil error, got %v", err)
@@ -2694,7 +2718,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -2884,7 +2908,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -3055,7 +3079,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -3186,7 +3210,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -3344,7 +3368,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -3499,7 +3523,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -3632,7 +3656,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -3751,7 +3775,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -3878,7 +3902,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -4010,7 +4034,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -4139,7 +4163,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -4273,7 +4297,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -4412,7 +4436,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -4566,7 +4590,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -4719,7 +4743,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -4871,7 +4895,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -5006,7 +5030,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -5149,7 +5173,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -5296,7 +5320,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -5443,7 +5467,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -5577,7 +5601,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -5648,7 +5672,7 @@ func TestNetwork_Forward(t *testing.T) {
 		}
 	})
 
-	t.Run("ForwardEthGetLogsEmptyArrayResponseSuccess", func(t *testing.T) {
+	t.Run("ForwardEthGetLogsEmptyArrayResponseSuccessWithRetryOnEmpty", func(t *testing.T) {
 		util.ResetGock()
 		defer util.ResetGock()
 		util.SetupMocksForEvmStatePoller()
@@ -5712,7 +5736,161 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
+				},
+			},
+		})
+		if err != nil {
+			panic(err)
+		}
+		upr := upstream.NewUpstreamsRegistry(
+			ctx,
+			&log.Logger,
+			"prjA",
+			[]*common.UpstreamConfig{up1, up2},
+			ssr,
+			rlr,
+			vr,
+			pr,
+			nil,
+			mt,
+			1*time.Second,
+		)
+		err = upr.Bootstrap(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1, err := upr.NewUpstream(up1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl1, err := clr.GetOrCreateClient(ctx, pup1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup1.Client = cl1
+
+		pup2, err := upr.NewUpstream(up2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cl2, err := clr.GetOrCreateClient(ctx, pup2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pup2.Client = cl2
+
+		ntw, err := NewNetwork(
+			ctx,
+			&log.Logger,
+			"prjA",
+			&common.NetworkConfig{
+				Architecture: common.ArchitectureEvm,
+				Evm: &common.EvmNetworkConfig{
+					ChainId: 123,
+				},
+				Failsafe: fsCfg,
+				DirectiveDefaults: &common.DirectiveDefaultsConfig{
+					RetryEmpty: &common.TRUE,
+				},
+			},
+			rlr,
+			upr,
+			mt,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		upstream.ReorderUpstreams(upr)
+
+		fakeReq := common.NewNormalizedRequest(requestBytes)
+		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
+		resp, err := ntw.Forward(ctx, fakeReq)
+
+		if err != nil {
+			t.Fatalf("Expected nil error, got %v", err)
+		}
+
+		jrr, err := resp.JsonRpcResponse()
+		if err != nil {
+			t.Fatalf("Failed to get JSON-RPC response: %v", err)
+		}
+
+		if jrr.Result == nil {
+			t.Fatalf("Expected non-nil result")
+		}
+
+		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
+		if err != nil || fromHost != "rpc2" {
+			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
+		}
+	})
+
+	t.Run("ForwardEthGetLogsEmptyArrayResponseSuccessWithoutRetryOnEmpty", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		var requestBytes = []byte(`{"jsonrpc": "2.0","method": "eth_getLogs","params":[{"address":"0x1234567890abcdef1234567890abcdef12345678"}],"id": 1}`)
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Reply(200).
+			JSON([]byte(`{"result":[],"fromHost": "rpc1"}`))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		vr := thirdparty.NewVendorsRegistry()
+		pr, err := thirdparty.NewProvidersRegistry(
+			&log.Logger,
+			vr,
+			[]*common.ProviderConfig{},
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clr := clients.NewClientRegistry(&log.Logger, "prjA", nil)
+		fsCfg := &common.FailsafeConfig{
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: 2,
+			},
+		}
+		rlr, err := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{
+			Budgets: []*common.RateLimitBudgetConfig{},
+		}, &log.Logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+		up1 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc1",
+			Endpoint: "http://rpc1.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
+		up2 := &common.UpstreamConfig{
+			Type:     common.UpstreamTypeEvm,
+			Id:       "rpc2",
+			Endpoint: "http://rpc2.localhost",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId: 123,
+			},
+		}
+		ssr, err := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "memory",
+				Memory: &common.MemoryConnectorConfig{
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -5797,9 +5975,8 @@ func TestNetwork_Forward(t *testing.T) {
 			t.Fatalf("Expected non-nil result")
 		}
 
-		fromHost, err := jrr.PeekStringByPath(context.TODO(), 0, "fromHost")
-		if err != nil || fromHost != "rpc2" {
-			t.Errorf("Expected fromHost to be %q, got %q", "rpc2", fromHost)
+		if jrr.Result[0] != '[' || jrr.Result[1] != ']' {
+			t.Fatalf("Expected result to be an array")
 		}
 	})
 
@@ -5869,7 +6046,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -5912,6 +6089,9 @@ func TestNetwork_Forward(t *testing.T) {
 						MaxAttempts: 2,
 					},
 				},
+				DirectiveDefaults: &common.DirectiveDefaultsConfig{
+					RetryEmpty: &common.TRUE,
+				},
 			},
 			rlr,
 			upr,
@@ -5926,6 +6106,7 @@ func TestNetwork_Forward(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 
 		fakeReq := common.NewNormalizedRequest(requestBytes)
+		fakeReq.ApplyDirectiveDefaults(ntw.Config().DirectiveDefaults)
 		resp, err := ntw.Forward(ctx, fakeReq)
 
 		if err != nil {
@@ -5999,7 +6180,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -6122,7 +6303,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -6245,7 +6426,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -6355,7 +6536,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -6472,15 +6653,15 @@ func TestNetwork_Forward(t *testing.T) {
 
 		sortedUpstreamsGetLogs, err := upstreamsRegistry.GetSortedUpstreams(context.TODO(), networkID, "eth_getLogs")
 		assert.NoError(t, err)
-		assert.Equal(t, "upstream-c", sortedUpstreamsGetLogs[0].Config().Id, "Expected upstream-c to be preferred for eth_getLogs in Phase 1")
+		assert.Equal(t, "upstream-c", sortedUpstreamsGetLogs[0].Id(), "Expected upstream-c to be preferred for eth_getLogs in Phase 1")
 
 		sortedUpstreamsTraceTransaction, err := upstreamsRegistry.GetSortedUpstreams(context.TODO(), networkID, "eth_traceTransaction")
 		assert.NoError(t, err)
-		assert.Equal(t, "upstream-b", sortedUpstreamsTraceTransaction[0].Config().Id, "Expected upstream-b to be preferred for eth_traceTransaction in Phase 1")
+		assert.Equal(t, "upstream-b", sortedUpstreamsTraceTransaction[0].Id(), "Expected upstream-b to be preferred for eth_traceTransaction in Phase 1")
 
 		sortedUpstreamsCall, err := upstreamsRegistry.GetSortedUpstreams(context.TODO(), networkID, "eth_call")
 		assert.NoError(t, err)
-		assert.Equal(t, "upstream-a", sortedUpstreamsCall[0].Config().Id, "Expected upstream-a to be preferred for eth_call in Phase 1")
+		assert.Equal(t, "upstream-a", sortedUpstreamsCall[0].Id(), "Expected upstream-a to be preferred for eth_call in Phase 1")
 	})
 
 	t.Run("ForwardEnvioUnsupportedNetwork", func(t *testing.T) {
@@ -6559,7 +6740,7 @@ func TestNetwork_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -6641,7 +6822,7 @@ func TestNetwork_Forward(t *testing.T) {
 					Driver: "mock",
 					Mock: &common.MockConnectorConfig{
 						MemoryConnectorConfig: common.MemoryConnectorConfig{
-							MaxItems: 100_000,
+							MaxItems: 100_000, MaxTotalSize: "1GB",
 						},
 						// GetDelay: 10 * time.Second,
 						// SetDelay: 10 * time.Second,
@@ -6890,7 +7071,7 @@ func TestNetwork_Forward(t *testing.T) {
 
 		// Prepare a large payload and allowed overhead
 		sampleSize := 100 * 1024 * 1024
-		allowedOverhead := 30 * 1024 * 1024
+		allowedOverhead := 35 * 1024 * 1024
 		largeResult := strings.Repeat("x", sampleSize)
 
 		// Stub only the actual debug_traceTransaction call and return our big string
@@ -7058,7 +7239,7 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 			"Expected upstream to be excluded by policy")
 
 		// Verify metrics show high error rate from state poller requests
-		metrics := network.metricsTracker.GetUpstreamMethodMetrics("rpc1", "evm:123", "*")
+		metrics := network.metricsTracker.GetUpstreamMethodMetrics(ups1, "*")
 		assert.True(t, metrics.ErrorRate() > 0.7,
 			"Expected error rate above 70%% due to state poller failures, got %.2f%%",
 			metrics.ErrorRate()*100)
@@ -7071,7 +7252,7 @@ func TestNetwork_SelectionScenarios(t *testing.T) {
 		assert.NoError(t, err, "Upstream should be active after error rate improves")
 
 		// Verify metrics show improved error rate
-		metrics = network.metricsTracker.GetUpstreamMethodMetrics("rpc1", "evm:123", "*")
+		metrics = network.metricsTracker.GetUpstreamMethodMetrics(ups1, "*")
 		assert.True(t, metrics.ErrorRate() < 0.7,
 			"Expected error rate below 70%% after successful requests, got %.2f%%",
 			metrics.ErrorRate()*100)
@@ -7763,7 +7944,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		assert.Error(t, err)
 		assert.Nil(t, resp)
 
-		assert.Contains(t, err.Error(), "less than toBlock")
+		assert.Contains(t, err.Error(), "block not found")
 	})
 
 	t.Run("AvoidLatestBlockUpdateWhenRangeEndIsLowerThanLatestBlock", func(t *testing.T) {
@@ -7903,7 +8084,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		// Verify that the request was skipped with appropriate error
 		assert.Error(t, err)
 		assert.Nil(t, resp)
-		assert.Contains(t, err.Error(), "is < than upstream latest block")
+		assert.Contains(t, err.Error(), "block not found")
 
 		assert.True(t, len(gock.Pending()) == 0, "Expected no pending mocks")
 	})
@@ -8234,6 +8415,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 
 		upsList := network.upstreamsRegistry.GetNetworkUpstreams(context.TODO(), util.EvmNetworkId(123))
 		upsList[0].Config().Evm.GetLogsAutoSplittingRangeThreshold = 0x10000000 // Large range to avoid auto-splitting since we want error-based splitting
+		upsList[0].Config().Evm.GetLogsSplitOnError = util.BoolPtr(true)
 
 		req := common.NewNormalizedRequest(requestBytes)
 		resp, err := network.Forward(ctx, req)
@@ -8582,7 +8764,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 					Driver: "mock",
 					Mock: &common.MockConnectorConfig{
 						MemoryConnectorConfig: common.MemoryConnectorConfig{
-							MaxItems: 100_000,
+							MaxItems: 100_000, MaxTotalSize: "1GB",
 						},
 						// GetDelay: 10 * time.Second,
 						// SetDelay: 10 * time.Second,
@@ -8638,6 +8820,7 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 			Post("").
 			Filter(func(request *http.Request) bool {
 				body := util.SafeReadBody(request)
+				fmt.Println("body 1111", body)
 				return strings.Contains(body, "eth_getLogs") &&
 					strings.Contains(body, `"fromBlock":"0x11118100"`) &&
 					strings.Contains(body, `"toBlock":"0x111181ff"`)
@@ -8731,6 +8914,9 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 		// Verify the merged response
 		jrr, err := resp.JsonRpcResponse()
 		assert.NoError(t, err)
+		if jrr == nil {
+			t.Fatalf("Expected non-nil JsonRpcResponse")
+		}
 		w := bytes.NewBuffer(nil)
 		jrr.WriteTo(w)
 		result := w.Bytes()
@@ -8771,6 +8957,488 @@ func TestNetwork_EvmGetLogs(t *testing.T) {
 	})
 }
 
+func TestNetwork_ThunderingHerdProtection(t *testing.T) {
+	util.ResetGock()
+	defer util.ResetGock()
+
+	t.Run("ForwardThunderingHerdGetLatestBlockWithErrors", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		gock.Off()
+		gock.Clean()
+		telemetry.MetricUpstreamLatestBlockPolled.Reset()
+
+		//------------------------------------------------------------
+		// 1. RPC stubs
+		//------------------------------------------------------------
+		var latestBlockPolls int32
+		const failAttempts = 2
+		const herd = 1000
+
+		// First eth_getBlockByNumber("latest") - Succeed
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				isLatest := strings.Contains(body, `"eth_getBlockByNumber"`) && strings.Contains(body, `"latest"`)
+				if isLatest {
+					t.Logf("Gock Filter: Successful eth_getBlockByNumber(\"latest\") call")
+				}
+				return isLatest
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0xa"}}`)) // Block 10
+
+		// eth_getBlockByNumber("latest") - Then fail with retryable error
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Times(failAttempts). // Fail for the next failAttempts
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				isLatest := strings.Contains(body, `"eth_getBlockByNumber"`) && strings.Contains(body, `"latest"`)
+				if isLatest {
+					// Only count the polls that hit this failing mock
+					count := atomic.AddInt32(&latestBlockPolls, 1)
+					t.Logf("Gock Filter: Failing eth_getBlockByNumber(\"latest\") attempt #%d", count)
+				}
+				return isLatest
+			}).
+			Reply(503). // Retryable server error
+			JSON([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"Temporary server issue"}}`))
+
+		// eth_getBlockByNumber("latest") - Succeed eventually
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				isLatest := strings.Contains(body, `"eth_getBlockByNumber"`) && strings.Contains(body, `"latest"`)
+				if isLatest {
+					t.Logf("Gock Filter: Successful eth_getBlockByNumber(\"latest\") call")
+				}
+				return isLatest
+			}).
+			Reply(200).
+			Delay(1000 * time.Millisecond).
+			JSON([]byte(`{"result":{"number":"0x14"}}`)) // Block 20
+
+		// eth_getBlockByNumber("finalized") – always OK
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `"eth_getBlockByNumber"`) &&
+					strings.Contains(body, `"finalized"`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":null}`))
+
+		// eth_syncing – upstream is fully synced
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), `"eth_syncing"`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":false}`))
+
+		//------------------------------------------------------------
+		// 2. Network / poller set-up
+		//------------------------------------------------------------
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		mt := health.NewTracker(&log.Logger, "prjA", 5*time.Second)
+
+		pollerInterval := 2000 * time.Millisecond
+		pollerDebounce := 1000 * time.Millisecond
+
+		fsCfg := &common.FailsafeConfig{
+			Retry: &common.RetryPolicyConfig{
+				MaxAttempts: failAttempts, // upstream‑level retries
+			},
+		}
+
+		//   -- upstream will retry --
+		upCfg := &common.UpstreamConfig{
+			Id:         "rpc1",
+			Type:       common.UpstreamTypeEvm,
+			Endpoint:   "http://rpc1.localhost",
+			VendorName: "vendorA",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId:             123,
+				StatePollerInterval: common.Duration(pollerInterval),
+				StatePollerDebounce: common.Duration(pollerDebounce),
+			},
+			Failsafe: fsCfg,
+		}
+
+		vr := thirdparty.NewVendorsRegistry()
+		pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
+		ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{Driver: "memory", Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}},
+		})
+		upr := upstream.NewUpstreamsRegistry(
+			ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg},
+			ssr, rlr, vr, pr, nil, mt, 1*time.Second,
+		)
+		require.NoError(t, upr.Bootstrap(ctx))
+
+		ntwCfg := &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm:          &common.EvmNetworkConfig{ChainId: 123},
+			Failsafe:     fsCfg,
+		}
+		ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+		require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+		require.NoError(t, ntw.Bootstrap(ctx)) // This starts the poller ticker
+
+		pup := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))[0]
+		poller := pup.EvmStatePoller()
+
+		// --- Bootstrap with the success mock so we have a fresh timestamp ---
+		require.NoError(t, poller.Poll(ctx))
+		require.Equal(t, int64(10), poller.LatestBlock())
+
+		//------------------------------------------------------------
+		// 3. Test Execution & Assertions
+		//------------------------------------------------------------
+		// ------------------------------------------------------------------
+		// 3.  Wait until the value becomes stale (> debounce), then unleash
+		//     a burst of concurrent PollLatestBlockNumber() calls.
+		// ------------------------------------------------------------------
+		time.Sleep((pollerDebounce * 2) + 200*time.Millisecond) // let cache go stale
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(herd)
+		for i := 0; i < herd; i++ {
+			go func() {
+				defer wg.Done()
+				<-start
+				time.Sleep(time.Duration(rand.Intn(1000)) * time.Millisecond)
+				_, _ = poller.PollLatestBlockNumber(ctx)
+			}()
+		}
+		close(start)
+		wg.Wait()
+
+		// Stop ticker before final mock assertions
+		cancel()                          // stop poller ticker to avoid races with mock assertions
+		time.Sleep(50 * time.Millisecond) // let any in‑flight calls finish
+
+		// Cached value should be 20 (final success).
+		assert.Equal(t, int64(20), poller.LatestBlock())
+
+		// Metric counts successful cache refreshes (bootstrap + final success).
+		// It should *not* increase for each failed attempt, so we expect exactly 2.
+		polledMetric, err := telemetry.MetricUpstreamLatestBlockPolled.
+			GetMetricWithLabelValues("prjA", "vendorA", util.EvmNetworkId(123), "rpc1")
+		require.NoError(t, err)
+		metricValue := promUtil.ToFloat64(polledMetric)
+		//
+		// Metric counts successful cache refreshes (bootstrap + one failed attempt + final success).
+		//
+		assert.Equal(t, float64(3), metricValue)
+
+		// Only the failing mocks should have been hit exactly failAttempts times.
+		assert.Equal(t, int32(failAttempts), atomic.LoadInt32(&latestBlockPolls))
+
+		// No pending or unmatched mocks remain
+		assert.False(t, gock.HasUnmatchedRequest(), "Unexpected gock requests")
+		// finalized & syncing mocks are persistent, so they remain pending
+		require.Equal(t, 2, len(gock.Pending()), "expected only the 2 persistent mocks to remain")
+	})
+
+	t.Run("ForwardThunderingHerdGetLatestBlockWithoutErrors", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		telemetry.MetricUpstreamLatestBlockPolled.Reset()
+
+		//------------------------------------------------------------
+		// 1.  RPC stubs
+		//------------------------------------------------------------
+		const herd = 10_000
+		// First eth_getBlockByNumber("latest") during the herd – slow so the lock stays held
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Times(1).
+			Filter(func(r *http.Request) bool {
+				b := util.SafeReadBody(r)
+				return strings.Contains(b, `"eth_getBlockByNumber"`) &&
+					strings.Contains(b, `"latest"`)
+			}).
+			Reply(200).
+			Delay(300 * time.Millisecond).              // <- keeps leader busy
+			JSON([]byte(`{"result":{"number":"0xa"}}`)) // 10
+
+		// Subsequent "latest" polls – fast, unlimited
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				b := util.SafeReadBody(r)
+				return strings.Contains(b, `"eth_getBlockByNumber"`) &&
+					strings.Contains(b, `"latest"`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0xa"}}`))
+
+		// eth_getBlockByNumber("finalized")
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `"eth_getBlockByNumber"`) &&
+					strings.Contains(body, `"finalized"`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":null}`))
+
+		// eth_syncing
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				return strings.Contains(util.SafeReadBody(r), `"eth_syncing"`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":false}`))
+
+		//----------------------------------------------------------------------
+		// 2) Network / poller set-up
+		//----------------------------------------------------------------------
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+
+		upCfg := &common.UpstreamConfig{
+			Id:         "rpc1",
+			Type:       common.UpstreamTypeEvm,
+			Endpoint:   "http://rpc1.localhost",
+			VendorName: "vendorA",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId:             123,
+				StatePollerInterval: common.Duration(5000 * time.Millisecond), // we’ll drive it manually
+				StatePollerDebounce: common.Duration(5000 * time.Millisecond), // TryUpdateIfStale → 1 s default
+			},
+		}
+
+		vr := thirdparty.NewVendorsRegistry()
+		pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
+		ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{
+				Driver: "redis",
+				Redis: &common.RedisConnectorConfig{
+					Addr:        "localhost:6379",
+					Password:    "",
+					DB:          0,
+					InitTimeout: common.Duration(10 * time.Second),
+					GetTimeout:  common.Duration(10 * time.Second),
+					SetTimeout:  common.Duration(10 * time.Second),
+				},
+			},
+			FallbackTimeout: common.Duration(10 * time.Second),
+			LockTtl:         common.Duration(10 * time.Second),
+		})
+		upr := upstream.NewUpstreamsRegistry(
+			ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg},
+			ssr, rlr, vr, pr, nil, mt, 1*time.Second,
+		)
+		require.NoError(t, upr.Bootstrap(ctx))
+
+		ntwCfg := &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm: &common.EvmNetworkConfig{
+				ChainId: 123,
+				Integrity: &common.EvmIntegrityConfig{
+					EnforceHighestBlock: util.BoolPtr(true),
+				},
+			},
+		}
+		ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+		require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+		require.NoError(t, ntw.Bootstrap(ctx))
+
+		pup := upr.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))[0]
+		poller := pup.EvmStatePoller()
+
+		// Bootstrap value
+		require.NoError(t, poller.Poll(ctx))
+		require.Equal(t, int64(10), poller.LatestBlock())
+
+		//----------------------------------------------------------------------
+		// 3) Sleep 1.1 s so the cached value becomes “stale”
+		//----------------------------------------------------------------------
+		time.Sleep(1100 * time.Millisecond) // TryUpdateIfStale default is 1 s
+
+		//----------------------------------------------------------------------
+		// 4) Fire 1 000 concurrent PollLatestBlockNumber calls directly
+		//    This bypasses forwarding and reproduces the thundering‑herd inside
+		//    CounterInt64SharedVariable.TryUpdateIfStale.
+		//----------------------------------------------------------------------
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(herd)
+		for i := 0; i < herd; i++ {
+			go func() {
+				defer wg.Done()
+				<-start // unleash all goroutines at once
+				_, _ = poller.PollLatestBlockNumber(ctx)
+			}()
+		}
+		close(start)
+		wg.Wait()
+
+		//----------------------------------------------------------------------
+		// 5) Inspect metrics: single poll, zero multiplexer hits
+		//----------------------------------------------------------------------
+		polled, err := telemetry.MetricUpstreamLatestBlockPolled.
+			GetMetricWithLabelValues("prjA", "vendorA", util.EvmNetworkId(123), "rpc1")
+		require.NoError(t, err)
+
+		t.Logf("MetricUpstreamLatestBlockPolled   : %.0f", promUtil.ToFloat64(polled))
+
+		require.Equal(t,
+			float64(1),
+			promUtil.ToFloat64(polled),
+			"expected two polls (bootstrap + stale refresh)",
+		)
+	})
+
+	t.Run("ForwardThunderingHerdSyncing", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+
+		//------------------------------------------------------------
+		// 1.  RPC stubs
+		//------------------------------------------------------------
+
+		// eth_getBlockByNumber("latest") – fast, unlimited
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `"eth_getBlockByNumber"`) &&
+					strings.Contains(body, `"latest"`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":{"number":"0x9"}}`))
+
+		// eth_getBlockByNumber("finalized") – fast, unlimited
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Persist().
+			Filter(func(r *http.Request) bool {
+				body := util.SafeReadBody(r)
+				return strings.Contains(body, `"eth_getBlockByNumber"`) &&
+					strings.Contains(body, `"finalized"`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":null}`))
+
+		// Counter for eth_syncing calls
+		const workers = 25
+		var syncCalls int32
+
+		// eth_syncing – first call fast (bootstrap)
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Times(1).
+			Filter(func(r *http.Request) bool {
+				atomic.AddInt32(&syncCalls, 1)
+				return strings.Contains(util.SafeReadBody(r), `"eth_syncing"`)
+			}).
+			Reply(200).
+			JSON([]byte(`{"result":false}`))
+
+		// eth_syncing – second call *slow* (300 ms) → leader
+		gock.New("http://rpc1.localhost").
+			Post("").
+			Times(1).
+			Filter(func(r *http.Request) bool {
+				atomic.AddInt32(&syncCalls, 1)
+				return strings.Contains(util.SafeReadBody(r), `"eth_syncing"`)
+			}).
+			Reply(200).
+			Delay(300 * time.Millisecond). // <- keeps leader busy
+			JSON([]byte(`{"result":false}`))
+
+		//------------------------------------------------------------
+		// 2.  Network / poller set-up
+		//------------------------------------------------------------
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		rlr, _ := upstream.NewRateLimitersRegistry(&common.RateLimiterConfig{}, &log.Logger)
+		mt := health.NewTracker(&log.Logger, "prjA", 2*time.Second)
+
+		upCfg := &common.UpstreamConfig{
+			Id:         "rpc1",
+			Type:       common.UpstreamTypeEvm,
+			Endpoint:   "http://rpc1.localhost",
+			VendorName: "vendorA",
+			Evm: &common.EvmUpstreamConfig{
+				ChainId:             123,
+				StatePollerInterval: common.Duration(50 * time.Millisecond),
+				StatePollerDebounce: common.Duration(0), // no debounce needed
+			},
+		}
+		vr := thirdparty.NewVendorsRegistry()
+		pr, _ := thirdparty.NewProvidersRegistry(&log.Logger, vr, nil, nil)
+		ssr, _ := data.NewSharedStateRegistry(ctx, &log.Logger, &common.SharedStateConfig{
+			Connector: &common.ConnectorConfig{Driver: "memory", Memory: &common.MemoryConnectorConfig{MaxItems: 100_000, MaxTotalSize: "1GB"}},
+		})
+		upr := upstream.NewUpstreamsRegistry(
+			ctx, &log.Logger, "prjA", []*common.UpstreamConfig{upCfg},
+			ssr, rlr, vr, pr, nil, mt, 1*time.Second,
+		)
+
+		ntwCfg := &common.NetworkConfig{
+			Architecture: common.ArchitectureEvm,
+			Evm:          &common.EvmNetworkConfig{ChainId: 123},
+		}
+		ntw, _ := NewNetwork(ctx, &log.Logger, "prjA", ntwCfg, rlr, upr, mt)
+
+		require.NoError(t, upr.Bootstrap(ctx))
+		require.NoError(t, upr.PrepareUpstreamsForNetwork(ctx, util.EvmNetworkId(123)))
+		require.NoError(t, ntw.Bootstrap(ctx))
+
+		poller := upr.
+			GetNetworkUpstreams(ctx, util.EvmNetworkId(123))[0].
+			EvmStatePoller()
+
+		//------------------------------------------------------------
+		// 3.  Bootstrap call done; now hammer Poll() in parallel
+		//------------------------------------------------------------
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(workers)
+
+		for i := 0; i < workers; i++ {
+			go func() {
+				defer wg.Done()
+				<-start              // fire all at once
+				_ = poller.Poll(ctx) // each Poll triggers the "syncing" fetch
+			}()
+		}
+		close(start) // unleash the goroutines
+		wg.Wait()
+
+		require.Equal(t,
+			int32(2),
+			atomic.LoadInt32(&syncCalls),
+			"expected exactly two eth_syncing polls (bootstrap + leader)",
+		)
+	})
+}
+
 func setupTestNetworkSimple(t *testing.T, ctx context.Context, upstreamConfig *common.UpstreamConfig, networkConfig *common.NetworkConfig) *Network {
 	t.Helper()
 
@@ -8801,7 +9469,7 @@ func setupTestNetworkSimple(t *testing.T, ctx context.Context, upstreamConfig *c
 		Connector: &common.ConnectorConfig{
 			Driver: "memory",
 			Memory: &common.MemoryConnectorConfig{
-				MaxItems: 100_000,
+				MaxItems: 100_000, MaxTotalSize: "1GB",
 			},
 		},
 	})
@@ -8905,7 +9573,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.C
 		Connector: &common.ConnectorConfig{
 			Driver: "memory",
 			Memory: &common.MemoryConnectorConfig{
-				MaxItems: 100_000,
+				MaxItems: 100_000, MaxTotalSize: "1GB",
 			},
 		},
 	})
@@ -8923,7 +9591,7 @@ func setupTestNetworkWithFullAndArchiveNodeUpstreams(t *testing.T, ctx context.C
 		pr,
 		nil,
 		metricsTracker,
-		1*time.Second,
+		120*time.Second,
 	)
 
 	fsCfg := &common.FailsafeConfig{

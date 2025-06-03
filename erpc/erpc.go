@@ -50,7 +50,7 @@ func NewERPC(
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		}
@@ -158,7 +158,7 @@ func (e *ERPC) AdminHandleRequest(ctx context.Context, nq *common.NormalizedRequ
 				}
 				upstreams := n.upstreamsRegistry.GetNetworkUpstreams(ctx, n.Id())
 				for _, u := range upstreams {
-					ntw.Upstreams = append(ntw.Upstreams, &taxonomyUpstream{Id: u.Config().Id})
+					ntw.Upstreams = append(ntw.Upstreams, &taxonomyUpstream{Id: u.Id()})
 				}
 				networks = append(networks, ntw)
 			}

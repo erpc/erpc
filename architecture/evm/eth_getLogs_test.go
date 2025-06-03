@@ -81,6 +81,16 @@ func (m *mockEvmUpstream) NetworkId() string {
 	return args.Get(0).(string)
 }
 
+func (m *mockEvmUpstream) Id() string {
+	args := m.Called()
+	return args.Get(0).(string)
+}
+
+func (m *mockEvmUpstream) VendorName() string {
+	args := m.Called()
+	return args.Get(0).(string)
+}
+
 func (m *mockEvmUpstream) EvmStatePoller() common.EvmStatePoller {
 	args := m.Called()
 	return args.Get(0).(common.EvmStatePoller)
@@ -202,6 +212,7 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 				{fromBlock: 3, toBlock: 4},
 			},
 			mockSetup: func(n *mockNetwork, u *mockEvmUpstream) {
+				n.On("ProjectId").Return("test")
 				n.On("Forward", mock.Anything, mock.Anything).Return(
 					common.NewNormalizedResponse().WithJsonRpcResponse(
 						&common.JsonRpcResponse{Result: []byte(`["log1"]`)},
@@ -214,6 +225,9 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 					),
 					nil,
 				).Once()
+				u.On("Id").Return("rpc1")
+				u.On("NetworkId").Return("evm:123")
+				u.On("VendorName").Return("test")
 			},
 		},
 		{
@@ -223,6 +237,8 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 				{fromBlock: 3, toBlock: 4},
 			},
 			mockSetup: func(n *mockNetwork, u *mockEvmUpstream) {
+				n.On("Id").Return("evm:123")
+				n.On("ProjectId").Return("test")
 				n.On("Forward", mock.Anything, mock.Anything).
 					Return(
 						common.NewNormalizedResponse().WithJsonRpcResponse(
@@ -231,6 +247,9 @@ func TestExecuteGetLogsSubRequests(t *testing.T) {
 						nil,
 					).Times(1).
 					Return(nil, errors.New("failed")).Times(3)
+				u.On("Id").Return("rpc1")
+				u.On("NetworkId").Return("evm:123")
+				u.On("VendorName").Return("test")
 			},
 			expectError: true,
 		},
@@ -289,11 +308,10 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 						},
 					},
 				})
-				// n.On("ProjectId").Return("test")
+				u.On("Id").Return("rpc1")
 				u.On("Config").Return(&common.UpstreamConfig{
 					Evm: nil,
 				})
-				// u.On("NetworkId").Return("evm:123")
 				stp := new(mockStatePoller)
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
@@ -333,7 +351,9 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 						GetLogsAutoSplittingRangeThreshold: 10,
 					},
 				})
+				u.On("Id").Return("rpc1")
 				u.On("NetworkId").Return("evm:123")
+				u.On("VendorName").Return("test")
 				stp := new(mockStatePoller)
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
@@ -364,14 +384,14 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				n.On("ProjectId").Return("test")
 				// We do NOT expect "Forward" to be called at all, because we won't split
 				// (the range is above the allowed limit => immediate error)
-
 				u.On("Config").Return(&common.UpstreamConfig{
 					Evm: &common.EvmUpstreamConfig{
 						GetLogsMaxAllowedRange: 10,
 					},
 				})
+				u.On("Id").Return("rpc1")
 				u.On("NetworkId").Return("evm:123")
-
+				u.On("VendorName").Return("test")
 				stp := new(mockStatePoller)
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
@@ -410,7 +430,9 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 						GetLogsMaxAllowedAddresses: 2,
 					},
 				})
-
+				u.On("Id").Return("rpc1")
+				u.On("NetworkId").Return("evm:123")
+				u.On("VendorName").Return("test")
 				stp := new(mockStatePoller)
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
@@ -447,7 +469,9 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 						GetLogsMaxAllowedTopics: 2,
 					},
 				})
-
+				u.On("Id").Return("rpc1")
+				u.On("NetworkId").Return("evm:123")
+				u.On("VendorName").Return("test")
 				stp := new(mockStatePoller)
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
@@ -476,9 +500,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 						},
 					},
 				})
-				u.On("Config").Return(&common.UpstreamConfig{
-					Evm: nil,
-				})
+				u.On("Id").Return("rpc1")
 				return n, u, r
 			},
 			expectSplit: false,
@@ -524,9 +546,7 @@ func TestUpstreamPostForward_eth_getLogs(t *testing.T) {
 				r := createTestRequest(nil)
 
 				n.On("Id").Return("evm:123")
-				u.On("Config").Return(&common.UpstreamConfig{
-					Evm: nil,
-				})
+				u.On("Id").Return("rpc1")
 
 				return n, u, r
 			},
@@ -534,7 +554,7 @@ func TestUpstreamPostForward_eth_getLogs(t *testing.T) {
 			expectSplit: false,
 		},
 		{
-			name: "request_too_large_error",
+			name: "auto_split_request_too_large_error",
 			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
 				n := new(mockNetwork)
 				u := new(mockEvmUpstream)
@@ -543,6 +563,7 @@ func TestUpstreamPostForward_eth_getLogs(t *testing.T) {
 					"toBlock":   "0x2",
 				})
 				n.On("Id").Return("evm:123")
+				n.On("ProjectId").Return("test")
 				n.On("Forward", mock.Anything, mock.Anything).Return(
 					common.NewNormalizedResponse().WithJsonRpcResponse(
 						&common.JsonRpcResponse{Result: []byte(`["log1"]`)},
@@ -555,9 +576,13 @@ func TestUpstreamPostForward_eth_getLogs(t *testing.T) {
 					),
 					nil,
 				).Times(1)
+				u.On("Id").Return("rpc1")
+				u.On("NetworkId").Return("evm:123")
+				u.On("VendorName").Return("test")
 				u.On("Config").Return(&common.UpstreamConfig{
 					Evm: &common.EvmUpstreamConfig{
 						GetLogsMaxBlockRange: 10,
+						GetLogsSplitOnError:  util.BoolPtr(true),
 					},
 				})
 
@@ -565,6 +590,29 @@ func TestUpstreamPostForward_eth_getLogs(t *testing.T) {
 			},
 			inputError:  common.NewErrEndpointRequestTooLarge(errors.New("too large"), common.EvmBlockRangeTooLarge),
 			expectSplit: true,
+		},
+		{
+			name: "not_splitting_request_too_large_error",
+			setup: func() (*mockNetwork, *mockEvmUpstream, *common.NormalizedRequest) {
+				n := new(mockNetwork)
+				u := new(mockEvmUpstream)
+				r := createTestRequest(map[string]interface{}{
+					"fromBlock": "0x1",
+					"toBlock":   "0x2",
+				})
+				n.On("Id").Return("evm:123")
+				u.On("Id").Return("rpc1")
+				u.On("Config").Return(&common.UpstreamConfig{
+					Evm: &common.EvmUpstreamConfig{
+						GetLogsMaxBlockRange: 10,
+						GetLogsSplitOnError:  util.BoolPtr(false),
+					},
+				})
+
+				return n, u, r
+			},
+			inputError:  common.NewErrEndpointRequestTooLarge(errors.New("too large"), common.EvmBlockRangeTooLarge),
+			expectSplit: false,
 		},
 	}
 
@@ -736,7 +784,9 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 			GetLogsAutoSplittingRangeThreshold: 1,
 		},
 	})
+	mockUpstream.On("Id").Return("rpc1")
 	mockUpstream.On("NetworkId").Return("evm:1")
+	mockUpstream.On("VendorName").Return("test")
 	mockUpstream.On("EvmStatePoller").Return(mockStatePoller)
 	mockStatePoller.On("LatestBlock").Return(int64(1000))
 
@@ -747,6 +797,7 @@ func TestExecuteGetLogsSubRequests_WithNestedSplits(t *testing.T) {
 		"address":   []interface{}{"0x123", "0x456"}, // Will split by address
 		"topics":    []interface{}{"0xabc", "0xdef"}, // Will split by topics
 	})
+	mockNetwork.On("ProjectId").Return("test")
 
 	// Mock network responses for the nested splits
 	// Each block range (0x1-0x2, 0x3-0x4) will be split by address (0x123, 0x456)

@@ -152,7 +152,7 @@ func EndRequestSpan(ctx context.Context, resp *NormalizedResponse, err interface
 			attribute.Bool("cache.hit", resp.FromCache()),
 		)
 		if ups := resp.Upstream(); ups != nil {
-			span.SetAttributes(attribute.String("upstream.id", ups.Config().Id))
+			span.SetAttributes(attribute.String("upstream.id", ups.Id()))
 		}
 		if IsTracingDetailed {
 			if jrpcResp, err := resp.JsonRpcResponse(); err == nil && jrpcResp != nil {

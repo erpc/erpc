@@ -34,6 +34,10 @@ func (s *HttpServer) handleHealthCheck(
 	writeFatalError func(ctx context.Context, statusCode int, body error),
 ) {
 	logger := s.logger.With().Str("handler", "healthcheck").Str("projectId", projectId).Logger()
+	if s.draining.Load() {
+		http.Error(w, "shutting down", http.StatusServiceUnavailable)
+		return
+	}
 
 	if s.healthCheckAuthRegistry != nil {
 		headers := r.Header
@@ -41,12 +45,12 @@ func (s *HttpServer) handleHealthCheck(
 
 		ap, err := auth.NewPayloadFromHttp("healthcheck", r.RemoteAddr, headers, queryArgs)
 		if err != nil {
-			handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, true)
+			handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, &common.TRUE)
 			return
 		}
 		if s.healthCheckAuthRegistry != nil {
 			if err := s.healthCheckAuthRegistry.Authenticate(ctx, "healthcheck", ap); err != nil {
-				handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, true)
+				handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, &common.TRUE)
 				return
 			}
 		}
@@ -61,7 +65,7 @@ func (s *HttpServer) handleHealthCheck(
 	logger = logger.With().Str("evalStrategy", evalStrategy).Logger()
 
 	if s.erpc == nil {
-		handleErrorResponse(ctx, &logger, startedAt, nil, errors.New("eRPC is not initialized"), w, encoder, writeFatalError, false)
+		handleErrorResponse(ctx, &logger, startedAt, nil, errors.New("eRPC is not initialized"), w, encoder, writeFatalError, s.serverCfg.IncludeErrorDetails)
 		return
 	}
 
@@ -69,13 +73,13 @@ func (s *HttpServer) handleHealthCheck(
 	if projectId == "" {
 		projects = s.erpc.GetProjects()
 		if len(projects) == 0 {
-			handleErrorResponse(ctx, &logger, startedAt, nil, errors.New("no projects found"), w, encoder, writeFatalError, false)
+			handleErrorResponse(ctx, &logger, startedAt, nil, errors.New("no projects found"), w, encoder, writeFatalError, s.serverCfg.IncludeErrorDetails)
 			return
 		}
 	} else {
 		project, err := s.erpc.GetProject(projectId)
 		if err != nil {
-			handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, true)
+			handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, &common.TRUE)
 			return
 		}
 		projects = []*PreparedProject{project}
@@ -118,7 +122,7 @@ func (s *HttpServer) handleHealthCheck(
 		// Attempt to gather health info for all initialized upstreams
 		projHealthInfo, err := project.GatherHealthInfo()
 		if err != nil {
-			handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, true)
+			handleErrorResponse(ctx, &logger, startedAt, nil, err, w, encoder, writeFatalError, &common.TRUE)
 			return
 		}
 
@@ -169,12 +173,12 @@ func (s *HttpServer) handleHealthCheck(
 		upstreamsDetails := make(map[string]map[string]any)
 
 		for _, ups := range filteredUpstreams {
-			upstreamsDetails[ups.Config().Id] = map[string]any{
+			upstreamsDetails[ups.Id()] = map[string]any{
 				"network": ups.NetworkId(),
 			}
 			if !s.isSimpleMode() {
-				mts := metricsTracker.GetUpstreamMethodMetrics(ups.Config().Id, "*", "*")
-				upstreamsDetails[ups.Config().Id]["metrics"] = mts
+				mts := metricsTracker.GetUpstreamMethodMetrics(ups, "*")
+				upstreamsDetails[ups.Id()]["metrics"] = mts
 			}
 		}
 
@@ -210,8 +214,7 @@ func (s *HttpServer) handleHealthCheck(
 			belowThresholdErrorRates := []float64{}
 
 			for _, ups := range filteredUpstreams {
-				cfg := ups.Config()
-				mts := metricsTracker.GetUpstreamMethodMetrics(cfg.Id, "*", "*")
+				mts := metricsTracker.GetUpstreamMethodMetrics(ups, "*")
 				if mts != nil && mts.RequestsTotal.Load() > 0 {
 					errorRate := float64(mts.ErrorsTotal.Load()) / float64(mts.RequestsTotal.Load())
 					allErrorRates = append(allErrorRates, errorRate)
@@ -289,7 +292,7 @@ func (s *HttpServer) handleHealthCheck(
 				w,
 				encoder,
 				writeFatalError,
-				true,
+				&common.TRUE,
 			)
 		}
 	} else {
@@ -361,7 +364,7 @@ func checkEvmChainId(ctx context.Context, upstreams []*upstream.Upstream, upstre
 
 			expectedChainId := ups.Config().Evm.ChainId
 			mu.Lock()
-			upstreamResult := upstreamsDetails[ups.Config().Id]
+			upstreamResult := upstreamsDetails[ups.Id()]
 			upstreamResult["expectedChainId"] = expectedChainId
 			mu.Unlock()
 

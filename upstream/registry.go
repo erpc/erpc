@@ -203,6 +203,12 @@ func (u *UpstreamsRegistry) GetNetworkUpstreams(ctx context.Context, networkId s
 	return u.networkUpstreams[networkId]
 }
 
+func (u *UpstreamsRegistry) GetAllUpstreams() []*Upstream {
+	u.upstreamsMu.RLock()
+	defer u.upstreamsMu.RUnlock()
+	return u.allUpstreams
+}
+
 func (u *UpstreamsRegistry) GetSortedUpstreams(ctx context.Context, networkId, method string) ([]*Upstream, error) {
 	_, span := common.StartDetailSpan(ctx, "UpstreamsRegistry.GetSortedUpstreams")
 	defer span.End()
@@ -251,7 +257,7 @@ func (u *UpstreamsRegistry) GetSortedUpstreams(ctx context.Context, networkId, m
 
 		// Initialize scores for this method on this network and "any" network
 		for _, ups := range methodUpsList {
-			upid := ups.Config().Id
+			upid := ups.Id()
 			if _, ok := u.upstreamScores[upid]; !ok {
 				u.upstreamScores[upid] = make(map[string]map[string]float64)
 			}
@@ -284,14 +290,14 @@ func (u *UpstreamsRegistry) RUnlockUpstreams() {
 func (u *UpstreamsRegistry) sortAndFilterUpstreams(networkId, method string, upstreams []*Upstream) []*Upstream {
 	activeUpstreams := make([]*Upstream, 0)
 	for _, ups := range upstreams {
-		if !u.metricsTracker.IsCordoned(ups.Config().Id, networkId, method) {
+		if !u.metricsTracker.IsCordoned(ups, method) {
 			activeUpstreams = append(activeUpstreams, ups)
 		}
 	}
 	// Calculate total score
 	totalScore := 0.0
 	for _, ups := range activeUpstreams {
-		score := u.upstreamScores[ups.Config().Id][networkId][method]
+		score := u.upstreamScores[ups.Id()][networkId][method]
 		if score > 0 {
 			totalScore += score
 		}
@@ -306,8 +312,8 @@ func (u *UpstreamsRegistry) sortAndFilterUpstreams(networkId, method string, ups
 	}
 
 	sort.Slice(activeUpstreams, func(i, j int) bool {
-		scoreI := u.upstreamScores[activeUpstreams[i].Config().Id][networkId][method]
-		scoreJ := u.upstreamScores[activeUpstreams[j].Config().Id][networkId][method]
+		scoreI := u.upstreamScores[activeUpstreams[i].Id()][networkId][method]
+		scoreJ := u.upstreamScores[activeUpstreams[j].Id()][networkId][method]
 
 		if scoreI < 0 {
 			scoreI = 0
@@ -321,17 +327,17 @@ func (u *UpstreamsRegistry) sortAndFilterUpstreams(networkId, method string, ups
 		}
 
 		// If values are equal, sort by upstream ID for consistency
-		return activeUpstreams[i].Config().Id < activeUpstreams[j].Config().Id
+		return activeUpstreams[i].Id() < activeUpstreams[j].Id()
 	})
 
 	if u.logger.Trace().Enabled() {
 		ids := make([]string, len(activeUpstreams))
 		for i, ups := range activeUpstreams {
-			ids[i] = ups.Config().Id
+			ids[i] = ups.Id()
 		}
 		scores := make([]float64, len(activeUpstreams))
 		for i, ups := range activeUpstreams {
-			scores[i] = u.upstreamScores[ups.Config().Id][networkId][method]
+			scores[i] = u.upstreamScores[ups.Id()][networkId][method]
 		}
 		// u.logger.Trace().
 		// 	Str("networkId", networkId).
@@ -404,7 +410,7 @@ func (u *UpstreamsRegistry) buildUpstreamBootstrapTask(upsCfg *common.UpstreamCo
 			u.upstreamsMu.RLock()
 			var ups *Upstream
 			for _, up := range u.allUpstreams {
-				if up.Config().Id == cfg.Id {
+				if up.Id() == cfg.Id {
 					ups = up
 					break
 				}
@@ -463,7 +469,7 @@ func (u *UpstreamsRegistry) buildProviderBootstrapTask(
 				return err
 			}
 
-			upsCfgs, err := provider.GenerateUpstreamConfigs(networkId)
+			upsCfgs, err := provider.GenerateUpstreamConfigs(ctx, &lg, networkId)
 			if err != nil {
 				return err
 			}
@@ -531,7 +537,7 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 	// Add to network upstreams map
 	exists := false
 	for _, existingUps := range u.networkUpstreams[networkId] {
-		if existingUps.Config().Id == cfg.Id {
+		if existingUps.Id() == cfg.Id {
 			exists = true
 			break
 		}
@@ -543,7 +549,7 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 	// Add to wildcard sorted upstreams if not already present
 	found := false
 	for _, existingUps := range u.sortedUpstreams["*"]["*"] {
-		if existingUps.Config().Id == cfg.Id {
+		if existingUps.Id() == cfg.Id {
 			found = true
 			break
 		}
@@ -555,7 +561,7 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 	for method, netUps := range u.sortedUpstreams["*"] {
 		methodUpsFound := false
 		for _, existingUps := range netUps {
-			if existingUps.Config().Id == cfg.Id {
+			if existingUps.Id() == cfg.Id {
 				methodUpsFound = true
 				break
 			}
@@ -568,7 +574,7 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 	// Add to network-specific sorted upstreams if not already present
 	found = false
 	for _, existingUps := range u.sortedUpstreams[networkId]["*"] {
-		if existingUps.Config().Id == cfg.Id {
+		if existingUps.Id() == cfg.Id {
 			found = true
 			break
 		}
@@ -579,7 +585,7 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 		for method, netUps := range u.sortedUpstreams[networkId] {
 			methodUpsFound := false
 			for _, existingUps := range netUps {
-				if existingUps.Config().Id == cfg.Id {
+				if existingUps.Id() == cfg.Id {
 					methodUpsFound = true
 					break
 				}
@@ -624,11 +630,16 @@ func (u *UpstreamsRegistry) updateScoresAndSort(ctx context.Context, networkId, 
 	_, span := common.StartDetailSpan(ctx, "UpstreamsRegistry.UpdateScoresAndSort")
 	defer span.End()
 
-	var p90Latencies, errorRates, totalRequests, throttledRates, blockHeadLags, finalizationLags []float64
+	var respLatencies, errorRates, totalRequests, throttledRates, blockHeadLags, finalizationLags []float64
 
 	for _, ups := range upsList {
-		metrics := u.metricsTracker.GetUpstreamMethodMetrics(ups.Config().Id, networkId, method)
-		p90Latencies = append(p90Latencies, metrics.ResponseQuantiles.GetQuantile(0.90).Seconds())
+		qn := 0.70
+		cfg := ups.Config()
+		if cfg != nil && cfg.Routing != nil && cfg.Routing.ScoreLatencyQuantile != 0 {
+			qn = cfg.Routing.ScoreLatencyQuantile
+		}
+		metrics := u.metricsTracker.GetUpstreamMethodMetrics(ups, method)
+		respLatencies = append(respLatencies, metrics.ResponseQuantiles.GetQuantile(qn).Seconds())
 		blockHeadLags = append(blockHeadLags, float64(metrics.BlockHeadLag.Load()))
 		finalizationLags = append(finalizationLags, float64(metrics.FinalizationLag.Load()))
 		errorRates = append(errorRates, metrics.ErrorRate())
@@ -636,20 +647,20 @@ func (u *UpstreamsRegistry) updateScoresAndSort(ctx context.Context, networkId, 
 		totalRequests = append(totalRequests, float64(metrics.RequestsTotal.Load()))
 	}
 
-	normP90Latencies := normalizeValues(p90Latencies)
+	normRespLatencies := normalizeValuesLog(respLatencies)
 	normErrorRates := normalizeValues(errorRates)
 	normThrottledRates := normalizeValues(throttledRates)
 	normTotalRequests := normalizeValues(totalRequests)
-	normBlockHeadLags := normalizeValues(blockHeadLags)
-	normFinalizationLags := normalizeValues(finalizationLags)
+	normBlockHeadLags := normalizeValuesLog(blockHeadLags)
+	normFinalizationLags := normalizeValuesLog(finalizationLags)
 	for i, ups := range upsList {
-		upsId := ups.Config().Id
+		upsId := ups.Id()
 		score := u.calculateScore(
 			ups,
 			networkId,
 			method,
 			normTotalRequests[i],
-			normP90Latencies[i],
+			normRespLatencies[i],
 			normErrorRates[i],
 			normThrottledRates[i],
 			normBlockHeadLags[i],
@@ -662,7 +673,17 @@ func (u *UpstreamsRegistry) updateScoresAndSort(ctx context.Context, networkId, 
 				upsc[networkId][method] = score
 			}
 		}
-		telemetry.MetricUpstreamScoreOverall.WithLabelValues(u.prjId, networkId, upsId, method).Set(score)
+		ups.logger.Trace().
+			Str("method", method).
+			Float64("score", score).
+			Float64("normalizedTotalRequests", normTotalRequests[i]).
+			Float64("normalizedRespLatency", normRespLatencies[i]).
+			Float64("normalizedErrorRate", normErrorRates[i]).
+			Float64("normalizedThrottledRate", normThrottledRates[i]).
+			Float64("normalizedBlockHeadLag", normBlockHeadLags[i]).
+			Float64("normalizedFinalizationLag", normFinalizationLags[i]).
+			Msg("score updated")
+		telemetry.MetricUpstreamScoreOverall.WithLabelValues(u.prjId, ups.VendorName(), networkId, upsId, method).Set(score)
 	}
 
 	upsList = u.sortAndFilterUpstreams(networkId, method, upsList)
@@ -674,7 +695,7 @@ func (u *UpstreamsRegistry) calculateScore(
 	networkId,
 	method string,
 	normTotalRequests,
-	normP90Latency,
+	normRespLatency,
 	normErrorRate,
 	normThrottledRate,
 	normBlockHeadLag,
@@ -689,9 +710,9 @@ func (u *UpstreamsRegistry) calculateScore(
 		score += expCurve(1-normTotalRequests) * mul.TotalRequests
 	}
 
-	// Higher score for lower p90 latency
-	if mul.P90Latency > 0 {
-		score += expCurve(1-normP90Latency) * mul.P90Latency
+	// Higher score for lower latency
+	if mul.RespLatency > 0 {
+		score += expCurve(1-normRespLatency) * mul.RespLatency
 	}
 
 	// Higher score for lower error rate
@@ -742,6 +763,74 @@ func normalizeValues(values []float64) []float64 {
 	return normalized
 }
 
+func normalizeValuesLog(values []float64) []float64 {
+	if len(values) == 0 {
+		return []float64{}
+	}
+
+	// Find the true min and max values in the input slice.
+	// Assumes values are non-negative based on typical use for latencies, lags etc.
+	dataMin := values[0]
+	dataMax := values[0]
+	for i := 1; i < len(values); i++ {
+		if values[i] < dataMin {
+			dataMin = values[i]
+		}
+		if values[i] > dataMax {
+			dataMax = values[i]
+		}
+	}
+
+	normalized := make([]float64, len(values))
+
+	if dataMin == dataMax {
+		// If all values are the same
+		if dataMin == 0.0 {
+			// All values are 0, result is all 0s (implicitly done by make).
+		} else {
+			// All values are a positive constant C, result is all 1s.
+			// This makes behavior consistent with normalizeValues.
+			for i := range normalized {
+				normalized[i] = 1.0
+			}
+		}
+		return normalized
+	}
+
+	// Apply log(v+1) transformation and scale to [0, 1]
+	// log(dataMin+1) will be the minimum of the log-transformed values.
+	// log(dataMax+1) will be the maximum of the log-transformed values.
+	logMinOffset := math.Log(dataMin + 1.0)
+	logMaxOffset := math.Log(dataMax + 1.0)
+	denom := logMaxOffset - logMinOffset
+
+	// Since dataMin < dataMax, dataMin+1 < dataMax+1,
+	// so logMinOffset < logMaxOffset, and denom > 0.
+	// Thus, no division by zero here.
+
+	for i, v := range values {
+		if v < 0 {
+			// This case should ideally not happen for metrics like latency.
+			// If it can, specific handling might be needed.
+			// For now, map negative values to 0 to avoid math.Log errors with v+1.0 <= 0.
+			normalized[i] = 0.0
+			continue
+		}
+		logVOffset := math.Log(v + 1.0)
+		norm := (logVOffset - logMinOffset) / denom
+
+		// Clamp to [0, 1] as a safeguard against potential floating-point inaccuracies.
+		if norm < 0.0 {
+			norm = 0.0
+		} else if norm > 1.0 {
+			norm = 1.0
+		}
+		normalized[i] = norm
+	}
+
+	return normalized
+}
+
 func (u *UpstreamsRegistry) GetUpstreamsHealth() (*UpstreamsHealth, error) {
 	u.upstreamsMu.RLock()
 	defer u.upstreamsMu.RUnlock()
@@ -753,7 +842,7 @@ func (u *UpstreamsRegistry) GetUpstreamsHealth() (*UpstreamsHealth, error) {
 		for method, ups := range methods {
 			upstreamIds := make([]string, len(ups))
 			for i, ups := range ups {
-				upstreamIds[i] = ups.Config().Id
+				upstreamIds[i] = ups.Id()
 			}
 			if _, ok := sortedUpstreams[nw]; !ok {
 				sortedUpstreams[nw] = make(map[string][]string)

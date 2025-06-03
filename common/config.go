@@ -41,7 +41,7 @@ type Config struct {
 
 // LoadConfig loads the configuration from the specified file.
 // It supports both YAML and TypeScript (.ts) files.
-func LoadConfig(fs afero.Fs, filename string) (*Config, error) {
+func LoadConfig(fs afero.Fs, filename string, opts *DefaultOptions) (*Config, error) {
 	data, err := afero.ReadFile(fs, filename)
 	if err != nil {
 		return nil, err
@@ -65,7 +65,7 @@ func LoadConfig(fs afero.Fs, filename string) (*Config, error) {
 		}
 	}
 
-	err = cfg.SetDefaults()
+	err = cfg.SetDefaults(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -79,17 +79,20 @@ func LoadConfig(fs afero.Fs, filename string) (*Config, error) {
 }
 
 type ServerConfig struct {
-	ListenV4     *bool           `yaml:"listenV4,omitempty" json:"listenV4"`
-	HttpHostV4   *string         `yaml:"httpHostV4,omitempty" json:"httpHostV4"`
-	ListenV6     *bool           `yaml:"listenV6,omitempty" json:"listenV6"`
-	HttpHostV6   *string         `yaml:"httpHostV6,omitempty" json:"httpHostV6"`
-	HttpPort     *int            `yaml:"httpPort,omitempty" json:"httpPort"`
-	MaxTimeout   *Duration       `yaml:"maxTimeout,omitempty" json:"maxTimeout" tstype:"Duration"`
-	ReadTimeout  *Duration       `yaml:"readTimeout,omitempty" json:"readTimeout" tstype:"Duration"`
-	WriteTimeout *Duration       `yaml:"writeTimeout,omitempty" json:"writeTimeout" tstype:"Duration"`
-	EnableGzip   *bool           `yaml:"enableGzip,omitempty" json:"enableGzip"`
-	TLS          *TLSConfig      `yaml:"tls,omitempty" json:"tls"`
-	Aliasing     *AliasingConfig `yaml:"aliasing" json:"aliasing"`
+	ListenV4            *bool           `yaml:"listenV4,omitempty" json:"listenV4"`
+	HttpHostV4          *string         `yaml:"httpHostV4,omitempty" json:"httpHostV4"`
+	ListenV6            *bool           `yaml:"listenV6,omitempty" json:"listenV6"`
+	HttpHostV6          *string         `yaml:"httpHostV6,omitempty" json:"httpHostV6"`
+	HttpPort            *int            `yaml:"httpPort,omitempty" json:"httpPort"`
+	MaxTimeout          *Duration       `yaml:"maxTimeout,omitempty" json:"maxTimeout" tstype:"Duration"`
+	ReadTimeout         *Duration       `yaml:"readTimeout,omitempty" json:"readTimeout" tstype:"Duration"`
+	WriteTimeout        *Duration       `yaml:"writeTimeout,omitempty" json:"writeTimeout" tstype:"Duration"`
+	EnableGzip          *bool           `yaml:"enableGzip,omitempty" json:"enableGzip"`
+	TLS                 *TLSConfig      `yaml:"tls,omitempty" json:"tls"`
+	Aliasing            *AliasingConfig `yaml:"aliasing" json:"aliasing"`
+	WaitBeforeShutdown  *Duration       `yaml:"waitBeforeShutdown,omitempty" json:"waitBeforeShutdown" tstype:"Duration"`
+	WaitAfterShutdown   *Duration       `yaml:"waitAfterShutdown,omitempty" json:"waitAfterShutdown" tstype:"Duration"`
+	IncludeErrorDetails *bool           `yaml:"includeErrorDetails,omitempty" json:"includeErrorDetails"`
 }
 
 type HealthCheckConfig struct {
@@ -160,9 +163,17 @@ type SharedStateConfig struct {
 }
 
 type CacheConfig struct {
-	Connectors []*ConnectorConfig            `yaml:"connectors,omitempty" json:"connectors" tstype:"TsConnectorConfig[]"`
-	Policies   []*CachePolicyConfig          `yaml:"policies,omitempty" json:"policies"`
-	Methods    map[string]*CacheMethodConfig `yaml:"methods,omitempty" json:"methods"`
+	Connectors  []*ConnectorConfig            `yaml:"connectors,omitempty" json:"connectors" tstype:"TsConnectorConfig[]"`
+	Policies    []*CachePolicyConfig          `yaml:"policies,omitempty" json:"policies"`
+	Methods     map[string]*CacheMethodConfig `yaml:"methods,omitempty" json:"methods"`
+	Compression *CompressionConfig            `yaml:"compression,omitempty" json:"compression"`
+}
+
+type CompressionConfig struct {
+	Enabled   *bool  `yaml:"enabled,omitempty" json:"enabled"`
+	Algorithm string `yaml:"algorithm,omitempty" json:"algorithm"` // "zstd" for now, can be extended
+	ZstdLevel string `yaml:"zstdLevel,omitempty" json:"zstdLevel"` // "fastest", "default", "better", "best"
+	Threshold int    `yaml:"threshold,omitempty" json:"threshold"` // Minimum size in bytes to compress
 }
 
 type CacheMethodConfig struct {
@@ -204,7 +215,9 @@ type ConnectorConfig struct {
 }
 
 type MemoryConnectorConfig struct {
-	MaxItems int `yaml:"maxItems" json:"maxItems"`
+	MaxItems     int    `yaml:"maxItems" json:"maxItems"`
+	MaxTotalSize string `yaml:"maxTotalSize" json:"maxTotalSize"`
+	EmitMetrics  *bool  `yaml:"emitMetrics,omitempty" json:"emitMetrics,omitempty"`
 }
 
 type MockConnectorConfig struct {
@@ -224,16 +237,17 @@ type TLSConfig struct {
 }
 
 type RedisConnectorConfig struct {
-	Addr         string     `yaml:"addr" json:"addr"`
-	Username     string     `yaml:"username,omitempty" json:"username"`
-	Password     string     `yaml:"password" json:"-"`
-	DB           int        `yaml:"db" json:"db"`
-	TLS          *TLSConfig `yaml:"tls" json:"tls"`
-	ConnPoolSize int        `yaml:"connPoolSize" json:"connPoolSize"`
-	URI          string     `yaml:"uri,omitempty" json:"uri"`
-	InitTimeout  Duration   `yaml:"initTimeout,omitempty" json:"initTimeout" tstype:"Duration"`
-	GetTimeout   Duration   `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
-	SetTimeout   Duration   `yaml:"setTimeout,omitempty" json:"setTimeout" tstype:"Duration"`
+	Addr              string     `yaml:"addr" json:"addr"`
+	Username          string     `yaml:"username,omitempty" json:"username"`
+	Password          string     `yaml:"password" json:"-"`
+	DB                int        `yaml:"db" json:"db"`
+	TLS               *TLSConfig `yaml:"tls" json:"tls"`
+	ConnPoolSize      int        `yaml:"connPoolSize" json:"connPoolSize"`
+	URI               string     `yaml:"uri,omitempty" json:"uri"`
+	InitTimeout       Duration   `yaml:"initTimeout,omitempty" json:"initTimeout" tstype:"Duration"`
+	GetTimeout        Duration   `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
+	SetTimeout        Duration   `yaml:"setTimeout,omitempty" json:"setTimeout" tstype:"Duration"`
+	LockRetryInterval Duration   `yaml:"lockRetryInterval,omitempty" json:"lockRetryInterval" tstype:"Duration"`
 }
 
 func (r *RedisConnectorConfig) MarshalJSON() ([]byte, error) {
@@ -263,7 +277,9 @@ type DynamoDBConnectorConfig struct {
 	InitTimeout       Duration       `yaml:"initTimeout,omitempty" json:"initTimeout" tstype:"Duration"`
 	GetTimeout        Duration       `yaml:"getTimeout,omitempty" json:"getTimeout" tstype:"Duration"`
 	SetTimeout        Duration       `yaml:"setTimeout,omitempty" json:"setTimeout" tstype:"Duration"`
+	MaxRetries        int            `yaml:"maxRetries,omitempty" json:"maxRetries"`
 	StatePollInterval Duration       `yaml:"statePollInterval,omitempty" json:"statePollInterval" tstype:"Duration"`
+	LockRetryInterval Duration       `yaml:"lockRetryInterval,omitempty" json:"lockRetryInterval" tstype:"Duration"`
 }
 
 type PostgreSQLConnectorConfig struct {
@@ -414,7 +430,8 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 }
 
 type RoutingConfig struct {
-	ScoreMultipliers []*ScoreMultiplierConfig `yaml:"scoreMultipliers" json:"scoreMultipliers"`
+	ScoreMultipliers     []*ScoreMultiplierConfig `yaml:"scoreMultipliers" json:"scoreMultipliers"`
+	ScoreLatencyQuantile float64                  `yaml:"scoreLatencyQuantile,omitempty" json:"scoreLatencyQuantile"`
 }
 
 func (c *RoutingConfig) Copy() *RoutingConfig {
@@ -439,11 +456,14 @@ type ScoreMultiplierConfig struct {
 	Method          string  `yaml:"method" json:"method"`
 	Overall         float64 `yaml:"overall" json:"overall"`
 	ErrorRate       float64 `yaml:"errorRate" json:"errorRate"`
-	P90Latency      float64 `yaml:"p90latency" json:"p90latency"`
+	RespLatency     float64 `yaml:"respLatency" json:"respLatency"`
 	TotalRequests   float64 `yaml:"totalRequests" json:"totalRequests"`
 	ThrottledRate   float64 `yaml:"throttledRate" json:"throttledRate"`
 	BlockHeadLag    float64 `yaml:"blockHeadLag" json:"blockHeadLag"`
 	FinalizationLag float64 `yaml:"finalizationLag" json:"finalizationLag"`
+
+	// @deprecated use RespLatency instead
+	DeprecatedP90Latency float64 `yaml:"p90latency" json:"p90latency"`
 }
 
 func (c *ScoreMultiplierConfig) Copy() *ScoreMultiplierConfig {
@@ -521,7 +541,8 @@ type EvmUpstreamConfig struct {
 	GetLogsMaxAllowedRange             int64       `yaml:"getLogsMaxAllowedRange,omitempty" json:"getLogsMaxAllowedRange"`
 	GetLogsMaxAllowedAddresses         int64       `yaml:"getLogsMaxAllowedAddresses,omitempty" json:"getLogsMaxAllowedAddresses"`
 	GetLogsMaxAllowedTopics            int64       `yaml:"getLogsMaxAllowedTopics,omitempty" json:"getLogsMaxAllowedTopics"`
-
+	GetLogsSplitOnError                *bool       `yaml:"getLogsSplitOnError,omitempty" json:"getLogsSplitOnError"`
+	SkipWhenSyncing                    *bool       `yaml:"skipWhenSyncing,omitempty" json:"skipWhenSyncing"`
 	// TODO: remove deprecated alias (backward compat): maps to GetLogsAutoSplittingRangeThreshold
 	GetLogsMaxBlockRange int64 `yaml:"getLogsMaxBlockRange,omitempty" json:"-"`
 }

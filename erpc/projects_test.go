@@ -53,7 +53,7 @@ func TestProject_Forward(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -146,7 +146,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -260,7 +260,7 @@ func TestProject_TimeoutScenarios(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -392,7 +392,7 @@ func TestProject_LazyLoadNetworkDefaults(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -488,7 +488,7 @@ func TestProject_NetworkAlias(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})
@@ -584,7 +584,7 @@ func TestProject_NetworkAlias(t *testing.T) {
 			Connector: &common.ConnectorConfig{
 				Driver: "memory",
 				Memory: &common.MemoryConnectorConfig{
-					MaxItems: 100_000,
+					MaxItems: 100_000, MaxTotalSize: "1GB",
 				},
 			},
 		})

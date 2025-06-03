@@ -10,22 +10,24 @@ const ERPC_BASE_URL = __ENV.ERPC_BASE_URL || 'http://localhost:4000/main/evm/';
 const TRANSFER_EVENT_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 
 const CHAINS = {
-  ETH: {
-    id: '1',
-    blockMin: 0x1006F40,
-    blockMax: 0x1406F40,
-    cached: {
-      latestBlock: null,
-      latestBlockTimestamp: 0
-    }
-  },
+  // ETH: {
+  //   id: '1',
+  //   blockMin: 0x1006F40,
+  //   blockMax: 0x1406F40,
+  //   cached: {
+  //     latestBlock: null,
+  //     latestBlockTimestamp: 0,
+  //     blockHashSamplePool: []
+  //   }
+  // },
   // ABS: {
   //   id: '11124',
   //   blockMin: 0x194920,
   //   blockMax: 0x694920,
   //   cached: {
   //     latestBlock: null,
-  //     latestBlockTimestamp: 0
+  //     latestBlockTimestamp: 0,
+  //     blockHashSamplePool: []
   //   }
   // },
   // POLYGON: {
@@ -34,16 +36,28 @@ const CHAINS = {
   //   blockMax: 0x40D9900,
   //   cached: {
   //     latestBlock: null,
-  //     latestBlockTimestamp: 0
+  //     latestBlockTimestamp: 0,
+  //     blockHashSamplePool: []
   //   }
   // },
-  // ARBITRUM: {
-  //   id: '42161',
-  //   blockMin: 0x10E1A300,
-  //   blockMax: 0x11E1A300,
+  ARBITRUM: {
+    id: '42161',
+    blockMin: 0x9000000,
+    blockMax: 0x11000000,
+    cached: {
+      latestBlock: null,
+      latestBlockTimestamp: 0,
+      blockHashSamplePool: []
+    }
+  },
+  // BASE: {
+  //   id: '8453',
+  //   blockMin: 0x1312D00,
+  //   blockMax: 0x1D05E9C,
   //   cached: {
   //     latestBlock: null,
-  //     latestBlockTimestamp: 0
+  //     latestBlockTimestamp: 0,
+  //     blockHashSamplePool: []
   //   }
   // }
 };
@@ -54,10 +68,11 @@ if (__ENV.RANDOM_SEED) {
 
 // Traffic pattern weights (in percentage, should sum to 100)
 const TRAFFIC_PATTERNS = {
-  RANDOM_HISTORICAL_BLOCKS: 15,      // Fetch random blocks from history
-  RANDOM_LOG_RANGES: 15,             // Get logs for random block ranges
-  RANDOM_HISTORICAL_RECEIPTS: 15,    // Get random transaction receipts from history
-  TRACE_RANDOM_TRANSACTIONS: 10,     // Trace random transactions with various methods
+  RANDOM_HISTORICAL_BLOCKS: 30,      // Fetch random blocks from history
+  RANDOM_LOG_RANGES: 60,             // Get logs for random block ranges
+  RANDOM_HISTORICAL_RECEIPTS: 10,    // Get random transaction receipts from history
+  RANDOM_TRACE_TRANSACTIONS: 0,     // Trace random transactions with various methods
+  RANDOM_BLOCK_BY_HASH: 0,         // Get random block by hash
 };
 
 // Configuration
@@ -72,11 +87,11 @@ export const options = {
   scenarios: {    
     constant_request_rate: {
       executor: 'constant-arrival-rate',
-      rate: 100,
+      rate: 200,
       timeUnit: '1s',
-      duration: '6m',
-      preAllocatedVUs: 500,
-      maxVUs: 500,
+      duration: '30m',
+      preAllocatedVUs: 200,
+      maxVUs: 1000,
     },
   },
 };
@@ -114,6 +129,20 @@ function randomHistoricalBlocks(http, params, chain) {
   return http.post(ERPC_BASE_URL + chain.id, payload, params);
 }
 
+function randomBlockByHash(http, params, chain) {
+  if (!chain.cached.blockHashSamplePool.length) {
+    return
+  }
+  const selectedHash = chain.cached.blockHashSamplePool[randomIntBetween(0, chain.cached.blockHashSamplePool.length - 1)];
+  const payload = JSON.stringify({
+    jsonrpc: "2.0",
+    method: "eth_getBlockByHash",
+    params: [selectedHash, true],  
+    id: Math.floor(Math.random() * 100000000)
+  });
+  return http.post(ERPC_BASE_URL + chain.id, payload, params);
+}
+
 function randomLogRanges(http, params, chain) {
   const { fromBlock, toBlock } = getRandomBlockRange(chain);
   const payload = JSON.stringify({
@@ -126,7 +155,21 @@ function randomLogRanges(http, params, chain) {
     }],
     id: Math.floor(Math.random() * 100000000)
   });
-  return http.post(ERPC_BASE_URL + chain.id, payload, params);
+  const res = http.post(ERPC_BASE_URL + chain.id, payload, params);
+  if (res.status < 300) {
+    try {
+      const body = JSON.parse(res.body);
+      if (body && body.result && body.result.length > 0) {
+        for (const log of body.result) {
+          if (chain.cached.blockHashSamplePool.indexOf(log.blockHash) === -1) {
+            console.debug(`Adding block hash to sample pool: ${log.blockHash}`);
+            chain.cached.blockHashSamplePool.push(log.blockHash);
+          }
+        }
+      }
+    } catch(e){}
+  }
+  return res;
 }
 
 function randomHistoricalReceipts(http, params, chain) {
@@ -263,8 +306,11 @@ export default async function () {
         case 'RANDOM_HISTORICAL_RECEIPTS':
           res = randomHistoricalReceipts(http, params, selectedChain);
           break;
-        case 'TRACE_RANDOM_TRANSACTIONS':
+        case 'RANDOM_TRACE_TRANSACTIONS':
           res = await traceRandomTransaction(http, params, selectedChain);
+          break;
+        case 'RANDOM_BLOCK_BY_HASH':
+          res = randomBlockByHash(http, params, selectedChain);
           break;
       }
       break;
@@ -290,7 +336,7 @@ export default async function () {
       parsedBody = JSON.parse(res.body);
     } catch (e) {
       parsingErrorsCounter.add(1, tags);
-      console.error(`Failed to parse response body: ${e}`);
+      console.error(`Failed to parse response body: ${e} body: ${res.body?.slice(0, 100)}(.........)${res.body?.slice(-100)}`);
     }
 
     if (parsedBody?.error?.code) {
@@ -308,6 +354,8 @@ export default async function () {
         return true;
       },
     }, tags);
+  } else {
+    console.debug(`skipped as no response for ${tags['pattern']} ${selectedChain.id}`);
   }
 }
 

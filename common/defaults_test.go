@@ -1,6 +1,7 @@
 package common
 
 import (
+	"net/url"
 	"testing"
 	"time"
 
@@ -143,7 +144,7 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 				},
 			},
 		}
-		err := cfg.SetDefaults()
+		err := cfg.SetDefaults(&DefaultOptions{})
 		assert.Nil(t, err)
 		assert.Len(t, cfg.Projects[0].Upstreams, 2)
 		assert.Len(t, cfg.Projects[0].Providers, 1)
@@ -169,7 +170,7 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 			},
 		}
 
-		err := cfg.SetDefaults()
+		err := cfg.SetDefaults(&DefaultOptions{})
 		assert.Nil(t, err, "SetDefaults should not return an error")
 
 		// Verify that the alchemy upstream has been converted to a provider
@@ -231,7 +232,7 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 		}
 
 		// Apply defaults
-		err := cfg.SetDefaults()
+		err := cfg.SetDefaults(&DefaultOptions{})
 		assert.Nil(t, err, "SetDefaults should not return an error")
 
 		// Verify failsafe retry is only applied to the first upstream
@@ -262,5 +263,44 @@ func TestSetDefaults_UpstreamConfig(t *testing.T) {
 		// Validate the project configuration
 		err = cfg.Validate()
 		assert.Nil(t, err, "Validate should pass when providers and upstreams with defaults are present")
+	})
+}
+
+func TestBuildProviderSettings(t *testing.T) {
+	// Test case for Chainstack with query parameters
+	t.Run("chainstack with filters", func(t *testing.T) {
+		endpoint, _ := url.Parse("chainstack://test-api-key?project=proj-123&organization=org-456&region=us-east-1&provider=aws&type=dedicated")
+		settings, err := buildProviderSettings("chainstack", endpoint)
+		assert.NoError(t, err)
+		assert.Equal(t, "test-api-key", settings["apiKey"])
+		assert.Equal(t, "proj-123", settings["project"])
+		assert.Equal(t, "org-456", settings["organization"])
+		assert.Equal(t, "us-east-1", settings["region"])
+		assert.Equal(t, "aws", settings["provider"])
+		assert.Equal(t, "dedicated", settings["type"])
+	})
+
+	t.Run("chainstack with partial filters", func(t *testing.T) {
+		endpoint, _ := url.Parse("chainstack://test-api-key?project=proj-123&type=shared")
+		settings, err := buildProviderSettings("chainstack", endpoint)
+		assert.NoError(t, err)
+		assert.Equal(t, "test-api-key", settings["apiKey"])
+		assert.Equal(t, "proj-123", settings["project"])
+		assert.Equal(t, "shared", settings["type"])
+		assert.Nil(t, settings["organization"])
+		assert.Nil(t, settings["region"])
+		assert.Nil(t, settings["provider"])
+	})
+
+	t.Run("chainstack without filters", func(t *testing.T) {
+		endpoint, _ := url.Parse("chainstack://test-api-key")
+		settings, err := buildProviderSettings("chainstack", endpoint)
+		assert.NoError(t, err)
+		assert.Equal(t, "test-api-key", settings["apiKey"])
+		assert.Nil(t, settings["project"])
+		assert.Nil(t, settings["organization"])
+		assert.Nil(t, settings["region"])
+		assert.Nil(t, settings["provider"])
+		assert.Nil(t, settings["type"])
 	})
 }

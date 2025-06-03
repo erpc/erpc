@@ -9,6 +9,7 @@ import { Callout, Tabs, Tab } from "nextra/components";
 Providers make it easy to add well-known third-parties RPC endpoints quickly. Here are the supported providers:
 
 - [`repository`](#repository) A special provider to automatically add "public" RPC endpoints for 2,000+ EVM chains.
+- [`erpc`](#erpc) Accepts erpc.cloud endpoint and automatically adds all their EVM chains.
 - [`alchemy`](#alchemy) Accepts alchemy.com api key and automatically adds all their EVM chains.
 - [`drpc`](#drpc) Accepts drpc.org api key and automatically adds all their EVM chains.
 - [`blastapi`](#blastapi) Accepts blastapi.io api key and automatically adds all their EVM chains.
@@ -19,6 +20,11 @@ Providers make it easy to add well-known third-parties RPC endpoints quickly. He
 - [`etherspot`](#etherspot) Accepts etherspot.io rpc endpoint for account-abstraction (ERC-4337) support.
 - [`dwellir`](#dwellir) Accepts dwellir.com api key and automatically adds all their EVM chains.
 - [`conduit`](#conduit) Accepts conduit.xyz api key and automatically adds all their EVM chains.
+- [`superchain`](#superchain) Accepts [superchain registry](https://github.com/ethereum-optimism/superchain-registry/blob/main/chainList.json) and automatically adds all chains from it.
+- [`chainstack`](#chainstack) Accepts chainstack.com api key and automatically adds all their EVM chains.
+- [`onfinality`](#onfinality) Accepts onfinality.io api key and automatically adds all their EVM chains.
+- [`tenderly`](#tenderly) Accepts tenderly.co api key and automatically adds all their EVM chains.
+- [`blockpi`](#blockpi) Accepts blockpi.io api key and automatically adds all their EVM chains.
 
 <Callout type='info'>
   eRPC supports **any EVM-compatible** JSON-RPC endpoint when using [`evm` type](/config/projects/upstreams). 
@@ -137,6 +143,52 @@ export default createConfig({
         {
           endpoint: "drpc://YOUR_DRPC_API_KEY",
           // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+#### `erpc`
+
+Built for [eRPC Cloud](https://erpc.cloud) endpoints to make it easier to connect to eRPC-hosted RPC services. You don't have to pass chainId as that will be automatically detected based on the request you send.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+
+      # With project and architecture specified
+      - endpoint: erpc://xxx.aws.erpc.cloud/project/evm
+
+      # With authentication secret (optional)
+      - endpoint: erpc://xxx.aws.erpc.cloud/project/evm?secret=xxxxx
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        // With project and architecture specified
+        {
+          endpoint: "erpc://xxx.aws.erpc.cloud/project/evm",
+        },
+        // With authentication secret (optional)
+        {
+          endpoint: "erpc://xxx.aws.erpc.cloud/project/evm?secret=xxxxx",
         },
       ],
     },
@@ -471,6 +523,227 @@ export default createConfig({
 </Tabs.Tab>
 </Tabs>
 
+#### `superchain`
+
+This provider accepts superchain registry json file (e.g [github.com/ethereum-optimism/superchain-registry/main/chainList.json](https://github.com/ethereum-optimism/superchain-registry/blob/main/chainList.json)) and automatically adds all chains from it.
+
+**Note**: If you are using a github URL, you can simply use the shorthand of `superchain://github.com/org/repo/<branch>/chainList.json`. if your url includes `blob`, t will be automatically stripped.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - endpoint: superchain://github.com/ethereum-optimism/superchain-registry/main/chainList.json
+        # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          endpoint: "superchain://github.com/ethereum-optimism/superchain-registry/main/chainList.json",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+#### `tenderly`
+
+Built for [Tenderly](https://tenderly.co) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - endpoint: tenderly://YOUR_TENDERLY_API_KEY
+        # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          endpoint: "tenderly://YOUR_TENDERLY_API_KEY",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+For production traffic consult with Tenderly team about the chains you are going to use and amount of traffic you expect to handle.
+
+#### `chainstack`
+
+Built for [Chainstack](https://chainstack.com) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
+
+<Callout type='info'>
+  This key must be created using [Platform API key](https://docs.chainstack.com/reference/platform-api-getting-started) settings page.
+</Callout>
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      # Simple usage with just API key
+      - endpoint: chainstack://YOUR_CHAINSTACK_PLATFORM_API_KEY
+        # ...
+      
+      # With query parameters for filtering
+      - endpoint: chainstack://YOUR_CHAINSTACK_PLATFORM_API_KEY?project=PROJECT_ID&organization=ORG_ID&region=us-east-1&provider=aws&type=dedicated
+        # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          // Simple usage with just API key
+          endpoint: "chainstack://YOUR_CHAINSTACK_API_KEY",
+          // ...
+        },
+        {
+          // With query parameters for filtering
+          endpoint: "chainstack://YOUR_CHAINSTACK_API_KEY?project=PROJECT_ID&organization=ORG_ID&region=us-east-1&provider=aws&type=dedicated",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+Chainstack supports a wide range of EVM-compatible networks. For production traffic, ensure your Chainstack subscription plan supports the expected load and number of networks you plan to use.
+
+**Supported filter parameters:**
+- `project`: Filter by project ID
+- `organization`: Filter by organization ID  
+- `region`: Filter by region (e.g., `asia-southeast1`, `ap-southeast-1`, `us-west-2`, `us-east-1`, `uksouth`, `eu3`)
+- `provider`: Filter by cloud provider (e.g., `aws`, `azure`, `gcloud`, `vzo`)
+- `type`: Filter by node type (e.g., `shared`, `dedicated`)
+
+#### `onfinality`
+
+Built for [Onfinality](https://onfinality.io/) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - endpoint: onfinality://YOUR_ONFINALITY_API_KEY
+        # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          endpoint: "onfinality://YOUR_ONFINALITY_API_KEY",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
+#### `blockpi`
+
+Built for [BlockPi](https://blockpi.io/) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
+
+<Callout type='info'>
+  You can [contact BlockPi team](https://docs.blockpi.io/supports/contact-us) to get a global API key for all your evm chains.
+</Callout>
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - endpoint: blockpi://YOUR_BLOCKPI_API_KEY
+        # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          endpoint: "blockpi://YOUR_BLOCKPI_API_KEY",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
 
 ## Advanced config
 
@@ -587,6 +860,10 @@ providers:
   - vendor: envio
     settings:
       rootDomain: rpc.hypersync.xyz
+  - vendor: erpc
+    settings:
+      endpoint: xxx.aws.erpc.cloud/project/evm
+      secret: xxxxx # Optional authentication secret
   - vendor: etherspot
     settings:
       apiKey: xxxxx
@@ -614,4 +891,26 @@ providers:
       apiKey: xxxxx
       networksUrl: https://api.conduit.xyz/public/network/all # (optional) Endpoint to fetch all supported networks
       recheckInterval: 24h # (optional) How often to recheck the API for newly added networks (default: 24h)
+  - vendor: superchain
+    settings:
+      registryUrl: "github.com/ethereum-optimism/superchain-registry/main/chainList.json"
+      recheckInterval: 24h # (optional) How often to recheck the registry for newly added chains (default: 24h)
+  - vendor: tenderly
+    settings:
+      apiKey: xxxxx # Your Tenderly API key
+  - vendor: chainstack
+    settings:
+      apiKey: xxxxx # Your Chainstack API key
+      recheckInterval: 1h # (optional) How often to recheck the API for newly added networks (default: 1h)
+      project: xxxxx # (optional) Filter by project ID
+      organization: xxxxx # (optional) Filter by organization ID
+      region: us-east-1 # (optional) Filter by region (asia-southeast1, ap-southeast-1, us-west-2, us-east-1, uksouth, eu3)
+      provider: aws # (optional) Filter by cloud provider (aws, azure, gcloud, vzo)
+      type: dedicated # (optional) Filter by node type (shared, dedicated)
+  - vendor: onfinality
+    settings:
+      apiKey: xxxxx # Your OnFinality API key
+  - vendor: blockpi
+    settings:
+      apiKey: xxxxx # Your BlockPi API key
 ```

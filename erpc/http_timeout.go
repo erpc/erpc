@@ -76,7 +76,7 @@ func (h *timeoutHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(tw.code)
 		_, err := w.Write(tw.wbuf.Bytes())
 		if err != nil {
-			log.Error().Err(err).Msg("failed to write response")
+			log.Warn().Err(err).Msg("failed to write response")
 		}
 	case <-ctx.Done():
 		tw.mu.Lock()

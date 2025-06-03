@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/erpc/erpc/common"
@@ -18,6 +19,7 @@ import (
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/net/http2"
 )
 
 const (
@@ -30,7 +32,8 @@ type DynamoDBConnector struct {
 	id                string
 	logger            *zerolog.Logger
 	initializer       *util.Initializer
-	client            *dynamodb.DynamoDB
+	writeClient       *dynamodb.DynamoDB
+	readClient        *dynamodb.DynamoDB
 	table             string
 	ttlAttributeName  string
 	partitionKeyName  string
@@ -40,11 +43,40 @@ type DynamoDBConnector struct {
 	getTimeout        time.Duration
 	setTimeout        time.Duration
 	statePollInterval time.Duration
+	lockRetryInterval time.Duration
 }
+
+var _ DistributedLock = &dynamoLock{}
 
 type dynamoLock struct {
 	connector *DynamoDBConnector
 	lockKey   string
+}
+
+func (l *dynamoLock) IsNil() bool {
+	return l == nil || l.connector == nil
+}
+
+var sharedReadClient = &http.Client{
+	Transport: &http.Transport{
+		MaxIdleConns:        2048,
+		MaxIdleConnsPerHost: 2048,
+		MaxConnsPerHost:     0, // unlimited, let MaxIdle… guard memory
+		IdleConnTimeout:     120 * time.Second,
+	},
+}
+var sharedWriteClient = &http.Client{
+	Transport: &http.Transport{
+		MaxIdleConns:        256,
+		MaxIdleConnsPerHost: 256,
+		MaxConnsPerHost:     0, // unlimited, let MaxIdle… guard memory
+		IdleConnTimeout:     120 * time.Second,
+	},
+}
+
+func init() {
+	_ = http2.ConfigureTransport(sharedReadClient.Transport.(*http.Transport))
+	_ = http2.ConfigureTransport(sharedWriteClient.Transport.(*http.Transport))
 }
 
 func NewDynamoDBConnector(
@@ -68,6 +100,7 @@ func NewDynamoDBConnector(
 		getTimeout:        cfg.GetTimeout.Duration(),
 		setTimeout:        cfg.SetTimeout.Duration(),
 		statePollInterval: cfg.StatePollInterval.Duration(),
+		lockRetryInterval: cfg.LockRetryInterval.Duration(),
 	}
 
 	// create an Initializer to handle (re)connecting
@@ -92,18 +125,17 @@ func (d *DynamoDBConnector) connectTask(ctx context.Context, cfg *common.DynamoD
 		return err
 	}
 
-	d.client = dynamodb.New(sess, &aws.Config{
-		Endpoint: aws.String(cfg.Endpoint),
-		HTTPClient: &http.Client{
-			Timeout: d.setTimeout,
-			Transport: &http.Transport{
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 100,
-				MaxConnsPerHost:     100,
-				IdleConnTimeout:     120 * time.Second,
-			},
-		},
-		MaxRetries: aws.Int(3),
+	d.writeClient = dynamodb.New(sess, &aws.Config{
+		Endpoint:   aws.String(cfg.Endpoint),
+		HTTPClient: sharedWriteClient,
+		MaxRetries: aws.Int(cfg.MaxRetries),
+		Region:     aws.String(cfg.Region),
+	})
+
+	d.readClient = dynamodb.New(sess, &aws.Config{
+		Endpoint:   aws.String(cfg.Endpoint),
+		HTTPClient: sharedReadClient,
+		MaxRetries: aws.Int(cfg.MaxRetries),
 		Region:     aws.String(cfg.Region),
 	})
 
@@ -111,12 +143,12 @@ func (d *DynamoDBConnector) connectTask(ctx context.Context, cfg *common.DynamoD
 		return fmt.Errorf("missing table name for dynamodb connector")
 	}
 
-	err = createTableIfNotExists(ctx, d.logger, d.client, cfg)
+	err = createTableIfNotExists(ctx, d.logger, d.writeClient, cfg)
 	if err != nil {
 		return err
 	}
 
-	err = ensureGlobalSecondaryIndexes(ctx, d.logger, d.client, cfg)
+	err = ensureGlobalSecondaryIndexes(ctx, d.logger, d.writeClient, cfg)
 	if err != nil {
 		return err
 	}
@@ -315,7 +347,7 @@ func (d *DynamoDBConnector) Id() string {
 	return d.id
 }
 
-func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, value string, ttl *time.Duration) error {
+func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey string, value []byte, ttl *time.Duration) error {
 	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.Set")
 	defer span.End()
 
@@ -327,7 +359,7 @@ func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, val
 		)
 	}
 
-	if d.client == nil {
+	if d.writeClient == nil {
 		err := fmt.Errorf("DynamoDB client not initialized yet")
 		common.SetTraceSpanError(span, err)
 		return err
@@ -336,7 +368,7 @@ func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, val
 	if len(value) > 1024 {
 		d.logger.Debug().Int("len", len(value)).Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Interface("ttl", ttl).Msg("putting item in dynamodb")
 	} else {
-		d.logger.Debug().Str("value", value).Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Interface("ttl", ttl).Msg("putting item in dynamodb")
+		d.logger.Debug().Int("len", len(value)).Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Interface("ttl", ttl).Msg("putting item in dynamodb")
 	}
 
 	item := map[string]*dynamodb.AttributeValue{
@@ -347,7 +379,7 @@ func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, val
 			S: aws.String(rangeKey),
 		},
 		"value": {
-			S: aws.String(value),
+			B: value, // Using Binary attribute type
 		},
 	}
 
@@ -362,7 +394,7 @@ func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, val
 		}
 	}
 
-	_, err := d.client.PutItemWithContext(ctx, &dynamodb.PutItemInput{
+	_, err := d.writeClient.PutItemWithContext(ctx, &dynamodb.PutItemInput{
 		TableName: aws.String(d.table),
 		Item:      item,
 	})
@@ -374,7 +406,7 @@ func (d *DynamoDBConnector) Set(ctx context.Context, partitionKey, rangeKey, val
 	return err
 }
 
-func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) (string, error) {
+func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeKey string) ([]byte, error) {
 	ctx, span := common.StartSpan(ctx, "DynamoDBConnector.Get")
 	defer span.End()
 
@@ -386,19 +418,19 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 		)
 	}
 
-	if d.client == nil {
+	if d.readClient == nil {
 		err := fmt.Errorf("DynamoDB client not initialized yet")
 		common.SetTraceSpanError(span, err)
-		return "", err
+		return nil, err
 	}
 
-	var value string
+	var value []byte
 
 	if index == ConnectorReverseIndex {
 		if rangeKey == "" || strings.HasSuffix(rangeKey, "*") {
 			err := fmt.Errorf("when using reverse index rangeKey must be a non-empty string and not contain wildcards (rangeKey: '%s', partitionKey: '%s')", rangeKey, partitionKey)
 			common.SetTraceSpanError(span, err)
-			return "", err
+			return nil, err
 		}
 		var keyCondition string = "#pkey = :pkey"
 		var exprAttrNames map[string]*string = map[string]*string{
@@ -423,27 +455,33 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 			}
 		}
 
+		// We only need the first matching item and only its "value" attribute.
 		qi := &dynamodb.QueryInput{
 			TableName:                 aws.String(d.table),
 			IndexName:                 aws.String(d.reverseIndexName),
 			KeyConditionExpression:    aws.String(keyCondition),
 			ExpressionAttributeNames:  exprAttrNames,
 			ExpressionAttributeValues: exprAttrValues,
+			Limit:                     aws.Int64(1),       // return at most one item
+			ProjectionExpression:      aws.String("#val"), // only return the value attribute
+			Select:                    aws.String("SPECIFIC_ATTRIBUTES"),
 		}
+		// Add alias for value attribute in ProjectionExpression
+		qi.ExpressionAttributeNames["#val"] = aws.String("value")
 
 		ctx, cancel := context.WithTimeout(ctx, d.getTimeout)
 		defer cancel()
 
 		d.logger.Debug().Str("index", d.reverseIndexName).Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("getting item from dynamodb")
-		result, err := d.client.QueryWithContext(ctx, qi)
+		result, err := d.readClient.QueryWithContext(ctx, qi, request.WithResponseReadTimeout(d.getTimeout))
 		if err != nil {
 			common.SetTraceSpanError(span, err)
-			return "", err
+			return nil, err
 		}
 		if len(result.Items) == 0 {
 			err := common.NewErrRecordNotFound(partitionKey, rangeKey, DynamoDBDriverName)
 			common.SetTraceSpanError(span, err)
-			return "", err
+			return nil, err
 		}
 
 		// Check if the item has expired
@@ -453,11 +491,19 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 			if err == nil && now > expirationTime {
 				err := common.NewErrRecordExpired(partitionKey, rangeKey, DynamoDBDriverName, now, expirationTime)
 				common.SetTraceSpanError(span, err)
-				return "", err
+				return nil, err
 			}
 		}
 
-		value = *result.Items[0]["value"].S
+		// Backward compatibility: check both B and S attributes
+		if result.Items[0]["value"].B != nil {
+			value = result.Items[0]["value"].B
+		} else if result.Items[0]["value"].S != nil {
+			// Legacy string value - treat as final decompressed value
+			value = []byte(*result.Items[0]["value"].S)
+		} else {
+			return nil, fmt.Errorf("value attribute is neither binary nor string")
+		}
 	} else {
 		ky := map[string]*dynamodb.AttributeValue{
 			d.partitionKeyName: {
@@ -468,20 +514,20 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 			},
 		}
 		d.logger.Debug().Str("index", "n/a").Str("partitionKey", partitionKey).Str("rangeKey", rangeKey).Msg("getting item from dynamodb")
-		result, err := d.client.GetItemWithContext(ctx, &dynamodb.GetItemInput{
+		result, err := d.readClient.GetItemWithContext(ctx, &dynamodb.GetItemInput{
 			TableName: aws.String(d.table),
 			Key:       ky,
 		})
 
 		if err != nil {
 			common.SetTraceSpanError(span, err)
-			return "", err
+			return nil, err
 		}
 
 		if result.Item == nil {
 			err := common.NewErrRecordNotFound(partitionKey, rangeKey, DynamoDBDriverName)
 			common.SetTraceSpanError(span, err)
-			return "", err
+			return nil, err
 		}
 
 		// Check if the item has expired
@@ -491,11 +537,19 @@ func (d *DynamoDBConnector) Get(ctx context.Context, index, partitionKey, rangeK
 			if err == nil && now > expirationTime {
 				err := common.NewErrRecordExpired(partitionKey, rangeKey, DynamoDBDriverName, now, expirationTime)
 				common.SetTraceSpanError(span, err)
-				return "", err
+				return nil, err
 			}
 		}
 
-		value = *result.Item["value"].S
+		// Backward compatibility: check both B and S attributes
+		if result.Item["value"].B != nil {
+			value = result.Item["value"].B
+		} else if result.Item["value"].S != nil {
+			// Legacy string value - treat as final decompressed value
+			value = []byte(*result.Item["value"].S)
+		} else {
+			return nil, fmt.Errorf("value attribute is neither binary nor string")
+		}
 	}
 
 	if common.IsTracingDetailed {
@@ -516,51 +570,107 @@ func (d *DynamoDBConnector) Lock(ctx context.Context, key string, ttl time.Durat
 	)
 	defer span.End()
 
-	if d.client == nil {
+	if d.writeClient == nil {
 		err := fmt.Errorf("DynamoDB client not initialized yet")
 		common.SetTraceSpanError(span, err)
 		return nil, err
 	}
 
 	lockKey := fmt.Sprintf("%s:lock", key)
-	expiryTime := time.Now().Add(ttl).Unix()
 
-	_, err := d.client.PutItemWithContext(ctx, &dynamodb.PutItemInput{
-		TableName: aws.String(d.table),
-		Item: map[string]*dynamodb.AttributeValue{
-			d.partitionKeyName: {S: aws.String(lockKey)},
-			d.rangeKeyName:     {S: aws.String("lock")},
-			"expiry":           {N: aws.String(fmt.Sprintf("%d", expiryTime))},
-		},
-		ConditionExpression: aws.String(
-			"attribute_not_exists(#pk) OR #expiry < :now",
-		),
-		ExpressionAttributeNames: map[string]*string{
-			"#pk":     aws.String(d.partitionKeyName),
-			"#expiry": aws.String("expiry"),
-		},
-		ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
-			":now": {N: aws.String(fmt.Sprintf("%d", time.Now().Unix()))},
-		},
-	})
+	// The 'ttl' parameter defines how long the lock will be held if acquired.
+	// The overall acquisition timeout is governed by the parent 'ctx'.
 
-	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok && aerr.Code() == dynamodb.ErrCodeConditionalCheckFailedException {
-			err := fmt.Errorf("lock is held by another process")
+	for {
+		// Check if the parent context is already done (e.g., request cancelled or timed out)
+		// This check is done at the beginning of each attempt and before waiting for retry.
+		select {
+		case <-ctx.Done():
+			err := fmt.Errorf("lock acquisition cancelled or timed out for key '%s': %w", key, ctx.Err())
 			common.SetTraceSpanError(span, err)
 			return nil, err
+		default:
+			// Continue with lock acquisition attempt
 		}
-		err := fmt.Errorf("failed to acquire lock: %w", err)
-		common.SetTraceSpanError(span, err)
-		return nil, err
+
+		// Calculate expiry time for the lock item itself IF it's acquired in this attempt.
+		// This 'ttl' is the duration the lock will be held.
+		lockItemExpiryTime := time.Now().Add(ttl).Unix()
+
+		// Context for the individual PutItem attempt.
+		// This is bounded by the connector's configured SetTimeout and the parent context 'ctx'.
+		// If 'ctx' finishes, PutItemWithContext will be interrupted.
+		putAttemptCtx, putAttemptCancel := context.WithTimeout(ctx, d.setTimeout)
+
+		_, err := d.writeClient.PutItemWithContext(putAttemptCtx, &dynamodb.PutItemInput{
+			TableName: aws.String(d.table),
+			Item: map[string]*dynamodb.AttributeValue{
+				d.partitionKeyName: {S: aws.String(lockKey)},
+				d.rangeKeyName:     {S: aws.String("lock")}, // Using a fixed value for the range key of lock items
+				"expiry":           {N: aws.String(fmt.Sprintf("%d", lockItemExpiryTime))},
+			},
+			ConditionExpression: aws.String(
+				"attribute_not_exists(#pk) OR #expiry < :now",
+			),
+			ExpressionAttributeNames: map[string]*string{
+				"#pk":     aws.String(d.partitionKeyName),
+				"#expiry": aws.String("expiry"),
+			},
+			ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
+				":now": {N: aws.String(fmt.Sprintf("%d", time.Now().Unix()))},
+			},
+		})
+		putAttemptCancel() // Release resources for this attempt's context immediately
+
+		if err == nil {
+			// Lock acquired successfully
+			d.logger.Debug().Str("lockKey", lockKey).Dur("ttl", ttl).Msg("distributed lock acquired")
+			return &dynamoLock{
+				connector: d,
+				lockKey:   lockKey,
+			}, nil
+		}
+
+		// If an error occurred, check if it's a known AWS error we should retry on
+		retryableError := false
+		if aerr, ok := err.(awserr.Error); ok {
+			switch aerr.Code() {
+			case dynamodb.ErrCodeConditionalCheckFailedException:
+				d.logger.Debug().Str("lockKey", lockKey).Dur("retryInterval", d.lockRetryInterval).
+					Msg("lock currently held or contention, will retry")
+				retryableError = true
+			case dynamodb.ErrCodeProvisionedThroughputExceededException,
+				dynamodb.ErrCodeInternalServerError,    // Often retryable for DynamoDB
+				dynamodb.ErrCodeLimitExceededException: // Covers various limits, potentially including some throttling
+				d.logger.Warn().Err(aerr).Str("lockKey", lockKey).Str("errorCode", aerr.Code()).
+					Dur("retryInterval", d.lockRetryInterval).
+					Msg("DynamoDB capacity/limit/server error during lock acquisition, will retry")
+				retryableError = true
+			default:
+				// Non-retryable AWS error for lock acquisition logic
+				d.logger.Error().Err(aerr).Str("lockKey", lockKey).Str("errorCode", aerr.Code()).
+					Msg("non-retryable AWS error during lock acquisition attempt")
+			}
+		}
+
+		if retryableError {
+			// Wait for d.lockRetryInterval before retrying, but also respect parent context cancellation.
+			select {
+			case <-time.After(d.lockRetryInterval):
+				// Continue to the next iteration of the loop to retry
+			case <-ctx.Done(): // Parent context was cancelled/timed out while waiting
+				wrappedErr := fmt.Errorf("lock acquisition timed out while waiting to retry for key '%s': %w", key, ctx.Err())
+				common.SetTraceSpanError(span, wrappedErr)
+				return nil, wrappedErr
+			}
+		} else {
+			// An unexpected or non-retryable error occurred during the PutItem attempt
+			wrappedErr := fmt.Errorf("failed to acquire lock for key '%s' during attempt: %w", key, err)
+			common.SetTraceSpanError(span, wrappedErr)
+			return nil, wrappedErr
+		}
+		// If a retryableError occurred and context wasn't done, the loop continues.
 	}
-
-	d.logger.Debug().Str("lockKey", lockKey).Dur("ttl", ttl).Msg("distributed lock acquired")
-
-	return &dynamoLock{
-		connector: d,
-		lockKey:   lockKey,
-	}, nil
 }
 
 func (l *dynamoLock) Unlock(ctx context.Context) error {
@@ -571,7 +681,7 @@ func (l *dynamoLock) Unlock(ctx context.Context) error {
 	)
 	defer span.End()
 
-	_, err := l.connector.client.DeleteItemWithContext(ctx, &dynamodb.DeleteItemInput{
+	_, err := l.connector.writeClient.DeleteItemWithContext(ctx, &dynamodb.DeleteItemInput{
 		TableName: aws.String(l.connector.table),
 		Key: map[string]*dynamodb.AttributeValue{
 			l.connector.partitionKeyName: {S: aws.String(l.lockKey)},
@@ -589,7 +699,7 @@ func (l *dynamoLock) Unlock(ctx context.Context) error {
 }
 
 func (d *DynamoDBConnector) WatchCounterInt64(ctx context.Context, key string) (<-chan int64, func(), error) {
-	if d.client == nil {
+	if d.readClient == nil {
 		return nil, nil, fmt.Errorf("DynamoDB client not initialized yet")
 	}
 
@@ -646,7 +756,7 @@ func (d *DynamoDBConnector) getSimpleValue(ctx context.Context, key string) (int
 	)
 	defer span.End()
 
-	result, err := d.client.GetItemWithContext(ctx, &dynamodb.GetItemInput{
+	result, err := d.readClient.GetItemWithContext(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(d.table),
 		Key: map[string]*dynamodb.AttributeValue{
 			d.partitionKeyName: {S: aws.String(key)},
@@ -690,11 +800,11 @@ func (d *DynamoDBConnector) PublishCounterInt64(ctx context.Context, key string,
 		)
 	}
 
-	if d.client == nil {
+	if d.writeClient == nil {
 		return fmt.Errorf("DynamoDB client not initialized yet")
 	}
 
-	_, err := d.client.UpdateItemWithContext(ctx, &dynamodb.UpdateItemInput{
+	_, err := d.writeClient.UpdateItemWithContext(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(d.table),
 		Key: map[string]*dynamodb.AttributeValue{
 			d.partitionKeyName: {S: aws.String(key)},

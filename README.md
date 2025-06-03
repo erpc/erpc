@@ -95,7 +95,7 @@ make setup
 3. **Create a configuration file:**
 
 ```bash
-cp erpc.yaml.dist erpc.yaml
+cp erpc.dist.yaml erpc.yaml
 vi erpc.yaml
 ```
 

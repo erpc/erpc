@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -51,12 +52,26 @@ func init() {
 func main() {
 	logger := log.With().Logger()
 
+	// Create a context that is cancelled on SIGINT/SIGTERM
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	// Define the flag for the config file
 	configFileFlag := &cli.StringFlag{
 		Name:     "config",
 		Usage:    "Config file to use (by default checking erpc.js, erpc.ts, erpc.yaml, erpc.yml)",
 		Required: false,
 	}
+	endpointFlag := &cli.StringSliceFlag{
+		Name:    "endpoint",
+		Aliases: []string{"e"},
+		Usage:   "Endpoint URL to use when no config file is provided (can be specified multiple times)",
+	}
+	// setFlag := &cli.StringSliceFlag{
+	// 	Name:    "set",
+	// 	Aliases: []string{"s"},
+	// 	Usage:   "Override a config value (can be specified multiple times)",
+	// }
 	requireConfigFlag := &cli.BoolFlag{
 		Name:  "require-config",
 		Usage: "Enforce passing a config file instead of using a default project and public endpoints",
@@ -66,7 +81,7 @@ func main() {
 	validateCmd := &cli.Command{
 		Name:  "validate",
 		Usage: "Validate the eRPC configuration",
-		Action: baseCliAction(logger, func(cfg *common.Config) error {
+		Action: baseCliAction(logger, func(ctx context.Context, cfg *common.Config) error {
 			return erpc.AnalyseConfig(cfg, logger)
 		}),
 	}
@@ -76,11 +91,13 @@ func main() {
 		Name:  "start",
 		Usage: "Start the eRPC service",
 		Flags: []cli.Flag{
+			endpointFlag,
+			// setFlag,
 			requireConfigFlag,
 		},
-		Action: baseCliAction(logger, func(cfg *common.Config) error {
+		Action: baseCliAction(logger, func(ctx context.Context, cfg *common.Config) error {
 			return erpc.Init(
-				context.Background(),
+				ctx,
 				cfg,
 				logger,
 			)
@@ -95,12 +112,14 @@ func main() {
 		Version:   common.ErpcVersion,
 		Flags: []cli.Flag{
 			configFileFlag,
+			endpointFlag,
+			// setFlag,
 			requireConfigFlag,
 		},
 		// Legacy action being the start one directly, to ensure we fetch the potential first arg as config file
-		Action: baseCliAction(logger, func(cfg *common.Config) error {
+		Action: baseCliAction(logger, func(ctx context.Context, cfg *common.Config) error {
 			return erpc.Init(
-				context.Background(),
+				ctx,
 				cfg,
 				logger,
 			)
@@ -111,21 +130,16 @@ func main() {
 			validateCmd,
 		},
 	}
-	if err := cmd.Run(context.Background(), os.Args); err != nil {
+	if err := cmd.Run(ctx, os.Args); err != nil {
 		logger.Error().Msgf("failed to start erpc: %v", err)
 		util.OsExit(util.ExitCodeERPCStartFailed)
 	}
-
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	recvSig := <-sig
-	logger.Warn().Msgf("caught signal: %v", recvSig)
 }
 
 // Base cli action func with init log + config loading
 func baseCliAction(
 	logger zerolog.Logger,
-	fn func(*common.Config) error,
+	fn func(ctx context.Context, cfg *common.Config) error,
 ) cli.ActionFunc {
 	return func(ctx context.Context, cmd *cli.Command) error {
 		logger.Info().
@@ -139,7 +153,7 @@ func baseCliAction(
 			logger.Error().Err(err).Msg("failed to load configuration")
 			return err
 		}
-		return fn(cfg)
+		return fn(ctx, cfg)
 	}
 }
 
@@ -167,6 +181,8 @@ func getConfig(
 		"/root/erpc.js",
 	}
 	requireConfig := cmd.Bool("require-config")
+	endpoints := cmd.StringSlice("endpoint")
+	// configOverrides := cmd.StringMap("set")
 
 	// Check for the config flag, if present, use that file
 	if configFile := cmd.String("config"); len(configFile) > 1 {
@@ -194,18 +210,31 @@ func getConfig(
 	}
 
 	cfg := &common.Config{}
+	opts := &common.DefaultOptions{}
+
+	// If endpoints are provided via command line, use them
+	if len(endpoints) > 0 {
+		logger.Info().Msgf("using %d endpoints provided via command line", len(endpoints))
+		for _, ep := range endpoints {
+			if _, err := url.ParseRequestURI(ep); err != nil {
+				return nil, fmt.Errorf("invalid endpoint URL format: %s (%w)", ep, err)
+			}
+		}
+		opts.Endpoints = endpoints
+	}
+
 	if requireConfig || configPath != "" {
 		if configPath == "" {
 			return nil, fmt.Errorf("no valid configuration file found in %v", possibleConfigs)
 		}
 		logger.Info().Msgf("resolved configuration file to: %s", configPath)
 		var err error
-		cfg, err = common.LoadConfig(fs, configPath)
+		cfg, err = common.LoadConfig(fs, configPath, opts)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load configuration from %s: %v", configPath, err)
 		}
 	} else {
-		if err := cfg.SetDefaults(); err != nil {
+		if err := cfg.SetDefaults(opts); err != nil {
 			return nil, fmt.Errorf("failed to set defaults for config: %v", err)
 		}
 	}
@@ -218,6 +247,7 @@ func getConfig(
 		} else {
 			cfg.LogLevel = level.String()
 		}
+		zerolog.SetGlobalLevel(level)
 	}
 
 	return cfg, nil
