@@ -140,6 +140,10 @@ func (v *DrpcVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logger
 		upstream.Type = common.UpstreamTypeEvm
 	}
 
+	if v.OwnsUpstream(upstream) && upstream.Type == "" {
+		upstream.Type = common.UpstreamTypeEvm
+	}
+
 	return []*common.UpstreamConfig{upstream}, nil
 }
 
