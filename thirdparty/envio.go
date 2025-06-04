@@ -116,7 +116,8 @@ func (v *EnvioVendor) SupportsNetwork(ctx context.Context, logger *zerolog.Logge
 		rootDomain = DefaultEnvioRootDomain
 	}
 
-	parsedURL, err := v.generateUrl(chainId, rootDomain)
+	apiKey, _ := settings["apiKey"].(string)
+	parsedURL, err := v.generateUrl(chainId, rootDomain, apiKey)
 	if err != nil {
 		return false, err
 	}
@@ -193,11 +194,12 @@ func (v *EnvioVendor) GenerateConfigs(ctx context.Context, logger *zerolog.Logge
 		if !ok || rootDomain == "" {
 			rootDomain = DefaultEnvioRootDomain
 		}
+		apiKey, _ := settings["apiKey"].(string)
 		chainID := upstream.Evm.ChainId
 		if chainID == 0 {
 			return nil, fmt.Errorf("envio vendor requires upstream.evm.chainId to be defined")
 		}
-		parsedURL, err := v.generateUrl(chainID, rootDomain)
+		parsedURL, err := v.generateUrl(chainID, rootDomain, apiKey)
 		if err != nil {
 			return nil, err
 		}
@@ -219,8 +221,13 @@ func (v *EnvioVendor) OwnsUpstream(ups *common.UpstreamConfig) bool {
 		strings.Contains(ups.Endpoint, "hypersync.xyz")
 }
 
-func (v *EnvioVendor) generateUrl(chainId int64, rootDomain string) (*url.URL, error) {
-	envioURL := fmt.Sprintf("https://%d.%s", chainId, rootDomain)
+func (v *EnvioVendor) generateUrl(chainId int64, rootDomain string, apiKey string) (*url.URL, error) {
+	var envioURL string
+	if apiKey != "" {
+		envioURL = fmt.Sprintf("https://%d.%s/%s", chainId, rootDomain, apiKey)
+	} else {
+		envioURL = fmt.Sprintf("https://%d.%s", chainId, rootDomain)
+	}
 	parsedURL, err := url.Parse(envioURL)
 	if err != nil {
 		return nil, err
