@@ -888,9 +888,9 @@ func (u *Upstream) MarshalJSON() ([]byte, error) {
 }
 
 func (u *Upstream) Cordon(method string, reason string) {
-	u.metricsTracker.Cordon(u.config.Id, u.NetworkId(), method, reason)
+	u.metricsTracker.Cordon(u, method, reason)
 }
 
 func (u *Upstream) Uncordon(method string) {
-	u.metricsTracker.Uncordon(u.config.Id, u.NetworkId(), method)
+	u.metricsTracker.Uncordon(u, method)
 }
