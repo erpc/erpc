@@ -9969,21 +9969,18 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 		err = upstreamsRegistry.Bootstrap(ctx)
 		require.NoError(t, err)
 
+		err = upstreamsRegistry.Bootstrap(ctx)
+		require.NoError(t, err)
+
 		initErr := upstreamsRegistry.GetInitializer().WaitForTasks(ctx)
 		require.NoError(t, initErr, "Upstream initializer failed to complete tasks")
 
 		err = network.Bootstrap(ctx)
 		require.NoError(t, err)
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(250 * time.Millisecond)
 
 		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 		require.Len(t, upsList, 2)
-
-		// Bootstrap both upstreams
-		err = upsList[0].Bootstrap(ctx)
-		require.NoError(t, err)
-		err = upsList[1].Bootstrap(ctx)
-		require.NoError(t, err)
 
 		// Find the specific upstreams by ID
 		var syncingUpstream, syncedUpstream *upstream.Upstream
@@ -10119,12 +10116,6 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 
 		upsList := upstreamsRegistry.GetNetworkUpstreams(ctx, util.EvmNetworkId(123))
 		require.Len(t, upsList, 2)
-
-		// Bootstrap both upstreams
-		err = upsList[0].Bootstrap(ctx)
-		require.NoError(t, err)
-		err = upsList[1].Bootstrap(ctx)
-		require.NoError(t, err)
 
 		// Find the specific upstreams by ID
 		var excludedUpstream, includedUpstream *upstream.Upstream
