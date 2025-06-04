@@ -384,6 +384,14 @@ func (i *Initializer) Errors() error {
 	return errors.Join(errs...)
 }
 
+func (i *Initializer) GetTask(name string) (*BootstrapTask, bool) {
+	task, loaded := i.tasks.Load(name)
+	if !loaded {
+		return nil, false
+	}
+	return task.(*BootstrapTask), true
+}
+
 func (i *Initializer) MarkTaskAsFailed(name string, err error) {
 	i.logger.Error().Str("task", name).Err(err).Msg("marking task as failed")
 	i.tasks.Range(func(key, value interface{}) bool {

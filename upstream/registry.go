@@ -138,6 +138,13 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 	for _, p := range allProviders {
 		// Capture loop variable in local scope
 		provider := p
+
+		taskName := fmt.Sprintf("provider/%s/network/%s", p.Id(), networkId)
+		if _, loaded := u.initializer.GetTask(taskName); loaded {
+			u.logger.Debug().Str("taskName", taskName).Msg("provider bootstrap task already scheduled, skipping.")
+			continue
+		}
+
 		t := u.buildProviderBootstrapTask(provider, networkId)
 		tasks = append(tasks, t)
 	}
