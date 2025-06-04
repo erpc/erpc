@@ -9,6 +9,7 @@ import (
 
 var _ EvmStatePoller = &FakeEvmStatePoller{}
 var _ Upstream = &FakeUpstream{}
+var _ EvmUpstream = &FakeUpstream{}
 
 type FakeUpstream struct {
 	id             string
@@ -85,7 +86,7 @@ func (u *FakeUpstream) SupportsNetwork(ctx context.Context, networkId string) (b
 	return true, nil
 }
 
-func (u *FakeUpstream) EvmIsBlockFinalized(blockNumber int64) (bool, error) {
+func (u *FakeUpstream) EvmIsBlockFinalized(ctx context.Context, blockNumber int64, forceFresh bool) (bool, error) {
 	return false, nil
 }
 
@@ -115,6 +116,10 @@ func (u *FakeUpstream) CordonedReason() (string, bool) {
 	u.cordonMu.RLock()
 	defer u.cordonMu.RUnlock()
 	return u.cordonedReason, u.cordoned
+}
+
+func (u *FakeUpstream) EvmAssertBlockAvailability(ctx context.Context, forMethod string, confidence AvailbilityConfidence, forceFreshIfStale bool, blockNumber int64) (bool, error) {
+	return true, nil
 }
 
 type FakeEvmStatePoller struct {

@@ -425,6 +425,10 @@ func (e *executor[R]) findBlockHeadLeader(responses []*execResult[R]) (int64, *e
 							highestBlockResult = r
 						}
 					}
+				} else {
+					e.logger.Warn().
+						Str("upstream", upstream.Config().Id).
+						Msg("upstream does not support block head leader detection")
 				}
 			}
 		}
