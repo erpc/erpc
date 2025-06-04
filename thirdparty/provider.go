@@ -86,6 +86,7 @@ func (p *Provider) buildBaseUpstreamConfig(networkId string) (*common.UpstreamCo
 	if baseCfg == nil {
 		baseCfg = &common.UpstreamConfig{}
 		err := baseCfg.SetDefaults(p.upstreamDefaults)
+		baseCfg.Id = ""
 		if err != nil {
 			return nil, err
 		}

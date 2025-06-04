@@ -1,6 +1,6 @@
 {
   "name": "@erpc-cloud/config",
-  "version": "0.0.49",
+  "version": "0.0.50",
   "description": "Library of types for IDE autocompletion of erpc config in Typescript",
   "repository": {
     "type": "git",
@@ -16,7 +16,8 @@
   },
   "files": [
     "lib",
-    "src/*.ts"
+    "src/*.ts",
+    "src/types/*.ts"
   ],
   "exports": {
     ".": {

@@ -106,17 +106,17 @@ var (
 		Help:      "Total number of times an upstream returned a stale (vs others) finalized block number.",
 	}, []string{"project", "vendor", "network", "upstream"})
 
-	MetricUpstreamEvmGetLogsStaleUpperBound = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricUpstreamStaleUpperBound = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
-		Name:      "upstream_evm_get_logs_stale_upper_bound_total",
-		Help:      "Total number of times eth_getLogs was skipped due to upstream latest block being less than requested toBlock.",
-	}, []string{"project", "vendor", "network", "upstream"})
+		Name:      "upstream_stale_upper_bound_total",
+		Help:      "Total number of times a request was skipped due to upstream latest block being less than requested upper bound block.",
+	}, []string{"project", "vendor", "network", "upstream", "category", "confidence"})
 
-	MetricUpstreamEvmGetLogsStaleLowerBound = promauto.NewCounterVec(prometheus.CounterOpts{
+	MetricUpstreamStaleLowerBound = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
-		Name:      "upstream_evm_get_logs_stale_lower_bound_total",
-		Help:      "Total number of times eth_getLogs was skipped due to fromBlock being less than upstream's available block range.",
-	}, []string{"project", "vendor", "network", "upstream"})
+		Name:      "upstream_stale_lower_bound_total",
+		Help:      "Total number of times a request was skipped due to requested lower bound block being less than upstream's available block range.",
+	}, []string{"project", "vendor", "network", "upstream", "category", "confidence"})
 
 	MetricUpstreamEvmGetLogsRangeExceededAutoSplittingThreshold = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",
@@ -159,6 +159,12 @@ var (
 		Name:      "upstream_block_head_large_rollback",
 		Help:      "Number of times block head rolled back by a large number vs previous latest block returned by the same upstream.",
 	}, []string{"project", "vendor", "network", "upstream"})
+
+	MetricUpstreamWrongEmptyResponseTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "upstream_wrong_empty_response_total",
+		Help:      "Total number of times an upstream returned a wrong empty response even though other upstreams returned data.",
+	}, []string{"project", "vendor", "network", "upstream", "category"})
 
 	MetricNetworkRequestSelfRateLimited = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "erpc",

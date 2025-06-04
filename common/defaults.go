@@ -954,10 +954,11 @@ func convertUpstreamToProvider(upstream *UpstreamConfig) (*ProviderConfig, error
 	upsCfg.Id = ""
 
 	id := upstream.Id
+	// Generate a unique provider ID that includes the vendor name and a hash of the endpoint
+	// This ensures that multiple instances of the same provider with different credentials
+	// will have unique IDs
 	if id == "" {
-		id = util.RedactEndpoint(upstream.Endpoint)
-	} else {
-		id = fmt.Sprintf("%s-%s", id, util.RedactEndpoint(upstream.Endpoint))
+		id = vendorName + "-" + util.IncrementAndGetIndex("shorthand-provider-id", vendorName)
 	}
 
 	cfg := &ProviderConfig{
@@ -1045,21 +1046,12 @@ func buildProviderSettings(vendorName string, endpoint *url.URL) (VendorSettings
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse chainstack query parameters: %w", err)
 			}
-
-			if project := params.Get("project"); project != "" {
-				settings["project"] = project
-			}
-			if organization := params.Get("organization"); organization != "" {
-				settings["organization"] = organization
-			}
-			if region := params.Get("region"); region != "" {
-				settings["region"] = region
-			}
-			if provider := params.Get("provider"); provider != "" {
-				settings["provider"] = provider
-			}
-			if nodeType := params.Get("type"); nodeType != "" {
-				settings["type"] = nodeType
+			for key, values := range params {
+				if len(values) == 1 {
+					settings[key] = values[0]
+				} else {
+					settings[key] = values
+				}
 			}
 		}
 
@@ -1234,7 +1226,23 @@ func (u *UpstreamConfig) ApplyDefaults(defaults *UpstreamConfig) error {
 
 func (u *UpstreamConfig) SetDefaults(defaults *UpstreamConfig) error {
 	if u.Id == "" {
-		u.Id = util.RedactEndpoint(u.Endpoint)
+		if u.VendorName == "" {
+			epUrl, err := url.Parse(u.Endpoint)
+			if err != nil {
+				return fmt.Errorf("failed to parse endpoint: %w", err)
+			}
+			if epUrl.Scheme == "http" || epUrl.Scheme == "https" || epUrl.Scheme == "ws" || epUrl.Scheme == "wss" {
+				host := epUrl.Hostname()
+				if host == "" {
+					host = epUrl.Host
+				}
+				u.Id = host + "-" + util.IncrementAndGetIndex("shorthand-upstream-default-id", host)
+			} else {
+				u.Id = epUrl.Scheme + "-" + util.IncrementAndGetIndex("shorthand-upstream-default-id", epUrl.Scheme)
+			}
+		} else {
+			u.Id = u.VendorName + "-" + util.IncrementAndGetIndex("shorthand-upstream-default-id", u.VendorName)
+		}
 	}
 	if u.Type == "" {
 		// TODO make actual calls to detect other types (solana, btc, etc)?
@@ -1622,6 +1630,14 @@ func (r *RetryPolicyConfig) SetDefaults(defaults *RetryPolicyConfig) error {
 		} else {
 			r.Jitter = Duration(0 * time.Millisecond)
 		}
+	}
+	// Only set EmptyResultConfidence if provided through defaults
+	if r.EmptyResultConfidence == 0 && defaults != nil && defaults.EmptyResultConfidence != 0 {
+		r.EmptyResultConfidence = defaults.EmptyResultConfidence
+	}
+	// Only set EmptyResultIgnore if provided through defaults
+	if r.EmptyResultIgnore == nil && defaults != nil && defaults.EmptyResultIgnore != nil {
+		r.EmptyResultIgnore = defaults.EmptyResultIgnore
 	}
 
 	return nil

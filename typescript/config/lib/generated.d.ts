@@ -1,6 +1,9 @@
-import type { LogLevel, Duration, ByteSize, ConnectorDriverType as TsConnectorDriverType, ConnectorConfig as TsConnectorConfig, UpstreamType as TsUpstreamType, NetworkArchitecture as TsNetworkArchitecture, AuthType as TsAuthType, AuthStrategyConfig as TsAuthStrategyConfig, SelectionPolicyEvalFunction } from "./types";
+import type { LogLevel, Duration, ByteSize, ConnectorDriverType as TsConnectorDriverType, ConnectorConfig as TsConnectorConfig, UpstreamType as TsUpstreamType, NetworkArchitecture as TsNetworkArchitecture, AuthType as TsAuthType, AuthStrategyConfig as TsAuthStrategyConfig, EvmNetworkConfigForDefaults as TsEvmNetworkConfigForDefaults, SelectionPolicyEvalFunction } from "./types";
 export declare const UpstreamTypeEvm: UpstreamType;
 export type EvmUpstream = Upstream;
+export type AvailbilityConfidence = number;
+export declare const AvailbilityConfidenceBlockHead: AvailbilityConfidence;
+export declare const AvailbilityConfidenceFinalized: AvailbilityConfidence;
 export type EvmNodeType = string;
 export declare const EvmNodeTypeUnknown: EvmNodeType;
 export declare const EvmNodeTypeFull: EvmNodeType;
@@ -212,7 +215,7 @@ export interface ProjectConfig {
     networkDefaults?: NetworkDefaults;
     networks?: (NetworkConfig | undefined)[];
     rateLimitBudget?: string;
-    scoreMetricsWindowSize: Duration;
+    scoreMetricsWindowSize?: Duration;
     healthCheck?: DeprecatedProjectHealthCheckConfig;
 }
 export interface NetworkDefaults {
@@ -220,7 +223,7 @@ export interface NetworkDefaults {
     failsafe?: FailsafeConfig;
     selectionPolicy?: SelectionPolicyConfig;
     directiveDefaults?: DirectiveDefaultsConfig;
-    evm?: EvmNetworkConfig;
+    evm?: TsEvmNetworkConfigForDefaults;
 }
 export interface CORSConfig {
     allowedOrigins: string[];
@@ -324,6 +327,8 @@ export interface RetryPolicyConfig {
     backoffMaxDelay?: Duration;
     backoffFactor?: number;
     jitter?: Duration;
+    emptyResultConfidence?: AvailbilityConfidence;
+    emptyResultIgnore?: string[];
 }
 export interface CircuitBreakerPolicyConfig {
     failureThresholdCount: number;
@@ -471,8 +476,8 @@ export interface MetricsConfig {
     listenV6?: boolean;
     hostV6?: string;
     port?: number;
-    errorLabelMode: LabelMode;
-    histogramBuckets: string;
+    errorLabelMode?: LabelMode;
+    histogramBuckets?: string;
 }
 export type DataFinalityState = number;
 /**

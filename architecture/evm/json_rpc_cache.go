@@ -436,6 +436,9 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 						ttl.String(),
 						common.ErrorSummary(err),
 					).Observe(time.Since(start).Seconds())
+					errsMu.Lock()
+					errs = append(errs, err)
+					errsMu.Unlock()
 				} else {
 					telemetry.MetricCacheSetSkippedTotal.WithLabelValues(
 						c.projectId,
@@ -446,9 +449,6 @@ func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest
 						ttl.String(),
 					).Inc()
 				}
-				errsMu.Lock()
-				errs = append(errs, err)
-				errsMu.Unlock()
 				return
 			}
 
@@ -706,7 +706,7 @@ func (c *EvmJsonRpcCache) getFinalityState(ctx context.Context, req *common.Norm
 		upstream := resp.Upstream()
 		if upstream != nil {
 			if ups, ok := upstream.(common.EvmUpstream); ok {
-				if isFinalized, err := ups.EvmIsBlockFinalized(blockNumber); err == nil {
+				if isFinalized, err := ups.EvmIsBlockFinalized(ctx, blockNumber, false); err == nil {
 					if isFinalized {
 						finality = common.DataFinalityStateFinalized
 					} else {

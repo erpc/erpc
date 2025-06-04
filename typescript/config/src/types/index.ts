@@ -8,6 +8,7 @@ export type {
     NetworkArchitecture,
     AuthType,
     AuthStrategyConfig,
+    EvmNetworkConfigForDefaults,
   } from "./generic";
   export type {
     PolicyEvalUpstreamMetrics,

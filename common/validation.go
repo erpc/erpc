@@ -458,10 +458,15 @@ func (p *ProjectConfig) Validate(c *Config) error {
 		return fmt.Errorf("project id is required")
 	}
 	if p.Providers != nil && len(p.Providers) > 0 {
+		existingIds := make(map[string]bool)
 		for _, provider := range p.Providers {
 			if err := provider.Validate(c); err != nil {
 				return err
 			}
+			if existingIds[provider.Id] {
+				return fmt.Errorf("project.*.providers.*.id must be unique, '%s' is duplicated", provider.Id)
+			}
+			existingIds[provider.Id] = true
 		}
 	}
 	if p.Upstreams != nil && len(p.Upstreams) > 0 {

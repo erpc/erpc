@@ -1,4 +1,4 @@
-import type { DynamoDBConnectorConfig, AuthStrategyConfig as GenAuthStrategyConfig, JwtStrategyConfig, MemoryConnectorConfig, NetworkStrategyConfig, PostgreSQLConnectorConfig, RedisConnectorConfig, SecretStrategyConfig, SiweStrategyConfig } from "../generated";
+import type { DynamoDBConnectorConfig, EvmNetworkConfig, AuthStrategyConfig as GenAuthStrategyConfig, JwtStrategyConfig, MemoryConnectorConfig, NetworkStrategyConfig, PostgreSQLConnectorConfig, RedisConnectorConfig, SecretStrategyConfig, SiweStrategyConfig } from "../generated";
 /**
  * Possible log level configuration
  */
@@ -64,4 +64,8 @@ export type AuthStrategyConfig = Omit<GenAuthStrategyConfig, "type" | "network" 
     type: "siwe";
     secret: SiweStrategyConfig;
 });
+/**
+  * Network defaults override (chainId isn't needed for defaults config)
+  */
+export type EvmNetworkConfigForDefaults = Omit<EvmNetworkConfig, "chainId">;
 //# sourceMappingURL=generic.d.ts.map

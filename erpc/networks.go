@@ -505,8 +505,33 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		}
 	}
 
-	if execErr == nil && resp != nil && !resp.IsObjectNull(ctx) {
+	isEmpty := resp == nil || resp.IsObjectNull(ctx) || resp.IsResultEmptyish(ctx)
+	if isEmpty {
+		lg.Trace().Msgf("response is empty")
+	}
+
+	if execErr == nil && !isEmpty {
 		n.enrichStatePoller(ctx, method, req, resp)
+
+		// If response is not empty, but at least one upstream responded empty we track in a metric.
+		emptyResponses.Range(func(key, value any) bool {
+			upstream := key.(*upstream.Upstream)
+			telemetry.MetricUpstreamWrongEmptyResponseTotal.WithLabelValues(
+				n.projectId,
+				upstream.VendorName(),
+				n.networkId,
+				upstream.Id(),
+				method,
+			).Inc()
+			if upstream != nil {
+				if mt := upstream.MetricsTracker(); mt != nil {
+					// We would like to penalize the upstream if another upstream responded with data,
+					// but this upstream responded empty.
+					mt.RecordUpstreamFailure(upstream, method)
+				}
+			}
+			return true
+		})
 	}
 	if mlx != nil {
 		mlx.Close(ctx, resp, nil)

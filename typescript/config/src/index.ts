@@ -11,6 +11,7 @@ export type {
   PolicyEvalUpstreamMetrics,
   PolicyEvalUpstream,
   SelectionPolicyEvalFunction,
+  EvmNetworkConfigForDefaults,
 } from "./types";
 export {
   // Data finality const exports
@@ -114,7 +115,6 @@ export type {
   TLSConfig,
   // Proxy pools related
   ProxyPoolConfig,
-
 } from "./generated";
 
 import type { Config } from './generated'

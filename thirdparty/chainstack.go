@@ -155,7 +155,11 @@ func (v *ChainstackVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 			if node.ChainID == chainID && node.Status == "running" && node.Details.HTTPSEndpoint != "" {
 				// Create a copy of the upstream config for each node
 				upsCopy := upstream.Copy()
-				upsCopy.Id = fmt.Sprintf("chainstack-%s", node.ID)
+				if upstream.Id != "" {
+					upsCopy.Id = fmt.Sprintf("%s-%s", upstream.Id, node.ID)
+				} else {
+					upsCopy.Id = fmt.Sprintf("chainstack-%d-%s", chainID, node.ID)
+				}
 				upsCopy.Endpoint = node.Details.HTTPSEndpoint + "/" + node.Details.AuthKey
 				upsCopy.Type = common.UpstreamTypeEvm
 

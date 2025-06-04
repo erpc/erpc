@@ -17,7 +17,6 @@ services:
       - SERVICE_ENDPOINT=host.docker.internal
       - SERVICE_PORT=4001
     volumes:
-      - ./monitoring/prometheus:/etc/prometheus
       - ./monitoring/grafana/grafana.ini:/etc/grafana/grafana.ini
       - ./monitoring/grafana/dashboards:/etc/grafana/dashboards
       - prometheus_data:/prometheus

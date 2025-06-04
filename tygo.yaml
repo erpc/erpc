@@ -23,6 +23,7 @@ packages:
         NetworkArchitecture as TsNetworkArchitecture,
         AuthType as TsAuthType,
         AuthStrategyConfig as TsAuthStrategyConfig,
+        EvmNetworkConfigForDefaults as TsEvmNetworkConfigForDefaults,
         SelectionPolicyEvalFunction
       } from "./types"
     exclude_files:

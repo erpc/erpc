@@ -1987,7 +1987,7 @@ func (e *ErrJsonRpcExceptionInternal) ErrorStatusCode() int {
 			return er.ErrorStatusCode()
 		}
 	}
-	return http.StatusBadRequest
+	return http.StatusInternalServerError
 }
 
 func (e *ErrJsonRpcExceptionInternal) CodeChain() string {

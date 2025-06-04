@@ -96,6 +96,11 @@ func (m *mockEvmUpstream) EvmStatePoller() common.EvmStatePoller {
 	return args.Get(0).(common.EvmStatePoller)
 }
 
+func (m *mockEvmUpstream) EvmAssertBlockAvailability(ctx context.Context, forMethod string, confidence common.AvailbilityConfidence, forceRefreshIfStale bool, blockNumber int64) (bool, error) {
+	args := m.Called(ctx, forMethod, confidence, forceRefreshIfStale, blockNumber)
+	return args.Bool(0), args.Error(1)
+}
+
 var _ common.EvmStatePoller = (*mockStatePoller)(nil)
 
 type mockStatePoller struct {
@@ -315,6 +320,9 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				stp := new(mockStatePoller)
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
+				// Mock the new EvmAssertBlockAvailability calls
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(1)).Return(true, nil)
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(5)).Return(true, nil)
 
 				return n, u, r
 			},
@@ -357,6 +365,9 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				stp := new(mockStatePoller)
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
+				// Mock the new EvmAssertBlockAvailability calls
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(1)).Return(true, nil)
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, int64(21)).Return(true, nil)
 
 				return n, u, r
 			},
@@ -395,6 +406,8 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				stp := new(mockStatePoller)
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
+				// Mock the new EvmAssertBlockAvailability calls - this should fail on the first call
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(1)).Return(true, nil)
 
 				return n, u, r
 			},
@@ -422,7 +435,7 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 						},
 					},
 				})
-				// We don’t expect any forward calls if we fail on addresses limit
+				// We don't expect any forward calls if we fail on addresses limit
 				n.On("ProjectId").Return("test").Maybe()
 
 				u.On("Config").Return(&common.UpstreamConfig{
@@ -436,6 +449,8 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				stp := new(mockStatePoller)
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
+				// Mock the new EvmAssertBlockAvailability calls - this should fail on the first call
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(1)).Return(true, nil)
 
 				return n, u, r
 			},
@@ -475,6 +490,8 @@ func TestUpstreamPreForward_eth_getLogs(t *testing.T) {
 				stp := new(mockStatePoller)
 				u.On("EvmStatePoller").Return(stp)
 				stp.On("LatestBlock").Return(int64(1000))
+				// Mock the new EvmAssertBlockAvailability calls - this should fail on the first call
+				u.On("EvmAssertBlockAvailability", mock.Anything, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, int64(1)).Return(true, nil)
 
 				return n, u, r
 			},

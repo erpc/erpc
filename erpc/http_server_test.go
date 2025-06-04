@@ -5227,6 +5227,22 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 				"result":  "0x123456",
 			})
 
+		gock.New("https://12340001234.rpc.hypersync.xyz").
+			Post("/").
+			Filter(func(request *http.Request) bool {
+				b := util.SafeReadBody(request)
+				return strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, "latest")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]interface{}{
+					"number": "0x123456",
+					"hash":   "0x1234567890",
+				},
+			})
+
 		sendRequest, _, _, shutdown, _ := createServerTestFixtures(cfg, t)
 		defer shutdown()
 
@@ -5255,6 +5271,9 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 								Delay:    common.Duration(10 * time.Millisecond),
 								MaxCount: 267,
 							},
+						},
+						Evm: &common.EvmUpstreamConfig{
+							StatePollerInterval: common.Duration(100 * time.Millisecond),
 						},
 					},
 					Providers: []*common.ProviderConfig{
@@ -5299,8 +5318,27 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 				"result":  "0x123456",
 			})
 
+		gock.New("https://eth-mainnet.g.alchemy.com").
+			Post("/v2/test-key").
+			Persist().
+			Filter(func(request *http.Request) bool {
+				b := util.SafeReadBody(request)
+				return strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, "latest")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]interface{}{
+					"number": "0x123456",
+					"hash":   "0x1234567890",
+				},
+			})
+
 		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		time.Sleep(200 * time.Millisecond)
 
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x0","toBlock":"0x0"}],"id":1234}`, nil, nil)
 		assert.Equal(t, http.StatusOK, statusCode)
@@ -5332,6 +5370,9 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 								Delay:    common.Duration(10 * time.Millisecond),
 								MaxCount: 267,
 							},
+						},
+						Evm: &common.EvmUpstreamConfig{
+							StatePollerInterval: common.Duration(100 * time.Millisecond),
 						},
 					},
 					Providers: []*common.ProviderConfig{
@@ -5385,8 +5426,26 @@ func TestHttpServer_ProviderBasedUpstreams(t *testing.T) {
 				"result":  "0x123456",
 			})
 
+		gock.New("https://eth-mainnet.g.alchemy.com").
+			Post("/v2/test-key").
+			Filter(func(request *http.Request) bool {
+				b := util.SafeReadBody(request)
+				return strings.Contains(b, "eth_getBlockByNumber") && strings.Contains(b, "latest")
+			}).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result": map[string]interface{}{
+					"number": "0x123456",
+					"hash":   "0x1234567890",
+				},
+			})
+
 		sendRequest, _, _, shutdown, erpcInstance := createServerTestFixtures(cfg, t)
 		defer shutdown()
+
+		time.Sleep(200 * time.Millisecond)
 
 		statusCode, body := sendRequest(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"fromBlock":"0x0","toBlock":"0x0"}],"id":1234}`, nil, nil)
 		assert.Equal(t, http.StatusOK, statusCode)
@@ -5564,7 +5623,10 @@ func TestHttpServer_EvmGetLogs(t *testing.T) {
 		err := sonic.UnmarshalString(body, &respObject)
 		assert.NoError(t, err)
 
-		logs := respObject["result"].([]interface{})
+		logs, ok := respObject["result"].([]interface{})
+		if !ok {
+			t.Fatalf("Failed to parse logs: %v", respObject)
+		}
 		assert.Equal(t, 4, len(logs), "Expected exactly 4 logs (one from each range)")
 
 		// Verify log block numbers and data

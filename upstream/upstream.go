@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"strconv"
@@ -179,6 +180,13 @@ func (u *Upstream) Config() *common.UpstreamConfig {
 	return u.config
 }
 
+func (u *Upstream) MetricsTracker() *health.Tracker {
+	if u == nil {
+		return nil
+	}
+	return u.metricsTracker
+}
+
 func (u *Upstream) Logger() *zerolog.Logger {
 	return u.logger
 }
@@ -197,12 +205,12 @@ func (u *Upstream) SetNetworkConfig(cfg *common.NetworkConfig) {
 	}
 }
 
-func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, byPassMethodExclusion bool) (*common.NormalizedResponse, error) {
+func (u *Upstream) Forward(ctx context.Context, nrq *common.NormalizedRequest, byPassMethodExclusion bool) (*common.NormalizedResponse, error) {
 	// TODO Should we move byPassMethodExclusion to directives? How do we prevent clients from setting it?
 	startTime := time.Now()
 	cfg := u.Config()
 
-	method, err := req.Method()
+	method, err := nrq.Method()
 	ctx, span := common.StartSpan(ctx, "Upstream.Forward",
 		trace.WithAttributes(
 			attribute.String("network.id", u.networkId),
@@ -214,7 +222,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 
 	if common.IsTracingDetailed {
 		span.SetAttributes(
-			attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
+			attribute.String("request.id", fmt.Sprintf("%v", nrq.ID())),
 		)
 	}
 
@@ -232,7 +240,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 		)
 	}
 	if !byPassMethodExclusion {
-		if reason, skip := u.shouldSkip(ctx, req); skip {
+		if reason, skip := u.shouldSkip(ctx, nrq); skip {
 			span.SetAttributes(attribute.Bool("skipped", true))
 			span.SetAttributes(attribute.String("skipped_reason", reason.Error()))
 			return nil, common.NewErrUpstreamRequestSkipped(reason, cfg.Id)
@@ -254,7 +262,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 		}
 	}
 
-	lg := u.logger.With().Str("method", method).Str("networkId", u.networkId).Interface("id", req.ID()).Logger()
+	lg := u.logger.With().Str("method", method).Str("networkId", u.networkId).Interface("id", nrq.ID()).Logger()
 
 	if limitersBudget != nil {
 		lg.Trace().Str("budget", cfg.RateLimitBudget).Msgf("checking upstream-level rate limiters budget")
@@ -288,8 +296,8 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 	//
 	// Prepare and normalize the request object
 	//
-	req.SetLastUpstream(u)
-	err = u.prepareRequest(ctx, req)
+	nrq.SetLastUpstream(u)
+	err = u.prepareRequest(ctx, nrq)
 	if err != nil {
 		common.SetTraceSpanError(span, err)
 		return nil, err
@@ -324,23 +332,22 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				u,
 				method,
 			)
-			telemetry.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, strconv.Itoa(exec.Attempts()), req.CompositeType()).Inc()
-			timer := u.metricsTracker.RecordUpstreamDurationStart(u, method, req.CompositeType())
+			telemetry.MetricUpstreamRequestTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, strconv.Itoa(exec.Attempts()), nrq.CompositeType()).Inc()
+			timer := u.metricsTracker.RecordUpstreamDurationStart(u, method, nrq.CompositeType())
 
-			resp, errCall := jsonRpcClient.SendRequest(ctx, req)
+			nrs, errCall := jsonRpcClient.SendRequest(ctx, nrq)
 			isSuccess := false
-			if resp != nil {
-				jrr, _ := resp.JsonRpcResponse()
+			if nrs != nil {
+				nrs.SetUpstream(u)
+				jrr, _ := nrs.JsonRpcResponse()
 				if jrr != nil && jrr.Error == nil {
-					resp.SetUpstream(u)
-					req.SetLastValidResponse(resp)
-					req.SetLastUpstream(u)
+					nrq.SetLastValidResponse(ctx, nrs)
 					isSuccess = true
 				} else {
 					isSuccess = false
 				}
 				if lg.GetLevel() == zerolog.TraceLevel {
-					lg.Debug().Err(errCall).Object("response", resp).Msgf("upstream request ended with response")
+					lg.Debug().Err(errCall).Object("response", nrs).Msgf("upstream request ended with response")
 				} else {
 					lg.Debug().Err(errCall).Msgf("upstream request ended with non-nil response")
 				}
@@ -363,7 +370,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 					telemetry.MetricUpstreamMissingDataErrorTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method).Inc()
 				} else {
 					if common.HasErrorCode(errCall, common.ErrCodeEndpointCapacityExceeded) {
-						u.recordRemoteRateLimit(u.networkId, method)
+						u.recordRemoteRateLimit(method)
 					}
 					severity := common.ClassifySeverity(errCall)
 					if severity == common.SeverityCritical {
@@ -374,7 +381,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 							method,
 						)
 					}
-					telemetry.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, common.ErrorFingerprint(errCall), string(severity), req.CompositeType()).Inc()
+					telemetry.MetricUpstreamErrorTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method, common.ErrorFingerprint(errCall), string(severity), nrq.CompositeType()).Inc()
 				}
 
 				timer.ObserveDuration(false)
@@ -402,7 +409,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 					)
 				}
 			} else {
-				if resp.IsResultEmptyish() {
+				if nrs.IsResultEmptyish() {
 					telemetry.MetricUpstreamEmptyResponseTotal.WithLabelValues(u.ProjectId, u.VendorName(), u.networkId, cfg.Id, method).Inc()
 				}
 			}
@@ -412,7 +419,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 				u.recordRequestSuccess(method)
 			}
 
-			return resp, nil
+			return nrs, nil
 		}
 
 		executor := u.failsafeExecutor
@@ -432,7 +439,7 @@ func (u *Upstream) Forward(ctx context.Context, req *common.NormalizedRequest, b
 
 				if common.IsTracingDetailed {
 					execSpan.SetAttributes(
-						attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
+						attribute.String("request.id", fmt.Sprintf("%v", nrq.ID())),
 					)
 				}
 
@@ -534,11 +541,22 @@ func (u *Upstream) EvmGetChainId(ctx context.Context) (string, error) {
 }
 
 // TODO move to evm package
-func (u *Upstream) EvmIsBlockFinalized(blockNumber int64) (bool, error) {
+func (u *Upstream) EvmIsBlockFinalized(ctx context.Context, blockNumber int64, forceFreshIfStale bool) (bool, error) {
 	if u.evmStatePoller == nil {
 		return false, fmt.Errorf("evm state poller not initialized yet")
 	}
-	return u.evmStatePoller.IsBlockFinalized(blockNumber)
+	isFinalized, err := u.evmStatePoller.IsBlockFinalized(blockNumber)
+	if err != nil {
+		return false, err
+	}
+	if !isFinalized && forceFreshIfStale {
+		newFinalizedBlock, err := u.evmStatePoller.PollFinalizedBlockNumber(ctx)
+		if err != nil {
+			return false, err
+		}
+		return newFinalizedBlock >= blockNumber, nil
+	}
+	return isFinalized, nil
 }
 
 // TODO move to evm package?
@@ -568,6 +586,161 @@ func (u *Upstream) EvmFinalizedBlock() (int64, error) {
 // TODO move to evm package?
 func (u *Upstream) EvmStatePoller() common.EvmStatePoller {
 	return u.evmStatePoller
+}
+
+// TODO move to evm package?
+// EvmAssertBlockAvailability checks if the upstream is supposed to have the data for a certain block number.
+// For full nodes it will check the first available block number, and for archive nodes it will check if the block is less than the latest block number.
+// If the requested block is beyond the current latest block, it will force-poll the latest block number once.
+// This method also increments appropriate metrics when the upstream cannot handle the block.
+func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod string, confidence common.AvailbilityConfidence, forceFreshIfStale bool, blockNumber int64) (bool, error) {
+	if u == nil || u.config == nil {
+		return false, fmt.Errorf("upstream or config is nil")
+	}
+
+	// Get the state poller
+	statePoller := u.EvmStatePoller()
+	if statePoller == nil || statePoller.IsObjectNull() {
+		return false, fmt.Errorf("upstream evm state poller is not available")
+	}
+
+	cfg := u.config
+	if cfg.Type != common.UpstreamTypeEvm || cfg.Evm == nil {
+		// If not an EVM upstream, we can't determine block handling capability
+		return false, fmt.Errorf("upstream is not an EVM type")
+	}
+
+	if confidence == common.AvailbilityConfidenceFinalized {
+		//
+		// UPPER BOUND: Check if the block is finalized
+		//
+		isFinalized, err := u.EvmIsBlockFinalized(ctx, blockNumber, forceFreshIfStale)
+		if err != nil {
+			return false, fmt.Errorf("failed to check if block is finalized: %w", err)
+		}
+		if !isFinalized {
+			// Block is not finalized yet
+			telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
+				u.ProjectId,
+				u.VendorName(),
+				u.NetworkId(),
+				u.Id(),
+				forMethod,
+				confidence.String(),
+			).Inc()
+			return false, nil
+		}
+
+		//
+		// LOWER BOUND: For full nodes, also check if the block is within the available range
+		//
+		if cfg.Evm.MaxAvailableRecentBlocks > 0 {
+			// First check with current data
+			available, err := u.assertUpstreamLowerBound(ctx, statePoller, blockNumber, cfg.Evm.MaxAvailableRecentBlocks, forMethod, confidence)
+			if err != nil {
+				return false, err
+			}
+			if !available {
+				// If it can't handle, return immediately
+				return false, nil
+			}
+		}
+
+		// Block is finalized and within range (or archive node)
+		return true, nil
+	} else if confidence == common.AvailbilityConfidenceBlockHead {
+		//
+		// UPPER BOUND: Check if block is before the latest block
+		//
+		latestBlock := statePoller.LatestBlock()
+		// If the requested block is beyond the current latest block, try force-polling once
+		if blockNumber > latestBlock && forceFreshIfStale {
+			var err error
+			latestBlock, err = statePoller.PollLatestBlockNumber(ctx)
+			if err != nil {
+				return false, fmt.Errorf("failed to poll latest block number: %w", err)
+			}
+		}
+		// Check if the requested block is still beyond the latest known block
+		if blockNumber > latestBlock {
+			// Upper bound issue - block is beyond latest
+			telemetry.MetricUpstreamStaleUpperBound.WithLabelValues(
+				u.ProjectId,
+				u.VendorName(),
+				u.NetworkId(),
+				u.Id(),
+				forMethod,
+				confidence.String(),
+			).Inc()
+			return false, nil
+		}
+
+		//
+		// LOWER BOUND: For full nodes, check if the block is within the available range
+		//
+		if cfg.Evm.MaxAvailableRecentBlocks > 0 {
+			available, err := u.assertUpstreamLowerBound(ctx, statePoller, blockNumber, cfg.Evm.MaxAvailableRecentBlocks, forMethod, confidence)
+			if err != nil {
+				return false, err
+			}
+			if !available {
+				return false, nil
+			}
+		}
+
+		// If MaxAvailableRecentBlocks is not configured, assume the node can handle the block if it's <= latest
+		return blockNumber <= latestBlock, nil
+	} else {
+		return false, fmt.Errorf("unsupported block availability confidence: %s", confidence)
+	}
+}
+
+// assertUpstreamLowerBound checks if a full node can handle a block based on its lower bound.
+// It returns whether the block is within the available range and records metrics if not.
+func (u *Upstream) assertUpstreamLowerBound(ctx context.Context, statePoller common.EvmStatePoller, blockNumber int64, maxAvailableRecentBlocks int64, forMethod string, confidence common.AvailbilityConfidence) (available bool, err error) {
+	latestBlock := statePoller.LatestBlock()
+	firstAvailableBlock := latestBlock - maxAvailableRecentBlocks
+	available = blockNumber >= firstAvailableBlock
+
+	if !available {
+		telemetry.MetricUpstreamStaleLowerBound.WithLabelValues(
+			u.ProjectId,
+			u.VendorName(),
+			u.NetworkId(),
+			u.Id(),
+			forMethod,
+			confidence.String(),
+		).Inc()
+		return false, nil
+	}
+
+	// Only poll if near boundary
+	// If we assume it is available, we need to poll a fresh latest block to check against potential pruning on full nodes
+	shouldPoll := latestBlock > 0 && blockNumber > 0 && math.Abs(float64(blockNumber-(latestBlock-maxAvailableRecentBlocks))) <= 10
+	if shouldPoll {
+		latestBlock, err = statePoller.PollLatestBlockNumber(ctx)
+		if err != nil {
+			return false, fmt.Errorf("failed to poll latest block number: %w", err)
+		}
+		if latestBlock <= 0 {
+			return false, fmt.Errorf("upstream latest block is not available")
+		}
+	}
+
+	firstAvailableBlock = latestBlock - maxAvailableRecentBlocks
+	available = blockNumber >= firstAvailableBlock
+	if !available {
+		telemetry.MetricUpstreamStaleLowerBound.WithLabelValues(
+			u.ProjectId,
+			u.VendorName(),
+			u.NetworkId(),
+			u.Id(),
+			forMethod,
+			confidence.String(),
+		).Inc()
+	}
+
+	return available, nil
 }
 
 func (u *Upstream) IgnoreMethod(method string) {
@@ -658,7 +831,7 @@ func (u *Upstream) recordRequestSuccess(method string) {
 	}
 }
 
-func (u *Upstream) recordRemoteRateLimit(netId, method string) {
+func (u *Upstream) recordRemoteRateLimit(method string) {
 	u.metricsTracker.RecordUpstreamRemoteRateLimited(
 		u,
 		method,

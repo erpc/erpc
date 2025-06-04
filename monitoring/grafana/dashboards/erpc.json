@@ -1,13 +1,25 @@
 {
   "annotations": {
-    "list": []
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
   },
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
-  "id": 1,
+  "id": 32575157,
   "links": [],
-  "liveNow": false,
   "panels": [
     {
       "collapsed": false,
@@ -104,7 +116,7 @@
         "sizing": "auto",
         "text": {}
       },
-      "pluginVersion": "9.5.1",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -133,7 +145,7 @@
       },
       "id": 19,
       "panels": [],
-      "title": "Network-level Requests",
+      "title": "Networks",
       "type": "row"
     },
     {
@@ -148,21 +160,24 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
+            "barWidthFactor": 0.8,
+            "drawStyle": "bars",
+            "fillOpacity": 100,
+            "gradientMode": "hue",
             "hideFrom": {
               "legend": false,
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
-            "lineWidth": 1,
+            "lineWidth": 0,
             "pointSize": 5,
             "scaleDistribution": {
               "type": "linear"
@@ -171,12 +186,13 @@
             "spanNulls": false,
             "stacking": {
               "group": "A",
-              "mode": "none"
+              "mode": "normal"
             },
             "thresholdsStyle": {
               "mode": "off"
             }
           },
+          "fieldMinMax": false,
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -184,10 +200,6 @@
               {
                 "color": "green",
                 "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
               }
             ]
           },
@@ -197,7 +209,7 @@
       },
       "gridPos": {
         "h": 12,
-        "w": 12,
+        "w": 8,
         "x": 0,
         "y": 10
       },
@@ -206,17 +218,21 @@
       "options": {
         "alertThreshold": true,
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "table",
           "placement": "bottom",
-          "showLegend": true
+          "showLegend": true,
+          "sortBy": "Total",
+          "sortDesc": true
         },
         "tooltip": {
           "mode": "multi",
-          "sort": "none"
+          "sort": "desc"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -224,14 +240,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_network_request_received_total{network=~\"${network:regex}\",upstream=~\"${upstream:regexp}\",category=~\"${category:regex}\"}[1m])) by (project, network, category)",
+          "expr": "sum(increase(erpc_network_request_received_total{network=~\"${network:regex}\",upstream=~\"${upstream:regexp}\",category=~\"${category:regex}\"}[1m])) by (network, category)",
           "interval": "",
-          "legendFormat": "{{project}}, {{network}}, {{category}}",
+          "legendFormat": "{{network}}, {{category}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Network-level Requests",
+      "title": "Incoming Requests",
       "type": "timeseries"
     },
     {
@@ -246,21 +262,27 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
-            "fillOpacity": 10,
+            "fillOpacity": 100,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
-            "lineWidth": 1,
+            "lineStyle": {
+              "fill": "solid"
+            },
+            "lineWidth": 0,
             "pointSize": 5,
             "scaleDistribution": {
               "type": "linear"
@@ -269,109 +291,13 @@
             "spanNulls": false,
             "stacking": {
               "group": "A",
-              "mode": "none"
+              "mode": "normal"
             },
             "thresholdsStyle": {
               "mode": "off"
             }
           },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 12,
-        "w": 12,
-        "x": 12,
-        "y": 10
-      },
-      "id": 28,
-      "interval": "1m",
-      "options": {
-        "alertThreshold": true,
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "11.5.0-80207",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(erpc_network_request_received_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, category)",
-          "interval": "",
-          "legendFormat": "{{project}}, {{network}}, {{category}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Network-level RPS",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
+          "decimals": 1,
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
@@ -393,25 +319,31 @@
       "gridPos": {
         "h": 12,
         "w": 8,
-        "x": 0,
-        "y": 22
+        "x": 8,
+        "y": 10
       },
-      "id": 12,
+      "id": 28,
       "interval": "1m",
       "options": {
         "alertThreshold": true,
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": [
+            "min",
+            "p70",
+            "max"
+          ],
+          "displayMode": "table",
           "placement": "bottom",
-          "showLegend": true
+          "showLegend": true,
+          "sortBy": "Max",
+          "sortDesc": true
         },
         "tooltip": {
           "mode": "multi",
-          "sort": "none"
+          "sort": "desc"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -419,13 +351,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(erpc_network_request_self_rate_limited_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network)",
-          "legendFormat": "{{project}}, {{network}}",
+          "expr": "sum(rate(erpc_network_request_received_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (network, category)",
+          "interval": "",
+          "legendFormat": "{{network}}, {{category}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Network self-imposed Rate-limited requests",
+      "title": "Incoming RPS",
       "type": "timeseries"
     },
     {
@@ -433,37 +366,40 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "When a request fails even after trying all upstreams and retries",
+      "description": "When identical requests arrive at the same time they'll be merged, this number shows number of these requests",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 10,
+            "barWidthFactor": 0.5,
+            "drawStyle": "bars",
+            "fillOpacity": 100,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
+            "lineWidth": 0,
+            "pointSize": 1,
             "scaleDistribution": {
               "type": "linear"
             },
-            "showPoints": "never",
+            "showPoints": "auto",
             "spanNulls": false,
             "stacking": {
               "group": "A",
-              "mode": "none"
+              "mode": "normal"
             },
             "thresholdsStyle": {
               "mode": "off"
@@ -482,33 +418,36 @@
                 "value": 80
               }
             ]
-          },
-          "unit": "short"
+          }
         },
         "overrides": []
       },
       "gridPos": {
         "h": 12,
-        "w": 16,
-        "x": 8,
-        "y": 22
+        "w": 8,
+        "x": 16,
+        "y": 10
       },
-      "id": 14,
+      "id": 9,
       "interval": "1m",
       "options": {
         "alertThreshold": true,
         "legend": {
-          "calcs": [],
+          "calcs": [
+            "sum"
+          ],
           "displayMode": "table",
           "placement": "bottom",
-          "showLegend": true
+          "showLegend": true,
+          "sortBy": "Total",
+          "sortDesc": true
         },
         "tooltip": {
           "mode": "multi",
-          "sort": "none"
+          "sort": "desc"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -516,16 +455,13 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "exemplar": false,
-          "expr": "sum(increase(erpc_network_failed_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (cluster_name,network,category,error) > 0",
-          "instant": false,
-          "interval": "",
-          "legendFormat": "{{cluster_name}}, {{network}}, {{category}}, {{error}}",
+          "expr": "sum(increase(erpc_network_multiplexed_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, category)",
+          "legendFormat": "{{project}}, {{network}}, {{category}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Network-level Errors",
+      "title": "Multiplexed requests",
       "type": "timeseries"
     },
     {
@@ -539,11 +475,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
             "gradientMode": "none",
@@ -552,6 +490,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -590,7 +529,7 @@
         "h": 12,
         "w": 8,
         "x": 0,
-        "y": 34
+        "y": 22
       },
       "id": 8,
       "interval": "1m",
@@ -604,10 +543,10 @@
         },
         "tooltip": {
           "mode": "multi",
-          "sort": "none"
+          "sort": "desc"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -615,9 +554,9 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (le, project, network, category))",
+          "expr": "histogram_quantile(0.99, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (le, network, category))",
           "hide": false,
-          "legendFormat": "{{project}}, {{network}}, {{category}}",
+          "legendFormat": "{{network}}, {{category}}",
           "range": true,
           "refId": "B"
         }
@@ -636,11 +575,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
             "gradientMode": "none",
@@ -649,6 +590,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -687,7 +629,7 @@
         "h": 12,
         "w": 8,
         "x": 8,
-        "y": 34
+        "y": 22
       },
       "id": 44,
       "interval": "1m",
@@ -701,10 +643,10 @@
         },
         "tooltip": {
           "mode": "multi",
-          "sort": "none"
+          "sort": "desc"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -712,8 +654,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (le, project, network, category))",
-          "legendFormat": "{{project}}, {{network}}, {{category}}",
+          "expr": "histogram_quantile(0.9, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (le, network, category))",
+          "legendFormat": "{{network}}, {{category}}",
           "range": true,
           "refId": "A"
         }
@@ -732,11 +674,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
             "gradientMode": "none",
@@ -745,6 +689,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -783,9 +728,418 @@
         "h": 12,
         "w": 8,
         "x": 16,
-        "y": 34
+        "y": 22
       },
       "id": 45,
+      "interval": "1m",
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.3.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (le, network, category))",
+          "hide": false,
+          "legendFormat": "{{network}}, {{category}}",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Network-level P50 Resp. time",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "When a request fails even after trying all upstreams and retries, we send a error response to the user. This chart shows critical errors that need attention and wake-up alarms.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 8,
+        "x": 0,
+        "y": 34
+      },
+      "id": 14,
+      "interval": "1m",
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "sum(increase(erpc_network_failed_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",severity=\"critical\"}[1m])) by (cluster_name,network,category,error) > 0",
+          "instant": false,
+          "interval": "",
+          "legendFormat": "{{cluster_name}}, {{network}}, {{category}}, {{error}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Network-level Critical Errors",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Issues where clients got an error but it's most probably due to bad requests or a transient problem with upstreams",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 8,
+        "x": 8,
+        "y": 34
+      },
+      "id": 66,
+      "interval": "1m",
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "sum(increase(erpc_network_failed_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",severity=\"warning\"}[1m])) by (client_name,cluster_key,project,network,category,error) > 0",
+          "instant": false,
+          "interval": "",
+          "legendFormat": "{{client_name}}, {{cluster_key}}, {{network}}, {{category}}, {{error}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Network-level Warnings",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Client-side errors where it's most probably a normal operation (eth_call reverts) or bad request by the user",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 8,
+        "x": 16,
+        "y": 34
+      },
+      "id": 67,
+      "interval": "1m",
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "exemplar": false,
+          "expr": "sum(increase(erpc_network_failed_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",severity=\"info\"}[1m])) by (client_name,cluster_key,project,network,category,error) > 0",
+          "instant": false,
+          "interval": "",
+          "legendFormat": "{{client_name}}, {{cluster_key}}, {{network}}, {{category}}, {{error}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Network-level Notices",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 8,
+        "x": 0,
+        "y": 46
+      },
+      "id": 12,
       "interval": "1m",
       "options": {
         "alertThreshold": true,
@@ -800,7 +1154,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -808,110 +1162,13 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum(rate(erpc_network_request_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (le, project, network, category))",
-          "hide": false,
-          "legendFormat": "{{project}}, {{network}}, {{category}}",
-          "range": true,
-          "refId": "C"
-        }
-      ],
-      "title": "Network-level P50 Resp. time",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "When identical requests arrive at the same time they'll be merged, this number shows number of these requests",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 11,
-        "w": 8,
-        "x": 0,
-        "y": 46
-      },
-      "id": 9,
-      "interval": "1m",
-      "options": {
-        "alertThreshold": true,
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "11.5.0-80207",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(increase(erpc_network_multiplexed_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, category)",
-          "legendFormat": "{{project}}, {{network}}, {{category}}",
+          "expr": "sum(rate(erpc_network_request_self_rate_limited_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network)",
+          "legendFormat": "{{project}}, {{network}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Network-level Multiplexed requests",
+      "title": "Network self-imposed Rate-limited requests",
       "type": "timeseries"
     },
     {
@@ -919,33 +1176,36 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "When identical requests arrive at the same time they'll be merged, this number shows number of these requests",
+      "description": "Total hedge requests fired due to initial upstream being slow",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
-            "fillOpacity": 0,
+            "fillOpacity": 10,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
             "scaleDistribution": {
               "type": "linear"
             },
-            "showPoints": "auto",
+            "showPoints": "never",
             "spanNulls": false,
             "stacking": {
               "group": "A",
@@ -968,17 +1228,18 @@
                 "value": 80
               }
             ]
-          }
+          },
+          "unit": "short"
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 11,
+        "h": 12,
         "w": 8,
         "x": 8,
         "y": 46
       },
-      "id": 62,
+      "id": 68,
       "interval": "1m",
       "options": {
         "alertThreshold": true,
@@ -989,11 +1250,11 @@
           "showLegend": true
         },
         "tooltip": {
-          "mode": "single",
-          "sort": "none"
+          "mode": "multi",
+          "sort": "desc"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -1001,13 +1262,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_network_multiplexed_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, category)",
+          "expr": "sum(rate(erpc_network_hedged_request_total{network=~\"${network:regex}\",category=~\"${category:regex}\"}[1m])) by (project, network, category)",
+          "interval": "",
           "legendFormat": "{{project}}, {{network}}, {{category}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Network-level Multiplexed requests",
+      "title": "Hedge RPS",
       "type": "timeseries"
     },
     {
@@ -1023,11 +1285,13 @@
             "seriesBy": "last"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 17,
             "gradientMode": "opacity",
@@ -1036,6 +1300,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineStyle": {
               "dash": [
@@ -1078,7 +1343,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 11,
+        "h": 12,
         "w": 8,
         "x": 16,
         "y": 46
@@ -1097,7 +1362,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -1111,7 +1376,7 @@
           "refId": "A"
         }
       ],
-      "title": "Effective hedged requests",
+      "title": "Hedge Effectiveness",
       "type": "timeseries"
     },
     {
@@ -1126,12 +1391,14 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisGridShow": false,
             "axisLabel": "",
             "axisPlacement": "hidden",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -1140,6 +1407,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineStyle": {
               "dash": [
@@ -1187,7 +1455,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 57
+        "y": 58
       },
       "id": 25,
       "interval": "1m",
@@ -1209,7 +1477,7 @@
           "sort": "desc"
         }
       },
-      "pluginVersion": "9.5.1",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -1241,12 +1509,14 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisGridShow": false,
             "axisLabel": "",
             "axisPlacement": "hidden",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -1255,6 +1525,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineStyle": {
               "dash": [
@@ -1302,7 +1573,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 57
+        "y": 58
       },
       "id": 63,
       "interval": "1m",
@@ -1324,7 +1595,7 @@
           "sort": "desc"
         }
       },
-      "pluginVersion": "9.5.1",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -1350,11 +1621,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 67
+        "y": 68
       },
-      "id": 20,
+      "id": 69,
       "panels": [],
-      "title": "Upstream-level Requests",
+      "title": "Vendors",
       "type": "row"
     },
     {
@@ -1362,18 +1633,20 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "These are real requests sent to upstream endpoints, including retries",
+      "description": "These are real requests sent to upstream endpoints, including retries, grouped by Vendor Name",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -1382,6 +1655,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -1420,9 +1694,9 @@
         "h": 12,
         "w": 12,
         "x": 0,
-        "y": 68
+        "y": 69
       },
-      "id": 4,
+      "id": 70,
       "interval": "1m",
       "options": {
         "alertThreshold": true,
@@ -1437,7 +1711,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -1445,14 +1719,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(increase(erpc_upstream_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",composite=\"none\"}[1m])) by (project, network, upstream, category, attempt)",
+          "expr": "sum(increase(erpc_upstream_request_total{network=~\"${network:regex}\",vendor=~\"${vendor:regex}\",category=~\"${category:regex}\",composite=\"none\"}[1m])) by (network, vendor, category)",
           "interval": "",
-          "legendFormat": "{{project}}, {{network}}, {{upstream}}, {{category}}, attempt={{attempt}}",
+          "legendFormat": "{{network}}, {{vendor}}, {{category}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Upstream-level Requests",
+      "title": "Vendor Requests",
       "type": "timeseries"
     },
     {
@@ -1467,11 +1741,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -1480,6 +1756,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -1518,7 +1795,7 @@
         "h": 12,
         "w": 12,
         "x": 12,
-        "y": 68
+        "y": 69
       },
       "id": 29,
       "interval": "1m",
@@ -1535,7 +1812,222 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(erpc_upstream_request_total{network=~\"${network:regex}\",vendor=~\"${vendor:regex}\",category=~\"${category:regex}\",composite=\"none\"}[1m])) by (network, vendor, category)",
+          "interval": "",
+          "legendFormat": "{{network}}, {{vendor}}, {{category}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Vendor RPS",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 81
+      },
+      "id": 20,
+      "panels": [],
+      "title": "Upstreams",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "These are real requests sent to upstream endpoints, including retries",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 12,
+        "x": 0,
+        "y": 82
+      },
+      "id": 4,
+      "interval": "1m",
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(erpc_upstream_request_total{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",composite=\"none\"}[1m])) by (project, network, upstream, category, attempt)",
+          "interval": "",
+          "legendFormat": "{{project}}, {{network}}, {{upstream}}, {{category}}, attempt={{attempt}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Upstream-level Requests",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "These are real requests sent to upstream endpoints, including retries",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 12,
+        "x": 12,
+        "y": 82
+      },
+      "id": 71,
+      "interval": "1m",
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -1565,11 +2057,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -1578,6 +2072,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -1616,7 +2111,7 @@
         "h": 12,
         "w": 8,
         "x": 0,
-        "y": 80
+        "y": 94
       },
       "id": 11,
       "options": {
@@ -1632,7 +2127,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -1661,11 +2156,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -1674,6 +2171,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -1712,7 +2210,7 @@
         "h": 12,
         "w": 8,
         "x": 8,
-        "y": 80
+        "y": 94
       },
       "id": 10,
       "options": {
@@ -1728,7 +2226,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -1757,11 +2255,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -1770,6 +2270,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -1808,7 +2309,7 @@
         "h": 12,
         "w": 8,
         "x": 16,
-        "y": 80
+        "y": 94
       },
       "id": 30,
       "options": {
@@ -1824,7 +2325,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "9.5.1",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -1853,11 +2354,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -1866,6 +2369,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -1904,7 +2408,7 @@
         "h": 12,
         "w": 8,
         "x": 0,
-        "y": 92
+        "y": 106
       },
       "id": 27,
       "interval": "1m",
@@ -1921,7 +2425,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -1950,11 +2454,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -1963,6 +2469,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -2001,7 +2508,7 @@
         "h": 12,
         "w": 8,
         "x": 8,
-        "y": 92
+        "y": 106
       },
       "id": 46,
       "options": {
@@ -2017,7 +2524,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -2046,11 +2553,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -2059,6 +2568,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -2097,7 +2607,7 @@
         "h": 12,
         "w": 8,
         "x": 16,
-        "y": 92
+        "y": 106
       },
       "id": 47,
       "options": {
@@ -2113,7 +2623,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -2142,11 +2652,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -2155,6 +2667,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -2192,7 +2705,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 104
+        "y": 118
       },
       "id": 15,
       "options": {
@@ -2208,7 +2721,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -2238,11 +2751,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -2251,6 +2766,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -2288,7 +2804,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 116
+        "y": 130
       },
       "id": 24,
       "options": {
@@ -2304,7 +2820,205 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(erpc_upstream_request_errors_total{severity=\"critical\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",composite=\"none\"}[1m])) by (project, network, upstream, category, error) > 0",
+          "interval": "",
+          "legendFormat": "{{project}}, {{network}}, {{category}}, {{upstream}}, {{error}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Upstream-level critical errors",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Failures received when attempting upstream endpoints, these errors mean upstream has failures",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 14,
+        "w": 12,
+        "x": 0,
+        "y": 139
+      },
+      "id": 73,
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum(increase(erpc_upstream_request_errors_total{severity=\"critical\",network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",composite=\"none\"}[1m])) by (project, network, upstream, category, error) > 0",
+          "interval": "",
+          "legendFormat": "{{project}}, {{network}}, {{category}}, {{upstream}}, {{error}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Upstream-level critical errors",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Failures received when attempting upstream endpoints, these errors mean upstream has failures",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 15,
+        "w": 11,
+        "x": 12,
+        "y": 139
+      },
+      "id": 74,
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -2328,11 +3042,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 125
+        "y": 154
       },
       "id": 53,
       "panels": [],
-      "title": "Upstream Health",
+      "title": "Health",
       "type": "row"
     },
     {
@@ -2340,81 +3054,58 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "",
       "fieldConfig": {
         "defaults": {
           "color": {
             "mode": "palette-classic"
           },
           "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
             "hideFrom": {
               "legend": false,
               "tooltip": false,
               "viz": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
             }
           },
+          "fieldMinMax": false,
           "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
+          "unit": "short"
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 12,
-        "w": 12,
+        "h": 19,
+        "w": 10,
         "x": 0,
-        "y": 126
+        "y": 155
       },
-      "id": 26,
-      "interval": "1m",
+      "id": 72,
       "options": {
-        "alertThreshold": true,
+        "displayLabels": [
+          "name",
+          "percent"
+        ],
         "legend": {
-          "calcs": [],
           "displayMode": "list",
           "placement": "bottom",
-          "showLegend": true
+          "showLegend": true,
+          "values": [
+            "percent"
+          ]
+        },
+        "pieType": "pie",
+        "reduceOptions": {
+          "calcs": [
+            "sum"
+          ],
+          "fields": "",
+          "values": false
         },
         "tooltip": {
           "mode": "single",
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -2422,16 +3113,42 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg(erpc_upstream_score_overall{network=\"*\",category=\"*\",upstream=~\"${upstream:regex}\"}) by (project, upstream)",
+          "exemplar": false,
+          "expr": "sum by (vendor) (\n  erpc_upstream_score_overall{\n    network=~\"$network\",\n    client_name=~\"$client_name\",\n    cluster_key=~\"$cluster_key\",\n    vendor=~\"$vendor\",\n    category=~\"$category\"\n  }\n)",
           "format": "time_series",
+          "instant": true,
           "interval": "1m",
-          "legendFormat": "{{project}}, {{upstream}}",
-          "range": true,
+          "legendFormat": "{{vendor}}",
+          "range": false,
           "refId": "A"
         }
       ],
-      "title": "Avg. Score by Upstream",
-      "type": "timeseries"
+      "title": "Top Score Vendors",
+      "transformations": [
+        {
+          "id": "sortBy",
+          "options": {
+            "desc": true,
+            "fields": [
+              "Value"
+            ],
+            "sort": [
+              {
+                "field": "Value"
+              }
+            ]
+          }
+        },
+        {
+          "id": "limit",
+          "options": {
+            "limit": 10,
+            "offset": 0
+          }
+        }
+      ],
+      "transparent": true,
+      "type": "piechart"
     },
     {
       "datasource": {
@@ -2445,11 +3162,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -2458,6 +3177,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -2492,10 +3212,10 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 12,
+        "h": 19,
         "w": 12,
         "x": 12,
-        "y": 126
+        "y": 155
       },
       "id": 50,
       "interval": "1m",
@@ -2512,7 +3232,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -2540,16 +3260,119 @@
       "fieldConfig": {
         "defaults": {
           "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 174
+      },
+      "id": 26,
+      "interval": "1m",
+      "options": {
+        "alertThreshold": true,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.3.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "avg(erpc_upstream_score_overall{network=\"*\",category=\"*\",upstream=~\"${upstream:regex}\"}) by (project, upstream)",
+          "format": "time_series",
+          "interval": "1m",
+          "legendFormat": "{{project}}, {{upstream}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Avg. Score by Upstream",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
             "mode": "continuous-GrYlRd",
             "seriesBy": "last"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "axisSoftMax": 1024,
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "points",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -2558,6 +3381,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineStyle": {
               "fill": "solid"
@@ -2626,7 +3450,7 @@
         "h": 20,
         "w": 12,
         "x": 0,
-        "y": 138
+        "y": 184
       },
       "id": 49,
       "interval": "1m",
@@ -2649,7 +3473,7 @@
           "sort": "desc"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -2658,7 +3482,7 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "avg(erpc_upstream_block_head_lag{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\"}) by (project, network, upstream) <= 5000",
+          "expr": "avg(erpc_upstream_block_head_lag{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",vendor=~\"${vendor:regex}\"}) by (project, network, upstream) <= 5000",
           "format": "time_series",
           "instant": false,
           "interval": "1m",
@@ -2684,12 +3508,14 @@
             "seriesBy": "last"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisGridShow": false,
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "points",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -2698,6 +3524,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineStyle": {
               "dash": [
@@ -2757,7 +3584,7 @@
         "h": 20,
         "w": 12,
         "x": 12,
-        "y": 138
+        "y": 184
       },
       "id": 59,
       "interval": "1m",
@@ -2772,7 +3599,7 @@
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "sortBy": "Max",
+          "sortBy": "Mean",
           "sortDesc": true
         },
         "tooltip": {
@@ -2780,7 +3607,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -2788,7 +3615,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg(erpc_upstream_block_head_lag{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\"}) by (project, upstream, network) > 5000",
+          "expr": "avg(erpc_upstream_block_head_lag{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",vendor=~\"${vendor:regex}\"}) by (project, upstream, network,category) > 5000",
           "format": "time_series",
           "interval": "1m",
           "legendFormat": "{{project}}, {{network}}, {{upstream}}",
@@ -2867,7 +3694,7 @@
         "h": 15,
         "w": 12,
         "x": 0,
-        "y": 158
+        "y": 204
       },
       "id": 51,
       "interval": "1m",
@@ -2883,9 +3710,14 @@
           "show": false
         },
         "showHeader": true,
-        "sortBy": []
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Value"
+          }
+        ]
       },
-      "pluginVersion": "9.5.1",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -2894,7 +3726,7 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "avg(erpc_upstream_latest_block_number{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\"}) by (project, upstream, network)",
+          "expr": "avg(erpc_upstream_latest_block_number{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",vendor=~\"${vendor:regex}\"}) by (project, upstream, network)",
           "format": "table",
           "instant": true,
           "interval": "1m",
@@ -2904,7 +3736,6 @@
         }
       ],
       "title": "Latest Block by Upstream",
-      "transformations": [],
       "type": "table"
     },
     {
@@ -2919,11 +3750,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -2932,6 +3765,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 1,
@@ -2970,7 +3804,7 @@
         "h": 15,
         "w": 12,
         "x": 12,
-        "y": 158
+        "y": 204
       },
       "id": 52,
       "interval": "1m",
@@ -2987,7 +3821,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -3019,12 +3853,14 @@
             "seriesBy": "last"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisGridShow": false,
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "points",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -3033,6 +3869,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineStyle": {
               "dash": [
@@ -3093,7 +3930,7 @@
         "h": 20,
         "w": 12,
         "x": 0,
-        "y": 173
+        "y": 219
       },
       "id": 54,
       "interval": "1m",
@@ -3116,7 +3953,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -3124,7 +3961,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg(erpc_upstream_finalization_lag{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\"}) by (project, upstream, network) <= 5000",
+          "expr": "avg(erpc_upstream_finalization_lag{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",vendor=~\"${vendor:regex}\"}) by (project, upstream, network) <= 5000",
           "format": "time_series",
           "interval": "1m",
           "legendFormat": "{{project}}, {{network}}, {{upstream}}",
@@ -3149,12 +3986,14 @@
             "seriesBy": "last"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisGridShow": false,
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "points",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -3163,6 +4002,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineStyle": {
               "dash": [
@@ -3221,7 +4061,7 @@
         "h": 20,
         "w": 12,
         "x": 12,
-        "y": 173
+        "y": 219
       },
       "id": 57,
       "interval": "1m",
@@ -3236,7 +4076,7 @@
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true,
-          "sortBy": "Max",
+          "sortBy": "Mean",
           "sortDesc": true
         },
         "tooltip": {
@@ -3244,7 +4084,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -3252,7 +4092,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "avg(erpc_upstream_finalization_lag{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\"}) by (project, upstream, network) > 5000",
+          "expr": "avg(erpc_upstream_finalization_lag{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\",project=~\"${project:regex}\",vendor=~\"${vendor:regex}\"}) by (project, upstream, network) > 5000",
           "format": "time_series",
           "interval": "1m",
           "legendFormat": "{{project}}, {{network}}, {{upstream}}",
@@ -3317,7 +4157,7 @@
         "h": 13,
         "w": 12,
         "x": 0,
-        "y": 193
+        "y": 239
       },
       "id": 55,
       "interval": "1m",
@@ -3332,14 +4172,9 @@
           "show": false
         },
         "showHeader": true,
-        "sortBy": [
-          {
-            "desc": false,
-            "displayName": "network"
-          }
-        ]
+        "sortBy": []
       },
-      "pluginVersion": "9.5.1",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -3348,7 +4183,7 @@
           },
           "editorMode": "code",
           "exemplar": false,
-          "expr": "avg(erpc_upstream_finalized_block_number{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\"}) by (project, upstream, network)",
+          "expr": "avg(erpc_upstream_finalized_block_number{upstream!=\"*\",network!=\"\",network=~\"${network:regex}\",vendor=~\"${vendor:regex}\"}) by (project, upstream, network)",
           "format": "table",
           "instant": true,
           "interval": "1m",
@@ -3372,11 +4207,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -3385,6 +4222,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 1,
@@ -3423,7 +4261,7 @@
         "h": 13,
         "w": 12,
         "x": 12,
-        "y": 193
+        "y": 239
       },
       "id": 56,
       "interval": "1m",
@@ -3440,7 +4278,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -3471,11 +4309,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -3484,6 +4324,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -3522,7 +4363,7 @@
         "h": 13,
         "w": 12,
         "x": 0,
-        "y": 206
+        "y": 252
       },
       "id": 60,
       "interval": "1m",
@@ -3539,7 +4380,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -3570,11 +4411,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -3583,6 +4426,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -3621,7 +4465,7 @@
         "h": 13,
         "w": 12,
         "x": 12,
-        "y": 206
+        "y": 252
       },
       "id": 61,
       "interval": "1m",
@@ -3638,7 +4482,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -3663,7 +4507,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 219
+        "y": 265
       },
       "id": 21,
       "panels": [],
@@ -3681,11 +4525,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -3694,6 +4540,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -3731,7 +4578,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 220
+        "y": 266
       },
       "id": 17,
       "options": {
@@ -3747,7 +4594,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -3775,11 +4622,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -3788,6 +4637,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -3826,7 +4676,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 220
+        "y": 266
       },
       "id": 16,
       "options": {
@@ -3842,7 +4692,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -3851,6 +4701,7 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_set_success_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (le, project, network, category, connector, policy, ttl))",
+          "hide": false,
           "legendFormat": "p50 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
           "range": true,
           "refId": "A"
@@ -3862,7 +4713,7 @@
           },
           "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_set_success_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[1m])) by (le, project, network, category, connector, policy, ttl))",
-          "hide": false,
+          "hide": true,
           "legendFormat": "p95 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, TTL={{ttl}}",
           "range": true,
           "refId": "B"
@@ -3882,11 +4733,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -3895,6 +4748,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -3932,7 +4786,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 230
+        "y": 276
       },
       "id": 36,
       "options": {
@@ -3948,7 +4802,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -3976,11 +4830,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -3989,6 +4845,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -4027,7 +4884,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 230
+        "y": 276
       },
       "id": 37,
       "options": {
@@ -4043,7 +4900,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -4083,11 +4940,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -4096,6 +4955,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -4133,7 +4993,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 240
+        "y": 286
       },
       "id": 38,
       "options": {
@@ -4149,7 +5009,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -4177,11 +5037,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -4190,6 +5052,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -4228,7 +5091,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 240
+        "y": 286
       },
       "id": 39,
       "options": {
@@ -4244,7 +5107,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -4285,11 +5148,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -4298,6 +5163,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -4335,7 +5201,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 250
+        "y": 296
       },
       "id": 42,
       "options": {
@@ -4351,7 +5217,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -4379,11 +5245,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -4392,6 +5260,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -4430,7 +5299,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 250
+        "y": 296
       },
       "id": 43,
       "options": {
@@ -4446,7 +5315,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -4486,11 +5355,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -4499,6 +5370,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -4536,7 +5408,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 260
+        "y": 306
       },
       "id": 40,
       "options": {
@@ -4552,7 +5424,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -4580,11 +5452,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 0,
             "gradientMode": "none",
@@ -4593,6 +5467,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -4631,7 +5506,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 260
+        "y": 306
       },
       "id": 41,
       "options": {
@@ -4647,7 +5522,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -4655,7 +5530,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_get_error_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, network, category, connector, policy, ttl, error))",
+          "expr": "histogram_quantile(0.5, sum(rate(erpc_cache_get_error_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",error!=\"ErrRecordNotFound: record not found\"}[30s])) by (le, project, network, category, connector, policy, ttl, error))",
           "legendFormat": "p50 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, {{error}}, TTL={{ttl}}",
           "range": true,
           "refId": "A"
@@ -4666,7 +5541,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_get_error_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\"}[30s])) by (le, project, network, category, connector, policy, ttl, error))",
+          "expr": "histogram_quantile(0.95, sum(rate(erpc_cache_get_error_duration_seconds_bucket{network=~\"${network:regex}\",upstream=~\"${upstream:regex}\",category=~\"${category:regex}\",error!=\"ErrRecordNotFound: record not found\"}[30s])) by (le, project, network, category, connector, policy, ttl, error))",
           "hide": false,
           "legendFormat": "p95 - {{project}}, {{network}}, {{category}}, {{connector}}, {{policy}}, {{error}}, TTL={{ttl}}",
           "range": true,
@@ -4682,7 +5557,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 270
+        "y": 316
       },
       "id": 64,
       "panels": [],
@@ -4701,11 +5576,13 @@
             "mode": "palette-classic"
           },
           "custom": {
+            "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
             "axisLabel": "",
             "axisPlacement": "auto",
             "barAlignment": 0,
+            "barWidthFactor": 0.6,
             "drawStyle": "line",
             "fillOpacity": 10,
             "gradientMode": "none",
@@ -4714,6 +5591,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -4752,7 +5630,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 271
+        "y": 317
       },
       "id": 65,
       "interval": "1m",
@@ -4769,7 +5647,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.0-80207",
+      "pluginVersion": "11.3.2",
       "targets": [
         {
           "datasource": {
@@ -4790,34 +5668,128 @@
       "type": "timeseries"
     }
   ],
+  "preload": false,
   "refresh": "1m",
-  "schemaVersion": 38,
-  "style": "dark",
+  "schemaVersion": 40,
   "tags": [],
   "templating": {
     "list": [
       {
         "current": {
-          "selected": false,
           "text": "default",
           "value": "default"
         },
-        "hide": 0,
         "includeAll": false,
-        "multi": false,
         "name": "datasource",
         "options": [],
         "query": "prometheus",
-        "queryValue": "",
         "refresh": 1,
         "regex": "",
-        "skipUrlSync": false,
         "type": "datasource"
       },
       {
         "allValue": ".*",
         "current": {
-          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(client_name)",
+        "includeAll": true,
+        "multi": true,
+        "name": "client_name",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(client_name)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(cluster_key)",
+        "includeAll": true,
+        "multi": true,
+        "name": "cluster_key",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(cluster_key)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(project)",
+        "includeAll": true,
+        "multi": true,
+        "name": "project",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(project)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(vendor)",
+        "includeAll": true,
+        "multi": true,
+        "name": "vendor",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(vendor)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
           "text": [
             "All"
           ],
@@ -4829,29 +5801,24 @@
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values(network)",
-        "hide": 0,
+        "definition": "label_values({network=~\"evm:.*\"},network)",
         "includeAll": true,
         "multi": true,
         "name": "network",
         "options": [],
         "query": {
-          "query": "label_values(network)",
+          "qryType": 1,
+          "query": "label_values({network=~\"evm:.*\"},network)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 1,
         "regex": "",
-        "skipUrlSync": false,
-        "sort": 0,
         "type": "query"
       },
       {
         "allValue": ".*",
         "current": {
-          "selected": true,
-          "text": [
-            "All"
-          ],
+          "text": "All",
           "value": [
             "$__all"
           ]
@@ -4861,7 +5828,6 @@
           "uid": "${datasource}"
         },
         "definition": "label_values(upstream)",
-        "hide": 0,
         "includeAll": true,
         "multi": true,
         "name": "upstream",
@@ -4872,17 +5838,12 @@
         },
         "refresh": 1,
         "regex": "",
-        "skipUrlSync": false,
-        "sort": 0,
         "type": "query"
       },
       {
         "allValue": ".*",
         "current": {
-          "selected": false,
-          "text": [
-            "All"
-          ],
+          "text": "All",
           "value": [
             "$__all"
           ]
@@ -4892,7 +5853,6 @@
           "uid": "${datasource}"
         },
         "definition": "label_values(category)",
-        "hide": 0,
         "includeAll": true,
         "multi": true,
         "name": "category",
@@ -4903,20 +5863,18 @@
         },
         "refresh": 1,
         "regex": "",
-        "skipUrlSync": false,
-        "sort": 0,
         "type": "query"
       }
     ]
   },
   "time": {
-    "from": "now-30m",
+    "from": "now-3h",
     "to": "now"
   },
   "timepicker": {},
   "timezone": "",
   "title": "eRPC Metrics",
   "uid": "erpc_metrics",
-  "version": 36,
+  "version": 35,
   "weekStart": ""
 }

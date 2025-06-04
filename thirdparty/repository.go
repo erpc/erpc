@@ -144,7 +144,7 @@ func (v *RepositoryVendor) GenerateConfigs(ctx context.Context, logger *zerolog.
 			*routing = *upstream.Routing
 		}
 		upsList = append(upsList, &common.UpstreamConfig{
-			Id:                           util.RedactEndpoint(ep),
+			Id:                           fmt.Sprintf("%s-%s", upstream.Id, util.RedactEndpoint(ep)),
 			Type:                         common.UpstreamTypeEvm,
 			Endpoint:                     ep,
 			Group:                        upstream.Group,

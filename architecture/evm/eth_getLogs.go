@@ -17,10 +17,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// LowerBoundBlocksSafetyMargin is the number of blocks to subtract from the last available block to be on the safe side,
-// when looking for data too close to the lower-end of Full nodes, because they might have pruned the data already.
-var LowerBoundBlocksSafetyMargin int64 = 10
-
 func BuildGetLogsRequest(fromBlock, toBlock int64, address interface{}, topics interface{}) (*common.JsonRpcRequest, error) {
 	fb, err := common.NormalizeHex(fromBlock)
 	if err != nil {
@@ -49,10 +45,10 @@ func BuildGetLogsRequest(fromBlock, toBlock int64, address interface{}, topics i
 	return jrq, nil
 }
 
-func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u common.Upstream, r *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
+func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u common.Upstream, nrq *common.NormalizedRequest) (handled bool, resp *common.NormalizedResponse, err error) {
 	up, ok := u.(common.EvmUpstream)
 	if !ok {
-		log.Warn().Interface("upstream", u).Object("request", r).Msg("passed upstream is not a common.EvmUpstream")
+		log.Warn().Interface("upstream", u).Object("request", nrq).Msg("passed upstream is not a common.EvmUpstream")
 		return false, nil, nil
 	}
 
@@ -66,15 +62,15 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		return false, nil, nil
 	}
 	ctx, span := common.StartDetailSpan(ctx, "Upstream.PreForwardHook.eth_getLogs", trace.WithAttributes(
-		attribute.String("request.id", fmt.Sprintf("%v", r.ID())),
+		attribute.String("request.id", fmt.Sprintf("%v", nrq.ID())),
 		attribute.String("network.id", n.Id()),
 		attribute.String("upstream.id", up.Id()),
 	))
 	defer span.End()
 
-	logger := up.Logger().With().Str("method", "eth_getLogs").Interface("id", r.ID()).Logger()
+	logger := up.Logger().With().Str("method", "eth_getLogs").Interface("id", nrq.ID()).Logger()
 
-	jrq, err := r.JsonRpcRequest(ctx)
+	jrq, err := nrq.JsonRpcRequest(ctx)
 	if err != nil {
 		return true, nil, err
 	}
@@ -172,62 +168,24 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 		)
 	}
 
-	// Check if upstream state poller has the last block >= logs range end,
-	// if not force a poller update, and if still not enough, skip the request.
-	latestBlock := statePoller.LatestBlock()
-	if common.IsTracingDetailed {
-		span.SetAttributes(
-			attribute.Int64("upstream_latest_block", latestBlock),
-			attribute.Int64("from_block", fromBlock),
-			attribute.Int64("to_block", toBlock),
+	// Check if the upstream can handle the requested block range
+	available, err := up.EvmAssertBlockAvailability(ctx, "eth_getLogs", common.AvailbilityConfidenceBlockHead, true, toBlock)
+	if err != nil {
+		return true, nil, err
+	}
+	if !available {
+		return true, nil, common.NewErrEndpointMissingData(
+			fmt.Errorf("block not found, because requested block (toBlock %d) is not available on the upstream node, ensure statePollerDebounce is low enough and or the requested block is older than the current chain head", toBlock),
 		)
 	}
-	if latestBlock > 0 {
-		logger.Debug().Int64("fromBlock", fromBlock).Int64("toBlock", toBlock).Int64("latestBlock", latestBlock).Msg("checking eth_getLogs block range integrity")
-
-		if latestBlock < toBlock {
-			latestBlock, err = statePoller.PollLatestBlockNumber(ctx)
-			if err != nil {
-				return true, nil, err
-			}
-		}
-		if latestBlock < toBlock {
-			telemetry.MetricUpstreamEvmGetLogsStaleUpperBound.WithLabelValues(
-				n.ProjectId(),
-				up.VendorName(),
-				up.NetworkId(),
-				up.Id(),
-			).Inc()
-			return true, nil, common.NewErrEndpointMissingData(
-				fmt.Errorf("block not found, because requested block (toBlock %d) is beyond the latest known block (%d) on the upstream node, ensure statePollerDebounce is low enough and or the requested block is older than the current chain head", toBlock, latestBlock),
-			)
-		}
-	} else {
-		logger.Debug().Msg("upstream latest block is not available, skipping integrity check")
+	available, err = up.EvmAssertBlockAvailability(ctx, "eth_getLogs", common.AvailbilityConfidenceBlockHead, false, fromBlock)
+	if err != nil {
+		return true, nil, err
 	}
-
-	// Check if the log range start is higher than node's max available block range,
-	// if not, skip the request.
-	if cfg != nil && cfg.Evm != nil && cfg.Evm.MaxAvailableRecentBlocks > 0 {
-		firstAvailableBlock := latestBlock - cfg.Evm.MaxAvailableRecentBlocks
-		if common.IsTracingDetailed {
-			span.SetAttributes(
-				attribute.Int64("first_available_block", firstAvailableBlock),
-			)
-		}
-		// If range is beyond the last available block, or too close to the last available block, skip the request for safety.
-		firstAvailableBlock = firstAvailableBlock - LowerBoundBlocksSafetyMargin
-		if fromBlock < firstAvailableBlock {
-			telemetry.MetricUpstreamEvmGetLogsStaleLowerBound.WithLabelValues(
-				n.ProjectId(),
-				up.VendorName(),
-				up.NetworkId(),
-				up.Id(),
-			).Inc()
-			return true, nil, common.NewErrEndpointMissingData(
-				fmt.Errorf("block not found, because (fromBlock %d) is before the first available block (%d) on the upstream node, ensure the requested block is within supported non-pruned range", fromBlock, firstAvailableBlock),
-			)
-		}
+	if !available {
+		return true, nil, common.NewErrEndpointMissingData(
+			fmt.Errorf("block not found, because (fromBlock %d) is not available on the upstream node, ensure the requested block is within supported range", fromBlock),
+		)
 	}
 
 	// Check evmGetLogsMaxRange and if the range is already bigger try to split in multiple smaller requests, and merge the final result
@@ -259,19 +217,18 @@ func upstreamPreForward_eth_getLogs(ctx context.Context, n common.Network, u com
 				Int("subRequests", len(subRequests)).
 				Msg("eth_getLogs block range exceeded, splitting")
 
-			r.SetCompositeType(common.CompositeTypeLogsSplitProactive)
-			mergedResponse, err := executeGetLogsSubRequests(ctx, n, u, r, subRequests, r.Directives().SkipCacheRead)
+			nrq.SetCompositeType(common.CompositeTypeLogsSplitProactive)
+			mergedResponse, err := executeGetLogsSubRequests(ctx, n, u, nrq, subRequests, nrq.Directives().SkipCacheRead)
 			if err != nil {
 				return true, nil, err
 			}
 
-			mergedNR := common.NewNormalizedResponse().
-				WithRequest(r).
-				WithJsonRpcResponse(mergedResponse)
-			r.SetLastValidResponse(mergedNR)
-			mergedNR.SetUpstream(u)
+			nrs := common.NewNormalizedResponse().WithRequest(nrq).WithJsonRpcResponse(mergedResponse)
+			nrs.SetUpstream(u)
 
-			return true, mergedNR, nil
+			nrq.SetLastValidResponse(ctx, nrs)
+
+			return true, nrs, nil
 		}
 	}
 
@@ -318,14 +275,14 @@ func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u co
 			return nil, err
 		}
 		nnr := common.NewNormalizedResponse().WithRequest(rq).WithJsonRpcResponse(jrr)
-		nnr.SetUpstream(u)
 		nnr.SetFromCache(rs.FromCache())
 		nnr.SetEvmBlockRef(rs.EvmBlockRef())
 		nnr.SetEvmBlockNumber(rs.EvmBlockNumber())
 		nnr.SetAttempts(rs.Attempts())
 		nnr.SetRetries(rs.Retries())
 		nnr.SetHedges(rs.Hedges())
-		rq.SetLastValidResponse(nnr)
+		nnr.SetUpstream(u)
+		rq.SetLastValidResponse(ctx, nnr)
 		return nnr, nil
 	}
 
