@@ -141,84 +141,82 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 		t := u.buildProviderBootstrapTask(provider, networkId)
 		tasks = append(tasks, t)
 	}
-
-	prepareCtx, cancelPrepare := context.WithTimeout(ctx, 5*time.Second)
-	defer cancelPrepare()
-
 	errCh := make(chan error, 1)
 	go func() {
-		if err := u.initializer.ExecuteTasks(prepareCtx, tasks...); err != nil {
-			u.logger.Warn().
+		if err := u.initializer.ExecuteTasks(ctx, tasks...); err != nil {
+			u.logger.Error().
 				Err(err).
 				Str("networkId", networkId).
-				Msg("provider bootstrap tasks execution reported an error during initial preparation window")
+				Msg("failed to execute provider bootstrap tasks")
 			errCh <- err
-			return
 		}
 		close(errCh)
 	}()
 
-	ticker := time.NewTicker(200 * time.Millisecond)
+	// Wait for at least one active upstream, completion, or error with a 3-second timeout
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
+
+	timeout := time.NewTimer(3 * time.Second)
+	defer timeout.Stop()
 
 	for {
 		select {
-		case <-prepareCtx.Done():
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-errCh:
+			return err
+		case <-timeout.C:
+			// Timeout expired - check if we have any active upstreams
 			u.upstreamsMu.RLock()
-			upstreamsCount := len(u.networkUpstreams[networkId])
-			u.upstreamsMu.RUnlock()
-			if upstreamsCount == 0 {
-				errMsg := fmt.Sprintf("timed out waiting for initial upstreams for network %s, 0 active", networkId)
-				u.logger.Error().Str("networkId", networkId).Msg(errMsg)
-				return common.NewErrNoUpstreamsFound(u.prjId, networkId)
+			upstreams := u.networkUpstreams[networkId]
+			activeCount := 0
+			for _, ups := range upstreams {
+				if !u.metricsTracker.IsCordoned(ups, "*") {
+					activeCount++
+				}
 			}
+			u.upstreamsMu.RUnlock()
+
+			if activeCount == 0 {
+				return fmt.Errorf("timeout waiting for active upstreams for network %s: found %d upstreams but none are active", networkId, len(upstreams))
+			}
+
 			u.logger.Info().
 				Str("networkId", networkId).
-				Int("upstreamsCount", upstreamsCount).
-				Msg("initial upstream preparation window ended, proceeding with available upstreams")
+				Int("activeUpstreamsCount", activeCount).
+				Msg("timeout reached but active upstreams are available, continuing")
 			return nil
-		case errFromExecuteTasks := <-errCh:
-			u.upstreamsMu.RLock()
-			upstreamsCount := len(u.networkUpstreams[networkId])
-			u.upstreamsMu.RUnlock()
-
-			if errFromExecuteTasks != nil {
-				if upstreamsCount == 0 {
-					u.logger.Error().Err(errFromExecuteTasks).Str("networkId", networkId).Msg("ExecuteTasks failed and no upstreams became available.")
-					return fmt.Errorf("bootstrap for network %s failed: %w", networkId, errFromExecuteTasks)
-				}
-				u.logger.Warn().Err(errFromExecuteTasks).Str("networkId", networkId).Int("upstreamsCount", upstreamsCount).
-					Msg("ExecuteTasks reported errors, but some upstreams are available. Proceeding.")
-				return nil
-			}
-
-			if upstreamsCount > 0 {
-				u.logger.Info().
-					Str("networkId", networkId).
-					Int("upstreamsCount", upstreamsCount).
-					Msg("at least one upstream is available for network, continuing initialization")
-				return nil
-			}
-			return common.NewErrNoUpstreamsFound(u.prjId, networkId)
-
 		case <-ticker.C:
-			u.upstreamsMu.RLock()
-			upstreamsCount := len(u.networkUpstreams[networkId])
-			u.upstreamsMu.RUnlock()
+			// check if the initializer has failed
+			status := u.initializer.Status()
 
-			if upstreamsCount > 0 {
-				u.logger.Info().
-					Str("networkId", networkId).
-					Int("upstreamsCount", upstreamsCount).
-					Msg("at least one upstream is available for network, continuing initialization")
-				return nil
+			if status.State == util.StateFailed {
+				return fmt.Errorf("initialization failed with state: %s", status.State.String())
 			}
 
-			status := u.initializer.Status()
-			if status.State == util.StateFailed && upstreamsCount == 0 {
-				errMsg := fmt.Sprintf("initializer failed and no upstreams active for network %s", networkId)
-				u.logger.Error().Str("networkId", networkId).Msg(errMsg)
-				return common.NewErrNoUpstreamsFound(u.prjId, networkId)
+			// Check if we have at least one active upstream for this network
+			u.upstreamsMu.RLock()
+			upstreams := u.networkUpstreams[networkId]
+			activeCount := 0
+			for _, ups := range upstreams {
+				if !u.metricsTracker.IsCordoned(ups, "*") {
+					activeCount++
+				}
+			}
+			u.upstreamsMu.RUnlock()
+
+			if activeCount == 0 {
+				continue
+			}
+
+			if activeCount > 0 {
+				u.logger.Info().
+					Str("networkId", networkId).
+					Int("totalUpstreamsCount", len(upstreams)).
+					Int("activeUpstreamsCount", activeCount).
+					Msg("at least one active upstream is available for network, continuing initialization")
+				return nil
 			}
 		}
 	}
