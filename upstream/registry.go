@@ -199,7 +199,7 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 					Msg("at least one upstream is available for network, continuing initialization")
 				return nil
 			}
-			u.logger.Warn().Str("networkId", networkId).Msg("ExecuteTasks completed but no upstreams registered yet, continuing to wait within preparation window.")
+			return common.NewErrNoUpstreamsFound(u.prjId, networkId)
 
 		case <-ticker.C:
 			u.upstreamsMu.RLock()
