@@ -88,6 +88,22 @@ func (n *Network) EvmHighestLatestBlockNumber(ctx context.Context) int64 {
 		if statePoller == nil {
 			continue
 		}
+
+		// Check if the node is syncing - skip syncing nodes as their block numbers may be unreliable
+		if u.EvmSyncingState() == common.EvmSyncingStateSyncing {
+			n.logger.Debug().Str("upstreamId", u.Id()).Msg("skipping syncing upstream for highest latest block calculation")
+			continue
+		}
+
+		// Check if upstream is excluded by selection policy
+		if n.selectionPolicyEvaluator != nil {
+			// We use "eth_blockNumber" as it's a common method that would be used to get latest block
+			if err := n.selectionPolicyEvaluator.AcquirePermit(n.logger, u, "eth_blockNumber"); err != nil {
+				n.logger.Debug().Str("upstreamId", u.Id()).Err(err).Msg("skipping upstream excluded by selection policy for highest latest block calculation")
+				continue
+			}
+		}
+
 		upBlock := statePoller.LatestBlock()
 		if upBlock > maxBlock {
 			maxBlock = upBlock
@@ -110,6 +126,22 @@ func (n *Network) EvmHighestFinalizedBlockNumber(ctx context.Context) int64 {
 		if statePoller == nil {
 			continue
 		}
+
+		// Check if the node is syncing - skip syncing nodes as their block numbers may be unreliable
+		if u.EvmSyncingState() == common.EvmSyncingStateSyncing {
+			n.logger.Debug().Str("upstreamId", u.Id()).Msg("skipping syncing upstream for highest finalized block calculation")
+			continue
+		}
+
+		// Check if upstream is excluded by selection policy
+		if n.selectionPolicyEvaluator != nil {
+			// We use "eth_getBlockByNumber" as it's a common method that would be used to get finalized block
+			if err := n.selectionPolicyEvaluator.AcquirePermit(n.logger, u, "eth_getBlockByNumber"); err != nil {
+				n.logger.Debug().Str("upstreamId", u.Id()).Err(err).Msg("skipping upstream excluded by selection policy for highest finalized block calculation")
+				continue
+			}
+		}
+
 		upBlock := statePoller.FinalizedBlock()
 		if upBlock > maxBlock {
 			maxBlock = upBlock
