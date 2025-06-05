@@ -43,12 +43,9 @@ func (n *Network) Bootstrap(ctx context.Context) error {
 	// Initialize policy evaluator if configured
 	if n.cfg.SelectionPolicy != nil {
 
-		initCtx, cancelInit := context.WithTimeout(ctx, 30*time.Second)
-		defer cancelInit()
-
-		err := n.upstreamsRegistry.GetInitializer().WaitForTasks(initCtx)
+		err := n.upstreamsRegistry.GetInitializer().WaitForTasks(ctx)
 		if err != nil {
-			n.logger.Warn().Err(err).Msg("failed to wait for initial upstreams")
+			n.logger.Debug().Err(err).Msg("issue during WaitForTasks in network bootstrap for policy evaluator, proceeding if upstreams exist")
 		}
 
 		evaluator, e := NewPolicyEvaluator(n.networkId, n.logger, n.cfg.SelectionPolicy, n.upstreamsRegistry, n.metricsTracker)
