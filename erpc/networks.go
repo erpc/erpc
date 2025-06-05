@@ -42,12 +42,6 @@ type Network struct {
 func (n *Network) Bootstrap(ctx context.Context) error {
 	// Initialize policy evaluator if configured
 	if n.cfg.SelectionPolicy != nil {
-
-		err := n.upstreamsRegistry.GetInitializer().WaitForTasks(ctx)
-		if err != nil {
-			n.logger.Debug().Err(err).Msg("issue during WaitForTasks in network bootstrap for policy evaluator, proceeding if upstreams exist")
-		}
-
 		evaluator, e := NewPolicyEvaluator(n.networkId, n.logger, n.cfg.SelectionPolicy, n.upstreamsRegistry, n.metricsTracker)
 		if e != nil {
 			return fmt.Errorf("failed to create selection policy evaluator: %w", e)
