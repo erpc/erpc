@@ -25,6 +25,7 @@ Providers make it easy to add well-known third-parties RPC endpoints quickly. He
 - [`onfinality`](#onfinality) Accepts onfinality.io api key and automatically adds all their EVM chains.
 - [`tenderly`](#tenderly) Accepts tenderly.co api key and automatically adds all their EVM chains.
 - [`blockpi`](#blockpi) Accepts blockpi.io api key and automatically adds all their EVM chains.
+- [`ankr`](#ankr) Accepts ankr.com api key and automatically adds all their EVM chains.
 
 <Callout type='info'>
   eRPC supports **any EVM-compatible** JSON-RPC endpoint when using [`evm` type](/config/projects/upstreams). 
@@ -745,6 +746,44 @@ export default createConfig({
 </Tabs.Tab>
 </Tabs>
 
+#### `ankr`
+
+Built for [Ankr](https://www.ankr.com/) 3rd-party provider to make it easier to import "all supported evm chains" with just an API key.
+
+<Tabs items={["yaml", "typescript"]} defaultIndex={0} storageKey="GlobalConfigTypeTabIndex">
+  <Tabs.Tab>
+```yaml filename="erpc.yaml"
+# ...
+projects:
+  - id: main
+    # ...
+    upstreams:
+      - endpoint: ankr://YOUR_ANKR_API_KEY
+        # ...
+```
+</Tabs.Tab>
+  <Tabs.Tab>
+```ts filename="erpc.ts"
+import { createConfig } from "@erpc-cloud/config";
+
+export default createConfig({
+  projects: [
+    {
+      id: "main",
+      // ...
+      upstreams: [
+        {
+          endpoint: "ankr://YOUR_ANKR_API_KEY",
+          // ...
+        },
+      ],
+    },
+  ],
+});
+```
+</Tabs.Tab>
+</Tabs>
+
 ## Advanced config
 
 You can use dedicated `providers:` config to customize per-network configurations (e.g. different config for Alchemy eth-mainnet vs Alchemy polygon) as follows:
@@ -913,4 +952,7 @@ providers:
   - vendor: blockpi
     settings:
       apiKey: xxxxx # Your BlockPi API key
+  - vendor: ankr
+    settings:
+      apiKey: xxxxx # Your Ankr API key
 ```

@@ -28,6 +28,7 @@ func NewVendorsRegistry() *VendorsRegistry {
 	r.Register(CreateOnFinalityVendor())
 	r.Register(CreateErpcVendor())
 	r.Register(CreateBlockPiVendor())
+	r.Register(CreateAnkrVendor())
 	return r
 }
 

@@ -105,7 +105,8 @@ import type {
     | "evm+tenderly"
     | "evm+onfinality"
     | "evm+erpc"
-    | "evm+blockpi";
+    | "evm+blockpi"
+    | "evm+ankr";
   
   /**
    * Supported auth type
