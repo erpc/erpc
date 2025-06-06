@@ -47,6 +47,7 @@ func init() {
 	}
 	SonicCfg = sonic.Config{
 		CopyString:              false,
+		NoNullSliceOrMap:        true,
 		NoQuoteTextMarshaler:    true,
 		NoValidateJSONMarshaler: true,
 		NoValidateJSONSkip:      true,
