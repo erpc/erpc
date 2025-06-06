@@ -2,6 +2,7 @@ package erpc
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/h2non/gock"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -22,16 +24,20 @@ var (
 
 func TestNetwork_Consensus(t *testing.T) {
 	tests := []struct {
-		name             string
-		upstreams        []*common.UpstreamConfig
-		mockResponses    []map[string]interface{}
-		expectedCalls    []int // Number of expected calls for each upstream
-		expectedResponse *common.NormalizedResponse
-		expectedError    *common.ErrorCode
-		expectedMsg      *string
+		name                 string
+		upstreams            []*common.UpstreamConfig
+		hasRetries           bool
+		request              map[string]interface{}
+		mockResponses        []map[string]interface{}
+		requiredParticipants int
+		expectedCalls        []int // Number of expected calls for each upstream
+		expectedResponse     *common.NormalizedResponse
+		expectedError        *common.ErrorCode
+		expectedMsg          *string
 	}{
 		{
-			name: "successful consensus",
+			name:                 "successful consensus",
+			requiredParticipants: 3,
 			upstreams: []*common.UpstreamConfig{
 				{
 					Id:       "test1",
@@ -57,6 +63,10 @@ func TestNetwork_Consensus(t *testing.T) {
 						ChainId: 123,
 					},
 				},
+			},
+			request: map[string]interface{}{
+				"method": "eth_chainId",
+				"params": []interface{}{},
 			},
 			mockResponses: []map[string]interface{}{
 				{
@@ -80,7 +90,8 @@ func TestNetwork_Consensus(t *testing.T) {
 				WithJsonRpcResponse(successResponse),
 		},
 		{
-			name: "low participants error",
+			name:                 "low participants error",
+			requiredParticipants: 3,
 			upstreams: []*common.UpstreamConfig{
 				{
 					Id:       "test1",
@@ -90,6 +101,10 @@ func TestNetwork_Consensus(t *testing.T) {
 						ChainId: 123,
 					},
 				},
+			},
+			request: map[string]interface{}{
+				"method": "eth_chainId",
+				"params": []interface{}{},
 			},
 			mockResponses: []map[string]interface{}{
 				{
@@ -103,7 +118,8 @@ func TestNetwork_Consensus(t *testing.T) {
 			expectedMsg:   pointer("not enough participants"),
 		},
 		{
-			name: "dispute error",
+			name:                 "dispute error",
+			requiredParticipants: 3,
 			upstreams: []*common.UpstreamConfig{
 				{
 					Id:       "test1",
@@ -130,6 +146,10 @@ func TestNetwork_Consensus(t *testing.T) {
 					},
 				},
 			},
+			request: map[string]interface{}{
+				"method": "eth_chainId",
+				"params": []interface{}{},
+			},
 			mockResponses: []map[string]interface{}{
 				{
 					"jsonrpc": "2.0",
@@ -152,7 +172,53 @@ func TestNetwork_Consensus(t *testing.T) {
 			expectedMsg:   pointer("not enough agreement among responses"),
 		},
 		{
-			name: "error response on upstreams",
+			name:                 "retried dispute error",
+			requiredParticipants: 2,
+			upstreams: []*common.UpstreamConfig{
+				{
+					Id:       "test1",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc1-dispute.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+				{
+					Id:       "test2",
+					Type:     common.UpstreamTypeEvm,
+					Endpoint: "http://rpc2-dispute.localhost",
+					Evm: &common.EvmUpstreamConfig{
+						ChainId: 123,
+					},
+				},
+			},
+			request: map[string]interface{}{
+				"method": "eth_getBlockByNumber",
+				"params": []interface{}{"latest", false},
+			},
+			mockResponses: []map[string]interface{}{
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"result":  "0x1",
+				},
+				{
+					"jsonrpc": "2.0",
+					"id":      1,
+					"error": map[string]interface{}{
+						"code":    -32000,
+						"message": "cannot query unfinalized data",
+					},
+				},
+			},
+			hasRetries:    true,
+			expectedCalls: []int{2, 1}, // Each upstream called twice
+			expectedError: pointer(common.ErrCodeConsensusDispute),
+			expectedMsg:   pointer("not enough agreement among responses"),
+		},
+		{
+			name:                 "error response on upstreams",
+			requiredParticipants: 3,
 			upstreams: []*common.UpstreamConfig{
 				{
 					Id:       "test1",
@@ -178,6 +244,10 @@ func TestNetwork_Consensus(t *testing.T) {
 						ChainId: 123,
 					},
 				},
+			},
+			request: map[string]interface{}{
+				"method": "eth_chainId",
+				"params": []interface{}{},
 			},
 			mockResponses: []map[string]interface{}{
 				{
@@ -262,6 +332,14 @@ func TestNetwork_Consensus(t *testing.T) {
 				1*time.Second,
 			)
 
+			var retryPolicy *common.RetryPolicyConfig
+			if tt.hasRetries {
+				retryPolicy = &common.RetryPolicyConfig{
+					MaxAttempts: 2,
+					Delay:       common.Duration(0),
+				}
+			}
+
 			ntw, err := NewNetwork(
 				ctx,
 				&log.Logger,
@@ -272,8 +350,9 @@ func TestNetwork_Consensus(t *testing.T) {
 						ChainId: 123,
 					},
 					Failsafe: &common.FailsafeConfig{
+						Retry: retryPolicy,
 						Consensus: &common.ConsensusPolicyConfig{
-							RequiredParticipants:    3,
+							RequiredParticipants:    tt.requiredParticipants,
 							AgreementThreshold:      2,
 							FailureBehavior:         common.ConsensusFailureBehaviorReturnError,
 							DisputeBehavior:         common.ConsensusDisputeBehaviorReturnError,
@@ -310,7 +389,12 @@ func TestNetwork_Consensus(t *testing.T) {
 			}
 
 			// Make request
-			fakeReq := common.NewNormalizedRequest([]byte(`{"method": "eth_chainId","params":[]}`))
+			reqBytes, err := json.Marshal(tt.request)
+			if err != nil {
+				require.NoError(t, err)
+			}
+
+			fakeReq := common.NewNormalizedRequest(reqBytes)
 			resp, err := ntw.Forward(ctx, fakeReq)
 
 			// Log the error for debugging
@@ -319,10 +403,10 @@ func TestNetwork_Consensus(t *testing.T) {
 			}
 
 			if tt.expectedError != nil {
-				assert.Error(t, err)
-				assert.True(t, common.HasErrorCode(err, *tt.expectedError))
-				assert.Contains(t, err.Error(), *tt.expectedMsg)
-				assert.Nil(t, resp)
+				assert.Error(t, err, "expected error but got nil")
+				assert.True(t, common.HasErrorCode(err, *tt.expectedError), "expected error code %s, got %s", *tt.expectedError, err)
+				assert.Contains(t, err.Error(), *tt.expectedMsg, "expected error message %s, got %s", *tt.expectedMsg, err.Error())
+				assert.Nil(t, resp, "expected nil response")
 			} else {
 				assert.NoError(t, err)
 				assert.NotNil(t, resp)

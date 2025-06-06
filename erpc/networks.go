@@ -464,13 +464,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	defer req.RUnlock()
 
 	if execErr != nil {
+		translatedErr := upstream.TranslateFailsafeError(common.ScopeNetwork, "", method, execErr, &startTime)
 		// Don't override consensus errors with last valid response
-		if common.HasErrorCode(execErr, common.ErrCodeConsensusFailure, common.ErrCodeConsensusDispute, common.ErrCodeConsensusLowParticipants) {
-			err = upstream.TranslateFailsafeError(common.ScopeNetwork, "", method, execErr, &startTime)
+		if common.HasErrorCode(translatedErr, common.ErrCodeConsensusFailure, common.ErrCodeConsensusDispute, common.ErrCodeConsensusLowParticipants) {
 			if mlx != nil {
-				mlx.Close(ctx, nil, err)
+				mlx.Close(ctx, nil, translatedErr)
 			}
-			return nil, err
+			return nil, translatedErr
 		}
 
 		lvr := req.LastValidResponse()
@@ -488,11 +488,10 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			resp = lvr
 			req.SetLastUpstream(resp.Upstream())
 		} else {
-			err = upstream.TranslateFailsafeError(common.ScopeNetwork, "", method, execErr, &startTime)
 			if mlx != nil {
-				mlx.Close(ctx, nil, err)
+				mlx.Close(ctx, nil, translatedErr)
 			}
-			return nil, err
+			return nil, translatedErr
 		}
 	}
 
