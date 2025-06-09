@@ -544,8 +544,6 @@ func (r *JsonRpcResponse) CanonicalHash(ctx ...context.Context) (string, error) 
 		return "", err
 	}
 
-	println(string(canonical))
-
 	b := sha256.Sum256(canonical)
 
 	return fmt.Sprintf("%x", b), nil
