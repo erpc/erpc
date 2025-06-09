@@ -204,18 +204,6 @@ func sortJSONReverse(v interface{}) ([]byte, error) {
 }
 
 func TestJsonRpcRequest_MarshalParams(t *testing.T) {
-	t.Run("Nil", func(t *testing.T) {
-		rawReq, err := SonicCfg.Marshal(JsonRpcRequest{
-			JSONRPC: "2.0",
-			ID:      1,
-			Method:  "eth_blockNumber",
-		})
-		assert.NoError(t, err)
-
-		expectedRawReq := `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}`
-		assert.Equal(t, expectedRawReq, string(rawReq))
-	})
-
 	t.Run("Empty", func(t *testing.T) {
 		rawReq, err := SonicCfg.Marshal(JsonRpcRequest{
 			JSONRPC: "2.0",
@@ -241,5 +229,4 @@ func TestJsonRpcRequest_MarshalParams(t *testing.T) {
 		expectedRawReq := `{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":["0xcafecafecafecafecafecafecafecafecafecafe"]}`
 		assert.Equal(t, expectedRawReq, string(rawReq))
 	})
-
 }

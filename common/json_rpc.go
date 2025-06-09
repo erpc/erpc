@@ -610,7 +610,7 @@ type JsonRpcRequest struct {
 	JSONRPC string        `json:"jsonrpc,omitempty"`
 	ID      interface{}   `json:"id,omitempty"`
 	Method  string        `json:"method"`
-	Params  []interface{} `json:"params,omitempty"`
+	Params  []interface{} `json:"params"`
 }
 
 func NewJsonRpcRequest(method string, params []interface{}) *JsonRpcRequest {
