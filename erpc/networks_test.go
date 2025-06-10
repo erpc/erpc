@@ -29,6 +29,7 @@ import (
 	promUtil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -10150,5 +10151,96 @@ func TestNetwork_HighestLatestBlockNumber(t *testing.T) {
 		highest := network.EvmHighestLatestBlockNumber(ctx)
 
 		assert.Equal(t, int64(2000), highest, "Should exclude policy-excluded node and return highest from included nodes only")
+	})
+}
+
+func TestNetwork_CacheEmptyBehavior(t *testing.T) {
+	t.Run("ServeCachedEmptyWhenAllowed", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkSimple(t, ctx, nil, nil)
+
+		cache := &common.MockCacheDal{}
+		network.cacheDal = cache
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"address":"0x11"}],"id":1}`))
+
+		jrr, err := common.NewJsonRpcResponse(req.ID(), []interface{}{}, nil)
+		require.NoError(t, err)
+		cachedResp := common.NewNormalizedResponse().
+			WithRequest(req).
+			WithJsonRpcResponse(jrr).
+			WithFromCache(true).
+			WithEmptyBehavior(common.CacheEmptyBehaviorAllow)
+
+		cache.On("Get", mock.Anything, mock.Anything).Return(cachedResp, nil).Once()
+
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		assert.True(t, resp.FromCache())
+		rjrr, err := resp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Equal(t, "[]", string(rjrr.Result))
+		cache.AssertExpectations(t)
+	})
+
+	t.Run("SkipCachedEmptyWhenIgnored", func(t *testing.T) {
+		util.ResetGock()
+		defer util.ResetGock()
+		util.SetupMocksForEvmStatePoller()
+		defer util.AssertNoPendingMocks(t, 0)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		network := setupTestNetworkSimple(t, ctx, nil, nil)
+
+		cache := &common.MockCacheDal{}
+		network.cacheDal = cache
+
+		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"address":"0x11"}],"id":1}`))
+
+		jrr, err := common.NewJsonRpcResponse(req.ID(), []interface{}{}, nil)
+		require.NoError(t, err)
+		cachedResp := common.NewNormalizedResponse().
+			WithRequest(req).
+			WithJsonRpcResponse(jrr).
+			WithFromCache(true).
+			WithEmptyBehavior(common.CacheEmptyBehaviorIgnore)
+
+		cache.On("Get", mock.Anything, mock.Anything).Return(cachedResp, nil).Once()
+
+		gock.New("http://rpc1.localhost").
+			Post("").
+			MatchType("json").
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"method":  "eth_getLogs",
+				"params":  []interface{}{map[string]interface{}{"address": "0x11"}},
+				"id":      float64(1),
+			}).
+			Times(1).
+			Reply(200).
+			JSON(map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  []interface{}{map[string]interface{}{"logIndex": "0x1"}},
+			})
+
+		resp, err := network.Forward(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		assert.False(t, resp.FromCache())
+		rjrr, err := resp.JsonRpcResponse()
+		require.NoError(t, err)
+		assert.Contains(t, string(rjrr.Result), `"logIndex":"0x1"`)
+		cache.AssertExpectations(t)
 	})
 }

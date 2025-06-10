@@ -198,7 +198,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		resp, err := n.cacheDal.Get(ctx, req)
 		if err != nil {
 			lg.Debug().Err(err).Msgf("could not find response in cache")
+			forwardSpan.SetAttributes(attribute.Bool("cache.hit", false))
 		} else if resp != nil && !resp.IsObjectNull(ctx) {
+			forwardSpan.SetAttributes(attribute.Bool("cache.hit", true))
 			allowedEmpty := resp.EmptyBehavior() != common.CacheEmptyBehaviorIgnore
 			if !resp.IsResultEmptyish(ctx) || allowedEmpty {
 				if lg.GetLevel() <= zerolog.DebugLevel {
@@ -209,13 +211,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				if mlx != nil {
 					mlx.Close(ctx, resp, err)
 				}
-				forwardSpan.SetAttributes(attribute.Bool("cache.hit", true))
 				return resp, err
 			}
-			forwardSpan.SetAttributes(attribute.Bool("cache.hit", true))
-			return resp, err
+			lg.Debug().Msgf("ignoring empty response from cache")
+		} else {
+			forwardSpan.SetAttributes(attribute.Bool("cache.hit", false))
 		}
-		forwardSpan.SetAttributes(attribute.Bool("cache.hit", false))
 	}
 
 	_, upstreamSpan := common.StartDetailSpan(ctx, "GetSortedUpstreams")
