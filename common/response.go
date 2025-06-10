@@ -94,11 +94,6 @@ func (r *NormalizedResponse) EmptyBehavior() CacheEmptyBehavior {
 	return r.cacheEmptyBehavior
 }
 
-func (r *NormalizedResponse) SetEmptyBehavior(b CacheEmptyBehavior) *NormalizedResponse {
-	r.cacheEmptyBehavior = b
-	return r
-}
-
 func (r *NormalizedResponse) EvmBlockRef() interface{} {
 	if r == nil {
 		return nil
