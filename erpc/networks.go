@@ -198,15 +198,19 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 		resp, err := n.cacheDal.Get(ctx, req)
 		if err != nil {
 			lg.Debug().Err(err).Msgf("could not find response in cache")
-		} else if resp != nil && !resp.IsObjectNull(ctx) && !resp.IsResultEmptyish(ctx) {
-			// TODO should we skip the empty response check, that way we allow empty responses to be cached?
-			if lg.GetLevel() <= zerolog.DebugLevel {
-				lg.Debug().Object("response", resp).Msgf("response served from cache")
-			} else {
-				lg.Info().Msgf("response served from cache")
-			}
-			if mlx != nil {
-				mlx.Close(ctx, resp, err)
+		} else if resp != nil && !resp.IsObjectNull(ctx) {
+			allowedEmpty := resp.EmptyBehavior() != common.CacheEmptyBehaviorIgnore
+			if !resp.IsResultEmptyish(ctx) || allowedEmpty {
+				if lg.GetLevel() <= zerolog.DebugLevel {
+					lg.Debug().Object("response", resp).Msgf("response served from cache")
+				} else {
+					lg.Info().Msgf("response served from cache")
+				}
+				if mlx != nil {
+					mlx.Close(ctx, resp, err)
+				}
+				forwardSpan.SetAttributes(attribute.Bool("cache.hit", true))
+				return resp, err
 			}
 			forwardSpan.SetAttributes(attribute.Bool("cache.hit", true))
 			return resp, err

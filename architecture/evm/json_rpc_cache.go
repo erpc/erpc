@@ -290,6 +290,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 	return common.NewNormalizedResponse().
 		WithRequest(req).
 		WithFromCache(true).
+		WithEmptyBehavior(policy.EmptyState()).
 		WithJsonRpcResponse(jrr), nil
 }
 

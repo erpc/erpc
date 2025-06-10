@@ -24,9 +24,10 @@ type NormalizedResponse struct {
 	hedges    int
 	upstream  Upstream
 
-	jsonRpcResponse atomic.Pointer[JsonRpcResponse]
-	evmBlockNumber  atomic.Value
-	evmBlockRef     atomic.Value
+	jsonRpcResponse    atomic.Pointer[JsonRpcResponse]
+	evmBlockNumber     atomic.Value
+	evmBlockRef        atomic.Value
+	cacheEmptyBehavior CacheEmptyBehavior
 }
 
 var _ ResponseMetadata = &NormalizedResponse{}
@@ -83,6 +84,18 @@ func (r *NormalizedResponse) FromCache() bool {
 
 func (r *NormalizedResponse) SetFromCache(fromCache bool) *NormalizedResponse {
 	r.fromCache = fromCache
+	return r
+}
+
+func (r *NormalizedResponse) EmptyBehavior() CacheEmptyBehavior {
+	if r == nil {
+		return CacheEmptyBehaviorIgnore
+	}
+	return r.cacheEmptyBehavior
+}
+
+func (r *NormalizedResponse) SetEmptyBehavior(b CacheEmptyBehavior) *NormalizedResponse {
+	r.cacheEmptyBehavior = b
 	return r
 }
 
@@ -182,6 +195,11 @@ func (r *NormalizedResponse) WithRequest(req *NormalizedRequest) *NormalizedResp
 
 func (r *NormalizedResponse) WithFromCache(fromCache bool) *NormalizedResponse {
 	r.fromCache = fromCache
+	return r
+}
+
+func (r *NormalizedResponse) WithEmptyBehavior(b CacheEmptyBehavior) *NormalizedResponse {
+	r.cacheEmptyBehavior = b
 	return r
 }
 
