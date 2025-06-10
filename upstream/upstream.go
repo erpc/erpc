@@ -21,11 +21,19 @@ import (
 	"github.com/erpc/erpc/telemetry"
 	"github.com/erpc/erpc/thirdparty"
 	"github.com/erpc/erpc/util"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/failsafe-go/failsafe-go"
 	"github.com/rs/zerolog"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
+
+var _ common.Upstream = &Upstream{}
+
+// todo: currently Upstream implements EvmUpstream. This breaks the interface segregation principle,
+// as noted in prior todos on methods implementing the evm interface. We should refactor this as we're moving
+// towards a more modular architecture that supports multiple blockchain rpc schemas.
+var _ common.EvmUpstream = &Upstream{}
 
 type Upstream struct {
 	ProjectId string
@@ -693,6 +701,32 @@ func (u *Upstream) EvmAssertBlockAvailability(ctx context.Context, forMethod str
 	} else {
 		return false, fmt.Errorf("unsupported block availability confidence: %s", confidence)
 	}
+}
+
+func (u *Upstream) EvmGetTransactionByHash(ctx context.Context, txHash string) (*types.Transaction, error) {
+	pr := common.NewNormalizedRequest([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":75412,"method":"eth_getTransactionByHash","params":["%s"]}`, txHash)))
+
+	resp, err := u.Forward(ctx, pr, true)
+	if err != nil {
+		return nil, err
+	}
+
+	jrr, err := resp.JsonRpcResponse(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if jrr.Result == nil {
+		return nil, fmt.Errorf("transaction not found")
+	}
+
+	var txn types.Transaction
+	err = txn.UnmarshalJSON(jrr.Result)
+	if err != nil {
+		return nil, err
+	}
+
+	return &txn, nil
 }
 
 // assertUpstreamLowerBound checks if a full node can handle a block based on its lower bound.
