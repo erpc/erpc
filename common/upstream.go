@@ -22,6 +22,15 @@ const (
 
 type UpstreamType string
 
+type LoadBalancerType string
+
+const (
+	LoadBalancerTypeHighestScore       LoadBalancerType = "highestScore" // Original behavior - always use highest scored upstream
+	LoadBalancerTypeWeightedRoundRobin LoadBalancerType = "weightedRoundRobin"
+	LoadBalancerTypeRoundRobin         LoadBalancerType = "roundRobin"
+	LoadBalancerTypeLeastConnection    LoadBalancerType = "leastConnection"
+)
+
 type Upstream interface {
 	Id() string
 	VendorName() string

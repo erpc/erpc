@@ -390,6 +390,7 @@ type UpstreamConfig struct {
 	RateLimitBudget              string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune,omitempty" json:"rateLimitAutoTune"`
 	Routing                      *RoutingConfig           `yaml:"routing,omitempty" json:"routing"`
+	LoadBalancer                 *LoadBalancerConfig      `yaml:"loadBalancer,omitempty" json:"loadBalancer"`
 }
 
 func (c *UpstreamConfig) Copy() *UpstreamConfig {
@@ -992,4 +993,8 @@ func loadConfigFromTypescript(filename string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+type LoadBalancerConfig struct {
+	Type LoadBalancerType `json:"type"`
 }
