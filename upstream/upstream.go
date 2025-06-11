@@ -74,12 +74,16 @@ func NewUpstream(
 
 	vn := vr.LookupByUpstream(cfg)
 
+	// Create a copy of the config to avoid modifying the original
+	cfgCopy := new(common.UpstreamConfig)
+	*cfgCopy = *cfg
+
 	pup := &Upstream{
 		ProjectId: projectId,
 
 		logger:               &lg,
 		appCtx:               appCtx,
-		config:               cfg,
+		config:               cfgCopy,
 		vendor:               vn,
 		metricsTracker:       mt,
 		sharedStateRegistry:  ssr,
@@ -92,7 +96,7 @@ func NewUpstream(
 	pup.initRateLimitAutoTuner()
 
 	if vn != nil {
-		cfgs, err := vn.GenerateConfigs(appCtx, &lg, cfg, nil)
+		cfgs, err := vn.GenerateConfigs(appCtx, &lg, cfgCopy, nil)
 		if err != nil {
 			return nil, err
 		}

@@ -1774,16 +1774,17 @@ func createTestNetwork(t *testing.T, ctx context.Context) (*Network, *upstream.U
 	}
 	upr := upstream.NewUpstreamsRegistry(
 		ctx,
-		&log.Logger,
+		logger,
 		"prjA",
 		upstreamConfigs,
 		ssr,
-		rlr,
+		nil, // RateLimitersRegistry not needed for these tests
 		vr,
 		pr,
-		nil,
+		nil, // ProxyPoolRegistry
 		mt,
 		1*time.Second,
+		nil, // ProjectConfig not needed for these tests
 	)
 	err = upr.Bootstrap(ctx)
 	if err != nil {

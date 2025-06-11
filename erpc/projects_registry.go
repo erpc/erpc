@@ -124,6 +124,7 @@ func (r *ProjectsRegistry) RegisterProject(prjCfg *common.ProjectConfig) (*Prepa
 		r.proxyPoolRegistry,
 		metricsTracker,
 		1*time.Second,
+		prjCfg,
 	)
 
 	var consumerAuthRegistry *auth.AuthRegistry

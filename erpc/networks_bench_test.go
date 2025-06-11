@@ -75,12 +75,13 @@ func BenchmarkNetworkForward_SimpleSuccess(b *testing.B) {
 		"benchProject",
 		[]*common.UpstreamConfig{upConfig},
 		ssr,
-		rlr,
+		nil,
 		vr,
 		pr,
 		nil,
 		mt,
 		1*time.Second,
+		nil,
 	)
 
 	if err := upsReg.Bootstrap(ctx); err != nil {
@@ -180,12 +181,13 @@ func BenchmarkNetworkForward_MethodIgnoreCase(b *testing.B) {
 		"benchProject",
 		[]*common.UpstreamConfig{upConfig},
 		ssr,
-		rlr,
+		nil,
 		vr,
 		pr,
 		nil,
 		mt,
 		1*time.Second,
+		nil,
 	)
 
 	if err := upsReg.Bootstrap(ctx); err != nil {
@@ -292,12 +294,13 @@ func BenchmarkNetworkForward_RetryFailures(b *testing.B) {
 		"benchProject",
 		[]*common.UpstreamConfig{upConfig},
 		ssr,
-		rlr,
+		nil,
 		vr,
 		pr,
 		nil,
 		mt,
 		1*time.Second,
+		nil,
 	)
 	if err := upsReg.Bootstrap(ctx); err != nil {
 		b.Fatal(err)
@@ -333,7 +336,7 @@ func BenchmarkNetworkForward_RetryFailures(b *testing.B) {
 		for pb.Next() {
 			fakeReq := common.NewNormalizedRequest(requestBytes)
 			_, _ = ntw.Forward(ctx, fakeReq)
-			// We’re mainly measuring how quickly we process repeated fails
+			// We're mainly measuring how quickly we process repeated fails
 		}
 	})
 }
@@ -408,12 +411,13 @@ func BenchmarkNetworkForward_ConcurrentEthGetLogsIntegrityEnabled(b *testing.B) 
 		"benchProject",
 		[]*common.UpstreamConfig{upConfig},
 		ssr,
-		rlr,
+		nil,
 		vr,
 		pr,
 		nil,
 		mt,
 		10*time.Second,
+		nil,
 	)
 	if err := upsReg.Bootstrap(ctx); err != nil {
 		b.Fatal(err)

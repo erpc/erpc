@@ -813,6 +813,7 @@ func createTestRegistry(ctx context.Context, projectID string, logger *zerolog.L
 		nil, // ProxyPoolRegistry
 		metricsTracker,
 		1*time.Second,
+		nil, // ProjectConfig not needed for these tests
 	)
 
 	err = registry.Bootstrap(ctx)

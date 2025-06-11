@@ -391,6 +391,7 @@ type UpstreamConfig struct {
 	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune,omitempty" json:"rateLimitAutoTune"`
 	Routing                      *RoutingConfig           `yaml:"routing,omitempty" json:"routing"`
 	LoadBalancer                 *LoadBalancerConfig      `yaml:"loadBalancer,omitempty" json:"loadBalancer"`
+	ProjectConfig                *ProjectConfig           `yaml:"-" json:"-"` // Reference to parent project config
 }
 
 func (c *UpstreamConfig) Copy() *UpstreamConfig {

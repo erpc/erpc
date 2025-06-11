@@ -330,6 +330,7 @@ func TestNetwork_Consensus(t *testing.T) {
 				nil,
 				mt,
 				1*time.Second,
+				nil,
 			)
 
 			var retryPolicy *common.RetryPolicyConfig

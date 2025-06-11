@@ -32,6 +32,7 @@ type UpstreamsRegistry struct {
 	rateLimitersRegistry *RateLimitersRegistry
 	upsCfg               []*common.UpstreamConfig
 	initializer          *util.Initializer
+	projectConfig        *common.ProjectConfig
 
 	allUpstreams []*Upstream
 	upstreamsMu  *sync.RWMutex
@@ -68,6 +69,7 @@ func NewUpstreamsRegistry(
 	ppr *clients.ProxyPoolRegistry,
 	mt *health.Tracker,
 	scoreRefreshInterval time.Duration,
+	projectConfig *common.ProjectConfig,
 ) *UpstreamsRegistry {
 	lg := logger.With().Str("component", "upstreamsRegistry").Logger()
 	return &UpstreamsRegistry{
@@ -82,6 +84,7 @@ func NewUpstreamsRegistry(
 		providersRegistry:    pr,
 		metricsTracker:       mt,
 		upsCfg:               upsCfg,
+		projectConfig:        projectConfig,
 		networkUpstreams:     make(map[string][]*Upstream),
 		sortedUpstreams:      make(map[string]map[string][]*Upstream),
 		upstreamScores:       make(map[string]map[string]map[string]float64),
@@ -107,6 +110,8 @@ func (u *UpstreamsRegistry) OnUpstreamRegistered(fn func(ups *Upstream) error) {
 }
 
 func (u *UpstreamsRegistry) NewUpstream(cfg *common.UpstreamConfig) (*Upstream, error) {
+	// Set the project config reference
+	cfg.ProjectConfig = u.projectConfig
 	return NewUpstream(
 		u.appCtx,
 		u.prjId,
@@ -896,10 +901,14 @@ func (u *UpstreamsRegistry) GetNextUpstream(ctx context.Context, networkId, meth
 		return nil, common.NewErrNoUpstreamsFound(u.prjId, networkId)
 	}
 
-	// Get load balancer type from first upstream (assuming all upstreams in same network use same type)
+	// Get load balancer type from project's upstreamDefaults
 	lbType := common.LoadBalancerTypeHighestScore // default to original behavior
-	if len(upstreams) > 0 && upstreams[0].Config().LoadBalancer != nil {
-		lbType = upstreams[0].Config().LoadBalancer.Type
+	if len(upstreams) > 0 {
+		// Get the project config from the first upstream
+		projectConfig := upstreams[0].Config().ProjectConfig
+		if projectConfig != nil && projectConfig.UpstreamDefaults != nil && projectConfig.UpstreamDefaults.LoadBalancer != nil {
+			lbType = projectConfig.UpstreamDefaults.LoadBalancer.Type
+		}
 	}
 
 	switch lbType {
@@ -956,6 +965,16 @@ func (u *UpstreamsRegistry) getNextWeightedRoundRobin(networkId, method string, 
 
 	// Find next upstream based on weights
 	selectedIdx := idx
+	cumulativeWeight := 0.0
+	randomValue := rand.Float64() // Generate random value between 0 and 1
+
+	for i, weight := range u.rrWeights[networkId][method] {
+		cumulativeWeight += weight
+		if randomValue <= cumulativeWeight {
+			selectedIdx = i
+			break
+		}
+	}
 
 	// Update index for next time
 	u.rrIndices[networkId][method] = (idx + 1) % len(upstreams)
