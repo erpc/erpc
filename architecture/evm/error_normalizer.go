@@ -215,7 +215,8 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 		if strings.Contains(msg, "reverted") ||
 			strings.Contains(msg, "VM execution error") ||
 			strings.Contains(msg, "transaction: revert") ||
-			strings.Contains(msg, "VM Exception") {
+			strings.Contains(msg, "VM Exception") ||
+			strings.Contains(strings.ToLower(msg), "intrinsic gas too high") {
 			return common.NewErrEndpointExecutionException(
 				common.NewErrJsonRpcExceptionInternal(
 					int(code),
