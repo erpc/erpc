@@ -65,7 +65,7 @@ func NewUpstreamsRegistry(
 	mt *health.Tracker,
 	scoreRefreshInterval time.Duration,
 ) *UpstreamsRegistry {
-	lg := logger.With().Str("component", "upstreamsRegistry").Logger()
+	lg := logger.With().Str("component", "upstreams").Logger()
 	return &UpstreamsRegistry{
 		appCtx:               appCtx,
 		prjId:                prjId,

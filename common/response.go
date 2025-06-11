@@ -385,7 +385,11 @@ func CopyResponseForRequest(ctx context.Context, resp *NormalizedResponse, req *
 		if err != nil {
 			return nil, err
 		}
-		err = jrr.SetID(req.jsonRpcRequest.ID)
+		jrq := req.jsonRpcRequest.Load()
+		if jrq == nil {
+			return nil, fmt.Errorf("request jsonRpcRequest is nil")
+		}
+		err = jrr.SetID(jrq.ID)
 		if err != nil {
 			return nil, err
 		}

@@ -509,6 +509,7 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 
 		if n.cacheDal != nil {
 			resp.RLockWithTrace(ctx)
+	
 			go (func(resp *common.NormalizedResponse, forwardSpan trace.Span) {
 				defer (func() {
 					if rec := recover(); rec != nil {
@@ -523,8 +524,8 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 							Msgf("unexpected panic on cache-set")
 					}
 				})()
-
 				defer resp.RUnlock()
+
 				timeoutCtx, timeoutCtxCancel := context.WithTimeoutCause(n.appCtx, 10*time.Second, errors.New("cache driver timeout during set"))
 				defer timeoutCtxCancel()
 				tracedCtx := trace.ContextWithSpanContext(timeoutCtx, forwardSpan.SpanContext())
@@ -564,9 +565,11 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			return true
 		})
 	}
+
 	if mlx != nil {
 		mlx.Close(ctx, resp, nil)
 	}
+
 	return resp, nil
 }
 
@@ -715,7 +718,10 @@ func (n *Network) enrichStatePoller(ctx context.Context, method string, req *com
 	case common.ArchitectureEvm:
 		// TODO Move the logic to evm package as a post-forward hook?
 		if method == "eth_getBlockByNumber" {
-			jrq, _ := req.JsonRpcRequest(ctx)
+			jrq, err := req.JsonRpcRequest(ctx)
+			if err != nil {
+				return
+			}
 			jrq.RLock()
 			defer jrq.RUnlock()
 			if blkTag, ok := jrq.Params[0].(string); ok {

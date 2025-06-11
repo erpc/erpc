@@ -68,7 +68,7 @@ type NormalizedRequest struct {
 
 	method         string
 	directives     *RequestDirectives
-	jsonRpcRequest *JsonRpcRequest
+	jsonRpcRequest atomic.Pointer[JsonRpcRequest]
 
 	lastValidResponse atomic.Pointer[NormalizedResponse]
 	lastUpstream      atomic.Value
@@ -92,11 +92,11 @@ func NewNormalizedRequest(body []byte) *NormalizedRequest {
 
 func NewNormalizedRequestFromJsonRpcRequest(jsonRpcRequest *JsonRpcRequest) *NormalizedRequest {
 	nr := &NormalizedRequest{
-		jsonRpcRequest: jsonRpcRequest,
 		directives: &RequestDirectives{
 			RetryEmpty: false,
 		},
 	}
+	nr.jsonRpcRequest.Store(jsonRpcRequest)
 	nr.compositeType.Store(CompositeTypeNone)
 	return nr
 }
@@ -300,19 +300,8 @@ func (r *NormalizedRequest) JsonRpcRequest(ctx ...context.Context) (*JsonRpcRequ
 	if r == nil {
 		return nil, nil
 	}
-	r.RLock()
-	if r.jsonRpcRequest != nil {
-		r.RUnlock()
-		return r.jsonRpcRequest, nil
-	}
-	r.RUnlock()
-
-	r.Lock()
-	defer r.Unlock()
-
-	// Double-check in case another goroutine initialized it
-	if r.jsonRpcRequest != nil {
-		return r.jsonRpcRequest, nil
+	if jrq := r.jsonRpcRequest.Load(); jrq != nil {
+		return jrq, nil
 	}
 
 	rpcReq := new(JsonRpcRequest)
@@ -325,7 +314,7 @@ func (r *NormalizedRequest) JsonRpcRequest(ctx ...context.Context) (*JsonRpcRequ
 		return nil, NewErrJsonRpcRequestUnresolvableMethod(rpcReq)
 	}
 
-	r.jsonRpcRequest = rpcReq
+	r.jsonRpcRequest.Store(rpcReq)
 
 	return rpcReq, nil
 }
@@ -339,9 +328,9 @@ func (r *NormalizedRequest) Method() (string, error) {
 		return r.method, nil
 	}
 
-	if r.jsonRpcRequest != nil {
-		r.method = r.jsonRpcRequest.Method
-		return r.jsonRpcRequest.Method, nil
+	if jrq := r.jsonRpcRequest.Load(); jrq != nil {
+		r.method = jrq.Method
+		return jrq.Method, nil
 	}
 
 	if len(r.body) > 0 {
@@ -384,8 +373,8 @@ func (r *NormalizedRequest) MarshalZerologObject(e *zerolog.Event) {
 		e.Str("networkId", r.network.Id())
 	}
 
-	if r.jsonRpcRequest != nil {
-		e.Object("jsonRpc", r.jsonRpcRequest)
+	if jrq := r.jsonRpcRequest.Load(); jrq != nil {
+		e.Object("jsonRpc", jrq)
 	} else if r.body != nil {
 		if IsSemiValidJson(r.body) {
 			e.RawJSON("body", r.body)
@@ -429,9 +418,9 @@ func (r *NormalizedRequest) MarshalJSON() ([]byte, error) {
 		return r.body, nil
 	}
 
-	if r.jsonRpcRequest != nil {
+	if jrq := r.jsonRpcRequest.Load(); jrq != nil {
 		return SonicCfg.Marshal(map[string]interface{}{
-			"method": r.jsonRpcRequest.Method,
+			"method": jrq.Method,
 		})
 	}
 
@@ -462,7 +451,7 @@ func (r *NormalizedRequest) Validate() error {
 		return NewErrInvalidRequest(fmt.Errorf("request is nil"))
 	}
 
-	if r.body == nil && r.jsonRpcRequest == nil {
+	if r.body == nil && r.jsonRpcRequest.Load() == nil {
 		return NewErrInvalidRequest(fmt.Errorf("request body is nil"))
 	}
 
