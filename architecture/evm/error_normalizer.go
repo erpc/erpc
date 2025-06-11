@@ -227,6 +227,18 @@ func ExtractJsonRpcError(r *http.Response, nr *common.NormalizedResponse, jr *co
 			)
 		}
 
+		if strings.Contains(strings.ToLower(msg), "intrinsic gas too high") {
+			return common.NewErrEndpointExecutionException(
+				common.NewErrJsonRpcExceptionInternal(
+					int(code),
+					common.JsonRpcErrorCallException,
+					err.Message,
+					nil,
+					details,
+				),
+			)
+		}
+
 		//----------------------------------------------------------------
 		// "Insufficient funds" or "out of gas" errors
 		//----------------------------------------------------------------
