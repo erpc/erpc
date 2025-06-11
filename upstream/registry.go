@@ -904,7 +904,6 @@ func (u *UpstreamsRegistry) GetNextUpstream(ctx context.Context, networkId, meth
 	// Get load balancer type from project's upstreamDefaults
 	lbType := common.LoadBalancerTypeHighestScore // default to original behavior
 	if len(upstreams) > 0 {
-		// Get the project config from the first upstream
 		projectConfig := upstreams[0].Config().ProjectConfig
 		if projectConfig != nil && projectConfig.UpstreamDefaults != nil && projectConfig.UpstreamDefaults.LoadBalancer != nil {
 			lbType = projectConfig.UpstreamDefaults.LoadBalancer.Type
@@ -952,25 +951,27 @@ func (u *UpstreamsRegistry) getNextWeightedRoundRobin(networkId, method string, 
 		return u.getNextRoundRobin(networkId, method, upstreams)
 	}
 
-	// Normalize weights
-	for i := range u.rrWeights[networkId][method] {
-		u.rrWeights[networkId][method][i] /= totalWeight
-	}
-
 	// Get current index
 	if _, ok := u.rrIndices[networkId]; !ok {
 		u.rrIndices[networkId] = make(map[string]int)
 	}
 	idx := u.rrIndices[networkId][method]
 
-	// Find next upstream based on weights
-	randomValue := rand.Float64() // Generate random value between 0 and 1
+	// Calculate cumulative weights
+	cumulativeWeights := make([]float64, len(upstreams))
 	cumulativeWeight := 0.0
-	selectedIdx := 0 // Default to first upstream if something goes wrong
-
 	for i, weight := range u.rrWeights[networkId][method] {
-		cumulativeWeight += weight
-		if randomValue <= cumulativeWeight {
+		cumulativeWeight += weight / totalWeight
+		cumulativeWeights[i] = cumulativeWeight
+	}
+
+	// Calculate the target position based on the current index
+	targetPosition := float64(idx) / float64(len(upstreams))
+
+	// Find the first upstream whose cumulative weight exceeds the target position
+	selectedIdx := 0
+	for i, cumWeight := range cumulativeWeights {
+		if targetPosition <= cumWeight {
 			selectedIdx = i
 			break
 		}
