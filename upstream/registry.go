@@ -964,9 +964,9 @@ func (u *UpstreamsRegistry) getNextWeightedRoundRobin(networkId, method string, 
 	idx := u.rrIndices[networkId][method]
 
 	// Find next upstream based on weights
-	selectedIdx := idx
-	cumulativeWeight := 0.0
 	randomValue := rand.Float64() // Generate random value between 0 and 1
+	cumulativeWeight := 0.0
+	selectedIdx := 0 // Default to first upstream if something goes wrong
 
 	for i, weight := range u.rrWeights[networkId][method] {
 		cumulativeWeight += weight
