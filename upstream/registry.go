@@ -305,57 +305,53 @@ func (u *UpstreamsRegistry) sortAndFilterUpstreams(networkId, method string, ups
 			activeUpstreams = append(activeUpstreams, ups)
 		}
 	}
-	// Calculate total score
-	totalScore := 0.0
-	for _, ups := range activeUpstreams {
-		score := u.upstreamScores[ups.Id()][networkId][method]
-		if score > 0 {
-			totalScore += score
+
+	// Get load balancer type from project's upstreamDefaults
+	lbType := common.LoadBalancerTypeHighestScore // default to original behavior
+	if len(activeUpstreams) > 0 {
+		projectConfig := activeUpstreams[0].Config().ProjectConfig
+		if projectConfig != nil && projectConfig.UpstreamDefaults != nil && projectConfig.UpstreamDefaults.LoadBalancer != nil {
+			lbType = projectConfig.UpstreamDefaults.LoadBalancer.Type
 		}
 	}
 
-	// If all scores are 0, fall back to random shuffle
-	if totalScore == 0 {
-		rand.Shuffle(len(activeUpstreams), func(i, j int) {
-			activeUpstreams[i], activeUpstreams[j] = activeUpstreams[j], activeUpstreams[i]
+	// Only sort by score if using highestScore or weightedRoundRobin
+	if lbType == common.LoadBalancerTypeHighestScore || lbType == common.LoadBalancerTypeWeightedRoundRobin {
+		// Calculate total score
+		totalScore := 0.0
+		for _, ups := range activeUpstreams {
+			score := u.upstreamScores[ups.Id()][networkId][method]
+			if score > 0 {
+				totalScore += score
+			}
+		}
+
+		// If all scores are 0, fall back to random shuffle
+		if totalScore == 0 {
+			rand.Shuffle(len(activeUpstreams), func(i, j int) {
+				activeUpstreams[i], activeUpstreams[j] = activeUpstreams[j], activeUpstreams[i]
+			})
+			return activeUpstreams
+		}
+
+		sort.Slice(activeUpstreams, func(i, j int) bool {
+			scoreI := u.upstreamScores[activeUpstreams[i].Id()][networkId][method]
+			scoreJ := u.upstreamScores[activeUpstreams[j].Id()][networkId][method]
+
+			if scoreI < 0 {
+				scoreI = 0
+			}
+			if scoreJ < 0 {
+				scoreJ = 0
+			}
+
+			if scoreI != scoreJ {
+				return scoreI > scoreJ
+			}
+
+			// If values are equal, sort by upstream ID for consistency
+			return activeUpstreams[i].Id() < activeUpstreams[j].Id()
 		})
-		return activeUpstreams
-	}
-
-	sort.Slice(activeUpstreams, func(i, j int) bool {
-		scoreI := u.upstreamScores[activeUpstreams[i].Id()][networkId][method]
-		scoreJ := u.upstreamScores[activeUpstreams[j].Id()][networkId][method]
-
-		if scoreI < 0 {
-			scoreI = 0
-		}
-		if scoreJ < 0 {
-			scoreJ = 0
-		}
-
-		if scoreI != scoreJ {
-			return scoreI > scoreJ
-		}
-
-		// If values are equal, sort by upstream ID for consistency
-		return activeUpstreams[i].Id() < activeUpstreams[j].Id()
-	})
-
-	if u.logger.Trace().Enabled() {
-		ids := make([]string, len(activeUpstreams))
-		for i, ups := range activeUpstreams {
-			ids[i] = ups.Id()
-		}
-		scores := make([]float64, len(activeUpstreams))
-		for i, ups := range activeUpstreams {
-			scores[i] = u.upstreamScores[ups.Id()][networkId][method]
-		}
-		// u.logger.Trace().
-		// 	Str("networkId", networkId).
-		// 	Str("method", method).
-		// 	Strs("upstreams", ids).
-		// 	Floats64("scores", scores).
-		// 	Msgf("sorted upstreams")
 	}
 
 	return activeUpstreams
@@ -927,7 +923,10 @@ func (u *UpstreamsRegistry) GetNextUpstream(ctx context.Context, networkId, meth
 }
 
 func (u *UpstreamsRegistry) getNextWeightedRoundRobin(networkId, method string, upstreams []*Upstream) (*Upstream, error) {
-	// Initialize weights if needed
+	u.upstreamsMu.Lock()
+	defer u.upstreamsMu.Unlock()
+
+	// Initialize weights map if not exists
 	if _, ok := u.rrWeights[networkId]; !ok {
 		u.rrWeights[networkId] = make(map[string][]float64)
 	}
@@ -935,55 +934,42 @@ func (u *UpstreamsRegistry) getNextWeightedRoundRobin(networkId, method string, 
 		u.rrWeights[networkId][method] = make([]float64, len(upstreams))
 	}
 
-	// Calculate total weight and update weights based on scores
+	// Calculate total weight based on scores
 	totalWeight := 0.0
 	for i, ups := range upstreams {
 		score := u.upstreamScores[ups.Id()][networkId][method]
-		if score < 0 {
-			score = 0 // Ensure non-negative weights
-		}
 		u.rrWeights[networkId][method][i] = score
 		totalWeight += score
 	}
 
-	// If all weights are 0, fall back to simple round-robin
+	// If all weights are zero, fall back to simple round-robin
 	if totalWeight == 0 {
 		return u.getNextRoundRobin(networkId, method, upstreams)
 	}
 
-	// Get current index
-	if _, ok := u.rrIndices[networkId]; !ok {
-		u.rrIndices[networkId] = make(map[string]int)
+	// Normalize weights
+	for i := range u.rrWeights[networkId][method] {
+		u.rrWeights[networkId][method][i] /= totalWeight
 	}
-	idx := u.rrIndices[networkId][method]
 
-	// Calculate cumulative weights
-	cumulativeWeights := make([]float64, len(upstreams))
+	// Use random value to select next upstream
+	r := rand.Float64()
 	cumulativeWeight := 0.0
 	for i, weight := range u.rrWeights[networkId][method] {
-		cumulativeWeight += weight / totalWeight
-		cumulativeWeights[i] = cumulativeWeight
-	}
-
-	// Calculate the target position based on the current index
-	targetPosition := float64(idx) / float64(len(upstreams))
-
-	// Find the first upstream whose cumulative weight exceeds the target position
-	selectedIdx := 0
-	for i, cumWeight := range cumulativeWeights {
-		if targetPosition <= cumWeight {
-			selectedIdx = i
-			break
+		cumulativeWeight += weight
+		if r <= cumulativeWeight {
+			return upstreams[i], nil
 		}
 	}
 
-	// Update index for next time
-	u.rrIndices[networkId][method] = (idx + 1) % len(upstreams)
-
-	return upstreams[selectedIdx], nil
+	// Fallback to first upstream if something goes wrong
+	return upstreams[0], nil
 }
 
 func (u *UpstreamsRegistry) getNextRoundRobin(networkId, method string, upstreams []*Upstream) (*Upstream, error) {
+	u.upstreamsMu.Lock()
+	defer u.upstreamsMu.Unlock()
+
 	// Initialize index if needed
 	if _, ok := u.rrIndices[networkId]; !ok {
 		u.rrIndices[networkId] = make(map[string]int)
