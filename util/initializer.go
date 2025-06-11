@@ -205,7 +205,7 @@ func (i *Initializer) ExecuteTasks(ctx context.Context, tasks ...*BootstrapTask)
 	i.tasksMu.Unlock()
 
 	i.ensureAutoRetryIfEnabled()
-	i.attemptRemainingTasks(ctx)
+	i.attemptRemainingTasks()
 
 	return i.waitForTasks(ctx, tasksToWait...)
 }
@@ -242,7 +242,11 @@ func (i *Initializer) waitForTasks(ctx context.Context, tasks ...*BootstrapTask)
 }
 
 // attemptRemainingTasks tries to run any tasks in Pending, Failed or TimedOut states again.
-func (i *Initializer) attemptRemainingTasks(ctx context.Context) {
+// This function must use appContext to avoid premature cancellation of tasks when caller context is cancelled.
+// The correct way to enforce timeout is to pass appropriate context to "waitForTasks()" function.
+// To enforce timeout of task execution set proper TaskTimeout in InitializerConfig.
+// To cancel a running task, use MarkTaskAsFailed() function instead.
+func (i *Initializer) attemptRemainingTasks() {
 	i.tasksMu.Lock()
 	defer i.tasksMu.Unlock()
 
@@ -269,16 +273,14 @@ func (i *Initializer) attemptRemainingTasks(ctx context.Context) {
 					// The CompareAndSwap will ensure we always and only close the channel once for each attempt
 					defer close(doneCh)
 
-					if ctx.Err() != nil {
-						bt.lastErr.Store(wrappedError{err: ctx.Err()})
+					if i.appCtx.Err() != nil {
+						bt.lastErr.Store(wrappedError{err: i.appCtx.Err()})
 						bt.state.Store(int32(TaskFailed))
-						i.logger.Warn().Str("task", bt.Name).Err(ctx.Err()).Msg("initialization task context error")
+						i.logger.Warn().Str("task", bt.Name).Err(i.appCtx.Err()).Msg("initialization task context error")
 						return
 					}
 
-					tctx, cancel := context.WithTimeout(ctx, i.conf.TaskTimeout)
-					defer cancel()
-
+					tctx, cancel := context.WithTimeout(i.appCtx, i.conf.TaskTimeout)
 					bt.ctxCancel.Store(cancel)
 					wg.Done()
 					err := bt.Fn(tctx)
@@ -529,7 +531,7 @@ func (i *Initializer) autoRetryLoop(ctx context.Context) {
 			return
 		}
 		i.attempts.Add(1)
-		i.attemptRemainingTasks(ctx)
+		i.attemptRemainingTasks()
 		err := i.WaitForTasks(ctx)
 		state := i.State()
 		if err == nil && state == StateReady {

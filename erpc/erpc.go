@@ -3,6 +3,7 @@ package erpc
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
 	"github.com/erpc/erpc/auth"
@@ -89,7 +90,9 @@ func NewERPC(
 	// Shutdown tracing after appCtx is finished/cancelled
 	go func() {
 		<-appCtx.Done()
-		if err := common.ShutdownTracing(appCtx); err != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := common.ShutdownTracing(shutdownCtx); err != nil {
 			logger.Error().Err(err).Msg("failed to shutdown tracer provider")
 		}
 	}()

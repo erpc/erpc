@@ -27,7 +27,7 @@ func NewRateLimitersRegistry(cfg *common.RateLimiterConfig, logger *zerolog.Logg
 
 func (r *RateLimitersRegistry) bootstrap() error {
 	if r.cfg == nil {
-		r.logger.Warn().Msg("no rate limiters defined which means all capacity of both local cpu/memory and remote upstreams will be used")
+		r.logger.Debug().Msg("no rate limiters defined which means all capacity of both local cpu/memory and remote upstreams will be used")
 		return nil
 	}
 
