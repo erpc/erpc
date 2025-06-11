@@ -1175,6 +1175,22 @@ func (e *ErrUpstreamSyncing) ErrorStatusCode() int {
 	return http.StatusUnprocessableEntity
 }
 
+type ErrUpstreamShadowing struct{ BaseError }
+
+const ErrCodeUpstreamShadowing ErrorCode = "ErrUpstreamShadowing"
+
+var NewErrUpstreamShadowing = func(upstreamId string) error {
+	return &ErrUpstreamShadowing{
+		BaseError{
+			Code:    ErrCodeUpstreamShadowing,
+			Message: "upstream is shadowing and should not serve real requests",
+			Details: map[string]interface{}{
+				"upstreamId": upstreamId,
+			},
+		},
+	}
+}
+
 type ErrUpstreamGetLogsExceededMaxAllowedRange struct{ BaseError }
 
 const ErrCodeUpstreamGetLogsExceededMaxAllowedRange ErrorCode = "ErrUpstreamGetLogsExceededMaxAllowedRange"

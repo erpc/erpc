@@ -37,7 +37,8 @@ type UpstreamsRegistry struct {
 	upstreamsMu  *sync.RWMutex
 	networkMu    *sync.Map // map[string]*sync.RWMutex for per-network locks
 	// map of network => upstreams
-	networkUpstreams map[string][]*Upstream
+	networkUpstreams       map[string][]*Upstream
+	networkShadowUpstreams map[string][]*Upstream
 	// map of network -> method (or *) => upstreams
 	sortedUpstreams map[string]map[string][]*Upstream
 	// map of upstream -> network (or *) -> method (or *) => score
@@ -67,23 +68,24 @@ func NewUpstreamsRegistry(
 ) *UpstreamsRegistry {
 	lg := logger.With().Str("component", "upstreams").Logger()
 	return &UpstreamsRegistry{
-		appCtx:               appCtx,
-		prjId:                prjId,
-		scoreRefreshInterval: scoreRefreshInterval,
-		logger:               logger,
-		sharedStateRegistry:  ssr,
-		clientRegistry:       clients.NewClientRegistry(logger, prjId, ppr),
-		rateLimitersRegistry: rr,
-		vendorsRegistry:      vr,
-		providersRegistry:    pr,
-		metricsTracker:       mt,
-		upsCfg:               upsCfg,
-		networkUpstreams:     make(map[string][]*Upstream),
-		sortedUpstreams:      make(map[string]map[string][]*Upstream),
-		upstreamScores:       make(map[string]map[string]map[string]float64),
-		upstreamsMu:          &sync.RWMutex{},
-		networkMu:            &sync.Map{},
-		initializer:          util.NewInitializer(appCtx, &lg, nil),
+		appCtx:                 appCtx,
+		prjId:                  prjId,
+		scoreRefreshInterval:   scoreRefreshInterval,
+		logger:                 logger,
+		sharedStateRegistry:    ssr,
+		clientRegistry:         clients.NewClientRegistry(logger, prjId, ppr),
+		rateLimitersRegistry:   rr,
+		vendorsRegistry:        vr,
+		providersRegistry:      pr,
+		metricsTracker:         mt,
+		upsCfg:                 upsCfg,
+		networkUpstreams:       make(map[string][]*Upstream),
+		networkShadowUpstreams: make(map[string][]*Upstream),
+		sortedUpstreams:        make(map[string]map[string][]*Upstream),
+		upstreamScores:         make(map[string]map[string]map[string]float64),
+		upstreamsMu:            &sync.RWMutex{},
+		networkMu:              &sync.Map{},
+		initializer:            util.NewInitializer(appCtx, &lg, nil),
 	}
 }
 
@@ -189,6 +191,12 @@ func (u *UpstreamsRegistry) PrepareUpstreamsForNetwork(ctx context.Context, netw
 			}
 		}
 	}
+}
+
+func (u *UpstreamsRegistry) GetNetworkShadowUpstreams(networkId string) []*Upstream {
+	u.upstreamsMu.RLock()
+	defer u.upstreamsMu.RUnlock()
+	return u.networkShadowUpstreams[networkId]
 }
 
 func (u *UpstreamsRegistry) GetNetworkUpstreams(ctx context.Context, networkId string) []*Upstream {
@@ -535,15 +543,28 @@ func (u *UpstreamsRegistry) doRegisterBootstrappedUpstream(ups *Upstream) {
 	}
 
 	// Add to network upstreams map
+	isShadow := ups.Config() != nil && ups.Config().Shadow != nil && ups.Config().Shadow.Enabled
 	exists := false
-	for _, existingUps := range u.networkUpstreams[networkId] {
-		if existingUps.Id() == cfg.Id {
-			exists = true
-			break
+	if isShadow {
+		for _, existingUps := range u.networkShadowUpstreams[networkId] {
+			if existingUps.Id() == cfg.Id {
+				exists = true
+				break
+			}
 		}
-	}
-	if !exists {
-		u.networkUpstreams[networkId] = append(u.networkUpstreams[networkId], ups)
+		if !exists {
+			u.networkShadowUpstreams[networkId] = append(u.networkShadowUpstreams[networkId], ups)
+		}
+	} else {
+		for _, existingUps := range u.networkUpstreams[networkId] {
+			if existingUps.Id() == cfg.Id {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			u.networkUpstreams[networkId] = append(u.networkUpstreams[networkId], ups)
+		}
 	}
 
 	// Add to wildcard sorted upstreams if not already present

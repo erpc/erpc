@@ -309,6 +309,24 @@ var (
 		Name:      "ristretto_cache_sets_failed_total",
 		Help:      "Total number of set operations that failed (dropped or rejected) in Ristretto cache.",
 	}, []string{"connector"})
+
+	MetricShadowResponseIdenticalTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "shadow_response_identical_total",
+		Help:      "Total number of shadow upstream responses identical to the expected response.",
+	}, []string{"project", "vendor", "network", "upstream", "category"})
+
+	MetricShadowResponseMismatchTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "shadow_response_mismatch_total",
+		Help:      "Total number of shadow upstream responses that differ from the expected response.",
+	}, []string{"project", "vendor", "network", "upstream", "category", "emptyish"})
+
+	MetricShadowResponseErrorTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "erpc",
+		Name:      "shadow_response_error_total",
+		Help:      "Total number of shadow upstream requests that resulted in error.",
+	}, []string{"project", "vendor", "network", "upstream", "category", "error"})
 )
 
 var DefaultHistogramBuckets = []float64{
