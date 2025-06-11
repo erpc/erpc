@@ -637,64 +637,121 @@ func (u *UpstreamsRegistry) updateScoresAndSort(ctx context.Context, networkId, 
 	_, span := common.StartDetailSpan(ctx, "UpstreamsRegistry.UpdateScoresAndSort")
 	defer span.End()
 
-	var respLatencies, errorRates, totalRequests, throttledRates, blockHeadLags, finalizationLags []float64
-
-	for _, ups := range upsList {
-		qn := 0.70
-		cfg := ups.Config()
-		if cfg != nil && cfg.Routing != nil && cfg.Routing.ScoreLatencyQuantile != 0 {
-			qn = cfg.Routing.ScoreLatencyQuantile
+	// Get load balancer type from project's upstreamDefaults
+	lbType := common.LoadBalancerTypeHighestScore // default to original behavior
+	if len(upsList) > 0 {
+		projectConfig := upsList[0].Config().ProjectConfig
+		if projectConfig != nil && projectConfig.UpstreamDefaults != nil && projectConfig.UpstreamDefaults.LoadBalancer != nil {
+			lbType = projectConfig.UpstreamDefaults.LoadBalancer.Type
 		}
-		metrics := u.metricsTracker.GetUpstreamMethodMetrics(ups, method)
-		respLatencies = append(respLatencies, metrics.ResponseQuantiles.GetQuantile(qn).Seconds())
-		blockHeadLags = append(blockHeadLags, float64(metrics.BlockHeadLag.Load()))
-		finalizationLags = append(finalizationLags, float64(metrics.FinalizationLag.Load()))
-		errorRates = append(errorRates, metrics.ErrorRate())
-		throttledRates = append(throttledRates, metrics.ThrottledRate())
-		totalRequests = append(totalRequests, float64(metrics.RequestsTotal.Load()))
 	}
 
-	normRespLatencies := normalizeValuesLog(respLatencies)
-	normErrorRates := normalizeValues(errorRates)
-	normThrottledRates := normalizeValues(throttledRates)
-	normTotalRequests := normalizeValues(totalRequests)
-	normBlockHeadLags := normalizeValuesLog(blockHeadLags)
-	normFinalizationLags := normalizeValuesLog(finalizationLags)
-	for i, ups := range upsList {
-		upsId := ups.Id()
-		score := u.calculateScore(
-			ups,
-			networkId,
-			method,
-			normTotalRequests[i],
-			normRespLatencies[i],
-			normErrorRates[i],
-			normThrottledRates[i],
-			normBlockHeadLags[i],
-			normFinalizationLags[i],
-		)
-		// Upstream might not have scores initialized yet (especially when networkId is *)
-		// TODO add a test case to send request to network A when network B is defined in config but no requests sent yet
-		if upsc, ok := u.upstreamScores[upsId]; ok {
-			if _, ok := upsc[networkId]; ok {
-				upsc[networkId][method] = score
+	// Only update scores if using highestScore or weightedRoundRobin
+	if lbType == common.LoadBalancerTypeHighestScore || lbType == common.LoadBalancerTypeWeightedRoundRobin {
+		var respLatencies, errorRates, totalRequests, throttledRates, blockHeadLags, finalizationLags []float64
+
+		for _, ups := range upsList {
+			qn := 0.70
+			cfg := ups.Config()
+			if cfg != nil && cfg.Routing != nil && cfg.Routing.ScoreLatencyQuantile != 0 {
+				qn = cfg.Routing.ScoreLatencyQuantile
+			}
+			metrics := u.metricsTracker.GetUpstreamMethodMetrics(ups, method)
+			respLatencies = append(respLatencies, metrics.ResponseQuantiles.GetQuantile(qn).Seconds())
+			blockHeadLags = append(blockHeadLags, float64(metrics.BlockHeadLag.Load()))
+			finalizationLags = append(finalizationLags, float64(metrics.FinalizationLag.Load()))
+			errorRates = append(errorRates, metrics.ErrorRate())
+			throttledRates = append(throttledRates, metrics.ThrottledRate())
+			totalRequests = append(totalRequests, float64(metrics.RequestsTotal.Load()))
+		}
+
+		normRespLatencies := normalizeValuesLog(respLatencies)
+		normErrorRates := normalizeValues(errorRates)
+		normThrottledRates := normalizeValues(throttledRates)
+		normTotalRequests := normalizeValues(totalRequests)
+		normBlockHeadLags := normalizeValuesLog(blockHeadLags)
+		normFinalizationLags := normalizeValuesLog(finalizationLags)
+		for i, ups := range upsList {
+			upsId := ups.Id()
+			score := u.calculateScore(
+				ups,
+				networkId,
+				method,
+				normTotalRequests[i],
+				normRespLatencies[i],
+				normErrorRates[i],
+				normThrottledRates[i],
+				normBlockHeadLags[i],
+				normFinalizationLags[i],
+			)
+			// Upstream might not have scores initialized yet (especially when networkId is *)
+			// TODO add a test case to send request to network A when network B is defined in config but no requests sent yet
+			if upsc, ok := u.upstreamScores[upsId]; ok {
+				if _, ok := upsc[networkId]; ok {
+					upsc[networkId][method] = score
+				}
+			}
+			ups.logger.Trace().
+				Str("method", method).
+				Float64("score", score).
+				Float64("normalizedTotalRequests", normTotalRequests[i]).
+				Float64("normalizedRespLatency", normRespLatencies[i]).
+				Float64("normalizedErrorRate", normErrorRates[i]).
+				Float64("normalizedThrottledRate", normThrottledRates[i]).
+				Float64("normalizedBlockHeadLag", normBlockHeadLags[i]).
+				Float64("normalizedFinalizationLag", normFinalizationLags[i]).
+				Msg("score updated")
+			telemetry.MetricUpstreamScoreOverall.WithLabelValues(u.prjId, ups.VendorName(), networkId, upsId, method).Set(score)
+		}
+	}
+
+	// Filter out cordoned upstreams
+	activeUpstreams := make([]*Upstream, 0)
+	for _, ups := range upsList {
+		if !u.metricsTracker.IsCordoned(ups, method) {
+			activeUpstreams = append(activeUpstreams, ups)
+		}
+	}
+
+	// Only sort if using highestScore or weightedRoundRobin
+	if lbType == common.LoadBalancerTypeHighestScore || lbType == common.LoadBalancerTypeWeightedRoundRobin {
+		// Calculate total score
+		totalScore := 0.0
+		for _, ups := range activeUpstreams {
+			score := u.upstreamScores[ups.Id()][networkId][method]
+			if score > 0 {
+				totalScore += score
 			}
 		}
-		ups.logger.Trace().
-			Str("method", method).
-			Float64("score", score).
-			Float64("normalizedTotalRequests", normTotalRequests[i]).
-			Float64("normalizedRespLatency", normRespLatencies[i]).
-			Float64("normalizedErrorRate", normErrorRates[i]).
-			Float64("normalizedThrottledRate", normThrottledRates[i]).
-			Float64("normalizedBlockHeadLag", normBlockHeadLags[i]).
-			Float64("normalizedFinalizationLag", normFinalizationLags[i]).
-			Msg("score updated")
-		telemetry.MetricUpstreamScoreOverall.WithLabelValues(u.prjId, ups.VendorName(), networkId, upsId, method).Set(score)
+
+		// If all scores are 0, fall back to random shuffle
+		if totalScore == 0 {
+			rand.Shuffle(len(activeUpstreams), func(i, j int) {
+				activeUpstreams[i], activeUpstreams[j] = activeUpstreams[j], activeUpstreams[i]
+			})
+		} else {
+			sort.Slice(activeUpstreams, func(i, j int) bool {
+				scoreI := u.upstreamScores[activeUpstreams[i].Id()][networkId][method]
+				scoreJ := u.upstreamScores[activeUpstreams[j].Id()][networkId][method]
+
+				if scoreI < 0 {
+					scoreI = 0
+				}
+				if scoreJ < 0 {
+					scoreJ = 0
+				}
+
+				if scoreI != scoreJ {
+					return scoreI > scoreJ
+				}
+
+				// If values are equal, sort by upstream ID for consistency
+				return activeUpstreams[i].Id() < activeUpstreams[j].Id()
+			})
+		}
 	}
 
-	upsList = u.sortAndFilterUpstreams(networkId, method, upsList)
-	u.sortedUpstreams[networkId][method] = upsList
+	u.sortedUpstreams[networkId][method] = activeUpstreams
 }
 
 func (u *UpstreamsRegistry) calculateScore(
@@ -938,6 +995,9 @@ func (u *UpstreamsRegistry) getNextWeightedRoundRobin(networkId, method string, 
 	totalWeight := 0.0
 	for i, ups := range upstreams {
 		score := u.upstreamScores[ups.Id()][networkId][method]
+		if score < 0 {
+			score = 0
+		}
 		u.rrWeights[networkId][method][i] = score
 		totalWeight += score
 	}
@@ -947,22 +1007,25 @@ func (u *UpstreamsRegistry) getNextWeightedRoundRobin(networkId, method string, 
 		return u.getNextRoundRobin(networkId, method, upstreams)
 	}
 
-	// Normalize weights
-	for i := range u.rrWeights[networkId][method] {
-		u.rrWeights[networkId][method][i] /= totalWeight
+	// Normalize weights to sum to 1.0
+	normalizedWeights := make([]float64, len(upstreams))
+	for i := range upstreams {
+		normalizedWeights[i] = u.rrWeights[networkId][method][i] / totalWeight
 	}
 
-	// Use random value to select next upstream
+	// Generate a random value between 0 and 1
 	r := rand.Float64()
+
+	// Find the first upstream whose cumulative weight exceeds the random value
 	cumulativeWeight := 0.0
-	for i, weight := range u.rrWeights[networkId][method] {
+	for i, weight := range normalizedWeights {
 		cumulativeWeight += weight
 		if r <= cumulativeWeight {
 			return upstreams[i], nil
 		}
 	}
 
-	// Fallback to first upstream if something goes wrong
+	// Fallback to first upstream (should never happen due to normalization)
 	return upstreams[0], nil
 }
 
@@ -973,6 +1036,9 @@ func (u *UpstreamsRegistry) getNextRoundRobin(networkId, method string, upstream
 	// Initialize index if needed
 	if _, ok := u.rrIndices[networkId]; !ok {
 		u.rrIndices[networkId] = make(map[string]int)
+	}
+	if _, ok := u.rrIndices[networkId][method]; !ok {
+		u.rrIndices[networkId][method] = 0
 	}
 
 	// Get current index and update for next time
