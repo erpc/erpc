@@ -276,7 +276,6 @@ func upstreamPostForward_eth_getLogs(ctx context.Context, n common.Network, u co
 		}
 		nnr := common.NewNormalizedResponse().WithRequest(rq).WithJsonRpcResponse(jrr)
 		nnr.SetFromCache(rs.FromCache())
-		nnr.WithEmptyBehavior(rs.EmptyBehavior())
 		nnr.SetEvmBlockRef(rs.EvmBlockRef())
 		nnr.SetEvmBlockNumber(rs.EvmBlockNumber())
 		nnr.SetAttempts(rs.Attempts())
