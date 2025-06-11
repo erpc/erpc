@@ -390,6 +390,58 @@ func TestDrpcVendor_GetVendorSpecificErrorIfAny(t *testing.T) {
 	})
 }
 
+func TestDrpcVendor_GetVendorSpecificErrorIfAny_ChainExceptionAndInvalidBlockRange(t *testing.T) {
+	vendor := CreateDrpcVendor()
+
+	tests := []struct {
+		name        string
+		errorCode   int
+		errorMsg    string
+		expectError bool
+		errorType   interface{}
+	}{
+		{
+			name:        "ChainException error",
+			errorCode:   -32005,
+			errorMsg:    "ChainException: Unexpected error (code=40000)",
+			expectError: true,
+			errorType:   &common.ErrEndpointMissingData{},
+		},
+		{
+			name:        "invalid block range error",
+			errorCode:   -32602,
+			errorMsg:    "invalid block range",
+			expectError: true,
+			errorType:   &common.ErrEndpointMissingData{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &common.NormalizedRequest{}
+			resp := &http.Response{}
+			jrr := &common.JsonRpcResponse{
+				Error: &common.ErrJsonRpcExceptionExternal{
+					Code:    tt.errorCode,
+					Message: tt.errorMsg,
+					Data:    "test data",
+				},
+			}
+			details := make(map[string]interface{})
+
+			err := vendor.GetVendorSpecificErrorIfAny(req, resp, jrr, details)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.IsType(t, tt.errorType, err)
+				assert.Equal(t, "test data", details["data"])
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestDrpcVendor_OwnsUpstream(t *testing.T) {
 	vendor := CreateDrpcVendor()
 
