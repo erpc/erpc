@@ -390,6 +390,7 @@ type UpstreamConfig struct {
 	RateLimitBudget              string                   `yaml:"rateLimitBudget,omitempty" json:"rateLimitBudget"`
 	RateLimitAutoTune            *RateLimitAutoTuneConfig `yaml:"rateLimitAutoTune,omitempty" json:"rateLimitAutoTune"`
 	Routing                      *RoutingConfig           `yaml:"routing,omitempty" json:"routing"`
+	Shadow                       *ShadowUpstreamConfig    `yaml:"shadow,omitempty" json:"shadow"`
 }
 
 func (c *UpstreamConfig) Copy() *UpstreamConfig {
@@ -427,6 +428,10 @@ func (c *UpstreamConfig) Copy() *UpstreamConfig {
 	}
 
 	return copied
+}
+
+type ShadowUpstreamConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
 }
 
 type RoutingConfig struct {

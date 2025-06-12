@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/erpc/erpc/architecture/evm"
@@ -71,6 +72,10 @@ func (n *Network) Architecture() common.NetworkArchitecture {
 	}
 
 	return n.cfg.Architecture
+}
+
+func (n *Network) ShadowUpstreams() []*upstream.Upstream {
+	return n.upstreamsRegistry.GetNetworkShadowUpstreams(n.networkId)
 }
 
 func (n *Network) Logger() *zerolog.Logger {
@@ -280,12 +285,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	// 5) Actual forwarding logic
-	var execution failsafe.Execution[*common.NormalizedResponse]
+	// Use an atomic counter to pick the next upstream across concurrent hedged executions
+	var upstreamIdx uint32
+
 	errorsByUpstream := &sync.Map{}
 	emptyResponses := &sync.Map{}
 	ectx := context.WithValue(ctx, common.RequestContextKey, req)
 
-	i := 0
 	resp, execErr := n.failsafeExecutor.
 		WithContext(ectx).
 		GetWithExecution(func(exec failsafe.Execution[*common.NormalizedResponse]) (*common.NormalizedResponse, error) {
@@ -305,10 +311,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 					attribute.String("request.id", fmt.Sprintf("%v", req.ID())),
 				)
 			}
-
-			req.LockWithTrace(execSpanCtx)
-			execution = exec
-			req.Unlock()
 
 			if ctxErr := execSpanCtx.Err(); ctxErr != nil {
 				cause := context.Cause(execSpanCtx)
@@ -343,7 +345,6 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 			ln := len(upsList)
 			for range upsList {
 				loopCtx, loopSpan := common.StartDetailSpan(execSpanCtx, "Network.UpstreamLoop")
-
 				if ctxErr := loopCtx.Err(); ctxErr != nil {
 					cause := context.Cause(loopCtx)
 					if cause != nil {
@@ -356,23 +357,18 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						return nil, ctxErr
 					}
 				}
-				// We need to use write-lock here because "i" is being updated.
-				req.LockWithTrace(loopCtx)
-				u := upsList[i]
+				// Pick next upstream in a round-robin fashion using atomic counter.
+				idx := int(atomic.AddUint32(&upstreamIdx, 1)-1) % ln
+				u := upsList[idx]
 				loopSpan.SetAttributes(attribute.String("upstream.id", u.Id()))
 				ulg := lg.With().Str("upstreamId", u.Id()).Logger()
-				ulg.Trace().Int("index", i).Int("upstreams", ln).Msgf("attempt to forward request to next upstream")
-				i++
-				if i >= ln {
-					i = 0
-				}
+				ulg.Trace().Int("index", idx).Int("upstreams", ln).Msgf("attempt to forward request to next upstream")
 				if _, respondedEmptyBefore := emptyResponses.Load(u); respondedEmptyBefore {
 					loopSpan.SetAttributes(
 						attribute.Bool("skipped", true),
 						attribute.String("skipped_reason", "upstream already responded empty"),
 					)
 					ulg.Debug().Msgf("upstream already responded empty no reason to retry, skipping")
-					req.Unlock()
 					loopSpan.End()
 					continue
 				}
@@ -382,16 +378,15 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						// Do not even try this upstream if we already know
 						// the previous error was not retryable. e.g. Billing issues
 						// Or there was a rate-limit error.
-						req.Unlock()
 						loopSpan.SetAttributes(
 							attribute.Bool("skipped", true),
 							attribute.String("skipped_reason", "upstream already responded with non-retryable error"),
 						)
+						ulg.Debug().Msgf("upstream already responded with non-retryable error, skipping")
 						loopSpan.End()
 						continue
 					}
 				}
-				req.Unlock()
 				hedges := exec.Hedges()
 				attempts := exec.Attempts()
 				if hedges > 0 {
@@ -437,6 +432,12 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 						loopSpan.SetStatus(codes.Ok, "")
 					} else {
 						common.SetTraceSpanError(loopSpan, err)
+					}
+					if r != nil {
+						// Store execution metadata inside the response for later use.
+						r.SetAttempts(exec.Attempts())
+						r.SetRetries(exec.Retries())
+						r.SetHedges(exec.Hedges())
 					}
 					loopSpan.End()
 					return r, err
@@ -496,20 +497,9 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 	}
 
 	if resp != nil {
-		if execution != nil {
-			resp.SetAttempts(execution.Attempts())
-			resp.SetRetries(execution.Retries())
-			resp.SetHedges(execution.Hedges())
-			forwardSpan.SetAttributes(
-				attribute.Int("execution.attempts", execution.Attempts()),
-				attribute.Int("execution.retries", execution.Retries()),
-				attribute.Int("execution.hedges", execution.Hedges()),
-			)
-		}
-
 		if n.cacheDal != nil {
 			resp.RLockWithTrace(ctx)
-	
+
 			go (func(resp *common.NormalizedResponse, forwardSpan trace.Span) {
 				defer (func() {
 					if rec := recover(); rec != nil {
@@ -535,6 +525,13 @@ func (n *Network) Forward(ctx context.Context, req *common.NormalizedRequest) (*
 				}
 			})(resp, forwardSpan)
 		}
+
+		// Use the counters embedded earlier in the response
+		forwardSpan.SetAttributes(
+			attribute.Int("execution.attempts", int(resp.Attempts())),
+			attribute.Int("execution.retries", int(resp.Retries())),
+			attribute.Int("execution.hedges", int(resp.Hedges())),
+		)
 	}
 
 	isEmpty := resp == nil || resp.IsObjectNull(ctx) || resp.IsResultEmptyish(ctx)

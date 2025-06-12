@@ -19,9 +19,9 @@ type NormalizedResponse struct {
 	expectedSize int
 
 	fromCache bool
-	attempts  int
-	retries   int
-	hedges    int
+	attempts  atomic.Value
+	retries   atomic.Value
+	hedges    atomic.Value
 	upstream  Upstream
 
 	jsonRpcResponse atomic.Pointer[JsonRpcResponse]
@@ -118,11 +118,15 @@ func (r *NormalizedResponse) Attempts() int {
 	if r == nil {
 		return 0
 	}
-	return r.attempts
+	v, ok := r.attempts.Load().(int)
+	if !ok {
+		return 0
+	}
+	return v
 }
 
 func (r *NormalizedResponse) SetAttempts(attempts int) *NormalizedResponse {
-	r.attempts = attempts
+	r.attempts.Store(attempts)
 	return r
 }
 
@@ -130,11 +134,15 @@ func (r *NormalizedResponse) Retries() int {
 	if r == nil {
 		return 0
 	}
-	return r.retries
+	v, ok := r.retries.Load().(int)
+	if !ok {
+		return 0
+	}
+	return v
 }
 
 func (r *NormalizedResponse) SetRetries(retries int) *NormalizedResponse {
-	r.retries = retries
+	r.retries.Store(retries)
 	return r
 }
 
@@ -142,11 +150,15 @@ func (r *NormalizedResponse) Hedges() int {
 	if r == nil {
 		return 0
 	}
-	return r.hedges
+	v, ok := r.hedges.Load().(int)
+	if !ok {
+		return 0
+	}
+	return v
 }
 
 func (r *NormalizedResponse) SetHedges(hedges int) *NormalizedResponse {
-	r.hedges = hedges
+	r.hedges.Store(hedges)
 	return r
 }
 
@@ -323,9 +335,9 @@ func (r *NormalizedResponse) MarshalZerologObject(e *zerolog.Event) {
 	}
 
 	e.Bool("fromCache", r.fromCache)
-	e.Int("attempts", r.attempts)
-	e.Int("retries", r.retries)
-	e.Int("hedges", r.hedges)
+	e.Int("attempts", r.Attempts())
+	e.Int("retries", r.Retries())
+	e.Int("hedges", r.Hedges())
 	e.Interface("evmBlockRef", r.evmBlockRef.Load())
 	e.Interface("evmBlockNumber", r.evmBlockNumber.Load())
 
