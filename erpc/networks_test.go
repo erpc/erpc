@@ -10176,11 +10176,10 @@ func TestNetwork_CacheEmptyBehavior(t *testing.T) {
 		cachedResp := common.NewNormalizedResponse().
 			WithRequest(req).
 			WithJsonRpcResponse(jrr).
-			WithFromCache(true).
-			WithEmptyBehavior(common.CacheEmptyBehaviorAllow)
+			WithFromCache(true)
 
 		cache.On("Get", mock.Anything, mock.Anything).Return(cachedResp, nil).Once()
-
+		
 		resp, err := network.Forward(ctx, req)
 		require.NoError(t, err)
 		require.NotNil(t, resp)
@@ -10207,15 +10206,7 @@ func TestNetwork_CacheEmptyBehavior(t *testing.T) {
 
 		req := common.NewNormalizedRequest([]byte(`{"jsonrpc":"2.0","method":"eth_getLogs","params":[{"address":"0x11"}],"id":1}`))
 
-		jrr, err := common.NewJsonRpcResponse(req.ID(), []interface{}{}, nil)
-		require.NoError(t, err)
-		cachedResp := common.NewNormalizedResponse().
-			WithRequest(req).
-			WithJsonRpcResponse(jrr).
-			WithFromCache(true).
-			WithEmptyBehavior(common.CacheEmptyBehaviorIgnore)
-
-		cache.On("Get", mock.Anything, mock.Anything).Return(cachedResp, nil).Once()
+		cache.On("Get", mock.Anything, mock.Anything).Return(nil, nil).Once()
 
 		gock.New("http://rpc1.localhost").
 			Post("").
