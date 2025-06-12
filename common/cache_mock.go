@@ -12,6 +12,9 @@ type MockCacheDal struct {
 
 func (m *MockCacheDal) Get(ctx context.Context, nrq *NormalizedRequest) (*NormalizedResponse, error) {
 	args := m.Called(ctx, nrq)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
 	return args.Get(0).(*NormalizedResponse), args.Error(1)
 }
 
