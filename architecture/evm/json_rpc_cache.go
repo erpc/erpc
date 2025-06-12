@@ -264,6 +264,39 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		return nil, nil
 	}
 
+	if jrr.IsResultEmptyish() {
+		switch policy.EmptyState() {
+		case common.CacheEmptyBehaviorIgnore:
+			// Treat as cache miss - return nil to indicate no cached data
+			telemetry.MetricCacheGetSuccessMissTotal.WithLabelValues(
+				c.projectId,
+				req.NetworkId(),
+				rpcReq.Method,
+				connector.Id(),
+				policy.String(),
+				policy.GetTTL().String(),
+			).Inc()
+			telemetry.MetricCacheGetSuccessMissDuration.WithLabelValues(
+				c.projectId,
+				req.NetworkId(),
+				rpcReq.Method,
+				connector.Id(),
+				policy.String(),
+				policy.GetTTL().String(),
+			).Observe(time.Since(start).Seconds())
+			span.SetAttributes(attribute.Bool("cache.hit", false))
+			return nil, nil
+		case common.CacheEmptyBehaviorAllow, common.CacheEmptyBehaviorOnly:
+			// Continue to create and return the response
+			break
+		}
+	}
+
+	resp := common.NewNormalizedResponse().
+		WithRequest(req).
+		WithFromCache(true).
+		WithJsonRpcResponse(jrr)
+
 	telemetry.MetricCacheGetSuccessHitTotal.WithLabelValues(
 		c.projectId,
 		req.NetworkId(),
@@ -287,10 +320,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		c.logger.Debug().Str("method", rpcReq.Method).Interface("id", req.ID()).Msg("returning cached response")
 	}
 
-	return common.NewNormalizedResponse().
-		WithRequest(req).
-		WithFromCache(true).
-		WithJsonRpcResponse(jrr), nil
+	return resp, nil
 }
 
 func (c *EvmJsonRpcCache) Set(ctx context.Context, req *common.NormalizedRequest, resp *common.NormalizedResponse) error {
