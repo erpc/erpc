@@ -264,12 +264,7 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 		return nil, nil
 	}
 
-	resp := common.NewNormalizedResponse().
-		WithRequest(req).
-		WithFromCache(true).
-		WithJsonRpcResponse(jrr)
-
-	if resp.IsResultEmptyish() {
+	if jrr.IsResultEmptyish() {
 		switch policy.EmptyState() {
 		case common.CacheEmptyBehaviorIgnore:
 			// Treat as cache miss - return nil to indicate no cached data
@@ -292,10 +287,15 @@ func (c *EvmJsonRpcCache) Get(ctx context.Context, req *common.NormalizedRequest
 			span.SetAttributes(attribute.Bool("cache.hit", false))
 			return nil, nil
 		case common.CacheEmptyBehaviorAllow, common.CacheEmptyBehaviorOnly:
-			// Return the empty response
+			// Continue to create and return the response
 			break
 		}
 	}
+
+	resp := common.NewNormalizedResponse().
+		WithRequest(req).
+		WithFromCache(true).
+		WithJsonRpcResponse(jrr)
 
 	telemetry.MetricCacheGetSuccessHitTotal.WithLabelValues(
 		c.projectId,
