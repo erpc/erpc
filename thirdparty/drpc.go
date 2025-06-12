@@ -172,7 +172,7 @@ func (v *DrpcVendor) GetVendorSpecificErrorIfAny(req *common.NormalizedRequest, 
 			)
 		}
 
-		if strings.Contains(msg, "ChainException") ||
+		if strings.Contains(msg, "ChainException: Unexpected error (code=40000)") ||
 			strings.Contains(msg, "invalid block range") {
 			return common.NewErrEndpointMissingData(
 				common.NewErrJsonRpcExceptionInternal(
