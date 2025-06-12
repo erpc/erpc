@@ -941,48 +941,125 @@ func (u *UpstreamsRegistry) GetMetricsTracker() *health.Tracker {
 }
 
 func (u *UpstreamsRegistry) GetNextUpstream(ctx context.Context, networkId, method string) (*Upstream, error) {
-	u.upstreamsMu.RLock()
-	defer u.upstreamsMu.RUnlock()
+	u.upstreamsMu.Lock()
+	defer u.upstreamsMu.Unlock()
 
 	// Get sorted upstreams
-	upstreams, err := u.GetSortedUpstreams(ctx, networkId, method)
-	if err != nil {
-		return nil, err
+	upsList := u.sortedUpstreams[networkId][method]
+	if upsList == nil {
+		upsList = u.sortedUpstreams[networkId]["*"]
+		if upsList == nil {
+			upsList = u.networkUpstreams[networkId]
+			if upsList == nil {
+				return nil, common.NewErrNoUpstreamsFound(u.prjId, networkId)
+			}
+		}
+
+		// Create a copy of the default upstreams list for this method
+		methodUpsList := make([]*Upstream, len(upsList))
+		copy(methodUpsList, upsList)
+
+		if _, ok := u.sortedUpstreams[networkId]; !ok {
+			u.sortedUpstreams[networkId] = make(map[string][]*Upstream)
+		}
+		u.sortedUpstreams[networkId][method] = methodUpsList
+
+		if u.sortedUpstreams[networkId]["*"] == nil {
+			cpUps := make([]*Upstream, len(methodUpsList))
+			copy(cpUps, methodUpsList)
+			u.sortedUpstreams[networkId]["*"] = cpUps
+		}
+
+		if u.sortedUpstreams["*"][method] == nil {
+			cpUps := make([]*Upstream, len(methodUpsList))
+			copy(cpUps, methodUpsList)
+			u.sortedUpstreams["*"][method] = cpUps
+		}
+
+		// Initialize scores for this method on this network and "any" network
+		for _, ups := range methodUpsList {
+			upid := ups.Id()
+			if _, ok := u.upstreamScores[upid]; !ok {
+				u.upstreamScores[upid] = make(map[string]map[string]float64)
+			}
+			if _, ok := u.upstreamScores[upid][networkId]; !ok {
+				u.upstreamScores[upid][networkId] = make(map[string]float64)
+			}
+			if _, ok := u.upstreamScores[upid][networkId][method]; !ok {
+				u.upstreamScores[upid][networkId][method] = 0
+			}
+			if _, ok := u.upstreamScores[upid]["*"][method]; !ok {
+				u.upstreamScores[upid]["*"][method] = 0
+			}
+		}
+
+		upsList = methodUpsList
 	}
 
-	if len(upstreams) == 0 {
+	if len(upsList) == 0 {
 		return nil, common.NewErrNoUpstreamsFound(u.prjId, networkId)
 	}
 
 	// Get load balancer type from project's upstreamDefaults
-	lbType := common.LoadBalancerTypeHighestScore // default to original behavior
-	if len(upstreams) > 0 {
-		projectConfig := upstreams[0].Config().ProjectConfig
+	lbType := common.LoadBalancerTypeHighestScore
+	if len(upsList) > 0 {
+		projectConfig := upsList[0].Config().ProjectConfig
 		if projectConfig != nil && projectConfig.UpstreamDefaults != nil && projectConfig.UpstreamDefaults.LoadBalancer != nil {
 			lbType = projectConfig.UpstreamDefaults.LoadBalancer.Type
 		}
 	}
 
+	// Filter out cordoned upstreams
+	activeUpstreams := make([]*Upstream, 0)
+	for _, ups := range upsList {
+		if !u.metricsTracker.IsCordoned(ups, method) {
+			activeUpstreams = append(activeUpstreams, ups)
+		}
+	}
+
+	if len(activeUpstreams) == 0 {
+		return nil, common.NewErrNoUpstreamsFound(u.prjId, networkId)
+	}
+
+	// Select next upstream based on load balancer type
 	switch lbType {
-	case common.LoadBalancerTypeHighestScore:
-		// Original behavior - just return the first upstream which is already sorted by score
-		return upstreams[0], nil
-	case common.LoadBalancerTypeWeightedRoundRobin:
-		return u.getNextWeightedRoundRobin(networkId, method, upstreams)
 	case common.LoadBalancerTypeRoundRobin:
-		return u.getNextRoundRobin(networkId, method, upstreams)
+		return u.getNextRoundRobin(networkId, method, activeUpstreams)
+	case common.LoadBalancerTypeWeightedRoundRobin:
+		return u.getNextWeightedRoundRobin(networkId, method, activeUpstreams)
 	case common.LoadBalancerTypeLeastConnection:
-		return u.getNextLeastConnection(networkId, method, upstreams)
-	default:
-		// Default to original behavior
-		return upstreams[0], nil
+		return u.getNextLeastConnection(networkId, method, activeUpstreams)
+	default: // LoadBalancerTypeHighestScore
+		return activeUpstreams[0], nil
 	}
 }
 
-func (u *UpstreamsRegistry) getNextWeightedRoundRobin(networkId, method string, upstreams []*Upstream) (*Upstream, error) {
-	u.upstreamsMu.Lock()
-	defer u.upstreamsMu.Unlock()
+func (u *UpstreamsRegistry) getNextRoundRobin(networkId, method string, upstreams []*Upstream) (*Upstream, error) {
+	// Initialize index if needed
+	if _, ok := u.rrIndices[networkId]; !ok {
+		u.rrIndices[networkId] = make(map[string]int)
+	}
+	if _, ok := u.rrIndices[networkId][method]; !ok {
+		u.rrIndices[networkId][method] = 0
+	}
 
+	// Get current index and update for next time
+	idx := u.rrIndices[networkId][method]
+	u.rrIndices[networkId][method] = (idx + 1) % len(upstreams)
+
+	u.logger.Debug().
+		Str("networkId", networkId).
+		Str("method", method).
+		Int("currentIndex", idx).
+		Int("nextIndex", u.rrIndices[networkId][method]).
+		Int("totalUpstreams", len(upstreams)).
+		Str("selectedUpstream", upstreams[idx].Id()).
+		Msg("round robin selection")
+
+	return upstreams[idx], nil
+}
+
+func (u *UpstreamsRegistry) getNextWeightedRoundRobin(networkId, method string, upstreams []*Upstream) (*Upstream, error) {
 	// Initialize weights map if not exists
 	if _, ok := u.rrWeights[networkId]; !ok {
 		u.rrWeights[networkId] = make(map[string][]float64)
@@ -1004,6 +1081,10 @@ func (u *UpstreamsRegistry) getNextWeightedRoundRobin(networkId, method string, 
 
 	// If all weights are zero, fall back to simple round-robin
 	if totalWeight == 0 {
+		u.logger.Debug().
+			Str("networkId", networkId).
+			Str("method", method).
+			Msg("all weights are zero, falling back to simple round-robin")
 		return u.getNextRoundRobin(networkId, method, upstreams)
 	}
 
@@ -1021,31 +1102,25 @@ func (u *UpstreamsRegistry) getNextWeightedRoundRobin(networkId, method string, 
 	for i, weight := range normalizedWeights {
 		cumulativeWeight += weight
 		if r <= cumulativeWeight {
+			u.logger.Debug().
+				Str("networkId", networkId).
+				Str("method", method).
+				Float64("randomValue", r).
+				Float64("cumulativeWeight", cumulativeWeight).
+				Float64("weight", weight).
+				Int("selectedIndex", i).
+				Str("selectedUpstream", upstreams[i].Id()).
+				Msg("weighted round robin selection")
 			return upstreams[i], nil
 		}
 	}
 
 	// Fallback to first upstream (should never happen due to normalization)
+	u.logger.Debug().
+		Str("networkId", networkId).
+		Str("method", method).
+		Msg("falling back to first upstream in weighted round-robin")
 	return upstreams[0], nil
-}
-
-func (u *UpstreamsRegistry) getNextRoundRobin(networkId, method string, upstreams []*Upstream) (*Upstream, error) {
-	u.upstreamsMu.Lock()
-	defer u.upstreamsMu.Unlock()
-
-	// Initialize index if needed
-	if _, ok := u.rrIndices[networkId]; !ok {
-		u.rrIndices[networkId] = make(map[string]int)
-	}
-	if _, ok := u.rrIndices[networkId][method]; !ok {
-		u.rrIndices[networkId][method] = 0
-	}
-
-	// Get current index and update for next time
-	idx := u.rrIndices[networkId][method]
-	u.rrIndices[networkId][method] = (idx + 1) % len(upstreams)
-
-	return upstreams[idx], nil
 }
 
 func (u *UpstreamsRegistry) getNextLeastConnection(networkId, method string, upstreams []*Upstream) (*Upstream, error) {
